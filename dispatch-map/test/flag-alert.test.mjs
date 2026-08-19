@@ -109,7 +109,25 @@ test('a failed send still keeps the claim — one missed alert beats an alert lo
   assert.equal(second.skippedAlreadySent, 1, 'the claim survived the failure, deliberately');
 });
 
-test('a bad data day cannot become a hundred emails', async () => {
+test('the alert cap is INDEPENDENT of the customer-communications cap', async () => {
+  // Chad: "the flag emails should not be bound to the resend cap we set for customer
+  // communications." They share no code — this asserts the constant has not drifted back to
+  // the comms figure, which is the way the two would silently re-couple.
+  const comms = await import('../netlify/functions/lib/customer-comms.mts');
+  assert.notEqual(DAILY_ALERT_CAP, comms.DEFAULT_CONFIG.dailyCap,
+    'the alert ceiling must not be the customer-comms daily cap');
+  assert.ok(DAILY_ALERT_CAP >= 100, 'it is a runaway backstop, not a budget');
+});
+
+test('the alert module imports nothing from the customer-communications engine', async () => {
+  // The strongest form of "not bound to it": no shared counter, config doc, or budget.
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('../netlify/functions/lib/flag-alert.mts', import.meta.url), 'utf8');
+  const imports = [...src.matchAll(/^import .*?from '(.+?)';/gm)].map((m) => m[1]);
+  assert.deepEqual(imports, ['./email.mts'], 'the only dependency is the raw sender');
+});
+
+test('a runaway board cannot become an unbounded flood', async () => {
   const io = {
     createDocIfAbsent: async () => true,
     send: async () => ({ ok: true }),
