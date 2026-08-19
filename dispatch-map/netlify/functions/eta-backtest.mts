@@ -115,7 +115,7 @@ interface Row {
 /** Replay one route. Returns one row per stop that has BOTH a position and a real
  *  arrival stamp — a stop we cannot score is excluded from the error stats and counted
  *  separately, never silently treated as correct. */
-function replayRoute(stops: any[], date: string, tuned: { speed: number; service: number; road: number }): { rows: Row[]; skipped: Record<string, number> } {
+function replayRoute(stops: any[], date: string, tuned: { speed: number; service: number; road: number; depart: number }): { rows: Row[]; skipped: Record<string, number> } {
   const skipped: Record<string, number> = {};
   const bump = (k: string) => { skipped[k] = (skipped[k] || 0) + 1; };
   const rows: Row[] = [];
@@ -140,8 +140,8 @@ function replayRoute(stops: any[], date: string, tuned: { speed: number; service
 
   let cur: any = DEPOT;
   let clockA = DEPART_MIN;          // model A: pure projection, SHIPPED constants
-  let clockB = DEPART_MIN;          // model B: pure projection, TUNED constants (no anchor)
-  let clockC = DEPART_MIN;          // model C: tuned constants AND re-anchored on observed stamps
+  let clockB = tuned.depart;        // model B: pure projection, TUNED constants (no anchor)
+  let clockC = tuned.depart;          // model C: tuned constants AND re-anchored on observed stamps
   let idx = 0;
   // How far C is projecting past its last real stamp. This is the number that decides whether
   // a re-anchored model can answer "will the truck make a 2pm close five stops from now" —
@@ -230,7 +230,16 @@ export default async (req: Request): Promise<Response> => {
     const speed = Number(url.searchParams.get('speed') || AVG_SPEED_MPS);
     const service = Number(url.searchParams.get('service') || SERVICE_SEC);
     const road = Number(url.searchParams.get('road') || ROAD_FACTOR);
-    const tuned = { speed, service, road };
+    // Departure is tunable too, and it may be the largest single term: an 8:00 assumption
+    // against a truck that rolls at 8:40 makes EVERY stop on EVERY route 40 minutes optimistic,
+    // and no amount of speed tuning can absorb a constant offset.
+    const departRaw = url.searchParams.get('depart');
+    const depart = departRaw
+      ? (/^\d{1,2}:\d{2}$/.test(departRaw)
+          ? Number(departRaw.split(':')[0]) * 60 + Number(departRaw.split(':')[1])
+          : Number(departRaw))
+      : DEPART_MIN;
+    const tuned = { speed, service, road, depart };
 
     const dates: string[] = [];
     for (let d = new Date(`${from}T00:00:00Z`); d <= new Date(`${to}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + 1)) {
@@ -338,7 +347,7 @@ export default async (req: Request): Promise<Response> => {
       ok: true,
       window: { from, to, days: dates.length },
       constants: { road_factor: ROAD_FACTOR, avg_speed_mps: AVG_SPEED_MPS, service_min: SERVICE_SEC / 60, depart: '08:00', depot: DEPOT },
-      tuned_used: { road: tuned.road, speed_mps: tuned.speed, service_min: tuned.service / 60 },
+      tuned_used: { road: tuned.road, speed_mps: tuned.speed, service_min: tuned.service / 60, depart_min: tuned.depart },
       coverage: {
         routes_seen: routesSeen,
         stops_scored: allRows.length,
