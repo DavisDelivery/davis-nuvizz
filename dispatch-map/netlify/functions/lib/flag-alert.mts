@@ -33,17 +33,29 @@ import { sendEmail } from './email.mts';
 
 export const ALERT_COLLECTION = 'eta_flag_alerts';
 export const ALERT_TO = 'customerservice@davisdelivery.com';
-// DELIBERATELY NOT THE CUSTOMER-COMMS CAP. Chad: "the flag emails should not be bound to the
-// resend cap we set for customer communications." They never shared code — this module reads
-// no comms config and increments no comms counter, and the two only meet at the Resend
-// account itself. But the first number here was 25, which is exactly the figure the customer
-// email trial ran at, and a constant that LOOKS borrowed will eventually be treated as
-// borrowed by whoever tunes the other one.
+// DELIBERATELY NOT THE CUSTOMER-COMMS CAP, AND DELIBERATELY NOT ITS NUMBER EITHER.
 //
-// So it is sized as what it is: an anti-runaway ceiling, an order of magnitude above any
-// plausible day. Operational alerts are not a marketing budget — a day with forty trucks in
-// trouble is a day when customer service needs forty emails, not the first twenty-five.
-export const DAILY_ALERT_CAP = 200;
+// Chad, twice: "the flag emails should not be bound to the resend cap we set for customer
+// communications", and then "what i want to make sure is the alert email to customerservice
+// when we are going to miss a delivery window is not bound to that ... cap for the customer
+// communications on delivery confirmations."
+//
+// They are not, and never were, COUPLED: this module's only import is the raw sender, it
+// reads no comms config document, and it increments no comms counter. The customer-comms
+// daily cap lives in that engine's own config and is consumed only by its sweep. The single
+// thing the two share is the Resend account itself, which is nowhere near either ceiling.
+//
+// The number is the part that kept causing the question. It was first 25 — exactly the
+// figure the customer-email trial ran at — and then 200, which collided with the comms cap
+// Chad had in mind. A constant that keeps LOOKING like the other one will keep being read as
+// the other one, so it is now a value that matches nothing over there and is written as what
+// it is: an anti-runaway ceiling for a parser bug marking a whole board critical.
+//
+// It sits far above any plausible day on purpose. Only stops that carry receiving hours,
+// read CRITICAL, and still have an open window can alert at all — a handful on a bad day.
+// Suppressing a real "this truck is about to miss" is the one failure this feature exists to
+// prevent, so the ceiling must never be the thing that decides.
+export const DAILY_ALERT_CAP = 500;
 
 export function alertClaimPath(tenant: string, date: string, stopNbr: string): string {
   const safe = String(stopNbr).replace(/[^A-Za-z0-9_.-]/g, '_');

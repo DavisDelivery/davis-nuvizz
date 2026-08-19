@@ -24,6 +24,7 @@
 // day either side of a DST flip without needing to be re-timed twice a year.
 import { isFirestoreEnabled, readStops, getDoc, createDocIfAbsent, etDayString } from './lib/firestore.mts';
 import { computeBoardFlags } from '../../src/lib/board-flags.js';
+import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { selectAlertable, sendAlerts, ALERT_TO } from './lib/flag-alert.mts';
 import { emailEnabled } from './lib/email.mts';
 
@@ -62,12 +63,16 @@ export default async (req: Request): Promise<Response> => {
       ? Number(url.searchParams.get('now'))
       : (date === etDayString() ? etNowMin() : null);
 
-    const { stops } = await readStops(TENANT, date);
+    const { stops: rawStops } = await readStops(TENANT, date);
+    // THE LIVE STOP INDEX DOES NOT CARRY matchKey. computeBoardFlags looks its receiving
+    // hours up by stop.matchKey, so without this every stop reads as having no deadline and
+    // the whole board comes back clean — measured: 778 stops, 63 routes judged, 0 flags.
+    const stops = withCustomerKeys(rawStops);
     if (!stops?.length) return J({ ok: true, date, note: 'no board', alertable: 0 });
 
     // Receiving hours live in customer_notes, one doc per customer key. Read each distinct
     // key once — a 700-stop board is only a few hundred customers.
-    const keys = [...new Set(stops.map((s: any) => String(s?.matchKey || '')).filter(Boolean))];
+    const keys = [...new Set(stops.map((s: any) => stopCustomerKey(s)).filter(Boolean) as string[])];
     const notes = new Map<string, any>();
     const CHUNK = 25;
     for (let i = 0; i < keys.length; i += CHUNK) {

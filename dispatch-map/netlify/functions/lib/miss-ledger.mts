@@ -22,21 +22,12 @@
 // override, appointment matching — which changed which routes were scored. A scorer that
 // grades a copy of the model grades the wrong thing.
 import { dayReceivingWindow, arrivalAnchor, isFinishedStop } from '../../../src/lib/board-flags.js';
-import { normalizeMatchKey } from '../../../src/lib/matchKey.js';
+import { stopCustomerKey } from './customer-key.mts';
 
-// THE CUSTOMER KEY IS DERIVED, NOT TRUSTED. customer_notes is keyed by
-// normalizeMatchKey(name, addr1, city, zip); buildStopRecord stores that same value as
-// `customerMatchKey`, so reading the stored field usually works — but "usually" is the
-// problem. If a writer ever omits it, EVERY stop resolves to no-hours-on-file and the
-// ledger reports a serene zero misses, which is indistinguishable from a perfect week.
-// So derive it the way the live email path does (usableMatchKey in customer-comms.mts),
-// fall back to the stored field, and refuse a key with no alphanumerics rather than
-// looking up a garbage document.
-export function ledgerMatchKey(s: any): string | null {
-  const derived = normalizeMatchKey(s?.businessName, s?.addr1, s?.city, s?.zip);
-  const key = /[a-z0-9]/i.test(String(derived || '')) ? derived : (s?.customerMatchKey || s?.matchKey || '');
-  return /[a-z0-9]/i.test(String(key || '')) ? String(key) : null;
-}
+// Kept as a named export because the tests and the background job both use it; the
+// derivation itself now lives in ONE place (lib/customer-key.mts) after the same
+// trust-the-stored-field bug shipped twice in one session.
+export const ledgerMatchKey = stopCustomerKey;
 
 export const MISS_LEDGER_COLLECTION = 'eta_miss_ledger';
 export const LEDGER_VERSION = 1;

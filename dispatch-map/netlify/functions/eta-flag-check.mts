@@ -21,6 +21,7 @@
 // Read-only. Firestore only. ZERO NuVizz calls.
 import { isFirestoreEnabled, readStops, getDoc, listDocs, etDayString } from './lib/firestore.mts';
 import { computeBoardFlags } from '../../src/lib/board-flags.js';
+import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, DAILY_ALERT_CAP } from './lib/flag-alert.mts';
 import { emailEnabled } from './lib/email.mts';
 
@@ -56,10 +57,14 @@ export default async (req: Request): Promise<Response> => {
     // `?now=` lets a dispatcher ask "what will this look like at 2pm" without waiting for 2pm.
     const nowMin = nowParam ? Number(nowParam) : (date === etDayString() ? etNowMin() : null);
 
-    const { stops } = await readStops(TENANT, date);
+    const { stops: rawStops } = await readStops(TENANT, date);
+    // THE LIVE STOP INDEX DOES NOT CARRY matchKey. computeBoardFlags looks its receiving
+    // hours up by stop.matchKey, so without this every stop reads as having no deadline and
+    // the whole board comes back clean — measured: 778 stops, 63 routes judged, 0 flags.
+    const stops = withCustomerKeys(rawStops);
     if (!stops?.length) return J({ ok: true, date, note: 'no board for this date' });
 
-    const keys = [...new Set(stops.map((s: any) => String(s?.matchKey || '')).filter(Boolean))];
+    const keys = [...new Set(stops.map((s: any) => stopCustomerKey(s)).filter(Boolean) as string[])];
     const notes = new Map<string, any>();
     for (let i = 0; i < keys.length; i += 25) {
       await Promise.all(keys.slice(i, i + 25).map(async (k) => {
@@ -86,8 +91,22 @@ export default async (req: Request): Promise<Response> => {
         .map((d: any) => ({ stopNbr: d.stopNbr, customer: d.customer, lateBy: d.lateBy, claimed_at: d.claimed_at }));
     } catch { /* the collection does not exist until the first claim */ }
 
+    // PROVE IT LOOKED. A bare "0 critical" is indistinguishable from "the notes never
+    // loaded and every stop looked deadline-free" — the silent-zero failure this endpoint
+    // exists to catch. computeBoardFlags already counts what it examined; surface it.
+    const diag = {
+      stopsSeen: stops.length,
+      distinctCustomerKeys: keys.length,
+      notesLoaded: notes.size,
+      stopsWithHoursToday: flags.checked?.stopsWithHours ?? null,
+      routesJudged: flags.checked?.routesJudged ?? null,
+      openStopsChecked: flags.checked?.stops ?? null,
+      skipped: flags.skipped,
+      sampleStopKeys: stops.slice(0, 3).map((s: any) => s?.matchKey ?? null),
+    };
+
     return J({
-      ok: true, dryRun: true, date,
+      ok: true, dryRun: true, date, diag,
       now: nowMin != null ? clock(nowMin) : null,
       emailConfigured: emailEnabled(), to: ALERT_TO, dailyCap: DAILY_ALERT_CAP,
       counts: { critical: flags.criticalCount ?? 0, red: flags.redCount ?? 0, amber: flags.amberCount ?? 0 },
