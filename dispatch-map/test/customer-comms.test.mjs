@@ -196,6 +196,38 @@ test('every field the editor advertises is actually supplied', () => {
   for (const f of MERGE_FIELDS) assert.ok(f in v, `stopVars does not supply {{${f}}}`);
 });
 
+// ── NO DRIVER NAME ───────────────────────────────────────────────────────────
+//
+// Chad, Aug 2026: "Want drivers name removed from these emails." The name is removed at
+// the VALUE, not just from DEFAULT_HTML, because the template that actually renders is
+// the one saved in Firestore — and the saved one still carries the old {{#driver}} block.
+// These pin the property that survives that: a driver name cannot reach a customer
+// through ANY template, including one that still asks for it by name.
+
+test('stopVars supplies no driver name, even from a stop that has one', () => {
+  assert.equal(LIST_STOP.driverName, 'Rasheed W', 'sanity: the fixture does carry a driver');
+  const v = stopVars(LIST_STOP, '2026-08-16');
+  assert.equal(v.driver, undefined, 'the driver must not be a merge value');
+  for (const val of Object.values(v)) {
+    assert.ok(!String(val).includes('Rasheed'), 'no merge value may carry the driver name');
+  }
+});
+
+test('a template that still asks for the driver renders no name', () => {
+  // Exactly the block the saved Firestore template still contains.
+  const stale = 'X{{#driver}}<div>Driver</div><div>{{driver}}</div>{{/driver}}Y{{driver}}Z';
+  const v = stopVars(LIST_STOP, '2026-08-16');
+  const out = renderTemplate(stale, v);
+  assert.equal(out, 'XYZ', 'section and bare field both render empty — label goes with it');
+  assert.ok(!out.includes('Rasheed'));
+  assert.ok(!/Driver/.test(out), 'no orphaned DRIVER heading over a blank line');
+});
+
+test('the shipped default template no longer mentions the driver field', () => {
+  assert.ok(!/\{\{#?\/?\s*driver\s*\}\}/.test(DEFAULT_HTML));
+  assert.ok(!MERGE_FIELDS.includes('driver'), 'the editor must not advertise it either');
+});
+
 // ── THE LIST-ROW GAPS ────────────────────────────────────────────────────────
 
 test('an un-enriched list row composes city/zip without a dangling comma', () => {
