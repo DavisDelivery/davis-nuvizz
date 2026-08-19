@@ -148,7 +148,24 @@ function stubRoutes(page, emailHtml) {
         defaultHtml: emailHtml, resendConfigured: true, effectiveFrom: 'Davis Delivery <notifications@davisdelivery.com>',
       });
     }
-    if (u.includes('customer-comms-log')) return R({ ok: true, totals: { total: 2, sent: 1, failed: 1, inflight: 0 }, entries: [{ date: '2026-08-17', key: 'k1', at: '2026-08-17T13:50:00Z', customer: 'ACME SUPPLY COMPANY OF NORTH GEORGIA', to: 'receiving@acmesupply.example.com', subject: 'Delivered — PRO 007161743', ok: true, claimed: true }] });
+    // The send log is grouped BY DAY now, so the fixture carries the shape the endpoint
+    // actually returns — byDay/byMonth/range/months alongside the flat entries. A second,
+    // EMPTY day is deliberate: a day that was read and found nothing still renders a row,
+    // and that row is the one thing separating a quiet day from a missing one.
+    if (u.includes('customer-comms-log')) return R({
+      ok: true, today: '2026-08-17',
+      range: { mode: 'days', from: '2026-08-16', to: '2026-08-17', days: 2, requestedDays: 2, clipped: false, maxDays: 92 },
+      dates: ['2026-08-17', '2026-08-16'], unreadable: [], months: ['2026-08', '2026-07'],
+      totals: { total: 1, sent: 1, failed: 0, inflight: 0 },
+      byDay: [
+        { date: '2026-08-17', total: 1, sent: 1, failed: 0, inflight: 0 },
+        { date: '2026-08-16', total: 0, sent: 0, failed: 0, inflight: 0 },
+      ],
+      byMonth: [{ month: '2026-08', days: 2, total: 1, sent: 1, failed: 0, inflight: 0 }],
+      status: { '2026-08-16': { considered: 4, sent: 0, failed: 0 } },
+      entries: [{ date: '2026-08-17', key: 'k1', at: '2026-08-17T13:50:00Z', customer: 'ACME SUPPLY COMPANY OF NORTH GEORGIA', to: 'receiving@acmesupply.example.com', subject: 'Delivered — PRO 007161743', pro: '007161743', ok: true, claimed: true }],
+      entriesShown: 1, entriesTotal: 1, entriesTruncated: false,
+    });
     if (u.includes('coverage=1')) return R({ ok: true, pct: 100, withEmail: 599, sampled: 600, delivered: 710, bySource: { order: 599, notes: 0 }, optedOut: 0, withoutEmail: 1 });
     if (u.includes('customer-comms-test')) return R({ ok: true, preview: true, pro: '007161743', customer: 'BUFORD TILE & STONE', subject: 'Delivered — PRO 007161743', html: emailHtml.replace(/\{\{[^}]+\}\}/g, 'X'), recipientOnFile: 'receiving@buford.example.com', recipientSource: 'order', optedOut: false });
     if (u.includes('nuvizz-pull-today-stops') || u.includes('nuvizz-board')) return R({ ok: true, stops: STOPS, count: STOPS.length, date: '2026-08-17' });

@@ -20,7 +20,7 @@
 import { isFirestoreEnabled } from './lib/firestore.mts';
 import { emailEnabled } from './lib/email.mts';
 import {
-  readConfig, writeConfig, DEFAULT_HTML, MERGE_FIELDS, adminTokenOk,
+  readConfig, writeConfig, DEFAULT_HTML, MERGE_FIELDS, adminTokenOk, readDomainStatus,
   clampDailyCap, isSenderAddress, isEmailAddress, MAX_HTML_TEMPLATE, MAX_SUBJECT,
 } from './lib/customer-comms.mts';
 
@@ -43,6 +43,12 @@ export default async (req: Request): Promise<Response> => {
         resendConfigured: emailEnabled(),
         // What an empty fromAddress resolves to, so the UI can show the real sender.
         effectiveFrom: cfg.fromAddress || process.env.RESEND_FROM || null,
+        // The sender domain's REAL DNS state, so the screen stops asserting a failure it
+        // has not checked. verified:null means "could not tell" and is shown as such.
+        domain: await readDomainStatus(
+          cfg.fromAddress || process.env.RESEND_FROM || '',
+          process.env.RESEND_API_KEY || null,
+        ),
       });
     }
 

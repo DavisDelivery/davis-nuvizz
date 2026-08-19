@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.55.4';
+const APP_VERSION = '0.55.6';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -148,8 +148,11 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['0.55.4', 'A FLAG IS NOW ABOUT HOW LATE THE TRUCK IS, NOT WHO TYPED THE HOURS \u2014 AND CUSTOMER SERVICE GETS TOLD. Chad, looking at a live board: \u201cWhat makes one of these flags go red and trigger the email to customerservice@davisdelivery.com\u201d. Two answers, and the first one was embarrassing. RED MEANT ONE THING ONLY: a dispatcher had typed the receiving hours. Amber meant they were parsed from Uline\u2019s order text. That is a statement about where a time came from and says nothing about whether freight is about to be refused \u2014 which is why his board read \u201c0 red \u00b7 6 advisory\u201d while carrying AWC INC predicted 155 minutes past its close, sitting at exactly the same weight as VERITIV at 28 minutes past. And the second answer: NO EMAIL EXISTED. It had been discussed and never built. SEVERITY IS NOW SLACK MEASURED AGAINST HOW WRONG THE ESTIMATE IS KNOWN TO BE. The back-test measured that error in each state over 39 sealed days and 24,238 stops: about 15 minutes when the clock is anchored on a real arrival a stop or two back, growing as it projects further, and 90-plus when nothing on the route has reported and it is still a pure 8:00 projection. Every row now carries the band for its own state. CRITICAL means the overrun clears twice that band \u2014 the miss survives the model being as wrong as it usually is. RED means it clears the band once, or the hours were typed and any overrun is predicted. AMBER means predicted late but inside the bars, where the model genuinely cannot tell late from on-time. Auto-detected hours can now reach critical, because a truck 155 minutes past a close is a problem no matter who wrote the 11:00 down. criticalCount is reported separately AND folded into redCount, so promoting a row can never make the header read calmer than it did a minute earlier. THE EMAIL. First time a stop goes critical, once per stop per board day, to customerservice@davisdelivery.com \u2014 and never once the window has already shut, because past the close the message cannot change anything and competes with stops that can still be saved. The claim is written to Firestore BEFORE the send, which is what stops a truck that simply stays late from emailing every twenty minutes all afternoon; a send that then fails keeps its claim on purpose, because one missed alert beats an alert loop. Capped at 25 a day so a mis-parsed board cannot become a hundred emails. It runs the SAME engine the screen runs \u2014 imported, not reimplemented \u2014 after two separate incidents this session where a copy of the model quietly diverged from it. Dry-run mode reports exactly what would be sent and claims nothing. 1,781 tests.'],
-  ['0.55.2', 'THE DESKTOP GETS ITS DISPLAY BACK \u2014 AND A GUARD SO IT STAYS THAT WAY. Chad, on Diagnostics at ~2000px wide: \u201ci don\u2019t like these narrow pages it acts like we dont\u2019 have 2 versions of this app one for desktop and one for mobile these page looks like it was designed for mobile.\u201d He was right and it was systemic, measured on the real build: Diagnostics used 44% of a 1920px display, Manifest 52%, Customer emails 58%, New Order 33%, Quote 23%. Every guard this app had looked at PHONES \u2014 a screen can be perfect at 390px and still waste half a monitor, and nothing in the build could see it. One convention now, not four ad-hoc caps, named by CONTENT SHAPE because the shape decides the answer: SCREEN_DASH for stacked cards (widen and let panels breathe), SCREEN_FORM for forms (widen, but a 1600px text field reads worse, not better), SCREEN_WIDE for tables and lists where every pixel is another readable column. All three start at the phone width and only widen at lg/xl/2xl, so the phone build \u2014 deliberately a different being \u2014 is untouched. After: Diagnostics 86%, Manifest 92%, Customer emails 92%, New Order 65%. Quote stays narrower ON PURPOSE and says so in the code: it is a single-column calculator whose 468px cap lives upstream in DavisDelivery/Quotes; it is widened to 820px on desktop through the same scoped-override channel as its header fix, and marked data-desktop-narrow with the reason. AND THE GUARD: scripts/verify-desktop-layout.mjs walks the built app at 1440 and 1920, measures the width the content column ACTUALLY occupies, and fails the build under a 62% floor \u2014 wired into CI next to the phone guard. Worth confessing because it is the whole lesson: the first two versions of the measurement PASSED EVERYTHING \u2014 one measured the full-width app shell, the next included the footer bar that spans the viewport by design \u2014 both structurally unable to fire, exactly the vacuous-pass defect the phone guard once shipped with. The check only became real when the number was compared against a screenshot of the starved screen it claimed to measure. Every navigation step must also PROVE the screen opened, or that screen FAILS rather than silently measuring the previous one twice.'],
+  ['0.55.6', 'A FLAG IS NOW ABOUT HOW LATE THE TRUCK IS, NOT WHO TYPED THE HOURS \u2014 AND CUSTOMER SERVICE GETS TOLD. Chad, looking at a live board: \u201cWhat makes one of these flags go red and trigger the email to customerservice@davisdelivery.com\u201d. Two answers, and the first one was embarrassing. RED MEANT ONE THING ONLY: a dispatcher had typed the receiving hours. Amber meant they were parsed from Uline\u2019s order text. That is a statement about where a time came from and says nothing about whether freight is about to be refused \u2014 which is why his board read \u201c0 red \u00b7 6 advisory\u201d while carrying AWC INC predicted 155 minutes past its close, sitting at exactly the same weight as VERITIV at 28 minutes past. And the second answer: NO EMAIL EXISTED. It had been discussed and never built. SEVERITY IS NOW SLACK MEASURED AGAINST HOW WRONG THE ESTIMATE IS KNOWN TO BE. The back-test measured that error in each state over 39 sealed days and 24,238 stops: about 15 minutes when the clock is anchored on a real arrival a stop or two back, growing as it projects further, and 90-plus when nothing on the route has reported and it is still a pure 8:00 projection. Every row now carries the band for its own state. CRITICAL means the overrun clears twice that band \u2014 the miss survives the model being as wrong as it usually is. RED means it clears the band once, or the hours were typed and any overrun is predicted. AMBER means predicted late but inside the bars, where the model genuinely cannot tell late from on-time. Auto-detected hours can now reach critical, because a truck 155 minutes past a close is a problem no matter who wrote the 11:00 down. criticalCount is reported separately AND folded into redCount, so promoting a row can never make the header read calmer than it did a minute earlier. THE EMAIL. First time a stop goes critical, once per stop per board day, to customerservice@davisdelivery.com \u2014 and never once the window has already shut, because past the close the message cannot change anything and competes with stops that can still be saved. The claim is written to Firestore BEFORE the send, which is what stops a truck that simply stays late from emailing every twenty minutes all afternoon; a send that then fails keeps its claim on purpose, because one missed alert beats an alert loop. Capped at 25 a day so a mis-parsed board cannot become a hundred emails. It runs the SAME engine the screen runs \u2014 imported, not reimplemented \u2014 after two separate incidents this session where a copy of the model quietly diverged from it. Dry-run mode reports exactly what would be sent and claims nothing. 1,781 tests.'],
+  ['0.55.5', 'THE DESKTOP GETS ITS DISPLAY BACK \u2014 AND A GUARD SO IT STAYS THAT WAY. Chad, on Diagnostics at ~2000px wide: \u201ci don\u2019t like these narrow pages it acts like we dont\u2019 have 2 versions of this app one for desktop and one for mobile these page looks like it was designed for mobile.\u201d He was right and it was systemic, measured on the real build: Diagnostics used 44% of a 1920px display, Manifest 52%, Customer emails 58%, New Order 33%, Quote 23%. Every guard this app had looked at PHONES \u2014 a screen can be perfect at 390px and still waste half a monitor, and nothing in the build could see it. One convention now, not four ad-hoc caps, named by CONTENT SHAPE because the shape decides the answer: SCREEN_DASH for stacked cards (widen and let panels breathe), SCREEN_FORM for forms (widen, but a 1600px text field reads worse, not better), SCREEN_WIDE for tables and lists where every pixel is another readable column. All three start at the phone width and only widen at lg/xl/2xl, so the phone build \u2014 deliberately a different being \u2014 is untouched. After: Diagnostics 86%, Manifest 92%, Customer emails 92%, New Order 65%. Quote stays narrower ON PURPOSE and says so in the code: it is a single-column calculator whose 468px cap lives upstream in DavisDelivery/Quotes; it is widened to 820px on desktop through the same scoped-override channel as its header fix, and marked data-desktop-narrow with the reason. AND THE GUARD: scripts/verify-desktop-layout.mjs walks the built app at 1440 and 1920, measures the width the content column ACTUALLY occupies, and fails the build under a 62% floor \u2014 wired into CI next to the phone guard. Worth confessing because it is the whole lesson: the first two versions of the measurement PASSED EVERYTHING \u2014 one measured the full-width app shell, the next included the footer bar that spans the viewport by design \u2014 both structurally unable to fire, exactly the vacuous-pass defect the phone guard once shipped with. The check only became real when the number was compared against a screenshot of the starved screen it claimed to measure. Every navigation step must also PROVE the screen opened, or that screen FAILS rather than silently measuring the previous one twice.'],
+  ['0.55.4', 'THE ADDRESS IS LIVE \u2014 A RE-ADDRESSED ORDER NOW REACHES THE BOARD, AND THE YELLOW DNS WARNING STOPPED CRYING WOLF. Chad, holding our card beside the NuVizz portal for ESTES-1283081681: \u201cWhy are these not the same[?] nuvizz is showing different than what we are showing[,] a new scan should have fixed this problem.\u201d IT COULD NOT HAVE. NuVizz had MR LARRY WOELFL, 2385 HO HUM HOLLOW ROAD, MONROE 30655. The board showed DAVIS DELIVERY, 943 GAINESVILLE HIGHWAY, BUFORD \u2014 our own yard. WHY: the address was not a LIVE field. The scan refreshes status, load, driver, dates and order instructions every time; everything else is treated as static detail, captured ONCE when an order first appears, and carried forward for ever. So when Estes re-addressed that order the NOTE saying so came through \u2014 notes were made live in an earlier release for exactly this reason \u2014 and the address did not. The card ended up reading \u201cUPDATED ADDY PER ESTES\u201d directly above the old address. The proof was on the card itself: it said \u201cBUFORD, GEORGIA\u201d, and the list feed carries NO state column at all, so that block could only have come from the one-time detail fetch. THE ADDRESS NOW WINS FROM THE LIST, which already carries it free on every scan \u2014 street, suite, city, ZIP and consignee name. Deliberately LIVE-IF-PRESENT, not plain live: a saved-search row can arrive with the address columns blank, and a plain live field would have WIPED a good address board-wide. The list wins wherever it actually carried a value; enrichment still fills whatever it left blank. That distinction also stops the fix undoing itself \u2014 the re-enrichment a move triggers returns NuVizz\u2019s own address, which as an ordinary field would overwrite the list\u2019s copy a few lines later and put the board straight back. AND THE PIN MOVES WITH IT. A corrected address under a pin still sitting on the old building is worse than the stale address was: the card reads right and the driver still goes to the wrong place. A move drops the stored coordinates and re-geocodes. What counts as a move is deliberately format-stable (ZIP5 + street number), because the two NuVizz endpoints spell the same address differently \u2014 comparing the raw text would re-enrich the entire board on every scan. Buford\u2192Monroe registers; \u201cHwy\u201d vs \u201cHIGHWAY\u201d and a ZIP+4 do not. It also converges after one scan now, which the old comparison could not, because the LIST\u2019s spelling is what gets stored. SECOND THING, same screen: \u201cWhat is this yellow window for?\u201d That panel was HARDCODED. It was written while davisdelivery.com genuinely was unverified and never stopped saying \u201cDNS is not verified \u2014 every send is rejected\u201d, on a live program that had just delivered 25 of 25. A warning that cannot stop warning is worse than none, on the one screen you would check to find out whether email works. It now asks Resend. Verified reads as a quiet green line; unverified lists ONLY the records still failing; and \u201ccould not check\u201d says exactly that \u2014 an unknown is never dressed up as a failure, which was the whole mistake. 18 new tests, 1,801 green.'],
+  ['0.55.3', 'THE BOARD FLAGS PANEL: THE CHAT BUBBLE IS OFF IT, AND YOU CAN MINIMISE IT. Chad, on a screenshot of 7 advisories: \u201cformatting issue here things are laying on top of one another and no way for me to minimize the flag window.\u201d Both were real. WHY THINGS SAT ON TOP OF EACH OTHER, and it is not what it looks like: the panel already asked to be drawn above everything (z-70). It could not be. It was rendered INSIDE the frosted stops pill, and a backdrop-filter creates a stacking context \u2014 so that z-70 only ever applied WITHIN the pill, and the round message button further down the same column, which asks for no z-index at all, won simply by coming later in the document. Proven rather than guessed: with the panel open, the browser was asked what element is actually on top at a grid of points inside the panel, and it answered with the message button. The panel now hangs off a plain unblurred wrapper instead, and the same probe answers nothing at all \u2014 open and minimised. This repo already knew the rule; the Routing screen carries a comment saying in as many words never to nest this panel in a backdrop-blur pill. The desktop Map was the last place still doing it. MINIMISE, NOT JUST CLOSE. The only control was \u2715, which throws away the counts along with the list. There is now a chevron beside it that collapses the panel to its header \u2014 still showing \u201cN red \u00b7 N advisory\u201d, one click from the list \u2014 and the choice is remembered per device, because a dispatcher who wants it out of the way today wants it out of the way tomorrow. The panel is also bounded to the viewport now and scrolls its LIST rather than itself, so the footer that says what was and was not judged can no longer be pushed off the bottom of the screen by a long list of flags.'],
+  ['0.55.2', 'THE SEND LOG IS A HISTORY NOW, NOT A PILE. Chad: the email history \u201cneeds to be done by the day and have ranges and months and so on and so forth, not just a long compilation of all the emails that we\u2019ve sent. We need to be able to sort it.\u201d It was one flat list of every send, newest first, hardcoded to the last 7 days and CUT AT 50 ROWS WITHOUT SAYING SO \u2014 on a 25-a-day program that is two days of history presented as though it were all of it. THE LEDGER WAS ALWAYS DAY-SHAPED: every send is already its own document under customer_comms_<date>/sent. The flattening happened on the way out, so this is a reader change, not a migration \u2014 the same documents, grouped the way they were always written. PICK A RANGE: Today, 7 days, 30 days, This month, any of the last twelve months by name, or a from\u2013to pair. A day opens to its sends; the columns sort by time, customer, address or result, and every day\u2019s table is aligned to the same grid so they read down the page. Months get their own subtotals once a range spans more than one. WHAT IT NOW REFUSES TO HIDE. A day that was READ and had nothing shows as a row saying so \u2014 and says \u2018swept \u2014 nobody to email\u2019 when the sweep ran, which is the one thing that tells a quiet day apart from a broken one. A day Firestore could not return is named in red instead of appearing as a silent gap. A range longer than the 92-day read budget says how many days it asked for and how many it is showing. So does a truncated row list. Every one of those used to look identical to \u2018nothing happened\u2019. A range change reloads only the log, never the config, so browsing history cannot throw away an unsaved template edit. Zero NuVizz calls, as before \u2014 it reads our own ledger. ALSO FIXED, FOUND BY THE NEW TESTS: a date could be silently WRONG rather than rejected. \u20182026-02-30\u2019 is the right shape and does not fail a parse \u2014 the engine rolls it forward to March 2nd and reports success \u2014 so a range could quietly read days nobody asked for. Dates now have to spell themselves back. The same hole was in dayBefore/dayAfter, which the duplicate-send guard uses to check the neighbouring day\u2019s ledger; an impossible date has no board so nothing was mis-sent, but it was a trap and it is closed. 24 new tests, 1,763 green.'],
   ['0.55.1', 'THE PER-STOP COST IS NOW MEASURED, NOT ASSUMED \u2014 AND CHAD WAS RIGHT TO PUSH BACK. I proposed feeding the flag model the learned dwell times in routing_service_times. Chad: \u201ci don\u2019t think dwell time is going to do as much as you hoped as i find the vast majority of deliveries show an arrival time and departure time that are less than 120 seconds apart and this is because the driver performs the actual delivery before ever clicking arrive at stop.\u201d He was right, and the warehouse makes it worse than he knew: arrivalDTTM is present on EIGHT stops out of 20,904. There is no arrive\u2192deliver bracket to measure at all, so routing_service_times \u2014 which mines exactly that bracket \u2014 could not have been trusted, and wiring it in would have fed the model a per-stop cost near zero. The claim is still testable without that stamp. The residual between consecutive delivery stamps, minus modelled travel, is dwell PLUS travel error; the two are identical in aggregate but not against DISTANCE, because dwell is a fixed cost per stop while a short travel model scales with the leg. Over 32 sealed days the residual is FLAT \u2014 10.9 min under a mile, 15.8 at 3-8 miles, 13.7 over 20 \u2014 so there IS a real fixed cost at every stop, and the travel model is not the thing hiding it. Sweeping that cost against the anchored walk: 0 min gives a mean bias of -14.3, 8 gives -7.0, 13 gives -2.1, 15 gives -0.2, and the old 20-minute planning default gives +4.0. Fourteen minutes sits at the bias-zero crossing and the error minimum. Moving there from the zero that v0.55.0 shipped for a delivered stamp lifts within-fifteen-minutes from 41% to 52% and cuts the median miss from 18.9 to 14.3. The bias sign matters more than the accuracy: at zero the model was systematically fourteen minutes OPTIMISTIC, and for a deadline flag optimism is the dangerous direction \u2014 it is the model quietly deciding a late truck is fine. Kept as its own constant rather than changing DEFAULT_SERVICE_SEC, so tuning the flag can never silently re-plan a route.'],
   ['0.55.0', 'THE ETA IS ANCHORED ON WHAT THE TRUCK ACTUALLY DID. Chad, after the back-test: "we do need to re anchor to the first delivery when it\u2019s made and then recalculate every time going forward." Here is what the flags were doing until now. R5 judged only the stops still OPEN, but it restarted the walk at the DEPOT at 8:00 every time \u2014 so every completed stop deleted its leg AND its 20-minute service block from the front of the chain while the start time stayed put, and the predicted arrival for everything still out walked BACKWARDS as the day ran. Run against the real module on a 10-stop route with a typed 2pm close on stop 9: predicted 2:43p at 08:05, 2:23p at 08:35, 2:03p at 09:05 \u2014 and from 09:35 the red flag was GONE, with the truck no closer to making 2pm. A dispatcher who saw it at nine found it withdrawn at ten. The re-anchor could not save it either, because one delivered stop makes a route \u201crolling\u201d, so the clock stayed pinned to 8:00 all day. It now walks the FULL sequenced chain and snaps the clock to each stop\u2019s real arrival stamp, so everything after it is projected from where the truck REALLY was rather than from an assumption made this morning. Same truck falling steadily behind: the flag now HOLDS and escalates \u2014 2:43p, 2:46p, 2:59p, 3:12p, 3:38p \u2014 and the row says which arrival it is standing on (\u201cfrom CUST 3\u2019s 10:30a arrival\u201d) so you can see whether the estimate rests on a truck or on a guess. A truck running AHEAD still clears its flag, which is the point rather than a regression. This is not a hoped-for gain. Replayed over 39 sealed days, 2,357 routes and 24,238 real stops, the old model was within 30 minutes of reality 12% of the time with a median miss of 2h09; the anchored model is within 30 minutes 67% of the time with a median miss near 15. Two details that would each have quietly cost most of that: an arrival stamp means the truck is on site with the dwell still ahead of it while a delivered stamp means the dwell already happened, so adding service to a delivered stamp would count it twice; and the stamps are naive ET wall-clock, so reading one through Date+timeZone lands 4-5 hours early and rolls a pre-dawn delivery onto the previous day.'],
   ['0.54.99', 'PACE THE SENDS. The first live day went out clean — 25 emails, 25 delivered, no bounces, no duplicates, and the cap held exactly (every later sweep that day reported considered 764, sent 0, capped). One number in that run is worth acting on before the cap goes up: those 25 took 12.5 seconds, which is 2.0 sends per second, and 2/second is Resend\'s documented default rate limit. It succeeded, so the limit is at least that — but a run sitting ON a ceiling has no headroom, and at ~700 deliveries a day the sweep will meet it. Two changes. (1) A FLOOR ON THE INTERVAL between send starts, not a sleep added to each send. A send already spends ~500ms on its own round trips, so on a healthy run this adds ~100ms and the wall clock barely moves; it only bites when Resend is answering fast enough that we would otherwise outrun it. The distinction matters because the run has a finite wall-clock budget too — a fixed sleep per send would tax the slow case that needed no taxing. (2) A 429 IS NOT A FAULT. It means "too fast": nothing was queued, the claim is released, the customer is reached on the next pass. It used to count toward the five-consecutive-failure circuit breaker, which meant a busy minute could HALT a healthy run and leave the rest of the day\'s mail hours late — the opposite of what a delivery-confirmation email is for. A 429 now backs the pace off instead, doubling the interval up to a 5s ceiling, and the count is reported in the sweep status so a run that quietly slowed down says so rather than leaving an unexplained slow day. Worth stating plainly, because it changes the shape of the risk: on a normal day the mail spreads itself out anyway — deliveries land all day and each half-hourly sweep only picks up what is newly delivered, roughly forty at a time. The all-at-once case is the FIRST day you switch on mid-afternoon, when the whole day sits unclaimed. That was today, and the cap of 25 is what held it.'],
@@ -2960,6 +2963,11 @@ function UnplannedScanCount({ count, visible, className }) {
 // there is furniture, and furniture gets ignored. All detection lives in
 // src/lib/board-flags.js (pure, tested); this is presentation + dismissal persistence.
 const LS_BOARD_FLAGS_DISMISSED = 'dispatchMap.boardFlags.dismissed';
+// Minimised = header only, panel still open. Chad, on a board with 7 advisories:
+// "no way for me to minimize the flag window". Closing it outright was the only
+// control, and that loses the counts as well as the list. Persisted, because a
+// dispatcher who wants it out of the way wants it out of the way tomorrow too.
+const LS_BOARD_FLAGS_MINIMIZED = 'dispatchMap.boardFlags.minimized';
 function readDismissedFlags() {
   const m = safeReadJSON(LS_BOARD_FLAGS_DISMISSED, {});
   return m && typeof m === 'object' ? m : {};
@@ -3011,7 +3019,7 @@ function BoardFlagsChip({ flags, open, onToggle }) {
 // ✕ to dismiss. The footer is REQUIRED honesty — what the checks could not judge (no
 // roster fetched, routes with no sequence, note coverage) — because "no flags" from a
 // detector that could not look is not the same claim as "nothing is wrong".
-function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onRestoreAll }) {
+function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onRestoreAll, minimized = false, onToggleMinimized }) {
   if (!flags) return null;
   const rows = flags.rows.filter((r) => !dismissed[r.dismissKey]);
   const hiddenByDismiss = flags.rows.length - rows.length;
@@ -3033,18 +3041,33 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
     sk.routesAppointment?.length ? `${sk.routesAppointment.join(', ')} not judged — held for appointments` : null,
   ].filter(Boolean);
   return (
-    <div className="w-[340px] max-w-[92vw] bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden pointer-events-auto">
-      <div className="px-3 py-2 border-b flex items-center justify-between bg-slate-50">
-        <div className="text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5">
-          <Flag size={13} className="text-red-600" /> Board flags
+    // max-h + flex column so the panel can never grow past the viewport and push its own
+    // footer off the bottom: only the LIST scrolls, the header and footer stay put.
+    <div className="w-[340px] max-w-[92vw] max-h-[80vh] flex flex-col bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden pointer-events-auto">
+      <div className="px-3 py-2 border-b flex items-center justify-between bg-slate-50 flex-shrink-0">
+        <div className="text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 min-w-0">
+          <Flag size={13} className="text-red-600 flex-shrink-0" /> Board flags
           {liveCritical > 0 && (
-            <span className="px-1.5 py-0.5 rounded bg-red-600 text-white text-[10px] font-bold tracking-wide">{liveCritical} CRITICAL</span>
+            <span className="px-1.5 py-0.5 rounded bg-red-600 text-white text-[10px] font-bold tracking-wide flex-shrink-0">
+              {liveCritical} CRITICAL
+            </span>
           )}
-          <span className="font-normal text-slate-500">{liveRed} red · {liveAmber} advisory</span>
+          <span className="font-normal text-slate-500 truncate">{liveRed} red · {liveAmber} advisory</span>
         </div>
-        <button onClick={onClose} className="p-1 rounded hover:bg-slate-200" aria-label="Close"><X size={14} /></button>
+        <div className="flex items-center flex-shrink-0">
+          {/* Minimise, not close: keeps the counts on screen and one click from the list. */}
+          <button
+            onClick={onToggleMinimized}
+            className="p-1 rounded hover:bg-slate-200 text-slate-500"
+            aria-expanded={!minimized}
+            title={minimized ? 'Expand' : 'Minimise — keep the counts, hide the list'}
+            aria-label={minimized ? 'Expand board flags' : 'Minimise board flags'}
+          >{minimized ? <ChevronDown size={14} /> : <ChevronUp size={14} />}</button>
+          <button onClick={onClose} className="p-1 rounded hover:bg-slate-200" aria-label="Close"><X size={14} /></button>
+        </div>
       </div>
-      <div className="max-h-[46vh] overflow-y-auto divide-y divide-slate-100">
+      {minimized ? null : <>
+      <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-100">
         {rows.length === 0 && (
           <div className="px-3 py-3 text-xs text-slate-500">
             Nothing needs looking at{hiddenByDismiss > 0 ? ` — ${hiddenByDismiss} flag${hiddenByDismiss === 1 ? '' : 's'} dismissed` : ''}.
@@ -3074,7 +3097,7 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
           </div>
         ))}
       </div>
-      <div className="px-3 py-1.5 border-t bg-slate-50 text-[10px] text-slate-400 leading-snug">
+      <div className="px-3 py-1.5 border-t bg-slate-50 text-[10px] text-slate-400 leading-snug flex-shrink-0">
         {/* What was actually looked at — so a quiet panel is a CLAIM, not an absence. A zero
             in "receiving hours on file" tells the dispatcher the fix is data, not the code. */}
         Watched {ck.stops ?? 0} open stop{(ck.stops ?? 0) === 1 ? '' : 's'} · {ck.routesJudged ?? 0} route{(ck.routesJudged ?? 0) === 1 ? '' : 's'} judged for hours risk · {ck.stopsWithHours ?? 0} stop{(ck.stopsWithHours ?? 0) === 1 ? '' : 's'} with receiving hours on file today.
@@ -3086,6 +3109,7 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
           <> {hiddenByDismiss} dismissed · <button onClick={onRestoreAll} className="underline text-slate-500 hover:text-slate-800">Restore dismissed</button></>
         )}
       </div>
+      </>}
     </div>
   );
 }
@@ -9037,6 +9061,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
       amberCount: live.filter((r) => r.tier === 'amber').length,
     };
   }, [boardFlags, dismissedFlags]);
+  const [flagsMinimized, setFlagsMinimized] = useState(() => safeReadJSON(LS_BOARD_FLAGS_MINIMIZED, false) === true);
+  const toggleFlagsMinimized = useCallback(() => setFlagsMinimized((m) => { safeWriteJSON(LS_BOARD_FLAGS_MINIMIZED, !m); return !m; }), []);
   const dismissFlag = useCallback((key) => setDismissedFlags({ ...writeDismissedFlag(key) }), []);
   const restoreDismissedFlags = useCallback(() => { safeWriteJSON(LS_BOARD_FLAGS_DISMISSED, {}); setDismissedFlags({}); }, []);
   const openFlaggedStop = useCallback((stopNbr) => {
@@ -10504,7 +10530,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             instead of the viewport — an opened panel could be invisible on mobile. */}
         {flagsPanelOpen && (
           <div className="fixed inset-x-2 top-16 z-[70] flex justify-center pointer-events-auto">
-            <BoardFlagsPanel flags={boardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} />
+            <BoardFlagsPanel flags={boardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} minimized={flagsMinimized} onToggleMinimized={toggleFlagsMinimized} />
           </div>
         )}
         {driverGateNote && (
@@ -10905,7 +10931,22 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             under the pill regardless of the pill's height — the overlap bug
             that hid the toolbar. "Show routes" now lives inside the toolbar. */}
         {!isMobile && (
-          <div className="absolute top-3 right-3 z-[6] flex flex-col items-end gap-2">
+          // z-index is CONDITIONAL. `position:absolute` + a z-index creates a stacking
+          // context, so the open panel's own z-[70] is capped by whatever this container
+          // is — at z-[6] the map's other overlays (the messages button at z-[39]) paint
+          // straight over it, which is what put the chat bubble on top of the flag list.
+          // Raised only while the panel is open, so the resting pill keeps its old
+          // stacking against the rest of the map furniture.
+          <div className={`absolute top-3 right-3 flex flex-col items-end gap-2 ${flagsPanelOpen ? 'z-[71]' : 'z-[6]'}`}>
+            {/* This wrapper exists ONLY to anchor the flags panel, and it deliberately has
+                no backdrop-blur of its own. The panel used to live inside the blurred pill
+                below, and backdrop-filter creates a STACKING CONTEXT — which capped the
+                panel's z-[70] inside the pill, so the round message button further down
+                this same column (no z-index, but later in the DOM) painted straight over
+                the flag list. That is the chat bubble sitting on top of the flags.
+                Routing already knew this rule and says so in as many words: "never nest it
+                in a backdrop-blur pill". The desktop Map was the one place still doing it. */}
+            <div className="relative flex flex-col items-end">
             <div className="relative bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 text-xs">
               {/* Header row: stops count + collapse/refresh — always visible. */}
               <div className="flex items-center gap-2">
@@ -10928,11 +10969,6 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                   <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
                 </button>
               </div>
-              {flagsPanelOpen && (
-                <div className="absolute right-0 top-full mt-1 z-[70]">
-                  <BoardFlagsPanel flags={boardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} />
-                </div>
-              )}
               {/* Stacked details — hidden when collapsed. */}
               {!statusCollapsed && (
                 <div className="mt-0.5 leading-tight">
@@ -10950,6 +10986,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                   {scanErr && <div className="text-[11px] text-red-600">{scanErr}</div>}
                 </div>
               )}
+            </div>
+            {flagsPanelOpen && (
+              <div className="absolute right-0 top-full mt-1 z-[70]">
+                <BoardFlagsPanel flags={boardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} minimized={flagsMinimized} onToggleMinimized={toggleFlagsMinimized} />
+              </div>
+            )}
             </div>
             <FilterToolbar
               filters={mapFilters}
@@ -15582,6 +15624,8 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       amberCount: live.filter((r) => r.tier === 'amber').length,
     };
   }, [routingBoardFlags, dismissedFlags]);
+  const [flagsMinimized, setFlagsMinimized] = useState(() => safeReadJSON(LS_BOARD_FLAGS_MINIMIZED, false) === true);
+  const toggleFlagsMinimized = useCallback(() => setFlagsMinimized((m) => { safeWriteJSON(LS_BOARD_FLAGS_MINIMIZED, !m); return !m; }), []);
   const dismissFlag = useCallback((key) => setDismissedFlags({ ...writeDismissedFlag(key) }), []);
   const restoreDismissedFlags = useCallback(() => { safeWriteJSON(LS_BOARD_FLAGS_DISMISSED, {}); setDismissedFlags({}); }, []);
   const openFlaggedStop = useCallback((stopNbr) => {
@@ -15598,7 +15642,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       </div>
       {flagsPanelOpen && (
         <div className="absolute right-0 top-full mt-1 z-[70]">
-          <BoardFlagsPanel flags={routingBoardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} />
+          <BoardFlagsPanel flags={routingBoardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} minimized={flagsMinimized} onToggleMinimized={toggleFlagsMinimized} />
         </div>
       )}
     </div>
@@ -22423,6 +22467,15 @@ function EmailHeaderStrip({ subject, from, to, note, compact }) {
 function useCommsConsole() {
   const [cfgResp, setCfgResp] = useState(null);
   const [log, setLog] = useState(null);
+  // The send log used to be a hardcoded ?days=7 rendered as one flat time-sorted list.
+  // Chad, Aug 2026: it "needs to be done by the day and have ranges and months, not just
+  // a long compilation of all the emails that we've sent. We need to be able to sort it."
+  // `range` is whatever the server understands: {days}, {month}, or {from,to}.
+  const [range, setRange] = useState({ days: 7 });
+  const [logBusy, setLogBusy] = useState(false);
+  // Which day rows are expanded. Day-first is the default view; a day opens to its rows.
+  const [openDays, setOpenDays] = useState(() => new Set());
+  const [sort, setSort] = useState({ by: 'at', dir: 'desc' });
   const [busy, setBusy] = useState('load');
   // Feedback is ADDRESSED: { where, kind, text }. A message raised by the test-send
   // button renders at the test-send button, not in a banner at the top of a screen the
@@ -22463,6 +22516,36 @@ function useCommsConsole() {
     return h;
   };
 
+  // One place that turns a range into a query, so the fetch on mount and the fetch on a
+  // range change cannot drift apart.
+  const rangeQuery = (r) => {
+    if (r?.month) return `month=${encodeURIComponent(r.month)}`;
+    if (r?.from || r?.to) {
+      const p = [];
+      if (r.from) p.push(`from=${encodeURIComponent(r.from)}`);
+      if (r.to) p.push(`to=${encodeURIComponent(r.to)}`);
+      return p.join('&');
+    }
+    if (r?.date) return `date=${encodeURIComponent(r.date)}`;
+    return `days=${Math.max(1, Number(r?.days) || 1)}`;
+  };
+
+  const loadLog = async (r) => {
+    setLogBusy(true);
+    try {
+      const l = await fetch(`/.netlify/functions/customer-comms-log?${rangeQuery(r)}`)
+        .then((x) => x.json()).catch(() => null);
+      setLog(l && l.ok ? l : null);
+      // Collapse on every range change: carrying open days across a new range leaves
+      // rows expanded under dates the user did not ask to see.
+      setOpenDays(new Set());
+    } finally { setLogBusy(false); }
+  };
+
+  // Changing the range reloads ONLY the log. Re-reading the config here would throw away
+  // unsaved template edits, which is a bad thing to do to someone browsing history.
+  const applyRange = (r) => { setRange(r); loadLog(r); };
+
   const loadAll = async () => {
     setBusy('load'); clear();
     try {
@@ -22471,7 +22554,7 @@ function useCommsConsole() {
       // the whole console down with it. It degrades to an empty log now.
       const [c, l] = await Promise.all([
         fetch('/.netlify/functions/customer-comms-config').then((r) => r.json()),
-        fetch('/.netlify/functions/customer-comms-log?days=7').then((r) => r.json()).catch(() => null),
+        fetch(`/.netlify/functions/customer-comms-log?${rangeQuery(range)}`).then((r) => r.json()).catch(() => null),
       ]);
       if (!c.ok) throw new Error(c.error || 'config load failed');
       setCfgResp(c);
@@ -22576,6 +22659,7 @@ function useCommsConsole() {
   const showingReal = !!realPreview;
   return {
     cfgResp, cfg, log, busy, msg, say, clear,
+    range, applyRange, logBusy, openDays, setOpenDays, sort, setSort,
     enabled: !!cfg?.enabled,
     subjectT, setSubjectT, htmlT, setHtmlT, fromAddr, setFromAddr, replyTo, setReplyTo,
     dailyCap, setDailyCap, dirty, setDirty,
@@ -22600,25 +22684,63 @@ function useCommsConsole() {
 }
 
 /**
- * The sender IS where Chad asked for it now (v0.54.85: notifications@davisdelivery.com).
- * What the screen has to say is the part that is still outstanding — the domain's DNS —
- * because until it resolves Resend rejects every send outright rather than falling back to
- * a working sender, and a [TEST] that fails for that reason should not look like a bug.
+ * What the sender domain's DNS is ACTUALLY doing.
+ *
+ * This panel used to be a hardcoded amber warning saying the domain was unverified and
+ * every send rejected. It was true when it was written and it never stopped saying it —
+ * Chad, on a live program that had just delivered 25 of 25: "What is this yellow window
+ * for?" A warning that cannot stop warning is worse than none, because it sits on the one
+ * screen you would check to find out whether email works.
+ *
+ * Three states, and the third is the one that matters:
+ *   verified true  → a quiet green line. Confirmation, not a warning.
+ *   verified false → the amber panel, listing only the records still failing.
+ *   verified null  → we could not ask (no key, Resend down). Say THAT — do not dress an
+ *                    unknown up as a failure, which is the whole mistake being fixed.
  */
-function SenderTargetNote({ compact }) {
+function SenderTargetNote({ compact, domain, from }) {
+  const size = compact ? 'text-[12px]' : 'text-[11px]';
+  const box = `mt-2 ${size} leading-relaxed rounded-lg px-2.5 py-2 border`;
+  const sender = from || 'the configured sender';
+
+  if (!domain) return null;                       // an older server that does not report it
+
+  if (domain.verified === true) {
+    return (
+      <div className={`${box} text-emerald-800 bg-emerald-50 border-emerald-200`}>
+        Sending as <b>{sender}</b>. DNS for <span className="font-mono">{domain.domain}</span> is
+        <b> verified</b> — Resend will accept these sends.
+      </div>
+    );
+  }
+
+  if (domain.verified === null) {
+    return (
+      <div className={`${box} text-slate-600 bg-slate-50 border-slate-200`}>
+        Sending as <b>{sender}</b>. Could not check the domain's DNS just now
+        {domain.error ? <> ({domain.error})</> : null} — this is <b>not</b> a report that
+        anything is wrong, only that the check did not run.
+      </div>
+    );
+  }
+
+  const pending = domain.pending || [];
   return (
-    <div className={`mt-2 ${compact ? 'text-[12px]' : 'text-[11px]'} leading-relaxed text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2`}>
-      Sending as <b>notifications@davisdelivery.com</b>. The domain is registered in Resend but its
-      DNS is <b>not verified yet</b> — until these three records resolve, every send is rejected:
-      <span className="block mt-1 font-mono text-[10px] leading-relaxed">
-        TXT&nbsp; resend._domainkey → p=MIGfMA0GCSqG…<br />
-        MX&nbsp;&nbsp; send &nbsp;→ feedback-smtp.us-east-1.amazonses.com (priority 10)<br />
-        TXT&nbsp; send &nbsp;→ v=spf1 include:amazonses.com ~all
-      </span>
+    <div className={`${box} text-amber-800 bg-amber-50 border-amber-200`}>
+      Sending as <b>{sender}</b>. DNS for <span className="font-mono">{domain.domain}</span> is
+      <b> not verified</b>{domain.status === 'not_registered'
+        ? <> — the domain is not registered in Resend at all.</>
+        : <> — until these resolve, every send is rejected:</>}
+      {pending.length > 0 && (
+        <span className="block mt-1 font-mono text-[10px] leading-relaxed break-all">
+          {pending.map((r, i) => (
+            <span key={i} className="block">{r.type}&nbsp; {r.name} → {String(r.value).slice(0, 60)}{String(r.value).length > 60 ? '…' : ''}</span>
+          ))}
+        </span>
+      )}
       <span className="block mt-1">
-        They hang off <span className="font-mono">send.</span> and <span className="font-mono">resend._domainkey.</span>, not the
-        apex, so publishing them does not touch existing davisdelivery.com mail. Nothing sends
-        meanwhile — the sweep declines every send while the program switch is off.
+        These hang off sub-names, not the apex, so publishing them does not touch existing
+        mail on the domain.
       </span>
     </div>
   );
@@ -22762,7 +22884,7 @@ function CommsPhone(c) {
           <label className={label}>From address</label>
           <input className={input} value={c.fromAddr} onChange={(e) => { c.setFromAddr(e.target.value); c.setDirty(true); }} placeholder="blank = the site default sender" inputMode="email" autoCapitalize="off" autoCorrect="off" />
           <div className="text-[11px] text-slate-400 mt-1">An address on an unverified domain makes Resend reject every send.</div>
-          <SenderTargetNote compact />
+          <SenderTargetNote compact domain={c.cfgResp?.domain} from={c.cfgResp?.effectiveFrom} />
           <label className={`${label} mt-3`}>Replies go to</label>
           <input className={input} value={c.replyTo} onChange={(e) => { c.setReplyTo(e.target.value); c.setDirty(true); }} inputMode="email" autoCapitalize="off" autoCorrect="off" />
           <label className={`${label} mt-3`}>Daily cap</label>
@@ -22824,23 +22946,10 @@ function CommsPhone(c) {
 
         <PhoneSection
           title="Send log"
-          subtitle={c.log?.totals ? `${c.log.totals.sent} sent · ${c.log.totals.failed} failed · ${c.log.totals.inflight} unconfirmed` : 'Last 7 days'}
+          subtitle={c.log?.totals ? `${c.log.totals.sent} sent · ${c.log.totals.failed} failed · ${c.log.totals.inflight} unconfirmed` : 'By day'}
           open={open === 'log'} onToggle={() => toggle('log')}
         >
-          {c.log?.totals?.total === 0 && <div className="text-[12px] text-slate-400">{c.enabled ? 'Nothing sent yet — the sweep runs every 30 minutes.' : 'Nothing has been sent yet — expected while the program is off.'}</div>}
-          {/* Cards, not a table: a five-column table on a 390px phone is a scroll puzzle. */}
-          <ul className="divide-y divide-slate-100">
-            {(c.log?.entries || []).slice(0, 25).map((e, i) => (
-              <li key={`${e.date}-${e.key}-${i}`} className="py-2.5">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-[13px] font-semibold text-slate-800 flex-1 min-w-0 truncate">{e.customer || '—'}</span>
-                  <span className={`text-[11px] font-bold shrink-0 ${e.ok ? 'text-emerald-700' : e.claimed ? 'text-amber-700' : 'text-red-700'}`}>{e.ok ? 'sent' : e.claimed ? 'unconfirmed' : 'failed'}</span>
-                </div>
-                <div className="text-[11px] text-slate-500 break-all">{e.to || '—'}</div>
-                <div className="text-[10px] text-slate-400">{agoText(e.at) || e.date}</div>
-              </li>
-            ))}
-          </ul>
+          <LogBody c={c} compact />
         </PhoneSection>
 
         <div className="text-[11px] text-slate-400 py-4">
@@ -22872,6 +22981,333 @@ function CommsPhone(c) {
 // ── DESKTOP ──────────────────────────────────────────────────────────────────
 // Everything visible at once, because there is room for it: controls in a left rail,
 // the email in the main pane.
+
+// ── THE SEND LOG: RANGES, DAYS, MONTHS, SORTING ──────────────────────────────
+//
+// The log was one flat list of every send, newest first, silently cut at 50 rows. Chad,
+// Aug 2026: it "needs to be done by the day and have ranges and months, not just a long
+// compilation of all the emails that we've sent. We need to be able to sort it."
+//
+// The ledger was ALREADY stored one subcollection per day — the flattening happened on
+// the way out. So this is a reader change, not a migration: the same documents, grouped
+// the way they were always written.
+
+const LOG_PRESETS = [
+  { label: 'Today', range: { days: 1 } },
+  { label: '7 days', range: { days: 7 } },
+  { label: '30 days', range: { days: 30 } },
+  { label: 'This month', range: { month: 'CURRENT' } },
+];
+
+/** A YYYY-MM as "August 2026". Built from the parts, never parsed as a local date —
+ *  `new Date('2026-08')` is UTC midnight, which in ET is the 31st of JULY. */
+function monthLabel(m) {
+  const [y, mo] = String(m || '').split('-');
+  const names = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
+  const name = names[Number(mo) - 1];
+  return name ? `${name} ${y}` : String(m || '');
+}
+
+/** A YYYY-MM-DD as "Wed 19 Aug". Same rule: from the parts, in UTC, never through the
+ *  browser's local timezone — a date-only string parsed locally slides a day west of ET. */
+function dayLabel(d) {
+  const s = String(d || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const dt = new Date(`${s}T12:00:00Z`);          // noon, so no offset can move the date
+  if (Number.isNaN(dt.getTime())) return s;
+  return dt.toLocaleDateString('en-GB', {
+    weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC',
+  });
+}
+
+/** The clock time of a send, in ET — the timezone the whole board runs on. */
+function clockText(iso) {
+  const t = Date.parse(String(iso || ''));
+  if (!Number.isFinite(t)) return '';
+  return new Date(t).toLocaleTimeString('en-US', {
+    hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York',
+  });
+}
+
+const outcomeOf = (e) => (e.ok ? 'sent' : e.claimed ? 'unconfirmed' : 'failed');
+const outcomeClass = (e) => (e.ok ? 'text-emerald-700' : e.claimed ? 'text-amber-700' : 'text-red-700');
+
+/**
+ * Day rows for the log body.
+ *
+ * Prefers the server's byDay (it counts EVERY entry it read, before any row-list
+ * truncation, so its totals are right even when the list is clipped). Falls back to
+ * grouping the entries we were given.
+ *
+ * The fallback is not decoration: a response without byDay used to render a completely
+ * BLANK log — which is exactly what a stale cached function returns mid-deploy, and what
+ * the mobile guard's fixture returned. A blank panel is the worst possible answer here,
+ * because "no sends" and "I could not read the shape" look identical.
+ */
+function dayRowsFor(log) {
+  if (Array.isArray(log?.byDay) && log.byDay.length) return log.byDay;
+  const byDate = new Map();
+  for (const e of log?.entries || []) {
+    const d = String(e?.date || '');
+    if (!d) continue;
+    const cur = byDate.get(d) || { date: d, total: 0, sent: 0, failed: 0, inflight: 0 };
+    cur.total++;
+    if (e.ok) cur.sent++; else if (e.claimed) cur.inflight++; else cur.failed++;
+    byDate.set(d, cur);
+  }
+  return [...byDate.values()].sort((a, b) => b.date.localeCompare(a.date));
+}
+
+/** Sort a day's rows. Ties always fall back to time so the order is stable — two rows with
+ *  the same customer jumping about between clicks looks like data changing under you. */
+function sortEntries(entries, sort) {
+  const dir = sort?.dir === 'asc' ? 1 : -1;
+  const by = sort?.by || 'at';
+  const val = (e) => {
+    if (by === 'customer') return String(e.customer || '').toLowerCase();
+    if (by === 'to') return String(e.to || '').toLowerCase();
+    if (by === 'result') return outcomeOf(e);
+    return String(e.at || '');
+  };
+  return [...(entries || [])].sort((a, b) => {
+    const c = val(a).localeCompare(val(b));
+    return c !== 0 ? c * dir : String(b.at || '').localeCompare(String(a.at || ''));
+  });
+}
+
+/** Range controls. `today` comes from the SERVER's ET day, not the browser's — a dispatcher
+ *  in another timezone must still get the board's idea of "this month". */
+function LogRangeBar({ log, range, applyRange, busy, compact = false }) {
+  const today = log?.today || '';
+  const months = log?.months || [];
+  const currentMonth = today.slice(0, 7);
+  const resolve = (r) => (r.month === 'CURRENT' ? { month: currentMonth } : r);
+  const isOn = (r) => {
+    const t = resolve(r);
+    if (t.month) return range?.month === t.month;
+    if (t.days) return !range?.month && !range?.from && !range?.to && range?.days === t.days;
+    return false;
+  };
+  // 44px on a phone, not 34: the repo's own mobile guard holds every control to a 44px
+  // touch target and caught these at 34. A range picker you have to aim at is worse than
+  // no range picker — this is the control the whole day view hangs off.
+  const pill = (on) =>
+    `${compact ? 'min-h-[44px] px-3 text-[13px]' : 'px-2.5 py-1 text-xs'} rounded-md border font-semibold ` +
+    (on ? 'border-slate-800 bg-slate-800 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50');
+  const field = `${compact ? 'min-h-[44px] text-[13px]' : 'text-xs'} px-2 py-1 rounded-md border border-slate-300 bg-white text-slate-700`;
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 mb-2">
+      {LOG_PRESETS.map((p) => (
+        <button key={p.label} disabled={busy} onClick={() => applyRange(resolve(p.range))} className={pill(isOn(p.range))}>
+          {p.label}
+        </button>
+      ))}
+      <select
+        value={range?.month && range.month !== currentMonth ? range.month : ''}
+        disabled={busy}
+        onChange={(e) => e.target.value && applyRange({ month: e.target.value })}
+        className={field}
+      >
+        <option value="">Month…</option>
+        {months.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
+      </select>
+      <span className="flex items-center gap-1">
+        <input
+          type="date" value={range?.from || ''} disabled={busy} max={today}
+          onChange={(e) => applyRange({ from: e.target.value, to: range?.to || today })}
+          className={field} aria-label="From date"
+        />
+        <span className="text-[11px] text-slate-400">to</span>
+        <input
+          type="date" value={range?.to || ''} disabled={busy} max={today}
+          onChange={(e) => applyRange({ from: range?.from || e.target.value, to: e.target.value })}
+          className={field} aria-label="To date"
+        />
+      </span>
+      {busy && <span className="text-[11px] text-slate-400">loading…</span>}
+    </div>
+  );
+}
+
+/** What the range actually covers — and, when they differ, what it does NOT. A clipped
+ *  range or an unreadable day shown as a silent gap reads as "that period was quiet". */
+function LogRangeNote({ log }) {
+  if (!log?.range) return null;
+  const r = log.range;
+  const bits = [];
+  if (r.days > 0) bits.push(`${dayLabel(r.from)}${r.days > 1 ? ` – ${dayLabel(r.to)}` : ''} · ${r.days} day${r.days === 1 ? '' : 's'}`);
+  return (
+    <div className="text-[11px] text-slate-400 mb-2">
+      {bits.join(' ')}
+      {r.clipped && (
+        <span className="text-amber-700 font-semibold">
+          {' '}— asked for {r.requestedDays} days, showing the most recent {r.maxDays}.
+        </span>
+      )}
+      {log.unreadable?.length > 0 && (
+        <span className="text-red-700 font-semibold"> — could not read {log.unreadable.join(', ')}.</span>
+      )}
+      {log.entriesTruncated && (
+        <span className="text-amber-700 font-semibold"> — {log.entriesShown} of {log.entriesTotal} rows listed.</span>
+      )}
+    </div>
+  );
+}
+
+/** Month subtotals. Only shown when the range actually spans more than one month —
+ *  a single-month header above a single-month list is noise. */
+function LogMonthRollup({ log }) {
+  const months = log?.byMonth || [];
+  if (months.length < 2) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5 mb-2">
+      {months.map((m) => (
+        <span key={m.month} className="text-[11px] rounded-md border border-slate-200 bg-slate-50 px-2 py-1">
+          <span className="font-semibold text-slate-700">{monthLabel(m.month)}</span>
+          <span className="text-slate-500"> · {m.sent} sent</span>
+          {m.failed > 0 && <span className="text-red-700"> · {m.failed} failed</span>}
+          {m.inflight > 0 && <span className="text-amber-700"> · {m.inflight} unconfirmed</span>}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** One day: a header row that is always present (so a quiet day reads as quiet rather than
+ *  missing), expanding to its sends. */
+function LogDay({ day, entries, open, onToggle, sort, setSort, status, compact }) {
+  const quiet = day.total === 0;
+  const swept = !!status;
+  const th = (key, label, extra = '') => (
+    <th
+      className={`py-1.5 pr-3 font-semibold cursor-pointer select-none hover:text-slate-800 ${extra}`}
+      onClick={() => setSort({ by: key, dir: sort.by === key && sort.dir === 'desc' ? 'asc' : 'desc' })}
+    >
+      {label}{sort.by === key ? (sort.dir === 'desc' ? ' ▾' : ' ▴') : ''}
+    </th>
+  );
+  return (
+    <div className="border-b border-slate-100 last:border-0">
+      <button
+        onClick={onToggle} disabled={quiet}
+        className={`w-full flex items-center gap-2 text-left ${compact ? 'py-2.5 min-h-[44px]' : 'py-2'} ${quiet ? 'cursor-default' : ''}`}
+      >
+        <span className="text-slate-400 text-[11px] w-3 shrink-0">{quiet ? '' : open ? '▾' : '▸'}</span>
+        <span className="text-[13px] font-semibold text-slate-800 shrink-0">{dayLabel(day.date)}</span>
+        <span className="flex-1 min-w-0 text-[11px] text-slate-500 truncate">
+          {quiet
+            // The distinction the per-day status snapshot exists to make.
+            ? (swept ? 'swept — nobody to email' : 'no sends recorded')
+            : <>
+                {day.sent} sent
+                {day.failed > 0 && <span className="text-red-700 font-semibold"> · {day.failed} failed</span>}
+                {day.inflight > 0 && <span className="text-amber-700 font-semibold"> · {day.inflight} unconfirmed</span>}
+              </>}
+        </span>
+      </button>
+
+      {open && !quiet && (compact ? (
+        <ul className="divide-y divide-slate-100 pb-1">
+          {sortEntries(entries, sort).map((e, i) => (
+            <li key={`${e.date}-${e.key}-${i}`} className="py-2 pl-5">
+              <div className="flex items-baseline gap-2">
+                <span className="text-[13px] font-semibold text-slate-800 flex-1 min-w-0 truncate">{e.customer || '—'}</span>
+                <span className={`text-[11px] font-bold shrink-0 ${outcomeClass(e)}`}>{outcomeOf(e)}</span>
+              </div>
+              <div className="text-[11px] text-slate-500 break-all">{e.to || '—'}</div>
+              <div className="text-[10px] text-slate-400">{clockText(e.at)}{e.pro ? ` · ${e.pro}` : ''}</div>
+              {e.error && <div className="text-[10px] text-red-700 break-words">{e.error}</div>}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="overflow-x-auto pb-1 pl-5">
+          {/* table-fixed + explicit widths: each day renders its OWN table, so
+              content-driven columns made every day line up differently down the page. */}
+          <table className="w-full text-xs table-fixed min-w-[560px]">
+            <colgroup>
+              <col style={{ width: '14%' }} /><col style={{ width: '26%' }} />
+              <col style={{ width: '30%' }} /><col style={{ width: '12%' }} />
+              <col style={{ width: '18%' }} />
+            </colgroup>
+            <thead>
+              <tr className="text-left text-slate-500 border-b">
+                {th('at', 'Time')}{th('customer', 'Customer')}{th('to', 'To')}
+                <th className="py-1.5 pr-3 font-semibold">Pro</th>{th('result', 'Result')}
+              </tr>
+            </thead>
+            <tbody>
+              {sortEntries(entries, sort).map((e, i) => (
+                <tr key={`${e.date}-${e.key}-${i}`} className="border-b border-slate-100 last:border-0">
+                  <td className="py-1.5 pr-3 whitespace-nowrap text-slate-500">{clockText(e.at)}</td>
+                  <td className="py-1.5 pr-3">{e.customer || '—'}</td>
+                  <td className="py-1.5 pr-3 truncate">{e.to || '—'}</td>
+                  <td className="py-1.5 pr-3 font-mono text-slate-500">{e.pro || '—'}</td>
+                  <td className="py-1.5">
+                    <span className={`font-semibold ${outcomeClass(e)}`}>{outcomeOf(e)}</span>
+                    {e.error && <div className="text-[10px] text-red-700 break-words">{e.error}</div>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** The whole log body, shared by phone and desktop. */
+function LogBody({ c, compact = false }) {
+  const log = c.log;
+  const byDay = dayRowsFor(log);
+  const entriesFor = (date) => (log?.entries || []).filter((e) => e.date === date);
+  // Open the newest day that actually has sends. A log that opens as nothing but collapsed
+  // headers makes you tap before it has told you anything, and the day people want is
+  // almost always the most recent one. Only when nothing is open yet, so it never fights a
+  // deliberate collapse — and openDays is cleared on every range change, so a new range
+  // gets the same treatment.
+  const newestWithSends = byDay.find((d) => d.total > 0)?.date || null;
+  useEffect(() => {
+    if (newestWithSends && c.openDays.size === 0) c.setOpenDays(new Set([newestWithSends]));
+  }, [newestWithSends]); // eslint-disable-line react-hooks/exhaustive-deps
+  const toggle = (d) => {
+    const next = new Set(c.openDays);
+    if (next.has(d)) next.delete(d); else next.add(d);
+    c.setOpenDays(next);
+  };
+  return (
+    <>
+      <LogRangeBar log={log} range={c.range} applyRange={c.applyRange} busy={c.logBusy} compact={compact} />
+      <LogRangeNote log={log} />
+      {log?.totals && (
+        <div className="text-xs text-slate-600 mb-2">
+          {log.totals.sent} sent · {log.totals.failed} failed · {log.totals.inflight} unconfirmed
+          {log.totals.total === 0 && (
+            <span className="text-slate-400">
+              {c.enabled ? ' — nothing sent in this range; the sweep runs every 30 minutes.' : ' — nothing sent, which is expected while the program is off.'}
+            </span>
+          )}
+        </div>
+      )}
+      <LogMonthRollup log={log} />
+      {byDay.length > 0 && (
+        <div>
+          {byDay.map((d) => (
+            <LogDay
+              key={d.date} day={d} entries={entriesFor(d.date)}
+              open={c.openDays.has(d.date)} onToggle={() => toggle(d.date)}
+              sort={c.sort} setSort={c.setSort} status={log?.status?.[d.date]} compact={compact}
+            />
+          ))}
+        </div>
+      )}
+      {!log && !c.logBusy && <div className="text-[12px] text-slate-400">The send log could not be loaded.</div>}
+    </>
+  );
+}
 
 function CommsCard({ title, aside = null, children }) {
   return (
@@ -22997,7 +23433,7 @@ function CommsDesktop(c) {
               <label className={label}>From address</label>
               <input className={input} value={c.fromAddr} onChange={(e) => { c.setFromAddr(e.target.value); c.setDirty(true); }} placeholder="blank = the site default sender" />
               <div className="text-[10px] text-slate-400 mt-1">Currently sends as <span className="font-semibold text-slate-500">{c.cfgResp?.effectiveFrom || '—'}</span>. An unverified domain makes every send bounce.</div>
-              <SenderTargetNote />
+              <SenderTargetNote domain={c.cfgResp?.domain} from={c.cfgResp?.effectiveFrom} />
               <label className={`${label} mt-3`}>Replies go to</label>
               <input className={input} value={c.replyTo} onChange={(e) => { c.setReplyTo(e.target.value); c.setDirty(true); }} />
               <label className={`${label} mt-3`}>Daily cap</label>
@@ -23044,31 +23480,8 @@ function CommsDesktop(c) {
         )}
         <CommsMsg msg={c.msg} where="save" className="max-w-sm mx-auto text-center" />
 
-        <CommsCard title="Send log — last 7 days">
-          {c.log?.totals && (
-            <div className="text-xs text-slate-600 mb-2">
-              {c.log.totals.sent} sent · {c.log.totals.failed} failed · {c.log.totals.inflight} unconfirmed
-              {c.log.totals.total === 0 && <span className="text-slate-400">{c.enabled ? ' — nothing sent yet; the sweep runs every 30 minutes.' : ' — nothing has been sent yet, which is expected while the program is off.'}</span>}
-            </div>
-          )}
-          {c.log?.entries?.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead><tr className="text-left text-slate-500 border-b"><th className="py-1.5 pr-3 font-semibold">When</th><th className="py-1.5 pr-3 font-semibold">Customer</th><th className="py-1.5 pr-3 font-semibold">To</th><th className="py-1.5 pr-3 font-semibold">Subject</th><th className="py-1.5 font-semibold">Result</th></tr></thead>
-                <tbody>
-                  {c.log.entries.slice(0, 50).map((e, i) => (
-                    <tr key={`${e.date}-${e.key}-${i}`} className="border-b border-slate-100">
-                      <td className="py-1.5 pr-3 whitespace-nowrap text-slate-500">{agoText(e.at) || e.date}</td>
-                      <td className="py-1.5 pr-3">{e.customer || '—'}</td>
-                      <td className="py-1.5 pr-3">{e.to || '—'}</td>
-                      <td className="py-1.5 pr-3 max-w-[240px] truncate">{e.subject || '—'}</td>
-                      <td className="py-1.5">{e.ok ? <span className="text-emerald-700 font-semibold">sent</span> : e.claimed ? <span className="text-amber-700 font-semibold">unconfirmed</span> : <span className="text-red-700 font-semibold">failed</span>}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+        <CommsCard title="Send log">
+          <LogBody c={c} />
         </CommsCard>
 
         <div className="text-[10px] text-slate-400 pb-6">
