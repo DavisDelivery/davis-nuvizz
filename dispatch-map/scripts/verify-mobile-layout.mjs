@@ -189,7 +189,9 @@ const MEASURE = `(() => {
   // up in #root.scrollWidth, and anything merely clipped is caught by the clipped check.
   const root = document.getElementById('root') || document.body;
   const docW = Math.max(vw, root.scrollWidth);
-  const out = { vw, docW, wide: [], offscreen: [], small: [], dead: [], clipped: [] };
+  const out = { vw, docW, wide: [], offscreen: [], small: [], dead: [], clipped: [], overlap: [] };
+  // Controls collected during the sweep, for the pairwise overlap check below.
+  const controls = [];
 
   const visible = (el, r) => {
     if (r.width <= 0 || r.height <= 0) return false;
@@ -259,6 +261,36 @@ const MEASURE = `(() => {
       || clickableTh || labelForBox
       || el.getAttribute('role') === 'button' || el.getAttribute('role') === 'menuitem';
     if (tappable && !el.disabled) {
+      // Only controls a finger can actually REACH. A closed bottom sheet is parked with
+      // translate-y-full, so its full-size, fully-"visible" inputs geometrically overlap
+      // the tab bar under the viewport edge — flagging those would bury the real
+      // occlusions in noise. Sample five points; if the browser's own hit-testing never
+      // returns this element (or its own subtree) at any of them, no tap can land on it,
+      // so it is not part of the interactive surface being judged.
+      const hits = (x, y) => {
+        const t = document.elementFromPoint(x, y);
+        return !!t && (t === el || el.contains(t) || t.contains(el));
+      };
+      const cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+      const inset = Math.min(6, r.width / 4, r.height / 4);
+      const reachable = hits(cx, cy)
+        || hits(r.left + inset, r.top + inset) || hits(r.right - inset, r.top + inset)
+        || hits(r.left + inset, r.bottom - inset) || hits(r.right - inset, r.bottom - inset);
+      if (reachable) {
+        // The VISIBLE rect, not the layout rect. A row half-scrolled out of a sheet
+        // still reports its full box, which geometrically "overlaps" the tab bar below
+        // the scroller — but it is clipped there, occluding nothing. Intersect with
+        // every clipping ancestor so the overlap test judges what is actually painted.
+        const vr = { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+        for (let p = el.parentElement; p; p = p.parentElement) {
+          const cs = getComputedStyle(p);
+          if (!/(auto|scroll|hidden)/.test(cs.overflowX + ' ' + cs.overflowY)) continue;
+          const pr = p.getBoundingClientRect();
+          vr.left = Math.max(vr.left, pr.left); vr.top = Math.max(vr.top, pr.top);
+          vr.right = Math.min(vr.right, pr.right); vr.bottom = Math.min(vr.bottom, pr.bottom);
+        }
+        if (vr.right - vr.left > 8 && vr.bottom - vr.top > 8) controls.push({ el, r: vr });
+      }
       // Credit a deliberately-expanded hit area: the app's own idiom is an absolutely
       // positioned ::after with negative insets (after:-inset-y-3), which really does
       // make a 20px switch a 44px target. Measure what the finger hits, not the paint.
@@ -287,11 +319,49 @@ const MEASURE = `(() => {
     });
     if (!hasInk && (el.textContent || '').trim().length === 0) out.dead.push({ el: describe(el), h: Math.round(r.height) });
   }
+  // TWO CONTROLS ON THE SAME PIXELS. The defect class behind Chad's 2026-08-19 phone
+  // screenshot ("things are laying on top of one another"): the Map's draw buttons were
+  // absolutely pinned at a guessed offset and landed on the status card's own buttons the
+  // moment the card wrapped and expanded. Nothing here fired — the buttons were full-size,
+  // unclipped, on-screen — so the guard passed a screen where a tap on "N c/o" armed the
+  // lasso. Occlusion between interactive controls is ALWAYS a defect in the resting or
+  // probed state; deliberate layers are excluded structurally, not by threshold:
+  //   • ancestor/descendant pairs (a badge overflowing its own button is one control)
+  //   • anything inside a position:fixed layer (sheets, drawers, panels, tab bar — those
+  //     are MEANT to cover the page; pinning furniture is only a bug within one layer)
+  //   • sticky containers count as layers too: a sticky header EXISTS to cover the
+  //     content that scrolls under it — flagging that is flagging scrolling itself.
+  //   • surfaces that EXIST to cover the page declare it with data-overlay-layer
+  //     (bottom sheets, the resizable data grid). A declared cover over the furniture
+  //     beneath it is scrolling/sheets working as designed; two controls colliding
+  //     WITHIN one layer is still always a defect.
+  const fixedLayerOf = (el) => {
+    for (let p = el; p && p !== document.body; p = p.parentElement) {
+      if (p.hasAttribute && p.hasAttribute('data-overlay-layer')) return p;
+      const pos = getComputedStyle(p).position;
+      if (pos === 'fixed' || pos === 'sticky') return p;
+    }
+    return null;
+  };
+  for (let i = 0; i < controls.length; i++) {
+    for (let j = i + 1; j < controls.length; j++) {
+      const A = controls[i], B = controls[j];
+      if (A.el.contains(B.el) || B.el.contains(A.el)) continue;
+      if (fixedLayerOf(A.el) !== fixedLayerOf(B.el)) continue;
+      const ox = Math.min(A.r.right, B.r.right) - Math.max(A.r.left, B.r.left);
+      const oy = Math.min(A.r.bottom, B.r.bottom) - Math.max(A.r.top, B.r.top);
+      // >8px on BOTH axes: real occlusion, not rounded corners touching.
+      if (ox > 8 && oy > 8) {
+        out.overlap.push({ el: describe(A.el) + '  ⇄  ' + describe(B.el), px: Math.round(Math.min(ox, oy)) });
+      }
+    }
+  }
   // Dedup by description, keep the worst.
   const top = (arr, k) => Object.values(arr.reduce((m, x) => { const p = m[x.el]; if (!p || (x[k] || 0) > (p[k] || 0)) m[x.el] = x; return m; }, {})).slice(0, 6);
   out.wide = top(out.wide, 'w'); out.offscreen = top(out.offscreen, 'right');
   out.clipped = top(out.clipped, 'cut');
   out.small = Object.values(out.small.reduce((m,x)=>{m[x.el]=x;return m;},{})); out.dead = top(out.dead, 'h');
+  out.overlap = top(out.overlap, 'px');
   return out;
 })()`;
 
@@ -357,6 +427,7 @@ for (const device of DEVICES) {
     for (const cl of m.clipped) probs.push(`clipped ${cl.cut}px by an overflow-hidden ancestor — ${cl.el}`);
     for (const d of m.dead) probs.push(`dead region ${d.h}px tall with nothing in it — ${d.el}`);
     for (const s of m.small) probs.push(`touch target ${s.w}×${s.h}px — ${s.el}`);
+    for (const ov of m.overlap) probs.push(`controls overlapping by ${ov.px}px — ${ov.el}`);
 
     if (probs.length === 0) ok(`${screen.label}`);
     else { bad(`${screen.label}`); for (const p of probs) console.log(`      ${p}`); }
@@ -378,6 +449,7 @@ for (const device of DEVICES) {
       for (const o of pm.offscreen) pp.push(`off-screen: right edge ${o.right}px — ${o.el}`);
       for (const cl of pm.clipped) pp.push(`clipped ${cl.cut}px — ${cl.el}`);
       for (const sm of pm.small) pp.push(`touch target ${sm.w}×${sm.h}px — ${sm.el}`);
+      for (const ov of pm.overlap) pp.push(`controls overlapping by ${ov.px}px — ${ov.el}`);
       if (pp.length === 0) ok(`${screen.label} → ${probe.name}`);
       else { bad(`${screen.label} → ${probe.name}`); for (const x of pp) console.log(`      ${x}`); }
     }

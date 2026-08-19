@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.56.1';
+const APP_VERSION = '0.56.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -150,6 +150,7 @@ function looksLikeLoadNbr(v) {
 const VERSION_LOG = [
   ['0.56.0', 'THE CRITICAL-FLAG ALERT WOULD NEVER HAVE SENT ANYTHING \u2014 CAUGHT BY THE TOOL BUILT TO CATCH IT. Turning the alert live meant it could not be inspected (a function carrying a cron is not reachable over HTTP here), so v0.55.7 added a dry endpoint that answers \u201cwhat would you send right now\u201d. Pointed at the real board it said: 0 critical, 0 red, 0 amber. On three separate days. The back-test had scored hundreds of stops on two of them, so that was not a quiet week \u2014 that was a lie. The endpoint could not say WHY, which is its own lesson: a bare zero is indistinguishable from \u201cnothing loaded\u201d, exactly the ambiguity this whole feature exists to remove. So it now reports what it examined, and the answer arrived immediately: 778 stops seen, 63 routes judged, and matchKey NULL ON EVERY ROW. The live stop index does not carry one. computeBoardFlags looks a stop\u2019s receiving hours up by stop.matchKey, so every stop read as having no deadline, no stop had hours, and the board came back clean. The alert would have watched an ordinary Tuesday, concluded there was nothing wrong, and never emailed \u2014 forever, invisibly, because a quiet alert looks exactly like a good day. It never showed on screen because the browser\u2019s stops DO carry the key. The fix is to DERIVE the key rather than trust a stored field, from the name and address every stop carries in the live index and in sealed history alike. That derivation now lives in exactly one module, because this same trust-the-stored-field bug shipped twice in one session \u2014 once in the miss ledger, once here \u2014 and the miss ledger now delegates to it too. A regression test reproduces the failure end to end: live-shaped stops with correctly-loaded notes produce ZERO flags before the keys are stamped and the flag after, so the silent zero can never come back unnoticed. 1,829 tests.'],
   ['0.55.9', 'THE MISS-WINDOW ALERT IS NOT ON THE DELIVERY-CONFIRMATION BUDGET \u2014 SAID AGAIN, IN CODE. Chad, asking a second time: \u201cwhat i want to make sure is the alert email to customerservice when we are going to miss a delivery window is not bound to that cap for the customer communications on delivery confirmations.\u201d It is not, and never was. The alert module\u2019s ONLY import is the raw sender; it reads no customer-comms config document and increments no customer-comms counter. The confirmations cap lives in that engine\u2019s own config and is consumed only by its sweep. The one thing the two genuinely share is the Resend account itself, which is nowhere near either ceiling. The reason the question kept coming back was the NUMBER, not the wiring. The alert ceiling was first 25 \u2014 exactly the figure the customer-email trial ran at \u2014 and then 200, which collided with the confirmations cap Chad had in mind. A constant that keeps looking like the other one keeps being read as the other one. It is now 500, a value matching nothing on the comms side, and written down as what it actually is: an anti-runaway ceiling for a parser bug that marks a whole board critical, not a budget. It sits far above any plausible day on purpose, because only stops that carry receiving hours, read CRITICAL, and still have an open window can alert at all \u2014 a handful on a bad day \u2014 and suppressing a real \u201cthis truck is about to miss\u201d is the one failure the feature exists to prevent. Three tests hold the line: the ceiling may not equal a comms cap value, the module\u2019s import list must stay exactly [the raw sender], and \u2014 the one that proves it rather than asserting it \u2014 an alert still sends with the confirmations budget run all the way to zero. Worth recording alongside it: the live confirmations cap read 300 at the time of writing, not the 200 in the question.'],
+  ['0.56.2', 'THE PHONE MAP\u2019S TOP OVERLAYS CANNOT SIT ON EACH OTHER ANY MORE \u2014 AND A GUARD NOW FAILS ANY SCREEN WHERE TWO CONTROLS SHARE PIXELS. Chad, with the draw buttons sitting on top of the status card: \u201cBig formatting issues on mobile. I\u2019ve told you time and again that mobile and desktop should be treated as 2 different views and to quit trying to take the easy way out.\u201d He is right, and the file\u2019s own comments prove it: this exact layout had been collision-patched FOUR times (v0.54.80, v0.54.82, the wrap fix, the flags-chip clip), each time repositioning one absolutely-pinned layer and keeping the architecture that guarantees the next crash. The search bar was pinned at one offset, the date/status/flags row at a measured one, and the draw tools at that offset PLUS A HARDCODED 42 \u2014 an assumption that the row above was one line tall, when it was explicitly allowed to wrap and the card to expand. Carryover made it wrap, the expanded card made it tall, and the draw buttons landed on \u2018N c/o\u2019. THE MOBILE MAP\u2019S TOP FURNITURE IS NOW ONE COLUMN IN NORMAL FLOW: search, then date + flags, then tools beside the status card, then the notices \u2014 when anything grows or wraps, everything below it MOVES, because that is what flow does. No measured offsets, no +42, nothing to re-guess. The \u2018no stops match\u2019 banner moved into the same column (it used to paint over Filters and Scan at the exact moment nothing was on the map). ROUTING HAD THE SAME DISEASE, found by the new guard, not by a screenshot: the Box/Lasso/Ninja tools were centred on the whole map container while the bottom grid overlaid part of it, which put a tool on the grid\u2019s Profiles button \u2014 and on a 360px phone walked the column up into the selected-stops chip and the Build tab. On the phone the chip and tools are now one flow column; on desktop the tools centre in the strip ABOVE the grid, driven by the grid\u2019s measured height, so resizing the grid moves them. THE GUARD: every screen, both phone sizes, now fails CI when two REACHABLE controls overlap within one layer. Proven against yesterday\u2019s build \u2014 it fails it on exactly the screenshotted bug \u2014 and green on this one. It judges what a finger can actually reach (a row scrolled half out of a sheet occludes nothing), and deliberate covers \u2014 bottom sheets, the data grid, sticky headers \u2014 declare themselves rather than being threshold-tuned around. CLAUDE.md now carries the standing rule: every screen is TWO views, and phone overlay furniture lives in one flow container. 10 new tests\u2019 worth of guard reach, 1,843 green.'],
   ['0.56.1', 'A 5-STAR REVIEW THAT NEVER REACHED GOOGLE, AND THE TWO REASONS NOBODY COULD TELL. Chad, holding a 5-star alert email next to a Google page whose newest review was a fortnight old: \u201c2 things i want to track where the review came from tracking or delivery emails other thing is this review did not make it to google why?\u201d Both answers were in the tracking portal (DavisDelivery/dds-tracking), and this app is the other half of the fix. ONE, THE HAND-OFF COULD NOT WORK. On 4-5 stars the portal awaited the review POST, then set an 1800ms timer and called window.open(google). A window.open from inside a promise callback and a timer has no transient activation \u2014 Safari blocks it past about a second, Firefox past one by default \u2014 and the awaited POST alone runs 1.5-5s because it waits on three NuVizz lookups the customer never asked for. Blocked essentially always on a phone. The manual target=\u201c_blank\u201d button underneath was not the fallback it looked like either: inside an iOS email client\u2019s in-app browser, a host app that does not implement WKUIDelegate cannot open new windows at all, so window.open returns null AND target=\u201c_blank\u201d is silently inert. Since most of these customers arrive by tapping a button in a delivery email, that is the main path. \u201cThey never tapped it\u201d was partly \u201cthey tapped it and nothing happened.\u201d The portal now takes JavaScript out of the navigation path entirely: for 4-5 stars the submit control IS the Google link, a real anchor in the same tab, with the review POST riding alongside it fire-and-forget. TWO, THE SYSTEM WAS ASSERTING AN OUTCOME IT NEVER OBSERVED. \u201c\u2705 The customer was also routed to leave this review on Google\u201d was a hardcoded string in the 5-star alert template, printed for every rating >= 4 before the customer had done anything; routedTo:\u201cgoogle\u201d and the dashboard\u2019s \u201cSent to Google\u201d badge said the same thing on the same non-evidence. Nothing could distinguish shown-the-link from took-it from posted-it. A click hop now sits between the button and Google and records what it actually sees \u2014 and stops there, because whether a review gets POSTED happens on google.com signed in as the customer and Google tells us nothing. WHAT CHANGED HERE: the delivery email\u2019s two CTAs now say which button they are. trackingUrl carries src=track-email and reviewUrl carries src=review-email, minted by a new pure trackingLink() helper; the portal reads src on arrival, keeps it for the session, posts it with the review and shows it on the dashboard. Until now the question had no answer at all \u2014 the two buttons differed only by rate=1, which is an intent flag, not a source. Honest about its limits: a forwarded email carries the forwarder\u2019s tag, and a bookmark or a retype reads as direct. Carried even on the no-PRO fallback links, because there is nothing to track but the click still came out of an email. Related, and found while reading that code: rate=1 has been on every Rate button since it was added, specifically so the page would open on the stars \u2014 and the portal only ever parsed `pro`, so it landed customers on the Request-a-Quote banner with the rating below the fold. It reads it now. 4 new tests here, all green.'],
   ['0.55.8', 'THE VERSION BUMP IS A TEST NOW, AND SOMETHING FINALLY WATCHES WHETHER A MERGE ACTUALLY SHIPPED. Chad: \u201ci told you to put in the claude.md that every merge should carry a new version and that still is not occurring[.] i\u2019ve been on v0.55.0 all morning not once has it changed[,] also i\u2019m not getting the alert at top of page anymore that code is changed and i need to reload[.] both of these need an exhaustively reviewed fix to keep from happening again.\u201d Right on both, and they turned out to be TWO SEPARATE FAILURES with one shared symptom. ONE, THE RULE WAS BEING SKIPPED. CLAUDE.md has required a version bump on every merged change since this morning, and two merges that same morning ignored it \u2014 #696 and #697 both landed with APP_VERSION still 0.55.0. #697 was the LAST commit to reach production, so Chad got a deploy notification and watched the footer sit exactly where it was. Written guidance is only as strong as the attention of whoever reads it. It is now a CI job that fails the PR: bump APP_VERSION, add the changelog row, or the merge does not happen. Deliberately narrow \u2014 a docs-only or test-only branch is not made to invent a version, because a guard that fires on things it should not care about is one somebody switches off. Verified against real history: it FAILS #697 and PASSES #698 and #700. TWO, AND THE BIGGER ONE: PRODUCTION STOPPED TAKING MAIN AT 09:51 AND NOTHING SAID SO. Between 10:08 and 11:32 main moved five times \u2014 v0.55.1, .3, .4, .6, .7 \u2014 and the live site served v0.55.0 the entire morning. Every merge was green, every PR check passed, the deploy previews built normally. Confirmed by reading the deployed bundle itself: both the production URL and the main-branch alias were serving the build from commit 030304d, published 09:51:57Z. So the version was not \u201cnot changing\u201d \u2014 it was changing five times and never arriving. WHY THE RELOAD BANNER WENT QUIET, and it is not broken: it compares the bundle THIS TAB is running against the bundle THE SITE is serving. Both were v0.55.0, so it correctly said nothing. It can only ever report \u201cyour tab is behind the site\u201d \u2014 and the failure here was \u201cthe site is behind main\u201d, which is invisible from inside the app because the app has no idea what main says. Nothing watched that axis. Now something does: a scheduled check every 30 minutes reads the APP_VERSION out of the LIVE bundle and compares it with main\u2019s, and goes red when they diverge. It stays quiet for the first 20 minutes after a merge (a build takes a minute; failing during that window would make it cry on every normal deploy) and quiet when the site simply cannot be reached, because \u201cI could not check\u201d is not \u201cyou are broken\u201d. Both guards are importable and unit-tested \u2014 a release guard that cannot itself be tested is an odd thing to trust. 12 new tests, 1,813 green.'],
   ['0.55.7', 'THE FLAG ALERT IS NOT ON THE CUSTOMER-EMAIL BUDGET, AND YOU CAN NOW ASK IT WHAT IT IS ABOUT TO DO. Chad: \u201cthe flag emails should not be bound to the resend cap we set for customer communications.\u201d They never shared code \u2014 the alert reads no comms config and increments no comms counter, and the two only ever meet at the Resend account itself. But its ceiling was 25, which is exactly the figure the customer-email trial ran at, and a constant that LOOKS borrowed gets treated as borrowed by whoever tunes the other one later. It is now 200 and documented as what it actually is: an anti-runaway backstop for a parser bug that marks a whole board critical, not a budget. A day with forty trucks in trouble is a day customer service needs forty emails, not the first twenty-five. Two tests pin the separation, including one asserting the module\u2019s only import is the raw sender. AND A WAY TO SEE IT. Turning the alert on exposed a property of this app that is easy to forget and expensive to rediscover: A FUNCTION CARRYING A CRON IS NOT REACHABLE OVER PLAIN HTTP. The v0.54.21 notes recorded it from the Scan-now button, and the nightly miss ledger answers a manual POST with a flat 403 today. So the alert would have emailed customer service on its own timer with no way for anyone \u2014 including whoever built it \u2014 to ask what it was about to send. New Diagnostics-grade endpoint eta-flag-check answers exactly that, always dry: every critical stop with its close, its ETA, how late, whether the estimate is anchored on a real arrival or still a projection, and for each one WHETHER IT WOULD EMAIL RIGHT NOW AND WHY NOT. It also lists what has already been claimed today, because \u201cwhy did customer service not hear about this stop\u201d is the question that actually gets asked and the claim ledger is the only place the answer lives. It never sends and never claims, so asking cannot consume a stop\u2019s one alert for the day.'],
@@ -7639,6 +7640,7 @@ function BottomSheet({ open, onClose, children, ariaLabel, fitContent = false })
   // the screen and scrolls, so keyboard behavior is unchanged for the case that matters.
   return (
     <div
+      data-overlay-layer
       className={`absolute z-[25] bg-white flex flex-col ${fitContent ? 'inset-x-0 bottom-0 max-h-full rounded-t-2xl shadow-[0_-4px_24px_rgba(0,0,0,0.18)]' : 'inset-0'}`}
       style={{
         transform: open ? 'translateY(0)' : 'translateY(100%)',
@@ -8975,24 +8977,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   const { google, error: mapsError } = useGoogleMaps();
   const viewportWidth = useViewportWidth();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
-  // The phone map's top overlays hang beneath the search bar. Their offsets were once
-  // constants, which is a promise the bar has to keep forever — and it stopped keeping it
-  // the moment the v0.54.80 touch floor made its controls 44px. Measure it instead: the
-  // row below sits 8px under whatever the bar actually is, and the selection tools 42px
-  // under that. ResizeObserver covers rotation and the AI-mode swap.
-  const searchBarRef = useRef(null);
-  const [searchBarH, setSearchBarH] = useState(48);
-  useEffect(() => {
-    const el = searchBarRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return undefined;
-    const measure = () => setSearchBarH(el.getBoundingClientRect().height || 48);
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [isMobile]);
-  // 8px is the bar's own top-2 inset, repeated as the gap beneath it.
-  const overlayTop = Math.round(8 + searchBarH + 8);
+  // The mobile top overlay is ONE flow column now (see the render below), so nothing
+  // needs the search bar's height measured any more — flow moves what sits beneath it.
 
 
   const [selectedStop, setSelectedStop] = useState(null);
@@ -9833,6 +9819,25 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   // canvas size never changes). Every fit pads the bottom by the grid's LIVE rendered height
   // (open/resized/collapsed alike), measured at call time through a ref on the grid's root.
   const bottomGridRef = useRef(null);
+  // Publish the bottom grid's real height onto its container as --rt-grid-h, so overlays
+  // (RoutingMapTools) can centre in the strip the grid does NOT cover. Measured with a
+  // ResizeObserver — a resize, open/close, or unmount moves the overlays automatically.
+  useEffect(() => {
+    const el = bottomGridRef.current;
+    const host = el?.parentElement;
+    if (!el || !host || typeof ResizeObserver === 'undefined') return undefined;
+    const publish = () => {
+      const v = `${el.offsetHeight || 0}px`;
+      // Only touch the style when the value moved — this effect re-arms per render on the
+      // two busiest screens, and rewriting an identical custom property would dirty style
+      // for nothing.
+      if (host.style.getPropertyValue('--rt-grid-h') !== v) host.style.setProperty('--rt-grid-h', v);
+    };
+    publish();
+    const ro = new ResizeObserver(publish);
+    ro.observe(el);
+    return () => { ro.disconnect(); host.style.removeProperty('--rt-grid-h'); };
+  });
   const fitPad = useCallback(() => ({ top: 60, right: 60, left: 60, bottom: 60 + (bottomGridRef.current?.offsetHeight || 0) }), []);
 
   // Keep the Recenter button's action pointed at the current board: fit to all
@@ -10375,172 +10380,173 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             onLasso={(pts) => { selectByLasso(pts); setSelectMode(null); }}
           />
         )}
-        {/* Persistent search bar (#382 — "there should be a search bar here").
-            Fixed, single-line height (no "Showing N of M" subtext / AI-summary chip
-            like the desktop SearchBar — those grow the box and would collide with
-            the date/status row below) so every other top overlay can sit at a FIXED
-            offset beneath it without a runtime height measurement. Shares the same
-            searchInput/aiMode state as desktop, so results/auto-zoom behave
-            identically; "Recent searches" renders as an absolutely-positioned
-            dropdown (doesn't push this row's height).
+        {/* ── THE MOBILE TOP OVERLAY IS ONE COLUMN IN NORMAL FLOW ─────────────
+            Chad, on a screenshot of the draw buttons sitting on top of the status
+            card: "Big formatting issues on mobile ... quit trying to take the easy
+            way out and make screens work for both[;] there should be an individual
+            view of every screen[,] one for desktop and one for mobile."
 
-            The offsets below used to be hard-coded (top-14 / top-28) on the premise,
-            stated above, that this bar has a fixed single-line height. v0.54.80 broke
-            that premise from a distance: the phone touch floor raised the bar's input
-            and both its buttons to 44px, so the bar became ~62px and the date chip
-            underneath was sliced by the 6px it overlapped — and taps on that strip hit
-            the search field instead of the date picker. It is measured now, so a future
-            change to the bar's height moves what sits under it instead of colliding. */}
-        <div ref={searchBarRef} className="absolute top-2 left-2 right-2 z-[17]">
-          <MobileMapSearchBar
-            value={searchInput}
-            onChange={setSearchInput}
-            onSubmit={(v) => { if (v.trim()) remember(v.trim()); }}
-            history={history}
-            aiAvailable={aiAvailable}
-            aiMode={aiMode}
-            setAiMode={(v) => { setAiMode(v); if (!v) clearAi(); }}
-            onAskAi={runAiSearch}
-            aiBusy={aiBusy}
-          />
-        </div>
-        <div className="absolute left-2 z-[16] flex flex-col items-start gap-1" style={{ top: overlayTop + 42 }}>
-          <SelectionControls mode={selectMode} setMode={setSelectMode} count={selectionSet?.size || 0} onClear={clearSelection} onText={textSelected} onTextDrivers={textSelectedDrivers} />
-          {selectNote && <div className="text-[10px] bg-white/95 border border-slate-200 rounded px-1.5 py-0.5 shadow text-slate-700">{selectNote}</div>}
-        </div>
-        {/* Top overlay row: date chip (left) + status pill (right) share one
-            flex row anchored left-2/right-2, so on a narrow phone they lay out
-            side-by-side and can NEVER overlap (the old separate top-2 left/right
-            absolutes collided in the middle). The wrapper passes map gestures
-            through the gap (pointer-events-none) while each control stays tappable. */}
-        {/* flex-wrap, because at 360px this row could not hold both children: the date chip is
-            shrink-0 and the Board Flags chip is shrink-0, so the status pill absorbed the whole
-            squeeze and collapsed to 126px against the 165px its own row needs. Its
-            overflow-hidden then clipped the LAST child — the Filters button — clean outside the
-            pill, where it rendered invisibly on top of the Board Flags chip, so a tap aimed at
-            Filters opened Board Flags instead. Wrapping gives the pill its own line instead of
-            crushing it. v0.54.82 caused this by raising the Scan button to the 44px floor. */}
-        <div className="absolute left-2 right-2 z-10 flex flex-wrap items-start justify-between gap-2 pointer-events-none" style={{ top: overlayTop }}>
-          {/* date chip (P2.7): core control, visible without opening the drawer. */}
-          <div className="flex items-center gap-1 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-1.5 py-1 pointer-events-auto flex-shrink-0">
-            <input
-              type="date"
-              value={selectedDate}
-              onChange={(e) => { if (e.target.value) setSelectedDate(e.target.value); }}
-              className="text-[11px] border-0 p-0 focus:outline-none bg-transparent w-[124px]"
-              aria-label="Select delivery date"
+            What this replaces was three ABSOLUTELY-PINNED layers: the search bar at
+            top-2, the date/status/flags row at a measured `overlayTop`, and the
+            selection controls at `overlayTop + 42` — a hardcoded offset that assumed
+            the row above was exactly one line tall. But that row was explicitly
+            allowed to WRAP (flex-wrap, added v0.54.82) and the status card to EXPAND
+            (details + sparkline), and nothing pinned below it moved. On a board with
+            carryover the pill wrapped, the card was expanded, and the draw buttons
+            landed straight on top of "N c/o" and the Filters row. This exact layout
+            had already been collision-patched four separate times (v0.54.80, .82,
+            the wrap fix, the flags-chip clip) — each fix repositioned one pinned
+            sibling and kept the architecture that makes the next collision.
+
+            Now: one absolute container, everything inside it in NORMAL FLOW. When
+            the card grows or a row wraps, whatever is below MOVES, because that is
+            what flow does. No measured offsets, no +42, nothing to re-guess when a
+            control changes height. The wrapper passes map gestures through the gaps
+            (pointer-events-none); each control re-enables itself. */}
+        <div className="absolute top-2 left-2 right-2 z-[16] flex flex-col items-stretch gap-1.5 pointer-events-none">
+          {/* Search. relative + z so its "Recent searches" dropdown paints over the
+              rows below instead of sliding under the date chip. */}
+          <div className="relative z-[2] pointer-events-auto">
+            <MobileMapSearchBar
+              value={searchInput}
+              onChange={setSearchInput}
+              onSubmit={(v) => { if (v.trim()) remember(v.trim()); }}
+              history={history}
+              aiAvailable={aiAvailable}
+              aiMode={aiMode}
+              setAiMode={(v) => { setAiMode(v); if (!v) clearAi(); }}
+              onAskAi={runAiSearch}
+              aiBusy={aiBusy}
             />
-            {!dateIsToday && (
-              <button
-                onClick={goToToday}
-                className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-blue-300 text-blue-700 active:bg-blue-50"
-                title="Today"
-              >
-                Today
-              </button>
-            )}
           </div>
-
-          {/* Right-side cluster: status pill + Board Flags chip. One group so the row's
-              justify-between still reads date-left / status-right with the chip outboard. */}
-          <div className="flex items-start gap-1.5 min-w-0 flex-shrink">
-          {/* Compact status pill — collapsible to just the stops count (shares
-              statusCollapsed with desktop). min-w-0 lets it shrink before it can
-              ever reach the date chip. */}
-          <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 text-[11px] pointer-events-auto min-w-0 flex-shrink max-w-[60vw] overflow-hidden">
-            {/* Header row — always visible: collapse toggle + stops, scan, filters. */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setStatusCollapsed((c) => !c)}
-                className="flex items-center gap-1 font-semibold flex-shrink-0"
-                aria-expanded={!statusCollapsed}
-                title={statusCollapsed ? 'Show details' : 'Collapse'}
-              >
-                {statusCollapsed ? <ChevronDown size={13} className="text-slate-400 flex-shrink-0" /> : <ChevronUp size={13} className="text-slate-400 flex-shrink-0" />}
-                {/* The stop count is the one number this pill exists to show, and it was the
-                    only child allowed to shrink — so on a narrow phone it truncated to
-                    "728 st…" while the buttons beside it kept their full width. It no longer
-                    shrinks; the row's slack comes out of the controls instead. */}
-                <span className="whitespace-nowrap">{stops.length} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}</span>
-              </button>
-              <button
-                onClick={manualScan}
-                disabled={scanning || scanCooldown}
-                className="ml-auto p-1 rounded hover:bg-slate-100 active:bg-slate-200 disabled:opacity-50 flex-shrink-0 min-w-[44px] min-h-[44px] inline-flex items-center justify-center"
-                aria-label="Scan now"
-                title={scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)'}
-              >
-                <RefreshCw size={14} className={scanning ? 'animate-spin' : ''} />
-              </button>
-              <span className="w-px self-stretch bg-slate-200 flex-shrink-0" aria-hidden />
-              <button
-                onClick={() => { setMobileDrawerTab('filters'); setMobileDrawerOpen(true); }}
-                className="flex items-center gap-1 px-1.5 py-1 rounded hover:bg-slate-100 active:bg-slate-200 font-semibold text-slate-700 flex-shrink-0"
-                aria-label="Open filters"
-              >
-                {/* Label hidden on the narrowest phones: the stop count beside it must not
-                    shrink (it is the number this pill exists for), and on a 360px screen
-                    something has to give or the button runs off the right edge. The bottom
-                    nav has a labelled Filters tab two inches below, so the word is the
-                    cheapest thing in the row to lose. */}
-                {/* 440, not 380. v0.54.71 set this threshold by eye and picked it ~50px too
-                    low: on a 390px iPhone the label DID render and was then sliced in half by
-                    the row's clip, so the button read "Fil". Measured, the row needs 426px
-                    before the word fits. Under that the icon stands alone — the bottom nav
-                    has a labelled Filters tab an inch below. */}
-                <Filter size={14} /> <span className="hidden min-[440px]:inline">Filters</span>
-              </button>
+          {/* Row: date chip (left) · Board Flags chip (right). Deliberately its own
+              row — v0.54.82 already proved date + status + flags cannot share 360px. */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-1.5 py-1 pointer-events-auto flex-shrink-0">
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => { if (e.target.value) setSelectedDate(e.target.value); }}
+                className="text-[11px] border-0 p-0 focus:outline-none bg-transparent w-[124px]"
+                aria-label="Select delivery date"
+              />
+              {!dateIsToday && (
+                <button
+                  onClick={goToToday}
+                  className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-blue-300 text-blue-700 active:bg-blue-50"
+                  title="Today"
+                >
+                  Today
+                </button>
+              )}
             </div>
-            {/* Stacked details — hidden when collapsed (mirrors desktop). */}
-            {!statusCollapsed && (
-              <div className="mt-0.5 leading-tight min-w-0 [&>div]:truncate">
-                <div className="text-slate-600 text-[10px]">{totalPalletsCount.toLocaleString()} total pallets</div>
-                <UnplannedScanCount count={scanUnplannedCount} visible={visibleUnplannedCount} className="text-slate-600 text-[10px]" />
-                <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} isToday={dateIsToday} className="text-slate-500 text-[10px]" stacked />
-                {ops && typeof ops.dayCount === 'number' && (
-                  <>
-                    <div className="text-slate-500 text-[10px]" title={`Today's NuVizz API calls (${ops.mode})${ops.byRoute && Object.keys(ops.byRoute).length ? ' · ' + Object.entries(ops.byRoute).map(([k, v]) => `${k}:${v}`).join(' ') : ''}`}>
-                      NuVizz calls: {ops.dayCount.toLocaleString()}{ops.ceiling ? ` / ${ops.ceiling.toLocaleString()}` : ''} <span className="text-slate-400">({ops.mode}{ops.breaker ? ', halted' : ''})</span>
-                    </div>
-                    <HourlyCalls byHour={ops.byHour} className="text-slate-400 text-[10px] mt-0.5" />
-                  </>
-                )}
+            {/* Board Flags — its OWN pill (the status card is overflow-hidden and
+                clipped the chip off exactly on the phones where flags matter most). */}
+            <div className="bg-white/95 backdrop-blur rounded-lg shadow pointer-events-auto flex-shrink-0 text-[11px]">
+              <BoardFlagsChip flags={visibleFlagCounts} open={flagsPanelOpen} onToggle={() => setFlagsPanelOpen((o) => !o)} />
+            </div>
+          </div>
+          {/* Row: selection tools (left) · status card (right). A flex ROW, so the
+              two can never occupy the same pixels — the row is as tall as its
+              tallest child and everything beneath moves down with it. */}
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex flex-col items-start gap-1 pointer-events-auto">
+              <SelectionControls mode={selectMode} setMode={setSelectMode} count={selectionSet?.size || 0} onClear={clearSelection} onText={textSelected} onTextDrivers={textSelectedDrivers} />
+              {selectNote && <div className="text-[10px] bg-white/95 border border-slate-200 rounded px-1.5 py-0.5 shadow text-slate-700">{selectNote}</div>}
+            </div>
+            {/* Compact status pill — collapsible to just the stops count (shares
+                statusCollapsed with desktop). min-w-0 lets it shrink before it can
+                ever reach the selection tools. */}
+            <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 text-[11px] pointer-events-auto min-w-0 flex-shrink max-w-[70vw] overflow-hidden">
+              {/* Header row — always visible: collapse toggle + stops, scan, filters. */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setStatusCollapsed((c) => !c)}
+                  className="flex items-center gap-1 font-semibold flex-shrink-0"
+                  aria-expanded={!statusCollapsed}
+                  title={statusCollapsed ? 'Show details' : 'Collapse'}
+                >
+                  {statusCollapsed ? <ChevronDown size={13} className="text-slate-400 flex-shrink-0" /> : <ChevronUp size={13} className="text-slate-400 flex-shrink-0" />}
+                  {/* The stop count is the one number this pill exists to show; it never
+                      shrinks — the row's slack comes out of the controls instead. */}
+                  <span className="whitespace-nowrap">{stops.length} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}</span>
+                </button>
+                <button
+                  onClick={manualScan}
+                  disabled={scanning || scanCooldown}
+                  className="ml-auto p-1 rounded hover:bg-slate-100 active:bg-slate-200 disabled:opacity-50 flex-shrink-0 min-w-[44px] min-h-[44px] inline-flex items-center justify-center"
+                  aria-label="Scan now"
+                  title={scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)'}
+                >
+                  <RefreshCw size={14} className={scanning ? 'animate-spin' : ''} />
+                </button>
+                <span className="w-px self-stretch bg-slate-200 flex-shrink-0" aria-hidden />
+                <button
+                  onClick={() => { setMobileDrawerTab('filters'); setMobileDrawerOpen(true); }}
+                  className="flex items-center gap-1 px-1.5 py-1 rounded hover:bg-slate-100 active:bg-slate-200 font-semibold text-slate-700 flex-shrink-0"
+                  aria-label="Open filters"
+                >
+                  {/* Label hidden on the narrowest phones — the bottom nav has a labelled
+                      Filters tab an inch below, so the word is the cheapest thing to lose. */}
+                  <Filter size={14} /> <span className="hidden min-[440px]:inline">Filters</span>
+                </button>
               </div>
-            )}
-            {/* OUTSIDE the !statusCollapsed block, deliberately. Collapsing this pill is the
-                obvious thing to do on a phone — it covers the map — and the state persists.
-                While collapsed the Scan button stays visible but every answer it can give
-                did not: a failed scan, a tripped daily ceiling and a successful one were
-                pixel-identical, so the button read as dead and the natural response is to
-                tap it again. That is the expensive mistake this app exists to avoid. */}
-            {scanState?.halted && (
-              <div className="text-[10px] font-semibold text-red-700 px-1.5 pb-1">
-                {scanState.reason === 'ceiling'
-                  ? 'Daily scan limit reached — updates resume after midnight UTC'
-                  : 'Scanning paused (kill switch) — board may be stale'}
-              </div>
-            )}
-            {scanErr && <div className="text-[10px] text-red-600 px-1.5 pb-1">{scanErr}</div>}
+              {/* Stacked details — hidden when collapsed (mirrors desktop). */}
+              {!statusCollapsed && (
+                <div className="mt-0.5 leading-tight min-w-0 [&>div]:truncate">
+                  <div className="text-slate-600 text-[10px]">{totalPalletsCount.toLocaleString()} total pallets</div>
+                  <UnplannedScanCount count={scanUnplannedCount} visible={visibleUnplannedCount} className="text-slate-600 text-[10px]" />
+                  <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} isToday={dateIsToday} className="text-slate-500 text-[10px]" stacked />
+                  {ops && typeof ops.dayCount === 'number' && (
+                    <>
+                      <div className="text-slate-500 text-[10px]" title={`Today's NuVizz API calls (${ops.mode})${ops.byRoute && Object.keys(ops.byRoute).length ? ' · ' + Object.entries(ops.byRoute).map(([k, v]) => `${k}:${v}`).join(' ') : ''}`}>
+                        NuVizz calls: {ops.dayCount.toLocaleString()}{ops.ceiling ? ` / ${ops.ceiling.toLocaleString()}` : ''} <span className="text-slate-400">({ops.mode}{ops.breaker ? ', halted' : ''})</span>
+                      </div>
+                      <HourlyCalls byHour={ops.byHour} className="text-slate-400 text-[10px] mt-0.5" />
+                    </>
+                  )}
+                </div>
+              )}
+              {/* OUTSIDE the !statusCollapsed block, deliberately: while collapsed the
+                  Scan button stays visible, so its failure states must too — a failed
+                  scan, a tripped ceiling and a success were pixel-identical otherwise. */}
+              {scanState?.halted && (
+                <div className="text-[10px] font-semibold text-red-700 px-1.5 pb-1">
+                  {scanState.reason === 'ceiling'
+                    ? 'Daily scan limit reached — updates resume after midnight UTC'
+                    : 'Scanning paused (kill switch) — board may be stale'}
+                </div>
+              )}
+              {scanErr && <div className="text-[10px] text-red-600 px-1.5 pb-1">{scanErr}</div>}
+            </div>
           </div>
-          {/* Board Flags — its OWN pill, not a child of the status pill: the status pill is
-              max-w-[60vw] overflow-hidden, and as its last flex child the chip was first to
-              be clipped off exactly on the narrow phones where flags matter most. */}
-          <div className="bg-white/95 backdrop-blur rounded-lg shadow pointer-events-auto flex-shrink-0 text-[11px]">
-            <BoardFlagsChip flags={visibleFlagCounts} open={flagsPanelOpen} onToggle={() => setFlagsPanelOpen((o) => !o)} />
-          </div>
-          </div>
+          {driverGateNote && (
+            <div className="self-center bg-amber-50 border border-amber-300 rounded shadow px-2 py-1 text-[10px] text-amber-800 pointer-events-auto">
+              Live drivers only available for today.
+            </div>
+          )}
+          {/* "No stops match" — in the SAME flow column, so it can never paint over
+              the controls above it (it used to sit at the row's offset and swallow
+              taps on Filters/Scan/flags at the exact moment nothing was on the map).
+              The wrapper stays pointer-events-none; only Clear filters is tappable. */}
+          {!visibleStops.length && !loading && !mapsError && (
+            <div className="self-center bg-white border border-slate-200 rounded shadow px-3 py-1.5 text-[11px] text-slate-600 max-w-[92vw] text-center pointer-events-none">
+              {debouncedSearch ? `No stops match "${debouncedSearch}"` : 'No stops match filters'}
+              {searchHiddenByFilters > 0 && (
+                <div className="mt-1 text-amber-800">
+                  {searchHiddenByFilters === 1 ? 'It IS on this board' : `${searchHiddenByFilters} matching stops ARE on this board`} — your filters are hiding {searchHiddenByFilters === 1 ? 'it' : 'them'}.
+                  <button onClick={clearAllStopFilters} className="pointer-events-auto ml-1 underline font-semibold hover:text-amber-900">Clear filters</button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
-        {/* The open panel lives OUTSIDE the backdrop-blur pill: backdrop-filter creates a
-            containing block, so a `fixed` descendant anchored to the pill's tiny clipped box
-            instead of the viewport — an opened panel could be invisible on mobile. */}
+        {/* The open panel lives OUTSIDE the backdrop-blur pill, viewport-fixed:
+            backdrop-filter creates a containing block that traps z-indexes — the
+            desktop Map learned that the hard way (v0.55.3). */}
         {flagsPanelOpen && (
           <div className="fixed inset-x-2 top-16 z-[70] flex justify-center pointer-events-auto">
             <BoardFlagsPanel flags={boardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} minimized={flagsMinimized} onToggleMinimized={toggleFlagsMinimized} />
-          </div>
-        )}
-        {driverGateNote && (
-          <div className="absolute left-1/2 -translate-x-1/2 z-20 bg-amber-50 border border-amber-300 rounded shadow px-2 py-1 text-[10px] text-amber-800" style={{ top: overlayTop + 42 }}>
-            Live drivers only available for today.
           </div>
         )}
         {mapsError && (
@@ -10550,24 +10556,6 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
           <div className="absolute bottom-36 left-2 right-2 bg-red-50 border border-red-200 rounded p-2 text-xs text-red-800 z-10">
             <div className="font-semibold">Google Maps failed to load</div>
             <div className="mt-0.5">{mapsError}</div>
-          </div>
-        )}
-        {!visibleStops.length && !loading && !mapsError && (
-          // This sat at the SAME offset as the date/status row and, being later in the DOM at
-          // equal z, painted over it — an opaque box swallowing taps on Filters, Scan and the
-          // Board Flags chip at the one moment they matter: nothing is on the map and the
-          // operator wants to undo whatever is hiding it. It clears the row now, and the
-          // wrapper passes taps through so anything it still overlaps stays reachable.
-          <div className="absolute left-1/2 -translate-x-1/2 bg-white border border-slate-200 rounded shadow px-3 py-1.5 text-[11px] text-slate-600 z-10 max-w-[92vw] text-center pointer-events-none" style={{ top: overlayTop + 42 }}>
-            {debouncedSearch ? `No stops match "${debouncedSearch}"` : 'No stops match filters'}
-            {searchHiddenByFilters > 0 && (
-              <div className="mt-1 text-amber-800">
-                {searchHiddenByFilters === 1 ? 'It IS on this board' : `${searchHiddenByFilters} matching stops ARE on this board`} — your filters are hiding {searchHiddenByFilters === 1 ? 'it' : 'them'}.
-                {/* The banner wrapper is pointer-events-none so it cannot swallow taps meant
-                    for the controls behind it; this is the one thing in it you tap. */}
-                <button onClick={clearAllStopFilters} className="pointer-events-auto ml-1 underline font-semibold hover:text-amber-900">Clear filters</button>
-              </div>
-            )}
           </div>
         )}
 
@@ -11679,7 +11667,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const deleteProfile = (name) => removeProfile(name);
 
   return (
-    <div ref={rootRef} className="absolute left-0 right-0 bottom-0 z-[12] bg-white border-t border-slate-200 shadow-[0_-2px_10px_rgba(0,0,0,0.10)] flex flex-col" style={{ height: open ? height : undefined, maxHeight: open ? 'calc(100% - 4rem)' : undefined }}>
+    <div ref={rootRef} data-overlay-layer className="absolute left-0 right-0 bottom-0 z-[12] bg-white border-t border-slate-200 shadow-[0_-2px_10px_rgba(0,0,0,0.10)] flex flex-col" style={{ height: open ? height : undefined, maxHeight: open ? 'calc(100% - 4rem)' : undefined }}>
       {open && (
         <div
           onPointerDown={onResizeDown}
@@ -13816,7 +13804,7 @@ function NinjaIcon({ size = 14, className = '' }) {
 // Floating on-map selection toolbar: Box · Lasso · Ninja, as small selectors that live on the
 // map (so they're reachable even when the Compare panel replaces the Setup stack). Box/Lasso
 // toggle their select mode; Ninja toggles ninja mode (disabled until a route is open in Compare).
-function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja, ninjaAvailable }) {
+function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja, ninjaAvailable, inFlow = false }) {
   const Btn = ({ active, onClick, disabled, title, children }) => (
     <button
       onClick={onClick} disabled={disabled} title={title} aria-pressed={!!active}
@@ -13826,8 +13814,28 @@ function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja,
   // z-30 keeps the tools above the Selected panel and chips so they're always tappable (issue #232).
   // Ninja is never disabled — when no Compare route is open, tapping it surfaces a hint (handled by
   // onToggleNinja) instead of presenting a dead button the dispatcher can't tell apart from a bug.
+  //
+  // Centred in the strip ABOVE the bottom grid, not in the whole container. The grid is an
+  // absolute overlay inside the same box, so top-1/2 centred these tools on space the grid
+  // occupies — on a phone the bottom tool sat exactly on the grid toolbar's Profiles button
+  // (found by the overlap guard, 2026-08-19). --rt-grid-h is MEASURED off the grid by the
+  // effect beside bottomGridRef, so a resized or closed grid moves the tools instead of
+  // colliding with them; with no grid mounted the var is 0 and this is exactly top-1/2.
+  // inFlow: the phone renders these inside the left overlay COLUMN (selected-stops chip
+  // above, tools below), so the two can never collide and the centring math — which on a
+  // short phone strip pushed the column's top ABOVE the map container onto the Build tab —
+  // does not run at all. Desktop keeps the strip-centred absolute placement. Two views.
+  if (inFlow) {
+    return (
+      <div className="flex flex-col gap-1.5">
+        <Btn active={selectMode === 'box'} onClick={onBox} title="Box select — tap two corners (or drag) to grab a group"><Square size={16} /></Btn>
+        <Btn active={selectMode === 'lasso'} onClick={onLasso} title="Lasso select — tap points (or hold & draw) around stops"><Lasso size={16} /></Btn>
+        <Btn active={ninjaMode} onClick={onToggleNinja} title={ninjaAvailable ? 'Ninja — click stops onto the active Compare route' : 'Ninja — open a route in the Compare panel first'}><NinjaIcon size={16} /></Btn>
+      </div>
+    );
+  }
   return (
-    <div className="absolute left-2 top-1/2 -translate-y-1/2 z-30 flex flex-col gap-1.5">
+    <div className="absolute left-2 -translate-y-1/2 z-30 flex flex-col gap-1.5" style={{ top: 'calc((100% - var(--rt-grid-h, 0px)) / 2)' }}>
       <Btn active={selectMode === 'box'} onClick={onBox} title="Box select — tap two corners (or drag) to grab a group"><Square size={16} /></Btn>
       <Btn active={selectMode === 'lasso'} onClick={onLasso} title="Lasso select — tap points (or hold & draw) around stops"><Lasso size={16} /></Btn>
       <Btn active={ninjaMode} onClick={onToggleNinja} title={ninjaAvailable ? 'Ninja — click stops onto the active Compare route' : 'Ninja — open a route in the Compare panel first'}><NinjaIcon size={16} /></Btn>
@@ -16768,6 +16776,25 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // container, so Google's canvas runs underneath it and a flat 60px pad frames a route's
   // southern stops behind the grid. Pad the bottom by the grid's live height at call time.
   const bottomGridRef = useRef(null);
+  // Publish the bottom grid's real height onto its container as --rt-grid-h, so overlays
+  // (RoutingMapTools) can centre in the strip the grid does NOT cover. Measured with a
+  // ResizeObserver — a resize, open/close, or unmount moves the overlays automatically.
+  useEffect(() => {
+    const el = bottomGridRef.current;
+    const host = el?.parentElement;
+    if (!el || !host || typeof ResizeObserver === 'undefined') return undefined;
+    const publish = () => {
+      const v = `${el.offsetHeight || 0}px`;
+      // Only touch the style when the value moved — this effect re-arms per render on the
+      // two busiest screens, and rewriting an identical custom property would dirty style
+      // for nothing.
+      if (host.style.getPropertyValue('--rt-grid-h') !== v) host.style.setProperty('--rt-grid-h', v);
+    };
+    publish();
+    const ro = new ResizeObserver(publish);
+    ro.observe(el);
+    return () => { ro.disconnect(); host.style.removeProperty('--rt-grid-h'); };
+  });
   const fitPad = useCallback(() => ({ top: 60, right: 60, left: 60, bottom: 60 + (bottomGridRef.current?.offsetHeight || 0) }), []);
 
   // Right Routes-panel click → open that route into the workbench (cards) and frame it on the
@@ -17979,7 +18006,6 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
           {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button),
               with the Board Flags chip stacked above it. */}
           <div className="absolute top-12 right-2 z-[15] max-w-[230px] flex flex-col items-end gap-1">{flagsOverlay()}{statusCard()}</div>
-          {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} />}
           {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
           {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[92%] bg-slate-900/90 text-white text-[11px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={12} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
           {/* Ninja status — while armed, tapping a stop on the map adds it to the active route. Shown
@@ -18006,7 +18032,18 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
           )}
           {viewing
             ? <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 bg-indigo-600 text-white text-[11px] rounded shadow px-3 py-1.5 flex items-center gap-2 max-w-[92%]"><span className="truncate">👁 {viewedLoad?.name || viewedLoad?.id}</span><button onClick={() => setViewedLoad(null)} className="underline shrink-0">Back</button></div>
-            : <button onClick={() => { setMobilePanel('setup'); setSheetOpen(true); }} className="absolute top-2 left-2 z-20 bg-white/95 border border-slate-200 rounded shadow px-2 py-1 text-[11px]" title="Review selected stops in the Setup panel">{tally.count} selected · {tally.skids} skids · {tally.pieces} pcs</button>}
+            : (
+              <div className="absolute top-2 left-2 z-20 flex flex-col items-start gap-1.5">
+                {/* One flow column: chip above, Box/Lasso/Ninja beneath. These were two
+                    separately-pinned overlays — the chip at top-2 and the tools centred on
+                    the container — and on a phone the centring math walked the tools into
+                    the chip (and, with the grid tall, above the container onto the Build
+                    tab). In a column the chip's height MOVES the tools. Found by the
+                    overlap guard, 2026-08-19. */}
+                <button onClick={() => { setMobilePanel('setup'); setSheetOpen(true); }} className="bg-white/95 border border-slate-200 rounded shadow px-2 py-1 text-[11px]" title="Review selected stops in the Setup panel">{tally.count} selected · {tally.skids} skids · {tally.pieces} pcs</button>
+                <RoutingMapTools inFlow selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} />
+              </div>
+            )}
           {/* On mobile the selected list lives in the Setup sheet (tap the chip) — a full-width map
               overlay here covered the stops and tool rail (issue #232), so it's desktop-only now. */}
           {/* The dispatch-Map data grid — Stops/Loads spreadsheet, route-able. Toggleable (gear).

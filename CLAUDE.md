@@ -57,6 +57,27 @@ Project-level guidance for Claude Code in this repository.
   (`node dispatch-map/scripts/check-deploy-fresh.mjs`) BEFORE assuming
   it is a browser cache — that check takes seconds and settles it.
 
+## Mobile and desktop are TWO VIEWS (Chad, Aug 2026)
+
+- **Every screen gets an individual mobile view and an individual desktop
+  view.** Chad: "I've told you time and again that mobile and desktop
+  should be treated as 2 different views and to quit trying to take the
+  easy way out and make screens work for both." A shared layout with
+  responsive patches is the easy way out; do not take it.
+- **On a phone, overlay furniture lives in ONE flow container.** Never
+  absolutely pin sibling controls at measured or guessed offsets — that
+  architecture was collision-patched four separate times on the Map
+  (v0.54.80, .82, the wrap fix, the flags-chip clip) and still put the
+  draw buttons on top of the status card on 2026-08-19. In flow, when
+  something grows or wraps, what is below it MOVES.
+- A surface that is DESIGNED to cover the page (bottom sheet, resizable
+  data grid) declares it with `data-overlay-layer` so the overlap guard
+  knows it is deliberate.
+- **The guard enforces this**: `verify-mobile-layout.mjs` fails CI when
+  two reachable controls occupy the same pixels within one layer, on
+  every screen at 390px and 360px. Do not weaken it to get green — fix
+  the layout.
+
 ## Reports — always a PDF (Chad, Aug 2026)
 
 - **Every report goes to Chad as a formatted PDF, never as raw
