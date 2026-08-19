@@ -20,6 +20,98 @@ Project-level guidance for Claude Code in this repository.
 - When a task seems to need fresh data, STOP and ask first — state the
   expected call cost — instead of scanning.
 
+## EVERY feature gets judged as a logistics professional FIRST (Chad, Aug 2026)
+
+- Chad: **"every feature should be evaluated like you are a senior
+  logistics professional."** Before any design work, before any code,
+  ask what a person who has run a dock and a dispatch board would say
+  about it.
+- **The order is not decorative.** The engineering question is "does
+  this work?" The logistics question is "is this the right thing to
+  build, and does it match how freight actually moves?" A feature that
+  is beautifully built and operationally wrong is a wasted week, and
+  the engineering pass cannot catch that — it will happily test the
+  wrong thing to four decimal places.
+- What that lens actually asks:
+  - **Who acts on this, and when?** A flag nobody can act on is
+    decoration. A warning that arrives after the receiving window has
+    shut cost more attention than it saved.
+  - **What does the driver / dispatcher / customer service rep DO
+    differently** because of it? If the answer is "nothing", stop.
+  - **What is the real-world failure it prevents**, in freight terms —
+    a refused delivery, a redelivery, a customer who stops calling.
+  - **What does it cost when it is wrong in each direction?** Missing a
+    real problem and crying wolf are rarely symmetrical, and the
+    threshold belongs where the cheaper mistake is.
+  - **Does it survive a bad day?** 700 stops, a driver out, carryover,
+    a customer closed early. Design for that day, not the quiet one.
+- **This is why v0.56.3 existed.** The alert was wired to `critical`
+  only, which is defensible engineering — the top tier is the confident
+  one. It is poor logistics: a stop nine minutes past a 2pm close is a
+  phone call somebody can still make, and Chad had already SAID "we
+  want every red." The screen and the inbox disagreed about the word
+  urgent for weeks and no test could have caught it, because the code
+  did exactly what it was told.
+- Say the operational judgement out loud in the PR, not just the
+  technical one. If the logistics answer and the engineering answer
+  point different ways, that is the thing worth Chad's attention.
+
+## Build it like a professional, not like a demo (Chad, Aug 2026)
+
+- Chad: **"every feature should be designed and tested like you're a
+  professional software engineer that specializes in building apps."**
+- The standard, concretely:
+  - **Pure core, thin edges.** The rules go in a testable module; the
+    endpoint and the screen stay dumb. Every non-trivial decision in
+    this repo that shipped broken shipped inside a handler nobody could
+    unit-test.
+  - **Tests pin the RULE, not the implementation.** Write the test that
+    fails when the behaviour is wrong, and name the real-world event in
+    the test name.
+  - **Handle the empty, the absent and the malformed.** `Number(null)`
+    is 0 and 0 is finite — that one shipped a customer-service email
+    announcing a midnight deadline for a stop with no deadline at all.
+  - **Never blind-write a document you do not own.** `setDoc` here
+    REPLACES; use a field-masked write. A suppression flag written the
+    lazy way takes the dispatcher's receiving hours with it.
+  - **Two views, always.** Phone and desktop are separate work, and a
+    screen added to one navigation and not the other is a screen that
+    does not exist on a phone. It has shipped that way twice.
+  - **Never report an intent as an outcome.** If the system did not
+    observe it, the system may not claim it. A hardcoded "✅ routed to
+    Google" ran for weeks and nobody could tell.
+  - **Make it inspectable.** Every job that acts on its own needs a way
+    to ask what it is about to do, without doing it. A dry run is part
+    of the feature, not a nicety.
+  - **Adversarially review before merge.** Have the change read back
+    with the question "how does this fail silently?" That pass caught a
+    test email that would have unsubscribed a real customer and an undo
+    link that would have re-subscribed one.
+- Report honestly. If a test fails, say so with the output; if a part
+  is unfinished, name it. "Done" means verified.
+
+## Merge it — do not ask (Chad, Aug 2026)
+
+- Chad: **"add to the Claude.md file to merge everything auto."** Open
+  the PR and let it land. Do not stop to ask "want me to merge?" and do
+  not park finished work in draft waiting for a word that is not
+  coming.
+- **Green CI is still the gate.** Auto-merge means no human permission
+  step, not no verification. A red build is a stop, and the
+  drive-to-green posture applies: fix it and push, or say plainly what
+  is blocking.
+- **A decision that is Chad's does not hold the PR.** If something
+  turns on a business judgement rather than a technical one — a policy
+  exposure, a spend, a first email to 700 customers — merge it
+  **inert behind a switch** and tell him what the switch is and what it
+  costs to flip. That is what happened with the review follow-up
+  mailer: shipped complete and disabled, one env var away, and he
+  turned it on the same day. Holding the merge would have bought
+  nothing and delayed everything else in the branch.
+- The two things that still warrant asking first are unchanged and
+  narrow: **a NuVizz scan** (see the cost rule above) and anything
+  genuinely destructive or hard to reverse.
+
 ## Version bump — EVERY merge (Chad, Aug 2026)
 
 - **`APP_VERSION` in `dispatch-map/src/App.jsx` MUST be bumped in every
