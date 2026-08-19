@@ -46,7 +46,7 @@ export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // The merge fields the template editor advertises. Exported from HERE, next to the
 // stopVars() that supplies them, so the editor's list and the renderer cannot drift.
 export const MERGE_FIELDS = [
-  'pro', 'customer', 'driver', 'deliveredDate', 'deliveredTime', 'deliveredWhen',
+  'pro', 'customer', 'deliveredDate', 'deliveredTime', 'deliveredWhen',
   'address', 'address2', 'city', 'state', 'zip', 'cityStateZip', 'pieces', 'weight',
   'trackingUrl', 'reviewUrl', 'year',
 ];
@@ -393,7 +393,7 @@ export function renderTemplate(tpl: string, vars: Record<string, string>): strin
 }
 
 /**
- * Every merge value is DATA — a customer name, an address, a driver — and it lands in an
+ * Every merge value is DATA — a customer name, an address, a pro number — and it lands in an
  * HTML document in someone's inbox. NuVizz carries whatever the shipper typed, so a
  * consignee name containing markup would otherwise be rendered as markup by Gmail and
  * Outlook. Escape at the HTML render only; a subject line is not HTML. PURE.
@@ -464,7 +464,14 @@ export function stopVars(stop: any, date: string): Record<string, string> {
   return {
     pro,
     customer: String(stop?.businessName || ''),
-    driver: String(stop?.driverName || ''),
+    // No `driver`. Chad, Aug 2026: "Want drivers name removed from these emails."
+    //
+    // Removed as a VALUE, not just from DEFAULT_HTML below, because DEFAULT_HTML is only
+    // the fallback — readConfig prefers the htmlTemplate saved in Firestore, and the saved
+    // one carries the old {{#driver}} block. Deleting the markup here would have left the
+    // name in every live email. With no value, renderTemplate drops {{#driver}}…{{/driver}}
+    // whole (label included) and renders a bare {{driver}} as empty, so the name cannot
+    // reach a customer through ANY template — saved, default, or hand-edited later.
     deliveredDate: dDate,
     deliveredTime: dTime,
     deliveredWhen: dTime ? `${dDate} at ${dTime}` : dDate,
@@ -477,15 +484,25 @@ export function stopVars(stop: any, date: string): Record<string, string> {
     pieces,
     weight: stop?.weight != null ? String(stop.weight) : '',
     trackingUrl: pro ? `https://tracking.davisdelivery.com/?pro=${encodeURIComponent(pro)}` : 'https://tracking.davisdelivery.com/',
-    // Same page as trackingUrl, and deliberately so: the tracking site's star rating is a
-    // card ON that page, not a separate route. It carried a '#review' fragment that pointed
-    // at nothing — the page has no element with that id, its only ids are app/review-form/
-    // stars-row, it never reads location.hash, and review-form is display:none until a star
-    // is tapped. So the fragment was decoration and any anchor would be: the whole page is
-    // rendered by script into <div id="app">, so there is no target at load time to jump to.
-    // Kept as its own merge field anyway, so the button can be pointed straight at Google
-    // (or anywhere else) from the Communications tab without touching this file.
-    reviewUrl: pro ? `https://tracking.davisdelivery.com/?pro=${encodeURIComponent(pro)}` : 'https://tracking.davisdelivery.com/',
+    // The same PAGE as trackingUrl — the star rating is a card ON the tracking page, not a
+    // separate route — but no longer the same URL. Chad: "when they click that rate my
+    // delivery in the email, it takes them directly to the tracking page with the rate my
+    // delivery already opened up, ready to click on stars."
+    //
+    // It used to be byte-identical to trackingUrl, so nothing told the page WHY the customer
+    // had come. The page renders the quote banner above the review card, so tapping "Rate my
+    // delivery" landed them on an advert with the stars below the fold — on a phone, most
+    // people never scroll to them.
+    //
+    // `rate=1` is that missing signal, and a query parameter rather than the '#review'
+    // fragment this once carried: that fragment pointed at nothing (the page has no element
+    // with the id, never reads location.hash, and renders itself by script into <div id="app">
+    // AFTER load, so there is no anchor to jump to at parse time). A query parameter is read
+    // by the page's own initFromUrl, which already parses `pro` the same way.
+    //
+    // Still its own merge field, so the button can be pointed straight at Google — or
+    // anywhere else — from the Communications tab without touching this file.
+    reviewUrl: pro ? `https://tracking.davisdelivery.com/?pro=${encodeURIComponent(pro)}&rate=1` : 'https://tracking.davisdelivery.com/',
     // ET, not the UTC runtime's year — otherwise a New Year's Eve send stamps next year.
     year: etDayString().slice(0, 4),
   };
@@ -1024,8 +1041,6 @@ export const DEFAULT_HTML = `<table role="presentation" width="100%" cellpadding
       <tr><td style="padding:18px 20px;font-size:14px;color:#16202B;">
         <div style="font-size:10px;letter-spacing:1.2px;color:#7C8B9A;text-transform:uppercase;padding-bottom:4px;">Delivered To</div>
         <div style="font-weight:600;line-height:1.5;">{{customer}}<br><span style="font-weight:400;color:#5A6B7C;">{{address}}{{#address2}}<br>{{address2}}{{/address2}}<br>{{cityStateZip}}</span></div>
-        {{#driver}}<div style="font-size:10px;letter-spacing:1.2px;color:#7C8B9A;text-transform:uppercase;padding:14px 0 4px;">Driver</div>
-        <div style="font-weight:600;">{{driver}}</div>{{/driver}}
         <div style="border-top:1px dashed #C3D0DC;margin-top:14px;padding-top:12px;">
           <a href="{{trackingUrl}}" style="color:#123A63;font-size:13px;font-weight:600;text-decoration:none;">View full tracking &rarr;</a>
         </div>
