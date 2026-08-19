@@ -79,13 +79,15 @@ export default async (req: Request): Promise<Response> => {
     const found = results.filter((r: any) => r.found);
     // The window rolled up. Deliberately re-derived from the day summaries rather than
     // stored, so a change to what a column MEANS cannot leave stale totals behind.
-    const total = found.reduce((a: any, d: any) => {
+    // Seeded with zeros rather than built up from {}, so a range with no data still answers
+    // with every field present. An empty object forces each reader to invent its own
+    // fallback, and the one that forgets prints "undefined" on a dashboard.
+    const TOTAL_KEYS = ['flags', 'made', 'missed', 'rolled', 'undelivered', 'unknown', 'emailed', 'actedOn', 'warned', 'tooLateToAct', 'gradable'] as const;
+    const total: any = Object.fromEntries(TOTAL_KEYS.map((k) => [k, 0]));
+    for (const d of found as any[]) {
       const s = d.summary || {};
-      for (const k of ['flags', 'made', 'missed', 'rolled', 'undelivered', 'unknown', 'emailed', 'actedOn', 'warned', 'tooLateToAct', 'gradable']) {
-        a[k] = (a[k] || 0) + (s[k] || 0);
-      }
-      return a;
-    }, {} as any);
+      for (const k of TOTAL_KEYS) total[k] += s[k] || 0;
+    }
     total.missedAfterWarning = total.gradable ? Math.round((total.missed / total.gradable) * 100) : null;
 
     return J({
