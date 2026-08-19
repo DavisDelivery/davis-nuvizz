@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.58.1';
+const APP_VERSION = '0.58.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -148,6 +148,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.58.2', 'FLAGS THAT COME AND GO, AND A HISTORY THAT COULD ONLY EVER SAY \u201cUNKNOWN\u201d. Chad, on a phone showing three receiving-hours flags: \u201cHow are these coming and going? Where are we building and locating the flag history I told you to build.\u201d THE HISTORY WAS ALREADY BUILT \u2014 it shipped that morning as v0.57.0 and sits under More \u203a Flag history on desktop and in the flags-chip menu on a phone. But the half he named out loud, \u201cor at all and rolled to the next day\u201d, could never come back anything except \u201cwe cannot tell\u201d, and nothing said so. THE ARITHMETIC, ALL OF IT FROM THE CRONS: the day capture seals day D at 06:00 UTC on D+1; the nightly miss ledger runs at 08:00 UTC and scores ET-yesterday; but \u201crolled\u201d needs D+1\u2019s sealed board, which does not exist until 06:00 UTC on D+2. So seenLater was null on EVERY scheduled run, classifyOutcome correctly withheld the harsher answer \u2014 and then the next night\u2019s run hit the miss ledger\u2019s \u2018already scored\u2019 guard and skipped the flag step entirely, so nothing ever looked again. \u2018rolled\u2019 and \u2018undelivered\u2019 were unreachable outcomes. The scorer\u2019s own comment said \u201cthose rows re-score on the next run\u201d; the guard above it made that impossible. TWO JOBS WERE SHARING ONE VERSION NUMBER. The miss ledger is finished with a day the moment that day is sealed; flag outcomes are not finished until the day AFTER it is sealed too. The flag step now runs independently of that guard, and the scheduled run sweeps the last seven days for any whose outcomes never settled \u2014 one getDoc for a day that already resolved, and no further reads. AND THE SCREEN NOW SEPARATES \u201cnothing rolled\u201d FROM \u201cwe had not looked yet\u201d, which the stat block could not do: a zero under Rolled looked like a fact. Days scored before their successor was captured read \u201cawaiting next day\u201d, and a range containing any of them says its Rolled and Missed-anyway figures are provisional. Nothing failed while this was broken and no check went red \u2014 a history recording nothing but shrugs is pixel-identical to a week in which nothing went wrong, which is the whole reason it is worth writing down. THE OTHER HALF OF HIS QUESTION IS THAT FLAGS ARE NOT RECORDS: computeBoardFlags is re-run from scratch every 5 minutes, on every board refetch and on every tab refocus, over an arrival estimate that moves. The single biggest mover is that a route with no evidence of having left is simulated as departing NOW, so at 3:07p an unmoved route lights up wholesale \u2014 and the moment one stop on it reports rolling, the clock snaps back to 8:00a and the whole route\u2019s flags withdraw at once. That is the model changing its mind, not the problem being fixed. ONE OF THE COMINGS AND GOINGS WAS A BUG, THOUGH, AND IT RAN THE WRONG WAY: dismissing a row wrote one key built from the facts, and the hours fingerprint carries no tier \u2014 so waving off a stop while it read amber kept it hidden after it escalated to red and then critical. The loudest thing the board can say was silenceable by a shrug at the quietest version of it, invisibly. A dismissal is now capped at the severity it was made at: it writes its own rank and every rank below, so getting WORSE comes back and getting BETTER stays quiet. Putting the tier in the fingerprint alone would have produced both, which is what closed_today does and why it re-raises rows that merely calmed down. Standing dismissals are re-keyed once by this change, so a handful of long-dismissed advisories reappear a single time; hours rows carry their board date and expire nightly regardless. ALSO FIXED: a collapsed \u201c37 stops: \u2026\u201d summary row inherited its first constituent stop\u2019s dismiss key, so waving off the batch silenced one unrelated stop and the batch came straight back. 17 new tests, 1,926 green.'],
   ['0.58.1', 'THE UNSUBSCRIBE READINESS IS NOW ACTUALLY ON THE SCREEN \u2014 v0.58.0 CLAIMED IT AND SHIPPED HALF. That release added unsubscribeReady to the config endpoint and said the Communications tab \u201ccan say so out loud\u201d. It could not: nothing rendered it. The flag lived in an API response nobody looks at, which is a fair description of not existing \u2014 and the entire point of that flag is that a missing signing secret is otherwise INVISIBLE, because the footer degrades to \u201creply to this message\u201d and reads exactly like a working feature. Caught by re-reading my own claim against the code, not by anything failing. The Unsubscribed card now carries a plain amber banner naming the variable to set when links are inactive, and a green one confirming they are live when they are. COMMS_UNSUB_SECRET is also now set on the production site (Chad: \u201cYou set it in netlify you have a connector\u201d) \u2014 256 bits of randomness, functions scope, all contexts. Confirmed while doing it that COMMS_ADMIN_TOKEN is genuinely absent from the site, which is exactly why readiness read false: the fallback chain had nothing to fall back to, as the design review predicted.'],
   ['0.58.0', 'THE CUSTOMER CAN TAKE THEMSELVES OFF THE DELIVERY EMAILS NOW. Chad: a customer replied \u201cunsubscribe\u201d to a delivery confirmation and he went into the app and turned her emails off by hand \u2014 \u201cI think we need to set it up in such a way that we can allow the customer to automatically do that, and then also have somewhere that shows us all the customers that have unsubscribed.\u201d The suppression itself has existed and been honoured since v0.54.78 (customer_notes.comms_opt_out, checked in chooseRecipient). What was missing was any way for the CUSTOMER to set it, so every unsubscribe was a person reading a reply and remembering to act on it. Every delivery email now carries an unsubscribe link, and List-Unsubscribe / List-Unsubscribe-Post headers so Gmail and Outlook show their own native button \u2014 which required teaching sendEmail to pass custom headers at all, something it could not do. WHY THE LINK DOES NOT FIRE ON A PLAIN GET, even though Chad asked for automatic: corporate mail filters and link-preview bots fetch every URL in an email before the human sees it, so a GET that unsubscribed would silently opt out customers who never touched it \u2014 and the symptom is indistinguishable from the sweep not running. That is precisely why RFC 8058 specifies one-click as a POST. It is still automatic in the way he meant: nobody at Davis touches anything. THE FOOTER IS APPENDED AT SEND, NOT PUT IN THE TEMPLATE, because the live template lives in Firestore and is edited from the Communications tab \u2014 adding it to the shipped default would have placed it in exactly zero real emails. A template that positions {{unsubscribeUrl}} itself keeps control; anything else gets it appended. THE WRITE IS FIELD-MASKED, via a new updateDocFields helper, and that is load-bearing: setDoc in this repo REPLACES a document rather than merging it (writeStopNotes reads the whole doc back precisely because of this), and customer_notes carries the dispatcher-authored receiving hours the flag engine reads. A blind write of a suppression flag would have taken those hours with it and silently stopped flagging that customer forever. AN ADVERSARIAL REVIEW CAUGHT FOUR THINGS BEFORE MERGE, two of them silent: a DOUBLE FOOTER whenever a template did place the link (the guard compared the raw URL against template output that had been HTML-escaped, so it never matched); a [TEST] send carrying a LIVE unsubscribe link built from a real customer\u2019s delivered stop, so anyone in a Davis inbox clicking it would have suppressed a real customer and been shown their name; the undo sharing the unsubscribe token, which would have let anyone holding the URL put a customer who opted out BACK on the list; and a matchKey \u2014 derived from a business\u2019s public name and address \u2014 interpolated straight into a Firestore path. Fixed with a scoped 30-minute undo token, a key-shape check, and a signing KEY RING, because links live in inboxes for months and rotating the secret without one would make every link already sent answer \u201cnot valid\u201d. AND THE READINESS IS REPORTED RATHER THAN ASSUMED: with no signing secret the footer degrades to \u201creply to this email\u201d, which is honest but indistinguishable from working, so the Communications tab now reads unsubscribeReady from the server and can say so out loud. A new Unsubscribed card on that screen, phone and desktop, lists everyone suppressed and separates the ones who asked from the ones we switched off \u2014 and counts the pre-tracking ones as neither, rather than crediting a customer request that may never have happened. 29 new tests, 1,909 green.'],
   ['0.57.0', 'A HISTORY OF FLAGS, AND WHETHER THEY DID ANY GOOD. Chad: \u201cI want to build a history of flags\u2026 somewhere that tracks all the flags that have presented itself, then the time the shipment actually delivered. And if the flag allowed us to fix the problem or not before it didn\u2019t deliver on time or at all and rolled to the next day.\u201d WHAT DID NOT EXIST: a flag was a live computation \u2014 computeBoardFlags ran over the board, painted the screen, and threw the answer away. The only durable trace was the alert claim, which exists ONLY for stops that earned an email, so ambers and reds that appeared after their window had shut left no record they ever happened. You could not ask how many flags we raised last week, let alone whether any of them helped. The miss ledger answers the other half \u2014 did a stop with a receiving close actually miss it \u2014 but knows nothing about flags, so it cannot tell a stop we SAW COMING from one that blindsided us, which is the entire value of the flag and was until now unmeasurable. TWO WRITERS, NO NEW CRONS. The alert sweep already recomputes the whole board every 20 minutes through the working day; it now folds each sweep into the day\u2019s rows \u2014 first sighting (never overwritten, because how much warning we got is the whole question), worst tier reached, worst lateness, how many sweeps saw it, and whether it emailed. The nightly miss-ledger run, already reading the same sealed day, attaches what actually happened: made, missed, rolled to the next day, never delivered, or not gradable. WHAT THE SCREEN MAY NOT SAY, and this is the point: it CANNOT report that a flag saved a delivery. Nobody instruments the phone call and there is no unflagged control group. \u201cMoved after flag\u201d \u2014 the stop changed route or position after we flagged it \u2014 is the nearest honest signal and is labelled as exactly that. \u201cMissed anyway\u201d is of the flags we could GRADE, how many still missed; it is not the flag\u2019s accuracy. A flag raised after its close counts as too-late-to-act rather than being averaged into \u201cwe warned them\u201d, days with nothing gradable report \u2014 rather than a flattering 0%, and \u201cnever delivered\u201d is only claimed once the next day\u2019s capture exists to rule out a roll. The last measurement built in this repo reported an intent as an outcome for weeks, so every number here is the boring defensible kind. THE PHONE GUARD EARNED ITS KEEP ON THE WAY IN: this app has TWO navigations and I added the screen to the desktop row only \u2014 the same omission that shipped Manifest check invisible on a phone in v0.54.50. The guard failed the build, the chip menu now carries it, and both guards cover the new screen at both phone sizes and on the desktop. 18 new tests, 1,880 green.'],
@@ -2986,10 +2987,15 @@ function readDismissedFlags() {
 // Standing dismissals persist until the row's fact-fingerprint changes; occurrence keys
 // embed their board date so they stop matching on their own. Entries older than 60 days
 // are pruned on write so the map never grows without bound.
-function writeDismissedFlag(key) {
+// Takes the LADDER of keys a dismissal implies (see dismissKeysFor in board-flags.js), not
+// one key: waving off a row at critical also silences the milder versions of the same row,
+// while waving off an amber leaves the red and critical keys unwritten so an escalation
+// comes back. A bare string is still accepted so nothing that passes one key breaks.
+function writeDismissedFlag(keys) {
   const m = readDismissedFlags();
-  m[key] = Date.now();
-  const cutoff = Date.now() - 60 * 86400000;
+  const now = Date.now();
+  for (const k of (Array.isArray(keys) ? keys : [keys])) if (k) m[k] = now;
+  const cutoff = now - 60 * 86400000;
   for (const [k, ts] of Object.entries(m)) if (!(ts > cutoff)) delete m[k];
   safeWriteJSON(LS_BOARD_FLAGS_DISMISSED, m);
   return m;
@@ -3100,7 +3106,7 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
               <div className="text-[11px] text-slate-500 leading-snug mt-0.5">{r.detail}</div>
             </button>
             <button
-              onClick={() => onDismiss(r.dismissKey)}
+              onClick={() => onDismiss(r.dismissKeys || r.dismissKey)}
               className="p-1 -mr-1 rounded text-slate-300 hover:text-slate-600 hover:bg-slate-100 flex-shrink-0"
               title={r.scope === 'standing' ? 'Dismiss — stays dismissed until the underlying facts change' : 'Dismiss for today'}
               aria-label="Dismiss"
@@ -20521,6 +20527,11 @@ function FlagHistoryScreen() {
 
   const t = data?.total || {};
   const results = data?.results || [];
+  // Days that HAVE been scored but were scored before the following day's board was sealed.
+  // Their unresolved rows read as unknown rather than as rolled/undelivered, so any total
+  // that includes them is provisional. `nextDayCaptured` is null on days written before this
+  // was recorded, which is not a claim either way and so is not counted as pending.
+  const pendingDays = results.filter((d) => d.found && d.scored && d.nextDayCaptured === false).length;
 
   return (
     <div className="flex-1 overflow-y-auto bg-slate-50">
@@ -20563,6 +20574,20 @@ function FlagHistoryScreen() {
                 hint="Of the flags that could be graded, how many still missed. NOT the flag's accuracy — see the note below."
               />
             </div>
+
+            {/* A range containing unresolved days cannot have a final "Rolled" number, and the
+                stat block gives no hint of that on its own — a zero there looks like a fact.
+                Chad's actual question was whether a flagged stop "didn't deliver on time or at
+                all and rolled to the next day", so this is the one column where reporting a
+                confident zero too early defeats the feature. */}
+            {pendingDays > 0 && (
+              <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-900">
+                <strong>{pendingDays} day{pendingDays === 1 ? '' : 's'} in this range {pendingDays === 1 ? 'is' : 'are'} still settling.</strong>{' '}
+                A stop that rolled only shows as rolled once the following day's board has been sealed, which
+                happens overnight — until then it counts as unknown, not as nothing. Treat “Rolled” and
+                “Missed anyway” as provisional for {pendingDays === 1 ? 'that day' : 'those days'}.
+              </div>
+            )}
 
             {/* The honesty note. It is on the screen, not in a comment, because the numbers
                 above are the kind people quote in meetings. */}
@@ -20619,6 +20644,14 @@ function FlagHistoryScreen() {
                           {s.missed > 0 && <span className="text-xs text-rose-700">{s.missed} missed</span>}
                           {s.rolled > 0 && <span className="text-xs text-amber-700">{s.rolled} rolled</span>}
                           {!d.scored && <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">not scored yet</span>}
+                          {/* Scored, but before the next day's board was sealed — so "rolled"
+                              and "never delivered" were not yet separable and everything
+                              unresolved reads as unknown. Saying so is the difference between
+                              "nothing rolled" and "we had not looked yet". Resolves itself on
+                              the nightly sweep once that day is captured. */}
+                          {d.scored && d.nextDayCaptured === false && (
+                            <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-600">awaiting next day</span>
+                          )}
                           <span className="ml-auto text-[11px] text-slate-400">
                             {s.medianLeadMin != null ? `median warning ${fmtLead(s.medianLeadMin)}` : ''}
                           </span>
