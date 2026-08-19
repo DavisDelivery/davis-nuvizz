@@ -116,37 +116,6 @@ export function closedDayTier(note, dayKey) {
   return humanTouched && !scannerSetThisDay ? 'typed' : 'auto';
 }
 
-// ── real arrival stamps: the anchor ───────────────────────────────────────────
-
-// The stamps are NAIVE ET wall-clock ("YYYY-MM-DDTHH:MM") carrying NO offset. Handing one
-// to Date + timeZone reads 4-5 hours early and rolls a pre-dawn delivery to the previous
-// DAY — the trap parseNaiveStamp documents in lib/customer-comms.mts. So this reads the
-// digits directly and never constructs a Date. Returns minutes past midnight, or null.
-export function stampMinutes(v) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(v ?? ''));
-  if (!m) return null;
-  const hh = Number(m[4]), mm = Number(m[5]);
-  return Number.isFinite(hh) && Number.isFinite(mm) ? hh * 60 + mm : null;
-}
-
-// What the truck ACTUALLY did at this stop, and WHICH kind of stamp said so — the two are
-// not interchangeable and treating them as one double-counts the dwell:
-//   arrival   → the truck is ON SITE and the service time is still ahead of it.
-//   delivered → the service is already DONE, so the truck leaves at that moment.
-// A stamp dated to another day is refused: a board can carry a stop re-dated from
-// yesterday, and yesterday's arrival says nothing about where this truck is now.
-export function arrivalAnchor(s, servedDate) {
-  for (const [field, source] of [['arrivalDTTM', 'arrival'], ['deliveredDTTM', 'delivered']]) {
-    const v = s?.[field];
-    if (!v) continue;
-    const day = /^(\d{4}-\d{2}-\d{2})/.exec(String(v));
-    if (servedDate && day && day[1] !== servedDate) continue;
-    const min = stampMinutes(v);
-    if (min != null) return { min, source };
-  }
-  return null;
-}
-
 // ── stop-level helpers ────────────────────────────────────────────────────────
 
 const TERMINAL_STATUSES = new Set(['DELIVERED', 'EXCEPTION']);
@@ -345,29 +314,12 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       if (!byRoute.has(k)) byRoute.set(k, []);
       byRoute.get(k).push(s);
     }
-    // THE FULL SEQUENCED CHAIN, finished stops INCLUDED. R5 walks this rather than the open
-    // set. A completed stop is the best information we have about where the truck actually
-    // is; dropping it deleted its leg AND its service block from the front of the chain
-    // while the clock stayed pinned to the 8:00 departure, so every remaining ETA walked
-    // BACKWARDS as the day ran and a red flag was quietly withdrawn exactly when lateness
-    // became real. Route SELECTION and R6 still read `byRoute` (open only) — unchanged.
-    const chainByRoute = new Map();
-    for (const s of stops) {
-      const k = routeKeyOf(s);
-      if (!k || ambiguousNames.has(k.toLowerCase())) continue;
-      if (isAppointmentRoute(k)) continue;
-      if (!chainByRoute.has(k)) chainByRoute.set(k, []);
-      chainByRoute.get(k).push(s);
-    }
     // Say what was set aside rather than quietly narrowing the sweep — the panel's footer
     // reports it, so "why is ULINE APPT never flagged" has a visible answer.
     for (const k of apptRoutes) skipped.routesAppointment.push(k);
     // R5's arrival flags, kept per route so R6 can supersede them — see the note there.
     const hoursRowsByRoute = new Map();
-    for (const [k, openGroup] of byRoute) {
-      // Judged over the full chain; only OPEN stops can raise a row (a delivered stop has
-      // no deadline left to miss). openGroup still decides WHICH routes are looked at.
-      const group = chainByRoute.get(k) || openGroup;
+    for (const [k, group] of byRoute) {
       const deliveries = group.filter((s) => !isPickupStop(s));
       const seqd = deliveries.filter((s) => seqOf(s) != null);
       // Judge against DELIVERIES only: pickups never carry a usable sequence (their
@@ -393,25 +345,11 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       const notStarted = !startedRoutes.has(k) && nowMin != null && nowMin > departMin + NOT_STARTED_GRACE_MIN;
       const effDepart = notStarted ? nowMin : departMin;
       let cur = depot; let clockMin = effDepart; let chainBroken = false;
-      // Where the clock is currently running from, for the row's detail line. It starts as
-      // the assumed departure and is replaced the moment a real stamp anchors the chain —
-      // so the dispatcher can see whether the estimate rests on an assumption or on a truck.
-      let anchorNote = notStarted ? `no movement yet, clock runs from ${fmtMin(nowMin)}` : `departs ${fmtMin(effDepart)}`;
       for (const s of visits) {
         const pos = stopPosition(s, noteOf(s));
-        // A MISSING PIN NO LONGER HAS TO END THE ROUTE. It used to, and that was right when
-        // the walk only ever saw OPEN stops: with no position there is no leg, so the rest
-        // of the chain was guesswork. But the chain now carries FINISHED stops too, and a
-        // delivered stop that never got a pin would abandon a route that judged fine
-        // yesterday — the change would have QUIETLY REDUCED flag coverage while appearing
-        // to improve the model. When such a stop carries a real stamp we lose only its leg
-        // length, not our grip on the clock: anchor on the stamp and keep walking. The
-        // chain still breaks honestly when there is neither a position nor a stamp.
-        const stamplessGap = !pos && !arrivalAnchor(s, servedDate);
-        if (stamplessGap) { chainBroken = true; break; }
-        if (pos) clockMin += (haversineMeters(cur, pos) * ROUTE_ROAD_FACTOR / ROUTE_AVG_SPEED_MPS) / 60;
-        const finished = isFinishedStop(s);
-        const w = finished ? null : dayReceivingWindow(noteOf(s), day);
+        if (!pos) { chainBroken = true; break; } // a missing pin breaks the chain honestly
+        clockMin += (haversineMeters(cur, pos) * ROUTE_ROAD_FACTOR / ROUTE_AVG_SPEED_MPS) / 60;
+        const w = dayReceivingWindow(noteOf(s), day);
         if (w && clockMin > w.closeMin) {
           const lateBy = Math.round(clockMin - w.closeMin);
           const hoursRow = row(w.tier === 'typed' ? 'red' : 'amber', 'hours_risk', s, {
@@ -420,33 +358,15 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
             // four lines of identical boilerplate and the panel read as a wall of text).
             // The model disclaimer lives ONCE in the panel footer; "estimated" on the number
             // keeps the row honest; the auto-detected caveat is four words, not two sentences.
-            detail: `Stop ${seqOf(s)} on ${k} — estimated arrival ~${fmtMin(clockMin)} vs close ${fmtMin(w.closeMin)} (${lateBy} min late); ${anchorNote}.${w.tier === 'auto' ? ' Hours auto-detected — verify.' : ''}`,
+            detail: `Stop ${seqOf(s)} on ${k} — estimated arrival ~${fmtMin(clockMin)} vs close ${fmtMin(w.closeMin)} (${lateBy} min late)${notStarted ? `; no movement yet, clock runs from ${fmtMin(nowMin)}` : `; departs ${fmtMin(effDepart)}`}.${w.tier === 'auto' ? ' Hours auto-detected — verify.' : ''}`,
             scope: 'occurrence', servedDate, fingerprint: `hours|${servedDate}|${k}|${s.stopNbr}|${w.closeMin}`,
           });
           rows.push(hoursRow);
           if (!hoursRowsByRoute.has(k)) hoursRowsByRoute.set(k, []);
           hoursRowsByRoute.get(k).push(hoursRow);
         }
-        // THE ANCHOR. Once this stop reports in, the clock stops being a projection and
-        // becomes a measurement — and everything after it is projected from where the truck
-        // REALLY was, not from an assumption made at 8:00 this morning. Applied AFTER the
-        // row above, so a stop is never judged using its own answer.
-        //
-        // The two stamp kinds are not interchangeable: an arrival means the truck is on
-        // site with the dwell still ahead of it, a delivered means the dwell already
-        // happened. Adding service to a delivered stamp would count the dwell twice.
-        //
-        // An out-of-sequence stamp is trusted rather than clamped. Stops do get delivered
-        // out of order, and when they do the stamp is still the truth about where the truck
-        // is — refusing it to keep the clock monotonic would throw away the better answer.
-        const anchor = arrivalAnchor(s, servedDate);
-        if (anchor) {
-          clockMin = anchor.source === 'delivered' ? anchor.min : anchor.min + serviceSec / 60;
-          anchorNote = `from ${s.businessName || `stop ${seqOf(s)}`}'s ${fmtMin(anchor.min)} ${anchor.source === 'delivered' ? 'delivery' : 'arrival'}`;
-        } else {
-          clockMin += serviceSec / 60;
-        }
-        if (pos) cur = pos;   // an unpinned stop leaves the last known position standing
+        clockMin += serviceSec / 60;
+        cur = pos;
       }
       // A chain-broken route was NOT judged — counting it would make the panel claim
       // "1 route judged" and "1 route not judged" about the same truck in one breath.
