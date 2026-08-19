@@ -108,6 +108,8 @@ interface Row {
   date: string; route: string; seq: number; stopNbr: string; customer: string;
   actual: number; predA: number | null; predC: number | null; predD: number | null;
   idx: number; legMeters: number; pallets: number | null;
+  predB: number | null;
+  hops: number;   // stops since the last real arrival stamp C could anchor on (0 = none yet)
 }
 
 /** Replay one route. Returns one row per stop that has BOTH a position and a real
@@ -137,9 +139,14 @@ function replayRoute(stops: any[], date: string, tuned: { speed: number; service
   });
 
   let cur: any = DEPOT;
-  let clockA = DEPART_MIN;          // model A/B: pure projection from the assumed departure
-  let clockC = DEPART_MIN;          // model C: same, but re-anchored on observed stamps
+  let clockA = DEPART_MIN;          // model A: pure projection, SHIPPED constants
+  let clockB = DEPART_MIN;          // model B: pure projection, TUNED constants (no anchor)
+  let clockC = DEPART_MIN;          // model C: tuned constants AND re-anchored on observed stamps
   let idx = 0;
+  // How far C is projecting past its last real stamp. This is the number that decides whether
+  // a re-anchored model can answer "will the truck make a 2pm close five stops from now" —
+  // C's headline accuracy is measured one hop out, and one hop is not the question being asked.
+  let hops = 0;
 
   for (const s of visits) {
     idx += 1;
@@ -154,7 +161,9 @@ function replayRoute(stops: any[], date: string, tuned: { speed: number; service
     const travelT = (legMeters * tuned.road / tuned.speed) / 60;
 
     clockA += travelA;
+    clockB += travelT;
     clockC += travelT;
+    hops += 1;
 
     const actual = actualArrivalMin(s, date);
     if (actual == null) {
@@ -165,19 +174,22 @@ function replayRoute(stops: any[], date: string, tuned: { speed: number; service
         customer: String(s.businessName || ''),
         actual,
         predA: Math.round(clockA),
+        predB: Math.round(clockB),
         predC: Math.round(clockC),
+        hops,
         predD: vendorEtaMin(s),
         idx, legMeters: Math.round(legMeters), pallets: numOr(s?.pallets),
       });
     }
 
     clockA += SERVICE_SEC / 60;
+    clockB += tuned.service / 60;
     clockC += tuned.service / 60;
 
     // MODEL C's ANCHOR — and the as-of rule that makes it honest. Once this stop's own
     // arrival is known, later stops in the sequence may be projected from it. It is applied
     // AFTER this stop was scored, so no stop is ever predicted using its own answer.
-    if (actual != null) clockC = actual + tuned.service / 60;
+    if (actual != null) { clockC = actual + tuned.service / 60; hops = 0; }
 
     cur = pos;
   }
@@ -252,6 +264,7 @@ export default async (req: Request): Promise<Response> => {
     }
 
     const errA = allRows.filter((r) => r.predA != null).map((r) => (r.predA as number) - r.actual);
+    const errB = allRows.filter((r) => r.predB != null).map((r) => (r.predB as number) - r.actual);
     const errC = allRows.filter((r) => r.predC != null).map((r) => (r.predC as number) - r.actual);
     const withVendor = allRows.filter((r) => r.predD != null);
     const errD = withVendor.map((r) => (r.predD as number) - r.actual);
@@ -269,6 +282,45 @@ export default async (req: Request): Promise<Response> => {
       const sel = allRows.filter((r) => r.actual >= h[0] * 60 && r.actual < h[1] * 60 && r.predA != null);
       byHour[`${h[0]}-${h[1]}`] = stats(sel.map((r) => (r.predA as number) - r.actual));
     }
+
+    // HOW FAR CAN A RE-ANCHORED MODEL SEE? C's headline number is dominated by one-hop
+    // predictions, and a flag that only fires one stop ahead fires too late to act on.
+    // Bucketing by hops-since-anchor is the honest read of C's usable horizon.
+    const byHop: Record<string, any> = {};
+    for (const b of [[1, 1], [2, 2], [3, 4], [5, 7], [8, 99]]) {
+      const sel = allRows.filter((r) => r.hops >= b[0] && r.hops <= b[1] && r.predC != null);
+      byHop[`hops_${b[0]}${b[1] === b[0] ? '' : `_${b[1] === 99 ? 'plus' : b[1]}`}`] = stats(sel.map((r) => (r.predC as number) - r.actual));
+    }
+
+    // WHAT TIME DOES THE TRUCK ACTUALLY LEAVE? The 8:00 departure is an assumption nobody
+    // ever checked. Back the first stop's travel out of its real arrival and the assumption
+    // becomes a measurement — and if it is wrong, every stop on every route inherits the error.
+    const firsts = allRows.filter((r) => r.idx === 1);
+    const departImplied = firsts.map((r) => r.actual - ((r.legMeters * ROAD_FACTOR / AVG_SPEED_MPS) / 60));
+    const departStats = departImplied.length ? {
+      n: departImplied.length,
+      median_min: pct(departImplied, 50), p10: pct(departImplied, 10), p90: pct(departImplied, 90),
+      median_clock: (() => { const m = pct(departImplied, 50) as number; return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(Math.round(m % 60)).padStart(2, '0')}`; })(),
+    } : { n: 0 };
+
+    // WHAT IS A STOP ACTUALLY WORTH IN MINUTES? Consecutive real stamps on the same route
+    // give service+travel end to end; subtract modelled travel and the remainder is service.
+    const svc: number[] = [];
+    for (let i = 1; i < allRows.length; i += 1) {
+      const a = allRows[i - 1], b = allRows[i];
+      if (a.date !== b.date || a.route !== b.route || b.idx !== a.idx + 1) continue;
+      const travel = (b.legMeters * ROAD_FACTOR / AVG_SPEED_MPS) / 60;
+      const gap = b.actual - a.actual - travel;
+      if (gap > -60 && gap < 240) svc.push(gap);
+    }
+    const serviceStats = svc.length
+      ? { n: svc.length, median_min: pct(svc, 50), p10: pct(svc, 10), p90: pct(svc, 90), mean_min: mean(svc) }
+      : { n: 0 };
+
+    // RAW ERROR ARRAYS so a caller can pool exactly across days instead of averaging medians.
+    const raw = url.searchParams.get('raw') === '1'
+      ? allRows.map((r) => [r.actual, r.predA, r.predB, r.predC, r.predD, r.idx, r.hops])
+      : undefined;
 
     const worst = [...allRows]
       .filter((r) => r.predA != null)
@@ -296,11 +348,16 @@ export default async (req: Request): Promise<Response> => {
       },
       models: {
         A_current: stats(errA),
+        B_calibrated: stats(errB),
         C_anchored: stats(errC),
         D_vendor: stats(errD),
       },
       A_by_route_position: byIdx,
       A_by_hour_of_day: byHour,
+      C_by_horizon: byHop,
+      observed_departure: departStats,
+      observed_service: serviceStats,
+      raw,
       per_day_scored: perDay,
       worst_rows: worst,
     });
