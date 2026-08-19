@@ -77,7 +77,33 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.55.1';
+const APP_VERSION = '0.55.2';
+
+// ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
+//
+// Chad, on the Diagnostics screen photographed at ~2000px: "i don't like these narrow pages
+// it acts like we dont' have 2 versions of this app one for desktop and one for mobile
+// these page looks like it was designed for mobile." He was right, and it was systemic —
+// four screens carried a hard centred cap (896px, 672px, 1024px, 1152px) that never widened,
+// so on a dispatcher's monitor Diagnostics used 44% of the display and Quote 23%.
+//
+// These are the only screen-width strings a screen container should use. They are named by
+// CONTENT SHAPE, because the shape decides the answer:
+//
+//   SCREEN_DASH  stacked independent cards. Widen AND grid them at xl — one 1600px column
+//                of full-width cards is no better than one 900px column, only emptier.
+//   SCREEN_FORM  a form or prose. Widen, but not without limit: a 1600px text field and a
+//                200-character line read worse than the narrow version, not better.
+//   SCREEN_WIDE  tables, grids and lists, where every extra pixel is another column or
+//                another row readable without scrolling.
+//
+// All three start at the phone-appropriate width and only widen at lg/xl/2xl, so the phone
+// build — deliberately a different being — is untouched by any of this.
+const SCREEN_DASH = 'w-full mx-auto max-w-4xl xl:max-w-[1500px] 2xl:max-w-[1700px]';
+const SCREEN_FORM = 'w-full mx-auto max-w-2xl lg:max-w-4xl xl:max-w-7xl';
+const SCREEN_WIDE = 'w-full mx-auto max-w-5xl xl:max-w-[1600px] 2xl:max-w-[1800px]';
+// Cards inside a SCREEN_DASH screen: one column until there is genuinely room for two.
+const DASH_GRID = 'grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-6 items-start';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -122,6 +148,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.55.2', 'THE DESKTOP GETS ITS DISPLAY BACK \u2014 AND A GUARD SO IT STAYS THAT WAY. Chad, on Diagnostics at ~2000px wide: \u201ci don\u2019t like these narrow pages it acts like we dont\u2019 have 2 versions of this app one for desktop and one for mobile these page looks like it was designed for mobile.\u201d He was right and it was systemic, measured on the real build: Diagnostics used 44% of a 1920px display, Manifest 52%, Customer emails 58%, New Order 33%, Quote 23%. Every guard this app had looked at PHONES \u2014 a screen can be perfect at 390px and still waste half a monitor, and nothing in the build could see it. One convention now, not four ad-hoc caps, named by CONTENT SHAPE because the shape decides the answer: SCREEN_DASH for stacked cards (widen and let panels breathe), SCREEN_FORM for forms (widen, but a 1600px text field reads worse, not better), SCREEN_WIDE for tables and lists where every pixel is another readable column. All three start at the phone width and only widen at lg/xl/2xl, so the phone build \u2014 deliberately a different being \u2014 is untouched. After: Diagnostics 86%, Manifest 92%, Customer emails 92%, New Order 65%. Quote stays narrower ON PURPOSE and says so in the code: it is a single-column calculator whose 468px cap lives upstream in DavisDelivery/Quotes; it is widened to 820px on desktop through the same scoped-override channel as its header fix, and marked data-desktop-narrow with the reason. AND THE GUARD: scripts/verify-desktop-layout.mjs walks the built app at 1440 and 1920, measures the width the content column ACTUALLY occupies, and fails the build under a 62% floor \u2014 wired into CI next to the phone guard. Worth confessing because it is the whole lesson: the first two versions of the measurement PASSED EVERYTHING \u2014 one measured the full-width app shell, the next included the footer bar that spans the viewport by design \u2014 both structurally unable to fire, exactly the vacuous-pass defect the phone guard once shipped with. The check only became real when the number was compared against a screenshot of the starved screen it claimed to measure. Every navigation step must also PROVE the screen opened, or that screen FAILS rather than silently measuring the previous one twice.'],
   ['0.55.1', 'THE PER-STOP COST IS NOW MEASURED, NOT ASSUMED \u2014 AND CHAD WAS RIGHT TO PUSH BACK. I proposed feeding the flag model the learned dwell times in routing_service_times. Chad: \u201ci don\u2019t think dwell time is going to do as much as you hoped as i find the vast majority of deliveries show an arrival time and departure time that are less than 120 seconds apart and this is because the driver performs the actual delivery before ever clicking arrive at stop.\u201d He was right, and the warehouse makes it worse than he knew: arrivalDTTM is present on EIGHT stops out of 20,904. There is no arrive\u2192deliver bracket to measure at all, so routing_service_times \u2014 which mines exactly that bracket \u2014 could not have been trusted, and wiring it in would have fed the model a per-stop cost near zero. The claim is still testable without that stamp. The residual between consecutive delivery stamps, minus modelled travel, is dwell PLUS travel error; the two are identical in aggregate but not against DISTANCE, because dwell is a fixed cost per stop while a short travel model scales with the leg. Over 32 sealed days the residual is FLAT \u2014 10.9 min under a mile, 15.8 at 3-8 miles, 13.7 over 20 \u2014 so there IS a real fixed cost at every stop, and the travel model is not the thing hiding it. Sweeping that cost against the anchored walk: 0 min gives a mean bias of -14.3, 8 gives -7.0, 13 gives -2.1, 15 gives -0.2, and the old 20-minute planning default gives +4.0. Fourteen minutes sits at the bias-zero crossing and the error minimum. Moving there from the zero that v0.55.0 shipped for a delivered stamp lifts within-fifteen-minutes from 41% to 52% and cuts the median miss from 18.9 to 14.3. The bias sign matters more than the accuracy: at zero the model was systematically fourteen minutes OPTIMISTIC, and for a deadline flag optimism is the dangerous direction \u2014 it is the model quietly deciding a late truck is fine. Kept as its own constant rather than changing DEFAULT_SERVICE_SEC, so tuning the flag can never silently re-plan a route.'],
   ['0.55.0', 'THE ETA IS ANCHORED ON WHAT THE TRUCK ACTUALLY DID. Chad, after the back-test: "we do need to re anchor to the first delivery when it\u2019s made and then recalculate every time going forward." Here is what the flags were doing until now. R5 judged only the stops still OPEN, but it restarted the walk at the DEPOT at 8:00 every time \u2014 so every completed stop deleted its leg AND its 20-minute service block from the front of the chain while the start time stayed put, and the predicted arrival for everything still out walked BACKWARDS as the day ran. Run against the real module on a 10-stop route with a typed 2pm close on stop 9: predicted 2:43p at 08:05, 2:23p at 08:35, 2:03p at 09:05 \u2014 and from 09:35 the red flag was GONE, with the truck no closer to making 2pm. A dispatcher who saw it at nine found it withdrawn at ten. The re-anchor could not save it either, because one delivered stop makes a route \u201crolling\u201d, so the clock stayed pinned to 8:00 all day. It now walks the FULL sequenced chain and snaps the clock to each stop\u2019s real arrival stamp, so everything after it is projected from where the truck REALLY was rather than from an assumption made this morning. Same truck falling steadily behind: the flag now HOLDS and escalates \u2014 2:43p, 2:46p, 2:59p, 3:12p, 3:38p \u2014 and the row says which arrival it is standing on (\u201cfrom CUST 3\u2019s 10:30a arrival\u201d) so you can see whether the estimate rests on a truck or on a guess. A truck running AHEAD still clears its flag, which is the point rather than a regression. This is not a hoped-for gain. Replayed over 39 sealed days, 2,357 routes and 24,238 real stops, the old model was within 30 minutes of reality 12% of the time with a median miss of 2h09; the anchored model is within 30 minutes 67% of the time with a median miss near 15. Two details that would each have quietly cost most of that: an arrival stamp means the truck is on site with the dwell still ahead of it while a delivered stamp means the dwell already happened, so adding service to a delivered stamp would count it twice; and the stamps are naive ET wall-clock, so reading one through Date+timeZone lands 4-5 hours early and rolls a pre-dawn delivery onto the previous day.'],
   ['0.54.99', 'PACE THE SENDS. The first live day went out clean — 25 emails, 25 delivered, no bounces, no duplicates, and the cap held exactly (every later sweep that day reported considered 764, sent 0, capped). One number in that run is worth acting on before the cap goes up: those 25 took 12.5 seconds, which is 2.0 sends per second, and 2/second is Resend\'s documented default rate limit. It succeeded, so the limit is at least that — but a run sitting ON a ceiling has no headroom, and at ~700 deliveries a day the sweep will meet it. Two changes. (1) A FLOOR ON THE INTERVAL between send starts, not a sleep added to each send. A send already spends ~500ms on its own round trips, so on a healthy run this adds ~100ms and the wall clock barely moves; it only bites when Resend is answering fast enough that we would otherwise outrun it. The distinction matters because the run has a finite wall-clock budget too — a fixed sleep per send would tax the slow case that needed no taxing. (2) A 429 IS NOT A FAULT. It means "too fast": nothing was queued, the claim is released, the customer is reached on the next pass. It used to count toward the five-consecutive-failure circuit breaker, which meant a busy minute could HALT a healthy run and leave the rest of the day\'s mail hours late — the opposite of what a delivery-confirmation email is for. A 429 now backs the pace off instead, doubling the interval up to a 5s ceiling, and the count is reported in the sweep status so a run that quietly slowed down says so rather than leaving an unexplained slow day. Worth stating plainly, because it changes the shape of the risk: on a normal day the mail spreads itself out anyway — deliveries land all day and each half-hourly sweep only picks up what is newly delivered, roughly forty at a time. The all-at-once case is the FIRST day you switch on mid-afternoon, when the whole day sits unclaimed. That was today, and the cap of 25 is what held it.'],
@@ -12035,7 +12062,7 @@ function DiagnosticsScreen({ stops, notes, ops, lastLoadScanAt, lastUnplannedSca
   }, [onRefresh]);
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6 max-w-4xl mx-auto w-full">
+    <div className={`flex-1 min-h-0 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6 ${SCREEN_DASH}`}>
       <div>
         <h2 className="text-xl font-bold text-slate-900">Diagnostics</h2>
         <p className="text-sm text-slate-600 mt-1">NuVizz API usage and the live scan schedule. Schedule edits apply to the running scanner.</p>
@@ -18691,13 +18718,18 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
 // data ships inside the package, so no NuVizz calls and no props are required.
 function QuoteScreen() {
   return (
-    <div className="flex-1 min-h-0 overflow-auto bg-slate-50">
+    <div className="flex-1 min-h-0 overflow-auto bg-slate-50" data-desktop-narrow="single-column quote calculator; width capped upstream in DavisDelivery/Quotes (.rc-wrap), widened to 820px on desktop via scoped override">
       {/* The console gates its FOOTER on `embedded` but not its HEADER (UlineQuoteConsole.jsx
           :591-594), so embedding it as a tab printed a second title bar directly under this
           app's own — two headers stacked, ~64px of it. The real fix belongs upstream in
           DavisDelivery/Quotes, next to the footer's existing gate; until that lands this
           hides it here, scoped to .rc-embedded so the standalone console is untouched. */}
       <style>{'.rc-root.rc-embedded .rc-head{display:none}'}</style>
+      {/* The console's own .rc-wrap caps at 468px — an upstream choice in DavisDelivery/
+          Quotes, right for a phone and cramped on a monitor. Same override channel as the
+          header fix above, desktop only: a quote is still a single-column calculator, so it
+          gets room to breathe (fields, zone table) without being stretched absurd. */}
+      <style>{'@media (min-width:1024px){.rc-root.rc-embedded .rc-wrap{max-width:820px}}'}</style>
       <React.Suspense fallback={<div className="p-6 text-sm text-slate-500">Loading quote console…</div>}>
         <UlineQuoteConsole embedded />
       </React.Suspense>
@@ -20523,7 +20555,7 @@ function NewOrderSingleScreen() {
 
   return (
     <div className="flex-1 min-h-0 overflow-auto bg-slate-50">
-      <div className="max-w-2xl mx-auto p-4 space-y-4">
+      <div className={`p-4 space-y-4 ${SCREEN_FORM}`}>
         {/* Header + Beta/Live */}
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -22842,7 +22874,7 @@ function CommsDesktop(c) {
   return (
     <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden bg-slate-100">
       <div className="bg-white border-b border-slate-200">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+        <div className={`px-4 py-3 flex items-center justify-between gap-3 ${SCREEN_WIDE}`}>
           <div className="min-w-0">
             <h1 className="text-base font-bold text-slate-900 flex items-center gap-2"><Mail size={17} style={{ color: BRAND }} /> Customer emails</h1>
             <p className="text-[11px] text-slate-500 truncate">Branded delivery-complete email · zero NuVizz calls — reads only our cached board</p>
@@ -22854,7 +22886,7 @@ function CommsDesktop(c) {
         </div>
       </div>
 
-      <div className="max-w-6xl mx-auto p-4 space-y-4">
+      <div className={`p-4 space-y-4 ${SCREEN_WIDE}`}>
         <CommsMsg msg={c.msg} where="top" className="mt-0" />
 
         <div className="grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)] items-start">
@@ -23102,7 +23134,7 @@ function ManifestCheckScreen() {
 
   return (
     <div className="flex-1 overflow-auto bg-slate-50">
-      <div className="max-w-5xl mx-auto p-4 space-y-3">
+      <div className={`p-4 space-y-3 ${SCREEN_WIDE}`}>
         <div>
           <h1 className="text-lg font-bold text-slate-800">Manifest check</h1>
           <p className="text-xs text-slate-500 mt-0.5">

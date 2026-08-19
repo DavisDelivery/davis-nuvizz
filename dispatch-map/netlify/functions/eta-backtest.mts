@@ -165,6 +165,8 @@ interface Row {
   // after it is composing the clock out of the wrong parts.
   arrMin: number | null;      // arrivalDTTM alone
   delMin: number | null;      // deliveredDTTM alone
+  conMin: number | null;      // stopExecutionInfo.to.confirmedDTTM
+  recMin: number | null;      // stopExecutionInfo.receiveDTTM
 }
 
 /** Replay one route. Returns one row per stop that has BOTH a position and a real
@@ -256,6 +258,8 @@ function replayRoute(stops: any[], date: string, tuned: { speed: number; service
         idx, legMeters: Math.round(legMeters), pallets: numOr(s?.pallets),
         arrMin: sameDayStamp(s?.arrivalDTTM, date),
         delMin: sameDayStamp(s?.deliveredDTTM, date),
+        conMin: sameDayStamp(s?.executed?.confirmedDTTM ?? s?.raw?.stopExecutionInfo?.to?.confirmedDTTM, date),
+        recMin: sameDayStamp(s?.executed?.receiveDTTM ?? s?.raw?.stopExecutionInfo?.receiveDTTM, date),
       });
     }
 
@@ -512,6 +516,12 @@ export default async (req: Request): Promise<Response> => {
     const stampCoverage = {
       rows: allRows.length,
       has_arrival: allRows.filter((r) => r.arrMin != null).length,
+      // history-derive stores TWO more execution stamps and calls them "the dwell signal":
+      // confirmedDTTM and receiveDTTM out of raw.stopExecutionInfo. If either has real
+      // coverage, the visit CAN be bracketed after all and per-customer dwell is learnable
+      // without the arrival stamp the driver never taps in time.
+      has_confirmed: allRows.filter((r) => r.conMin != null).length,
+      has_receive: allRows.filter((r) => r.recMin != null).length,
       has_delivered: allRows.filter((r) => r.delMin != null).length,
       has_both: allRows.filter((r) => r.arrMin != null && r.delMin != null).length,
       delivered_before_arrival: allRows.filter((r) => r.arrMin != null && r.delMin != null && r.delMin < r.arrMin).length,
