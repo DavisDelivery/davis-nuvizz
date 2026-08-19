@@ -323,7 +323,16 @@ export function classifyStopTimeRestriction(stop, note, servedDate, defaultSlots
   // than implying we were on time.
   const deliveredMin = clockMinFromStamp(stop?.deliveredDTTM);
   let missedByMin = null;
-  if (deliveredMin != null) {
+  // RECEIVING HOURS GOVERN FREIGHT COMING IN, AND A PICKUP IS NOT THAT. Every stop
+  // carries stopType PU or DO, and a completed pickup is also status DELIVERED — the
+  // same conflation that once had this app telling a shipper "your delivery is complete"
+  // at the moment we took custody (v0.54.89). Here it produced two false misses on one
+  // board: an internal Davis pickup collected at 12:05p, exactly as its order asked
+  // ("PICK UP BEFORE 1:00PM"), scored 65 minutes late against a consignee close time it
+  // had inherited from a customer_notes doc that has nothing to do with pickups. The
+  // hours stay on the row as context; only the ACCUSATION is withheld.
+  const isPickup = stop?.stopType === 'PU';
+  if (deliveredMin != null && !isPickup) {
     if (split) {
       // Only the GAP is a miss. Arriving after the dock reopens is exactly what the
       // customer asked for and must never be reported as late.
