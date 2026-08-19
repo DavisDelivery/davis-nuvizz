@@ -47,6 +47,17 @@
     timeout = 26
   [functions."customer-comms-log"]
     timeout = 26
+  # The ETA back-test replays the arrival model over the sealed history warehouse: one
+  # day is ~65 routes and ~800 stops read out of Firestore, and a multi-day window is that
+  # again per day. Read-only, Firestore-only, ZERO NuVizz calls. On the 10s DEFAULT a
+  # single day squeaked through but a 4-week window died at 502 mid-replay, which reads as
+  # "no data" rather than "ran out of time" — the same trap the stop explorer hit.
+  [functions."eta-backtest"]
+    timeout = 26
+  # The nightly miss ledger scores a sealed day: a full day's stop index plus one
+  # customer_notes read per distinct customer, and a BACKFILL walks up to 60 of those.
+  # It is declared -background, so it gets Netlify's 15-minute allowance and needs no
+  # timeout override; this note exists so nobody adds one and caps a backfill at 26s.
   # Scanned-manifest OCR runs as manifest-ocr-BACKGROUND (vision over a multi-page fax
   # PDF takes 20-40s — over the 26s request cap that killed the synchronous version).
   # Background functions get Netlify's 15-min allowance; no timeout override needed.
