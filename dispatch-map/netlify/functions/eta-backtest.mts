@@ -517,6 +517,53 @@ export default async (req: Request): Promise<Response> => {
       delivered_before_arrival: allRows.filter((r) => r.arrMin != null && r.delMin != null && r.delMin < r.arrMin).length,
     };
 
+    // ── DWELL OR TRAVEL? THE ONE TEST THE DATA CAN STILL SETTLE ──────────────
+    // arrivalDTTM turns out to be absent from the warehouse, so the visit cannot be
+    // bracketed and dwell cannot be measured directly. But Chad's claim still makes a
+    // falsifiable prediction. The residual between consecutive real stamps —
+    //     gap = delivered(n+1) - delivered(n)   minus the MODELLED travel
+    // — is dwell plus travel error, and the two are indistinguishable in aggregate. They
+    // are NOT indistinguishable against DISTANCE:
+    //   - if the residual is dwell, it is a fixed cost per stop and stays FLAT as legs
+    //     get longer;
+    //   - if it is the travel model running short, it scales with the leg and RISES.
+    // Bucketing by leg distance therefore separates them without needing an arrival stamp.
+    const byLeg: Record<string, number[]> = {};
+    const LEG_BUCKETS: Array<[string, number, number]> = [
+      ['under_1mi', 0, 1609], ['1_3mi', 1609, 4828], ['3_8mi', 4828, 12875],
+      ['8_20mi', 12875, 32187], ['over_20mi', 32187, 1e9],
+    ];
+    for (let i = 1; i < allRows.length; i += 1) {
+      const a = allRows[i - 1], b = allRows[i];
+      if (a.date !== b.date || a.route !== b.route || b.idx !== a.idx + 1) continue;
+      const modelled = (b.legMeters * ROAD_FACTOR / AVG_SPEED_MPS) / 60;
+      const resid = (b.actual - a.actual) - modelled;
+      if (resid < -60 || resid > 240) continue;
+      const bucket = LEG_BUCKETS.find(([, lo, hi]) => b.legMeters >= lo && b.legMeters < hi);
+      if (bucket) (byLeg[bucket[0]] ||= []).push(resid);
+    }
+    const residualByLeg: Record<string, any> = {};
+    for (const [name] of LEG_BUCKETS) {
+      const xs = byLeg[name] || [];
+      residualByLeg[name] = xs.length
+        ? { n: xs.length, median_min: pct(xs, 50), mean_min: mean(xs) }
+        : { n: 0 };
+    }
+
+    // MODEL G — the composition v0.55.0 ACTUALLY SHIPPED. board-flags treats a delivered
+    // stamp as "the dwell already happened" and adds NO service after it, whereas model C
+    // (the version that scored 67% within 30 min) adds a full service block after every
+    // anchor. Since arrivalDTTM is absent, EVERY live anchor takes the delivered branch, so
+    // that difference is not an edge case — it is the whole model, on every stop. Grade the
+    // shipped composition directly rather than inferring it.
+    const errG: number[] = [];
+    for (let i = 1; i < allRows.length; i += 1) {
+      const a = allRows[i - 1], b = allRows[i];
+      if (a.date !== b.date || a.route !== b.route || b.idx !== a.idx + 1) continue;
+      const modelled = (b.legMeters * ROAD_FACTOR / AVG_SPEED_MPS) / 60;
+      errG.push((a.actual + modelled) - b.actual);      // anchor, NO service block
+    }
+
     // RAW ERROR ARRAYS so a caller can pool exactly across days instead of averaging medians.
     const raw = url.searchParams.get('raw') === '1'
       ? allRows.map((r) => [r.actual, r.predA, r.predB, r.predC, r.predD, r.idx, r.hops, r.legMeters, r.predE, r.startSignal])
@@ -551,6 +598,7 @@ export default async (req: Request): Promise<Response> => {
         B_calibrated: stats(errB),
         E_route_start: stats(errE),
         F_shipped_intraday: stats(errF),
+        G_shipped_anchor_no_service: stats(errG),
         C_anchored: stats(errC),
         D_vendor: stats(errD),
       },
@@ -564,6 +612,7 @@ export default async (req: Request): Promise<Response> => {
       stamp_coverage: stampCoverage,
       observed_dwell_min: dwellStats,
       observed_travel: travelStats,
+      residual_by_leg_distance: residualByLeg,
       raw,
       per_day_scored: perDay,
       worst_rows: worst,
