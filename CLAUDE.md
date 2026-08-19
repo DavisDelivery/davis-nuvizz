@@ -20,6 +20,27 @@ Project-level guidance for Claude Code in this repository.
 - When a task seems to need fresh data, STOP and ask first — state the
   expected call cost — instead of scanning.
 
+## Version bump — EVERY merge (Chad, Aug 2026)
+
+- **`APP_VERSION` in `dispatch-map/src/App.jsx` MUST be bumped in every
+  change that gets merged.** Chad: "I just got a notification that the
+  build has changed however the version at bottom did not — it should be
+  part of the claude md file for this repo that it changes every time we
+  merge."
+- The version in the footer is how Chad tells whether the thing he is
+  looking at is the thing that just deployed. A build that changes while
+  the version does not makes that check useless: a stale cached page and
+  a fresh one look identical, so "did my fix ship?" becomes unanswerable
+  without digging through commits.
+- This applies to EVERY merged change, including ones with no visible UI
+  — a backend-only fix still produces a new deploy Chad gets told about.
+- Bump the patch digit for ordinary work; minor for a new capability.
+  Check `origin/main` for the current value FIRST — several sessions work
+  in parallel and two branches claiming the same number collide at merge.
+- Add a changelog row in the same edit, newest first, in the array
+  directly below `APP_VERSION`. The row is what Chad reads to find out
+  what changed; a bump with no row is half the job.
+
 ## Reports — always a PDF (Chad, Aug 2026)
 
 - **Every report goes to Chad as a formatted PDF, never as raw

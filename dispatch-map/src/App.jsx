@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.55.0';
+const APP_VERSION = '0.55.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -122,6 +122,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.55.1', 'THE BOARD FLAGS PANEL: THE CHAT BUBBLE IS OFF IT, AND YOU CAN MINIMISE IT. Chad, on a screenshot of 7 advisories: \u201cformatting issue here things are laying on top of one another and no way for me to minimize the flag window.\u201d Both were real. WHY THINGS SAT ON TOP OF EACH OTHER, and it is not what it looks like: the panel already asked to be drawn above everything (z-70). It could not be. It was rendered INSIDE the frosted stops pill, and a backdrop-filter creates a stacking context \u2014 so that z-70 only ever applied WITHIN the pill, and the round message button further down the same column, which asks for no z-index at all, won simply by coming later in the document. Proven rather than guessed: with the panel open, the browser was asked what element is actually on top at a grid of points inside the panel, and it answered with the message button. The panel now hangs off a plain unblurred wrapper instead, and the same probe answers nothing at all \u2014 open and minimised. This repo already knew the rule; the Routing screen carries a comment saying in as many words never to nest this panel in a backdrop-blur pill. The desktop Map was the last place still doing it. MINIMISE, NOT JUST CLOSE. The only control was \u2715, which throws away the counts along with the list. There is now a chevron beside it that collapses the panel to its header \u2014 still showing \u201cN red \u00b7 N advisory\u201d, one click from the list \u2014 and the choice is remembered per device, because a dispatcher who wants it out of the way today wants it out of the way tomorrow. The panel is also bounded to the viewport now and scrolls its LIST rather than itself, so the footer that says what was and was not judged can no longer be pushed off the bottom of the screen by a long list of flags.'],
   ['0.55.0', 'THE SEND LOG IS A HISTORY NOW, NOT A PILE. Chad: the email history \u201cneeds to be done by the day and have ranges and months and so on and so forth, not just a long compilation of all the emails that we\u2019ve sent. We need to be able to sort it.\u201d It was one flat list of every send, newest first, hardcoded to the last 7 days and CUT AT 50 ROWS WITHOUT SAYING SO \u2014 on a 25-a-day program that is two days of history presented as though it were all of it. THE LEDGER WAS ALWAYS DAY-SHAPED: every send is already its own document under customer_comms_<date>/sent. The flattening happened on the way out, so this is a reader change, not a migration \u2014 the same documents, grouped the way they were always written. PICK A RANGE: Today, 7 days, 30 days, This month, any of the last twelve months by name, or a from\u2013to pair. A day opens to its sends; the columns sort by time, customer, address or result, and every day\u2019s table is aligned to the same grid so they read down the page. Months get their own subtotals once a range spans more than one. WHAT IT NOW REFUSES TO HIDE. A day that was READ and had nothing shows as a row saying so \u2014 and says \u2018swept \u2014 nobody to email\u2019 when the sweep ran, which is the one thing that tells a quiet day apart from a broken one. A day Firestore could not return is named in red instead of appearing as a silent gap. A range longer than the 92-day read budget says how many days it asked for and how many it is showing. So does a truncated row list. Every one of those used to look identical to \u2018nothing happened\u2019. A range change reloads only the log, never the config, so browsing history cannot throw away an unsaved template edit. Zero NuVizz calls, as before \u2014 it reads our own ledger. ALSO FIXED, FOUND BY THE NEW TESTS: a date could be silently WRONG rather than rejected. \u20182026-02-30\u2019 is the right shape and does not fail a parse \u2014 the engine rolls it forward to March 2nd and reports success \u2014 so a range could quietly read days nobody asked for. Dates now have to spell themselves back. The same hole was in dayBefore/dayAfter, which the duplicate-send guard uses to check the neighbouring day\u2019s ledger; an impossible date has no board so nothing was mis-sent, but it was a trap and it is closed. 24 new tests, 1,763 green.'],
   ['0.54.99', 'PACE THE SENDS. The first live day went out clean — 25 emails, 25 delivered, no bounces, no duplicates, and the cap held exactly (every later sweep that day reported considered 764, sent 0, capped). One number in that run is worth acting on before the cap goes up: those 25 took 12.5 seconds, which is 2.0 sends per second, and 2/second is Resend\'s documented default rate limit. It succeeded, so the limit is at least that — but a run sitting ON a ceiling has no headroom, and at ~700 deliveries a day the sweep will meet it. Two changes. (1) A FLOOR ON THE INTERVAL between send starts, not a sleep added to each send. A send already spends ~500ms on its own round trips, so on a healthy run this adds ~100ms and the wall clock barely moves; it only bites when Resend is answering fast enough that we would otherwise outrun it. The distinction matters because the run has a finite wall-clock budget too — a fixed sleep per send would tax the slow case that needed no taxing. (2) A 429 IS NOT A FAULT. It means "too fast": nothing was queued, the claim is released, the customer is reached on the next pass. It used to count toward the five-consecutive-failure circuit breaker, which meant a busy minute could HALT a healthy run and leave the rest of the day\'s mail hours late — the opposite of what a delivery-confirmation email is for. A 429 now backs the pace off instead, doubling the interval up to a 5s ceiling, and the count is reported in the sweep status so a run that quietly slowed down says so rather than leaving an unexplained slow day. Worth stating plainly, because it changes the shape of the risk: on a normal day the mail spreads itself out anyway — deliveries land all day and each half-hourly sweep only picks up what is newly delivered, roughly forty at a time. The all-at-once case is the FIRST day you switch on mid-afternoon, when the whole day sits unclaimed. That was today, and the cap of 25 is what held it.'],
   ['0.54.98', 'BOARD FLAGS: A DRIVERLESS ROUTE IS ONE PROBLEM, NOT TWO. Chad, on a Board flags screenshot: "there is same one listed twice." Three cards apart sat "May miss receiving hours — MCNAUGHTON MCKAY ELECTRIC" (stop 5 on SUW, estimated ~11:54a vs close 11:30a) and "No driver — SUW must make 11:30a" — which names the SAME customer and the SAME close. Two different rules, one situation. They exist for different reasons and that is why they collided. The arrival walk cannot see a driverless route EARLY — at 9:24a a re-anchored clock still lands hours before a 2:00p close, so it says nothing, which is exactly why the no-driver rule was added in v0.54.63. But once the morning wears on and the clock does cross the line, both qualify and both print. The no-driver card now SUPERSEDES the arrival cards for its own route, and nothing is lost by that: it gives the CAUSE (nobody is driving) rather than implying a slow morning, it counts every constrained stop on the route instead of only the ones whose estimate has crossed yet, it already names the earliest-closing customer, and it ends in the action — assign a driver or move the dates. The suppression is scoped to the route: a route WITH a driver still gets its arrival card, because there the timing really is the story. Two tests pin both halves, run at 11:20a against an 11:30a close so the arrival rule genuinely qualifies in both — without the driver-assigned control the first test would pass simply because nothing fired. 1,641 tests green.'],
@@ -2931,6 +2932,11 @@ function UnplannedScanCount({ count, visible, className }) {
 // there is furniture, and furniture gets ignored. All detection lives in
 // src/lib/board-flags.js (pure, tested); this is presentation + dismissal persistence.
 const LS_BOARD_FLAGS_DISMISSED = 'dispatchMap.boardFlags.dismissed';
+// Minimised = header only, panel still open. Chad, on a board with 7 advisories:
+// "no way for me to minimize the flag window". Closing it outright was the only
+// control, and that loses the counts as well as the list. Persisted, because a
+// dispatcher who wants it out of the way wants it out of the way tomorrow too.
+const LS_BOARD_FLAGS_MINIMIZED = 'dispatchMap.boardFlags.minimized';
 function readDismissedFlags() {
   const m = safeReadJSON(LS_BOARD_FLAGS_DISMISSED, {});
   return m && typeof m === 'object' ? m : {};
@@ -2982,7 +2988,7 @@ function BoardFlagsChip({ flags, open, onToggle }) {
 // ✕ to dismiss. The footer is REQUIRED honesty — what the checks could not judge (no
 // roster fetched, routes with no sequence, note coverage) — because "no flags" from a
 // detector that could not look is not the same claim as "nothing is wrong".
-function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onRestoreAll }) {
+function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onRestoreAll, minimized = false, onToggleMinimized }) {
   if (!flags) return null;
   const rows = flags.rows.filter((r) => !dismissed[r.dismissKey]);
   const hiddenByDismiss = flags.rows.length - rows.length;
@@ -3001,15 +3007,28 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
     sk.routesAppointment?.length ? `${sk.routesAppointment.join(', ')} not judged — held for appointments` : null,
   ].filter(Boolean);
   return (
-    <div className="w-[340px] max-w-[92vw] bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden pointer-events-auto">
-      <div className="px-3 py-2 border-b flex items-center justify-between bg-slate-50">
-        <div className="text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5">
-          <Flag size={13} className="text-red-600" /> Board flags
-          <span className="font-normal text-slate-500">{liveRed} red · {liveAmber} advisory</span>
+    // max-h + flex column so the panel can never grow past the viewport and push its own
+    // footer off the bottom: only the LIST scrolls, the header and footer stay put.
+    <div className="w-[340px] max-w-[92vw] max-h-[80vh] flex flex-col bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden pointer-events-auto">
+      <div className="px-3 py-2 border-b flex items-center justify-between bg-slate-50 flex-shrink-0">
+        <div className="text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 min-w-0">
+          <Flag size={13} className="text-red-600 flex-shrink-0" /> Board flags
+          <span className="font-normal text-slate-500 truncate">{liveRed} red · {liveAmber} advisory</span>
         </div>
-        <button onClick={onClose} className="p-1 rounded hover:bg-slate-200" aria-label="Close"><X size={14} /></button>
+        <div className="flex items-center flex-shrink-0">
+          {/* Minimise, not close: keeps the counts on screen and one click from the list. */}
+          <button
+            onClick={onToggleMinimized}
+            className="p-1 rounded hover:bg-slate-200 text-slate-500"
+            aria-expanded={!minimized}
+            title={minimized ? 'Expand' : 'Minimise — keep the counts, hide the list'}
+            aria-label={minimized ? 'Expand board flags' : 'Minimise board flags'}
+          >{minimized ? <ChevronDown size={14} /> : <ChevronUp size={14} />}</button>
+          <button onClick={onClose} className="p-1 rounded hover:bg-slate-200" aria-label="Close"><X size={14} /></button>
+        </div>
       </div>
-      <div className="max-h-[46vh] overflow-y-auto divide-y divide-slate-100">
+      {minimized ? null : <>
+      <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-100">
         {rows.length === 0 && (
           <div className="px-3 py-3 text-xs text-slate-500">
             Nothing needs looking at{hiddenByDismiss > 0 ? ` — ${hiddenByDismiss} flag${hiddenByDismiss === 1 ? '' : 's'} dismissed` : ''}.
@@ -3034,7 +3053,7 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
           </div>
         ))}
       </div>
-      <div className="px-3 py-1.5 border-t bg-slate-50 text-[10px] text-slate-400 leading-snug">
+      <div className="px-3 py-1.5 border-t bg-slate-50 text-[10px] text-slate-400 leading-snug flex-shrink-0">
         {/* What was actually looked at — so a quiet panel is a CLAIM, not an absence. A zero
             in "receiving hours on file" tells the dispatcher the fix is data, not the code. */}
         Watched {ck.stops ?? 0} open stop{(ck.stops ?? 0) === 1 ? '' : 's'} · {ck.routesJudged ?? 0} route{(ck.routesJudged ?? 0) === 1 ? '' : 's'} judged for hours risk · {ck.stopsWithHours ?? 0} stop{(ck.stopsWithHours ?? 0) === 1 ? '' : 's'} with receiving hours on file today.
@@ -3046,6 +3065,7 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
           <> {hiddenByDismiss} dismissed · <button onClick={onRestoreAll} className="underline text-slate-500 hover:text-slate-800">Restore dismissed</button></>
         )}
       </div>
+      </>}
     </div>
   );
 }
@@ -8992,6 +9012,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     const live = boardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]);
     return { ...boardFlags, redCount: live.filter((r) => r.tier === 'red').length, amberCount: live.filter((r) => r.tier === 'amber').length };
   }, [boardFlags, dismissedFlags]);
+  const [flagsMinimized, setFlagsMinimized] = useState(() => safeReadJSON(LS_BOARD_FLAGS_MINIMIZED, false) === true);
+  const toggleFlagsMinimized = useCallback(() => setFlagsMinimized((m) => { safeWriteJSON(LS_BOARD_FLAGS_MINIMIZED, !m); return !m; }), []);
   const dismissFlag = useCallback((key) => setDismissedFlags({ ...writeDismissedFlag(key) }), []);
   const restoreDismissedFlags = useCallback(() => { safeWriteJSON(LS_BOARD_FLAGS_DISMISSED, {}); setDismissedFlags({}); }, []);
   const openFlaggedStop = useCallback((stopNbr) => {
@@ -10459,7 +10481,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             instead of the viewport — an opened panel could be invisible on mobile. */}
         {flagsPanelOpen && (
           <div className="fixed inset-x-2 top-16 z-[70] flex justify-center pointer-events-auto">
-            <BoardFlagsPanel flags={boardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} />
+            <BoardFlagsPanel flags={boardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} minimized={flagsMinimized} onToggleMinimized={toggleFlagsMinimized} />
           </div>
         )}
         {driverGateNote && (
@@ -10860,7 +10882,22 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             under the pill regardless of the pill's height — the overlap bug
             that hid the toolbar. "Show routes" now lives inside the toolbar. */}
         {!isMobile && (
-          <div className="absolute top-3 right-3 z-[6] flex flex-col items-end gap-2">
+          // z-index is CONDITIONAL. `position:absolute` + a z-index creates a stacking
+          // context, so the open panel's own z-[70] is capped by whatever this container
+          // is — at z-[6] the map's other overlays (the messages button at z-[39]) paint
+          // straight over it, which is what put the chat bubble on top of the flag list.
+          // Raised only while the panel is open, so the resting pill keeps its old
+          // stacking against the rest of the map furniture.
+          <div className={`absolute top-3 right-3 flex flex-col items-end gap-2 ${flagsPanelOpen ? 'z-[71]' : 'z-[6]'}`}>
+            {/* This wrapper exists ONLY to anchor the flags panel, and it deliberately has
+                no backdrop-blur of its own. The panel used to live inside the blurred pill
+                below, and backdrop-filter creates a STACKING CONTEXT — which capped the
+                panel's z-[70] inside the pill, so the round message button further down
+                this same column (no z-index, but later in the DOM) painted straight over
+                the flag list. That is the chat bubble sitting on top of the flags.
+                Routing already knew this rule and says so in as many words: "never nest it
+                in a backdrop-blur pill". The desktop Map was the one place still doing it. */}
+            <div className="relative flex flex-col items-end">
             <div className="relative bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 text-xs">
               {/* Header row: stops count + collapse/refresh — always visible. */}
               <div className="flex items-center gap-2">
@@ -10883,11 +10920,6 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                   <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
                 </button>
               </div>
-              {flagsPanelOpen && (
-                <div className="absolute right-0 top-full mt-1 z-[70]">
-                  <BoardFlagsPanel flags={boardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} />
-                </div>
-              )}
               {/* Stacked details — hidden when collapsed. */}
               {!statusCollapsed && (
                 <div className="mt-0.5 leading-tight">
@@ -10905,6 +10937,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                   {scanErr && <div className="text-[11px] text-red-600">{scanErr}</div>}
                 </div>
               )}
+            </div>
+            {flagsPanelOpen && (
+              <div className="absolute right-0 top-full mt-1 z-[70]">
+                <BoardFlagsPanel flags={boardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} minimized={flagsMinimized} onToggleMinimized={toggleFlagsMinimized} />
+              </div>
+            )}
             </div>
             <FilterToolbar
               filters={mapFilters}
@@ -15532,6 +15570,8 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     const live = routingBoardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]);
     return { ...routingBoardFlags, redCount: live.filter((r) => r.tier === 'red').length, amberCount: live.filter((r) => r.tier === 'amber').length };
   }, [routingBoardFlags, dismissedFlags]);
+  const [flagsMinimized, setFlagsMinimized] = useState(() => safeReadJSON(LS_BOARD_FLAGS_MINIMIZED, false) === true);
+  const toggleFlagsMinimized = useCallback(() => setFlagsMinimized((m) => { safeWriteJSON(LS_BOARD_FLAGS_MINIMIZED, !m); return !m; }), []);
   const dismissFlag = useCallback((key) => setDismissedFlags({ ...writeDismissedFlag(key) }), []);
   const restoreDismissedFlags = useCallback(() => { safeWriteJSON(LS_BOARD_FLAGS_DISMISSED, {}); setDismissedFlags({}); }, []);
   const openFlaggedStop = useCallback((stopNbr) => {
@@ -15548,7 +15588,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       </div>
       {flagsPanelOpen && (
         <div className="absolute right-0 top-full mt-1 z-[70]">
-          <BoardFlagsPanel flags={routingBoardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} />
+          <BoardFlagsPanel flags={routingBoardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} minimized={flagsMinimized} onToggleMinimized={toggleFlagsMinimized} />
         </div>
       )}
     </div>
