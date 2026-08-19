@@ -36,7 +36,7 @@
 import { resolveNameOwner } from './route-status.js';
 import { routeStopSeq } from './route-stop-line.js';
 import {
-  haversineMeters, ROUTE_ROAD_FACTOR, ROUTE_AVG_SPEED_MPS, DEFAULT_SERVICE_SEC,
+  haversineMeters, ROUTE_ROAD_FACTOR, ROUTE_AVG_SPEED_MPS,
 } from './routing-select.js';
 
 // ── time + hours parsing ──────────────────────────────────────────────────────
@@ -147,6 +147,39 @@ export function arrivalAnchor(s, servedDate) {
   return null;
 }
 
+// THE PER-STOP COST, MEASURED RATHER THAN ASSUMED.
+//
+// The flag model used the routing engine's DEFAULT_SERVICE_SEC (20 min). That constant is
+// for PLANNING a route — a deliberately conservative allowance — and it is not what a stop
+// actually costs. Chad, on the proposal to feed the model learned dwell times: "the vast
+// majority of deliveries show an arrival time and departure time that are less than 120
+// seconds apart... the driver performs the actual delivery before ever clicking arrive at
+// stop." He was right that arrive→deliver is not a usable dwell signal — and the warehouse
+// makes it moot: arrivalDTTM is present on 8 stops out of 20,904, so there is no bracket to
+// measure and routing_service_times (which mines exactly that bracket) cannot be trusted here.
+//
+// What CAN be measured is the residual between consecutive real delivery stamps, minus the
+// modelled travel. That is dwell plus travel error, and the two look identical in aggregate —
+// but not against distance. Dwell is a fixed cost per stop and stays flat as legs lengthen;
+// a travel model running short scales with the leg. Over 32 sealed days the residual is
+// FLAT — 10.9 min under a mile, 15.8 min at 3-8 miles, 13.7 min over 20 — so it is a real
+// per-stop cost, not a travel-model artefact.
+//
+// Sweeping it against the anchored walk agrees. Mean bias by assumed per-stop cost:
+//     0 min -> -14.3   (what v0.55.0 shipped for a delivered stamp)
+//     8 min ->  -7.0
+//    13 min ->  -2.1
+//    15 min ->  -0.2
+//    20 min ->  +4.0   (the planning default)
+// 14 minutes sits at the bias-zero crossing and the |error| minimum, and moving there from
+// zero lifts within-15-minutes from 41% to 52% and cuts the median miss from 18.9 to 14.3.
+//
+// Why this matters more than the accuracy: at 0 the model is systematically 14 minutes
+// OPTIMISTIC, and for a deadline flag optimism is the dangerous direction — it is the model
+// quietly deciding a late truck is fine. Kept separate from DEFAULT_SERVICE_SEC so tuning
+// the flag never silently re-plans routes.
+const FLAG_SERVICE_SEC = 14 * 60;
+
 // ── stop-level helpers ────────────────────────────────────────────────────────
 
 const TERMINAL_STATUSES = new Set(['DELIVERED', 'EXCEPTION']);
@@ -234,7 +267,7 @@ export const AMBER_CAP = 25;
 export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = null, servedDate = null, dayKey = null, opts = {} } = {}) {
   const day = dayKey || null;
   const departMin = Number.isFinite(opts.departMin) ? opts.departMin : 8 * 60;
-  const serviceSec = Number.isFinite(opts.serviceSec) ? opts.serviceSec : DEFAULT_SERVICE_SEC;
+  const serviceSec = Number.isFinite(opts.serviceSec) ? opts.serviceSec : FLAG_SERVICE_SEC;
   const depot = opts.depot || null;
 
   const open = stops.filter((s) => !isFinishedStop(s));
