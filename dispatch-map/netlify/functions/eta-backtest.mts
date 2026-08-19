@@ -73,14 +73,37 @@ function stampMin(v: any): number | null {
 function stampDay(v: any): string { const m = /^(\d{4}-\d{2}-\d{2})/.exec(String(v || '')); return m ? m[1] : ''; }
 
 const numOr = (v: any) => { const n = typeof v === 'number' ? v : parseFloat(v); return Number.isFinite(n) ? n : null; };
-const seqOf = (s: any) => numOr(s?.routeSeq ?? s?.stopSeq ?? s?.displaySeq ?? s?.position);
+// SEQUENCE, exactly as production resolves it. board-flags.js goes through routeStopSeq
+// (route-stop-line.js:88): top-level routeSeq first, then the RAW feed's stop.to.seq /
+// stop.from.seq — and the comment there records that reading only the top-level field was
+// a real bug, because a board whose sequence lived in the raw shape showed numbered routes
+// in the UI while the detector judged none of them. A back-test that reads only the top
+// level reintroduces that bug as a silent `route_no_sequence` skip and quietly changes
+// WHICH routes get scored. `typeof === 'number'` is deliberate and matches production: a
+// numeric string is not accepted.
+function routeStopSeq(s: any): { seq: number | null; pickup: boolean } {
+  if (String(s?.stopType || '').toUpperCase() === 'PU') return { seq: null, pickup: true };
+  if (typeof s?.routeSeq === 'number') return { seq: s.routeSeq, pickup: false };
+  const t = s?.raw?.stop?.to?.seq;
+  const f = s?.raw?.stop?.from?.seq;
+  return { seq: typeof t === 'number' ? t : typeof f === 'number' ? f : null, pickup: false };
+}
+const seqOf = (s: any) => routeStopSeq(s).seq;
 const routeKeyOf = (s: any) => String(s?.loadNbr || s?.routeName || '').trim();
+// POSITION, exactly as production resolves it (board-flags.js stopPosition): the
+// dispatcher's saved pin OUTRANKS the feed geocode. Reading the feed only would use the
+// wrong coordinates for precisely the stops a human corrected because the feed was wrong,
+// which is the population where the leg error is largest.
 const posOf = (s: any) => {
+  const ov = s?.note?.location_override ?? s?.location_override;
+  const oLat = numOr(ov?.lat), oLng = numOr(ov?.lng);
+  if (oLat != null && oLng != null) return { lat: oLat, lng: oLng };
   const lat = numOr(s?.lat), lng = numOr(s?.lng);
   return lat != null && lng != null ? { lat, lng } : null;
 };
-const isPickup = (s: any) => String(s?.stopType || '').toUpperCase() === 'PU';
-const isAppointmentRoute = (k: string) => /\b(APPT|APPOINTMENT)\b/i.test(k);
+const isPickup = (s: any) => routeStopSeq(s).pickup;
+// Production's regex, plurals included (board-flags.js) — 'ULINE APPTS' must be excluded too.
+const isAppointmentRoute = (k: string) => /\b(?:APPTS?|APPOINTMENTS?)\b/i.test(k);
 
 /** What the truck ACTUALLY did. Arrival is what the model predicts; delivery is the
  *  fallback when the feed carried no arrival stamp (it is later, so this is conservative
@@ -286,6 +309,9 @@ export default async (req: Request): Promise<Response> => {
     }
 
     const allRows: Row[] = [];
+    // Route groups are kept (not discarded with the day) so model F can re-walk each route
+    // once per completed-stop count without re-reading Firestore.
+    const routeGroups: Array<[string, any[]]> = [];
     const skipped: Record<string, number> = {};
     const perDay: Record<string, number> = {};
     let routesSeen = 0;
@@ -302,8 +328,10 @@ export default async (req: Request): Promise<Response> => {
         if (!byRoute.has(k)) byRoute.set(k, []);
         (byRoute.get(k) as any[]).push(s);
       }
-      for (const [, group] of byRoute) {
+      for (const [gk, group] of byRoute) {
         routesSeen += 1;
+        for (const st of group) st.__date = date;
+        routeGroups.push([`${date}|${gk}`, group]);
         const r = replayRoute(group, date, tuned);
         allRows.push(...r.rows);
         for (const [k, v] of Object.entries(r.skipped)) skipped[k] = (skipped[k] || 0) + v;
@@ -381,6 +409,39 @@ export default async (req: Request): Promise<Response> => {
       };
     }
 
+    // MODEL F — THE SHIPPED INTRA-DAY BEHAVIOUR, WHICH EVERY MODEL ABOVE MISSES.
+    // computeBoardFlags does not walk the route. It walks the stops that are still OPEN
+    // (board-flags.js:209 filters out every finished stop), and then restarts the clock at
+    // the DEPOT at 8:00 regardless (line 347). So each completed stop deletes its leg AND
+    // its 20-minute service block from the front of the chain while the start time stays
+    // put, and the predicted arrival for everything still out walks BACKWARDS as the day
+    // runs. The re-anchor cannot save it: a route with one delivered stop counts as rolling
+    // (isRollingEvidence), so notStarted is false and effDepart stays 08:00 forever.
+    //
+    // Replaying the sealed day as one chain — which is what every model above does — only
+    // ever reproduces the MORNING state, so it cannot see this at all. F reproduces it
+    // honestly: for each k, drop the first k visits, restart at the depot at 08:00, and
+    // score the remainder. Note this conditions on route POSITION (k), never on the
+    // outcome — no stop is selected for being late.
+    const errF: number[] = [];
+    const byDrop: Record<string, number[]> = { drop_1_2: [], drop_3_4: [], drop_5_plus: [] };
+    for (const [, group] of routeGroups) {
+      const base = replayRoute(group, String(group[0]?.__date || ''), tuned).rows;
+      if (base.length < 3) continue;
+      for (let k = 1; k < base.length; k += 1) {
+        // Re-walk the tail as R5 would see it: the clock restarts at DEPART_MIN and the
+        // dropped stops' service blocks are gone, so the shift is exactly what R5 shows.
+        const dropped = base[k - 1];
+        const shift = (dropped.predA as number) + SERVICE_SEC / 60 - DEPART_MIN;
+        for (let j = k; j < base.length; j += 1) {
+          const e = ((base[j].predA as number) - shift) - base[j].actual;
+          errF.push(e);
+          const b = k <= 2 ? 'drop_1_2' : k <= 4 ? 'drop_3_4' : 'drop_5_plus';
+          byDrop[b].push(e);
+        }
+      }
+    }
+
     // RAW ERROR ARRAYS so a caller can pool exactly across days instead of averaging medians.
     const raw = url.searchParams.get('raw') === '1'
       ? allRows.map((r) => [r.actual, r.predA, r.predB, r.predC, r.predD, r.idx, r.hops, r.legMeters, r.predE, r.startSignal])
@@ -414,6 +475,7 @@ export default async (req: Request): Promise<Response> => {
         A_current: stats(errA),
         B_calibrated: stats(errB),
         E_route_start: stats(errE),
+        F_shipped_intraday: stats(errF),
         C_anchored: stats(errC),
         D_vendor: stats(errD),
       },
@@ -421,6 +483,7 @@ export default async (req: Request): Promise<Response> => {
       A_by_hour_of_day: byHour,
       C_by_horizon: byHop,
       start_signal_split: bySignal,
+      F_by_stops_completed: Object.fromEntries(Object.entries(byDrop).map(([k, v]) => [k, stats(v)])),
       observed_departure: departStats,
       observed_service: serviceStats,
       raw,
