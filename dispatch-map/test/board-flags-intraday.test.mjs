@@ -19,14 +19,15 @@ const DEPOT = { name: 'Buford Terminal', lat: 34.147791, lng: -83.960911 };
 const N = 10, TARGET = 9, DATE = '2026-08-17';
 const hhmm = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 
-// `pace` = real minutes per stop. The model believes ~47 (27 travel + 20 service), so a
-// pace of 60 is a truck steadily falling behind and 40 is one running ahead.
-const board = (delivered, { pace = 60, firstArrival = 8 * 60 + 30 } = {}) => {
+// `pace` = real minutes per stop. The model believes ~51 (37 travel + 14 service — the
+// per-stop cost is the MEASURED 14 minutes, not the routing engine's 20-minute planning
+// allowance), so a pace of 75 is a truck steadily falling behind and 40 is one running ahead.
+const board = (delivered, { pace = 75, firstArrival = 8 * 60 + 30 } = {}) => {
   const stops = [];
   for (let i = 1; i <= N; i += 1) {
     const s = {
       stopNbr: `S${i}`, matchKey: `c${i}`, businessName: `CUST ${i}`, loadNbr: 'TESTLOAD',
-      routeSeq: i, stopType: 'DL', lat: 34.147791 + i * 0.15, lng: -83.960911,
+      routeSeq: i, stopType: 'DL', lat: 34.147791 + i * 0.18, lng: -83.960911,
       normalizedStatus: 'PLANNED', status: '10',
       driverName: 'TEST DRIVER', driverUserName: 'tdriver',   // keeps R6 from superseding
     };
@@ -108,7 +109,7 @@ test('an unpinned but STAMPED finished stop does not abandon the route', () => {
   // Before the chain carried finished stops, this stop was never walked at all. If a
   // missing pin still broke the chain, adding it would silently REDUCE flag coverage —
   // the change would look like an improvement while judging fewer routes.
-  const stops = board(3, { pace: 60 });
+  const stops = board(3, { pace: 75 });
   delete stops[1].lat; delete stops[1].lng;          // CUST 2: delivered, stamped, no pin
   const out = computeBoardFlags({
     stops, notes, servedDate: DATE, dayKey: 'mon', opts: { depot: DEPOT, nowMin: 11 * 60 },
@@ -131,11 +132,11 @@ test('a stop with NEITHER a pin nor a stamp still breaks the chain honestly', ()
 test('an unpinned stop leaves the last known position standing for the next leg', () => {
   // CUST 2 unpinned: the leg into CUST 3 must be measured from CUST 1, not from the depot
   // and not from a null. A wrong origin here would silently distort every later estimate.
-  const stops = board(3, { pace: 60 });
+  const stops = board(3, { pace: 75 });
   delete stops[1].lat; delete stops[1].lng;
   const withGap = computeBoardFlags({ stops, notes, servedDate: DATE, dayKey: 'mon',
     opts: { depot: DEPOT, nowMin: 11 * 60 } })
     .rows.find((r) => /CUST 9/.test(`${r.title} ${r.detail}`));
   // Anchored on CUST 3's real 10:30a arrival, so the unpinned gap upstream cannot move it.
-  assert.match(withGap.detail, /from CUST 3's 10:30a arrival/);
+  assert.match(withGap.detail, /from CUST 3's 11:00a arrival/);
 });
