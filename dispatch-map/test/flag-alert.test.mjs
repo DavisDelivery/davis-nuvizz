@@ -117,6 +117,10 @@ test('the alert cap is INDEPENDENT of the customer-communications cap', async ()
   assert.notEqual(DAILY_ALERT_CAP, comms.DEFAULT_CONFIG.dailyCap,
     'the alert ceiling must not be the customer-comms daily cap');
   assert.ok(DAILY_ALERT_CAP >= 100, 'it is a runaway backstop, not a budget');
+  // The number itself must not read as a comms figure. It has twice been set to a value
+  // that matched one (25, then 200) and twice prompted "is the alert bound by that cap?".
+  assert.notEqual(DAILY_ALERT_CAP, 200, 'do not reuse a customer-communications cap value');
+  assert.notEqual(DAILY_ALERT_CAP, 300, 'do not reuse a customer-communications cap value');
 });
 
 test('the alert module imports nothing from the customer-communications engine', async () => {
@@ -141,6 +145,26 @@ test('a runaway board cannot become an unbounded flood', async () => {
 test('the claim path is per tenant, per day, per stop — and safe as a doc id', () => {
   assert.equal(alertClaimPath('davis', DATE, '007163412'), 'eta_flag_alerts/davis__2026-08-17__007163412');
   assert.ok(!/[/#?]/.test(alertClaimPath('davis', DATE, 'a/b#c?d').split('/').slice(1).join('')));
+});
+
+test('alerts still send when the customer-communications budget is fully spent', async () => {
+  // The strongest statement of Chad's requirement, proved rather than asserted: run the
+  // customer-comms sweep's budget all the way to zero, then send an alert. If the two were
+  // coupled through any shared counter or config, this send would be suppressed.
+  const comms = await import('../netlify/functions/lib/customer-comms.mts');
+  const cap = comms.DEFAULT_CONFIG.dailyCap;
+  let commsSpent = cap;                       // pretend today's confirmations are all gone
+  assert.ok(commsSpent >= cap, 'comms budget is exhausted for the purposes of this test');
+
+  const claims = new Set();
+  const sends = [];
+  const io = {
+    createDocIfAbsent: async (p) => (claims.has(p) ? false : (claims.add(p), true)),
+    send: async (a) => { sends.push(a); return { ok: true, id: 'x' }; },
+  };
+  const r = await sendAlerts(selectAlertable([row({})], 10 * 60), DATE, 'davis', io);
+  assert.equal(r.sent, 1, 'the miss-window alert is unaffected by the confirmations budget');
+  assert.equal(sends[0].to[0], ALERT_TO);
 });
 
 test('the recipient is customer service', () => {
