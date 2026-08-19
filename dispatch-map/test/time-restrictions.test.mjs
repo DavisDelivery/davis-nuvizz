@@ -298,6 +298,18 @@ test('a cell starting with = is neutered so Excel shows text, not a formula', ()
   assert.equal(csvCell('-ACME'), "'-ACME");
 });
 
+test('a carried-over restricted stop is LABELLED, not silently folded in as today\'s work', () => {
+  const rows = buildTimeRestrictionRows([
+    stop({ primaryPro: 'OLD', businessName: 'GXO', carryover: true, scheduledDate: '2026-08-17',
+      normalizedStatus: 'UNPLANNED', ...instr('NTFY OF DELIVERY-APPT REQD') }),
+  ], new Map(), WED);
+  assert.equal(rows[0].carryover, 'Yes');
+  assert.equal(rows[0].scheduledDate, '2026-08-17', 'the day it was FOR, so its age is visible');
+  const s = summarizeRows(rows);
+  assert.equal(s.carryover, 1);
+  assert.equal(s.stillOpen, 1, 'undelivered freight with a clock on it is the actionable count');
+});
+
 test('the summary counts customers once even when they have several restricted PROs', () => {
   const rows = buildTimeRestrictionRows([
     stop({ primaryPro: 'A', businessName: 'SAME CO', ...instr('RECEIVING HOURS 8AM-2PM') }),

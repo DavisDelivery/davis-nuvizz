@@ -396,6 +396,11 @@ export function buildTimeRestrictionRows(stops = [], notes = new Map(), servedDa
       zip: stop.zip || '',
       stopType: stop.stopType === 'PU' ? 'Pickup' : 'Delivery',
       status: stop.normalizedStatus || '',
+      // A stop carried over from an earlier day is still undelivered freight that
+      // carries a clock. Flagged rather than hidden: an appointment-required stop
+      // sitting since Monday is the most actionable row on the sheet.
+      carryover: stop.carryover ? 'Yes' : '',
+      scheduledDate: stop.scheduledDate || '',
       route: stop.routeName || '',
       driver: stop.driverName || '',
       tier: r.tier,
@@ -436,6 +441,8 @@ export const CSV_COLUMNS = [
   ['zip', 'ZIP'],
   ['stopType', 'Type'],
   ['status', 'Status'],
+  ['carryover', 'Carried over'],
+  ['scheduledDate', 'Scheduled for'],
   ['route', 'Route'],
   ['driver', 'Driver'],
   ['tierLabel', 'Restriction type'],
@@ -469,12 +476,17 @@ export function toCsv(rows, columns = CSV_COLUMNS) {
 export function summarizeRows(rows = []) {
   const byTier = {};
   for (const t of TIER_ORDER) byTier[t] = 0;
-  let missed = 0;
+  let missed = 0; let carried = 0; let open = 0;
   const customers = new Set();
   for (const r of rows) {
     byTier[r.tier] = (byTier[r.tier] || 0) + 1;
     if (r.customer) customers.add(r.customer);
     if (r.missedCloseByMin) missed += 1;
+    if (r.carryover) carried += 1;
+    if (r.status && r.status !== 'DELIVERED') open += 1;
   }
-  return { total: rows.length, byTier, customers: customers.size, missedClose: missed };
+  return {
+    total: rows.length, byTier, customers: customers.size,
+    missedClose: missed, carryover: carried, stillOpen: open,
+  };
 }
