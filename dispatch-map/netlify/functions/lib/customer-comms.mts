@@ -654,6 +654,16 @@ export interface SendDeps {
  * request and queued nothing, so that claim is released and retried.
  * PURE → unit-tested.
  */
+/**
+ * Too fast, not broken. A 429 means the request was refused for pace alone — nothing was
+ * queued, the claim is released, and the same customer is sent on the next attempt. It must
+ * NOT count toward the failure circuit: five of these in a row is a busy minute, not an
+ * outage, and halting a healthy run on it is how a day's mail ends up hours late.
+ */
+export function isRateLimited(error?: string): boolean {
+  return /^Resend HTTP 429/.test(String(error || ''));
+}
+
 export function isDefinitiveRejection(error?: string): boolean {
   const m = /^Resend HTTP (\d{3})/.exec(String(error || ''));
   if (!m) return false;
@@ -786,6 +796,24 @@ export const FAILURE_CIRCUIT = 5;
  *  enough that the extra config reads are a rounding error beside the sends themselves. */
 export const ABORT_POLL_EVERY = 25;
 
+/**
+ * PACING. Sends are issued one at a time in a plain loop, and the first live run measured
+ * 25 emails in 12.5 seconds — 2.0/second, which is exactly Resend's documented default
+ * rate limit. It succeeded, so the limit is at least that; running AT a ceiling is not the
+ * same as running under one.
+ *
+ * This is a floor on the interval between send STARTS, not a sleep added to each send. A
+ * send already takes ~500ms of its own round trips, so on a healthy run this adds ~100ms
+ * and the wall-clock barely moves; it only really bites when Resend is answering fast
+ * enough that we would otherwise outrun it. That matters because the run has a finite
+ * budget of wall-clock too (a Netlify background function is bounded), so a fixed sleep per
+ * send would be the wrong shape entirely — it would tax the slow case that needs no taxing.
+ */
+export const MIN_SEND_INTERVAL_MS = 600;
+
+/** After a 429, how long to hold off before the next attempt. */
+export const RATE_LIMIT_BACKOFF_MS = 2000;
+
 export interface SweepResult {
   ran: boolean; sent: number; failed: number;
   skipped: Record<string, number>;
@@ -857,6 +885,9 @@ export async function sweepDelivered(
   }
 
   let sent = 0, failed = 0, consecutiveFailures = 0, circuitOpen = false, abandoned = false;
+  let lastSendStart = 0;
+  let paceMs = MIN_SEND_INTERVAL_MS;
+  let rateLimited = 0;
   const errors: string[] = [];
   let checked = 0;
   for (const stop of delivered) {
@@ -888,11 +919,27 @@ export async function sweepDelivered(
       }
     }
 
+    // Hold the pace. Measured from the last send START, so a slow send pays nothing extra.
+    if (lastSendStart) {
+      const wait = (lastSendStart + paceMs) - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    }
+    lastSendStart = Date.now();
+
     try {
       const r = await sendForStop(stop, date, { cfg });
       if (r.skipped) { bump(r.skipped); continue; }
       if (r.ok) {
         sent++; budget--; checked++; consecutiveFailures = 0;
+      } else if (isRateLimited(r.error)) {
+        // Refused for pace. The claim was released, so this customer is not lost — they are
+        // simply reached on the next pass. Slow down for the rest of the run rather than
+        // spending a circuit-breaker life on it.
+        failed++;
+        rateLimited++;
+        paceMs = Math.min(paceMs * 2, 5000);
+        if (errors.length < 5 && r.error) errors.push(`${r.key}: ${r.error}`);
+        await new Promise((r2) => setTimeout(r2, RATE_LIMIT_BACKOFF_MS));
       } else {
         failed++; consecutiveFailures++;
         if (errors.length < 5 && r.error) errors.push(`${r.key}: ${r.error}`);
@@ -911,8 +958,8 @@ export async function sweepDelivered(
     }
   }
 
-  await writeSweepStatus(date, { considered: delivered.length, sent, failed, capped: budget <= 0, circuitOpen, abandoned, skipped, errors });
-  return { ran: true, sent, failed, skipped, capped: budget <= 0, circuitOpen, abandoned };
+  await writeSweepStatus(date, { considered: delivered.length, sent, failed, capped: budget <= 0, circuitOpen, abandoned, skipped, errors, ...(rateLimited ? { rateLimited } : {}) });
+  return { ran: true, sent, failed, skipped, capped: budget <= 0, circuitOpen, abandoned, ...(rateLimited ? { rateLimited } : {}) };
 }
 
 /**
