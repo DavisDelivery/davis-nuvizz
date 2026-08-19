@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.56.4';
+const APP_VERSION = '0.57.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -148,6 +148,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.57.0', 'A HISTORY OF FLAGS, AND WHETHER THEY DID ANY GOOD. Chad: \u201cI want to build a history of flags\u2026 somewhere that tracks all the flags that have presented itself, then the time the shipment actually delivered. And if the flag allowed us to fix the problem or not before it didn\u2019t deliver on time or at all and rolled to the next day.\u201d WHAT DID NOT EXIST: a flag was a live computation \u2014 computeBoardFlags ran over the board, painted the screen, and threw the answer away. The only durable trace was the alert claim, which exists ONLY for stops that earned an email, so ambers and reds that appeared after their window had shut left no record they ever happened. You could not ask how many flags we raised last week, let alone whether any of them helped. The miss ledger answers the other half \u2014 did a stop with a receiving close actually miss it \u2014 but knows nothing about flags, so it cannot tell a stop we SAW COMING from one that blindsided us, which is the entire value of the flag and was until now unmeasurable. TWO WRITERS, NO NEW CRONS. The alert sweep already recomputes the whole board every 20 minutes through the working day; it now folds each sweep into the day\u2019s rows \u2014 first sighting (never overwritten, because how much warning we got is the whole question), worst tier reached, worst lateness, how many sweeps saw it, and whether it emailed. The nightly miss-ledger run, already reading the same sealed day, attaches what actually happened: made, missed, rolled to the next day, never delivered, or not gradable. WHAT THE SCREEN MAY NOT SAY, and this is the point: it CANNOT report that a flag saved a delivery. Nobody instruments the phone call and there is no unflagged control group. \u201cMoved after flag\u201d \u2014 the stop changed route or position after we flagged it \u2014 is the nearest honest signal and is labelled as exactly that. \u201cMissed anyway\u201d is of the flags we could GRADE, how many still missed; it is not the flag\u2019s accuracy. A flag raised after its close counts as too-late-to-act rather than being averaged into \u201cwe warned them\u201d, days with nothing gradable report \u2014 rather than a flattering 0%, and \u201cnever delivered\u201d is only claimed once the next day\u2019s capture exists to rule out a roll. The last measurement built in this repo reported an intent as an outcome for weeks, so every number here is the boring defensible kind. THE PHONE GUARD EARNED ITS KEEP ON THE WAY IN: this app has TWO navigations and I added the screen to the desktop row only \u2014 the same omission that shipped Manifest check invisible on a phone in v0.54.50. The guard failed the build, the chip menu now carries it, and both guards cover the new screen at both phone sizes and on the desktop. 18 new tests, 1,880 green.'],
   ['0.56.4', 'THE DEPLOY WATCHDOG WAS READING THE WRONG NUMBER, AND IT SENT ME HUNTING A PRODUCTION FAILURE THAT WAS NOT THERE. check-deploy-fresh exists because of the morning five merges never went live: it reads APP_VERSION out of the LIVE bundle and goes red when the site disagrees with main. It cannot read a minified variable name, so it inferred the version from the changelog \u2014 taking the FIRST \u201cx.y.z\u201d row it found, on the assumption that VERSION_LOG is strictly newest-first. CLAUDE.md asks for newest-first; nothing enforced it. Several sessions ship in parallel and each inserts its row at whatever anchor it happened to match, so the array had drifted to 0.56.0, 0.55.9, 0.56.2, 0.56.1 \u2014 and the guard reported the live site as v0.56.0 while it was actually serving 0.56.2. Twice in one afternoon. I believed it both times and went looking for a stuck deploy on the same day a genuinely stuck deploy had happened, which is exactly how a watchdog does harm rather than nothing: the false alarm is indistinguishable from the real one it was built to raise. IT NOW TAKES THE HIGHEST version among the rows rather than the first. Every release adds a row for its own version and CI enforces that, so the maximum row IS APP_VERSION no matter what order the rows ended up in \u2014 ordering became a convenience for whoever reads the list instead of a correctness dependency for the release guard. Compared numerically, too, so 0.56.10 outranks 0.56.9 rather than sorting below it as strings would. \u201cI could not tell\u201d still returns null and stays distinguishable from \u201cit is stale\u201d, which is the property that keeps the check quiet on a network blip. AND THE LIST IS SORTED AGAIN \u2014 all 511 rows, newest-first, no duplicates \u2014 because it is what Chad reads to find out what changed and one where 0.55.9 sits above 0.56.2 is one nobody can scan. A test now holds all of it: the guard reads a scrambled changelog correctly, and the app\u2019s own log must stay ordered, duplicate-free, and headed by APP_VERSION. 6 new tests.'],
   ['0.56.3', 'AN URGENT RED FLAG THAT EMAILED NOBODY \u2014 I SHRANK THE FEATURE CHAD ASKED FOR AND DID NOT NOTICE. Chad, holding a phone showing a red flag on SIMPLY CHARLOTTE MASON (PRO 007164290-1, Auburn, receiving hours 10AM to 12PM) at 12:33: \u201cThis popped up as an urgent red flag but no email was sent to customer service.\u201d He was right, and the cause was mine. WHEN HE ASKED FOR THIS FEATURE he said \u201cif something gets a red flag, that we should send a email to customer service\u2026 We want EVERY RED. Amber is a screen thing. Yeah if we are already past the time shouldn\u2019t send.\u201d That is what v0.55.7 built. Then v0.55.4\u2019s severity rework split the old single \u2018red\u2019 into \u2018critical\u2019 (the overrun survives the model being as wrong as it usually is) and \u2018red\u2019 (it clears the error band once, or a dispatcher typed the hours and the stop is predicted late at all) \u2014 and the alert stayed wired to \u2018critical\u2019 alone. So \u201cevery red\u201d silently became \u201conly the worst reds\u201d, and a stop the BOARD was painting as urgent sent nothing whatsoever. The screen and the inbox had come to disagree about the word urgent, and nothing anywhere reported the disagreement. THE RULE IS NOW THE ONE THAT CANNOT DRIFT: if the board shows it as urgent, customer service hears about it. Both tiers alert, amber stays a screen thing, and the tier list is ONE exported constant that the alert gate and the diagnostic both read \u2014 deliberately NOT a second lateness threshold invented inside the mailer, because a private invisible bar is exactly how this happened. Measured on today\u2019s 11:07a board (0 critical, 1 red, 2 amber) the change moves the day from 0 alertable to 1, not into the dozens. THE SECOND GATE IS STAYING, because Chad asked for it: past the receiving close nothing sends. That is why the 12:33 screenshot would still be silent for a window that shut at noon \u2014 correct by his own instruction, but until now impossible to LEARN. AND THE DIAGNOSTIC HAD THE SAME BLIND SPOT: eta-flag-check\u2019s per-row explanation filtered to tier===\u2018critical\u2019, so the endpoint built to answer \u201cwhy did this not email\u201d could not see a red row either and reported a clean board. A diagnostic that shares the bug it is meant to diagnose is worse than none, because it reads as a clean bill of health. It now reports every urgent row with a plain-English heldBecause, and takes ?stop=<PRO> to explain ANY stop \u2014 flagged or not, matching the number with or without the -1 instance suffix the stop card displays \u2014 and distinguishes \u201cno flag at all\u201d (the hours never reached the engine) from \u201cflagged but held\u201d (a rule fired), which are different failures that used to look identical. A REAL BUG FELL OUT OF WRITING THE TESTS: closeMin was validated with Number()+isFinite, but Number(null), Number(\u2018\u2019) and Number([]) are all 0 and 0 is finite \u2014 so a stop with NO receiving close survived as closeMin 0. With a live clock the past-the-close rule hid it by accident; judging a PAST board passes no clock, that rule never runs, and it became a genuine email to customer service announcing \u201cReceiving close 12:00a\u201d for a stop that has no deadline at all. Both call sites now share one strict parser that rejects the emptiness BEFORE the coercion, since a real midnight close must still be honoured. 14 new tests, 1,857 green.'],
   ['0.56.2', 'THE PHONE MAP\u2019S TOP OVERLAYS CANNOT SIT ON EACH OTHER ANY MORE \u2014 AND A GUARD NOW FAILS ANY SCREEN WHERE TWO CONTROLS SHARE PIXELS. Chad, with the draw buttons sitting on top of the status card: \u201cBig formatting issues on mobile. I\u2019ve told you time and again that mobile and desktop should be treated as 2 different views and to quit trying to take the easy way out.\u201d He is right, and the file\u2019s own comments prove it: this exact layout had been collision-patched FOUR times (v0.54.80, v0.54.82, the wrap fix, the flags-chip clip), each time repositioning one absolutely-pinned layer and keeping the architecture that guarantees the next crash. The search bar was pinned at one offset, the date/status/flags row at a measured one, and the draw tools at that offset PLUS A HARDCODED 42 \u2014 an assumption that the row above was one line tall, when it was explicitly allowed to wrap and the card to expand. Carryover made it wrap, the expanded card made it tall, and the draw buttons landed on \u2018N c/o\u2019. THE MOBILE MAP\u2019S TOP FURNITURE IS NOW ONE COLUMN IN NORMAL FLOW: search, then date + flags, then tools beside the status card, then the notices \u2014 when anything grows or wraps, everything below it MOVES, because that is what flow does. No measured offsets, no +42, nothing to re-guess. The \u2018no stops match\u2019 banner moved into the same column (it used to paint over Filters and Scan at the exact moment nothing was on the map). ROUTING HAD THE SAME DISEASE, found by the new guard, not by a screenshot: the Box/Lasso/Ninja tools were centred on the whole map container while the bottom grid overlaid part of it, which put a tool on the grid\u2019s Profiles button \u2014 and on a 360px phone walked the column up into the selected-stops chip and the Build tab. On the phone the chip and tools are now one flow column; on desktop the tools centre in the strip ABOVE the grid, driven by the grid\u2019s measured height, so resizing the grid moves them. THE GUARD: every screen, both phone sizes, now fails CI when two REACHABLE controls overlap within one layer. Proven against yesterday\u2019s build \u2014 it fails it on exactly the screenshotted bug \u2014 and green on this one. It judges what a finger can actually reach (a row scrolled half out of a sheet occludes nothing), and deliberate covers \u2014 bottom sheets, the data grid, sticky headers \u2014 declare themselves rather than being threshold-tuned around. CLAUDE.md now carries the standing rule: every screen is TWO views, and phone overlay furniture lives in one flow container. 10 new tests\u2019 worth of guard reach, 1,843 green.'],
@@ -7524,6 +7525,18 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                   role="menuitem"
                 >
                   <Mail size={12} /> Customer emails
+                </button>
+                {/* THE PHONE MENU IS A SECOND LIST, and forgetting it is a documented
+                    failure here: v0.54.50 shipped Manifest check visible on a laptop and
+                    invisible on a phone, because the desktop nav row and this chip menu
+                    are built separately. Dispatch runs on a phone. Anything added to the
+                    desktop MoreMenu belongs here too. */}
+                <button
+                  className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+                  onClick={() => onSelectMenu('flaghistory')}
+                  role="menuitem"
+                >
+                  <Flag size={12} /> Flag history
                 </button>
                 {/* Diagnostics and Debug moved UNDER More (Chad, v0.54.82). Both are
                     tools for looking into the app rather than screens for running the
@@ -20311,7 +20324,7 @@ function Shell() {
     // named here or the phone menu silently opens the map instead — which is what
     // happened to Manifest check in v0.54.48: the desktop nav had it, the chip
     // menu did not, and there was no way to reach it from a phone at all.
-    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms'];
+    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory'];
     setTab(next === 'diagnostics' ? 'diag' : KNOWN.includes(next) ? next : 'map');
   };
 
@@ -20383,6 +20396,7 @@ function Shell() {
               items={[
                 { id: 'manifest', label: 'Manifest check', hint: 'Uline nightly vs the scan', icon: <FileCheck size={14} />, badge: moreBadge },
                 { id: 'comms', label: 'Customer emails', hint: 'Delivery-complete email program', icon: <Mail size={14} /> },
+                { id: 'flaghistory', label: 'Flag history', hint: 'Every flag, and what happened to it', icon: <Flag size={14} /> },
                 { id: 'diag', label: 'Diagnostics', hint: 'Scan health, API calls, schedule', icon: <Activity size={14} /> },
                 { id: 'debug', label: 'Debug this view', hint: 'Bundle what you are looking at', icon: <Bug size={14} /> },
               ]}
@@ -20397,7 +20411,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} />}
@@ -20413,6 +20427,267 @@ function Shell() {
           <div className="hidden sm:block">© Davis Delivery Service</div>
         </footer>
       )}
+    </div>
+  );
+}
+
+
+// ── FLAG HISTORY ──────────────────────────────────────────────────────────────
+//
+// Chad: "I want to build a history of flags... somewhere that tracks all the flags that
+// have presented itself, then the time the shipment actually delivered. And if the flag
+// allowed us to fix the problem or not before it didn't deliver on time or at all and
+// rolled to the next day."
+//
+// Reads eta-flag-history, which reads what the 20-minute sweep and the nightly ledger
+// already wrote. It never computes a flag itself — a screen that re-derived the rules would
+// eventually disagree with the board about what was flagged, and nobody could say which one
+// was lying.
+//
+// WHAT THIS SCREEN MAY NOT SAY. It cannot report that a flag SAVED a delivery. Nobody
+// instrumented the phone call, and no control group exists. "Moved after the flag" is the
+// nearest honest signal and is labelled as exactly that. The last measurement built in this
+// codebase reported an intent as an outcome for weeks, so the wording here is deliberately
+// the boring, defensible kind.
+const OUTCOME_STYLE = {
+  made: { label: 'Made it', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  missed: { label: 'Missed', cls: 'bg-rose-50 text-rose-700 border-rose-200' },
+  rolled: { label: 'Rolled to next day', cls: 'bg-amber-50 text-amber-800 border-amber-200' },
+  undelivered: { label: 'Never delivered', cls: 'bg-rose-50 text-rose-700 border-rose-200' },
+  unknown: { label: 'Not gradable', cls: 'bg-slate-50 text-slate-500 border-slate-200' },
+};
+const TIER_STYLE = {
+  critical: 'bg-rose-600 text-white',
+  red: 'bg-rose-100 text-rose-700',
+  amber: 'bg-amber-100 text-amber-800',
+};
+const fmtMinOfDay = (m) => {
+  if (m == null || !Number.isFinite(Number(m))) return '—';
+  const v = Math.round(Number(m));
+  const h = Math.floor(v / 60), x = ((v % 60) + 60) % 60;
+  const ampm = h >= 12 ? 'p' : 'a';
+  const h12 = ((h % 12) + 12) % 12 === 0 ? 12 : ((h % 12) + 12) % 12;
+  return `${h12}:${String(x).padStart(2, '0')}${ampm}`;
+};
+const fmtLead = (m) => {
+  if (m == null) return '—';
+  const v = Math.round(m);
+  if (v <= 0) return `${Math.abs(v)}m too late`;
+  return v >= 60 ? `${Math.floor(v / 60)}h ${v % 60}m` : `${v}m`;
+};
+
+function FlagStat({ value, label, tone = 'slate', hint }) {
+  const tones = {
+    slate: 'text-slate-900', emerald: 'text-emerald-700', rose: 'text-rose-700', amber: 'text-amber-700',
+  };
+  return (
+    <div className="rounded-lg border bg-white px-3 py-2" title={hint || undefined}>
+      <div className={`text-xl font-bold ${tones[tone] || tones.slate}`}>{value}</div>
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{label}</div>
+    </div>
+  );
+}
+
+function FlagHistoryScreen() {
+  const [days, setDays] = React.useState(14);
+  const [data, setData] = React.useState(null);
+  const [openDate, setOpenDate] = React.useState(null);
+  const [dayRows, setDayRows] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [err, setErr] = React.useState(null);
+
+  const load = React.useCallback(async () => {
+    setLoading(true); setErr(null);
+    try {
+      const r = await fetch(`/.netlify/functions/eta-flag-history?days=${days}`);
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'read failed');
+      setData(j);
+    } catch (e) { setErr(String(e.message || e)); } finally { setLoading(false); }
+  }, [days]);
+  React.useEffect(() => { load(); }, [load]);
+
+  const openDay = React.useCallback(async (date) => {
+    if (openDate === date) { setOpenDate(null); setDayRows(null); return; }
+    setOpenDate(date); setDayRows(null);
+    try {
+      const r = await fetch(`/.netlify/functions/eta-flag-history?date=${encodeURIComponent(date)}`);
+      const j = await r.json();
+      setDayRows(j.ok && j.found ? j.rows : []);
+    } catch { setDayRows([]); }
+  }, [openDate]);
+
+  const t = data?.total || {};
+  const results = data?.results || [];
+
+  return (
+    <div className="flex-1 overflow-y-auto bg-slate-50">
+      <div className={`${SCREEN_DASH} p-4 sm:p-6 space-y-4`}>
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <h1 className="text-xl font-bold text-slate-900">Flag history</h1>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Every receiving-hours flag the board raised, and what actually happened to that shipment.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              value={days} onChange={(e) => setDays(Number(e.target.value))}
+              className="rounded-lg border px-2 py-1.5 text-xs font-semibold bg-white min-h-[40px]"
+            >
+              {[7, 14, 30, 60].map((n) => <option key={n} value={n}>Last {n} days</option>)}
+            </select>
+            <button
+              onClick={load}
+              className="rounded-lg border px-3 py-1.5 text-xs font-semibold bg-white hover:bg-slate-50 min-h-[40px]"
+            >Refresh</button>
+          </div>
+        </div>
+
+        {err && <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{err}</div>}
+        {loading && <div className="text-xs text-slate-500">Loading…</div>}
+
+        {!loading && (
+          <>
+            <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-2">
+              <FlagStat value={t.flags ?? 0} label="Flags raised" />
+              <FlagStat value={t.made ?? 0} label="Made it" tone="emerald" hint="Delivered on or before the receiving close." />
+              <FlagStat value={t.missed ?? 0} label="Missed" tone="rose" hint="Delivered after the receiving close." />
+              <FlagStat value={t.rolled ?? 0} label="Rolled" tone="amber" hint="Did not deliver that day and appeared on a later board." />
+              <FlagStat value={t.emailed ?? 0} label="Emailed CS" hint="An alert reached customerservice@davisdelivery.com." />
+              <FlagStat
+                value={t.missedAfterWarning == null ? '—' : `${t.missedAfterWarning}%`}
+                label="Missed anyway" tone="rose"
+                hint="Of the flags that could be graded, how many still missed. NOT the flag's accuracy — see the note below."
+              />
+            </div>
+
+            {/* The honesty note. It is on the screen, not in a comment, because the numbers
+                above are the kind people quote in meetings. */}
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-900">
+              <strong>What these numbers can and cannot tell you.</strong> They show what happened
+              <em> after</em> a flag, not that the flag caused it — nobody records the phone call, and there is
+              no unflagged control group to compare against. “Moved after flag” means the stop changed route or
+              position once we flagged it, which is evidence a person acted on it. A day still showing “—”
+              has not been scored yet; the outcome join runs overnight.
+            </div>
+
+            {/* THE EMPTY STATE IS THE FIRST STATE. Flags are recorded going forward from
+                the day this shipped, so on day one there is nothing here — and a page that
+                shows a header and a blank box in that situation reads as broken rather than
+                as new. It says what it will hold and when. */}
+            {(data?.daysWithData ?? 0) === 0 && (
+              <div className="rounded-xl border bg-white p-5 space-y-2">
+                <div className="text-sm font-semibold text-slate-800">No flags recorded in this range yet.</div>
+                <div className="text-xs text-slate-600 leading-relaxed max-w-2xl">
+                  Flags are written as they appear, by the check that already re-reads the board every
+                  20 minutes through the working day. Each one records the customer, the route, when we
+                  first saw it, how long that gave us before the receiving window shut, and whether an
+                  alert went to customer service.
+                </div>
+                <div className="text-xs text-slate-600 leading-relaxed max-w-2xl">
+                  Overnight, the same day is re-read from sealed history and each flag gets what actually
+                  happened to that shipment: delivered before the close, delivered after it, rolled to the
+                  next day, or never delivered at all.
+                </div>
+                <div className="text-xs text-slate-400">
+                  A day with no receiving-hours risk produces no rows, which is a quiet day rather than a fault.
+                </div>
+              </div>
+            )}
+
+            <div className="rounded-xl border bg-white overflow-hidden">
+              {results.length === 0 && <div className="p-6 text-center text-sm text-slate-500">No days in range.</div>}
+              {results.map((d) => {
+                const s = d.summary || {};
+                const isOpen = openDate === d.date;
+                return (
+                  <div key={d.date} className="border-b last:border-b-0">
+                    <button
+                      onClick={() => d.found && openDay(d.date)}
+                      className={`w-full text-left px-3 py-2.5 min-h-[48px] flex items-center gap-3 flex-wrap ${d.found ? 'hover:bg-slate-50 cursor-pointer' : 'cursor-default'}`}
+                    >
+                      <span className="font-semibold text-sm text-slate-800 w-[110px] shrink-0">{d.date}</span>
+                      {!d.found ? (
+                        <span className="text-xs text-slate-400">no flags recorded</span>
+                      ) : (
+                        <>
+                          <span className="text-xs text-slate-600">{s.flags} flag{s.flags === 1 ? '' : 's'}</span>
+                          {s.made > 0 && <span className="text-xs text-emerald-700">{s.made} made</span>}
+                          {s.missed > 0 && <span className="text-xs text-rose-700">{s.missed} missed</span>}
+                          {s.rolled > 0 && <span className="text-xs text-amber-700">{s.rolled} rolled</span>}
+                          {!d.scored && <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">not scored yet</span>}
+                          <span className="ml-auto text-[11px] text-slate-400">
+                            {s.medianLeadMin != null ? `median warning ${fmtLead(s.medianLeadMin)}` : ''}
+                          </span>
+                        </>
+                      )}
+                    </button>
+
+                    {isOpen && (
+                      <div className="bg-slate-50 border-t px-3 py-2">
+                        {dayRows == null && <div className="text-xs text-slate-500 py-2">Loading stops…</div>}
+                        {dayRows?.length === 0 && <div className="text-xs text-slate-500 py-2">No rows.</div>}
+                        {dayRows?.length > 0 && (
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-xs min-w-[720px]">
+                              <thead>
+                                <tr className="text-[10px] uppercase tracking-wide text-slate-400 text-left">
+                                  <th className="py-1 pr-3">Customer</th>
+                                  <th className="py-1 pr-3">Route</th>
+                                  <th className="py-1 pr-3">Worst</th>
+                                  <th className="py-1 pr-3">Close</th>
+                                  <th className="py-1 pr-3">First flagged</th>
+                                  <th className="py-1 pr-3">Warning</th>
+                                  <th className="py-1 pr-3">Delivered</th>
+                                  <th className="py-1 pr-3">Outcome</th>
+                                  <th className="py-1 pr-3">Acted on</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {[...dayRows].sort((a, b) => (a.firstSeenMin ?? 0) - (b.firstSeenMin ?? 0)).map((r) => {
+                                  const o = OUTCOME_STYLE[r.outcome] || OUTCOME_STYLE.unknown;
+                                  return (
+                                    <tr key={r.stopNbr} className="border-t border-slate-200 align-top">
+                                      <td className="py-1.5 pr-3">
+                                        <div className="font-semibold text-slate-800">{r.customer || r.stopNbr}</div>
+                                        <div className="text-[10px] text-slate-400">PRO {r.stopNbr}{r.emailed ? ' · emailed CS' : ''}</div>
+                                      </td>
+                                      <td className="py-1.5 pr-3 text-slate-600">
+                                        {r.lastRoute || '—'}
+                                        {r.firstRoute && r.lastRoute && r.firstRoute !== r.lastRoute && (
+                                          <div className="text-[10px] text-slate-400">was {r.firstRoute}</div>
+                                        )}
+                                      </td>
+                                      <td className="py-1.5 pr-3">
+                                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${TIER_STYLE[r.worstTier] || TIER_STYLE.amber}`}>{r.worstTier}</span>
+                                      </td>
+                                      <td className="py-1.5 pr-3 text-slate-600">{fmtMinOfDay(r.closeMin)}</td>
+                                      <td className="py-1.5 pr-3 text-slate-600">{fmtMinOfDay(r.firstSeenMin)}</td>
+                                      <td className={`py-1.5 pr-3 ${r.leadMin != null && r.leadMin <= 0 ? 'text-rose-600 font-semibold' : 'text-slate-600'}`}>{fmtLead(r.leadMin)}</td>
+                                      <td className="py-1.5 pr-3 text-slate-600">{fmtMinOfDay(r.arrivalMin)}</td>
+                                      <td className="py-1.5 pr-3">
+                                        <span className={`px-1.5 py-0.5 rounded border text-[10px] font-semibold ${o.cls}`}>{o.label}</span>
+                                      </td>
+                                      <td className="py-1.5 pr-3 text-slate-600">
+                                        {r.actedOn ? <span className="text-slate-700 font-semibold">moved</span> : <span className="text-slate-300">—</span>}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
