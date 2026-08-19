@@ -40,6 +40,22 @@ Project-level guidance for Claude Code in this repository.
 - Add a changelog row in the same edit, newest first, in the array
   directly below `APP_VERSION`. The row is what Chad reads to find out
   what changed; a bump with no row is half the job.
+- **This is now enforced by CI, not by good intentions.** The
+  `version-bump` job (`dispatch-map/scripts/check-version-bump.mjs`)
+  fails any PR that touches shipping code without moving `APP_VERSION`
+  and adding the matching row. It was added because the rule above was
+  skipped twice on the morning it was written (#696, #697) — and #697
+  was the last commit to reach production that day, so a deploy landed
+  with the footer version unchanged, which is the precise thing this
+  rule exists to prevent.
+- **Merging is not shipping.** On 2026-08-19 production stopped taking
+  main at 09:51 and five merges (v0.55.1 → .7) never went live, with
+  every check green the whole time. The `deploy-watch` workflow now
+  reads the version out of the LIVE bundle every 30 minutes and goes red
+  when it disagrees with main. If you have merged something and Chad
+  says he cannot see it, check what the site is actually serving
+  (`node dispatch-map/scripts/check-deploy-fresh.mjs`) BEFORE assuming
+  it is a browser cache — that check takes seconds and settles it.
 
 ## Reports — always a PDF (Chad, Aug 2026)
 

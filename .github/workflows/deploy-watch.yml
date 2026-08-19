@@ -1,0 +1,32 @@
+name: deploy-watch
+
+# Is the live site actually running what main says it should be?
+#
+# On 2026-08-19 main moved five times between 10:08 and 11:32 and production stayed on
+# v0.55.0 from 09:51 all morning. Every merge was green, every PR check passed, the deploy
+# previews built — and nothing anywhere said the site had stopped taking main. Chad found
+# it by noticing the footer never changed.
+#
+# The in-app reload banner could not have caught this. It compares the running TAB against
+# the deployed SITE; when the SITE is the stale thing, both sides agree and it correctly
+# stays quiet. This watches the other axis — SITE against MAIN — which nothing did.
+#
+# Fails loudly (a red run, and GitHub emails the owner on a failing scheduled workflow) and
+# stays quiet on "could not tell": an unreachable site is not evidence of a bad deploy.
+
+on:
+  schedule:
+    # Every 30 minutes. A stale production is measured in minutes of dispatchers looking at
+    # the wrong board, not hours.
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  fresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node dispatch-map/scripts/check-deploy-fresh.mjs
