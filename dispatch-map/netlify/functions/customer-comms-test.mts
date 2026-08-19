@@ -93,7 +93,10 @@ export default async (req: Request): Promise<Response> => {
       stop = delivered[0] || stops[0];
     }
 
-    const { subject, html, vars } = buildMessage(stop, date, cfg);
+    // NEUTRALIZED: this message is built from a real customer's delivered stop and sent to a
+    // Davis inbox. A working unsubscribe footer here would let anyone on our side opt out a
+    // real customer with one click, from a preview.
+    const { subject, html, vars } = buildMessage(stop, date, cfg, { neutralizeUnsubscribe: true });
     const recip = await resolveRecipient(stop);
 
     if (preview || req.method === 'GET') {

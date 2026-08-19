@@ -23,6 +23,7 @@ import {
   readConfig, writeConfig, DEFAULT_HTML, MERGE_FIELDS, adminTokenOk, readDomainStatus,
   clampDailyCap, isSenderAddress, isEmailAddress, MAX_HTML_TEMPLATE, MAX_SUBJECT,
 } from './lib/customer-comms.mts';
+import { unsubscribeReady } from './lib/unsubscribe.mts';
 
 export default async (req: Request): Promise<Response> => {
   const headers = { 'Content-Type': 'application/json' };
@@ -41,6 +42,12 @@ export default async (req: Request): Promise<Response> => {
         // Surfaced so the tab can show "Resend not configured" rather than letting
         // someone flip Enabled on and wonder why no mail arrives.
         resendConfigured: emailEnabled(),
+        // CAN WE ACTUALLY OFFER AN UNSUBSCRIBE? Without a signing secret the footer falls
+        // back to "reply to this email" — honest, but indistinguishable from the link
+        // working, so the program would keep sending hundreds a day with no working opt-out
+        // and nobody would know. Reported so the screen can say so out loud. Never returns
+        // the secret itself, only whether one exists.
+        unsubscribeReady: unsubscribeReady(),
         // What an empty fromAddress resolves to, so the UI can show the real sender.
         effectiveFrom: cfg.fromAddress || process.env.RESEND_FROM || null,
         // The sender domain's REAL DNS state, so the screen stops asserting a failure it
