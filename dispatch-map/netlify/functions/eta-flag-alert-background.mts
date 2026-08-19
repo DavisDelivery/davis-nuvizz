@@ -22,10 +22,11 @@
 // The scan itself refreshes every 15 minutes, so anything tighter re-reads the same board.
 // Cron is UTC: 11:00-23:59 UTC covers roughly 07:00-19:59 ET, which brackets the delivery
 // day either side of a DST flip without needing to be re-timed twice a year.
-import { isFirestoreEnabled, readStops, getDoc, createDocIfAbsent, etDayString } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, getDoc, setDoc, createDocIfAbsent, etDayString } from './lib/firestore.mts';
 import { computeBoardFlags } from '../../src/lib/board-flags.js';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { selectAlertable, sendAlerts, ALERT_TO } from './lib/flag-alert.mts';
+import { mergeSweep, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
 import { emailEnabled } from './lib/email.mts';
 
 const TENANT = 'davis';
@@ -87,7 +88,48 @@ export default async (req: Request): Promise<Response> => {
     });
 
     const candidates = selectAlertable(flags.rows, nowMin);
+
+    // ── KEEP THE FLAG, NOT JUST THE EMAIL ─────────────────────────────────────
+    //
+    // Chad: "I want to build a history of flags... somewhere that tracks all the flags that
+    // have presented itself." Until now a flag was a live computation — painted on the
+    // board and discarded. The only durable trace was the alert claim, which exists only
+    // for stops that earned an EMAIL, so ambers and post-close reds left no record that
+    // they ever happened.
+    //
+    // This sweep already computes the whole board. Folding the result into the day's row
+    // set costs one read and one write and no NuVizz calls, and it is what makes "did the
+    // flag do any good" answerable at all. See lib/flag-history.mts.
+    //
+    // Never lets a bookkeeping failure stop an alert: the email is the job, this is the
+    // record of it.
+    let recorded: any = { added: 0, updated: 0 };
+    if (!dry && nowMin != null) {
+      try {
+        const path = flagHistoryPath(TENANT, date);
+        const prev = await getDoc(path);
+        const merged = mergeSweep(prev?.rows, flags.rows, {
+          nowMin,
+          atISO: new Date().toISOString(),
+          // Stops already claimed today have had their email attempted. Reading the claim
+          // rather than this run's result means a stop that alerted at 9:40 still reads as
+          // emailed on the 14:00 sweep.
+          emailedStops: new Set(candidates.map((c) => String(c.stopNbr))),
+        });
+        await setDoc(path, {
+          tenant: TENANT, date, version: FLAG_HISTORY_VERSION,
+          updated_at: new Date().toISOString(),
+          rows: merged.rows,
+        });
+        recorded = { added: merged.added, updated: merged.updated, tracked: Object.keys(merged.rows).length };
+      } catch (e: any) {
+        console.error('flag history write failed (non-fatal):', e?.message);
+        recorded = { error: String(e?.message || e) };
+      }
+    }
+
     const base = {
+      recorded,
       ok: true, date, nowMin,
       critical: flags.criticalCount ?? 0, red: flags.redCount ?? 0, amber: flags.amberCount ?? 0,
       alertable: candidates.length,

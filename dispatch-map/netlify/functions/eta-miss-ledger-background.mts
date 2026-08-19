@@ -22,6 +22,8 @@ import { isFirestoreEnabled, getDoc, setDoc } from './lib/firestore.mts';
 import { etYesterday } from './lib/history-core.mts';
 import { listStops } from './lib/history-store.mts';
 import { scoreDay, ledgerPath, ledgerMatchKey, LEDGER_VERSION } from './lib/miss-ledger.mts';
+import { scoreRow, summarize, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
+import { arrivalAnchor, isFinishedStop } from '../../src/lib/board-flags.js';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -49,6 +51,67 @@ function makeNoteReader() {
     }
     return (k: string) => cache.get(k) ?? null;
   };
+}
+
+/** ET minutes past midnight from a stamp the board engine already knows how to read. */
+function stampMin(s: any, date: string): { min: number; at: string } | null {
+  const a = arrivalAnchor(s, date);
+  if (!a || !Number.isFinite(a.min)) return null;
+  return { min: a.min, at: String(s?.deliveredDTTM || s?.arrivalDTTM || '') };
+}
+
+/** ISO date + n days, on the digits, so no timezone can roll it. */
+function addDays(date: string, n: number): string {
+  const d = new Date(`${date}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Attach outcomes to the flags recorded live on `date`.
+ *
+ * `seenLater` — the evidence for Chad's "rolled to the next day" — comes from the NEXT
+ * day's sealed board. If that day is not captured yet we pass null rather than false, so a
+ * roll cannot be mislabelled as "never delivered" purely because we scored it too early.
+ * Those rows re-score on the next run, which is why re-scoring is allowed to overwrite.
+ */
+async function scoreFlagOutcomes(date: string, stops: any[]) {
+  const path = flagHistoryPath(TENANT, date);
+  const doc = await getDoc(path);
+  const tracked = doc?.rows;
+  if (!tracked || !Object.keys(tracked).length) return null;
+
+  const byStop = new Map<string, any>();
+  for (const s of stops) if (s?.stopNbr != null) byStop.set(String(s.stopNbr), s);
+
+  // Did the next day's board carry it? Absent capture => null => "we cannot tell yet".
+  let nextDay: Set<string> | null = null;
+  try {
+    const later = await listStops(TENANT, addDays(date, 1));
+    if (later?.length) nextDay = new Set(later.map((s: any) => String(s?.stopNbr)));
+  } catch { /* not captured yet */ }
+
+  const scoredAt = new Date().toISOString();
+  const out: Record<string, any> = {};
+  for (const [stopNbr, row] of Object.entries<any>(tracked)) {
+    const s = byStop.get(stopNbr);
+    const stamp = s ? stampMin(s, date) : null;
+    out[stopNbr] = scoreRow(row, {
+      arrivalMin: stamp ? stamp.min : null,
+      deliveredAt: stamp ? stamp.at : null,
+      finished: s ? isFinishedStop(s) : false,
+      seenLater: nextDay ? nextDay.has(stopNbr) : null,
+      scoredAt,
+    });
+  }
+
+  const summary = summarize(out);
+  await setDoc(path, {
+    ...doc, tenant: TENANT, date, version: FLAG_HISTORY_VERSION,
+    rows: out, summary, scored_at: scoredAt,
+    next_day_captured: nextDay != null,
+  });
+  return summary;
 }
 
 export default async (req: Request): Promise<Response> => {
@@ -86,7 +149,30 @@ export default async (req: Request): Promise<Response> => {
       // The per-stop rows are kept alongside the summary: a rollup answers "how often", the
       // rows answer "which customers, and by how long" — which is what actually gets fixed.
       await setDoc(ledgerPath(TENANT, date), { tenant: TENANT, ...summary, rows, scored_at: new Date().toISOString() });
-      done.push({ date, scored: summary.scored, missed: summary.missed, miss_rate_pct: summary.miss_rate_pct });
+
+      // ── DID THE FLAGS DO ANY GOOD? ───────────────────────────────────────────
+      //
+      // Chad: "the time the shipment actually delivered. And if the flag allowed us to fix
+      // the problem or not before it didn't deliver on time or at all and rolled to the
+      // next day."
+      //
+      // The flags themselves were recorded live through the day by
+      // eta-flag-alert-background. This is the other half: what actually happened to each
+      // one, read off the SAME sealed day the miss ledger just scored, so the two can never
+      // disagree about an arrival.
+      //
+      // Best-effort. A day with no flags recorded is the ordinary case for any date before
+      // this feature existed, and must not fail the ledger run that is its actual job.
+      let flagOutcome: any = null;
+      try {
+        flagOutcome = await scoreFlagOutcomes(date, stops);
+      } catch (e: any) {
+        console.error('flag outcome scoring failed (non-fatal):', date, e?.message);
+      }
+      done.push({
+        date, scored: summary.scored, missed: summary.missed, miss_rate_pct: summary.miss_rate_pct,
+        ...(flagOutcome ? { flags: flagOutcome } : {}),
+      });
     }
 
     return J({ ok: true, version: LEDGER_VERSION, days: done.length, results: done });
