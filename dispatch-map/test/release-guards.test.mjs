@@ -15,9 +15,10 @@
 // PURE — no git, no network.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import { shipsCode, versionOf, changelogVersions } from '../scripts/check-version-bump.mjs';
-import { entryFromHtml, versionFromBundle, versionOf as liveVersionOf } from '../scripts/check-deploy-fresh.mjs';
+import { entryFromHtml, versionFromBundle, compareSemver, versionOf as liveVersionOf } from '../scripts/check-deploy-fresh.mjs';
 
 // ── WHAT COUNTS AS A CHANGE THAT SHIPS ───────────────────────────────────────
 
@@ -126,4 +127,54 @@ test('both guards read APP_VERSION the same way', () => {
   // readers ever disagreed the comparison would be meaningless.
   const s = SRC('0.55.7', ['0.55.7']);
   assert.equal(versionOf(s), liveVersionOf(s));
+});
+
+// ── THE GUARD MUST NOT DEPEND ON CHANGELOG ORDER ─────────────────────────────
+//
+// versionFromBundle used to take the FIRST "x.y.z" row it found, on the assumption that
+// VERSION_LOG is strictly newest-first. CLAUDE.md asks for that, but nothing enforced it —
+// and several sessions ship in parallel, each inserting its row at whatever anchor it
+// matched. By 2026-08-19 the array began 0.56.0, 0.55.9, 0.56.2, 0.56.1, and the guard
+// reported the live site as v0.56.0 while it was serving 0.56.2. Twice in one afternoon.
+//
+// That sent me hunting a production deploy failure that did not exist, on the same day a
+// REAL one had happened — which is the precise way a watchdog does harm rather than none.
+
+test('the live version survives a changelog that is not in order', () => {
+  const scrambled = 'x=[["0.56.0","a"],["0.55.9","b"],["0.56.2","c"],["0.56.1","d"]]';
+  assert.equal(versionFromBundle(scrambled), '0.56.2');
+});
+
+test('ordinary newest-first still reads the same', () => {
+  assert.equal(versionFromBundle('x=[["0.56.2","c"],["0.56.1","d"],["0.56.0","a"]]'), '0.56.2');
+});
+
+test('patch 10 outranks patch 9 — string compare would get this backwards', () => {
+  assert.equal(versionFromBundle('x=[["0.56.9","a"],["0.56.10","b"]]'), '0.56.10');
+  assert.equal(versionFromBundle('x=[["0.9.0","a"],["0.10.0","b"]]'), '0.10.0');
+  assert.ok(compareSemver('0.56.10', '0.56.9') > 0);
+  assert.ok(compareSemver('0.56.9', '0.56.10') < 0);
+  assert.equal(compareSemver('0.56.1', '0.56.1'), 0);
+});
+
+test('a bundle with no changelog rows still reports null, not a guess', () => {
+  // "I could not tell" must stay distinguishable from "it is stale".
+  for (const js of ['', null, undefined, 'no versions here', '["nope","x"]']) {
+    assert.equal(versionFromBundle(js), null, JSON.stringify(String(js).slice(0, 20)));
+  }
+});
+
+test("the app's own changelog is newest-first and has no duplicate versions", () => {
+  // Not required by the guard any more, but it IS what Chad reads to find out what changed,
+  // and a list where 0.55.9 sits above 0.56.2 is a list nobody can scan.
+  const src = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const body = src.slice(src.indexOf('const VERSION_LOG = ['));
+  const rows = [...body.slice(0, body.indexOf('\n];')).matchAll(/^\s*\['(\d+\.\d+\.\d+)',/gm)].map((m) => m[1]);
+  assert.ok(rows.length > 100, `only found ${rows.length} rows`);
+  assert.equal(new Set(rows).size, rows.length, 'a version appears twice');
+  for (let i = 1; i < rows.length; i++) {
+    assert.ok(compareSemver(rows[i - 1], rows[i]) > 0,
+      `out of order: ${rows[i - 1]} listed above ${rows[i]}`);
+  }
+  assert.equal(rows[0], liveVersionOf(src), 'the top row must be APP_VERSION');
 });
