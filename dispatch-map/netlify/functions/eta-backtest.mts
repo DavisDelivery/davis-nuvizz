@@ -319,7 +319,7 @@ export default async (req: Request): Promise<Response> => {
 
     // RAW ERROR ARRAYS so a caller can pool exactly across days instead of averaging medians.
     const raw = url.searchParams.get('raw') === '1'
-      ? allRows.map((r) => [r.actual, r.predA, r.predB, r.predC, r.predD, r.idx, r.hops])
+      ? allRows.map((r) => [r.actual, r.predA, r.predB, r.predC, r.predD, r.idx, r.hops, r.legMeters])
       : undefined;
 
     const worst = [...allRows]
