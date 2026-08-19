@@ -64,10 +64,36 @@ export function entryFromHtml(html) {
 /** APP_VERSION as the MINIFIED bundle carries it — the name is gone, the string is not. */
 export function versionFromBundle(js) {
   const s = String(js || '');
-  // The changelog array's newest row leads with the same version the footer prints, and it
-  // survives minification as a plain string literal at the head of an array literal.
-  const row = /\[\s*"(\d+\.\d+\.\d+)"\s*,/.exec(s);
-  return row ? row[1] : null;
+  // THE HIGHEST changelog version in the bundle, not the FIRST one.
+  //
+  // This used to take the first match, on the assumption that VERSION_LOG is strictly
+  // newest-first — which CLAUDE.md asks for but nothing enforced. Several sessions ship in
+  // parallel and each inserts its row at whatever anchor it happened to match, so by
+  // 2026-08-19 the array began 0.56.0, 0.55.9, 0.56.2, 0.56.1. The guard duly reported the
+  // live site as "v0.56.0" while it was actually serving 0.56.2, twice in one afternoon.
+  //
+  // That is a bad way for THIS check to fail. It exists to answer "did my merge actually
+  // ship?" after a morning when five merges never went live, and a version-stale watchdog
+  // that itself reads a stale number sends you hunting a deploy problem that is not there —
+  // or, on the other side of the same coin, could report a healthy version while production
+  // sits still.
+  //
+  // Every release adds a row for its own version and CI enforces it, so the maximum row IS
+  // APP_VERSION regardless of what order the rows ended up in. Ordering is now a convenience
+  // for whoever reads the list, not a correctness dependency for the release guard.
+  const versions = [...s.matchAll(/\[\s*"(\d+\.\d+\.\d+)"\s*,/g)].map((m) => m[1]);
+  if (!versions.length) return null;
+  return versions.sort(compareSemver).at(-1);
+}
+
+/** Ascending numeric compare, so "0.56.10" sorts above "0.56.9" rather than below it. */
+export function compareSemver(a, b) {
+  const pa = String(a).split('.').map(Number);
+  const pb = String(b).split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+  }
+  return 0;
 }
 
 // The CLI. Behind a direct-execution guard so the readers above can be imported by the
