@@ -1,24 +1,27 @@
-// THE FLAG IS WITHDRAWN AS THE TRUCK FALLS BEHIND.
+// THE ETA IS ANCHORED ON WHAT THE TRUCK ACTUALLY DID, NOT ON AN ASSUMPTION MADE AT 8:00.
 //
-// computeBoardFlags judges only the stops still OPEN (board-flags.js filters finished
-// stops), but the arrival walk always restarts at the DEPOT at 08:00. So every completed
-// stop deletes its leg AND its 20-minute service block from the front of the chain while
-// the start time stays put, and the predicted arrival for everything still out moves
-// EARLIER as the day runs — most optimistic exactly when lateness is realest.
+// R5 used to judge only the stops still OPEN while restarting the walk at the DEPOT at
+// 08:00. Every completed stop therefore deleted its leg AND its 20-minute service block
+// from the front of the chain while the start time stayed put, so the predicted arrival
+// for everything still out walked BACKWARDS as the day ran — and a red flag was quietly
+// WITHDRAWN exactly when lateness became real. Measured on 39 sealed days, that model put
+// the truck within 30 minutes of reality 12% of the time (median miss 2h09).
 //
-// The re-anchor cannot rescue it: one delivered stop makes the route "rolling"
-// (isRollingEvidence), so notStarted is false and effDepart stays 08:00 all day.
+// It now walks the FULL sequenced chain and snaps the clock to each stop's real arrival
+// stamp. Same 39 days, that model is within 30 minutes 67% of the time (median miss ~15).
 //
-// This is the PYROK shape — a typed 2pm close, second-to-last on the load. These tests
-// pin the CURRENT behaviour so the rebuild has to change them deliberately.
+// These tests are the PYROK shape: a dispatcher-typed 2pm close on stop 9 of 10.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeBoardFlags } from '../src/lib/board-flags.js';
+import { computeBoardFlags, arrivalAnchor, stampMinutes } from '../src/lib/board-flags.js';
 
 const DEPOT = { name: 'Buford Terminal', lat: 34.147791, lng: -83.960911 };
-const N = 10, TARGET = 9;
+const N = 10, TARGET = 9, DATE = '2026-08-17';
+const hhmm = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 
-const board = (delivered) => {
+// `pace` = real minutes per stop. The model believes ~47 (27 travel + 20 service), so a
+// pace of 60 is a truck steadily falling behind and 40 is one running ahead.
+const board = (delivered, { pace = 60, firstArrival = 8 * 60 + 30 } = {}) => {
   const stops = [];
   for (let i = 1; i <= N; i += 1) {
     const s = {
@@ -27,7 +30,11 @@ const board = (delivered) => {
       normalizedStatus: 'PLANNED', status: '10',
       driverName: 'TEST DRIVER', driverUserName: 'tdriver',   // keeps R6 from superseding
     };
-    if (i <= delivered) { s.deliveredDTTM = '2026-08-17T09:00'; s.normalizedStatus = 'DELIVERED'; s.status = '90'; }
+    if (i <= delivered) {
+      s.arrivalDTTM = `${DATE}T${hhmm(firstArrival + (i - 1) * pace)}`;
+      s.deliveredDTTM = `${DATE}T${hhmm(firstArrival + (i - 1) * pace + 15)}`;
+      s.normalizedStatus = 'DELIVERED'; s.status = '90';
+    }
     stops.push(s);
   }
   return stops;
@@ -37,37 +44,60 @@ const notes = new Map([['c9', {
   receiving_hours: { mon: { open: '08:00', close: '14:00' } },
 }]]);
 
-const flagFor = (delivered) => {
+const flagFor = (delivered, opts) => {
   const out = computeBoardFlags({
-    stops: board(delivered), notes, servedDate: '2026-08-17', dayKey: 'mon',
-    opts: { depot: DEPOT, nowMin: 8 * 60 + 5 + delivered * 30 },
+    stops: board(delivered, opts), notes, servedDate: DATE, dayKey: 'mon',
+    opts: { depot: DEPOT, nowMin: 8 * 60 + 5 + delivered * 60 },
   });
   return out.rows.find((r) => r.rule === 'hours_risk' && /CUST 9/.test(`${r.title} ${r.detail}`)) || null;
 };
-const etaOf = (row) => (row ? (row.detail.match(/estimated arrival ~([^ ]+)/) || [])[1] : null);
+const etaMin = (row) => {
+  const t = row.detail.match(/estimated arrival ~(\d+):(\d+)([ap])/);
+  let h = Number(t[1]) % 12; if (t[3] === 'p') h += 12;
+  return h * 60 + Number(t[2]);
+};
 
-test('the same stop is predicted EARLIER as its route completes', () => {
-  const at0 = flagFor(0), at1 = flagFor(1), at2 = flagFor(2);
-  assert.ok(at0 && at1 && at2, 'all three should still flag');
-  assert.equal(etaOf(at0), '2:43p');
-  assert.equal(etaOf(at1), '2:23p');   // one stop done -> 20 minutes more optimistic
-  assert.equal(etaOf(at2), '2:03p');   // two stops done -> 40 minutes more optimistic
-});
-
-test('the red flag is WITHDRAWN once enough stops complete, though nothing improved', () => {
-  assert.ok(flagFor(2), 'still flagged with 2 delivered');
-  for (let done = 3; done < TARGET; done += 1) {
-    assert.equal(flagFor(done), null, `flag unexpectedly present with ${done} delivered`);
+test('a truck that is falling behind KEEPS its red flag as the route completes', () => {
+  for (let done = 0; done <= 5; done += 1) {
+    assert.ok(flagFor(done), `flag lost with ${done} delivered — this is the withdrawal bug`);
   }
 });
 
-test('a delivered stop makes the route rolling, so the not-started re-anchor never applies', () => {
-  // Late morning, three stops done. If the re-anchor fired, the clock would restart at NOW
-  // (11:00) and the estimate would be far LATER, not earlier. It does not fire.
-  const out = computeBoardFlags({
-    stops: board(3), notes, servedDate: '2026-08-17', dayKey: 'mon',
-    opts: { depot: DEPOT, nowMin: 11 * 60 },
-  });
-  const row = out.rows.find((r) => r.rule === 'hours_risk' && /CUST 9/.test(`${r.title} ${r.detail}`));
-  assert.equal(row, undefined, 'no flag: the walk still starts at 08:00 from the depot');
+test('and the estimate gets LATER as it falls further behind, never earlier', () => {
+  const seen = [];
+  for (let done = 1; done <= 5; done += 1) seen.push(etaMin(flagFor(done)));
+  for (let i = 1; i < seen.length; i += 1) {
+    assert.ok(seen[i] >= seen[i - 1], `estimate moved backwards: ${seen[i - 1]} -> ${seen[i]}`);
+  }
+  assert.ok(seen[seen.length - 1] > seen[0], 'a steadily later truck must read steadily later');
+});
+
+test('the row says the clock is running from a real arrival, not from the 8:00 assumption', () => {
+  const row = flagFor(3);
+  assert.match(row.detail, /from CUST 3's [\d:]+[ap]'?s? ?arrival|from CUST 3's [\d:]+[ap] arrival/);
+  assert.doesNotMatch(row.detail, /departs 8:00a/);
+});
+
+test('a truck running AHEAD correctly clears the flag — that is the point, not a regression', () => {
+  assert.equal(flagFor(4, { pace: 35, firstArrival: 8 * 60 }), null);
+});
+
+test('with nothing delivered yet the walk still starts from the assumed departure', () => {
+  const row = flagFor(0);
+  assert.match(row.detail, /departs 8:00a/);
+});
+
+test('a delivered stamp is not given another service block (the dwell already happened)', () => {
+  assert.deepEqual(arrivalAnchor({ arrivalDTTM: `${DATE}T10:15` }, DATE), { min: 615, source: 'arrival' });
+  assert.deepEqual(arrivalAnchor({ deliveredDTTM: `${DATE}T10:40` }, DATE), { min: 640, source: 'delivered' });
+});
+
+test("a stamp dated to another day is refused — yesterday says nothing about today's truck", () => {
+  assert.equal(arrivalAnchor({ arrivalDTTM: '2026-08-16T10:15' }, DATE), null);
+});
+
+test('stamps are read as naive ET digits, never through Date + timeZone', () => {
+  assert.equal(stampMinutes('2026-08-17T03:43'), 223);   // a pre-dawn run stays on its own day
+  assert.equal(stampMinutes('2026-08-17 17:32'), 1052);
+  assert.equal(stampMinutes('not a stamp'), null);
 });
