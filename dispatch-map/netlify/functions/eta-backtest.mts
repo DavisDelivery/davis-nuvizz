@@ -72,6 +72,13 @@ function stampMin(v: any): number | null {
 /** The DATE half of a stamp, so a stop stamped on another day can be excluded. */
 function stampDay(v: any): string { const m = /^(\d{4}-\d{2}-\d{2})/.exec(String(v || '')); return m ? m[1] : ''; }
 
+/** A stamp's minutes, but only if it belongs to THIS board day. */
+function sameDayStamp(v: any, date: string): number | null {
+  if (!v) return null;
+  if (stampDay(v) && stampDay(v) !== date) return null;
+  return stampMin(v);
+}
+
 const numOr = (v: any) => { const n = typeof v === 'number' ? v : parseFloat(v); return Number.isFinite(n) ? n : null; };
 // SEQUENCE, exactly as production resolves it. board-flags.js goes through routeStopSeq
 // (route-stop-line.js:88): top-level routeSeq first, then the RAW feed's stop.to.seq /
@@ -151,6 +158,13 @@ interface Row {
   predE: number | null;   // model E: departs at the route's OWN planned start
   startSignal: string;    // which candidate supplied that start ('' = none, route falls back to 8:00)
   hops: number;   // stops since the last real arrival stamp C could anchor on (0 = none yet)
+  // THE TWO STAMPS KEPT APART. Everything above collapses them into one "actual", which is
+  // fine for grading an arrival prediction and useless for the question Chad raised: if a
+  // driver taps ARRIVE only after the freight is already off the truck, then arrivalDTTM is
+  // not an arrival at all, it is a completion — and every model that adds a service block
+  // after it is composing the clock out of the wrong parts.
+  arrMin: number | null;      // arrivalDTTM alone
+  delMin: number | null;      // deliveredDTTM alone
 }
 
 /** Replay one route. Returns one row per stop that has BOTH a position and a real
@@ -240,6 +254,8 @@ function replayRoute(stops: any[], date: string, tuned: { speed: number; service
         hops,
         predD: vendorEtaMin(s),
         idx, legMeters: Math.round(legMeters), pallets: numOr(s?.pallets),
+        arrMin: sameDayStamp(s?.arrivalDTTM, date),
+        delMin: sameDayStamp(s?.deliveredDTTM, date),
       });
     }
 
@@ -442,6 +458,65 @@ export default async (req: Request): Promise<Response> => {
       }
     }
 
+    // ── IS THE ARRIVAL STAMP AN ARRIVAL? ─────────────────────────────────────
+    // Chad: "the vast majority of deliveries show an arrival time and departure time that
+    // are less than 120 seconds apart... because the driver performs the actual delivery
+    // before ever clicking arrive at stop." If that is right, arrivalDTTM marks the END of
+    // the visit, not the start, and the whole model is mis-composed: it would be charging a
+    // 20-minute service block AFTER the service already happened, and hiding an equal-sized
+    // underestimate in the travel term. The two errors cancel in the TOTAL, which is exactly
+    // why a back-test that only grades arrival predictions cannot see it — the sum is right
+    // while both parts are wrong. Split them and the question answers itself.
+    const dwell: number[] = [];
+    for (const r of allRows) {
+      if (r.arrMin == null || r.delMin == null) continue;
+      const d = r.delMin - r.arrMin;
+      if (d >= -30 && d <= 480) dwell.push(d);       // refuse clock-skew and multi-day junk
+    }
+    const dwellStats = dwell.length ? {
+      n: dwell.length,
+      under_2_min_pct: Math.round((dwell.filter((d) => d <= 2).length / dwell.length) * 100),
+      under_5_min_pct: Math.round((dwell.filter((d) => d <= 5).length / dwell.length) * 100),
+      over_15_min_pct: Math.round((dwell.filter((d) => d > 15).length / dwell.length) * 100),
+      p10: pct(dwell, 10), median: pct(dwell, 50), p90: pct(dwell, 90), mean: mean(dwell),
+    } : { n: 0 };
+
+    // REAL TRAVEL, MEASURED RATHER THAN ASSUMED. If the visit is bracketed by two stamps,
+    // then the road time between consecutive stops is arrival(n+1) - delivered(n) — no
+    // service term involved, so this is the one clean read on the travel model. Comparing
+    // it to the modelled leg gives the true road factor at the shipped speed.
+    const legs: Array<{ real: number; modelled: number; meters: number }> = [];
+    for (let i = 1; i < allRows.length; i += 1) {
+      const a = allRows[i - 1], b = allRows[i];
+      if (a.date !== b.date || a.route !== b.route || b.idx !== a.idx + 1) continue;
+      if (a.delMin == null || b.arrMin == null) continue;
+      const real = b.arrMin - a.delMin;
+      const modelled = (b.legMeters * ROAD_FACTOR / AVG_SPEED_MPS) / 60;
+      if (real < 0 || real > 300 || b.legMeters < 200) continue;   // skip same-site revisits
+      legs.push({ real, modelled, meters: b.legMeters });
+    }
+    const ratios = legs.filter((l) => l.modelled > 1).map((l) => l.real / l.modelled);
+    const travelStats = legs.length ? {
+      n: legs.length,
+      real_median_min: pct(legs.map((l) => l.real), 50),
+      modelled_median_min: Math.round((pct(legs.map((l) => l.modelled), 50) as number)),
+      // >1 means the road takes LONGER than the model thinks.
+      ratio_p10: Math.round((pct(ratios, 10) as number) * 100) / 100,
+      ratio_median: Math.round((pct(ratios, 50) as number) * 100) / 100,
+      ratio_p90: Math.round((pct(ratios, 90) as number) * 100) / 100,
+      // The road factor that WOULD have matched, holding the shipped speed fixed.
+      implied_road_factor: Math.round(ROAD_FACTOR * (pct(ratios, 50) as number) * 100) / 100,
+      implied_mph: Math.round((AVG_SPEED_MPS * 2.237) / (pct(ratios, 50) as number) * 10) / 10,
+    } : { n: 0 };
+
+    const stampCoverage = {
+      rows: allRows.length,
+      has_arrival: allRows.filter((r) => r.arrMin != null).length,
+      has_delivered: allRows.filter((r) => r.delMin != null).length,
+      has_both: allRows.filter((r) => r.arrMin != null && r.delMin != null).length,
+      delivered_before_arrival: allRows.filter((r) => r.arrMin != null && r.delMin != null && r.delMin < r.arrMin).length,
+    };
+
     // RAW ERROR ARRAYS so a caller can pool exactly across days instead of averaging medians.
     const raw = url.searchParams.get('raw') === '1'
       ? allRows.map((r) => [r.actual, r.predA, r.predB, r.predC, r.predD, r.idx, r.hops, r.legMeters, r.predE, r.startSignal])
@@ -486,6 +561,9 @@ export default async (req: Request): Promise<Response> => {
       F_by_stops_completed: Object.fromEntries(Object.entries(byDrop).map(([k, v]) => [k, stats(v)])),
       observed_departure: departStats,
       observed_service: serviceStats,
+      stamp_coverage: stampCoverage,
+      observed_dwell_min: dwellStats,
+      observed_travel: travelStats,
       raw,
       per_day_scored: perDay,
       worst_rows: worst,
