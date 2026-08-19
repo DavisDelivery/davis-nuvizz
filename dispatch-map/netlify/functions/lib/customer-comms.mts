@@ -585,23 +585,23 @@ export const YESTERDAY_SWEEP_BEFORE_ET_HOUR = 6;
 /** Yesterday, from a YYYY-MM-DD string. Self-contained so this module gains no
  *  new cross-module dependency for one line of arithmetic. */
 export function dayBefore(ymd: string): string {
-  if (!DATE_RE.test(String(ymd || ''))) return '';
-  const d = new Date(`${ymd}T00:00:00Z`);
-  // DATE_RE only pins the SHAPE. '2026-13-45' is four-two-two digits and sails
-  // through it, but is not a date — and Date#toISOString THROWS on that rather
-  // than returning something wrong. Since sweepDates() is called before the
-  // handler's per-date try/catch, an unchecked throw here would take down the
-  // whole run instead of one date. Validate the parse, not just the pattern.
-  if (Number.isNaN(d.getTime())) return '';
+  // DATE_RE only pins the SHAPE, and a NaN check alone is not enough either:
+  // '2026-13-45' is caught by it, but '2026-02-30' is NOT — V8 rolls that over to
+  // March 2nd and reports success, so this would hand back a real-looking day one
+  // side of the wrong month. That matters because the caller below uses ±1 day as
+  // the duplicate-send guard; a silently shifted neighbour checks the wrong ledger.
+  // parseYmd makes the date spell itself back. (An unchecked throw would also take
+  // down a whole sweep, since sweepDates runs before the per-date try/catch.)
+  const d = parseYmd(ymd);
+  if (!d) return '';
   d.setUTCDate(d.getUTCDate() - 1);
   return d.toISOString().slice(0, 10);
 }
 
-/** Tomorrow, from a YYYY-MM-DD string. Same validate-the-parse rule as dayBefore. */
+/** Tomorrow, from a YYYY-MM-DD string. Same strict round-trip rule as dayBefore. */
 export function dayAfter(ymd: string): string {
-  if (!DATE_RE.test(String(ymd || ''))) return '';
-  const d = new Date(`${ymd}T00:00:00Z`);
-  if (Number.isNaN(d.getTime())) return '';
+  const d = parseYmd(ymd);
+  if (!d) return '';
   d.setUTCDate(d.getUTCDate() + 1);
   return d.toISOString().slice(0, 10);
 }
@@ -613,6 +613,201 @@ export function sweepDates(now: Date = new Date()): string[] {
   const y = dayBefore(today);
   // Newest first: if a run is ever cut short, the day that matters most is done.
   return y ? [today, y] : [today];
+}
+
+// ── SEND-LOG RANGES + ROLLUPS ────────────────────────────────────────────────
+//
+// The ledger is already stored one subcollection PER DAY, so the history has always been
+// day-shaped underneath. What the log endpoint did with it was flatten every day into one
+// list sorted by time — Chad, Aug 2026: "needs to be done by the day and have ranges and
+// months, not just a long compilation of all the emails that we've sent."
+//
+// These turn a request into an explicit set of dates, and a set of entries back into
+// per-day and per-month rollups. All PURE → unit-tested. Reading Firestore stays in the
+// endpoint; deciding WHICH days to read, and what the totals are, lives here.
+
+export const MONTH_RE = /^\d{4}-\d{2}$/;
+
+/** Every day costs two Firestore reads (the ledger list + the status doc), so a range is
+ *  bounded. A quarter is the most a page load may spend; anything longer is CLIPPED and
+ *  says so — a silently shortened range reads as "that month was quiet" when it was
+ *  simply never looked at. */
+export const MAX_LOG_DAYS = 92;
+
+/**
+ * A YYYY-MM-DD as a real Date, or null.
+ *
+ * Stricter than the validate-the-parse rule used elsewhere in this file, because that rule
+ * has a hole my own tests found: `new Date('2026-02-30T00:00:00Z')` does NOT return Invalid
+ * Date — V8 ROLLS IT OVER to March 2nd and reports success. So '2026-02-30' would sail
+ * through both DATE_RE (right shape) and a NaN check (parsed fine) and silently become a
+ * different day, which for a date RANGE means quietly reading the wrong days and showing
+ * the answer as though it were the one asked for. '2026-13-45' is caught by the NaN check;
+ * '2026-02-30' is only caught by asking the parsed date to spell itself back.
+ */
+export function parseYmd(ymd: string): Date | null {
+  const v = String(ymd || '');
+  if (!DATE_RE.test(v)) return null;
+  const d = new Date(`${v}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10) === v ? d : null;
+}
+
+/** A calendar month as [first, last]. Returns null on anything that is not YYYY-MM, and
+ *  validates the PARSE, not just the shape — '2026-13' matches the pattern and is not a
+ *  month, and Date#toISOString throws on it rather than returning something wrong. */
+export function monthRange(month: string): { from: string; to: string } | null {
+  if (!MONTH_RE.test(String(month || ''))) return null;
+  const first = parseYmd(`${month}-01`);
+  if (!first) return null;
+  const last = new Date(first);
+  last.setUTCMonth(last.getUTCMonth() + 1);
+  last.setUTCDate(0);                       // day 0 of next month = last day of this one
+  return { from: first.toISOString().slice(0, 10), to: last.toISOString().slice(0, 10) };
+}
+
+/** The days from `from` to `to` inclusive, NEWEST FIRST, bounded by MAX_LOG_DAYS.
+ *  Reversed bounds are accepted and swapped rather than returning nothing: a from/to the
+ *  wrong way round is a slip, and an empty log is a bad way to report it. */
+export function datesInRange(from: string, to: string, cap = MAX_LOG_DAYS):
+  { dates: string[]; requested: number; clipped: boolean; from: string; to: string } {
+  const empty = { dates: [] as string[], requested: 0, clipped: false, from: '', to: '' };
+  let a = parseYmd(from), b = parseYmd(to);
+  if (!a || !b) return empty;
+  if (a.getTime() > b.getTime()) { const t = a; a = b; b = t; }
+
+  const requested = Math.floor((b.getTime() - a.getTime()) / 86400000) + 1;
+  const take = Math.min(requested, Math.max(1, cap));
+  const dates: string[] = [];
+  // Walk BACK from the newest day, so a clipped range keeps the most recent days —
+  // the ones somebody looking at a send log is nearly always asking about.
+  for (let i = 0; i < take; i++) {
+    dates.push(new Date(b.getTime() - i * 86400000).toISOString().slice(0, 10));
+  }
+  return {
+    dates,
+    requested,
+    clipped: requested > take,
+    from: dates[dates.length - 1] || '',
+    to: dates[0] || '',
+  };
+}
+
+export interface LogRange {
+  mode: 'date' | 'month' | 'range' | 'days';
+  dates: string[]; from: string; to: string; requested: number; clipped: boolean;
+}
+
+/**
+ * Turn the query string into the days to read. Precedence is most-specific first:
+ * an exact ?date=, then ?month=, then ?from=/?to=, then ?days= back from today.
+ *
+ * `today` is passed in rather than read here so the whole thing stays pure.
+ */
+export function resolveLogRange(
+  params: { date?: string; month?: string; from?: string; to?: string; days?: number | string },
+  today: string,
+): LogRange {
+  const none: LogRange = { mode: 'days', dates: [], from: '', to: '', requested: 0, clipped: false };
+  // Shape is not enough: '2026-13-45' matches DATE_RE, and every branch below does date
+  // arithmetic on this anchor — an unreal one throws out of toISOString rather than
+  // returning something wrong.
+  const anchorDate = parseYmd(today);
+  if (!anchorDate) return none;
+  const anchor = today;
+
+  const date = String(params.date || '');
+  if (DATE_RE.test(date)) {
+    const r = datesInRange(date, date);
+    return { mode: 'date', ...r };
+  }
+
+  const month = String(params.month || '');
+  if (MONTH_RE.test(month)) {
+    const m = monthRange(month);
+    if (m) {
+      // A month that has not finished yet stops at TODAY. Listing tomorrow's empty days
+      // as zero-send rows invites reading them as days the sweep skipped.
+      const to = m.to > anchor ? anchor : m.to;
+      // Asking for a month that has not started yet is empty, not the whole month.
+      if (m.from > anchor) return { mode: 'month', dates: [], from: m.from, to: m.from, requested: 0, clipped: false };
+      return { mode: 'month', ...datesInRange(m.from, to) };
+    }
+  }
+
+  const from = String(params.from || ''), to = String(params.to || '');
+  if (DATE_RE.test(from) || DATE_RE.test(to)) {
+    // One end given is a half-open range: from X to today, or the single day X.
+    const a = DATE_RE.test(from) ? from : to;
+    const b = DATE_RE.test(to) ? to : anchor;
+    return { mode: 'range', ...datesInRange(a, b) };
+  }
+
+  const n = Math.min(Math.max(Math.floor(Number(params.days) || 1), 1), MAX_LOG_DAYS);
+  const first = anchorDate.getTime() - (n - 1) * 86400000;
+  return { mode: 'days', ...datesInRange(new Date(first).toISOString().slice(0, 10), anchor) };
+}
+
+export interface DayRollup {
+  date: string; total: number; sent: number; failed: number; inflight: number;
+}
+
+/** Count one bucket of entries. The three outcomes are the same split the endpoint's
+ *  totals use: `ok` sent, claimed-but-never-confirmed `inflight` (NOT safe to retry),
+ *  and everything else failed. */
+export function tallyEntries(entries: any[]): { total: number; sent: number; failed: number; inflight: number } {
+  let sent = 0, failed = 0, inflight = 0;
+  for (const e of entries || []) {
+    if (e?.ok) sent++;
+    else if (e?.claimed) inflight++;
+    else failed++;
+  }
+  return { total: (entries || []).length, sent, failed, inflight };
+}
+
+/** Per-day rows, newest first. `dates` drives the shape rather than the entries, so a day
+ *  that was READ and had nothing still gets a zero row — "we looked and it was quiet" is
+ *  a different answer from "that day is not in this range", and the log has to tell them
+ *  apart. */
+export function rollupByDay(dates: string[], entries: any[]): DayRollup[] {
+  const byDate = new Map<string, any[]>();
+  for (const d of dates) byDate.set(d, []);
+  for (const e of entries || []) {
+    const d = String(e?.date || '');
+    if (byDate.has(d)) byDate.get(d)!.push(e);
+  }
+  return [...byDate.entries()]
+    .map(([date, es]) => ({ date, ...tallyEntries(es) }))
+    .sort((a, b) => b.date.localeCompare(a.date));
+}
+
+export interface MonthRollup extends DayRollup { month: string; days: number; }
+
+/** Per-month rows, newest first, summed from the day rows so the two can never disagree.
+ *  `days` counts days actually READ in that month, not the length of the month. */
+export function rollupByMonth(days: DayRollup[]): MonthRollup[] {
+  const byMonth = new Map<string, MonthRollup>();
+  for (const d of days || []) {
+    const m = String(d.date || '').slice(0, 7);
+    if (!MONTH_RE.test(m)) continue;
+    const cur = byMonth.get(m) || { month: m, date: m, days: 0, total: 0, sent: 0, failed: 0, inflight: 0 };
+    cur.days++; cur.total += d.total; cur.sent += d.sent; cur.failed += d.failed; cur.inflight += d.inflight;
+    byMonth.set(m, cur);
+  }
+  return [...byMonth.values()].sort((a, b) => b.month.localeCompare(a.month));
+}
+
+/** The months worth offering in a picker: this month back through `count-1` earlier ones. */
+export function recentMonths(today: string, count = 12): string[] {
+  const d = parseYmd(today);
+  if (!d) return [];
+  const out: string[] = [];
+  d.setUTCDate(1);
+  for (let i = 0; i < Math.max(1, count); i++) {
+    out.push(d.toISOString().slice(0, 7));
+    d.setUTCMonth(d.getUTCMonth() - 1);
+  }
+  return out;
 }
 
 // ── SEND ONE ─────────────────────────────────────────────────────────────────
