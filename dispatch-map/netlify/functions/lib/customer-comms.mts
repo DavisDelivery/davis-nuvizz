@@ -515,6 +515,36 @@ export function formatClock(hh: number, mm: number): string {
   return `${hh % 12 || 12}:${String(mm).padStart(2, '0')} ${hh < 12 ? 'AM' : 'PM'}`;
 }
 
+// ── TRACKING PORTAL LINKS ────────────────────────────────────────────────────
+//
+// The portal is ONE page reached from several places, and until now every arrival looked
+// identical to it: the delivery email's "Track" button, its "Rate this delivery" button and
+// a customer who bookmarked the site all landed on the same URL carrying the same nothing.
+// So when a review came in, "where did this come from?" had no answer — the stored record
+// had no such field and the page had never been told.
+//
+// `src` is that missing sentence. It rides on the link, the portal reads it on arrival and
+// keeps it for the session, and it is POSTed with the review and stored on the record.
+//
+// A query parameter for the same reason `rate=1` is one: the portal's own initFromUrl parses
+// the query string and has no reader for a fragment.
+//
+// HONEST ABOUT ITS LIMITS. A forwarded email carries the FORWARDER's tag, and a bookmark,
+// a retype, or a reload that drops the query string carries none and reads as `direct`. This
+// is right for the ordinary case, which is the case worth sizing — it is not an audit trail.
+//
+// Carried even when there is no PRO. There is nothing to track and nothing to rate on a bare
+// link, but the click still came out of an email, and that is the fact `src` exists to keep.
+export const TRACKING_ORIGIN = 'https://tracking.davisdelivery.com/';
+
+export function trackingLink(pro: string, extra: Record<string, string> = {}): string {
+  const qs = new URLSearchParams();
+  if (pro) qs.set('pro', pro);
+  for (const [k, v] of Object.entries(extra)) if (v) qs.set(k, v);
+  const s = qs.toString();
+  return s ? `${TRACKING_ORIGIN}?${s}` : TRACKING_ORIGIN;
+}
+
 export function stopVars(stop: any, date: string): Record<string, string> {
   const pro = String(stop?.pro || stop?.primaryPro || stop?.stopNbr || '');
   const stamp = parseNaiveStamp(stop?.deliveredDTTM);
@@ -555,7 +585,7 @@ export function stopVars(stop: any, date: string): Record<string, string> {
     city, state, zip, cityStateZip,
     pieces,
     weight: stop?.weight != null ? String(stop.weight) : '',
-    trackingUrl: pro ? `https://tracking.davisdelivery.com/?pro=${encodeURIComponent(pro)}` : 'https://tracking.davisdelivery.com/',
+    trackingUrl: trackingLink(pro, { src: 'track-email' }),
     // The same PAGE as trackingUrl — the star rating is a card ON the tracking page, not a
     // separate route — but no longer the same URL. Chad: "when they click that rate my
     // delivery in the email, it takes them directly to the tracking page with the rate my
@@ -574,7 +604,7 @@ export function stopVars(stop: any, date: string): Record<string, string> {
     //
     // Still its own merge field, so the button can be pointed straight at Google — or
     // anywhere else — from the Communications tab without touching this file.
-    reviewUrl: pro ? `https://tracking.davisdelivery.com/?pro=${encodeURIComponent(pro)}&rate=1` : 'https://tracking.davisdelivery.com/',
+    reviewUrl: trackingLink(pro, pro ? { rate: '1', src: 'review-email' } : { src: 'review-email' }),
     // ET, not the UTC runtime's year — otherwise a New Year's Eve send stamps next year.
     year: etDayString().slice(0, 4),
   };

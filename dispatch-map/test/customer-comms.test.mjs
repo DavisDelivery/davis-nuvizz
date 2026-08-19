@@ -23,7 +23,7 @@ import {
   isEmailAddress, isSenderAddress, clampDailyCap, testRecipientAllowed, adminTokenOk, buildMessage,
   isRateLimited, MIN_SEND_INTERVAL_MS,
   sendForStop, DEFAULT_CONFIG,
-  MERGE_FIELDS, DEFAULT_HTML, MAX_DAILY_CAP,
+  MERGE_FIELDS, DEFAULT_HTML, MAX_DAILY_CAP, trackingLink,
 } from '../netlify/functions/lib/customer-comms.mts';
 
 // A board stop as the LIST path writes it (toBoardStop): no state, no pallets, and a
@@ -290,10 +290,37 @@ test('the Rate CTA deep-links INTO the rating, not just to the page', () => {
 
 test('with no PRO, both CTAs fall back to the bare tracking page', () => {
   // Nothing to rate and nothing to track — a rate=1 on a page with no shipment would open
-  // an empty rating card.
+  // an empty rating card. `src` still rides along: there is no shipment, but the click still
+  // came out of an email, and that is the one fact the bare link can still carry.
   const vars = stopVars({ ...LIST_STOP, stopNbr: '', pro: '', primaryPro: '' }, '2026-08-16');
-  assert.equal(vars.reviewUrl, 'https://tracking.davisdelivery.com/');
-  assert.equal(vars.trackingUrl, 'https://tracking.davisdelivery.com/');
+  assert.ok(!vars.reviewUrl.includes('pro='), 'nothing to deep-link to');
+  assert.ok(!vars.reviewUrl.includes('rate=1'), 'no empty rating card');
+  assert.equal(vars.reviewUrl, 'https://tracking.davisdelivery.com/?src=review-email');
+  assert.equal(vars.trackingUrl, 'https://tracking.davisdelivery.com/?src=track-email');
+});
+
+test('every CTA says which button it was, so a review can be attributed', () => {
+  // Chad: "i want to track where the review came from tracking or delivery emails". Until
+  // now it could not be answered at all — the two buttons were distinguishable only by
+  // rate=1, which is an INTENT flag, not a source, and a bare tracking visit carried nothing.
+  const vars = stopVars(LIST_STOP, '2026-08-16');
+  assert.ok(vars.reviewUrl.includes('src=review-email'), 'the Rate button is attributable');
+  assert.ok(vars.trackingUrl.includes('src=track-email'), 'and so is the Track button');
+  assert.notEqual(
+    new URL(vars.reviewUrl).searchParams.get('src'),
+    new URL(vars.trackingUrl).searchParams.get('src'),
+    'the two buttons must not report as the same source',
+  );
+  // The PRO still leads, so the existing deep-link assertions above keep holding.
+  assert.ok(vars.reviewUrl.startsWith('https://tracking.davisdelivery.com/?pro='));
+});
+
+test('trackingLink drops empty params rather than emitting ?src=', () => {
+  // A blank value would produce a dangling `src=` the portal would read as a source named
+  // "" — worse than absent, because it looks answered.
+  assert.equal(trackingLink('', {}), 'https://tracking.davisdelivery.com/');
+  assert.equal(trackingLink('', { src: '' }), 'https://tracking.davisdelivery.com/');
+  assert.equal(trackingLink('007161743'), 'https://tracking.davisdelivery.com/?pro=007161743');
 });
 
 test('pieces falls back to the list freight columns when the stop is not enriched', () => {
