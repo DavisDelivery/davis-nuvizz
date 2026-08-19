@@ -236,15 +236,28 @@ export function classifyStopTimeRestriction(stop, note, servedDate, defaultSlots
   // text; dayReceivingWindow already reports which it is, and a 'typed' tier is the one
   // we are willing to call authoritative in the report.
   let closeMin = null; let openMin = null; let hoursTier = null; let hoursLabel = '';
+  // WHERE THE HOURS CAME FROM, kept separate from how much we trust them. These are two
+  // different questions and collapsing them misattributes the data: dayReceivingWindow
+  // reports tier 'auto' both for hours sitting in a customer's saved notes and — via the
+  // branches below — for hours parsed out of THIS order's text, so a tier-derived label
+  // told the reader 100 of 107 rows were read off the order in front of them when they
+  // were really read off a record saved earlier. The column exists so a dispatcher can
+  // judge how far to trust a row; an attribution the data does not support is worse than
+  // no column at all.
+  //   'dispatcher' — somebody typed these hours for this customer
+  //   'saved'      — auto-detected previously and kept on the customer's record
+  //   'order-text' — parsed from the instructions on this order
+  let hoursProvenance = null;
   const split = splitWindow(text);
   const noteWindow = dayKey ? dayReceivingWindow(note, dayKey) : null;
   if (noteWindow?.closeMin != null) {
     openMin = noteWindow.openMin; closeMin = noteWindow.closeMin; hoursTier = noteWindow.tier;
+    hoursProvenance = hoursTier === 'typed' ? 'dispatcher' : 'saved';
     sources.add(hoursTier === 'typed' ? 'Dispatcher-entered hours' : 'Saved hours (auto-detected)');
   } else if (split) {
     // Shut between the two times. Held separately from open/close because it is a hole
     // in the day, not a window around it.
-    hoursTier = 'auto';
+    hoursTier = 'auto'; hoursProvenance = 'order-text';
     sources.add('Order instructions (midday closure)');
   } else {
     // Nothing on file: read the order text with the repo's own tested scanner. Its
@@ -257,14 +270,14 @@ export function classifyStopTimeRestriction(stop, note, servedDate, defaultSlots
     const cm = parseClockMin(close);
     const om = parseClockMin(open);
     if (scanned && cm != null) {
-      openMin = om; closeMin = cm; hoursTier = 'auto';
+      openMin = om; closeMin = cm; hoursTier = 'auto'; hoursProvenance = 'order-text';
       sources.add('Order instructions (receiving hours)');
     } else if (scanned && om != null) {
       // OPEN-ONLY — 'RECEIVING AFTER 10AM'. A real constraint (this cannot be the 7am
       // first stop) with no close to miss, so it is carried as an open and can never
       // produce a past-close miss. Dropping these, as an earlier cut did, hid a
       // genuine routing constraint entirely.
-      openMin = om; hoursTier = 'auto';
+      openMin = om; hoursTier = 'auto'; hoursProvenance = 'order-text';
       sources.add('Order instructions (opens at)');
     }
   }
@@ -272,7 +285,7 @@ export function classifyStopTimeRestriction(stop, note, servedDate, defaultSlots
   if (closeMin == null) {
     const c = closesAtMin(text);
     if (c != null) {
-      closeMin = c; hoursTier = 'auto';
+      closeMin = c; hoursTier = 'auto'; hoursProvenance = 'order-text';
       sources.add('Order instructions (closing time)');
     }
   }
@@ -351,6 +364,7 @@ export function classifyStopTimeRestriction(stop, note, servedDate, defaultSlots
     openMin,
     closeMin,
     hoursTier,
+    hoursProvenance,
     orderWindowLabel: win ? `${fmtMin(win.openMin)}–${fmtMin(win.closeMin)}` : '',
     orderWindowKind: win ? win.kind : '',
     appointmentReasons: appts,
@@ -416,7 +430,7 @@ export function buildTimeRestrictionRows(stops = [], notes = new Map(), servedDa
       tierLabel: TIER_LABEL[r.tier],
       restriction: r.summary,
       receivingHours: r.hoursLabel,
-      hoursSource: r.hoursTier === 'typed' ? 'Dispatcher' : r.hoursTier === 'auto' ? 'Order text' : '',
+      hoursSource: HOURS_SOURCE_LABEL[r.hoursProvenance] || '',
       orderWindow: r.orderWindowLabel,
       appointment: r.appointmentReasons.join('; '),
       closedToday: r.closedToday ? 'Yes' : '',
@@ -439,6 +453,12 @@ export function buildTimeRestrictionRows(stops = [], notes = new Map(), servedDa
     || String(a.pro).localeCompare(String(b.pro)));
   return rows;
 }
+
+export const HOURS_SOURCE_LABEL = {
+  dispatcher: 'Dispatcher',
+  saved: 'Saved on customer',
+  'order-text': 'This order',
+};
 
 export const CSV_COLUMNS = [
   ['pro', 'PRO'],

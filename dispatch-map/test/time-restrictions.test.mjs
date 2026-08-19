@@ -160,6 +160,29 @@ test('an opens-at constraint has no close, so it can never report a past-close m
   assert.equal(r.missedByMin, null);
 });
 
+// ── where the hours came from ─────────────────────────────────────────────────
+
+test('hours kept on the customer record are NOT attributed to the order in front of you', () => {
+  // dayReceivingWindow reports tier 'auto' for both saved and order-text hours, so a
+  // tier-derived label called 100 of 107 rows "Order text" when they came off a saved
+  // record. The column is how a dispatcher judges a row; it must say which it is.
+  const note = { receiving_hours: { wed: { open: '06:00', close: '11:00' } } };
+  const saved = buildTimeRestrictionRows([{ ...stop(), matchKey: 'k' }], new Map([['k', note]]), WED);
+  assert.equal(saved[0].hoursSource, 'Saved on customer');
+
+  const typed = buildTimeRestrictionRows([{ ...stop(), matchKey: 'k' }],
+    new Map([['k', { ...note, manual_overrides: { receiving_hours: true } }]]), WED);
+  assert.equal(typed[0].hoursSource, 'Dispatcher');
+
+  const fromOrder = buildTimeRestrictionRows([stop(instr('RECEIVING HOURS 8AM-2PM'))], new Map(), WED);
+  assert.equal(fromOrder[0].hoursSource, 'This order');
+});
+
+test('a stop with no hours at all claims no source', () => {
+  const rows = buildTimeRestrictionRows([stop(instr('APPOINTMENT REQUIRED'))], new Map(), WED);
+  assert.equal(rows[0].hoursSource, '');
+});
+
 test('hours a dispatcher TYPED outrank the scanner reading of the order text', () => {
   const note = { receiving_hours: { wed: { open: '07:00', close: '11:00' } }, manual_overrides: { receiving_hours: true } };
   const r = classify(instr('RECEIVING HOURS 8AM-2PM'), note);
