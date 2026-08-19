@@ -211,6 +211,31 @@ export function classifyOutcome(o: {
   return 'undelivered';
 }
 
+/**
+ * PURE. Does this day's recorded flag set still have outcomes that could change?
+ *
+ * A day is PENDING while it has rows but was scored without the next day's sealed board —
+ * `next_day_captured: false`. Until that capture exists, `rolled` and `undelivered` are
+ * indistinguishable from each other and both read as `unknown` (see classifyOutcome), so the
+ * day is not finished being scored no matter how green the run looked.
+ *
+ * This is the guard that keeps the re-score sweep cheap: a day that has already resolved
+ * answers false after one getDoc and costs nothing further.
+ */
+export function needsOutcomeRescore(doc: any): boolean {
+  const rows = doc?.rows;
+  if (!rows || !Object.keys(rows).length) return false;
+  if (doc.next_day_captured === true) return false;
+  // Never scored at all is also pending — the nightly run may simply not have reached it.
+  return true;
+}
+
+/** PURE. How many rows are still waiting on evidence that has not existed yet. */
+export function pendingOutcomeCount(doc: any): number {
+  const rows: any[] = Object.values(doc?.rows || {});
+  return rows.filter((r) => r?.outcome == null || r.outcome === 'unknown').length;
+}
+
 /** PURE. Attach the nightly outcome to one accumulated flag row. */
 export function scoreRow(
   row: FlagRow,

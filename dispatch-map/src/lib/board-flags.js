@@ -311,6 +311,10 @@ export const AMBER_CAP = 25;
 // that, and there are only ever a handful. Ordering is critical, then red, then amber.
 export const CRITICAL_CAP = 40;
 export const TIER_ORDER = { critical: 0, red: 1, amber: 2 };
+// Severity as a LADDER, worst highest. TIER_ORDER sorts for display and reads the other
+// way; a dismissal has to compare "is this worse than what I waved off", so it needs a
+// scale that grows with the trouble rather than one that grows with the list position.
+export const TIER_RANK = { amber: 1, red: 2, critical: 3 };
 
 /**
  * PURE: derive the day's flag rows from what the browser already holds.
@@ -627,12 +631,19 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   for (const [rule, rs] of byRule) {
     const cap = rs[0].tier === 'critical' ? CRITICAL_CAP : rs[0].tier === 'red' ? RED_CAP : AMBER_CAP;
     if (rs.length <= cap) { capped.push(...rs); continue; }
-    capped.push({
+    // The summary row needs its OWN dismissal identity. Spreading rs[0] used to carry that
+    // stop's dismissKey onto the collapsed line, so waving off the batch wrote a key
+    // belonging to one constituent — and the batch reappeared while a single stop went
+    // quiet. Rebuild the key from the collapsed fingerprint rather than inheriting it.
+    const summaryRow = {
       ...rs[0], stopNbr: null, matchKey: null,
       title: `${rs.length} stops: ${rs[0].title.split('—')[0].trim()}`,
       detail: `Too many to list one by one (cap ${cap}) — this is a data-quality batch, not ${rs.length} separate emergencies. Work it from the stops grid.`,
       fingerprint: `collapsed|${rule}|${servedDate}|${rs.length}`, collapsed: rs.length,
-    });
+    };
+    summaryRow.dismissKey = `${rule}|${summaryRow.scope === 'occurrence' ? `${summaryRow.servedDate}|` : ''}${summaryRow.fingerprint}|t${TIER_RANK[summaryRow.tier] ?? 1}`;
+    summaryRow.dismissKeys = dismissKeysFor(summaryRow);
+    capped.push(summaryRow);
   }
   capped.sort((a, b) => (TIER_ORDER[a.tier] ?? 9) - (TIER_ORDER[b.tier] ?? 9));
 
@@ -650,15 +661,42 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   };
 }
 
+// The key a row is hidden under, and the keys a dismissal must WRITE.
+//
+// A DISMISSAL IS CAPPED AT THE SEVERITY IT WAS MADE AT. Waving off an amber used to hide the
+// same stop after it escalated to red or critical, because the hours fingerprint
+// (`hours|date|route|stop|close`) carries no tier — so the worst thing the board can say was
+// silenceable by a shrug at the mildest version of it. Tier is now part of the key, and a
+// dismissal writes its own rank AND every rank below it:
+//
+//   dismiss at amber    → writes t1        → escalation to red (t2) is NOT hidden, it returns
+//   dismiss at critical → writes t1,t2,t3  → de-escalation to amber stays hidden
+//
+// That asymmetry is the point. Getting worse earns another look; getting better does not
+// earn another interruption. Putting tier in the fingerprint alone would have given both,
+// which is how closed_today (fingerprint `closed|…|${tier}`) currently re-raises rows that
+// merely improved.
+export function dismissKeysFor(r) {
+  if (!r) return [];
+  const base = `${r.rule}|${r.scope === 'occurrence' ? `${r.servedDate}|` : ''}${r.fingerprint}`;
+  const rank = TIER_RANK[r.tier] ?? 1;
+  const keys = [];
+  for (let i = 1; i <= rank; i++) keys.push(`${base}|t${i}`);
+  return keys;
+}
+
 function row(tier, rule, s, extra) {
-  return {
+  const r = {
     tier, rule,
     stopNbr: s?.stopNbr ?? null,
     matchKey: s?.matchKey ?? null,
     routeName: s ? (s.routeName || s.loadNbr || null) : null,
     ...extra,
-    // Dismissal key: standing conditions ignore the date (they persist until the FACTS in the
-    // fingerprint change); occurrences carry the board day and so expire with it.
-    dismissKey: `${rule}|${extra.scope === 'occurrence' ? `${extra.servedDate}|` : ''}${extra.fingerprint}`,
   };
+  // Dismissal key: standing conditions ignore the date (they persist until the FACTS in the
+  // fingerprint change); occurrences carry the board day and so expire with it. The `|t<rank>`
+  // suffix is what caps a dismissal at the severity it was made at — see dismissKeysFor.
+  r.dismissKey = `${rule}|${extra.scope === 'occurrence' ? `${extra.servedDate}|` : ''}${extra.fingerprint}|t${TIER_RANK[tier] ?? 1}`;
+  r.dismissKeys = dismissKeysFor(r);
+  return r;
 }

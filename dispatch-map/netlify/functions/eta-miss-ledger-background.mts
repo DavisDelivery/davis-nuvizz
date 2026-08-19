@@ -22,12 +22,17 @@ import { isFirestoreEnabled, getDoc, setDoc } from './lib/firestore.mts';
 import { etYesterday } from './lib/history-core.mts';
 import { listStops } from './lib/history-store.mts';
 import { scoreDay, ledgerPath, ledgerMatchKey, LEDGER_VERSION } from './lib/miss-ledger.mts';
-import { scoreRow, summarize, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
+import { scoreRow, summarize, flagHistoryPath, FLAG_HISTORY_VERSION, needsOutcomeRescore } from './lib/flag-history.mts';
 import { arrivalAnchor, isFinishedStop } from '../../src/lib/board-flags.js';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_BACKFILL_DAYS = 60;
+// How far back a scheduled run reaches to finish scoring days it could not finish at the
+// time. Only needs to cover the one-day lag between scoring D and D+1 being sealed, but a
+// week absorbs a capture that failed or a couple of days of the site being down without
+// leaving those days stuck on "unknown" for ever.
+const OUTCOME_RESCORE_DAYS = 7;
 
 export const config = { schedule: '0 8 * * *' };
 
@@ -60,6 +65,13 @@ function stampMin(s: any, date: string): { min: number; at: string } | null {
   return { min: a.min, at: String(s?.deliveredDTTM || s?.arrivalDTTM || '') };
 }
 
+/** `date` and the n-1 days before it, newest first — the scheduled run's catch-up window. */
+function recentDates(date: string, n: number): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < n; i++) out.push(addDays(date, -i));
+  return out;
+}
+
 /** ISO date + n days, on the digits, so no timezone can roll it. */
 function addDays(date: string, n: number): string {
   const d = new Date(`${date}T12:00:00Z`);
@@ -73,8 +85,33 @@ function addDays(date: string, n: number): string {
  * `seenLater` — the evidence for Chad's "rolled to the next day" — comes from the NEXT
  * day's sealed board. If that day is not captured yet we pass null rather than false, so a
  * roll cannot be mislabelled as "never delivered" purely because we scored it too early.
- * Those rows re-score on the next run, which is why re-scoring is allowed to overwrite.
+ *
+ * ── WHY THIS RE-RUNS, AND WHY THAT USED TO BE IMPOSSIBLE ─────────────────────
+ *
+ * That deferral only works if something comes back later. It could not. This job runs at
+ * 08:00 UTC and scores ET-yesterday (day D), but D+1 is not sealed until 06:00 UTC the
+ * FOLLOWING morning — so `nextDay` was ALWAYS null on the scheduled path, and
+ * classifyOutcome's `seenLater == null` branch filed every genuine roll as "unknown".
+ * The next run then hit `prior?.version === LEDGER_VERSION` and `continue`d before ever
+ * reaching this function, so nothing was re-scored and "unknown" was permanent.
+ *
+ * That made `rolled` and `undelivered` unreachable outcomes — i.e. the exact question the
+ * feature was built to answer ("or at all and rolled to the next day") could never come back
+ * anything but "we cannot tell". Every check stayed green the whole time, which is the
+ * failure mode worth naming: a history that records nothing but shrugs looks identical to a
+ * week when nothing went wrong.
+ *
+ * The fix is two-part and both halves are needed: this step now runs independently of the
+ * miss ledger's own already-scored guard, and the scheduled run sweeps back over recent days
+ * whose outcomes are still pending. Cheap by construction — a day that already resolved is
+ * one getDoc and no further reads.
  */
+/** One getDoc: does this day still have flag outcomes that could change? See
+ *  needsOutcomeRescore — a resolved day costs exactly this read and nothing more. */
+async function outcomesPending(date: string): Promise<boolean> {
+  try { return needsOutcomeRescore(await getDoc(flagHistoryPath(TENANT, date))); } catch { return false; }
+}
+
 async function scoreFlagOutcomes(date: string, stops: any[]) {
   const path = flagHistoryPath(TENANT, date);
   const doc = await getDoc(path);
@@ -128,27 +165,43 @@ export default async (req: Request): Promise<Response> => {
     let dates: string[];
     if (from && to && DATE_RE.test(from) && DATE_RE.test(to)) dates = datesBetween(from, to);
     else if (one && DATE_RE.test(one)) dates = [one];
-    else dates = [etYesterday()];
+    // THE SCHEDULED RUN LOOKS BACK, not just at last night. Scoring ET-yesterday alone can
+    // never resolve a roll, because the day a rolled stop would reappear on is not sealed
+    // yet at 08:00 UTC. The older days in this window are visited for their flag outcomes
+    // only — each costs one getDoc unless it actually has something left to settle.
+    else dates = recentDates(etYesterday(), OUTCOME_RESCORE_DAYS);
 
     const warmNotes = makeNoteReader();
     const done: any[] = [];
 
     for (const date of dates) {
-      if (!force) {
-        const prior = await getDoc(ledgerPath(TENANT, date));
-        if (prior?.version === LEDGER_VERSION) { done.push({ date, skipped: 'already scored' }); continue; }
+      // THE LEDGER'S GUARD MUST NOT GATE THE FLAG STEP. These are two different jobs behind
+      // one version number: the miss ledger is finished with a day as soon as that day is
+      // sealed, while flag outcomes are not finished until the day AFTER it is sealed too.
+      // Sharing the guard meant the second job could never run a second time, which is
+      // precisely why every roll was filed as "unknown" for ever. `ledgerDone` now skips
+      // only the ledger's own work.
+      const priorLedger = force ? null : await getDoc(ledgerPath(TENANT, date));
+      const ledgerDone = priorLedger?.version === LEDGER_VERSION;
+      if (ledgerDone && !(await outcomesPending(date))) {
+        done.push({ date, skipped: 'already scored' });
+        continue;
       }
       let stops: any[] = [];
       try { stops = await listStops(TENANT, date); } catch { done.push({ date, skipped: 'no capture' }); continue; }
       if (!stops.length) { done.push({ date, skipped: 'no capture' }); continue; }
 
-      const keys = [...new Set(stops.map((s) => ledgerMatchKey(s)).filter(Boolean) as string[])];
-      const noteFor = await warmNotes(keys);
-      const { rows, summary } = scoreDay(stops, date, noteFor);
+      let summary: any = priorLedger || null;
+      if (!ledgerDone) {
+        const keys = [...new Set(stops.map((s) => ledgerMatchKey(s)).filter(Boolean) as string[])];
+        const noteFor = await warmNotes(keys);
+        const scored = scoreDay(stops, date, noteFor);
+        summary = scored.summary;
 
-      // The per-stop rows are kept alongside the summary: a rollup answers "how often", the
-      // rows answer "which customers, and by how long" — which is what actually gets fixed.
-      await setDoc(ledgerPath(TENANT, date), { tenant: TENANT, ...summary, rows, scored_at: new Date().toISOString() });
+        // The per-stop rows are kept alongside the summary: a rollup answers "how often", the
+        // rows answer "which customers, and by how long" — which is what actually gets fixed.
+        await setDoc(ledgerPath(TENANT, date), { tenant: TENANT, ...scored.summary, rows: scored.rows, scored_at: new Date().toISOString() });
+      }
 
       // ── DID THE FLAGS DO ANY GOOD? ───────────────────────────────────────────
       //
@@ -170,7 +223,8 @@ export default async (req: Request): Promise<Response> => {
         console.error('flag outcome scoring failed (non-fatal):', date, e?.message);
       }
       done.push({
-        date, scored: summary.scored, missed: summary.missed, miss_rate_pct: summary.miss_rate_pct,
+        date, scored: summary?.scored, missed: summary?.missed, miss_rate_pct: summary?.miss_rate_pct,
+        ...(ledgerDone ? { ledger: 'already scored' } : {}),
         ...(flagOutcome ? { flags: flagOutcome } : {}),
       });
     }
