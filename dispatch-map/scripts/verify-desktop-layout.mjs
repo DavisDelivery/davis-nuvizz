@@ -61,10 +61,11 @@ const srv = createServer(async (req, res) => {
 });
 await new Promise((r) => srv.listen(PORT, r));
 
-const browser = await chromium.launch({
-  executablePath: process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
-  args: ['--no-sandbox'],
-});
+// Same resolution as verify-mobile-layout.mjs: CHROMIUM_PATH when set, otherwise let
+// playwright-core find the installed browser (PLAYWRIGHT_BROWSERS_PATH locally, the
+// `playwright install chromium` step in CI). A hardcoded container path shipped here first
+// and failed in CI within the hour — the guard's own history repeating as farce.
+const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, args: ['--no-sandbox'] });
 
 let failures = 0;
 console.log('\nDesktop layout guard — is the display being used?\n');
