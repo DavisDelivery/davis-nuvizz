@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  selectAlertable, buildAlert, sendAlerts, alertClaimPath, DAILY_ALERT_CAP, ALERT_TO,
+  selectAlertable, buildAlert, sendAlerts, alertClaimPath, DAILY_ALERT_CAP, ALERT_TO, ALERT_TIERS,
 } from '../netlify/functions/lib/flag-alert.mts';
 
 const DATE = '2026-08-17';
@@ -12,13 +12,33 @@ const row = (o) => ({
   closeMin: 14 * 60, etaMin: 16 * 60, lateBy: 120, anchored: true, ...o,
 });
 
-test('only CRITICAL is emailed — amber and red stay on the screen', () => {
+test('EVERY urgent tier is emailed — amber alone stays on the screen', () => {
+  // Chad: "We want every red. Amber is a screen thing."
+  //
+  // This test used to assert the opposite, and the assertion was wrong rather than the
+  // behaviour being deliberate. v0.55.4 split the old 'red' into critical + red and the
+  // alert stayed wired to critical alone, so a stop the BOARD was painting as an urgent red
+  // flag sent nothing. Chad found it that way: "This popped up as an urgent red flag but no
+  // email was sent to customer service."
   const got = selectAlertable([
     row({ stopNbr: '1' }),
-    row({ stopNbr: '2', tier: 'red' }),
+    row({ stopNbr: '2', tier: 'red', lateBy: 60 }),
     row({ stopNbr: '3', tier: 'amber' }),
   ], 10 * 60);
-  assert.deepEqual(got.map((c) => c.stopNbr), ['1']);
+  assert.deepEqual(got.map((c) => c.stopNbr), ['1', '2']);
+});
+
+test('the alert tiers are exactly the tiers the board paints as urgent', () => {
+  // The screen and the inbox disagreeing is the defect above. Pinning the set means the
+  // next person to add a tier has to decide, in one place, whether it wakes anyone.
+  assert.deepEqual([...ALERT_TIERS].sort(), ['critical', 'red']);
+  assert.equal(ALERT_TIERS.has('amber'), false);
+});
+
+test('a red row carries its own numbers into the message, not a critical row\'s', () => {
+  const m = buildAlert(selectAlertable([row({ tier: 'red', lateBy: 45, etaMin: 14 * 60 + 45 })], 10 * 60)[0], DATE);
+  assert.match(m.text, /45 minutes late/);
+  assert.match(m.html, /45 min late/);
 });
 
 test('nothing is emailed once the window has already closed', () => {
@@ -27,6 +47,20 @@ test('nothing is emailed once the window has already closed', () => {
   assert.equal(selectAlertable([row({})], 14 * 60).length, 0, 'exactly at the close');
   assert.equal(selectAlertable([row({})], 15 * 60).length, 0, 'past the close');
   assert.equal(selectAlertable([row({})], 13 * 60 + 59).length, 1, 'one minute before, still actionable');
+});
+
+test('a row with NO receiving close never emails a midnight deadline', () => {
+  // Number(null) is 0, and 0 is finite — so a bare isFinite check let a stop with no
+  // receiving close through carrying closeMin 0. With a live clock the close-has-passed
+  // rule then hid it by accident (now >= 0), but judging a past board passes nowMin null,
+  // that rule never runs, and it became a real email to customer service announcing
+  // "Receiving close 12:00a" about a stop that has no deadline at all.
+  for (const bad of [null, undefined, '', '   ', 'noon', NaN, [], {}, true]) {
+    assert.equal(selectAlertable([row({ closeMin: bad })], 10 * 60).length, 0, String(bad));
+    assert.equal(selectAlertable([row({ closeMin: bad })], null).length, 0, `${bad} with no clock`);
+  }
+  // A genuine midnight close is still a close, and must survive.
+  assert.equal(selectAlertable([row({ closeMin: 0, etaMin: 30, lateBy: 30 })], null).length, 1);
 });
 
 test('a collapsed summary row is never emailed — it is not a stop', () => {

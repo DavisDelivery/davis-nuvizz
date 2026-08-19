@@ -7,15 +7,30 @@
 // flag appears as a red flag which could come later in day if a driver gets behind. We want
 // every red. Amber is a screen thing. Yeah if we are already past the time shouldn't send."
 //
-// WHY THIS ALERTS ON CRITICAL AND NOT ON THE OLD 'red'. Until v0.55.4 the tier meant only
-// where the receiving hours came from — red if a dispatcher typed them, amber if they were
-// parsed from Uline's order text. Wiring an alert to that would have paged customer service
-// based on the PROVENANCE of a time, not on whether freight was about to be refused: a stop
-// predicted 155 minutes late read as advisory while a 5-minute overrun against typed hours
-// read as red. Severity now comes from slack measured against the model's own known error,
-// and 'critical' means the overrun survives the model being as wrong as it usually is.
+// WHAT THE TIERS MEAN, AND A REGRESSION THAT CAME OUT OF RENAMING THEM. Until v0.55.4 the
+// tier meant only where the receiving hours came from — red if a dispatcher typed them,
+// amber if they were parsed from Uline's order text. Wiring an alert to that would have
+// paged customer service on the PROVENANCE of a time rather than on whether freight was
+// about to be refused, so v0.55.4 rebuilt severity around slack measured against the model's
+// own known error, and split the old red into 'critical' (the overrun survives the model
+// being as wrong as it usually is) and 'red' (it clears the error band once, or the hours
+// were typed and the stop is predicted late at all).
+//
+// The alert was then wired to 'critical' ALONE — and that quietly shrank the feature Chad
+// asked for. He said "We want every red"; after the split, "every red" meant only the worst
+// of them, and a stop the BOARD was showing as an urgent red flag sent nothing at all. He
+// found it exactly that way: a red flag on SIMPLY CHARLOTTE MASON with no email behind it —
+// "This popped up as an urgent red flag but no email was sent to customer service."
+//
+// So the rule is now the one that cannot drift from what he is looking at: IF THE BOARD
+// SHOWS IT AS URGENT, CUSTOMER SERVICE HEARS ABOUT IT. Both urgent tiers alert. Amber stays
+// a screen thing, as he said. Deliberately NOT a separate lateness threshold invented in
+// here — a second, invisible bar is precisely how the screen and the inbox came to disagree,
+// and how the disagreement stayed invisible for weeks.
 //
 // THE FOUR RULES, each of which exists because breaking it produces a specific bad morning:
+//   0. EVERY URGENT TIER, matching the board. Chad: "We want every red. Amber is a screen
+//      thing."
 //   1. FIRST TRANSITION ONLY. One email per stop per board day, claimed atomically before
 //      the send. The board recomputes every few minutes; without the claim a truck that
 //      stays late emails customer service every sweep for the rest of the day.
@@ -52,7 +67,9 @@ export const ALERT_TO = 'customerservice@davisdelivery.com';
 // it is: an anti-runaway ceiling for a parser bug marking a whole board critical.
 //
 // It sits far above any plausible day on purpose. Only stops that carry receiving hours,
-// read CRITICAL, and still have an open window can alert at all — a handful on a bad day.
+// read RED or CRITICAL, and still have an open window can alert at all — a handful on a bad
+// day. (Measured on the 2026-08-19 board at 11:07a: 0 critical, 1 red, 2 amber — so widening
+// to red moved the day's alertable count from 0 to 1, not into the dozens.)
 // Suppressing a real "this truck is about to miss" is the one failure this feature exists to
 // prevent, so the ceiling must never be the thing that decides.
 export const DAILY_ALERT_CAP = 500;
@@ -68,6 +85,25 @@ export interface AlertCandidate {
   anchored?: boolean; detail?: string;
 }
 
+// A minutes value, or null — and STRICTLY, because the loose version shipped a real defect.
+//
+// `Number(r.closeMin)` was the original check, guarded by isFinite. But Number(null) is 0,
+// Number('') is 0, and Number([]) is 0 — all finite. So a stop carrying no receiving close
+// survived as closeMin 0. With a live clock the close-has-passed rule hid it by accident
+// (now >= 0), but judging a past board passes nowMin null, that rule never runs, and it
+// became a real email to customer service announcing "Receiving close 12:00a" about a stop
+// that has no deadline at all. A midnight close is a legitimate value, so it cannot simply
+// be treated as absent — the emptiness has to be rejected before the coercion, not after.
+function finiteMinutes(v: any): number | null {
+  if (v == null) return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v !== 'string') return null;
+  const t = v.trim();
+  if (t === '') return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+}
+
 const hhmm = (m: number) => {
   const h = Math.floor(m / 60), x = m % 60;
   const ampm = h >= 12 ? 'p' : 'a';
@@ -81,15 +117,20 @@ const hhmm = (m: number) => {
  * `nowMin` is the board's own clock. A row whose close has already passed is dropped here
  * rather than at send time, so the reason is testable and the caller cannot forget it.
  */
+// The tiers the BOARD paints as urgent. One list, so the screen and the inbox cannot come to
+// disagree again without someone editing this line on purpose.
+export const ALERT_TIERS = new Set(['critical', 'red']);
+export { finiteMinutes };
+
 export function selectAlertable(rows: any[], nowMin: number | null): AlertCandidate[] {
   const out: AlertCandidate[] = [];
   for (const r of rows || []) {
     if (r?.rule !== 'hours_risk') continue;
-    if (r?.tier !== 'critical') continue;          // amber and red stay on the screen
+    if (!ALERT_TIERS.has(String(r?.tier))) continue;   // amber stays on the screen
     if (!r?.stopNbr) continue;                     // a collapsed summary row is not a stop
     if (r?.collapsed) continue;
-    const closeMin = Number(r.closeMin);
-    if (!Number.isFinite(closeMin)) continue;
+    const closeMin = finiteMinutes(r?.closeMin);
+    if (closeMin == null) continue;
     // Rule 2 — the window has already shut. Nothing actionable is left in this message.
     if (nowMin != null && nowMin >= closeMin) continue;
     out.push({
