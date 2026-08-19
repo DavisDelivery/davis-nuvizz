@@ -150,12 +150,58 @@ test('a stop sequenced past a TYPED close flags red, labelled as an estimate', (
   assert.ok(!/30 mph/.test(r.detail), 'the model note belongs to the footer, not each row');
 });
 
-test('scanner-guessed hours cap the same miss at AMBER, and say why', () => {
+// SEVERITY IS SLACK, NOT PROVENANCE (v0.55.4). This test used to assert that auto-detected
+// hours CAP at amber however late the truck was. That rule is what produced a board header
+// reading "0 red - 6 advisory" while carrying a stop predicted 155 minutes past its close.
+// A big overrun now escalates whatever the source of the hours; the caveat text stays.
+test('scanner-guessed hours still SAY they are guessed — but a big miss escalates anyway', () => {
   const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '08:00', close: '09:00' } } }) };
   const stops = [stop({ stopNbr: '1', routeSeq: 1 }), stop({ stopNbr: '2', routeSeq: 2, matchKey: 'far|k', lat: 33.60, lng: -84.60 })];
   const r = run(stops, notesObj).rows.find((x) => x.rule === 'hours_risk');
-  assert.ok(r && r.tier === 'amber');
-  assert.ok(/auto-detected/.test(r.detail));
+  assert.ok(r, 'the miss is still flagged');
+  assert.equal(r.tier, 'red', 'the overrun clears the unanchored error band');
+  assert.equal(r.errorMin, 90, 'nothing has reported in, so the wide unanchored band applies');
+  assert.ok(r.lateBy > r.errorMin && r.lateBy <= r.errorMin * 2, `lateBy ${r.lateBy} sits in the red band`);
+  assert.ok(/auto-detected/.test(r.detail), 'the provenance caveat survives — it just no longer sets the tier');
+});
+
+test('a small overrun on guessed hours stays AMBER — inside the error bars, the model cannot tell', () => {
+  // Same route, but the close is late enough that the predicted arrival misses it by less
+  // than the model's own typical error. That is not evidence, and it must not read as red.
+  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '08:00', close: '10:30' } } }) };
+  const stops = [stop({ stopNbr: '1', routeSeq: 1 }), stop({ stopNbr: '2', routeSeq: 2, matchKey: 'far|k', lat: 33.60, lng: -84.60 })];
+  const r = run(stops, notesObj).rows.find((x) => x.rule === 'hours_risk');
+  assert.ok(r);
+  assert.equal(r.tier, 'amber');
+  assert.ok(r.lateBy <= r.errorMin, 'amber means the overrun did not clear the error band');
+});
+
+test('typed hours keep their weight: any predicted overrun is at least RED', () => {
+  const notesObj = { 'far|k': note({
+    receiving_hours: { mon: { open: '08:00', close: '10:30' } },
+    manual_overrides: { receiving_hours: true },
+  }) };
+  const stops = [stop({ stopNbr: '1', routeSeq: 1 }), stop({ stopNbr: '2', routeSeq: 2, matchKey: 'far|k', lat: 33.60, lng: -84.60 })];
+  const r = run(stops, notesObj).rows.find((x) => x.rule === 'hours_risk');
+  assert.equal(r.tier, 'red', 'a human put that deadline on the record');
+});
+
+test('an overrun clearing TWICE the error band is CRITICAL, whatever typed the hours', () => {
+  // Auto-detected hours, and a miss so large it survives the model being as wrong as it
+  // usually is. This is the tier that did not exist when a 155-minute miss read as advisory.
+  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '06:00', close: '06:30' } } }) };
+  const stops = [stop({ stopNbr: '1', routeSeq: 1 }), stop({ stopNbr: '2', routeSeq: 2, matchKey: 'far|k', lat: 33.60, lng: -84.60 })];
+  const r = run(stops, notesObj).rows.find((x) => x.rule === 'hours_risk');
+  assert.equal(r.tier, 'critical');
+  assert.ok(r.lateBy > r.errorMin * 2);
+});
+
+test('critical is counted separately AND inside redCount — promotion never reads calmer', () => {
+  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '06:00', close: '06:30' } } }) };
+  const stops = [stop({ stopNbr: '1', routeSeq: 1 }), stop({ stopNbr: '2', routeSeq: 2, matchKey: 'far|k', lat: 33.60, lng: -84.60 })];
+  const out = run(stops, notesObj);
+  assert.equal(out.criticalCount, 1);
+  assert.equal(out.redCount, 1, 'the critical row is inside redCount, not instead of it');
 });
 
 test('a route without sequence numbers is not judged — an invented order is worse than silence', () => {

@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.55.2';
+const APP_VERSION = '0.55.4';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -148,6 +148,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.55.4', 'A FLAG IS NOW ABOUT HOW LATE THE TRUCK IS, NOT WHO TYPED THE HOURS \u2014 AND CUSTOMER SERVICE GETS TOLD. Chad, looking at a live board: \u201cWhat makes one of these flags go red and trigger the email to customerservice@davisdelivery.com\u201d. Two answers, and the first one was embarrassing. RED MEANT ONE THING ONLY: a dispatcher had typed the receiving hours. Amber meant they were parsed from Uline\u2019s order text. That is a statement about where a time came from and says nothing about whether freight is about to be refused \u2014 which is why his board read \u201c0 red \u00b7 6 advisory\u201d while carrying AWC INC predicted 155 minutes past its close, sitting at exactly the same weight as VERITIV at 28 minutes past. And the second answer: NO EMAIL EXISTED. It had been discussed and never built. SEVERITY IS NOW SLACK MEASURED AGAINST HOW WRONG THE ESTIMATE IS KNOWN TO BE. The back-test measured that error in each state over 39 sealed days and 24,238 stops: about 15 minutes when the clock is anchored on a real arrival a stop or two back, growing as it projects further, and 90-plus when nothing on the route has reported and it is still a pure 8:00 projection. Every row now carries the band for its own state. CRITICAL means the overrun clears twice that band \u2014 the miss survives the model being as wrong as it usually is. RED means it clears the band once, or the hours were typed and any overrun is predicted. AMBER means predicted late but inside the bars, where the model genuinely cannot tell late from on-time. Auto-detected hours can now reach critical, because a truck 155 minutes past a close is a problem no matter who wrote the 11:00 down. criticalCount is reported separately AND folded into redCount, so promoting a row can never make the header read calmer than it did a minute earlier. THE EMAIL. First time a stop goes critical, once per stop per board day, to customerservice@davisdelivery.com \u2014 and never once the window has already shut, because past the close the message cannot change anything and competes with stops that can still be saved. The claim is written to Firestore BEFORE the send, which is what stops a truck that simply stays late from emailing every twenty minutes all afternoon; a send that then fails keeps its claim on purpose, because one missed alert beats an alert loop. Capped at 25 a day so a mis-parsed board cannot become a hundred emails. It runs the SAME engine the screen runs \u2014 imported, not reimplemented \u2014 after two separate incidents this session where a copy of the model quietly diverged from it. Dry-run mode reports exactly what would be sent and claims nothing. 1,781 tests.'],
   ['0.55.2', 'THE DESKTOP GETS ITS DISPLAY BACK \u2014 AND A GUARD SO IT STAYS THAT WAY. Chad, on Diagnostics at ~2000px wide: \u201ci don\u2019t like these narrow pages it acts like we dont\u2019 have 2 versions of this app one for desktop and one for mobile these page looks like it was designed for mobile.\u201d He was right and it was systemic, measured on the real build: Diagnostics used 44% of a 1920px display, Manifest 52%, Customer emails 58%, New Order 33%, Quote 23%. Every guard this app had looked at PHONES \u2014 a screen can be perfect at 390px and still waste half a monitor, and nothing in the build could see it. One convention now, not four ad-hoc caps, named by CONTENT SHAPE because the shape decides the answer: SCREEN_DASH for stacked cards (widen and let panels breathe), SCREEN_FORM for forms (widen, but a 1600px text field reads worse, not better), SCREEN_WIDE for tables and lists where every pixel is another readable column. All three start at the phone width and only widen at lg/xl/2xl, so the phone build \u2014 deliberately a different being \u2014 is untouched. After: Diagnostics 86%, Manifest 92%, Customer emails 92%, New Order 65%. Quote stays narrower ON PURPOSE and says so in the code: it is a single-column calculator whose 468px cap lives upstream in DavisDelivery/Quotes; it is widened to 820px on desktop through the same scoped-override channel as its header fix, and marked data-desktop-narrow with the reason. AND THE GUARD: scripts/verify-desktop-layout.mjs walks the built app at 1440 and 1920, measures the width the content column ACTUALLY occupies, and fails the build under a 62% floor \u2014 wired into CI next to the phone guard. Worth confessing because it is the whole lesson: the first two versions of the measurement PASSED EVERYTHING \u2014 one measured the full-width app shell, the next included the footer bar that spans the viewport by design \u2014 both structurally unable to fire, exactly the vacuous-pass defect the phone guard once shipped with. The check only became real when the number was compared against a screenshot of the starved screen it claimed to measure. Every navigation step must also PROVE the screen opened, or that screen FAILS rather than silently measuring the previous one twice.'],
   ['0.55.1', 'THE PER-STOP COST IS NOW MEASURED, NOT ASSUMED \u2014 AND CHAD WAS RIGHT TO PUSH BACK. I proposed feeding the flag model the learned dwell times in routing_service_times. Chad: \u201ci don\u2019t think dwell time is going to do as much as you hoped as i find the vast majority of deliveries show an arrival time and departure time that are less than 120 seconds apart and this is because the driver performs the actual delivery before ever clicking arrive at stop.\u201d He was right, and the warehouse makes it worse than he knew: arrivalDTTM is present on EIGHT stops out of 20,904. There is no arrive\u2192deliver bracket to measure at all, so routing_service_times \u2014 which mines exactly that bracket \u2014 could not have been trusted, and wiring it in would have fed the model a per-stop cost near zero. The claim is still testable without that stamp. The residual between consecutive delivery stamps, minus modelled travel, is dwell PLUS travel error; the two are identical in aggregate but not against DISTANCE, because dwell is a fixed cost per stop while a short travel model scales with the leg. Over 32 sealed days the residual is FLAT \u2014 10.9 min under a mile, 15.8 at 3-8 miles, 13.7 over 20 \u2014 so there IS a real fixed cost at every stop, and the travel model is not the thing hiding it. Sweeping that cost against the anchored walk: 0 min gives a mean bias of -14.3, 8 gives -7.0, 13 gives -2.1, 15 gives -0.2, and the old 20-minute planning default gives +4.0. Fourteen minutes sits at the bias-zero crossing and the error minimum. Moving there from the zero that v0.55.0 shipped for a delivered stamp lifts within-fifteen-minutes from 41% to 52% and cuts the median miss from 18.9 to 14.3. The bias sign matters more than the accuracy: at zero the model was systematically fourteen minutes OPTIMISTIC, and for a deadline flag optimism is the dangerous direction \u2014 it is the model quietly deciding a late truck is fine. Kept as its own constant rather than changing DEFAULT_SERVICE_SEC, so tuning the flag can never silently re-plan a route.'],
   ['0.55.0', 'THE ETA IS ANCHORED ON WHAT THE TRUCK ACTUALLY DID. Chad, after the back-test: "we do need to re anchor to the first delivery when it\u2019s made and then recalculate every time going forward." Here is what the flags were doing until now. R5 judged only the stops still OPEN, but it restarted the walk at the DEPOT at 8:00 every time \u2014 so every completed stop deleted its leg AND its 20-minute service block from the front of the chain while the start time stayed put, and the predicted arrival for everything still out walked BACKWARDS as the day ran. Run against the real module on a 10-stop route with a typed 2pm close on stop 9: predicted 2:43p at 08:05, 2:23p at 08:35, 2:03p at 09:05 \u2014 and from 09:35 the red flag was GONE, with the truck no closer to making 2pm. A dispatcher who saw it at nine found it withdrawn at ten. The re-anchor could not save it either, because one delivered stop makes a route \u201crolling\u201d, so the clock stayed pinned to 8:00 all day. It now walks the FULL sequenced chain and snaps the clock to each stop\u2019s real arrival stamp, so everything after it is projected from where the truck REALLY was rather than from an assumption made this morning. Same truck falling steadily behind: the flag now HOLDS and escalates \u2014 2:43p, 2:46p, 2:59p, 3:12p, 3:38p \u2014 and the row says which arrival it is standing on (\u201cfrom CUST 3\u2019s 10:30a arrival\u201d) so you can see whether the estimate rests on a truck or on a guess. A truck running AHEAD still clears its flag, which is the point rather than a regression. This is not a hoped-for gain. Replayed over 39 sealed days, 2,357 routes and 24,238 real stops, the old model was within 30 minutes of reality 12% of the time with a median miss of 2h09; the anchored model is within 30 minutes 67% of the time with a median miss near 15. Two details that would each have quietly cost most of that: an arrival stamp means the truck is on site with the dwell still ahead of it while a delivered stamp means the dwell already happened, so adding service to a delivered stamp would count it twice; and the stamps are naive ET wall-clock, so reading one through Date+timeZone lands 4-5 hours early and rolls a pre-dawn delivery onto the previous day.'],
@@ -3017,7 +3018,10 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
   // Header counts come from the DISMISS-FILTERED rows — the same numbers the chip shows.
   // Printing the raw detector counts here made a fully-dismissed board read "1 red · 0
   // advisory" directly above "Nothing needs looking at", one claim contradicting the other.
-  const liveRed = rows.filter((r) => r.tier === 'red').length;
+  // Critical is counted separately AND inside red — a row promoted from red to critical must
+  // never make the header read calmer than it did a minute earlier.
+  const liveCritical = rows.filter((r) => r.tier === 'critical').length;
+  const liveRed = rows.filter((r) => r.tier === 'critical' || r.tier === 'red').length;
   const liveAmber = rows.filter((r) => r.tier === 'amber').length;
   const sk = flags.skipped || {};
   const ck = flags.checked || {};
@@ -3033,6 +3037,9 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
       <div className="px-3 py-2 border-b flex items-center justify-between bg-slate-50">
         <div className="text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5">
           <Flag size={13} className="text-red-600" /> Board flags
+          {liveCritical > 0 && (
+            <span className="px-1.5 py-0.5 rounded bg-red-600 text-white text-[10px] font-bold tracking-wide">{liveCritical} CRITICAL</span>
+          )}
           <span className="font-normal text-slate-500">{liveRed} red · {liveAmber} advisory</span>
         </div>
         <button onClick={onClose} className="p-1 rounded hover:bg-slate-200" aria-label="Close"><X size={14} /></button>
@@ -3045,7 +3052,12 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
         )}
         {rows.map((r) => (
           <div key={r.dismissKey} className="px-3 py-2 flex items-start gap-2 hover:bg-slate-50">
-            <span className={'mt-1 w-2 h-2 rounded-full flex-shrink-0 ' + (r.tier === 'red' ? 'bg-red-500' : 'bg-amber-400')} />
+            <span
+              className={'mt-1 rounded-full flex-shrink-0 ' + (
+                r.tier === 'critical' ? 'w-2.5 h-2.5 bg-red-600 ring-2 ring-red-300'
+                  : r.tier === 'red' ? 'w-2 h-2 bg-red-500'
+                    : 'w-2 h-2 bg-amber-400')}
+            />
             <button
               onClick={() => { if (r.stopNbr) { onOpenStop?.(r.stopNbr); onClose(); } }}
               className={'min-w-0 flex-1 text-left ' + (r.stopNbr ? 'cursor-pointer' : 'cursor-default')}
@@ -9018,7 +9030,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   // The chip's number excludes dismissed rows — a cleared list must read as cleared.
   const visibleFlagCounts = useMemo(() => {
     const live = boardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]);
-    return { ...boardFlags, redCount: live.filter((r) => r.tier === 'red').length, amberCount: live.filter((r) => r.tier === 'amber').length };
+    return {
+      ...boardFlags,
+      criticalCount: live.filter((r) => r.tier === 'critical').length,
+      redCount: live.filter((r) => r.tier === 'critical' || r.tier === 'red').length,
+      amberCount: live.filter((r) => r.tier === 'amber').length,
+    };
   }, [boardFlags, dismissedFlags]);
   const dismissFlag = useCallback((key) => setDismissedFlags({ ...writeDismissedFlag(key) }), []);
   const restoreDismissedFlags = useCallback(() => { safeWriteJSON(LS_BOARD_FLAGS_DISMISSED, {}); setDismissedFlags({}); }, []);
@@ -15558,7 +15575,12 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   }, [stops, notes, loadRosterList, selectedDate, flagsClockTick]); // eslint-disable-line react-hooks/exhaustive-deps
   const visibleFlagCounts = useMemo(() => {
     const live = routingBoardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]);
-    return { ...routingBoardFlags, redCount: live.filter((r) => r.tier === 'red').length, amberCount: live.filter((r) => r.tier === 'amber').length };
+    return {
+      ...routingBoardFlags,
+      criticalCount: live.filter((r) => r.tier === 'critical').length,
+      redCount: live.filter((r) => r.tier === 'critical' || r.tier === 'red').length,
+      amberCount: live.filter((r) => r.tier === 'amber').length,
+    };
   }, [routingBoardFlags, dismissedFlags]);
   const dismissFlag = useCallback((key) => setDismissedFlags({ ...writeDismissedFlag(key) }), []);
   const restoreDismissedFlags = useCallback(() => { safeWriteJSON(LS_BOARD_FLAGS_DISMISSED, {}); setDismissedFlags({}); }, []);

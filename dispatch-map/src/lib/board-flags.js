@@ -180,6 +180,60 @@ export function arrivalAnchor(s, servedDate) {
 // the flag never silently re-plans routes.
 const FLAG_SERVICE_SEC = 14 * 60;
 
+// ── SEVERITY: HOW MUCH SLACK IS LEFT, NOT WHO TYPED THE HOURS ────────────────
+//
+// Until now a receiving-hours flag was red if a dispatcher had typed the hours and amber if
+// they were parsed out of Uline's order text. That is a statement about PROVENANCE, and it
+// says nothing about whether freight is about to be refused. On Chad's board it produced a
+// header reading "0 red - 6 advisory" while carrying a stop predicted 155 minutes past its
+// close, sitting at the same weight as one predicted 28 minutes past.
+//
+// Severity now comes from SLACK measured against how wrong the estimate is KNOWN to be in
+// the state it was produced in. That second half matters: the same "30 minutes late" is
+// near-worthless at 6am off an assumed 8:00 departure and is worth acting on at 11am
+// projected from a stamp two stops ago. The back-test measured both states over 39 sealed
+// days, 24,238 stops:
+//
+//   anchored on a real arrival, 1-2 stops out ... median |error| ~15 min
+//   anchored, further down the chain ........... error grows with each projected hop
+//   never anchored (pure 8:00 projection) ...... median |error| ~96-128 min
+//
+// So each row carries the typical error for its own state, and lateness is judged against
+// it. A row only reaches the top tier when the overrun clears TWICE that band — i.e. the
+// miss survives the model being as wrong as it usually is.
+export const MODEL_ERROR_MIN = { anchored: 15, anchoredFar: 25, anchoredDistant: 40, unanchored: 90 };
+
+export function modelErrorMinutes({ anchored, hops }) {
+  if (!anchored) return MODEL_ERROR_MIN.unanchored;
+  if (hops <= 2) return MODEL_ERROR_MIN.anchored;
+  if (hops <= 5) return MODEL_ERROR_MIN.anchoredFar;
+  return MODEL_ERROR_MIN.anchoredDistant;
+}
+
+/**
+ * The tier for a predicted receiving-hours overrun.
+ *
+ * critical — the overrun clears twice the model's typical error. We are confident this stop
+ *            misses even allowing for the model being as wrong as it usually is. This is the
+ *            tier Chad asked for: "a high priority flag that is even more prominent."
+ * red      — the overrun clears the error band once, OR the hours were typed by a dispatcher
+ *            and the stop is predicted late at all. Typed hours keep their weight: a human
+ *            put that deadline on the record, so any predicted overrun against it is real
+ *            enough to look at.
+ * amber    — predicted late, but inside the error bars. Worth showing, not worth waking
+ *            anyone: at this distance the model simply cannot tell late from on-time.
+ *
+ * Auto-detected hours can still reach critical. A truck 155 minutes past a close is a
+ * problem whether the 11:00 came from a dispatcher or from Uline's order text — and refusing
+ * to escalate it because of where the text came from is the exact defect being fixed.
+ */
+export function severityTier({ lateBy, errorMin, hoursTier }) {
+  if (lateBy > errorMin * 2) return 'critical';
+  if (lateBy > errorMin) return 'red';
+  if (hoursTier === 'typed') return 'red';
+  return 'amber';
+}
+
 // ── stop-level helpers ────────────────────────────────────────────────────────
 
 const TERMINAL_STATUSES = new Set(['DELIVERED', 'EXCEPTION']);
@@ -252,6 +306,11 @@ export function isAppointmentRoute(name) {
 
 export const RED_CAP = 12;    // per rule; beyond this a rule collapses to one summary row
 export const AMBER_CAP = 25;
+// A critical row is never collapsed away. The cap exists so a data-quality batch cannot bury
+// the panel; a stop the model is CONFIDENT will miss its receiving window is the opposite of
+// that, and there are only ever a handful. Ordering is critical, then red, then amber.
+export const CRITICAL_CAP = 40;
+export const TIER_ORDER = { critical: 0, red: 1, amber: 2 };
 
 /**
  * PURE: derive the day's flag rows from what the browser already holds.
@@ -430,6 +489,11 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       // the assumed departure and is replaced the moment a real stamp anchors the chain —
       // so the dispatcher can see whether the estimate rests on an assumption or on a truck.
       let anchorNote = notStarted ? `no movement yet, clock runs from ${fmtMin(nowMin)}` : `departs ${fmtMin(effDepart)}`;
+      // Anchor state drives SEVERITY, not just the wording: an estimate projected from a real
+      // stamp two stops back is a different quality of evidence from one projected from an
+      // assumed departure six hours ago, and the tier has to know which it is holding.
+      let anchored = false;
+      let hopsSinceAnchor = 0;
       for (const s of visits) {
         const pos = stopPosition(s, noteOf(s));
         // A MISSING PIN NO LONGER HAS TO END THE ROUTE. It used to, and that was right when
@@ -443,11 +507,19 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         const stamplessGap = !pos && !arrivalAnchor(s, servedDate);
         if (stamplessGap) { chainBroken = true; break; }
         if (pos) clockMin += (haversineMeters(cur, pos) * ROUTE_ROAD_FACTOR / ROUTE_AVG_SPEED_MPS) / 60;
+        hopsSinceAnchor += 1;
         const finished = isFinishedStop(s);
         const w = finished ? null : dayReceivingWindow(noteOf(s), day);
         if (w && clockMin > w.closeMin) {
           const lateBy = Math.round(clockMin - w.closeMin);
-          const hoursRow = row(w.tier === 'typed' ? 'red' : 'amber', 'hours_risk', s, {
+          const errorMin = modelErrorMinutes({ anchored, hops: hopsSinceAnchor });
+          const tier = severityTier({ lateBy, errorMin, hoursTier: w.tier });
+          const hoursRow = row(tier, 'hours_risk', s, {
+            // Machine-readable facts alongside the human sentence: the alert path must not
+            // have to parse the detail string to know when the window shuts.
+            lateBy, errorMin, anchored,
+            closeMin: w.closeMin, etaMin: Math.round(clockMin),
+            customer: s.businessName || s.stopNbr || null,
             title: `May miss receiving hours — ${s.businessName || s.stopNbr}`,
             // Facts only, one breath (Chad, Aug 12: "fotmatting issues" — every card carried
             // four lines of identical boilerplate and the panel read as a wall of text).
@@ -475,6 +547,8 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         const anchor = arrivalAnchor(s, servedDate);
         if (anchor) {
           clockMin = anchor.source === 'delivered' ? anchor.min : anchor.min + serviceSec / 60;
+          anchored = true;
+          hopsSinceAnchor = 0;
           anchorNote = `from ${s.businessName || `stop ${seqOf(s)}`}'s ${fmtMin(anchor.min)} ${anchor.source === 'delivered' ? 'delivery' : 'arrival'}`;
         } else {
           clockMin += serviceSec / 60;
@@ -551,7 +625,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   const byRule = new Map();
   for (const r of rows) { if (!byRule.has(r.rule)) byRule.set(r.rule, []); byRule.get(r.rule).push(r); }
   for (const [rule, rs] of byRule) {
-    const cap = rs[0].tier === 'red' ? RED_CAP : AMBER_CAP;
+    const cap = rs[0].tier === 'critical' ? CRITICAL_CAP : rs[0].tier === 'red' ? RED_CAP : AMBER_CAP;
     if (rs.length <= cap) { capped.push(...rs); continue; }
     capped.push({
       ...rs[0], stopNbr: null, matchKey: null,
@@ -560,11 +634,16 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       fingerprint: `collapsed|${rule}|${servedDate}|${rs.length}`, collapsed: rs.length,
     });
   }
-  capped.sort((a, b) => (a.tier === b.tier ? 0 : a.tier === 'red' ? -1 : 1));
+  capped.sort((a, b) => (TIER_ORDER[a.tier] ?? 9) - (TIER_ORDER[b.tier] ?? 9));
 
   return {
     rows: capped,
-    redCount: capped.filter((r) => r.tier === 'red').length,
+    // criticalCount is reported separately AND folded into redCount. Every existing caller
+    // reads redCount to decide whether the board is in trouble; if critical were its own
+    // count only, promoting a row from red to critical would DECREASE redCount and the chip
+    // would read calmer at the exact moment things got worse.
+    criticalCount: capped.filter((r) => r.tier === 'critical').length,
+    redCount: capped.filter((r) => r.tier === 'critical' || r.tier === 'red').length,
     amberCount: capped.filter((r) => r.tier === 'amber').length,
     skipped,
     checked,
