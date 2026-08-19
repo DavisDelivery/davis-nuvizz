@@ -37,6 +37,7 @@
 import { getDoc, setDoc, deleteDoc, listDocs, createDocIfAbsent, etDayString, etHourString } from './firestore.mts';
 import { normalizeMatchKey } from './match-key.mts';
 import { emailEnabled, sendEmail } from './email.mts';
+import { unsubSecret, unsubscribeUrl } from './unsubscribe.mts';
 
 const OPS = 'nuvizz_ops';
 const CONFIG_DOC = `${OPS}/customer_comms_config`;
@@ -48,7 +49,7 @@ export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export const MERGE_FIELDS = [
   'pro', 'customer', 'deliveredDate', 'deliveredTime', 'deliveredWhen',
   'address', 'address2', 'city', 'state', 'zip', 'cityStateZip', 'pieces', 'weight',
-  'trackingUrl', 'reviewUrl', 'year',
+  'trackingUrl', 'reviewUrl', 'unsubscribeUrl', 'year',
 ];
 
 // ── SENDER DOMAIN STATUS ─────────────────────────────────────────────────────
@@ -537,6 +538,10 @@ export function formatClock(hh: number, mm: number): string {
 // link, but the click still came out of an email, and that is the fact `src` exists to keep.
 export const TRACKING_ORIGIN = 'https://tracking.davisdelivery.com/';
 
+// Where the unsubscribe link points. This app's own site, because the endpoint that honours
+// it lives here. Overridable so a custom domain can be moved onto later without a code change.
+export const SITE_ORIGIN = (process.env.COMMS_SITE_ORIGIN || 'https://dd-dispatch-map.netlify.app').replace(/\/+$/, '');
+
 export function trackingLink(pro: string, extra: Record<string, string> = {}): string {
   const qs = new URLSearchParams();
   if (pro) qs.set('pro', pro);
@@ -605,16 +610,85 @@ export function stopVars(stop: any, date: string): Record<string, string> {
     // Still its own merge field, so the button can be pointed straight at Google — or
     // anywhere else — from the Communications tab without touching this file.
     reviewUrl: trackingLink(pro, pro ? { rate: '1', src: 'review-email' } : { src: 'review-email' }),
+    // The customer's own way off these emails. Signed, because a matchKey is derived from a
+    // business's public name and address and would otherwise let anyone unsubscribe anyone.
+    // Empty when no signing secret is configured, which is what makes the footer below fall
+    // back to "reply to this email" rather than shipping a link that cannot work.
+    unsubscribeUrl: unsubscribeUrl(usableMatchKey(stop) || '', SITE_ORIGIN, unsubSecret()),
     // ET, not the UTC runtime's year — otherwise a New Year's Eve send stamps next year.
     year: etDayString().slice(0, 4),
   };
 }
 
-export function buildMessage(stop: any, date: string, cfg: CommsConfig): { subject: string; html: string; vars: Record<string, string> } {
+/**
+ * PURE. Guarantee the email carries a way off the list, whatever the template says.
+ *
+ * THE LIVE TEMPLATE LIVES IN FIRESTORE, edited from the Communications tab — DEFAULT_HTML
+ * below is only the fallback. So adding an unsubscribe footer to the default would put it in
+ * exactly zero real emails: the saved template wins, and the saved one predates this.
+ *
+ * A template that places {{unsubscribeUrl}} deliberately keeps control of where it sits.
+ * Anything else gets this appended. The one thing that must not happen is a delivery email
+ * going out with no way off it — that is the situation that made a customer reply
+ * "unsubscribe" in words and wait for someone to notice.
+ *
+ * With no signing secret configured there is no working link, so it falls back to asking
+ * them to reply — which is honest, and is what was already happening.
+ */
+export function withUnsubscribeFooter(html: string, url: string, replyTo?: string): string {
+  const body = String(html || '');
+  // BOTH FORMS. The template is rendered with escapeVars, so a template that places
+  // {{unsubscribeUrl}} itself emits the ESCAPED url (& becomes &amp;) — comparing only the
+  // raw one never matched, and the email went out with the template's link AND an appended
+  // footer. Two unsubscribe links, in exactly the case this guard exists to prevent.
+  if (url && (body.includes(url) || body.includes(escapeHtml(url)))) return body;
+  if (/id="dds-unsub"/.test(body)) return body;             // already appended
+  const inner = url
+    ? `Don't want delivery emails? <a href="${url}" style="color:#5A6B7C;text-decoration:underline;">Unsubscribe</a>.`
+    : `Don't want delivery emails? Reply to this message and we'll take you off the list.`;
+  return `${body}
+<table role="presentation" id="dds-unsub" width="100%" cellpadding="0" cellspacing="0" style="background:#EDF1F5;">
+<tr><td align="center" style="padding:0 12px 26px;">
+  <div style="max-width:600px;width:100%;font-family:'DM Sans','Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:12px;line-height:1.6;color:#7C8B9A;text-align:center;">
+    You're getting this because we delivered freight to you.<br>${inner}
+  </div>
+</td></tr></table>`;
+}
+
+/**
+ * The headers that put a native Unsubscribe button in Gmail and Outlook.
+ *
+ * List-Unsubscribe-Post is RFC 8058 one-click: the client POSTs and the customer is done,
+ * with no page and no round trip. It is only honoured alongside an https URL, so it is
+ * omitted entirely when there is no link to give.
+ */
+export function unsubscribeHeaders(url: string, replyTo?: string): Record<string, string> {
+  const parts: string[] = [];
+  if (url) parts.push(`<${url}>`);
+  if (replyTo) parts.push(`<mailto:${replyTo}?subject=unsubscribe>`);
+  if (!parts.length) return {};
+  return {
+    'List-Unsubscribe': parts.join(', '),
+    ...(url ? { 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' } : {}),
+  };
+}
+
+/**
+ * @param opts.neutralizeUnsubscribe  A [TEST] send is built from a REAL delivered stop and
+ * goes to a Davis inbox. With a live footer, anyone in that inbox clicking Unsubscribe would
+ * opt out an actual customer — and the confirmation page would show that customer's name
+ * back to them. The test path passes true, so the footer renders the reply-to fallback
+ * instead of a working link that suppresses somebody who never asked.
+ */
+export function buildMessage(
+  stop: any, date: string, cfg: CommsConfig, opts: { neutralizeUnsubscribe?: boolean } = {},
+): { subject: string; html: string; vars: Record<string, string> } {
   const vars = stopVars(stop, date);
+  if (opts.neutralizeUnsubscribe) vars.unsubscribeUrl = '';
+  const rendered = renderTemplate(cfg.htmlTemplate, escapeVars(vars));
   return {
     subject: normalizeSubject(renderTemplate(cfg.subjectTemplate, vars)),
-    html: renderTemplate(cfg.htmlTemplate, escapeVars(vars)),
+    html: withUnsubscribeFooter(rendered, vars.unsubscribeUrl, cfg.replyTo),
     vars,
   };
 }
@@ -1010,7 +1084,7 @@ export async function sendForStop(
   }
   if (!isEmailAddress(to)) return { pro, key, skipped: 'bad_recipient' };
 
-  const { subject, html } = buildMessage(stop, date, cfg);
+  const { subject, html, vars } = buildMessage(stop, date, cfg);
 
   // CLAIM, ATOMICALLY, BEFORE SENDING. The precondition is evaluated inside Firestore's
   // commit, so two overlapping sweeps cannot both win it. A claim that cannot be written
@@ -1060,7 +1134,13 @@ export async function sendForStop(
   }
   if (!owned) return { pro, key, skipped: 'already_sent' };
 
-  const res = await d.send({ to, subject, html, replyTo: cfg.replyTo, from: cfg.fromAddress || undefined });
+  const res = await d.send({
+    to, subject, html, replyTo: cfg.replyTo, from: cfg.fromAddress || undefined,
+    // Puts Gmail's and Outlook's own Unsubscribe control on the message — one click, no page.
+    // The mailto: fallback is what a customer replying "unsubscribe" in words was already
+    // doing by hand; naming it in the header at least routes it somewhere deliberate.
+    headers: unsubscribeHeaders(vars.unsubscribeUrl, cfg.replyTo),
+  });
 
   if (!res.ok && isDefinitiveRejection(res.error)) {
     // Resend refused it, so nothing was delivered and nothing is in flight. Release the

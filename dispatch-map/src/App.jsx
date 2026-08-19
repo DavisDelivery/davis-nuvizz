@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.57.0';
+const APP_VERSION = '0.58.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -148,6 +148,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.58.0', 'THE CUSTOMER CAN TAKE THEMSELVES OFF THE DELIVERY EMAILS NOW. Chad: a customer replied \u201cunsubscribe\u201d to a delivery confirmation and he went into the app and turned her emails off by hand \u2014 \u201cI think we need to set it up in such a way that we can allow the customer to automatically do that, and then also have somewhere that shows us all the customers that have unsubscribed.\u201d The suppression itself has existed and been honoured since v0.54.78 (customer_notes.comms_opt_out, checked in chooseRecipient). What was missing was any way for the CUSTOMER to set it, so every unsubscribe was a person reading a reply and remembering to act on it. Every delivery email now carries an unsubscribe link, and List-Unsubscribe / List-Unsubscribe-Post headers so Gmail and Outlook show their own native button \u2014 which required teaching sendEmail to pass custom headers at all, something it could not do. WHY THE LINK DOES NOT FIRE ON A PLAIN GET, even though Chad asked for automatic: corporate mail filters and link-preview bots fetch every URL in an email before the human sees it, so a GET that unsubscribed would silently opt out customers who never touched it \u2014 and the symptom is indistinguishable from the sweep not running. That is precisely why RFC 8058 specifies one-click as a POST. It is still automatic in the way he meant: nobody at Davis touches anything. THE FOOTER IS APPENDED AT SEND, NOT PUT IN THE TEMPLATE, because the live template lives in Firestore and is edited from the Communications tab \u2014 adding it to the shipped default would have placed it in exactly zero real emails. A template that positions {{unsubscribeUrl}} itself keeps control; anything else gets it appended. THE WRITE IS FIELD-MASKED, via a new updateDocFields helper, and that is load-bearing: setDoc in this repo REPLACES a document rather than merging it (writeStopNotes reads the whole doc back precisely because of this), and customer_notes carries the dispatcher-authored receiving hours the flag engine reads. A blind write of a suppression flag would have taken those hours with it and silently stopped flagging that customer forever. AN ADVERSARIAL REVIEW CAUGHT FOUR THINGS BEFORE MERGE, two of them silent: a DOUBLE FOOTER whenever a template did place the link (the guard compared the raw URL against template output that had been HTML-escaped, so it never matched); a [TEST] send carrying a LIVE unsubscribe link built from a real customer\u2019s delivered stop, so anyone in a Davis inbox clicking it would have suppressed a real customer and been shown their name; the undo sharing the unsubscribe token, which would have let anyone holding the URL put a customer who opted out BACK on the list; and a matchKey \u2014 derived from a business\u2019s public name and address \u2014 interpolated straight into a Firestore path. Fixed with a scoped 30-minute undo token, a key-shape check, and a signing KEY RING, because links live in inboxes for months and rotating the secret without one would make every link already sent answer \u201cnot valid\u201d. AND THE READINESS IS REPORTED RATHER THAN ASSUMED: with no signing secret the footer degrades to \u201creply to this email\u201d, which is honest but indistinguishable from working, so the Communications tab now reads unsubscribeReady from the server and can say so out loud. A new Unsubscribed card on that screen, phone and desktop, lists everyone suppressed and separates the ones who asked from the ones we switched off \u2014 and counts the pre-tracking ones as neither, rather than crediting a customer request that may never have happened. 29 new tests, 1,909 green.'],
   ['0.57.0', 'A HISTORY OF FLAGS, AND WHETHER THEY DID ANY GOOD. Chad: \u201cI want to build a history of flags\u2026 somewhere that tracks all the flags that have presented itself, then the time the shipment actually delivered. And if the flag allowed us to fix the problem or not before it didn\u2019t deliver on time or at all and rolled to the next day.\u201d WHAT DID NOT EXIST: a flag was a live computation \u2014 computeBoardFlags ran over the board, painted the screen, and threw the answer away. The only durable trace was the alert claim, which exists ONLY for stops that earned an email, so ambers and reds that appeared after their window had shut left no record they ever happened. You could not ask how many flags we raised last week, let alone whether any of them helped. The miss ledger answers the other half \u2014 did a stop with a receiving close actually miss it \u2014 but knows nothing about flags, so it cannot tell a stop we SAW COMING from one that blindsided us, which is the entire value of the flag and was until now unmeasurable. TWO WRITERS, NO NEW CRONS. The alert sweep already recomputes the whole board every 20 minutes through the working day; it now folds each sweep into the day\u2019s rows \u2014 first sighting (never overwritten, because how much warning we got is the whole question), worst tier reached, worst lateness, how many sweeps saw it, and whether it emailed. The nightly miss-ledger run, already reading the same sealed day, attaches what actually happened: made, missed, rolled to the next day, never delivered, or not gradable. WHAT THE SCREEN MAY NOT SAY, and this is the point: it CANNOT report that a flag saved a delivery. Nobody instruments the phone call and there is no unflagged control group. \u201cMoved after flag\u201d \u2014 the stop changed route or position after we flagged it \u2014 is the nearest honest signal and is labelled as exactly that. \u201cMissed anyway\u201d is of the flags we could GRADE, how many still missed; it is not the flag\u2019s accuracy. A flag raised after its close counts as too-late-to-act rather than being averaged into \u201cwe warned them\u201d, days with nothing gradable report \u2014 rather than a flattering 0%, and \u201cnever delivered\u201d is only claimed once the next day\u2019s capture exists to rule out a roll. The last measurement built in this repo reported an intent as an outcome for weeks, so every number here is the boring defensible kind. THE PHONE GUARD EARNED ITS KEEP ON THE WAY IN: this app has TWO navigations and I added the screen to the desktop row only \u2014 the same omission that shipped Manifest check invisible on a phone in v0.54.50. The guard failed the build, the chip menu now carries it, and both guards cover the new screen at both phone sizes and on the desktop. 18 new tests, 1,880 green.'],
   ['0.56.4', 'THE DEPLOY WATCHDOG WAS READING THE WRONG NUMBER, AND IT SENT ME HUNTING A PRODUCTION FAILURE THAT WAS NOT THERE. check-deploy-fresh exists because of the morning five merges never went live: it reads APP_VERSION out of the LIVE bundle and goes red when the site disagrees with main. It cannot read a minified variable name, so it inferred the version from the changelog \u2014 taking the FIRST \u201cx.y.z\u201d row it found, on the assumption that VERSION_LOG is strictly newest-first. CLAUDE.md asks for newest-first; nothing enforced it. Several sessions ship in parallel and each inserts its row at whatever anchor it happened to match, so the array had drifted to 0.56.0, 0.55.9, 0.56.2, 0.56.1 \u2014 and the guard reported the live site as v0.56.0 while it was actually serving 0.56.2. Twice in one afternoon. I believed it both times and went looking for a stuck deploy on the same day a genuinely stuck deploy had happened, which is exactly how a watchdog does harm rather than nothing: the false alarm is indistinguishable from the real one it was built to raise. IT NOW TAKES THE HIGHEST version among the rows rather than the first. Every release adds a row for its own version and CI enforces that, so the maximum row IS APP_VERSION no matter what order the rows ended up in \u2014 ordering became a convenience for whoever reads the list instead of a correctness dependency for the release guard. Compared numerically, too, so 0.56.10 outranks 0.56.9 rather than sorting below it as strings would. \u201cI could not tell\u201d still returns null and stays distinguishable from \u201cit is stale\u201d, which is the property that keeps the check quiet on a network blip. AND THE LIST IS SORTED AGAIN \u2014 all 511 rows, newest-first, no duplicates \u2014 because it is what Chad reads to find out what changed and one where 0.55.9 sits above 0.56.2 is one nobody can scan. A test now holds all of it: the guard reads a scrambled changelog correctly, and the app\u2019s own log must stay ordered, duplicate-free, and headed by APP_VERSION. 6 new tests.'],
   ['0.56.3', 'AN URGENT RED FLAG THAT EMAILED NOBODY \u2014 I SHRANK THE FEATURE CHAD ASKED FOR AND DID NOT NOTICE. Chad, holding a phone showing a red flag on SIMPLY CHARLOTTE MASON (PRO 007164290-1, Auburn, receiving hours 10AM to 12PM) at 12:33: \u201cThis popped up as an urgent red flag but no email was sent to customer service.\u201d He was right, and the cause was mine. WHEN HE ASKED FOR THIS FEATURE he said \u201cif something gets a red flag, that we should send a email to customer service\u2026 We want EVERY RED. Amber is a screen thing. Yeah if we are already past the time shouldn\u2019t send.\u201d That is what v0.55.7 built. Then v0.55.4\u2019s severity rework split the old single \u2018red\u2019 into \u2018critical\u2019 (the overrun survives the model being as wrong as it usually is) and \u2018red\u2019 (it clears the error band once, or a dispatcher typed the hours and the stop is predicted late at all) \u2014 and the alert stayed wired to \u2018critical\u2019 alone. So \u201cevery red\u201d silently became \u201conly the worst reds\u201d, and a stop the BOARD was painting as urgent sent nothing whatsoever. The screen and the inbox had come to disagree about the word urgent, and nothing anywhere reported the disagreement. THE RULE IS NOW THE ONE THAT CANNOT DRIFT: if the board shows it as urgent, customer service hears about it. Both tiers alert, amber stays a screen thing, and the tier list is ONE exported constant that the alert gate and the diagnostic both read \u2014 deliberately NOT a second lateness threshold invented inside the mailer, because a private invisible bar is exactly how this happened. Measured on today\u2019s 11:07a board (0 critical, 1 red, 2 amber) the change moves the day from 0 alertable to 1, not into the dozens. THE SECOND GATE IS STAYING, because Chad asked for it: past the receiving close nothing sends. That is why the 12:33 screenshot would still be silent for a window that shut at noon \u2014 correct by his own instruction, but until now impossible to LEARN. AND THE DIAGNOSTIC HAD THE SAME BLIND SPOT: eta-flag-check\u2019s per-row explanation filtered to tier===\u2018critical\u2019, so the endpoint built to answer \u201cwhy did this not email\u201d could not see a red row either and reported a clean board. A diagnostic that shares the bug it is meant to diagnose is worse than none, because it reads as a clean bill of health. It now reports every urgent row with a plain-English heldBecause, and takes ?stop=<PRO> to explain ANY stop \u2014 flagged or not, matching the number with or without the -1 instance suffix the stop card displays \u2014 and distinguishes \u201cno flag at all\u201d (the hours never reached the engine) from \u201cflagged but held\u201d (a rule fired), which are different failures that used to look identical. A REAL BUG FELL OUT OF WRITING THE TESTS: closeMin was validated with Number()+isFinite, but Number(null), Number(\u2018\u2019) and Number([]) are all 0 and 0 is finite \u2014 so a stop with NO receiving close survived as closeMin 0. With a live clock the past-the-close rule hid it by accident; judging a PAST board passes no clock, that rule never runs, and it became a genuine email to customer service announcing \u201cReceiving close 12:00a\u201d for a stop that has no deadline at all. Both call sites now share one strict parser that rejects the emptiness BEFORE the coercion, since a real midnight close must still be honoured. 14 new tests, 1,857 green.'],
@@ -23264,6 +23265,13 @@ function CommsPhone(c) {
         </PhoneSection>
 
         <PhoneSection
+          title="Unsubscribed" subtitle="Customers not getting delivery emails"
+          open={open === 'unsub'} onToggle={() => toggle('unsub')}
+        >
+          <UnsubscribedList compact />
+        </PhoneSection>
+
+        <PhoneSection
           title="Send log"
           subtitle={c.log?.totals ? `${c.log.totals.sent} sent · ${c.log.totals.failed} failed · ${c.log.totals.inflight} unconfirmed` : 'By day'}
           open={open === 'log'} onToggle={() => toggle('log')}
@@ -23628,6 +23636,122 @@ function LogBody({ c, compact = false }) {
   );
 }
 
+
+// ── WHO HAS UNSUBSCRIBED ──────────────────────────────────────────────────────
+//
+// Chad: "have somewhere... that shows us all the customers that have unsubscribed to these
+// emails." The flag has always been per-customer and invisible in aggregate — you could see
+// it on one customer's notes card if you happened to open that customer, and nowhere else.
+//
+// Self-contained and used by BOTH the phone and desktop screens, because this app has two
+// navigations and two layouts, and a card written into one of them is a card that does not
+// exist on a phone. That has shipped here before.
+function UnsubscribedList({ compact = false }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState(null);
+  const [busy, setBusy] = useState(true);
+
+  const load = useCallback(async () => {
+    setBusy(true); setErr(null);
+    try {
+      const r = await fetch('/.netlify/functions/comms-optouts');
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'read failed');
+      setData(j);
+    } catch (e) { setErr(String(e.message || e)); } finally { setBusy(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const rows = data?.rows || [];
+  const when = (iso) => {
+    if (!iso) return '—';
+    try {
+      return new Date(iso).toLocaleString('en-US', {
+        month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York',
+      });
+    } catch { return '—'; }
+  };
+  const SRC = {
+    customer: { label: 'They asked', cls: 'bg-amber-100 text-amber-800' },
+    dispatcher: { label: 'We turned off', cls: 'bg-slate-200 text-slate-700' },
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-2xl font-bold text-slate-900">{data?.count ?? '—'}</span>
+        <span className="text-xs text-slate-500">customer{data?.count === 1 ? '' : 's'} not receiving delivery emails</span>
+        <button onClick={load} disabled={busy}
+          className="ml-auto min-h-[40px] px-3 rounded-lg text-xs font-semibold border border-slate-300 bg-white text-slate-600 hover:bg-slate-50">
+          {busy ? '…' : 'Reload'}
+        </button>
+      </div>
+
+      {err && <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{err}</div>}
+
+      {!err && data && (
+        <div className="flex gap-2 flex-wrap text-[11px]">
+          <span className="px-2 py-1 rounded-full bg-amber-100 text-amber-800 font-semibold">{data.byCustomer} asked us to stop</span>
+          <span className="px-2 py-1 rounded-full bg-slate-200 text-slate-700 font-semibold">{data.byDispatcher} we turned off</span>
+          {data.unrecorded > 0 && (
+            <span className="px-2 py-1 rounded-full bg-slate-100 text-slate-500 font-semibold"
+              title="Set before we started recording who did it — not attributed either way.">
+              {data.unrecorded} before we tracked it
+            </span>
+          )}
+        </div>
+      )}
+
+      {!err && !busy && rows.length === 0 && (
+        <div className="text-xs text-slate-500">Nobody has unsubscribed.</div>
+      )}
+
+      {rows.length > 0 && (
+        <div className="overflow-x-auto -mx-1 px-1">
+          <table className="w-full text-xs min-w-[420px]">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-wide text-slate-400 text-left">
+                <th className="py-1 pr-3">Customer</th>
+                <th className="py-1 pr-3">When</th>
+                <th className="py-1 pr-3">Who</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(compact ? rows.slice(0, 12) : rows).map((r) => {
+                const s = SRC[r.source];
+                return (
+                  <tr key={r.matchKey} className="border-t border-slate-200 align-top">
+                    <td className="py-1.5 pr-3">
+                      <div className="font-semibold text-slate-800">{r.customer || r.matchKey}</div>
+                      {r.email && <div className="text-[10px] text-slate-400 break-all">{r.email}</div>}
+                    </td>
+                    <td className="py-1.5 pr-3 text-slate-600 whitespace-nowrap">{when(r.at)}</td>
+                    <td className="py-1.5 pr-3">
+                      {s
+                        ? <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${s.cls}`}>{s.label}</span>
+                        : <span className="text-[10px] text-slate-400">not recorded</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {compact && rows.length > 12 && (
+            <div className="text-[10px] text-slate-400 pt-1">+{rows.length - 12} more</div>
+          )}
+        </div>
+      )}
+
+      <div className="text-[11px] text-slate-500 leading-relaxed border-t border-slate-100 pt-2">
+        Every delivery email carries an unsubscribe link, and Gmail and Outlook show their own
+        Unsubscribe button from it. A customer who uses either lands here on their own — nobody
+        has to switch anything off by hand. To put someone back on, clear the red
+        “No delivery emails” toggle on their customer notes.
+      </div>
+    </div>
+  );
+}
+
 function CommsCard({ title, aside = null, children }) {
   return (
     <section className="bg-white border border-slate-200 rounded-xl shadow-sm">
@@ -23798,6 +23922,10 @@ function CommsDesktop(c) {
           </div>
         )}
         <CommsMsg msg={c.msg} where="save" className="max-w-sm mx-auto text-center" />
+
+        <CommsCard title="Unsubscribed">
+          <UnsubscribedList />
+        </CommsCard>
 
         <CommsCard title="Send log">
           <LogBody c={c} />

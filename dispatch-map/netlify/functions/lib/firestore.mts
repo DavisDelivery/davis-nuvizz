@@ -189,6 +189,49 @@ export async function setDoc(path: string, data: any): Promise<boolean> {
 }
 
 /**
+ * PATCH ONLY THE NAMED FIELDS, leaving everything else on the document untouched.
+ *
+ * WHY THIS EXISTS. setDoc above is a PATCH with NO updateMask, and Firestore treats that as
+ * "replace the document with these fields" — every field not in the payload is DELETED. The
+ * codebase already knows this: writeStopNotes reads the whole doc and writes back
+ * `{...rest, ...patch}` precisely so a three-field update does not erase the other thirty.
+ *
+ * That read-merge-write works, but it is a lost update by construction: two writers both
+ * read, both merge onto their own stale copy, and the second erases the first. It is the
+ * same shape as the bug found earlier today, where a dashboard's background refresh wrote
+ * back a record it had read before another job stamped a field on it.
+ *
+ * A field-masked PATCH avoids both problems at once. Firestore applies it server-side to
+ * the named paths only, so there is nothing to read first and nothing to clobber — a
+ * concurrent writer touching DIFFERENT fields of the same document simply succeeds too.
+ *
+ * Use this for "set this one flag on a document somebody else owns". customer_notes is the
+ * example that forced it: those docs carry dispatcher-authored receiving hours the flag
+ * engine depends on, and a blind write of a suppression flag would take the hours with it
+ * and silently stop flagging that customer.
+ *
+ * Creates the document if it is absent, which is the ordinary case for a customer who has
+ * never had a note written.
+ */
+export async function updateDocFields(path: string, data: any): Promise<boolean> {
+  const keys = Object.keys(data || {});
+  if (!keys.length) return false;
+  const token = await getAccessToken();
+  const sa = loadServiceAccount();
+  // Repeated updateMask.fieldPaths params — one per field. Backticked field paths so a key
+  // containing a dot or a reserved word cannot be read as a nested path.
+  const mask = keys.map((k) => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join('&');
+  const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${path}?${mask}`;
+  const resp = await fetch(url, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fields: objectToFields(data) }),
+  });
+  if (!resp.ok) throw new Error(`updateDocFields ${path} failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
+  return true;
+}
+
+/**
  * ATOMIC CREATE — write `path` only if no document is there, and say which happened.
  *
  * setDoc above is a blind PATCH: read-then-write around it is a lost update waiting to

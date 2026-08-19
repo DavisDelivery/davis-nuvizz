@@ -27,6 +27,16 @@ export interface SendEmailArgs {
   // from an env var. Whatever is passed must still be on a domain verified in Resend, or the
   // API rejects the send; callers are expected to validate before storing one.
   from?: string;
+  // ARBITRARY HEADERS, added for List-Unsubscribe.
+  //
+  // Gmail and Outlook render their own native "Unsubscribe" control when a message carries
+  // List-Unsubscribe, and RFC 8058's List-Unsubscribe-Post makes that control one click
+  // instead of a round trip. Both are headers, and there was no way to send one — which is
+  // why a customer who wanted off the delivery emails had to reply in words and wait for a
+  // human to act on it.
+  //
+  // Resend passes these through as `headers` on the send payload.
+  headers?: Record<string, string>;
 }
 
 // Sends one email. Best-effort: returns {ok} and never throws, so a mail failure
@@ -50,6 +60,7 @@ export async function sendEmail(args: SendEmailArgs): Promise<{ ok: boolean; id?
         ...(args.html ? { html: args.html } : {}),
         ...(args.text ? { text: args.text } : {}),
         ...(args.replyTo ? { reply_to: args.replyTo } : {}),
+        ...(args.headers && Object.keys(args.headers).length ? { headers: args.headers } : {}),
       }),
     });
     if (!resp.ok) {
