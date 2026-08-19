@@ -11,6 +11,27 @@ on:
   pull_request:
 
 jobs:
+  # ── the version bump is a TEST now, not a request ─────────────────────────
+  # CLAUDE.md has required a version bump on every merged change since 2026-08-19,
+  # and it was skipped twice that same morning (#696, #697) — #697 being the last
+  # commit to reach production, so Chad got a deploy notice and watched the footer
+  # sit still. That is the exact thing the rule exists to prevent. Written guidance
+  # is only as good as the attention of whoever reads it; this makes it fail.
+  #
+  # PR-only: it compares against the base branch, which a bare push has no notion of.
+  # fetch-depth 0 because the comparison needs history, not just the tip.
+  version-bump:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node dispatch-map/scripts/check-version-bump.mjs "origin/${{ github.base_ref }}"
+
   unit:
     runs-on: ubuntu-latest
     defaults:
