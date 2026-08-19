@@ -734,6 +734,38 @@ export const LIVE_LIST_FIELDS = [
   // notice they have gone stale. See noteTextChanged in stop-notes-freshness.js.
   'orderInstructions',
 ];
+
+// ── THE ADDRESS IS LIVE TOO — but only where the list actually has one ────────
+//
+// Chad, holding our card beside the NuVizz portal for ESTES-1283081681: "Why are these not
+// the same[?] nuvizz is showing different than what we are showing[,] a new scan should
+// have fixed this problem."
+//
+// It could not. The address was NOT a live field, so it came from the ONE first-sight
+// enrichment and was carried forward for ever — the identical bug the orderInstructions
+// note above describes, on the field that decides where a driver goes. Estes re-addressed
+// that order; the NOTE saying so reached the board (notes are live) and the address did
+// not, so the card showed "UPDATED ADDY PER ESTES" above the old address. The giveaway is
+// in the card itself: it read "BUFORD, GEORGIA" and the list carries NO state column at
+// all (toBoardStop pins state to null), so that block could only have come from the
+// one-time detail fetch.
+//
+// These are LIVE-IF-PRESENT rather than plain LIVE, and the distinction is the whole
+// safety of it. A plain LIVE field takes the list value unconditionally — and the list row
+// can legitimately arrive with a blank address column, which would WIPE a good stored
+// address board-wide. So: the list wins whenever it actually carried a value, and
+// enrichment still fills whatever the list left blank.
+//
+// That also makes the fix survive its own scan. The re-enrichment that follows a move
+// returns /stop/info's address, and a plain non-live field would let that merge overwrite
+// the list address again a few lines later — putting the board straight back where it
+// started.
+export const LIVE_IF_PRESENT_FIELDS = ['businessName', 'addr1', 'addr2', 'city', 'zip'];
+
+/** A value the list genuinely carried, as opposed to a blank column. */
+export function hasListValue(v: any): boolean {
+  return !(v === null || v === undefined || (typeof v === 'string' && v.trim() === ''));
+}
 // Copy ALL non-live fields from src (a /stop/info-normalized stop, or a prior enriched
 // index doc) onto target, then mark it enriched. Never overwrites a real value with a
 // null/blank, so list-derived values survive when a detail field is sparse.
@@ -755,6 +787,10 @@ export function mergeEnrich(target: any, src: any): any {
   const listStopId = (typeof target.stopId === 'string' && target.stopId) ? target.stopId : null;
   for (const [k, v] of Object.entries(src)) {
     if (LIVE_LIST_FIELDS.includes(k) || k === 'enriched' || k === 'last_scanned_at' || k === '_id') continue;
+    // The address the LIST carried this scan outranks any stored or enriched copy — but
+    // only where the list actually carried one; a blank column must never wipe a good
+    // address. See LIVE_IF_PRESENT_FIELDS.
+    if (LIVE_IF_PRESENT_FIELDS.includes(k) && hasListValue(target[k])) continue;
     if (v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0)) continue;
     target[k] = v;
   }

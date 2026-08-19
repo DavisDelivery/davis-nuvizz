@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.55.3';
+const APP_VERSION = '0.55.4';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -122,6 +122,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.55.4', 'THE ADDRESS IS LIVE \u2014 A RE-ADDRESSED ORDER NOW REACHES THE BOARD, AND THE YELLOW DNS WARNING STOPPED CRYING WOLF. Chad, holding our card beside the NuVizz portal for ESTES-1283081681: \u201cWhy are these not the same[?] nuvizz is showing different than what we are showing[,] a new scan should have fixed this problem.\u201d IT COULD NOT HAVE. NuVizz had MR LARRY WOELFL, 2385 HO HUM HOLLOW ROAD, MONROE 30655. The board showed DAVIS DELIVERY, 943 GAINESVILLE HIGHWAY, BUFORD \u2014 our own yard. WHY: the address was not a LIVE field. The scan refreshes status, load, driver, dates and order instructions every time; everything else is treated as static detail, captured ONCE when an order first appears, and carried forward for ever. So when Estes re-addressed that order the NOTE saying so came through \u2014 notes were made live in an earlier release for exactly this reason \u2014 and the address did not. The card ended up reading \u201cUPDATED ADDY PER ESTES\u201d directly above the old address. The proof was on the card itself: it said \u201cBUFORD, GEORGIA\u201d, and the list feed carries NO state column at all, so that block could only have come from the one-time detail fetch. THE ADDRESS NOW WINS FROM THE LIST, which already carries it free on every scan \u2014 street, suite, city, ZIP and consignee name. Deliberately LIVE-IF-PRESENT, not plain live: a saved-search row can arrive with the address columns blank, and a plain live field would have WIPED a good address board-wide. The list wins wherever it actually carried a value; enrichment still fills whatever it left blank. That distinction also stops the fix undoing itself \u2014 the re-enrichment a move triggers returns NuVizz\u2019s own address, which as an ordinary field would overwrite the list\u2019s copy a few lines later and put the board straight back. AND THE PIN MOVES WITH IT. A corrected address under a pin still sitting on the old building is worse than the stale address was: the card reads right and the driver still goes to the wrong place. A move drops the stored coordinates and re-geocodes. What counts as a move is deliberately format-stable (ZIP5 + street number), because the two NuVizz endpoints spell the same address differently \u2014 comparing the raw text would re-enrich the entire board on every scan. Buford\u2192Monroe registers; \u201cHwy\u201d vs \u201cHIGHWAY\u201d and a ZIP+4 do not. It also converges after one scan now, which the old comparison could not, because the LIST\u2019s spelling is what gets stored. SECOND THING, same screen: \u201cWhat is this yellow window for?\u201d That panel was HARDCODED. It was written while davisdelivery.com genuinely was unverified and never stopped saying \u201cDNS is not verified \u2014 every send is rejected\u201d, on a live program that had just delivered 25 of 25. A warning that cannot stop warning is worse than none, on the one screen you would check to find out whether email works. It now asks Resend. Verified reads as a quiet green line; unverified lists ONLY the records still failing; and \u201ccould not check\u201d says exactly that \u2014 an unknown is never dressed up as a failure, which was the whole mistake. 18 new tests, 1,801 green.'],
   ['0.55.3', 'THE BOARD FLAGS PANEL: THE CHAT BUBBLE IS OFF IT, AND YOU CAN MINIMISE IT. Chad, on a screenshot of 7 advisories: \u201cformatting issue here things are laying on top of one another and no way for me to minimize the flag window.\u201d Both were real. WHY THINGS SAT ON TOP OF EACH OTHER, and it is not what it looks like: the panel already asked to be drawn above everything (z-70). It could not be. It was rendered INSIDE the frosted stops pill, and a backdrop-filter creates a stacking context \u2014 so that z-70 only ever applied WITHIN the pill, and the round message button further down the same column, which asks for no z-index at all, won simply by coming later in the document. Proven rather than guessed: with the panel open, the browser was asked what element is actually on top at a grid of points inside the panel, and it answered with the message button. The panel now hangs off a plain unblurred wrapper instead, and the same probe answers nothing at all \u2014 open and minimised. This repo already knew the rule; the Routing screen carries a comment saying in as many words never to nest this panel in a backdrop-blur pill. The desktop Map was the last place still doing it. MINIMISE, NOT JUST CLOSE. The only control was \u2715, which throws away the counts along with the list. There is now a chevron beside it that collapses the panel to its header \u2014 still showing \u201cN red \u00b7 N advisory\u201d, one click from the list \u2014 and the choice is remembered per device, because a dispatcher who wants it out of the way today wants it out of the way tomorrow. The panel is also bounded to the viewport now and scrolls its LIST rather than itself, so the footer that says what was and was not judged can no longer be pushed off the bottom of the screen by a long list of flags.'],
   ['0.55.2', 'THE SEND LOG IS A HISTORY NOW, NOT A PILE. Chad: the email history \u201cneeds to be done by the day and have ranges and months and so on and so forth, not just a long compilation of all the emails that we\u2019ve sent. We need to be able to sort it.\u201d It was one flat list of every send, newest first, hardcoded to the last 7 days and CUT AT 50 ROWS WITHOUT SAYING SO \u2014 on a 25-a-day program that is two days of history presented as though it were all of it. THE LEDGER WAS ALWAYS DAY-SHAPED: every send is already its own document under customer_comms_<date>/sent. The flattening happened on the way out, so this is a reader change, not a migration \u2014 the same documents, grouped the way they were always written. PICK A RANGE: Today, 7 days, 30 days, This month, any of the last twelve months by name, or a from\u2013to pair. A day opens to its sends; the columns sort by time, customer, address or result, and every day\u2019s table is aligned to the same grid so they read down the page. Months get their own subtotals once a range spans more than one. WHAT IT NOW REFUSES TO HIDE. A day that was READ and had nothing shows as a row saying so \u2014 and says \u2018swept \u2014 nobody to email\u2019 when the sweep ran, which is the one thing that tells a quiet day apart from a broken one. A day Firestore could not return is named in red instead of appearing as a silent gap. A range longer than the 92-day read budget says how many days it asked for and how many it is showing. So does a truncated row list. Every one of those used to look identical to \u2018nothing happened\u2019. A range change reloads only the log, never the config, so browsing history cannot throw away an unsaved template edit. Zero NuVizz calls, as before \u2014 it reads our own ledger. ALSO FIXED, FOUND BY THE NEW TESTS: a date could be silently WRONG rather than rejected. \u20182026-02-30\u2019 is the right shape and does not fail a parse \u2014 the engine rolls it forward to March 2nd and reports success \u2014 so a range could quietly read days nobody asked for. Dates now have to spell themselves back. The same hole was in dayBefore/dayAfter, which the duplicate-send guard uses to check the neighbouring day\u2019s ledger; an impossible date has no board so nothing was mis-sent, but it was a trap and it is closed. 24 new tests, 1,763 green.'],
   ['0.55.1', 'THE PER-STOP COST IS NOW MEASURED, NOT ASSUMED \u2014 AND CHAD WAS RIGHT TO PUSH BACK. I proposed feeding the flag model the learned dwell times in routing_service_times. Chad: \u201ci don\u2019t think dwell time is going to do as much as you hoped as i find the vast majority of deliveries show an arrival time and departure time that are less than 120 seconds apart and this is because the driver performs the actual delivery before ever clicking arrive at stop.\u201d He was right, and the warehouse makes it worse than he knew: arrivalDTTM is present on EIGHT stops out of 20,904. There is no arrive\u2192deliver bracket to measure at all, so routing_service_times \u2014 which mines exactly that bracket \u2014 could not have been trusted, and wiring it in would have fed the model a per-stop cost near zero. The claim is still testable without that stamp. The residual between consecutive delivery stamps, minus modelled travel, is dwell PLUS travel error; the two are identical in aggregate but not against DISTANCE, because dwell is a fixed cost per stop while a short travel model scales with the leg. Over 32 sealed days the residual is FLAT \u2014 10.9 min under a mile, 15.8 at 3-8 miles, 13.7 over 20 \u2014 so there IS a real fixed cost at every stop, and the travel model is not the thing hiding it. Sweeping that cost against the anchored walk: 0 min gives a mean bias of -14.3, 8 gives -7.0, 13 gives -2.1, 15 gives -0.2, and the old 20-minute planning default gives +4.0. Fourteen minutes sits at the bias-zero crossing and the error minimum. Moving there from the zero that v0.55.0 shipped for a delivered stamp lifts within-fifteen-minutes from 41% to 52% and cuts the median miss from 18.9 to 14.3. The bias sign matters more than the accuracy: at zero the model was systematically fourteen minutes OPTIMISTIC, and for a deadline flag optimism is the dangerous direction \u2014 it is the model quietly deciding a late truck is fine. Kept as its own constant rather than changing DEFAULT_SERVICE_SEC, so tuning the flag can never silently re-plan a route.'],
@@ -22627,25 +22628,63 @@ function useCommsConsole() {
 }
 
 /**
- * The sender IS where Chad asked for it now (v0.54.85: notifications@davisdelivery.com).
- * What the screen has to say is the part that is still outstanding — the domain's DNS —
- * because until it resolves Resend rejects every send outright rather than falling back to
- * a working sender, and a [TEST] that fails for that reason should not look like a bug.
+ * What the sender domain's DNS is ACTUALLY doing.
+ *
+ * This panel used to be a hardcoded amber warning saying the domain was unverified and
+ * every send rejected. It was true when it was written and it never stopped saying it —
+ * Chad, on a live program that had just delivered 25 of 25: "What is this yellow window
+ * for?" A warning that cannot stop warning is worse than none, because it sits on the one
+ * screen you would check to find out whether email works.
+ *
+ * Three states, and the third is the one that matters:
+ *   verified true  → a quiet green line. Confirmation, not a warning.
+ *   verified false → the amber panel, listing only the records still failing.
+ *   verified null  → we could not ask (no key, Resend down). Say THAT — do not dress an
+ *                    unknown up as a failure, which is the whole mistake being fixed.
  */
-function SenderTargetNote({ compact }) {
+function SenderTargetNote({ compact, domain, from }) {
+  const size = compact ? 'text-[12px]' : 'text-[11px]';
+  const box = `mt-2 ${size} leading-relaxed rounded-lg px-2.5 py-2 border`;
+  const sender = from || 'the configured sender';
+
+  if (!domain) return null;                       // an older server that does not report it
+
+  if (domain.verified === true) {
+    return (
+      <div className={`${box} text-emerald-800 bg-emerald-50 border-emerald-200`}>
+        Sending as <b>{sender}</b>. DNS for <span className="font-mono">{domain.domain}</span> is
+        <b> verified</b> — Resend will accept these sends.
+      </div>
+    );
+  }
+
+  if (domain.verified === null) {
+    return (
+      <div className={`${box} text-slate-600 bg-slate-50 border-slate-200`}>
+        Sending as <b>{sender}</b>. Could not check the domain's DNS just now
+        {domain.error ? <> ({domain.error})</> : null} — this is <b>not</b> a report that
+        anything is wrong, only that the check did not run.
+      </div>
+    );
+  }
+
+  const pending = domain.pending || [];
   return (
-    <div className={`mt-2 ${compact ? 'text-[12px]' : 'text-[11px]'} leading-relaxed text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2`}>
-      Sending as <b>notifications@davisdelivery.com</b>. The domain is registered in Resend but its
-      DNS is <b>not verified yet</b> — until these three records resolve, every send is rejected:
-      <span className="block mt-1 font-mono text-[10px] leading-relaxed">
-        TXT&nbsp; resend._domainkey → p=MIGfMA0GCSqG…<br />
-        MX&nbsp;&nbsp; send &nbsp;→ feedback-smtp.us-east-1.amazonses.com (priority 10)<br />
-        TXT&nbsp; send &nbsp;→ v=spf1 include:amazonses.com ~all
-      </span>
+    <div className={`${box} text-amber-800 bg-amber-50 border-amber-200`}>
+      Sending as <b>{sender}</b>. DNS for <span className="font-mono">{domain.domain}</span> is
+      <b> not verified</b>{domain.status === 'not_registered'
+        ? <> — the domain is not registered in Resend at all.</>
+        : <> — until these resolve, every send is rejected:</>}
+      {pending.length > 0 && (
+        <span className="block mt-1 font-mono text-[10px] leading-relaxed break-all">
+          {pending.map((r, i) => (
+            <span key={i} className="block">{r.type}&nbsp; {r.name} → {String(r.value).slice(0, 60)}{String(r.value).length > 60 ? '…' : ''}</span>
+          ))}
+        </span>
+      )}
       <span className="block mt-1">
-        They hang off <span className="font-mono">send.</span> and <span className="font-mono">resend._domainkey.</span>, not the
-        apex, so publishing them does not touch existing davisdelivery.com mail. Nothing sends
-        meanwhile — the sweep declines every send while the program switch is off.
+        These hang off sub-names, not the apex, so publishing them does not touch existing
+        mail on the domain.
       </span>
     </div>
   );
@@ -22789,7 +22828,7 @@ function CommsPhone(c) {
           <label className={label}>From address</label>
           <input className={input} value={c.fromAddr} onChange={(e) => { c.setFromAddr(e.target.value); c.setDirty(true); }} placeholder="blank = the site default sender" inputMode="email" autoCapitalize="off" autoCorrect="off" />
           <div className="text-[11px] text-slate-400 mt-1">An address on an unverified domain makes Resend reject every send.</div>
-          <SenderTargetNote compact />
+          <SenderTargetNote compact domain={c.cfgResp?.domain} from={c.cfgResp?.effectiveFrom} />
           <label className={`${label} mt-3`}>Replies go to</label>
           <input className={input} value={c.replyTo} onChange={(e) => { c.setReplyTo(e.target.value); c.setDirty(true); }} inputMode="email" autoCapitalize="off" autoCorrect="off" />
           <label className={`${label} mt-3`}>Daily cap</label>
@@ -23338,7 +23377,7 @@ function CommsDesktop(c) {
               <label className={label}>From address</label>
               <input className={input} value={c.fromAddr} onChange={(e) => { c.setFromAddr(e.target.value); c.setDirty(true); }} placeholder="blank = the site default sender" />
               <div className="text-[10px] text-slate-400 mt-1">Currently sends as <span className="font-semibold text-slate-500">{c.cfgResp?.effectiveFrom || '—'}</span>. An unverified domain makes every send bounce.</div>
-              <SenderTargetNote />
+              <SenderTargetNote domain={c.cfgResp?.domain} from={c.cfgResp?.effectiveFrom} />
               <label className={`${label} mt-3`}>Replies go to</label>
               <input className={input} value={c.replyTo} onChange={(e) => { c.setReplyTo(e.target.value); c.setDirty(true); }} />
               <label className={`${label} mt-3`}>Daily cap</label>

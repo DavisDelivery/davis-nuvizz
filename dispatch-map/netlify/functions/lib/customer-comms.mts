@@ -51,6 +51,78 @@ export const MERGE_FIELDS = [
   'trackingUrl', 'reviewUrl', 'year',
 ];
 
+// ── SENDER DOMAIN STATUS ─────────────────────────────────────────────────────
+//
+// The "DNS is not verified yet — every send is rejected" panel on the Communications tab
+// used to be HARDCODED. It was written while davisdelivery.com genuinely was unverified,
+// and it kept saying so afterwards: Chad, looking at a live program that had just put out
+// 25 emails with 25 delivered, asked "What is this yellow window for?"
+//
+// A warning that cannot stop warning is worse than no warning. It sits on the one screen
+// somebody checks to find out whether email is working, and it contradicts the answer.
+//
+// So ask Resend. One GET, no NuVizz calls, and it tells the truth in BOTH directions —
+// including the direction that matters later, when a record is edited or expires and sends
+// start bouncing with nothing on screen to explain why.
+
+export interface DomainStatus {
+  /** null = we could not tell (no key, API down). NEVER guessed — see below. */
+  verified: boolean | null;
+  domain: string | null;
+  status: string | null;
+  /** Only the records still failing, so a partly-published domain says which one is left. */
+  pending: Array<{ type: string; name: string; value: string }>;
+  error?: string;
+}
+
+/** The domain half of "Name <box@domain>" or "box@domain". PURE. */
+export function senderDomain(from: string): string | null {
+  const m = /<([^>]*)>/.exec(String(from || ''));
+  const addr = (m ? m[1] : String(from || '')).trim();
+  const at = addr.lastIndexOf('@');
+  // > 0, not >= 0: '@example.com' has a domain but no mailbox in front of it, and that is
+  // not a sender. Found by the test below.
+  if (at <= 0) return null;
+  const d = addr.slice(at + 1).trim().toLowerCase();
+  return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(d) ? d : null;
+}
+
+/**
+ * Read one Resend domain's verification state. PURE given `fetchImpl`.
+ *
+ * Fails to `verified: null`, never to `false`. "I could not check" and "your DNS is
+ * broken" are different claims, and showing the second when you mean the first is exactly
+ * the failure this replaces.
+ */
+export async function readDomainStatus(
+  from: string,
+  apiKey: string | null | undefined,
+  fetchImpl: typeof fetch = fetch,
+): Promise<DomainStatus> {
+  const domain = senderDomain(from);
+  const none = { verified: null as boolean | null, domain, status: null, pending: [] };
+  if (!domain) return { ...none, error: 'no sender domain' };
+  if (!apiKey) return { ...none, error: 'RESEND_API_KEY not set' };
+  try {
+    const r = await fetchImpl('https://api.resend.com/domains', { headers: { Authorization: `Bearer ${apiKey}` } });
+    if (!r.ok) return { ...none, error: `resend ${r.status}` };
+    const j: any = await r.json().catch(() => null);
+    const list: any[] = Array.isArray(j?.data) ? j.data : [];
+    const hit = list.find((d) => String(d?.name || '').toLowerCase() === domain);
+    // Registered domains we can see, but not THIS one: that is a real, reportable answer
+    // ("nothing is going to send"), not an inability to check.
+    if (!hit) return { verified: false, domain, status: 'not_registered', pending: [] };
+    const status = String(hit.status || '').toLowerCase();
+    const records: any[] = Array.isArray(hit.records) ? hit.records : [];
+    const pending = records
+      .filter((rec) => String(rec?.status || '').toLowerCase() !== 'verified')
+      .map((rec) => ({ type: String(rec?.type || ''), name: String(rec?.name || ''), value: String(rec?.value || '') }));
+    return { verified: status === 'verified', domain, status, pending };
+  } catch (e: any) {
+    return { ...none, error: e?.message || 'domain read failed' };
+  }
+}
+
 // ── CONFIG ───────────────────────────────────────────────────────────────────
 
 export interface CommsConfig {

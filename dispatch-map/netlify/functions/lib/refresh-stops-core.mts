@@ -1004,6 +1004,34 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             // candidate exists to put a question mark over.
             if (p.enriched && !wasReconsigned && !s.absentFromPull) mergeEnrich(s, p); // carry same-day enriched detail forward
             if (wasReconsigned) { reconsigned++; reconsignedNbrs.add(String(s.stopNbr)); }
+            // THE ADDRESS MOVED WITHOUT THE SIGNATURE NOTICING (Chad, ESTES-1283081681).
+            //
+            // The list↔list check above only fires when the STORED SIGNATURE disagrees with
+            // this scan's list row. It cannot fire when there is no stored baseline (first
+            // sighting, or a stop that predates the field), and it stops firing the moment a
+            // baseline is stamped from the new address while the DISPLAYED address is still
+            // the old enriched one — after which both sides agree for ever and the card never
+            // corrects itself. That is the state Chad's order was in.
+            //
+            // So compare the list against the address we are actually SHOWING. That is the
+            // list↔stored comparison addrListSig's comment warns off — because the two
+            // endpoints format addresses differently and it "re-fired every scan, never
+            // converging". It converges NOW, and only now: LIVE_IF_PRESENT_FIELDS means we
+            // persist the LIST's spelling of the address, so the next scan compares the list
+            // against itself and agrees. One re-enrichment per real move, not per scan.
+            //
+            // mergeEnrich has already run, so `s` holds what the board WOULD have shown.
+            const shownSig = addrListSig(s);
+            if (!wasReconsigned && p.enriched && shownSig && listSig && shownSig !== listSig) {
+              // The list wins the text (mergeEnrich left it alone — the fields are
+              // live-if-present), but the coordinates, the state and the line items on the
+              // record all describe the PREVIOUS address. A corrected address under a pin
+              // still sitting on the old building is worse than the stale address was: the
+              // card would read right and the driver would still be sent to the wrong place.
+              s.lat = null; s.lng = null;
+              s.enriched = false;                       // re-enrich: fresh detail + re-geocode
+              reconsigned++; reconsignedNbrs.add(String(s.stopNbr));
+            }
             // A recent CONFIRMED live Save (write-through, #361) outranks a lagging list row:
             // hold the confirmed plan fields until the list agrees or the grace expires.
             const held = applyBoardWriteGrace(s, p, Date.now());
@@ -1017,7 +1045,9 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             // own stop record decide.
             if (!held && p.isPlanned === true && p.loadNbr && s.isPlanned !== true) demoteChecks.push({ s, p });
             // Don't seed a reconsigned stop's OLD coords — they belong to the previous address.
-            if (!wasReconsigned && typeof p.lat === 'number' && typeof p.lng === 'number') { const k = addrKey(p); if (k) seed.set(k, { lat: p.lat, lng: p.lng }); }
+            // `s.enriched` is cleared just above when the shown address moved, so this also
+            // stops the OLD coordinates being seeded for a stop that has just been re-addressed.
+            if (!wasReconsigned && s.enriched !== false && typeof p.lat === 'number' && typeof p.lng === 'number') { const k = addrKey(p); if (k) seed.set(k, { lat: p.lat, lng: p.lng }); }
           }
           // Stamp THIS scan's list signature so the next scan compares list↔list. Current list
           // wins; fall back to the stored sig when the list carried no address this scan, so a
