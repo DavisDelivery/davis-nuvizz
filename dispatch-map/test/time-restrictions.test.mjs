@@ -8,7 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   classifyStopTimeRestriction, buildTimeRestrictionRows, orderWindow, clockMinFromStamp,
-  weekdayKey, toCsv, csvCell, summarizeRows, ALL_DAY_MIN, detectDefaultSlots,
+  weekdayKey, toCsv, csvCell, summarizeRows, ALL_DAY_MIN, detectDefaultSlots, CSV_COLUMNS,
 } from '../src/lib/time-restrictions.js';
 
 const WED = '2026-08-19'; // a Wednesday
@@ -347,6 +347,54 @@ test('a carried-over restricted stop is LABELLED, not silently folded in as toda
   const s = summarizeRows(rows);
   assert.equal(s.carryover, 1);
   assert.equal(s.stillOpen, 1, 'undelivered freight with a clock on it is the actionable count');
+});
+
+// ── what the sheet covers ─────────────────────────────────────────────────────
+
+test('deliveries-only drops pickups — a receiving window is about freight arriving', () => {
+  const board = [
+    stop({ primaryPro: 'DEL', stopType: 'DO', ...instr('RECEIVING HOURS 8AM-2PM') }),
+    stop({ primaryPro: 'PU1', stopType: 'PU', ...instr('RECEIVING HOURS 8AM-2PM') }),
+  ];
+  assert.deepEqual(
+    buildTimeRestrictionRows(board, new Map(), WED, { include: 'deliveries' }).map((r) => r.pro), ['DEL']);
+  assert.deepEqual(
+    buildTimeRestrictionRows(board, new Map(), WED, { include: 'pickups' }).map((r) => r.pro), ['PU1']);
+  assert.equal(buildTimeRestrictionRows(board, new Map(), WED, { include: 'all' }).length, 2);
+});
+
+test('the library defaults to ALL — silently dropping rows is the caller\'s choice to make', () => {
+  const board = [stop({ stopType: 'PU', ...instr('RECEIVING HOURS 8AM-2PM') })];
+  assert.equal(buildTimeRestrictionRows(board, new Map(), WED).length, 1);
+  assert.equal(buildTimeRestrictionRows(board, new Map(), WED, { include: 'nonsense' }).length, 1,
+    'an unrecognised mode falls back to all rather than hiding data');
+});
+
+test('filtering happens AFTER default-slot detection, so a stamp cannot slip through', () => {
+  // Five customers share 09:00-09:30 — a creation default. Four are pickups. If the
+  // pickups were filtered out BEFORE detection, only one stop would carry the slot, it
+  // would no longer look like a stamp, and the surviving delivery would be reported as a
+  // booked appointment it never had.
+  const board = ['a', 'b', 'c', 'd'].map((n) => stop({
+    primaryPro: `PU${n}`, businessName: `CUST ${n}`, stopType: 'PU',
+    scheduledFrom: `${WED}T09:00:00`, scheduledTo: `${WED}T09:30:00`,
+  }));
+  board.push(stop({
+    primaryPro: 'DEL', businessName: 'CUST E', stopType: 'DO',
+    scheduledFrom: `${WED}T09:00:00`, scheduledTo: `${WED}T09:30:00`,
+  }));
+  assert.equal(buildTimeRestrictionRows(board, new Map(), WED, { include: 'deliveries' }).length, 0);
+});
+
+test('the sheet carries no driver and no load name', () => {
+  const rows = buildTimeRestrictionRows(
+    [stop({ routeName: 'FRANK', driverName: 'Frank Okine', ...instr('RECEIVING HOURS 8AM-2PM') })],
+    new Map(), WED);
+  const headers = CSV_COLUMNS.map(([, h]) => h);
+  assert.ok(!headers.includes('Route') && !headers.includes('Driver'), 'columns are gone');
+  assert.equal(rows[0].route, undefined);
+  assert.equal(rows[0].driver, undefined);
+  assert.ok(!toCsv(rows).includes('Frank Okine'), 'and no driver name reaches the file');
 });
 
 test('the summary counts customers once even when they have several restricted PROs', () => {
