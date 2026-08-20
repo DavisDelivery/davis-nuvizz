@@ -100,7 +100,18 @@ export function dayReceivingWindow(note, dayKey) {
   }
   const closeMin = parseClockMin(v.close);
   if (closeMin == null) return null;
-  return { openMin: parseClockMin(v.open), closeMin, tier: tierOfHours(note) };
+  const openMin = parseClockMin(v.open);
+  // THE SAME REFUSAL THE STRING BRANCH ALREADY MAKES, and it belongs here too. The two
+  // `<input type="time">` boxes on the stop card write this object shape, so a dispatcher
+  // typing a real overnight dock (21:00–05:00) or a 24-hour dock (00:00–00:00) produced a
+  // window whose close lands BEFORE its open — and because a typed window is tier 'typed',
+  // severityTier makes any predicted overrun at least RED. Every stop at that customer then
+  // carried a 5:00a (or midnight) deadline it could never meet, in the loudest tier, from a
+  // dispatcher doing nothing but recording the truth. An overnight dock is not comparable to
+  // a daytime route; saying "no comparable window" is the honest answer, exactly as the
+  // string branch decided for "9PM-5AM".
+  if (openMin != null && closeMin <= openMin) return null;
+  return { openMin, closeMin, tier: tierOfHours(note) };
 }
 const tierOfHours = (note) => (note?.manual_overrides?.receiving_hours === true ? 'typed' : 'auto');
 
@@ -384,6 +395,9 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // Every leg the walk crosses, keyed and positioned, so the server sweep can prefetch
   // real drive times for exactly these pairs next pass. Deduped; order irrelevant.
   const legsWanted = new Map();
+  // Predicted arrival per stop, from the SAME walk that decides the flags. Consumed by the
+  // route-detail card so a dispatcher reads our ETA instead of a shared appointment window.
+  const etaByStop = new Map();
   if (day) for (const s of open) { if (dayReceivingWindow(noteOf(s), day)) checked.stopsWithHours += 1; }
 
   // R1 — two NuVizz orders under one stop number (the Estes twin). Proof, not a guess: the
@@ -524,8 +538,15 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       // and emitted its own copy of the flag (Chad's screenshot: Subaru flagged at 1:06p,
       // 1:26p AND 1:46p, exactly one service-time apart). One visit, one clock, one flag.
       const visitSeen = new Set();
+      // The rows behind each visit. A multi-order customer is ONE physical arrival spread
+      // over several board rows; the walk prices it once, and every row of it shares that
+      // arrival — otherwise the duplicates would show no ETA at all on the route card.
+      const rowsOfVisit = new Map();
       const visits = seqd.filter((s) => {
         const vk = `${seqOf(s)}|${String(s.matchKey || s.businessName || s.stopNbr || '').toLowerCase()}`;
+        if (!rowsOfVisit.has(vk)) rowsOfVisit.set(vk, []);
+        rowsOfVisit.get(vk).push(s);
+        s.__visitKey = vk;
         if (visitSeen.has(vk)) return false;
         visitSeen.add(vk);
         return true;
@@ -580,6 +601,43 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
           if (leg.source === 'google') checked.legsGoogle += 1;
         }
         hopsSinceAnchor += 1;
+        // A TRUCK CANNOT ARRIVE IN THE PAST.
+        //
+        // The clock is re-anchored on every real stamp, which is what makes it accurate —
+        // and it was trusted no matter how OLD that stamp was. A route whose last POD is
+        // 9:30 and which then stalls (a long dock wait, a breakdown, lunch) kept projecting
+        // its remaining stops at 9:45, 10:05, 10:25 while the wall clock read 12:45, so
+        // `clockMin > closeMin` stayed false against a typed 1:00p close and the board
+        // showed NOTHING. The failure is silent in the worst direction: the model produces
+        // fewer flags, and a clean board looks like a good day. Chad asked for this exact
+        // case — the alert "could come later in day if a driver gets behind".
+        //
+        // The route-level `notStarted` clamp already encodes this reasoning for the
+        // DEPARTURE ("a route with no sign of movement cannot depart in the past"); this is
+        // the same rule applied per stop. Only for stops nobody has reported arriving at:
+        // a stop with its own stamp already happened, and clamping that would be a lie in
+        // the other direction.
+        const ownAnchor = arrivalAnchor(s, servedDate);
+        if (nowMin != null && !ownAnchor && !isFinishedStop(s)) clockMin = Math.max(clockMin, nowMin);
+        // WHAT THE WALK ALREADY KNOWS, WRITTEN DOWN. The route card used to print NuVizz's
+        // shared saved-search window ("appt 8:00 AM" on every stop of a load, which no route
+        // ever runs). This is the same clock the flags are judged on — recorded, never
+        // re-derived, so the card and the flag can never disagree about an arrival.
+        // Recorded BEFORE the service block and BEFORE the anchor, so it is the predicted
+        // ARRIVAL at this stop rather than the departure from it.
+        for (const row of rowsOfVisit.get(s.__visitKey) || [s]) {
+          if (row?.stopNbr == null) continue;
+          etaByStop.set(String(row.stopNbr), {
+            etaMin: clockMin,
+            anchored,
+            hops: hopsSinceAnchor,
+            routeKey: k,
+            // The model's own error band at this point in the chain — an estimate six hops
+            // past the last real stamp is a different promise from one anchored next door,
+            // and the card is entitled to say so.
+            errorMin: modelErrorMinutes({ anchored, hops: hopsSinceAnchor }),
+          });
+        }
         const finished = isFinishedStop(s);
         const w = finished ? null : dayReceivingWindow(noteOf(s), day);
         if (w && clockMin > w.closeMin) {
@@ -616,7 +674,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         // An out-of-sequence stamp is trusted rather than clamped. Stops do get delivered
         // out of order, and when they do the stamp is still the truth about where the truck
         // is — refusing it to keep the clock monotonic would throw away the better answer.
-        const anchor = arrivalAnchor(s, servedDate);
+        const anchor = ownAnchor;
         if (anchor) {
           clockMin = anchor.source === 'delivered' ? anchor.min : anchor.min + rt.serviceSec / 60;
           anchored = true;
@@ -661,8 +719,36 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         if (!constrained.length) continue;
         constrained.sort((a, b) => a.w.closeMin - b.w.closeMin);
         const first = constrained[0];
-        const tier = constrained.some((x) => x.w.tier === 'typed') ? 'red' : 'amber';
+        // WHAT R5 ALREADY FOUND ON THIS ROUTE, read BEFORE the card is built — because the
+        // supersede below deletes those rows, and deleting them used to delete their
+        // SEVERITY with them. R6's own tier comes from provenance alone (typed hours → red,
+        // auto → amber) and never calls severityTier, so a driverless route carrying five
+        // stops predicted 200+ minutes past an auto-detected close collapsed to ONE amber:
+        // critical 0, red 0, and — since selectAlertable only reads hours_risk rows with a
+        // stopNbr — customer service heard nothing about the worst route on the board.
+        // Removing the driver made the situation strictly worse and the board strictly calmer.
+        const supersededRows = hoursRowsByRoute.get(k) || [];
+        const worstHours = supersededRows.length
+          ? [...supersededRows].sort((a, b) =>
+            ((TIER_ORDER[a.tier] ?? 9) - (TIER_ORDER[b.tier] ?? 9)) || ((b.lateBy || 0) - (a.lateBy || 0)))[0]
+          : null;
+        const ownTier = constrained.some((x) => x.w.tier === 'typed') ? 'red' : 'amber';
+        // The louder of the two. A card that replaces a critical has to be a critical.
+        const tier = worstHours && (TIER_ORDER[worstHours.tier] ?? 9) < (TIER_ORDER[ownTier] ?? 9)
+          ? worstHours.tier
+          : ownTier;
         rows.push(row(tier, 'no_driver_hours', first.s, {
+          // The alert path needs a real stop to claim and a close to check against. When R6
+          // supersedes a genuine arrival row, it inherits that row's facts so the message
+          // can be sent — with the BETTER reason (nobody is driving) rather than the vaguer
+          // one it replaced. With nothing superseded these stay absent and the card is
+          // screen-only, exactly as before.
+          ...(worstHours ? {
+            customer: worstHours.customer || first.s.businessName || null,
+            closeMin: worstHours.closeMin, etaMin: worstHours.etaMin,
+            lateBy: worstHours.lateBy, anchored: worstHours.anchored,
+            supersededTier: worstHours.tier,
+          } : {}),
           title: `No driver — ${k} must make ${fmtMin(first.w.closeMin)}`,
           detail: `${k} has ${constrained.length} stop${constrained.length === 1 ? '' : 's'} with receiving hours today (earliest close ${fmtMin(first.w.closeMin)} at ${first.s.businessName || first.s.stopNbr}); past the ${fmtMin(departMin)} departure, no movement, no driver.${tier === 'amber' ? ' Hours auto-detected — verify.' : ''} Assign a driver or move the dates.`,
           scope: 'occurrence', servedDate, fingerprint: `nodrv|${servedDate}|${k}|${first.w.closeMin}`,
@@ -683,9 +769,8 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         // clock still lands hours before a 2:00p close, so R5 says nothing). Once the clock
         // does cross, both fire. Suppressing R5 here loses nothing: every stop it would
         // have named is already inside R6's count, and R6 names the earliest one.
-        const superseded = hoursRowsByRoute.get(k);
-        if (superseded && superseded.length) {
-          const drop = new Set(superseded);
+        if (supersededRows.length) {
+          const drop = new Set(supersededRows);
           for (let i = rows.length - 1; i >= 0; i -= 1) if (drop.has(rows[i])) rows.splice(i, 1);
         }
       }
@@ -693,10 +778,28 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   }
 
   // Volume caps — a wall of rows is how badges die. Collapse an over-cap rule to one line.
+  //
+  // PER RULE **AND TIER**, and that second half is the whole correctness of it. This used to
+  // bucket by rule alone and then pick the cap from `rs[0].tier` — the first row pushed,
+  // which is the first late stop of whichever route came first, a tier that is arbitrary
+  // with respect to severity. So thirteen late stops whose first happened to be red
+  // collapsed the ENTIRE rule to one red summary: eleven criticals erased, criticalCount 0,
+  // and — because selectAlertable skips collapsed rows and rows with no stopNbr — customer
+  // service emailed about none of them. Thirteen stops past their close is an ordinary bad
+  // day on a 700-stop board, so this was reachable, and the failure is silent by
+  // construction: one calm amber row is pixel-identical to a calm board.
+  //
+  // Bucketing by tier means a critical can only ever be summarized by criticals, and the
+  // count that collapses is the count the dispatcher would have had to read anyway.
   const capped = [];
   const byRule = new Map();
-  for (const r of rows) { if (!byRule.has(r.rule)) byRule.set(r.rule, []); byRule.get(r.rule).push(r); }
-  for (const [rule, rs] of byRule) {
+  for (const r of rows) {
+    const bucket = `${r.rule}|${r.tier}`;
+    if (!byRule.has(bucket)) byRule.set(bucket, []);
+    byRule.get(bucket).push(r);
+  }
+  for (const [bucketKey, rs] of byRule) {
+    const rule = bucketKey.slice(0, bucketKey.lastIndexOf('|'));
     const cap = rs[0].tier === 'critical' ? CRITICAL_CAP : rs[0].tier === 'red' ? RED_CAP : AMBER_CAP;
     if (rs.length <= cap) { capped.push(...rs); continue; }
     // The summary row needs its OWN dismissal identity. Spreading rs[0] used to carry that
@@ -707,7 +810,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       ...rs[0], stopNbr: null, matchKey: null,
       title: `${rs.length} stops: ${rs[0].title.split('—')[0].trim()}`,
       detail: `Too many to list one by one (cap ${cap}) — this is a data-quality batch, not ${rs.length} separate emergencies. Work it from the stops grid.`,
-      fingerprint: `collapsed|${rule}|${servedDate}|${rs.length}`, collapsed: rs.length,
+      fingerprint: `collapsed|${rule}|${rs[0].tier}|${servedDate}|${rs.length}`, collapsed: rs.length,
     };
     summaryRow.dismissKey = `${rule}|${summaryRow.scope === 'occurrence' ? `${summaryRow.servedDate}|` : ''}${summaryRow.fingerprint}|t${TIER_RANK[summaryRow.tier] ?? 1}`;
     summaryRow.dismissKeys = dismissKeysFor(summaryRow);
@@ -727,6 +830,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     skipped,
     checked,
     legsWanted: [...legsWanted.values()],
+    etaByStop,
   };
 }
 

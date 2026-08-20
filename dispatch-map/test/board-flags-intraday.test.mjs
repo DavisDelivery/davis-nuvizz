@@ -48,10 +48,20 @@ const notes = new Map([['c9', {
   receiving_hours: { mon: { open: '08:00', close: '14:00' } },
 }]]);
 
+// THE CLOCK HAS TO MATCH THE FICTION. This used to be `8:05 + delivered*60` — a flat hour
+// per stop regardless of `pace` — so the running-ahead case (pace 35) claimed it was 12:05
+// while the truck's last delivery was 10:00 and six stops sat untouched. That is not a truck
+// running ahead; that is a truck that stopped reporting two hours ago, and the engine is
+// right to flag it (a stop still open cannot have been arrived at in the past). The clock now
+// sits just after the last stamp the fixture wrote, which is the world these tests describe:
+// the truck just delivered stop N and is en route to N+1.
+const nowFor = (delivered, { pace = 75, firstArrival = 8 * 60 + 30 } = {}) =>
+  (delivered > 0 ? firstArrival + (delivered - 1) * pace + 15 + 5 : 8 * 60 + 5);
+
 const flagFor = (delivered, opts) => {
   const out = computeBoardFlags({
     stops: board(delivered, opts), notes, servedDate: DATE, dayKey: 'mon',
-    opts: { depot: DEPOT, nowMin: 8 * 60 + 5 + delivered * 60 },
+    opts: { depot: DEPOT, nowMin: nowFor(delivered, opts) },
   });
   return out.rows.find((r) => r.rule === 'hours_risk' && /CUST 9/.test(`${r.title} ${r.detail}`)) || null;
 };
