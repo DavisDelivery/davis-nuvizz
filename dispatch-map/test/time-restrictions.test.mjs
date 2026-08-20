@@ -114,6 +114,46 @@ test('"RECEIVING HOURS 8AM-2PM" is a hard window with the close read off the tex
   assert.equal(r.hoursLabel, '8:00a–2:00p');
 });
 
+// ── a dock open all day is not a restriction, whoever stated the hours ────────
+
+test('"RECEIVING HOURS 9AM-5PM" is a working day, not a hard window', () => {
+  assert.equal(classify(instr('RECEIVING HOURS 9AM-5PM')), null, 'exactly 8 hours is already a day');
+  assert.equal(classify(instr('RECEIVING HOURS 8AM-5PM')), null);
+  assert.equal(classify(instr('RECEIVING HOURS 7AM-5PM')), null);
+});
+
+test('7:30a-3:30p is 8 hours and goes; 7:30a-3:00p is 7.5 and stays', () => {
+  assert.equal(classify(instr('RECEIVING HOURS 7 30AM-3 30PM')), null);
+  assert.equal(classify(instr('RECEIVING HOURS 7 30AM-3PM')).tier, 'hard_window');
+});
+
+test('the span rule applies to hours a DISPATCHER typed, not just ones we scanned', () => {
+  const wide = { receiving_hours: { wed: { open: '08:00', close: '17:00' } }, manual_overrides: { receiving_hours: true } };
+  assert.equal(classify({}, wide), null, 'a typed 8-5 is still a working day');
+  const tight = { receiving_hours: { wed: { open: '08:00', close: '12:00' } }, manual_overrides: { receiving_hours: true } };
+  assert.equal(classify({}, tight).tier, 'hard_window');
+});
+
+test('an opens-at or closes-at has no span to measure and survives', () => {
+  assert.equal(classify(instr('RECEIVING AFTER 10AM')).hoursLabel, 'opens 10:00a');
+  assert.equal(classify(instr('CLOSES AT 3 30 PM')).closeMin, 15 * 60 + 30);
+  assert.equal(classify(instr('PICK UP BEFORE 11AM OR AFTER 12:30PM.')).tier, 'hard_window',
+    'a midday closure is a hole in the day, not a wide window');
+});
+
+test('wide hours cannot prop up an appointment-only stop', () => {
+  // The hours go, which leaves the appointment standing alone — and an appointment alone
+  // is not a clock constraint either, so the row leaves the sheet entirely.
+  const board = [stop({ ...instr('RECEIVING HOURS 8AM-5PM', 'NTFY OF DELIVERY-APPT REQD') })];
+  assert.equal(buildTimeRestrictionRows(board, new Map(), WED, { dropAppointmentOnly: true }).length, 0);
+});
+
+test('a stop with wide hours keeps a genuine PM order window', () => {
+  const r = classify({ ...instr('RECEIVING HOURS 8AM-5PM'),
+    scheduledFrom: `${WED}T12:00:00`, scheduledTo: `${WED}T17:00:00` });
+  assert.equal(r.tier, 'half_day', 'the wide hours drop away, the real window remains');
+});
+
 test('FRIDAY is the day that bites: "MON-THU 8-2 / FRI 8-12" closes at noon on a Friday', () => {
   const lines = instr('RECEIVING HOURS', 'MONDAY-THURSDAY 8-2', 'FRIDAY 8-12');
   assert.equal(classify(lines, null, WED).closeMin, 14 * 60, 'Wednesday still closes at 2p');
@@ -308,7 +348,7 @@ test('rows come back most-constrained first so the top of the sheet is the expen
 
 test('inside a tier the EARLIEST CLOSE leads, whatever the customer is called', () => {
   const rows = buildTimeRestrictionRows([
-    stop({ primaryPro: 'LATE', businessName: 'AAA CO', ...instr('RECEIVING HOURS 8AM-5PM') }),
+    stop({ primaryPro: 'LATE', businessName: 'AAA CO', ...instr('RECEIVING HOURS 8AM-3PM') }),
     stop({ primaryPro: 'EARLY', businessName: 'ZZZ CO', ...instr('RECEIVING HOURS 8AM-11AM') }),
   ], new Map(), WED);
   assert.deepEqual(rows.map((r) => r.pro), ['EARLY', 'LATE'],
