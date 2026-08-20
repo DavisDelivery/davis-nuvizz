@@ -38,13 +38,19 @@ import { emailEnabled, sendEmail } from './lib/email.mts';
 const TENANT = 'davis';
 export const REPORT_HOUR_ET = 18;
 export const REPORT_MINUTE_ET = 30;
-// THE RECIPIENT IS AN ENV VAR AND NOT A LINE OF SOURCE. Chad asked for this to reach him
-// personally, and a person's address on the company domain must not be committed: the repo's
-// own guard (test/no-lifelike-addresses) refuses them because Netlify's secret scanner can
-// read one as an env-var VALUE and fail the deploy. The guard's bar is a ROLE word the
-// product genuinely sends from — "chad" is not one, and weakening the guard to fit one
-// address would cost more than setting a variable. Unset means no send, said out loud in
-// the run status rather than failing quietly.
+// THE RECIPIENT IS AN ENV VAR AND NOT A LINE OF SOURCE. This report goes to a person, and a
+// person's address on the company domain must not be committed: the repo's own guard
+// (test/no-lifelike-addresses) refuses them because Netlify's secret scanner reads an
+// env-var VALUE out of the build and fails the deploy. That guard's bar is a ROLE word the
+// product genuinely sends from, which a personal address is not.
+//
+// AND THE FIRST DRAFT OF THIS VERY COMMENT FAILED THE DEPLOY. It spelled out the local part
+// in lowercase to explain why it was not being committed — and that bare word is itself an
+// env-var value on this site, so the scanner matched the explanation. The scan reads
+// COMMENTS, not just code, and it is case-sensitive: a secret does not become safe by being
+// prose about a secret. Nothing here spells one out, deliberately.
+//
+// Unset means no send, said out loud in the run status rather than failing quietly.
 const TO_ENV = 'DAY_REPORT_TO';
 
 function etParts(d = new Date()) {
