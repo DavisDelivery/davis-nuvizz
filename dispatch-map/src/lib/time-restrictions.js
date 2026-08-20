@@ -404,6 +404,19 @@ function summarize({ hoursLabel, win, appts, closedToday, dayKey, amPm }) {
  */
 export const INCLUDE_MODES = ['all', 'deliveries', 'pickups'];
 
+// AN APPOINTMENT IS A BOOKING OBLIGATION, NOT A CLOCK CONSTRAINT. "Call before you come"
+// tells a dispatcher to make a phone call; it does not say the freight must be there by
+// two. On a sheet whose whole subject is when a dock will take freight, a stop carrying
+// nothing but 'NTFY OF DELIVERY-APPT REQD' is a different job on a different desk — and on
+// the 2026-08-19 board it was 33 of 187 rows, an eighth of the sheet answering a question
+// nobody asked of it.
+//
+// ONLY when it stands alone. A stop with receiving hours AND an appointment already ranks
+// as a hard window and is untouched by this; so is one that pairs an appointment with a
+// closed day or an AM/PM window. The test is the WHOLE kinds list, not the tier, because
+// a tier of 'appointment' still permits a closed-day or half-day kind underneath it.
+export const isAppointmentOnly = (kinds = []) => kinds.length === 1 && kinds[0] === 'appointment';
+
 export function buildTimeRestrictionRows(stops = [], notes = new Map(), servedDate = null, opts = {}) {
   // Default 'all' — a library that silently drops rows is a trap. The report endpoint
   // above chooses 'deliveries' and says so in its coverage block, because a receiving
@@ -412,6 +425,9 @@ export function buildTimeRestrictionRows(stops = [], notes = new Map(), servedDa
   // still sees the whole board: a creation default is a property of the board, and
   // hiding half of it from the detector would let a stamp slip through as real.
   const include = INCLUDE_MODES.includes(opts.include) ? opts.include : 'all';
+  // Default false here, true at the endpoint — same split as `include`: the library does
+  // not drop rows behind the caller's back, the report decides its own subject.
+  const dropAppointmentOnly = opts.dropAppointmentOnly === true;
   const defaultSlots = detectDefaultSlots(stops);
   const rows = [];
   for (const stop of stops) {
@@ -421,6 +437,7 @@ export function buildTimeRestrictionRows(stops = [], notes = new Map(), servedDa
     const isPickup = stop.stopType === 'PU';
     if (include === 'deliveries' && isPickup) continue;
     if (include === 'pickups' && !isPickup) continue;
+    if (dropAppointmentOnly && isAppointmentOnly(r.kinds)) continue;
     rows.push({
       pro: stop.primaryPro || stop.pro || stop.stopNbr || '',
       orderNbr: stop.orderNbr || '',
