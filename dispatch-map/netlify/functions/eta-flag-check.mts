@@ -20,7 +20,7 @@
 //
 // Read-only. Firestore only. ZERO NuVizz calls.
 import { isFirestoreEnabled, readStops, getDoc, listDocs, etDayString } from './lib/firestore.mts';
-import { computeBoardFlags, isFinishedStop, dayReceivingWindow } from '../../src/lib/board-flags.js';
+import { computeBoardFlags, isFinishedStop, dayReceivingWindow, parseClockMin } from '../../src/lib/board-flags.js';
 import { legSecondsMap, travelLegsPath, readTravelCalibration, readRouteClasses } from './lib/travel-store.mts';
 import { routeDeparturePath } from './lib/route-departure.mts';
 import { flagHistoryPath } from './lib/flag-history.mts';
@@ -135,6 +135,89 @@ export function hoursProvenance(stop: any, notes: Map<string, any> | null, dayKe
     parsed: { open: w.openMin != null ? clock(w.openMin) : null, close: clock(w.closeMin), tier: w.tier },
     why: null,
   };
+}
+
+/**
+ * PURE. WHERE THE WHOLE BOARD'S DEADLINES COME FROM — one row per customer, not per stop.
+ *
+ * Chad, after METRO: "maybe we need the parser to learn how the note for hours was
+ * constructed." The right way to answer that is not to read one customer's note and
+ * generalise. It is to ask the board how many customers carry hours the parser REFUSES, and
+ * to show the actual text it refused, so the question becomes "should it learn THESE shapes"
+ * instead of "does it have a problem".
+ *
+ * The split matters because the fixes are different and land on different people:
+ *   • noNote / noHoursAnyDay — nobody has recorded this customer's hours. Data entry.
+ *   • blankToday             — hours exist for other weekdays but not this one. Data entry,
+ *                              and the likeliest kind to be an oversight rather than a
+ *                              deliberate "they are shut".
+ *   • refusedText            — a string with no readable clock. THIS is the only bucket
+ *                              parser work can move, and the samples say whether it is
+ *                              worth moving. On the first real run it was ZERO.
+ *   • refusedWindow          — an overnight or 24-hour dock, refused on purpose. Policy.
+ *   • incompleteRecord       — an hours record saved with no close. Data entry, or a stop
+ *                              card that should not have accepted it.
+ *
+ * Samples are the hours text only — deduped and capped. No addresses, no customer names:
+ * the question is what SHAPES appear, and a list of shapes is smaller and safer than a list
+ * of customers.
+ */
+export function hoursCoverage(
+  stops: any[], notes: Map<string, any> | null, dayKey: string | null,
+  { sampleCap = 24 }: { sampleCap?: number } = {},
+) {
+  const seen = new Set<string>();
+  const sampleSeen = new Set<string>();
+  const out = {
+    customers: 0, stopsWithNoMatchKey: 0,
+    noNote: 0, noHoursAnyDay: 0, blankToday: 0,
+    // THE REFUSALS, SPLIT BY WHO CAN ACTUALLY FIX THEM. Collapsing these into one "refused"
+    // number is how a parser gets rewritten for no reason: the first real run of this report
+    // returned 7 refusals on an 804-customer board, and every one of them was a receiving
+    // -hours record saved with a BLANK CLOSE — no free text anywhere, nothing to learn.
+    // A single bucket would have read as "7 customers the parser is failing."
+    refusedText: 0,      // a string the parser could not read. The ONLY parser-fixable bucket.
+    refusedWindow: 0,    // a real window deliberately refused (overnight / 24h). Policy, not parser.
+    incompleteRecord: 0, // an hours record with no usable close. Data entry — or a card that let it save.
+    parsedTyped: 0, parsedAuto: 0,
+    refusedSamples: [] as string[],
+  };
+  for (const s of stops || []) {
+    if (!s?.matchKey) { out.stopsWithNoMatchKey += 1; continue; }
+    if (seen.has(s.matchKey)) continue;   // one customer, one row — a 3-order stop is not 3 gaps
+    seen.add(s.matchKey);
+    out.customers += 1;
+    const p = hoursProvenance(s, notes, dayKey);
+    if (!p.noteOnFile) { out.noNote += 1; continue; }
+    if (p.parsed) { if (p.parsed.tier === 'typed') out.parsedTyped += 1; else out.parsedAuto += 1; continue; }
+    if (p.raw == null) {
+      // "Never recorded" and "recorded for other days but not this one" are different gaps.
+      const rh = notes?.get(s.matchKey)?.receiving_hours;
+      const anyDay = rh && typeof rh === 'object' && Object.values(rh).some((v) => v);
+      if (anyDay) out.blankToday += 1; else out.noHoursAnyDay += 1;
+      continue;
+    }
+    // Which KIND of refusal — the whole point of the report.
+    if (typeof p.raw === 'string') {
+      // A bare string with no readable clock in it. Free text ("call first", "24-7") is the
+      // shape parser work could conceivably learn, so it is the one counted as such.
+      out.refusedText += 1;
+    } else if (parseClockMin((p.raw as any)?.close) == null) {
+      // Structured record, but no close to be late against. Nothing for a parser to read;
+      // somebody saved the hours boxes without filling the one field that matters.
+      out.incompleteRecord += 1;
+    } else {
+      // A close that parses but the window is refused on purpose — an overnight or 24-hour
+      // dock is not comparable to a daytime route (see dayReceivingWindow). Policy.
+      out.refusedWindow += 1;
+    }
+    const text = typeof p.raw === 'string' ? p.raw : JSON.stringify(p.raw);
+    if (!sampleSeen.has(text) && out.refusedSamples.length < sampleCap) {
+      sampleSeen.add(text);
+      out.refusedSamples.push(text);
+    }
+  }
+  return out;
 }
 
 // Any stop on the board, flagged or not — because "no email" and "no flag" are different
@@ -285,6 +368,8 @@ export default async (req: Request): Promise<Response> => {
       openStopsChecked: flags.checked?.stops ?? null,
       skipped: flags.skipped,
       sampleStopKeys: stops.slice(0, 3).map((s: any) => s?.matchKey ?? null),
+      // WHY THE BOARD HAS THE DEADLINE COVERAGE IT HAS, split by what would fix each gap.
+      hoursCoverage: hoursCoverage(stops, notes, weekdayKey(date)),
     };
 
     return J({

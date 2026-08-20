@@ -70,3 +70,32 @@ test('counts are whole numbers — a fractional count never reaches the screen',
   assert.equal(p.red, 2);
   assert.equal(p.amber, 4);
 });
+
+// ── each tier wears its own colour ───────────────────────────────────────────
+//
+// Chad, on "⚑ 2 · 1" sitting on one solid red box: "the flag box at top should be half red
+// half yellow to represent the 2 flag colors." The colour IS the information — a red box
+// reading 2 · 1 says three things need attention now, when two do and the third is a stop
+// worth a look. showSep is what the chip switches on to draw the split.
+
+test('A MIXED BOARD WEARS BOTH COLOURS: the split is exactly the two-tier case', () => {
+  const mixed = flagChipParts({ redCount: 2, amberCount: 1 });
+  assert.equal(mixed.showSep, true, 'two tiers → a red half and an amber half');
+  assert.equal(mixed.red, 2);
+  assert.equal(mixed.amber, 1);
+  assert.equal(mixed.tone, 'red', 'severity still leads — the border and the flag stay red');
+});
+
+test('a single-tier board keeps its one solid chip — an empty half would be furniture', () => {
+  const redOnly = flagChipParts({ redCount: 3, amberCount: 0 });
+  assert.equal(redOnly.showSep, false);
+  assert.equal(redOnly.tone, 'red');
+
+  const amberOnly = flagChipParts({ redCount: 0, amberCount: 5 });
+  assert.equal(amberOnly.showSep, false);
+  assert.equal(amberOnly.tone, 'amber', 'and it is the AMBER count that shows, in amber');
+
+  const clean = flagChipParts({ redCount: 0, amberCount: 0 });
+  assert.equal(clean.showSep, false);
+  assert.equal(clean.quiet, true);
+});
