@@ -19,15 +19,18 @@ const DEPOT = { name: 'Buford Terminal', lat: 34.147791, lng: -83.960911 };
 const N = 10, TARGET = 9, DATE = '2026-08-17';
 const hhmm = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 
-// `pace` = real minutes per stop. The model believes ~51 (37 travel + 14 service — the
-// per-stop cost is the MEASURED 14 minutes, not the routing engine's 20-minute planning
-// allowance), so a pace of 75 is a truck steadily falling behind and 40 is one running ahead.
+// `pace` = real minutes per stop. Under the distance-tiered curve the model believes ~44
+// per stop here (18-mile legs at ~36 mph effective = 30 travel + the MEASURED 14 service,
+// not the routing engine's 20-minute planning allowance), so a pace of 75 is a truck
+// steadily falling behind and 35 is one running ahead. The spacing is tuned so the pure
+// 8:00 projection ALREADY misses the 14:00 close — these tests are about what the anchor
+// does to an already-late route, not about whether the curve finds it late.
 const board = (delivered, { pace = 75, firstArrival = 8 * 60 + 30 } = {}) => {
   const stops = [];
   for (let i = 1; i <= N; i += 1) {
     const s = {
       stopNbr: `S${i}`, matchKey: `c${i}`, businessName: `CUST ${i}`, loadNbr: 'TESTLOAD',
-      routeSeq: i, stopType: 'DL', lat: 34.147791 + i * 0.18, lng: -83.960911,
+      routeSeq: i, stopType: 'DL', lat: 34.147791 + i * 0.26, lng: -83.960911,
       normalizedStatus: 'PLANNED', status: '10',
       driverName: 'TEST DRIVER', driverUserName: 'tdriver',   // keeps R6 from superseding
     };

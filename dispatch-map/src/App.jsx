@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.59.3';
+const APP_VERSION = '0.60.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -148,6 +148,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.60.0', 'THE FLAT ~30 MPH IS GONE — LEGS NOW COST WHAT THE ROADS ACTUALLY COST. Chad: \u201cwe shouldn\u2019t be using straight line distances surely we can come up with a better way. That is also not going to be expensive to do.\u201d The old model priced every leg at one speed \u2014 a flat ~30 mph over crow-flies \u00d7 1.3 \u2014 which UNDERSTATES town hops (lights, turns, lot entrances run ~12\u201316 mph effective) and OVERSTATES highway runs (the 49-mile Monroe leg is about an hour, not 127 minutes). Both errors cost attention in opposite directions: missed real risk in town, cried wolf on exactly the far-out stops whose flags read \u201c307 min late\u201d. TWO LAYERS REPLACE IT, CHEAPEST FIRST. (1) A DISTANCE-TIERED SPEED CURVE \u2014 effective speed grows with leg length, piecewise-linear, in src/lib/travel-model.js \u2014 CALIBRATED NIGHTLY from Davis\u2019s own sealed history: consecutive same-route arrival stamps are (distance, elapsed) pairs from the trucks that actually drive these roads, pooled over 28 days, median per bucket, isotonic so one noisy bucket can never make a longer leg read slower, per-bucket fallback to the shipped defaults wherever the pool is thin. The measured stop dwell rides along, so service time self-tunes too. (2) REAL GOOGLE DRIVE TIMES PER LEG where the server holds one \u2014 the routing engine\u2019s existing Routes key, asked per-pair, cached in ONE Firestore doc and reused across sweeps, days and the recurring customers that make up this board. ~150 legs on a cold day, a handful thereafter \u2014 inside the API free tier, and with no key everything degrades to the curve: $0 either way, which was the brief. THE 20-MINUTE ALERT SWEEP RUNS THE ENGINE TWICE \u2014 pass one reports which legs today\u2019s boards need, the store fills the gaps (capped), pass two \u2014 the one that alerts and gets recorded \u2014 runs on the filled cache. The browser reads the same inputs from a new travel-model endpoint every 5 minutes, so the screen and the inbox can never disagree about how long a leg takes. eta-flag-check judges on identical inputs, read-only. THE FOOTER NOW SAYS WHAT THE CLOCK ACTUALLY RAN ON \u2014 \u201creal drive times on N of M legs\u201d vs calibrated vs default \u2014 instead of asserting \u201cflat ~30 mph\u201d for ever, which was the same intent-as-outcome trap as the hardcoded DNS banner. AND IT WAS MEASURED BEFORE IT SHIPPED, not assumed: eta-backtest gained model T \u2014 the shipped anchored walk with ONLY the leg pricing swapped \u2014 plus ?fit=1, which fits the curve from the sealed window and grades it on the spot. The shipped defaults are literature-shaped and stand only until the first nightly fit lands, which the engine then prefers automatically \u2014 and the backtest verdict on the fitted curve is reported right after this merges, so the claim is measured, not assumed. 20 new travel-model tests; the intraday and severity suites re-tuned to the curve\u2019s arithmetic (the rules they pin are unchanged \u2014 what moved is that a 49-mile leg no longer pretends to take two hours). 1,987 green, zero NuVizz calls anywhere in this change.'],
   ['0.59.3', 'THE SHEET WAS TELLING YOU IT READ THE HOURS OFF THE ORDER IN FRONT OF YOU. IT HAD NOT. Every row carries an Hours source column, and its whole job is to let a dispatcher decide how far to trust the row — hours somebody TYPED for that customer are worth more than hours a scanner guessed. It was derived from the trust tier, and dayReceivingWindow returns tier “auto” for two completely different things: hours sitting on the customer’s SAVED record from an earlier scan, and hours parsed out of THIS order’s instructions. So both printed as “Order text”, and on a real board that was 100 of the 107 rows with hours on them — a provenance claim the data never supported, on the one column a reader consults precisely when they doubt a row. It is the same failure as the stop card printing the ORDER’s contact name beside a number a dispatcher had typed. Provenance is now tracked separately from trust and says which of the three it actually is: Dispatcher (somebody typed it), Saved on customer (auto-detected earlier and kept on the record), or This order (parsed from the instructions on the order in front of you). A stop with no hours claims no source at all rather than defaulting to one. 2 new tests, 1,972 green.'],
   ['0.59.2', 'A PICKUP WAS BEING ACCUSED OF MISSING A DOCK IT WAS NEVER DELIVERING TO. Reading the finished sheet against the raw orders — the pass that has now caught every real bug in this feature — two of the eight “delivered past close” rows were wrong, and wrong in the direction that damages a driver. An internal Davis pickup was collected at 12:05p against an order that said, in as many words, “PICK UP BEFORE 1:00PM”. It was on time. The sheet called it 65 minutes late, because it had inherited a 6a–11a RECEIVING window from a customer_notes document — and a second pickup, whose order carries no time language whatsoever, was scored against those same hours for the same reason. Receiving hours describe when a dock will take freight IN. A pickup is us collecting freight OUT, and the two have nothing to do with each other. This is the same conflation the customer-email trigger shipped and had caught before it ever sent: every stop carries stopType PU or DO, a completed PICKUP is also status DELIVERED, and code that looks only at the status cannot tell the difference between taking custody and handing it over. It cost a wrong sentence in an email then; it would have cost a wrong accusation about a driver’s day here, on a report whose entire value is that Chad can trust the exceptions it names. The hours still print on the row, because a pickup window is real context worth seeing — what is withheld is the ACCUSATION. Eight past-close rows become six, and all six are deliveries against a stated dock close, the tightest being two minutes and the widest five hours. 2 new tests, 1,970 green.'],
   ['0.59.1', 'THE TIME-RESTRICTION SHEET CAN NOW SEE THE FREIGHT THAT IS ALREADY LATE. v0.59.0 read one day’s board, which is the right default — it matches what the map shows unless a dispatcher asks for more. But it meant the report could not see a CARRIED-OVER stop, and on the very board it was built against three of the four carry-overs were time-restricted: a GXO stop undelivered since the 17th that nobody can deliver without booking it first, a Switchyards stop with an 8–3 dock and an appointment requirement, and a PM-window stop from the 18th. Freight that is already two days late and ALSO carries a clock is the most actionable thing the sheet can list, and it was the one category invisible to it. The endpoint now takes ?carryDays=N, the same opt-in and the same 14-day clamp the map feed uses, folding still-unplanned stops from the prior N days through mergeCarryover — the tested function the map already calls, reading per-day indexes that were scanned days ago, so it costs ZERO extra NuVizz traffic. It stays 0 by default so the report and the screen agree unless you ask otherwise. Carried-over rows are LABELLED rather than quietly mixed into today’s work, and they carry the date they were scheduled FOR so their age is visible on the row: a stop that says 2026-08-17 on a Wednesday sheet is three days old and reads as three days old. The summary gained two counts that matter more than the total: how many rows are carry-overs, and how many are still undelivered — because a restricted stop already signed for is history, and a restricted stop still open is work. 1 new test, 1,968 green.'],
@@ -3005,6 +3006,38 @@ function writeDismissedFlag(keys) {
   return m;
 }
 
+// What the flag clock runs on, fetched from the server: cached real Google drive times
+// for today's legs plus the nightly-calibrated speed curve. The server sweep fills the
+// leg cache; the browser only READS — no Google call ever originates here. Null until the
+// first fetch lands (and on failure), which the engine treats as "shipped defaults":
+// the board is never blank waiting on this, and never crashes without it.
+function useTravelInputs() {
+  const [travel, setTravel] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const r = await fetch('/.netlify/functions/travel-model');
+        const j = await r.json();
+        if (cancelled || !j?.ok) return;
+        const next = {
+          legs: j.legs || {},
+          ...(j.curve ? { curve: j.curve } : {}),
+          ...(Number.isFinite(j.serviceMin) ? { serviceMin: j.serviceMin } : {}),
+          meta: { calibrated: !!j.curve, googleEnabled: !!j.googleEnabled, legCount: j.legCount || 0 },
+        };
+        // Identity-stable when nothing moved: a fresh object every 5 minutes would
+        // invalidate both boards' flag memos for a byte-identical payload.
+        setTravel((prev) => (prev && JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+      } catch { /* the curve defaults carry the board */ }
+    };
+    load();
+    const id = setInterval(load, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+  return travel;
+}
+
 function BoardFlagsChip({ flags, open, onToggle }) {
   if (!flags) return null;
   // The chip is ALWAYS rendered now. It used to unrender itself on a zero count, which made
@@ -3122,7 +3155,16 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
         {/* What was actually looked at — so a quiet panel is a CLAIM, not an absence. A zero
             in "receiving hours on file" tells the dispatcher the fix is data, not the code. */}
         Watched {ck.stops ?? 0} open stop{(ck.stops ?? 0) === 1 ? '' : 's'} · {ck.routesJudged ?? 0} route{(ck.routesJudged ?? 0) === 1 ? '' : 's'} judged for hours risk · {ck.stopsWithHours ?? 0} stop{(ck.stopsWithHours ?? 0) === 1 ? '' : 's'} with receiving hours on file today.
-        {' '}From data already on this board — zero NuVizz calls. Arrival times are estimates (flat ~30 mph model). Amber rows use hours auto-detected from order text — verify before acting.
+        {' '}From data already on this board — zero NuVizz calls.
+        {/* Say what the clock ACTUALLY ran on, not what the design hoped for. The old text
+            asserted "flat ~30 mph model" and would have kept asserting it after the model
+            changed — the same intent-as-outcome trap as the hardcoded DNS banner. */}
+        {' '}{(ck.legsGoogle ?? 0) > 0
+          ? `Arrival times: Google road times on ${ck.legsGoogle} of ${ck.legsTotal} legs, ${flags.travelMeta?.calibrated ? 'calibrated' : 'estimated'} speeds on the rest.`
+          : flags.travelMeta?.calibrated
+            ? 'Arrival times are estimates (speeds calibrated from our own deliveries).'
+            : 'Arrival times are estimates (distance-tiered speed model).'}
+        {' '}Amber rows use hours auto-detected from order text — verify before acting.
         {skippedBits.length > 0 && <> Not judged: {skippedBits.join(' · ')}.</>}
         {/* The restore path lives HERE, not only in the empty state — 3 of 4 dismissed
             still deserves a way back. */}
@@ -9053,22 +9095,28 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   const [dismissedFlags, setDismissedFlags] = useState(() => readDismissedFlags());
   // A coarse clock for the hours-risk model: the detector clamps a not-yet-started route's
   // departure to "now", so the memo must re-run as the day moves even when the board data
-  // doesn't. 5-minute ticks — the model is a flat ~30 mph estimate; minute precision is noise.
+  // doesn't. 5-minute ticks — the model is an estimate; minute precision is noise.
   const [flagsClockTick, setFlagsClockTick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => setFlagsClockTick((t) => t + 1), 5 * 60 * 1000);
     return () => clearInterval(id);
   }, []);
+  const travelInputs = useTravelInputs();
   const boardFlags = useMemo(() => {
     const now = new Date();
-    return computeBoardFlags({
+    const out = computeBoardFlags({
       stops, notes, rosterRows: rosterRawRows, servedDate: selectedDate,
       dayKey: weekdayKeyFromDate(selectedDate),
       // nowMin only makes sense for the day being looked at — a tomorrow board's routes
       // haven't started because tomorrow hasn't, and clamping them to now would be a lie.
-      opts: { depot: ROUTING_DEPOT, ...(selectedDate === todayLocalYMD() ? { nowMin: now.getHours() * 60 + now.getMinutes() } : {}) },
+      opts: {
+        depot: ROUTING_DEPOT,
+        ...(selectedDate === todayLocalYMD() ? { nowMin: now.getHours() * 60 + now.getMinutes() } : {}),
+        ...(travelInputs ? { travel: travelInputs } : {}),
+      },
     });
-  }, [stops, notes, rosterRawRows, selectedDate, flagsClockTick]); // eslint-disable-line react-hooks/exhaustive-deps
+    return { ...out, travelMeta: travelInputs?.meta || null };
+  }, [stops, notes, rosterRawRows, selectedDate, flagsClockTick, travelInputs]); // eslint-disable-line react-hooks/exhaustive-deps
   // The chip's number excludes dismissed rows — a cleared list must read as cleared.
   const visibleFlagCounts = useMemo(() => {
     const live = boardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]);
@@ -15646,15 +15694,21 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     const id = setInterval(() => setFlagsClockTick((t) => t + 1), 5 * 60 * 1000);
     return () => clearInterval(id);
   }, []);
+  const travelInputs = useTravelInputs();
   const routingBoardFlags = useMemo(() => {
     const now = new Date();
-    return computeBoardFlags({
+    const out = computeBoardFlags({
       stops, notes, rosterRows: loadRosterList.length ? loadRosterList : null, servedDate: selectedDate,
       dayKey: weekdayKeyFromDate(selectedDate),
       // nowMin only for the today board — see the Map screen's twin of this call.
-      opts: { depot: ROUTING_DEPOT, ...(selectedDate === todayLocalYMD() ? { nowMin: now.getHours() * 60 + now.getMinutes() } : {}) },
+      opts: {
+        depot: ROUTING_DEPOT,
+        ...(selectedDate === todayLocalYMD() ? { nowMin: now.getHours() * 60 + now.getMinutes() } : {}),
+        ...(travelInputs ? { travel: travelInputs } : {}),
+      },
     });
-  }, [stops, notes, loadRosterList, selectedDate, flagsClockTick]); // eslint-disable-line react-hooks/exhaustive-deps
+    return { ...out, travelMeta: travelInputs?.meta || null };
+  }, [stops, notes, loadRosterList, selectedDate, flagsClockTick, travelInputs]); // eslint-disable-line react-hooks/exhaustive-deps
   const visibleFlagCounts = useMemo(() => {
     const live = routingBoardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]);
     return {
