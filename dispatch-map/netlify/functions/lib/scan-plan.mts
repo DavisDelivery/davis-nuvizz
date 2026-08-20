@@ -72,6 +72,26 @@ export const SCAN_INFO: Record<ScanKind, {
   },
 };
 
+/**
+ * HOW OFTEN THE SCANNER WAKES, and how much jitter a fire is allowed.
+ *
+ * The cron used to wake every 15 minutes with a 7-minute tolerance. Chad asked for
+ * planned/unplanned every 20 minutes between midnight
+ * and 5am — and on a 15-minute cron there is no such thing as 20: it snaps to 15, so the box
+ * would have said 20 while the system did 15. A screen that lies about a number you typed is
+ * worse than a screen that refuses it.
+ *
+ * At a 5-minute step every interval a dispatcher would actually reach for lands exactly:
+ * 15→15, 20→20, 30→30, 45→45, 60→60. The tolerance has to come down with it — it exists to
+ * absorb cron jitter and is meant to be about half the step, and at 7 on a 5-minute cron a
+ * 15-minute rule would fire every 10.
+ *
+ * The cost is Netlify invocations (288/day instead of 96), not NuVizz calls: a fire that is
+ * not due does two Firestore reads and returns.
+ */
+export const CRON_STEP_MIN = 5;
+export const CRON_TOLERANCE_MIN = 2;
+
 export interface ScanRule {
   /** Stable id so the UI can key rows and edits survive re-ordering. */
   id?: string;
@@ -88,11 +108,11 @@ export interface ScanRule {
   note?: string;
 }
 
-/** Safe bounds. The interval floor is 15 minutes because the scanner's cron wakes every 15 —
- *  see effectiveCadence. Anything tighter is a number the box accepts and the system cannot
- *  deliver, which is worse than refusing it. */
+/** Safe bounds. The interval floor is the cron step — see effectiveCadence and CRON_STEP_MIN.
+ *  Anything tighter is a number the box accepts and the system cannot deliver, which is worse
+ *  than refusing it outright. */
 export const RULE_BOUNDS = {
-  intervalMin: [15, 720] as [number, number],
+  intervalMin: [CRON_STEP_MIN, 720] as [number, number],
   hour: [0, 24] as [number, number],
 };
 /** More than this many rules is a table nobody can reason about, not a schedule. */
@@ -102,25 +122,40 @@ const WEEKDAYS = [0, 1, 2, 3, 4, 5, 6];
 export const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 /**
- * The shipped plan. Reproduces the single-cadence behaviour this replaces (30m in 04:00–12:59,
- * 60m otherwise, no scanning Sat / Fri night / Sun morning) for `planned` and `roster`, and
- * applies the one change the decoupling is FOR: completed is pulled hard through the delivery
- * day and left alone overnight, when it could only come back empty.
+ * THE SHIPPED PLAN — Chad's schedule, verbatim.
+ *
+ * Planned/unplanned is his, band for band: "every 30 mins from 8pm–12am, then every 20 mins
+ * from 12am to 5am, and every 15 mins from 5am to 10am, then every 30 mins from 10am to 8pm."
+ * The 20-minute band is why the cron moved to a 5-minute step — see CRON_STEP_MIN.
+ *
+ * Completed is the decoupling this feature exists for: hard through the delivery day, and NOT
+ * PULLED AT ALL between 10pm and 4am, where it can only come back empty. 4am is the honest
+ * start — the earliest measured route departure is ~3:42a and there is a delivery on record
+ * at 5:04a.
+ *
+ * Roster drops to hourly. It was being pulled on every one of the ~33 fires a day for a list
+ * that only changes when somebody creates a load; that reclaim pays for most of the extra
+ * completed sampling.
+ *
+ * DAY ASSIGNMENT: an evening band belongs to the night BEFORE a delivery day (Sun–Thu), and a
+ * small-hours band to the morning OF one (Mon–Fri). Friday evening and Saturday are therefore
+ * quiet, because Saturday delivers nothing.
  */
 export function defaultScanRules(): ScanRule[] {
-  const weekdays = [1, 2, 3, 4, 5];
+  const deliveryDays = [1, 2, 3, 4, 5];         // Mon-Fri — days freight actually moves
+  const routingNights = [0, 1, 2, 3, 4];        // Sun-Thu evenings — the night before one
   return [
-    // ── planned / unplanned ──────────────────────────────────────────────────
-    { id: 'plan-routing', kind: 'planned', days: [0, 1, 2, 3, 4], startHour: 20, endHour: 24, intervalMin: 15, note: 'Routing evening — the plan is being built, so watch it closely.' },
-    { id: 'plan-overnight', kind: 'planned', days: weekdays, startHour: 0, endHour: 4, intervalMin: 60, note: 'Overnight — routing tails off.' },
-    { id: 'plan-day', kind: 'planned', days: weekdays, startHour: 4, endHour: 13, intervalMin: 30, note: 'Morning — dispatch edits, and the ~10am order drop.' },
-    { id: 'plan-pm', kind: 'planned', days: weekdays, startHour: 13, endHour: 20, intervalMin: 60, note: 'Afternoon — the plan is largely settled.' },
-    // ── completed ────────────────────────────────────────────────────────────
-    { id: 'done-run', kind: 'completed', days: weekdays, startHour: 4, endHour: 20, intervalMin: 15, note: 'The delivery day — every stamp re-anchors a route clock.' },
-    { id: 'done-tail', kind: 'completed', days: weekdays, startHour: 20, endHour: 22, intervalMin: 60, note: 'Late deliveries closing out.' },
-    // ── roster ───────────────────────────────────────────────────────────────
-    { id: 'roster-am', kind: 'roster', days: weekdays, startHour: 4, endHour: 13, intervalMin: 60, note: 'Enough to keep yesterday’s routes off today’s board.' },
-    { id: 'roster-pm', kind: 'roster', days: weekdays, startHour: 20, endHour: 24, intervalMin: 60, note: 'Tomorrow’s loads appear during routing.' },
+    // ── planned / unplanned (77128) — Chad's bands ───────────────────────────
+    { id: 'plan-eve', kind: 'planned', days: routingNights, startHour: 20, endHour: 24, intervalMin: 30, note: 'Routing opens — routes are being built for tomorrow.' },
+    { id: 'plan-small-hours', kind: 'planned', days: deliveryDays, startHour: 0, endHour: 5, intervalMin: 20, note: 'Routing runs late; the plan is still moving.' },
+    { id: 'plan-rollout', kind: 'planned', days: deliveryDays, startHour: 5, endHour: 10, intervalMin: 15, note: 'Trucks rolling and dispatch still editing — the plan changes fastest here.' },
+    { id: 'plan-day', kind: 'planned', days: deliveryDays, startHour: 10, endHour: 20, intervalMin: 30, note: 'Running day — the plan is largely settled.' },
+    // ── completed (77131) — the ETA anchor ───────────────────────────────────
+    { id: 'done-run', kind: 'completed', days: deliveryDays, startHour: 4, endHour: 20, intervalMin: 15, note: 'The delivery day — every stamp re-anchors a route clock.' },
+    { id: 'done-tail', kind: 'completed', days: deliveryDays, startHour: 20, endHour: 22, intervalMin: 60, note: 'Late deliveries closing out.' },
+    // ── load roster (35833) ──────────────────────────────────────────────────
+    { id: 'roster-am', kind: 'roster', days: deliveryDays, startHour: 4, endHour: 13, intervalMin: 60, note: 'Enough to keep yesterday’s routes off today’s board.' },
+    { id: 'roster-eve', kind: 'roster', days: routingNights, startHour: 20, endHour: 24, intervalMin: 60, note: 'Tomorrow’s loads appear during routing.' },
   ];
 }
 
@@ -204,7 +239,7 @@ export function resolveWeekGrid(rules: ScanRule[]): Record<ScanKind, Array<Array
  * plan is worse than no estimate. Enrichment (/stop/info on genuinely new PROs) is on top of
  * this and is not schedulable, so it is deliberately not counted here.
  */
-export function estimatePlanCalls(rules: ScanRule[], cronStepMin = 15): {
+export function estimatePlanCalls(rules: ScanRule[], cronStepMin = CRON_STEP_MIN): {
   perDay: number[]; perWeek: number; byKind: Record<ScanKind, number>; busiestDay: number;
 } {
   const perDay = WEEKDAYS.map(() => 0);
@@ -236,10 +271,11 @@ export function estimatePlanCalls(rules: ScanRule[], cronStepMin = 15): {
  *
  * The scanner wakes on a fixed cron — every `cronStepMin` minutes — and on each wake asks
  * whether enough time has passed. So the achievable cadence only comes in whole cron steps,
- * and a requested interval is rounded UP to the next one: ask for 40 with a 15-minute cron
- * and you get 45. The UI shows this so the number on screen is the number you get.
+ * and a requested interval is rounded UP to the next one. At the 5-minute step every interval
+ * worth typing lands exactly (15, 20, 30, 45, 60); only an off-step number like 22 moves, and
+ * the UI shows what it will really be so the number on screen is the number you get.
  */
-export function effectiveCadence(intervalMin: number, cronStepMin = 15, toleranceMin = 7): number {
+export function effectiveCadence(intervalMin: number, cronStepMin = CRON_STEP_MIN, toleranceMin = CRON_TOLERANCE_MIN): number {
   const steps = Math.max(1, Math.ceil((intervalMin - toleranceMin) / cronStepMin));
   return steps * cronStepMin;
 }
@@ -261,7 +297,7 @@ export function dueKinds(
   rules: ScanRule[],
   lastByKind: Partial<Record<ScanKind, string | null>> = {},
   nowMs: number = 0,
-  toleranceMin = 7,
+  toleranceMin = CRON_TOLERANCE_MIN,
 ): Record<ScanKind, { due: boolean; intervalMin: number | null; elapsedMin: number; reason: string }> {
   const out: any = {};
   for (const kind of SCAN_KINDS) {

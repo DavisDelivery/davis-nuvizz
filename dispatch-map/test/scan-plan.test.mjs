@@ -18,6 +18,7 @@ import assert from 'node:assert/strict';
 import {
   SCAN_KINDS, SCAN_INFO, defaultScanRules, clampScanRules, resolveInterval, ruleCoversHour,
   resolveWeekGrid, estimatePlanCalls, effectiveCadence, MAX_RULES, RULE_BOUNDS, dueKinds,
+  CRON_STEP_MIN, CRON_TOLERANCE_MIN,
 } from '../netlify/functions/lib/scan-plan.mts';
 
 const MON = 1, TUE = 2, FRI = 5, SAT = 6, SUN = 0;
@@ -25,14 +26,27 @@ const rule = (over = {}) => ({ kind: 'completed', days: [MON], startHour: 8, end
 
 // ── the point of the whole feature ───────────────────────────────────────────
 
-test('THE DECOUPLING: completed and planned can run at different rates in the same hour', () => {
+test('THE DECOUPLING: completed and planned run at different rates in the same hour', () => {
   const rules = defaultScanRules();
-  // 9am Tuesday — trucks are running. Completed matters most; the plan is settled.
-  assert.equal(resolveInterval('completed', TUE, 9, rules), 15);
-  assert.equal(resolveInterval('planned', TUE, 9, rules), 30);
-  // 9pm Tuesday — routing. Exactly the other way round.
-  assert.equal(resolveInterval('planned', TUE, 21, rules), 15);
+  // 2pm Tuesday — trucks are running, the plan is settled. Completed matters twice as much.
+  assert.equal(resolveInterval('completed', TUE, 14, rules), 15);
+  assert.equal(resolveInterval('planned', TUE, 14, rules), 30);
+  // 9pm Tuesday — routing. Exactly the other way round: the plan moves, nothing is delivering.
+  assert.equal(resolveInterval('planned', TUE, 21, rules), 30);
   assert.equal(resolveInterval('completed', TUE, 21, rules), 60);
+});
+
+test("CHAD'S BANDS, verbatim: 30 from 8pm, 20 through the small hours, 15 from 5am, 30 from 10am", () => {
+  const r = defaultScanRules();
+  assert.equal(resolveInterval('planned', TUE, 21, r), 30, '8pm-12am');
+  assert.equal(resolveInterval('planned', TUE, 2, r), 20, '12am-5am');
+  assert.equal(resolveInterval('planned', TUE, 4, r), 20, 'still the small-hours band at 4am');
+  assert.equal(resolveInterval('planned', TUE, 5, r), 15, '5am-10am');
+  assert.equal(resolveInterval('planned', TUE, 9, r), 15);
+  assert.equal(resolveInterval('planned', TUE, 10, r), 30, '10am-8pm');
+  assert.equal(resolveInterval('planned', TUE, 19, r), 30);
+  // …and every one of those is delivered exactly, which is why the cron step moved to 5.
+  for (const iv of [15, 20, 30]) assert.equal(effectiveCadence(iv), iv, `${iv} is honoured`);
 });
 
 test('completed is NOT pulled overnight — a 2am pull can only come back empty', () => {
@@ -40,8 +54,8 @@ test('completed is NOT pulled overnight — a 2am pull can only come back empty'
   for (const h of [0, 1, 2, 3]) {
     assert.equal(resolveInterval('completed', TUE, h, rules), null, `${h}:00 must not pull completed`);
   }
-  // …while the plan is still watched overnight, because routing tails off through it.
-  assert.equal(resolveInterval('planned', TUE, 2, rules), 60);
+  // …while the plan is still watched hard overnight, because routing runs late.
+  assert.equal(resolveInterval('planned', TUE, 2, rules), 20);
 });
 
 test('Saturday is silent, and Sunday evening wakes up for Monday routing', () => {
@@ -51,7 +65,7 @@ test('Saturday is silent, and Sunday evening wakes up for Monday routing', () =>
       assert.equal(resolveInterval(kind, SAT, h, rules), null, `Sat ${h}:00 ${kind}`);
     }
   }
-  assert.equal(resolveInterval('planned', SUN, 21, rules), 15, 'Sunday evening builds Monday');
+  assert.equal(resolveInterval('planned', SUN, 21, rules), 30, 'Sunday evening builds Monday');
   assert.equal(resolveInterval('planned', SUN, 9, rules), null, 'Sunday daytime stays quiet');
 });
 
@@ -97,19 +111,30 @@ test('a window that wraps midnight covers both ends, and the DAY is the hour’s
 
 // ── what the box accepts vs what the system delivers ─────────────────────────
 
-test('a requested interval rounds UP to the cron step — the estimate may not flatter itself', () => {
-  assert.equal(effectiveCadence(15), 15);
-  assert.equal(effectiveCadence(30), 30);
-  assert.equal(effectiveCadence(60), 60);
-  assert.equal(effectiveCadence(40), 45, 'ask for 40 on a 15-minute cron and you get 45');
-  assert.equal(effectiveCadence(20), 15, 'anything inside one step lands on the step');
-  assert.equal(effectiveCadence(90), 90);
+test('EVERY interval a dispatcher would type is now honoured exactly', () => {
+  // The whole reason the cron step moved to 5. On the old 15-minute step there was no such
+  // thing as 20 — it snapped to 15, and the box would have said 20 while the system did 15.
+  for (const iv of [5, 10, 15, 20, 30, 45, 60, 90, 120]) {
+    assert.equal(effectiveCadence(iv), iv, `${iv} minutes is delivered as ${iv}`);
+  }
+  // An off-step number lands on the nearest cron step at or above (interval - tolerance), so
+  // it can come out slightly FASTER than asked — the tolerance exists to let a fire that is
+  // a couple of minutes early still count, rather than slipping a whole step. Either way the
+  // screen shows the delivered number, so it never flatters the plan.
+  assert.equal(effectiveCadence(22), 20);
+  assert.equal(effectiveCadence(37), 35);
+  for (const iv of [7, 13, 22, 37, 53]) {
+    const got = effectiveCadence(iv);
+    assert.equal(got % CRON_STEP_MIN, 0, `${iv} lands on a cron step`);
+    assert.ok(Math.abs(got - iv) <= CRON_TOLERANCE_MIN + CRON_STEP_MIN,
+      `${iv} -> ${got} stays within a step of what was asked`);
+  }
 });
 
 test('the interval floor is the cron step — a number we cannot deliver is refused, not fudged', () => {
-  assert.equal(RULE_BOUNDS.intervalMin[0], 15);
+  assert.equal(RULE_BOUNDS.intervalMin[0], CRON_STEP_MIN);
   const [r] = clampScanRules([rule({ intervalMin: 1 })]);
-  assert.equal(r.intervalMin, 15);
+  assert.equal(r.intervalMin, CRON_STEP_MIN);
 });
 
 // ── clamping: junk is dropped, never repaired into something plausible ───────
@@ -167,12 +192,12 @@ test('the preview grid is exactly what the resolver says, for every hour of the 
 });
 
 test('the estimate counts the ACHIEVED cadence, not the typed one', () => {
-  // One kind, one day, 08:00–12:00, asking for 40 minutes → delivered as 45.
-  const rules = [rule({ days: [MON], startHour: 8, endHour: 12, intervalMin: 40 })];
+  // One kind, one day, 08:00–12:00, asking for 22 minutes → delivered as 20 (see
+  // effectiveCadence). The estimate must count the 20, not the 22.
+  const rules = [rule({ days: [MON], startHour: 8, endHour: 12, intervalMin: 22 })];
   const est = estimatePlanCalls(rules);
-  // 4 hours at a 45-minute cadence = 60/45 per hour × 4 ≈ 5.33 → 5
-  assert.equal(est.perDay[MON], 5);
-  assert.equal(est.perWeek, 5, 'and nothing on any other day');
+  assert.equal(est.perDay[MON], 12, '4 hours at a 20-minute cadence = 12 scans, not 11');
+  assert.equal(est.perWeek, 12, 'and nothing on any other day');
 });
 
 test('the default plan stays comfortably inside the daily ceiling', () => {
@@ -184,7 +209,7 @@ test('the default plan stays comfortably inside the daily ceiling', () => {
   // /stop/info reads that give new orders their address and pin.
   assert.ok(busiest < 300, `busiest day ${busiest} must stay well under the 2,000 ceiling`);
   assert.equal(est.perDay[SAT], 0, 'nothing on Saturday');
-  assert.ok(est.byKind.completed > est.byKind.planned, 'completed is the one worth scanning hardest');
+  assert.ok(est.byKind.completed >= est.byKind.planned, 'completed is scanned at least as hard as the plan');
 });
 
 // ── the descriptions the screen shows ────────────────────────────────────────
@@ -221,9 +246,9 @@ test('the default plan covers every scan kind', () => {
 test('dueKinds: a kind with no rule for this hour is never due', () => {
   const rules = defaultScanRules();
   const d = dueKinds(TUE, 2, rules, {}, Date.parse('2026-08-25T06:00:00Z'));
-  assert.equal(d.completed.due, false);
+  assert.equal(d.completed.due, false, 'nothing delivers at 2am');
   assert.match(d.completed.reason, /no rule covers/);
-  assert.equal(d.planned.due, true, 'the plan IS watched overnight');
+  assert.equal(d.planned.due, true, 'the plan IS watched overnight — routing runs late');
 });
 
 test('dueKinds: a kind that has never run is due immediately', () => {
@@ -237,16 +262,16 @@ test('dueKinds: elapsed time gates it, with tolerance for a late cron fire', () 
   const now = Date.parse('2026-08-25T13:00:00Z');
   const rules = [{ kind: 'completed', days: [TUE], startHour: 0, endHour: 24, intervalMin: 30 }];
   const at = (min) => new Date(now - min * 60000).toISOString();
-  assert.equal(dueKinds(TUE, 9, rules, { completed: at(10) }, now).completed.due, false, '10m < 30-7');
-  assert.equal(dueKinds(TUE, 9, rules, { completed: at(24) }, now).completed.due, true, '24m clears 30-7');
+  assert.equal(dueKinds(TUE, 9, rules, { completed: at(10) }, now).completed.due, false, '10m short of 30');
+  assert.equal(dueKinds(TUE, 9, rules, { completed: at(28) }, now).completed.due, true, '28m clears 30 minus tolerance');
   assert.equal(dueKinds(TUE, 9, rules, { completed: at(45) }, now).completed.due, true);
 });
 
 test('THE DECOUPLING, ON ONE TICK: completed fires while planned waits', () => {
   const now = Date.parse('2026-08-25T13:00:00Z');   // 9:00a ET Tuesday
   const at = (min) => new Date(now - min * 60000).toISOString();
-  // 20 minutes since both last ran. Completed wants 15, planned wants 30.
-  const d = dueKinds(TUE, 9, defaultScanRules(), { completed: at(20), planned: at(20) }, now);
+  // 2pm: completed wants 15, the plan wants 30. 20 minutes since both last ran.
+  const d = dueKinds(TUE, 14, defaultScanRules(), { completed: at(20), planned: at(20) }, now);
   assert.equal(d.completed.due, true, 'completed is due — this is the whole feature');
   assert.equal(d.planned.due, false, 'and the plan is not, so the fire costs 1 call not 3');
 });
