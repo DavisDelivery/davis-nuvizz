@@ -192,6 +192,20 @@ export function arrivalAnchor(s, servedDate) {
 // the flag never silently re-plans routes.
 const FLAG_SERVICE_SEC = 14 * 60;
 
+// WHEN A LOAD WITH NOBODY ON IT ACTUALLY STARTS DELIVERING.
+//
+// Chad: "any loads that have stops on them and no driver assigned we should treat them as if
+// they are starting the deliveries at 12pm." An unassigned load is not running on the 8:00
+// board — it has not been dispatched — and it is not running from "now" either, because the
+// moment it gets a driver there is still a yard, a load-out and a drive ahead of it. Noon is
+// the operational reading of "somebody will get to this today, late."
+//
+// It is a THRESHOLD, not a prediction: the point is to ask "if this stays unassigned until
+// midday, what does it miss?" A load that still clears every close on a noon start is not a
+// problem a dispatcher needs a red card about at 9:30 in the morning — it is a load that
+// needs a driver, which is true of it whether or not anything is at risk.
+export const NO_DRIVER_START_MIN = 12 * 60;
+
 // ── SEVERITY: HOW MUCH SLACK IS LEFT, NOT WHO TYPED THE HOURS ────────────────
 //
 // Until now a receiving-hours flag was red if a dispatcher had typed the hours and amber if
@@ -418,7 +432,13 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // Predicted arrival per stop, from the SAME walk that decides the flags. Consumed by the
   // route-detail card so a dispatcher reads our ETA instead of a shared appointment window.
   const etaByStop = new Map();
-  if (day) for (const s of open) { if (dayReceivingWindow(noteOf(s), day)) checked.stopsWithHours += 1; }
+  // THE FOOTER'S COUNT IS A CLAIM, AND IT HAS TO MATCH WHAT WAS JUDGED. v0.65.2 routed both
+  // window lookups through receivingWindow so a pickup stops inheriting a dock's receiving
+  // hours — but left this counter on the raw lookup, so the panel would report "N stops with
+  // receiving hours on file today" counting RA pickups the engine deliberately never judges.
+  // The whole point of the footer is that a quiet panel can prove it was watched; a count
+  // that overstates its own coverage is the one number a dispatcher cannot check.
+  if (day) for (const s of open) { if (receivingWindow(s)) checked.stopsWithHours += 1; }
 
   // R1 — two NuVizz orders under one stop number (the Estes twin). Proof, not a guess: the
   // scan flags this only when record ids differ. Occurrence-scoped: cleaning the portal
@@ -507,6 +527,22 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       const k = routeKeyOf(s);
       if (k) startedRoutes.add(k);
     }
+    // ONE DEFINITION OF "NOBODY IS DRIVING THIS", read by BOTH the arrival walk's clock (R5)
+    // and the no-driver card (R6). They used to answer it separately, and the moment R5
+    // started running driverless loads on a different clock that duplication would have been
+    // the seam the two rules disagreed across — one saying a load makes its close, the other
+    // saying it cannot. Returns the assumed START MINUTE for an unassigned load, or null when
+    // a driver is on it (or a truck is already rolling, whatever the feed says about drivers).
+    //
+    // Before the fleet's departure hour this returns null on purpose: at 6:30am a load with
+    // no driver is dispatch still doing its job, not a problem. Past noon it returns `now` —
+    // a load nobody has taken by 1:00pm cannot start at noon either.
+    const hasDriverOn = (g) => (g || []).some((s) => String(s?.driverName || s?.driverUserName || '').trim());
+    const driverlessStart = (k, g) => (
+      nowMin != null && nowMin >= departMin && !startedRoutes.has(k) && !hasDriverOn(g)
+        ? Math.max(NO_DRIVER_START_MIN, nowMin)
+        : null
+    );
     const byRoute = new Map();
     const apptRoutes = new Set();
     for (const s of open) {
@@ -579,7 +615,16 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       const learnedDepart = departFor(k);
       const routeDepart = learnedDepart != null ? learnedDepart : departMin;
       const notStarted = !startedRoutes.has(k) && nowMin != null && nowMin > routeDepart + NOT_STARTED_GRACE_MIN;
-      const effDepart = notStarted ? nowMin : routeDepart;
+      // AN UNASSIGNED LOAD DOES NOT LEAVE AT 8:00 — AND IT DOES NOT LEAVE NOW EITHER.
+      // Chad, on the four "No driver" cards filling the panel at 9:32a: "why is habasit
+      // flagged if system thinks its leaving at 8am and its first stop would have plenty of
+      // time to get there before 2pm." He is right, and the fault was the clock: a load with
+      // nobody on it was walked from the same departure as a truck that had already left, so
+      // the arrival math said "fine" and the no-driver rule had to shout on its own, about
+      // every driverless load, whether or not anything was actually at risk.
+      // On the noon clock the arrival math can answer the question itself.
+      const noDriverStart = driverlessStart(k, openGroup);
+      const effDepart = noDriverStart != null ? noDriverStart : (notStarted ? nowMin : routeDepart);
       const rt = travelForRoute(k);
       let cur = depot; let clockMin = effDepart; let chainBroken = false;
       // Where the clock is currently running from, for the row's detail line. It starts as
@@ -588,9 +633,11 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       // The wording carries the PROVENANCE of the departure, because "departs 8:00a" and
       // "departs 3:42a (measured)" are different claims and a dispatcher deciding whether
       // to trust a 2am text needs to know which one the estimate rests on.
-      let anchorNote = notStarted
-        ? `no movement yet, clock runs from ${fmtMin(nowMin)}`
-        : `departs ${fmtMin(effDepart)}${learnedDepart != null ? ' (measured)' : ' (assumed)'}`;
+      let anchorNote = noDriverStart != null
+        ? `no driver assigned — clock runs from an assumed ${fmtMin(noDriverStart)} start`
+        : notStarted
+          ? `no movement yet, clock runs from ${fmtMin(nowMin)}`
+          : `departs ${fmtMin(effDepart)}${learnedDepart != null ? ' (measured)' : ' (assumed)'}`;
       // Anchor state drives SEVERITY, not just the wording: an estimate projected from a real
       // stamp two stops back is a different quality of evidence from one projected from an
       // assumed departure six hours ago, and the tier has to know which it is holding.
@@ -711,19 +758,32 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       else checked.routesJudged += 1;
     }
 
-    // R6 — Chad's LVILLE case: "lund needs to be delivered by 2pm and there isn't even a
-    // driver assigned to it". The ETA walk above cannot see this — at 9:24a even a
-    // re-anchored clock lands mid-morning, hours before a 2:00p close — but a route that
-    // is PAST its scheduled departure, shows no movement, carries a receiving close today
-    // and has NO driver assigned is a problem right now, not at 1:30p when the arrival
-    // math finally crosses the line. Facts only: driver assignment and hours are both
-    // read straight off the board; the only estimate here is none at all. Today-board
-    // only (nowMin present) — a tomorrow route without a driver yet is just tomorrow.
+    // R6 — THE NO-DRIVER CARD. Chad's LVILLE case: "lund needs to be delivered by 2pm and
+    // there isn't even a driver assigned to it."
+    //
+    // This rule used to be the whole answer to that: the ETA walk could not see a driverless
+    // load early (at 9:24a a clock started at 8:00 lands mid-morning, hours before a 2:00p
+    // close), so R6 fired on the FACT of an unassigned load carrying hours and let the
+    // dispatcher judge. That bought the early warning at the price of firing on every
+    // unassigned load whether or not anything was at risk — which is what put four
+    // interchangeable "No driver" cards on Chad's panel at 9:32a and buried the one route
+    // that genuinely could not make its 11:00a.
+    //
+    // The walk can see it now: an unassigned load runs on the noon clock (NO_DRIVER_START_MIN
+    // above), so the arrival math answers "does it miss?" for itself and R6 goes back to
+    // being what it is good at — saying WHY, and what to do about it. It fires only where
+    // there is a miss to report, and it still supersedes the arrival rows it replaces,
+    // because "nobody is driving this" is a better sentence than "it is running late".
+    //
+    // Today-board only (nowMin present) — a tomorrow route without a driver yet is just
+    // tomorrow.
     if (nowMin != null && nowMin >= departMin) {
       for (const [k, group] of byRoute) {
-        if (startedRoutes.has(k)) continue; // moving freight implies a driver, whatever the feed says
-        const hasDriver = group.some((s) => String(s?.driverName || s?.driverUserName || '').trim());
-        if (hasDriver) continue;
+        // The assumed noon start for this load, or null when somebody is driving it (or a
+        // truck is already rolling on it). Same helper R5's clock used, so the card and the
+        // arrival math are talking about the same set of loads and the same start time.
+        const start = driverlessStart(k, group);
+        if (start == null) continue;
         // Same physical-visit collapse as the ETA walk: a 3-order customer is ONE stop
         // with hours, not three — "has 3 stops with receiving hours" overstated the load.
         const cSeen = new Set();
@@ -752,25 +812,80 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
           ? [...supersededRows].sort((a, b) =>
             ((TIER_ORDER[a.tier] ?? 9) - (TIER_ORDER[b.tier] ?? 9)) || ((b.lateBy || 0) - (a.lateBy || 0)))[0]
           : null;
-        const ownTier = constrained.some((x) => x.w.tier === 'typed') ? 'red' : 'amber';
+        // THE STOPS A NOON START CANNOT REACH AT ALL. No model, no geography, no estimate:
+        // the door shuts before the truck can leave the yard. `constrained` is already sorted
+        // by close, so doomed[0] is `first` whenever this is non-empty.
+        const doomed = constrained.filter((x) => start >= x.w.closeMin);
+        // NOTHING AT RISK → NOTHING TO SAY. This is the fix for Chad's HABASIT question.
+        // The rule used to fire on the mere EXISTENCE of an unassigned load carrying hours,
+        // so a 2:00p close with four and a half hours of slack got the same red card as an
+        // 11:00a close that was already unreachable — four of the six cards on the panel,
+        // every morning, none of them separable from the one that mattered. A flag nobody
+        // can act on differently is decoration, and decoration is what makes the real one
+        // invisible. Now the load has to actually miss something: either the noon walk above
+        // predicted a late arrival (supersededRows), or the noon start is itself past a close.
+        //
+        // The second test is not redundant. A route with no usable sequence, or one whose
+        // chain breaks on a stop with no pin, is never walked — R5 says nothing about it —
+        // and "we cannot even start before this door shuts" needs no walk to be true.
+        //
+        // What this deliberately does NOT do is flag an unassigned load that clears every
+        // close on a noon start. It still has no driver, and somebody still has to assign
+        // one; that is dispatch's ordinary work and it is visible on the board without a
+        // red card claiming freight is at risk when it is not.
+        if (!supersededRows.length && !doomed.length) continue;
+        // Which hours the verdict RESTS ON — the unreachable ones when there are any, else
+        // the whole constrained set. Drives both the tier and the auto-detected caveat, so a
+        // card built on a dispatcher-typed deadline never carries "verify" and one built on
+        // scanner-guessed text always does.
+        const decidingTyped = doomed.length
+          ? doomed.some((x) => x.w.tier === 'typed')
+          : constrained.some((x) => x.w.tier === 'typed');
+        // A close that a noon start is ALREADY past is arithmetic, not a projection — the
+        // only uncertainty left is whether the hours are right. Typed hours with no way to
+        // reach them is the top tier and Chad's original LVILLE case exactly ("lund needs to
+        // be delivered by 2pm and there isn't even a driver assigned to it"); auto-detected
+        // hours stop at red, because the deadline itself might be the scanner's invention.
+        const ownTier = doomed.length
+          ? (decidingTyped ? 'critical' : 'red')
+          : (decidingTyped ? 'red' : 'amber');
         // The louder of the two. A card that replaces a critical has to be a critical.
         const tier = worstHours && (TIER_ORDER[worstHours.tier] ?? 9) < (TIER_ORDER[ownTier] ?? 9)
           ? worstHours.tier
           : ownTier;
+        // The close this card is ABOUT. Usually the route's earliest; when the noon walk
+        // found a worse one further down the chain and nothing is outright unreachable, that
+        // one — so the title names the deadline actually in play.
+        const riskClose = doomed.length ? first.w.closeMin
+          : (worstHours && Number.isFinite(worstHours.closeMin) ? worstHours.closeMin : first.w.closeMin);
+        const startedLate = `on the ${fmtMin(start)} start assumed for unassigned loads`;
+        const missNote = doomed.length
+          ? `even ${startedLate} the load cannot reach ${doomed.length === 1 ? '' : `${doomed.length} stops, earliest `}${first.s.businessName || first.s.stopNbr} before it closes at ${fmtMin(first.w.closeMin)}`
+          : `${startedLate}, ${worstHours.customer || 'a stop on it'} is estimated ~${fmtMin(worstHours.etaMin)} vs close ${fmtMin(worstHours.closeMin)} (${worstHours.lateBy} min late)`;
+        // WHAT THE ALERT PATH NEEDS: a real stop to claim and a close to check against.
+        // The unreachable case supplies them from FACTS (the stop, its close, and the start
+        // we assumed) and takes precedence over the walk's estimate — an earlier close the
+        // load provably cannot make is the more urgent thing to say. selectAlertable still
+        // drops it once the window has actually shut, so this only ever emails while there
+        // is still time to put a driver on the load.
+        const alertFacts = doomed.length ? {
+          customer: first.s.businessName || first.s.stopNbr || null,
+          closeMin: first.w.closeMin,
+          etaMin: Math.round(start),
+          lateBy: Math.round(start - first.w.closeMin),
+          anchored: false,
+        } : {
+          customer: worstHours.customer || first.s.businessName || null,
+          closeMin: worstHours.closeMin,
+          etaMin: worstHours.etaMin,
+          lateBy: worstHours.lateBy,
+          anchored: worstHours.anchored,
+        };
         rows.push(row(tier, 'no_driver_hours', first.s, {
-          // The alert path needs a real stop to claim and a close to check against. When R6
-          // supersedes a genuine arrival row, it inherits that row's facts so the message
-          // can be sent — with the BETTER reason (nobody is driving) rather than the vaguer
-          // one it replaced. With nothing superseded these stay absent and the card is
-          // screen-only, exactly as before.
-          ...(worstHours ? {
-            customer: worstHours.customer || first.s.businessName || null,
-            closeMin: worstHours.closeMin, etaMin: worstHours.etaMin,
-            lateBy: worstHours.lateBy, anchored: worstHours.anchored,
-            supersededTier: worstHours.tier,
-          } : {}),
-          title: `No driver — ${k} must make ${fmtMin(first.w.closeMin)}`,
-          detail: `${k} has ${constrained.length} stop${constrained.length === 1 ? '' : 's'} with receiving hours today (earliest close ${fmtMin(first.w.closeMin)} at ${first.s.businessName || first.s.stopNbr}); past the ${fmtMin(departMin)} departure, no movement, no driver.${tier === 'amber' ? ' Hours auto-detected — verify.' : ''} Assign a driver or move the dates.`,
+          ...alertFacts,
+          ...(worstHours ? { supersededTier: worstHours.tier } : {}),
+          title: `No driver — ${k} must make ${fmtMin(riskClose)}`,
+          detail: `${k} has no driver assigned and has not moved — ${missNote}. ${constrained.length} stop${constrained.length === 1 ? '' : 's'} on this load carr${constrained.length === 1 ? 'ies' : 'y'} receiving hours today.${decidingTyped ? '' : ' Hours auto-detected — verify.'} Assign a driver or move the dates.`,
           scope: 'occurrence', servedDate, fingerprint: `nodrv|${servedDate}|${k}|${first.w.closeMin}`,
         }));
         // ONE ROUTE, ONE CARD. Chad's screenshot: "May miss receiving hours — MCNAUGHTON

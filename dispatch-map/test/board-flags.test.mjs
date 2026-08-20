@@ -386,28 +386,68 @@ test('a stop that HAS reported arriving is never clamped forward — that would 
 
 // ── v0.54.58: Chad's LVILLE case — a deadline route with no driver assigned ──
 
-test('past departure, a driverless route with a receiving close today flags NOW', () => {
-  // 9:24a, LVILLE untouched, LUND closes 2:00p, nobody assigned. The ETA walk stays quiet
-  // (a re-anchored clock still lands mid-morning) — the no-driver fact is the flag.
-  const notesObj = { 'lund|k': note({ receiving_hours: { mon: { open: '06:00', close: '14:00' } } }) };
+test('past departure, a driverless route flags when a NOON start cannot make the close', () => {
+  // 9:24a, LVILLE untouched, LUND closes 11:00a, nobody assigned. Chad's rule for unassigned
+  // loads — "treat them as if they are starting the deliveries at 12pm" — settles this
+  // without any geography: the door shuts an hour before the truck could leave the yard.
+  const notesObj = { 'lund|k': note({ receiving_hours: { mon: { open: '06:00', close: '11:00' } } }) };
   const stops = [
     stop({ stopNbr: '1', routeSeq: 1, loadNbr: 'LVILLE', routeName: 'LVILLE', driverName: null, driverUserName: null }),
     stop({ stopNbr: '2', routeSeq: 2, loadNbr: 'LVILLE', routeName: 'LVILLE', driverName: null, driverUserName: null, matchKey: 'lund|k', businessName: 'LUND INTERNATIONAL' }),
   ];
   const out = run(stops, notesObj, { opts: { ...OPTS, nowMin: 9 * 60 + 24 } });
   const r = out.rows.find((x) => x.rule === 'no_driver_hours');
-  assert.ok(r, 'a driverless deadline route must flag as soon as departure time passes');
-  assert.equal(r.tier, 'amber', 'scanner-guessed hours cap at amber');
-  assert.ok(r.title.includes('LVILLE') && r.title.includes('2:00p'));
+  assert.ok(r, 'a driverless load that a noon start cannot make must flag while there is still time');
+  assert.equal(r.tier, 'red', 'unreachable on scanner-guessed hours: loud, but not the top tier');
+  assert.ok(r.title.includes('LVILLE') && r.title.includes('11:00a'));
   assert.ok(/LUND INTERNATIONAL/.test(r.detail), 'the earliest-close stop is named');
-  assert.equal(out.rows.filter((x) => x.rule === 'hours_risk').length, 0, 'the ETA walk alone stays quiet at 9:24a');
+  assert.equal(r.closeMin, 11 * 60, 'the alert path gets a real close to check against');
+  assert.equal(r.stopNbr, '2', 'and a real stop to claim');
 });
 
-test('driverless-deadline goes RED when any constrained stop has dispatcher-typed hours', () => {
-  const notesObj = { 'lund|k': note({ receiving_hours: { mon: { open: '06:00', close: '14:00' } }, manual_overrides: { receiving_hours: true } }) };
+// CHAD'S HABASIT QUESTION, 2026-08-20: "why is habasit flagged if system thinks its leaving
+// at 8am and its first stop would have plenty of time to get there before 2pm."
+//
+// It was the loudest kind of wrong: four interchangeable "No driver" cards on the panel at
+// 9:32a, one of which was a route that genuinely could not make 11:00a. A card a dispatcher
+// cannot act on differently from the next one is what makes the real one invisible.
+test('a driverless load that CAN still make its close on a noon start stays quiet', () => {
+  const notesObj = { 'habasit|k': note({ receiving_hours: { mon: { open: '06:00', close: '14:00' } } }) };
+  const stops = [
+    stop({ stopNbr: '1', routeSeq: 1, loadNbr: 'TRAILER 5', routeName: 'TRAILER 5', driverName: null, driverUserName: null }),
+    stop({ stopNbr: '2', routeSeq: 2, loadNbr: 'TRAILER 5', routeName: 'TRAILER 5', driverName: null, driverUserName: null, matchKey: 'habasit|k', businessName: 'HABASIT AMERICA' }),
+  ];
+  const out = run(stops, notesObj, { opts: { ...OPTS, nowMin: 9 * 60 + 32 } });
+  assert.equal(out.rows.filter((x) => x.rule === 'no_driver_hours').length, 0,
+    'noon plus a short drive clears a 2:00p close — this load needs a driver, not a red card');
+  assert.equal(out.rows.filter((x) => x.rule === 'hours_risk').length, 0);
+});
+
+test('the noon clock is what decides it — the same load flags once the close moves inside it', () => {
+  // Identical board, identical time of day; only the customer's close changes. Proof the
+  // verdict comes from the noon walk and not from the presence of an unassigned load.
+  const stops = [
+    stop({ stopNbr: '1', routeSeq: 1, loadNbr: 'TRAILER 5', routeName: 'TRAILER 5', driverName: null, driverUserName: null }),
+    stop({ stopNbr: '2', routeSeq: 2, loadNbr: 'TRAILER 5', routeName: 'TRAILER 5', driverName: null, driverUserName: null, matchKey: 'habasit|k', businessName: 'HABASIT AMERICA', lat: 33.60, lng: -84.60 }),
+  ];
+  const at = (close) => run(stops, { 'habasit|k': note({ receiving_hours: { mon: { open: '06:00', close } } }) },
+    { opts: { ...OPTS, nowMin: 9 * 60 + 32 } }).rows.filter((x) => x.rule === 'no_driver_hours');
+  assert.equal(at('16:00').length, 0, 'a 4:00p close is reachable from noon even 50 miles out');
+  assert.equal(at('12:30').length, 1, 'a 12:30p close is not');
+});
+
+test('driverless-deadline tiers on whether the miss is arithmetic or an estimate', () => {
+  const hours = (close, typed) => ({ 'lund|k': note({ receiving_hours: { mon: { open: '06:00', close } }, ...(typed ? { manual_overrides: { receiving_hours: true } } : {}) }) });
   const stops = [stop({ stopNbr: '1', routeSeq: 1, driverName: null, driverUserName: null, matchKey: 'lund|k' })];
-  const r = run(stops, notesObj, { opts: { ...OPTS, nowMin: 10 * 60 } }).rows.find((x) => x.rule === 'no_driver_hours');
-  assert.ok(r && r.tier === 'red');
+  const tierOf = (close, typed) => run(stops, hours(close, typed), { opts: { ...OPTS, nowMin: 10 * 60 } })
+    .rows.find((x) => x.rule === 'no_driver_hours')?.tier;
+  // Typed hours the noon start is already past: no model, no geography, no doubt.
+  assert.equal(tierOf('11:00', true), 'critical');
+  // The same unreachable close, but the deadline itself is the scanner's guess.
+  assert.equal(tierOf('11:00', false), 'red');
+  // Reachable from noon — nothing at risk, nothing said, whoever typed the hours.
+  assert.equal(tierOf('14:00', true), undefined);
+  assert.equal(tierOf('14:00', false), undefined);
 });
 
 test('the no-driver check stays quiet when it should', () => {
@@ -508,13 +548,13 @@ test('duplicate rows add no phantom service time to later stops on the route', (
 });
 
 test('the driverless-deadline count speaks in customers, not board rows', () => {
-  const notesObj = { 'subaru|k': note({ receiving_hours: { mon: { open: '08:00', close: '14:00' } } }) };
+  const notesObj = { 'subaru|k': note({ receiving_hours: { mon: { open: '08:00', close: '11:00' } } }) };
   const dupRow = { stopNbr: '2', routeSeq: 2, matchKey: 'subaru|k', businessName: 'SUBARU', driverName: '' };
   const stops = [stop({ ...dupRow }), stop({ ...dupRow, stopNbr: '2b' }), stop({ ...dupRow, stopNbr: '2c' })];
   const out = run(stops.map((s) => ({ ...s, driverName: '' })), notesObj, { opts: { ...OPTS, nowMin: 9 * 60 } });
   const r = out.rows.find((x) => x.rule === 'no_driver_hours');
   assert.ok(r, 'expected the driverless-deadline flag');
-  assert.match(r.detail, /has 1 stop with receiving hours/, 'three rows, one customer, count of 1');
+  assert.match(r.detail, /1 stop on this load carries receiving hours/, 'three rows, one customer, count of 1');
 });
 
 // ── appointment routes (Chad: "dont put uline appt's in the flag") ────────────
@@ -573,8 +613,9 @@ test('the SAME stops on a normal route still flag — the rule narrowed, it did 
 
 test('the no-driver rule is silenced on appointment routes too', () => {
   // An appointment route has no driver because it is not being run. Flagging that at 8am
-  // every day is the same false alarm wearing a different hat.
-  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '08:00', close: '15:00' } }, manual_overrides: { receiving_hours: true } }) };
+  // every day is the same false alarm wearing a different hat. The close here is one a noon
+  // start CANNOT make, so the silencing is what keeps this quiet — not the arrival math.
+  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '08:00', close: '11:00' } }, manual_overrides: { receiving_hours: true } }) };
   const stops = [
     stop({ stopNbr: '1', routeSeq: 1, loadNbr: 'ULINE APPT', routeName: 'ULINE APPT', driverName: '', driverUserName: '',
       matchKey: 'far|k', businessName: 'HELD CO' }),
@@ -584,7 +625,7 @@ test('the no-driver rule is silenced on appointment routes too', () => {
 });
 
 test('a driverless NORMAL route past departure still raises no_driver_hours', () => {
-  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '08:00', close: '15:00' } }, manual_overrides: { receiving_hours: true } }) };
+  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '08:00', close: '11:00' } }, manual_overrides: { receiving_hours: true } }) };
   const stops = [
     stop({ stopNbr: '1', routeSeq: 1, loadNbr: 'LVILLE', routeName: 'LVILLE', driverName: '', driverUserName: '',
       matchKey: 'far|k', businessName: 'LUND' }),

@@ -122,11 +122,17 @@ export function replayDay({ stops, notes, date, grid, depot, travel }: {
 
     const alertable = new Set(selectAlertable(flags.rows, nowMin).map((c: any) => String(c.stopNbr)));
     for (const r of flags.rows || []) {
-      // hours_risk is the emailable rule. no_driver_hours (R6) SUPERSEDES a driverless
-      // route's hours_risk rows and is never emailed — production behavior, reproduced
-      // here — so it counts as SCREEN visibility for the stop it names, never as a catch.
-      const screenOnlyRule = r?.rule === 'no_driver_hours';
-      if ((r?.rule !== 'hours_risk' && !screenOnlyRule) || r?.scope !== 'occurrence' || r?.stopNbr == null) continue;
+      // THE TWO RULES THAT REACH AN INBOX. hours_risk is the primary one; no_driver_hours
+      // (R6) supersedes a driverless route's hours_risk rows and, since it started carrying
+      // a stop and a close, is emailable in its own right (lib/flag-alert ALERT_RULES).
+      //
+      // This used to hard-code no_driver_hours as screen-only and skip the email accounting
+      // for it, which made the backtest UNDER-report its own warning: a driverless route's
+      // card was scored "seen but never emailed" while production emailed it. A measurement
+      // tool that restates the production rule instead of asking it will drift from it, and
+      // the drift is invisible — the numbers still look like numbers. selectAlertable is the
+      // one authority on email-eligibility, and `alertable` below already consults it.
+      if ((r?.rule !== 'hours_risk' && r?.rule !== 'no_driver_hours') || r?.scope !== 'occurrence' || r?.stopNbr == null) continue;
       const key = String(r.stopNbr);
       let t = traj.get(key);
       if (!t) {
@@ -143,7 +149,6 @@ export function replayDay({ stops, notes, date, grid, depot, travel }: {
       t.sweepsFlagged += 1;
       t.worstTier = worse(t.worstTier, r.tier || null);
       if (t.firstAnyMin == null) { t.firstAnyMin = nowMin; t.firstAnyTier = r.tier || null; }
-      if (screenOnlyRule) continue; // never email-eligible, whatever its tier
       if (t.firstRedMin == null && alertable.has(key)) {
         t.firstRedMin = nowMin;
         t.etaAtFirstRed = Number.isFinite(r.etaMin) ? r.etaMin : null;

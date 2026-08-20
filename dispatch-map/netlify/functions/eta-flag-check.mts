@@ -20,7 +20,7 @@
 //
 // Read-only. Firestore only. ZERO NuVizz calls.
 import { isFirestoreEnabled, readStops, getDoc, listDocs, etDayString } from './lib/firestore.mts';
-import { computeBoardFlags, isFinishedStop } from '../../src/lib/board-flags.js';
+import { computeBoardFlags, isFinishedStop, dayReceivingWindow } from '../../src/lib/board-flags.js';
 import { legSecondsMap, travelLegsPath, readTravelCalibration, readRouteClasses } from './lib/travel-store.mts';
 import { routeDeparturePath } from './lib/route-departure.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
@@ -81,23 +81,84 @@ export function explainRow(r: any, alertableSet: Set<string>, nowMin: number | n
   };
 }
 
+/**
+ * PURE. One stop number, one canonical form.
+ *
+ * Chad asked this endpoint about "7165047" three times and was told, three times, that no
+ * stop with that number was on the board. The stop was there — the feed carries it as
+ * 007164290-style, zero-padded to nine digits, and the compare was exact. The number Chad
+ * has is the one printed on the paperwork and typed into a phone, which is the number
+ * WITHOUT the padding. A diagnostic built to answer "why was this not flagged" that cannot
+ * find the stop is worse than no diagnostic, because "not on this board" reads like an
+ * answer instead of a miss.
+ */
+export function normStopNbr(v: any): string {
+  return String(v ?? '').trim().toUpperCase()
+    .replace(/-\d+$/, '')      // NuVizz's "-1" suffix on a split order
+    .replace(/^0+(?=.)/, '');  // the feed pads; paperwork does not. Keep a lone "0".
+}
+
+/**
+ * PURE. WHY THIS STOP HAS (OR HAS NOT) GOT A DEADLINE ON FILE.
+ *
+ * `close: null` used to be the end of the answer, and it hides four completely different
+ * situations that need four different fixes: the stop has no customer key to look a note up
+ * by; there is no note; there is a note with nothing recorded for today; or there IS text and
+ * the parser refused it as not comparable. Only the last one is a parser question. The first
+ * three are "nobody has told the system when this customer stops receiving", which no amount
+ * of engine work fixes — and which is what "close: null" was quietly reporting.
+ */
+export function hoursProvenance(stop: any, notes: Map<string, any> | null, dayKey: string | null) {
+  const matchKey = stop?.matchKey ?? null;
+  if (!matchKey) {
+    return { matchKey: null, noteOnFile: false, raw: null, parsed: null,
+      why: 'this stop carries no customer match key, so no note can be looked up for it at all' };
+  }
+  const note = notes?.get(matchKey) || null;
+  if (!note) {
+    return { matchKey, noteOnFile: false, raw: null, parsed: null,
+      why: `no customer note on file for "${matchKey}" — nobody has recorded receiving hours for this customer, so the board has no deadline to judge the stop against` };
+  }
+  const raw = note.receiving_hours?.[String(dayKey ?? '')] ?? null;
+  if (!raw) {
+    return { matchKey, noteOnFile: true, raw: null, parsed: null,
+      why: `there is a note for this customer, but no receiving hours recorded for ${dayKey} — that weekday is blank on the customer card` };
+  }
+  const w = dayReceivingWindow(note, dayKey);
+  if (!w) {
+    return { matchKey, noteOnFile: true, raw, parsed: null,
+      why: `receiving hours for ${dayKey} read ${JSON.stringify(raw)}, which is not a comparable clock window. Free text ("call first", "RH 7-11AM appt only") and overnight or 24-hour docks are refused rather than guessed at — a guessed deadline is worse than none` };
+  }
+  return {
+    matchKey, noteOnFile: true, raw,
+    parsed: { open: w.openMin != null ? clock(w.openMin) : null, close: clock(w.closeMin), tier: w.tier },
+    why: null,
+  };
+}
+
 // Any stop on the board, flagged or not — because "no email" and "no flag" are different
 // answers and the difference is the whole question.
 export function explainStop(
   askedStop: string, stops: any[], rows: any[], alertableSet: Set<string>,
   nowMin: number | null, claimed: any[],
+  { notes = null, dayKey = null }: { notes?: Map<string, any> | null; dayKey?: string | null } = {},
 ) {
-  const want = String(askedStop).trim().toUpperCase();
-  const matches = (v: any) => String(v ?? '').trim().toUpperCase().replace(/-\d+$/, '') === want.replace(/-\d+$/, '');
+  const want = normStopNbr(askedStop);
+  const matches = (v: any) => normStopNbr(v) === want;
   const stop = (stops || []).find((s: any) => matches(s?.stopNbr) || matches(s?.pro) || matches(s?.primaryPro));
   const row = (rows || []).find((r: any) => matches(r?.stopNbr));
 
   if (!stop && !row) return { asked: askedStop, found: false, note: 'no stop with that number on this board' };
 
   const alreadyClaimed = (claimed || []).some((c: any) => matches(c?.stopNbr));
+  // WHERE THE DEADLINE COMES FROM — reported whether or not the stop flagged, because the
+  // most common answer to "why was this not flagged" turns out not to be about the flag
+  // engine at all: the hours were never on file.
+  const hours = stop ? hoursProvenance(stop, notes, dayKey) : null;
   return {
     asked: askedStop,
     found: true,
+    hours,
     customer: stop?.businessName || row?.customer || null,
     route: row?.routeName || stop?.routeName || null,
     status: stop?.normalizedStatus || stop?.status || null,
@@ -113,7 +174,12 @@ export function explainStop(
     wouldEmailNow: row ? alertableSet.has(String(row.stopNbr)) : false,
     heldBecause: alreadyClaimed ? 'already emailed once today — one per stop per board day'
       : (row ? heldReason(row, alertableSet.has(String(row.stopNbr)), nowMin)
-             : 'no receiving-hours flag on this stop: either it has no parsed receiving close, or it is not predicted late'),
+        // NOT FLAGGED SPLITS IN TWO, and the halves need different people. No parsable
+        // hours is a data gap somebody has to fill in on the customer card; hours on file
+        // with no flag is the engine saying the stop makes it.
+        : hours && !hours.parsed
+          ? `no receiving close on file, so nothing to be late for — ${hours.why}`
+          : 'receiving hours ARE on file for this stop and the arrival walk does not predict it late'),
   };
 }
 
@@ -215,7 +281,7 @@ export default async (req: Request): Promise<Response> => {
       // ?stop=<PRO> — the answer to "why did I not get an email about THIS one", for any
       // stop on the board, flagged or not. Added because answering it once by hand meant
       // reading three modules; it should cost one request.
-      explain: askedStop ? explainStop(askedStop, stops, flags.rows || [], alertableSet, nowMin, claimed) : undefined,
+      explain: askedStop ? explainStop(askedStop, stops, flags.rows || [], alertableSet, nowMin, claimed, { notes, dayKey: weekdayKey(date) }) : undefined,
       alreadyClaimedToday: claimed,
       wouldSendNow: alertable.filter((c) => !claimed.some((x) => x.stopNbr === c.stopNbr)).length,
       sample: alertable[0] ? buildAlert(alertable[0], date).subject : null,

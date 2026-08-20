@@ -102,10 +102,19 @@ test('a warning that could only fire after the close is never a catch', () => {
   assert.equal(rows[0].leadMin, null);
 });
 
-test('a DRIVERLESS route with a blown close is screen-only — R6 supersedes and never emails', () => {
-  // Production behavior, pinned so the replay counts it honestly: no driver after the
-  // departure hour means rule no_driver_hours replaces the route's hours_risk rows, and
-  // the alert path only emails hours_risk — the screen shows red, the inbox stays silent.
+test('a DRIVERLESS route that cannot make its close is CAUGHT — R6 supersedes and emails', () => {
+  // Production behavior, pinned so the replay counts it honestly. Two things this test used
+  // to get wrong, in opposite directions:
+  //
+  //   • It asserted the alert path emails hours_risk ONLY. It has not, since no_driver_hours
+  //     started carrying a stop and a close — so the replay scored this "screen-only" while
+  //     production sent the email. The backtest was marking its own successes as misses.
+  //   • The route is driverless, so it now walks on the noon clock: a typed 11:00a close is
+  //     unreachable before the truck could leave the yard, which is arithmetic rather than an
+  //     estimate — the loudest tier, and it is right to be.
+  //
+  // At 9:00a there are two hours left to put a driver on this load. That is the whole value
+  // of the warning, and 120 minutes of lead is what it is worth.
   const stops = keyed(Array.from({ length: 20 }, (_, i) => mkStop(i + 1, { driverName: '' })));
   stops[18].deliveredDTTM = `${DATE}T14:07`;
   const notes = new Map([[stopCustomerKey(stops[18]), noteTyped('11:00')]]);
@@ -113,8 +122,9 @@ test('a DRIVERLESS route with a blown close is screen-only — R6 supersedes and
   const { trajectories } = replayDay({ stops, notes, date: DATE, grid, depot: DEPOT });
   const { rows } = judgeDay({ stops, notes, date: DATE, trajectories });
   assert.equal(rows[0].missed, true);
-  assert.equal(rows[0].verdict, 'missed_screen_only', 'seen on screen, never email-eligible');
-  assert.equal(rows[0].firstRedMin, null);
+  assert.equal(rows[0].verdict, 'missed_caught', 'a driverless load nobody can save by 11:00a must reach the inbox');
+  assert.equal(rows[0].firstRedMin, 540, 'the first sweep past departure already knows');
+  assert.equal(rows[0].leadMin, 120);
 });
 
 test('a stop that MADE its window but was email-eligible is a false alarm, never a catch', () => {
