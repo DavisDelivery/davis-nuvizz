@@ -9,8 +9,8 @@
 // plain HTTP in this app — a property rediscovered twice at cost). It never calls Google:
 // filling the cache is the sweep's job; this only reports what is already known.
 // ZERO NuVizz calls.
-import { isFirestoreEnabled, getDoc } from './lib/firestore.mts';
-import { travelLegsPath, legSecondsMap, isGoogleRoutesEnabled, readTravelCalibration } from './lib/travel-store.mts';
+import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
+import { travelLegsPath, legSecondsMap, isGoogleRoutesEnabled, readTravelCalibration, readRouteClasses } from './lib/travel-store.mts';
 
 const TENANT = 'davis';
 
@@ -29,9 +29,10 @@ export default async (req: Request): Promise<Response> => {
   try {
     // readTravelCalibration decodes the doc's array-of-maps curve back into the [at,mph]
     // pairs every consumer speaks — the browser gets pairs, same as the server engine.
-    const [cal, legDoc] = await Promise.all([
+    const [cal, legDoc, routeClasses] = await Promise.all([
       readTravelCalibration(TENANT),
       getDoc(travelLegsPath(TENANT)).catch(() => null),
+      readRouteClasses(TENANT, etDayString()),
     ]);
     const legs = legSecondsMap(legDoc);
     return J({
@@ -42,6 +43,16 @@ export default async (req: Request): Promise<Response> => {
       curve: cal?.curve?.length ? cal.curve : null,
       serviceMin: Number.isFinite(cal?.serviceMin) ? cal.serviceMin : null,
       buckets: cal?.buckets ?? null,
+      // Per-truck-class refinements: curves keyed 'tractor'/'box' (as [at,mph] pairs),
+      // measured dwell per class, and TODAY's route→class map the sweep resolved from the
+      // roster — so a tractor route reads on a tractor clock in the browser too.
+      classCurves: cal?.classCurves ?? null,
+      classService: cal?.classService ?? null,
+      routeClasses,
+      // The DATE the map is valid for. Route names repeat every day (SUW runs daily) and
+      // drivers rotate, so a client looking at tomorrow's or Friday's board must not walk
+      // it on today's trucks — it needs this to know when to drop the map.
+      routeClassesDate: etDayString(),
       fittedAt: cal?.fitted_at ?? null,
       calDays: cal?.days ?? 0,
       legs,

@@ -30,6 +30,11 @@ export function travelCalDayPath(tenant: string, date: string): string {
 export function travelCalCurrentPath(tenant: string): string {
   return `${TRAVEL_CAL_COLLECTION}/${tenant}__current`;
 }
+/** Today's route → truck-class map, resolved by the sweep from the MarginIQ roster.
+ *  Its own doc (not the leg cache) so the two writers never clobber each other. */
+export function routeClassesPath(tenant: string): string {
+  return `${TRAVEL_CAL_COLLECTION}/${tenant}__route_classes`;
+}
 
 // Cache limits. ~60 bytes/leg keeps 3000 legs near 200 KB — far under the 1 MB doc cap,
 // far over a season of distinct legs on this board.
@@ -169,15 +174,40 @@ export async function ensureLegs(
   return { legs: have, fetched: 0, missing: missing.length, googleEnabled };
 }
 
-/** The calibrated curve for the engine: { curve (as [at,mph] PAIRS), serviceMin } or null.
- *  The doc stores the curve as an array of maps — Firestore forbids nested arrays — so
- *  the translation back to pairs happens HERE, once, before any consumer sees it. */
+/** The calibrated curves for the engine: { curve (as [at,mph] PAIRS), serviceMin,
+ *  classCurves?: {cls: pairs}, classService?: {cls: min} } or null. The doc stores every
+ *  curve as an array of maps — Firestore forbids nested arrays — so the translation back
+ *  to pairs happens HERE, once, before any consumer sees it. */
 export async function readTravelCalibration(tenant: string): Promise<any | null> {
   try {
     const doc = await getDoc(travelCalCurrentPath(tenant));
     const curve = curveFromDoc(doc?.curve);
-    return curve ? { ...doc, curve } : null;
+    if (!curve) return null;
+    const classCurves: Record<string, any> = {};
+    const classService: Record<string, number> = {};
+    for (const [cls, c] of Object.entries<any>(doc?.classes || {})) {
+      const cc = curveFromDoc(c?.curve);
+      if (cc) classCurves[cls] = cc;
+      if (Number.isFinite(c?.serviceMin)) classService[cls] = c.serviceMin;
+    }
+    return {
+      ...doc, curve,
+      ...(Object.keys(classCurves).length ? { classCurves } : {}),
+      ...(Object.keys(classService).length ? { classService } : {}),
+    };
   } catch {
     return null;
+  }
+}
+
+/** Today's route → class map, or {} when absent/stale (a map from another DAY is a lie —
+ *  drivers rotate, so a stale doc must read as unknown, not as yesterday's trucks). */
+export async function readRouteClasses(tenant: string, date: string): Promise<Record<string, string>> {
+  try {
+    const doc = await getDoc(routeClassesPath(tenant));
+    if (!doc || doc.date !== date || !doc.classes) return {};
+    return doc.classes;
+  } catch {
+    return {};
   }
 }

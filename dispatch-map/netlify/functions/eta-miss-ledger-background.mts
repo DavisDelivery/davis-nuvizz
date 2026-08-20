@@ -24,7 +24,8 @@ import { listStops } from './lib/history-store.mts';
 import { scoreDay, ledgerPath, ledgerMatchKey, LEDGER_VERSION } from './lib/miss-ledger.mts';
 import { scoreRow, summarize, flagHistoryPath, FLAG_HISTORY_VERSION, needsOutcomeRescore } from './lib/flag-history.mts';
 import { arrivalAnchor, isFinishedStop } from '../../src/lib/board-flags.js';
-import { fitCurve, legSamplesFromRoutes, curveToDoc, DEFAULT_CURVE } from '../../src/lib/travel-model.js';
+import { fitCurveByClass, legSamplesFromRoutes, curveToDoc, travelClassOf, DEFAULT_CURVE } from '../../src/lib/travel-model.js';
+import { loadVehicleRoster, vehicleTypeForStop } from './lib/tractor-flags.mts';
 import { travelCalDayPath, travelCalCurrentPath } from './lib/travel-store.mts';
 
 const TENANT = 'davis';
@@ -178,12 +179,24 @@ function calPos(s: any): { lat: number; lng: number } | null {
 }
 const calIsAppointmentRoute = (k: string) => /\b(?:APPTS?|APPOINTMENTS?)\b/i.test(k);
 
-function calSamplesForDay(stops: any[], date: string) {
+function calSamplesForDay(stops: any[], date: string, roster: any = null) {
   const routes = new Map<string, any[]>();
+  // The route's truck class, by MAJORITY of its stops' roster joins — a route is one
+  // driver on a normal day, so this is usually unanimous; a midday driver swap or an
+  // unknown alias degrades the route to null (fleet curve), never to a coin flip.
+  const classVotes = new Map<string, Map<string, number>>();
   for (const s of stops) {
     const k = String(s?.loadNbr || s?.routeName || '').trim();
     if (!k || calIsAppointmentRoute(k)) continue;
     if (String(s?.stopType || '').toUpperCase() === 'PU') continue;
+    if (roster) {
+      const cls = travelClassOf(vehicleTypeForStop(s, roster));
+      if (cls) {
+        if (!classVotes.has(k)) classVotes.set(k, new Map());
+        const v = classVotes.get(k)!;
+        v.set(cls, (v.get(cls) || 0) + 1);
+      }
+    }
     const a = arrivalAnchor(s, date);
     if (!routes.has(k)) routes.set(k, []);
     routes.get(k)!.push({
@@ -192,11 +205,20 @@ function calSamplesForDay(stops: any[], date: string) {
       seq: typeof s?.routeSeq === 'number' ? s.routeSeq : null,
     });
   }
-  return legSamplesFromRoutes(routes).slice(0, CAL_MAX_SAMPLES_PER_DAY);
+  const classOfRoute = new Map<string, string>();
+  for (const [k, votes] of classVotes) {
+    const ranked = [...votes.entries()].sort((a, b) => b[1] - a[1]);
+    if (ranked.length === 1 || (ranked.length > 1 && ranked[0][1] > ranked[1][1])) classOfRoute.set(k, ranked[0][0]);
+  }
+  return legSamplesFromRoutes(routes, classOfRoute).slice(0, CAL_MAX_SAMPLES_PER_DAY);
 }
 
 async function writeTravelCalibration(date: string, stops: any[]) {
-  const samples = calSamplesForDay(stops, date);
+  // Best-effort roster: a missing/unreadable roster means class-less samples — the fleet
+  // fit still runs and nothing is lost except the split, which returns when it does.
+  let roster: any = null;
+  try { roster = await loadVehicleRoster(); } catch { /* class-less day */ }
+  const samples = calSamplesForDay(stops, date, roster);
   await setDoc(travelCalDayPath(TENANT, date), {
     tenant: TENANT, date, n: samples.length, samples, written_at: new Date().toISOString(),
   });
@@ -220,7 +242,7 @@ async function writeTravelCalibration(date: string, stops: any[]) {
       if (doc?.samples?.length) { pooled.push(...doc.samples); daysUsed.push(d); }
     } catch { /* absent day — fine */ }
   }
-  const fit = fitCurve(pooled, { defaults: DEFAULT_CURVE });
+  const { fleet: fit, classes } = fitCurveByClass(pooled, { defaults: DEFAULT_CURVE });
   await setDoc(travelCalCurrentPath(TENANT), {
     tenant: TENANT,
     // AS MAPS, NOT PAIRS. Firestore rejects an array nested in an array with a 400, the
@@ -229,10 +251,19 @@ async function writeTravelCalibration(date: string, stops: any[]) {
     // ways this shape crosses the wire, and a test round-trips them.
     curve: curveToDoc(fit.curve), buckets: fit.buckets,
     serviceMin: fit.serviceMin, serviceMeasured: fit.serviceMeasured,
+    // Per truck class, same codec, hierarchically defaulted to the FLEET fit above —
+    // Chad: tractors and box trucks "get around town and deliveries very differently".
+    classes: Object.fromEntries(Object.entries(classes).map(([cls, c]: [string, any]) => [cls, {
+      curve: curveToDoc(c.curve), buckets: c.buckets,
+      serviceMin: c.serviceMin, serviceMeasured: c.serviceMeasured, n: c.n,
+    }])),
     n: fit.n, days: daysUsed.length, through: date,
     fitted_at: new Date().toISOString(),
   });
-  return { samples: samples.length, pooled: fit.n, days: daysUsed.length, serviceMin: fit.serviceMin };
+  return {
+    samples: samples.length, pooled: fit.n, days: daysUsed.length, serviceMin: fit.serviceMin,
+    classes: Object.fromEntries(Object.entries(classes).map(([cls, c]: [string, any]) => [cls, { n: c.n, serviceMin: c.serviceMin }])),
+  };
 }
 
 /** Is this date's calibration day-doc absent? One getDoc; lets the scheduled 7-day sweep

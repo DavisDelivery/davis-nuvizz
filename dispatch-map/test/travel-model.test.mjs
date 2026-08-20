@@ -333,3 +333,110 @@ test('the cache cap evicts oldest-first and never exceeds the doc budget', () =>
   const merged = mergeLegCache({ legs }, {}, NOW);
   assert.ok(Object.keys(merged.legs).length <= MAX_CACHED_LEGS);
 });
+
+// ── TRUCK CLASSES ────────────────────────────────────────────────────────────
+//
+// Chad: "study the difference in the amount of time it takes the tractor trailers ...
+// versus the box truck drivers instead of doing a flat number for both vehicles types."
+
+import { travelClassOf, fitCurveByClass, TRAVEL_CLASSES } from '../src/lib/travel-model.js';
+
+test('the class key follows the repo\'s existing reduction: tractor, or box, or unknown', () => {
+  assert.equal(travelClassOf('tractor'), 'tractor');
+  assert.equal(travelClassOf('  TRACTOR '), 'tractor');
+  for (const tractorish of ['Tractor Trailer', '53ft trailer', 'SEMI']) {
+    assert.equal(travelClassOf(tractorish), 'tractor', tractorish);
+  }
+  for (const boxish of ['box', 'Box Truck', 'sprinter', 'van', '26ft straight']) {
+    assert.equal(travelClassOf(boxish), 'box', boxish);
+  }
+  for (const unknown of ['', null, undefined, '   ']) {
+    assert.equal(travelClassOf(unknown), null, JSON.stringify(unknown));
+  }
+});
+
+test('THE SPLIT: each class fits its own speed from its own trucks', () => {
+  const mk = (mph, c, n) => Array.from({ length: n }, () => ({ meters: 5 * MI, gapMin: (5 / mph) * 60 + 14, c }));
+  const { fleet, classes } = fitCurveByClass([...mk(18, 'tractor', 120), ...mk(28, 'box', 120)]);
+  const at = (f) => f.buckets.find((b) => b.range === '4–8 mi');
+  assert.equal(at(classes.tractor).source, 'measured');
+  assert.equal(at(classes.box).source, 'measured');
+  assert.ok(at(classes.tractor).usedMph < at(classes.box).usedMph - 4,
+    `tractor ${at(classes.tractor).usedMph} must read clearly slower than box ${at(classes.box).usedMph}`);
+  assert.ok(at(fleet).usedMph >= at(classes.tractor).usedMph && at(fleet).usedMph <= at(classes.box).usedMph,
+    'the fleet blend sits between its classes');
+});
+
+test('HIERARCHY, both layers: a thin CLASS gets no fit; a thin BUCKET borrows the fleet', () => {
+  const mk = (mi, mph, c, n) => Array.from({ length: n }, () => ({ meters: mi * MI, gapMin: (mi / mph) * 60 + 14, ...(c ? { c } : {}) }));
+  // Layer 1: 10 tractor samples do not invent a truck — no class fit is emitted at all,
+  // so every tractor route rides the fleet numbers wholesale.
+  const thin = fitCurveByClass([...mk(5, 20, null, 200), ...mk(5, 14, 'tractor', 10)]);
+  assert.ok(!('tractor' in thin.classes), '10 samples must not produce a tractor fit');
+  // Layer 2: a class over the gate whose 8-15mi BUCKET is thin borrows the FLEET's
+  // measured value at that distance, not the literature default.
+  const rich = fitCurveByClass([
+    ...mk(11, 20, null, 300),            // fleet measures 8-15mi at ~20 (default says 31)
+    ...mk(5, 16, 'tractor', 120),        // tractor measures 4-8mi with plenty of samples
+    ...mk(11, 12, 'tractor', 5),         // ...but its 8-15mi bucket is 5 samples of noise
+  ]);
+  const at = (f, r) => f.buckets.find((b) => b.range === r);
+  assert.equal(at(rich.fleet, '8–15 mi').source, 'measured');
+  assert.equal(at(rich.classes.tractor, '8–15 mi').source, 'default', '5 samples do not measure a bucket');
+  assert.ok(Math.abs(at(rich.classes.tractor, '8–15 mi').usedMph - at(rich.fleet, '8–15 mi').usedMph) < 1,
+    'the thin tractor bucket must borrow the fleet, not the book');
+});
+
+test('THE DWELL IS GATED LIKE THE SPEEDS: one break-length gap is not a dock time', () => {
+  // Reproduced in review: 200 untagged fleet samples plus ONE tractor-tagged sample whose
+  // gap was a 50-minute break produced classes.tractor.serviceMin = 30, serviceMeasured
+  // true — and the engine prefers a class dwell over the fleet's on every tractor route.
+  const fleet = Array.from({ length: 200 }, () => ({ meters: 5 * MI, gapMin: (5 / 20) * 60 + 14 }));
+  const breakGap = [{ meters: 0.5 * MI, gapMin: 50, c: 'tractor' }];
+  const out = fitCurveByClass([...fleet, ...breakGap]);
+  assert.ok(!('tractor' in out.classes), 'one sample must not produce a class at all');
+  // And the fleet's own dwell needs the same bar: 10 samples keep the default, honestly.
+  const few = fitCurve(Array.from({ length: 10 }, () => ({ meters: 5 * MI, gapMin: (5 / 20) * 60 + 22 })));
+  assert.equal(few.serviceMeasured, false, '10 residuals are not a measured dwell');
+  assert.equal(few.serviceMin, 14, 'the shipped default holds until the data outvotes it');
+});
+
+test('untagged samples feed the fleet and neither class', () => {
+  const mk = (mph, c, n) => Array.from({ length: n }, () => ({ meters: 5 * MI, gapMin: (5 / mph) * 60 + 14, ...(c ? { c } : {}) }));
+  const { fleet, classes } = fitCurveByClass(mk(22, null, 200));
+  assert.ok(fleet.n === 200);
+  assert.deepEqual(Object.keys(classes), [], 'no tagged samples, no class fits');
+  assert.ok(TRAVEL_CLASSES.length === 2);
+});
+
+test('legSamplesFromRoutes tags samples with the route\'s class', () => {
+  const routes = new Map([['BEN 2', [
+    { pos: { lat: 34.0, lng: -84.0 }, stampMin: 540 },
+    { pos: { lat: 34.1, lng: -84.0 }, stampMin: 600 },
+  ]]]);
+  const tagged = legSamplesFromRoutes(routes, new Map([['BEN 2', 'tractor']]));
+  assert.equal(tagged[0].c, 'tractor');
+  const untagged = legSamplesFromRoutes(routes, new Map());
+  assert.ok(!('c' in untagged[0]), 'no class known, no tag invented');
+});
+
+// ── THE ENGINE PICKS THE CLOCK PER ROUTE ─────────────────────────────────────
+
+test('THE POINT: a tractor route and a box route disagree about the same close', () => {
+  // Same board, same 9:40 close at FAR CO. On the box curve (fast) the truck makes it;
+  // on the tractor curve (slow in town, slower dwell) it misses. One blended number
+  // would have been wrong for one of them every single day.
+  const classCurves = {
+    tractor: [[1, 10], [10, 18], [40, 38]],
+    box: [[1, 14], [10, 28], [40, 50]],
+  };
+  const base = { classCurves, classService: { tractor: 22, box: 10 } };
+  const asClass = (cls) => runBoard('09:40', { ...base, routeClasses: { T: cls } });
+  assert.ok(!asClass('box').rows.some((r) => r.rule === 'hours_risk'), 'the box truck makes it');
+  assert.ok(asClass('tractor').rows.some((r) => r.rule === 'hours_risk'), 'the tractor does not');
+  // A route the roster does not know rides the fleet curve — identical to no classes.
+  const unknown = runBoard('09:40', { ...base, routeClasses: {} });
+  const fleetOnly = runBoard('09:40');
+  assert.equal(unknown.rows.some((r) => r.rule === 'hours_risk'),
+    fleetOnly.rows.some((r) => r.rule === 'hours_risk'), 'unknown class = fleet behaviour');
+});

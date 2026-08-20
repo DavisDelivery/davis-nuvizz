@@ -1118,6 +1118,13 @@ export interface FleetSummary {
   totalExceptions: number; uniqueDrivers: number; pctComplete: number;
 }
 
+/** The fleet index's per-load docs for a day — the scanner's own record of each load's
+ *  header (vehicleType, driver, route). Read via the SAME path builder the writer uses,
+ *  because parentId case-normalizes the tenant and a hand-built path silently misses. */
+export async function listFleetLoads(tenant: string, dateStr: string, mask?: string[]): Promise<any[]> {
+  return listDocs(`${FLEET_COLLECTION}/${parentId(tenant, dateStr)}/loads`, mask ? { mask } : undefined);
+}
+
 export async function writeFleetIndex(
   tenant: string, dateStr: string,
   loads: any[], summary: FleetSummary, driverIndex: Record<string, string[]>, scannedAt: string,
