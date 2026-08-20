@@ -10,6 +10,7 @@
 //
 //   GET ?date=YYYY-MM-DD        JSON  { ok, date, summary, rows, coverage }
 //   GET ?date=…&format=csv      the same rows as a downloadable CSV
+//   GET ?include=deliveries|all|pickups   default 'deliveries'
 //   GET ?carryDays=N            also fold in still-unplanned stops from the prior N days
 //
 // carryDays defaults to 0, matching the map's own default so the report and the screen
@@ -33,7 +34,7 @@
 import { isFirestoreEnabled, readStops, getDoc, etDayString } from './lib/firestore.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { mergeCarryover } from './nuvizz-pull-today-stops.mts';
-import { buildTimeRestrictionRows, summarizeRows, toCsv } from '../../src/lib/time-restrictions.js';
+import { buildTimeRestrictionRows, summarizeRows, toCsv, INCLUDE_MODES } from '../../src/lib/time-restrictions.js';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -51,6 +52,13 @@ export default async (req: Request): Promise<Response> => {
     if (!DATE_RE.test(date)) return json({ ok: false, error: `bad date "${date}" — expected YYYY-MM-DD` }, 400);
     const wantCsv = (url.searchParams.get('format') || '').toLowerCase() === 'csv';
     const carryDays = Math.max(0, Math.min(14, parseInt(url.searchParams.get('carryDays') || '0', 10) || 0));
+    // DELIVERIES BY DEFAULT. A receiving window is a statement about freight arriving, and
+    // a dispatcher reading this sheet is planning deliveries — on a real board the pickups
+    // were 17 rows of our own terminal inheriting its own hours, which is noise here.
+    // ?include=all restores them; whichever is in force is reported in coverage, so the
+    // scope of the sheet is never something you have to infer from its length.
+    const includeParam = (url.searchParams.get('include') || 'deliveries').toLowerCase();
+    const include = INCLUDE_MODES.includes(includeParam) ? includeParam : 'deliveries';
 
     const { meta, stops: rawStops } = await readStops(TENANT, date);
     // The stored stop index carries no matchKey; customer_notes are keyed by it. Without
@@ -84,7 +92,7 @@ export default async (req: Request): Promise<Response> => {
       }));
     }
 
-    const rows = buildTimeRestrictionRows(stops, notes, date);
+    const rows = buildTimeRestrictionRows(stops, notes, date, { include });
     const summary = summarizeRows(rows);
 
     if (wantCsv) {
@@ -110,6 +118,7 @@ export default async (req: Request): Promise<Response> => {
         distinctCustomers: keys.length,
         notesLoaded: notes.size,
         noteReadFailures,
+        include,
         carryDays,
         carryoverAdded,
         lastScannedAt: meta?.last_scanned_at ?? null,

@@ -402,13 +402,25 @@ function summarize({ hoursLabel, win, appts, closedToday, dayKey, amPm }) {
  *               say so in the output rather than letting an empty map read as "no
  *               customer has hours on file".
  */
-export function buildTimeRestrictionRows(stops = [], notes = new Map(), servedDate = null) {
+export const INCLUDE_MODES = ['all', 'deliveries', 'pickups'];
+
+export function buildTimeRestrictionRows(stops = [], notes = new Map(), servedDate = null, opts = {}) {
+  // Default 'all' — a library that silently drops rows is a trap. The report endpoint
+  // above chooses 'deliveries' and says so in its coverage block, because a receiving
+  // window is a statement about freight arriving and a dispatcher reading this sheet is
+  // planning deliveries. Filtering happens AFTER classification so detectDefaultSlots
+  // still sees the whole board: a creation default is a property of the board, and
+  // hiding half of it from the detector would let a stamp slip through as real.
+  const include = INCLUDE_MODES.includes(opts.include) ? opts.include : 'all';
   const defaultSlots = detectDefaultSlots(stops);
   const rows = [];
   for (const stop of stops) {
     const note = notes.get?.(stop?.matchKey) ?? null;
     const r = classifyStopTimeRestriction(stop, note, servedDate, defaultSlots);
     if (!r) continue;
+    const isPickup = stop.stopType === 'PU';
+    if (include === 'deliveries' && isPickup) continue;
+    if (include === 'pickups' && !isPickup) continue;
     rows.push({
       pro: stop.primaryPro || stop.pro || stop.stopNbr || '',
       orderNbr: stop.orderNbr || '',
@@ -424,8 +436,6 @@ export function buildTimeRestrictionRows(stops = [], notes = new Map(), servedDa
       // sitting since Monday is the most actionable row on the sheet.
       carryover: stop.carryover ? 'Yes' : '',
       scheduledDate: stop.scheduledDate || '',
-      route: stop.routeName || '',
-      driver: stop.driverName || '',
       tier: r.tier,
       tierLabel: TIER_LABEL[r.tier],
       restriction: r.summary,
@@ -472,8 +482,6 @@ export const CSV_COLUMNS = [
   ['status', 'Status'],
   ['carryover', 'Carried over'],
   ['scheduledDate', 'Scheduled for'],
-  ['route', 'Route'],
-  ['driver', 'Driver'],
   ['tierLabel', 'Restriction type'],
   ['restriction', 'Restriction'],
   ['receivingHours', 'Receiving hours'],
