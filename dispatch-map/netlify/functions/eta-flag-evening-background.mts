@@ -41,6 +41,7 @@ import { isFirestoreEnabled, getDoc, setDoc, createDocIfAbsent, readStops, etDay
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { weekdayKey } from './lib/miss-ledger.mts';
 import { readTravelCalibration, ensureLegs } from './lib/travel-store.mts';
+import { routeDeparturePath } from './lib/route-departure.mts';
 import { smsEnabled, sendSms } from './lib/sms.mts';
 import { smsRecipients, eveningTargetDate, smsText, smsClaimPath, selectTextable } from './lib/flag-sms.mts';
 
@@ -80,6 +81,10 @@ export default async (req: Request): Promise<Response> => {
 
     // Same two-pass travel flow as the day sweep: judge on the cache, fill wanted legs,
     // judge again on the filled cache so tonight's verdicts price legs like the board.
+    // WHEN EACH ROUTE ACTUALLY LEAVES — the measured per-route departure, fitted nightly
+    // from sealed history. Absent or thin, every route keeps the shipped 8:00a default.
+    const departDoc = await getDoc(routeDeparturePath(TENANT)).catch(() => null);
+    const departByRoute = departDoc?.table || null;
     const cal = await readTravelCalibration(TENANT).catch(() => null);
     const calOpts = cal ? { curve: cal.curve, serviceMin: cal.serviceMin } : {};
     // A pre-day board gets NO nowMin: nothing has departed, so the not-started clamp and
@@ -87,7 +92,10 @@ export default async (req: Request): Promise<Response> => {
     // yet is just tomorrow. After midnight the board is today's; nowMin is real, and the
     // pre-dawn hours keep both of those rules naturally quiet anyway.
     const nowOpt = offsetDays === 0 ? { nowMin: etMin } : {};
-    const engineOpts = (legs: Record<string, number>) => ({ depot: DEPOT, ...nowOpt, travel: { legs, ...calOpts } });
+    const engineOpts = (legs: Record<string, number>) => ({
+      depot: DEPOT, ...nowOpt, travel: { legs, ...calOpts },
+      ...(departByRoute ? { departByRoute } : {}),
+    });
     const first = computeBoardFlags({ stops, notes, servedDate: date, dayKey: weekdayKey(date), opts: engineOpts({}) });
     let legInfo = { legs: {} as Record<string, number> };
     try { legInfo = await ensureLegs(TENANT, first.legsWanted || []); } catch { /* curve carries it */ }
@@ -100,6 +108,7 @@ export default async (req: Request): Promise<Response> => {
       tenant: TENANT, date, offsetDays, etMin, at: new Date().toISOString(),
       boardStops: stops.length, redCount: flags.redCount, amberCount: flags.amberCount,
       candidates: candidates.length, recipients: recipients.length,
+      departuresKnown: departByRoute ? Object.keys(departByRoute).length : 0,
       smsEnabled: smsEnabled(), sent: 0, failed: 0, alreadyClaimed: 0,
       texted: [] as any[],
     };

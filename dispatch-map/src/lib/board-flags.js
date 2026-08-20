@@ -337,6 +337,20 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // refinements }. Absent entirely, the tiered DEFAULT_CURVE still applies — the flat
   // ~30 mph model is gone even for callers that pass nothing.
   const travel = opts.travel || null;
+  // Per-route measured departures: { routeKey: minutes } or a lookup fn. Absent entirely,
+  // every route keeps departMin — the shipped behaviour, unchanged.
+  const departFor = typeof opts.departByRoute === 'function'
+    ? opts.departByRoute
+    : (() => {
+        const t = opts.departByRoute && typeof opts.departByRoute === 'object' ? opts.departByRoute : null;
+        if (!t) return () => null;
+        const byKey = new Map();
+        for (const [k, v] of Object.entries(t)) {
+          const m = Number(v && typeof v === 'object' ? v.departMin : v);
+          if (Number.isFinite(m)) byKey.set(String(k).trim().toLowerCase(), m);
+        }
+        return (k) => { const h = byKey.get(String(k ?? '').trim().toLowerCase()); return Number.isFinite(h) ? h : null; };
+      })();
   // Service precedence: an explicit caller override, then the nightly-measured dwell,
   // then the shipped constant. Calibration refining the dwell must not need a deploy.
   const serviceSec = Number.isFinite(opts.serviceSec) ? opts.serviceSec
@@ -516,14 +530,26 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         visitSeen.add(vk);
         return true;
       });
-      const notStarted = !startedRoutes.has(k) && nowMin != null && nowMin > departMin + NOT_STARTED_GRACE_MIN;
-      const effDepart = notStarted ? nowMin : departMin;
+      // WHEN THIS ROUTE ACTUALLY LEAVES. The 8:00a default is a fair guess for the MIDDLE
+      // of the fleet (measured median 08:23) and badly wrong in the tails (p10 05:46, p90
+      // 13:50) — and overnight, with no stamps to correct it, the tails are where the
+      // texts come from. A route with enough clean days of history carries its own
+      // measured departure; everything else keeps the default. See lib/route-departure.
+      const learnedDepart = departFor(k);
+      const routeDepart = learnedDepart != null ? learnedDepart : departMin;
+      const notStarted = !startedRoutes.has(k) && nowMin != null && nowMin > routeDepart + NOT_STARTED_GRACE_MIN;
+      const effDepart = notStarted ? nowMin : routeDepart;
       const rt = travelForRoute(k);
       let cur = depot; let clockMin = effDepart; let chainBroken = false;
       // Where the clock is currently running from, for the row's detail line. It starts as
       // the assumed departure and is replaced the moment a real stamp anchors the chain —
       // so the dispatcher can see whether the estimate rests on an assumption or on a truck.
-      let anchorNote = notStarted ? `no movement yet, clock runs from ${fmtMin(nowMin)}` : `departs ${fmtMin(effDepart)}`;
+      // The wording carries the PROVENANCE of the departure, because "departs 8:00a" and
+      // "departs 3:42a (measured)" are different claims and a dispatcher deciding whether
+      // to trust a 2am text needs to know which one the estimate rests on.
+      let anchorNote = notStarted
+        ? `no movement yet, clock runs from ${fmtMin(nowMin)}`
+        : `departs ${fmtMin(effDepart)}${learnedDepart != null ? ' (measured)' : ' (assumed)'}`;
       // Anchor state drives SEVERITY, not just the wording: an estimate projected from a real
       // stamp two stops back is a different quality of evidence from one projected from an
       // assumed departure six hours ago, and the tier has to know which it is holding.
