@@ -1,0 +1,137 @@
+// eta-flag-evening-background.mts — the EVENING and OVERNIGHT flag sweep, with texts.
+//
+// Chad: "Flags need to show up on tomorrow's board for deliveries tomorrow soon as we
+// start routing at 8pm tonight for tomorrow — shouldn't wait until 7. Trying to catch
+// the clearly obvious problems or critical ones sooner."
+//
+// The measured case for this sweep (flag-replay over 49 sealed days): the existing
+// 7:00a-7:40p sweep catches 40% of real receiving-hours misses with a median catch at
+// 11:40a — a mid-morning system — while a route built at 9pm with an unmakeable close
+// is knowable the moment it is sorted. This sweep runs the SAME engine (imported, never
+// copied) over the board the routers are building RIGHT NOW:
+//
+//   * 8:00p-11:xx ET  -> TOMORROW's board (routing starts ~8pm; the tomorrow-loads scan
+//                        gate opens at 20:00 ET, so the data arrives on the same clock)
+//   * 12:xx-6:xx ET   -> TODAY's board (same board, across midnight), handing off to the
+//                        existing day sweep at 7:00a.
+//
+// WHAT IT SENDS, AND TO WHOM. Texts, not email — the router is at a board, not an
+// inbox. Recipients are env-owned (lib/flag-sms.mts): FLAG_SMS_TO rides every sweep;
+// FLAG_SMS_TO_NIGHT (the router on duty — Zach) is dropped AT 6:00a ET sharp, per Chad:
+// "Stop flag texts to Zach by 6am — after that he's no longer routing." Only red and
+// critical hours_risk rows text ("clearly obvious problems or critical ones"); ambers
+// stay on the board. One text per stop per board day per recipient-independent claim —
+// claim-then-send, the same atomic pattern as the email path, so a retried sweep can
+// never double-text. Worst-late-first, capped per sweep.
+//
+// Pre-day honesty: an evening verdict is a pure 8:00a-departure projection — nothing
+// has driven yet — so the text is only sent for the tiers that survive the 90-minute
+// unanchored error band, which is exactly the "obvious" population Chad asked for.
+//
+// INSPECTABILITY. eta-flag-check?date=<the target date> runs the same engine dry over
+// the same index and explains per-stop verdicts — that endpoint answers "what would
+// tonight's sweep see" without sending anything. Each run of THIS function also writes
+// nuvizz_ops/flag_evening_status__<target-date> (attempted/sent/failed/skipped), so the
+// morning question "did anything text last night" is one document read.
+//
+// Data diet: Firestore only — the stop index the scanner maintains, customer_notes,
+// the travel cache. ZERO NuVizz calls, ever, from this path.
+import { computeBoardFlags } from '../../src/lib/board-flags.js';
+import { isFirestoreEnabled, getDoc, setDoc, createDocIfAbsent, readStops, etDayString } from './lib/firestore.mts';
+import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
+import { weekdayKey } from './lib/miss-ledger.mts';
+import { readTravelCalibration, ensureLegs } from './lib/travel-store.mts';
+import { smsEnabled, sendSms } from './lib/sms.mts';
+import { smsRecipients, eveningTargetDate, smsText, smsClaimPath, selectTextable } from './lib/flag-sms.mts';
+
+const TENANT = 'davis';
+const DEPOT = { name: 'Buford Terminal', lat: 34.147791, lng: -83.960911 };
+
+function etNowMin(): number {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date());
+  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? 0) % 24;
+  const m = Number(parts.find((p) => p.type === 'minute')?.value ?? 0);
+  return h * 60 + m;
+}
+
+export default async (req: Request): Promise<Response> => {
+  const J = (b: any, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } });
+  if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
+
+  try {
+    const etMin = etNowMin();
+    const etToday = etDayString();
+    const target = eveningTargetDate(etToday, etMin);
+    if (!target) return J({ ok: true, note: 'daytime — the 7:00a-7:40p sweep owns this window', etMin });
+
+    const { date, offsetDays } = target;
+    const { stops: rawStops } = await readStops(TENANT, date);
+    const stops = withCustomerKeys(rawStops || []);
+    if (!stops.length) return J({ ok: true, date, note: 'no board yet for the target date', etMin });
+
+    const keys = [...new Set(stops.map((s: any) => stopCustomerKey(s)).filter(Boolean) as string[])];
+    const notes = new Map<string, any>();
+    const CHUNK = 25;
+    for (let i = 0; i < keys.length; i += CHUNK) {
+      await Promise.all(keys.slice(i, i + CHUNK).map(async (k) => {
+        try { const d = await getDoc(`customer_notes/${k}`); if (d) notes.set(k, d); } catch { /* missing note = ordinary */ }
+      }));
+    }
+
+    // Same two-pass travel flow as the day sweep: judge on the cache, fill wanted legs,
+    // judge again on the filled cache so tonight's verdicts price legs like the board.
+    const cal = await readTravelCalibration(TENANT).catch(() => null);
+    const calOpts = cal ? { curve: cal.curve, serviceMin: cal.serviceMin } : {};
+    // A pre-day board gets NO nowMin: nothing has departed, so the not-started clamp and
+    // the driverless rule (R6) must stay out of it — a tomorrow route without a driver
+    // yet is just tomorrow. After midnight the board is today's; nowMin is real, and the
+    // pre-dawn hours keep both of those rules naturally quiet anyway.
+    const nowOpt = offsetDays === 0 ? { nowMin: etMin } : {};
+    const engineOpts = (legs: Record<string, number>) => ({ depot: DEPOT, ...nowOpt, travel: { legs, ...calOpts } });
+    const first = computeBoardFlags({ stops, notes, servedDate: date, dayKey: weekdayKey(date), opts: engineOpts({}) });
+    let legInfo = { legs: {} as Record<string, number> };
+    try { legInfo = await ensureLegs(TENANT, first.legsWanted || []); } catch { /* curve carries it */ }
+    const flags = computeBoardFlags({ stops, notes, servedDate: date, dayKey: weekdayKey(date), opts: engineOpts(legInfo.legs) });
+
+    const candidates = selectTextable(flags.rows);
+    const recipients = smsRecipients(process.env, etMin);
+
+    const status: any = {
+      tenant: TENANT, date, offsetDays, etMin, at: new Date().toISOString(),
+      boardStops: stops.length, redCount: flags.redCount, amberCount: flags.amberCount,
+      candidates: candidates.length, recipients: recipients.length,
+      smsEnabled: smsEnabled(), sent: 0, failed: 0, alreadyClaimed: 0,
+      texted: [] as any[],
+    };
+
+    if (smsEnabled() && recipients.length) {
+      for (const row of candidates) {
+        // Claim BEFORE sending — one text per stop per board day, no matter how many
+        // sweeps see it or how a retry lands. A claim on a failed send is kept, same
+        // deliberate trade as the email path: silence over spam.
+        const claimed = await createDocIfAbsent(smsClaimPath(TENANT, date, row.stopNbr), {
+          at: status.at, tier: row.tier, closeMin: row.closeMin ?? null, etaMin: row.etaMin ?? null, etMin,
+        });
+        if (!claimed) { status.alreadyClaimed += 1; continue; }
+        const text = smsText(row, date);
+        for (const to of recipients) {
+          const r = await sendSms({ to, text });
+          if (r.ok) status.sent += 1; else { status.failed += 1; console.error('flag sms failed:', r.error); }
+        }
+        status.texted.push({ stopNbr: row.stopNbr, customer: row.customer ?? null, tier: row.tier });
+      }
+    }
+
+    try { await setDoc(`nuvizz_ops/flag_evening_status__${date}`, status); } catch { /* status is best-effort */ }
+    return J({ ok: true, ...status });
+  } catch (err: any) {
+    return J({ ok: false, error: String(err?.message || err) }, 500);
+  }
+};
+
+// Hourly through the routing evening and overnight: 00:00-11:00 UTC = 8:00p-7:00a EDT
+// (7:00p-6:00a EST). The ET-side rules are the authority, not the cron: a fire that
+// lands at 7:00a ET stands down (the day sweep owns it), and Zach's number is dropped
+// the minute the 6:00a cutoff passes — recipient logic is minute-accurate. Netlify cron
+// fires only on published production deploys.
+export const config = { schedule: '0 0-11 * * *' };
