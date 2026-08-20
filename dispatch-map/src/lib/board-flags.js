@@ -401,6 +401,26 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
 
   const open = stops.filter((s) => !isFinishedStop(s));
   const noteOf = (s) => (s?.matchKey ? notes.get(s.matchKey) : null) || null;
+  // RECEIVING HOURS DESCRIBE DELIVERIES, AND A PICKUP IS NOT ONE.
+  //
+  // v0.59.2 settled this for the finished-day sheet: "Receiving hours describe when a dock
+  // will take freight IN. A pickup is us collecting freight OUT, and the two have nothing to
+  // do with each other." An internal pickup collected at 12:05p against an order that read
+  // "PICK UP BEFORE 1:00PM" was called 65 minutes late there, because it had inherited a
+  // 6a-11a receiving window that was never about it.
+  //
+  // The ETA walk below never had that problem: it judges `deliveries` only, because a pickup
+  // carries no usable sequence. R6 — the driverless-route card — is the one that does, since
+  // it reads the whole route group rather than the walk's stop list. So a driverless route
+  // whose only "constrained" stop was an RA pickup wearing our terminal's 6a-11a window
+  // raised a card about a deadline that did not exist. Both window lookups now go through
+  // one place, so the rule cannot be true in one of them and false in the other.
+  //
+  // The address fix shipping alongside this removes the usual SOURCE of those hours — a
+  // pickup that borrowed the terminal's identity borrowed its window with it. This is the
+  // rule underneath, and it still holds on the day a pickup sits at a business that really
+  // does have receiving hours on file.
+  const receivingWindow = (s) => (isPickupStop(s) ? null : dayReceivingWindow(noteOf(s), day));
   const rows = [];
   const skipped = { noRoster: false, ambiguousRoutes: [], routesNoSequence: [], routesAppointment: [], stopsNoPosition: 0 };
   // What the detector actually LOOKED at — the panel shows these so a quiet board can
@@ -412,7 +432,13 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // Predicted arrival per stop, from the SAME walk that decides the flags. Consumed by the
   // route-detail card so a dispatcher reads our ETA instead of a shared appointment window.
   const etaByStop = new Map();
-  if (day) for (const s of open) { if (dayReceivingWindow(noteOf(s), day)) checked.stopsWithHours += 1; }
+  // THE FOOTER'S COUNT IS A CLAIM, AND IT HAS TO MATCH WHAT WAS JUDGED. v0.65.2 routed both
+  // window lookups through receivingWindow so a pickup stops inheriting a dock's receiving
+  // hours — but left this counter on the raw lookup, so the panel would report "N stops with
+  // receiving hours on file today" counting RA pickups the engine deliberately never judges.
+  // The whole point of the footer is that a quiet panel can prove it was watched; a count
+  // that overstates its own coverage is the one number a dispatcher cannot check.
+  if (day) for (const s of open) { if (receivingWindow(s)) checked.stopsWithHours += 1; }
 
   // R1 — two NuVizz orders under one stop number (the Estes twin). Proof, not a guess: the
   // scan flags this only when record ids differ. Occurrence-scoped: cleaning the portal
@@ -680,7 +706,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
           });
         }
         const finished = isFinishedStop(s);
-        const w = finished ? null : dayReceivingWindow(noteOf(s), day);
+        const w = finished ? null : receivingWindow(s);
         if (w && clockMin > w.closeMin) {
           const lateBy = Math.round(clockMin - w.closeMin);
           const errorMin = modelErrorMinutes({ anchored, hops: hopsSinceAnchor });
@@ -768,7 +794,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
             cSeen.add(vk);
             return true;
           })
-          .map((s) => ({ s, w: dayReceivingWindow(noteOf(s), day) }))
+          .map((s) => ({ s, w: receivingWindow(s) }))
           .filter((x) => x.w);
         if (!constrained.length) continue;
         constrained.sort((a, b) => a.w.closeMin - b.w.closeMin);

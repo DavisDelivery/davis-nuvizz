@@ -766,11 +766,53 @@ export const LIVE_IF_PRESENT_FIELDS = ['businessName', 'addr1', 'addr2', 'city',
 export function hasListValue(v: any): boolean {
   return !(v === null || v === undefined || (typeof v === 'string' && v.trim() === ''));
 }
+
+// ── …BUT A PICKUP'S LIST ADDRESS IS NOT ITS OWN ADDRESS ───────────────────────
+//
+// Chad, on an RA row sitting on route DUL 2: "RA pickups need to show the address where
+// they are picking up as they are all coming back to the warehouse. The map is right but
+// the address is not."
+//
+// He described the mechanism exactly. The saved search reports SHIP-TO columns, and the
+// ship-to on a return is our own Buford terminal — so all fourteen RA rows on the
+// 2026-08-20 board carried the identical "DAVIS DELIVERY, 943 GAINESVILLE HIGHWAY" while
+// their pins sat on fourteen different houses across metro Atlanta. THE PIN IS RIGHT
+// BECAUSE lat/lng ARE NOT IN THE LIST ABOVE: enrichment resolves a pickup off stop.from
+// (nuvizz-scan's normalizeStop) and its coordinates survive the merge, while the five
+// address fields are live-if-present and the very same enrichment's correct pickup address
+// was thrown away on every scan. The give-away is on the row itself — isTerminal came back
+// FALSE on all fourteen, which is a value only /stop/info could have produced, and it could
+// only be false if the address it saw was not the terminal's.
+//
+// So the rule is not "the list wins the address". It is "the list wins the address it
+// actually reported FOR THIS STOP", and on a pickup it reported the destination. The ESTES
+// re-address case that put the rule there is a DELIVERY and is untouched.
+//
+// Two symptoms fall out of the same line. A pickup that borrows the terminal's identity
+// also borrows the terminal's customer_notes document — which is why the card in Chad's
+// screenshot showed 6:00a-11:00a receiving hours seven days a week on a residential
+// pickup, and why a dispatcher typing hours onto that card would have been editing OUR
+// TERMINAL's hours.
+export function isPickupRow(stop: any): boolean {
+  const t = String(stop?.stopType ?? '').trim().toUpperCase();
+  if (t === 'PU') return true;
+  // Enrichment is the authority on stop type, so an explicit DO is taken at its word.
+  if (t) return false;
+  // No type at all (a stored row that predates toBoardStop's prefix rule): Davis's own
+  // numbering says an RA order IS a pickup, which is where the prefix rule came from.
+  return /^RA/i.test(String(stop?.stopNbr ?? '').trim());
+}
 // Copy ALL non-live fields from src (a /stop/info-normalized stop, or a prior enriched
 // index doc) onto target, then mark it enriched. Never overwrites a real value with a
 // null/blank, so list-derived values survive when a detail field is sparse.
 export function mergeEnrich(target: any, src: any): any {
   if (!src || typeof src !== 'object') return target;
+  // A PICKUP's list address is the ship-to — our own warehouse on a return — not the place
+  // the driver is being sent. Enrichment read the real one off stop.from, so let it through
+  // rather than defending a value the list never held for this stop. Either side may carry
+  // the type: the list types an RA row PU off Davis's numbering, /stop/info types it off
+  // NuVizz's own record, and if either calls it a pickup the ship-to column is not evidence.
+  const pickup = isPickupRow(target) || isPickupRow(src);
   // The ShipTo-Display-Seq delivery order arrives FREE & authoritative on every list scan
   // (toBoardStop → routeSeq). It must WIN over any carried-forward / enriched value: the
   // enrichment path's routeSeq is the PHYSICAL stop.to.seq (nuvizz-scan: numOrNull(primary.seq))
@@ -790,7 +832,7 @@ export function mergeEnrich(target: any, src: any): any {
     // The address the LIST carried this scan outranks any stored or enriched copy — but
     // only where the list actually carried one; a blank column must never wipe a good
     // address. See LIVE_IF_PRESENT_FIELDS.
-    if (LIVE_IF_PRESENT_FIELDS.includes(k) && hasListValue(target[k])) continue;
+    if (!pickup && LIVE_IF_PRESENT_FIELDS.includes(k) && hasListValue(target[k])) continue;
     if (v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0)) continue;
     target[k] = v;
   }
