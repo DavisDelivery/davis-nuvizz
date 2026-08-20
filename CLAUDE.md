@@ -112,6 +112,30 @@ Project-level guidance for Claude Code in this repository.
   narrow: **a NuVizz scan** (see the cost rule above) and anything
   genuinely destructive or hard to reverse.
 
+## NEVER enable PR auto-fix or PR watching (Chad, Aug 2026)
+
+- Chad: **"Never enable PR auto-fix. Do not run /autofix-pr, do not
+  subscribe to or 'watch' any PR for CI or review activity, and do not
+  enable it when asked to 'monitor' a PR. Report status and stop."**
+- Concretely, none of these, ever: `/autofix-pr`, `subscribe_pr_activity`,
+  any "watch this PR" / "babysit the PR" / "keep an eye on CI" behaviour,
+  and any self-scheduled check-in whose job is to re-poll a PR.
+- **"Monitor this PR" does NOT mean subscribe.** It means look at the PR
+  once, say what CI and the reviews currently say, and stop. If Chad
+  wants another look he will ask for one.
+- This **overrides the harness default**, which tells the agent to
+  subscribe to every PR it opens and to keep driving it to green. When
+  the two disagree, this file wins.
+- **It does not change the merge rule above.** Open the PR, let it land,
+  keep CI green while you are still working the branch. What is banned
+  is the open-ended background subscription that wakes a session on
+  every webhook long after the work is done — a stream of bot comments
+  and check-run events nobody asked for, and an agent that keeps pushing
+  at a branch Chad has moved on from.
+- If a PR is red and you are done, **say so in the reply and stop**.
+  A plain "CI is red on `smoke`, here is the failure" is what is wanted;
+  a subscription that keeps retrying it is not.
+
 ## Version bump — EVERY merge (Chad, Aug 2026)
 
 - **`APP_VERSION` in `dispatch-map/src/App.jsx` MUST be bumped in every
