@@ -386,6 +386,40 @@ test('filtering happens AFTER default-slot detection, so a stamp cannot slip thr
   assert.equal(buildTimeRestrictionRows(board, new Map(), WED, { include: 'deliveries' }).length, 0);
 });
 
+// ── an appointment alone is not a clock constraint ────────────────────────────
+
+test('a stop whose ONLY flag is "appointment required" drops off the sheet', () => {
+  const board = [stop({ primaryPro: 'APPT', ...instr('NTFY OF DELIVERY-APPT REQD') })];
+  assert.equal(buildTimeRestrictionRows(board, new Map(), WED, { dropAppointmentOnly: true }).length, 0);
+  assert.equal(buildTimeRestrictionRows(board, new Map(), WED).length, 1, 'kept by default');
+});
+
+test('an appointment PLUS receiving hours stays — it is a hard window and always was', () => {
+  const rows = buildTimeRestrictionRows(
+    [stop({ primaryPro: 'BOTH', ...instr('RECEIVING HOURS 8AM-2PM', 'NTFY OF DELIVERY-APPT REQD') })],
+    new Map(), WED, { dropAppointmentOnly: true });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].tierLabel, 'Hard window');
+  assert.match(rows[0].appointment, /appointment required/i);
+});
+
+test('an appointment paired with a CLOSED DAY survives, though its tier is still appointment', () => {
+  // The trap: tier === 'appointment' does not mean appointment is the only kind. Testing
+  // the tier instead of the whole kinds list would silently drop a stop that is shut today.
+  const rows = buildTimeRestrictionRows(
+    [{ ...stop({ primaryPro: 'SHUT', ...instr('NTFY OF DELIVERY-APPT REQD') }), matchKey: 'k' }],
+    new Map([['k', { closed_days: ['wed'] }]]), WED, { dropAppointmentOnly: true });
+  assert.equal(rows.length, 1, 'a customer shut today is a clock fact, whatever else it carries');
+  assert.equal(rows[0].tierLabel, 'Appointment / call ahead');
+});
+
+test('an appointment paired with an AM/PM window survives too', () => {
+  const rows = buildTimeRestrictionRows(
+    [{ ...stop({ primaryPro: 'AMPM', ...instr('APPOINTMENT REQUIRED') }), matchKey: 'k' }],
+    new Map([['k', { delivery_window: 'AM' }]]), WED, { dropAppointmentOnly: true });
+  assert.equal(rows.length, 1);
+});
+
 test('the sheet carries no driver and no load name', () => {
   const rows = buildTimeRestrictionRows(
     [stop({ routeName: 'FRANK', driverName: 'Frank Okine', ...instr('RECEIVING HOURS 8AM-2PM') })],
