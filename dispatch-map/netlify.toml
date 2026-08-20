@@ -76,6 +76,12 @@
   # distinct customer. Same wide-Firestore shape as customer-comms-test, same 26s.
   [functions."eta-flag-check"]
     timeout = 26
+  # The manifest archive, read back: a 30-day window is one Firestore get per day, and the
+  # ?pdf=1 path streams a report out of the blob store. Read-only, ZERO NuVizz calls. A
+  # 180-day window on the 10s default would die partway and read as "no history" rather than
+  # "ran out of time" — the same trap the back-test, the replay and the departure fit hit.
+  [functions."manifest-history"]
+    timeout = 26
   # Scanned-manifest OCR runs as manifest-ocr-BACKGROUND (vision over a multi-page fax
   # PDF takes 20-40s — over the 26s request cap that killed the synchronous version).
   # Background functions get Netlify's 15-min allowance; no timeout override needed.

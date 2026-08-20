@@ -21,6 +21,9 @@
 import { isFirestoreEnabled, getDoc, setDoc } from './lib/firestore.mts';
 import { runManifestBoardDiff } from './lib/manifest-run.mts';
 import { ingestManifestEmails, LATEST_DOC } from './lib/manifest-email-ingest.mts';
+import { archiveManifest } from './lib/manifest-archive-store.mts';
+
+const TENANT = 'davis';
 import { buildMailSources, recordGmailRun, summarizeCycle } from './lib/mail-sources.mts';
 
 const CORS = {
@@ -49,6 +52,10 @@ export default async (req: Request): Promise<Response> => {
       fetchImpl: fetch,
       getDoc, setDoc,
       runDiff: (buf) => runManifestBoardDiff(buf),
+      // File the paper as well as reading it (Chad: "download the PDF and put them in our
+      // system… have a history of those"). Best-effort by contract — see archiveManifest.
+      archive: (buf, diff, email, fileName, at, mailbox) =>
+        archiveManifest({ tenant: TENANT, buf, diff, email, fileName, at, mailbox }),
     });
     await recordGmailRun(out);
 

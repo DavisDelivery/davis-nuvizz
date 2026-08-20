@@ -1,0 +1,118 @@
+// manifest-history.mts — the manifest archive, read back.
+//
+// Chad: "have a history of those, as well as any that we're missing on that manifest for that
+// particular day." This is the reading half: which nights we hold paperwork for, what each
+// night's report said, who was missing off the board, and the PDF itself.
+//
+//   GET ?days=30                 the last N nights, newest first (default 30, max 180)
+//   GET ?date=YYYY-MM-DD         one night in full, every revision and every missing row
+//   GET ?date=…&pdf=1[&rev=N]    the stored PDF, streamed back (latest revision by default)
+//   GET ?selftest=1              round-trip a tiny object through the blob store
+//
+// The self-test is not a nicety. This writes to an object store that no unit test can reach,
+// and an archive that silently stopped storing is discovered months later by the person who
+// needed the document — so "is it actually writing?" has to be one click, not an excavation.
+//
+// Firestore + blob reads only. ZERO NuVizz calls, writes nothing, sends nothing.
+//
+// NO SCHEDULE ON PURPOSE: a function carrying a cron is not reachable over plain HTTP in this
+// app, and this one must answer a browser.
+import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
+import { manifestDayPath, describeDay } from './lib/manifest-archive.mts';
+import { getManifestPdf, blobSelfTest, blobsAvailable } from './lib/manifest-blobs.mts';
+
+const TENANT = 'davis';
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const MAX_DAYS = 180;
+
+function addDays(date: string, n: number): string {
+  const d = new Date(`${date}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+export default async (req: Request): Promise<Response> => {
+  const J = (b: any, s = 200) => new Response(JSON.stringify(b, null, 1), {
+    status: s, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+  });
+  if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
+
+  try {
+    const url = new URL(req.url);
+
+    if (url.searchParams.get('selftest') === '1') {
+      const r = await blobSelfTest();
+      return J({ ok: r.ok, selftest: r, note: r.ok ? 'the blob store accepted and returned the same bytes' : 'PDFs are NOT being stored — day records will read pdfStored:false' });
+    }
+
+    const one = url.searchParams.get('date');
+
+    // ── the PDF itself ────────────────────────────────────────────────────────
+    if (one && DATE_RE.test(one) && url.searchParams.get('pdf') === '1') {
+      const doc = await getDoc(manifestDayPath(TENANT, one));
+      if (!doc?.latest) return J({ ok: false, error: `no manifest on file for ${one}` }, 404);
+      const wanted = Number(url.searchParams.get('rev') || doc.latest.revision);
+      const rev = (doc.revisions || []).find((r: any) => Number(r?.revision) === wanted) || doc.latest;
+      if (!rev?.blobKey || !rev.pdfStored) {
+        return J({ ok: false, error: `report ${wanted} for ${one} was recorded but its PDF was not stored`, pdfError: rev?.pdfError ?? null }, 404);
+      }
+      const buf = await getManifestPdf(rev.blobKey);
+      if (!buf) return J({ ok: false, error: 'the PDF is recorded as stored but the blob store did not return it', blobKey: rev.blobKey }, 404);
+      return new Response(buf, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/pdf',
+          // inline, not attachment: a dispatcher checking a disputed order wants to LOOK at
+          // it, not collect a downloads folder full of near-identical files.
+          'Content-Disposition': `inline; filename="uline-manifest-${one}-r${rev.revision}.pdf"`,
+          'Cache-Control': 'no-store',
+        },
+      });
+    }
+
+    // ── one night, in full ────────────────────────────────────────────────────
+    if (one && DATE_RE.test(one)) {
+      const doc = await getDoc(manifestDayPath(TENANT, one));
+      if (!doc) return J({ ok: true, date: one, found: false, summary: 'no manifest on file' });
+      return J({ ok: true, date: one, found: true, summary: describeDay(doc), ...doc });
+    }
+
+    // ── the window ────────────────────────────────────────────────────────────
+    const days = Math.min(MAX_DAYS, Math.max(1, Number(url.searchParams.get('days') || 30) || 30));
+    const today = etDayString();
+    const wanted = Array.from({ length: days }, (_, i) => addDays(today, -i));
+    const docs = await Promise.all(wanted.map((d) => getDoc(manifestDayPath(TENANT, d)).catch(() => null)));
+
+    const rows = docs.map((doc, i) => {
+      const date = wanted[i];
+      if (!doc?.latest) return null;
+      const l = doc.latest;
+      return {
+        date,
+        summary: describeDay(doc),
+        reports: Number(doc.revisionCount) || 1,
+        latestRevision: l.revision,
+        at: l.at,
+        orders: l.orders,
+        onBoard: l.onBoard,
+        missingCount: l.missingCount,
+        verified: !!l.verified,
+        pdfStored: !!l.pdfStored,
+        mailbox: l.mailbox ?? null,
+        fileName: l.fileName ?? null,
+      };
+    }).filter(Boolean);
+
+    return J({
+      ok: true, days, from: wanted[wanted.length - 1], to: today,
+      nightsOnFile: rows.length,
+      blobsAvailable: await blobsAvailable(),
+      // Say it plainly when nothing is filed yet rather than returning a bare empty list —
+      // "no history" and "the archive is broken" must not look the same.
+      note: rows.length ? null : 'no manifests archived in this window (the archive starts filing from its first nightly run after deploy)',
+      rows,
+    });
+  } catch (err: any) {
+    return J({ ok: false, error: String(err?.message || err).slice(0, 200) }, 500);
+  }
+};
