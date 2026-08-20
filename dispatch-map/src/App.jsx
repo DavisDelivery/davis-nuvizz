@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.68.1';
+const APP_VERSION = '0.68.4';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -148,10 +148,12 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['0.68.1', 'THE COMMENT EXPLAINING WHY A SECRET WAS NOT COMMITTED WAS ITSELF THE SECRET, AND IT FAILED THE DEPLOY. v0.68.0 moved the daily report\u2019s recipient into an env var rather than committing a personal address, and wrote a comment saying so \u2014 which spelled the local part out in lowercase to explain what was being avoided. That bare word is an env-var VALUE on this site, so Netlify\u2019s secret scan matched the explanation and the production build returned exit code 2. Every GitHub Actions check was green: unit, smoke, both load-scan jobs. Only the three Netlify checks went red, which is the shape of failure that is easy to wave through as \u201cjust the preview\u201d. TWO THINGS WORTH KEEPING. The scan reads COMMENTS, not only code \u2014 a secret does not become safe by being prose about a secret \u2014 and it is CASE-SENSITIVE, which is why five hundred changelog rows carrying the same word capitalised have never tripped it and one lowercase word in a code comment did. The comment now makes the point without spelling anything out, and records its own failure so the next person writing a careful note about an env var does not reproduce it. No behaviour changed; the report, the schedule, the grading and the screen are all exactly as merged. 2,133 tests green.'],
-  ['0.68.0', 'THE DAILY COMPLETION REPORT IS ON THE SCREEN NOW, WITH THE TWO CHARTS THAT ACTUALLY ANSWER \u201cHOW ARE WE DOING\u201d. Chad: \u201cI\u2019d like that report to be kept in the flag section of the dispatch map. And then also I\u2019d like to have charts and a lot of other things there to follow along over time and track how we perform.\u201d It lives inside Flag history behind a Flags / Completion control \u2014 same section, no third thing to add to two navigations. Today\u2019s board up top (completed, still open, unable to deliver, never attempted, out for delivery, closed by hand), yesterday\u2019s grading in one sentence, the unable-to-deliver list in its own red block because it is the only line that needs a phone call, then open-by-route. TWO CHARTS, AND THE SECOND ONE IS THE POINT: completion rate by day, and \u201copen at 6:30 \u2014 scanned later vs actually rolled\u201d, which splits the evening\u2019s open count into PODs nobody had scanned yet and freight that genuinely went to another day. Ungraded days draw HOLLOW rather than as zero, because \u201cnot graded yet\u201d and \u201cnothing rolled\u201d are the same shape and opposite meanings. COLOUR IS THE STATUS PALETTE AND IT WAS VALIDATED, NOT EYEBALLED: emerald/amber/rose against the light surface pass the lightness band, the chroma floor, normal-vision separation (16.6 worst adjacent) and 3:1 contrast; CVD separation lands at 7.9 on the amber\u2013emerald pair, inside the 6\u20138 floor that is legal ONLY with secondary encoding \u2014 so it ships with 2px gaps between stacked segments, direct labels, a legend and the full table underneath, and identity is never colour alone. TWO THINGS THE AUTOMATED GUARDS COULD NOT HAVE CAUGHT, both found by rendering the page and looking at it. The line chart needs preserveAspectRatio=\u201cnone\u201d to stretch across a fluid column, and that same non-uniform scale turns every SVG <circle> into an ELLIPSE \u2014 the worst-day marker rendered as a squashed lozenge. Markers are positioned HTML now and stay round at any width. And neither chart had a y-axis: a completion rate that never leaves 79\u201398% drawn on an unlabelled auto-zoom is a cliff that overstates every wobble, so the band auto-zooms AND says where it starts. What the guard DID catch, on its first run: both mobile chart-toggle buttons at 36px, under the 40px minimum \u2014 which is why the completion view is now a guard probe of its own rather than a screen measured only at rest. MOBILE AND DESKTOP ARE TWO VIEWS: the phone gets one chart at a time behind a segmented control (two 150px charts stacked on a 390px screen is a scroll nobody does) and route CARDS; the desktop gets both charts side by side, which is the comparison, and the full seven-column table. 30/30 phone combinations green. 2,133 tests green.'],
-  ['0.67.1', 'OUR OWN DOCK WAS WEARING AN INVENTED DEADLINE, AND IT OUTRANKED A REAL CUSTOMER\u2019S. Chad, on a red card reading \u201cNo driver \u2014 DUL 2 must make 11:00a \u2026 earliest close 11:00a at DAVIS DELIVERY\u201d: \u201cWhy are you worried about Davis Delivery\u2019s hours? Never gave you my hours and they don\u2019t matter anyways. Has nothing to do with the deliveries.\u201d He never typed them \u2014 the text scanner invented them from order text, which is exactly what the auto tier means. And an 11:00a receiving close at our own terminal is not a deadline in any sense: we are not going to refuse our own freight, and a truck arriving late at its own yard is not a customer outcome. IT WAS NOT MERELY NOISE. That phantom 11:00a was the EARLIEST close on DUL 2, so it set the entire card \u2014 it made the route read as unreachable from a noon start, took the loudest tier, and put its own name in the title \u2014 while METRO\u2019s real 2:00p, next to last on the same load, was superseded and never printed. Chad found METRO by flipping through paperwork and moved it to another route: \u201cSo we caught it, but it was not flagged.\u201d The two things he raised an hour apart were the same bug wearing two faces \u2014 a made-up deadline at our warehouse crowding out a real one at a customer. v0.65.2 had fixed the neighbouring case (a PICKUP does not inherit a dock\u2019s receiving hours) but that keys on stopType \u2018PU\u2019, and freight coming BACK to us is routinely typed as a delivery, so the rule has to be about the PLACE and not the movement. Two independent tests now, because either alone has a gap: the business name catches a record with no usable pin, and depot proximity (250 m) catches one whose name is spelled another way. A test pins the whole DUL 2 shape \u2014 twelve stops, our dock at the front wearing 11:00a, METRO next to last at 2:00p \u2014 and asserts our own name appears nowhere on the card while METRO names it. 2,133 tests green.'],
-  ['0.67.0', 'THE END-OF-DAY BOARD: WHAT WAS PLANNED, WHAT CLOSED, AND WHAT IS STILL OPEN AT 6:30 \u2014 EMAILED, KEPT, AND GRADED THE NEXT MORNING. Chad: \u201cproduce a report at the end of every day at six thirty on everything that was planned for that day per NuVizz \u2026 and then does not have a completed status at six thirty \u2026 I think it is ninety \u2026 and then also email that report to Chad at Davis delivery dot com every day as well.\u201d He is right about 90, and \u201ceverything that is not 90\u201d is still the wrong filter in two ways that would each make the report technically correct and operationally misleading on the days it matters. 91 IS ALSO A COMPLETION \u2014 90 is a system close, 91 is a dispatcher closing the stop by hand in the portal \u2014 so filtering on 90 alone reports every hand-closed stop as open, and the busiest, messiest days are exactly the days dispatch closes the most by hand: the report would look WORST on the days that actually went fine. And 80, \u201cunable to deliver\u201d, is TERMINAL in NuVizz, so a naive not-completed filter DROPS the single most actionable line on the page \u2014 a refused delivery somebody has to call about tomorrow morning \u2014 while 99 (cancelled) is also terminal and is not a failure at all, so counting it manufactures a problem out of an order nobody was going to run. So \u201cnot completed\u201d is FOUR buckets that go to four different people: never attempted (rolls to tomorrow), in flight (40/50 \u2014 call the driver: either it is delivered and unscanned or he is still at the dock), unable (the urgent line), and cancelled (counted, never blamed). THE RECONCILIATION IS WHAT MAKES THE TREND WORTH ANYTHING. A stop open at 6:30 and closed at 7:15 was never a service failure \u2014 it was a POD nobody had scanned yet. Without grading, the daily open count measures WHEN DRIVERS SCAN and reads as delivery performance, and a driver who scans at the truck and one who scans everything at the yard at 7pm produce identical freight and wildly different charts. The 6:30 snapshot is written ONCE and never rewritten (a snapshot that drifted through the evening would be grading itself), and the next evening re-reads that day and records which stops closed after the snapshot (POD lag \u2014 a coaching number) and which genuinely rolled (the carryover an operation lives on). A stop that VANISHED from the later board is never assumed closed: a missed stop rolls under the same PRO, and guessing would erase the carryover in the flattering direction. SIX-THIRTY MEANS SIX-THIRTY IN GEORGIA: Netlify cron is UTC and knows nothing about DST, so the job fires at 22:30 AND 23:30 UTC and the ET wall clock throws away whichever is not 6:30 today \u2014 otherwise it would silently start arriving at 5:30 on a Sunday in November. Recipient is env-owned (DAY_REPORT_TO); unset means built and stored, nobody mailed, said out loud in the run status. And because a scheduled function is not reachable over plain HTTP in this app, day-completion.mts is the schedule-free twin that runs the SAME builder and sends nothing \u2014 ?date=, ?full=1, ?email=1 to read the message before anyone else does, ?history=1 for the charts. AND THE NO-DRIVER CARD NOW NAMES EVERY DEADLINE RIDING ON THE LOAD. Chad on PRO 007165047 (METRO, 2:00p, next to last on driverless DUL 2): \u201cwe found it manually flipping through paperwork \u2026 So we caught it, but it was not flagged.\u201d A human caught it and the board did not, and the reason was right there: R6 supersedes the route\u2019s per-stop arrival rows \u2014 correct, one situation one card \u2014 and then named only the EARLIEST close, DAVIS DELIVERY at 11:00a. METRO\u2019s 2:00p was computed, superseded and deleted without ever being printed. Fine for the dispatcher, whose action is one action for the whole route; useless for whoever has to ring the customers, and that is how a detected risk became a manual paperwork catch. The card lists them now, worst close first, capped so a 12-stop load is not a paragraph, and the list rides on the row as data so nothing downstream has to parse prose. 2,130 tests green.'],
+  ['0.68.4', 'PUBLIC/VERSION.JSON WAS SPELLING OUT ITS OWN ESCAPE SEQUENCES, AND IT IS THE FILE THE DEPLOY WATCHDOG READS. Merging main brought a version collision \u2014 a parallel session had also claimed 0.67.0 \u2014 and renumbering this branch\u2019s four rows surfaced something else: the freshly emitted version.json read \u201cthe reportu2019s recipient\u201d. emit-version-json reads App.jsx as TEXT to pull the changelog row, and its string reader took the character after a backslash and moved on. That is correct for \\\' and \\\\ and wrong for \\uXXXX, so any row authored with a unicode escape emitted the literal letters. It was never about one row: the log is full of \\u2014 and \\u201c, and whether a headline came out readable depended entirely on whether whoever wrote it happened to paste the character or escape it. The reader decodes now \u2014 four hex digits or nothing, so a malformed \\uZZZZ is left alone instead of silently eating four characters of real text. Four tests pin it, including that one. This matters more than a typo because version.json is what check-deploy-fresh and the in-app update bar read: it is the file consulted precisely when somebody is asking \u201cdid my fix actually ship\u201d, which is the worst moment for it to be mangled. 2,137 tests green.'],
+  ['0.68.3', 'THE COMMENT EXPLAINING WHY A SECRET WAS NOT COMMITTED WAS ITSELF THE SECRET, AND IT FAILED THE DEPLOY. v0.68.0 moved the daily report\u2019s recipient into an env var rather than committing a personal address, and wrote a comment saying so \u2014 which spelled the local part out in lowercase to explain what was being avoided. That bare word is an env-var VALUE on this site, so Netlify\u2019s secret scan matched the explanation and the production build returned exit code 2. Every GitHub Actions check was green: unit, smoke, both load-scan jobs. Only the three Netlify checks went red, which is the shape of failure that is easy to wave through as \u201cjust the preview\u201d. TWO THINGS WORTH KEEPING. The scan reads COMMENTS, not only code \u2014 a secret does not become safe by being prose about a secret \u2014 and it is CASE-SENSITIVE, which is why five hundred changelog rows carrying the same word capitalised have never tripped it and one lowercase word in a code comment did. The comment now makes the point without spelling anything out, and records its own failure so the next person writing a careful note about an env var does not reproduce it. No behaviour changed; the report, the schedule, the grading and the screen are all exactly as merged. 2,133 tests green.'],
+  ['0.68.2', 'THE DAILY COMPLETION REPORT IS ON THE SCREEN NOW, WITH THE TWO CHARTS THAT ACTUALLY ANSWER \u201cHOW ARE WE DOING\u201d. Chad: \u201cI\u2019d like that report to be kept in the flag section of the dispatch map. And then also I\u2019d like to have charts and a lot of other things there to follow along over time and track how we perform.\u201d It lives inside Flag history behind a Flags / Completion control \u2014 same section, no third thing to add to two navigations. Today\u2019s board up top (completed, still open, unable to deliver, never attempted, out for delivery, closed by hand), yesterday\u2019s grading in one sentence, the unable-to-deliver list in its own red block because it is the only line that needs a phone call, then open-by-route. TWO CHARTS, AND THE SECOND ONE IS THE POINT: completion rate by day, and \u201copen at 6:30 \u2014 scanned later vs actually rolled\u201d, which splits the evening\u2019s open count into PODs nobody had scanned yet and freight that genuinely went to another day. Ungraded days draw HOLLOW rather than as zero, because \u201cnot graded yet\u201d and \u201cnothing rolled\u201d are the same shape and opposite meanings. COLOUR IS THE STATUS PALETTE AND IT WAS VALIDATED, NOT EYEBALLED: emerald/amber/rose against the light surface pass the lightness band, the chroma floor, normal-vision separation (16.6 worst adjacent) and 3:1 contrast; CVD separation lands at 7.9 on the amber\u2013emerald pair, inside the 6\u20138 floor that is legal ONLY with secondary encoding \u2014 so it ships with 2px gaps between stacked segments, direct labels, a legend and the full table underneath, and identity is never colour alone. TWO THINGS THE AUTOMATED GUARDS COULD NOT HAVE CAUGHT, both found by rendering the page and looking at it. The line chart needs preserveAspectRatio=\u201cnone\u201d to stretch across a fluid column, and that same non-uniform scale turns every SVG <circle> into an ELLIPSE \u2014 the worst-day marker rendered as a squashed lozenge. Markers are positioned HTML now and stay round at any width. And neither chart had a y-axis: a completion rate that never leaves 79\u201398% drawn on an unlabelled auto-zoom is a cliff that overstates every wobble, so the band auto-zooms AND says where it starts. What the guard DID catch, on its first run: both mobile chart-toggle buttons at 36px, under the 40px minimum \u2014 which is why the completion view is now a guard probe of its own rather than a screen measured only at rest. MOBILE AND DESKTOP ARE TWO VIEWS: the phone gets one chart at a time behind a segmented control (two 150px charts stacked on a 390px screen is a scroll nobody does) and route CARDS; the desktop gets both charts side by side, which is the comparison, and the full seven-column table. 30/30 phone combinations green. 2,133 tests green.'],
+  ['0.68.1', 'OUR OWN DOCK WAS WEARING AN INVENTED DEADLINE, AND IT OUTRANKED A REAL CUSTOMER\u2019S. Chad, on a red card reading \u201cNo driver \u2014 DUL 2 must make 11:00a \u2026 earliest close 11:00a at DAVIS DELIVERY\u201d: \u201cWhy are you worried about Davis Delivery\u2019s hours? Never gave you my hours and they don\u2019t matter anyways. Has nothing to do with the deliveries.\u201d He never typed them \u2014 the text scanner invented them from order text, which is exactly what the auto tier means. And an 11:00a receiving close at our own terminal is not a deadline in any sense: we are not going to refuse our own freight, and a truck arriving late at its own yard is not a customer outcome. IT WAS NOT MERELY NOISE. That phantom 11:00a was the EARLIEST close on DUL 2, so it set the entire card \u2014 it made the route read as unreachable from a noon start, took the loudest tier, and put its own name in the title \u2014 while METRO\u2019s real 2:00p, next to last on the same load, was superseded and never printed. Chad found METRO by flipping through paperwork and moved it to another route: \u201cSo we caught it, but it was not flagged.\u201d The two things he raised an hour apart were the same bug wearing two faces \u2014 a made-up deadline at our warehouse crowding out a real one at a customer. v0.65.2 had fixed the neighbouring case (a PICKUP does not inherit a dock\u2019s receiving hours) but that keys on stopType \u2018PU\u2019, and freight coming BACK to us is routinely typed as a delivery, so the rule has to be about the PLACE and not the movement. Two independent tests now, because either alone has a gap: the business name catches a record with no usable pin, and depot proximity (250 m) catches one whose name is spelled another way. A test pins the whole DUL 2 shape \u2014 twelve stops, our dock at the front wearing 11:00a, METRO next to last at 2:00p \u2014 and asserts our own name appears nowhere on the card while METRO names it. 2,133 tests green.'],
+  ['0.68.0', 'THE END-OF-DAY BOARD: WHAT WAS PLANNED, WHAT CLOSED, AND WHAT IS STILL OPEN AT 6:30 \u2014 EMAILED, KEPT, AND GRADED THE NEXT MORNING. Chad: \u201cproduce a report at the end of every day at six thirty on everything that was planned for that day per NuVizz \u2026 and then does not have a completed status at six thirty \u2026 I think it is ninety \u2026 and then also email that report to Chad at Davis delivery dot com every day as well.\u201d He is right about 90, and \u201ceverything that is not 90\u201d is still the wrong filter in two ways that would each make the report technically correct and operationally misleading on the days it matters. 91 IS ALSO A COMPLETION \u2014 90 is a system close, 91 is a dispatcher closing the stop by hand in the portal \u2014 so filtering on 90 alone reports every hand-closed stop as open, and the busiest, messiest days are exactly the days dispatch closes the most by hand: the report would look WORST on the days that actually went fine. And 80, \u201cunable to deliver\u201d, is TERMINAL in NuVizz, so a naive not-completed filter DROPS the single most actionable line on the page \u2014 a refused delivery somebody has to call about tomorrow morning \u2014 while 99 (cancelled) is also terminal and is not a failure at all, so counting it manufactures a problem out of an order nobody was going to run. So \u201cnot completed\u201d is FOUR buckets that go to four different people: never attempted (rolls to tomorrow), in flight (40/50 \u2014 call the driver: either it is delivered and unscanned or he is still at the dock), unable (the urgent line), and cancelled (counted, never blamed). THE RECONCILIATION IS WHAT MAKES THE TREND WORTH ANYTHING. A stop open at 6:30 and closed at 7:15 was never a service failure \u2014 it was a POD nobody had scanned yet. Without grading, the daily open count measures WHEN DRIVERS SCAN and reads as delivery performance, and a driver who scans at the truck and one who scans everything at the yard at 7pm produce identical freight and wildly different charts. The 6:30 snapshot is written ONCE and never rewritten (a snapshot that drifted through the evening would be grading itself), and the next evening re-reads that day and records which stops closed after the snapshot (POD lag \u2014 a coaching number) and which genuinely rolled (the carryover an operation lives on). A stop that VANISHED from the later board is never assumed closed: a missed stop rolls under the same PRO, and guessing would erase the carryover in the flattering direction. SIX-THIRTY MEANS SIX-THIRTY IN GEORGIA: Netlify cron is UTC and knows nothing about DST, so the job fires at 22:30 AND 23:30 UTC and the ET wall clock throws away whichever is not 6:30 today \u2014 otherwise it would silently start arriving at 5:30 on a Sunday in November. Recipient is env-owned (DAY_REPORT_TO); unset means built and stored, nobody mailed, said out loud in the run status. And because a scheduled function is not reachable over plain HTTP in this app, day-completion.mts is the schedule-free twin that runs the SAME builder and sends nothing \u2014 ?date=, ?full=1, ?email=1 to read the message before anyone else does, ?history=1 for the charts. AND THE NO-DRIVER CARD NOW NAMES EVERY DEADLINE RIDING ON THE LOAD. Chad on PRO 007165047 (METRO, 2:00p, next to last on driverless DUL 2): \u201cwe found it manually flipping through paperwork \u2026 So we caught it, but it was not flagged.\u201d A human caught it and the board did not, and the reason was right there: R6 supersedes the route\u2019s per-stop arrival rows \u2014 correct, one situation one card \u2014 and then named only the EARLIEST close, DAVIS DELIVERY at 11:00a. METRO\u2019s 2:00p was computed, superseded and deleted without ever being printed. Fine for the dispatcher, whose action is one action for the whole route; useless for whoever has to ring the customers, and that is how a detected risk became a manual paperwork catch. The card lists them now, worst close first, capped so a 12-stop load is not a paragraph, and the list rides on the row as data so nothing downstream has to parse prose. 2,130 tests green.'],
+  ['0.67.0', 'ONE COPY OF EVERY NIGHT’S MANIFEST IS KEPT NOW — WITH WHO WAS MISSING OFF IT, AND THE FLAG CHIP WEARS BOTH ITS COLOURS. Chad: “we need to download the PDF and put them in our system and have a history of those, as well as any that we’re missing on that manifest for that particular day… their last one is sent at twelve AM, which is technically the delivery day — we need to make sure that day applies to the night before and not to that actual day.” WHAT WAS HAPPENING: the ingest wrote ONE document and every new report replaced it. Four or five arrive a night, so nothing anywhere could say what a night’s manifest had contained — and the PDF, the document you hold up to Uline when an order is disputed, was read once and thrown away. ONE COPY, NOT FOUR. Chad, on the first cut: “the manifest is only added to, nothing is ever removed from it, so overwriting it every time was correct. I just want to keep an actual copy of it, but I don’t want 4 copies a night kept.” That invariant IS the design: each report is a SUPERSET of the one before, so the last is the complete one and the earlier four hold nothing it does not. The night’s PDF lives at ONE key and each report overwrites those bytes — one document a night, not five. What is kept beyond it is metadata only: how many reports came and when each landed, which is the one thing the overwrite would otherwise destroy — whether the midnight report actually reached us. AND THE INVARIANT IS A CHECK. A report arriving SHORTER than the one before it means rows went missing from a document that is only ever added to — a truncated download or a mis-parse — so the night records it and the screen says so, rather than quietly replacing a good manifest with a worse one. The night stays flagged after a good report lands on top, because the reason to look does not go away. THE MIDNIGHT PROBLEM SOLVES ITSELF ONCE YOU STOP ASKING THE CLOCK. The report prints its own ship date on every row and all four or five of a night carry the SAME one, including the 12:05a one — so filing by what the paper says removes the problem instead of working around it. Chad confirmed the ship date is the right file. The clock is consulted only when no row carries a readable date, and then it is night-aware: an arrival before 5:00a belongs to the evening that just ended. The day comes from the MODE of the rows’ dates, not row zero the way the old diff did it — one mis-read line must not misfile a night’s paperwork. PDFs GO TO NETLIFY BLOBS, not Firestore, whose 1 MB cap is why the drop screen already chunks a PDF into base64 parts. That store is unreachable from any test, so the archive REPORTS rather than assumes: a night carries pdfStored and the failure text, never a key pointing at bytes that were never written, and manifest-history?selftest=1 round-trips a small object so “is it actually filing?” is one click. ON THE SCREEN: a Manifest history card at the foot of the Manifest check tab — one row per night newest first, the missing count in red, the PDF one tap away, and underneath it who was not on the board plus when each report arrived. AND THE FLAG CHIP IS HALF RED, HALF YELLOW. Chad, on “⚑ 2 · 1” sitting on one solid red box: “the flag box at top should be half red half yellow to represent the 2 flag colors.” The colour IS the information — a red box reading 2 · 1 claims three things need attention now, when two do and the third is a stop worth a look nobody has to drop anything for. A mixed board now wears both: the reds on their red half with the flag, the advisories on an amber half beside them, severity still setting the border. A single-tier board keeps the one solid chip it always had, because a second half for an empty tier is furniture. 24 new tests, 2,135 green.'],
   ['0.66.4', 'THE REFUSAL COUNT NOW SAYS WHO CAN FIX IT, BECAUSE THE FIRST REAL RUN WOULD HAVE SENT SOMEONE TO REWRITE A PARSER THAT IS FINE. v0.66.3 asked the board how many customers carry receiving hours the parser refuses. The answer on 2026-08-20: 804 customers, SEVEN refusals \u2014 and every single one was an hours record saved with a BLANK CLOSE ({\u201copen\u201d:\u201c\u201d,\u201cclose\u201d:\u201c\u201d} and {\u201copen\u201d:\u201c08:00\u201d,\u201cclose\u201d:\u201c\u201d}). Not one line of free text. Nothing for a parser to learn. As one number labelled \u201crefused\u201d that reads as \u201cseven customers the parser is failing\u201d, which is exactly the wrong conclusion and exactly the kind that gets acted on. IT IS THREE NUMBERS NOW, one per owner: refusedText is a string with no readable clock and is the ONLY bucket parser work can move; refusedWindow is an overnight or 24-hour dock refused on purpose, which is policy and not a defect; incompleteRecord is an hours record with no close at all, which is data entry \u2014 or a stop card that should not have accepted a window with the one field that matters left empty. Today those read 0 / 0 / 7. THE REAL COVERAGE PICTURE IS NOT THE PARSER AND IS NOT CLOSE: of 804 customers on the board, 659 (82%) have NO customer note at all and another 35 have a note whose hours were never recorded \u2014 so 86% carry no deadline the flag engine could ever judge them against, and only 103 have working hours, of which just FIVE were typed by a dispatcher. The receiving-hours flag can protect about an eighth of the board, and the lever is getting hours on file, not code. 2,112 tests green.'],
   ['0.66.3', 'THE BOARD CAN NOW SAY WHY IT HAS THE DEADLINE COVERAGE IT HAS \u2014 AND WHETHER THE PARSER IS THE THING TO FIX. Chad, after METRO: \u201cmaybe we need the parser to learn how the note for hours was constructed.\u201d Reading one customer\u2019s note and generalising is exactly how you end up rewriting a parser that was never the problem \u2014 METRO\u2019s note turned out to be a clean {open 08:00, close 14:00} that parses correctly, so nothing about the 2:00p was ever missing. The generalisable question is the one worth answering: across the WHOLE board, how many customers carry hours the parser REFUSES, and what does the refused text actually look like? eta-flag-check now reports hoursCoverage \u2014 one row per customer, never per board row, so a three-order stop is not counted as three gaps \u2014 split by WHAT WOULD FIX EACH GAP, because the fixes land on different people. noNote and noHoursAnyDay mean nobody has ever recorded this customer\u2019s hours; blankToday means hours exist for other weekdays but not this one, which is the bucket most likely to be an oversight rather than a deliberate \u201cthey are shut\u201d; refused means text IS on file and the parser will not guess at it \u2014 and that last bucket is the ONLY one parser work can move. It ships with deduped samples of the refused text, capped, hours text only and never a customer name, so the question stops being \u201cdoes the parser have a problem\u201d and becomes \u201cshould it learn THESE shapes\u201d, which is answerable by looking. A count with no samples would have been the same guess in a nicer wrapper. 2,111 tests green.'],
   ['0.66.2', 'A FLAG NO LONGER GETS QUIETER BECAUSE THE MODEL GOT LESS SURE. Chad, on RAICOM LLC at stop 10 of KOSTNER — the route card still predicting 12:33p against a 12:00p close, the panel now reading “0 red · 5 advisory”: “you took the Raicom flag away but eta on route still shows 12:30, that doesn’t work for me. The flag should remain unless our updated eta is showing we will get there in time.” IT HAD NOT BEEN TAKEN AWAY — IT HAD BEEN DEMOTED, and that is worse, because a demotion is invisible. Red at 45 minutes late, amber at 33, because severity is the overrun measured against the model’s OWN error band and the band six hops down a chain is 40 minutes. Nothing about the stop improved. The truck caught up slightly, the model’s confidence fell below its own bar, and the board got calmer while the freight sat in exactly the same trouble — the screen and the urgency disagreeing, which is the v0.56.3 failure wearing a different hat. SEVERITY NOW RATCHETS: a receiving-hours row that has reached red today stays at least red, confidence may still promote it, and the ONLY thing that clears it is the estimate coming back inside the window — at which point there is no row at all, which is precisely the “we will get there in time” Chad named. The row says so in words when it is being held, so a held red never looks like an ordinary one. THE FLOOR CANNOT INVENT ANYTHING. It is the worstTier the flag history already records for that board day, applied only to a row this sweep just produced, and the walk produces a row only while arrival is predicted past the close — so a delivered stop, a resequenced stop and a stop with no hours on file are all untouched. Tested against every one of those. THE NIGHT NOW LEAVES A RECORD TOO. Only the day sweep wrote flag history and it does not start until 7:00a, so a stop that TEXTED at 1:00a had no floor to stand on and the first morning sweep judged it from scratch — a row that had already woken somebody could turn up as an advisory at breakfast. The evening sweep now folds its rows into the same document, with emailedStops deliberately empty because that path texts and never emails. Screen, alert sweep, evening sweep and the dry twin all read the same floor, so none of them can disagree about a row by one tier. AND THE UPDATE BAR SAYS WHAT CHANGED. Chad: “can we start including a simple set of details of what changed in the new version.” It could not — it compares bundle fingerprints and is content-blind by design, and the changelog lives inside the bundle, so a stale tab holds only its own history. The build now emits version.json beside index.html carrying the deployed version and the first sentence of its changelog row, DERIVED rather than hand-written because a second field to maintain is a field that drifts. The bar shows “v0.66.2 · THE HEADLINE”, wraps to its own line on a phone, and shows the plain bar unchanged whenever the served version is not genuinely newer — a rollback or a stale edge must never caption itself as news. 23 new tests.'],
@@ -3152,37 +3154,61 @@ function BoardFlagsChip({ flags, open, onToggle }) {
   // looking for eta and hours of operation conflicts isn't working." The quiet state is a
   // gray outline flag that opens the same panel, where the footer says what was actually
   // checked and what could not be judged.
-  // BOTH COUNTS, ALWAYS — see flagChipParts. The chip used to publish the red count and
-  // swallow the advisories behind it, so the card beside an open panel reading
-  // "1 red · 4 advisory" said only "1", and one red with twelve advisories looked exactly
-  // like one red on its own. Chad: "put the advisory flag numbers on the top card as well."
+  // BOTH COUNTS, AND EACH IN ITS OWN COLOUR — see flagChipParts.
+  //
+  // v0.66.1 got both numbers onto the chip; Chad, looking at "⚑ 2 · 1" sitting on one solid
+  // red box: "the flag box at top should be half red half yellow to represent the 2 flag
+  // colors." He is right, and it is not decoration — the COLOUR is the information. A red box
+  // reading "2 · 1" says three things need attention now; two of them do, and the third is a
+  // stop worth a look that nobody has to drop anything for. The tiers are the whole point of
+  // having two numbers, and painting them the same colour throws that away again.
+  //
+  // So a mixed board wears both: the reds on their own red half with the flag, the advisories
+  // on an amber half beside them. A board with only one tier keeps the single solid chip it
+  // has always had — the split exists to tell two tiers apart, and inventing a second half
+  // for a tier that is empty would be furniture.
   const { red: redN, amber: amberN, quiet, tone, showSep } = flagChipParts(flags);
+  const title = quiet
+    ? 'No flags right now — click to see what was checked (and what could not be judged)'
+    : `${redN} need attention · ${amberN} advisory — click for the list`;
+  const label = quiet ? 'Board flags — none right now' : `Board flags — ${redN} red, ${amberN} advisory`;
+
+  // THE SPLIT CHIP. items-stretch + overflow-hidden so each half runs the full height and the
+  // rounded corners clip it, rather than two pills sitting in a box.
+  if (showSep) {
+    return (
+      <button
+        onClick={onToggle}
+        aria-expanded={open}
+        title={title}
+        aria-label={label}
+        className="tap-target inline-flex items-stretch overflow-hidden rounded border border-red-300 font-semibold flex-shrink-0 hover:opacity-90"
+      >
+        <span className="flex items-center gap-1 px-1.5 py-0.5 bg-red-50 text-red-700 tabular-nums">
+          <Flag size={12} />{redN}
+        </span>
+        <span className="flex items-center px-1.5 py-0.5 bg-amber-50 text-amber-700 border-l border-amber-300 tabular-nums">
+          {amberN}
+        </span>
+      </button>
+    );
+  }
+
   return (
     <button
       onClick={onToggle}
       aria-expanded={open}
+      title={title}
+      aria-label={label}
       className={
-        'tap-target inline-flex items-center justify-center gap-1 px-1.5 py-0.5 rounded font-semibold flex-shrink-0 border ' +
-        (tone === 'red' ? 'bg-red-50 text-red-700 border-red-300 hover:bg-red-100'
+        'tap-target inline-flex items-center justify-center gap-1 px-1.5 py-0.5 rounded font-semibold flex-shrink-0 border '
+        + (tone === 'red' ? 'bg-red-50 text-red-700 border-red-300 hover:bg-red-100'
           : tone === 'amber' ? 'bg-amber-50 text-amber-700 border-amber-300 hover:bg-amber-100'
             : 'bg-white text-slate-400 border-slate-200 hover:bg-slate-50 hover:text-slate-600')
       }
-      title={quiet
-        ? 'No flags right now — click to see what was checked (and what could not be judged)'
-        : `${redN} need attention · ${amberN} advisory — click for the list`}
-      aria-label={quiet ? 'Board flags — none right now' : `Board flags — ${redN} red, ${amberN} advisory`}
     >
       <Flag size={12} />
-      {quiet ? null : (
-        <span className="tabular-nums">
-          {redN > 0 ? redN : null}
-          {showSep ? <span className="font-normal opacity-50"> · </span> : null}
-          {/* The advisory count keeps its OWN colour on a red chip. Painting it red would
-              claim four more things need attention now; painting it amber says what it is —
-              four worth a look, which is the tier a router can still do something about. */}
-          {amberN > 0 ? <span className={tone === 'red' ? 'text-amber-700' : undefined}>{amberN}</span> : null}
-        </span>
-      )}
+      {quiet ? null : <span className="tabular-nums">{redN > 0 ? redN : amberN}</span>}
     </button>
   );
 }
@@ -24545,6 +24571,157 @@ function CustomerCommsScreen() {
   return isPhone ? <CommsPhone {...console_} /> : <CommsDesktop {...console_} />;
 }
 
+
+// ── THE MANIFEST ARCHIVE, ON THE SCREEN ──────────────────────────────────────
+//
+// Chad: "we need to download the PDF and put them in our system and have a history of those,
+// as well as any that we're missing on that manifest for that particular day" — then, on the
+// first cut of it: "the manifest is only added to, nothing is ever removed from it, so
+// overwriting it every time was correct. I just want to keep an actual copy of it, but I
+// don't want 4 copies a night kept."
+//
+// So one row per night, one PDF per night, and the missing list from the report that stood.
+// The arrivals line exists because the overwrite destroys the ability to ask how many reports
+// came and when the last one landed — which is the exact question behind the midnight one.
+//
+// ONE FLOW COLUMN, no measured offsets — the rows wrap and what is below MOVES, which is the
+// rule this repo has had to relearn four times on the Map.
+function ManifestHistoryCard() {
+  const [state, setState] = useState({ loading: true, err: null, data: null });
+  const [openDate, setOpenDate] = useState(null);
+  const [day, setDay] = useState({ date: null, loading: false, doc: null, err: null });
+
+  const load = useCallback(async () => {
+    setState((s) => ({ ...s, loading: true, err: null }));
+    try {
+      const r = await fetch('/.netlify/functions/manifest-history?days=30');
+      const d = await r.json();
+      if (!d?.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+      setState({ loading: false, err: null, data: d });
+    } catch (e) { setState({ loading: false, err: String(e?.message || e), data: null }); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const openNight = useCallback(async (date) => {
+    if (openDate === date) { setOpenDate(null); return; }
+    setOpenDate(date);
+    setDay({ date, loading: true, doc: null, err: null });
+    try {
+      const r = await fetch(`/.netlify/functions/manifest-history?date=${encodeURIComponent(date)}`);
+      const d = await r.json();
+      if (!d?.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+      setDay({ date, loading: false, doc: d, err: null });
+    } catch (e) { setDay({ date, loading: false, doc: null, err: String(e?.message || e) }); }
+  }, [openDate]);
+
+  const rows = state.data?.rows || [];
+  const pdfHref = (date) => `/.netlify/functions/manifest-history?date=${encodeURIComponent(date)}&pdf=1`;
+
+  return (
+    <div className="bg-white border rounded-lg">
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-b">
+        <span className="font-semibold text-sm text-slate-800">Manifest history</span>
+        {state.data ? <span className="text-[11px] text-slate-500">{state.data.nightsOnFile} night{state.data.nightsOnFile === 1 ? '' : 's'} on file · last 30 days</span> : null}
+        <button
+          onClick={load}
+          className="ml-auto tap-target px-2 py-1 text-xs font-semibold text-slate-600 border rounded hover:bg-slate-50"
+        >
+          Refresh
+        </button>
+      </div>
+
+      {/* The archive writes to an object store no test can reach, so say plainly when it is
+          not available rather than letting the list simply stay empty — "nothing filed yet"
+          and "the cabinet is broken" must not look the same. */}
+      {state.data && state.data.blobsAvailable === false ? (
+        <div className="px-3 py-2 text-[11px] text-red-700 bg-red-50 border-b">
+          PDF storage is not available on this deploy — nightly runs are still recording what each
+          manifest said, but the documents themselves are not being kept.
+        </div>
+      ) : null}
+
+      {state.loading ? <div className="px-3 py-3 text-xs text-slate-500">Loading…</div> : null}
+      {state.err ? <div className="px-3 py-3 text-xs text-red-600">{state.err}</div> : null}
+      {!state.loading && !state.err && !rows.length ? (
+        <div className="px-3 py-3 text-xs text-slate-500">{state.data?.note || 'No manifests on file yet.'}</div>
+      ) : null}
+
+      {rows.map((r) => (
+        <div key={r.date} className="border-b last:border-b-0">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-2 hover:bg-slate-50">
+            <button
+              onClick={() => openNight(r.date)}
+              className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-left min-w-0"
+              aria-expanded={openDate === r.date}
+            >
+              <span className="font-semibold text-xs text-slate-800 tabular-nums">{r.date}</span>
+              {r.missingCount > 0
+                ? <span className="text-[11px] font-semibold text-red-700">{r.missingCount} not on the board</span>
+                : <span className="text-[11px] text-emerald-700">all on the board</span>}
+              <span className="text-[11px] text-slate-500">{r.orders} orders · {r.reports} report{r.reports === 1 ? '' : 's'}</span>
+              {/* The manifest is only ever added to, so a report that came back SHORTER than
+                  the one before it is a truncated download or a mis-parse, not a change. */}
+              {r.sawOrderCountFall ? <span className="text-[11px] font-semibold text-amber-700">a report came back short</span> : null}
+            </button>
+            {r.pdfStored
+              ? <a href={pdfHref(r.date)} target="_blank" rel="noreferrer" className="tap-target ml-auto px-2 py-1 text-[11px] font-semibold text-blue-700 border border-blue-200 rounded hover:bg-blue-50">PDF</a>
+              : <span className="ml-auto text-[11px] text-amber-700">PDF not stored</span>}
+          </div>
+
+          {openDate === r.date ? (
+            <div className="px-3 pb-2">
+              {day.loading ? <div className="text-[11px] text-slate-500 py-1">Loading…</div> : null}
+              {day.err ? <div className="text-[11px] text-red-600 py-1">{day.err}</div> : null}
+
+              {/* WHEN THEY CAME. Metadata only — the overwrite is what Chad asked for, and this
+                  is the one thing it would otherwise take with it: whether the last report of
+                  the night actually reached us. */}
+              {day.doc?.arrivals?.length ? (
+                <div className="border-t pt-1">
+                  <div className="text-[11px] font-semibold text-slate-600 mb-0.5">Reports that night</div>
+                  {day.doc.arrivals.map((a) => (
+                    <div key={a.reportNo} className="flex flex-wrap gap-x-2 text-[11px] text-slate-500 py-0.5">
+                      <span className="font-semibold tabular-nums">#{a.reportNo}</span>
+                      <span className="tabular-nums">{String(a.at || '').slice(0, 16).replace('T', ' ')}</span>
+                      <span>{a.orders} orders</span>
+                      <span className={a.missingCount ? 'font-semibold text-red-700' : 'text-slate-400'}>{a.missingCount} missing</span>
+                      {a.orderCountFell ? <span className="font-semibold text-amber-700">shorter than the last</span> : null}
+                    </div>
+                  ))}
+                  {day.doc.latest?.seen > 1 ? (
+                    <div className="text-[11px] text-slate-400">the final report was sent {day.doc.latest.seen}× (identical copies)</div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {/* WHO WAS MISSING — the half Chad asked for by name. The manifest is
+                  append-only, so the report that stood is the complete one and this is the
+                  authoritative list for the night. */}
+              {day.doc?.latest?.missing?.length ? (
+                <div className="mt-1 border-t pt-1">
+                  <div className="text-[11px] font-semibold text-slate-600 mb-0.5">Not on the board</div>
+                  <div className="max-h-48 overflow-auto">
+                    {day.doc.latest.missing.slice(0, 60).map((m, i) => (
+                      <div key={`${m.pro}-${i}`} className="flex flex-wrap gap-x-2 text-[11px] text-slate-600 py-0.5">
+                        <span className="font-semibold tabular-nums">{m.pro}</span>
+                        <span className="truncate">{m.custName || ''}</span>
+                        <span className="text-slate-400">{[m.city, m.zip].filter(Boolean).join(' ')}</span>
+                      </div>
+                    ))}
+                  </div>
+                  {day.doc.latest.missing.length > 60 ? (
+                    <div className="text-[11px] text-slate-400">…and {day.doc.latest.missing.length - 60} more — open the PDF for the full report.</div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ManifestCheckScreen() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
@@ -24759,6 +24936,8 @@ function ManifestCheckScreen() {
             </div>
           </>
         )}
+
+        <ManifestHistoryCard />
       </div>
     </div>
   );

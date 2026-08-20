@@ -26,6 +26,9 @@
 import { isFirestoreEnabled, getDoc, setDoc } from './lib/firestore.mts';
 import { runManifestBoardDiff } from './lib/manifest-run.mts';
 import { ingestManifestEmails } from './lib/manifest-email-ingest.mts';
+import { archiveManifest } from './lib/manifest-archive-store.mts';
+
+const TENANT = 'davis';
 import { buildMailSources, recordGmailRun } from './lib/mail-sources.mts';
 
 export default async (): Promise<Response> => {
@@ -41,6 +44,11 @@ export default async (): Promise<Response> => {
     fetchImpl: fetch,
     getDoc, setDoc,
     runDiff: (buf) => runManifestBoardDiff(buf),
+    // The SCHEDULED path is the one that actually files most nights — the click-driven
+    // endpoint is the exception. Same archiver, so a manifest caught by either route lands
+    // in the same day record with the same revision numbering.
+    archive: (buf, diff, email, fileName, at, mailbox) =>
+      archiveManifest({ tenant: TENANT, buf, diff, email, fileName, at, mailbox }),
   });
   // Let the Manifest check tab see that this ran, and whether a tab-connected
   // Gmail grant has lapsed — otherwise a dead token looks exactly like a quiet

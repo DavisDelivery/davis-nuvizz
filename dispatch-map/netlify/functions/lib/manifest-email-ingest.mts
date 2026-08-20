@@ -57,6 +57,12 @@ export interface IngestDeps {
   now?: () => string;      // ISO stamp, injectable for tests
   sources?: MailSource[];  // when omitted, built from apiKey below (back-compat)
   apiKey?: string | null;  // Resend key — the original single-mailbox entry point
+  /** FILE THE PAPER. Called once per ACCEPTED report with the bytes and the diff, so the
+   *  nightly run leaves a per-day record and a stored PDF behind it (Chad: "download the PDF
+   *  and put them in our system… have a history of those"). Optional and best-effort by
+   *  contract: the diff and the marker are the job, and an archive failure must never cost a
+   *  night's check. Returns whatever it wants recorded on the outcome line. */
+  archive?: (buf: Buffer, diff: any, email: any, fileName: string | null, at: string, mailbox: string) => Promise<any>;
 }
 
 const isPdfAttachment = (a: any) =>
@@ -189,8 +195,16 @@ async function ingestOneSource(src: MailSource, deps: IngestDeps, outcomes: any[
         if (diff?.ok) {
           const run = toStoredEmailRun(diff, email, att.filename || null, now(), src.name);
           await setDoc(LATEST_DOC, run);
-          await setDoc(marker, { outcome: 'checked', at: run.at, suspects: run.suspectsTotal, source: src.name, from: run.from, subject: run.subject });
-          outcomes.push({ source: src.name, id, outcome: 'checked', suspects: run.suspectsTotal });
+          // File the paper BEFORE the marker. The marker is what stops this email ever being
+          // read again, so writing it first would make an archive failure permanent — the one
+          // ordering mistake here that cannot be retried out of.
+          let filed: any = null;
+          if (deps.archive) {
+            try { filed = await deps.archive(buf, diff, email, att.filename || null, run.at, src.name); }
+            catch (e: any) { filed = { ok: false, error: String(e?.message || e).slice(0, 200) }; }
+          }
+          await setDoc(marker, { outcome: 'checked', at: run.at, suspects: run.suspectsTotal, source: src.name, from: run.from, subject: run.subject, ...(filed ? { archived: filed } : {}) });
+          outcomes.push({ source: src.name, id, outcome: 'checked', suspects: run.suspectsTotal, ...(filed ? { archived: filed } : {}) });
           stored = true;
           break;
         }

@@ -144,3 +144,72 @@ test('the stored shape matches what the drop screen stores (flag-compatible)', (
   }
   assert.equal(run.source, 'email');
 });
+
+// ── FILING THE PAPER (Chad: "download the PDF and put them in our system") ────
+
+test('an accepted report is handed to the archive, with the bytes and the diff', async () => {
+  const filed = [];
+  const { deps } = world({
+    emails: [reportEmail('e-arch')],
+    files: { 'https://dl/e-arch': 'REPORT' },
+    diffs: { REPORT: GOOD_DIFF },
+  });
+  deps.archive = async (buf, diff, email, fileName, at, mailbox) => {
+    filed.push({ bytes: buf.toString(), orders: diff.manifest.orders, id: email.id, fileName, at, mailbox });
+    return { ok: true, date: '2026-08-11', revision: 1, pdfStored: true };
+  };
+  const out = await ingestManifestEmails(deps);
+  assert.equal(filed.length, 1, 'exactly one report, filed once');
+  assert.equal(filed[0].bytes, 'REPORT', 'the archive gets the actual PDF, not a re-fetch');
+  assert.equal(filed[0].orders, 3);
+  assert.equal(filed[0].fileName, 'freight.pdf');
+  assert.equal(filed[0].mailbox, 'resend');
+  // The outcome carries what the archive REPORTED, so "did tonight's paperwork land" is
+  // answerable from the run summary instead of by going looking for the document.
+  assert.deepEqual(out.outcomes[0].archived, { ok: true, date: '2026-08-11', revision: 1, pdfStored: true });
+});
+
+test('AN ARCHIVE FAILURE MUST NOT COST THE NIGHT’S CHECK', async () => {
+  const { deps, store } = world({
+    emails: [reportEmail('e-boom')],
+    files: { 'https://dl/e-boom': 'REPORT' },
+    diffs: { REPORT: GOOD_DIFF },
+  });
+  deps.archive = async () => { throw new Error('blob store on fire'); };
+  const out = await ingestManifestEmails(deps);
+  // The diff still reached the document every browser reads…
+  assert.ok(store.get(LATEST_DOC), 'the check still stored its result');
+  assert.equal(out.outcomes[0].outcome, 'checked');
+  // …and the failure is REPORTED rather than swallowed.
+  assert.equal(out.outcomes[0].archived.ok, false);
+  assert.match(out.outcomes[0].archived.error, /on fire/);
+});
+
+test('a report is only ever filed once — the marker is written AFTER the archive', async () => {
+  // Ordering matters and is easy to get backwards: the marker is what stops an email ever
+  // being read again, so writing it first would make an archive failure permanent.
+  const seen = [];
+  const { deps } = world({
+    emails: [reportEmail('e-once')],
+    files: { 'https://dl/e-once': 'REPORT' },
+    diffs: { REPORT: GOOD_DIFF },
+  });
+  const realSet = deps.setDoc;
+  deps.setDoc = async (p, d) => { seen.push(p); return realSet(p, d); };
+  deps.archive = async () => { seen.push('ARCHIVE'); return { ok: true }; };
+  await ingestManifestEmails(deps);
+  const markerAt = seen.findIndex((p) => p.startsWith('nuvizz_ops/manifest_email__'));
+  assert.ok(seen.indexOf('ARCHIVE') < markerAt, 'archive runs before the marker is written');
+});
+
+test('the ingest works exactly as before when no archive is wired', async () => {
+  const { deps, store } = world({
+    emails: [reportEmail('e-plain')],
+    files: { 'https://dl/e-plain': 'REPORT' },
+    diffs: { REPORT: GOOD_DIFF },
+  });
+  const out = await ingestManifestEmails(deps);   // no deps.archive at all
+  assert.equal(out.outcomes[0].outcome, 'checked');
+  assert.equal(out.outcomes[0].archived, undefined, 'no archive, no archive line');
+  assert.ok(store.get(LATEST_DOC));
+});
