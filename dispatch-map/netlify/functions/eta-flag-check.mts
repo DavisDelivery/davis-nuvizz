@@ -21,7 +21,7 @@
 // Read-only. Firestore only. ZERO NuVizz calls.
 import { isFirestoreEnabled, readStops, getDoc, listDocs, etDayString } from './lib/firestore.mts';
 import { computeBoardFlags, isFinishedStop } from '../../src/lib/board-flags.js';
-import { legSecondsMap, travelLegsPath, readTravelCalibration } from './lib/travel-store.mts';
+import { legSecondsMap, travelLegsPath, readTravelCalibration, readRouteClasses } from './lib/travel-store.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, DAILY_ALERT_CAP, ALERT_TIERS, finiteMinutes } from './lib/flag-alert.mts';
 import { emailEnabled } from './lib/email.mts';
@@ -145,15 +145,23 @@ export default async (req: Request): Promise<Response> => {
     // The SAME travel inputs the alert sweep judges on — cached real legs plus the
     // calibrated curve — read, never fetched: a diagnostic must not spend API calls or
     // warm caches, only explain the verdicts the live path produced.
-    const [cal, legDoc] = await Promise.all([
+    const [cal, legDoc, routeClasses] = await Promise.all([
       readTravelCalibration(TENANT).catch(() => null),
       getDoc(travelLegsPath(TENANT)).catch(() => null),
+      readRouteClasses(TENANT, date).catch(() => ({})),
     ]);
     const flags = computeBoardFlags({
       stops, notes, servedDate: date, dayKey: weekdayKey(date),
       opts: {
         depot: DEPOT, ...(nowMin != null ? { nowMin } : {}),
-        travel: { legs: legSecondsMap(legDoc), ...(cal ? { curve: cal.curve, serviceMin: cal.serviceMin } : {}) },
+        travel: {
+          legs: legSecondsMap(legDoc), routeClasses,
+          ...(cal ? {
+            curve: cal.curve, serviceMin: cal.serviceMin,
+            ...(cal.classCurves ? { classCurves: cal.classCurves } : {}),
+            ...(cal.classService ? { classService: cal.classService } : {}),
+          } : {}),
+        },
       },
     });
 

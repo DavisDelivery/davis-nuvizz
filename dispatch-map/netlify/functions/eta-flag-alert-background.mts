@@ -22,9 +22,11 @@
 // The scan itself refreshes every 15 minutes, so anything tighter re-reads the same board.
 // Cron is UTC: 11:00-23:59 UTC covers roughly 07:00-19:59 ET, which brackets the delivery
 // day either side of a DST flip without needing to be re-timed twice a year.
-import { isFirestoreEnabled, readStops, getDoc, setDoc, createDocIfAbsent, etDayString } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, getDoc, setDoc, listFleetLoads, createDocIfAbsent, etDayString } from './lib/firestore.mts';
 import { computeBoardFlags } from '../../src/lib/board-flags.js';
-import { ensureLegs, readTravelCalibration } from './lib/travel-store.mts';
+import { ensureLegs, readTravelCalibration, routeClassesPath } from './lib/travel-store.mts';
+import { travelClassOf } from '../../src/lib/travel-model.js';
+import { loadVehicleRoster, vehicleTypeForStop } from './lib/tractor-flags.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { selectAlertable, sendAlerts, ALERT_TO } from './lib/flag-alert.mts';
 import { mergeSweep, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
@@ -93,10 +95,78 @@ export default async (req: Request): Promise<Response> => {
     // runs with the filled cache. The engine is pure and takes milliseconds; running it
     // twice buys same-sweep freshness instead of always being one sweep behind.
     const cal = await readTravelCalibration(TENANT);
-    const calOpts = cal ? { curve: cal.curve, serviceMin: cal.serviceMin } : {};
+    // WHICH TRUCK RUNS EACH ROUTE. Truthiest source first: the NuVizz load header's own
+    // vehicleType — the unit actually ASSIGNED to the load, refreshed every scan into the
+    // fleet index — then the MarginIQ roster's per-driver type where the header is silent.
+    // The roster names the driver's USUAL truck, and on the day that matters (tractor in
+    // the shop, driver in a rental box) the header knows and the roster does not. NOTE
+    // driverName is a LOAD-level field, so the per-stop "vote" below is one voice per
+    // load in practice — it exists to survive a feed that ever stops being load-level,
+    // not because ties are common.
+    let routeClasses: Record<string, string> = {};
+    let classSource = 'none';
+    try {
+      // Load headers: nuvizzFleet/{tenant}__{date}/loads/{loadNbr}, vehicleType field.
+      try {
+        const loads = await listFleetLoads(TENANT, date, ['loadNbr', 'routeName', 'vehicleType']);
+        for (const l of loads || []) {
+          const cls = travelClassOf(l?.vehicleType);
+          if (!cls) continue;
+          for (const key of [String(l?.loadNbr || '').trim(), String(l?.routeName || '').trim()]) {
+            if (key) routeClasses[key] = cls;
+          }
+        }
+        if (Object.keys(routeClasses).length) classSource = 'load_header';
+      } catch (e: any) {
+        console.error('fleet-index class read failed (roster will carry it):', e?.message);
+      }
+
+      const roster = await loadVehicleRoster();
+      const votes = new Map<string, Map<string, number>>();
+      for (const s of stops as any[]) {
+        const k = String(s?.loadNbr || s?.routeName || '').trim();
+        if (!k || k in routeClasses) continue;
+        // Same electorate as the nightly calibration: deliveries on judged routes only.
+        if (String(s?.stopType || '').toUpperCase() === 'PU') continue;
+        if (/\b(?:APPTS?|APPOINTMENTS?)\b/i.test(k)) continue;
+        const cls = travelClassOf(vehicleTypeForStop(s, roster));
+        if (!cls) continue;
+        if (!votes.has(k)) votes.set(k, new Map());
+        const v = votes.get(k)!;
+        v.set(cls, (v.get(cls) || 0) + 1);
+      }
+      let fromRoster = 0;
+      for (const [k, v] of votes) {
+        const ranked = [...v.entries()].sort((a, b) => b[1] - a[1]);
+        if (ranked.length === 1 || ranked[0][1] > ranked[1][1]) { routeClasses[k] = ranked[0][0]; fromRoster++; }
+      }
+      if (fromRoster) classSource = classSource === 'load_header' ? 'header+roster' : 'roster';
+
+      // The doc is TODAY's operational state and only a real sweep of today may write it.
+      // A dry run must claim nothing, and a ?date= replay writing last Friday's trucks
+      // over today's map would put every route on the fleet clock until the next sweep —
+      // across a whole weekend, if the replay ran on a Friday night.
+      if (!dry && date === etDayString()) {
+        try {
+          await setDoc(routeClassesPath(TENANT), { tenant: TENANT, date, classes: routeClasses, at: new Date().toISOString() });
+        } catch (e: any) {
+          // The sweep would now judge on a map the browser cannot read — say so where
+          // the run record shows it rather than letting screen and inbox drift apart.
+          console.error('route-classes publish failed (screen will run fleet-only):', e?.message);
+        }
+      }
+    } catch (e: any) {
+      console.error('route classes unavailable — fleet curve carries every route:', e?.message);
+    }
+
+    const calOpts = cal ? {
+      curve: cal.curve, serviceMin: cal.serviceMin,
+      ...(cal.classCurves ? { classCurves: cal.classCurves } : {}),
+      ...(cal.classService ? { classService: cal.classService } : {}),
+    } : {};
     const engineOpts = (legs: Record<string, number>) => ({
       depot: DEPOT, ...(nowMin != null ? { nowMin } : {}),
-      travel: { legs, ...calOpts },
+      travel: { legs, routeClasses, ...calOpts },
     });
 
     const first = computeBoardFlags({
@@ -160,6 +230,7 @@ export default async (req: Request): Promise<Response> => {
         legsGoogle: flags.checked?.legsGoogle ?? 0, legsTotal: flags.checked?.legsTotal ?? 0,
         fetched: legInfo.fetched, stillMissing: Math.max(0, legInfo.missing - legInfo.fetched),
         googleEnabled: legInfo.googleEnabled, calibrated: !!cal,
+        classCurves: !!cal?.classCurves, routeClasses: Object.keys(routeClasses).length, classSource,
       },
       ok: true, date, nowMin,
       critical: flags.criticalCount ?? 0, red: flags.redCount ?? 0, amber: flags.amberCount ?? 0,

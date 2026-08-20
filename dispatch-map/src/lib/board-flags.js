@@ -332,15 +332,32 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   const day = dayKey || null;
   const departMin = Number.isFinite(opts.departMin) ? opts.departMin : 8 * 60;
   // How legs turn into minutes. { legs: {legKey: seconds} — real cached drive times,
-  // curve: distance-tiered speed control points, serviceMin: measured stop dwell }.
-  // Absent entirely, the tiered DEFAULT_CURVE still applies — the flat ~30 mph model is
-  // gone even for callers that pass nothing.
+  // curve: distance-tiered speed control points, serviceMin: measured stop dwell,
+  // routeClasses: {routeKey: 'tractor'|'box'}, classCurves / classService: per-truck-class
+  // refinements }. Absent entirely, the tiered DEFAULT_CURVE still applies — the flat
+  // ~30 mph model is gone even for callers that pass nothing.
   const travel = opts.travel || null;
   // Service precedence: an explicit caller override, then the nightly-measured dwell,
   // then the shipped constant. Calibration refining the dwell must not need a deploy.
   const serviceSec = Number.isFinite(opts.serviceSec) ? opts.serviceSec
     : Number.isFinite(travel?.serviceMin) ? travel.serviceMin * 60
       : FLAG_SERVICE_SEC;
+  // A ROUTE RUNS ON ITS OWN TRUCK'S CLOCK. Chad: tractor-trailers and box trucks "get
+  // around town and deliveries very differently" — so a route whose driver the roster
+  // knows gets that class's calibrated curve and dwell, hierarchically: class fit →
+  // fleet fit → defaults. An unknown driver rides the fleet numbers, never a guess.
+  const travelForRoute = (k) => {
+    if (!travel) return { travel: null, serviceSec };
+    const cls = travel.routeClasses ? travel.routeClasses[k] : null;
+    const clsCurve = cls && travel.classCurves ? travel.classCurves[cls] : null;
+    const clsService = cls && travel.classService ? travel.classService[cls] : null;
+    return {
+      travel: clsCurve ? { ...travel, curve: clsCurve } : travel,
+      serviceSec: Number.isFinite(opts.serviceSec) ? opts.serviceSec
+        : Number.isFinite(clsService) ? clsService * 60
+          : serviceSec,
+    };
+  };
   const depot = opts.depot || null;
 
   const open = stops.filter((s) => !isFinishedStop(s));
@@ -501,6 +518,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       });
       const notStarted = !startedRoutes.has(k) && nowMin != null && nowMin > departMin + NOT_STARTED_GRACE_MIN;
       const effDepart = notStarted ? nowMin : departMin;
+      const rt = travelForRoute(k);
       let cur = depot; let clockMin = effDepart; let chainBroken = false;
       // Where the clock is currently running from, for the row's detail line. It starts as
       // the assumed departure and is replaced the moment a real stamp anchors the chain —
@@ -530,7 +548,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
           // the stops where being wrong costs a delivery.
           const lk = legKey(cur, pos);
           if (!legsWanted.has(lk)) legsWanted.set(lk, { key: lk, a: { lat: cur.lat, lng: cur.lng }, b: { lat: pos.lat, lng: pos.lng } });
-          const leg = resolveLegMinutes(cur, pos, haversineMeters(cur, pos), travel);
+          const leg = resolveLegMinutes(cur, pos, haversineMeters(cur, pos), rt.travel);
           clockMin += leg.min;
           checked.legsTotal += 1;
           if (leg.source === 'google') checked.legsGoogle += 1;
@@ -574,12 +592,12 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         // is — refusing it to keep the clock monotonic would throw away the better answer.
         const anchor = arrivalAnchor(s, servedDate);
         if (anchor) {
-          clockMin = anchor.source === 'delivered' ? anchor.min : anchor.min + serviceSec / 60;
+          clockMin = anchor.source === 'delivered' ? anchor.min : anchor.min + rt.serviceSec / 60;
           anchored = true;
           hopsSinceAnchor = 0;
           anchorNote = `from ${s.businessName || `stop ${seqOf(s)}`}'s ${fmtMin(anchor.min)} ${anchor.source === 'delivered' ? 'delivery' : 'arrival'}`;
         } else {
-          clockMin += serviceSec / 60;
+          clockMin += rt.serviceSec / 60;
         }
         if (pos) cur = pos;   // an unpinned stop leaves the last known position standing
       }

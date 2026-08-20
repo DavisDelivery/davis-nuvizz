@@ -250,7 +250,12 @@ export function fitCurve(samples, { defaults = DEFAULT_CURVE, serviceMin = SERVI
     const svc = gap - legMinutesFromMeters(s.meters, curve1);
     if (svc > -30 && svc < 120) svcSamples.push(svc);
   }
-  const measuredService = median(svcSamples);
+  // THE DWELL IS GATED LIKE THE SPEEDS. The curve buckets refuse to call 29 samples a
+  // measurement; the dwell median used to accept ONE — and a single break-length gap
+  // residual would have shipped as a truck class's "measured" 30-minute dock time,
+  // preferred over the fleet's real number on every route of that class. Same bar for
+  // both halves of the decomposition, because the engine trusts both equally.
+  const measuredService = svcSamples.length >= MIN_BUCKET_SAMPLES ? median(svcSamples) : null;
   const finalService = measuredService != null
     ? Math.min(30, Math.max(5, measuredService))
     : serviceMin;
@@ -271,6 +276,58 @@ export function fitCurve(samples, { defaults = DEFAULT_CURVE, serviceMin = SERVI
   };
 }
 
+// ── TRUCK CLASSES ────────────────────────────────────────────────────────────
+//
+// Chad: "study the difference in the amount of time it takes the tractor trailers ...
+// versus the box truck drivers instead of doing a flat number for both vehicles types as
+// they get around town and deliveries very differently."
+//
+// He is right, and the repo already knows who drives what: the MarginIQ employee roster
+// carries vehicleType per driver, joined to stops by NuVizz alias (lib/tractor-flags.mts),
+// and the routing engine already reduces the fleet to the tractor/box axis. The travel
+// model splits along the same axis — a 53-foot trailer threading a cul-de-sac and a box
+// truck on the same legs are different clocks, and one blended curve is wrong for both.
+//
+// THE FALLBACK IS HIERARCHICAL, and that is the design: class curve (measured for THAT
+// equipment) → fleet curve (measured, blended) → shipped defaults. A class bucket with 29
+// samples does not invent a truck; it borrows the fleet's measured number at that
+// distance, and only where the fleet is thin too does literature speak.
+
+/** The class key for a roster vehicleType. 'tractor' is its own world; every other
+ *  typed vehicle folds to 'box' (the repo's existing reduction); unknown stays null and
+ *  rides the fleet curve. */
+export function travelClassOf(vehicleType) {
+  const v = String(vehicleType ?? '').trim().toLowerCase();
+  if (!v) return null;
+  // Two spellings feed this: MarginIQ's roster says exactly 'tractor'; NuVizz load
+  // headers say whatever the TMS admin typed ('Tractor Trailer', '53ft Trailer',
+  // 'Semi'...). Anything trailer-shaped is the tractor world; every other typed
+  // vehicle folds to 'box' — the repo's existing reduction.
+  return /tractor|trailer|semi/.test(v) ? 'tractor' : 'box';
+}
+
+export const TRAVEL_CLASSES = ['tractor', 'box'];
+
+/**
+ * Fleet fit plus per-class fits, classes defaulting to the FLEET's fitted curve.
+ * samples may carry `c` ('tractor'|'box') — untagged samples feed the fleet only,
+ * so pre-class history keeps counting without polluting either class.
+ */
+export function fitCurveByClass(samples, { defaults = DEFAULT_CURVE, serviceMin = SERVICE_DEFAULT_MIN } = {}) {
+  const list = Array.isArray(samples) ? samples : [];
+  const fleet = fitCurve(list, { defaults, serviceMin });
+  const classes = {};
+  for (const cls of TRAVEL_CLASSES) {
+    const own = list.filter((x) => x?.c === cls);
+    // "A class bucket with 29 samples does not invent a truck" — enforced, not aspired
+    // to. Below the gate the class gets NO fit at all and its routes ride the fleet
+    // numbers wholesale, which is what the hierarchical fallback is for.
+    if (own.length < MIN_BUCKET_SAMPLES) continue;
+    classes[cls] = fitCurve(own, { defaults: fleet.curve, serviceMin: fleet.serviceMin });
+  }
+  return { fleet, classes };
+}
+
 /**
  * Consecutive same-route stamp pairs from one sealed day's stops. Caller supplies
  * position and stamp extraction (they live in board-flags/backtest land — importing them
@@ -283,9 +340,10 @@ export function fitCurve(samples, { defaults = DEFAULT_CURVE, serviceMin = SERVI
  * the "measured" curve drifts slower than any truck. Routes without sequence still pair
  * by stamp order alone; the admissibility filters carry the residual risk there.
  */
-export function legSamplesFromRoutes(routes) {
+export function legSamplesFromRoutes(routes, classOfRoute = null) {
   const out = [];
-  for (const [, stops] of routes) {
+  for (const [rk, stops] of routes) {
+    const cls = classOfRoute ? classOfRoute.get?.(rk) ?? classOfRoute[rk] ?? null : null;
     const stamped = stops
       .filter((s) => s?.pos && Number.isFinite(s?.stampMin))
       .sort((a, b) => a.stampMin - b.stampMin);
@@ -295,7 +353,9 @@ export function legSamplesFromRoutes(routes) {
       if (haveSeq && Math.abs(b.seq - a.seq) !== 1) continue;
       const meters = haversineM(a.pos, b.pos);
       const gapMin = b.stampMin - a.stampMin;
-      if (meters > 0 && gapMin > 0) out.push({ meters: Math.round(meters), gapMin: Math.round(gapMin * 10) / 10 });
+      if (meters > 0 && gapMin > 0) {
+        out.push({ meters: Math.round(meters), gapMin: Math.round(gapMin * 10) / 10, ...(cls ? { c: cls } : {}) });
+      }
     }
   }
   return out;

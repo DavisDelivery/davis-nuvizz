@@ -36,7 +36,8 @@ import { listStops } from './lib/history-store.mts';
 // The candidate replacement for the flat speed: a distance-tiered curve (src/lib/
 // travel-model.js — the SAME module the live engine runs, so what this grades is what
 // ships, not a re-implementation that can drift).
-import { legMinutesFromMeters, fitCurve, legSamplesFromRoutes, DEFAULT_CURVE } from '../../src/lib/travel-model.js';
+import { legMinutesFromMeters, fitCurve, fitCurveByClass, legSamplesFromRoutes, travelClassOf, DEFAULT_CURVE } from '../../src/lib/travel-model.js';
+import { loadVehicleRoster, vehicleTypeForStop } from './lib/tractor-flags.mts';
 
 const TENANT = 'davis';
 
@@ -428,10 +429,30 @@ export default async (req: Request): Promise<Response> => {
       // A preview fitted through a slightly different pairing had already diverged from
       // what the nightly would write before this comment existed; "preview equals
       // production" now holds by construction, not by care.
-      const fitFromGroups = (groups: Array<[string, any[]]>) => {
+      // WHICH TRUCK RAN EACH ROUTE — the same roster join production uses. Best-effort:
+      // an unreadable roster degrades the study to fleet-only, never to a wrong label.
+      let roster: any = null;
+      try { roster = await loadVehicleRoster(); } catch { /* fleet-only study */ }
+      const classOfGroup = (group: any[]): string | null => {
+        if (!roster) return null;
+        const votes = new Map<string, number>();
+        for (const st of group) {
+          const cls = travelClassOf(vehicleTypeForStop(st, roster));
+          if (cls) votes.set(cls, (votes.get(cls) || 0) + 1);
+        }
+        const ranked = [...votes.entries()].sort((a, b) => b[1] - a[1]);
+        return ranked.length === 1 || (ranked.length > 1 && ranked[0][1] > ranked[1][1]) ? ranked[0][0] : null;
+      };
+      const groupClass = new Map<string, string | null>();
+      for (const [gk, group] of routeGroups) groupClass.set(gk, classOfGroup(group));
+
+      const samplesFromGroups = (groups: Array<[string, any[]]>) => {
         const routes = new Map<string, any[]>();
+        const clsOf = new Map<string, string>();
         for (const [gk, group] of groups) {
           const date = String(group[0]?.__date || '');
+          const cls = groupClass.get(gk);
+          if (cls) clsOf.set(gk, cls);
           routes.set(gk, group
             .filter((st) => !isPickup(st))
             .map((st) => ({
@@ -440,8 +461,10 @@ export default async (req: Request): Promise<Response> => {
               seq: seqOf(st),
             })));
         }
-        return fitCurve(legSamplesFromRoutes(routes), { defaults: DEFAULT_CURVE });
+        return legSamplesFromRoutes(routes, clsOf);
       };
+      const fitFromGroups = (groups: Array<[string, any[]]>) =>
+        fitCurveByClass(samplesFromGroups(groups), { defaults: DEFAULT_CURVE });
 
       // HOLDOUT, because a curve graded on the rows it was fitted from is a curve grading
       // its own homework. Fit on the window's first half of days, grade on the second;
@@ -452,24 +475,61 @@ export default async (req: Request): Promise<Response> => {
       const fitGroups = routeGroups.filter(([k]) => k.split('|')[0] < cutDay);
       const gradeGroups = routeGroups.filter(([k]) => k.split('|')[0] >= cutDay);
 
-      fitted = fitFromGroups(routeGroups);
-      const fittedHalf = fitGroups.length ? fitFromGroups(fitGroups) : fitted;
+      const fittedBoth = fitFromGroups(routeGroups);
+      const fittedHalfBoth = fitGroups.length ? fitFromGroups(fitGroups) : fittedBoth;
+      fitted = fittedBoth.fleet;
 
       // Replay with the FITTED dwell too — fitCurve decomposed the same gaps into
       // (curve, serviceMin) as a pair, and production consumes them as a pair; grading
       // the curve against a different service would grade a configuration nobody ships.
-      const replayWith = (groups: Array<[string, any[]]>, fit: any) => {
+      // classAware=true replays each route on ITS truck's fitted curve+dwell (falling
+      // back to the fleet fit), which is exactly what the class-aware engine ships.
+      // mode 'fleet' = one blended clock; 'class' = each route on its truck's full fit
+      // (curve + dwell); 'dwell' = fleet curve with only the CLASS DWELL swapped in —
+      // the component that actually ships on a warm board, where cached Google times
+      // (vehicle-blind) override the curve on most legs and only the dwell term splits.
+      const replayWith = (groups: Array<[string, any[]]>, both: any, mode: 'fleet' | 'class' | 'dwell') => {
         const out: Row[] = [];
-        const t = { ...tuned, service: fit.serviceMin * 60 };
-        for (const [, group] of groups) out.push(...replayRoute(group, String(group[0]?.__date || ''), t, fit.curve).rows);
-        return out;
+        let classedRows = 0;
+        for (const [gk, group] of groups) {
+          const cls = mode !== 'fleet' ? groupClass.get(gk) : null;
+          const clsFit = cls ? both.classes[cls] : null;
+          const fit = (mode === 'class' && clsFit) || both.fleet;
+          const service = mode === 'dwell' && clsFit ? clsFit.serviceMin : fit.serviceMin;
+          const t = { ...tuned, service: service * 60 };
+          const rows = replayRoute(group, String(group[0]?.__date || ''), t, fit.curve).rows;
+          if (clsFit) classedRows += rows.length;
+          out.push(...rows);
+        }
+        return { out, classedRows };
       };
-      const rowsTF = replayWith(routeGroups, fitted);
-      fittedStats = { ...stats(rowsTF.filter((r) => r.predT != null).map((r) => (r.predT as number) - r.actual)), in_sample: true, serviceMin: fitted.serviceMin };
-      const rowsHold = gradeGroups.length && fitGroups.length ? replayWith(gradeGroups, fittedHalf) : [];
-      fittedHoldout = rowsHold.length
-        ? { ...stats(rowsHold.filter((r) => r.predT != null).map((r) => (r.predT as number) - r.actual)), fit_days: fitGroups.length ? `${dayList[0]}..<${cutDay}` : null, graded_days: `${cutDay}..${dayList[dayList.length - 1]}`, serviceMin: fittedHalf.serviceMin }
+      const grade = (rows: Row[]) => stats(rows.filter((r) => r.predT != null).map((r) => (r.predT as number) - r.actual));
+      const rowsTF = replayWith(routeGroups, fittedBoth, 'fleet').out;
+      fittedStats = { ...grade(rowsTF), in_sample: true, serviceMin: fitted.serviceMin };
+      const holdable = gradeGroups.length && fitGroups.length;
+      const hFleet = holdable ? replayWith(gradeGroups, fittedHalfBoth, 'fleet') : { out: [], classedRows: 0 };
+      const hClass = holdable ? replayWith(gradeGroups, fittedHalfBoth, 'class') : { out: [], classedRows: 0 };
+      const hDwell = holdable ? replayWith(gradeGroups, fittedHalfBoth, 'dwell') : { out: [], classedRows: 0 };
+      const holdMeta = { fit_days: fitGroups.length ? `${dayList[0]}..<${cutDay}` : null, graded_days: `${cutDay}..${dayList[dayList.length - 1]}` };
+      fittedHoldout = hFleet.out.length
+        ? {
+          fleet_curve: { ...grade(hFleet.out), serviceMin: fittedHalfBoth.fleet.serviceMin },
+          // THE STUDY'S VERDICT COLUMNS, same holdout days each time. by_truck_class is
+          // the FULL split (curve + dwell); dwell_only isolates what ships on a warm
+          // board. classed_rows says how many rows actually rode a class fit — a verdict
+          // whose evidential base is 40 rows is a hint, not a policy.
+          by_truck_class: hClass.out.length ? { ...grade(hClass.out), classed_rows: hClass.classedRows } : null,
+          dwell_only: hDwell.out.length ? { ...grade(hDwell.out), classed_rows: hDwell.classedRows } : null,
+          note: 'Curve-only replay — production overrides warm legs with vehicle-blind Google road times, so the shipped split effect on a warm board is chiefly the dwell term (see dwell_only).',
+          ...holdMeta,
+        }
         : null;
+      // THE STUDY ITSELF: what each truck class measured, side by side. In these buckets
+      // source "default" means FLEET-BORROWED (the class defaults to the fleet fit), not
+      // the literature curve.
+      (fitted as any).study = Object.fromEntries(Object.entries(fittedBoth.classes).map(([cls, c]: [string, any]) => [cls, {
+        n: c.n, serviceMin: c.serviceMin, serviceMeasured: c.serviceMeasured, buckets: c.buckets,
+      }]));
       byHopTF = {};
       for (const b of [[1, 1], [2, 2], [3, 4], [5, 7], [8, 99]]) {
         const sel = rowsTF.filter((r) => r.hops >= b[0] && r.hops <= b[1] && r.predT != null);
@@ -755,7 +815,7 @@ export default async (req: Request): Promise<Response> => {
       C_by_horizon: byHop,
       T_by_horizon: byHopT,
       ...(byHopTF ? { T_fitted_by_horizon: byHopTF } : {}),
-      ...(fitted ? { fitted_curve: { curve: fitted.curve, buckets: fitted.buckets, serviceMin: fitted.serviceMin, serviceMeasured: fitted.serviceMeasured, n: fitted.n } } : {}),
+      ...(fitted ? { fitted_curve: { curve: fitted.curve, buckets: fitted.buckets, serviceMin: fitted.serviceMin, serviceMeasured: fitted.serviceMeasured, n: fitted.n, by_truck_class: (fitted as any).study ?? null } } : {}),
       start_signal_split: bySignal,
       F_by_stops_completed: Object.fromEntries(Object.entries(byDrop).map(([k, v]) => [k, stats(v)])),
       observed_departure: departStats,

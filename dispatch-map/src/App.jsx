@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.61.0';
+const APP_VERSION = '0.62.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -148,6 +148,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.62.0', 'TRACTORS AND BOX TRUCKS NOW RUN ON SEPARATE CLOCKS. Chad: \u201cShouldn\u2019t we also study the difference in the amount of time it takes the tractor trailers, drivers, versus the box truck drivers instead of doing a flat number for both vehicles types as they get around town and deliveries very differently?\u201d He is right, and the data to answer him already existed in-house: the MarginIQ employee roster carries vehicleType per driver, joined to any stop by NuVizz alias \u2014 the exact join the tractor-paint and routing engine already trust \u2014 so no new source, no NuVizz calls, no manual tagging. THE NIGHTLY CALIBRATION NOW FITS THREE CURVES: the fleet blend (as before), a tractor curve, and a box curve, each from only its own trucks\u2019 stamped legs, each with its own measured dock dwell \u2014 because a 53-foot trailer bumping a dock and a box truck at the same door are different numbers, and dwell likely differs MORE than road speed. THE FALLBACK IS HIERARCHICAL AND THAT IS THE DESIGN: class fit \u2192 fleet fit \u2192 shipped defaults. A class bucket with 29 samples does not invent a truck; it borrows the fleet\u2019s measured number at that distance, and only where the fleet is thin too does literature speak. Pinned by test: a 10-sample tractor bucket must show the fleet\u2019s measured speed, never the book value. EACH ROUTE READS ON ITS OWN TRUCK\u2019S CLOCK: the 20-minute sweep resolves today\u2019s route\u2192class map from the roster (majority vote over the route\u2019s stops \u2014 a midday driver swap degrades to the fleet curve, never to a coin flip), writes it where the browser reads it, and the engine picks curve and dwell per route. Screen, alert emails and the eta-flag-check diagnostic all judge on identical inputs. An unknown driver rides the fleet numbers \u2014 pinned by test as byte-identical to the pre-split behaviour. AND IT IS A STUDY, NOT A VIBE: eta-backtest ?fit=1 now reports the per-class measurement side by side \u2014 each class\u2019s speed per distance bucket, sample counts, measured dwell \u2014 and grades the split honestly on HELD-OUT days: the same routes replayed on the fleet curve versus each on its own truck\u2019s curve. If the split does not beat the blend out of sample, the numbers will say so and the hierarchical fallback quietly carries that verdict. Google road times are unchanged and vehicle-blind (a car\u2019s road time; the per-class ratio against actuals is the natural follow-up if the data warrants it). 8 new tests, and an adversarial review pass that caught the ungated dwell, the dry-run clobber and the stale-map date gate before any of them shipped. Zero NuVizz calls.'],
   ['0.61.0', 'REPLAY THE FLAG SYSTEM OVER EVERY SEALED DAY \u2014 would the misses have been caught? Chad: \u201cwe need to go back and study all the data that we have to see how our flagging system would work and whether or not things that ended up delivering after the receiving hours \u2026 would have been flagged.\u201d New read-only endpoint flag-replay (?date=YYYY-MM-DD) runs TODAY\u2019S engine \u2014 imported, never copied \u2014 over one sealed day in simulated 20-minute sweeps and grades the result against what the trucks actually did. THE AS-OF RULE ON THE TIME AXIS: at simulated clock T the engine may only see stamps with time \u2264 T; a stop delivered at 10:30 is open with no stamp at the 10:20 sweep. Sealed STATUSES carry no timestamps, so they are DERIVED from the masked stamps rather than trusted \u2014 the replay can never peek at an outcome through a status field. Every gradable stop (a close on file + a real same-day stamp, the miss ledger\u2019s population) gets one verdict: missed_caught (email-eligible red/critical BEFORE the close \u2014 the warning worked, lead measured), missed_screen_only (visible on the board, inbox silent \u2014 including the driverless-route R6 shape, which supersedes hours_risk and NEVER emails; a test pins that production behavior), missed_flag_after_close, missed_blind (reason named: no sequence, no position, appointment route, unplanned carry-over), or the made_* mirror for false alarms. Rates are null, not 0, when nothing is gradable \u2014 an unmeasurable day must never read as a perfect one. Uses the same travel inputs as the live sweep (cached Google legs read with an empty want-list \u2014 never bills \u2014 plus the nightly curve). Labelled reconstructed: notes are read as of today, so this grades how the CURRENT system would have done, which is the question that was asked. One day per request; ZERO NuVizz calls; never sends. 12 new tests.'],
   ['0.60.2', 'AN APPOINTMENT IS NOT A TIME RESTRICTION, AND IT WAS AN EIGHTH OF THE SHEET. Chad: “Take out the appointment required deliveries if they are in there and that is there only time restriction.” He is right, and the distinction is a real one rather than a preference: “NTFY OF DELIVERY-APPT REQD” tells you to make a PHONE CALL. It does not say the freight has to be there by two. On a sheet whose entire subject is when a dock will take freight, 33 of 187 rows were answering a question nobody had asked of it — and worse, they were sitting in their own tier looking like work a dispatcher does when building a route, when in fact it is office work somebody does in the morning before a truck moves at all. THE TEST IS THE WHOLE KINDS LIST, NOT THE TIER, and that is the part that would have been easy to get wrong. A tier of “appointment” only means no HARD window outranked it; the stop can still be closed today, or carry an AM/PM window underneath. Filtering on the tier would have silently dropped a customer who is SHUT on the board day purely because an appointment flag happened to sort above the closed-day flag. On this board that case did not occur — all 33 were genuinely appointment-only — which is exactly why it needed a test rather than an eyeball. Three now pin it: appointment alone goes, appointment plus receiving hours stays as the hard window it always was, appointment plus closed-today and appointment plus AM/PM both survive. ?appointmentOnly=1 brings them back, and the coverage block reports which way it ran, because the length of a sheet is not a way to find out what is on it. 187 deliveries become 154: 92 hard windows and 62 half-day windows, every one of them a statement about the clock. 4 new tests, 2,008 green.'],
   ['0.60.1', 'THE TIME-RESTRICTION SHEET IS ONE DAY, DELIVERIES, AND NO NAMES. Chad, on the first run: “Take the driver and load name out of reports. And these are only deliveries from today correct? Just want one days data worth.” TWO OF THOSE WERE CORRECTIONS, NOT PREFERENCES, AND THE HONEST ANSWER TO THE QUESTION WAS NO. The sheet had been generated with ?carryDays=3, which reached back to the 17th, and it counted PICKUPS alongside deliveries — so “207 PROs” was 190 deliveries plus 17 pickups, three of them from earlier days. Asking a one-day question and being handed a three-day answer is the kind of thing that only shows up when somebody checks, and he checked. The real figure for one day of deliveries is 187. DELIVERIES ARE NOW THE DEFAULT, because a receiving window is a statement about freight ARRIVING and a dispatcher reading this sheet is planning deliveries; ?include=all restores pickups and ?include=pickups inverts it. This also settles the question the last report put on its own cover: 17 of the hard-window rows were our own Buford terminal, RA-numbered internal pickups inheriting the terminal’s own 6a–11a hours, and they are gone. THE FILTER RUNS AFTER CLASSIFICATION, NOT BEFORE, and that ordering is load-bearing rather than tidy: the 09:00–09:30 creation stamp is detected by counting how many customers share the slot ACROSS THE WHOLE BOARD, so filtering pickups out first could drop a five-customer stamp to one surviving delivery, at which point it no longer looks like a default and gets reported as a booked appointment that never existed. A test pins exactly that shape. WHICHEVER SCOPE IS IN FORCE IS REPORTED in the coverage block and printed on the report’s cover, because the one thing worse than the wrong scope is the right scope you have to infer from the row count. DRIVER AND LOAD NAME ARE OUT of both the CSV and the PDF — a stop’s restriction belongs to the customer and their dock, not to whoever happened to be carrying it, and a sheet about receiving hours is not a place to put a driver’s name next to a late delivery. The library itself still defaults to everything: a caller that silently drops rows is a trap, so the narrowing is the endpoint’s decision and it is written down where it is made. 4 new tests, 2,004 green.'],
@@ -3027,6 +3028,11 @@ function useTravelInputs() {
           legs: j.legs || {},
           ...(j.curve ? { curve: j.curve } : {}),
           ...(Number.isFinite(j.serviceMin) ? { serviceMin: j.serviceMin } : {}),
+          // Truck-class refinements: a tractor route reads on a tractor clock. The map is
+          // today's, resolved server-side from the roster — the browser never sees it.
+          ...(j.classCurves ? { classCurves: j.classCurves } : {}),
+          ...(j.classService ? { classService: j.classService } : {}),
+          ...(j.routeClasses && Object.keys(j.routeClasses).length ? { routeClasses: j.routeClasses, routeClassesDate: j.routeClassesDate } : {}),
           meta: { calibrated: !!j.curve, googleEnabled: !!j.googleEnabled, legCount: j.legCount || 0 },
         };
         // Identity-stable when nothing moved: a fresh object every 5 minutes would
@@ -3167,6 +3173,7 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
           : flags.travelMeta?.calibrated
             ? 'Arrival times are estimates (speeds calibrated from our own deliveries).'
             : 'Arrival times are estimates (distance-tiered speed model).'}
+        {flags.travelMeta?.classes ? ` ${flags.travelMeta.routeClassCount} route${flags.travelMeta.routeClassCount === 1 ? '' : 's'} on truck-class clocks (tractor vs box).` : ''}
         {' '}Amber rows use hours auto-detected from order text — verify before acting.
         {skippedBits.length > 0 && <> Not judged: {skippedBits.join(' · ')}.</>}
         {/* The restore path lives HERE, not only in the empty state — 3 of 4 dismissed
@@ -9115,10 +9122,18 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
       opts: {
         depot: ROUTING_DEPOT,
         ...(selectedDate === todayLocalYMD() ? { nowMin: now.getHours() * 60 + now.getMinutes() } : {}),
-        ...(travelInputs ? { travel: travelInputs } : {}),
+        // The route→class map is only true for ITS day — route names repeat daily and
+        // drivers rotate, so a Friday map applied to Monday's planning board would walk
+        // Monday's routes on Friday's trucks. Same gate discipline as nowMin above.
+        ...(travelInputs ? {
+          travel: travelInputs.routeClasses && travelInputs.routeClassesDate !== selectedDate
+            ? { ...travelInputs, routeClasses: undefined }
+            : travelInputs,
+        } : {}),
       },
     });
-    return { ...out, travelMeta: travelInputs?.meta || null };
+    const classesLive = !!(travelInputs?.classCurves && travelInputs?.routeClasses && travelInputs.routeClassesDate === selectedDate);
+    return { ...out, travelMeta: travelInputs ? { ...travelInputs.meta, classes: classesLive, routeClassCount: classesLive ? Object.keys(travelInputs.routeClasses).length : 0 } : null };
   }, [stops, notes, rosterRawRows, selectedDate, flagsClockTick, travelInputs]); // eslint-disable-line react-hooks/exhaustive-deps
   // The chip's number excludes dismissed rows — a cleared list must read as cleared.
   const visibleFlagCounts = useMemo(() => {
@@ -15707,10 +15722,18 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       opts: {
         depot: ROUTING_DEPOT,
         ...(selectedDate === todayLocalYMD() ? { nowMin: now.getHours() * 60 + now.getMinutes() } : {}),
-        ...(travelInputs ? { travel: travelInputs } : {}),
+        // The route→class map is only true for ITS day — route names repeat daily and
+        // drivers rotate, so a Friday map applied to Monday's planning board would walk
+        // Monday's routes on Friday's trucks. Same gate discipline as nowMin above.
+        ...(travelInputs ? {
+          travel: travelInputs.routeClasses && travelInputs.routeClassesDate !== selectedDate
+            ? { ...travelInputs, routeClasses: undefined }
+            : travelInputs,
+        } : {}),
       },
     });
-    return { ...out, travelMeta: travelInputs?.meta || null };
+    const classesLive = !!(travelInputs?.classCurves && travelInputs?.routeClasses && travelInputs.routeClassesDate === selectedDate);
+    return { ...out, travelMeta: travelInputs ? { ...travelInputs.meta, classes: classesLive, routeClassCount: classesLive ? Object.keys(travelInputs.routeClasses).length : 0 } : null };
   }, [stops, notes, loadRosterList, selectedDate, flagsClockTick, travelInputs]); // eslint-disable-line react-hooks/exhaustive-deps
   const visibleFlagCounts = useMemo(() => {
     const live = routingBoardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]);
