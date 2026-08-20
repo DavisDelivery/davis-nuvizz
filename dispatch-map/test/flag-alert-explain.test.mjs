@@ -215,11 +215,32 @@ test('hoursCoverage splits the gaps by what would actually fix each one', () => 
   assert.equal(c.blankToday, 1, 'hours on other weekdays but not this one — likeliest oversight');
   assert.equal(c.noHoursAnyDay, 1, 'a note exists but hours were never recorded');
   assert.equal(c.noNote, 1);
-  assert.equal(c.refused, 3, 'two free-text plus one overnight dock');
+  // THE REFUSALS SPLIT BY WHO CAN FIX THEM — the distinction the first real run turned on.
+  // An 804-customer board returned 7 refusals and every one was an hours record saved with a
+  // blank close: no free text anywhere, nothing for a parser to learn. One combined number
+  // would have read as "7 customers the parser is failing" and sent someone to rewrite it.
+  assert.equal(c.refusedText, 2, 'two free-text strings — the only parser-fixable kind');
+  assert.equal(c.refusedWindow, 1, 'the overnight dock is refused on purpose: policy, not parser');
+  assert.equal(c.incompleteRecord, 0);
   // The samples are what makes this actionable: deduped SHAPES, not a customer list.
   assert.deepEqual(c.refusedSamples.filter((t) => t === 'call first').length, 1, 'deduped');
   assert.ok(c.refusedSamples.some((t) => t.includes('21:00')), 'the overnight window is shown as refused');
   assert.equal(c.refusedSamples.length, 2);
+});
+
+// THE SHAPE THE REAL BOARD ACTUALLY HAD, 2026-08-20: 804 customers, 7 refusals, and every
+// one of them a receiving-hours record with the close left blank. Not one line of free text.
+test('an hours record saved with a blank close is data entry, NOT a parser gap', () => {
+  const notes = new Map([
+    ['both_blank|k', { receiving_hours: { thu: { open: '', close: '' } } }],
+    ['open_only|k', { receiving_hours: { thu: { open: '08:00', close: '' } } }],
+    ['no_close_key|k', { receiving_hours: { thu: { open: '08:00' } } }],
+  ]);
+  const stops = [...notes.keys()].map((matchKey, i) => ({ stopNbr: String(i), matchKey }));
+  const c = hoursCoverage(stops, notes, 'thu');
+  assert.equal(c.incompleteRecord, 3, 'no close means nothing to be late against');
+  assert.equal(c.refusedText, 0, 'and NOTHING here is a parser problem');
+  assert.equal(c.refusedWindow, 0);
 });
 
 test('hoursCoverage caps its samples and never leaks a customer name', () => {
@@ -230,7 +251,7 @@ test('hoursCoverage caps its samples and never leaks a customer name', () => {
     stops.push({ stopNbr: String(i), matchKey: `c${i}|k`, businessName: `SECRET CO ${i}` });
   }
   const c = hoursCoverage(stops, notes, 'thu', { sampleCap: 5 });
-  assert.equal(c.refused, 60, 'every one is counted');
+  assert.equal(c.refusedText, 60, 'every one is counted');
   assert.equal(c.refusedSamples.length, 5, 'only the cap is shown');
   assert.ok(!c.refusedSamples.some((t) => t.includes('SECRET CO')), 'samples are hours text, never identities');
 });

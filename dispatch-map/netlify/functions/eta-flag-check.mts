@@ -20,7 +20,7 @@
 //
 // Read-only. Firestore only. ZERO NuVizz calls.
 import { isFirestoreEnabled, readStops, getDoc, listDocs, etDayString } from './lib/firestore.mts';
-import { computeBoardFlags, isFinishedStop, dayReceivingWindow } from '../../src/lib/board-flags.js';
+import { computeBoardFlags, isFinishedStop, dayReceivingWindow, parseClockMin } from '../../src/lib/board-flags.js';
 import { legSecondsMap, travelLegsPath, readTravelCalibration, readRouteClasses } from './lib/travel-store.mts';
 import { routeDeparturePath } from './lib/route-departure.mts';
 import { flagHistoryPath } from './lib/flag-history.mts';
@@ -151,9 +151,12 @@ export function hoursProvenance(stop: any, notes: Map<string, any> | null, dayKe
  *   • blankToday             — hours exist for other weekdays but not this one. Data entry,
  *                              and the likeliest kind to be an oversight rather than a
  *                              deliberate "they are shut".
- *   • refused                — text IS on file and the parser will not guess at it. THIS is
- *                              the only bucket that parser work can move, and the samples
- *                              say whether it is worth moving.
+ *   • refusedText            — a string with no readable clock. THIS is the only bucket
+ *                              parser work can move, and the samples say whether it is
+ *                              worth moving. On the first real run it was ZERO.
+ *   • refusedWindow          — an overnight or 24-hour dock, refused on purpose. Policy.
+ *   • incompleteRecord       — an hours record saved with no close. Data entry, or a stop
+ *                              card that should not have accepted it.
  *
  * Samples are the hours text only — deduped and capped. No addresses, no customer names:
  * the question is what SHAPES appear, and a list of shapes is smaller and safer than a list
@@ -167,7 +170,16 @@ export function hoursCoverage(
   const sampleSeen = new Set<string>();
   const out = {
     customers: 0, stopsWithNoMatchKey: 0,
-    noNote: 0, noHoursAnyDay: 0, blankToday: 0, refused: 0, parsedTyped: 0, parsedAuto: 0,
+    noNote: 0, noHoursAnyDay: 0, blankToday: 0,
+    // THE REFUSALS, SPLIT BY WHO CAN ACTUALLY FIX THEM. Collapsing these into one "refused"
+    // number is how a parser gets rewritten for no reason: the first real run of this report
+    // returned 7 refusals on an 804-customer board, and every one of them was a receiving
+    // -hours record saved with a BLANK CLOSE — no free text anywhere, nothing to learn.
+    // A single bucket would have read as "7 customers the parser is failing."
+    refusedText: 0,      // a string the parser could not read. The ONLY parser-fixable bucket.
+    refusedWindow: 0,    // a real window deliberately refused (overnight / 24h). Policy, not parser.
+    incompleteRecord: 0, // an hours record with no usable close. Data entry — or a card that let it save.
+    parsedTyped: 0, parsedAuto: 0,
     refusedSamples: [] as string[],
   };
   for (const s of stops || []) {
@@ -185,7 +197,20 @@ export function hoursCoverage(
       if (anyDay) out.blankToday += 1; else out.noHoursAnyDay += 1;
       continue;
     }
-    out.refused += 1;
+    // Which KIND of refusal — the whole point of the report.
+    if (typeof p.raw === 'string') {
+      // A bare string with no readable clock in it. Free text ("call first", "24-7") is the
+      // shape parser work could conceivably learn, so it is the one counted as such.
+      out.refusedText += 1;
+    } else if (parseClockMin((p.raw as any)?.close) == null) {
+      // Structured record, but no close to be late against. Nothing for a parser to read;
+      // somebody saved the hours boxes without filling the one field that matters.
+      out.incompleteRecord += 1;
+    } else {
+      // A close that parses but the window is refused on purpose — an overnight or 24-hour
+      // dock is not comparable to a daytime route (see dayReceivingWindow). Policy.
+      out.refusedWindow += 1;
+    }
     const text = typeof p.raw === 'string' ? p.raw : JSON.stringify(p.raw);
     if (!sampleSeen.has(text) && out.refusedSamples.length < sampleCap) {
       sampleSeen.add(text);
