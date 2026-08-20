@@ -137,6 +137,64 @@ export function hoursProvenance(stop: any, notes: Map<string, any> | null, dayKe
   };
 }
 
+/**
+ * PURE. WHERE THE WHOLE BOARD'S DEADLINES COME FROM — one row per customer, not per stop.
+ *
+ * Chad, after METRO: "maybe we need the parser to learn how the note for hours was
+ * constructed." The right way to answer that is not to read one customer's note and
+ * generalise. It is to ask the board how many customers carry hours the parser REFUSES, and
+ * to show the actual text it refused, so the question becomes "should it learn THESE shapes"
+ * instead of "does it have a problem".
+ *
+ * The split matters because the fixes are different and land on different people:
+ *   • noNote / noHoursAnyDay — nobody has recorded this customer's hours. Data entry.
+ *   • blankToday             — hours exist for other weekdays but not this one. Data entry,
+ *                              and the likeliest kind to be an oversight rather than a
+ *                              deliberate "they are shut".
+ *   • refused                — text IS on file and the parser will not guess at it. THIS is
+ *                              the only bucket that parser work can move, and the samples
+ *                              say whether it is worth moving.
+ *
+ * Samples are the hours text only — deduped and capped. No addresses, no customer names:
+ * the question is what SHAPES appear, and a list of shapes is smaller and safer than a list
+ * of customers.
+ */
+export function hoursCoverage(
+  stops: any[], notes: Map<string, any> | null, dayKey: string | null,
+  { sampleCap = 24 }: { sampleCap?: number } = {},
+) {
+  const seen = new Set<string>();
+  const sampleSeen = new Set<string>();
+  const out = {
+    customers: 0, stopsWithNoMatchKey: 0,
+    noNote: 0, noHoursAnyDay: 0, blankToday: 0, refused: 0, parsedTyped: 0, parsedAuto: 0,
+    refusedSamples: [] as string[],
+  };
+  for (const s of stops || []) {
+    if (!s?.matchKey) { out.stopsWithNoMatchKey += 1; continue; }
+    if (seen.has(s.matchKey)) continue;   // one customer, one row — a 3-order stop is not 3 gaps
+    seen.add(s.matchKey);
+    out.customers += 1;
+    const p = hoursProvenance(s, notes, dayKey);
+    if (!p.noteOnFile) { out.noNote += 1; continue; }
+    if (p.parsed) { if (p.parsed.tier === 'typed') out.parsedTyped += 1; else out.parsedAuto += 1; continue; }
+    if (p.raw == null) {
+      // "Never recorded" and "recorded for other days but not this one" are different gaps.
+      const rh = notes?.get(s.matchKey)?.receiving_hours;
+      const anyDay = rh && typeof rh === 'object' && Object.values(rh).some((v) => v);
+      if (anyDay) out.blankToday += 1; else out.noHoursAnyDay += 1;
+      continue;
+    }
+    out.refused += 1;
+    const text = typeof p.raw === 'string' ? p.raw : JSON.stringify(p.raw);
+    if (!sampleSeen.has(text) && out.refusedSamples.length < sampleCap) {
+      sampleSeen.add(text);
+      out.refusedSamples.push(text);
+    }
+  }
+  return out;
+}
+
 // Any stop on the board, flagged or not — because "no email" and "no flag" are different
 // answers and the difference is the whole question.
 export function explainStop(
@@ -285,6 +343,8 @@ export default async (req: Request): Promise<Response> => {
       openStopsChecked: flags.checked?.stops ?? null,
       skipped: flags.skipped,
       sampleStopKeys: stops.slice(0, 3).map((s: any) => s?.matchKey ?? null),
+      // WHY THE BOARD HAS THE DEADLINE COVERAGE IT HAS, split by what would fix each gap.
+      hoursCoverage: hoursCoverage(stops, notes, weekdayKey(date)),
     };
 
     return J({
