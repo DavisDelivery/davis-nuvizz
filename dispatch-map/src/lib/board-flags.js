@@ -35,6 +35,7 @@
 
 import { resolveNameOwner } from './route-status.js';
 import { routeStopSeq } from './route-stop-line.js';
+import { resolveLegMinutes, legKey } from './travel-model.js';
 import {
   haversineMeters, ROUTE_ROAD_FACTOR, ROUTE_AVG_SPEED_MPS,
 } from './routing-select.js';
@@ -330,7 +331,16 @@ export const TIER_RANK = { amber: 1, red: 2, critical: 3 };
 export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = null, servedDate = null, dayKey = null, opts = {} } = {}) {
   const day = dayKey || null;
   const departMin = Number.isFinite(opts.departMin) ? opts.departMin : 8 * 60;
-  const serviceSec = Number.isFinite(opts.serviceSec) ? opts.serviceSec : FLAG_SERVICE_SEC;
+  // How legs turn into minutes. { legs: {legKey: seconds} — real cached drive times,
+  // curve: distance-tiered speed control points, serviceMin: measured stop dwell }.
+  // Absent entirely, the tiered DEFAULT_CURVE still applies — the flat ~30 mph model is
+  // gone even for callers that pass nothing.
+  const travel = opts.travel || null;
+  // Service precedence: an explicit caller override, then the nightly-measured dwell,
+  // then the shipped constant. Calibration refining the dwell must not need a deploy.
+  const serviceSec = Number.isFinite(opts.serviceSec) ? opts.serviceSec
+    : Number.isFinite(travel?.serviceMin) ? travel.serviceMin * 60
+      : FLAG_SERVICE_SEC;
   const depot = opts.depot || null;
 
   const open = stops.filter((s) => !isFinishedStop(s));
@@ -339,7 +349,10 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   const skipped = { noRoster: false, ambiguousRoutes: [], routesNoSequence: [], routesAppointment: [], stopsNoPosition: 0 };
   // What the detector actually LOOKED at — the panel shows these so a quiet board can
   // prove it was watched, and so "no hours on file" is visibly a data gap, not a bug.
-  const checked = { stops: open.length, routesJudged: 0, stopsWithHours: 0 };
+  const checked = { stops: open.length, routesJudged: 0, stopsWithHours: 0, legsTotal: 0, legsGoogle: 0 };
+  // Every leg the walk crosses, keyed and positioned, so the server sweep can prefetch
+  // real drive times for exactly these pairs next pass. Deduped; order irrelevant.
+  const legsWanted = new Map();
   if (day) for (const s of open) { if (dayReceivingWindow(noteOf(s), day)) checked.stopsWithHours += 1; }
 
   // R1 — two NuVizz orders under one stop number (the Estes twin). Proof, not a guess: the
@@ -510,7 +523,18 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         // chain still breaks honestly when there is neither a position nor a stamp.
         const stamplessGap = !pos && !arrivalAnchor(s, servedDate);
         if (stamplessGap) { chainBroken = true; break; }
-        if (pos) clockMin += (haversineMeters(cur, pos) * ROUTE_ROAD_FACTOR / ROUTE_AVG_SPEED_MPS) / 60;
+        if (pos) {
+          // THE LEG. A cached real drive time when the sweep has one for this pair;
+          // the distance-tiered curve otherwise. Never the old flat ~30 mph — a flat
+          // speed understates town legs and overstates highway ones, in both cases at
+          // the stops where being wrong costs a delivery.
+          const lk = legKey(cur, pos);
+          if (!legsWanted.has(lk)) legsWanted.set(lk, { key: lk, a: { lat: cur.lat, lng: cur.lng }, b: { lat: pos.lat, lng: pos.lng } });
+          const leg = resolveLegMinutes(cur, pos, haversineMeters(cur, pos), travel);
+          clockMin += leg.min;
+          checked.legsTotal += 1;
+          if (leg.source === 'google') checked.legsGoogle += 1;
+        }
         hopsSinceAnchor += 1;
         const finished = isFinishedStop(s);
         const w = finished ? null : dayReceivingWindow(noteOf(s), day);
@@ -658,6 +682,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     amberCount: capped.filter((r) => r.tier === 'amber').length,
     skipped,
     checked,
+    legsWanted: [...legsWanted.values()],
   };
 }
 

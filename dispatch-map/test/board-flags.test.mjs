@@ -155,7 +155,9 @@ test('a stop sequenced past a TYPED close flags red, labelled as an estimate', (
 // reading "0 red - 6 advisory" while carrying a stop predicted 155 minutes past its close.
 // A big overrun now escalates whatever the source of the hours; the caveat text stays.
 test('scanner-guessed hours still SAY they are guessed — but a big miss escalates anyway', () => {
-  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '08:00', close: '09:00' } } }) };
+  // ETA at FAR CO is ~9:27 under the tiered curve (the 49-mile leg rides at ~47 mph now,
+  // not a flat 30) — a 7:00 close puts the overrun in the red band past the 90-min bars.
+  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '06:00', close: '07:00' } } }) };
   const stops = [stop({ stopNbr: '1', routeSeq: 1 }), stop({ stopNbr: '2', routeSeq: 2, matchKey: 'far|k', lat: 33.60, lng: -84.60 })];
   const r = run(stops, notesObj).rows.find((x) => x.rule === 'hours_risk');
   assert.ok(r, 'the miss is still flagged');
@@ -168,7 +170,7 @@ test('scanner-guessed hours still SAY they are guessed — but a big miss escala
 test('a small overrun on guessed hours stays AMBER — inside the error bars, the model cannot tell', () => {
   // Same route, but the close is late enough that the predicted arrival misses it by less
   // than the model's own typical error. That is not evidence, and it must not read as red.
-  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '08:00', close: '10:30' } } }) };
+  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '08:00', close: '09:00' } } }) };
   const stops = [stop({ stopNbr: '1', routeSeq: 1 }), stop({ stopNbr: '2', routeSeq: 2, matchKey: 'far|k', lat: 33.60, lng: -84.60 })];
   const r = run(stops, notesObj).rows.find((x) => x.rule === 'hours_risk');
   assert.ok(r);
@@ -178,7 +180,7 @@ test('a small overrun on guessed hours stays AMBER — inside the error bars, th
 
 test('typed hours keep their weight: any predicted overrun is at least RED', () => {
   const notesObj = { 'far|k': note({
-    receiving_hours: { mon: { open: '08:00', close: '10:30' } },
+    receiving_hours: { mon: { open: '08:00', close: '09:00' } },
     manual_overrides: { receiving_hours: true },
   }) };
   const stops = [stop({ stopNbr: '1', routeSeq: 1 }), stop({ stopNbr: '2', routeSeq: 2, matchKey: 'far|k', lat: 33.60, lng: -84.60 })];
@@ -189,7 +191,7 @@ test('typed hours keep their weight: any predicted overrun is at least RED', () 
 test('an overrun clearing TWICE the error band is CRITICAL, whatever typed the hours', () => {
   // Auto-detected hours, and a miss so large it survives the model being as wrong as it
   // usually is. This is the tier that did not exist when a 155-minute miss read as advisory.
-  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '06:00', close: '06:30' } } }) };
+  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '05:00', close: '06:00' } } }) };
   const stops = [stop({ stopNbr: '1', routeSeq: 1 }), stop({ stopNbr: '2', routeSeq: 2, matchKey: 'far|k', lat: 33.60, lng: -84.60 })];
   const r = run(stops, notesObj).rows.find((x) => x.rule === 'hours_risk');
   assert.equal(r.tier, 'critical');
@@ -197,7 +199,7 @@ test('an overrun clearing TWICE the error band is CRITICAL, whatever typed the h
 });
 
 test('critical is counted separately AND inside redCount — promotion never reads calmer', () => {
-  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '06:00', close: '06:30' } } }) };
+  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '05:00', close: '06:00' } } }) };
   const stops = [stop({ stopNbr: '1', routeSeq: 1 }), stop({ stopNbr: '2', routeSeq: 2, matchKey: 'far|k', lat: 33.60, lng: -84.60 })];
   const out = run(stops, notesObj);
   assert.equal(out.criticalCount, 1);

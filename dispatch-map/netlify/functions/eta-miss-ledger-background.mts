@@ -24,6 +24,8 @@ import { listStops } from './lib/history-store.mts';
 import { scoreDay, ledgerPath, ledgerMatchKey, LEDGER_VERSION } from './lib/miss-ledger.mts';
 import { scoreRow, summarize, flagHistoryPath, FLAG_HISTORY_VERSION, needsOutcomeRescore } from './lib/flag-history.mts';
 import { arrivalAnchor, isFinishedStop } from '../../src/lib/board-flags.js';
+import { fitCurve, legSamplesFromRoutes, curveToDoc, DEFAULT_CURVE } from '../../src/lib/travel-model.js';
+import { travelCalDayPath, travelCalCurrentPath } from './lib/travel-store.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -151,6 +153,94 @@ async function scoreFlagOutcomes(date: string, stops: any[]) {
   return summary;
 }
 
+// ── TRAVEL CALIBRATION ───────────────────────────────────────────────────────
+//
+// The distance-tiered speed curve the flag walk runs on is MEASURED, not assumed: every
+// sealed day's consecutive same-route stamps are (distance, elapsed) pairs from the
+// trucks that actually drive these roads. This job already holds the day's stops, so
+// recording the samples costs one small write — and the rolling fit pools the last 28
+// day-docs so no single bad afternoon steers the curve. Same "two writers, no new crons"
+// discipline as the flag history itself.
+const CAL_WINDOW_DAYS = 28;
+const CAL_MAX_SAMPLES_PER_DAY = 800;
+
+// The SAME per-stop resolution the backtest's ?fit=1 preview uses — pickups out (their
+// stamp is the terminal's, not a road's), appointment routes out (held freight paces
+// nothing), dispatcher pin over feed geocode, strict numeric coords (Number(null) is 0
+// and 0 is finite — the exact trap CLAUDE.md warns about, and lat 0 is a real ocean).
+const calNumOr = (v: any) => { const n = typeof v === 'number' ? v : parseFloat(v); return Number.isFinite(n) ? n : null; };
+function calPos(s: any): { lat: number; lng: number } | null {
+  const ov = s?.note?.location_override ?? s?.location_override;
+  const oLat = calNumOr(ov?.lat), oLng = calNumOr(ov?.lng);
+  if (oLat != null && oLng != null) return { lat: oLat, lng: oLng };
+  const lat = calNumOr(s?.lat), lng = calNumOr(s?.lng);
+  return lat != null && lng != null ? { lat, lng } : null;
+}
+const calIsAppointmentRoute = (k: string) => /\b(?:APPTS?|APPOINTMENTS?)\b/i.test(k);
+
+function calSamplesForDay(stops: any[], date: string) {
+  const routes = new Map<string, any[]>();
+  for (const s of stops) {
+    const k = String(s?.loadNbr || s?.routeName || '').trim();
+    if (!k || calIsAppointmentRoute(k)) continue;
+    if (String(s?.stopType || '').toUpperCase() === 'PU') continue;
+    const a = arrivalAnchor(s, date);
+    if (!routes.has(k)) routes.set(k, []);
+    routes.get(k)!.push({
+      pos: calPos(s),
+      stampMin: a ? a.min : null,
+      seq: typeof s?.routeSeq === 'number' ? s.routeSeq : null,
+    });
+  }
+  return legSamplesFromRoutes(routes).slice(0, CAL_MAX_SAMPLES_PER_DAY);
+}
+
+async function writeTravelCalibration(date: string, stops: any[]) {
+  const samples = calSamplesForDay(stops, date);
+  await setDoc(travelCalDayPath(TENANT, date), {
+    tenant: TENANT, date, n: samples.length, samples, written_at: new Date().toISOString(),
+  });
+
+  // A BACKFILLED OLD DAY MUST NOT STEER THE LIVE CURVE BACKWARDS. ?force/?date re-scores
+  // are fair game for day-docs, but __current is what every board runs on tonight — it
+  // only moves forward. (String compare is correct: ISO dates.)
+  const existing = await getDoc(travelCalCurrentPath(TENANT)).catch(() => null);
+  if (existing?.through && String(existing.through) > date) {
+    return { samples: samples.length, skippedCurrent: `through ${existing.through} > ${date}` };
+  }
+
+  // Pool the window and refit. A day with no doc contributes nothing; the fit itself
+  // falls back per-bucket to the shipped defaults wherever the pool is thin.
+  const pooled: any[] = [];
+  const daysUsed: string[] = [];
+  for (let i = 0; i < CAL_WINDOW_DAYS; i++) {
+    const d = addDays(date, -i);
+    try {
+      const doc = await getDoc(travelCalDayPath(TENANT, d));
+      if (doc?.samples?.length) { pooled.push(...doc.samples); daysUsed.push(d); }
+    } catch { /* absent day — fine */ }
+  }
+  const fit = fitCurve(pooled, { defaults: DEFAULT_CURVE });
+  await setDoc(travelCalCurrentPath(TENANT), {
+    tenant: TENANT,
+    // AS MAPS, NOT PAIRS. Firestore rejects an array nested in an array with a 400, the
+    // write here is wrapped in a best-effort catch, and the resulting "calibration never
+    // persists" is pixel-identical to day one. curveToDoc/curveFromDoc are the only two
+    // ways this shape crosses the wire, and a test round-trips them.
+    curve: curveToDoc(fit.curve), buckets: fit.buckets,
+    serviceMin: fit.serviceMin, serviceMeasured: fit.serviceMeasured,
+    n: fit.n, days: daysUsed.length, through: date,
+    fitted_at: new Date().toISOString(),
+  });
+  return { samples: samples.length, pooled: fit.n, days: daysUsed.length, serviceMin: fit.serviceMin };
+}
+
+/** Is this date's calibration day-doc absent? One getDoc; lets the scheduled 7-day sweep
+ *  seed history that predates the feature instead of pooling a single day for a month. */
+async function calDayMissing(date: string): Promise<boolean> {
+  try { return !(await getDoc(travelCalDayPath(TENANT, date))); } catch { return false; }
+}
+
 export default async (req: Request): Promise<Response> => {
   const J = (b: any, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } });
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
@@ -183,7 +273,8 @@ export default async (req: Request): Promise<Response> => {
       // only the ledger's own work.
       const priorLedger = force ? null : await getDoc(ledgerPath(TENANT, date));
       const ledgerDone = priorLedger?.version === LEDGER_VERSION;
-      if (ledgerDone && !(await outcomesPending(date))) {
+      const calMissing = await calDayMissing(date);
+      if (ledgerDone && !calMissing && !(await outcomesPending(date))) {
         done.push({ date, skipped: 'already scored' });
         continue;
       }
@@ -222,10 +313,18 @@ export default async (req: Request): Promise<Response> => {
       } catch (e: any) {
         console.error('flag outcome scoring failed (non-fatal):', date, e?.message);
       }
+      // Calibration rides the same sealed stops. Best-effort for the same reason the flag
+      // step is: the ledger is the job, this is a measurement taken while the data is warm.
+      let travelCal: any = null;
+      if (!ledgerDone || calMissing) {
+        try { travelCal = await writeTravelCalibration(date, stops); }
+        catch (e: any) { console.error('travel calibration failed (non-fatal):', date, e?.message); }
+      }
       done.push({
         date, scored: summary?.scored, missed: summary?.missed, miss_rate_pct: summary?.miss_rate_pct,
         ...(ledgerDone ? { ledger: 'already scored' } : {}),
         ...(flagOutcome ? { flags: flagOutcome } : {}),
+        ...(travelCal ? { travel: travelCal } : {}),
       });
     }
 

@@ -33,6 +33,10 @@
 // hides which one we have.
 import { isFirestoreEnabled } from './lib/firestore.mts';
 import { listStops } from './lib/history-store.mts';
+// The candidate replacement for the flat speed: a distance-tiered curve (src/lib/
+// travel-model.js — the SAME module the live engine runs, so what this grades is what
+// ships, not a re-implementation that can drift).
+import { legMinutesFromMeters, fitCurve, legSamplesFromRoutes, DEFAULT_CURVE } from '../../src/lib/travel-model.js';
 
 const TENANT = 'davis';
 
@@ -155,6 +159,7 @@ interface Row {
   actual: number; predA: number | null; predC: number | null; predD: number | null;
   idx: number; legMeters: number; pallets: number | null;
   predB: number | null;
+  predT: number | null;   // model T: model C's anchored walk, legs on the TIERED curve
   predE: number | null;   // model E: departs at the route's OWN planned start
   startSignal: string;    // which candidate supplied that start ('' = none, route falls back to 8:00)
   hops: number;   // stops since the last real arrival stamp C could anchor on (0 = none yet)
@@ -173,7 +178,7 @@ interface Row {
 /** Replay one route. Returns one row per stop that has BOTH a position and a real
  *  arrival stamp — a stop we cannot score is excluded from the error stats and counted
  *  separately, never silently treated as correct. */
-function replayRoute(stops: any[], date: string, tuned: { speed: number; service: number; road: number; depart: number }): { rows: Row[]; skipped: Record<string, number> } {
+function replayRoute(stops: any[], date: string, tuned: { speed: number; service: number; road: number; depart: number }, curveT: any = DEFAULT_CURVE): { rows: Row[]; skipped: Record<string, number> } {
   const skipped: Record<string, number> = {};
   const bump = (k: string) => { skipped[k] = (skipped[k] || 0) + 1; };
   const rows: Row[] = [];
@@ -216,6 +221,9 @@ function replayRoute(stops: any[], date: string, tuned: { speed: number; service
   let clockA = DEPART_MIN;          // model A: pure projection, SHIPPED constants
   let clockB = tuned.depart;        // model B: pure projection, TUNED constants (no anchor)
   let clockC = tuned.depart;          // model C: tuned constants AND re-anchored on observed stamps
+  // Model T is C with ONE change — each leg costs what the distance-tiered curve says
+  // instead of flat 30 mph — so any difference between C and T is the speed shape alone.
+  let clockT = tuned.depart;
   let clockE = departE;             // model E: model B's walk, started at the ROUTE's own clock
   let idx = 0;
   // How far C is projecting past its last real stamp. This is the number that decides whether
@@ -238,6 +246,7 @@ function replayRoute(stops: any[], date: string, tuned: { speed: number; service
     clockA += travelA;
     clockB += travelT;
     clockC += travelT;
+    clockT += legMinutesFromMeters(legMeters, curveT);
     clockE += travelT;
     hops += 1;
 
@@ -254,6 +263,7 @@ function replayRoute(stops: any[], date: string, tuned: { speed: number; service
         predE: Math.round(clockE),
         startSignal,
         predC: Math.round(clockC),
+        predT: Math.round(clockT),
         hops,
         predD: vendorEtaMin(s),
         idx, legMeters: Math.round(legMeters), pallets: numOr(s?.pallets),
@@ -268,12 +278,13 @@ function replayRoute(stops: any[], date: string, tuned: { speed: number; service
     clockA += SERVICE_SEC / 60;
     clockB += tuned.service / 60;
     clockC += tuned.service / 60;
+    clockT += tuned.service / 60;
     clockE += tuned.service / 60;
 
     // MODEL C's ANCHOR — and the as-of rule that makes it honest. Once this stop's own
     // arrival is known, later stops in the sequence may be projected from it. It is applied
     // AFTER this stop was scored, so no stop is ever predicted using its own answer.
-    if (actual != null) { clockC = actual + tuned.service / 60; hops = 0; }
+    if (actual != null) { clockC = actual + tuned.service / 60; clockT = actual + tuned.service / 60; hops = 0; }
 
     cur = pos;
   }
@@ -365,6 +376,7 @@ export default async (req: Request): Promise<Response> => {
     const errB = allRows.filter((r) => r.predB != null).map((r) => (r.predB as number) - r.actual);
     const errE = allRows.filter((r) => r.predE != null).map((r) => (r.predE as number) - r.actual);
     const errC = allRows.filter((r) => r.predC != null).map((r) => (r.predC as number) - r.actual);
+    const errT = allRows.filter((r) => r.predT != null).map((r) => (r.predT as number) - r.actual);
     const withVendor = allRows.filter((r) => r.predD != null);
     const errD = withVendor.map((r) => (r.predD as number) - r.actual);
 
@@ -389,6 +401,80 @@ export default async (req: Request): Promise<Response> => {
     for (const b of [[1, 1], [2, 2], [3, 4], [5, 7], [8, 99]]) {
       const sel = allRows.filter((r) => r.hops >= b[0] && r.hops <= b[1] && r.predC != null);
       byHop[`hops_${b[0]}${b[1] === b[0] ? '' : `_${b[1] === 99 ? 'plus' : b[1]}`}`] = stats(sel.map((r) => (r.predC as number) - r.actual));
+    }
+    // The same horizon read for T — the whole question is whether the curve helps at the
+    // MULTI-hop horizon where a flag has to fire to be actionable, not just one stop out.
+    const byHopT: Record<string, any> = {};
+    for (const b of [[1, 1], [2, 2], [3, 4], [5, 7], [8, 99]]) {
+      const sel = allRows.filter((r) => r.hops >= b[0] && r.hops <= b[1] && r.predT != null);
+      byHopT[`hops_${b[0]}${b[1] === b[0] ? '' : `_${b[1] === 99 ? 'plus' : b[1]}`}`] = stats(sel.map((r) => (r.predT as number) - r.actual));
+    }
+
+    // ── FIT THE CURVE FROM THIS WINDOW (?fit=1) ─────────────────────────────
+    //
+    // Consecutive scored rows on the same route are (leg distance, stamp gap) pairs — the
+    // exact input the nightly calibration uses. Fitting here, over the same sealed window
+    // being graded, answers "what WOULD the calibrated curve be, and how would it score"
+    // before anything ships. The refit replay reuses the kept route groups, no re-read.
+    const doFit = url.searchParams.get('fit') === '1';
+    let fitted: any = null;
+    let fittedStats: any = null;
+    let fittedHoldout: any = null;
+    let byHopTF: Record<string, any> | null = null;
+    if (doFit) {
+      // THE FIT GOES THROUGH THE PRODUCTION PAIRING, not a lookalike. legSamplesFromRoutes
+      // — the exact function the nightly calibration calls — is fed the same per-stop
+      // resolution production uses (override-aware position, same-day stamp, real seq).
+      // A preview fitted through a slightly different pairing had already diverged from
+      // what the nightly would write before this comment existed; "preview equals
+      // production" now holds by construction, not by care.
+      const fitFromGroups = (groups: Array<[string, any[]]>) => {
+        const routes = new Map<string, any[]>();
+        for (const [gk, group] of groups) {
+          const date = String(group[0]?.__date || '');
+          routes.set(gk, group
+            .filter((st) => !isPickup(st))
+            .map((st) => ({
+              pos: posOf(st),
+              stampMin: actualArrivalMin(st, date),
+              seq: seqOf(st),
+            })));
+        }
+        return fitCurve(legSamplesFromRoutes(routes), { defaults: DEFAULT_CURVE });
+      };
+
+      // HOLDOUT, because a curve graded on the rows it was fitted from is a curve grading
+      // its own homework. Fit on the window's first half of days, grade on the second;
+      // the full-window fit (what the nightly would converge to) is what gets REPORTED
+      // as the curve, with its in-sample grade labelled as exactly that.
+      const dayList = [...new Set(routeGroups.map(([k]) => k.split('|')[0]))].sort();
+      const cutDay = dayList[Math.floor(dayList.length / 2)] || '';
+      const fitGroups = routeGroups.filter(([k]) => k.split('|')[0] < cutDay);
+      const gradeGroups = routeGroups.filter(([k]) => k.split('|')[0] >= cutDay);
+
+      fitted = fitFromGroups(routeGroups);
+      const fittedHalf = fitGroups.length ? fitFromGroups(fitGroups) : fitted;
+
+      // Replay with the FITTED dwell too — fitCurve decomposed the same gaps into
+      // (curve, serviceMin) as a pair, and production consumes them as a pair; grading
+      // the curve against a different service would grade a configuration nobody ships.
+      const replayWith = (groups: Array<[string, any[]]>, fit: any) => {
+        const out: Row[] = [];
+        const t = { ...tuned, service: fit.serviceMin * 60 };
+        for (const [, group] of groups) out.push(...replayRoute(group, String(group[0]?.__date || ''), t, fit.curve).rows);
+        return out;
+      };
+      const rowsTF = replayWith(routeGroups, fitted);
+      fittedStats = { ...stats(rowsTF.filter((r) => r.predT != null).map((r) => (r.predT as number) - r.actual)), in_sample: true, serviceMin: fitted.serviceMin };
+      const rowsHold = gradeGroups.length && fitGroups.length ? replayWith(gradeGroups, fittedHalf) : [];
+      fittedHoldout = rowsHold.length
+        ? { ...stats(rowsHold.filter((r) => r.predT != null).map((r) => (r.predT as number) - r.actual)), fit_days: fitGroups.length ? `${dayList[0]}..<${cutDay}` : null, graded_days: `${cutDay}..${dayList[dayList.length - 1]}`, serviceMin: fittedHalf.serviceMin }
+        : null;
+      byHopTF = {};
+      for (const b of [[1, 1], [2, 2], [3, 4], [5, 7], [8, 99]]) {
+        const sel = rowsTF.filter((r) => r.hops >= b[0] && r.hops <= b[1] && r.predT != null);
+        byHopTF[`hops_${b[0]}${b[1] === b[0] ? '' : `_${b[1] === 99 ? 'plus' : b[1]}`}`] = stats(sel.map((r) => (r.predT as number) - r.actual));
+      }
     }
 
     // WHAT TIME DOES THE TRUCK ACTUALLY LEAVE? The 8:00 departure is an assumption nobody
@@ -656,11 +742,20 @@ export default async (req: Request): Promise<Response> => {
         F_shipped_intraday: stats(errF),
         G_shipped_anchor_no_service: stats(errG),
         C_anchored: stats(errC),
+        // T's ABSOLUTE level shares C's composition (service added after every stamp,
+        // incl. delivered ones the live engine treats as dwell-included) — deliberately,
+        // so the C-vs-T DELTA isolates the leg pricing. Read the delta, not the level.
+        T_anchored_tiered_curve: stats(errT),
+        ...(fittedStats ? { T_anchored_fitted_curve: fittedStats } : {}),
+        ...(fittedHoldout ? { T_fitted_HOLDOUT: fittedHoldout } : {}),
         D_vendor: stats(errD),
       },
       A_by_route_position: byIdx,
       A_by_hour_of_day: byHour,
       C_by_horizon: byHop,
+      T_by_horizon: byHopT,
+      ...(byHopTF ? { T_fitted_by_horizon: byHopTF } : {}),
+      ...(fitted ? { fitted_curve: { curve: fitted.curve, buckets: fitted.buckets, serviceMin: fitted.serviceMin, serviceMeasured: fitted.serviceMeasured, n: fitted.n } } : {}),
       start_signal_split: bySignal,
       F_by_stops_completed: Object.fromEntries(Object.entries(byDrop).map(([k, v]) => [k, stats(v)])),
       observed_departure: departStats,

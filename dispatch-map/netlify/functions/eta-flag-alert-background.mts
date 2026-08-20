@@ -24,6 +24,7 @@
 // day either side of a DST flip without needing to be re-timed twice a year.
 import { isFirestoreEnabled, readStops, getDoc, setDoc, createDocIfAbsent, etDayString } from './lib/firestore.mts';
 import { computeBoardFlags } from '../../src/lib/board-flags.js';
+import { ensureLegs, readTravelCalibration } from './lib/travel-store.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { selectAlertable, sendAlerts, ALERT_TO } from './lib/flag-alert.mts';
 import { mergeSweep, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
@@ -82,9 +83,32 @@ export default async (req: Request): Promise<Response> => {
       }));
     }
 
+    // ── HOW LONG A LEG TAKES ─────────────────────────────────────────────────
+    //
+    // Real cached Google drive times where the cache holds them, the nightly-calibrated
+    // distance-tiered curve everywhere else — never the old flat ~30 mph. TWO PASSES,
+    // because the walk itself is what knows which legs today's boards need: pass one runs
+    // on whatever is cached and reports its legsWanted, the store fills the gaps (capped,
+    // cached, free-tier), and pass two — the one whose verdicts alert and get recorded —
+    // runs with the filled cache. The engine is pure and takes milliseconds; running it
+    // twice buys same-sweep freshness instead of always being one sweep behind.
+    const cal = await readTravelCalibration(TENANT);
+    const calOpts = cal ? { curve: cal.curve, serviceMin: cal.serviceMin } : {};
+    const engineOpts = (legs: Record<string, number>) => ({
+      depot: DEPOT, ...(nowMin != null ? { nowMin } : {}),
+      travel: { legs, ...calOpts },
+    });
+
+    const first = computeBoardFlags({
+      stops, notes, servedDate: date, dayKey: weekdayKey(date), opts: engineOpts({}),
+    });
+    let legInfo = { legs: {} as Record<string, number>, fetched: 0, missing: 0, googleEnabled: false };
+    try {
+      legInfo = await ensureLegs(TENANT, first.legsWanted || []);
+    } catch { /* the curve carries the sweep; a cache failure must not */ }
+
     const flags = computeBoardFlags({
-      stops, notes, servedDate: date, dayKey: weekdayKey(date),
-      opts: { depot: DEPOT, ...(nowMin != null ? { nowMin } : {}) },
+      stops, notes, servedDate: date, dayKey: weekdayKey(date), opts: engineOpts(legInfo.legs),
     });
 
     const candidates = selectAlertable(flags.rows, nowMin);
@@ -130,6 +154,13 @@ export default async (req: Request): Promise<Response> => {
 
     const base = {
       recorded,
+      // What the clock ran on, so a sweep is inspectable: how many legs rode real drive
+      // times vs the curve, whether the calibration doc existed, whether Google is wired.
+      travel: {
+        legsGoogle: flags.checked?.legsGoogle ?? 0, legsTotal: flags.checked?.legsTotal ?? 0,
+        fetched: legInfo.fetched, stillMissing: Math.max(0, legInfo.missing - legInfo.fetched),
+        googleEnabled: legInfo.googleEnabled, calibrated: !!cal,
+      },
       ok: true, date, nowMin,
       critical: flags.criticalCount ?? 0, red: flags.redCount ?? 0, amber: flags.amberCount ?? 0,
       alertable: candidates.length,
