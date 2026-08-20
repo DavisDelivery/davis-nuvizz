@@ -206,6 +206,24 @@ const FLAG_SERVICE_SEC = 14 * 60;
 // needs a driver, which is true of it whether or not anything is at risk.
 export const NO_DRIVER_START_MIN = 12 * 60;
 
+// WHEN WE START WATCHING FOR IT — which is NOT the same question as when the trucks leave.
+//
+// Chad: "The unassigned loads that we act like leaving at 12 will throw flags at 7am if
+// there is a problem yes?" They did not. The watch was gated on the fleet's DEPARTURE hour
+// (8:00a), so a load with nobody on it and an 11:00a close said nothing until eight — an
+// hour of lead time thrown away on exactly the loads with the least of it.
+//
+// That gate was inherited from the rule this replaced. When R6 fired on the mere EXISTENCE
+// of an unassigned load, holding it until departure was the only thing stopping a 6:30am
+// wall of cards about loads dispatch was still in the middle of assigning. The noon clock
+// absorbed that job completely: the flag now fires only when a NOON start actually misses
+// something, so an unassigned load with a 4:00p close is silent at 7am for the right reason
+// — there is no problem — rather than because the clock had not struck eight.
+//
+// So the two concepts are separated. `departMin` is when trucks roll. This is when somebody
+// is at a desk who can put a driver on a load, and 7:00a is when the day sweep starts.
+export const NO_DRIVER_WATCH_FROM_MIN = 7 * 60;
+
 // ── SEVERITY: HOW MUCH SLACK IS LEFT, NOT WHO TYPED THE HOURS ────────────────
 //
 // Until now a receiving-hours flag was red if a dispatcher had typed the hours and amber if
@@ -655,8 +673,9 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     // no driver is dispatch still doing its job, not a problem. Past noon it returns `now` —
     // a load nobody has taken by 1:00pm cannot start at noon either.
     const hasDriverOn = (g) => (g || []).some((s) => String(s?.driverName || s?.driverUserName || '').trim());
+    const watchFrom = Number.isFinite(opts.noDriverWatchFromMin) ? opts.noDriverWatchFromMin : NO_DRIVER_WATCH_FROM_MIN;
     const driverlessStart = (k, g) => (
-      nowMin != null && nowMin >= departMin && !startedRoutes.has(k) && !hasDriverOn(g)
+      nowMin != null && nowMin >= watchFrom && !startedRoutes.has(k) && !hasDriverOn(g)
         ? Math.max(NO_DRIVER_START_MIN, nowMin)
         : null
     );
@@ -902,7 +921,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     //
     // Today-board only (nowMin present) — a tomorrow route without a driver yet is just
     // tomorrow.
-    if (nowMin != null && nowMin >= departMin) {
+    if (nowMin != null && nowMin >= watchFrom) {
       for (const [k, group] of byRoute) {
         // The assumed noon start for this load, or null when somebody is driving it (or a
         // truck is already rolling on it). Same helper R5's clock used, so the card and the

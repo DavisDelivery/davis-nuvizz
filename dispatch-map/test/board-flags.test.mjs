@@ -780,3 +780,45 @@ test('THE METRO CASE: a phantom close at our dock no longer outranks a real cust
   assert.match(r.title, /2:00p/, 'and the deadline in the title is the real one');
   assert.ok((r.atRisk || []).some((x) => x.customer === 'METRO'), 'and it rides on the row as data');
 });
+
+// ── 7AM, NOT 8 (Chad, 2026-08-20) ────────────────────────────────────────────
+//
+// "The unassigned loads that we act like leaving at 12 will throw flags at 7am if there is
+// a problem yes?" They did not — the watch was gated on the fleet's DEPARTURE hour, so an
+// unassigned load with an 11:00a close said nothing until eight. An hour of lead thrown
+// away on exactly the loads with the least of it.
+
+test('a driverless load with a real problem flags at 7:00a, not 8:00a', () => {
+  const notesObj = { 'lund|k': note({ receiving_hours: { mon: { open: '06:00', close: '11:00' } } }) };
+  const stops = [stop({ stopNbr: '1', routeSeq: 1, loadNbr: 'LVILLE', routeName: 'LVILLE',
+    matchKey: 'lund|k', businessName: 'LUND', driverName: null, driverUserName: null })];
+  const at = (nowMin) => run(stops, notesObj, { opts: { ...OPTS, nowMin } })
+    .rows.filter((r) => r.rule === 'no_driver_hours').length;
+  assert.equal(at(6 * 60 + 59), 0, 'before the day sweep starts, nobody is at a desk to fix it');
+  assert.equal(at(7 * 60), 1, 'the moment the sweep starts — a full hour earlier than before');
+  assert.equal(at(7 * 60 + 30), 1);
+  assert.equal(at(9 * 60), 1);
+});
+
+test('…and the earlier watch does NOT become a 7am wall — the noon clock still decides', () => {
+  // This is the whole reason the departure gate could be dropped safely. It used to be the
+  // only thing stopping a wall of cards about loads dispatch was still assigning; the noon
+  // start took that job over. A 4:00p close is silent at 7am because there is no problem,
+  // not because the clock has not struck eight.
+  const stops = [stop({ stopNbr: '1', routeSeq: 1, loadNbr: 'LVILLE', routeName: 'LVILLE',
+    matchKey: 'lund|k', businessName: 'LUND', driverName: null, driverUserName: null })];
+  const withClose = (close) => run(stops, { 'lund|k': note({ receiving_hours: { mon: { open: '06:00', close } } }) },
+    { opts: { ...OPTS, nowMin: 7 * 60 } }).rows.filter((r) => r.rule === 'no_driver_hours').length;
+  assert.equal(withClose('16:00'), 0, 'a 4:00p close is reachable from noon — silent at 7am, correctly');
+  assert.equal(withClose('11:00'), 1, 'an 11:00a close is not');
+});
+
+test('the watch hour is separate from the departure hour, and settable', () => {
+  // They answer different questions: departMin is when trucks roll, this is when somebody is
+  // at a desk who can put a driver on a load. Conflating them is what caused the miss.
+  const notesObj = { 'lund|k': note({ receiving_hours: { mon: { open: '06:00', close: '11:00' } } }) };
+  const stops = [stop({ stopNbr: '1', routeSeq: 1, matchKey: 'lund|k', driverName: null, driverUserName: null })];
+  const fires = (o) => run(stops, notesObj, { opts: { ...OPTS, ...o } }).rows.some((r) => r.rule === 'no_driver_hours');
+  assert.equal(fires({ nowMin: 7 * 60, departMin: 9 * 60 }), true, 'a late-departing fleet does not delay the warning');
+  assert.equal(fires({ nowMin: 6 * 60, noDriverWatchFromMin: 5 * 60 }), true, 'and the hour is settable');
+});
