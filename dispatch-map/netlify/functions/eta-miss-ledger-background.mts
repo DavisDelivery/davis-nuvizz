@@ -27,6 +27,7 @@ import { arrivalAnchor, isFinishedStop } from '../../src/lib/board-flags.js';
 import { fitCurveByClass, legSamplesFromRoutes, curveToDoc, travelClassOf, DEFAULT_CURVE } from '../../src/lib/travel-model.js';
 import { loadVehicleRoster, vehicleTypeForStop } from './lib/tractor-flags.mts';
 import { travelCalDayPath, travelCalCurrentPath } from './lib/travel-store.mts';
+import { impliedDeparture, departureTable, routeDeparturePath, DEPARTURE_VERSION } from './lib/route-departure.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -163,6 +164,7 @@ async function scoreFlagOutcomes(date: string, stops: any[]) {
 // day-docs so no single bad afternoon steers the curve. Same "two writers, no new crons"
 // discipline as the flag history itself.
 const CAL_WINDOW_DAYS = 28;
+const CAL_DEPOT = { lat: 34.147791, lng: -83.960911 };   // Buford Terminal, as every sweep uses
 const CAL_MAX_SAMPLES_PER_DAY = 800;
 
 // The SAME per-stop resolution the backtest's ?fit=1 preview uses — pickups out (their
@@ -213,14 +215,43 @@ function calSamplesForDay(stops: any[], date: string, roster: any = null) {
   return legSamplesFromRoutes(routes, classOfRoute).slice(0, CAL_MAX_SAMPLES_PER_DAY);
 }
 
+// WHEN EACH ROUTE ACTUALLY LEFT, for this one sealed day. Same `routes` shape the leg
+// calibration builds, so this costs one extra pass over data already in memory and no
+// extra reads. Routes whose first sequenced stop never reported yield nothing — see
+// lib/route-departure for why a later stamp is deliberately not used.
+function departureSamplesForDay(stops: any[], date: string, curve: any): Record<string, number> {
+  const routes = new Map<string, any[]>();
+  for (const s of stops) {
+    const k = String(s?.loadNbr || s?.routeName || '').trim();
+    if (!k || calIsAppointmentRoute(k)) continue;
+    if (String(s?.stopType || '').toUpperCase() === 'PU') continue;
+    const a = arrivalAnchor(s, date);
+    if (!routes.has(k)) routes.set(k, []);
+    routes.get(k)!.push({
+      pos: calPos(s),
+      stampMin: a ? a.min : null,
+      seq: typeof s?.routeSeq === 'number' ? s.routeSeq : null,
+    });
+  }
+  const out: Record<string, number> = {};
+  for (const [k, entries] of routes) {
+    const dep = impliedDeparture(entries, CAL_DEPOT, curve);
+    if (dep != null) out[k] = dep;
+  }
+  return out;
+}
+
 async function writeTravelCalibration(date: string, stops: any[]) {
   // Best-effort roster: a missing/unreadable roster means class-less samples — the fleet
   // fit still runs and nothing is lost except the split, which returns when it does.
   let roster: any = null;
   try { roster = await loadVehicleRoster(); } catch { /* class-less day */ }
   const samples = calSamplesForDay(stops, date, roster);
+  // Departures ride in the SAME day-doc: one write, one window, and a backfill of an old
+  // day repairs both fits together rather than leaving them describing different histories.
+  const departures = departureSamplesForDay(stops, date, DEFAULT_CURVE);
   await setDoc(travelCalDayPath(TENANT, date), {
-    tenant: TENANT, date, n: samples.length, samples, written_at: new Date().toISOString(),
+    tenant: TENANT, date, n: samples.length, samples, departures, written_at: new Date().toISOString(),
   });
 
   // A BACKFILLED OLD DAY MUST NOT STEER THE LIVE CURVE BACKWARDS. ?force/?date re-scores
@@ -235,13 +266,28 @@ async function writeTravelCalibration(date: string, stops: any[]) {
   // falls back per-bucket to the shipped defaults wherever the pool is thin.
   const pooled: any[] = [];
   const daysUsed: string[] = [];
+  const departureDays: Array<{ date: string; byRoute: Record<string, number> }> = [];
   for (let i = 0; i < CAL_WINDOW_DAYS; i++) {
     const d = addDays(date, -i);
     try {
       const doc = await getDoc(travelCalDayPath(TENANT, d));
       if (doc?.samples?.length) { pooled.push(...doc.samples); daysUsed.push(d); }
+      if (doc?.departures && Object.keys(doc.departures).length) {
+        departureDays.push({ date: d, byRoute: doc.departures });
+      }
     } catch { /* absent day — fine */ }
   }
+  // The measured departure per route, published separately so a bad travel fit and a bad
+  // departure fit can never be mistaken for each other. Routes with too few clean days are
+  // omitted by departureTable, and the board keeps its 8:00a default for them.
+  try {
+    const table = departureTable(departureDays);
+    await setDoc(routeDeparturePath(TENANT), {
+      tenant: TENANT, version: DEPARTURE_VERSION, through: date,
+      days: departureDays.length, routes: Object.keys(table).length,
+      table, fitted_at: new Date().toISOString(),
+    });
+  } catch (e: any) { console.error('route departure fit failed (non-fatal):', e?.message); }
   const { fleet: fit, classes } = fitCurveByClass(pooled, { defaults: DEFAULT_CURVE });
   await setDoc(travelCalCurrentPath(TENANT), {
     tenant: TENANT,

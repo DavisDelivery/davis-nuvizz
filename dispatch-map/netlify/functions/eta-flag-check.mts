@@ -22,6 +22,7 @@
 import { isFirestoreEnabled, readStops, getDoc, listDocs, etDayString } from './lib/firestore.mts';
 import { computeBoardFlags, isFinishedStop } from '../../src/lib/board-flags.js';
 import { legSecondsMap, travelLegsPath, readTravelCalibration, readRouteClasses } from './lib/travel-store.mts';
+import { routeDeparturePath } from './lib/route-departure.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, DAILY_ALERT_CAP, ALERT_TIERS, finiteMinutes } from './lib/flag-alert.mts';
 import { emailEnabled } from './lib/email.mts';
@@ -150,10 +151,15 @@ export default async (req: Request): Promise<Response> => {
       getDoc(travelLegsPath(TENANT)).catch(() => null),
       readRouteClasses(TENANT, date).catch(() => ({})),
     ]);
+    // Measured per-route departures, same table the sweeps judge on — so the dry twin
+    // cannot disagree with the alert about when a truck leaves.
+    const departDoc = await getDoc(routeDeparturePath(TENANT)).catch(() => null);
+    const departByRoute = departDoc?.table || null;
     const flags = computeBoardFlags({
       stops, notes, servedDate: date, dayKey: weekdayKey(date),
       opts: {
         depot: DEPOT, ...(nowMin != null ? { nowMin } : {}),
+        ...(departByRoute ? { departByRoute } : {}),
         travel: {
           legs: legSecondsMap(legDoc), routeClasses,
           ...(cal ? {

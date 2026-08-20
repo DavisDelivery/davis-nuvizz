@@ -25,6 +25,7 @@
 import { isFirestoreEnabled, readStops, getDoc, setDoc, listFleetLoads, createDocIfAbsent, etDayString } from './lib/firestore.mts';
 import { computeBoardFlags } from '../../src/lib/board-flags.js';
 import { ensureLegs, readTravelCalibration, routeClassesPath } from './lib/travel-store.mts';
+import { routeDeparturePath } from './lib/route-departure.mts';
 import { travelClassOf } from '../../src/lib/travel-model.js';
 import { loadVehicleRoster, vehicleTypeForStop } from './lib/tractor-flags.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
@@ -94,6 +95,10 @@ export default async (req: Request): Promise<Response> => {
     // cached, free-tier), and pass two — the one whose verdicts alert and get recorded —
     // runs with the filled cache. The engine is pure and takes milliseconds; running it
     // twice buys same-sweep freshness instead of always being one sweep behind.
+    // WHEN EACH ROUTE ACTUALLY LEAVES — measured per-route departure, fitted nightly from
+    // sealed history. Absent or thin, every route keeps the shipped 8:00a default.
+    const departDoc = await getDoc(routeDeparturePath(TENANT)).catch(() => null);
+    const departByRoute = departDoc?.table || null;
     const cal = await readTravelCalibration(TENANT);
     // WHICH TRUCK RUNS EACH ROUTE. Truthiest source first: the NuVizz load header's own
     // vehicleType — the unit actually ASSIGNED to the load, refreshed every scan into the
@@ -167,6 +172,7 @@ export default async (req: Request): Promise<Response> => {
     const engineOpts = (legs: Record<string, number>) => ({
       depot: DEPOT, ...(nowMin != null ? { nowMin } : {}),
       travel: { legs, routeClasses, ...calOpts },
+      ...(departByRoute ? { departByRoute } : {}),
     });
 
     const first = computeBoardFlags({
