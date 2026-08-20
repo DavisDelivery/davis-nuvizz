@@ -343,6 +343,86 @@ export const TIER_ORDER = { critical: 0, red: 1, amber: 2 };
 export const TIER_RANK = { amber: 1, red: 2, critical: 3 };
 
 /**
+ * PURE. A FLAG DOES NOT GET QUIETER BECAUSE THE MODEL GOT LESS SURE.
+ *
+ * Chad, on RAICOM sitting at stop 10 of KOSTNER — the route card still predicting 12:33p
+ * against a 12:00p close, the panel now reading "0 red · 5 advisory": "you took the Raicom
+ * flag away but eta on route still shows 12:30, that doesn't work for me. The flag should
+ * remain unless our updated eta is showing we will get there in time."
+ *
+ * He is describing a real demotion, not a disappearance. The row was red at 45 minutes late
+ * and went amber at 33, because severity is the overrun measured against the model's own
+ * error band and the band at that point in the chain is 40 minutes. Nothing about the stop
+ * improved — it is still predicted past its close — but the board got calmer, which is the
+ * wrong direction and the exact failure v0.56.3 was about: the screen and the urgency
+ * disagreeing while the freight sits in the same trouble.
+ *
+ * So severity RATCHETS. Once a stop's receiving-hours row has reached red today it stays at
+ * least red, and the only thing that clears it is the estimate coming back inside the window
+ * — at which point the row stops existing at all, which is the honest "we will get there in
+ * time" Chad asked for. Confidence may still promote a row (red → critical); it may never
+ * demote one.
+ *
+ * The floor is a per-board-day fact, read from the flag history the sweeps already write
+ * (worstTier per stop). It cannot resurrect anything: it only applies to a row the walk has
+ * just produced, and the walk produces a row only while arrival is predicted past the close.
+ *
+ * Accepts a function, a Map, or a plain object so the browser and the server sweeps can each
+ * pass whatever they hold. Anything unreadable resolves to no floor.
+ */
+export function tierFloorLookup(src) {
+  if (typeof src === 'function') return (k) => normTier(src(k));
+  if (src instanceof Map) return (k) => normTier(src.get(String(k)));
+  if (src && typeof src === 'object') return (k) => normTier(src[String(k)]);
+  return () => null;
+}
+function normTier(v) {
+  const t = String(v ?? '').trim().toLowerCase();
+  return TIER_RANK[t] ? t : null;
+}
+/** PURE. The worse of two tiers, unknown treated as absent. */
+export function worstOfTiers(a, b) {
+  const ra = TIER_RANK[String(a ?? '').toLowerCase()] || 0;
+  const rb = TIER_RANK[String(b ?? '').toLowerCase()] || 0;
+  return rb > ra ? b : a;
+}
+
+/**
+ * PURE. What the top-bar flag chip should show.
+ *
+ * THE CHIP USED TO PUBLISH ONE NUMBER: the red count if there were any reds, otherwise the
+ * amber count. So a board reading "1 red · 4 advisory" in the panel showed a bare "1" on the
+ * card, and a board with one red and twelve advisories was pixel-identical to one with a
+ * single red and nothing else. Chad, pointing at the card beside the open panel: "put the
+ * advisory flag numbers on the top card as well."
+ *
+ * That matters more than a missing digit. Advisory IS the early-warning tier — the one that
+ * fires overnight while a router can still resequence a route, hours before the same stop
+ * hardens into a red. The 49-day replay found 48 misses that were visible on the screen and
+ * never texted, and every one of them was amber when it was first seen. Hiding that count
+ * behind the red one puts the tier you can still act on out of sight, and leaves a board
+ * whose only news is advisory looking exactly like a board with no news at all.
+ *
+ * Returns both counts and the tone the chip paints in, so the three places that render the
+ * chip (mobile Map, desktop Map, Routing) cannot drift apart on what it means.
+ */
+export function flagChipParts(flags) {
+  const n = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Math.floor(Number(v)) : 0);
+  const red = n(flags?.redCount);
+  const amber = n(flags?.amberCount);
+  return {
+    red,
+    amber,
+    // A quiet board still renders the chip — a detector that could not look must not be
+    // pixel-identical to a clean board (v0.54.x). It just renders grey and count-less.
+    quiet: red === 0 && amber === 0,
+    tone: red > 0 ? 'red' : amber > 0 ? 'amber' : 'quiet',
+    // The separator only exists when there are two numbers to separate.
+    showSep: red > 0 && amber > 0,
+  };
+}
+
+/**
  * PURE: derive the day's flag rows from what the browser already holds.
  *
  * @param stops       board stops for the served day (client rows)
@@ -376,6 +456,10 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         }
         return (k) => { const h = byKey.get(String(k ?? '').trim().toLowerCase()); return Number.isFinite(h) ? h : null; };
       })();
+  // The severity floor for this board day: { stopNbr: worstTier } as the sweeps recorded it,
+  // or a lookup fn. Absent entirely, every row is judged on this sweep alone — the shipped
+  // behaviour. See tierFloorLookup for why a flag may promote but never demote.
+  const tierFloor = tierFloorLookup(opts.tierFloorByStop);
   // Service precedence: an explicit caller override, then the nightly-measured dwell,
   // then the shipped constant. Calibration refining the dwell must not need a deploy.
   const serviceSec = Number.isFinite(opts.serviceSec) ? opts.serviceSec
@@ -710,7 +794,12 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         if (w && clockMin > w.closeMin) {
           const lateBy = Math.round(clockMin - w.closeMin);
           const errorMin = modelErrorMinutes({ anchored, hops: hopsSinceAnchor });
-          const tier = severityTier({ lateBy, errorMin, hoursTier: w.tier });
+          const computedTier = severityTier({ lateBy, errorMin, hoursTier: w.tier });
+          // THE RATCHET (see tierFloorLookup). A row that has already been red today cannot
+          // slide back to advisory while we still predict it past the close — the only exit
+          // is the estimate clearing the window, and then there is no row here at all.
+          const tier = worstOfTiers(computedTier, tierFloor(s.stopNbr));
+          const tierHeld = tier !== computedTier;
           const hoursRow = row(tier, 'hours_risk', s, {
             // Machine-readable facts alongside the human sentence: the alert path must not
             // have to parse the detail string to know when the window shuts.
@@ -722,7 +811,10 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
             // four lines of identical boilerplate and the panel read as a wall of text).
             // The model disclaimer lives ONCE in the panel footer; "estimated" on the number
             // keeps the row honest; the auto-detected caveat is four words, not two sentences.
-            detail: `Stop ${seqOf(s)} on ${k} — estimated arrival ~${fmtMin(clockMin)} vs close ${fmtMin(w.closeMin)} (${lateBy} min late); ${anchorNote}.${w.tier === 'auto' ? ' Hours auto-detected — verify.' : ''}`,
+            // Provenance for the ratchet, so the alert path and the history never have to
+            // infer it: what the model said on its own, and whether it was held above that.
+            computedTier, tierHeld,
+            detail: `Stop ${seqOf(s)} on ${k} — estimated arrival ~${fmtMin(clockMin)} vs close ${fmtMin(w.closeMin)} (${lateBy} min late); ${anchorNote}.${w.tier === 'auto' ? ' Hours auto-detected — verify.' : ''}${tierHeld ? ` Flagged earlier today — stays ${tier} while the estimate is past the close.` : ''}`,
             scope: 'occurrence', servedDate, fingerprint: `hours|${servedDate}|${k}|${s.stopNbr}|${w.closeMin}`,
           });
           rows.push(hoursRow);

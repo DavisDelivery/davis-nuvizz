@@ -43,7 +43,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
 import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, isPlannedStop, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
-import { entryScriptFromHtml, isNewBuild } from './lib/build-update.js';
+import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact } from './lib/nuvizzWrite.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
@@ -55,7 +55,7 @@ import { cancelsIn, cancelSummary } from './lib/cancel-guard.js';
 import { validateNewRoute } from './lib/route-create.js';
 import { mergeDayLoads, dayLoadTally } from './lib/day-loads.js';
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
-import { computeBoardFlags, fmtMin } from './lib/board-flags.js';
+import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
 import ChatPanel, { ChatLauncher, MessagesLauncher } from './components/ChatPanel.jsx';
 import MessagesPanel from './components/MessagesPanel.jsx';
 
@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.66.0';
+const APP_VERSION = '0.66.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -148,6 +148,8 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.66.2', 'A FLAG NO LONGER GETS QUIETER BECAUSE THE MODEL GOT LESS SURE. Chad, on RAICOM LLC at stop 10 of KOSTNER — the route card still predicting 12:33p against a 12:00p close, the panel now reading “0 red · 5 advisory”: “you took the Raicom flag away but eta on route still shows 12:30, that doesn’t work for me. The flag should remain unless our updated eta is showing we will get there in time.” IT HAD NOT BEEN TAKEN AWAY — IT HAD BEEN DEMOTED, and that is worse, because a demotion is invisible. Red at 45 minutes late, amber at 33, because severity is the overrun measured against the model’s OWN error band and the band six hops down a chain is 40 minutes. Nothing about the stop improved. The truck caught up slightly, the model’s confidence fell below its own bar, and the board got calmer while the freight sat in exactly the same trouble — the screen and the urgency disagreeing, which is the v0.56.3 failure wearing a different hat. SEVERITY NOW RATCHETS: a receiving-hours row that has reached red today stays at least red, confidence may still promote it, and the ONLY thing that clears it is the estimate coming back inside the window — at which point there is no row at all, which is precisely the “we will get there in time” Chad named. The row says so in words when it is being held, so a held red never looks like an ordinary one. THE FLOOR CANNOT INVENT ANYTHING. It is the worstTier the flag history already records for that board day, applied only to a row this sweep just produced, and the walk produces a row only while arrival is predicted past the close — so a delivered stop, a resequenced stop and a stop with no hours on file are all untouched. Tested against every one of those. THE NIGHT NOW LEAVES A RECORD TOO. Only the day sweep wrote flag history and it does not start until 7:00a, so a stop that TEXTED at 1:00a had no floor to stand on and the first morning sweep judged it from scratch — a row that had already woken somebody could turn up as an advisory at breakfast. The evening sweep now folds its rows into the same document, with emailedStops deliberately empty because that path texts and never emails. Screen, alert sweep, evening sweep and the dry twin all read the same floor, so none of them can disagree about a row by one tier. AND THE UPDATE BAR SAYS WHAT CHANGED. Chad: “can we start including a simple set of details of what changed in the new version.” It could not — it compares bundle fingerprints and is content-blind by design, and the changelog lives inside the bundle, so a stale tab holds only its own history. The build now emits version.json beside index.html carrying the deployed version and the first sentence of its changelog row, DERIVED rather than hand-written because a second field to maintain is a field that drifts. The bar shows “v0.66.2 · THE HEADLINE”, wraps to its own line on a phone, and shows the plain bar unchanged whenever the served version is not genuinely newer — a rollback or a stale edge must never caption itself as news. 23 new tests.'],
+  ['0.66.1', 'THE TOP CARD WAS SWALLOWING THE ADVISORY COUNT. Chad, with the flags panel open beside the status card — the panel reading “1 red · 4 advisory”, the card reading a bare “⚑ 1”: “put the advisory flag numbers on the top card as well.” The chip published ONE number: the red count when any red existed, and the amber count only when there were no reds at all. So one red with four advisories and one red on its own were PIXEL-IDENTICAL, and a board whose only news was advisory looked like a board with no news. IT IS THE ADVISORY TIER THAT IS WORTH SEEING EARLY, which is what makes this more than a missing digit. Amber is what a stop looks like overnight, while nothing has moved and the model’s error band is still 90 minutes wide — hours before the same stop anchors on a real delivery, the band narrows to 40, and it hardens into a red somebody chases. The 49-day replay found 48 receiving-hours misses that were visible on the screen and never texted, and EVERY ONE was amber when first seen. Hiding that count behind the red one put the tier a router can still act on out of sight of the person who could act on it. The chip now reads “1 · 4” — severity still picks the chip’s colour, and the advisory count keeps its own amber inside a red chip, because painting it red would claim four more things need attention right now instead of four worth a look. One number becomes two in ONE place: the counts come from a pure flagChipParts, so the three screens that draw this chip (phone Map, desktop Map, Routing) cannot drift on what it means. A clean board is unchanged — still a grey count-less flag that opens the panel, because a detector that could not look must never be pixel-identical to a board with nothing wrong on it. Junk or fractional counts read as zero rather than painting a colour off a NaN. 6 new tests.'],
   ['0.66.0', 'AN UNASSIGNED LOAD IS NOW TIMED FROM NOON, AND THE NO-DRIVER CARD ONLY FIRES WHEN THAT START ACTUALLY MISSES SOMETHING. Chad, on a Board flags panel carrying four interchangeable \u201cNo driver\u201d cards at 9:32 in the morning: \u201cwhy is habasit flagged if system thinks its leaving at 8am and its first stop would have plenty of time to get there before 2pm\u201d \u2014 and the rule to fix it: \u201cany loads that have stops on them and no driver assigned we should treat them as if they are starting the deliveries at 12pm.\u201d He is right twice over. THE FAULT WAS THE CLOCK. A load with nobody on it was walked from the same 8:00 departure as a truck that had already left, so the arrival math always said \u201cfine\u201d and the no-driver rule had to shout on its own \u2014 which it did, on the mere EXISTENCE of an unassigned load carrying receiving hours. A 2:00p close with four and a half hours of slack got the same red card as an 11:00a close that was already unreachable. Four of the six cards on the panel, every morning, none of them separable from the one that mattered: TRAILER 5 (HABASIT, 2:00p), DULUTH (2:00p) and GAINESVILLE (3:00p) sat at identical weight beside DUL 2, which could not make 11:00a. That is not a warning system, it is wallpaper \u2014 and wallpaper is precisely what makes the real one invisible. NOW THE ARRIVAL WALK ANSWERS THE QUESTION ITSELF. A driverless, unmoved load past the departure hour runs its whole chain on a noon clock (max of 12:00p and now, so a load nobody has taken by 1:00pm cannot start at noon either), and the no-driver card fires only where there is a miss to report: either the noon walk predicts a late arrival, or the noon start is itself already past a close. The second test is not redundant \u2014 a route with no usable sequence, or one whose chain breaks on a stop with no pin, is never walked, and \u201cwe cannot even leave the yard before this door shuts\u201d needs no walk to be true. TIERS FOLLOW THE KIND OF EVIDENCE: a close a noon start is already past is arithmetic, not an estimate, so typed hours there go CRITICAL (Chad\u2019s original LVILLE case \u2014 \u201clund needs to be delivered by 2pm and there isn\u2019t even a driver assigned to it\u201d \u2014 exactly) and scanner-guessed hours stop at red, because the deadline itself may be the scanner\u2019s invention. One definition of \u201cnobody is driving this\u201d now serves both the clock and the card, so the two rules can never come to disagree about which loads are unassigned. The card still supersedes the arrival rows it replaces, and now carries a real stop and a real close in the unreachable case, so it can reach customer service while there is still time to put a driver on the load. The panel footer says the assumption out loud \u2014 silence about an unassigned load is a decision, not a gap. AND THE BACKTEST WAS MARKING ITS OWN SUCCESSES AS MISSES: flag-replay hard-coded no_driver_hours as screen-only and skipped the email accounting for it, long after the alert path started sending it. A measurement tool that restates the production rule instead of asking it drifts from it invisibly \u2014 the numbers still look like numbers. It asks selectAlertable now. WHY WASN\u2019T THIS FLAGGED, ANSWERED IN ONE REQUEST: eta-flag-check compared stop numbers exactly, so Chad\u2019s \u201c7165047\u201d returned \u201cno stop with that number on this board\u201d three times for a stop the feed carries as 007165047 \u2014 the diagnostic built to answer the question failed on the number as it appears on the paperwork, and returned a confident wrong answer rather than an error. It normalises the padding now. It also reports WHERE THE DEADLINE COMES FROM: \u201cclose: null\u201d hid four situations needing four different fixes \u2014 no customer match key, no note, a note blank for that weekday, or free text the parser refuses to guess at \u2014 and only the last is an engine question. The first three are \u201cnobody has told the system when this customer stops receiving\u201d, which is what METRO on DUL 2 turned out to be. ONE COUNT IN THE FOOTER WAS OVERSTATING ITS OWN COVERAGE: v0.65.2 routed both window lookups through receivingWindow so an RA pickup stops inheriting a dock\u2019s receiving hours, but left the panel\u2019s \u201cN stops with receiving hours on file today\u201d tally on the raw lookup \u2014 counting pickups the engine deliberately never judges. The whole point of that footer is that a quiet panel can PROVE it was watched, and a coverage number that overstates itself is the one figure a dispatcher cannot check. 2,085 tests green.'],
   ['0.65.2', 'AN RA PICKUP WAS SHOWING THE WAREHOUSE IT WAS COMING BACK TO. Chad, on a row at stop 12 of DUL 2: “RA pickups need to show the address where they are picking up as they are all coming back to the warehouse. The map is right but the address is not.” All fourteen RA rows on the board read DAVIS DELIVERY, 943 GAINESVILLE HIGHWAY — our own terminal — and all fourteen had DIFFERENT pins, scattered across metro Atlanta. That split is the whole diagnosis. The saved search reports SHIP-TO columns and the ship-to on a return is the warehouse; enrichment reads a pickup off stop.from and had the real address all along. Coordinates are not live-if-present so the pin survived the merge, the five address fields are, so the correct address was thrown away on every scan — the rule was “the list wins the address” when it should have been “the list wins the address it actually reported FOR THIS STOP”, and on a pickup it reported the destination. THE DELIVERY CASE THE RULE EXISTS FOR IS UNTOUCHED: an ESTES re-address still reaches the board from the list every scan. TWO MORE THINGS FALL OUT OF THE SAME LINE. A pickup wearing the terminal’s address also wore the terminal’s customer_notes document — which is where the 6:00a–11:00a receiving hours on Chad’s screenshot came from, seven days a week, on a residential pickup, and it means a dispatcher typing hours onto that card was editing OUR TERMINAL’S hours. And the driverless-route card judged pickups against those borrowed hours: the ETA walk already judged deliveries only, R6 read the whole route group, so both window lookups now go through one place. Receiving hours describe when a dock will take freight IN; a pickup is us collecting freight OUT (v0.59.2). THE REPAIR IS ONE CALL PER AFFECTED PICKUP, ONCE. The enrichment registry caches the MERGED row, so the true address is nowhere in our data and no carry-forward can recover it — a versioned stamp, written on NuVizz’s answer rather than on the attempt, spends exactly one /stop/info per stale pickup and can never become a per-scan habit. The reconsignment detector is exempted from pickups in the same change: a pickup’s list address and shown address are different places by design and would have read as a move on every scan for ever, re-enriching each RA row and blanking its pin — the precise non-converging loop that check was written to avoid. 10 new tests.'],
   ['0.65.1', 'THE MEASURED DEPARTURES CAN BE PUBLISHED TONIGHT, NOT TOMORROW MORNING. v0.64.0 fits each route\u2019s real start time as a by-product of the nightly ledger job \u2014 the right home for it, sharing the sealed days and window with the travel calibration. But that job carries a cron, a cron\u2019d Netlify function is not reachable over plain HTTP, and the sweeps that most need the table run THE SAME NIGHT the fit ships: without this the 8pm\u20137am texts would have spent one more night judging every truck as an 8:00a departure, which is exactly the thing that made two of the first three texts wrong. NEW route-departures reads the published table, and ?refit=1 recomputes it from sealed history on demand. A DRY REFIT IS THE DEFAULT-SAFE PATH and ?dry=1 shows exactly what would be published without publishing it \u2014 a departure table SILENCES alerts, so being able to read it before it takes effect is part of the feature, not a nicety. The response prints each route as a clock time with its sample count and spread, so \u201cWILLIAM 03:42 (n=7)\u201d is legible without decoding minutes-past-midnight. Same pure fit as the nightly job, so the two can never disagree about what the history says. 26s timeout because a multi-week scan on the 10s default dies partway and reads as \u201cno routes learned\u201d rather than \u201cran out of time\u201d. Firestore only, ZERO NuVizz calls, never sends.'],
@@ -2168,21 +2170,65 @@ function useBuildUpdate() {
 // mid-plan with staged, unsaved route cards, and yanking the page out from under them to
 // deliver a bug fix would be a worse bug than the one being fixed. It also can't be
 // dismissed — a dismissed banner is how a tab ends up four days stale again.
+// WHAT the new version changed, for the tab that cannot know. The running bundle carries its
+// OWN changelog and nothing about the build being served, so the detail has to come off the
+// wire: /version.json is emitted at build time next to index.html (scripts/emit-version-json)
+// and holds the deployed version plus the first sentence of its changelog row.
+//
+// Null until it lands, on any failure, and — deliberately — whenever the served version is
+// not NEWER than this tab's. A bar that captions itself with a version older than the one
+// you are running (a rollback, a stale CDN edge, a deploy preview) would be worse than the
+// plain bar, so in every one of those cases the plain bar is what shows.
+function useDeployedVersion(active) {
+  const [info, setInfo] = useState(null);
+  useEffect(() => {
+    if (!active) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`/version.json?t=${Date.now()}`, { cache: 'no-store' });
+        if (!r.ok) return;
+        const j = await r.json();
+        if (cancelled || !j?.version) return;
+        if (!isNewerVersion(APP_VERSION, j.version)) return;
+        setInfo({ version: String(j.version), headline: j.headline ? String(j.headline) : null });
+      } catch { /* the plain bar still offers the reload, which is the job */ }
+    })();
+    return () => { cancelled = true; };
+  }, [active]);
+  return info;
+}
+
 function UpdateBanner() {
+  const deployed = useDeployedVersion(true);
   // This bar renders ABOVE MobileAppBar, so while it is up it owns the top of the screen and the
   // notch inset the app bar carries protects nothing. Carry the inset here too (viewport-fit=cover
   // is on) or the text sits under the status bar / Dynamic Island on a home-screen iPhone. env()
   // is 0 on desktop and in a plain browser tab, so nothing else moves.
   return (
     <div
-      className="shrink-0 flex items-center justify-center gap-3 px-4 py-1.5 bg-blue-600 text-white text-xs font-semibold"
+      className="shrink-0 flex flex-wrap items-center justify-center gap-x-3 gap-y-0.5 px-4 py-1.5 bg-blue-600 text-white text-xs font-semibold"
       style={{ paddingTop: 'calc(0.375rem + env(safe-area-inset-top))' }}
     >
-      <RefreshCw size={13} />
-      <span>A newer version of Dispatch Map is available — this tab is running older code.</span>
+      <RefreshCw size={13} className="shrink-0" />
+      {/* One flow container, so the headline WRAPS the bar taller instead of shouldering the
+          Reload button off a 390px screen. The button is the point of the bar and must never
+          be the thing that gets pushed out. */}
+      <span className="min-w-0">
+        A newer version of Dispatch Map is available
+        {deployed?.version ? <> — <span className="font-bold">v{deployed.version}</span></> : ' — this tab is running older code.'}
+        {deployed?.headline
+          ? <span className="hidden sm:inline font-normal text-blue-100"> · {deployed.headline}</span>
+          : null}
+      </span>
+      {/* The phone gets the headline on its own line rather than not at all: a dispatcher on
+          a 390px screen is exactly who has been staring at a bar that would not say why. */}
+      {deployed?.headline
+        ? <span className="sm:hidden font-normal text-blue-100 min-w-0">{deployed.headline}</span>
+        : null}
       <button
         onClick={() => window.location.reload()}
-        className="rounded bg-white px-2.5 py-1 text-[11px] font-bold text-blue-700 hover:bg-blue-50 active:bg-blue-100"
+        className="shrink-0 rounded bg-white px-2.5 py-1 text-[11px] font-bold text-blue-700 hover:bg-blue-50 active:bg-blue-100"
       >
         Reload
       </button>
@@ -3055,6 +3101,43 @@ function useTravelInputs() {
   return travel;
 }
 
+// THE SEVERITY FLOOR FOR THIS BOARD DAY — { stopNbr: worstTier } as the sweeps recorded it.
+//
+// Chad, on RAICOM still predicted 12:33p against a 12:00p close while the panel read
+// "0 red · 5 advisory": "the flag should remain unless our updated eta is showing we will
+// get there in time." The engine ratchets on this map (see tierFloorLookup); the browser's
+// job is only to fetch it. Read-only, one Firestore document, ZERO NuVizz calls — the very
+// same flag history the 20-minute sweep already writes.
+//
+// Null until the first fetch lands and on any failure, which the engine treats as "no
+// floor": the board judges on this sweep alone, exactly as it did before. A flag that
+// should have been held reads one tier calmer for a few minutes — never a flag invented.
+function useFlagTierFloor(date) {
+  const [floor, setFloor] = useState(null);
+  useEffect(() => {
+    if (!date) { setFloor(null); return undefined; }
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const r = await fetch(`/.netlify/functions/eta-flag-history?date=${encodeURIComponent(date)}`);
+        const j = await r.json();
+        if (cancelled || !j?.ok) return;
+        const next = {};
+        for (const row of (Array.isArray(j.rows) ? j.rows : [])) {
+          if (row?.stopNbr && row?.worstTier) next[String(row.stopNbr)] = String(row.worstTier);
+        }
+        // Identity-stable when nothing moved — a fresh object every few minutes would
+        // invalidate the flag memo for a byte-identical payload.
+        setFloor((prev) => (prev && JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+      } catch { /* no floor — the board judges on this sweep alone */ }
+    };
+    load();
+    const id = setInterval(load, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [date]);
+  return floor;
+}
+
 function BoardFlagsChip({ flags, open, onToggle }) {
   if (!flags) return null;
   // The chip is ALWAYS rendered now. It used to unrender itself on a zero count, which made
@@ -3063,25 +3146,37 @@ function BoardFlagsChip({ flags, open, onToggle }) {
   // looking for eta and hours of operation conflicts isn't working." The quiet state is a
   // gray outline flag that opens the same panel, where the footer says what was actually
   // checked and what could not be judged.
-  const red = flags.redCount > 0;
-  const amber = !red && flags.amberCount > 0;
-  const quiet = !red && !amber;
+  // BOTH COUNTS, ALWAYS — see flagChipParts. The chip used to publish the red count and
+  // swallow the advisories behind it, so the card beside an open panel reading
+  // "1 red · 4 advisory" said only "1", and one red with twelve advisories looked exactly
+  // like one red on its own. Chad: "put the advisory flag numbers on the top card as well."
+  const { red: redN, amber: amberN, quiet, tone, showSep } = flagChipParts(flags);
   return (
     <button
       onClick={onToggle}
       aria-expanded={open}
       className={
         'tap-target inline-flex items-center justify-center gap-1 px-1.5 py-0.5 rounded font-semibold flex-shrink-0 border ' +
-        (red ? 'bg-red-50 text-red-700 border-red-300 hover:bg-red-100'
-          : amber ? 'bg-amber-50 text-amber-700 border-amber-300 hover:bg-amber-100'
+        (tone === 'red' ? 'bg-red-50 text-red-700 border-red-300 hover:bg-red-100'
+          : tone === 'amber' ? 'bg-amber-50 text-amber-700 border-amber-300 hover:bg-amber-100'
             : 'bg-white text-slate-400 border-slate-200 hover:bg-slate-50 hover:text-slate-600')
       }
       title={quiet
         ? 'No flags right now — click to see what was checked (and what could not be judged)'
-        : `${flags.redCount} need attention · ${flags.amberCount} advisory — click for the list`}
-      aria-label={quiet ? 'Board flags — none right now' : `Board flags — ${flags.redCount} red, ${flags.amberCount} advisory`}
+        : `${redN} need attention · ${amberN} advisory — click for the list`}
+      aria-label={quiet ? 'Board flags — none right now' : `Board flags — ${redN} red, ${amberN} advisory`}
     >
-      <Flag size={12} />{quiet ? null : <> {red ? flags.redCount : flags.amberCount}</>}
+      <Flag size={12} />
+      {quiet ? null : (
+        <span className="tabular-nums">
+          {redN > 0 ? redN : null}
+          {showSep ? <span className="font-normal opacity-50"> · </span> : null}
+          {/* The advisory count keeps its OWN colour on a red chip. Painting it red would
+              claim four more things need attention now; painting it amber says what it is —
+              four worth a look, which is the tier a router can still do something about. */}
+          {amberN > 0 ? <span className={tone === 'red' ? 'text-amber-700' : undefined}>{amberN}</span> : null}
+        </span>
+      )}
     </button>
   );
 }
@@ -9144,6 +9239,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     return () => clearInterval(id);
   }, []);
   const travelInputs = useTravelInputs();
+  const tierFloorByStop = useFlagTierFloor(selectedDate);
   const boardFlags = useMemo(() => {
     const now = new Date();
     const out = computeBoardFlags({
@@ -9154,6 +9250,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
       opts: {
         depot: ROUTING_DEPOT,
         ...(selectedDate === todayLocalYMD() ? { nowMin: now.getHours() * 60 + now.getMinutes() } : {}),
+        // Severity ratchets on what this board day has already seen — a row that reached
+        // red does not slide back to advisory while it is still predicted past the close.
+        ...(tierFloorByStop ? { tierFloorByStop } : {}),
         // The route→class map is only true for ITS day — route names repeat daily and
         // drivers rotate, so a Friday map applied to Monday's planning board would walk
         // Monday's routes on Friday's trucks. Same gate discipline as nowMin above.
@@ -9166,7 +9265,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     });
     const classesLive = !!(travelInputs?.classCurves && travelInputs?.routeClasses && travelInputs.routeClassesDate === selectedDate);
     return { ...out, travelMeta: travelInputs ? { ...travelInputs.meta, classes: classesLive, routeClassCount: classesLive ? Object.keys(travelInputs.routeClasses).length : 0 } : null };
-  }, [stops, notes, rosterRawRows, selectedDate, flagsClockTick, travelInputs]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [stops, notes, rosterRawRows, selectedDate, flagsClockTick, travelInputs, tierFloorByStop]); // eslint-disable-line react-hooks/exhaustive-deps
   // The chip's number excludes dismissed rows — a cleared list must read as cleared.
   const visibleFlagCounts = useMemo(() => {
     const live = boardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]);
@@ -15747,6 +15846,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     return () => clearInterval(id);
   }, []);
   const travelInputs = useTravelInputs();
+  const tierFloorByStop = useFlagTierFloor(selectedDate);
   const routingBoardFlags = useMemo(() => {
     const now = new Date();
     const out = computeBoardFlags({
@@ -15756,6 +15856,9 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       opts: {
         depot: ROUTING_DEPOT,
         ...(selectedDate === todayLocalYMD() ? { nowMin: now.getHours() * 60 + now.getMinutes() } : {}),
+        // Severity ratchets on what this board day has already seen — a row that reached
+        // red does not slide back to advisory while it is still predicted past the close.
+        ...(tierFloorByStop ? { tierFloorByStop } : {}),
         // The route→class map is only true for ITS day — route names repeat daily and
         // drivers rotate, so a Friday map applied to Monday's planning board would walk
         // Monday's routes on Friday's trucks. Same gate discipline as nowMin above.
@@ -15768,7 +15871,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     });
     const classesLive = !!(travelInputs?.classCurves && travelInputs?.routeClasses && travelInputs.routeClassesDate === selectedDate);
     return { ...out, travelMeta: travelInputs ? { ...travelInputs.meta, classes: classesLive, routeClassCount: classesLive ? Object.keys(travelInputs.routeClasses).length : 0 } : null };
-  }, [stops, notes, loadRosterList, selectedDate, flagsClockTick, travelInputs]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [stops, notes, loadRosterList, selectedDate, flagsClockTick, travelInputs, tierFloorByStop]); // eslint-disable-line react-hooks/exhaustive-deps
   const visibleFlagCounts = useMemo(() => {
     const live = routingBoardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]);
     return {
