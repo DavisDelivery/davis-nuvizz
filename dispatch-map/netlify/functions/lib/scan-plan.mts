@@ -65,9 +65,9 @@ export const SCAN_INFO: Record<ScanKind, {
   roster: {
     label: 'Load roster',
     listDef: '35833',
-    what: "The day's authoritative list of loads and their per-day loadIds.",
-    affects: "Keeps yesterday's instance of a recurring route (yesterday's \"BEN 2\") from bleeding onto today's board. It does NOT feed the flags. Best-effort: if it fails, the board is left unchanged.",
-    costPerScan: '1 NuVizz call',
+    what: "The day's authoritative list of loads: route name, status, stop count, and the per-day loadId (a recurring route like \"BEN 2\" gets a NEW id every day). Also the only place an EMPTY load shows up — one created but not yet filled with orders, which the stop-grouped Loads view cannot display because it has no stops to group.",
+    affects: "Two things. It is what lets the board tell yesterday's \"BEN 2\" from today's, so a prior-day instance of a recurring route cannot bleed onto today. And it is what the flag engine uses to spot TWO LIVE LOADS SHARING ONE ROUTE NAME — which raises a red flag AND makes the engine refuse to judge that route at all, because a merged sequence would produce confident wrong ETAs. Without it those route-level checks report \"not checked\" rather than clean.",
+    costPerScan: '1 NuVizz call — and it is cached, so the Loads view and the board read it for free afterwards',
     quietWhen: 'Any time the load list is not changing — it only needs to be right once the day is built.',
   },
 };

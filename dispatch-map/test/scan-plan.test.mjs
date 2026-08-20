@@ -201,7 +201,12 @@ test('every scan carries a description, because the screen and the scheduler mus
   // question this table exists to answer.
   assert.match(SCAN_INFO.planned.affects, /flag/i);
   assert.match(SCAN_INFO.completed.affects, /anchor/i);
-  assert.match(SCAN_INFO.roster.affects, /NOT feed the flags/);
+  // The roster DOES reach the flag engine — it is what detects two live loads sharing one
+  // route name, which both raises a red flag and makes the engine refuse to judge that route.
+  // An earlier draft of this description said the opposite; the test is here so it cannot
+  // drift back.
+  assert.match(SCAN_INFO.roster.affects, /route name/i);
+  assert.match(SCAN_INFO.roster.affects, /refuse to judge/i);
 });
 
 test('the default plan covers every scan kind', () => {
