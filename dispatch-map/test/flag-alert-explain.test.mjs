@@ -10,7 +10,7 @@
 // answer so it stays a one-request question.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { heldReason, explainStop, normStopNbr, hoursProvenance } from '../netlify/functions/eta-flag-check.mts';
+import { heldReason, explainStop, normStopNbr, hoursProvenance, hoursCoverage } from '../netlify/functions/eta-flag-check.mts';
 import { selectAlertable, ALERT_TIERS } from '../netlify/functions/lib/flag-alert.mts';
 
 const NOON = 12 * 60;
@@ -176,4 +176,67 @@ test('the explain surface and the alert gate read the SAME tier list', () => {
     assert.equal(heldReason(row({ tier }), true, 11 * 60), null);
   }
   assert.match(heldReason(row({ tier: 'amber' }), false, 11 * 60), /only critical and red email/);
+});
+
+// ── "MAYBE THE PARSER NEEDS TO LEARN HOW THE NOTE WAS CONSTRUCTED" ───────────
+//
+// Chad, after METRO turned out to have perfectly good hours on file. The way to answer that
+// is not to read one note and generalise — it is to ask the whole board how many customers
+// carry hours the parser REFUSES, and show the text it refused. Only that bucket is one
+// parser work can move; the rest is data entry, and conflating them sends the wrong fix.
+
+test('hoursCoverage splits the gaps by what would actually fix each one', () => {
+  const stop = (matchKey, over = {}) => ({ stopNbr: String(Math.random()), matchKey, ...over });
+  const notes = new Map([
+    ['parsed_auto|k', { receiving_hours: { thu: { open: '08:00', close: '14:00' } } }],
+    ['parsed_typed|k', { receiving_hours: { thu: '6AM-2PM' }, manual_overrides: { receiving_hours: true } }],
+    ['blank_today|k', { receiving_hours: { mon: '8-5', tue: '8-5' } }],
+    ['never|k', { pin: { lat: 1, lng: 2 } }],
+    ['freetext|k', { receiving_hours: { thu: 'call first' } }],
+    ['overnight|k', { receiving_hours: { thu: { open: '21:00', close: '05:00' } } }],
+    ['alsofreetext|k', { receiving_hours: { thu: 'call first' } }],
+  ]);
+  const stops = [
+    stop('parsed_auto|k'), stop('parsed_auto|k'), stop('parsed_auto|k'), // one customer, 3 orders
+    stop('parsed_typed|k'),
+    stop('blank_today|k'),
+    stop('never|k'),
+    stop('freetext|k'),
+    stop('overnight|k'),
+    stop('alsofreetext|k'),
+    stop('no_note_at_all|k'),
+    { stopNbr: 'X' }, // no matchKey — cannot be looked up at all
+  ];
+  const c = hoursCoverage(stops, notes, 'thu');
+  assert.equal(c.customers, 8, 'counted per customer, not per board row');
+  assert.equal(c.stopsWithNoMatchKey, 1);
+  assert.equal(c.parsedAuto, 1);
+  assert.equal(c.parsedTyped, 1);
+  assert.equal(c.blankToday, 1, 'hours on other weekdays but not this one — likeliest oversight');
+  assert.equal(c.noHoursAnyDay, 1, 'a note exists but hours were never recorded');
+  assert.equal(c.noNote, 1);
+  assert.equal(c.refused, 3, 'two free-text plus one overnight dock');
+  // The samples are what makes this actionable: deduped SHAPES, not a customer list.
+  assert.deepEqual(c.refusedSamples.filter((t) => t === 'call first').length, 1, 'deduped');
+  assert.ok(c.refusedSamples.some((t) => t.includes('21:00')), 'the overnight window is shown as refused');
+  assert.equal(c.refusedSamples.length, 2);
+});
+
+test('hoursCoverage caps its samples and never leaks a customer name', () => {
+  const notes = new Map();
+  const stops = [];
+  for (let i = 0; i < 60; i += 1) {
+    notes.set(`c${i}|k`, { receiving_hours: { thu: `weird text ${i}` } });
+    stops.push({ stopNbr: String(i), matchKey: `c${i}|k`, businessName: `SECRET CO ${i}` });
+  }
+  const c = hoursCoverage(stops, notes, 'thu', { sampleCap: 5 });
+  assert.equal(c.refused, 60, 'every one is counted');
+  assert.equal(c.refusedSamples.length, 5, 'only the cap is shown');
+  assert.ok(!c.refusedSamples.some((t) => t.includes('SECRET CO')), 'samples are hours text, never identities');
+});
+
+test('hoursCoverage on an empty board is zeros, not a crash', () => {
+  const c = hoursCoverage([], null, null);
+  assert.equal(c.customers, 0);
+  assert.deepEqual(c.refusedSamples, []);
 });
