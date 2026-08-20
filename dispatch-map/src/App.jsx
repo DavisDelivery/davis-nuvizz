@@ -148,7 +148,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['0.67.0', 'THE NIGHTLY MANIFESTS ARE KEPT NOW — THE PDF, THE HISTORY, AND WHO WAS MISSING. Chad: “we need to download the PDF and put them in our system and have a history of those, as well as any that we’re missing on that manifest for that particular day… we get four or five manifests every night, and every new manifest needs to overwrite the previous for that particular day. But their last one is sent at twelve AM, which is technically the delivery day — we need to make sure that day applies to the night before and not to that actual day.” WHAT WAS HAPPENING: the ingest wrote ONE document and every new report replaced it. Four or five arrive a night, so if the third showed six orders off the board and the fourth superseded it, nothing anywhere could say whether those six were added or lost — and the PDF, the document you hold up to Uline when an order is disputed, was read once and thrown away. THE MIDNIGHT PROBLEM SOLVES ITSELF ONCE YOU STOP ASKING THE CLOCK. The report prints its own ship date on every row and all four or five of a night carry the SAME one, including the one that lands at 12:05a — so filing by what the paper says makes the problem disappear instead of needing a rule to work around it. The clock is consulted only when no row carries a readable date, and then it is night-aware exactly as Chad described: an arrival before 5:00a belongs to the evening that just ended. And the day is decided by the MODE of the rows’ dates, not by row zero the way the old diff did it — one mis-read line must not misfile a night’s paperwork. OVERWRITE, BUT DO NOT DESTROY. Those two instructions pull against each other if overwrite is taken literally, so: anything reading a day gets the newest report, and the superseded ones stay addressable as numbered revisions under the same day. The sequence is where the story lives — six orders that appear only on the last report, two hours before dispatch, is a fact about Uline you can only see if the earlier reports were kept. A byte-identical resend is NOT a new revision; it records that it was seen again and costs no upload. THE PDFs GO TO NETLIFY BLOBS, not Firestore, whose 1 MB document cap is the reason the drop screen has to chunk a PDF into base64 parts to get it in at all. And because that is a store no unit test can reach, the archive REPORTS rather than assumes: a day record carries pdfStored and the failure text, never a key pointing at bytes that were never written, and manifest-history?selftest=1 round-trips a small object so “is it actually filing?” is one click instead of a question answered months later by an empty file. ON THE SCREEN: a Manifest history card at the foot of the Manifest check tab — one row per night newest first, the missing count in red, every report of that night expandable with its own PDF link, and the not-on-the-board list underneath. One flow column, so it wraps rather than collides at 390px. The nightly check itself is unchanged and still costs ZERO NuVizz calls; an archive failure can never cost a night’s check, and the marker that retires an email is written AFTER the paperwork, never before. 20 new tests, 2,128 green.'],
+  ['0.67.0', 'ONE COPY OF EVERY NIGHT’S MANIFEST IS KEPT NOW — WITH WHO WAS MISSING OFF IT. Chad: “we need to download the PDF and put them in our system and have a history of those, as well as any that we’re missing on that manifest for that particular day… their last one is sent at twelve AM, which is technically the delivery day — we need to make sure that day applies to the night before and not to that actual day.” WHAT WAS HAPPENING: the ingest wrote ONE document and every new report replaced it. Four or five arrive a night, so nothing anywhere could say what a night’s manifest had actually contained — and the PDF, the document you hold up to Uline when an order is disputed, was read once and thrown away. ONE COPY, NOT FOUR. Chad, on the first cut of this: “the manifest is only added to, nothing is ever removed from it, so overwriting it every time was correct. I just want to keep an actual copy of it, but I don’t want 4 copies a night kept.” That invariant is the design: each report is a SUPERSET of the one before, so the last one is the complete one and the earlier four hold nothing it does not. The night’s PDF lives at one key and each new report overwrites those bytes — one document a night, not five. AND THE INVARIANT IS A CHECK, NOT JUST A SIMPLIFICATION. A report that arrives SHORTER than the one before it means rows went missing from a document that is only ever added to — a truncated download or a mis-parse — so the night records it and the screen says so, rather than quietly replacing a good manifest with a worse one. The flag stays on the night even after a good report lands on top, because the reason to look does not go away. THE MIDNIGHT PROBLEM SOLVES ITSELF ONCE YOU STOP ASKING THE CLOCK. The report prints its own ship date on every row and all four or five of a night carry the SAME one, including the one that lands at 12:05a — so filing by what the paper says removes the problem instead of working around it. The clock is consulted only when no row carries a readable date, and then it is night-aware exactly as Chad described: an arrival before 5:00a belongs to the evening that just ended. The day is decided by the MODE of the rows’ dates, not by row zero the way the old diff did it — one mis-read line must not misfile a night’s paperwork. THE PDFs GO TO NETLIFY BLOBS, not Firestore, whose 1 MB document cap is why the drop screen already has to chunk a PDF into base64 parts. That is a store no unit test can reach, so the archive REPORTS rather than assumes: a night carries pdfStored and the failure text, never a key pointing at bytes that were never written, and manifest-history?selftest=1 round-trips a small object so “is it actually filing?” is one click instead of a question answered months later by an empty file. ON THE SCREEN: a Manifest history card at the foot of the Manifest check tab — one row per night newest first, the missing count in red, the PDF one tap away, and underneath it who was not on the board plus when each report arrived (metadata only, which is the one thing the overwrite would otherwise take with it — whether the midnight report actually reached us). One flow column, so it wraps rather than collides at 390px. The nightly check itself is unchanged and still costs ZERO NuVizz calls; an archive failure can never cost a night’s check, and the marker that retires an email is written AFTER the paperwork, never before. 21 new tests, 2,129 green.'],
   ['0.66.2', 'A FLAG NO LONGER GETS QUIETER BECAUSE THE MODEL GOT LESS SURE. Chad, on RAICOM LLC at stop 10 of KOSTNER — the route card still predicting 12:33p against a 12:00p close, the panel now reading “0 red · 5 advisory”: “you took the Raicom flag away but eta on route still shows 12:30, that doesn’t work for me. The flag should remain unless our updated eta is showing we will get there in time.” IT HAD NOT BEEN TAKEN AWAY — IT HAD BEEN DEMOTED, and that is worse, because a demotion is invisible. Red at 45 minutes late, amber at 33, because severity is the overrun measured against the model’s OWN error band and the band six hops down a chain is 40 minutes. Nothing about the stop improved. The truck caught up slightly, the model’s confidence fell below its own bar, and the board got calmer while the freight sat in exactly the same trouble — the screen and the urgency disagreeing, which is the v0.56.3 failure wearing a different hat. SEVERITY NOW RATCHETS: a receiving-hours row that has reached red today stays at least red, confidence may still promote it, and the ONLY thing that clears it is the estimate coming back inside the window — at which point there is no row at all, which is precisely the “we will get there in time” Chad named. The row says so in words when it is being held, so a held red never looks like an ordinary one. THE FLOOR CANNOT INVENT ANYTHING. It is the worstTier the flag history already records for that board day, applied only to a row this sweep just produced, and the walk produces a row only while arrival is predicted past the close — so a delivered stop, a resequenced stop and a stop with no hours on file are all untouched. Tested against every one of those. THE NIGHT NOW LEAVES A RECORD TOO. Only the day sweep wrote flag history and it does not start until 7:00a, so a stop that TEXTED at 1:00a had no floor to stand on and the first morning sweep judged it from scratch — a row that had already woken somebody could turn up as an advisory at breakfast. The evening sweep now folds its rows into the same document, with emailedStops deliberately empty because that path texts and never emails. Screen, alert sweep, evening sweep and the dry twin all read the same floor, so none of them can disagree about a row by one tier. AND THE UPDATE BAR SAYS WHAT CHANGED. Chad: “can we start including a simple set of details of what changed in the new version.” It could not — it compares bundle fingerprints and is content-blind by design, and the changelog lives inside the bundle, so a stale tab holds only its own history. The build now emits version.json beside index.html carrying the deployed version and the first sentence of its changelog row, DERIVED rather than hand-written because a second field to maintain is a field that drifts. The bar shows “v0.66.2 · THE HEADLINE”, wraps to its own line on a phone, and shows the plain bar unchanged whenever the served version is not genuinely newer — a rollback or a stale edge must never caption itself as news. 23 new tests.'],
   ['0.66.1', 'THE TOP CARD WAS SWALLOWING THE ADVISORY COUNT. Chad, with the flags panel open beside the status card — the panel reading “1 red · 4 advisory”, the card reading a bare “⚑ 1”: “put the advisory flag numbers on the top card as well.” The chip published ONE number: the red count when any red existed, and the amber count only when there were no reds at all. So one red with four advisories and one red on its own were PIXEL-IDENTICAL, and a board whose only news was advisory looked like a board with no news. IT IS THE ADVISORY TIER THAT IS WORTH SEEING EARLY, which is what makes this more than a missing digit. Amber is what a stop looks like overnight, while nothing has moved and the model’s error band is still 90 minutes wide — hours before the same stop anchors on a real delivery, the band narrows to 40, and it hardens into a red somebody chases. The 49-day replay found 48 receiving-hours misses that were visible on the screen and never texted, and EVERY ONE was amber when first seen. Hiding that count behind the red one put the tier a router can still act on out of sight of the person who could act on it. The chip now reads “1 · 4” — severity still picks the chip’s colour, and the advisory count keeps its own amber inside a red chip, because painting it red would claim four more things need attention right now instead of four worth a look. One number becomes two in ONE place: the counts come from a pure flagChipParts, so the three screens that draw this chip (phone Map, desktop Map, Routing) cannot drift on what it means. A clean board is unchanged — still a grey count-less flag that opens the panel, because a detector that could not look must never be pixel-identical to a board with nothing wrong on it. Junk or fractional counts read as zero rather than painting a colour off a NaN. 6 new tests.'],
   ['0.66.0', 'AN UNASSIGNED LOAD IS NOW TIMED FROM NOON, AND THE NO-DRIVER CARD ONLY FIRES WHEN THAT START ACTUALLY MISSES SOMETHING. Chad, on a Board flags panel carrying four interchangeable \u201cNo driver\u201d cards at 9:32 in the morning: \u201cwhy is habasit flagged if system thinks its leaving at 8am and its first stop would have plenty of time to get there before 2pm\u201d \u2014 and the rule to fix it: \u201cany loads that have stops on them and no driver assigned we should treat them as if they are starting the deliveries at 12pm.\u201d He is right twice over. THE FAULT WAS THE CLOCK. A load with nobody on it was walked from the same 8:00 departure as a truck that had already left, so the arrival math always said \u201cfine\u201d and the no-driver rule had to shout on its own \u2014 which it did, on the mere EXISTENCE of an unassigned load carrying receiving hours. A 2:00p close with four and a half hours of slack got the same red card as an 11:00a close that was already unreachable. Four of the six cards on the panel, every morning, none of them separable from the one that mattered: TRAILER 5 (HABASIT, 2:00p), DULUTH (2:00p) and GAINESVILLE (3:00p) sat at identical weight beside DUL 2, which could not make 11:00a. That is not a warning system, it is wallpaper \u2014 and wallpaper is precisely what makes the real one invisible. NOW THE ARRIVAL WALK ANSWERS THE QUESTION ITSELF. A driverless, unmoved load past the departure hour runs its whole chain on a noon clock (max of 12:00p and now, so a load nobody has taken by 1:00pm cannot start at noon either), and the no-driver card fires only where there is a miss to report: either the noon walk predicts a late arrival, or the noon start is itself already past a close. The second test is not redundant \u2014 a route with no usable sequence, or one whose chain breaks on a stop with no pin, is never walked, and \u201cwe cannot even leave the yard before this door shuts\u201d needs no walk to be true. TIERS FOLLOW THE KIND OF EVIDENCE: a close a noon start is already past is arithmetic, not an estimate, so typed hours there go CRITICAL (Chad\u2019s original LVILLE case \u2014 \u201clund needs to be delivered by 2pm and there isn\u2019t even a driver assigned to it\u201d \u2014 exactly) and scanner-guessed hours stop at red, because the deadline itself may be the scanner\u2019s invention. One definition of \u201cnobody is driving this\u201d now serves both the clock and the card, so the two rules can never come to disagree about which loads are unassigned. The card still supersedes the arrival rows it replaces, and now carries a real stop and a real close in the unreachable case, so it can reach customer service while there is still time to put a driver on the load. The panel footer says the assumption out loud \u2014 silence about an unassigned load is a decision, not a gap. AND THE BACKTEST WAS MARKING ITS OWN SUCCESSES AS MISSES: flag-replay hard-coded no_driver_hours as screen-only and skipped the email accounting for it, long after the alert path started sending it. A measurement tool that restates the production rule instead of asking it drifts from it invisibly \u2014 the numbers still look like numbers. It asks selectAlertable now. WHY WASN\u2019T THIS FLAGGED, ANSWERED IN ONE REQUEST: eta-flag-check compared stop numbers exactly, so Chad\u2019s \u201c7165047\u201d returned \u201cno stop with that number on this board\u201d three times for a stop the feed carries as 007165047 \u2014 the diagnostic built to answer the question failed on the number as it appears on the paperwork, and returned a confident wrong answer rather than an error. It normalises the padding now. It also reports WHERE THE DEADLINE COMES FROM: \u201cclose: null\u201d hid four situations needing four different fixes \u2014 no customer match key, no note, a note blank for that weekday, or free text the parser refuses to guess at \u2014 and only the last is an engine question. The first three are \u201cnobody has told the system when this customer stops receiving\u201d, which is what METRO on DUL 2 turned out to be. ONE COUNT IN THE FOOTER WAS OVERSTATING ITS OWN COVERAGE: v0.65.2 routed both window lookups through receivingWindow so an RA pickup stops inheriting a dock\u2019s receiving hours, but left the panel\u2019s \u201cN stops with receiving hours on file today\u201d tally on the raw lookup \u2014 counting pickups the engine deliberately never judges. The whole point of that footer is that a quiet panel can PROVE it was watched, and a coverage number that overstates itself is the one figure a dispatcher cannot check. 2,085 tests green.'],
@@ -24226,13 +24226,14 @@ function CustomerCommsScreen() {
 // ── THE MANIFEST ARCHIVE, ON THE SCREEN ──────────────────────────────────────
 //
 // Chad: "we need to download the PDF and put them in our system and have a history of those,
-// as well as any that we're missing on that manifest for that particular day."
+// as well as any that we're missing on that manifest for that particular day" — then, on the
+// first cut of it: "the manifest is only added to, nothing is ever removed from it, so
+// overwriting it every time was correct. I just want to keep an actual copy of it, but I
+// don't want 4 copies a night kept."
 //
-// The card above shows the LATEST run and nothing else — four or five reports arrive a night
-// and each replaced the one before it, so a night where the third report showed six orders
-// off the board and the fourth superseded it left no trace of the six. This is the file
-// cabinet: one row per night, newest first, every report of that night addressable, and the
-// PDF itself one tap away because the PDF is the document you hold up to Uline.
+// So one row per night, one PDF per night, and the missing list from the report that stood.
+// The arrivals line exists because the overwrite destroys the ability to ask how many reports
+// came and when the last one landed — which is the exact question behind the midnight one.
 //
 // ONE FLOW COLUMN, no measured offsets — the rows wrap and what is below MOVES, which is the
 // rule this repo has had to relearn four times on the Map.
@@ -24265,7 +24266,7 @@ function ManifestHistoryCard() {
   }, [openDate]);
 
   const rows = state.data?.rows || [];
-  const pdfHref = (date, rev) => `/.netlify/functions/manifest-history?date=${encodeURIComponent(date)}&pdf=1&rev=${rev}`;
+  const pdfHref = (date) => `/.netlify/functions/manifest-history?date=${encodeURIComponent(date)}&pdf=1`;
 
   return (
     <div className="bg-white border rounded-lg">
@@ -24298,45 +24299,58 @@ function ManifestHistoryCard() {
 
       {rows.map((r) => (
         <div key={r.date} className="border-b last:border-b-0">
-          <button
-            onClick={() => openNight(r.date)}
-            className="w-full text-left px-3 py-2 hover:bg-slate-50 flex flex-wrap items-center gap-x-2 gap-y-0.5"
-            aria-expanded={openDate === r.date}
-          >
-            <span className="font-semibold text-xs text-slate-800 tabular-nums">{r.date}</span>
-            {r.missingCount > 0
-              ? <span className="text-[11px] font-semibold text-red-700">{r.missingCount} not on the board</span>
-              : <span className="text-[11px] text-emerald-700">all on the board</span>}
-            <span className="text-[11px] text-slate-500">{r.orders} orders · {r.reports} report{r.reports === 1 ? '' : 's'}</span>
-            {!r.pdfStored ? <span className="text-[11px] text-amber-700">PDF not stored</span> : null}
-          </button>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-2 hover:bg-slate-50">
+            <button
+              onClick={() => openNight(r.date)}
+              className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-left min-w-0"
+              aria-expanded={openDate === r.date}
+            >
+              <span className="font-semibold text-xs text-slate-800 tabular-nums">{r.date}</span>
+              {r.missingCount > 0
+                ? <span className="text-[11px] font-semibold text-red-700">{r.missingCount} not on the board</span>
+                : <span className="text-[11px] text-emerald-700">all on the board</span>}
+              <span className="text-[11px] text-slate-500">{r.orders} orders · {r.reports} report{r.reports === 1 ? '' : 's'}</span>
+              {/* The manifest is only ever added to, so a report that came back SHORTER than
+                  the one before it is a truncated download or a mis-parse, not a change. */}
+              {r.sawOrderCountFall ? <span className="text-[11px] font-semibold text-amber-700">a report came back short</span> : null}
+            </button>
+            {r.pdfStored
+              ? <a href={pdfHref(r.date)} target="_blank" rel="noreferrer" className="tap-target ml-auto px-2 py-1 text-[11px] font-semibold text-blue-700 border border-blue-200 rounded hover:bg-blue-50">PDF</a>
+              : <span className="ml-auto text-[11px] text-amber-700">PDF not stored</span>}
+          </div>
 
           {openDate === r.date ? (
             <div className="px-3 pb-2">
               {day.loading ? <div className="text-[11px] text-slate-500 py-1">Loading…</div> : null}
               {day.err ? <div className="text-[11px] text-red-600 py-1">{day.err}</div> : null}
-              {day.doc?.revisions?.map((rev) => (
-                <div key={rev.revision} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 py-1 border-t first:border-t-0">
-                  <span className="text-[11px] font-semibold text-slate-600 tabular-nums">#{rev.revision}</span>
-                  <span className="text-[11px] text-slate-500 tabular-nums">{String(rev.at || '').slice(0, 16).replace('T', ' ')}</span>
-                  <span className="text-[11px] text-slate-500">{rev.orders} orders</span>
-                  <span className={`text-[11px] ${rev.missingCount ? 'font-semibold text-red-700' : 'text-slate-400'}`}>
-                    {rev.missingCount} missing
-                  </span>
-                  {rev.seen > 1 ? <span className="text-[11px] text-slate-400">seen {rev.seen}×</span> : null}
-                  {rev.pdfStored
-                    ? <a href={pdfHref(r.date, rev.revision)} target="_blank" rel="noreferrer" className="tap-target ml-auto px-2 py-1 text-[11px] font-semibold text-blue-700 border border-blue-200 rounded hover:bg-blue-50">PDF</a>
-                    : <span className="ml-auto text-[11px] text-amber-700">no PDF{rev.pdfError ? ` — ${rev.pdfError}` : ''}</span>}
+
+              {/* WHEN THEY CAME. Metadata only — the overwrite is what Chad asked for, and this
+                  is the one thing it would otherwise take with it: whether the last report of
+                  the night actually reached us. */}
+              {day.doc?.arrivals?.length ? (
+                <div className="border-t pt-1">
+                  <div className="text-[11px] font-semibold text-slate-600 mb-0.5">Reports that night</div>
+                  {day.doc.arrivals.map((a) => (
+                    <div key={a.reportNo} className="flex flex-wrap gap-x-2 text-[11px] text-slate-500 py-0.5">
+                      <span className="font-semibold tabular-nums">#{a.reportNo}</span>
+                      <span className="tabular-nums">{String(a.at || '').slice(0, 16).replace('T', ' ')}</span>
+                      <span>{a.orders} orders</span>
+                      <span className={a.missingCount ? 'font-semibold text-red-700' : 'text-slate-400'}>{a.missingCount} missing</span>
+                      {a.orderCountFell ? <span className="font-semibold text-amber-700">shorter than the last</span> : null}
+                    </div>
+                  ))}
+                  {day.doc.latest?.seen > 1 ? (
+                    <div className="text-[11px] text-slate-400">the final report was sent {day.doc.latest.seen}× (identical copies)</div>
+                  ) : null}
                 </div>
-              ))}
-              {/* WHO WAS MISSING, for the night as it last stood. This is the half Chad asked
-                  for by name and the half that used to be thrown away every time a new report
-                  landed. Capped on screen; the count above is always the true one. */}
+              ) : null}
+
+              {/* WHO WAS MISSING — the half Chad asked for by name. The manifest is
+                  append-only, so the report that stood is the complete one and this is the
+                  authoritative list for the night. */}
               {day.doc?.latest?.missing?.length ? (
                 <div className="mt-1 border-t pt-1">
-                  <div className="text-[11px] font-semibold text-slate-600 mb-0.5">
-                    Not on the board (report #{day.doc.latest.revision})
-                  </div>
+                  <div className="text-[11px] font-semibold text-slate-600 mb-0.5">Not on the board</div>
                   <div className="max-h-48 overflow-auto">
                     {day.doc.latest.missing.slice(0, 60).map((m, i) => (
                       <div key={`${m.pro}-${i}`} className="flex flex-wrap gap-x-2 text-[11px] text-slate-600 py-0.5">

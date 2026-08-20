@@ -1,12 +1,13 @@
 // manifest-history.mts — the manifest archive, read back.
 //
 // Chad: "have a history of those, as well as any that we're missing on that manifest for that
-// particular day." This is the reading half: which nights we hold paperwork for, what each
-// night's report said, who was missing off the board, and the PDF itself.
+// particular day… I just want to keep an actual copy of it, but I don't want 4 copies a night
+// kept." This is the reading half: which nights we hold a manifest for, what it said, who was
+// missing off the board, and the one PDF that night's reports settled on.
 //
 //   GET ?days=30                 the last N nights, newest first (default 30, max 180)
-//   GET ?date=YYYY-MM-DD         one night in full, every revision and every missing row
-//   GET ?date=…&pdf=1[&rev=N]    the stored PDF, streamed back (latest revision by default)
+//   GET ?date=YYYY-MM-DD         one night in full — the manifest, the arrivals, the missing
+//   GET ?date=…&pdf=1            that night's stored PDF, streamed back
 //   GET ?selftest=1              round-trip a tiny object through the blob store
 //
 // The self-test is not a nicety. This writes to an object store that no unit test can reach,
@@ -51,10 +52,9 @@ export default async (req: Request): Promise<Response> => {
     if (one && DATE_RE.test(one) && url.searchParams.get('pdf') === '1') {
       const doc = await getDoc(manifestDayPath(TENANT, one));
       if (!doc?.latest) return J({ ok: false, error: `no manifest on file for ${one}` }, 404);
-      const wanted = Number(url.searchParams.get('rev') || doc.latest.revision);
-      const rev = (doc.revisions || []).find((r: any) => Number(r?.revision) === wanted) || doc.latest;
+      const rev = doc.latest;
       if (!rev?.blobKey || !rev.pdfStored) {
-        return J({ ok: false, error: `report ${wanted} for ${one} was recorded but its PDF was not stored`, pdfError: rev?.pdfError ?? null }, 404);
+        return J({ ok: false, error: `the manifest for ${one} was recorded but its PDF was not stored`, pdfError: rev?.pdfError ?? null }, 404);
       }
       const buf = await getManifestPdf(rev.blobKey);
       if (!buf) return J({ ok: false, error: 'the PDF is recorded as stored but the blob store did not return it', blobKey: rev.blobKey }, 404);
@@ -64,7 +64,7 @@ export default async (req: Request): Promise<Response> => {
           'Content-Type': 'application/pdf',
           // inline, not attachment: a dispatcher checking a disputed order wants to LOOK at
           // it, not collect a downloads folder full of near-identical files.
-          'Content-Disposition': `inline; filename="uline-manifest-${one}-r${rev.revision}.pdf"`,
+          'Content-Disposition': `inline; filename="uline-manifest-${one}.pdf"`,
           'Cache-Control': 'no-store',
         },
       });
@@ -90,8 +90,8 @@ export default async (req: Request): Promise<Response> => {
       return {
         date,
         summary: describeDay(doc),
-        reports: Number(doc.revisionCount) || 1,
-        latestRevision: l.revision,
+        reports: Number(doc.reportCount) || 1,
+        sawOrderCountFall: !!doc.sawOrderCountFall,
         at: l.at,
         orders: l.orders,
         onBoard: l.onBoard,
