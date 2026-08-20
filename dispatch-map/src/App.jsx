@@ -29,7 +29,7 @@ import {
 import { db } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
 import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
-import { routeStopEta, routeStopFreight, routeStopSeq } from './lib/route-stop-line.js';
+import { routeStopEta, routeStopFreight, routeStopSeq, routeStopTime, loadDefaultWindow } from './lib/route-stop-line.js';
 import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt, foldFreshStop } from './lib/stop-card-sections.js';
 import { resolveStopContact, resolveStopPhone, orderContactAside, mergeSavedContact, isDialable } from './lib/stop-contact.js';
 import { readViewportSize } from './lib/viewport.js';
@@ -55,7 +55,7 @@ import { cancelsIn, cancelSummary } from './lib/cancel-guard.js';
 import { validateNewRoute } from './lib/route-create.js';
 import { mergeDayLoads, dayLoadTally } from './lib/day-loads.js';
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
-import { computeBoardFlags } from './lib/board-flags.js';
+import { computeBoardFlags, fmtMin } from './lib/board-flags.js';
 import ChatPanel, { ChatLauncher, MessagesLauncher } from './components/ChatPanel.jsx';
 import MessagesPanel from './components/MessagesPanel.jsx';
 
@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.64.0';
+const APP_VERSION = '0.65.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -148,6 +148,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.65.0', 'THE ROUTE CARD SHOWS OUR ETA NOW \u2014 AND FOUR WAYS THE BOARD WAS QUIETLY SWALLOWING ITS OWN RED FLAGS. Chad, on a 12-stop BRIAN route where every row read \u201cappt 8:00 AM\u201d: \u201ci think the route should show our eta\u2019s instead of the appt time as that is not really helpful here.\u201d Twelve consignees do not book the same slot \u2014 that clock is the saved search\u2019s generic per-LOAD window, and v0.54.4 already found this exact shape (six stops on TRAILER 7 all reading 8:00 AM) and did the only thing possible at the time: LABEL it, because there was no arrival model to offer instead. There is now. The route card reads the flag engine\u2019s OWN walk \u2014 recorded, never re-derived, so the card and the flag can never disagree about an arrival \u2014 and shows ETA ~10:42a per stop, with a tooltip saying whether it rests on a real arrival stamp or on the assumed departure. A load-wide window is suppressed rather than printed twelve times; a genuine per-stop appointment still shows, still labelled. OUR ETA OUTRANKS NUVIZZ\u2019S OWN, and that is measured rather than assumed: eta-backtest grades NuVizz\u2019s per-stop ETA at a median 79 minutes off on the ~0.7% of stops that carry one, against 13\u201314 minutes for the anchored walk. Theirs stays as the fallback. THEN THE BUG HUNT, and four of its findings share one blast radius \u2014 the board knowing something and the inbox never hearing it, which is the exact failure Chad caught in v0.56.3. (1) THE VOLUME CAP COLLAPSED BY RULE AND TOOK ITS THRESHOLD FROM THE FIRST ROW\u2019S TIER, which is arbitrary with respect to severity: thirteen late stops whose first happened to be red collapsed the whole rule into ONE red summary \u2014 eleven criticals erased, criticalCount 0, and because the mailer skips collapsed rows, zero emails. Thirteen stops past their close is an ordinary bad day on a 700-stop board. It now collapses per rule AND TIER, so a critical can only ever be summarized by criticals. (2) R6\u2019s \u201cone route, one card\u201d supersede DELETED every hours_risk row on a driverless route and replaced it with a card whose tier came from provenance alone \u2014 so removing the driver, an objectively worse situation, took a route from 5 critical / 9 red to a single amber that emailed nobody. The card stays (Chad asked for it), but it now inherits the worst superseded row\u2019s tier and its stop facts, and the mailer accepts it \u2014 with the better reason attached: nobody is driving. (3) THE ANCHORED CLOCK WAS NEVER COMPARED TO NOW. A route that delivered at 9:30 and then stalled kept projecting its remaining stops into the morning, so at 12:45 a typed 1:00p close read as comfortably safe and the board showed nothing \u2014 fewer flags, and a clean board looks like a good day. A stop nobody has reported arriving at cannot have been arrived at in the past; the route-level \u201cno movement\u201d clamp already encoded this reasoning for the departure, and it now applies per stop. This is precisely the case Chad named: the alert \u201ccould come later in day if a driver gets behind.\u201d (4) A TYPED OVERNIGHT DOCK BECAME A 5:00A DEADLINE. The string branch refuses \u201c9PM-5AM\u201d on purpose; the object branch the two time-pickers write had no such guard, so a dispatcher recording a real overnight or 24-hour dock gave every stop at that customer an unmeetable close in the loudest tier \u2014 punished for recording the truth. Both branches now agree. AND THE FLAG HISTORY STOPPED CLAIMING SENDS IT NEVER MADE: emailed:true was written from the CANDIDATE list before sendAlerts ran, so with the mail key unset the screen still reported \u201cEmailed CS: 3\u201d for a day customer service heard nothing about \u2014 and the sticky merge made it permanent. sendAlerts now returns which stops it actually reached and the history is written after the send. Two intraday fixtures had clocks that contradicted their own fiction (a flat hour per stop regardless of the pace they declared) and were made coherent rather than the guard weakened. 20 new tests, 2,054 green.'],
   ['0.64.0', 'ROUTES NOW LEAVE WHEN THEY ACTUALLY LEAVE \u2014 the made-up 8:00a departure is measured per route. THE FIRST NIGHT OF OVERNIGHT TEXTS PROVED THE WEAKNESS THE DESIGN STUDY ONLY NAMED. Three texts went out on 2026-08-20 and at least two were wrong in the same direction: BHW SHEET METAL was predicted 1:58p against a 1:30p close and was DELIVERED AT 5:04a, because route WILLIAM had rolled at 3:42a; FABLE HOMEGOODS read 117 minutes late at 2:00a and cleared itself at 6:18a the moment route JEAN\u2019s first real stamp re-anchored the chain. Both were artefacts of a departure time nobody measured. Over sealed history the fleet departs at a median of 08:23 \u2014 so 8:00 is fair for the MIDDLE and badly wrong in the tails (p10 05:46, p90 13:50), and overnight, with no stamps to correct it, the tails are where the texts come from. Routes are named for the driver who runs them and recur daily, which is what makes the habit learnable. NEW lib/route-departure mines each sealed day for an implied departure and the nightly job fits the median per route into route_departures, riding the SAME day-doc and window as the travel calibration so a backfill repairs both together. WHAT IT REFUSES TO DO is the point: only a route whose FIRST sequenced stop carries a real stamp is sampled (backing a departure out of a later stop would stack three guesses to correct one), a route needs 3 clean days before its measured time outranks the default, samples outside 2:00a\u20134:00p are dropped, and the MEDIAN is used so one afternoon re-dispatch cannot drag an early truck\u2019s clock. Unknown routes keep 8:00a \u2014 learning one truck can never silence another, and a test pins that. Every flag row now says whether its clock ran from a measured or an assumed departure, because those are different claims and a dispatcher deciding whether to trust a 2am text needs to know which. Wired into the evening sweep, the day sweep and the dry twin from one table, so screen, inbox and phone cannot disagree about when a truck leaves. 12 new tests, 2,046 green.'],
   ['0.63.2', 'THE TIME-RESTRICTION SHEET IS ULINE, AND NINE COLUMNS. Chad: “Take the delivered or not out and take anything but uline out so just 716 series of pros … status out carried over out scheduled for out restriction type out hours out hours source out order window out Appointment / Closed today / AM/PM / Delivered at / Minutes past close / Signal source all of this out of the file as well.” WHOSE FREIGHT IS THIS IS NOT A FIELD, IT IS THE NUMBER. Davis hauls for several shippers on one board and nothing on a stop says which: `source` reads “nuvizz-list” on all 862 rows because it records how the SCAN found the stop, not who the freight belongs to. Uline’s PROs run in the 716 series; ESTES residential moves carry an ESTES- prefix, and SHP / FOODSERV / RA are Davis-created. So the PRO series IS the carrier, exactly as Chad said, and it now filters the sheet — leading zeros stripped first, the way normalizePro already does it, so 007163747 and 7163747 are one PRO and the 715 series is correctly a different one. 154 rows become 88. The half-day tier all but vanishes, 62 down to 2, which is itself worth knowing: nearly every PM-window stop on this board was an ESTES residential delivery rather than a Uline dock. THE SHEET IS NOW NINE COLUMNS — PRO, order, customer, address, city, state, ZIP, type, restriction. Everything cut was one of three things: a CONSTANT once the sheet is filtered (status, carried-over, scheduled-for all read the same on every row now), a DUPLICATE of the restriction sentence that already says it in words (receiving hours, order window, appointment, closed-today, AM/PM), or PROVENANCE that belongs in a diagnostic rather than a work list (hours source, signal source). The delivered/not-delivered half goes with them — the status column, the two cover figures and the whole “delivered past a stated close” section — because a sheet you plan tomorrow from is not the place to audit yesterday. NOTHING IS LOST, only unprinted: every field is still on the row object and still in the JSON endpoint, so ?format=csv narrows while the API stays whole. A test now pins the exact nine headers and names all fifteen banished ones, because a column list is precisely the sort of thing that grows back one convenient addition at a time. ?proPrefix=all widens it again and the prefix in force is reported in coverage — if Uline ever renumbers, the sheet comes back empty and the reason is printed rather than mysterious. 5 new tests, 2,037 green.'],
   ['0.63.1', 'DID ANYTHING TEXT LAST NIGHT? \u2014 the evening sweep can now be asked. Chad, looking at his board: \u201ci\u2019m not seeing the fable you speak of.\u201d He was right, and the answer took a Firestore console trip because the sweep\u2019s own record was not readable over HTTP \u2014 a job that acts on its own while nobody watches has to be inspectable, and this one was not. NEW flag-evening-status?date= returns the last fire\u2019s status doc AND the durable SMS claims for that board day. The claims are the point: the status doc is overwritten every fire, so a stop that texted at 2am and cleared by 6am is INVISIBLE in the latest status and present in the claims \u2014 exactly the case that prompted this. WHAT THE FABLE HOMEGOODS CASE ACTUALLY WAS: red at 2:57a (est 1:57p vs a noon close, 117 late), gone by 6:40a. Not a bug and not a vanished note \u2014 the hours were on file the whole time. Route JEAN\u2019s seq-4 stop delivered at 6:18a, the engine re-anchored the whole chain on that real stamp exactly as designed, and everything downstream moved ~2 hours earlier. The 2:57a verdict was a projection from an ASSUMED 8:00a departure on a route that actually rolls before 6 \u2014 the fabricated departure time the design study named as a known weakness, now demonstrated to produce a real overnight false alarm. Read-only, no cron so it stays HTTP-reachable, ZERO NuVizz calls.'],
@@ -8614,7 +8615,9 @@ const sameRouteId = (a, b) => String(a ?? '').trim().toLowerCase() === String(b 
 // M5.2 — Route detail body, shared between the desktop sidebar and mobile drawer.
 // Shows the load's stops in compareByPlannedEta order (== polyline order) with status
 // badge + delivery/arrival/ETA time. Tap a row → onPickStop closes route + opens stop.
-function RouteDetailBody({ stops, onPickStop, onViewOnMap }) {
+function RouteDetailBody({ stops, onPickStop, onViewOnMap, etaByStop = null }) {
+  // The load's shared saved-search window, so it is never printed as twelve appointments.
+  const defaultWindowTs = React.useMemo(() => loadDefaultWindow(stops), [stops]);
   const sorted = orderRouteStops(stops);
   const driverName = sorted[0]?.driverName || sorted[0]?.driverUserName || '—';
   const delivered = sorted.filter((s) => classifyStopStatus(s) === 'DELIVERED').length;
@@ -8700,10 +8703,17 @@ function RouteDetailBody({ stops, onPickStop, onViewOnMap }) {
           // Delivered/arrived read their real execution stamp; anything still to run reads
           // NuVizz's ETA — and when NuVizz has no ETA the scheduled window shows LABELLED,
           // because an unlabelled window is what made six stops all say "8:00 AM".
-          const eta = kind === 'DELIVERED' || kind === 'ARRIVED' ? null : routeStopEta(s);
+          // OUR ETA leads — see routeStopTime. Falls back through NuVizz's own ETA to a
+          // genuine per-stop appointment, and prints nothing rather than a load-wide window.
+          const line = routeStopTime(s, {
+            kind,
+            ours: etaByStop ? etaByStop.get(String(s.stopNbr)) || null : null,
+            defaultWindowTs,
+          });
           const time = kind === 'DELIVERED' ? fmtClockShort(s.deliveredDTTM || execDeliveredTs(exec))
                      : kind === 'ARRIVED' ? fmtClockShort(s.arrivalDTTM || execArrivalTs(exec))
-                     : fmtClockShort(eta?.ts);
+                     : line?.source === 'ours' ? fmtMin(line.etaMin)
+                     : fmtClockShort(line?.ts);
           const freight = routeStopFreight(s);
           // Number by NuVizz's own sequence (routeSeq) so the list matches the Route
           // Workbench and the numbered map pins 1:1; fall back to position if absent.
@@ -8729,8 +8739,16 @@ function RouteDetailBody({ stops, onPickStop, onViewOnMap }) {
                   {addr && <div className="text-[11px] text-slate-500 truncate">{addr}</div>}
                   <div className="text-[11px] text-slate-400 truncate">
                     {s.pro && <span className="font-mono mr-1">{s.pro}</span>}
-                    {/* "appt" is never dropped for width: a window read as an ETA is the bug. */}
-                    {time && <span>{eta?.label === 'appt' ? `appt ${time}` : eta ? `ETA ${time}` : time}</span>}
+                    {/* The label is never dropped for width: a schedule read as an arrival is
+                        the original bug, and an estimate read as a promise is the new one. A
+                        `~` marks ours as an estimate; the tooltip says what it rests on. */}
+                    {time && (
+                      <span title={line?.title || ''}>
+                        {line?.source === 'ours' ? `ETA ~${time}`
+                          : line?.source === 'appt' ? `appt ${time}`
+                            : line?.source === 'vendor' ? `ETA ${time}` : time}
+                      </span>
+                    )}
                   </div>
                   {/* What's actually on the stop — skids and loose, the two numbers a
                       dispatcher checks against the trailer before it rolls. */}
@@ -8745,7 +8763,7 @@ function RouteDetailBody({ stops, onPickStop, onViewOnMap }) {
   );
 }
 
-function RouteDetailSidebar({ loadNbr, stops, onClose, onPickStop, mobile = false }) {
+function RouteDetailSidebar({ loadNbr, stops, onClose, onPickStop, mobile = false, etaByStop = null }) {
   // M5.2.1 — lead with the human route name (e.g. "DULUTH"); load # stays as fine
   // print so the dispatcher can still grep for the internal identifier.
   const routeName = stops.find((s) => s.routeName)?.routeName || null;
@@ -8766,13 +8784,13 @@ function RouteDetailSidebar({ loadNbr, stops, onClose, onPickStop, mobile = fals
         <button onClick={onClose} className="p-1 hover:bg-white/20 rounded" aria-label="Close route"><X size={20} /></button>
       </div>
       <div className="overflow-y-auto flex-1">
-        <RouteDetailBody stops={stops} onPickStop={onPickStop} />
+        <RouteDetailBody stops={stops} onPickStop={onPickStop} etaByStop={etaByStop} />
       </div>
     </aside>
   );
 }
 
-function MobileRouteDetailDrawer({ loadNbr, stops, onClose, onPickStop, onViewOnMap }) {
+function MobileRouteDetailDrawer({ loadNbr, stops, onClose, onPickStop, onViewOnMap, etaByStop = null }) {
   const routeName = stops.find((s) => s.routeName)?.routeName || null;
   return (
     <BottomSheet open onClose={onClose} heights={SHEET_HEIGHTS} ariaLabel={`Route ${routeName || loadNbr}`}>
@@ -8785,7 +8803,7 @@ function MobileRouteDetailDrawer({ loadNbr, stops, onClose, onPickStop, onViewOn
         <button onClick={onClose} className="p-2 -mr-2" aria-label="Close route"><X size={20} /></button>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain" data-sheet-scroll>
-        <RouteDetailBody stops={stops} onPickStop={onPickStop} onViewOnMap={onViewOnMap} />
+        <RouteDetailBody stops={stops} onPickStop={onPickStop} onViewOnMap={onViewOnMap} etaByStop={etaByStop} />
       </div>
     </BottomSheet>
   );
@@ -10800,6 +10818,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
           <MobileRouteDetailDrawer
             loadNbr={selectedRoute}
             stops={selectedRouteStops}
+            etaByStop={boardFlags.etaByStop}
             onClose={() => { setSelectedRoute(null); setRouteMapView(false); }}
             onViewOnMap={() => { setRouteMapView(true); frameRoute(selectedRoute); }}
             onPickStop={(s) => {
@@ -11222,6 +11241,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         <RouteDetailSidebar
           loadNbr={selectedRoute}
           stops={selectedRouteStops}
+          etaByStop={boardFlags.etaByStop}
           onClose={() => setSelectedRoute(null)}
           onPickStop={(s) => {
             setSelectedStop(s);

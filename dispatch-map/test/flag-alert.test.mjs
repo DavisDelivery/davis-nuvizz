@@ -68,8 +68,33 @@ test('a collapsed summary row is never emailed — it is not a stop', () => {
   assert.equal(selectAlertable([row({ collapsed: 14 })], 10 * 60).length, 0);
 });
 
-test('other rules never trigger the alert, whatever their tier', () => {
-  assert.equal(selectAlertable([row({ rule: 'no_driver_hours' }), row({ rule: 'dup_number' })], 10 * 60).length, 0);
+test('data-quality rules never trigger the alert, whatever their tier', () => {
+  // dup_number, no_location and friends are screen work, not a delivery about to be refused.
+  assert.equal(selectAlertable([row({ rule: 'dup_number' }), row({ rule: 'no_location' })], 10 * 60).length, 0);
+});
+
+test('THE SUPERSEDE CAN EMAIL — because it DELETES the row that used to', () => {
+  // board-flags R6 replaces every hours_risk row on a driverless route with one card ("one
+  // route, one card" — Chad: "there is same one listed twice"). That supersede also took the
+  // severity and the alert with it: five stops predicted 200+ minutes past their close became
+  // one amber row, criticalCount 0, and customer service heard nothing about the worst route
+  // on the board. Removing the driver made the situation worse and the board calmer.
+  //
+  // R6 now inherits the worst superseded row's tier and its stop facts, and this path lets it
+  // send — with the better reason (nobody is driving) attached to the message.
+  const superseded = row({ rule: 'no_driver_hours', tier: 'critical', stopNbr: '007164290' });
+  const got = selectAlertable([superseded], 10 * 60);
+  assert.equal(got.length, 1, 'a supersede that replaced a real red must still reach the inbox');
+  assert.equal(got[0].rule, 'no_driver_hours');
+  assert.equal(got[0].tier, 'critical');
+});
+
+test('a screen-only no-driver card — one that superseded nothing — still sends nothing', () => {
+  // R6 also fires EARLY, before the ETA walk has crossed any close (Chad's 9:24a LVILLE).
+  // Those cards carry no stop facts, and without a stopNbr or a close there is nothing to
+  // claim, nothing to say, and no send.
+  assert.equal(selectAlertable([row({ rule: 'no_driver_hours', stopNbr: null })], 10 * 60).length, 0);
+  assert.equal(selectAlertable([row({ rule: 'no_driver_hours', closeMin: null })], 10 * 60).length, 0);
 });
 
 test('worst first, so the cap keeps the most urgent rather than an arbitrary slice', () => {
@@ -203,4 +228,36 @@ test('alerts still send when the customer-communications budget is fully spent',
 
 test('the recipient is customer service', () => {
   assert.equal(ALERT_TO, 'customerservice@davisdelivery.com');
+});
+
+// ── THE HISTORY MAY ONLY RECORD A SEND THAT HAPPENED ────────────────────────
+
+test('sendAlerts reports WHICH stops it actually reached, not which it intended to', () => {
+  // The flag history recorded emailed:true from the CANDIDATE list, before sendAlerts ran —
+  // so with RESEND_API_KEY unset, or Resend returning 500, or the runaway cap hit, the
+  // history still claimed every red and critical had emailed customer service. mergeSweep's
+  // sticky OR made that permanent for the day. This repo's oldest sin (an intent reported as
+  // an outcome) inside the feature built to stop committing it.
+  const io = (sendOk, claimOk = true) => ({
+    createDocIfAbsent: async () => claimOk,
+    send: async () => ({ ok: sendOk }),
+  });
+  const c = (stopNbr) => ({ stopNbr, customer: 'X', route: 'R', closeMin: 840, etaMin: 900, lateBy: 60, tier: 'red' });
+
+  return Promise.all([
+    sendAlerts([c('a'), c('b')], DATE, 'davis', io(true)).then((r) => {
+      assert.equal(r.sent, 2);
+      assert.deepEqual([...r.emailedStops].sort(), ['a', 'b'], 'both were mailed');
+    }),
+    sendAlerts([c('a'), c('b')], DATE, 'davis', io(false)).then((r) => {
+      assert.equal(r.sent, 0);
+      assert.equal(r.failed, 2);
+      assert.equal(r.emailedStops.size, 0, 'a refused send is NOT an email');
+    }),
+    // Claim already held: an EARLIER sweep mailed it, so it still counts as emailed today.
+    sendAlerts([c('a')], DATE, 'davis', io(true, false)).then((r) => {
+      assert.equal(r.skippedAlreadySent, 1);
+      assert.deepEqual([...r.emailedStops], ['a'], "an earlier sweep's send still counts");
+    }),
+  ]);
 });

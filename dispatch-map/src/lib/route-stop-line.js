@@ -93,3 +93,103 @@ export function routeStopSeq(stop) {
   const f = stop?.raw?.stop?.from?.seq;
   return { seq: typeof t === 'number' ? t : typeof f === 'number' ? f : null, pickup: false };
 }
+
+// ── WHOSE CLOCK THE ROUTE CARD SHOWS ────────────────────────────────────────
+//
+// Chad, on a 12-stop BRIAN route where every single row read "appt 8:00 AM": "i think the
+// route should show our eta's instead of the appt time as that is not really helpful here."
+//
+// He is right twice over. v0.54.4 already found this shape — six stops on TRAILER 7 all
+// reading 8:00 AM — and did the only thing possible AT THE TIME: label the window so it
+// could not be misread as an arrival. There was no arrival model to offer instead. There
+// is now: the flag engine walks each route from the depot on calibrated per-truck-class
+// speeds and re-anchors on every real arrival stamp, and computeBoardFlags hands that walk
+// out as etaByStop. So the card can finally answer the question the dispatcher is actually
+// asking — when does this truck get there — instead of quoting a number back at them.
+//
+// WHY OUR ETA OUTRANKS NUVIZZ'S OWN, which is not an obvious call and is not a guess:
+// eta-backtest graded both against what the trucks actually did. NuVizz's per-stop ETA
+// (model D) exists on ~0.7% of stops and lands a median 79 minutes off; the anchored walk
+// lands 13-14 minutes off with 72% inside half an hour. Ours is better where both exist and
+// present where theirs is not, so it leads — and NuVizz's stays as the fallback rather than
+// being thrown away.
+
+/**
+ * PURE. The window a whole LOAD shares, which is not an appointment.
+ *
+ * The saved search's "Estimated Arrival" is one generic window stamped on every stop of a
+ * load, so it arrives looking exactly like twelve customers who all booked 8:00 AM. Twelve
+ * independent consignees do not book the same slot — the same reasoning the time-restriction
+ * sheet uses to throw out NuVizz's 09:00-09:30 creation stamp, detected FROM the data rather
+ * than hardcoded, because it is the vendor's default and can change without telling us.
+ *
+ * @returns the shared timestamp when one dominates the route, else null.
+ */
+export function loadDefaultWindow(stops, { minStops = 3, share = 0.6 } = {}) {
+  const list = Array.isArray(stops) ? stops : [];
+  if (list.length < minStops) return null;
+  const counts = new Map();
+  for (const s of list) {
+    const ts = typeof s?.scheduledFrom === 'string' && s.scheduledFrom ? s.scheduledFrom : null;
+    if (!ts) continue;
+    counts.set(ts, (counts.get(ts) || 0) + 1);
+  }
+  for (const [ts, n] of counts) {
+    if (n >= minStops && n >= list.length * share) return ts;
+  }
+  return null;
+}
+
+/**
+ * PURE. What the time line on a route-detail stop card should say.
+ *
+ * Precedence, and every step of it is a claim about evidence quality:
+ *   1. a real execution stamp        — it already happened, nothing predicts better
+ *   2. OUR anchored ETA             — measured best (see above)
+ *   3. NuVizz's own per-stop ETA    — genuine route data, rarely present
+ *   4. a per-stop appointment       — a SCHEDULE, labelled, never an arrival prediction
+ *   5. nothing                      — a blank beats a placeholder clock
+ *
+ * A load-wide default window is suppressed at step 4: it is not an appointment and printing
+ * it twelve times is the noise this function exists to remove.
+ *
+ * @param stop      board stop
+ * @param opts.kind classifyStopStatus result ('DELIVERED' | 'ARRIVED' | …)
+ * @param opts.ours { etaMin, errorMin, anchored } from computeBoardFlags().etaByStop, or null
+ * @param opts.defaultWindowTs loadDefaultWindow() for this route, or null
+ * @returns {{ source: 'actual'|'ours'|'vendor'|'appt', ts?: string, etaMin?: number,
+ *             errorMin?: number, anchored?: boolean, label: string, title: string }|null}
+ */
+export function routeStopTime(stop, { kind = null, ours = null, defaultWindowTs = null } = {}) {
+  const exec = stop?.raw?.stopExecutionInfo || {};
+  if (kind === 'DELIVERED') {
+    const ts = stop?.deliveredDTTM || exec.to?.confirmedDTTM || exec.to?.arrivalDTTM || null;
+    return ts ? { source: 'actual', ts, label: '', title: 'Delivered' } : null;
+  }
+  if (kind === 'ARRIVED') {
+    const ts = stop?.arrivalDTTM || exec.to?.arrivalDTTM || null;
+    return ts ? { source: 'actual', ts, label: '', title: 'Arrived' } : null;
+  }
+
+  if (ours && Number.isFinite(ours.etaMin)) {
+    return {
+      source: 'ours', etaMin: ours.etaMin, errorMin: ours.errorMin, anchored: !!ours.anchored,
+      label: 'ETA',
+      title: ours.anchored
+        ? 'Our estimate, projected from the last real arrival stamp on this route.'
+        : 'Our estimate, projected from the assumed departure — no stop on this route has reported in yet.',
+    };
+  }
+
+  const vendor = exec.to?.plannedEtaDTTM || exec.from?.plannedEtaDTTM || null;
+  if (typeof vendor === 'string' && vendor) {
+    return { source: 'vendor', ts: vendor, label: 'ETA', title: "NuVizz's own route ETA." };
+  }
+
+  // A schedule, never an arrival. Suppressed when it is the load's shared window.
+  const sched = typeof stop?.scheduledFrom === 'string' && stop.scheduledFrom ? stop.scheduledFrom : null;
+  if (sched && sched !== defaultWindowTs) {
+    return { source: 'appt', ts: sched, label: 'appt', title: 'Scheduled window for this stop — not an arrival estimate.' };
+  }
+  return null;
+}
