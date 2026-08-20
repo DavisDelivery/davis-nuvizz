@@ -23,7 +23,7 @@
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro, lookupLoadStopNbrs } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired } from './firestore.mts';
-import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus } from './nuvizz-list.mts';
+import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow } from './nuvizz-list.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterForDate } from './nuvizz-loads.mts';
 import { getStop } from './history-store.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
@@ -164,6 +164,18 @@ export function addrListSig(stop: any): string {
   const streetNum = String(stop?.addr1 ?? '').match(/\d+/)?.[0] || '';
   return (zip5 || streetNum) ? `${zip5}|${streetNum}` : '';
 }
+// ── One-time repair for pickups enriched before the ship-to fix ───────────────
+//
+// Until v0.65.2 the merge discarded a pickup's real address in favour of the saved search's
+// ship-to column (see isPickupRow in nuvizz-list.mts). The enrichment registry stores the
+// MERGED row, not the raw /stop/info answer, so the correct pickup address is not in our
+// data anywhere and no amount of carrying forward can recover it — it takes one fresh
+// /stop/info per affected pickup. This stamp records that the re-read has happened, so the
+// repair costs one call per pickup ONCE and can never become a per-scan habit. It is
+// written on the strength of the ANSWER, not the attempt: a call that never came back
+// leaves the stamp unset and is retried, exactly like any other un-enriched stop.
+export const PICKUP_ADDR_HEAL = 1;
+
 // True when the stop's CURRENT list address differs from the signature we last stored for it.
 // No stored baseline (first sighting) or no usable current list address → never a change, so a
 // fresh field rollout and a momentarily address-less list row both stay quiet (no false re-pull).
@@ -989,6 +1001,11 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         const demoteChecks: Array<{ s: any; p: any }> = [];
         let reconsigned = 0;
         const reconsignedNbrs = new Set<string>();
+        // Stops whose CACHED enriched record must not be merged, for a reason other than a
+        // reconsignment — today only the pickup address repair below. Kept separate from
+        // reconsignedNbrs so the "N reconsigned stop(s)" line keeps meaning what it says.
+        const staleCacheNbrs = new Set<string>();
+        let healedPickups = 0;
         for (const s of dateStops) {
           const p = prevByNbr.get(String(s.stopNbr));
           const listSig = addrListSig(s);   // this scan's LIST address signature (same source every scan)
@@ -1021,8 +1038,15 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             // against itself and agrees. One re-enrichment per real move, not per scan.
             //
             // mergeEnrich has already run, so `s` holds what the board WOULD have shown.
+            //
+            // A PICKUP IS EXEMPT, and this is the whole reason the exemption has to be here
+            // rather than only in the merge. Its list address is the ship-to (our terminal on
+            // a return) while the address we SHOW is the pickup site, so the two signatures
+            // describe different places BY DESIGN and can never be made to agree. Left in,
+            // this check would blank the pin and re-enrich every RA row on every scan for
+            // ever — precisely the non-converging loop addrListSig's own comment warns off.
             const shownSig = addrListSig(s);
-            if (!wasReconsigned && p.enriched && shownSig && listSig && shownSig !== listSig) {
+            if (!wasReconsigned && p.enriched && !isPickupRow(s) && shownSig && listSig && shownSig !== listSig) {
               // The list wins the text (mergeEnrich left it alone — the fields are
               // live-if-present), but the coordinates, the state and the line items on the
               // record all describe the PREVIOUS address. A corrected address under a pin
@@ -1031,6 +1055,18 @@ export async function runRefreshStops(req: Request): Promise<Response> {
               s.lat = null; s.lng = null;
               s.enriched = false;                       // re-enrich: fresh detail + re-geocode
               reconsigned++; reconsignedNbrs.add(String(s.stopNbr));
+            }
+            // THE PICKUP ADDRESS REPAIR (see PICKUP_ADDR_HEAL). A pickup carried forward from
+            // a pre-fix scan holds the ship-to; the detail merge above has just handed it to
+            // this row, and its cached registry record holds the same thing. Keep the detail
+            // (so nothing is lost if the re-read is capped or fails) but clear `enriched` so
+            // the live /stop/info below runs and recovers stop.from. The stamp rides along on
+            // the merge, so a pickup already repaired — or one first enriched after the fix —
+            // never comes back through here.
+            if (isPickupRow(s) && s.enriched && Number(s.pickupAddrHeal ?? 0) < PICKUP_ADDR_HEAL) {
+              s.enriched = false;
+              staleCacheNbrs.add(String(s.stopNbr));
+              healedPickups++;
             }
             // A recent CONFIRMED live Save (write-through, #361) outranks a lagging list row:
             // hold the confirmed plan fields until the list agrees or the grace expires.
@@ -1068,6 +1104,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           if (!s.enriched) toEnrich.push(s);
         }
         if (reconsigned) console.log(`[scan] ${date}: ${reconsigned} reconsigned stop(s) — address changed, re-enriching for the new address + pin`);
+        if (healedPickups) console.log(`[scan] ${date}: ${healedPickups} pickup(s) still carrying the ship-to address — re-reading /stop/info once each for the real pickup address (one-time, see PICKUP_ADDR_HEAL)`);
 
         // ── Demotion verify (see collection above) ────────────────────────────
         // LOAD-CORROBORATED FIRST (OWUSU 1, Jul 10): NuVizz's per-stop record can read
@@ -1126,7 +1163,18 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             // address and would re-clobber the new one. Left un-enriched, it flows to the live
             // /stop/info below (fresh address + coords), or, if that's capped, its new list address
             // is geocoded in the coords fallback — either way the pin follows the move.
-            if (reg.found.size) for (const s of toEnrich) { if (reconsignedNbrs.has(String(s.stopNbr))) continue; const r = reg.found.get(String(s.stopNbr)); if (r) mergeEnrich(s, r); }
+            if (reg.found.size) for (const s of toEnrich) {
+              const nbr = String(s.stopNbr);
+              if (reconsignedNbrs.has(nbr) || staleCacheNbrs.has(nbr)) continue;
+              const r = reg.found.get(nbr);
+              if (!r) continue;
+              // A pickup cached before the ship-to fix holds OUR TERMINAL's address, so merging
+              // it would mark the row enriched and skip the live read that is the only way back
+              // to the real one. This is the cross-day half of the repair: the branch above only
+              // sees pickups that were already on TODAY's board on a previous scan.
+              if (isPickupRow(s) && Number(r.pickupAddrHeal ?? 0) < PICKUP_ADDR_HEAL) continue;
+              mergeEnrich(s, r);
+            }
             if (regUnresolved.size) console.warn(`[scan] ${date}: registry read could not resolve ${regUnresolved.size} PRO(s) after retries; SKIPPING those this cycle (retry next scan, never re-enrich on a read error)`);
           } catch (e: any) { regOk = false; console.warn(`[scan] ${date}: enrichment registry read failed (${e?.message}); SKIPPING enrichment this cycle to avoid a burst`); }
         }
@@ -1150,6 +1198,13 @@ export async function runRefreshStops(req: Request): Promise<Response> {
               try {
                 const r = await lookupStopByPro(s.stopNbr);
                 if (r.ok && r.stop) {
+                  // NuVizz ANSWERED, whichever way it answered — so a pickup's one-time address
+                  // repair is spent here and not re-armed tomorrow. Stamped on the answer rather
+                  // than the attempt: a call that threw falls to the catch below with the stamp
+                  // unset and is retried, like any other stop that failed to enrich. This also
+                  // settles the honest edge case — a pickup that genuinely happens AT our own
+                  // terminal reads back as the terminal, and must not be re-read for ever.
+                  if (isPickupRow(s)) s.pickupAddrHeal = PICKUP_ADDR_HEAL;
                   if (enrichedRecordMatches(s, r.stop)) { mergeEnrich(s, r.stop); enriched++; }
                   else {
                     // The by-number read answered with the OTHER record sharing this number.
