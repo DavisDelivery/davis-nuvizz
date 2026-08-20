@@ -504,7 +504,40 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // pickup that borrowed the terminal's identity borrowed its window with it. This is the
   // rule underneath, and it still holds on the day a pickup sits at a business that really
   // does have receiving hours on file.
-  const receivingWindow = (s) => (isPickupStop(s) ? null : dayReceivingWindow(noteOf(s), day));
+  // OUR OWN DOCK IS NOT A CUSTOMER, AND IT NEVER HAD A DEADLINE.
+  //
+  // Chad, 2026-08-20, on a red card reading "No driver — DUL 2 must make 11:00a ... earliest
+  // close 11:00a at DAVIS DELIVERY": "Why are you worried about Davis Delivery's hours? Never
+  // gave you my hours and they don't matter anyways. Has nothing to do with the deliveries."
+  //
+  // He never typed them — the text scanner invented them from order text, which is what the
+  // auto tier means. And an 11:00a "receiving close" at our own terminal is not a deadline in
+  // any sense: we are not going to refuse our own freight, and nothing about a truck arriving
+  // late at its own yard is a customer outcome.
+  //
+  // It was not merely noise. That phantom 11:00a was the EARLIEST close on DUL 2, so it set
+  // the whole card: it made the route read as unreachable, took the loudest tier, and put its
+  // own name in the title — while METRO's real 2:00p, further down the same load, was
+  // superseded and never printed. Chad found METRO by hand, flipping through paperwork. A
+  // made-up deadline at our own warehouse outranked a real one at a customer, and the two
+  // complaints he raised were the same bug wearing two faces.
+  //
+  // v0.65.2 fixed the neighbouring case — a PICKUP does not inherit a dock's receiving hours
+  // — but that keys on stopType 'PU', and freight coming BACK to us is often typed as a
+  // delivery. So the rule has to be about the PLACE, not the movement. Two independent tests,
+  // because either alone has a gap: the name catches a record with no usable pin, and the
+  // depot proximity catches a record whose name is spelled some other way.
+  const OWN_FACILITY_RE = /\bdavis\s*delivery\b/i;
+  const OWN_FACILITY_METERS = 250;
+  const isOwnFacility = (s) => {
+    if (OWN_FACILITY_RE.test(String(s?.businessName ?? ''))) return true;
+    if (!depot) return false;
+    const p = stopPosition(s, noteOf(s));
+    return !!p && haversineMeters(p, depot) <= OWN_FACILITY_METERS;
+  };
+  const receivingWindow = (s) => (
+    (isPickupStop(s) || isOwnFacility(s)) ? null : dayReceivingWindow(noteOf(s), day)
+  );
   const rows = [];
   const skipped = { noRoster: false, ambiguousRoutes: [], routesNoSequence: [], routesAppointment: [], stopsNoPosition: 0 };
   // What the detector actually LOOKED at — the panel shows these so a quiet board can
