@@ -10,7 +10,7 @@
 // answer so it stays a one-request question.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { heldReason, explainStop } from '../netlify/functions/eta-flag-check.mts';
+import { heldReason, explainStop, normStopNbr, hoursProvenance } from '../netlify/functions/eta-flag-check.mts';
 import { selectAlertable, ALERT_TIERS } from '../netlify/functions/lib/flag-alert.mts';
 
 const NOON = 12 * 60;
@@ -68,7 +68,7 @@ test('explainStop distinguishes NOT FLAGGED from FLAGGED BUT HELD', () => {
   const notFlagged = explainStop('007164290', STOPS, [], new Set(), 11 * 60, []);
   assert.equal(notFlagged.found, true);
   assert.equal(notFlagged.flagged, false);
-  assert.match(notFlagged.heldBecause, /no receiving-hours flag/);
+  assert.match(notFlagged.heldBecause, /no receiving close on file/);
 
   const held = explainStop('007164290', STOPS, [row({})], new Set(), 13 * 60, []);
   assert.equal(held.flagged, true);
@@ -88,6 +88,76 @@ test('explainStop matches the PRO with or without the -1 instance suffix', () =>
   const r = explainStop('007164290-1', STOPS, [row({})], new Set(), 11 * 60, []);
   assert.equal(r.found, true);
   assert.equal(r.customer, 'SIMPLY CHARLOTTE MASON');
+});
+
+// ── CHAD'S "7165047", 2026-08-20 ─────────────────────────────────────────────
+//
+// "why was this not flagged to be late it was next to last delivery and closes at 2pm
+// 7165047". The endpoint answered "no stop with that number on this board" — three times, on
+// three different dates. The stop was on every one of them, as 007165047. A diagnostic that
+// cannot find the stop does not return an error; it returns a confident, wrong answer.
+
+test('a PRO typed WITHOUT its leading zeros still finds the stop', () => {
+  const padded = [{ stopNbr: '007165047', businessName: 'METRO', status: '10' }];
+  const r = explainStop('7165047', padded, [], new Set(), 11 * 60, []);
+  assert.equal(r.found, true, 'the number on the paperwork must find the stop in the feed');
+  assert.equal(r.customer, 'METRO');
+});
+
+test('normStopNbr strips padding and the split-order suffix, and keeps a lone zero', () => {
+  assert.equal(normStopNbr('007165047'), '7165047');
+  assert.equal(normStopNbr('7165047'), '7165047');
+  assert.equal(normStopNbr(' 007165047-1 '), '7165047');
+  assert.equal(normStopNbr('0'), '0', 'a real zero must not normalise to empty');
+  assert.equal(normStopNbr(null), '');
+});
+
+// ── WHY THERE IS NO DEADLINE ─────────────────────────────────────────────────
+//
+// "close: null" was the whole answer, and it covers four situations with four different
+// fixes. Only one of them is an engine problem.
+
+test('hoursProvenance names WHICH way the hours are missing', () => {
+  const day = 'thu';
+  const withNote = (n) => new Map([['metro|k', n]]);
+  const stop = { stopNbr: '007165047', matchKey: 'metro|k' };
+
+  const noKey = hoursProvenance({ stopNbr: '1' }, withNote({}), day);
+  assert.equal(noKey.noteOnFile, false);
+  assert.match(noKey.why, /no customer match key/);
+
+  const noNote = hoursProvenance(stop, new Map(), day);
+  assert.equal(noNote.noteOnFile, false);
+  assert.match(noNote.why, /no customer note on file/);
+  assert.match(noNote.why, /metro\|k/, 'name the key so the gap is fixable');
+
+  const blankDay = hoursProvenance(stop, withNote({ receiving_hours: { mon: '8-5' } }), day);
+  assert.equal(blankDay.noteOnFile, true);
+  assert.equal(blankDay.parsed, null);
+  assert.match(blankDay.why, /no receiving hours recorded for thu/);
+
+  const freeText = hoursProvenance(stop, withNote({ receiving_hours: { thu: 'call first' } }), day);
+  assert.equal(freeText.raw, 'call first');
+  assert.equal(freeText.parsed, null);
+  assert.match(freeText.why, /not a comparable clock window/);
+
+  const good = hoursProvenance(stop, withNote({ receiving_hours: { thu: { open: '08:00', close: '14:00' } } }), day);
+  assert.deepEqual(good.parsed, { open: '8:00a', close: '2:00p', tier: 'auto' });
+  assert.equal(good.why, null);
+});
+
+test('a stop WITH hours on file that simply is not late says so, and does not blame the data', () => {
+  const stops = [{ stopNbr: '007165047', businessName: 'METRO', matchKey: 'metro|k', status: '10' }];
+  const notes = new Map([['metro|k', { receiving_hours: { thu: { open: '08:00', close: '14:00' } } }]]);
+  const r = explainStop('7165047', stops, [], new Set(), 11 * 60, [], { notes, dayKey: 'thu' });
+  assert.equal(r.hours.parsed.close, '2:00p');
+  assert.match(r.heldBecause, /receiving hours ARE on file/);
+
+  // …and the same stop with nothing on file blames the data, by name.
+  const bare = explainStop('7165047', stops, [], new Set(), 11 * 60, [], { notes: new Map(), dayKey: 'thu' });
+  assert.equal(bare.hours.parsed, null);
+  assert.match(bare.heldBecause, /no receiving close on file/);
+  assert.match(bare.heldBecause, /no customer note on file/);
 });
 
 test('an already-emailed stop says THAT, not that it was held', () => {
