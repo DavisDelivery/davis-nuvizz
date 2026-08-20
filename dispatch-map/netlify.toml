@@ -54,6 +54,12 @@
   # "no data" rather than "ran out of time" — the same trap the stop explorer hit.
   [functions."eta-backtest"]
     timeout = 26
+  # The flag replay simulates a full day of 20-minute alert sweeps over one sealed day —
+  # ~39 engine runs over ~800 stops plus the same Firestore reads the live sweep makes.
+  # One day per request BY DESIGN (a runner loops dates); the 10s default is too tight
+  # for the notes fan-out on a big board. Read-only, ZERO NuVizz calls, never sends.
+  [functions."flag-replay"]
+    timeout = 26
   # The nightly miss ledger scores a sealed day: a full day's stop index plus one
   # customer_notes read per distinct customer, and a BACKFILL walks up to 60 of those.
   # It is declared -background, so it gets Netlify's 15-minute allowance and needs no
