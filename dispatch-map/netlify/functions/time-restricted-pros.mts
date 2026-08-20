@@ -12,6 +12,7 @@
 //   GET ?date=…&format=csv      the same rows as a downloadable CSV
 //   GET ?include=deliveries|all|pickups   default 'deliveries'
 //   GET ?appointmentOnly=1      keep stops whose ONLY flag is "appointment required"
+//   GET ?proPrefix=716|all      default '716' — Uline's PRO series. 'all' = every shipper.
 //   GET ?carryDays=N            also fold in still-unplanned stops from the prior N days
 //
 // carryDays defaults to 0, matching the map's own default so the report and the screen
@@ -64,6 +65,14 @@ export default async (req: Request): Promise<Response> => {
     // call first, not deliver by. Dropped unless asked for. A stop that pairs an
     // appointment with real receiving hours is a HARD WINDOW and is never touched by this.
     const dropAppointmentOnly = url.searchParams.get('appointmentOnly') !== '1';
+    // ULINE ONLY BY DEFAULT. Davis hauls for several shippers on one board and the PRO
+    // series is the only thing that separates them — there is no carrier field (`source`
+    // records how the scan found the stop, not whose freight it is). Uline's run in the 716
+    // series; ESTES residential, SHP and FOODSERV orders do not. ?proPrefix=all widens it,
+    // and the prefix in force is reported in coverage so an empty sheet is explainable
+    // rather than mysterious if the numbering ever moves.
+    const prefixParam = (url.searchParams.get('proPrefix') ?? '716').trim();
+    const proPrefix = prefixParam.toLowerCase() === 'all' ? '' : prefixParam;
 
     const { meta, stops: rawStops } = await readStops(TENANT, date);
     // The stored stop index carries no matchKey; customer_notes are keyed by it. Without
@@ -97,7 +106,7 @@ export default async (req: Request): Promise<Response> => {
       }));
     }
 
-    const rows = buildTimeRestrictionRows(stops, notes, date, { include, dropAppointmentOnly });
+    const rows = buildTimeRestrictionRows(stops, notes, date, { include, dropAppointmentOnly, proPrefix });
     const summary = summarizeRows(rows);
 
     if (wantCsv) {
@@ -125,6 +134,7 @@ export default async (req: Request): Promise<Response> => {
         noteReadFailures,
         include,
         appointmentOnlyDropped: dropAppointmentOnly,
+        proPrefix: proPrefix || 'all',
         carryDays,
         carryoverAdded,
         lastScannedAt: meta?.last_scanned_at ?? null,
