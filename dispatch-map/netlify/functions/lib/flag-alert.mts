@@ -82,7 +82,7 @@ export function alertClaimPath(tenant: string, date: string, stopNbr: string): s
 export interface AlertCandidate {
   stopNbr: string; customer: string; route: string;
   closeMin: number; etaMin: number; lateBy: number; tier: string;
-  anchored?: boolean; detail?: string;
+  anchored?: boolean; detail?: string; rule?: string;
 }
 
 // A minutes value, or null — and STRICTLY, because the loose version shipped a real defect.
@@ -122,10 +122,17 @@ const hhmm = (m: number) => {
 export const ALERT_TIERS = new Set(['critical', 'red']);
 export { finiteMinutes };
 
+// The rules that can EARN an email. no_driver_hours is here because it does not merely sit
+// beside an hours_risk row — it DELETES it (board-flags R6, "one route, one card"), and a
+// supersede that also silenced the alert meant the worst routes on the board were the
+// quietest. It only carries a stopNbr and a closeMin when it actually replaced a real
+// arrival row, so a screen-only R6 card still sends nothing.
+export const ALERT_RULES = new Set(['hours_risk', 'no_driver_hours']);
+
 export function selectAlertable(rows: any[], nowMin: number | null): AlertCandidate[] {
   const out: AlertCandidate[] = [];
   for (const r of rows || []) {
-    if (r?.rule !== 'hours_risk') continue;
+    if (!ALERT_RULES.has(String(r?.rule))) continue;
     if (!ALERT_TIERS.has(String(r?.tier))) continue;   // amber stays on the screen
     if (!r?.stopNbr) continue;                     // a collapsed summary row is not a stop
     if (r?.collapsed) continue;
@@ -137,6 +144,7 @@ export function selectAlertable(rows: any[], nowMin: number | null): AlertCandid
       stopNbr: String(r.stopNbr), customer: String(r.customer || r.businessName || ''),
       route: String(r.routeName || ''), closeMin, etaMin: Number(r.etaMin),
       lateBy: Number(r.lateBy), tier: r.tier, anchored: !!r.anchored, detail: String(r.detail || ''),
+      rule: String(r.rule),
     });
   }
   // Worst first, so a cap keeps the most urgent rather than an arbitrary slice.
@@ -193,9 +201,15 @@ export async function sendAlerts(
   candidates: AlertCandidate[], date: string, tenant: string,
   io: { createDocIfAbsent: (p: string, d: any) => Promise<boolean>; send?: typeof sendEmail },
   to: string = ALERT_TO,
-): Promise<{ sent: number; claimed: number; failed: number; skippedAlreadySent: number; capped: number }> {
+): Promise<{ sent: number; claimed: number; failed: number; skippedAlreadySent: number; capped: number; emailedStops: Set<string> }> {
   const send = io.send || sendEmail;
   let sent = 0, claimed = 0, failed = 0, skippedAlreadySent = 0, capped = 0;
+  // WHICH STOPS A MESSAGE ACTUALLY REACHED CUSTOMER SERVICE ABOUT. Returned rather than
+  // inferred, because the caller records it as history and the last thing built here that
+  // inferred a send from an intention ran for weeks saying "routed to Google" about nothing.
+  // A stop counts when THIS run mailed it, or when an earlier sweep already claimed it —
+  // the claim is won once per stop per day, so the claim IS the record of the attempt.
+  const emailedStops = new Set<string>();
   for (const c of candidates) {
     if (claimed >= DAILY_ALERT_CAP) { capped += 1; continue; }
     let won = false;
@@ -206,11 +220,11 @@ export async function sendAlerts(
         claimed_at: new Date().toISOString(),
       });
     } catch { failed += 1; continue; }
-    if (!won) { skippedAlreadySent += 1; continue; }
+    if (!won) { skippedAlreadySent += 1; emailedStops.add(String(c.stopNbr)); continue; }
     claimed += 1;
     const msg = buildAlert(c, date);
     const res = await send({ to: [to], subject: msg.subject, text: msg.text, html: msg.html });
-    if (res?.ok) sent += 1; else failed += 1;
+    if (res?.ok) { sent += 1; emailedStops.add(String(c.stopNbr)); } else failed += 1;
   }
-  return { sent, claimed, failed, skippedAlreadySent, capped };
+  return { sent, claimed, failed, skippedAlreadySent, capped, emailedStops };
 }

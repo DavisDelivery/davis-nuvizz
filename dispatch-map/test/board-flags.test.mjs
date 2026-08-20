@@ -327,8 +327,16 @@ test('the first hour after departure is grace — a truck en route to stop 1 is 
 });
 
 test('any movement evidence keeps the scheduled departure model — POD, arrival stamp, or status', () => {
-  // 3:00p clock, but a sibling stop shows the truck is out. All three evidence shapes count:
-  // a DELIVERED stop, an ARRIVED status (driver at a dock, no POD yet), an arrivalDTTM stamp.
+  // A sibling stop shows the truck is out, so the route's DEPARTURE is not re-anchored to
+  // now. All four evidence shapes count: a DELIVERED stop, an ARRIVED status (driver at a
+  // dock, no POD yet), an arrivalDTTM stamp, and status 40 (out for delivery).
+  //
+  // The clock here is 11:00a against a 2:00p close — deliberately a window still OPEN. It
+  // used to be 3:00p against the same 2:00p close, which conflated two different questions:
+  // "was the departure re-anchored" (this test's subject) and "can a stop still open at 3:00p
+  // be reported as arriving at 8:13a" (it cannot — a stop nobody has reported arriving at
+  // cannot be arrived at in the past, and the engine now says so). Keeping the window open
+  // isolates the departure model, which is what this test is for.
   const notesObj = { 'near|k': note({ receiving_hours: { mon: { open: '08:00', close: '14:00' } }, manual_overrides: { receiving_hours: true } }) };
   for (const evidence of [
     { stopNbr: '0', normalizedStatus: 'DELIVERED', deliveredDTTM: '2026-08-10T10:00:00' },
@@ -336,10 +344,44 @@ test('any movement evidence keeps the scheduled departure model — POD, arrival
     { stopNbr: '0', arrivalDTTM: '2026-08-10T08:40:00' },
     { stopNbr: '0', status: '40' }, // out for delivery
   ]) {
-    const out = run([stop(evidence), stop({ stopNbr: '1', routeSeq: 1, matchKey: 'near|k' })], notesObj, { opts: { ...OPTS, nowMin: 15 * 60 } });
+    const out = run([stop(evidence), stop({ stopNbr: '1', routeSeq: 1, matchKey: 'near|k' })], notesObj, { opts: { ...OPTS, nowMin: 11 * 60 } });
     assert.equal(out.rows.filter((r) => r.rule === 'hours_risk').length, 0,
       `a route with ${JSON.stringify(evidence)} is rolling — never re-anchored to now`);
   }
+});
+
+test('A STOP STILL OPEN CANNOT HAVE ARRIVED IN THE PAST — the stalled truck is not a quiet board', () => {
+  // The stale-anchor hole. A route delivers stop 0 at 10:00a and then posts nothing: a long
+  // dock wait, a breakdown, lunch. The walk re-anchored on that 10:00 stamp and projected
+  // every remaining stop from it, so at 3:00p it still reported arrivals in the morning and
+  // `clockMin > closeMin` was false against a 2:00p close. The board showed NOTHING, which is
+  // the worst direction for this to fail in: fewer flags, and a clean board looks like a good
+  // day. Chad asked for exactly this case — the alert "could come later in day if a driver
+  // gets behind."
+  const notesObj = { 'near|k': note({ receiving_hours: { mon: { open: '08:00', close: '14:00' } }, manual_overrides: { receiving_hours: true } }) };
+  const stops = [
+    stop({ stopNbr: '0', normalizedStatus: 'DELIVERED', deliveredDTTM: '2026-08-10T10:00:00' }),
+    stop({ stopNbr: '1', routeSeq: 1, matchKey: 'near|k' }),
+  ];
+  const quiet = run(stops, notesObj, { opts: { ...OPTS, nowMin: 11 * 60 } });
+  assert.equal(quiet.rows.filter((r) => r.rule === 'hours_risk').length, 0,
+    'at 11:00a the truck can still make a 2:00p close — nothing to say');
+  const stalled = run(stops, notesObj, { opts: { ...OPTS, nowMin: 15 * 60 } });
+  assert.equal(stalled.rows.filter((r) => r.rule === 'hours_risk').length, 1,
+    'at 3:00p, with the close already shut and the stop still open, the board must say so');
+});
+
+test('a stop that HAS reported arriving is never clamped forward — that would be a lie the other way', () => {
+  // The clamp applies only to stops nobody has reported arriving at. A stop carrying its own
+  // stamp already happened, and pushing it to "now" would invent a late arrival for a truck
+  // that was on time.
+  const notesObj = { 'near|k': note({ receiving_hours: { mon: { open: '08:00', close: '14:00' } }, manual_overrides: { receiving_hours: true } }) };
+  const out = run([
+    stop({ stopNbr: '0', normalizedStatus: 'DELIVERED', deliveredDTTM: '2026-08-10T09:00:00' }),
+    stop({ stopNbr: '1', routeSeq: 1, matchKey: 'near|k', arrivalDTTM: '2026-08-10T09:30:00' }),
+  ], notesObj, { opts: { ...OPTS, nowMin: 15 * 60 } });
+  assert.equal(out.rows.filter((r) => r.rule === 'hours_risk').length, 0,
+    'it arrived at 9:30a, well inside the 2:00p close — 3:00p on the wall changes nothing');
 });
 
 // ── v0.54.58: Chad's LVILLE case — a deadline route with no driver assigned ──
@@ -579,4 +621,57 @@ test('a route WITH a driver still gets its arrival card — the supersede is sco
   const out = run(stops, notesObj, { opts: { ...OPTS, nowMin: 11 * 60 + 20 } });
   assert.equal(out.rows.filter((r) => r.rule === 'no_driver_hours').length, 0);
   assert.equal(out.rows.filter((r) => r.rule === 'hours_risk').length, 1, 'a driver is assigned — the timing risk is the real story');
+});
+
+// ── WHAT THE VOLUME CAP IS ALLOWED TO SILENCE (bug hunt, Aug 2026) ──────────
+
+test('THE CAP CANNOT ERASE A CRITICAL — it collapses per tier, not per rule', () => {
+  // The cap used to bucket by RULE and take its threshold from rs[0].tier — the first row
+  // pushed, whose tier is arbitrary with respect to severity. So thirteen late stops whose
+  // first happened to be red collapsed the WHOLE rule to one red summary: eleven criticals
+  // erased, criticalCount 0, and because selectAlertable skips collapsed rows and rows with
+  // no stopNbr, customer service was emailed about none of them. Thirteen stops past their
+  // close is an ordinary bad day on a 700-stop board.
+  const notesObj = {};
+  const stops = [];
+  for (let i = 0; i < 14; i += 1) {
+    const k = `c${i}|k`;
+    stops.push(stop({
+      stopNbr: `S${i}`, matchKey: k, businessName: `CO ${i}`,
+      routeSeq: i + 1, lat: 34.0 - i * 0.06, lng: -84.0 - i * 0.06,
+    }));
+    // Typed hours: severityTier grades these red/critical by how far past the close they land,
+    // so the group is genuinely mixed-tier — the shape the old cap could not survive.
+    notesObj[k] = note({
+      receiving_hours: { mon: { open: '06:00', close: i === 0 ? '11:30' : '07:00' } },
+      manual_overrides: { receiving_hours: true },
+    });
+  }
+  const out = run(stops, notesObj);
+  const hours = out.rows.filter((r) => r.rule === 'hours_risk');
+  assert.ok(out.criticalCount > 0, 'criticals must survive the cap');
+  assert.ok(hours.every((r) => !r.collapsed) || out.criticalCount > 0,
+    'a critical is never represented by a calmer summary row');
+  // Every surviving urgent row still names a stop, which is what the alert path requires.
+  const alertable = hours.filter((r) => (r.tier === 'red' || r.tier === 'critical') && r.stopNbr);
+  assert.ok(alertable.length >= 10, `expected the urgent rows to stay emailable, got ${alertable.length}`);
+});
+
+// ── A WINDOW THAT RUNS BACKWARDS IS NOT A DEADLINE ──────────────────────────
+
+test('a TYPED overnight or 24-hour dock is refused, exactly as the string form already was', () => {
+  // The two <input type="time"> boxes on the stop card write the OBJECT shape, and that
+  // branch had no guard — so a dispatcher recording a real overnight dock (21:00-05:00) gave
+  // every stop at that customer a 5:00a deadline, in tier 'typed', which severityTier grades
+  // at least RED for any predicted overrun. Recording the truth produced a permanent false
+  // alarm. The string branch refuses "9PM-5AM" for exactly this reason; both now agree.
+  const typed = (o) => dayReceivingWindow(
+    note({ receiving_hours: { mon: o }, manual_overrides: { receiving_hours: true } }), 'mon');
+  assert.equal(typed({ open: '21:00', close: '05:00' }), null, 'overnight dock');
+  assert.equal(typed({ open: '00:00', close: '00:00' }), null, '24-hour dock is not a midnight deadline');
+  assert.equal(typed({ open: '14:00', close: '14:00' }), null, 'open === close is not a window');
+  // The ordinary cases are untouched.
+  assert.deepEqual(typed({ open: '08:00', close: '17:00' }), { openMin: 480, closeMin: 1020, tier: 'typed' });
+  assert.deepEqual(typed({ close: '14:00' }), { openMin: null, closeMin: 840, tier: 'typed' },
+    'a close with no open is still a deadline');
 });

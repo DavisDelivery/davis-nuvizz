@@ -203,33 +203,36 @@ export default async (req: Request): Promise<Response> => {
     //
     // Never lets a bookkeeping failure stop an alert: the email is the job, this is the
     // record of it.
-    let recorded: any = { added: 0, updated: 0 };
-    if (!dry && nowMin != null) {
+    // RECORDED AFTER THE SEND, FROM WHAT THE SEND REPORTED.
+    //
+    // This used to run BEFORE sendAlerts with emailedStops built from the candidate LIST —
+    // so with RESEND_API_KEY unset, or Resend returning 500, or the runaway cap hit, the
+    // history still carried emailed:true for every red and critical of that sweep. And
+    // mergeSweep's sticky OR made the false claim permanent for the rest of the day, so the
+    // Flag history screen reported "Emailed CS: 3" for a day customer service heard nothing
+    // about. That is this repo's oldest sin — reporting an intent as an outcome — inside the
+    // very feature built to stop doing it.
+    const writeHistory = async (emailedStops: Set<string>) => {
+      if (dry || nowMin == null) return { added: 0, updated: 0, skipped: dry ? 'dry run' : 'no clock' };
       try {
         const path = flagHistoryPath(TENANT, date);
         const prev = await getDoc(path);
         const merged = mergeSweep(prev?.rows, flags.rows, {
-          nowMin,
-          atISO: new Date().toISOString(),
-          // Stops already claimed today have had their email attempted. Reading the claim
-          // rather than this run's result means a stop that alerted at 9:40 still reads as
-          // emailed on the 14:00 sweep.
-          emailedStops: new Set(candidates.map((c) => String(c.stopNbr))),
+          nowMin, atISO: new Date().toISOString(), emailedStops,
         });
         await setDoc(path, {
           tenant: TENANT, date, version: FLAG_HISTORY_VERSION,
           updated_at: new Date().toISOString(),
           rows: merged.rows,
         });
-        recorded = { added: merged.added, updated: merged.updated, tracked: Object.keys(merged.rows).length };
+        return { added: merged.added, updated: merged.updated, tracked: Object.keys(merged.rows).length };
       } catch (e: any) {
         console.error('flag history write failed (non-fatal):', e?.message);
-        recorded = { error: String(e?.message || e) };
+        return { error: String(e?.message || e) };
       }
-    }
+    };
 
     const base = {
-      recorded,
       // What the clock ran on, so a sweep is inspectable: how many legs rode real drive
       // times vs the curve, whether the calibration doc existed, whether Google is wired.
       travel: {
@@ -241,13 +244,19 @@ export default async (req: Request): Promise<Response> => {
       ok: true, date, nowMin,
       critical: flags.criticalCount ?? 0, red: flags.redCount ?? 0, amber: flags.amberCount ?? 0,
       alertable: candidates.length,
-      candidates: candidates.map((c) => ({ stopNbr: c.stopNbr, customer: c.customer, lateBy: c.lateBy })),
+      candidates: candidates.map((c) => ({ stopNbr: c.stopNbr, customer: c.customer, lateBy: c.lateBy, rule: c.rule })),
     };
-    if (dry) return J({ ...base, dryRun: true });
-    if (!emailEnabled()) return J({ ...base, sent: 0, note: 'email not configured (RESEND_API_KEY unset)' });
+    if (dry) return J({ ...base, recorded: await writeHistory(new Set()), dryRun: true });
+    // Email off is a real state, and the flags still happened — they are recorded, with
+    // emailed FALSE, which is the truth and is what makes "0 emailed on a 6-red day" legible
+    // instead of looking like a quiet day.
+    if (!emailEnabled()) {
+      return J({ ...base, recorded: await writeHistory(new Set()), sent: 0, note: 'email not configured (RESEND_API_KEY unset)' });
+    }
 
     const result = await sendAlerts(candidates, date, TENANT, { createDocIfAbsent }, ALERT_TO);
-    return J({ ...base, ...result, to: ALERT_TO });
+    const { emailedStops, ...counts } = result;
+    return J({ ...base, recorded: await writeHistory(emailedStops), ...counts, to: ALERT_TO });
   } catch (e: any) {
     return J({ ok: false, error: String(e?.message || e) }, 500);
   }
