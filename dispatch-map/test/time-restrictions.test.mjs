@@ -8,7 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   classifyStopTimeRestriction, buildTimeRestrictionRows, orderWindow, clockMinFromStamp,
-  weekdayKey, toCsv, csvCell, summarizeRows, ALL_DAY_MIN, detectDefaultSlots, CSV_COLUMNS,
+  weekdayKey, toCsv, csvCell, summarizeRows, ALL_DAY_MIN, detectDefaultSlots, CSV_COLUMNS, proHasPrefix,
 } from '../src/lib/time-restrictions.js';
 
 const WED = '2026-08-19'; // a Wednesday
@@ -420,12 +420,49 @@ test('an appointment paired with an AM/PM window survives too', () => {
   assert.equal(rows.length, 1);
 });
 
+// ── whose freight is on the sheet ─────────────────────────────────────────────
+
+test('the 716 series keeps Uline and drops every other shipper on the board', () => {
+  const board = [
+    stop({ primaryPro: '007163747', ...instr('RECEIVING HOURS 8AM-2PM') }),   // Uline
+    stop({ primaryPro: '007164430', ...instr('RECEIVING HOURS 8AM-2PM') }),   // Uline
+    stop({ primaryPro: 'ESTES-2918517246', ...instr('RECEIVING HOURS 8AM-2PM') }),
+    stop({ primaryPro: 'SHP030527', ...instr('RECEIVING HOURS 8AM-2PM') }),
+    stop({ primaryPro: 'FOODSERV8182026-A', ...instr('RECEIVING HOURS 8AM-2PM') }),
+    stop({ primaryPro: '007159942-1', ...instr('RECEIVING HOURS 8AM-2PM') }),  // 715 series
+  ];
+  assert.deepEqual(
+    buildTimeRestrictionRows(board, new Map(), WED, { proPrefix: '716' }).map((r) => r.pro),
+    ['007163747', '007164430']);
+  assert.equal(buildTimeRestrictionRows(board, new Map(), WED).length, 6, 'no prefix = every shipper');
+});
+
+test('leading zeros do not decide whether a PRO is Uline', () => {
+  assert.ok(proHasPrefix('007163747', '716'));
+  assert.ok(proHasPrefix('7163747', '716'));
+  assert.ok(!proHasPrefix('007159942-1', '716'), '715 is a different series');
+  assert.ok(!proHasPrefix('ESTES-7163747', '716'), 'a prefix match must start the number');
+  assert.ok(proHasPrefix('anything', ''), 'no prefix filters nothing');
+  assert.ok(proHasPrefix('anything', null));
+});
+
+test('a prefix matching nothing yields an EMPTY sheet, never a wrong one', () => {
+  const board = [stop({ primaryPro: '007163747', ...instr('RECEIVING HOURS 8AM-2PM') })];
+  assert.equal(buildTimeRestrictionRows(board, new Map(), WED, { proPrefix: '999' }).length, 0);
+});
+
 test('the sheet carries no driver and no load name', () => {
   const rows = buildTimeRestrictionRows(
     [stop({ routeName: 'FRANK', driverName: 'Frank Okine', ...instr('RECEIVING HOURS 8AM-2PM') })],
     new Map(), WED);
   const headers = CSV_COLUMNS.map(([, h]) => h);
-  assert.ok(!headers.includes('Route') && !headers.includes('Driver'), 'columns are gone');
+  assert.deepEqual(headers, ['PRO', 'Order #', 'Customer', 'Address', 'City', 'State', 'ZIP', 'Type', 'Restriction'],
+    'the sheet is exactly these nine columns — anything else creeping back is a regression');
+  for (const gone of ['Route', 'Driver', 'Status', 'Carried over', 'Scheduled for', 'Restriction type',
+    'Receiving hours', 'Hours source', 'Order window', 'Appointment / call-ahead', 'Closed today',
+    'AM/PM', 'Delivered at', 'Minutes past close', 'Signal source']) {
+    assert.ok(!headers.includes(gone), `${gone} must stay off the sheet`);
+  }
   assert.equal(rows[0].route, undefined);
   assert.equal(rows[0].driver, undefined);
   assert.ok(!toCsv(rows).includes('Frank Okine'), 'and no driver name reaches the file');

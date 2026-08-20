@@ -417,6 +417,22 @@ export const INCLUDE_MODES = ['all', 'deliveries', 'pickups'];
 // a tier of 'appointment' still permits a closed-day or half-day kind underneath it.
 export const isAppointmentOnly = (kinds = []) => kinds.length === 1 && kinds[0] === 'appointment';
 
+// WHOSE FREIGHT IS THIS? Davis hauls for several shippers on one board and their PRO
+// numbering is what tells them apart: Uline's run in the 716 series (007163747 → 7163747),
+// while ESTES residential moves carry an ESTES- prefix, Davis-created orders carry SHP /
+// FOODSERV / RA, and so on. There is no field that says the carrier — `source` reads
+// 'nuvizz-list' on every row because it records how the scan found the stop, not who the
+// freight belongs to — so the number IS the identifier.
+//
+// Leading zeros are stripped first, matching normalizePro in the parent app, so '007163747'
+// and '7163747' are the same PRO. A prefix that matches nothing yields an empty sheet
+// rather than a wrong one, which is why the caller is told what prefix ran.
+export function proHasPrefix(pro, prefix) {
+  if (!prefix) return true;
+  const cleaned = String(pro ?? '').trim().replace(/^0+/, '');
+  return cleaned.startsWith(String(prefix));
+}
+
 export function buildTimeRestrictionRows(stops = [], notes = new Map(), servedDate = null, opts = {}) {
   // Default 'all' — a library that silently drops rows is a trap. The report endpoint
   // above chooses 'deliveries' and says so in its coverage block, because a receiving
@@ -428,6 +444,8 @@ export function buildTimeRestrictionRows(stops = [], notes = new Map(), servedDa
   // Default false here, true at the endpoint — same split as `include`: the library does
   // not drop rows behind the caller's back, the report decides its own subject.
   const dropAppointmentOnly = opts.dropAppointmentOnly === true;
+  // '' / null = every shipper. See proHasPrefix.
+  const proPrefix = opts.proPrefix ? String(opts.proPrefix) : '';
   const defaultSlots = detectDefaultSlots(stops);
   const rows = [];
   for (const stop of stops) {
@@ -438,6 +456,7 @@ export function buildTimeRestrictionRows(stops = [], notes = new Map(), servedDa
     if (include === 'deliveries' && isPickup) continue;
     if (include === 'pickups' && !isPickup) continue;
     if (dropAppointmentOnly && isAppointmentOnly(r.kinds)) continue;
+    if (!proHasPrefix(stop.primaryPro || stop.pro || stop.stopNbr, proPrefix)) continue;
     rows.push({
       pro: stop.primaryPro || stop.pro || stop.stopNbr || '',
       orderNbr: stop.orderNbr || '',
@@ -487,6 +506,13 @@ export const HOURS_SOURCE_LABEL = {
   'order-text': 'This order',
 };
 
+// THE SHEET IS WHAT A DISPATCHER ACTS ON, and nothing else. Chad cut it to these nine by
+// name: the PRO, who and where, and the restriction in plain words. Everything stripped was
+// either a constant on a filtered sheet (status, carried-over, scheduled-for), a duplicate
+// of the Restriction column (receiving hours, order window, appointment, closed-today,
+// AM/PM), or provenance that belongs in a diagnostic rather than a work list (hours source,
+// signal source). The ROW OBJECT still carries all of it — the JSON endpoint is unchanged,
+// so nothing is lost, it just stops being printed.
 export const CSV_COLUMNS = [
   ['pro', 'PRO'],
   ['orderNbr', 'Order #'],
@@ -496,20 +522,7 @@ export const CSV_COLUMNS = [
   ['state', 'State'],
   ['zip', 'ZIP'],
   ['stopType', 'Type'],
-  ['status', 'Status'],
-  ['carryover', 'Carried over'],
-  ['scheduledDate', 'Scheduled for'],
-  ['tierLabel', 'Restriction type'],
   ['restriction', 'Restriction'],
-  ['receivingHours', 'Receiving hours'],
-  ['hoursSource', 'Hours source'],
-  ['orderWindow', 'Order window'],
-  ['appointment', 'Appointment / call-ahead'],
-  ['closedToday', 'Closed today'],
-  ['amPm', 'AM/PM'],
-  ['deliveredAt', 'Delivered at'],
-  ['missedCloseByMin', 'Minutes past close'],
-  ['sources', 'Signal source'],
 ];
 
 // RFC 4180. A leading =, +, - or @ is prefixed with a single quote so Excel treats the
