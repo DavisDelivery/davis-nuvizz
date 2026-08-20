@@ -42,6 +42,7 @@ import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { weekdayKey } from './lib/miss-ledger.mts';
 import { readTravelCalibration, ensureLegs } from './lib/travel-store.mts';
 import { routeDeparturePath } from './lib/route-departure.mts';
+import { mergeSweep, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
 import { smsEnabled, sendSms } from './lib/sms.mts';
 import { smsRecipients, eveningTargetDate, smsText, smsClaimPath, selectTextable } from './lib/flag-sms.mts';
 
@@ -85,6 +86,20 @@ export default async (req: Request): Promise<Response> => {
     // from sealed history. Absent or thin, every route keeps the shipped 8:00a default.
     const departDoc = await getDoc(routeDeparturePath(TENANT)).catch(() => null);
     const departByRoute = departDoc?.table || null;
+    // SEVERITY RATCHETS (see tierFloorLookup). A stop that texted at 1:00a must not read as
+    // advisory at 6:00a because the clock crept closer to it — Chad: "the flag should remain
+    // unless our updated eta is showing we will get there in time." The floor is the
+    // worstTier this night's own history already records.
+    let tierFloorByStop: Record<string, string> | null = null;
+    try {
+      const hist: any = await getDoc(flagHistoryPath(TENANT, date));
+      const histRows = hist?.rows && typeof hist.rows === 'object' ? Object.values<any>(hist.rows) : [];
+      if (histRows.length) {
+        const t: Record<string, string> = {};
+        for (const r of histRows) if (r?.stopNbr && r?.worstTier) t[String(r.stopNbr)] = String(r.worstTier);
+        tierFloorByStop = Object.keys(t).length ? t : null;
+      }
+    } catch { /* no floor — this sweep judges on its own */ }
     const cal = await readTravelCalibration(TENANT).catch(() => null);
     const calOpts = cal ? { curve: cal.curve, serviceMin: cal.serviceMin } : {};
     // A pre-day board gets NO nowMin: nothing has departed, so the not-started clamp and
@@ -95,6 +110,7 @@ export default async (req: Request): Promise<Response> => {
     const engineOpts = (legs: Record<string, number>) => ({
       depot: DEPOT, ...nowOpt, travel: { legs, ...calOpts },
       ...(departByRoute ? { departByRoute } : {}),
+      ...(tierFloorByStop ? { tierFloorByStop } : {}),
     });
     const first = computeBoardFlags({ stops, notes, servedDate: date, dayKey: weekdayKey(date), opts: engineOpts({}) });
     let legInfo = { legs: {} as Record<string, number> };
@@ -131,6 +147,28 @@ export default async (req: Request): Promise<Response> => {
       }
     }
 
+    // THE NIGHT NOW LEAVES A RECORD, which is what makes the ratchet survive to breakfast.
+    // Only the day sweep wrote flag history, and it does not start until 7:00a — so a stop
+    // that texted at 1:00a had no worstTier on file, and the first morning sweep judged it
+    // from scratch. A row that had already earned a text could therefore turn up as an
+    // advisory on the 7:00a board. Same tested merge the day sweep uses, same document.
+    // emailedStops is EMPTY on purpose: this path texts, it never emails, and claiming
+    // otherwise in the history is the intent-as-outcome mistake that column already carries
+    // scar tissue from.
+    if (etMin != null) {
+      try {
+        const path = flagHistoryPath(TENANT, date);
+        const prev = await getDoc(path);
+        const merged = mergeSweep(prev?.rows, flags.rows, {
+          nowMin: etMin, atISO: status.at, emailedStops: new Set<string>(),
+        });
+        await setDoc(path, {
+          tenant: TENANT, date, version: FLAG_HISTORY_VERSION,
+          updated_at: status.at, rows: merged.rows,
+        });
+        status.historyTracked = Object.keys(merged.rows).length;
+      } catch (e: any) { console.warn('evening flag history write failed:', e?.message); }
+    }
     try { await setDoc(`nuvizz_ops/flag_evening_status__${date}`, status); } catch { /* status is best-effort */ }
     return J({ ok: true, ...status });
   } catch (err: any) {

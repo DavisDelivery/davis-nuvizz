@@ -23,6 +23,7 @@ import { isFirestoreEnabled, readStops, getDoc, listDocs, etDayString } from './
 import { computeBoardFlags, isFinishedStop, dayReceivingWindow } from '../../src/lib/board-flags.js';
 import { legSecondsMap, travelLegsPath, readTravelCalibration, readRouteClasses } from './lib/travel-store.mts';
 import { routeDeparturePath } from './lib/route-departure.mts';
+import { flagHistoryPath } from './lib/flag-history.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, DAILY_ALERT_CAP, ALERT_TIERS, finiteMinutes } from './lib/flag-alert.mts';
 import { emailEnabled } from './lib/email.mts';
@@ -221,11 +222,26 @@ export default async (req: Request): Promise<Response> => {
     // cannot disagree with the alert about when a truck leaves.
     const departDoc = await getDoc(routeDeparturePath(TENANT)).catch(() => null);
     const departByRoute = departDoc?.table || null;
+    // Severity ratchets on the day's own history (see tierFloorLookup). The dry twin reads
+    // the SAME floor as the sweeps and the screen — a twin that judged a row one tier calmer
+    // than the board would answer "what would the alert do" with something the alert would
+    // not do, which is the whole failure this endpoint exists to make impossible.
+    let tierFloorByStop: Record<string, string> | null = null;
+    try {
+      const hist: any = await getDoc(flagHistoryPath(TENANT, date));
+      const hrows = hist?.rows && typeof hist.rows === 'object' ? Object.values<any>(hist.rows) : [];
+      if (hrows.length) {
+        const t: Record<string, string> = {};
+        for (const r of hrows) if (r?.stopNbr && r?.worstTier) t[String(r.stopNbr)] = String(r.worstTier);
+        tierFloorByStop = Object.keys(t).length ? t : null;
+      }
+    } catch { /* no floor — judged on this pass alone */ }
     const flags = computeBoardFlags({
       stops, notes, servedDate: date, dayKey: weekdayKey(date),
       opts: {
         depot: DEPOT, ...(nowMin != null ? { nowMin } : {}),
         ...(departByRoute ? { departByRoute } : {}),
+        ...(tierFloorByStop ? { tierFloorByStop } : {}),
         travel: {
           legs: legSecondsMap(legDoc), routeClasses,
           ...(cal ? {

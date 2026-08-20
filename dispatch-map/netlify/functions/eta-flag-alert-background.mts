@@ -169,10 +169,27 @@ export default async (req: Request): Promise<Response> => {
       ...(cal.classCurves ? { classCurves: cal.classCurves } : {}),
       ...(cal.classService ? { classService: cal.classService } : {}),
     } : {};
+    // SEVERITY RATCHETS ON WHAT TODAY HAS ALREADY SEEN. Chad, on a stop still predicted past
+    // its close while the panel read "0 red": "the flag should remain unless our updated eta
+    // is showing we will get there in time." The floor is the worstTier this same history
+    // doc already records — read here, BEFORE the judge, so this sweep and the screen agree
+    // about a row rather than disagreeing by one tier for twenty minutes.
+    let tierFloorByStop: Record<string, string> | null = null;
+    try {
+      const hist: any = await getDoc(flagHistoryPath(TENANT, date));
+      const rows = hist?.rows && typeof hist.rows === 'object' ? Object.values<any>(hist.rows) : [];
+      if (rows.length) {
+        const t: Record<string, string> = {};
+        for (const r of rows) if (r?.stopNbr && r?.worstTier) t[String(r.stopNbr)] = String(r.worstTier);
+        tierFloorByStop = Object.keys(t).length ? t : null;
+      }
+    } catch { /* no floor — this sweep judges on its own, the shipped behaviour */ }
+
     const engineOpts = (legs: Record<string, number>) => ({
       depot: DEPOT, ...(nowMin != null ? { nowMin } : {}),
       travel: { legs, routeClasses, ...calOpts },
       ...(departByRoute ? { departByRoute } : {}),
+      ...(tierFloorByStop ? { tierFloorByStop } : {}),
     });
 
     const first = computeBoardFlags({
