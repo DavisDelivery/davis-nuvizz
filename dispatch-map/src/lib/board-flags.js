@@ -504,7 +504,40 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // pickup that borrowed the terminal's identity borrowed its window with it. This is the
   // rule underneath, and it still holds on the day a pickup sits at a business that really
   // does have receiving hours on file.
-  const receivingWindow = (s) => (isPickupStop(s) ? null : dayReceivingWindow(noteOf(s), day));
+  // OUR OWN DOCK IS NOT A CUSTOMER, AND IT NEVER HAD A DEADLINE.
+  //
+  // Chad, 2026-08-20, on a red card reading "No driver — DUL 2 must make 11:00a ... earliest
+  // close 11:00a at DAVIS DELIVERY": "Why are you worried about Davis Delivery's hours? Never
+  // gave you my hours and they don't matter anyways. Has nothing to do with the deliveries."
+  //
+  // He never typed them — the text scanner invented them from order text, which is what the
+  // auto tier means. And an 11:00a "receiving close" at our own terminal is not a deadline in
+  // any sense: we are not going to refuse our own freight, and nothing about a truck arriving
+  // late at its own yard is a customer outcome.
+  //
+  // It was not merely noise. That phantom 11:00a was the EARLIEST close on DUL 2, so it set
+  // the whole card: it made the route read as unreachable, took the loudest tier, and put its
+  // own name in the title — while METRO's real 2:00p, further down the same load, was
+  // superseded and never printed. Chad found METRO by hand, flipping through paperwork. A
+  // made-up deadline at our own warehouse outranked a real one at a customer, and the two
+  // complaints he raised were the same bug wearing two faces.
+  //
+  // v0.65.2 fixed the neighbouring case — a PICKUP does not inherit a dock's receiving hours
+  // — but that keys on stopType 'PU', and freight coming BACK to us is often typed as a
+  // delivery. So the rule has to be about the PLACE, not the movement. Two independent tests,
+  // because either alone has a gap: the name catches a record with no usable pin, and the
+  // depot proximity catches a record whose name is spelled some other way.
+  const OWN_FACILITY_RE = /\bdavis\s*delivery\b/i;
+  const OWN_FACILITY_METERS = 250;
+  const isOwnFacility = (s) => {
+    if (OWN_FACILITY_RE.test(String(s?.businessName ?? ''))) return true;
+    if (!depot) return false;
+    const p = stopPosition(s, noteOf(s));
+    return !!p && haversineMeters(p, depot) <= OWN_FACILITY_METERS;
+  };
+  const receivingWindow = (s) => (
+    (isPickupStop(s) || isOwnFacility(s)) ? null : dayReceivingWindow(noteOf(s), day)
+  );
   const rows = [];
   const skipped = { noRoster: false, ambiguousRoutes: [], routesNoSequence: [], routesAppointment: [], stopsNoPosition: 0 };
   // What the detector actually LOOKED at — the panel shows these so a quiet board can
@@ -954,6 +987,34 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         const missNote = doomed.length
           ? `even ${startedLate} the load cannot reach ${doomed.length === 1 ? '' : `${doomed.length} stops, earliest `}${first.s.businessName || first.s.stopNbr} before it closes at ${fmtMin(first.w.closeMin)}`
           : `${startedLate}, ${worstHours.customer || 'a stop on it'} is estimated ~${fmtMin(worstHours.etaMin)} vs close ${fmtMin(worstHours.closeMin)} (${worstHours.lateBy} min late)`;
+        // EVERY DEADLINE RIDING ON THIS LOAD, BY NAME.
+        //
+        // Chad, 2026-08-20, on PRO 007165047 (METRO, 2:00p close, next to last on driverless
+        // DUL 2): "we found it manually flipping through paperwork, and we pulled it off the
+        // route and put it on another route. So we caught it, but it was not flagged."
+        //
+        // A human caught it. The board did not — and the reason is right here. R6 supersedes
+        // the route's per-stop arrival rows (correct: one situation, one card) and then named
+        // only ONE customer: the earliest close, DAVIS DELIVERY at 11:00a. METRO's 2:00p was
+        // computed, superseded and deleted without ever being printed. The dispatcher was told
+        // to assign a driver and told nothing about which customers were riding on it.
+        //
+        // That is fine for the dispatcher, whose action is one action for the whole route. It
+        // is useless for the person who has to ring the customers, and it is what turned a
+        // detected risk into a manual paperwork catch. The card now lists them — worst first,
+        // capped so a 12-stop load does not become a paragraph.
+        const atRisk = [
+          ...supersededRows.map((r) => ({ customer: r.customer, closeMin: r.closeMin, etaMin: r.etaMin, lateBy: r.lateBy })),
+          ...doomed
+            .filter((x) => !supersededRows.some((r) => r.closeMin === x.w.closeMin && r.customer === (x.s.businessName || x.s.stopNbr)))
+            .map((x) => ({ customer: x.s.businessName || x.s.stopNbr, closeMin: x.w.closeMin, etaMin: null, lateBy: null })),
+        ].sort((a, b) => (a.closeMin ?? 1e9) - (b.closeMin ?? 1e9));
+        const NAME_CAP = 4;
+        const named = atRisk.slice(0, NAME_CAP)
+          .map((r) => `${r.customer} ${fmtMin(r.closeMin)}`).join(', ');
+        const atRiskNote = atRisk.length
+          ? ` At risk: ${named}${atRisk.length > NAME_CAP ? ` +${atRisk.length - NAME_CAP} more` : ''}.`
+          : '';
         // WHAT THE ALERT PATH NEEDS: a real stop to claim and a close to check against.
         // The unreachable case supplies them from FACTS (the stop, its close, and the start
         // we assumed) and takes precedence over the walk's estimate — an earlier close the
@@ -977,7 +1038,10 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
           ...alertFacts,
           ...(worstHours ? { supersededTier: worstHours.tier } : {}),
           title: `No driver — ${k} must make ${fmtMin(riskClose)}`,
-          detail: `${k} has no driver assigned and has not moved — ${missNote}. ${constrained.length} stop${constrained.length === 1 ? '' : 's'} on this load carr${constrained.length === 1 ? 'ies' : 'y'} receiving hours today.${decidingTyped ? '' : ' Hours auto-detected — verify.'} Assign a driver or move the dates.`,
+          // The list rides on the row too, not just inside the sentence — the alert path and
+          // any screen that wants to act per customer must not have to parse prose.
+          atRisk,
+          detail: `${k} has no driver assigned and has not moved — ${missNote}. ${constrained.length} stop${constrained.length === 1 ? '' : 's'} on this load carr${constrained.length === 1 ? 'ies' : 'y'} receiving hours today.${atRiskNote}${decidingTyped ? '' : ' Hours auto-detected — verify.'} Assign a driver or move the dates.`,
           scope: 'occurrence', servedDate, fingerprint: `nodrv|${servedDate}|${k}|${first.w.closeMin}`,
         }));
         // ONE ROUTE, ONE CARD. Chad's screenshot: "May miss receiving hours — MCNAUGHTON

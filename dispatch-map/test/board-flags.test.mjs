@@ -716,3 +716,67 @@ test('a TYPED overnight or 24-hour dock is refused, exactly as the string form a
   assert.deepEqual(typed({ close: '14:00' }), { openMin: null, closeMin: 840, tier: 'typed' },
     'a close with no open is still a deadline');
 });
+
+// ── OUR OWN DOCK IS NOT A CUSTOMER (Chad, 2026-08-20) ────────────────────────
+//
+// "Why are you worried about Davis Delivery's hours? Never gave you my hours and they don't
+// matter anyways. Has nothing to do with the deliveries."
+//
+// He never typed them — the scanner invented them from order text. And the phantom close was
+// not merely noise: as the EARLIEST close on driverless DUL 2 it set the card's tier and its
+// title, while METRO's real 2:00p further down the same load was superseded and never
+// printed. He found METRO by hand. A made-up deadline at our own warehouse outranked a real
+// one at a customer.
+
+test('our own terminal never carries a receiving deadline, however the stop is typed', () => {
+  const notesObj = { 'davis|k': note({ receiving_hours: { mon: { open: '06:00', close: '11:00' } } }) };
+  // stopType DO — freight coming BACK to us, which the v0.65.2 pickup rule does not catch.
+  const ownDock = { stopNbr: '1', routeSeq: 1, matchKey: 'davis|k', businessName: 'DAVIS DELIVERY',
+    stopType: 'DO', lat: DEPOT.lat, lng: DEPOT.lng, driverName: null, driverUserName: null };
+  const out = run([stop(ownDock)], notesObj, { opts: { ...OPTS, nowMin: 9 * 60 + 32 } });
+  assert.equal(out.rows.filter((r) => r.rule === 'no_driver_hours').length, 0,
+    'we are not going to refuse our own freight');
+  assert.equal(out.rows.filter((r) => r.rule === 'hours_risk').length, 0);
+  assert.equal(out.checked.stopsWithHours, 0, 'and it is not counted as covered either');
+});
+
+test('it is caught by NAME even with no usable pin, and by PLACE under another name', () => {
+  const notesObj = { 'x|k': note({ receiving_hours: { mon: { open: '06:00', close: '11:00' } } }) };
+  const byName = stop({ stopNbr: '1', routeSeq: 1, matchKey: 'x|k', businessName: 'Davis Delivery Service',
+    lat: 33.9, lng: -84.4, driverName: null, driverUserName: null });
+  const byPlace = stop({ stopNbr: '2', routeSeq: 1, matchKey: 'x|k', businessName: 'BUFORD TERMINAL',
+    lat: DEPOT.lat, lng: DEPOT.lng, driverName: null, driverUserName: null });
+  for (const [label, s] of [['name', byName], ['place', byPlace]]) {
+    const out = run([s], notesObj, { opts: { ...OPTS, nowMin: 9 * 60 + 32 } });
+    assert.equal(out.rows.filter((r) => r.rule === 'no_driver_hours').length, 0, `caught by ${label}`);
+  }
+});
+
+test('THE METRO CASE: a phantom close at our dock no longer outranks a real customer close', () => {
+  // DUL 2 as it actually was: our own terminal wearing an invented 11:00a, and METRO with a
+  // real 2:00p next to last. Before the fix the card was titled for OUR dock and METRO never
+  // appeared. Now the card is about METRO, and it names it.
+  const notesObj = {
+    'davis|k': note({ receiving_hours: { mon: { open: '06:00', close: '11:00' } } }),
+    'metro|k': note({ receiving_hours: { mon: { open: '08:00', close: '14:00' } } }),
+  };
+  const onDul2 = (o) => stop({ loadNbr: 'DUL 2', routeName: 'DUL 2', driverName: null, driverUserName: null, ...o });
+  const stops = [
+    onDul2({ stopNbr: '1', routeSeq: 1, matchKey: 'davis|k', businessName: 'DAVIS DELIVERY', lat: DEPOT.lat, lng: DEPOT.lng }),
+    // A real load between them: METRO is next to last on a twelve-stop route, which is what
+    // puts it past 2:00p on a noon start. Two stops alone would make it comfortably.
+    ...Array.from({ length: 9 }, (_, i) => onDul2({
+      stopNbr: `f${i}`, routeSeq: 2 + i, matchKey: `filler${i}|k`,
+      businessName: `FILLER ${i}`, lat: 34.05 - i * 0.04, lng: -84.05 - i * 0.05,
+    })),
+    onDul2({ stopNbr: '007165047', routeSeq: 11, matchKey: 'metro|k', businessName: 'METRO', lat: 33.60, lng: -84.60 }),
+  ];
+  const out = run(stops, notesObj, { opts: { ...OPTS, nowMin: 9 * 60 + 32 } });
+  const r = out.rows.find((x) => x.rule === 'no_driver_hours');
+  assert.ok(r, 'METRO is genuinely at risk on a noon start — the card must still fire');
+  assert.ok(!/DAVIS DELIVERY/i.test(r.title), 'our own dock does not get to name the card');
+  assert.ok(!/DAVIS DELIVERY/i.test(r.detail), 'nor appear in it at all');
+  assert.match(r.detail, /METRO/, 'the customer actually at risk is named');
+  assert.match(r.title, /2:00p/, 'and the deadline in the title is the real one');
+  assert.ok((r.atRisk || []).some((x) => x.customer === 'METRO'), 'and it rides on the row as data');
+});

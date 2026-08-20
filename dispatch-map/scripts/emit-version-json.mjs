@@ -43,7 +43,23 @@ export function changelogEntryFor(source, wanted) {
   let out = '';
   while (i < source.length) {
     const c = source[i];
-    if (c === '\\') { out += source[i + 1] ?? ''; i += 2; continue; }
+    if (c === '\\') {
+      // ESCAPE SEQUENCES ARE DECODED, NOT MERELY UNWRAPPED. This read the character after
+      // the backslash and moved on, which is right for \\' and \\\\ and WRONG for a unicode
+      // escape: a row written with \\u2019 emitted the letters "u2019" into the headline, so
+      // v0.68.3 shipped a version.json reading "the reportu2019s recipient". Many rows in
+      // the log carry \\u2014 and \\u201c for the same reason, and this file is what the
+      // deploy watchdog and the update bar read — mangled text there is the one place
+      // nobody is looking when they need it to be right.
+      const nxt = source[i + 1] ?? '';
+      if (nxt === 'u' && /^[0-9a-fA-F]{4}$/.test(source.slice(i + 2, i + 6))) {
+        out += String.fromCharCode(parseInt(source.slice(i + 2, i + 6), 16));
+        i += 6; continue;
+      }
+      if (nxt === 'n') { out += '\\n'; i += 2; continue; }
+      if (nxt === 't') { out += '\\t'; i += 2; continue; }
+      out += nxt; i += 2; continue;
+    }
     if (c === quote) return out;
     out += c; i++;
   }

@@ -1,0 +1,207 @@
+// test/day-completion.test.mjs — the end-of-day completion report.
+//
+// Chad: "produce a report at the end of every day at six thirty on everything that was
+// planned for that day per NuVizz ... and then does not have a completed status."
+//
+// These pin the two ways "not completed" is operationally wrong as a single filter, and the
+// reconciliation that decides whether the trend chart measures freight or scanning.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  stopOutcome, buildDayCompletion, reconcileDay, isOpenOutcome, isDeliveredOutcome,
+} from '../netlify/functions/lib/day-completion.mts';
+
+const DATE = '2026-08-20';
+const stop = (over = {}) => ({
+  stopNbr: '1001', businessName: 'ACME', addr1: '1 Main', city: 'Buford',
+  loadNbr: 'SUW', routeName: 'SUW', routeSeq: 1, driverName: 'Joe Gibbs',
+  isPlanned: true, status: '20', ...over,
+});
+const build = (stops, o = {}) => buildDayCompletion(stops, { date: DATE, asOf: '18:30', ...o });
+
+// ── the codes ────────────────────────────────────────────────────────────────
+
+test('91 is a COMPLETION, not an open stop — the filter Chad guessed would have missed it', () => {
+  // 90 is a system close, 91 is a dispatcher closing it by hand in the portal. Both are
+  // delivered freight. "Everything that is not 90" reports every hand-closed stop as open,
+  // and the busiest days are the ones dispatch closes the most by hand — so the report would
+  // look worst exactly when the day actually went fine.
+  assert.equal(stopOutcome(stop({ status: '90' })), 'delivered_system');
+  assert.equal(stopOutcome(stop({ status: '91' })), 'delivered_manual');
+  assert.ok(isDeliveredOutcome(stopOutcome(stop({ status: '91' }))));
+  assert.ok(!isOpenOutcome(stopOutcome(stop({ status: '91' }))));
+});
+
+test('80 "unable to deliver" is TERMINAL — a naive not-90 filter drops the most urgent line', () => {
+  // NuVizz treats 80 as finished, so anything filtering on "no completed status" by looking
+  // for open records loses it. A refused delivery at 6:30pm is the line somebody has to act
+  // on tomorrow morning; it belongs at the top of the report, not off it.
+  assert.equal(stopOutcome(stop({ status: '80' })), 'unable');
+  assert.ok(!isOpenOutcome(stopOutcome(stop({ status: '80' }))), 'not open — it finished, badly');
+  assert.ok(!isDeliveredOutcome(stopOutcome(stop({ status: '80' }))), 'and it is NOT a delivery');
+});
+
+test('99 cancelled is neither a failure nor a delivery, and never inflates the open count', () => {
+  assert.equal(stopOutcome(stop({ status: '99' })), 'cancelled');
+  const out = build([stop({ status: '99' }), stop({ stopNbr: '2', status: '90' })]);
+  assert.equal(out.open, 0, 'a pulled order is not an open stop');
+  assert.equal(out.planned, 2);
+  assert.equal(out.gradable, 1, 'cancellations leave the denominator');
+  assert.equal(out.completionRate, 1, 'one planned, one delivered — a clean day');
+});
+
+test('an unable-to-deliver stays IN the denominator — the freight did not get there', () => {
+  const out = build([stop({ status: '90' }), stop({ stopNbr: '2', status: '80' })]);
+  assert.equal(out.gradable, 2);
+  assert.equal(out.completionRate, 0.5, 'scoring a refusal as "not our problem" is marking our own homework');
+});
+
+test('40/50 is in flight — the truck touched it and never closed it', () => {
+  assert.equal(stopOutcome(stop({ status: '40' })), 'in_flight');
+  assert.equal(stopOutcome(stop({ status: '50' })), 'in_flight');
+  assert.equal(stopOutcome(stop({ status: '20' })), 'not_attempted');
+});
+
+test('a delivery stamp settles it when the code lags, and is attributed conservatively', () => {
+  // Production's classifier already treats a real stamp as delivered. A code-less delivery
+  // has no 90/91 provenance, so it counts as system — which can only UNDER-state the manual
+  // rate. An inflated "dispatch closes everything by hand" sends someone after the wrong
+  // problem, so the error direction is chosen deliberately.
+  assert.equal(stopOutcome({ deliveredDTTM: `${DATE}T13:00`, status: '' }), 'delivered_system');
+  assert.equal(stopOutcome({ normalizedStatus: 'DELIVERED' }), 'delivered_system');
+  assert.equal(stopOutcome({ normalizedStatus: 'ARRIVED' }), 'in_flight');
+  assert.equal(stopOutcome({ arrivalDTTM: `${DATE}T13:00` }), 'in_flight');
+});
+
+// ── the day ──────────────────────────────────────────────────────────────────
+
+test('unplanned freight is never counted — the day is not blamed for work nobody scheduled', () => {
+  const out = build([
+    stop({ status: '90' }),
+    stop({ stopNbr: '2', isPlanned: false, loadNbr: '', routeName: '', status: '20' }),
+  ]);
+  assert.equal(out.planned, 1);
+  assert.equal(out.open, 0);
+});
+
+test('the open list collapses one physical stop, the delivery counts do not', () => {
+  // A three-order customer is three completions and ONE line on the call list. Three
+  // identical lines for one dock is how a ten-line report becomes one nobody reads.
+  const three = [0, 1, 2].map((i) => stop({ stopNbr: '7000', businessName: 'SUBARU', status: '20', routeSeq: 4 + i * 0 }));
+  const out = build(three);
+  assert.equal(out.counts.not_attempted, 3, 'three orders are three open orders');
+  assert.equal(out.openStops.length, 1, 'and one place to call');
+  assert.equal(out.openStops[0].customer, 'SUBARU');
+});
+
+test('the route roll is what makes it a conversation with a driver', () => {
+  const out = build([
+    stop({ stopNbr: '1', loadNbr: 'BRIAN', routeName: 'BRIAN', driverName: 'Brian', status: '90' }),
+    stop({ stopNbr: '2', loadNbr: 'BRIAN', routeName: 'BRIAN', driverName: 'Brian', status: '20', routeSeq: 9 }),
+    stop({ stopNbr: '3', loadNbr: 'BRIAN', routeName: 'BRIAN', driverName: 'Brian', status: '40', routeSeq: 10 }),
+    stop({ stopNbr: '4', loadNbr: 'SUW', routeName: 'SUW', driverName: 'Sam', status: '90' }),
+  ]);
+  const brian = out.byRoute.find((r) => r.route === 'BRIAN');
+  assert.equal(brian.planned, 3);
+  assert.equal(brian.open, 2);
+  assert.equal(brian.notAttempted, 1);
+  assert.equal(brian.inFlight, 1);
+  assert.equal(brian.driver, 'Brian');
+  assert.equal(out.byRoute[0].route, 'BRIAN', 'worst route first — most open stops leads');
+  assert.equal(out.byRoute.find((r) => r.route === 'SUW').completionRate, 1);
+});
+
+test('a driver blank on one row does not erase the route driver', () => {
+  const out = build([
+    stop({ stopNbr: '1', driverName: '', driverUserName: '', status: '20' }),
+    stop({ stopNbr: '2', driverName: 'Joe Gibbs', status: '90' }),
+  ]);
+  assert.equal(out.byRoute[0].driver, 'Joe Gibbs');
+});
+
+test('an empty board reports nothing rather than dividing by zero', () => {
+  const out = build([]);
+  assert.equal(out.planned, 0);
+  assert.equal(out.completionRate, null, 'no stops is not 0% — it is no answer');
+  assert.equal(out.manualRate, null);
+  assert.deepEqual(out.openStops, []);
+});
+
+test('the manual-close rate is reported separately from the completion rate', () => {
+  // They move for different reasons: one is freight, the other is scanning behaviour.
+  // Adding them together is how a scanning problem gets read as a service problem.
+  const out = build([
+    stop({ stopNbr: '1', status: '90' }), stop({ stopNbr: '2', status: '91' }),
+    stop({ stopNbr: '3', status: '91' }), stop({ stopNbr: '4', status: '20' }),
+  ]);
+  assert.equal(out.delivered, 3);
+  assert.equal(out.completionRate, 0.75);
+  assert.equal(Math.round(out.manualRate * 100), 67);
+});
+
+// ── reconciliation: the part that makes the trend chart mean anything ────────
+
+test('a stop open at 6:30 and closed at 7:15 is POD LAG, not a service failure', () => {
+  // Without this the daily "open at 6:30" line measures when drivers scan, not whether
+  // freight arrived — and a driver who scans at the truck and one who scans at the yard at
+  // 7pm produce the same freight and completely different charts.
+  const snapshot = { date: DATE, openStops: [{ stopNbr: '1' }, { stopNbr: '2' }, { stopNbr: '3' }] };
+  const later = [
+    stop({ stopNbr: '1', status: '90' }),
+    stop({ stopNbr: '2', status: '91' }),
+    stop({ stopNbr: '3', status: '20' }),
+  ];
+  const r = reconcileDay(snapshot, later);
+  assert.equal(r.openAtSnapshot, 3);
+  assert.equal(r.closedAfter, 2, 'two were already delivered, just not scanned yet');
+  assert.equal(r.stillOpen, 1, 'one genuinely rolled — the number the operation lives on');
+  assert.deepEqual(r.stillOpenStops, ['3']);
+  assert.equal(Math.round(r.lateCloseRate * 100), 67);
+});
+
+test('a stop that VANISHED from the later board is not assumed closed', () => {
+  // A missed stop rolls to a later day under the same PRO — this operation's normal miss
+  // path. Guessing "closed" for anything absent would silently erase the carryover the
+  // report exists to show, and it would erase it in the flattering direction.
+  const r = reconcileDay({ date: DATE, openStops: [{ stopNbr: '9' }] }, []);
+  assert.equal(r.closedAfter, 0);
+  assert.equal(r.stillOpen, 1);
+});
+
+test('a multi-order stop is not closed while any order on it is still open', () => {
+  const later = [stop({ stopNbr: '5', status: '90' }), stop({ stopNbr: '5', status: '20' })];
+  const r = reconcileDay({ date: DATE, openStops: [{ stopNbr: '5' }] }, later);
+  assert.equal(r.stillOpen, 1, 'the dock is not done while something for it is not done');
+});
+
+test('an unable-to-deliver counts as CLOSED in reconciliation — it finished, it just failed', () => {
+  // It is a bad outcome and it is already reported as one in unableStops. Counting it again
+  // as "still open" would double-count the same failure in two places on one page.
+  const r = reconcileDay({ date: DATE, openStops: [{ stopNbr: '6' }] }, [stop({ stopNbr: '6', status: '80' })]);
+  assert.equal(r.closedAfter, 1);
+  assert.equal(r.stillOpen, 0);
+});
+
+// ── the 6:30 that has to still be 6:30 in November ───────────────────────────
+
+import { isReportHour, previousDay, REPORT_HOUR_ET } from '../netlify/functions/day-completion-report-background.mts';
+
+test('the report fires at 6:30 ET and NOT an hour either side of it', () => {
+  // Netlify cron is UTC and knows nothing about DST, so one UTC slot drifts by an hour
+  // twice a year. The job fires at both 22:30 and 23:30 UTC and this decides which one is
+  // real — a report named for its hour that arrives at 5:30 half the year is one nobody
+  // trusts, and it would break silently on a Sunday in March.
+  assert.equal(isReportHour(18, 30), true);
+  assert.equal(isReportHour(18, 31), true);
+  assert.equal(isReportHour(18, 29), false, 'not yet');
+  assert.equal(isReportHour(17, 30), false, 'EST run of the EDT slot');
+  assert.equal(isReportHour(19, 30), false, 'EDT run of the EST slot');
+  assert.equal(REPORT_HOUR_ET, 18);
+});
+
+test('previousDay crosses months and years without a timezone eating a day', () => {
+  assert.equal(previousDay('2026-08-20'), '2026-08-19');
+  assert.equal(previousDay('2026-09-01'), '2026-08-31');
+  assert.equal(previousDay('2026-01-01'), '2025-12-31');
+  assert.equal(previousDay('2026-03-09'), '2026-03-08', 'the spring-forward boundary');
+});
