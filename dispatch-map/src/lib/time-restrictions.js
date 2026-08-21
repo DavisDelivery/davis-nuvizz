@@ -281,6 +281,31 @@ export function classifyStopTimeRestriction(stop, note, servedDate, defaultSlots
       sources.add('Order instructions (opens at)');
     }
   }
+  // A DOCK OPEN ALL DAY IS NOT A RESTRICTION, WHOEVER STATED THE HOURS. The 8-hour test
+  // was applied to the order's schedule from the start — it is what discards the vendor's
+  // 08:00-20:00 placeholder — but never to receiving hours, so a customer who simply keeps
+  // normal business hours came through as a HARD WINDOW. On one board that was 57 of 88
+  // rows: 7a-5p, 8a-5p, 9a-5p. Chad, reading them: "delete anything that is 8-5, or 9-5 or
+  // more than 8 hr window."
+  //
+  // He is right, and the inconsistency was mine: the same span means the same thing whether
+  // NuVizz stamped it or a dispatcher typed it. A window earns a place on this sheet by
+  // being NARROWER than a working day.
+  //
+  // Only a full range is measurable. An opens-at with no close, a closes-at with no open,
+  // and a midday closure have no span to test and are left alone — each is a real
+  // constraint regardless of how long the dock is open either side of it.
+  //
+  // Runs BEFORE the CLOSES-AT fallback below: a stop reading 'CLOSES AT 3 30 PM' can also
+  // scan as a wide 6a-3:30p range, and discarding that range has to leave the explicit
+  // closing time free to be read, not swallow it.
+  if (openMin != null && closeMin != null && closeMin - openMin >= ALL_DAY_MIN) {
+    openMin = null; closeMin = null; hoursTier = null; hoursProvenance = null;
+    sources.delete('Dispatcher-entered hours');
+    sources.delete('Saved hours (auto-detected)');
+    sources.delete('Order instructions (receiving hours)');
+  }
+
   // A bare 'CLOSES AT 3 30 PM' with no range anywhere else is still a close time.
   if (closeMin == null) {
     const c = closesAtMin(text);
