@@ -33,8 +33,24 @@ import { parseClockMin, dayReceivingWindow } from './board-flags.js';
 // not a slope, and moving one by a minute can double what the map draws.
 export const SHUTS_EARLY_BEFORE = 12 * 60;   // 12:00p — closes by noon. 7 pins.
 export const TIGHT_WINDOW_MAX   = 180;       // ≤3h of opening at all, whenever it falls.
-export const EARLY_CLOSE_BEFORE = 15 * 60;   // 3:00p — 26 pins. At 3:00p INCLUSIVE it is 45:
-                                             // nineteen docks shut at exactly three.
+export const EARLY_CLOSE_BEFORE = 15 * 60;   // 3:00p — 26 pins. Chad, asked and answered:
+                                             // "leave anything closing before 3 as early."
+                                             // The step here is the steepest on the board and
+                                             // it is worth writing down, because a 3:00p dock
+                                             // is a coin-flip rather than an oversight. At
+                                             // 3:00p INCLUSIVE the mark goes to 45 and at
+                                             // 4:00p to 48, since NINETEEN docks shut at
+                                             // exactly three and only three more between
+                                             // three and four. Measured whole-map cost of the
+                                             // 4:00p line: 56 marks becomes 72. Sixteen of
+                                             // those twenty-two are pins the map draws today
+                                             // for the first time; the other six are already
+                                             // lit, and four of THOSE are 6am docks that would
+                                             // trade "extra room, go at dawn" for an amber
+                                             // deadline — NEFAB, Dixie Seal, Space Pole, FBM.
+                                             // Losing the dawn signal on a 6a-3p dock is a
+                                             // worse trade than missing its close, because a
+                                             // driver sent there first is never late anyway.
 export const OPENS_LATE_FROM    = 9 * 60;    // 9:00a — 12 pins. At 9:30a only 4.
 export const OPENS_EARLY_BY     = 6 * 60 + 30; // 6:30a — 10 pins. At 7:00a it jumps to 22.
 export const OPEN_LATE_FROM     = 18 * 60;   // 6:00p — a dock still taking freight at six.
