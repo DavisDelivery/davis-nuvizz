@@ -22,7 +22,7 @@
 
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro, lookupLoadStopNbrs } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches } from './firestore.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan } from './firestore.mts';
 import { listScanForDate, mergeEnrich, twoScanBuckets, completedScanRows, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow } from './nuvizz-list.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterForDate } from './nuvizz-loads.mts';
 import { getStop } from './history-store.mts';
@@ -852,11 +852,17 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       const plan = planCompletions(boardByNbr, rows);
       const applied = await applyCompletionPatches(TENANT, today, plan.patches, at);
       await markScanKinds(['completed'], at);
+      // Stamp the DAY INDEX too, not just the ops doc. markScanKinds drives the scheduler's
+      // own "is this kind due" arithmetic; the day index is what the board API serves and the
+      // status card reads. Only the latter answers Chad's question — "at this time of day
+      // shouldn't the completed scan be on a 15 min timer?" — which was unanswerable from the
+      // screen because the card had no completed row to look at.
+      const stamped = await markCompletedScan(TENANT, today, at);
       console.log(`[scan] completed-overlay ${today}: pulled=${rows.length} changed=${applied.written} unchanged=${plan.unchanged} notOnBoard=${plan.unknown.length} missingDoc=${applied.missing} etHour=${decision.etHour} interval=${due.completed.intervalMin}`);
       return json({
         ok: true, mode: 'completed-overlay', date: today, at,
         pulled: rows.length, changed: applied.written, unchanged: plan.unchanged,
-        notOnBoard: plan.unknown.length, nuvizzCalls: 1,
+        notOnBoard: plan.unknown.length, nuvizzCalls: 1, stamped,
       });
     } catch (e: any) {
       // A failed overlay leaves the board exactly as it was and costs nothing but the call —
@@ -1312,7 +1318,10 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           } catch (e: any) { console.warn(`[scan] load-anchor ${date} skipped: ${e?.message}`); }
         }
 
-        const meta = await writeStops(TENANT, date, dateStops, scannedAt, { includeUnplanned: true, includeLoads: true, graceFn: (fresh, ex) => { applyBoardWriteGrace(fresh, ex, Date.now()); } });
+        // includeCompleted: a two-search pull fetches 77131 alongside 77128, so this write IS
+        // a completed scan and stamps as one. With TWO_SCAN off there is no completed pull in
+        // this path at all, and claiming one would date-stamp a scan that never happened.
+        const meta = await writeStops(TENANT, date, dateStops, scannedAt, { includeUnplanned: true, includeLoads: true, includeCompleted: TWO_SCAN, graceFn: (fresh, ex) => { applyBoardWriteGrace(fresh, ex, Date.now()); } });
         // Cache the date's empty-loads roster (once/day for a future date) so the Loads view can
         // show e.g. Monday's empty loads without a per-request live fetch.
         await persistLoadRoster(date, scannedAt);
