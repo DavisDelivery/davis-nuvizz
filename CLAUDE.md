@@ -20,6 +20,45 @@ Project-level guidance for Claude Code in this repository.
 - When a task seems to need fresh data, STOP and ask first — state the
   expected call cost — instead of scanning.
 
+## NEVER REASON AT ME — CHECK THE CODE (Chad, Aug 2026)
+
+- Chad: **"I never want you to reason when giving me an answer. I always
+  want you to have checked the code and give me factual answers."**
+- Before answering ANY question about how this system behaves — what a rule
+  does, why a flag fired, what a field holds, whether a job ran — **open the
+  code, or query the live data, or run the function.** Then answer from what
+  it returned. An answer that begins "it should" or "that would be" is not an
+  answer; it is a guess wearing an answer's clothes, and it is worse than
+  saying "let me check" because Chad cannot tell the two apart.
+- **Run the case, do not describe it.** Asked whether a stop ten stops down an
+  unassigned load flags at 7am, the right move is to build that load, call
+  `computeBoardFlags`, and paste the card it produced. It took one command and
+  turned a plausible yes into a verified one.
+- **Measure before proposing a fix, and check the measurement.** The
+  phantom-instance bug was first measured at 31 affected stops by a regex that
+  collapsed `AVRT-0028093763` and `ESTES-0538243875` onto the bare strings
+  "AVRT" and "ESTES" — so every carrier order looked like a sibling of every
+  other. The real number was 6. Acting on the first figure would have silenced
+  twelve live routed stops. A number is not a fact until the thing that
+  produced it has been checked too.
+- **Do not stack inference on inference.** "The browser is stale" was argued
+  from a footer reading 302 open against a server reading 280 — two counts with
+  different denominators, so the gap meant nothing. One reasoning step past the
+  evidence had already produced a confident wrong diagnosis.
+- **Never report an intent as an outcome.** "I flipped the switch" was said
+  about an API call that had returned a 502. If the system did not observe it,
+  the system may not claim it — and if the state cannot be read back, that is
+  a bug to fix, not a thing to be careful about. A switch whose position cannot
+  be read is not a switch.
+- **When the answer genuinely is not knowable from here, say so and say what
+  would settle it.** "I cannot tell from the code whether loads carry drivers
+  overnight — that is a fact about how Davis dispatches" is a good answer.
+  Inventing the probable one is not.
+- Corollary: **a plausible story that fits the symptom is the most dangerous
+  output this system produces.** METRO was declared correctly-silent because it
+  had not been late — when in fact a human had found it on paper and moved it.
+  The story fit every fact on screen and was still wrong.
+
 ## EVERY feature gets judged as a logistics professional FIRST (Chad, Aug 2026)
 
 - Chad: **"every feature should be evaluated like you are a senior

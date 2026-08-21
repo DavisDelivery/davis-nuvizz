@@ -94,9 +94,13 @@ export function explainRow(r: any, alertableSet: Set<string>, nowMin: number | n
  * answer instead of a miss.
  */
 export function normStopNbr(v: any): string {
-  return String(v ?? '').trim().toUpperCase()
-    .replace(/-\d+$/, '')      // NuVizz's "-1" suffix on a split order
-    .replace(/^0+(?=.)/, '');  // the feed pads; paperwork does not. Keep a lone "0".
+  const raw = String(v ?? '').trim().toUpperCase();
+  // The "-1" instance suffix ONLY exists on an all-numeric PRO. A carrier-prefixed id like
+  // AVRT-0028093763 or ESTES-0538243875 is a whole identifier — stripping its tail collapses
+  // every AVRT order onto the bare string "AVRT", so any two of them would match each other
+  // and this endpoint would confidently explain the wrong stop.
+  const base = /^\d+-\d+$/.test(raw) ? raw.replace(/-\d+$/, '') : raw;
+  return base.replace(/^0+(?=.)/, '');  // the feed pads; paperwork does not. Keep a lone "0".
 }
 
 /**

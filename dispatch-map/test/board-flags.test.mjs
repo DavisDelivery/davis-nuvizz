@@ -885,3 +885,70 @@ test('APPOINTMENT and APPTS spellings are covered, and a lookalike name is NOT',
   assert.equal(on('ULINE APPOINTMENTS'), 0);
   assert.equal(on('APPLETON'), 1, 'a route that merely starts with those letters is a real route');
 });
+
+// ── UNSCHEDULED WORK GETS NO TODAY-FLAGS (Chad, 2026-08-21) ─────────────────
+//
+// Five "Closed FRI" cards for freight that had already gone. Chad: "dispatch closed out the
+// originals and duped them. That's why there's the dash ones. However, those are unplanned.
+// It should not be on the board as going to miss receiving hours. That's where we need to be,
+// not coupling them together. They still need to remain decoupled."
+//
+// So the dash record is a REAL, SEPARATE order, and the rule is about the record — no route
+// and unplanned status — never about its sibling.
+
+const unscheduled = (o) => stop({ status: '10', normalizedStatus: 'UNPLANNED',
+  isPlanned: false, loadNbr: '', routeName: '', routeSeq: null, ...o });
+// The board these run on is a FRIDAY — the notes say closed_days: ['fri'], and on the
+// harness default of Monday every one of these assertions would pass by matching nothing.
+const FRI = { servedDate: '2026-08-21', dayKey: 'fri', opts: { ...OPTS, nowMin: 11 * 60 + 34 } };
+const CLOSED_FRI = { 'ies|k': note({ closed_days: ['fri'], manual_overrides: { closed_days: true } }) };
+
+test('an unplanned, unrouted order raises nothing — it is not scheduled today', () => {
+  const out = run([unscheduled({ stopNbr: '007165852-1', matchKey: 'ies|k', businessName: 'IES COMMUNICATIONS' })],
+    CLOSED_FRI, FRI);
+  assert.deepEqual(out.rows, [], '"closed today" is a statement about a delivery happening today');
+  assert.equal(out.checked.stops, 0, 'and it is not counted as work being watched');
+});
+
+test('the rule is about the RECORD, not the dash — a plain PRO unplanned and unrouted is the same', () => {
+  // Measured on the live board: of 24 unplanned unrouted stops, 5 carried no dash at all.
+  const out = run([unscheduled({ stopNbr: '007165852', matchKey: 'ies|k', businessName: 'IES COMMUNICATIONS' })],
+    CLOSED_FRI, FRI);
+  assert.deepEqual(out.rows, []);
+});
+
+test('THE ORDERS STAY DECOUPLED: a delivered twin does NOT settle a live re-cut order', () => {
+  // The fix this replaced coupled them, and it was wrong for a right-looking reason: dispatch
+  // closes an original and re-cuts it, so the moment the re-cut genuinely needs delivering,
+  // coupling would silence it because its dead twin had been closed — silently, and only on
+  // the days it mattered.
+  const out = run([
+    stop({ stopNbr: '007165852', matchKey: 'ies|k', businessName: 'IES', status: '91',
+      normalizedStatus: 'DELIVERED', deliveredDTTM: '2026-08-21T09:00', loadNbr: 'CHAD', routeName: 'CHAD', routeSeq: 1 }),
+    stop({ stopNbr: '007165852-1', matchKey: 'ies|k', businessName: 'IES', status: '20',
+      loadNbr: 'CHAD', routeName: 'CHAD', routeSeq: 2 }),
+  ], CLOSED_FRI, FRI);
+  assert.equal(out.rows.filter((r) => r.rule === 'closed_today').length, 1,
+    'the re-cut order is routed and scheduled — it must still flag');
+});
+
+test('BOTH halves are required — routed, or not-unplanned, keeps a stop judged', () => {
+  const on = (o) => run([stop({ stopNbr: '1', matchKey: 'ies|k', businessName: 'IES', ...o })], CLOSED_FRI, FRI)
+    .rows.filter((r) => r.rule === 'closed_today').length;
+  assert.equal(on({ status: '10', normalizedStatus: 'UNPLANNED', loadNbr: '', routeName: '' }), 0);
+  assert.equal(on({ status: '10', normalizedStatus: 'UNPLANNED', loadNbr: 'CHAD', routeName: 'CHAD' }), 1,
+    'routed is scheduled, whatever the status says');
+  assert.equal(on({ status: '20', normalizedStatus: 'SCHEDULED', loadNbr: '', routeName: '' }), 1,
+    'a stop that has left unplanned is being worked, even before a route lands');
+});
+
+test('90, 91, 99 and 80 have always been terminal — pinned so the real cause stays findable', () => {
+  // Chad's first hypothesis was that 91 was not recognised. It always was; the cause was
+  // elsewhere. This keeps that from being re-investigated.
+  for (const status of ['90', '91', '99', '80']) {
+    assert.equal(isFinishedStop({ status }), true, `${status} is terminal`);
+  }
+  assert.equal(isFinishedStop({ status: 91 }), true, 'as a number too');
+  assert.equal(isFinishedStop({ status: ' 91 ' }), true, 'and with whitespace');
+  assert.equal(isFinishedStop({ status: '20' }), false);
+});

@@ -501,7 +501,38 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   };
   const depot = opts.depot || null;
 
-  const open = stops.filter((s) => !isFinishedStop(s));
+  // UNSCHEDULED WORK IS NOT ON TODAY'S BOARD, SO IT DOES NOT GET TODAY'S FLAGS.
+  //
+  // Chad, 2026-08-21, on five "Closed FRI" cards for freight that had already gone:
+  // "dispatch closed out the originals and duped them. That's why there's the dash ones.
+  // However, those are unplanned. It should not be on the board as going to miss receiving
+  // hours. That's where we need to be, not coupling them together. They still need to remain
+  // decoupled. However, if the dash one is not on a route and it's in unplanned status, then
+  // it should not be a flag on the board."
+  //
+  // The dash record is a REAL, SEPARATE ORDER — dispatch closed the original and re-cut it —
+  // not a phantom of the one beside it. So the fix is emphatically NOT "a delivered PRO
+  // settles its instances": that couples two independent orders through a shared number, and
+  // the moment dispatch re-cuts an order that genuinely still needs delivering, that coupling
+  // would silence it because its dead twin had been closed. Wrong for the right-looking
+  // reason, and silent when it is wrong.
+  //
+  // The honest test is about the record itself, and needs no sibling at all: an order with NO
+  // ROUTE and in UNPLANNED status is not scheduled to be delivered today. "May miss receiving
+  // hours" and "closed today" are both statements about a delivery happening today, so
+  // neither is a statement about this. Both halves are required — a routed stop is scheduled
+  // whatever its status, and a stop that has left unplanned is being worked.
+  //
+  // Measured on the live board the morning it was reported: 304 open stops, 24 of them
+  // unplanned with no route — 19 dash records and 5 plain PROs, which is why this is a rule
+  // about the RECORD and not about the dash. None of them carried a missing pin or a
+  // duplicate number, so closed_today was the only flag they were raising.
+  const isUnscheduled = (s) => {
+    const routed = String(s?.loadNbr || s?.routeName || '').trim();
+    if (routed) return false;
+    return String(s?.status ?? '').trim() === '10' || String(s?.normalizedStatus ?? '') === 'UNPLANNED';
+  };
+  const open = stops.filter((s) => !isFinishedStop(s) && !isUnscheduled(s));
   // AN APPOINTMENT ROUTE IS A HOLDING PEN, NOT A TRUCK — AND THAT WAS ONLY HALF-ENFORCED.
   //
   // Chad: "need to silence any flags that are on the Uline appt route." ANY, and it was not.
