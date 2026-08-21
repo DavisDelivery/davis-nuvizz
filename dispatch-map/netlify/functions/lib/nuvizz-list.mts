@@ -687,6 +687,19 @@ export async function twoScanBuckets(overrides?: Record<string, string> | null):
   return mergeTwoScan(active, completed, overrides);
 }
 
+/**
+ * THE COMPLETED SEARCH ON ITS OWN — one call, for the overlay path.
+ *
+ * The scan plan runs 77131 far harder than 77128 through the delivery day (every stamp
+ * re-anchors a route clock), so those fires must not drag the planned pull along for the
+ * ride. Returns board-shaped rows, unbucketed: the overlay matches them against the stored
+ * board by stop number and never needs to know which day they belong to.
+ */
+export async function completedScanRows(): Promise<any[]> {
+  const rows = await fetchSavedSearchRows(SAVED_SEARCHES.completed);
+  return rows.map((r) => toBoardStop(r));
+}
+
 // The saved searches bucket by ET arrival date, but the scanner keys boards by UTC date.
 // Map a target UTC date to its ET-equivalent date (same offset from "today" in both
 // frames, so todayUTC→etToday handles the late-night ET/UTC drift). PURE — unit-tested.

@@ -45,5 +45,10 @@ export default runRefreshStops;
 // A 15-minute index freshness is acceptable for a dispatch board; tighten again
 // only with real cost numbers in hand (see the runaway-calls incident report).
 export const config = {
-  schedule: '*/15 * * * *',
+  // Every 5 minutes, not 15. The scan plan lets each saved search run on its own cadence, and
+  // Chad asked for planned/unplanned every 20 minutes overnight — on a 15-minute cron there is
+  // no such thing as 20, it snaps to 15, so the screen would have said 20 while the system did
+  // 15. At a 5-minute step every interval worth typing lands exactly. A fire with nothing due
+  // does two Firestore reads and returns, so the extra invocations cost no NuVizz calls.
+  schedule: '*/5 * * * *',
 };
