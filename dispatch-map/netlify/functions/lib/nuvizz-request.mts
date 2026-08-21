@@ -135,6 +135,45 @@ export function effectiveDailyCeiling(fallback = DEFAULT_CONFIG.dailyCeiling): n
   return clampCeiling(__dailyCeilingOverride ?? fallback);
 }
 
+/**
+ * THE CEILING TO PRINT ON A SPEND GAUGE.
+ *
+ * Chad's Map status card read "216 / 20,000" while the breaker was tripping at 2,000 — a
+ * headroom figure overstated tenfold, on the one number a dispatcher consults before turning
+ * a scan cadence up. It is the specific way this can do real harm: the cold number-probe scan
+ * costs ~3,000 calls, so against a 20,000 gauge it looks affordable when in fact it is ABOVE
+ * the true cap and trips the breaker partway through, leaving the board half-written.
+ *
+ * The comment above HARD_DAILY_CEILING has claimed since v0.54.21 that "every path that
+ * produces a ceiling runs through clampCeiling(), so the number on the Diagnostics pill is
+ * the number actually enforced". One path did not: the board endpoint built its own
+ * expression straight off the stored config and NUVIZZ_DAILY_CEILING, with a third fallback
+ * number (12,000) that appears nowhere else in the system. Both the Map card and the
+ * Diagnostics gauge read that field.
+ *
+ * Both inputs need the clamp, not just the env one. The stored Diagnostics config is bounded
+ * to 2,000 when it is WRITTEN, but readScanConfig returns the raw document — so a value
+ * saved before that bound existed comes back unclamped and is just as capable of printing a
+ * number the breaker will not honour.
+ *
+ * PURE; env injected so a test can state the real production case.
+ */
+export function reportedDailyCeiling(configured?: any, env: Record<string, any> = process.env): number {
+  // Numbers and numeric strings only. A bare Number() coercion here would read `true` as a
+  // ceiling of 1 and `[1500]` as 1500 — the same family as the Number(null) is 0 bug that put
+  // a midnight deadline in front of a customer. A malformed value must fall THROUGH to the
+  // next proposal, not become one.
+  const asCeiling = (v: any): number | null => {
+    if (typeof v !== 'number' && typeof v !== 'string') return null;
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? clampCeiling(n) : null;
+  };
+  return asCeiling(configured)
+    ?? asCeiling(env?.NUVIZZ_DAILY_CEILING)
+    // No config and no env is not "unlimited" — it is the hard cap, same as DEFAULT_CONFIG.
+    ?? HARD_DAILY_CEILING;
+}
+
 export interface RequesterDeps {
   /** The real network call. Injected so tests can stub it. */
   fetchImpl: (url: string, init: any) => Promise<Response>;

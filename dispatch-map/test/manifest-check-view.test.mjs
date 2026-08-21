@@ -35,6 +35,41 @@ test('the badge counts ORDERS to chase, not categories of problem', () => {
   assert.equal(r.issues[0].kind, 'not_on_board', 'the actionable one leads');
 });
 
+test("Chad's Friday: 18 orders off the board, but no board exists for Monday yet", () => {
+  // The false alarm, in the shape it actually arrived. The window now reaches Monday; at
+  // midday Friday that board has not been built, so there is nothing to chase and the alert
+  // becomes a warning that names the day to come back to.
+  const r = manifestIssues({
+    ...clean,
+    manifest: { orders: 18, verified: false },
+    onBoard: 0,
+    suspects: sus(18),
+    checkedAgainst: [{ date: '2026-08-24', stops: 0 }, { date: '2026-08-25', stops: 0 }],
+  });
+  assert.equal(r.level, 'warn', 'not an alert — a dispatcher cannot act on this');
+  assert.equal(r.badge, 0, 'nothing to chase, so nothing on the badge');
+  assert.equal(r.issues[0].kind, 'not_routed_yet');
+  assert.match(r.issues[0].text, /not routed yet/i);
+  assert.match(r.issues[0].text, /2026-08-24/);
+});
+
+test('the SAME 18 against a real board stay an alert — the fix must not mute a genuine miss', () => {
+  const r = manifestIssues({
+    ...clean,
+    manifest: { orders: 18, verified: true },
+    onBoard: 0,
+    suspects: sus(18),
+    checkedAgainst: [{ date: '2026-08-21', stops: 758 }, { date: '2026-08-24', stops: 0 }],
+  });
+  assert.equal(r.level, 'alert');
+  assert.equal(r.badge, 18);
+  assert.equal(r.issues[0].kind, 'not_on_board');
+  assert.match(manifestHeadline(r.ok === false ? r : {
+    ...clean, manifest: { orders: 18 }, suspects: sus(18),
+    checkedAgainst: [{ date: '2026-08-21', stops: 758 }],
+  }), /NOT in the scan/);
+});
+
 test('board orders the manifest never mentions are NEVER flagged', () => {
   // The board carries every shipper. Flagging these would bury the real finding.
   const r = manifestIssues({ ...clean, boardOnly: 400 });

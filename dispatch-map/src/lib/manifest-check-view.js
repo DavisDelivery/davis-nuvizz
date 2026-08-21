@@ -5,7 +5,18 @@
 // tested. A flag that lies in either direction is worse than no flag: a false
 // one trains you to ignore it, a missed one is the order that never shipped.
 
+import { boardCoverage, gradeSuspects, gradeText } from './manifest-window.js';
+
 export const MANIFEST_CHECK_KEY = 'dd_manifest_check_last';
+
+// The grade the run carries, or one derived from its board days for a stored run written
+// before the field existed. Never assume 'missing' when the boards could not say.
+function gradeOf(result) {
+  const suspects = Array.isArray(result?.suspects) ? result.suspects : [];
+  if (result?.grade && result.grade.verdict) return { grade: result.grade, coverage: result.coverage || boardCoverage(result.checkedAgainst) };
+  const coverage = result?.coverage || boardCoverage(result?.checkedAgainst);
+  return { grade: gradeSuspects(suspects, coverage), coverage };
+}
 
 /**
  * What is wrong with this run, if anything. Returns a list of issues, most
@@ -19,13 +30,26 @@ export function manifestIssues(result) {
   if (!result || result.ok === false) return { issues: [], badge: 0, level: 'none' };
   const issues = [];
 
-  const missing = Array.isArray(result.suspects) ? result.suspects.length : 0;
-  if (missing > 0) {
+  // OFF THE BOARD IS NOT THE SAME AS MISSING. When every delivery day in the window has no
+  // cached board — midday Friday looking at Monday, before the routing evening runs — there
+  // is nothing for a dispatcher to chase and the alert is noise. It becomes a warning that
+  // names the day to come back to. This is the file's own rule applied to itself: a false
+  // flag trains you to ignore it.
+  const { grade, coverage } = gradeOf(result);
+  const missing = grade.verdict === 'missing' ? grade.count : 0;
+  if (grade.verdict === 'missing') {
     issues.push({
       kind: 'not_on_board',
       level: 'alert',
-      count: missing,
-      text: `${missing} order${missing === 1 ? '' : 's'} on the manifest ${missing === 1 ? 'is' : 'are'} not in the scan`,
+      count: grade.count,
+      text: gradeText(grade, coverage),
+    });
+  } else if (grade.verdict === 'unrouted') {
+    issues.push({
+      kind: 'not_routed_yet',
+      level: 'warn',
+      count: grade.count,
+      text: gradeText(grade, coverage),
     });
   }
 
@@ -63,8 +87,10 @@ export function manifestHeadline(result) {
   if (!result) return 'No manifest checked yet';
   if (result.ok === false) return result.error || 'The last check failed';
   const { level } = manifestIssues(result);
-  const n = Array.isArray(result.suspects) ? result.suspects.length : 0;
+  const { grade, coverage } = gradeOf(result);
+  const n = grade.count;
   if (level === 'alert') return `${n} order${n === 1 ? '' : 's'} on the manifest ${n === 1 ? 'is' : 'are'} NOT in the scan`;
+  if (grade.verdict === 'unrouted') return gradeText(grade, coverage);
   const orders = result.manifest?.orders ?? 0;
   return `All ${orders} manifest order${orders === 1 ? '' : 's'} found in the scan`;
 }
@@ -105,6 +131,10 @@ export function toStored(result, fileName) {
     // pathological run (an unscanned day) must not blow the storage quota.
     suspects: (result.suspects || []).slice(0, 200),
     suspectsTotal: (result.suspects || []).length,
+    // Carried so a reload grades the run the same way the server did, rather than
+    // re-deriving it from a truncated suspect list.
+    coverage: result.coverage || null,
+    grade: result.grade || null,
   };
 }
 
