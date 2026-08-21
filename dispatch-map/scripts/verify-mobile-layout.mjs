@@ -98,6 +98,19 @@ const PROBES = {
   ],
   flaghistory: [
     {
+      // The date picker is furniture that only exists after a tap, so at rest the guard would
+      // never measure it — and two full-width date fields plus a wrapping pill row on a 360px
+      // screen is exactly the shape that has collided before.
+      name: 'Date picker open',
+      open: async (page) => {
+        const btn = page.getByRole('button', { name: /pick a day or range/i }).first();
+        if (!(await btn.isVisible().catch(() => false))) return false;
+        await btn.click();
+        await page.waitForTimeout(400);
+        return page.getByLabel(/^to date$/i).first().isVisible().catch(() => false);
+      },
+    },
+    {
       // The daily completion report lives behind a segmented control in this section, so at
       // rest the guard would only ever measure the flags half. Charts, a stat grid and a
       // route list are all on the other side of one tap.
