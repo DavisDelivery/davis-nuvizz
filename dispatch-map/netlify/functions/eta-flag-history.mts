@@ -8,7 +8,13 @@
 //
 //   GET ?days=14              the last N days, newest first (default 14, max 60)
 //   GET ?date=YYYY-MM-DD      one day, with every row
+//   GET ?from=&to=            an arbitrary window, inclusive — "was August better than July"
 //   GET ?rows=1               include per-stop rows on a multi-day read (heavier)
+//
+// THE WINDOW RULE IS NOT HERE. It is in src/lib/history-range.js, imported, because the
+// screen resolves the same selection to decide what to print at the top. Clamping the 60-day
+// cap or a future end differently in the two places gives you a header describing one range
+// over numbers covering another, and both halves look right on their own.
 //
 // Writes nothing, sends nothing, and makes ZERO NuVizz calls — it reads the documents the
 // 20-minute sweep and the nightly ledger already wrote.
@@ -17,16 +23,9 @@
 // this app — a property rediscovered twice at cost. This one must answer a browser.
 import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
 import { flagHistoryPath, summarize, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
+import { resolveRange, expandRange, selectionFromParams, isDateStr } from '../../src/lib/history-range.js';
 
 const TENANT = 'davis';
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const MAX_DAYS = 60;
-
-function addDays(date: string, n: number): string {
-  const d = new Date(`${date}T12:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-}
 
 export default async (req: Request): Promise<Response> => {
   const J = (b: any, s = 200) => new Response(JSON.stringify(b), {
@@ -38,10 +37,11 @@ export default async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
     const one = url.searchParams.get('date');
     const wantRows = url.searchParams.get('rows') === '1';
-    const days = Math.min(MAX_DAYS, Math.max(1, Number(url.searchParams.get('days') || 14) || 14));
+    const today = etDayString();
 
-    // ONE DAY, in full.
-    if (one && DATE_RE.test(one)) {
+    // ONE DAY, in full. ?date= keeps meaning "that day with every row", which is what an
+    // expanded day row fetches; a one-day WINDOW goes through ?from=&to= like any other.
+    if (one && isDateStr(one)) {
       const doc = await getDoc(flagHistoryPath(TENANT, one));
       if (!doc?.rows) return J({ ok: true, date: one, found: false, rows: [], summary: null });
       const rows = Object.values(doc.rows);
@@ -54,10 +54,10 @@ export default async (req: Request): Promise<Response> => {
       });
     }
 
-    // A WINDOW, newest first. Reads are one doc per day and days are small, so this stays a
-    // handful of gets rather than a query — and the collection needs no index.
-    const today = etDayString();
-    const wanted = Array.from({ length: days }, (_, i) => addDays(today, -i));
+    // A WINDOW, newest first. Reads are one doc per day and the span is capped, so this stays
+    // a handful of gets rather than a query — and the collection needs no index.
+    const range = resolveRange(selectionFromParams((k) => url.searchParams.get(k)), today);
+    const wanted = expandRange(range.from, range.to);
     const results = await Promise.all(wanted.map(async (date) => {
       try {
         const doc = await getDoc(flagHistoryPath(TENANT, date));
@@ -92,6 +92,10 @@ export default async (req: Request): Promise<Response> => {
 
     return J({
       ok: true, version: FLAG_HISTORY_VERSION, days: results.length,
+      // The window actually READ, not the one asked for. A range clamped to the cap or pulled
+      // back off the future has to say so, or a silently narrowed window reads on the screen
+      // as a genuinely quiet stretch.
+      range: { from: range.from, to: range.to, days: range.days, clamped: range.clamped ?? null },
       daysWithData: found.length, total, results,
     });
   } catch (e: any) {

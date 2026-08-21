@@ -49,6 +49,7 @@ import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact } fr
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { timeMarkForDay, TIME_MARK_KEYS } from './lib/time-marks.js';
+import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS } from './lib/history-range.js';
 import {
   drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
   legendIsEmpty, pinTintKind, visibleIconKeys,
@@ -87,7 +88,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.71.0';
+const APP_VERSION = '0.71.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -158,6 +159,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.71.1', 'FLAG HISTORY CAN BE ASKED ABOUT A DAY NOW, AND ABOUT ANY TWO DATES. Chad: “I want to be able to select today and calendar to select a specific day and or range.” The window control was four rolling lookbacks — 7, 14, 30, 60 — and every one of them anchored to this morning. THAT SHAPE ANSWERS ONLY ONE QUESTION, “how are we trending”, and it is not the question that gets asked out loud. The two that do are “what happened on the nineteenth”, which is the day a customer called about, and “was August better than July” — one needs a single day, the other needs two arbitrary ends, and neither is a distance back from today. There was also no way to say TODAY at all: the shortest window was a week. Now: Today · 7 · 14 · 30 · 60 as one-tap presets, two date fields for any range, and a one-tap collapse to a single day. A preset lights up by the WINDOW it produces rather than by which button was pressed, so picking Aug 15–21 by hand lights the 7-day pill — the control describes what is on screen, not how you got there. THE RULE IS ONE MODULE READ BY BOTH ENDS. src/lib/history-range.js resolves a selection into {from, to}; the screen reads it to decide what to print at the top and the endpoint imports the same function to decide which documents to read. Clamping the 60-day cap, a future end or a reversed pair differently in those two places gives you a header describing one range over numbers covering another, and both halves look right on their own. Dates entered backwards mean the span between them, “the 1st to the end of the month” typed on the 21st clamps to today instead of erroring, a too-wide range keeps the RECENT end, and every adjustment SAYS SO on the screen — a silently narrowed window reads as a genuinely quiet stretch, which is the one thing a history must never do. A half-typed date falls back to 14 days rather than blanking the page. AND \u201cTODAY\u201d MADE AN OLD SILENCE LOUD. Outcomes are joined overnight, so today\u2019s flags are recorded but ungraded — and in the stat block that is pixel-identical to a day where every flagged stop made it. Tolerable while one ungraded day sat among six graded ones; with Today one tap away it is the WHOLE screen, and a grid of zeros under Missed reads as a clean day. The screen now says which days are unscored and that Made it / Missed / Rolled are “not marked yet”, not “nothing went wrong”, while Flags raised and the warning times are real right now. The empty state names the dates it found nothing in, because “no flags recorded” over a range you chose is ambiguous between a quiet week, a Sunday, and a stretch before the feature existed. TWO VIEWS, NOT ONE: desktop puts presets, both date fields and the resolved label on a single line, because somebody comparing two periods should not have to open anything to see which dates are set; the phone gets short pills that fit one row at 360px and a calendar behind one tap, all in ONE flow container so a wrap moves what is below it. The mobile guard now opens that calendar and measures the screen inside it — furniture that only exists after a tap was the guard\u2019s original blind spot. 22 new tests, 32/32 phone screens green.'],
   ['0.71.0', 'TWO FAILURES THAT WERE SILENT IN THE FLATTERING DIRECTION. Chad: \u201cthe two silent-failure bugs \u2014 a failed scan writing an authoritative empty board while reporting ok: true, and a zero-stop capture sealing the day complete: true. Both fail in the flattering direction, which is the pattern that bit us repeatedly today. Fix these.\u201d Both verified in the code before touching anything, and one of the two turned out narrower than described \u2014 the list-discovery path already refuses an empty pull (skipped: list-empty), so only the NUMBER-PROBE path was exposed. (1) A LOAD PROBE THAT COULD NOT BE ANSWERED LOOKED EXACTLY LIKE A LOAD THAT DOES NOT EXIST. probeLoad returned null for three different things \u2014 a 404 (the ordinary answer when probing a window of numbers), an auth/5xx/network failure, and a real load holding no stops for the date \u2014 so a scan whose every call failed produced an EMPTY load list, and a full scan (no lean targets, no forward walk) PRUNES against exactly that: an authoritative empty planned board written over a real one, reported ok:true. The unplanned descent has carried complete:false for this reason since it was written; the loads never got the equivalent. They do now \u2014 unanswered probes are tallied, 404 deliberately excluded, and scanDate reports loadsComplete. ANY single unanswered probe makes the list non-authoritative, and the asymmetry is why: preserving a few stale rows costs one scan cycle, while pruning on a failed scan takes the dispatchers\u2019 board, the flags, the ETAs and the 6:30 completion report to zero at once with nothing saying why. The fleet index is skipped on the same signal, since it is REBUILT from the scan and would empty in a second place. (2) A ZERO-STOP CAPTURE SEALED THE DAY AS VERIFIED, because allPresent() asks \u201cis every intended id in the readback?\u201d and over an EMPTY id set that is vacuously TRUE \u2014 all three collections verified, and the manifest went down reading verified:true, complete:true, stops:0. A day with 800 real stops, captured on a night the source came back empty, became a permanent record of a day Davis did not run. WORSE, IT DEFENDED ITSELF: classifyHealTarget refuses a sealed date, so the heal path built for exactly this kind of hole declined to touch it. An empty capture now refuses to seal and leaves a loud failure record; a genuinely empty day still has writeTombstone, which marks one deliberately with a stated reason. Both rules were pulled out as pure exported functions (loadsArePartial, isLoadProbeFailureStatus) so they are pinned by tests rather than buried in a handler \u2014 including the controls: a clean full scan still prunes, and a capture with stops still seals. 2,299 tests green.'],
   ['0.70.8', 'THE MANIFEST’S DATE COLUMN IS A SHIP DATE, AND THE BOARD IS A DELIVERY DAY. Chad, answering the question the last two releases were dancing around: “Uline date column in manifest is date shipped so expectation is we deliver it next business day except for the manifest we get on sundays that is for Tuesday.” The check had been using that column STRAIGHT as a board date and papering over the difference with a tolerance window — which is the whole reason a Friday manifest was diffed against Friday’s board and came back with 18 orders missing that were never for Friday. Ship Thursday, deliver Friday. Ship Friday, deliver Monday. Ship Saturday, deliver Monday. AND SUNDAY IS FOR TUESDAY, which is a real exception rather than an off-by-one: that load moves Sunday night, is received Monday, routed Monday evening and delivered Tuesday — “next business day” would say Monday, and Monday is wrong. THE WINDOW NOW SPLITS IN TWO, and this is what makes the strict rule from v0.70.7 usable. The EXPECTED delivery day is the one that decides: the check may only conclude “missing” when THAT board exists, because that is the board the freight is supposed to be on. The slack days after it are extra places to LOOK, for an order that got deferred, and deliberately NOT days that must be scanned — requiring them would make every check inconclusive forever, since the day after tomorrow is never routed yet. So the nightly Thursday check is conclusive against Friday’s board the moment routing has run, while the midday Friday check honestly reports that Monday has not been built. THE BASE ALSO STOPPED TRUSTING ROW ONE: it is the ship date most rows agree on now, so a single mis-parsed row cannot move the whole window. AND THE SCREEN SAYS WHY. It showed “Checked against …” with no way to tell a sensible window from a wrong one; it now leads with “Shipped 8/21 · expected delivery 8/24”, which is the line that would have made this visible months ago. 12 new tests, including the Sunday exception and the Friday run Chad was looking at. 2,290 green.'],
   ['0.70.7', 'THE FRIDAY MANIFEST FIX DID NOT FIX IT, AND THE REASON WAS ONE WORD. Chad, sent the same red banner back: “your fix didn’t work.” He was right twice — his tab was still running v0.70.2, but that was the smaller half. Even reloaded, and even on a fresh run, the banner would have stayed red, because v0.70.3 widened the WINDOW and left the test that reads it too weak. Coverage counted as conclusive when AT LEAST ONE day in the window had a real board. On Friday the 08-21 board is real and holds 758 stops — so the run was graded conclusive on the strength of a board that could not possibly have held freight bound for MONDAY. Reaching Monday in the window bought nothing while one Friday board was still enough to declare the answer. IT NOW TAKES EVERY DAY. A suspect is chase-able only when every delivery day it could land on has actually been scanned; one unbuilt day in the window is a day the order might be sitting on. THE COST, STATED PLAINLY: a MIDDAY run is usually inconclusive now, because tomorrow’s board is not built until the routing evening. That is correct rather than unfortunate — an alert at noon about freight nobody has routed yet is not actionable, there is nothing to chase into a board that does not exist. The NIGHTLY check runs after routing with the boards in place, and it still goes red, at the moment somebody can still do something. Verified against all three real cases: the run sitting on Chad’s screen now reads “18 orders not routed yet”, a fresh midday run reads the same and names Monday and Tuesday, and a nightly run with every board built still reads “18 orders on the manifest are not in the scan”. THREE OF MY OWN TESTS FAILED ON THIS CHANGE AND ALL THREE WERE WRONG — they had been written to pin the any-board rule, including one titled “the downgrade can only ever fire when NO board was opened”, which is the mistake stated as a requirement. Retitled and re-fixtured to the rule that is actually correct, plus a new test that a fully-scanned window still produces the alert. And the unrouted sentence names only DELIVERY days now: “no board has been built for Saturday” is noise, we never build one. 4 new tests, 2,282 green.'],
@@ -21737,6 +21739,148 @@ function DayCompletionView({ isMobile }) {
   );
 }
 
+// ── THE WINDOW PICKER — TWO VIEWS, BECAUSE THEY ARE TWO LAYOUTS ──────────────
+//
+// Chad: "I want to be able to select today and calendar to select a specific day and or
+// range." Three different questions, and the four-option dropdown could answer none of them.
+//
+// The presets and the calendar are NOT alternatives. A preset is the answer to "how are we
+// trending"; the calendar is the answer to "the customer called about the nineteenth". Both
+// resolve to the same {from, to}, which is why a hand-picked Aug 15–21 lights the 7-day pill:
+// the control describes the WINDOW, not which button was pressed to get there.
+
+const RANGE_PRESETS = [
+  // `short` is the phone's label, and it is not a truncation of the desktop's — five pills
+  // reading "7 days … 60 days" wrap to a second row at 390px and push the numbers below the
+  // fold, while "7d … 60d" fits one line at 360px with the calendar toggle on its own row.
+  { key: 'today', label: 'Today', short: 'Today', sel: { kind: 'today' } },
+  { key: 'd7', label: '7 days', short: '7d', sel: { kind: 'days', days: 7 } },
+  { key: 'd14', label: '14 days', short: '14d', sel: { kind: 'days', days: 14 } },
+  { key: 'd30', label: '30 days', short: '30d', sel: { kind: 'days', days: 30 } },
+  { key: 'd60', label: '60 days', short: '60d', sel: { kind: 'days', days: MAX_RANGE_DAYS } },
+];
+
+/** A preset is lit by the window it produces, not by which control set it. */
+function presetIsOn(p, range, today) {
+  const r = resolveRange(p.sel, today);
+  return r.from === range.from && r.to === range.to;
+}
+
+/** Why the window on screen is not the one that was typed. Silence here reads as a quiet
+ *  period rather than as a narrowed range, which is the one thing this must never do. */
+function RangeClampNote({ range, today }) {
+  if (!range?.clamped) return null;
+  const msg = {
+    'max-days': `That range is longer than ${MAX_RANGE_DAYS} days, so it is showing the most recent ${MAX_RANGE_DAYS} — ${shortDay(range.from, today)} onward.`,
+    future: 'History only goes up to today, so the end of that range was pulled back to today.',
+    swapped: 'Those dates were the other way round, so the range between them is showing.',
+    'bad-date': 'That date could not be read, so the last 14 days are showing.',
+    'bad-days': 'That window could not be read, so the last 14 days are showing.',
+    'bad-range': 'That range could not be read, so the last 14 days are showing.',
+  }[range.clamped];
+  if (!msg) return null;
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] text-slate-600">{msg}</div>
+  );
+}
+
+const RANGE_PILL = (on) => `rounded-lg border px-3 min-h-[40px] text-xs font-semibold ${
+  on ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 hover:bg-slate-50'}`;
+const RANGE_FIELD = 'rounded-lg border border-slate-300 px-2 min-h-[40px] text-xs bg-white';
+
+// DESKTOP. One line, everything visible — a dispatcher comparing two periods should not
+// have to open anything to see which dates are set.
+function HistoryRangeBarDesktop({ sel, setSel, range, today }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {RANGE_PRESETS.map((p) => (
+          <button key={p.key} onClick={() => setSel(p.sel)} className={RANGE_PILL(presetIsOn(p, range, today))}>
+            {p.label}
+          </button>
+        ))}
+        <span className="w-px h-6 bg-slate-200 mx-1" />
+        <input
+          type="date" aria-label="From date" value={range.from || ''} max={today}
+          onChange={(e) => e.target.value && setSel({ kind: 'range', from: e.target.value, to: range.to })}
+          className={RANGE_FIELD}
+        />
+        <span className="text-[11px] text-slate-400">to</span>
+        <input
+          type="date" aria-label="To date" value={range.to || ''} max={today}
+          onChange={(e) => e.target.value && setSel({ kind: 'range', from: range.from, to: e.target.value })}
+          className={RANGE_FIELD}
+        />
+        <button
+          onClick={() => setSel({ kind: 'day', date: range.to })}
+          disabled={range.from === range.to}
+          className={`${RANGE_PILL(false)} disabled:opacity-40 disabled:hover:bg-white`}
+          title="Narrow this range to its end date alone"
+        >Just {shortDay(range.to, today)}</button>
+        <span className="ml-2 text-xs font-semibold text-slate-700">{rangeLabel(range, today)}</span>
+      </div>
+      <RangeClampNote range={range} today={today} />
+    </div>
+  );
+}
+
+// PHONE. The same three questions, laid out for a thumb on a 360px screen: presets wrap in
+// flow, and the calendar is one tap away rather than two date fields permanently eating a
+// line. Everything sits in ONE flow container — when the pills wrap to a second row, what is
+// below them MOVES, which is the thing four separate collision patches on the Map taught.
+function HistoryRangeBarMobile({ sel, setSel, range, today }) {
+  const picked = sel?.kind === 'range' || sel?.kind === 'day';
+  const [open, setOpen] = React.useState(picked);
+  return (
+    <div className="rounded-xl border bg-white p-2 space-y-2">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {RANGE_PRESETS.map((p) => (
+          <button key={p.key} onClick={() => { setSel(p.sel); setOpen(false); }}
+            className={`${RANGE_PILL(presetIsOn(p, range, today))} flex-1`}>{p.short}</button>
+        ))}
+      </div>
+      <button onClick={() => setOpen((v) => !v)}
+        className={`w-full rounded-lg border px-3 min-h-[40px] text-xs font-semibold ${
+          open ? 'bg-slate-100 text-slate-700 border-slate-300' : 'bg-white text-slate-600'}`}>
+        {open ? 'Hide calendar' : 'Pick a day or range'}
+      </button>
+
+      {open && (
+        <div className="space-y-1.5 pt-1 border-t">
+          <label className="flex items-center gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 w-10 shrink-0">From</span>
+            <input
+              type="date" aria-label="From date" value={range.from || ''} max={today}
+              onChange={(e) => e.target.value && setSel({ kind: 'range', from: e.target.value, to: range.to })}
+              className={`${RANGE_FIELD} flex-1 min-w-0`}
+            />
+          </label>
+          <label className="flex items-center gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 w-10 shrink-0">To</span>
+            <input
+              type="date" aria-label="To date" value={range.to || ''} max={today}
+              onChange={(e) => e.target.value && setSel({ kind: 'range', from: range.from, to: e.target.value })}
+              className={`${RANGE_FIELD} flex-1 min-w-0`}
+            />
+          </label>
+          {/* The single-day case deserves one tap, not two identical dates typed twice. */}
+          <button
+            onClick={() => setSel({ kind: 'day', date: range.to })}
+            disabled={range.from === range.to}
+            className={`${RANGE_PILL(false)} w-full disabled:opacity-40`}
+          >Just {shortDay(range.to, today)}</button>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-semibold text-slate-700">{rangeLabel(range, today)}</span>
+        <span className="text-[11px] text-slate-400">{range.days} day{range.days === 1 ? '' : 's'}</span>
+      </div>
+      <RangeClampNote range={range} today={today} />
+    </div>
+  );
+}
+
 function FlagHistoryScreen() {
   // TWO REPORTS, ONE SECTION. Chad asked for the end-of-day completion report to live "in
   // the flag section", alongside the flag outcomes rather than behind another tab in a
@@ -21744,7 +21888,13 @@ function FlagHistoryScreen() {
   const [view, setView] = React.useState('flags');
   const viewportWidth = useViewportWidth();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
-  const [days, setDays] = React.useState(14);
+  // A SELECTION, NOT A DAY COUNT. Chad: "I want to be able to select today and calendar to
+  // select a specific day and or range." The old control was four rolling lookbacks, every
+  // one anchored to this morning — so the two questions that actually get asked, "what
+  // happened on the nineteenth" and "was August better than July", had no way in.
+  const [sel, setSel] = React.useState({ kind: 'days', days: 14 });
+  const today = todayInET();
+  const range = React.useMemo(() => resolveRange(sel, today), [sel, today]);
   const [data, setData] = React.useState(null);
   const [openDate, setOpenDate] = React.useState(null);
   const [dayRows, setDayRows] = React.useState(null);
@@ -21754,12 +21904,12 @@ function FlagHistoryScreen() {
   const load = React.useCallback(async () => {
     setLoading(true); setErr(null);
     try {
-      const r = await fetch(`/.netlify/functions/eta-flag-history?days=${days}`);
+      const r = await fetch(`/.netlify/functions/eta-flag-history?${paramsForRange(range)}`);
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'read failed');
       setData(j);
     } catch (e) { setErr(String(e.message || e)); } finally { setLoading(false); }
-  }, [days]);
+  }, [range.from, range.to]);
   React.useEffect(() => { load(); }, [load]);
 
   const openDay = React.useCallback(async (date) => {
@@ -21779,6 +21929,14 @@ function FlagHistoryScreen() {
   // that includes them is provisional. `nextDayCaptured` is null on days written before this
   // was recorded, which is not a claim either way and so is not counted as pending.
   const pendingDays = results.filter((d) => d.found && d.scored && d.nextDayCaptured === false).length;
+  // NOT SCORED IS NOT ZERO. Outcomes are joined overnight, so today's flags are recorded but
+  // ungraded — and in the stat block that is indistinguishable from a day where every flagged
+  // stop made it. That was tolerable while the shortest window was seven days and one
+  // ungraded day sat among six graded ones. With "Today" now one tap away it is the WHOLE
+  // screen, and a grid of zeros under Missed reads as a clean day rather than as a day that
+  // has not been marked yet.
+  const foundDays = results.filter((d) => d.found).length;
+  const unscoredDays = results.filter((d) => d.found && !d.scored).length;
 
   return (
     <div className="flex-1 overflow-y-auto bg-slate-50">
@@ -21800,18 +21958,16 @@ function FlagHistoryScreen() {
                 >{lbl}</button>
               ))}
             </div>
-            {view === 'flags' && <select
-              value={days} onChange={(e) => setDays(Number(e.target.value))}
-              className="rounded-lg border px-2 py-1.5 text-xs font-semibold bg-white min-h-[40px]"
-            >
-              {[7, 14, 30, 60].map((n) => <option key={n} value={n}>Last {n} days</option>)}
-            </select>}
             {view === 'flags' && <button
               onClick={load}
               className="rounded-lg border px-3 py-1.5 text-xs font-semibold bg-white hover:bg-slate-50 min-h-[40px]"
             >Refresh</button>}
           </div>
         </div>
+
+        {view === 'flags' && (isMobile
+          ? <HistoryRangeBarMobile sel={sel} setSel={setSel} range={range} today={today} />
+          : <HistoryRangeBarDesktop sel={sel} setSel={setSel} range={range} today={today} />)}
 
         {view === 'completion' && <DayCompletionView isMobile={isMobile} />}
 
@@ -21838,6 +21994,20 @@ function FlagHistoryScreen() {
                 Chad's actual question was whether a flagged stop "didn't deliver on time or at
                 all and rolled to the next day", so this is the one column where reporting a
                 confident zero too early defeats the feature. */}
+            {unscoredDays > 0 && (
+              <div className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-[11px] leading-relaxed text-slate-700">
+                <strong>
+                  {unscoredDays === foundDays
+                    ? (foundDays === 1 ? 'This day has not been scored yet.' : 'No day in this range has been scored yet.')
+                    : `${unscoredDays} day${unscoredDays === 1 ? '' : 's'} in this range ${unscoredDays === 1 ? 'has' : 'have'} not been scored yet.`}
+                </strong>{' '}
+                Flags are written as they appear through the day; what actually happened to each shipment is
+                joined overnight. Until then <em>Made it</em>, <em>Missed</em> and <em>Rolled</em>
+                {unscoredDays === foundDays ? ' stay at zero' : ' undercount'} — that is “not marked yet”,
+                not “nothing went wrong”. <em>Flags raised</em> and the warning times are real now.
+              </div>
+            )}
+
             {pendingDays > 0 && (
               <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-900">
                 <strong>{pendingDays} day{pendingDays === 1 ? '' : 's'} in this range {pendingDays === 1 ? 'is' : 'are'} still settling.</strong>{' '}
@@ -21863,7 +22033,13 @@ function FlagHistoryScreen() {
                 as new. It says what it will hold and when. */}
             {(data?.daysWithData ?? 0) === 0 && (
               <div className="rounded-xl border bg-white p-5 space-y-2">
-                <div className="text-sm font-semibold text-slate-800">No flags recorded in this range yet.</div>
+                {/* Naming the window matters now that one can be CHOSEN. "No flags recorded"
+                    over a range the reader picked by hand is ambiguous between "that week was
+                    quiet", "you picked a Sunday" and "the feature did not exist yet" — and
+                    only the reader knows which, once they can see which dates they asked for. */}
+                <div className="text-sm font-semibold text-slate-800">
+                  No flags recorded {range.from === range.to ? `on ${range.to === today ? 'today' : shortDay(range.to, today)}` : `between ${shortDay(range.from, today)} and ${shortDay(range.to, today)}`}.
+                </div>
                 <div className="text-xs text-slate-600 leading-relaxed max-w-2xl">
                   Flags are written as they appear, by the check that already re-reads the board every
                   20 minutes through the working day. Each one records the customer, the route, when we
