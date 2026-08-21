@@ -8,6 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   isoWeekday, isDeliveryDay, shiftIso, deliveryWindow, boardCoverage, gradeSuspects, gradeText,
+  nextDeliveryDay, expectedDeliveryDate, manifestWindow,
 } from '../src/lib/manifest-window.js';
 
 // 2026-08-21 is a Friday. 08-22 Sat, 08-23 Sun, 08-24 Mon.
@@ -161,4 +162,82 @@ test('the unrouted sentence names the DELIVERY day, not the weekend', () => {
   const text = gradeText(gradeSuspects([{ pro: '1' }], cov), cov);
   assert.match(text, /2026-08-24/);
   assert.doesNotMatch(text, /2026-08-22|2026-08-23/, 'a weekend day has no board by design');
+});
+
+// ── SHIP DATE → DELIVERY DAY ─────────────────────────────────────────────────
+//
+// Chad, asked what Uline's date column means: "Uline date column in manifest is date shipped
+// so expectation is we deliver it next business day except for the manifest we get on sundays
+// that is for Tuesday." The check had been treating the column as a board date outright, which
+// is why a Friday manifest was diffed against Friday's board.
+
+test('shipped is not delivered — every weekday maps to the next business day', () => {
+  assert.equal(expectedDeliveryDate('2026-08-17'), '2026-08-18', 'Mon ships, Tue delivers');
+  assert.equal(expectedDeliveryDate('2026-08-18'), '2026-08-19');
+  assert.equal(expectedDeliveryDate('2026-08-19'), '2026-08-20');
+  assert.equal(expectedDeliveryDate('2026-08-20'), '2026-08-21', 'Thu ships, Fri delivers');
+});
+
+test('a FRIDAY manifest is for MONDAY — the run Chad was looking at', () => {
+  // Shipped 2026-08-21. It was being diffed against the 08-21 board, which held 758 stops and
+  // none of these 18, because none of them were ever for Friday.
+  assert.equal(expectedDeliveryDate('2026-08-21'), '2026-08-24');
+  assert.deepEqual(manifestWindow('2026-08-21', 2).dates, ['2026-08-24', '2026-08-25', '2026-08-26']);
+  assert.ok(!manifestWindow('2026-08-21', 2).dates.includes('2026-08-21'), 'Friday is the ship day, not a delivery day for this freight');
+});
+
+test('the SUNDAY manifest is for TUESDAY, not Monday — a real exception, not an off-by-one', () => {
+  // It moves Sunday night, is received Monday, routed Monday evening, delivered Tuesday.
+  // "Next business day" would say Monday and Monday is wrong.
+  assert.equal(expectedDeliveryDate('2026-08-23'), '2026-08-25');
+  assert.notEqual(expectedDeliveryDate('2026-08-23'), '2026-08-24');
+  assert.deepEqual(manifestWindow('2026-08-23', 1).dates, ['2026-08-25', '2026-08-26']);
+});
+
+test('a Saturday ship date lands on Monday', () => {
+  assert.equal(expectedDeliveryDate('2026-08-22'), '2026-08-24');
+  assert.equal(nextDeliveryDay('2026-08-21'), '2026-08-24');
+  assert.equal(nextDeliveryDay('2026-08-19'), '2026-08-20');
+});
+
+test('a junk ship date yields no window at all rather than one around today', () => {
+  for (const bad of ['', null, undefined, 'nope']) {
+    assert.equal(expectedDeliveryDate(bad), null, String(bad));
+    assert.deepEqual(manifestWindow(bad, 2), { expected: null, required: [], dates: [] });
+  }
+});
+
+// ── REQUIRED vs EXTRA DAYS ───────────────────────────────────────────────────
+
+test('only the EXPECTED delivery day has to be scanned — the slack days are just extra looks', () => {
+  // Requiring the slack days too would make every check inconclusive: the day after tomorrow
+  // is never routed yet. The expected day is the board the freight is supposed to be on.
+  const w = manifestWindow('2026-08-20', 2);            // Thu ships → Fri delivers
+  assert.deepEqual(w.required, ['2026-08-21']);
+  const cov = boardCoverage([
+    { date: '2026-08-21', stops: 700 }, { date: '2026-08-24', stops: 0 }, { date: '2026-08-25', stops: 0 },
+  ], w.required);
+  assert.equal(cov.conclusive, true, 'the day that decides was scanned');
+  assert.deepEqual(cov.missingRequired, []);
+  assert.equal(gradeSuspects([{ pro: '1' }], cov).verdict, 'missing');
+});
+
+test('the expected day unbuilt is inconclusive however many other boards exist', () => {
+  const w = manifestWindow('2026-08-21', 2);            // Fri ships → Mon delivers
+  const cov = boardCoverage([
+    { date: '2026-08-24', stops: 0 }, { date: '2026-08-25', stops: 0 }, { date: '2026-08-26', stops: 0 },
+  ], w.required);
+  assert.equal(cov.conclusive, false);
+  assert.deepEqual(cov.missingRequired, ['2026-08-24']);
+  const text = gradeText(gradeSuspects(new Array(18).fill({}), cov), cov);
+  assert.match(text, /not routed yet/i);
+  assert.match(text, /2026-08-24/, 'name the day that decides');
+});
+
+test('with no required set recorded, every day must be scanned — the conservative fallback', () => {
+  // An older stored run never recorded which day decided. Demanding all of them downgrades a
+  // stale verdict to a warning rather than leaving it shouting.
+  const cov = boardCoverage([{ date: '2026-08-21', stops: 758 }, { date: '2026-08-22', stops: 0 }]);
+  assert.equal(cov.conclusive, false);
+  assert.deepEqual(cov.required, []);
 });
