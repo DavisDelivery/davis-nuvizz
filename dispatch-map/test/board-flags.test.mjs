@@ -822,3 +822,66 @@ test('the watch hour is separate from the departure hour, and settable', () => {
   assert.equal(fires({ nowMin: 7 * 60, departMin: 9 * 60 }), true, 'a late-departing fleet does not delay the warning');
   assert.equal(fires({ nowMin: 6 * 60, noDriverWatchFromMin: 5 * 60 }), true, 'and the hour is settable');
 });
+
+// ── ANY flag on an appointment route, not just the hours ones (Chad, 2026-08-20) ──
+//
+// "need to silence any flags that are on the Uline appt route." ANY — and it was not.
+// v0.54.9x silenced the two HOURS rules, because those were the ones producing arithmetic
+// about freight that was never going out. The other rules iterate the open set directly and
+// nobody carried the exclusion across, so a stop parked on ULINE APPT still raised a red for
+// a missing pin, a duplicate order number, or a closed weekday.
+
+test('NO rule fires on an appointment route — pin, duplicate number or closed day', () => {
+  const appt = (o) => stop({ loadNbr: 'ULINE APPT', routeName: 'ULINE APPT', ...o });
+  const notesObj = { 'c|k': note({ closed_days: ['mon'], manual_overrides: { closed_days: true } }) };
+  const stops = [
+    appt({ stopNbr: 'U1', routeSeq: 1, businessName: 'DUPE CO', dupNbr: true, matchKey: 'd|k' }),
+    appt({ stopNbr: 'U2', routeSeq: 2, businessName: 'NOPIN CO', lat: null, lng: null, matchKey: 'n|k' }),
+    appt({ stopNbr: 'U3', routeSeq: 3, businessName: 'CLOSED CO', matchKey: 'c|k' }),
+  ];
+  const out = run(stops, notesObj, { opts: { ...OPTS, nowMin: 9 * 60 } });
+  assert.deepEqual(out.rows, [], 'freight waiting on an appointment is not being routed today');
+  assert.deepEqual(out.skipped.routesAppointment, ['ULINE APPT'], 'and the silence is still SAID');
+});
+
+test('…while the same three faults on a real route still fire', () => {
+  // The risk in silencing a route is silencing a real one. Identical faults, real load.
+  const notesObj = { 'c|k': note({ closed_days: ['mon'], manual_overrides: { closed_days: true } }) };
+  const stops = [
+    stop({ stopNbr: 'S1', routeSeq: 1, businessName: 'DUPE CO', dupNbr: true, matchKey: 'd|k' }),
+    stop({ stopNbr: 'S2', routeSeq: 2, businessName: 'NOPIN CO', lat: null, lng: null, matchKey: 'n|k' }),
+    stop({ stopNbr: 'S3', routeSeq: 3, businessName: 'CLOSED CO', matchKey: 'c|k' }),
+  ];
+  const rules = run(stops, notesObj, { opts: { ...OPTS, nowMin: 9 * 60 } }).rows.map((r) => r.rule).sort();
+  assert.deepEqual(rules, ['closed_today', 'dup_number', 'no_location']);
+});
+
+test('the footer does not claim to have watched what it set aside', () => {
+  // A quiet panel is a CLAIM. Counting appointment stops as watched while reporting the
+  // route as not judged makes the panel contradict itself in one breath.
+  const stops = [
+    stop({ stopNbr: 'U1', routeSeq: 1, loadNbr: 'ULINE APPT', routeName: 'ULINE APPT', matchKey: 'a|k' }),
+    stop({ stopNbr: 'S1', routeSeq: 1, matchKey: 'b|k' }),
+  ];
+  const out = run(stops, {}, { opts: { ...OPTS, nowMin: 9 * 60 } });
+  assert.equal(out.checked.stops, 1, 'one real stop watched, not two');
+});
+
+test('an appointment route is reported as set aside even with no day or depot', () => {
+  // The report used to live inside the hours block, so a board computed without a dayKey or
+  // a depot silently dropped it — the panel would show nothing and say nothing about why.
+  const out = computeBoardFlags({
+    stops: [stop({ stopNbr: 'U1', loadNbr: 'ULINE APPT', routeName: 'ULINE APPT' })],
+    notes: new Map(), servedDate: '2026-08-10', dayKey: null, rosterRows: [], opts: {},
+  });
+  assert.deepEqual(out.skipped.routesAppointment, ['ULINE APPT']);
+});
+
+test('APPOINTMENT and APPTS spellings are covered, and a lookalike name is NOT', () => {
+  const on = (name) => run([stop({ stopNbr: '1', routeSeq: 1, loadNbr: name, routeName: name,
+    businessName: 'NOPIN', lat: null, lng: null })], {}, { opts: { ...OPTS, nowMin: 9 * 60 } }).rows.length;
+  assert.equal(on('ULINE APPT'), 0);
+  assert.equal(on('ULINE APPTS'), 0);
+  assert.equal(on('ULINE APPOINTMENTS'), 0);
+  assert.equal(on('APPLETON'), 1, 'a route that merely starts with those letters is a real route');
+});
