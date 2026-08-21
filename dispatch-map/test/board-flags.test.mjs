@@ -885,3 +885,62 @@ test('APPOINTMENT and APPTS spellings are covered, and a lookalike name is NOT',
   assert.equal(on('ULINE APPOINTMENTS'), 0);
   assert.equal(on('APPLETON'), 1, 'a route that merely starts with those letters is a real route');
 });
+
+// ── A DELIVERED PRO KEEPS FLAGGING THROUGH ITS LEFTOVER INSTANCE (Chad, 2026-08-21) ──
+//
+// Five "Closed FRI" cards for customers whose freight had already been delivered and closed
+// by hand. Chad: "Are we not correctly recognizing code ninety one?" We were — 91 has always
+// been terminal. NuVizz carries a SECOND record for the same PRO: alongside a delivered
+// 007165852 sits 007165852-1 at status 10, UNPLANNED, no route. The delivery lands on the
+// base number, so the instance never completes and, record-for-record, is genuinely open.
+
+// The board these run on is a FRIDAY — the notes say closed_days: ['fri'], and on the
+// harness default of Monday every one of these assertions would pass by matching nothing.
+const FRI = { servedDate: '2026-08-21', dayKey: 'fri', opts: { ...OPTS, nowMin: 11 * 60 + 34 } };
+const delivered = (o) => stop({ status: '91', normalizedStatus: 'DELIVERED',
+  deliveredDTTM: '2026-08-21T09:00', isPlanned: true, loadNbr: 'CHAD', routeName: 'CHAD', ...o });
+const instance = (o) => stop({ status: '10', normalizedStatus: 'UNPLANNED', isPlanned: false,
+  loadNbr: '', routeName: '', ...o });
+
+test('an instance record whose base PRO delivered raises nothing', () => {
+  const notesObj = { 'ies|k': note({ closed_days: ['fri'], manual_overrides: { closed_days: true } }) };
+  const out = run([
+    delivered({ stopNbr: '007165852', matchKey: 'ies|k', businessName: 'IES COMMUNICATIONS', routeSeq: 1 }),
+    instance({ stopNbr: '007165852-1', matchKey: 'ies|k', businessName: 'IES COMMUNICATIONS' }),
+  ], notesObj, FRI);
+  assert.deepEqual(out.rows, [], 'the freight went; stop telling anyone the customer is shut');
+  assert.equal(out.checked.stops, 0, 'and it is not counted as open work either');
+});
+
+test('an instance whose base has NOT delivered is still judged', () => {
+  // The one that must survive the fix. On the live board this was a single record — so
+  // "ignore anything with a suffix" would have been both wrong and nearly invisible.
+  const notesObj = { 'ies|k': note({ closed_days: ['fri'], manual_overrides: { closed_days: true } }) };
+  const out = run([
+    stop({ stopNbr: '007165852', matchKey: 'ies|k', businessName: 'IES', status: '20', routeSeq: 1 }),
+    instance({ stopNbr: '007165852-1', matchKey: 'ies|k', businessName: 'IES' }),
+  ], notesObj, FRI);
+  assert.equal(out.rows.filter((r) => r.rule === 'closed_today').length, 2, 'nothing has delivered yet');
+});
+
+test('a CARRIER-PREFIXED id is a whole identifier, not a base plus a suffix', () => {
+  // AVRT-0028093763 and AVRT-0060538833 are unrelated orders. A naive /-\d+$/ strip collapses
+  // both onto "AVRT", so one delivering would silence the other — a false reading that nearly
+  // sent this fix after 31 stops instead of the 6 that were real.
+  const notesObj = { 'a|k': note({ closed_days: ['fri'], manual_overrides: { closed_days: true } }) };
+  const out = run([
+    delivered({ stopNbr: 'AVRT-0060538833', matchKey: 'z|k', businessName: 'OTHER CO', routeSeq: 1 }),
+    stop({ stopNbr: 'AVRT-0028093763', matchKey: 'a|k', businessName: 'DALE INC', status: '20', routeSeq: 2 }),
+  ], notesObj, FRI);
+  assert.equal(out.rows.filter((r) => r.rule === 'closed_today').length, 1,
+    'one AVRT order delivering must not settle a different AVRT order');
+});
+
+test('90, 91, 99 and 80 have always been terminal — pinned so the real cause stays findable', () => {
+  for (const status of ['90', '91', '99', '80']) {
+    assert.equal(isFinishedStop({ status }), true, `${status} is terminal`);
+  }
+  assert.equal(isFinishedStop({ status: 91 }), true, 'as a number too');
+  assert.equal(isFinishedStop({ status: ' 91 ' }), true, 'and with whitespace');
+  assert.equal(isFinishedStop({ status: '20' }), false);
+});

@@ -207,6 +207,7 @@ export default async (req: Request): Promise<Response> => {
     let lastScannedAt: string | null = null;
     let lastLoadScanAt: string | null = null;
     let lastUnplannedScanAt: string | null = null;
+    let lastCompletedScanAt: string | null = null;
     let scanState: { halted: boolean; reason: string; since: string } | null = null;
 
     if (useMock) {
@@ -226,6 +227,7 @@ export default async (req: Request): Promise<Response> => {
       lastScannedAt = scan.scannedAt;
       lastLoadScanAt = scan.scannedAt;
       lastUnplannedScanAt = scan.scannedAt;
+      lastCompletedScanAt = scan.scannedAt;
       source = 'live-scan';
     } else if (isFirestoreEnabled()) {
       const { meta, stops: indexed } = await readStops(TENANT, date, stopMask ? { mask: stopMask } : undefined);
@@ -237,6 +239,10 @@ export default async (req: Request): Promise<Response> => {
       lastScannedAt = meta?.last_scanned_at ?? null;
       lastLoadScanAt = meta?.lastLoadScanAt ?? meta?.last_scanned_at ?? null;
       lastUnplannedScanAt = meta?.lastUnplannedScanAt ?? null;
+      // No fallback to last_scanned_at here on purpose. A board written before this field
+      // existed has genuinely never recorded a completed pull, and dating one off the general
+      // scan stamp would invent freshness the system never observed. Null renders as "—".
+      lastCompletedScanAt = meta?.lastCompletedScanAt ?? null;
       scanState = (meta?.scanState as any) ?? null;
       // Empty index (background scan hasn't populated this date yet) is a normal
       // state, not an error — the UI shows an honest "no scan yet" empty state.
@@ -292,6 +298,7 @@ export default async (req: Request): Promise<Response> => {
       lastScannedAt,
       lastLoadScanAt,
       lastUnplannedScanAt,
+      lastCompletedScanAt,
       scanState,
       count: stops.length,
       unplannedCount,

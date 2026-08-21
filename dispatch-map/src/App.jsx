@@ -48,6 +48,11 @@ import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './li
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact } from './lib/nuvizzWrite.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
+import { timeMarkForDay, TIME_MARK_KEYS } from './lib/time-marks.js';
+import {
+  drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
+  legendIsEmpty, pinTintKind, visibleIconKeys,
+} from './lib/map-legend.js';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
 import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerChipLabel, latestPeerSaveAt, PRESENCE_HEARTBEAT_MS } from './lib/presence.js';
@@ -82,7 +87,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.69.2';
+const APP_VERSION = '0.70.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -153,7 +158,12 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['0.69.2', 'A SWITCH WHOSE POSITION CANNOT BE READ IS NOT A SWITCH. The 6:30pm completion report mails whoever DAY_REPORT_TO names, and that variable is set in the Netlify console \u2014 so the code had no way to know whether it had been. That gap stopped being hypothetical the moment it mattered: the variable was set through an API that returned a 502 gateway error, so the write may or may not have landed, and I told Chad the email was on its way without having verified it. There was then no way to answer \u201cis the report actually reaching him\u201d short of waiting until 6:30 and asking. Reporting an intent as an outcome is the exact failure this repo has a rule about, and the fix is not to be more careful \u2014 it is to make the state readable. day-completion now returns a delivery block: emailConfigured (are the Resend keys present), recipientConfigured (is DAY_REPORT_TO set), and disabled (has the kill switch been thrown). BOOLEANS ONLY, and a test enforces that: the value is a person\u2019s address on the company domain, it must never appear in a response body, a log or a transcript, and knowing it is SET is the entire question anyway. A second test greps the endpoint source for any bare read of the variable that is not wrapped in a truthiness check, so a later edit cannot casually start echoing it. VERIFIED WORKING, meanwhile: last night\u2019s run recorded 2026-08-20 at 6:30p \u2014 816 planned, 797 completed (97.7%), 18 open (17 never attempted, 1 in flight), 1 unable to deliver, 6 closed by hand (0.8% manual rate). The snapshot exists, which is proof the schedule fired, the ET guard picked the right UTC slot, and the classifier ran over a real 816-stop board. Tonight\u2019s run grades it. 2,205 tests green.'],
+  ['0.70.2', 'A DELIVERED PRO WAS STILL FLAGGING THROUGH ITS LEFTOVER INSTANCE RECORD \u2014 AND 91 WAS NEVER THE PROBLEM. Chad, on five \u201cClosed FRI\u201d cards for customers whose freight had already gone: \u201cThese deliveries have been manually completed. Is that the issue? Are we not correctly recognizing code ninety one?\u201d No \u2014 isFinishedStop has always taken 90, 91, 99 and 80, and that is now pinned by a test so the real cause stays findable next time. WHAT IS ACTUALLY HAPPENING: NuVizz carries a SECOND record for the same PRO. Alongside the delivered 007165852 sits 007165852-1 at status 10, UNPLANNED, no route, isPlanned false. The delivery is recorded against the BASE number, so the instance never completes and sits there for ever. Both records derive the SAME customer key, so the note lookup finds the same \u201cclosed Friday\u201d entry, and every per-stop rule judges the instance because \u2014 record for record \u2014 it genuinely is not finished. Measured on the live board that morning: 759 stops, SIX such records, and they were exactly the five customers on the screen (one had two orders). AND THE FIRST MEASUREMENT WAS WRONG IN A WAY WORTH RECORDING: a naive /-\\d+$/ strip said 31, because AVRT-0028093763 and ESTES-0538243875 collapse onto the bare strings \u201cAVRT\u201d and \u201cESTES\u201d \u2014 every carrier-prefixed order looked like a sibling of every other. The suffix only means \u201cinstance\u201d on an ALL-NUMERIC PRO. Fixing the measurement took the blast radius from 31 to 6 and stopped a change that would have silenced twelve live routed stops. One other instance record existed whose base had NOT delivered, and it stays judged \u2014 so this could never be \u201cignore anything with a suffix\u201d. THE SAME BUG WAS IN THE DIAGNOSTIC I SHIPPED YESTERDAY: normStopNbr stripped the tail unconditionally, so two unrelated AVRT orders normalised to the same string and eta-flag-check could confidently explain the wrong stop \u2014 a wrong answer dressed as an answer, which is the exact failure that endpoint exists to avoid. Narrowed, with a test. 2,210 tests green.'],
+  ['0.70.1', 'A SWITCH WHOSE POSITION CANNOT BE READ IS NOT A SWITCH. The 6:30pm completion report mails whoever DAY_REPORT_TO names, and that variable is set in the Netlify console \u2014 so the code had no way to know whether it had been. That gap stopped being hypothetical the moment it mattered: the variable was set through an API that returned a 502 gateway error, so the write may or may not have landed, and I told Chad the email was on its way without having verified it. There was then no way to answer \u201cis the report actually reaching him\u201d short of waiting until 6:30 and asking. Reporting an intent as an outcome is the exact failure this repo has a rule about, and the fix is not to be more careful \u2014 it is to make the state readable. day-completion now returns a delivery block: emailConfigured (are the Resend keys present), recipientConfigured (is DAY_REPORT_TO set), and disabled (has the kill switch been thrown). BOOLEANS ONLY, and a test enforces that: the value is a person\u2019s address on the company domain, it must never appear in a response body, a log or a transcript, and knowing it is SET is the entire question anyway. A second test greps the endpoint source for any bare read of the variable that is not wrapped in a truthiness check, so a later edit cannot casually start echoing it. VERIFIED WORKING, meanwhile: last night\u2019s run recorded 2026-08-20 at 6:30p \u2014 816 planned, 797 completed (97.7%), 18 open (17 never attempted, 1 in flight), 1 unable to deliver, 6 closed by hand (0.8% manual rate). The snapshot exists, which is proof the schedule fired, the ET guard picked the right UTC slot, and the classifier ran over a real 816-stop board. Tonight\u2019s run grades it. 2,205 tests green.'],
+  ['0.70.0', 'THE LEGEND DESCRIBES THIS BOARD, IT EXISTS ON A PHONE, THE CLOCKS LOST THEIR CHROME, AND THE COMPLETED SCAN FINALLY HAS A ROW. Five things Chad asked for on one screen, plus a dead button found on the way. (1) THE LEGEND ONLY SHOWS WHAT IS OUT THERE. “Only want it to display any icons that are currently on the map.” It listed all twenty restriction icons and every flag colour on every board, so finding the one pink clock you could actually see meant reading past nineteen marks that were not on it. Now it shows what the marker layer is drawing, each row carrying its count — “6” beside a mark tells you whether it is a corner case or half your afternoon — with “Show all” one tap away for somebody looking up a mark they remember. WHY THIS IS A MODULE AND NOT A FILTER: deciding what a stop draws is four suppressions deep. An AM/PM window takes the pin from the time marks; a hand-set “tractor OK” drops the auto-detected trailer blockers; do-not-send, a numbered route pin and the already-planned mute each replace the icons outright; and a stop with four restrictions paints the first two and a “+N”, so restrictions three and four are on the record and NOT on the map. Every one is a way to list a mark nobody can find. The rules live in lib/map-legend.js and stopMarkerIcon CALLS them — a legend that disagrees with the map is worse than none, because it teaches the wrong thing with authority. flagColor now reads the same table, so the purple swatch labelled “Restricted (no flag set)” is by construction the purple the pin wears. (2) THE ROUTING MAP HAS A LEGEND BUTTON. It had none at all, on either view, while drawing the same twenty marks — it is in the tool rail now, where the thumb already is. (3) AND SO DOES THE PHONE. The dispatch Map’s legend has been desktop-only since it was written; only the lime paint’s on/off switch was ever ported, so a dispatcher on the road could turn the paint off but could not ask what anything MEANT. It is in the Filters sheet now, same body as the other two. (4) THE TIME MARKS LOST THE DISC AND GOT THE WHOLE FOOTPRINT. Chad: “take away the white space and circle around the icon, make the time clock the actual size of the current icon.” He had the diagnosis right — the white disc is 36 across and the clock inside it was 15, so four fifths of what the eye lands on was chrome and the clock face, which is the entire message, was the smallest thing in it. It is also not only a size problem: every truck mark is a SOLID FILL and every clock is LINE ART, a ring and two hands that at half scale come out under a pixel wide on a satellite base. The disc earns its keep under a filled truck, which needs light ground to read against; a clock needs SIZE. Filling the box takes a single clock from ~7.6px across to ~16px — better than double — and a white halo replaces the disc so it still reads on a bright parking lot and a dark treeline alike, checked against both plus a grey roof. Per-kind on purpose: v0.54.37 halved these marks on Chad’s explicit “make this icon half as big”, and the no-tractor-trailer truck he was pointing at has not moved. The legend’s own badges go 16px to 22px — “make the icon image bigger, it’s too hard to read” — because 16 was a size for a chip inside a sentence, and in a legend the picture IS the entry. (5) THE COMPLETED SCAN HAS A ROW NOW, AND THE ANSWER IS YES. Chad, reading “Loads updated 21 min ago” at 11am: “at this time of day shouldn’t the completed deliveries scan be on a 15 min timer?” It was — the card had no row for it. Those two lines are the PLANNED pull (77128), which runs every 30 minutes in the 10am–8pm band, so 21 minutes was exactly right for them; the completed pull (77131) runs every 15 in the same hours through a cheap one-call overlay that never rewrote the stamps those rows read. Two feeds on the card, three feeds running, and the missing one was the one that turns a stop green. The overlay now stamps the day index with a FIELD-MASKED write — it does not own that document, and setDoc here REPLACES, so the lazy write would have taken the board’s stop counts with it. A board written before the field existed reports “—” rather than borrowing the general scan stamp, because dating a scan that was never observed is the thing this app does not do. (6) FOUND ON THE WAY: THE ROUTING TOOL RAIL WAS SWALLOWING CLICKS. Its button component was declared inside the render, making it a new component type every time the screen re-rendered — which it does on every board poll — so React replaced all four DOM nodes mid-gesture and a render landing between mousedown and mouseup meant the click event never fired at all. Box, Lasso and Ninja all silently did nothing, at a rate nobody could reproduce on purpose. Caught because the new legend button would not open in a browser harness; the existing Box button turned out not to work either. Hoisted. 16 new tests, 2,245 green.'],
+  ['0.69.4', 'THE PRO SHEET AND THE PINS NOW SAY THE SAME THING ABOUT THE SAME STOP. Chad: “make the pro report match the map.” THEY HAD BEEN ANSWERING DIFFERENT QUESTIONS AND NEITHER WAS LYING, WHICH IS WHY IT WAS SO EASY TO MISS. The report measured the SPAN of a window and cut anything eight hours or wider; the map, from v0.69.3, reads the two EDGES and asks which one binds. So a dock open 9–5 was absent from the sheet as an ordinary working day and marked OPENS LATE on its pin — and anyone holding both would have had to guess which to believe. The report now uses the map’s four marks as its own categories, so a row and a pin can never describe one stop two ways again. EVERYTHING THAT STATES A TIME GOES THROUGH THE SAME CLASSIFIER, which is the part that actually removes the drift rather than papering over it: receiving hours, the order’s own 12:00–17:00 schedule, and a dispatcher’s AM/PM tag are no longer three vocabularies that happen to sit in one table. A PM window and a dock that opens at noon constrain a route identically, so they get the same mark; an AM tag means be there before noon and reads as EARLY CLOSE. CLOSED TODAY sits above all four, because a customer who is shut is not a window to plan around — there is no delivery to make — and appointment sits below them, still dropped by default, because it says call somebody rather than beat a clock, which is exactly why the map draws it as a handset. ONE REAL BUG SURFACED ON THE WAY. The scanner reads “CLOSES AT 3 30 PM” as a wide 6a–3:30p range by synthesising a day-start the stop never stated. Harmless while only the close was ever measured — but the moment the OPEN edge started counting, that invented 6am would have reported the dock as “extra room, go at dawn” when what it says is that it shuts at half three. A stated close now outranks a scanned range and clears the open with it. WHAT THIS COSTS: the sheet grows from 31 rows to 53 on the same board, because opens-late and extra-room are real categories that the span rule simply could not express. That is the honest consequence of agreement, and the dial that changes it is EARLY_CLOSE_BEFORE — 26 of those rows close between noon and 3pm, and moving that line to 2pm takes them to 9. It is deliberately left at 3pm: missing a real 2:30 close costs a redelivery, while an extra row costs a glance, and the threshold belongs where the cheaper mistake is. A TEST NOW ENFORCES THE AGREEMENT rather than the changelog claiming it — eighteen window shapes a real board has produced are run through both the map classifier and the report classifier and compared, so the next special case added to either side fails the build instead of quietly reopening the gap. 3 new tests, 2,232 green.'],
+  ['0.69.3', 'A DOCK OPEN NINE TO FIVE IS NOT A TIME RESTRICTION. Chad, reading the sheet: “delete anything that is 8-5, or 9-5 or more than 8 hr window.” He is right and the inconsistency was mine. The eight-hour test has been in this module since the first version — it is the thing that throws away the vendor’s 08:00–20:00 placeholder — but it was only ever applied to the ORDER’s schedule, never to RECEIVING HOURS. So a customer who simply keeps normal business hours came through in the top tier, labelled “the dock shuts, route these first”. On the 19 August board that was 57 of 88 rows: 7a–5p, 8a–5p, 9a–5p, one dock open 10a–9p. Eighty-eight rows become thirty-one, and all thirty-one are genuinely tight — the widest is seven and a half hours and the tightest is a three-hour morning. THE SAME SPAN MEANS THE SAME THING WHOEVER STATED IT, so the rule applies to hours a dispatcher typed exactly as it does to hours the scanner read off a Uline order. WHAT IS DELIBERATELY LEFT ALONE is anything with no span to measure: an opens-at with no close (“RECEIVING AFTER 10AM” — it still cannot be the 7am first stop), a closes-at with no open, and a midday closure, which is a HOLE in the day rather than a window around it. Each is a real constraint no matter how long the dock stands open either side of it. ORDERING MATTERED AND THE TESTS CAUGHT IT: a stop reading “CLOSES AT 3 30 PM” also scans as a wide 6a–3:30p range, so discarding the range had to happen BEFORE the explicit closing time is read, or the guard swallows the very constraint the stop is announcing. Two tests failed on the first run for exactly that, plus one older fixture that was itself an 8a–5p working day and had been quietly asserting the wrong thing. A wide window can also no longer prop up a stop whose only other flag is an appointment: the hours drop away, the appointment stands alone, and the row leaves the sheet — which is the correct answer twice over. 7 new tests, 2,043 green.'],
+  ['0.69.2', 'THE MAP STOPS ASKING WHETHER WE HAVE HOURS AND STARTS SAYING WHICH END OF THE DAY BITES. Chad: “I want to get rid of the noise… I wanna be able to tell the difference between something that opens early, or something that stays open late, instead of an actual time restriction.” THE OLD CLOCK ANSWERED THE WRONG QUESTION. One amber clock fired whenever a customer had ANY receiving hours on file, which answers “do we know this customer’s hours?” — a question about our records. On the 21 August board that was 116 clock-type icons over 755 stops, and 67 of them were docks open a full working day: 7a–5p, 8a–5p, one open 10a–9p. Sixty-one per cent wallpaper, and no way to tell by looking whether a clock meant eleven or five. THE IDEA IS THAT A DOCK HAS TWO EDGES and each is independently a constraint or a gift. Opening at nine means it cannot lead a route; opening at six means it CAN, which is worth more than most of what the map was showing. Shutting at eleven is a deadline; open past six is slack you can spend. Four marks now, all clock-shaped so the family reads as “time” at a glance, colour carrying only what it costs to get wrong: SHUTS EARLY (rose, with the exclamation Chad asked for) closes by noon or opens ≤3h at all — first stop or nothing, 7 pins; EARLY CLOSE (amber) shuts before 3pm, 26; OPENS LATE (teal) not open until 9am, 12; EXTRA ROOM (sky) opens by 6:30am or still taking freight past 6pm, 11. Fifty-six marks where there were 116, and 37 docks keeping ordinary hours now say NOTHING — silence is the feature, and it is what makes the rest worth looking at. ONE MARK PER PIN, THE BINDING EDGE WINS, and the precedence falls out of the freight rather than out of convenience: when a dock shuts early you are going in the morning regardless, so its open edge is not news. Only when nothing binds at the CLOSE does the OPEN become the story — which is exactly how a 6am dock that stays open till five surfaces as extra room instead of vanishing. RED AND GREEN WERE UNAVAILABLE and that shaped the whole design: they mean no-tractor-trailer and tractor-trailer-friendly, both about the truck rather than the clock, and amber, orange, violet, cyan, slate and brown are spoken for across the equipment icons. So shape carries the family and every mark also has a SECOND glyph rather than leaning on hue, which is what keeps them apart when small, printed, or read by the roughly one person in twelve who is colour-blind. THE APPOINTMENT ICON IS NO LONGER A CLOCK. It drew a cyan clock on 24 pins and it is not a clock fact — it says call somebody, and the call happens in the office before a truck moves. Same cyan, now a handset, and a quarter of the time-noise leaves without losing a fact. AN OPEN WITH NO CLOSE IS NOW READ AT ALL: dayReceivingWindow returns null without a parseable close, because everything that consumed it was measuring a deadline, so a dock stating only “receiving after 10am” had been invisible. WORTH KNOWING: the map and the PRO report will disagree about a 9–5 dock. The report measures the SPAN and cuts it as a working day; the map reads the EDGES and marks it opens-late. Two different questions, two honest answers, and the report can be moved onto these same four marks whenever Chad wants them to agree. 20 new tests, 2,223 green.'],
   ['0.69.1', 'EVERY FLAG IS SILENT ON AN APPOINTMENT ROUTE NOW \u2014 THE RULE WAS ONLY HALF-ENFORCED FOR A YEAR. Chad: \u201cneed to silence any flags that are on the Uline appt route.\u201d ANY, and it was not. v0.54.9x silenced the two HOURS rules \u2014 the arrival walk and the no-driver card \u2014 because those were the ones producing arithmetic about freight that was never going out (\u201cestimated arrival ~1:49a vs close 5:00p, 529 min late\u201d for a stop deliberately parked waiting on a customer appointment). The OTHER rules kept firing the entire time, because they iterate the open set directly and nobody carried the exclusion across: a stop on ULINE APPT still raised a RED for a missing geocode, a duplicate order number, or a closed weekday. Measured on a synthetic ULINE APPT board just now: three stops, three red flags, every one of them about freight nobody is driving to today. THE REASONING THAT SILENCED THE HOURS RULES COVERS ALL OF THEM. Chad: \u201canything on a Uline appt route for a given day is not actually going to deliver today, it\u2019s being held for appt, and it\u2019s places we put things like deliveries that are closed on Friday.\u201d The route is a PARKING LOT with two uses \u2014 freight waiting on a scheduled appointment, and freight the dispatcher has deliberately pulled off today\u2019s board because the customer is shut. Neither is being routed today, so nothing on it is something anybody acts on today. THE CLOSED-DAY RULE IS THE SHARPEST CASE AND GIVES THE GAME AWAY: a delivery to a customer closed on Friday, parked here, is the dispatcher HAVING ALREADY SOLVED the problem that rule exists to raise \u2014 so flagging it is the board telling somebody off for doing exactly the right thing, and on the panel it is indistinguishable from the real version of that flag, which is a closed-day delivery still sitting on a LIVE route. A red about a missing pin on a stop nobody is driving to is the same false alarm in a different hat and costs the same attention \u2014 which is the whole reason the appointment exclusion exists. One predicate now feeds every per-stop rule (R1 duplicate numbers, R2 missing pins, R4 closed days) plus R3\u2019s is-this-route-even-on-the-board test, so a rule added later cannot quietly forget it. AND THE FOOTER STOPPED CONTRADICTING ITSELF: it counted appointment stops as \u201cwatched\u201d in the same breath as reporting the route as not judged. A quiet panel is a CLAIM, and a coverage count that includes what it set aside is the one number a dispatcher cannot check. The set-aside report also moved up out of the hours block, so a board computed without a dayKey or a depot still SAYS the route was held rather than showing nothing and explaining nothing. Six tests: none of the three faults fires on an appointment route, all three still fire on a real one, the footer counts one stop not two, the report survives a dayless board, and APPT/APPTS/APPOINTMENTS all match while APPLETON stays a real route. 2,203 tests green.'],
   ['0.69.0', 'THE TWO NUVIZZ SAVED SEARCHES NOW RUN ON THEIR OWN CLOCKS, AND THE SCAN SCHEDULE IS A REAL TABLE. Chad: “it’s time to decouple them — part of the day we need to scan more for completed, and part of the day we need to scan more for unplanned and planned… redesign the ui so I can set days of weeks and time schedules for each scan and rows of when it scans, and I want descriptions of what each scan does and what it affects.” WHY THEY WERE WRONG TOGETHER: 77128 (planned/unplanned) is about THE PLAN — which truck, what order, which driver — and churns during the routing evening and the ~10am order drop while being nearly static as trucks run. 77131 (completed) is about WHAT HAPPENED, and is dead overnight but is the whole game from first roll to last stop, because every delivery stamp RE-ANCHORS a route clock and moves every downstream ETA on that truck. One cadence for both meant the evening paid for a completed pull that could only come back empty, and the delivery day under-sampled the one feed that decides whether a flag is right. THE SCHEDULE IS CHAD’S, BAND FOR BAND. Planned: 30m 8pm-12am, 20m 12am-5am, 15m 5am-10am, 30m 10am-8pm. Completed: 30m 4-6am, 15m 6am-7pm, ONE sweep 7-10pm, nothing 10pm-4am. Roster: hourly — it was being pulled on every one of ~33 fires a day for a list that only changes when somebody creates a load, and that reclaim pays for most of the extra completed sampling. Measured: 133 discovery calls a weekday against 99 today, 665 a week against 510, still ~20% of the 2,000 ceiling. THE CRON MOVED FROM EVERY 15 MINUTES TO EVERY 5, and this is the honesty fix inside the feature: on a 15-minute cron there is no such thing as “every 20 minutes” — it snaps to 15, so the box would have said 20 while the system did 15. At a 5-minute step every interval worth typing lands exactly, and the jitter tolerance drops 7→2 with it (at 7 on a 5-minute cron a 15-minute rule would fire every 10). A fire with nothing due does two Firestore reads and returns, so the extra invocations cost NO NuVizz calls. A COMPLETED-ONLY FIRE TAKES A DELIBERATELY TINY PATH. The rebuild reads ABSENCE as meaning — a planned stop missing from a pull becomes a demote candidate — and a completed-only pull is missing every planned stop by definition. The thin-pull ratio guard would probably have caught it, but “probably, via a heuristic built for a different failure” is not a guarantee and what it guards is stops being torn off live routes mid-morning. So the overlay is its own operation: it can mark an EXISTING stop finished and nothing else — four fields, never a route, sequence, driver or plan flag, never creating or removing a stop — and the delivery stamp is write-once so a 4pm paperwork edit cannot rewrite a 12:33 delivery and drag every ETA anchored on it. THE SCREEN: one card per saved search, each with what it IS, what it AFFECTS, and its own rows of days + time band + interval. Overlapping rows resolve TIGHTEST-WINS, so there is no ordering to get wrong and adding a row can never silently slow something down. Under each card is the resolved 7×24 grid — the same resolution the scanner runs — so what a plan actually does is visible before it is saved, with blank hours meaning that scan does not run then. A typed interval the cron cannot deliver is labelled with what it will really be, and the cost line counts the ACHIEVED cadence, not the typed one. 35 new tests, 2,198 green.'],
   ['0.68.5', 'THE NO-DRIVER WATCH STARTS AT 7AM NOW, NOT 8 \u2014 AND THE HOUR IT WAS GATED ON WAS ANSWERING THE WRONG QUESTION. Chad: \u201cThe unassigned loads that we act like leaving at 12 will throw flags at 7am if there is a problem yes?\u201d They did not. The watch was gated on the FLEET\u2019S DEPARTURE HOUR (departMin, 8:00a), so a load with nobody on it and an 11:00a close stayed silent until eight \u2014 an hour of lead time thrown away on precisely the loads with the least of it, and the day sweep had already been running since 7:00a with nothing to say. THE GATE WAS INHERITED AND HAD STOPPED EARNING ITS KEEP. When the rule fired on the mere EXISTENCE of an unassigned load carrying hours, holding it until departure was the only thing standing between a dispatcher and a 6:30am wall of cards about loads they were still in the middle of assigning. v0.66.0\u2019s noon clock took that job over completely: the card fires only when a NOON start actually misses something, so an unassigned load with a 4:00p close is silent at 7am because there is no problem \u2014 not because the clock had not struck eight. Once that is true the departure gate does nothing except delay real warnings. So the two concepts are now separate constants answering their own questions: departMin is when trucks roll; NO_DRIVER_WATCH_FROM_MIN is when somebody is at a desk who can put a driver on a load, which is 7:00a, when the sweep starts. Conflating them is what caused the miss, and a test pins that a late-departing fleet no longer delays the warning. Both halves moved together \u2014 the arrival walk\u2019s driverless clock and the card\u2019s own gate read one value, so the clock cannot start without the card being allowed to speak. THE OVERNIGHT WINDOW IS DELIBERATELY STILL QUIET and is one constant away: the 12:00a\u20136:59a sweep runs on today\u2019s board with a real clock, so moving this to 0 would flag doomed loads to the night router the moment routing finishes \u2014 worth doing only if loads normally DO carry drivers overnight, which is a fact about how Davis dispatches and not one the code should guess at. 2,163 tests green.'],
@@ -749,7 +759,8 @@ function fmtTractorDate(dateString) {
 // Canonical restriction keys a 53' trailer can't satisfy. When a dispatcher marks a
 // stop tractor-friendly (green), these are suppressed on the pin AND ignored by the
 // router — an explicit green wins over an auto-detected restriction.
-const TRAILER_BLOCKER_KEYS = new Set(['no_tractor_trailer', 'box_truck_only', 'straight_truck_only', 'uline_straight_truck', 'no_53', '26ft_max', 'no_overhead_clearance']);
+// The list itself lives in lib/map-legend.js, because the Legend has to suppress exactly
+// what the marker suppresses or it lists marks that are not on the board.
 
 // M5.1 — stop execution-status visuals. Status is a SEPARATE channel from the
 // note-flag pin colors (rule #3): SCHEDULED keeps the existing flag color, and
@@ -1128,13 +1139,14 @@ const RESTRICTION_ICONS = {
     label: 'Appointment required',
     short: 'Appt',
     bg: '#0891b2',
-    accent: '#f59e0b',
-    glyph: '<circle cx="7" cy="7" r="3.5" fill="none" stroke="white" stroke-width="1.3"/><path d="M7 4.5 L7 7 L8.8 8" stroke="white" stroke-width="1.3" stroke-linecap="round" fill="none"/>',
-    // 22x22: clock face with hands at ~10 o'clock.
+    accent: '#0891b2',
+    // A HANDSET, not a clock (v0.65). This is not a clock fact: it says call somebody, and
+    // the call happens in the office before a truck rolls, not on the road against a
+    // deadline. It drew a cyan clock on 24 pins of the 2026-08-21 board and was a quarter
+    // of why the map read as time-noise. Same colour, same meaning, different conversation.
+    glyph: '<path d="M3.1 2.5 Q2.1 2.5 2.0 3.5 Q2.0 8.2 5.8 11.0 Q9.6 12.9 10.5 11.9 L11.9 10.5 Q12.3 10.0 11.8 9.6 L9.6 8.0 Q9.1 7.7 8.7 8.1 L7.9 8.9 Q6.1 7.9 5.1 6.1 L5.9 5.3 Q6.3 4.9 6.0 4.4 L4.4 2.2 Q4.0 1.7 3.5 2.1 Z" fill="white"/>',
     markerGlyph: `
-      <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/>
-      <line x1="11" y1="11" x2="11" y2="6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-      <line x1="11" y1="11" x2="14.5" y2="13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <path d="M4.6 2.8 Q2.9 2.8 2.7 4.5 Q2.7 12.4 9.0 17.0 Q15.3 20.2 16.8 18.5 L19.1 16.2 Q19.8 15.4 19.0 14.7 L15.3 12.1 Q14.5 11.6 13.8 12.3 L12.5 13.6 Q9.5 11.9 7.9 8.9 L9.2 7.6 Q9.9 6.9 9.4 6.1 L6.8 2.4 Q6.1 1.6 5.3 2.3 Z" fill="currentColor"/>
     `,
   },
   box_truck_only: {
@@ -1168,20 +1180,75 @@ const RESTRICTION_ICONS = {
     `,
   },
   // M4.4 — receiving hours present. Amber clock; not a prohibition. Synthesized
-  // from customer_notes.receiving_hours having any non-empty per-day value,
-  // OR from a scanner-detected hours range.
-  receiving_hours: {
-    label: 'Receiving hours',
-    short: 'Hours',
-    bg: '#f59e0b',
-    accent: '#f59e0b',
-    // 14×14 badge: clock face + hour/minute hands.
-    glyph: '<circle cx="7" cy="7" r="4.5" fill="none" stroke="white" stroke-width="1.3"/><path d="M7 4 L7 7 L9.5 8.5" stroke="white" stroke-width="1.3" stroke-linecap="round" fill="none"/>',
-    // 22×22 marker: clock face with bold hands at ~8 o'clock.
+  // ── THE TIME FAMILY (v0.65) ───────────────────────────────────────────────
+  // These four REPLACE the single amber `receiving_hours` clock, which fired whenever a
+  // customer had any hours on file and so answered "do we know this customer's hours?"
+  // rather than "will this stop bite me, and at which end of the day?". On the
+  // 2026-08-21 board that was 116 clock-type icons over 755 stops, 67 of them docks open
+  // a full working day. See src/lib/time-marks.js for the rules and the thresholds.
+  //
+  // Everything here is a CLOCK, so the shape alone says "this is about time" — colour is
+  // left to carry only how much it costs to get wrong. Red and green were unavailable
+  // (no-tractor-trailer and tractor-trailer-friendly, both about the truck), as were
+  // amber, orange, violet, cyan, slate and brown across the equipment icons. Each mark
+  // also carries a SECOND glyph rather than relying on hue, so they survive being small,
+  // being printed, and being read by the roughly one person in twelve who is colour-blind.
+  hours_shuts_early: {
+    label: 'Shuts early — first stop or nothing',
+    short: 'Shuts early',
+    bg: '#BE185D',
+    accent: '#BE185D',
+    glyph: '<circle cx="6.2" cy="7.4" r="4.3" fill="none" stroke="white" stroke-width="1.3"/><path d="M6.2 4.4 L6.2 7.4 L8.4 8.6" stroke="white" stroke-width="1.3" stroke-linecap="round" fill="none"/><rect x="11.2" y="1.6" width="1.4" height="3.4" rx="0.7" fill="white"/><circle cx="11.9" cy="6.6" r="0.85" fill="white"/>',
+    // Hands at 10 o'clock — a morning deadline — plus the exclamation.
     markerGlyph: `
-      <circle cx="11" cy="11" r="8" fill="none" stroke="currentColor" stroke-width="2"/>
-      <line x1="11" y1="11" x2="11" y2="5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-      <line x1="11" y1="11" x2="15" y2="13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="11" cy="11" r="7.6" fill="none" stroke="currentColor" stroke-width="1.9"/>
+      <line x1="11" y1="11" x2="11" y2="6.7" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+      <line x1="11" y1="11" x2="5.8" y2="8.0" stroke="currentColor" stroke-width="1.55" stroke-linecap="round"/>
+      <circle cx="18.2" cy="4.4" r="4.0" fill="currentColor"/>
+      <rect x="17.55" y="2.1" width="1.3" height="3.1" rx="0.6" fill="white"/>
+      <circle cx="18.2" cy="6.3" r="0.78" fill="white"/>
+    `,
+  },
+  hours_early_close: {
+    label: 'Early close — before the afternoon runs out',
+    short: 'Early close',
+    bg: '#B45309',
+    accent: '#B45309',
+    glyph: '<circle cx="5.8" cy="7" r="4.3" fill="none" stroke="white" stroke-width="1.3"/><path d="M5.8 4 L5.8 7 L8 8.2" stroke="white" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M11.7 2.6 L11.7 10 M9.9 8.3 L11.7 10.2 L13.5 8.3" fill="none" stroke="white" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>',
+    // Hands at 1 o'clock, and a bold arrow falling: the shutting edge is the story.
+    markerGlyph: `
+      <circle cx="9.6" cy="10.6" r="6.9" fill="none" stroke="currentColor" stroke-width="1.9"/>
+      <line x1="9.6" y1="10.6" x2="9.6" y2="6.1" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+      <line x1="9.6" y1="10.6" x2="12.8" y2="12.2" stroke="currentColor" stroke-width="1.55" stroke-linecap="round"/>
+      <path d="M19.0 5.6 L19.0 17.4 M16.4 14.6 L19.0 17.6 L21.6 14.6" fill="none" stroke="currentColor" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+    `,
+  },
+  hours_opens_late: {
+    label: 'Opens late — cannot be your first stop',
+    short: 'Opens late',
+    bg: '#0F766E',
+    accent: '#0F766E',
+    glyph: '<circle cx="8.4" cy="7" r="4.3" fill="none" stroke="white" stroke-width="1.3"/><path d="M8.4 4 L8.4 7 L10.6 8.2" stroke="white" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M0.8 7 L3.2 7 M2.1 5.7 L3.4 7 L2.1 8.3" fill="none" stroke="white" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>',
+    // An arrow entering from the left: this dock's day starts later than yours.
+    markerGlyph: `
+      <circle cx="12.4" cy="11" r="7.0" fill="none" stroke="currentColor" stroke-width="1.9"/>
+      <line x1="12.4" y1="11" x2="12.4" y2="6.4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+      <line x1="12.4" y1="11" x2="15.7" y2="12.6" stroke="currentColor" stroke-width="1.55" stroke-linecap="round"/>
+      <path d="M0.6 11 L4.6 11 M3.0 9.2 L4.9 11 L3.0 12.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    `,
+  },
+  hours_extra_room: {
+    label: 'Extra room — open early, or open late',
+    short: 'Extra room',
+    bg: '#0369A1',
+    accent: '#0369A1',
+    glyph: '<circle cx="7" cy="5.8" r="4.0" fill="none" stroke="white" stroke-width="1.3"/><path d="M7 3.1 L7 5.8 L9 6.9" stroke="white" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M1.4 11.9 L12.6 11.9 M2.8 10.7 L1.4 11.9 L2.8 13.1 M11.2 10.7 L12.6 11.9 L11.2 13.1" fill="none" stroke="white" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>',
+    // A wide span underneath: room at one end of the day or the other.
+    markerGlyph: `
+      <circle cx="11" cy="9.4" r="6.6" fill="none" stroke="currentColor" stroke-width="1.9"/>
+      <line x1="11" y1="9.4" x2="11" y2="5.2" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+      <line x1="11" y1="9.4" x2="14.1" y2="10.9" stroke="currentColor" stroke-width="1.55" stroke-linecap="round"/>
+      <path d="M1.9 19.1 L20.1 19.1 M4.0 17.2 L1.9 19.1 L4.0 21.0 M18.0 17.2 L20.1 19.1 L18.0 21.0" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
     `,
   },
   // M4.4 — closed Monday. Red circle + letter "M" + diagonal slash. Prohibition
@@ -1531,6 +1598,7 @@ function useStops(date, carryDays = 0) {
   const [lastScannedAt, setLastScannedAt] = useState(null);
   const [lastLoadScanAt, setLastLoadScanAt] = useState(null);
   const [lastUnplannedScanAt, setLastUnplannedScanAt] = useState(null);
+  const [lastCompletedScanAt, setLastCompletedScanAt] = useState(null);
   const [scanState, setScanState] = useState(null);
   const [source, setSource] = useState(null);
   const [ops, setOps] = useState(null); // today's NuVizz call volume (Fix 5)
@@ -1564,6 +1632,7 @@ function useStops(date, carryDays = 0) {
       setLastScannedAt(data.lastScannedAt || null);
       setLastLoadScanAt(data.lastLoadScanAt || null);
       setLastUnplannedScanAt(data.lastUnplannedScanAt || null);
+      setLastCompletedScanAt(data.lastCompletedScanAt || null);
       setScanState(data.scanState || null);
       setOps(data.ops || null);
       setScanUnplannedCount(typeof data.unplannedCount === 'number' ? data.unplannedCount : null);
@@ -1589,7 +1658,7 @@ function useStops(date, carryDays = 0) {
     return () => { clearInterval(timer); document.removeEventListener('visibilitychange', onVis); };
   }, [refresh]);
 
-  return { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, scanState, source, ops, scanUnplannedCount, refresh };
+  return { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, lastCompletedScanAt, scanState, source, ops, scanUnplannedCount, refresh };
 }
 const CARRYOVER_DAYS = 7; // how many prior days of still-unplanned orders to fold in
 
@@ -2253,12 +2322,12 @@ function UpdateBanner() {
   );
 }
 
+// The three tints a pin can wear when it carries NO restriction icon, by name. The Legend
+// renders this same map, so a swatch labelled "Restricted (no flag set)" is the exact purple
+// the pin uses — they read one table instead of two copies of a rule.
+const PIN_TINTS = { ...FLAG_COLORS, restricted: RESTRICTION_TINT, plain: UNFLAGGED_TINT };
 function flagColor(note) {
-  if (note?.priority_flag && FLAG_COLORS[note.priority_flag]) return FLAG_COLORS[note.priority_flag];
-  if (note && (note.equipment_restrictions?.length || note.liftgate_required || note.appointment_required)) {
-    return RESTRICTION_TINT;
-  }
-  return UNFLAGGED_TINT;
+  return PIN_TINTS[pinTintKind(note)] || UNFLAGGED_TINT;
 }
 
 // Resolve a stored restriction string to a canonical key in RESTRICTION_ICONS.
@@ -2314,15 +2383,6 @@ function cleanInstructions(text) {
     .join('\n');
 }
 
-// True if the note carries receiving hours for ONE specific weekday key
-// ('mon'..'sun'). Same legacy-string / {open,close} tolerance as above.
-function hasReceivingHoursForDay(note, dayKey) {
-  const v = note?.receiving_hours?.[dayKey];
-  if (!v) return false;
-  if (typeof v === 'string') return v.trim().length > 0;
-  return !!(v.open || v.close);
-}
-
 // Map a "YYYY-MM-DD" date string to a receiving-hours day key ('mon'..'sun').
 // Parsed at local noon so DST/UTC never shifts the weekday (matches date-util).
 // JS getDay() is 0=Sun..6=Sat; we re-key into our Mon-first DAYS vocabulary.
@@ -2367,8 +2427,15 @@ function getRestrictionBadgeKeys(note, opts = {}) {
   }
   if (note.liftgate_required && !keys.includes('liftgate_required')) keys.push('liftgate_required');
   if (note.appointment_required && !keys.includes('appointment_required')) keys.push('appointment_required');
-  const showHours = opts.day ? hasReceivingHoursForDay(note, opts.day) : hasReceivingHours(note);
-  if (showHours) keys.push('receiving_hours');
+  // ONE time mark, chosen by the binding edge (see src/lib/time-marks.js). Replaces the
+  // old blanket clock, which fired on any hours at all. Without a day we cannot say which
+  // edge binds — a customer can shut at noon on Friday and 5pm on Wednesday — so the
+  // day-less callers (the Legend, the counts panel) get the same silence as an ordinary
+  // dock rather than a guess dressed as a fact.
+  if (opts.day) {
+    const mark = timeMarkForDay(note, opts.day);
+    if (mark && !keys.includes(mark)) keys.push(mark);
+  }
   const closed = Array.isArray(note.closed_days) ? note.closed_days : [];
   const closedOrder = ['mon', 'fri', 'tue', 'wed', 'thu', 'sat', 'sun'];
   for (const day of closedOrder) {
@@ -2578,7 +2645,19 @@ function circleMarkerSvg(color, opts = {}) {
 // Substitutes `currentColor` in the template with the accent so the glyph
 // renders standalone (works in any SVG renderer, no CSS cascade required).
 // Returns the rendered glyph string plus the optional prohibition slash.
-function renderMarkerGlyph(restrictionKey, glyphX, glyphY, tint) {
+// A white halo behind the artwork, so a mark drawn with no disc under it still reads on a
+// bright parking lot and on a dark treeline alike. Two stacked zero-offset white shadows —
+// the standard cartographic trick — rather than a second copy of the glyph stroked wider,
+// because every glyph fragment carries its OWN stroke-width and a group stroke cannot widen
+// them. The id is scoped to this data-URI document, so it cannot collide with another marker.
+const TIME_MARK_HALO_ID = 'tmhalo';
+const TIME_MARK_HALO_DEFS = `<defs><filter id="${TIME_MARK_HALO_ID}" x="-35%" y="-35%" width="170%" height="170%">`
+  + '<feDropShadow dx="0" dy="0" stdDeviation="1.3" flood-color="#ffffff" flood-opacity="1"/>'
+  + '<feDropShadow dx="0" dy="0" stdDeviation="1.3" flood-color="#ffffff" flood-opacity="1"/>'
+  + '</filter></defs>';
+const isTimeMarkKey = (k) => typeof k === 'string' && TIME_MARK_KEYS.includes(resolveRestrictionKey(k));
+
+function renderMarkerGlyph(restrictionKey, glyphX, glyphY, tint, scale) {
   const resolved = resolveRestrictionKey(restrictionKey);
   const def = RESTRICTION_ICONS[resolved] || UNKNOWN_RESTRICTION;
   const color = tint || def.accent || def.bg || '#6b7280';
@@ -2587,7 +2666,8 @@ function renderMarkerGlyph(restrictionKey, glyphX, glyphY, tint) {
   const slash = def.prohibition
     ? `<line x1="2" y1="2" x2="20" y2="20" stroke="${color}" stroke-width="3" stroke-linecap="round"/>`
     : '';
-  return `<g transform="translate(${glyphX},${glyphY})">${glyph}${slash}</g>`;
+  const t = `translate(${glyphX},${glyphY})` + (scale && scale !== 1 ? ` scale(${scale})` : '');
+  return `<g transform="${t}">${glyph}${slash}</g>`;
 }
 
 // How big a restriction marker DRAWS, as a fraction of the SVG geometry below
@@ -2598,11 +2678,42 @@ function renderMarkerGlyph(restrictionKey, glyphX, glyphY, tint) {
 // 22×22 grid the markerGlyph templates are drawn against, and SVG being vector
 // means shrinking at draw time costs no sharpness.
 const RESTRICTION_MARKER_SCALE = 0.5;
+// THE TIME FAMILY DRAWS A QUARTER LARGER THAN THE REST. Chad: "increase the clock icon just
+// a smidge because hard to see our new ones."
+//
+// It is not only size. Every truck mark is a SOLID FILL and every clock is LINE ART — a ring
+// plus two hands at stroke-width 1.9 on the 22-unit design grid, which at 0.5 comes out under
+// a pixel wide on a satellite base. The trucks survive being small in a way the clocks never
+// could, so they were never really the same size problem. A 1.25 bump takes a single clock
+// from 20×22 to 25×28 and its strokes from ~0.95px to ~1.19px, which is the part that makes
+// it legible rather than just bigger.
+//
+// Deliberately PER-KIND rather than a global scale change: v0.54.37 shrank these marks by half
+// on Chad's explicit "make this icon half as big", and the no-tractor-trailer truck he was
+// pointing at stays exactly where he put it. A cluster takes the largest scale among the icons
+// it actually paints, so a truck sharing a pin with a clock grows with it — that pin is still
+// carrying a time constraint, which is the thing that is hard to spot.
+const TIME_MARK_MARKER_SCALE = 1.25;
+const RESTRICTION_MARKER_KIND_SCALE = Object.fromEntries(
+  TIME_MARK_KEYS.map((k) => [k, TIME_MARK_MARKER_SCALE]),
+);
+// The draw scale for one marker: the base half-size, times the largest per-kind bump among
+// the icons the marker actually PAINTS. An icon collapsed into the "+N" overflow is not on
+// the map, so it cannot enlarge the pin it isn't drawn on.
+function restrictionMarkerScale(restrictions) {
+  let f = 1;
+  for (const r of visibleIconKeys(restrictions)) {
+    if (typeof r !== 'string') continue;
+    const kind = RESTRICTION_MARKER_KIND_SCALE[resolveRestrictionKey(r)];
+    if (kind && kind > f) f = kind;
+  }
+  return RESTRICTION_MARKER_SCALE * f;
+}
 // Shrink a {url,width,height,anchor} spec to the drawn size. The anchor scales
 // with it — it's a point INSIDE the image, so leaving it unscaled would slide
 // the marker off the coordinate it marks.
-function scaleMarkerSpec(spec) {
-  const f = RESTRICTION_MARKER_SCALE;
+function scaleMarkerSpec(spec, scale) {
+  const f = typeof scale === 'number' && scale > 0 ? scale : RESTRICTION_MARKER_SCALE;
   return {
     url: spec.url,
     width: Math.round(spec.width * f),
@@ -2619,7 +2730,22 @@ function iconMarkerSvg(restrictions, tint) {
     const r = restrictions[0];
     const def = RESTRICTION_ICONS[resolveRestrictionKey(r)] || UNKNOWN_RESTRICTION;
     const accent = tint || def.accent || def.bg || '#6b7280';
-    const svg = `
+    // A TIME MARK GETS THE WHOLE FOOTPRINT — no disc, no ring, no padding. Chad: "on time
+    // icons take away the white space and circle around the icon, make the time clock the
+    // actual size of the current icon right now." He is describing the real problem: the
+    // white disc is 36 across and the clock inside it is 15, so more than four fifths of what
+    // the eye lands on is chrome, and the clock face — which is the entire message — is the
+    // smallest thing in it. The disc earns its keep on a filled truck glyph, which needs a
+    // light ground to read against; a ring-and-hands clock does not, it needs SIZE.
+    // Filling the box takes the clock from ~7.6px across to ~16px at the drawn scale.
+    const svg = isTimeMarkKey(r)
+      ? `
+      <svg xmlns="http://www.w3.org/2000/svg" width="40" height="44" viewBox="0 0 40 44">
+        ${TIME_MARK_HALO_DEFS}
+        <ellipse cx="20" cy="40" rx="10" ry="1.6" fill="black" opacity="0.16"/>
+        <g filter="url(#${TIME_MARK_HALO_ID})">${renderMarkerGlyph(r, 1, 1, tint, 38 / 22)}</g>
+      </svg>`
+      : `
       <svg xmlns="http://www.w3.org/2000/svg" width="40" height="44" viewBox="0 0 40 44">
         <ellipse cx="20" cy="40" rx="12" ry="1.8" fill="black" opacity="0.18"/>
         <circle cx="20" cy="20" r="18" fill="white" fill-opacity="0.95" stroke="${accent}" stroke-width="2"/>
@@ -2630,7 +2756,7 @@ function iconMarkerSvg(restrictions, tint) {
       width: 40,
       height: 44,
       anchor: [20, 38],
-    });
+    }, restrictionMarkerScale(restrictions));
   }
 
   // State C: side-by-side 32-diameter circles. 2 or 3 raw restrictions
@@ -2654,6 +2780,11 @@ function iconMarkerSvg(restrictions, tint) {
         <circle cx="${cx}" cy="${cy}" r="15" fill="white" fill-opacity="0.95" stroke="${tint || '#6b7280'}" stroke-width="2"/>
         <text x="${cx}" y="${cy + 4}" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="800" fill="${tint || '#374151'}" text-anchor="middle">+${el.__overflow}</text>
       `;
+    } else if (isTimeMarkKey(el)) {
+      // Same rule inside a cluster, so a clock looks like itself wherever it appears. The
+      // slots are already spaced apart, so the disc was doing separation work here that the
+      // spacing does anyway.
+      elementsMarkup += `<g filter="url(#${TIME_MARK_HALO_ID})">${renderMarkerGlyph(el, cx - 14, cy - 14, tint, 28 / 22)}</g>`;
     } else {
       const def = RESTRICTION_ICONS[resolveRestrictionKey(el)] || UNKNOWN_RESTRICTION;
       const accent = tint || def.accent || def.bg || '#6b7280';
@@ -2667,6 +2798,7 @@ function iconMarkerSvg(restrictions, tint) {
   const shadowRx = Math.max(8, totalW / 2 - 6);
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" width="${totalW}" height="${totalH}" viewBox="0 0 ${totalW} ${totalH}">
+      ${elements.some((el) => isTimeMarkKey(el)) ? TIME_MARK_HALO_DEFS : ''}
       <ellipse cx="${totalW / 2}" cy="36" rx="${shadowRx}" ry="1.8" fill="black" opacity="0.15"/>
       ${elementsMarkup}
     </svg>`;
@@ -2675,7 +2807,7 @@ function iconMarkerSvg(restrictions, tint) {
     width: totalW,
     height: totalH,
     anchor: [totalW / 2, 34],
-  });
+  }, restrictionMarkerScale(restrictions));
 }
 
 // Build the rich dispatch-map marker icon for a single stop — the shared source of
@@ -2729,24 +2861,20 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   // count badge only when 2+ deliveries share the place (Chad: "put the number on the delivery
   // icon"). 0 = no badge.
   const count = sameLocCount > 1 ? sameLocCount : 0;
-  let restrictions = getRestrictionBadgeKeys(note, { day: selectedDayKey });
-  // An AM/PM Delivery window IS the receiving-time statement, so it TAKES OVER the pin from the
-  // generic receiving-hours clock: without this, setting hours pushed the pin into the icon
-  // branch (below), which never draws the AM/PM tag — so the window silently vanished from the
-  // map behind a clock (Chad). Dropping the clock here lets the AM/PM tag show (State A); any
-  // OTHER restriction icon (liftgate, no-tractor, appointment, closed-day) still stands.
-  if (note?.delivery_window === 'AM' || note?.delivery_window === 'PM') {
-    restrictions = restrictions.filter((r) => r !== 'receiving_hours');
-  }
-  const flagHue = (note?.priority_flag && FLAG_COLORS[note.priority_flag]) ? FLAG_COLORS[note.priority_flag] : null;
-  // Dispatcher-set vehicle eligibility recolors the pin (green = trailer OK, red =
-  // box only). A green mark also suppresses any auto-detected trailer-blocking
-  // restriction badge so the pin never shows a contradictory "no tractor" icon.
   const elig = note?.vehicle_eligibility;
   const eligColor = elig === 'tractor' ? ELIG_TRACTOR_COLOR : (elig === 'box_only' ? ELIG_BOX_COLOR : null);
-  if (elig === 'tractor' && restrictions.length) {
-    restrictions = restrictions.filter((r) => !TRAILER_BLOCKER_KEYS.has(resolveRestrictionKey(r)));
-  }
+  // WHICH ICONS THIS STOP DRAWS. Two suppressions, both in lib/map-legend.js so the Legend
+  // can ask the same question and get the same answer:
+  //   · an AM/PM Delivery window IS the receiving-time statement, so it takes the pin over
+  //     from the time marks — otherwise setting hours pushed the stop into the icon branch,
+  //     which never draws the AM/PM tag, and the window silently vanished behind a clock;
+  //   · a dispatcher's hand-set "tractor OK" drops the auto-detected trailer blockers, so the
+  //     pin can never show a contradictory "no tractor" next to an explicit green.
+  const restrictions = drawnRestrictionKeys(
+    getRestrictionBadgeKeys(note, { day: selectedDayKey }),
+    { deliveryWindow: note?.delivery_window, eligibility: elig, resolve: resolveRestrictionKey },
+  );
+  const flagHue = (note?.priority_flag && FLAG_COLORS[note.priority_flag]) ? FLAG_COLORS[note.priority_flag] : null;
   const dnsStop = !!note?.do_not_send;
   // Pickups are MARKED on the pin (Chad: "Ra's should be marked as pickups and not
   // deliveries") — a PU tag in the same slot the AM/PM window uses. A delivery-window tag or
@@ -2908,14 +3036,28 @@ function etHourNow() {
 // Split per-feed freshness: loads and orders run on different cadences, so a
 // single stamp would mislead. Shows relative recency; absolute ET on hover.
 // Before 10 AM ET the orders feed is intentionally idle → "paused until 10 AM".
-function FeedTimestamps({ loadAt, unplannedAt, isToday, className, stacked }) {
+function FeedTimestamps({ loadAt, unplannedAt, completedAt, isToday, className, stacked }) {
   const ordersPaused = isToday && etHourNow() < 10;
   const loadRel = fmtFeedAge(loadAt);
   const orderRel = fmtFeedAge(unplannedAt);
+  const doneRel = fmtFeedAge(completedAt);
   const loads = <span title={fmtAbsoluteET(loadAt)}>Loads {loadRel ? `updated ${loadRel}` : '—'}</span>;
   const orders = (
     <span title={fmtAbsoluteET(unplannedAt)}>
       Orders {ordersPaused ? 'paused until 10 AM' : (orderRel ? `updated ${orderRel}` : '—')}
+    </span>
+  );
+  // THE THIRD FEED, AND IT HAS BEEN INVISIBLE. Chad, reading "Loads updated 21 min ago" at
+  // 11am: "at this time of day shouldn't the completed deliveries scan be on a 15 min timer?"
+  // It was — the card simply had no row for it. Those two lines are the PLANNED pull (77128),
+  // which runs every 30 minutes in the 10am–8pm band, so 21 minutes is exactly right for
+  // them; the completed pull (77131) runs every 15 in the same hours and updates the board
+  // through a cheap overlay that never rewrote the stamps those rows read. Two feeds on one
+  // card, three feeds running: the missing one is the one that turns a stop green, which is
+  // the thing a dispatcher is watching the board for all afternoon.
+  const completed = (
+    <span title={fmtAbsoluteET(completedAt)}>
+      Completed {doneRel ? `updated ${doneRel}` : '—'}
     </span>
   );
   // Stacked: one line each (saves horizontal space in the status card).
@@ -2925,6 +3067,7 @@ function FeedTimestamps({ loadAt, unplannedAt, isToday, className, stacked }) {
       <div className={className || 'text-slate-500'}>
         <div>{loads}</div>
         <div>{orders}</div>
+        <div>{completed}</div>
       </div>
     );
   }
@@ -2933,6 +3076,8 @@ function FeedTimestamps({ loadAt, unplannedAt, isToday, className, stacked }) {
       {loads}
       <span className="text-slate-300"> · </span>
       {orders}
+      <span className="text-slate-300"> · </span>
+      {completed}
     </div>
   );
 }
@@ -3343,7 +3488,7 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
 // other screens (Routing renders it too). Collapsible to just the stops count; the
 // refresh icon fires the cheap manual scan (useManualScan). Pure presentation — all
 // state comes in as props so each screen wires its own useStops/useManualScan.
-function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, unplannedAt, isToday, ops, scanErr, scanning, scanCooldown, onRefresh, collapsed, onToggleCollapsed, scanUnplannedCount, visibleUnplannedCount, drawnCount = null }) {
+function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, unplannedAt, completedAt, isToday, ops, scanErr, scanning, scanCooldown, onRefresh, collapsed, onToggleCollapsed, scanUnplannedCount, visibleUnplannedCount, drawnCount = null }) {
   // `drawnCount` (Routing) = pins actually on the map right now. The card used to publish the
   // whole day board while the map drew a filtered subset, so the number on the chip matched
   // neither the pins beneath it nor the bottom grid — Chad, counting dots: "there are more dots
@@ -3384,7 +3529,7 @@ function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, 
         <div className="mt-0.5 leading-tight">
           <div className="text-slate-600">{Number(totalPallets || 0).toLocaleString()} total pallets</div>
           <UnplannedScanCount count={scanUnplannedCount} visible={visibleUnplannedCount} className="text-slate-600" />
-          <FeedTimestamps loadAt={loadAt} unplannedAt={unplannedAt} isToday={isToday} className="text-slate-500" stacked />
+          <FeedTimestamps loadAt={loadAt} unplannedAt={unplannedAt} completedAt={completedAt} isToday={isToday} className="text-slate-500" stacked />
           {ops && typeof ops.dayCount === 'number' && (
             <>
               <div className="text-slate-500" title={`Today's NuVizz API calls (${ops.mode})${ops.byRoute && Object.keys(ops.byRoute).length ? ' · ' + Object.entries(ops.byRoute).map(([k, v]) => `${k}:${v}`).join(' ') : ''}`}>
@@ -3772,6 +3917,58 @@ function MobileMapSearchBar({ value, onChange, onSubmit, history, aiAvailable, a
 // M4.1.6: render the same iconMarkerSvg output as an <img> for the legend
 // examples. This guarantees the legend preview is byte-identical to what
 // the map renders, so if the marker visual changes the legend stays in sync.
+// WHAT THE MAP IS ACTUALLY DRAWING, folded into the counts the Legend renders.
+//
+// The gates below mirror stopMarkerIcon branch for branch, and they have to: every one of
+// them is a way for a mark to be in the DATA and not on the SCREEN, which is exactly the
+// mark a filtered legend must not list.
+//   · no lat/lng  — the stop has no marker at all
+//   · do-not-send — a red ✕ pin takes over from the icons
+//   · in an open route — a numbered pin takes over
+//   · planned-muted (Routing only) — a quiet slate ring takes over, unless the stop is
+//     selected or a search hit, which both out-rank the mute
+// Everything past those gates goes through drawnRestrictionKeys, the same function the
+// marker uses, so the panel and the pin cannot disagree about a suppression.
+function useLegendInventory({
+  stops, notes, dayKey, tractorLocs,
+  routeStopNbrs = null, plannedMuted = false, isPlanned = null,
+  selectedIds = null, searchMatchIds = null,
+}) {
+  return useMemo(() => {
+    if (!Array.isArray(stops) || !stops.length) return emptyLegendInventory();
+    const entries = [];
+    for (const s of stops) {
+      if (!s || s.lat == null || s.lng == null) continue;
+      const note = notes?.get?.(s.matchKey) || null;
+      // The Map keys its sets by the raw stopNbr and Routing keys its maps by String(stopNbr).
+      // Ask both ways rather than making every caller remember which one it is — getting this
+      // wrong shows up as a legend that silently over-lists, which is the hard bug to notice.
+      const id = s.stopNbr;
+      const sid = String(id);
+      const inSet = (set) => !!set && (set.has(id) || set.has(sid));
+      const dns = !!note?.do_not_send;
+      const inRoute = inSet(routeStopNbrs);
+      const hi = inSet(selectedIds) || inSet(searchMatchIds);
+      const muted = plannedMuted && !inRoute && !dns && !hi
+        && typeof isPlanned === 'function' && isPlanned(s)
+        && classifyStopStatus(s) === 'SCHEDULED';
+      const hidden = dns || inRoute || muted;
+      entries.push({
+        note,
+        hidden,
+        tractorDelivered: !!tractorLocs?.has?.(s.matchKey),
+        icons: drawnRestrictionKeys(getRestrictionBadgeKeys(note, { day: dayKey }), {
+          deliveryWindow: note?.delivery_window,
+          eligibility: note?.vehicle_eligibility,
+          hidden,
+          resolve: resolveRestrictionKey,
+        }),
+      });
+    }
+    return buildLegendInventory(entries);
+  }, [stops, notes, dayKey, tractorLocs, routeStopNbrs, plannedMuted, isPlanned, selectedIds, searchMatchIds]);
+}
+
 function LegendMarkerExample({ restrictions, label }) {
   const spec = useMemo(() => iconMarkerSvg(restrictions), [restrictions]);
   if (!spec) return null;
@@ -3799,7 +3996,7 @@ function LegendMarkerExample({ restrictions, label }) {
 // Also the DIAGNOSTIC for the lime layer. "No lime pins on the board" used to be a
 // dead end — the toggle being off, a failed read, and an empty collection were
 // indistinguishable from a paint bug. The status line below names which one it is.
-function TractorPaintControl() {
+function TractorPaintControl({ litCount = null }) {
   const [on, setOn] = useTractorPaintToggle();
   const { status, error, count, retry } = useTractorPaintStatus();
   // Read this as: loaded N locations but the map shows no lime → the paint/join is at
@@ -3812,7 +4009,13 @@ function TractorPaintControl() {
         ? { tone: 'text-slate-500', text: 'Loading saved locations…' }
         : count === 0
           ? { tone: 'text-amber-700', text: '0 saved locations — nothing to paint yet. The nightly pass hasn\'t flagged any (check the tractor roster / run the rebuild).', retry: true }
-          : { tone: 'text-slate-500', text: `${count.toLocaleString()} saved location${count === 1 ? '' : 's'} loaded.` };
+          : {
+            tone: 'text-slate-500',
+            // The store's size AND how many of THIS board's stops it actually lit. Loaded
+            // thousands and lit none is a join problem; the old line could not say that.
+            text: `${count.toLocaleString()} saved location${count === 1 ? '' : 's'} loaded`
+              + (litCount == null ? '.' : ` · ${litCount.toLocaleString()} lit on this board.`),
+          };
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
@@ -3850,7 +4053,182 @@ function TractorPaintControl() {
   );
 }
 
-function Legend({ expanded, setExpanded }) {
+// Display order for the restriction key. tractor_trailer_friendly is a POSITIVE mark and
+// gets its own section, so it is not in the prohibition list.
+const RESTRICTION_LEGEND_ORDER = Object.keys(RESTRICTION_ICONS).filter((k) => k !== 'tractor_trailer_friendly');
+
+// A count chip beside a legend row: how many stops on this board carry that mark. The number
+// is the reason the filtered legend is worth having — "6" next to a pink clock tells a
+// dispatcher whether it is a corner case or half his afternoon.
+// Chad: "make the icon image bigger it's too hard to read." 16px was the badge size used for
+// an inline chip inside a sentence; in a legend the picture IS the entry, and half these
+// glyphs are 2-character day letters or line art that simply cannot resolve at 16.
+const LEGEND_ICON_PX = 22;
+
+const plural = (n, word) => `${Number(n || 0).toLocaleString()} ${word}${Number(n) === 1 ? '' : 's'}`;
+
+function LegendCount({ n }) {
+  if (!n) return null;
+  return <span className="ml-auto pl-2 text-[10px] font-semibold text-slate-400 tabular-nums">{n}</span>;
+}
+
+// THE LEGEND BODY — shared by the Map sidebar panel and the Routing map's popover, so the two
+// screens can never explain the same mark two different ways.
+//
+// `inventory` is what the marker layer is CURRENTLY drawing (see lib/map-legend.js). Passing
+// null means "no inventory available" and falls back to the full catalogue rather than
+// showing an empty panel — a legend that hides everything because it could not measure the
+// board is worse than one that shows too much.
+function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true }) {
+  const inv = inventory || null;
+  const all = showAll || !inv;
+  const empty = legendIsEmpty(inv);
+  const has = (n) => all || !!n;
+  const iconKeys = all ? RESTRICTION_LEGEND_ORDER : presentIconKeys(inv, RESTRICTION_LEGEND_ORDER);
+  const tints = (inv && inv.tints) || {};
+  const shapes = (inv && inv.shapes) || {};
+  const iconCounts = (inv && inv.iconCounts) || {};
+  const flagRows = FLAG_OPTIONS.filter((k) => has(tints[k]));
+  const showRestrictedTint = has(tints.restricted);
+  const showPlainTint = has(tints.plain);
+  const anyFlagRow = flagRows.length || showRestrictedTint || showPlainTint;
+  const shapeRows = [
+    ['single', ['no_tractor_trailer'], 'One restriction'],
+    ['multi', ['no_tractor_trailer', 'liftgate_required'], 'Two or three — side by side'],
+    ['overflow', ['no_tractor_trailer', 'liftgate_required', 'appointment_required', 'no_overhead_clearance'], 'Four or more — first 2 + overflow'],
+  ].filter(([k]) => has(shapes[k]));
+  const ttFriendly = has(iconCounts.tractor_trailer_friendly);
+  // How many DISTINCT marks this board is using — the headline number, and the reason the
+  // filtered list is worth reading. Zero is a real answer and gets its own sentence rather
+  // than being printed as "the 0 marks on this board".
+  const markCount = (inv ? presentIconKeys(inv, RESTRICTION_LEGEND_ORDER).length : 0)
+    + (inv && iconCounts.tractor_trailer_friendly ? 1 : 0);
+
+  return (
+    <div className="space-y-3 text-[11px]">
+      {/* What this list is scoped to, and the way back to the full catalogue. A dispatcher who
+          remembers a mark from last week still needs to be able to look it up. */}
+      <div className="flex items-center justify-between gap-2 -mt-0.5">
+        <span className="text-[10px] text-slate-500 leading-snug">
+          {all
+            ? 'Every mark the map can draw.'
+            : empty
+              ? 'No stops on the map right now.'
+              : markCount
+                ? `The ${markCount} mark${markCount === 1 ? '' : 's'} on this board · ${plural(inv.stops, 'stop')}.`
+                : `${plural(inv.stops, 'stop')} on the map, none carrying a restriction mark.`}
+        </span>
+        {inv && (
+          <button
+            type="button"
+            onClick={() => onShowAll(!showAll)}
+            className="tap-dense shrink-0 text-[10px] font-semibold text-blue-700 underline hover:no-underline"
+          >
+            {showAll ? 'On this map' : 'Show all'}
+          </button>
+        )}
+      </div>
+
+      {anyFlagRow && (
+        <div>
+          <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Priority flag</div>
+          <div className="space-y-1">
+            {flagRows.map((k) => (
+              <div key={k} className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: FLAG_COLORS[k] }} />
+                <span className="capitalize">{k === 'question' ? 'Question (?)' : k}</span>
+                <LegendCount n={!all && tints[k]} />
+              </div>
+            ))}
+            {showRestrictedTint && (
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: RESTRICTION_TINT }} />
+                <span>Restricted (no flag set)</span>
+                <LegendCount n={!all && tints.restricted} />
+              </div>
+            )}
+            {showPlainTint && (
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: UNFLAGGED_TINT }} />
+                <span>No notes</span>
+                <LegendCount n={!all && tints.plain} />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* The lime paint stays whatever the board looks like: this block is the only kill
+          switch for it on a phone, and its status line is the ONLY way to tell a paint bug
+          apart from an empty collection. A control is not a key entry — filtering it out
+          because today's board happens to have no lime on it would hide the switch precisely
+          when somebody is asking why there is no lime. */}
+      {tractorControl && <TractorPaintControl litCount={inv ? inv.tractorDelivered : null} />}
+
+      {shapeRows.length > 0 && (
+        <div>
+          <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Restricted stops</div>
+          <p className="text-slate-600 mb-2 leading-snug">
+            When a stop has equipment restrictions, the pin is replaced by the restriction icon(s) for quick visual scanning.
+          </p>
+          <div className="space-y-2">
+            {shapeRows.map(([k, restrictions, label]) => (
+              <div key={k} className="flex items-center gap-2">
+                <LegendMarkerExample restrictions={restrictions} label={label} />
+                <LegendCount n={!all && shapes[k]} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {iconKeys.length > 0 && (
+        <div>
+          <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Restriction icons</div>
+          <div className="space-y-1">
+            {iconKeys.map((key) => (
+              <div key={key} className="flex items-center gap-2">
+                <RestrictionIcon kind={key} size={LEGEND_ICON_PX} />
+                <span>{RESTRICTION_ICONS[key]?.label || key}</span>
+                <LegendCount n={!all && iconCounts[key]} />
+              </div>
+            ))}
+            {has(shapes.overflow) && (
+              <div className="flex items-center gap-2 pt-1">
+                <span className="inline-flex items-center justify-center w-4 h-4 rounded-full text-white text-[8px] font-bold flex-shrink-0" style={{ background: '#0f172a' }}>+N</span>
+                <span className="text-slate-500">Four or more restrictions — the rest are in the count</span>
+                <LegendCount n={!all && shapes.overflow} />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {ttFriendly && (
+        <div>
+          <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Allowed (green)</div>
+          <div className="flex items-center gap-2">
+            <RestrictionIcon kind="tractor_trailer_friendly" size={LEGEND_ICON_PX} />
+            <span>{RESTRICTION_ICONS.tractor_trailer_friendly.label} — stop can take a tractor trailer</span>
+            <LegendCount n={!all && iconCounts.tractor_trailer_friendly} />
+          </div>
+        </div>
+      )}
+
+      {/* Filtered down to nothing is a real answer, and has to look like one. */}
+      {!all && !anyFlagRow && !shapeRows.length && !iconKeys.length && !ttFriendly && (
+        <div className="text-slate-500 leading-snug">
+          {empty
+            ? 'Nothing is on the map yet — pick a date or clear a filter.'
+            : 'No marks on this board. Every stop is drawing a plain pin.'}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Legend({ expanded, setExpanded, inventory }) {
+  const [showAll, setShowAll] = useState(false);
   return (
     <div className="border-t">
       <button
@@ -3864,71 +4242,8 @@ function Legend({ expanded, setExpanded }) {
         {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
       </button>
       {expanded && (
-        <div className="px-3 pb-3 space-y-3 text-[11px]">
-          <div>
-            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Priority flag</div>
-            <div className="space-y-1">
-              {FLAG_OPTIONS.map((k) => (
-                <div key={k} className="flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full" style={{ background: FLAG_COLORS[k] }} />
-                  <span className="capitalize">{k === 'question' ? 'Question (?)' : k}</span>
-                </div>
-              ))}
-              <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full" style={{ background: RESTRICTION_TINT }} />
-                <span>Restricted (no flag set)</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full" style={{ background: UNFLAGGED_TINT }} />
-                <span>No notes</span>
-              </div>
-            </div>
-          </div>
-          <TractorPaintControl />
-          <div>
-            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Restricted stops</div>
-            <p className="text-slate-600 mb-2 leading-snug">
-              When a stop has equipment restrictions, the pin is replaced by the restriction icon(s) for quick visual scanning.
-            </p>
-            <div className="space-y-2">
-              <LegendMarkerExample
-                restrictions={['no_tractor_trailer']}
-                label="Single restriction"
-              />
-              <LegendMarkerExample
-                restrictions={['no_tractor_trailer', 'liftgate_required']}
-                label="Multiple restrictions"
-              />
-              <LegendMarkerExample
-                restrictions={['no_tractor_trailer', 'liftgate_required', 'appointment_required', 'no_overhead_clearance']}
-                label="Four or more — first 2 + overflow"
-              />
-            </div>
-          </div>
-          <div>
-            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Restriction icons</div>
-            <div className="space-y-1">
-              {Object.entries(RESTRICTION_ICONS)
-                .filter(([key]) => key !== 'tractor_trailer_friendly')
-                .map(([key, def]) => (
-                  <div key={key} className="flex items-center gap-2">
-                    <RestrictionIcon kind={key} size={16} />
-                    <span>{def.label}</span>
-                  </div>
-                ))}
-              <div className="flex items-center gap-2 pt-1">
-                <span className="inline-flex items-center justify-center w-4 h-4 rounded-full text-white text-[8px] font-bold" style={{ background: '#0f172a' }}>+N</span>
-                <span className="text-slate-500">Three or more restrictions</span>
-              </div>
-            </div>
-          </div>
-          <div>
-            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Allowed (green)</div>
-            <div className="flex items-center gap-2">
-              <RestrictionIcon kind="tractor_trailer_friendly" size={16} />
-              <span>{RESTRICTION_ICONS.tractor_trailer_friendly.label} — stop can take a tractor trailer</span>
-            </div>
-          </div>
+        <div className="px-3 pb-3">
+          <MapLegendBody inventory={inventory} showAll={showAll} onShowAll={setShowAll} />
         </div>
       )}
     </div>
@@ -8392,9 +8707,13 @@ function MobileStopCard({ stop, note, onPick }) {
 function MobileFiltersTab({
   filters, setFilters, counts,
   mapFilters, setMapFilters,
-  showRoutes, setShowRoutes, vehicleDisabled, boardDate,
+  showRoutes, setShowRoutes, vehicleDisabled, boardDate, legendInventory,
 }) {
   const setMF = (key) => (v) => setMapFilters((prev) => ({ ...prev, [key]: v }));
+  // Collapsed by default, like the desktop panel — this sheet is primarily filters, and a
+  // legend that opens itself pushes them off the first screen of a phone.
+  const [legendOpen, setLegendOpen] = useState(false);
+  const [legendAll, setLegendAll] = useState(false);
   return (
     <div className="flex flex-col">
       <FilterPanel filters={filters} setFilters={setFilters} counts={counts} />
@@ -8449,12 +8768,26 @@ function MobileFiltersTab({
           </div>
         </div>
       </div>
-      {/* The lime tractor-delivered paint. The <Legend> that carries this control on
-      desktop is NOT rendered on mobile, so the phone had no way to see the toggle's
-      state — let alone flip it back on, or tell an off switch from an empty/failed
-      load. Same component, same persisted per-device setting. */}
-      <div className="border-t px-3 py-3">
-        <TractorPaintControl />
+      {/* THE LEGEND, ON A PHONE — which it has never had. Only the lime toggle was ported
+      here, so a dispatcher on the road could turn the paint on and off but had no way to ask
+      what any mark on his map MEANT; the panel that answers that has been desktop-only since
+      it was written. Same body as the desktop panel and the Routing popover, so all three
+      explain a mark identically, and it carries the lime control inside it rather than
+      leaving a second copy behind. */}
+      <div className="border-t">
+        <button
+          onClick={() => setLegendOpen((v) => !v)}
+          className="w-full px-3 py-2 flex items-center justify-between text-xs font-semibold text-slate-600 active:bg-slate-50"
+          aria-expanded={legendOpen}
+        >
+          <span className="inline-flex items-center gap-1.5"><Info size={13} /> Legend</span>
+          {legendOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        </button>
+        <div className="px-3 pb-3">
+          {legendOpen
+            ? <MapLegendBody inventory={legendInventory} showAll={legendAll} onShowAll={setLegendAll} />
+            : <TractorPaintControl litCount={legendInventory ? legendInventory.tractorDelivered : null} />}
+        </div>
       </div>
     </div>
   );
@@ -9202,7 +9535,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     return { ...DEFAULT_MAP_FILTERS, ...stored };
   });
 
-  const { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, scanState, source, ops, scanUnplannedCount, refresh } = useStops(selectedDate, mapFilters.carryoverDays || 0);
+  const { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, lastCompletedScanAt, scanState, source, ops, scanUnplannedCount, refresh } = useStops(selectedDate, mapFilters.carryoverDays || 0);
 
   // Manual "Scan now" — the cheap list-discovery scan, shared logic in useManualScan
   // (also used by the Routing tab's status card). See the hook for the cost notes.
@@ -9786,6 +10119,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     return filteredStops.filter((s) => effectiveMatchSet.has(s.stopNbr));
   }, [filteredStops, effectiveMatchSet]);
 
+
   // Board completion for the stops-count header (Chad: "% completed"). Delivered ÷ the whole
   // day's board — deliberately independent of the search box AND the map filters, so it reads
   // as "how much of today is done" and doesn't jump around while you filter. Null on an empty
@@ -9997,6 +10331,23 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     if (!selectedRoute) return [];
     return stops.filter((s) => s.loadNbr === selectedRoute);
   }, [stops, selectedRoute]);
+
+  // WHAT THE LEGEND IS ALLOWED TO SHOW — the marks the marker layer is drawing right now.
+  // Built off filteredStops, NOT visibleStops: a search narrows which pins are HIGHLIGHTED,
+  // it does not take the others off the map, and a legend that dropped them would stop
+  // explaining marks the dispatcher can still plainly see.
+  const selectedRouteStopNbrs = useMemo(
+    () => (selectedRoute ? new Set(selectedRouteStops.map((s) => s.stopNbr)) : null),
+    [selectedRoute, selectedRouteStops],
+  );
+  const legendDayKey = useMemo(() => weekdayKeyFromDate(selectedDate), [selectedDate]);
+  const legendInventory = useLegendInventory({
+    stops: filteredStops,
+    notes,
+    dayKey: legendDayKey,
+    tractorLocs,
+    routeStopNbrs: selectedRouteStopNbrs,
+  });
 
   // The day's loads, grouped from the board by loadNbr — powers the mobile Loads
   // tab. Delivered count is tolerant of status casing; skids/loose/weight are summed.
@@ -10761,7 +11112,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                 <div className="mt-0.5 leading-tight min-w-0 [&>div]:truncate">
                   <div className="text-slate-600 text-[10px]">{totalPalletsCount.toLocaleString()} total pallets</div>
                   <UnplannedScanCount count={scanUnplannedCount} visible={visibleUnplannedCount} className="text-slate-600 text-[10px]" />
-                  <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} isToday={dateIsToday} className="text-slate-500 text-[10px]" stacked />
+                  <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} completedAt={lastCompletedScanAt} isToday={dateIsToday} className="text-slate-500 text-[10px]" stacked />
                   {ops && typeof ops.dayCount === 'number' && (
                     <>
                       <div className="text-slate-500 text-[10px]" title={`Today's NuVizz API calls (${ops.mode})${ops.byRoute && Object.keys(ops.byRoute).length ? ' · ' + Object.entries(ops.byRoute).map(([k, v]) => `${k}:${v}`).join(' ') : ''}`}>
@@ -10909,6 +11260,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
               setShowRoutes={setShowRoutes}
               vehicleDisabled={!dateIsToday}
               boardDate={selectedDate}
+              legendInventory={legendInventory}
             />
           )}
           {mobileDrawerTab === 'loads' && (
@@ -11125,7 +11477,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
           setFilters={setFilters}
           counts={{ visible: visibleStops.length, total: stops.length, pct: boardCompletion?.pct ?? null }}
         />
-        <Legend expanded={legendExpanded} setExpanded={setLegendExpanded} />
+        <Legend expanded={legendExpanded} setExpanded={setLegendExpanded} inventory={legendInventory} />
         {showRoutes && (
           <DriverRouteLegend legend={routeData.legend} expanded={routeLegendExpanded} setExpanded={setRouteLegendExpanded} />
         )}
@@ -11233,7 +11585,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                 <div className="mt-0.5 leading-tight">
                   <div className="text-slate-600">{totalPalletsCount.toLocaleString()} total pallets</div>
                   <UnplannedScanCount count={scanUnplannedCount} visible={visibleUnplannedCount} className="text-slate-600" />
-                  <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} isToday={dateIsToday} className="text-slate-500" stacked />
+                  <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} completedAt={lastCompletedScanAt} isToday={dateIsToday} className="text-slate-500" stacked />
                   {ops && typeof ops.dayCount === 'number' && (
                     <>
                       <div className="text-slate-500" title={`Today's NuVizz API calls (${ops.mode})${ops.byRoute && Object.keys(ops.byRoute).length ? ' · ' + Object.entries(ops.byRoute).map(([k, v]) => `${k}:${v}`).join(' ') : ''}`}>
@@ -14302,13 +14654,31 @@ function NinjaIcon({ size = 14, className = '' }) {
 // Floating on-map selection toolbar: Box · Lasso · Ninja, as small selectors that live on the
 // map (so they're reachable even when the Compare panel replaces the Setup stack). Box/Lasso
 // toggle their select mode; Ninja toggles ninja mode (disabled until a route is open in Compare).
-function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja, ninjaAvailable, inFlow = false }) {
-  const Btn = ({ active, onClick, disabled, title, children }) => (
+// HOISTED OUT OF RoutingMapTools ON PURPOSE, and it was a live bug rather than tidiness.
+// Declared inside the component, this arrow function is a NEW component type on every
+// render — so React unmounts all four buttons and mounts fresh DOM nodes each time the
+// Routing screen re-renders, which it does on every board poll and every hover. A render
+// landing between mousedown and mouseup destroys the element mid-gesture and the click
+// event never fires at all: the tool silently does nothing and the dispatcher taps it
+// again. Same defect the mobile tab bar had (v0.54.x). At module scope the type is stable
+// and the DOM node survives the gesture.
+function RoutingToolBtn({ active, onClick, disabled, title, children }) {
+  return (
     <button
       onClick={onClick} disabled={disabled} title={title} aria-pressed={!!active}
       className={`w-9 h-9 flex items-center justify-center rounded-lg border shadow-sm ${active ? 'bg-blue-600 border-blue-700 text-white' : 'bg-white/95 border-slate-300 text-slate-700 hover:bg-white'} disabled:opacity-40 disabled:cursor-not-allowed`}
     >{children}</button>
   );
+}
+
+function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja, ninjaAvailable, legendInventory = null, inFlow = false }) {
+  // Chad: "put a map legend button here to show what all the different icons that are
+  // currently on the map mean." The rail is where a dispatcher's thumb already is, and it
+  // is the only furniture on this screen — the Routing map had no legend of any kind, on
+  // either view, while drawing the exact same twenty marks the dispatch Map draws.
+  const [legendOpen, setLegendOpen] = useState(false);
+  const [legendAll, setLegendAll] = useState(false);
+  const Btn = RoutingToolBtn;
   // z-30 keeps the tools above the Selected panel and chips so they're always tappable (issue #232).
   // Ninja is never disabled — when no Compare route is open, tapping it surfaces a hint (handled by
   // onToggleNinja) instead of presenting a dead button the dispatcher can't tell apart from a bug.
@@ -14323,20 +14693,40 @@ function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja,
   // above, tools below), so the two can never collide and the centring math — which on a
   // short phone strip pushed the column's top ABOVE the map container onto the Build tab —
   // does not run at all. Desktop keeps the strip-centred absolute placement. Two views.
+  const rail = (
+    <div className="flex flex-col gap-1.5">
+      <Btn active={selectMode === 'box'} onClick={onBox} title="Box select — tap two corners (or drag) to grab a group"><Square size={16} /></Btn>
+      <Btn active={selectMode === 'lasso'} onClick={onLasso} title="Lasso select — tap points (or hold & draw) around stops"><Lasso size={16} /></Btn>
+      <Btn active={ninjaMode} onClick={onToggleNinja} title={ninjaAvailable ? 'Ninja — click stops onto the active Compare route' : 'Ninja — open a route in the Compare panel first'}><NinjaIcon size={16} /></Btn>
+      <Btn active={legendOpen} onClick={() => setLegendOpen((v) => !v)} title="Legend — what the marks on this map mean"><Info size={16} /></Btn>
+    </div>
+  );
+  const panel = legendOpen ? (
+    <div className="w-64 max-w-[calc(100vw-1.5rem)] max-h-[58vh] overflow-y-auto bg-white/97 backdrop-blur border border-slate-200 rounded-lg shadow-lg p-3">
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <span className="text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5"><Info size={13} /> Legend</span>
+        <button onClick={() => setLegendOpen(false)} className="tap-dense text-slate-400 hover:text-slate-700" aria-label="Close legend"><X size={14} /></button>
+      </div>
+      <MapLegendBody inventory={legendInventory} showAll={legendAll} onShowAll={setLegendAll} />
+    </div>
+  ) : null;
+  // TWO VIEWS, and the phone one is why the panel is not absolutely pinned anywhere. On a
+  // phone this whole rail already lives inside ONE flow column (selected chip above, tools
+  // below) precisely because pinned siblings walked into each other here twice; the legend
+  // joins that column, so opening it pushes nothing and collides with nothing. Desktop puts
+  // it beside the rail, inside the rail's own container, so it moves with it.
   if (inFlow) {
     return (
-      <div className="flex flex-col gap-1.5">
-        <Btn active={selectMode === 'box'} onClick={onBox} title="Box select — tap two corners (or drag) to grab a group"><Square size={16} /></Btn>
-        <Btn active={selectMode === 'lasso'} onClick={onLasso} title="Lasso select — tap points (or hold & draw) around stops"><Lasso size={16} /></Btn>
-        <Btn active={ninjaMode} onClick={onToggleNinja} title={ninjaAvailable ? 'Ninja — click stops onto the active Compare route' : 'Ninja — open a route in the Compare panel first'}><NinjaIcon size={16} /></Btn>
+      <div className="flex flex-col items-start gap-1.5">
+        {rail}
+        {panel}
       </div>
     );
   }
   return (
-    <div className="absolute left-2 -translate-y-1/2 z-30 flex flex-col gap-1.5" style={{ top: 'calc((100% - var(--rt-grid-h, 0px)) / 2)' }}>
-      <Btn active={selectMode === 'box'} onClick={onBox} title="Box select — tap two corners (or drag) to grab a group"><Square size={16} /></Btn>
-      <Btn active={selectMode === 'lasso'} onClick={onLasso} title="Lasso select — tap points (or hold & draw) around stops"><Lasso size={16} /></Btn>
-      <Btn active={ninjaMode} onClick={onToggleNinja} title={ninjaAvailable ? 'Ninja — click stops onto the active Compare route' : 'Ninja — open a route in the Compare panel first'}><NinjaIcon size={16} /></Btn>
+    <div className="absolute left-2 -translate-y-1/2 z-30 flex items-start gap-2" style={{ top: 'calc((100% - var(--rt-grid-h, 0px)) / 2)' }}>
+      {rail}
+      {panel}
     </div>
   );
 }
@@ -15798,7 +16188,7 @@ function VersionLogModal({ onClose }) {
 
 function RoutingScreen({ debugCaptureRef, presence = null }) {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
-  const { stops, loading, error: stopsError, refresh: refreshStops, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, ops, scanUnplannedCount } = useStops(selectedDate);
+  const { stops, loading, error: stopsError, refresh: refreshStops, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, lastCompletedScanAt, ops, scanUnplannedCount } = useStops(selectedDate);
   // Stops status card (same pill as the dispatch Map, top-right of the routing map):
   // stops count + total pallets + feed freshness + NuVizz call meter. Shares the Map's
   // collapse preference and the cheap manual-scan path (~4 calls, never the number-probe).
@@ -15820,6 +16210,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       totalPallets={boardTotalPallets}
       loadAt={lastLoadScanAt}
       unplannedAt={lastUnplannedScanAt}
+      completedAt={lastCompletedScanAt}
       isToday={isTodayET(selectedDate)}
       scanUnplannedCount={scanUnplannedCount}
       // Routing renders the whole board (its own grid/status filters live below the map),
@@ -17767,6 +18158,23 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   const drawnStops = useMemo(() => (statusFilterIds
     ? vPositioned.filter((s) => { const id = String(s.stopNbr); return statusFilterIds.has(id) || selectedIds.has(id) || effectiveRouteInfo.has(id); })
     : vPositioned), [statusFilterIds, vPositioned, selectedIds, effectiveRouteInfo]);
+
+  // The legend's inventory rides on drawnStops for the same reason the status card does: it
+  // is the one list that means "what is on this map", filters and all. The gates below are
+  // the Routing map's own — a stop numbered onto a Compare card wears a numbered pin, and a
+  // stop already planned with no card open is muted to a slate ring, and neither of those
+  // draws its restriction icons.
+  const routingLegendInventory = useLegendInventory({
+    stops: drawnStops,
+    notes,
+    dayKey: selectedDayKey,
+    tractorLocs,
+    routeStopNbrs: effectiveRouteInfo,
+    plannedMuted: true,
+    isPlanned: isPlannedStop,
+    selectedIds: viewing ? null : selectedIds,
+    searchMatchIds,
+  });
   useEffect(() => {
     if (!google || !mapRef.current) return;
     markersRef.current.forEach((m) => m.setMap(null));
@@ -18557,7 +18965,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
                     tab). In a column the chip's height MOVES the tools. Found by the
                     overlap guard, 2026-08-19. */}
                 <button onClick={() => { setMobilePanel('setup'); setSheetOpen(true); }} className="bg-white/95 border border-slate-200 rounded shadow px-2 py-1 text-[11px]" title="Review selected stops in the Setup panel">{tally.count} selected · {tally.skids} skids · {tally.pieces} pcs</button>
-                <RoutingMapTools inFlow selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} />
+                <RoutingMapTools inFlow selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} legendInventory={routingLegendInventory} />
               </div>
             )}
           {/* On mobile the selected list lives in the Setup sheet (tap the chip) — a full-width map
@@ -18705,7 +19113,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
         {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button),
             with the Board Flags chip stacked above it. */}
         <div className="absolute top-12 right-2 z-[15] max-w-[240px] flex flex-col items-end gap-1">{flagsOverlay()}{statusCard()}</div>
-        {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} />}
+        {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} legendInventory={routingLegendInventory} />}
         {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
         {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[80%] bg-slate-900/90 text-white text-[12px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={13} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
         {viewing && (

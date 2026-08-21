@@ -501,7 +501,40 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   };
   const depot = opts.depot || null;
 
-  const open = stops.filter((s) => !isFinishedStop(s));
+  // A DELIVERED PRO DOES NOT GET TO KEEP FLAGGING THROUGH ITS LEFTOVER INSTANCE RECORD.
+  //
+  // Chad, 2026-08-21, on five "Closed FRI" cards: "These deliveries have been manually
+  // completed. Is that the issue? Are we not correctly recognizing code ninety one?"
+  //
+  // 91 was never the issue — isFinishedStop has always taken 90, 91, 99 and 80, and a test
+  // pins that. The issue is that NuVizz carries a second record for the same PRO: alongside
+  // the delivered 007165852 sits 007165852-1 at status 10, UNPLANNED, no route, planned
+  // false. The delivery is recorded against the BASE number, so the instance never completes
+  // — it just sits there for ever. Both records derive the same customer key, so the note
+  // lookup finds the same "closed Friday" entry, and the rules judge the instance because,
+  // record-for-record, it genuinely is not finished.
+  //
+  // Measured on the live board the morning it was reported: 759 stops, SIX such records, and
+  // they were exactly the five customers on Chad's screen (one of them had two orders). One
+  // other instance record existed whose base had NOT delivered, and it must keep being judged
+  // — so this cannot be "ignore anything with a suffix".
+  //
+  // The suffix only means "instance" on an ALL-NUMERIC PRO. A carrier-prefixed id like
+  // AVRT-0028093763 or ESTES-0538243875 is a whole identifier, not a base plus a suffix, and
+  // a naive /-\d+$/ strip collapses every AVRT order onto the same base — which is exactly
+  // the false reading that nearly sent this fix after 31 stops instead of 6.
+  const INSTANCE_RE = /^(\d+)-\d+$/;
+  const finishedPros = new Set();
+  for (const s of stops) {
+    if (!isFinishedStop(s)) continue;
+    const n = String(s?.stopNbr ?? '').trim();
+    if (/^\d+$/.test(n)) finishedPros.add(n);
+  }
+  const isSettledInstance = (s) => {
+    const m = INSTANCE_RE.exec(String(s?.stopNbr ?? '').trim());
+    return !!m && finishedPros.has(m[1]);
+  };
+  const open = stops.filter((s) => !isFinishedStop(s) && !isSettledInstance(s));
   // AN APPOINTMENT ROUTE IS A HOLDING PEN, NOT A TRUCK — AND THAT WAS ONLY HALF-ENFORCED.
   //
   // Chad: "need to silence any flags that are on the Uline appt route." ANY, and it was not.

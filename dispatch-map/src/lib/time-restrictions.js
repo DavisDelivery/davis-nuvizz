@@ -22,20 +22,25 @@
 // second, competing set of regexes.
 //
 // SEVERITY IS ORDERED BY WHAT IT COSTS TO GET WRONG, because a dispatcher acts
-// differently on each:
+// differently on each — and the categories are THE MAP'S, so a row here and a pin there
+// always say the same thing about the same stop (see time-marks.js):
 //
-//   hard_window  the dock shuts. Arrive late and the freight comes back and goes out
-//                again tomorrow — the most expensive failure on the board. Route first.
-//   appointment  somebody must call or book BEFORE the truck rolls. The cost lands in
-//                the office, in the morning, not on the road.
-//   closed_day   the customer is shut on this weekday entirely. Do not send it today.
-//   half_day     AM/PM preference. Sequencing, not refusal — the cheapest to miss.
+//   closed_day         shut on this weekday. There is no delivery to make. Do not send it.
+//   hours_shuts_early  the dock shuts by noon, or barely opens. First stop or nothing.
+//   hours_early_close  shuts before 3pm. A deadline inside the working day.
+//   hours_opens_late   not open until 9am. Cannot lead a route.
+//   hours_extra_room   open by 6:30am or past 6pm. The one mark that is good news.
+//
+// An appointment requirement is NOT in this list. It says call somebody, which is office
+// work before a truck moves rather than a clock the road has to beat, and the map draws it
+// as a handset for the same reason. It is tracked, and dropped from the sheet by default.
 //
 // Everything here is pure: same inputs, same answer, no clock and no network. The
 // caller supplies the served date so a report for last Friday reads Friday's hours.
 
 import { parseClockMin, fmtMin, dayReceivingWindow, closedDayTier } from './board-flags.js';
 import { scanStopFull } from './signal-scanner.ts';
+import { classifyTimeMark, TIME_MARK_KEYS } from './time-marks.js';
 
 // A schedule spanning this long or longer is a working day, not a delivery window.
 // 08:00–20:00 (720) and a normal 08:00–17:00 (540) both fall through; 12:00–17:00 (300,
@@ -49,13 +54,29 @@ const DAY_LABEL = {
   fri: 'Friday', sat: 'Saturday', sun: 'Sunday',
 };
 
-// Most severe first — the order the report ranks by.
-export const TIER_ORDER = ['hard_window', 'appointment', 'closed_day', 'half_day'];
+// ONE VOCABULARY, SHARED WITH THE MAP. Chad: "make the pro report match the map."
+//
+// The report used to have categories of its own — hard_window / half_day — measured on the
+// SPAN of a window, while the map reads the two EDGES. Same customer, two answers: a dock
+// open 9–5 was cut from the sheet as a working day and marked "opens late" on the pin, and
+// nobody looking at both could tell which was lying. Neither was; they were answering
+// different questions. Now they ask the same one.
+//
+// The four time marks come from time-marks.js and are rendered on the map by the icons of
+// the same name, so a row here and a pin there always agree. `closed_day` sits above them
+// because a customer shut today is not a window to plan around — there is no delivery to
+// make at all — and it is drawn separately on the map as a red day badge.
+// Appointment sits at the BOTTOM rather than outside: it is dropped from the sheet by
+// default, but ?appointmentOnly=1 brings it back and a row with no tier at all would be a
+// row the report could not label or sort.
+export const TIER_ORDER = ['closed_day', ...TIME_MARK_KEYS, 'appointment'];
 export const TIER_LABEL = {
-  hard_window: 'Hard window',
-  appointment: 'Appointment / call ahead',
   closed_day: 'Closed today',
-  half_day: 'Half-day window',
+  hours_shuts_early: 'Shuts early',
+  hours_early_close: 'Early close',
+  hours_opens_late: 'Opens late',
+  hours_extra_room: 'Extra room',
+  appointment: 'Appointment / call ahead',
 };
 
 // 'YYYY-MM-DD' → 'mon'..'sun'. Parsed at local noon so a DST boundary can never shift the
@@ -224,6 +245,8 @@ function closesAtMin(text) {
  * @param note      that customer's customer_notes doc, or null when we hold none
  * @param servedDate 'YYYY-MM-DD' — the board day; decides WHICH weekday's hours apply
  */
+const pushMark = (kinds, mark) => { if (mark && !kinds.includes(mark)) kinds.push(mark); };
+
 export function classifyStopTimeRestriction(stop, note, servedDate, defaultSlots = null) {
   if (!stop) return null;
   const dayKey = weekdayKey(servedDate);
@@ -281,30 +304,40 @@ export function classifyStopTimeRestriction(stop, note, servedDate, defaultSlots
       sources.add('Order instructions (opens at)');
     }
   }
-  // A bare 'CLOSES AT 3 30 PM' with no range anywhere else is still a close time.
-  if (closeMin == null) {
-    const c = closesAtMin(text);
-    if (c != null) {
-      closeMin = c; hoursTier = 'auto'; hoursProvenance = 'order-text';
-      sources.add('Order instructions (closing time)');
-    }
+  // AN EXPLICIT 'CLOSES AT 3 30 PM' OUTRANKS A SCANNED RANGE, and clears the open with it.
+  // The scanner reads that phrase as a wide 6a-3:30p range by synthesising a day-start that
+  // the stop never stated — harmless when the only question was the close, but the map's
+  // rules read the OPEN edge too, and a 6am open it invented would have this stop reported
+  // as "extra room, go at dawn" when what it actually says is that it shuts at half three.
+  const explicitClose = closesAtMin(text);
+  if (explicitClose != null) {
+    closeMin = explicitClose; openMin = null;
+    hoursTier = 'auto'; hoursProvenance = 'order-text';
+    sources.delete('Order instructions (receiving hours)');
+    sources.add('Order instructions (closing time)');
   }
+  // EVERY WINDOW IS PUT THROUGH THE MAP'S OWN CLASSIFIER, so a row and a pin can never
+  // disagree. A midday closure is the one shape the marks cannot express — it is a hole in
+  // the day rather than a window around it — and the shut-from time is what binds, so it is
+  // measured as a close.
   if (split) {
     hoursLabel = `before ${fmtMin(split.shutFromMin)} or after ${fmtMin(split.shutUntilMin)}`;
-    kinds.push('hard_window');
-  } else if (closeMin != null) {
-    hoursLabel = openMin != null ? `${fmtMin(openMin)}–${fmtMin(closeMin)}` : `closes ${fmtMin(closeMin)}`;
-    kinds.push('hard_window');
-  } else if (openMin != null) {
-    hoursLabel = `opens ${fmtMin(openMin)}`;
-    kinds.push('hard_window');
+    pushMark(kinds, classifyTimeMark(null, split.shutFromMin));
+  } else if (closeMin != null || openMin != null) {
+    hoursLabel = closeMin != null
+      ? (openMin != null ? `${fmtMin(openMin)}–${fmtMin(closeMin)}` : `closes ${fmtMin(closeMin)}`)
+      : `opens ${fmtMin(openMin)}`;
+    pushMark(kinds, classifyTimeMark(openMin, closeMin));
   }
 
   // ── the order's own schedule ────────────────────────────────────────────────
+  // A 12:00-17:00 PM window says the same thing about a route as a dock that opens at
+  // noon, so it goes through the same classifier rather than getting a category of its
+  // own — which is how the sheet and the pins ended up describing one stop two ways.
   const win = orderWindow(stop, defaultSlots);
   if (win) {
     sources.add('Order schedule');
-    kinds.push(win.kind === 'appointment' ? 'hard_window' : 'half_day');
+    pushMark(kinds, classifyTimeMark(win.openMin, win.closeMin));
   }
 
   // ── an appointment you must book, or a call you must make ───────────────────
@@ -323,9 +356,14 @@ export function classifyStopTimeRestriction(stop, note, servedDate, defaultSlots
   if (closedToday) { kinds.push('closed_day'); sources.add('Customer notes (closed day)'); }
 
   // ── AM/PM preference a dispatcher set by hand ───────────────────────────────
+  // AM means be there before noon; PM means do not come before it. Expressed in the same
+  // four marks so the tag agrees with everything else on the row.
   const amPm = note?.delivery_window === 'AM' || note?.delivery_window === 'PM'
     ? note.delivery_window : null;
-  if (amPm) { kinds.push('half_day'); sources.add('Customer notes (AM/PM)'); }
+  if (amPm) {
+    pushMark(kinds, amPm === 'AM' ? classifyTimeMark(null, 12 * 60) : classifyTimeMark(12 * 60, null));
+    sources.add('Customer notes (AM/PM)');
+  }
 
   if (!kinds.length) return null;
 

@@ -261,3 +261,16 @@ test('hoursCoverage on an empty board is zeros, not a crash', () => {
   assert.equal(c.customers, 0);
   assert.deepEqual(c.refusedSamples, []);
 });
+
+test('normStopNbr strips the instance suffix ONLY on an all-numeric PRO', () => {
+  // Found while chasing the phantom-instance bug: a carrier-prefixed id is a whole
+  // identifier. Stripping its tail collapsed every AVRT order onto the bare string "AVRT",
+  // so any two of them matched each other and this endpoint would confidently explain the
+  // wrong stop — a wrong answer dressed as an answer, which is the failure mode this
+  // diagnostic exists to avoid.
+  assert.equal(normStopNbr('007165852-1'), '7165852', 'a real instance suffix still strips');
+  assert.equal(normStopNbr('AVRT-0028093763'), 'AVRT-0028093763', 'carrier id kept whole');
+  assert.equal(normStopNbr('ESTES-0538243875'), 'ESTES-0538243875');
+  assert.notEqual(normStopNbr('AVRT-0028093763'), normStopNbr('AVRT-0060538833'),
+    'two unrelated AVRT orders must never normalise to the same thing');
+});
