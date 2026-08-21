@@ -31,9 +31,19 @@ test('THE DECOUPLING: completed and planned run at different rates in the same h
   // 2pm Tuesday — trucks are running, the plan is settled. Completed matters twice as much.
   assert.equal(resolveInterval('completed', TUE, 14, rules), 15);
   assert.equal(resolveInterval('planned', TUE, 14, rules), 30);
-  // 9pm Tuesday — routing. Exactly the other way round: the plan moves, nothing is delivering.
+  // 9pm Tuesday — routing. Exactly the other way round: the plan moves, nothing delivers.
   assert.equal(resolveInterval('planned', TUE, 21, rules), 30);
-  assert.equal(resolveInterval('completed', TUE, 21, rules), 60);
+  assert.equal(resolveInterval('completed', TUE, 21, rules), null);
+});
+
+test("CHAD'S COMPLETED BANDS: 30 from 4-6am, 15 from 6am-7pm, nothing 7pm-4am", () => {
+  const r = defaultScanRules();
+  assert.equal(resolveInterval('completed', TUE, 4, r), 30);
+  assert.equal(resolveInterval('completed', TUE, 5, r), 30);
+  assert.equal(resolveInterval('completed', TUE, 6, r), 15);
+  assert.equal(resolveInterval('completed', TUE, 18, r), 15, '6pm is still inside the run');
+  assert.equal(resolveInterval('completed', TUE, 19, r), null, '7pm the pull stops');
+  assert.equal(resolveInterval('completed', TUE, 3, r), null, 'and does not resume until 4am');
 });
 
 test("CHAD'S BANDS, verbatim: 30 from 8pm, 20 through the small hours, 15 from 5am, 30 from 10am", () => {
@@ -49,9 +59,9 @@ test("CHAD'S BANDS, verbatim: 30 from 8pm, 20 through the small hours, 15 from 5
   for (const iv of [15, 20, 30]) assert.equal(effectiveCadence(iv), iv, `${iv} is honoured`);
 });
 
-test('completed is NOT pulled overnight — a 2am pull can only come back empty', () => {
+test('completed is NOT pulled 7pm-4am — nine hours a day where a pull returns empty', () => {
   const rules = defaultScanRules();
-  for (const h of [0, 1, 2, 3]) {
+  for (const h of [19, 20, 21, 22, 23, 0, 1, 2, 3]) {
     assert.equal(resolveInterval('completed', TUE, h, rules), null, `${h}:00 must not pull completed`);
   }
   // …while the plan is still watched hard overnight, because routing runs late.
@@ -209,7 +219,7 @@ test('the default plan stays comfortably inside the daily ceiling', () => {
   // /stop/info reads that give new orders their address and pin.
   assert.ok(busiest < 300, `busiest day ${busiest} must stay well under the 2,000 ceiling`);
   assert.equal(est.perDay[SAT], 0, 'nothing on Saturday');
-  assert.ok(est.byKind.completed >= est.byKind.planned, 'completed is scanned at least as hard as the plan');
+  assert.ok(est.byKind.completed > 200, 'completed is still sampled hard through the delivery day');
 });
 
 // ── the descriptions the screen shows ────────────────────────────────────────

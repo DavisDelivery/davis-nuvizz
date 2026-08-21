@@ -128,10 +128,9 @@ export const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
  * from 12am to 5am, and every 15 mins from 5am to 10am, then every 30 mins from 10am to 8pm."
  * The 20-minute band is why the cron moved to a 5-minute step — see CRON_STEP_MIN.
  *
- * Completed is the decoupling this feature exists for: hard through the delivery day, and NOT
- * PULLED AT ALL between 10pm and 4am, where it can only come back empty. 4am is the honest
- * start — the earliest measured route departure is ~3:42a and there is a delivery on record
- * at 5:04a.
+ * Completed is his too, and is the decoupling this feature exists for: "every 30 mins from
+ * 4-6am, 6am to 7pm every 15 mins, 7pm-4am not at all." Nine hours a day with no call at all,
+ * because nothing is delivering then and the pull could only come back empty.
  *
  * Roster drops to hourly. It was being pulled on every one of the ~33 fires a day for a list
  * that only changes when somebody creates a load; that reclaim pays for most of the extra
@@ -150,9 +149,10 @@ export function defaultScanRules(): ScanRule[] {
     { id: 'plan-small-hours', kind: 'planned', days: deliveryDays, startHour: 0, endHour: 5, intervalMin: 20, note: 'Routing runs late; the plan is still moving.' },
     { id: 'plan-rollout', kind: 'planned', days: deliveryDays, startHour: 5, endHour: 10, intervalMin: 15, note: 'Trucks rolling and dispatch still editing — the plan changes fastest here.' },
     { id: 'plan-day', kind: 'planned', days: deliveryDays, startHour: 10, endHour: 20, intervalMin: 30, note: 'Running day — the plan is largely settled.' },
-    // ── completed (77131) — the ETA anchor ───────────────────────────────────
-    { id: 'done-run', kind: 'completed', days: deliveryDays, startHour: 4, endHour: 20, intervalMin: 15, note: 'The delivery day — every stamp re-anchors a route clock.' },
-    { id: 'done-tail', kind: 'completed', days: deliveryDays, startHour: 20, endHour: 22, intervalMin: 60, note: 'Late deliveries closing out.' },
+    // ── completed (77131) — the ETA anchor. Chad's bands. ────────────────────
+    { id: 'done-early', kind: 'completed', days: deliveryDays, startHour: 4, endHour: 6, intervalMin: 30, note: 'First trucks rolling — a few early deliveries.' },
+    { id: 'done-run', kind: 'completed', days: deliveryDays, startHour: 6, endHour: 19, intervalMin: 15, note: 'The delivery day — every stamp re-anchors a route clock.' },
+    // 7pm-4am: NOT PULLED. Nothing is delivering, so the call can only come back empty.
     // ── load roster (35833) ──────────────────────────────────────────────────
     { id: 'roster-am', kind: 'roster', days: deliveryDays, startHour: 4, endHour: 13, intervalMin: 60, note: 'Enough to keep yesterday’s routes off today’s board.' },
     { id: 'roster-eve', kind: 'roster', days: routingNights, startHour: 20, endHour: 24, intervalMin: 60, note: 'Tomorrow’s loads appear during routing.' },
