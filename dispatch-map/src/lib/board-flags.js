@@ -502,6 +502,36 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   const depot = opts.depot || null;
 
   const open = stops.filter((s) => !isFinishedStop(s));
+  // AN APPOINTMENT ROUTE IS A HOLDING PEN, NOT A TRUCK — AND THAT WAS ONLY HALF-ENFORCED.
+  //
+  // Chad: "need to silence any flags that are on the Uline appt route." ANY, and it was not.
+  // v0.54.9x silenced the two HOURS rules because those were the ones inventing arithmetic
+  // about freight that was never going out — "estimated arrival ~1:49a vs close 5:00p, 529
+  // min late". The other rules kept firing, because they iterate the open set directly and
+  // nobody carried the exclusion across: a stop parked on ULINE APPT still raised a red for
+  // a missing pin, a duplicate order number, or a closed weekday.
+  //
+  // The reasoning that silenced the hours rules covers all of them. Chad: "anything on a
+  // Uline appt route for a given day is not actually going to deliver today, it's being held
+  // for appt, and it's places we put things like deliveries that are closed on Friday."
+  //
+  // So the route is a PARKING LOT, and it is a parking lot with two uses. Freight waiting on
+  // a scheduled appointment, and freight the dispatcher has deliberately pulled off today's
+  // board because the customer is shut. Neither is being routed today, so nothing on it is
+  // something anybody acts on today, and a red about a missing geocode on a stop nobody is
+  // driving to is the same false alarm in a different hat.
+  //
+  // The closed-day rule (R4) is the sharpest case and the one that gives the game away. A
+  // delivery to a customer closed on Friday, parked here, is the dispatcher HAVING ALREADY
+  // SOLVED the problem R4 exists to raise. Flagging it is the board telling somebody off for
+  // doing exactly the right thing — and worse, it is indistinguishable on the panel from the
+  // real version of that flag, which is a closed-day delivery still sitting on a live route.
+  //
+  // The route is still REPORTED as not judged in the panel footer, so the silence stays a
+  // visible decision rather than a gap — and it is reported from HERE, so it says so even on
+  // a board with no day or depot, which the old placement inside the hours block could not.
+  const onAppointmentRoute = (s) => isAppointmentRoute(routeKeyOf(s));
+  const judged = open.filter((s) => !onAppointmentRoute(s));
   const noteOf = (s) => (s?.matchKey ? notes.get(s.matchKey) : null) || null;
   // RECEIVING HOURS DESCRIBE DELIVERIES, AND A PICKUP IS NOT ONE.
   //
@@ -558,9 +588,10 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   );
   const rows = [];
   const skipped = { noRoster: false, ambiguousRoutes: [], routesNoSequence: [], routesAppointment: [], stopsNoPosition: 0 };
+  for (const k of [...new Set(open.filter(onAppointmentRoute).map(routeKeyOf))]) if (k) skipped.routesAppointment.push(k);
   // What the detector actually LOOKED at — the panel shows these so a quiet board can
   // prove it was watched, and so "no hours on file" is visibly a data gap, not a bug.
-  const checked = { stops: open.length, routesJudged: 0, stopsWithHours: 0, legsTotal: 0, legsGoogle: 0 };
+  const checked = { stops: judged.length, routesJudged: 0, stopsWithHours: 0, legsTotal: 0, legsGoogle: 0 };
   // Every leg the walk crosses, keyed and positioned, so the server sweep can prefetch
   // real drive times for exactly these pairs next pass. Deduped; order irrelevant.
   const legsWanted = new Map();
@@ -573,12 +604,12 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // receiving hours on file today" counting RA pickups the engine deliberately never judges.
   // The whole point of the footer is that a quiet panel can prove it was watched; a count
   // that overstates its own coverage is the one number a dispatcher cannot check.
-  if (day) for (const s of open) { if (receivingWindow(s)) checked.stopsWithHours += 1; }
+  if (day) for (const s of judged) { if (receivingWindow(s)) checked.stopsWithHours += 1; }
 
   // R1 — two NuVizz orders under one stop number (the Estes twin). Proof, not a guess: the
   // scan flags this only when record ids differ. Occurrence-scoped: cleaning the portal
   // clears it on the next scan anyway.
-  for (const s of open) {
+  for (const s of judged) {
     if (s.dupNbr || s.dupNbrSuspect) {
       rows.push(row('red', 'dup_number', s, {
         title: `2 orders share number ${s.stopNbr}`,
@@ -590,7 +621,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
 
   // R2 — no map location. Judged AFTER the pin-override join; standing-scoped and
   // fingerprinted by the address text, so fixing the address genuinely retires the row.
-  for (const s of open) {
+  for (const s of judged) {
     if (!stopPosition(s, noteOf(s))) {
       skipped.stopsNoPosition += 1;
       rows.push(row('red', 'no_location', s, {
@@ -611,7 +642,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       const { ambiguous } = resolveNameOwner(nm, rosterRows);
       if (ambiguous) ambiguousNames.add(nm.toLowerCase());
     }
-    const onBoard = new Set(open.map((s) => routeKeyOf(s).toLowerCase()));
+    const onBoard = new Set(judged.map((s) => routeKeyOf(s).toLowerCase()));
     for (const nm of ambiguousNames) {
       if (!onBoard.has(nm)) continue;
       skipped.ambiguousRoutes.push(nm);
@@ -626,7 +657,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   }
 
   // R4 — delivering to a customer recorded closed that weekday. Tier decides red vs amber.
-  for (const s of open) {
+  for (const s of judged) {
     const note = noteOf(s);
     const tier = closedDayTier(note, day);
     if (!tier) continue;
@@ -707,7 +738,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     }
     // Say what was set aside rather than quietly narrowing the sweep — the panel's footer
     // reports it, so "why is ULINE APPT never flagged" has a visible answer.
-    for (const k of apptRoutes) skipped.routesAppointment.push(k);
+    // (already reported up top, where it holds even without a day or depot)
     // R5's arrival flags, kept per route so R6 can supersede them — see the note there.
     const hoursRowsByRoute = new Map();
     for (const [k, openGroup] of byRoute) {
