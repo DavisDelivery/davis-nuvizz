@@ -12,6 +12,7 @@
 
 import { isFirestoreEnabled, listDocs, etDayString } from './firestore.mts';
 import { readUlineManifest } from './uline-manifest.mts';
+import { deliveryWindow, boardCoverage, gradeSuspects } from '../../../src/lib/manifest-window.js';
 import { reconcileAgainstBoard, summarize } from './manifest-reconcile.mts';
 import { getCreds } from './nuvizz-scan.mts';
 
@@ -34,7 +35,7 @@ export function addDays(iso: string, n: number): string {
 
 export interface ManifestDiffOptions {
   dateOverride?: string | null;  // board day to diff against; default = the manifest's ship date
-  spanDays?: number;             // also accept the next N days' boards (default 2)
+  spanDays?: number;             // also accept the next N DELIVERY days' boards (default 2)
 }
 
 /**
@@ -55,7 +56,12 @@ export async function runManifestBoardDiff(buf: Buffer, opts: ManifestDiffOption
   const spanDays = Math.min(7, Math.max(0, opts.spanDays ?? 2));
   const base = String(opts.dateOverride || '')
     || manifestDateToIso(manifest.rows[0]?.shipDate) || etDayString(new Date());
-  const dates = Array.from({ length: spanDays + 1 }, (_, i) => addDays(base, i));
+  // DELIVERY days, not calendar days. The old window was base + 2 calendar days, which is
+  // right Monday to Thursday and wrong on a Friday: the next two days are Saturday and
+  // Sunday, we deliver on neither, and Monday — where the freight actually moves — fell one
+  // day outside. Chad's 2026-08-21 run spent two of its three days on an empty weekend and
+  // never opened the board it was really looking for. See src/lib/manifest-window.js.
+  const dates = deliveryWindow(base, spanDays);
 
   let tenant = 'davis';
   try { tenant = String(getCreds().companyCode || 'davis'); } catch { /* default */ }
@@ -76,10 +82,17 @@ export async function runManifestBoardDiff(buf: Buffer, opts: ManifestDiffOption
   }
 
   const board = reconcileAgainstBoard(manifest.rows, boardPros);
+  // WHAT THESE BOARDS CAN ACTUALLY PROVE. A day with no cached stops was never scanned —
+  // for a future delivery day that is the ordinary state until the routing evening runs — so
+  // it can neither confirm nor deny an order. Riding this along lets the screen tell
+  // "we looked and it is not there" apart from "there is nothing to look at yet".
+  const coverage = boardCoverage(boardDays);
+  const grade = gradeSuspects(board.offBoard, coverage);
   return {
     ok: true,
     mode: 'board-diff', nuvizzCalls: 0,
     base, dates,
+    coverage, grade,
     manifest: {
       orders: manifest.rows.length, totals: manifest.totals,
       verified: manifest.verified, warnings: manifest.warnings,
@@ -90,9 +103,11 @@ export async function runManifestBoardDiff(buf: Buffer, opts: ManifestDiffOption
     duplicatePros: board.duplicatePros,
     suspects: board.offBoard,
     summary: summarize(board, null),
-    note: board.offBoard.length
-      ? `${board.offBoard.length} order(s) on the manifest are not on the board. That is NOT yet "missing from NuVizz" — probe from the Manifest check tab to ask NuVizz about each one.`
-      : 'Every order on the manifest is on the board. Zero NuVizz calls were made.',
+    note: !board.offBoard.length
+      ? 'Every order on the manifest is on the board. Zero NuVizz calls were made.'
+      : grade.verdict === 'unrouted'
+        ? `${board.offBoard.length} order(s) on the manifest are not on any board yet, but no board has been built for ${coverage.empty.join(', ') || 'the delivery days checked'} — tomorrow's routes are built in the routing evening. This is not a missing-freight finding; re-check after routing.`
+        : `${board.offBoard.length} order(s) on the manifest are not on the board. That is NOT yet "missing from NuVizz" — probe from the Manifest check tab to ask NuVizz about each one.`,
     // The board object rides along for the endpoint's probe step; stored copies drop it.
     _board: board,
   };
