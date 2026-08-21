@@ -48,6 +48,7 @@ import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './li
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact } from './lib/nuvizzWrite.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
+import { timeMarkForDay, TIME_MARK_KEYS } from './lib/time-marks.js';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
 import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerChipLabel, latestPeerSaveAt, PRESENCE_HEARTBEAT_MS } from './lib/presence.js';
@@ -82,7 +83,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.69.1';
+const APP_VERSION = '0.69.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -153,6 +154,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.69.2', 'THE MAP STOPS ASKING WHETHER WE HAVE HOURS AND STARTS SAYING WHICH END OF THE DAY BITES. Chad: “I want to get rid of the noise… I wanna be able to tell the difference between something that opens early, or something that stays open late, instead of an actual time restriction.” THE OLD CLOCK ANSWERED THE WRONG QUESTION. One amber clock fired whenever a customer had ANY receiving hours on file, which answers “do we know this customer’s hours?” — a question about our records. On the 21 August board that was 116 clock-type icons over 755 stops, and 67 of them were docks open a full working day: 7a–5p, 8a–5p, one open 10a–9p. Sixty-one per cent wallpaper, and no way to tell by looking whether a clock meant eleven or five. THE IDEA IS THAT A DOCK HAS TWO EDGES and each is independently a constraint or a gift. Opening at nine means it cannot lead a route; opening at six means it CAN, which is worth more than most of what the map was showing. Shutting at eleven is a deadline; open past six is slack you can spend. Four marks now, all clock-shaped so the family reads as “time” at a glance, colour carrying only what it costs to get wrong: SHUTS EARLY (rose, with the exclamation Chad asked for) closes by noon or opens ≤3h at all — first stop or nothing, 7 pins; EARLY CLOSE (amber) shuts before 3pm, 26; OPENS LATE (teal) not open until 9am, 12; EXTRA ROOM (sky) opens by 6:30am or still taking freight past 6pm, 11. Fifty-six marks where there were 116, and 37 docks keeping ordinary hours now say NOTHING — silence is the feature, and it is what makes the rest worth looking at. ONE MARK PER PIN, THE BINDING EDGE WINS, and the precedence falls out of the freight rather than out of convenience: when a dock shuts early you are going in the morning regardless, so its open edge is not news. Only when nothing binds at the CLOSE does the OPEN become the story — which is exactly how a 6am dock that stays open till five surfaces as extra room instead of vanishing. RED AND GREEN WERE UNAVAILABLE and that shaped the whole design: they mean no-tractor-trailer and tractor-trailer-friendly, both about the truck rather than the clock, and amber, orange, violet, cyan, slate and brown are spoken for across the equipment icons. So shape carries the family and every mark also has a SECOND glyph rather than leaning on hue, which is what keeps them apart when small, printed, or read by the roughly one person in twelve who is colour-blind. THE APPOINTMENT ICON IS NO LONGER A CLOCK. It drew a cyan clock on 24 pins and it is not a clock fact — it says call somebody, and the call happens in the office before a truck moves. Same cyan, now a handset, and a quarter of the time-noise leaves without losing a fact. AN OPEN WITH NO CLOSE IS NOW READ AT ALL: dayReceivingWindow returns null without a parseable close, because everything that consumed it was measuring a deadline, so a dock stating only “receiving after 10am” had been invisible. WORTH KNOWING: the map and the PRO report will disagree about a 9–5 dock. The report measures the SPAN and cuts it as a working day; the map reads the EDGES and marks it opens-late. Two different questions, two honest answers, and the report can be moved onto these same four marks whenever Chad wants them to agree. 20 new tests, 2,223 green.'],
   ['0.69.1', 'EVERY FLAG IS SILENT ON AN APPOINTMENT ROUTE NOW \u2014 THE RULE WAS ONLY HALF-ENFORCED FOR A YEAR. Chad: \u201cneed to silence any flags that are on the Uline appt route.\u201d ANY, and it was not. v0.54.9x silenced the two HOURS rules \u2014 the arrival walk and the no-driver card \u2014 because those were the ones producing arithmetic about freight that was never going out (\u201cestimated arrival ~1:49a vs close 5:00p, 529 min late\u201d for a stop deliberately parked waiting on a customer appointment). The OTHER rules kept firing the entire time, because they iterate the open set directly and nobody carried the exclusion across: a stop on ULINE APPT still raised a RED for a missing geocode, a duplicate order number, or a closed weekday. Measured on a synthetic ULINE APPT board just now: three stops, three red flags, every one of them about freight nobody is driving to today. THE REASONING THAT SILENCED THE HOURS RULES COVERS ALL OF THEM. Chad: \u201canything on a Uline appt route for a given day is not actually going to deliver today, it\u2019s being held for appt, and it\u2019s places we put things like deliveries that are closed on Friday.\u201d The route is a PARKING LOT with two uses \u2014 freight waiting on a scheduled appointment, and freight the dispatcher has deliberately pulled off today\u2019s board because the customer is shut. Neither is being routed today, so nothing on it is something anybody acts on today. THE CLOSED-DAY RULE IS THE SHARPEST CASE AND GIVES THE GAME AWAY: a delivery to a customer closed on Friday, parked here, is the dispatcher HAVING ALREADY SOLVED the problem that rule exists to raise \u2014 so flagging it is the board telling somebody off for doing exactly the right thing, and on the panel it is indistinguishable from the real version of that flag, which is a closed-day delivery still sitting on a LIVE route. A red about a missing pin on a stop nobody is driving to is the same false alarm in a different hat and costs the same attention \u2014 which is the whole reason the appointment exclusion exists. One predicate now feeds every per-stop rule (R1 duplicate numbers, R2 missing pins, R4 closed days) plus R3\u2019s is-this-route-even-on-the-board test, so a rule added later cannot quietly forget it. AND THE FOOTER STOPPED CONTRADICTING ITSELF: it counted appointment stops as \u201cwatched\u201d in the same breath as reporting the route as not judged. A quiet panel is a CLAIM, and a coverage count that includes what it set aside is the one number a dispatcher cannot check. The set-aside report also moved up out of the hours block, so a board computed without a dayKey or a depot still SAYS the route was held rather than showing nothing and explaining nothing. Six tests: none of the three faults fires on an appointment route, all three still fire on a real one, the footer counts one stop not two, the report survives a dayless board, and APPT/APPTS/APPOINTMENTS all match while APPLETON stays a real route. 2,203 tests green.'],
   ['0.69.0', 'THE TWO NUVIZZ SAVED SEARCHES NOW RUN ON THEIR OWN CLOCKS, AND THE SCAN SCHEDULE IS A REAL TABLE. Chad: “it’s time to decouple them — part of the day we need to scan more for completed, and part of the day we need to scan more for unplanned and planned… redesign the ui so I can set days of weeks and time schedules for each scan and rows of when it scans, and I want descriptions of what each scan does and what it affects.” WHY THEY WERE WRONG TOGETHER: 77128 (planned/unplanned) is about THE PLAN — which truck, what order, which driver — and churns during the routing evening and the ~10am order drop while being nearly static as trucks run. 77131 (completed) is about WHAT HAPPENED, and is dead overnight but is the whole game from first roll to last stop, because every delivery stamp RE-ANCHORS a route clock and moves every downstream ETA on that truck. One cadence for both meant the evening paid for a completed pull that could only come back empty, and the delivery day under-sampled the one feed that decides whether a flag is right. THE SCHEDULE IS CHAD’S, BAND FOR BAND. Planned: 30m 8pm-12am, 20m 12am-5am, 15m 5am-10am, 30m 10am-8pm. Completed: 30m 4-6am, 15m 6am-7pm, ONE sweep 7-10pm, nothing 10pm-4am. Roster: hourly — it was being pulled on every one of ~33 fires a day for a list that only changes when somebody creates a load, and that reclaim pays for most of the extra completed sampling. Measured: 133 discovery calls a weekday against 99 today, 665 a week against 510, still ~20% of the 2,000 ceiling. THE CRON MOVED FROM EVERY 15 MINUTES TO EVERY 5, and this is the honesty fix inside the feature: on a 15-minute cron there is no such thing as “every 20 minutes” — it snaps to 15, so the box would have said 20 while the system did 15. At a 5-minute step every interval worth typing lands exactly, and the jitter tolerance drops 7→2 with it (at 7 on a 5-minute cron a 15-minute rule would fire every 10). A fire with nothing due does two Firestore reads and returns, so the extra invocations cost NO NuVizz calls. A COMPLETED-ONLY FIRE TAKES A DELIBERATELY TINY PATH. The rebuild reads ABSENCE as meaning — a planned stop missing from a pull becomes a demote candidate — and a completed-only pull is missing every planned stop by definition. The thin-pull ratio guard would probably have caught it, but “probably, via a heuristic built for a different failure” is not a guarantee and what it guards is stops being torn off live routes mid-morning. So the overlay is its own operation: it can mark an EXISTING stop finished and nothing else — four fields, never a route, sequence, driver or plan flag, never creating or removing a stop — and the delivery stamp is write-once so a 4pm paperwork edit cannot rewrite a 12:33 delivery and drag every ETA anchored on it. THE SCREEN: one card per saved search, each with what it IS, what it AFFECTS, and its own rows of days + time band + interval. Overlapping rows resolve TIGHTEST-WINS, so there is no ordering to get wrong and adding a row can never silently slow something down. Under each card is the resolved 7×24 grid — the same resolution the scanner runs — so what a plan actually does is visible before it is saved, with blank hours meaning that scan does not run then. A typed interval the cron cannot deliver is labelled with what it will really be, and the cost line counts the ACHIEVED cadence, not the typed one. 35 new tests, 2,198 green.'],
   ['0.68.5', 'THE NO-DRIVER WATCH STARTS AT 7AM NOW, NOT 8 \u2014 AND THE HOUR IT WAS GATED ON WAS ANSWERING THE WRONG QUESTION. Chad: \u201cThe unassigned loads that we act like leaving at 12 will throw flags at 7am if there is a problem yes?\u201d They did not. The watch was gated on the FLEET\u2019S DEPARTURE HOUR (departMin, 8:00a), so a load with nobody on it and an 11:00a close stayed silent until eight \u2014 an hour of lead time thrown away on precisely the loads with the least of it, and the day sweep had already been running since 7:00a with nothing to say. THE GATE WAS INHERITED AND HAD STOPPED EARNING ITS KEEP. When the rule fired on the mere EXISTENCE of an unassigned load carrying hours, holding it until departure was the only thing standing between a dispatcher and a 6:30am wall of cards about loads they were still in the middle of assigning. v0.66.0\u2019s noon clock took that job over completely: the card fires only when a NOON start actually misses something, so an unassigned load with a 4:00p close is silent at 7am because there is no problem \u2014 not because the clock had not struck eight. Once that is true the departure gate does nothing except delay real warnings. So the two concepts are now separate constants answering their own questions: departMin is when trucks roll; NO_DRIVER_WATCH_FROM_MIN is when somebody is at a desk who can put a driver on a load, which is 7:00a, when the sweep starts. Conflating them is what caused the miss, and a test pins that a late-departing fleet no longer delays the warning. Both halves moved together \u2014 the arrival walk\u2019s driverless clock and the card\u2019s own gate read one value, so the clock cannot start without the card being allowed to speak. THE OVERNIGHT WINDOW IS DELIBERATELY STILL QUIET and is one constant away: the 12:00a\u20136:59a sweep runs on today\u2019s board with a real clock, so moving this to 0 would flag doomed loads to the night router the moment routing finishes \u2014 worth doing only if loads normally DO carry drivers overnight, which is a fact about how Davis dispatches and not one the code should guess at. 2,163 tests green.'],
@@ -1127,13 +1129,14 @@ const RESTRICTION_ICONS = {
     label: 'Appointment required',
     short: 'Appt',
     bg: '#0891b2',
-    accent: '#f59e0b',
-    glyph: '<circle cx="7" cy="7" r="3.5" fill="none" stroke="white" stroke-width="1.3"/><path d="M7 4.5 L7 7 L8.8 8" stroke="white" stroke-width="1.3" stroke-linecap="round" fill="none"/>',
-    // 22x22: clock face with hands at ~10 o'clock.
+    accent: '#0891b2',
+    // A HANDSET, not a clock (v0.65). This is not a clock fact: it says call somebody, and
+    // the call happens in the office before a truck rolls, not on the road against a
+    // deadline. It drew a cyan clock on 24 pins of the 2026-08-21 board and was a quarter
+    // of why the map read as time-noise. Same colour, same meaning, different conversation.
+    glyph: '<path d="M3.1 2.5 Q2.1 2.5 2.0 3.5 Q2.0 8.2 5.8 11.0 Q9.6 12.9 10.5 11.9 L11.9 10.5 Q12.3 10.0 11.8 9.6 L9.6 8.0 Q9.1 7.7 8.7 8.1 L7.9 8.9 Q6.1 7.9 5.1 6.1 L5.9 5.3 Q6.3 4.9 6.0 4.4 L4.4 2.2 Q4.0 1.7 3.5 2.1 Z" fill="white"/>',
     markerGlyph: `
-      <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/>
-      <line x1="11" y1="11" x2="11" y2="6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-      <line x1="11" y1="11" x2="14.5" y2="13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <path d="M4.6 2.8 Q2.9 2.8 2.7 4.5 Q2.7 12.4 9.0 17.0 Q15.3 20.2 16.8 18.5 L19.1 16.2 Q19.8 15.4 19.0 14.7 L15.3 12.1 Q14.5 11.6 13.8 12.3 L12.5 13.6 Q9.5 11.9 7.9 8.9 L9.2 7.6 Q9.9 6.9 9.4 6.1 L6.8 2.4 Q6.1 1.6 5.3 2.3 Z" fill="currentColor"/>
     `,
   },
   box_truck_only: {
@@ -1167,20 +1170,75 @@ const RESTRICTION_ICONS = {
     `,
   },
   // M4.4 — receiving hours present. Amber clock; not a prohibition. Synthesized
-  // from customer_notes.receiving_hours having any non-empty per-day value,
-  // OR from a scanner-detected hours range.
-  receiving_hours: {
-    label: 'Receiving hours',
-    short: 'Hours',
-    bg: '#f59e0b',
-    accent: '#f59e0b',
-    // 14×14 badge: clock face + hour/minute hands.
-    glyph: '<circle cx="7" cy="7" r="4.5" fill="none" stroke="white" stroke-width="1.3"/><path d="M7 4 L7 7 L9.5 8.5" stroke="white" stroke-width="1.3" stroke-linecap="round" fill="none"/>',
-    // 22×22 marker: clock face with bold hands at ~8 o'clock.
+  // ── THE TIME FAMILY (v0.65) ───────────────────────────────────────────────
+  // These four REPLACE the single amber `receiving_hours` clock, which fired whenever a
+  // customer had any hours on file and so answered "do we know this customer's hours?"
+  // rather than "will this stop bite me, and at which end of the day?". On the
+  // 2026-08-21 board that was 116 clock-type icons over 755 stops, 67 of them docks open
+  // a full working day. See src/lib/time-marks.js for the rules and the thresholds.
+  //
+  // Everything here is a CLOCK, so the shape alone says "this is about time" — colour is
+  // left to carry only how much it costs to get wrong. Red and green were unavailable
+  // (no-tractor-trailer and tractor-trailer-friendly, both about the truck), as were
+  // amber, orange, violet, cyan, slate and brown across the equipment icons. Each mark
+  // also carries a SECOND glyph rather than relying on hue, so they survive being small,
+  // being printed, and being read by the roughly one person in twelve who is colour-blind.
+  hours_shuts_early: {
+    label: 'Shuts early — first stop or nothing',
+    short: 'Shuts early',
+    bg: '#BE185D',
+    accent: '#BE185D',
+    glyph: '<circle cx="6.2" cy="7.4" r="4.3" fill="none" stroke="white" stroke-width="1.3"/><path d="M6.2 4.4 L6.2 7.4 L8.4 8.6" stroke="white" stroke-width="1.3" stroke-linecap="round" fill="none"/><rect x="11.2" y="1.6" width="1.4" height="3.4" rx="0.7" fill="white"/><circle cx="11.9" cy="6.6" r="0.85" fill="white"/>',
+    // Hands at 10 o'clock — a morning deadline — plus the exclamation.
     markerGlyph: `
-      <circle cx="11" cy="11" r="8" fill="none" stroke="currentColor" stroke-width="2"/>
-      <line x1="11" y1="11" x2="11" y2="5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-      <line x1="11" y1="11" x2="15" y2="13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="11" cy="11" r="7.6" fill="none" stroke="currentColor" stroke-width="1.9"/>
+      <line x1="11" y1="11" x2="11" y2="6.7" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+      <line x1="11" y1="11" x2="5.8" y2="8.0" stroke="currentColor" stroke-width="1.55" stroke-linecap="round"/>
+      <circle cx="18.2" cy="4.4" r="4.0" fill="currentColor"/>
+      <rect x="17.55" y="2.1" width="1.3" height="3.1" rx="0.6" fill="white"/>
+      <circle cx="18.2" cy="6.3" r="0.78" fill="white"/>
+    `,
+  },
+  hours_early_close: {
+    label: 'Early close — before the afternoon runs out',
+    short: 'Early close',
+    bg: '#B45309',
+    accent: '#B45309',
+    glyph: '<circle cx="5.8" cy="7" r="4.3" fill="none" stroke="white" stroke-width="1.3"/><path d="M5.8 4 L5.8 7 L8 8.2" stroke="white" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M11.7 2.6 L11.7 10 M9.9 8.3 L11.7 10.2 L13.5 8.3" fill="none" stroke="white" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>',
+    // Hands at 1 o'clock, and a bold arrow falling: the shutting edge is the story.
+    markerGlyph: `
+      <circle cx="9.6" cy="10.6" r="6.9" fill="none" stroke="currentColor" stroke-width="1.9"/>
+      <line x1="9.6" y1="10.6" x2="9.6" y2="6.1" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+      <line x1="9.6" y1="10.6" x2="12.8" y2="12.2" stroke="currentColor" stroke-width="1.55" stroke-linecap="round"/>
+      <path d="M19.0 5.6 L19.0 17.4 M16.4 14.6 L19.0 17.6 L21.6 14.6" fill="none" stroke="currentColor" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+    `,
+  },
+  hours_opens_late: {
+    label: 'Opens late — cannot be your first stop',
+    short: 'Opens late',
+    bg: '#0F766E',
+    accent: '#0F766E',
+    glyph: '<circle cx="8.4" cy="7" r="4.3" fill="none" stroke="white" stroke-width="1.3"/><path d="M8.4 4 L8.4 7 L10.6 8.2" stroke="white" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M0.8 7 L3.2 7 M2.1 5.7 L3.4 7 L2.1 8.3" fill="none" stroke="white" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>',
+    // An arrow entering from the left: this dock's day starts later than yours.
+    markerGlyph: `
+      <circle cx="12.4" cy="11" r="7.0" fill="none" stroke="currentColor" stroke-width="1.9"/>
+      <line x1="12.4" y1="11" x2="12.4" y2="6.4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+      <line x1="12.4" y1="11" x2="15.7" y2="12.6" stroke="currentColor" stroke-width="1.55" stroke-linecap="round"/>
+      <path d="M0.6 11 L4.6 11 M3.0 9.2 L4.9 11 L3.0 12.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    `,
+  },
+  hours_extra_room: {
+    label: 'Extra room — open early, or open late',
+    short: 'Extra room',
+    bg: '#0369A1',
+    accent: '#0369A1',
+    glyph: '<circle cx="7" cy="5.8" r="4.0" fill="none" stroke="white" stroke-width="1.3"/><path d="M7 3.1 L7 5.8 L9 6.9" stroke="white" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M1.4 11.9 L12.6 11.9 M2.8 10.7 L1.4 11.9 L2.8 13.1 M11.2 10.7 L12.6 11.9 L11.2 13.1" fill="none" stroke="white" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>',
+    // A wide span underneath: room at one end of the day or the other.
+    markerGlyph: `
+      <circle cx="11" cy="9.4" r="6.6" fill="none" stroke="currentColor" stroke-width="1.9"/>
+      <line x1="11" y1="9.4" x2="11" y2="5.2" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+      <line x1="11" y1="9.4" x2="14.1" y2="10.9" stroke="currentColor" stroke-width="1.55" stroke-linecap="round"/>
+      <path d="M1.9 19.1 L20.1 19.1 M4.0 17.2 L1.9 19.1 L4.0 21.0 M18.0 17.2 L20.1 19.1 L18.0 21.0" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
     `,
   },
   // M4.4 — closed Monday. Red circle + letter "M" + diagonal slash. Prohibition
@@ -2313,15 +2371,6 @@ function cleanInstructions(text) {
     .join('\n');
 }
 
-// True if the note carries receiving hours for ONE specific weekday key
-// ('mon'..'sun'). Same legacy-string / {open,close} tolerance as above.
-function hasReceivingHoursForDay(note, dayKey) {
-  const v = note?.receiving_hours?.[dayKey];
-  if (!v) return false;
-  if (typeof v === 'string') return v.trim().length > 0;
-  return !!(v.open || v.close);
-}
-
 // Map a "YYYY-MM-DD" date string to a receiving-hours day key ('mon'..'sun').
 // Parsed at local noon so DST/UTC never shifts the weekday (matches date-util).
 // JS getDay() is 0=Sun..6=Sat; we re-key into our Mon-first DAYS vocabulary.
@@ -2366,8 +2415,15 @@ function getRestrictionBadgeKeys(note, opts = {}) {
   }
   if (note.liftgate_required && !keys.includes('liftgate_required')) keys.push('liftgate_required');
   if (note.appointment_required && !keys.includes('appointment_required')) keys.push('appointment_required');
-  const showHours = opts.day ? hasReceivingHoursForDay(note, opts.day) : hasReceivingHours(note);
-  if (showHours) keys.push('receiving_hours');
+  // ONE time mark, chosen by the binding edge (see src/lib/time-marks.js). Replaces the
+  // old blanket clock, which fired on any hours at all. Without a day we cannot say which
+  // edge binds — a customer can shut at noon on Friday and 5pm on Wednesday — so the
+  // day-less callers (the Legend, the counts panel) get the same silence as an ordinary
+  // dock rather than a guess dressed as a fact.
+  if (opts.day) {
+    const mark = timeMarkForDay(note, opts.day);
+    if (mark && !keys.includes(mark)) keys.push(mark);
+  }
   const closed = Array.isArray(note.closed_days) ? note.closed_days : [];
   const closedOrder = ['mon', 'fri', 'tue', 'wed', 'thu', 'sat', 'sun'];
   for (const day of closedOrder) {
@@ -2735,7 +2791,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   // map behind a clock (Chad). Dropping the clock here lets the AM/PM tag show (State A); any
   // OTHER restriction icon (liftgate, no-tractor, appointment, closed-day) still stands.
   if (note?.delivery_window === 'AM' || note?.delivery_window === 'PM') {
-    restrictions = restrictions.filter((r) => r !== 'receiving_hours');
+    restrictions = restrictions.filter((r) => !TIME_MARK_KEYS.includes(r));
   }
   const flagHue = (note?.priority_flag && FLAG_COLORS[note.priority_flag]) ? FLAG_COLORS[note.priority_flag] : null;
   // Dispatcher-set vehicle eligibility recolors the pin (green = trailer OK, red =
