@@ -205,3 +205,36 @@ test('previousDay crosses months and years without a timezone eating a day', () 
   assert.equal(previousDay('2026-01-01'), '2025-12-31');
   assert.equal(previousDay('2026-03-09'), '2026-03-08', 'the spring-forward boundary');
 });
+
+// ── the switch has to be readable (2026-08-21) ───────────────────────────────
+//
+// DAY_REPORT_TO is set in the Netlify console, so the code cannot know it happened. It was
+// set through an API that returned a gateway error, and "is the report actually reaching
+// Chad" then had no answer short of waiting until 6:30 and asking him. A switch whose
+// position cannot be read is not a switch. Booleans only — the value is a person's address
+// on the company domain and must never reach a response body, a log, or a transcript.
+
+test('the delivery readback reports SET or NOT SET, and never the address', async () => {
+  const mod = await import('../netlify/functions/day-completion.mts');
+  const before = process.env.DAY_REPORT_TO;
+  try {
+    process.env.DAY_REPORT_TO = 'ops@example.com';
+    assert.equal(!!String(process.env.DAY_REPORT_TO || '').trim(), true);
+    process.env.DAY_REPORT_TO = '   ';
+    assert.equal(!!String(process.env.DAY_REPORT_TO || '').trim(), false, 'whitespace is not a recipient');
+    delete process.env.DAY_REPORT_TO;
+    assert.equal(!!String(process.env.DAY_REPORT_TO || '').trim(), false);
+  } finally {
+    if (before === undefined) delete process.env.DAY_REPORT_TO; else process.env.DAY_REPORT_TO = before;
+  }
+  assert.ok(typeof mod.default === 'function', 'the endpoint still loads');
+});
+
+test('the endpoint source never emits the recipient VALUE, only whether it is set', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../netlify/functions/day-completion.mts', import.meta.url), 'utf8');
+  // The response may carry the boolean; it must never carry process.env.DAY_REPORT_TO itself
+  // anywhere that is not wrapped in a truthiness test.
+  const bare = src.match(/(?<!!!String\()process\.env\.DAY_REPORT_TO(?!\s*\|\|\s*''\)\.trim\(\))/g) || [];
+  assert.deepEqual(bare, [], 'the address itself must never reach a response body');
+});

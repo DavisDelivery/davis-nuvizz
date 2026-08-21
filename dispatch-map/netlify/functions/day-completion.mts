@@ -16,6 +16,7 @@
 //
 // Read-only. Firestore only. ZERO NuVizz calls.
 import { isFirestoreEnabled, readStops, etDayString } from './lib/firestore.mts';
+import { emailEnabled } from './lib/email.mts';
 import { buildDayCompletion, dayCompletionSubject, dayCompletionText } from './lib/day-completion.mts';
 import { listDayCompletions, readDayCompletion, HISTORY_DAYS } from './lib/day-completion-store.mts';
 
@@ -55,6 +56,22 @@ export default async (req: Request): Promise<Response> => {
         ? (full ? stored.snapshot : { ...stored.snapshot, openStops: undefined, unableStops: undefined })
         : null,
       reconciliation: stored?.reconciliation ?? null,
+      // CAN THIS THING ACTUALLY MAIL ANYONE? Two booleans, never the addresses.
+      //
+      // Setting the recipient is a Netlify console action, so the code has no way to know it
+      // happened — and the evening job's own status is written where nobody looks. That gap
+      // is not hypothetical: the variable was set through an API that returned a gateway
+      // error, and "is the report reaching Chad" then had no answer short of waiting until
+      // 6:30 and asking him. A switch whose position cannot be read is not a switch.
+      //
+      // Booleans only. The value is a person's address on the company domain and must never
+      // appear in a response body, a log, or a transcript — and knowing it is SET is the
+      // whole question anyway.
+      delivery: {
+        emailConfigured: emailEnabled(),
+        recipientConfigured: !!String(process.env.DAY_REPORT_TO || '').trim(),
+        disabled: process.env.DAY_REPORT_ENABLED === '0',
+      },
       ...(url.searchParams.get('email') === '1'
         ? { emailPreview: { subject: dayCompletionSubject(live), text: dayCompletionText(live) } }
         : {}),
