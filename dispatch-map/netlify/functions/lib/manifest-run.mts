@@ -12,7 +12,7 @@
 
 import { isFirestoreEnabled, listDocs, etDayString } from './firestore.mts';
 import { readUlineManifest } from './uline-manifest.mts';
-import { deliveryWindow, boardCoverage, gradeSuspects } from '../../../src/lib/manifest-window.js';
+import { deliveryWindow, manifestWindow, boardCoverage, gradeSuspects } from '../../../src/lib/manifest-window.js';
 import { reconcileAgainstBoard, summarize } from './manifest-reconcile.mts';
 import { getCreds } from './nuvizz-scan.mts';
 
@@ -44,6 +44,17 @@ export interface ManifestDiffOptions {
  * ok:false shapes included — so a stored email-run and a stored manual run are
  * interchangeable to every consumer. Zero NuVizz calls, Firestore reads only.
  */
+/** The ship date most rows agree on. One mis-parsed row must not move the whole window. */
+function modeShipDate(rows: any[]): string | null {
+  const tally = new Map<string, number>();
+  for (const r of (rows || [])) {
+    const d = String(r?.shipDate || '').trim();
+    if (d) tally.set(d, (tally.get(d) || 0) + 1);
+  }
+  if (!tally.size) return null;
+  return [...tally.entries()].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))[0][0];
+}
+
 export async function runManifestBoardDiff(buf: Buffer, opts: ManifestDiffOptions = {}): Promise<any> {
   if (!isFirestoreEnabled()) return { ok: false, error: 'Firestore off — no board to check against' };
   if (buf.subarray(0, 4).toString('latin1') !== '%PDF') return { ok: false, error: 'not a PDF' };
@@ -54,14 +65,21 @@ export async function runManifestBoardDiff(buf: Buffer, opts: ManifestDiffOption
   }
 
   const spanDays = Math.min(7, Math.max(0, opts.spanDays ?? 2));
-  const base = String(opts.dateOverride || '')
-    || manifestDateToIso(manifest.rows[0]?.shipDate) || etDayString(new Date());
-  // DELIVERY days, not calendar days. The old window was base + 2 calendar days, which is
-  // right Monday to Thursday and wrong on a Friday: the next two days are Saturday and
-  // Sunday, we deliver on neither, and Monday — where the freight actually moves — fell one
-  // day outside. Chad's 2026-08-21 run spent two of its three days on an empty weekend and
-  // never opened the board it was really looking for. See src/lib/manifest-window.js.
-  const dates = deliveryWindow(base, spanDays);
+  // THE SHIP DATE IS NOT THE DELIVERY DAY. Chad: "Uline date column in manifest is date
+  // shipped so expectation is we deliver it next business day except for the manifest we get
+  // on sundays that is for Tuesday." The check had been using the column straight as a board
+  // date and absorbing the difference with a tolerance window — which is why a Friday manifest
+  // was diffed against Friday's board and reported 18 orders missing that were never for
+  // Friday at all. manifestWindow does the real mapping, Sunday exception included.
+  //
+  // Mode of the ship dates, not rows[0]: one stray row must not move the whole window.
+  const shipIso = manifestDateToIso(modeShipDate(manifest.rows));
+  const override = String(opts.dateOverride || '');
+  const win = override
+    ? { expected: override, required: [override], dates: deliveryWindow(override, spanDays) }
+    : manifestWindow(shipIso, spanDays);
+  const base = win.expected || override || shipIso || etDayString(new Date());
+  const dates = win.dates.length ? win.dates : deliveryWindow(base, spanDays);
 
   let tenant = 'davis';
   try { tenant = String(getCreds().companyCode || 'davis'); } catch { /* default */ }
@@ -86,12 +104,16 @@ export async function runManifestBoardDiff(buf: Buffer, opts: ManifestDiffOption
   // for a future delivery day that is the ordinary state until the routing evening runs — so
   // it can neither confirm nor deny an order. Riding this along lets the screen tell
   // "we looked and it is not there" apart from "there is nothing to look at yet".
-  const coverage = boardCoverage(boardDays);
+  const coverage = boardCoverage(boardDays, win.required);
   const grade = gradeSuspects(board.offBoard, coverage);
   return {
     ok: true,
     mode: 'board-diff', nuvizzCalls: 0,
     base, dates,
+    // Both dates, named, so the screen can say "shipped Friday, expected Monday" instead of
+    // leaving a dispatcher to work out why it looked at the days it looked at.
+    shipDate: shipIso || null,
+    expectedDelivery: win.expected || null,
     coverage, grade,
     manifest: {
       orders: manifest.rows.length, totals: manifest.totals,

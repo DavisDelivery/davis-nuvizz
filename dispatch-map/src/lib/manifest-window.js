@@ -54,6 +54,60 @@ export function shiftIso(iso, n) {
   return d.toISOString().slice(0, 10);
 }
 
+/** The next Monday-to-Friday after `iso`. */
+export function nextDeliveryDay(iso) {
+  let cur = iso;
+  for (let guard = 0; guard < 8; guard++) {
+    cur = shiftIso(cur, 1);
+    if (!cur) return null;
+    if (isDeliveryDay(cur)) return cur;
+  }
+  return null;
+}
+
+/**
+ * WHEN FREIGHT SHIPPED ON `shipIso` IS EXPECTED TO DELIVER.
+ *
+ * Chad, asked what Uline's date column means: "Uline date column in manifest is date shipped
+ * so expectation is we deliver it next business day except for the manifest we get on sundays
+ * that is for Tuesday."
+ *
+ * So the column is a SHIP date and the board is a DELIVERY day — two different things that the
+ * check had been treating as one, then papering over with a tolerance window. Ship Thursday,
+ * deliver Friday. Ship Friday, deliver Monday. Ship Saturday, deliver Monday.
+ *
+ * SUNDAY IS THE EXCEPTION and it is a real one, not an off-by-one: a Sunday-shipped load moves
+ * Sunday night, is received Monday, routed Monday evening and delivered TUESDAY. Next business
+ * day would say Monday, and Monday is wrong.
+ */
+export function expectedDeliveryDate(shipIso) {
+  const wd = isoWeekday(shipIso);
+  if (wd == null) return null;
+  let cur = String(shipIso);
+  for (let i = 0, hops = wd === 0 ? 2 : 1; i < hops; i++) {
+    cur = nextDeliveryDay(cur);
+    if (!cur) return null;
+  }
+  return cur;
+}
+
+/**
+ * The days to open for a manifest, split into the day that DECIDES and the days that only
+ * give the order somewhere else to turn up.
+ *
+ *   required — the expected delivery day. The check can only conclude "missing" when this
+ *              board exists; that is the board the freight is supposed to be on.
+ *   dates    — required plus `slack` further delivery days, because a deferred order lands
+ *              later. These are extra places to LOOK, and deliberately not extra days that
+ *              must be scanned: requiring them would make every check inconclusive, since the
+ *              day after tomorrow is never routed yet.
+ */
+export function manifestWindow(shipIso, slack = 2) {
+  const expected = expectedDeliveryDate(shipIso);
+  if (!expected) return { expected: null, required: [], dates: [] };
+  return { expected, required: [expected], dates: deliveryWindow(expected, slack) };
+}
+
 /**
  * The days a manifest order could plausibly land on: the base date itself, then the next
  * `span` DELIVERY days after it.
@@ -84,10 +138,17 @@ export function deliveryWindow(baseIso, span = 2) {
  * that was never scanned — for a future date that is the ordinary state until the routing
  * evening runs — and it can neither confirm nor deny anything.
  */
-export function boardCoverage(boardDays) {
+export function boardCoverage(boardDays, required) {
   const days = Array.isArray(boardDays) ? boardDays.filter((d) => d && typeof d === 'object') : [];
   const withBoard = days.filter((d) => Number(d.stops) > 0);
   const empty = days.filter((d) => !(Number(d.stops) > 0));
+  // Which days must be scanned before "missing" is sayable. Given a required set, it is the
+  // expected delivery day alone; without one — an older stored run that never recorded it —
+  // fall back to demanding all of them, which is the conservative reading and downgrades a
+  // stale verdict to a warning rather than leaving it shouting.
+  const req = Array.isArray(required) && required.length ? required.map(String) : null;
+  const haveBoard = new Set(withBoard.map((d) => String(d.date)));
+  const missingRequired = req ? req.filter((d) => !haveBoard.has(d)) : empty.map((d) => String(d.date));
   return {
     days: days.length,
     checked: withBoard.map((d) => String(d.date)),
@@ -110,7 +171,9 @@ export function boardCoverage(boardDays) {
     // actionable, there is nothing to chase into a board that does not exist. The NIGHTLY
     // check, which runs after routing with the boards in place, is the one that produces the
     // red alert, and it does so at the moment somebody can still act on it.
-    conclusive: days.length > 0 && empty.length === 0,
+    required: req || [],
+    missingRequired,
+    conclusive: days.length > 0 && missingRequired.length === 0,
     totalStops: withBoard.reduce((s, d) => s + (Number(d.stops) || 0), 0),
   };
 }
@@ -152,7 +215,11 @@ export function gradeText(grade, coverage) {
     // Name only the DELIVERY days that are missing a board. A weekend day in the window has no
     // board because we do not deliver then, which is not news and reads as noise beside the
     // day that actually matters.
-    const days = (coverage?.empty || []).filter(isDeliveryDay);
+    // Name the day that actually decides — the expected delivery day we could not open —
+    // falling back to any empty delivery day. "No board has been built for Saturday" is
+    // noise; we never build one.
+    const req = (coverage?.missingRequired || []).filter(isDeliveryDay);
+    const days = req.length ? req : (coverage?.empty || []).filter(isDeliveryDay);
     const named = days.join(', ');
     return `${n} order${s} not routed yet — no board has been built for ${named || 'the delivery days checked'}`;
   }
