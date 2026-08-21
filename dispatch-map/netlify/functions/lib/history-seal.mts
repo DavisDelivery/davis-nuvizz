@@ -142,6 +142,35 @@ export async function finalizeCaptureSeal(input: FinalizeInput, io: Partial<Seal
   const driverIds = new Set(driverRecords.map((r) => histDocId(String(r.driverKey))));
   const checksum = computeStopChecksum(stopsForChecksum);
 
+  // A ZERO-STOP CAPTURE IS NOT A VERIFIED EMPTY DAY.
+  //
+  // allPresent() answers "is every intended id in the readback?", and over an EMPTY id set
+  // that is vacuously true — so a capture that read zero stops verified on all three
+  // collections and sealed a manifest reading verified:true, complete:true, stops:0. A day
+  // with 800 real stops, captured on a night the source came back empty, became a permanent
+  // record of a day Davis did not run.
+  //
+  // And it was unrecoverable by design: classifyHealTarget refuses a sealed date
+  // ('refuse_sealed'), so the heal path that exists precisely for holes would decline to
+  // touch it. The hole was invisible AND self-defending.
+  //
+  // A genuinely empty day still has a home — writeTombstone marks one deliberately, with
+  // no_board:true and a stated reason. What must never happen is an empty capture SEALING
+  // itself as if it had been verified. So this refuses, loudly, and leaves a failure record
+  // the heal path can act on.
+  if (stopIds.size === 0) {
+    const emptyCounts = manifestCountsFromReadback([], [], []);
+    await $.recordFailure(tenant, date, 'verify',
+      'capture produced ZERO stops — refusing to seal. An empty readback verifies vacuously, '
+      + 'so sealing here would mint a verified:true/complete:true manifest over a day that was '
+      + 'never actually read. If this date genuinely has no board, tombstone it deliberately.',
+      { intended: { stops: 0, routes: routeIds.size, drivers: driverIds.size }, persisted: emptyCounts });
+    return {
+      verified: false, sealed: false, counts: emptyCounts, checksum,
+      detail: { stopsOk: false, routesOk: false, driversOk: false, attempts: 0 },
+    };
+  }
+
   let stopsOk = false, routesOk = false, driversOk = false, attempts = 0;
   let rbStops: any[] = [], rbRoutes: any[] = [], rbDrivers: any[] = [];
   // Retry the readback: the seal's historical failure mode is a transient
