@@ -59,14 +59,15 @@ test('the SAME 18 against a real board stay an alert — the fix must not mute a
     manifest: { orders: 18, verified: true },
     onBoard: 0,
     suspects: sus(18),
-    checkedAgainst: [{ date: '2026-08-21', stops: 758 }, { date: '2026-08-24', stops: 0 }],
+    // EVERY day in the window scanned — the nightly run, after routing. Nothing to excuse it.
+    checkedAgainst: [{ date: '2026-08-21', stops: 758 }, { date: '2026-08-24', stops: 640 }],
   });
   assert.equal(r.level, 'alert');
   assert.equal(r.badge, 18);
   assert.equal(r.issues[0].kind, 'not_on_board');
   assert.match(manifestHeadline(r.ok === false ? r : {
     ...clean, manifest: { orders: 18 }, suspects: sus(18),
-    checkedAgainst: [{ date: '2026-08-21', stops: 758 }],
+    checkedAgainst: [{ date: '2026-08-21', stops: 758 }, { date: '2026-08-24', stops: 640 }],
   }), /NOT in the scan/);
 });
 

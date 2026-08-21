@@ -72,7 +72,10 @@ test('a day with no cached stops cannot deny anything — it was never scanned',
   ]);
   assert.deepEqual(cov.checked, ['2026-08-21']);
   assert.deepEqual(cov.empty, ['2026-08-22', '2026-08-23']);
-  assert.equal(cov.conclusive, true, 'one real board was opened');
+  // NOT conclusive, and this is the correction that made the fix actually work. One real
+  // board is not enough: Friday's 758 stops say nothing about freight bound for a day whose
+  // board has not been built.
+  assert.equal(cov.conclusive, false, 'an unbuilt day in the window is a day the order might be on');
   assert.equal(cov.totalStops, 758);
 });
 
@@ -129,11 +132,33 @@ test('no suspects is no verdict at all', () => {
   assert.equal(gradeText(gradeSuspects([], cov), cov), '');
 });
 
-test('the downgrade can only ever fire when NO board was opened', () => {
-  // The property that keeps a genuinely lost order visible: one real board is enough to
-  // conclude, however many empty days sit beside it.
-  const cov = boardCoverage([
+test('ONE unbuilt day in the window is enough to withhold the alert', () => {
+  // The rule that made the difference. "At least one real board" called Chad's Friday run
+  // conclusive on the strength of a board that could not have held the freight in question.
+  const partial = boardCoverage([
     { date: '2026-08-21', stops: 758 }, { date: '2026-08-24', stops: 0 }, { date: '2026-08-25', stops: 0 },
   ]);
-  assert.equal(gradeSuspects([{ pro: '1' }], cov).verdict, 'missing');
+  assert.equal(gradeSuspects([{ pro: '1' }], partial).verdict, 'unrouted');
+});
+
+test('EVERY day scanned and still off the board is the alert worth waking somebody for', () => {
+  // The nightly check, after the routing evening: the boards exist, the order is on none of
+  // them. This is the finding the whole feature is for, and it must survive the downgrade.
+  const full = boardCoverage([
+    { date: '2026-08-21', stops: 758 }, { date: '2026-08-24', stops: 640 }, { date: '2026-08-25', stops: 611 },
+  ]);
+  assert.equal(full.conclusive, true);
+  assert.equal(gradeSuspects([{ pro: '1' }], full).verdict, 'missing');
+  assert.match(gradeText(gradeSuspects([{ pro: '1' }], full), full), /not in the scan/i);
+});
+
+test('the unrouted sentence names the DELIVERY day, not the weekend', () => {
+  // Saying "no board has been built for Saturday" is noise — we never build one.
+  const cov = boardCoverage([
+    { date: '2026-08-21', stops: 758 }, { date: '2026-08-22', stops: 0 },
+    { date: '2026-08-23', stops: 0 }, { date: '2026-08-24', stops: 0 },
+  ]);
+  const text = gradeText(gradeSuspects([{ pro: '1' }], cov), cov);
+  assert.match(text, /2026-08-24/);
+  assert.doesNotMatch(text, /2026-08-22|2026-08-23/, 'a weekend day has no board by design');
 });

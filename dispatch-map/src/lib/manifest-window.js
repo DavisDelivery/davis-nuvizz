@@ -96,9 +96,21 @@ export function boardCoverage(boardDays) {
     // information — an old stored result, a malformed one — is NOT the same as one that
     // looked and found them empty, and the two must not grade alike.
     known: days.length > 0,
-    // Could ANY board we opened have held a manifest order? If not, "not on the board" is a
-    // statement about our scanning, not about the freight.
-    conclusive: withBoard.length > 0,
+    // EVERY day, not any day. This was "at least one real board was opened", and that is too
+    // weak by exactly the amount that matters: on Friday the 08-21 board is real and holds 758
+    // stops, so one-real-board called the run conclusive — about freight that is for MONDAY,
+    // whose board does not exist. Widening the window to reach Monday did not help while this
+    // said "any", and the banner stayed red. A suspect is only chase-able when every day it
+    // could plausibly land on has actually been scanned; one unbuilt day in the window is a
+    // day the order might be sitting on.
+    //
+    // The cost of the strong rule, stated plainly: a MIDDAY run is usually inconclusive, since
+    // tomorrow's board is not built until the routing evening. That is correct rather than
+    // unfortunate — an alert at noon about freight that has not been routed yet is not
+    // actionable, there is nothing to chase into a board that does not exist. The NIGHTLY
+    // check, which runs after routing with the boards in place, is the one that produces the
+    // red alert, and it does so at the moment somebody can still act on it.
+    conclusive: days.length > 0 && empty.length === 0,
     totalStops: withBoard.reduce((s, d) => s + (Number(d.stops) || 0), 0),
   };
 }
@@ -137,8 +149,12 @@ export function gradeText(grade, coverage) {
     return `${n} order${s} on the manifest ${n === 1 ? 'is' : 'are'} not in the scan`;
   }
   if (grade?.verdict === 'unrouted') {
-    const days = (coverage?.empty || []).join(', ');
-    return `${n} order${s} not routed yet — no board has been built for ${days || 'the delivery days checked'}`;
+    // Name only the DELIVERY days that are missing a board. A weekend day in the window has no
+    // board because we do not deliver then, which is not news and reads as noise beside the
+    // day that actually matters.
+    const days = (coverage?.empty || []).filter(isDeliveryDay);
+    const named = days.join(', ');
+    return `${n} order${s} not routed yet — no board has been built for ${named || 'the delivery days checked'}`;
   }
   return '';
 }
