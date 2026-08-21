@@ -73,6 +73,17 @@ test('3:00pm exactly is the cliff, and it falls on the quiet side', () => {
   assert.equal(classifyTimeMark(at(7), at(14, 59)), 'hours_early_close');
 });
 
+test('a 6am dock that shuts at three still reads as EXTRA ROOM, not as a deadline', () => {
+  // Chad asked what the 4pm line would cost before deciding to leave it at three, and this
+  // is the answer that decided it. The map goes from 56 marks to 72, and four of the newly
+  // amber pins are 6am docks — NEFAB, Dixie Seal, Space Pole, FBM — that today say "go at
+  // dawn". A driver sent to a 6a-3p dock first is never late, so trading the dawn signal
+  // for a deadline he does not need is the expensive direction to be wrong in.
+  assert.equal(classifyTimeMark(at(6), at(15)), 'hours_extra_room');
+  assert.equal(classifyTimeMark(at(6), at(14, 59)), 'hours_early_close',
+    'one minute earlier and the close genuinely binds — then the deadline outranks the dawn');
+});
+
 // ── mark 3 — opens late ──────────────────────────────────────────────────────
 
 test('a dock that opens at 9 cannot lead a route', () => {
