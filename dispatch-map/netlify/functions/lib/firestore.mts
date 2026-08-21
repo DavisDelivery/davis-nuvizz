@@ -381,6 +381,12 @@ export interface StopIndexMeta {
   // single stamp would mislead. UTC instants; the UI shows them split.
   lastLoadScanAt?: string | null;
   lastUnplannedScanAt?: string | null;
+  // The COMPLETED feed (saved search 77131) runs on its own cadence — through the delivery
+  // day far more often than the planned pull — and most of those fires are the cheap overlay,
+  // which never rewrites this document. Without its own stamp the status card could only
+  // report the planned scan's age, so a completed scan running every 15 minutes looked like
+  // nothing had happened for half an hour. See markCompletedScan below.
+  lastCompletedScanAt?: string | null;
   // Set when a scan cycle is SUPPRESSED (daily ceiling reached or kill switch),
   // so the UI can show an honest banner instead of silent staleness. Cleared on
   // the next successful scan.
@@ -434,7 +440,7 @@ export async function writeStops(
   dateStr: string,
   stops: any[],
   scannedAt: string,
-  opts: { includeUnplanned?: boolean; includeLoads?: boolean; partialLoads?: boolean; partialUnplanned?: boolean; rescannedLoads?: number[];
+  opts: { includeUnplanned?: boolean; includeLoads?: boolean; includeCompleted?: boolean; partialLoads?: boolean; partialUnplanned?: boolean; rescannedLoads?: number[];
     // Scan-race stamp preservation (audit C2): the scan snapshots the board MINUTES before this
     // write (vendor pulls + enrichment + geocoding sit in between), so a save's write-through
     // stamp landing in that window was clobbered by the full-row rewrite — grace and demotion
@@ -506,6 +512,9 @@ export async function writeStops(
     // carries forward, so "Loads/Orders updated …" reflects the real last scan.
     lastLoadScanAt: includeLoads ? scannedAt : (prevMeta?.lastLoadScanAt ?? null),
     lastUnplannedScanAt: includeUnplanned ? scannedAt : (prevMeta?.lastUnplannedScanAt ?? null),
+    // A full two-search scan pulls 77131 alongside 77128, so it IS a completed scan and
+    // stamps as one. Carried forward otherwise, exactly like the other two.
+    lastCompletedScanAt: opts.includeCompleted ? scannedAt : (prevMeta?.lastCompletedScanAt ?? null),
     // A successful scan clears any prior halted state (ceiling/kill switch).
     scanState: null,
   };
@@ -800,6 +809,28 @@ export async function markScanKinds(kinds: string[], atISO: string): Promise<voi
  * here would mean building a board row out of a completed-list row that carries no route, no
  * sequence and no address, and the next full scan is what legitimately adds it.
  */
+/**
+ * Stamp "a completed pull ran at this instant" on the day index.
+ *
+ * FIELD-MASKED on purpose. The overlay path does not own this document — the meta carries the
+ * board's counts and the other two feed stamps — and setDoc here REPLACES, so writing the
+ * stamp the lazy way would take the stop counts and the planned/orders stamps with it. This
+ * is the case updateDocFields exists for.
+ *
+ * Best-effort by design: the overlay's actual work is the stop patches, and failing to record
+ * a timestamp must never turn a successful scan into a reported failure. A missed stamp shows
+ * up as an older "Completed" age and nothing else.
+ */
+export async function markCompletedScan(tenant: string, dateStr: string, atISO: string): Promise<boolean> {
+  if (!isFirestoreEnabled()) return false;
+  try {
+    await updateDocFields(`${COLLECTION}/${parentId(tenant, dateStr)}`, { lastCompletedScanAt: atISO });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function applyCompletionPatches(
   tenant: string,
   dateStr: string,
