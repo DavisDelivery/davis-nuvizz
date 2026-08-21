@@ -156,7 +156,7 @@ test('monitor mode: crosses the ceiling but never trips or blocks (logs would-tr
 // running at 20,000 (an env var), the Diagnostics editor could reach 200,000, and the breaker
 // defaulted to MONITOR — count and warn, never block. Three separate ways the spend cap could
 // be higher than intended, or not a cap at all.
-import { clampCeiling, HARD_DAILY_CEILING, effectiveDailyCeiling, setDailyCeilingOverride, BREAKER_MODE } from '../netlify/functions/lib/nuvizz-request.mts';
+import { clampCeiling, HARD_DAILY_CEILING, effectiveDailyCeiling, reportedDailyCeiling, setDailyCeilingOverride, BREAKER_MODE } from '../netlify/functions/lib/nuvizz-request.mts';
 
 test('the hard cap is 2,000 and nothing may raise it', () => {
   assert.equal(HARD_DAILY_CEILING, 2000);
@@ -205,4 +205,59 @@ test('the breaker BLOCKS at the clamped ceiling, not at the requested one', asyn
   };
   const r = createNuvizzRequester(deps, { dailyCeiling: 20_000, breakerMode: 'enforce', maxRetries: 0, backoffTotalCapMs: 1000 });
   assert.equal(r.getStats().ceiling, 2000, 'the pill reports the ENFORCED number, not the requested one');
+});
+
+// ── THE NUMBER ON THE SPEND GAUGE ────────────────────────────────────────────
+//
+// Chad: "Fix that card to accurately represent what the ceiling is." It read "216 / 20,000"
+// while the breaker was tripping at 2,000. A gauge that overstates headroom tenfold is worse
+// than no gauge — it is the number somebody consults before turning a scan cadence up.
+
+test('the card cannot print a ceiling the breaker will not honour — the real 20,000 case', () => {
+  // The site's actual NUVIZZ_DAILY_CEILING, which the board endpoint used to report raw.
+  assert.equal(reportedDailyCeiling(undefined, { NUVIZZ_DAILY_CEILING: '20000' }), 2000);
+  assert.equal(reportedDailyCeiling(null, { NUVIZZ_DAILY_CEILING: 20000 }), 2000);
+});
+
+test('a stored Diagnostics ceiling is clamped too — readScanConfig returns the raw document', () => {
+  // The editor bounds dailyCeiling to 2,000 on WRITE, but a value saved before that bound
+  // existed comes back unclamped, and would print just as dishonestly as the env one.
+  assert.equal(reportedDailyCeiling(20000, {}), 2000);
+  assert.equal(reportedDailyCeiling(200000, {}), 2000);
+  assert.equal(reportedDailyCeiling(2001, {}), 2000);
+});
+
+test('a genuinely lower ceiling is reported as set — the clamp only ever lowers', () => {
+  assert.equal(reportedDailyCeiling(500, { NUVIZZ_DAILY_CEILING: '20000' }), 500);
+  assert.equal(reportedDailyCeiling(undefined, { NUVIZZ_DAILY_CEILING: '900' }), 900);
+  assert.equal(reportedDailyCeiling(1200, {}), 1200);
+});
+
+test('no config and no env is the hard cap, not the 12,000 that appeared nowhere else', () => {
+  // The old expression fell back to a literal 12,000 that matched no other number in the
+  // system — neither the hard cap, nor the env, nor the editor bound.
+  assert.equal(reportedDailyCeiling(undefined, {}), HARD_DAILY_CEILING);
+  assert.equal(reportedDailyCeiling(undefined, {}), 2000);
+  assert.notEqual(reportedDailyCeiling(undefined, {}), 12000);
+});
+
+test('junk in the config or the env falls back rather than printing junk', () => {
+  // true coerces to 1 and [1500] coerces to 1500, so a bare Number() here would have the
+  // gauge reporting a ceiling of ONE call, or trusting an array. Both must fall through.
+  for (const junk of [0, -1, NaN, 'abc', '', {}, [], [1500], true, false, null, undefined]) {
+    assert.equal(reportedDailyCeiling(junk, { NUVIZZ_DAILY_CEILING: '1500' }), 1500, JSON.stringify(junk) ?? String(junk));
+  }
+  assert.equal(reportedDailyCeiling(true, {}), HARD_DAILY_CEILING, 'true is not a ceiling of 1');
+  assert.equal(reportedDailyCeiling(undefined, { NUVIZZ_DAILY_CEILING: 'abc' }), 2000);
+  assert.equal(reportedDailyCeiling(undefined, null), 2000);
+  assert.equal(reportedDailyCeiling(), clampCeiling(Number(process.env.NUVIZZ_DAILY_CEILING) || 2000));
+});
+
+test('the reported ceiling never exceeds what effectiveDailyCeiling enforces', () => {
+  // The property that matters, stated directly: the gauge and the breaker read one number.
+  setDailyCeilingOverride(null);
+  for (const proposal of [1, 500, 1999, 2000, 2001, 20000, 200000]) {
+    assert.ok(reportedDailyCeiling(proposal, {}) <= HARD_DAILY_CEILING, String(proposal));
+    assert.equal(reportedDailyCeiling(proposal, {}), effectiveDailyCeiling(proposal));
+  }
 });

@@ -24,7 +24,7 @@ import { scanDate, normalizeStop } from './lib/nuvizz-scan.mts';
 import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString, readScanMetrics, readScanConfig, readActiveUnplannedSet, readCarryoverRetired } from './lib/firestore.mts';
 import { summarizeScanMetrics } from './lib/scan-metrics.mts';
 import { filterFinishedPriorDay } from './lib/nuvizz-list.mts';
-import { breakerMode } from './lib/nuvizz-request.mts';
+import { breakerMode, reportedDailyCeiling } from './lib/nuvizz-request.mts';
 
 const TENANT = 'davis';
 
@@ -279,8 +279,12 @@ export default async (req: Request): Promise<Response> => {
           byTrigger: stats.byTrigger, // WHY: scheduled-scan | enrichment | attempts | on-demand | …
           bySource: stats.bySource,
           byTenant: stats.byTenant,
-          // Effective spend cap: the live UI-configured ceiling wins over the env default.
-          ceiling: (typeof (scanCfg as any)?.dailyCeiling === 'number' ? (scanCfg as any).dailyCeiling : (Number(process.env.NUVIZZ_DAILY_CEILING) || 12000)),
+          // Effective spend cap: the live UI-configured ceiling wins over the env default, and
+          // BOTH are clamped to what the breaker actually enforces. This line used to report
+          // whichever number it found — the site's NUVIZZ_DAILY_CEILING is 20,000 — while the
+          // breaker trips at 2,000, so the card and the Diagnostics gauge both overstated the
+          // remaining headroom tenfold. See reportedDailyCeiling.
+          ceiling: reportedDailyCeiling((scanCfg as any)?.dailyCeiling),
           breaker: circuit.open,
           mode: breakerMode(),
           // Learned scan-discovery summary (avg/max new loads/day, worst gap,
