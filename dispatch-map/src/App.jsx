@@ -87,7 +87,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.70.3';
+const APP_VERSION = '0.70.4';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -158,6 +158,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.70.4', 'THE CLOSED-DAY LETTER IS READABLE AND THE CLOCK STOPPED BEING BLURRED ON PURPOSE. Chad: \u201cthe f in those closed on Friday deliveries icon needs to be bigger as well as the time clock icon is a little fuzzy. So I\u2019d like to sharpen that up.\u201d THE LETTER was font-size 14 on a 22-unit grid drawn at half scale \u2014 about 7px \u2014 and that was only half the problem: the prohibition slash was painted LAST, so it ran straight over the letter it was meant to qualify, and at 20px a red bar through a red letter reads as one blob. The day letters are now 19 (14.5 for the two-character ones), the slash is drawn UNDERNEATH, and each letter carries a white outline so the slash crossing the disc cannot erase it. Rendered before and after at 3x on a phone-density page and looked at, not assumed. THE CLOCK WAS FUZZY BECAUSE IT WAS BEING BLURRED: the time marks have no disc behind them, so they were separated from the map with two stacked feDropShadow filters at stdDeviation 1.3 \u2014 a gaussian glow, which is literally what \u201cfuzzy\u201d means, and SVG filters push the subtree through an offscreen raster which costs sharpness again on top. Replaced with a hard white outline: same separation, clean edges, and the same technique the day letters now use so both mark families read the same way. Tuned by rendering \u2014 the first outline at +3 stroke units filled the clock face and had to come back to +1.5. AND A NO-OP WAS REVERTED RATHER THAN SHIPPED AS A FIX: the first attempt raised the SVG\u2019s intrinsic width/height to hand the rasteriser three times the pixels, on the theory that scaledSize was shrinking the img while the source stayed small. It produced BYTE-IDENTICAL output at 1x and 3x \u2014 a browser re-rasterises SVG at paint time whatever the intrinsic size claims \u2014 so it was removed. Shipping it would have been a fix that fixes nothing, announced as one. 2,257 tests green, 30/30 phone combinations.'],
   ['0.70.3', 'UNSCHEDULED WORK IS NOT ON TODAY\u2019S BOARD, SO IT DOES NOT GET TODAY\u2019S FLAGS \u2014 AND 91 WAS NEVER THE PROBLEM. Chad, on five \u201cClosed FRI\u201d cards for freight that had already gone: \u201cAre we not correctly recognizing code ninety one?\u201d No \u2014 isFinishedStop has always taken 90, 91, 99 and 80, and a test now pins that so the real cause stays findable. WHAT IS ACTUALLY HAPPENING, in Chad\u2019s words: \u201cdispatch closed out the originals and duped them. That\u2019s why there\u2019s the dash ones. However, those are unplanned. It should not be on the board as going to miss receiving hours. That\u2019s where we need to be, not coupling them together. They still need to remain decoupled.\u201d The dash record is a REAL, SEPARATE order \u2014 the original was closed and re-cut \u2014 sitting at status 10, UNPLANNED, no route. It derives the same customer key as the order beside it, so the note lookup finds the same \u201cclosed Friday\u201d entry and every per-stop rule judges it, because record for record it genuinely is not finished. THE FIRST FIX FOR THIS WAS WRONG AND IS WORTH RECORDING: it settled an instance record whenever its base PRO had delivered. That couples two independent orders through a shared number, so the moment dispatch re-cuts an order that genuinely still needs delivering, the coupling silences it because its dead twin was closed \u2014 wrong for a right-looking reason, and silent on exactly the days it matters. Chad caught it. THE RULE THAT SHIPS is about the RECORD and needs no sibling at all: an order with NO ROUTE and in UNPLANNED status is not scheduled to be delivered today, and \u201cmay miss receiving hours\u201d and \u201cclosed today\u201d are both statements about a delivery happening today. Both halves are required \u2014 a routed stop is scheduled whatever its status, and a stop that has left unplanned is being worked even before a route lands. Measured on the live board: 304 open stops, 24 unplanned with no route \u2014 19 dash records and 5 plain PROs, which is why this is a rule about the record and not about the dash \u2014 and none of them carried a missing pin or duplicate number, so closed_today was the only flag they raised. Replayed over the real 759-stop board with the real notes: five closed-FRI rows became ZERO, and the decoupling test proves a delivered twin no longer silences a live re-cut order. ALSO FIXED, found on the way: normStopNbr stripped the -N tail unconditionally, so AVRT-0028093763 and ESTES-0538243875 collapsed onto the bare strings \u201cAVRT\u201d and \u201cESTES\u201d and two unrelated carrier orders normalised to the same string \u2014 eta-flag-check could confidently explain the wrong stop, a wrong answer dressed as an answer. The suffix only means \u201cinstance\u201d on an all-numeric PRO. 2,257 tests green.'],
   ['0.70.2', 'A SWITCH WHOSE POSITION CANNOT BE READ IS NOT A SWITCH. The 6:30pm completion report mails whoever DAY_REPORT_TO names, and that variable is set in the Netlify console \u2014 so the code had no way to know whether it had been. That gap stopped being hypothetical the moment it mattered: the variable was set through an API that returned a 502 gateway error, so the write may or may not have landed, and I told Chad the email was on its way without having verified it. There was then no way to answer \u201cis the report actually reaching him\u201d short of waiting until 6:30 and asking. Reporting an intent as an outcome is the exact failure this repo has a rule about, and the fix is not to be more careful \u2014 it is to make the state readable. day-completion now returns a delivery block: emailConfigured (are the Resend keys present), recipientConfigured (is DAY_REPORT_TO set), and disabled (has the kill switch been thrown). BOOLEANS ONLY, and a test enforces that: the value is a person\u2019s address on the company domain, it must never appear in a response body, a log or a transcript, and knowing it is SET is the entire question anyway. A second test greps the endpoint source for any bare read of the variable that is not wrapped in a truthiness check, so a later edit cannot casually start echoing it. VERIFIED WORKING, meanwhile: last night\u2019s run recorded 2026-08-20 at 6:30p \u2014 816 planned, 797 completed (97.7%), 18 open (17 never attempted, 1 in flight), 1 unable to deliver, 6 closed by hand (0.8% manual rate). The snapshot exists, which is proof the schedule fired, the ET guard picked the right UTC slot, and the classifier ran over a real 816-stop board. Tonight\u2019s run grades it. 2,205 tests green.'],
   ['0.70.1', 'THE 3PM LINE STAYS, AND THE MEASUREMENT THAT KEPT IT THERE IS NOW IN THE CODE INSTEAD OF IN A CHAT. Chad, on the early-close dial: “leave anything closing before 3 as early and also how many more pins if we did 4 as early?” Answered against Friday’s board: moving EARLY_CLOSE_BEFORE to 4:00p takes that category from 26 to 48 and the whole map from 56 marks to 72. THE HEADLINE NUMBER OVERSTATES IT AND THAT IS WORTH SAYING OUT LOUD — only sixteen of the twenty-two are pins the map does not already draw, because early-close is judged BEFORE opens-late and extra-room, so the other six are reclassified rather than added. FOUR OF THOSE SIX ARE THE REASON TO LEAVE IT ALONE. NEFAB, Dixie Seal, Space Pole and FBM all open at 6am and shut at three, and today their pins say “extra room, go at dawn” — the single most useful thing the map can tell a dispatcher building a morning. At a 4pm line they would turn amber and say “deadline” instead, which is true and useless: a driver sent to a 6a–3p dock first is never late. Trading a routing opportunity for a warning nobody needs to act on is the expensive direction to be wrong in, and it is exactly the noise Chad asked to have taken off the map. THE STEP IS ALSO STEEPEST HERE: nineteen docks shut at exactly three and only three more between three and four, so 3:00p inclusive alone would take the mark from 26 to 45. A dock closing at 3:00 sharp is a coin-flip rather than an oversight, and the line falls on the quiet side of it deliberately. NO BEHAVIOUR CHANGED — the dial is where it was. What changed is that the dials comment now carries the measured cost of moving it, and a test pins the 6am case by name, so the next person who nudges the threshold has to argue with NEFAB rather than with a number. 1 new test, 2,249 green.'],
@@ -1263,7 +1264,7 @@ const RESTRICTION_ICONS = {
     prohibition: true,
     glyph: '<text x="7" y="10" font-family="sans-serif" font-size="9" font-weight="bold" fill="white" text-anchor="middle">M</text>',
     markerGlyph: `
-      <text x="11" y="16" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="800" fill="currentColor" text-anchor="middle">M</text>
+      <text x="11" y="17.7" font-family="system-ui, -apple-system, sans-serif" font-size="19" font-weight="800" fill="currentColor" text-anchor="middle" stroke="white" stroke-width="3.5" paint-order="stroke" stroke-linejoin="round">M</text>
     `,
   },
   // M4.4 — closed Friday. Same template as Monday, letter F.
@@ -1276,30 +1277,30 @@ const RESTRICTION_ICONS = {
     prohibition: true,
     glyph: '<text x="7" y="10" font-family="sans-serif" font-size="9" font-weight="bold" fill="white" text-anchor="middle">F</text>',
     markerGlyph: `
-      <text x="11" y="16" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="800" fill="currentColor" text-anchor="middle">F</text>
+      <text x="11" y="17.7" font-family="system-ui, -apple-system, sans-serif" font-size="19" font-weight="800" fill="currentColor" text-anchor="middle" stroke="white" stroke-width="3.5" paint-order="stroke" stroke-linejoin="round">F</text>
     `,
   },
   // Other closed days — same template, brief listed them as low-priority cheap
   // additions. Letters Tu/W/Th/Sa/Su (2-char where needed for legibility).
   closed_tuesday:  { label: 'Closed Tuesday',  short: 'Closed Tue',  bg: '#dc2626', accent: '#dc2626', prohibition: true,
     glyph: '<text x="7" y="10" font-family="sans-serif" font-size="7" font-weight="bold" fill="white" text-anchor="middle">Tu</text>',
-    markerGlyph: '<text x="11" y="16" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="800" fill="currentColor" text-anchor="middle">Tu</text>',
+    markerGlyph: '<text x="11" y="16.6" font-family="system-ui, -apple-system, sans-serif" font-size="14.5" font-weight="800" fill="currentColor" text-anchor="middle" stroke="white" stroke-width="3.5" paint-order="stroke" stroke-linejoin="round">Tu</text>',
   },
   closed_wednesday: { label: 'Closed Wednesday', short: 'Closed Wed', bg: '#dc2626', accent: '#dc2626', prohibition: true,
     glyph: '<text x="7" y="10" font-family="sans-serif" font-size="9" font-weight="bold" fill="white" text-anchor="middle">W</text>',
-    markerGlyph: '<text x="11" y="16" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="800" fill="currentColor" text-anchor="middle">W</text>',
+    markerGlyph: '<text x="11" y="17.7" font-family="system-ui, -apple-system, sans-serif" font-size="19" font-weight="800" fill="currentColor" text-anchor="middle" stroke="white" stroke-width="3.5" paint-order="stroke" stroke-linejoin="round">W</text>',
   },
   closed_thursday: { label: 'Closed Thursday', short: 'Closed Thu', bg: '#dc2626', accent: '#dc2626', prohibition: true,
     glyph: '<text x="7" y="10" font-family="sans-serif" font-size="7" font-weight="bold" fill="white" text-anchor="middle">Th</text>',
-    markerGlyph: '<text x="11" y="16" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="800" fill="currentColor" text-anchor="middle">Th</text>',
+    markerGlyph: '<text x="11" y="16.6" font-family="system-ui, -apple-system, sans-serif" font-size="14.5" font-weight="800" fill="currentColor" text-anchor="middle" stroke="white" stroke-width="3.5" paint-order="stroke" stroke-linejoin="round">Th</text>',
   },
   closed_saturday: { label: 'Closed Saturday', short: 'Closed Sat', bg: '#dc2626', accent: '#dc2626', prohibition: true,
     glyph: '<text x="7" y="10" font-family="sans-serif" font-size="7" font-weight="bold" fill="white" text-anchor="middle">Sa</text>',
-    markerGlyph: '<text x="11" y="16" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="800" fill="currentColor" text-anchor="middle">Sa</text>',
+    markerGlyph: '<text x="11" y="16.6" font-family="system-ui, -apple-system, sans-serif" font-size="14.5" font-weight="800" fill="currentColor" text-anchor="middle" stroke="white" stroke-width="3.5" paint-order="stroke" stroke-linejoin="round">Sa</text>',
   },
   closed_sunday: { label: 'Closed Sunday', short: 'Closed Sun', bg: '#dc2626', accent: '#dc2626', prohibition: true,
     glyph: '<text x="7" y="10" font-family="sans-serif" font-size="7" font-weight="bold" fill="white" text-anchor="middle">Su</text>',
-    markerGlyph: '<text x="11" y="16" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="800" fill="currentColor" text-anchor="middle">Su</text>',
+    markerGlyph: '<text x="11" y="16.6" font-family="system-ui, -apple-system, sans-serif" font-size="14.5" font-weight="800" fill="currentColor" text-anchor="middle" stroke="white" stroke-width="3.5" paint-order="stroke" stroke-linejoin="round">Su</text>',
   },
 };
 // Recognized aliases — straight_truck_only is sometimes used as a synonym
@@ -2651,11 +2652,31 @@ function circleMarkerSvg(color, opts = {}) {
 // the standard cartographic trick — rather than a second copy of the glyph stroked wider,
 // because every glyph fragment carries its OWN stroke-width and a group stroke cannot widen
 // them. The id is scoped to this data-URI document, so it cannot collide with another marker.
-const TIME_MARK_HALO_ID = 'tmhalo';
-const TIME_MARK_HALO_DEFS = `<defs><filter id="${TIME_MARK_HALO_ID}" x="-35%" y="-35%" width="170%" height="170%">`
-  + '<feDropShadow dx="0" dy="0" stdDeviation="1.3" flood-color="#ffffff" flood-opacity="1"/>'
-  + '<feDropShadow dx="0" dy="0" stdDeviation="1.3" flood-color="#ffffff" flood-opacity="1"/>'
-  + '</filter></defs>';
+// A HARD WHITE OUTLINE, NOT A GAUSSIAN GLOW. Chad: "the time clock icon is a little fuzzy
+// ... I'd like to sharpen that up."
+//
+// The separation these marks need against a map is real — a clock is line art with no disc
+// behind it — but it was bought with two stacked feDropShadow blurs at stdDeviation 1.3, and
+// a blur is exactly what "fuzzy" means. Rendered side by side at 3x, the filtered clock wears
+// a soft white cloud that eats the edge of every stroke; the outlined one has clean edges and
+// the same separation. SVG filters also force the subtree through an offscreen raster, which
+// costs sharpness again on top of the blur it was asked for.
+//
+// (The first attempt at this was a NO-OP and is worth recording: raising the SVG's intrinsic
+// width/height to hand the rasteriser more pixels produced BYTE-IDENTICAL output at both 1x
+// and 3x, because a browser re-rasterises SVG at paint time whatever its intrinsic size says.
+// It was reverted rather than shipped as a fix that fixes nothing.)
+//
+// The outline is the same technique the closed-day letters use, so both mark families are
+// separated from the map the same way.
+// Widen every stroke by a constant and force the copy white — relative weights survive, so
+// the outline hugs the shape instead of blobbing the thin hands into the thick ring.
+function timeMarkOutline(glyph) {
+  return glyph
+    .replace(/stroke="[^"]*"/g, 'stroke="#ffffff"')
+    .replace(/fill="(?!none)[^"]*"/g, 'fill="#ffffff"')
+    .replace(/stroke-width="([\d.]+)"/g, (_m, w) => `stroke-width="${(Number(w) + 1.5).toFixed(2)}"`);
+}
 const isTimeMarkKey = (k) => typeof k === 'string' && TIME_MARK_KEYS.includes(resolveRestrictionKey(k));
 
 function renderMarkerGlyph(restrictionKey, glyphX, glyphY, tint, scale) {
@@ -2668,7 +2689,20 @@ function renderMarkerGlyph(restrictionKey, glyphX, glyphY, tint, scale) {
     ? `<line x1="2" y1="2" x2="20" y2="20" stroke="${color}" stroke-width="3" stroke-linecap="round"/>`
     : '';
   const t = `translate(${glyphX},${glyphY})` + (scale && scale !== 1 ? ` scale(${scale})` : '');
-  return `<g transform="${t}">${glyph}${slash}</g>`;
+  // Time marks carry their own white outline instead of a blur filter — see the note above.
+  if (isTimeMarkKey(restrictionKey)) {
+    return `<g transform="${t}">`
+      + `<g stroke="#ffffff" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round">${timeMarkOutline(glyph)}</g>`
+      + glyph
+      + `</g>`;
+  }
+  // THE SLASH GOES UNDER THE GLYPH, NOT OVER IT. Chad: "the f in those closed on Friday
+  // deliveries icon needs to be bigger." Enlarging the letter was only half of it — the
+  // prohibition slash was painted LAST, so it ran straight over the letter it was meant to
+  // qualify, and on a 20px marker a red bar through a red letter reads as one blob. Drawn
+  // first, with the letter's white halo over it, both marks stay whole: the slash still
+  // crosses the disc, and the day is still legible.
+  return `<g transform="${t}">${slash}${glyph}</g>`;
 }
 
 // How big a restriction marker DRAWS, as a fraction of the SVG geometry below
@@ -2723,6 +2757,7 @@ function scaleMarkerSpec(spec, scale) {
   };
 }
 
+
 function iconMarkerSvg(restrictions, tint) {
   if (!restrictions || restrictions.length === 0) return null;
 
@@ -2742,9 +2777,8 @@ function iconMarkerSvg(restrictions, tint) {
     const svg = isTimeMarkKey(r)
       ? `
       <svg xmlns="http://www.w3.org/2000/svg" width="40" height="44" viewBox="0 0 40 44">
-        ${TIME_MARK_HALO_DEFS}
         <ellipse cx="20" cy="40" rx="10" ry="1.6" fill="black" opacity="0.16"/>
-        <g filter="url(#${TIME_MARK_HALO_ID})">${renderMarkerGlyph(r, 1, 1, tint, 38 / 22)}</g>
+        ${renderMarkerGlyph(r, 1, 1, tint, 38 / 22)}
       </svg>`
       : `
       <svg xmlns="http://www.w3.org/2000/svg" width="40" height="44" viewBox="0 0 40 44">
@@ -2785,7 +2819,7 @@ function iconMarkerSvg(restrictions, tint) {
       // Same rule inside a cluster, so a clock looks like itself wherever it appears. The
       // slots are already spaced apart, so the disc was doing separation work here that the
       // spacing does anyway.
-      elementsMarkup += `<g filter="url(#${TIME_MARK_HALO_ID})">${renderMarkerGlyph(el, cx - 14, cy - 14, tint, 28 / 22)}</g>`;
+      elementsMarkup += `${renderMarkerGlyph(el, cx - 14, cy - 14, tint, 28 / 22)}`;
     } else {
       const def = RESTRICTION_ICONS[resolveRestrictionKey(el)] || UNKNOWN_RESTRICTION;
       const accent = tint || def.accent || def.bg || '#6b7280';
@@ -2799,7 +2833,6 @@ function iconMarkerSvg(restrictions, tint) {
   const shadowRx = Math.max(8, totalW / 2 - 6);
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" width="${totalW}" height="${totalH}" viewBox="0 0 ${totalW} ${totalH}">
-      ${elements.some((el) => isTimeMarkKey(el)) ? TIME_MARK_HALO_DEFS : ''}
       <ellipse cx="${totalW / 2}" cy="36" rx="${shadowRx}" ry="1.8" fill="black" opacity="0.15"/>
       ${elementsMarkup}
     </svg>`;
