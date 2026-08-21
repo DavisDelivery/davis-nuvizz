@@ -129,7 +129,8 @@ export const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
  * The 20-minute band is why the cron moved to a 5-minute step — see CRON_STEP_MIN.
  *
  * Completed is his too, and is the decoupling this feature exists for: "every 30 mins from
- * 4-6am, 6am to 7pm every 15 mins, 7pm-4am not at all." Nine hours a day with no call at all,
+ * 4-6am, 6am to 7pm every 15 mins, 7pm-4am not at all" — plus one sweep 7-10pm for the tail
+ * of a long day. Nine hours a day with no call at all,
  * because nothing is delivering then and the pull could only come back empty.
  *
  * Roster drops to hourly. It was being pulled on every one of the ~33 fires a day for a list
@@ -152,7 +153,11 @@ export function defaultScanRules(): ScanRule[] {
     // ── completed (77131) — the ETA anchor. Chad's bands. ────────────────────
     { id: 'done-early', kind: 'completed', days: deliveryDays, startHour: 4, endHour: 6, intervalMin: 30, note: 'First trucks rolling — a few early deliveries.' },
     { id: 'done-run', kind: 'completed', days: deliveryDays, startHour: 6, endHour: 19, intervalMin: 15, note: 'The delivery day — every stamp re-anchors a route clock.' },
-    // 7pm-4am: NOT PULLED. Nothing is delivering, so the call can only come back empty.
+    // ONE sweep across the late window — a 3-hour band at a 3-hour interval fires exactly
+    // once, which catches a long day's last deliveries without paying 15-minute rates for
+    // three hours that usually carry a handful of stops.
+    { id: 'done-late', kind: 'completed', days: deliveryDays, startHour: 19, endHour: 22, intervalMin: 180, note: 'One sweep for the tail of a long day.' },
+    // 10pm-4am: NOT PULLED. Nothing is delivering, so the call can only come back empty.
     // ── load roster (35833) ──────────────────────────────────────────────────
     { id: 'roster-am', kind: 'roster', days: deliveryDays, startHour: 4, endHour: 13, intervalMin: 60, note: 'Enough to keep yesterday’s routes off today’s board.' },
     { id: 'roster-eve', kind: 'roster', days: routingNights, startHour: 20, endHour: 24, intervalMin: 60, note: 'Tomorrow’s loads appear during routing.' },

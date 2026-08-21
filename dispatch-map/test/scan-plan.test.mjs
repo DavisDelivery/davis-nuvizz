@@ -31,19 +31,25 @@ test('THE DECOUPLING: completed and planned run at different rates in the same h
   // 2pm Tuesday — trucks are running, the plan is settled. Completed matters twice as much.
   assert.equal(resolveInterval('completed', TUE, 14, rules), 15);
   assert.equal(resolveInterval('planned', TUE, 14, rules), 30);
-  // 9pm Tuesday — routing. Exactly the other way round: the plan moves, nothing delivers.
+  // 9pm Tuesday — routing. The plan moves every 30; completed gets ONE sweep across 7-10pm.
   assert.equal(resolveInterval('planned', TUE, 21, rules), 30);
-  assert.equal(resolveInterval('completed', TUE, 21, rules), null);
+  assert.equal(resolveInterval('completed', TUE, 21, rules), 180);
 });
 
-test("CHAD'S COMPLETED BANDS: 30 from 4-6am, 15 from 6am-7pm, nothing 7pm-4am", () => {
+test("CHAD'S COMPLETED BANDS: 30 from 4-6am, 15 from 6am-7pm, one sweep 7-10pm, nothing after", () => {
   const r = defaultScanRules();
   assert.equal(resolveInterval('completed', TUE, 4, r), 30);
   assert.equal(resolveInterval('completed', TUE, 5, r), 30);
   assert.equal(resolveInterval('completed', TUE, 6, r), 15);
   assert.equal(resolveInterval('completed', TUE, 18, r), 15, '6pm is still inside the run');
-  assert.equal(resolveInterval('completed', TUE, 19, r), null, '7pm the pull stops');
+  // 7-10pm is a 3-hour window at a 3-hour interval, which fires exactly ONCE — the tail of a
+  // long day, without paying 15-minute rates for three thin hours.
+  for (const h of [19, 20, 21]) assert.equal(resolveInterval('completed', TUE, h, r), 180, `${h}:00`);
+  assert.equal(resolveInterval('completed', TUE, 22, r), null, '10pm the pull stops');
   assert.equal(resolveInterval('completed', TUE, 3, r), null, 'and does not resume until 4am');
+  // One scan, not three: the estimator has to agree with that reading.
+  const lateOnly = r.filter((x) => x.id === 'done-late');
+  assert.equal(estimatePlanCalls(lateOnly).perDay[TUE], 1, 'exactly one sweep across the window');
 });
 
 test("CHAD'S BANDS, verbatim: 30 from 8pm, 20 through the small hours, 15 from 5am, 30 from 10am", () => {
@@ -59,9 +65,9 @@ test("CHAD'S BANDS, verbatim: 30 from 8pm, 20 through the small hours, 15 from 5
   for (const iv of [15, 20, 30]) assert.equal(effectiveCadence(iv), iv, `${iv} is honoured`);
 });
 
-test('completed is NOT pulled 7pm-4am — nine hours a day where a pull returns empty', () => {
+test('completed is NOT pulled 10pm-4am — six hours a day where a pull returns empty', () => {
   const rules = defaultScanRules();
-  for (const h of [19, 20, 21, 22, 23, 0, 1, 2, 3]) {
+  for (const h of [22, 23, 0, 1, 2, 3]) {
     assert.equal(resolveInterval('completed', TUE, h, rules), null, `${h}:00 must not pull completed`);
   }
   // …while the plan is still watched hard overnight, because routing runs late.

@@ -764,6 +764,68 @@ export async function writeEnrichedPros(tenant: string, stops: any[], atISO: str
 // flag so a regression is throttled in minutes instead of by a vendor email.
 const OPS_COLLECTION = 'nuvizz_ops';
 
+// ── Per-scan-kind cadence stamps (the scan plan) ─────────────────────────────
+// The plan runs each saved search on its own clock, so "when did THIS kind last run" has to
+// be durable and per kind — the day index's lastLoadScanAt/lastUnplannedScanAt describe the
+// old one-cadence world and cannot answer it. One tiny document, one read and one write per
+// acting fire.
+const SCAN_KINDS_PATH = `${OPS_COLLECTION}/scan_kinds`;
+
+export async function readScanKindStamps(): Promise<Record<string, string>> {
+  if (!isFirestoreEnabled()) return {};
+  const doc = await getDoc(SCAN_KINDS_PATH).catch(() => null);
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(doc || {})) {
+    if (k.startsWith('_')) continue;
+    if (typeof v === 'string' && v) out[k] = v;
+  }
+  return out;
+}
+
+/** Stamp the kinds that actually RAN. Merged onto what is already there, so a fire that ran
+ *  one kind cannot erase another kind's stamp and make it look overdue. */
+export async function markScanKinds(kinds: string[], atISO: string): Promise<void> {
+  if (!isFirestoreEnabled() || !kinds?.length) return;
+  const prev = await readScanKindStamps().catch(() => ({}));
+  const next: Record<string, string> = { ...prev };
+  for (const k of kinds) next[k] = atISO;
+  await setDoc(SCAN_KINDS_PATH, next as any).catch(() => {});
+}
+
+/**
+ * Apply a completed-only pull to a day's board — the narrow overlay path.
+ *
+ * Read-modify-write per stop, like patchBoardPlan, and ONLY for stops that already exist.
+ * A stop this pull mentions that the board has never seen is counted, not created: adding it
+ * here would mean building a board row out of a completed-list row that carries no route, no
+ * sequence and no address, and the next full scan is what legitimately adds it.
+ */
+export async function applyCompletionPatches(
+  tenant: string,
+  dateStr: string,
+  patches: Array<{ stopNbr: string; fields: Record<string, any> }>,
+  atISO: string,
+): Promise<{ written: number; missing: number }> {
+  if (!isFirestoreEnabled() || !patches?.length) return { written: 0, missing: 0 };
+  const base = `${COLLECTION}/${parentId(tenant, dateStr)}`;
+  let i = 0, written = 0, missing = 0;
+  const worker = async () => {
+    while (i < patches.length) {
+      const j = patches[i++];
+      try {
+        const cur = await getDoc(`${base}/stops/${encodeURIComponent(j.stopNbr)}`);
+        if (!cur) { missing++; continue; }
+        const { _id, ...rest } = cur as any;
+        await setDoc(`${base}/stops/${j.stopNbr}`, { ...rest, ...j.fields, last_scanned_at: atISO });
+        written++;
+      } catch { missing++; }
+    }
+  };
+  await Promise.all(Array.from({ length: 8 }, worker));
+  return { written, missing };
+}
+
+
 // Route label → field-safe per-route counter key, e.g. '/load/info' → 'count__load_info'.
 // Exported for tests: a route name can never alias onto the authoritative `count`
 // (it is always prefixed `count__`) nor inject a Firestore field path (non-alnum runs

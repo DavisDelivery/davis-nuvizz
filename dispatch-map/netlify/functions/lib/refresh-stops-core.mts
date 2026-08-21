@@ -22,8 +22,8 @@
 
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro, lookupLoadStopNbrs } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired } from './firestore.mts';
-import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow } from './nuvizz-list.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches } from './firestore.mts';
+import { listScanForDate, mergeEnrich, twoScanBuckets, completedScanRows, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow } from './nuvizz-list.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterForDate } from './nuvizz-loads.mts';
 import { getStop } from './history-store.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
@@ -31,6 +31,8 @@ import { maxConsecutiveGap } from './scan-metrics.mts';
 import { notifyMarkedCustomers, pendingNotifyDates } from './cs-notify.mts';
 import { breakerTripped, scanIntervalElapsed, breakerMode, setDailyCeilingOverride, setCallTrigger } from './nuvizz-request.mts';
 import { scanDecision, isInRoutingWindow, clampScanConfig } from './scan-schedule.mts';
+import { clampScanRules, defaultScanRules, dueKinds } from './scan-plan.mts';
+import { planCompletions } from './scan-completions.mts';
 
 // Reuse the CANONICAL integer parsers from nuvizz-scan so the parity log's
 // load/stop numbers are extracted identically to selectLoadProbeTargets /
@@ -476,6 +478,29 @@ export async function runRefreshStops(req: Request): Promise<Response> {
 
   const decision = scanDecision(now, isManual, lastLoadScanAt, scanCfg);
 
+  // ── THE SCAN PLAN — per saved search, per day, per hour ────────────────────
+  //
+  // Chad: "part of the day we need to scan more for completed, and part of the day we need to
+  // scan more for unplanned and planned." The two searches answer different questions and
+  // matter at opposite ends of the day, so they now run on their own clocks.
+  //
+  // A fire where only `completed` is due takes the OVERLAY path below — one call, and it can
+  // only mark existing stops finished. It deliberately does NOT go through the board rebuild,
+  // which reads absence as meaning and would see a completed-only pull as every planned stop
+  // having vanished. A fire where `planned` is due runs the full scan exactly as before.
+  //
+  // An empty/missing rules doc falls back to the shipped plan; a manual scan ignores the plan
+  // entirely and does the full thing, which is what a dispatcher pressing the button wants.
+  const planRules = (() => {
+    const stored = clampScanRules((scanCfg as any)?.rules);
+    return stored.length ? stored : defaultScanRules();
+  })();
+  const kindStamps = fsOn ? await readScanKindStamps().catch(() => ({})) : {};
+  const due = dueKinds(decision.weekday, decision.etHour, planRules, kindStamps, now.getTime());
+  const plannedDue = isManual || due.planned.due;
+  const completedDue = isManual || due.completed.due;
+  const rosterDue = isManual || due.roster.due;
+
   // Fix 4 — exactly ONE structured line per invocation, so "why didn't it scan"
   // is answerable from the log. today/tomorrow report the DECISION's feed intent.
   // Now also carries today's NuVizz volume: total, per-route, breaker + mode.
@@ -544,9 +569,10 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // tomorrow's empty/Draft loads (and their real load NUMBERS, which Saves are keyed by) are
   // on the board all day. That is what lets the dispatcher build TOMORROW's routes TODAY.
   // Runs on any acting scan >=6am ET.
-  if (decision.act && fsOn && decision.etHour >= 6) {
+  if (decision.act && fsOn && decision.etHour >= 6 && rosterDue) {
     const rosterAt = new Date().toISOString();
     for (const d of scanDates.slice(1)) await persistLoadRoster(d, rosterAt);
+    await markScanKinds(['roster'], rosterAt).catch(() => {});
   }
 
   // scanAndWrite — one date. includeUnplanned gates the order descent; `forced`
@@ -695,7 +721,10 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         const fleet = deriveFleetSummary(scan.stops, scan.loadHeaders);
         await writeFleetIndex(TENANT, date, fleet.loads, fleet.summary, fleet.driverIndex, scan.scannedAt);
         // Cache the date's empty-loads roster too (once/day for a future date).
-        await persistLoadRoster(date, scan.scannedAt);
+        // THE ROSTER ON ITS OWN CLOCK. It used to be pulled on every acting fire — ~33 calls a
+        // day for a list that only changes when somebody creates a load. Hourly is plenty, and
+        // that reclaim pays for most of the extra completed sampling.
+        if (rosterDue) await persistLoadRoster(date, scan.scannedAt);
       }
       // Phase 1 (shadow mode): persist scan_state + log what lean discovery WOULD
       // probe (known-active loads + buffer) vs the wide window we ACTUALLY probed.
@@ -806,9 +835,49 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // an empty/failed pull writes nothing for that date, so the last-good board is
   // preserved (stale, never blank) — per Chad's call we'd just fix-forward if the
   // list endpoint ever changes, rather than fall back to the expensive probe.
+  // ── COMPLETED-ONLY FIRE: the overlay ──────────────────────────────────────
+  //
+  // The plan wants 77131 far more often than 77128 through the delivery day, so most fires in
+  // that window land here: ONE NuVizz call, applied to the stored board as a status overlay.
+  // It can mark an existing stop finished and nothing else — never creates, never removes,
+  // never touches a route, sequence, driver or plan flag. See lib/scan-completions.mts for
+  // why this is a separate path rather than a flag on the rebuild.
+  if (decision.act && LIST_DISCOVERY && fsOn && !plannedDue && completedDue) {
+    const at = new Date().toISOString();
+    try {
+      const rows = await completedScanRows();
+      const prev = await readStops(TENANT, today).catch(() => ({ stops: [] as any[] }));
+      const boardByNbr = new Map<string, any>();
+      for (const pr of (prev?.stops || [])) boardByNbr.set(String(pr.stopNbr), pr);
+      const plan = planCompletions(boardByNbr, rows);
+      const applied = await applyCompletionPatches(TENANT, today, plan.patches, at);
+      await markScanKinds(['completed'], at);
+      console.log(`[scan] completed-overlay ${today}: pulled=${rows.length} changed=${applied.written} unchanged=${plan.unchanged} notOnBoard=${plan.unknown.length} missingDoc=${applied.missing} etHour=${decision.etHour} interval=${due.completed.intervalMin}`);
+      return json({
+        ok: true, mode: 'completed-overlay', date: today, at,
+        pulled: rows.length, changed: applied.written, unchanged: plan.unchanged,
+        notOnBoard: plan.unknown.length, nuvizzCalls: 1,
+      });
+    } catch (e: any) {
+      // A failed overlay leaves the board exactly as it was and costs nothing but the call —
+      // the next fire retries. It must NEVER fall through into the full rebuild, which would
+      // turn a cheap tick into three calls plus enrichment.
+      console.warn(`[scan] completed-overlay ${today} failed: ${e?.message}`);
+      return json({ ok: false, mode: 'completed-overlay', error: String(e?.message || e).slice(0, 200) });
+    }
+  }
+
+  // Nothing due at all this tick — the plan covers this hour but no kind has aged out yet.
+  if (decision.act && LIST_DISCOVERY && fsOn && !plannedDue && !completedDue && !rosterDue) {
+    logScan('plan-not-due', false, no, no, ` plan={planned:${due.planned.reason},completed:${due.completed.reason},roster:${due.roster.reason}}`);
+    return json({ ok: true, skipped: 'plan-not-due' });
+  }
+
   if (LIST_DISCOVERY) {
     try {
       const scannedAt = new Date().toISOString();
+      // A full list scan pulls BOTH saved searches, so it satisfies both clocks.
+      await markScanKinds(['planned', 'completed'], scannedAt).catch(() => {});
       const targets = [today];
       // Tomorrow + further planning days (LIST_HORIZON_DAYS) — all sliced from the SAME ±7d pull,
       // so e.g. Sunday writes Mon AND Tue. Gated by the same decision so far-day work only runs

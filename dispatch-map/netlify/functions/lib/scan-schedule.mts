@@ -25,6 +25,7 @@
 // arrive from ~10am the day before, so they must be descended through the day).
 
 import { MIN_SCAN_INTERVAL_MS } from './nuvizz-request.mts';
+import { clampScanRules, defaultScanRules } from './scan-plan.mts';
 
 // Live-editable scan configuration (Diagnostics UI → Firestore nuvizz_ops/scan_config).
 // EVERY field is optional: an absent field falls back to the env/hardcoded default,
@@ -46,6 +47,8 @@ export interface ScanConfig {
   deepSweepHour?: number;      // earliest ET hour a deep sweep may run (default 13)
   dailyCeiling?: number;       // hard daily NuVizz call cap / breaker threshold
   scansEnabled?: boolean;      // master on/off (false = same as the kill switch)
+  /** THE SCAN PLAN — per saved search, per day, per hour. Empty/absent = the shipped plan. */
+  rules?: any[];
   // Metadata (set by the write endpoint).
   updatedAt?: string;
   updatedBy?: string;
@@ -87,6 +90,7 @@ export function scanConfigDefaults(env: Record<string, any> = process.env): Requ
     // Clamped to the hard cap: an env var cannot raise the ceiling, only lower it.
     dailyCeiling: Math.min(2_000, Number(env.NUVIZZ_DAILY_CEILING) || 2_000),
     scansEnabled: String(env.NUVIZZ_SCANS_ENABLED ?? '').toLowerCase() !== 'false',
+    rules: defaultScanRules(),
   };
 }
 
@@ -105,6 +109,10 @@ export function clampScanConfig(input: any): ScanConfig {
     (out as any)[k] = Math.min(hi, Math.max(lo, n));
   }
   if (typeof input.scansEnabled === 'boolean') out.scansEnabled = input.scansEnabled;
+  // The plan validates itself (drops unusable rows rather than repairing them). An explicitly
+  // EMPTY array is kept and means "no rules of my own" — the scanner then falls back to the
+  // shipped plan, which is the same thing an absent field means.
+  if (Array.isArray(input.rules)) out.rules = clampScanRules(input.rules);
   // Cross-field sanity: the day band must be a real forward interval, else drop
   // both edits so we fall back to the proven 4→13 default rather than a band that
   // never matches (which would silently force the slow night cadence all day).
@@ -138,6 +146,8 @@ export interface ScanDecision {
   // Diagnostics (surfaced in the [scan] log line):
   etHour: number;
   etMin: number;
+  /** ET weekday 0=Sun..6=Sat — the scan plan resolves per day, so the decision carries it. */
+  weekday: number;
   intervalMin: number;
   elapsedMin: number;            // Infinity when no prior load scan
   skip: 'none' | 'cadence' | 'floor' | 'weekend';
@@ -218,11 +228,11 @@ export function scanDecision(
   if (isManual) {
     return {
       act: true, scanTodayUnplanned: true, scanTomorrowLoads: true, scanTomorrowUnplanned: true,
-      etHour: hour, etMin: minute, intervalMin, elapsedMin, skip: 'none', reason: 'manual',
+      etHour: hour, etMin: minute, weekday, intervalMin, elapsedMin, skip: 'none', reason: 'manual',
     };
   }
 
-  const base = { scanTodayUnplanned: false, scanTomorrowLoads: false, scanTomorrowUnplanned: false, etHour: hour, etMin: minute, intervalMin, elapsedMin };
+  const base = { scanTodayUnplanned: false, scanTomorrowLoads: false, scanTomorrowUnplanned: false, etHour: hour, etMin: minute, weekday, intervalMin, elapsedMin };
 
   // Weekend blackout — no work Fri 22:00 ET → Sun 20:00 ET, so no scheduled scans.
   if (isWeekendBlackout(weekday, hour, cfg)) {
@@ -244,7 +254,7 @@ export function scanDecision(
     scanTodayUnplanned: hour >= 10 && hour < 24,
     scanTomorrowLoads: hour >= 20 && hour < 24,
     scanTomorrowUnplanned: hour >= 10 && hour < 24,
-    etHour: hour, etMin: minute, intervalMin, elapsedMin, skip: 'none',
+    etHour: hour, etMin: minute, weekday, intervalMin, elapsedMin, skip: 'none',
     reason: `act h=${hour} elapsed=${elapsedMin === Infinity ? 'inf' : Math.round(elapsedMin)}>=${intervalMin}-${TOLERANCE_MIN}`,
   };
 }

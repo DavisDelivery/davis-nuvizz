@@ -56,6 +56,11 @@ import { validateNewRoute } from './lib/route-create.js';
 import { mergeDayLoads, dayLoadTally } from './lib/day-loads.js';
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
+// The scan plan's model, shared with the scheduler that runs it — the screen and the code
+// must not be able to disagree about what a rule means or what a scan affects.
+import {
+  SCAN_KINDS as SCAN_KIND_LIST, SCAN_INFO, estimatePlanCalls,
+} from '../netlify/functions/lib/scan-plan.mts';
 import ChatPanel, { ChatLauncher, MessagesLauncher } from './components/ChatPanel.jsx';
 import MessagesPanel from './components/MessagesPanel.jsx';
 
@@ -77,7 +82,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.68.5';
+const APP_VERSION = '0.69.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -148,6 +153,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.69.0', 'THE TWO NUVIZZ SAVED SEARCHES NOW RUN ON THEIR OWN CLOCKS, AND THE SCAN SCHEDULE IS A REAL TABLE. Chad: “it’s time to decouple them — part of the day we need to scan more for completed, and part of the day we need to scan more for unplanned and planned… redesign the ui so I can set days of weeks and time schedules for each scan and rows of when it scans, and I want descriptions of what each scan does and what it affects.” WHY THEY WERE WRONG TOGETHER: 77128 (planned/unplanned) is about THE PLAN — which truck, what order, which driver — and churns during the routing evening and the ~10am order drop while being nearly static as trucks run. 77131 (completed) is about WHAT HAPPENED, and is dead overnight but is the whole game from first roll to last stop, because every delivery stamp RE-ANCHORS a route clock and moves every downstream ETA on that truck. One cadence for both meant the evening paid for a completed pull that could only come back empty, and the delivery day under-sampled the one feed that decides whether a flag is right. THE SCHEDULE IS CHAD’S, BAND FOR BAND. Planned: 30m 8pm-12am, 20m 12am-5am, 15m 5am-10am, 30m 10am-8pm. Completed: 30m 4-6am, 15m 6am-7pm, ONE sweep 7-10pm, nothing 10pm-4am. Roster: hourly — it was being pulled on every one of ~33 fires a day for a list that only changes when somebody creates a load, and that reclaim pays for most of the extra completed sampling. Measured: 133 discovery calls a weekday against 99 today, 665 a week against 510, still ~20% of the 2,000 ceiling. THE CRON MOVED FROM EVERY 15 MINUTES TO EVERY 5, and this is the honesty fix inside the feature: on a 15-minute cron there is no such thing as “every 20 minutes” — it snaps to 15, so the box would have said 20 while the system did 15. At a 5-minute step every interval worth typing lands exactly, and the jitter tolerance drops 7→2 with it (at 7 on a 5-minute cron a 15-minute rule would fire every 10). A fire with nothing due does two Firestore reads and returns, so the extra invocations cost NO NuVizz calls. A COMPLETED-ONLY FIRE TAKES A DELIBERATELY TINY PATH. The rebuild reads ABSENCE as meaning — a planned stop missing from a pull becomes a demote candidate — and a completed-only pull is missing every planned stop by definition. The thin-pull ratio guard would probably have caught it, but “probably, via a heuristic built for a different failure” is not a guarantee and what it guards is stops being torn off live routes mid-morning. So the overlay is its own operation: it can mark an EXISTING stop finished and nothing else — four fields, never a route, sequence, driver or plan flag, never creating or removing a stop — and the delivery stamp is write-once so a 4pm paperwork edit cannot rewrite a 12:33 delivery and drag every ETA anchored on it. THE SCREEN: one card per saved search, each with what it IS, what it AFFECTS, and its own rows of days + time band + interval. Overlapping rows resolve TIGHTEST-WINS, so there is no ordering to get wrong and adding a row can never silently slow something down. Under each card is the resolved 7×24 grid — the same resolution the scanner runs — so what a plan actually does is visible before it is saved, with blank hours meaning that scan does not run then. A typed interval the cron cannot deliver is labelled with what it will really be, and the cost line counts the ACHIEVED cadence, not the typed one. 35 new tests, 2,198 green.'],
   ['0.68.5', 'THE NO-DRIVER WATCH STARTS AT 7AM NOW, NOT 8 \u2014 AND THE HOUR IT WAS GATED ON WAS ANSWERING THE WRONG QUESTION. Chad: \u201cThe unassigned loads that we act like leaving at 12 will throw flags at 7am if there is a problem yes?\u201d They did not. The watch was gated on the FLEET\u2019S DEPARTURE HOUR (departMin, 8:00a), so a load with nobody on it and an 11:00a close stayed silent until eight \u2014 an hour of lead time thrown away on precisely the loads with the least of it, and the day sweep had already been running since 7:00a with nothing to say. THE GATE WAS INHERITED AND HAD STOPPED EARNING ITS KEEP. When the rule fired on the mere EXISTENCE of an unassigned load carrying hours, holding it until departure was the only thing standing between a dispatcher and a 6:30am wall of cards about loads they were still in the middle of assigning. v0.66.0\u2019s noon clock took that job over completely: the card fires only when a NOON start actually misses something, so an unassigned load with a 4:00p close is silent at 7am because there is no problem \u2014 not because the clock had not struck eight. Once that is true the departure gate does nothing except delay real warnings. So the two concepts are now separate constants answering their own questions: departMin is when trucks roll; NO_DRIVER_WATCH_FROM_MIN is when somebody is at a desk who can put a driver on a load, which is 7:00a, when the sweep starts. Conflating them is what caused the miss, and a test pins that a late-departing fleet no longer delays the warning. Both halves moved together \u2014 the arrival walk\u2019s driverless clock and the card\u2019s own gate read one value, so the clock cannot start without the card being allowed to speak. THE OVERNIGHT WINDOW IS DELIBERATELY STILL QUIET and is one constant away: the 12:00a\u20136:59a sweep runs on today\u2019s board with a real clock, so moving this to 0 would flag doomed loads to the night router the moment routing finishes \u2014 worth doing only if loads normally DO carry drivers overnight, which is a fact about how Davis dispatches and not one the code should guess at. 2,163 tests green.'],
   ['0.68.4', 'PUBLIC/VERSION.JSON WAS SPELLING OUT ITS OWN ESCAPE SEQUENCES, AND IT IS THE FILE THE DEPLOY WATCHDOG READS. Merging main brought a version collision \u2014 a parallel session had also claimed 0.67.0 \u2014 and renumbering this branch\u2019s four rows surfaced something else: the freshly emitted version.json read \u201cthe reportu2019s recipient\u201d. emit-version-json reads App.jsx as TEXT to pull the changelog row, and its string reader took the character after a backslash and moved on. That is correct for \\\' and \\\\ and wrong for \\uXXXX, so any row authored with a unicode escape emitted the literal letters. It was never about one row: the log is full of \\u2014 and \\u201c, and whether a headline came out readable depended entirely on whether whoever wrote it happened to paste the character or escape it. The reader decodes now \u2014 four hex digits or nothing, so a malformed \\uZZZZ is left alone instead of silently eating four characters of real text. Four tests pin it, including that one. This matters more than a typo because version.json is what check-deploy-fresh and the in-app update bar read: it is the file consulted precisely when somebody is asking \u201cdid my fix actually ship\u201d, which is the worst moment for it to be mangled. 2,137 tests green.'],
   ['0.68.3', 'THE COMMENT EXPLAINING WHY A SECRET WAS NOT COMMITTED WAS ITSELF THE SECRET, AND IT FAILED THE DEPLOY. v0.68.0 moved the daily report\u2019s recipient into an env var rather than committing a personal address, and wrote a comment saying so \u2014 which spelled the local part out in lowercase to explain what was being avoided. That bare word is an env-var VALUE on this site, so Netlify\u2019s secret scan matched the explanation and the production build returned exit code 2. Every GitHub Actions check was green: unit, smoke, both load-scan jobs. Only the three Netlify checks went red, which is the shape of failure that is easy to wave through as \u201cjust the preview\u201d. TWO THINGS WORTH KEEPING. The scan reads COMMENTS, not only code \u2014 a secret does not become safe by being prose about a secret \u2014 and it is CASE-SENSITIVE, which is why five hundred changelog rows carrying the same word capitalised have never tripped it and one lowercase word in a code comment did. The comment now makes the point without spelling anything out, and records its own failure so the next person writing a careful note about an env var does not reproduce it. No behaviour changed; the report, the schedule, the grading and the screen are all exactly as merged. 2,133 tests green.'],
@@ -12815,6 +12821,236 @@ function SchedSection({ icon, title, desc, children }) {
   );
 }
 
+// ── THE SCAN PLAN EDITOR ─────────────────────────────────────────────────────
+//
+// Chad: "redesign the ui for the scan schedule so I can set days of weeks and time schedules
+// for each scan and be able to set different values or rows of when it scans so I can scan
+// more heavily on each scan at different times of the day — and I want descriptions of what
+// each scan does and what it affects."
+//
+// One card per saved search, each carrying its own description and its own rows. A row is
+// days + a time window + an interval. Where rows overlap the TIGHTEST wins, so there is no
+// ordering to get wrong and adding a row can never silently slow something down.
+//
+// The 7x24 grid under each card is the point of the whole screen: it resolves the rows the
+// same way the scanner does, so what a plan actually DOES is visible before it is saved
+// rather than inferred from a table. An hour no row covers reads blank — that scan does not
+// run then, which is a thing you can want.
+//
+// PHONE AND DESKTOP ARE THE SAME FLOW COLUMN here on purpose: rows wrap rather than scroll
+// sideways, and the grid gets its own horizontal scroller so the page body never does.
+const DOW = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+const DOW_FULL = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const hourLabel = (h) => (h === 0 ? '12a' : h === 12 ? '12p' : h === 24 ? '12a' : h < 12 ? `${h}a` : `${h - 12}p`);
+
+// What a typed interval will REALLY be: the cron wakes every CRON_STEP minutes, so an
+// off-step number lands on the nearest step. Mirrors effectiveCadence in lib/scan-plan.
+const CRON_STEP = 5, CRON_TOL = 2;
+const realCadence = (min) => Math.max(1, Math.ceil((Number(min) - CRON_TOL) / CRON_STEP)) * CRON_STEP;
+
+function DayChips({ days, onChange }) {
+  const on = new Set(days || []);
+  return (
+    <div className="flex flex-wrap gap-0.5">
+      {DOW.map((d, i) => (
+        <button
+          key={i}
+          type="button"
+          title={DOW_FULL[i]}
+          aria-label={DOW_FULL[i]}
+          aria-pressed={on.has(i)}
+          onClick={() => { const n = new Set(on); n.has(i) ? n.delete(i) : n.add(i); onChange([...n].sort()); }}
+          className={'w-7 h-9 rounded text-[11px] font-bold border ' + (on.has(i)
+            ? 'bg-blue-600 text-white border-blue-600'
+            : 'bg-white text-slate-400 border-slate-200 hover:bg-slate-50')}
+        >{d}</button>
+      ))}
+    </div>
+  );
+}
+
+function RuleRow({ rule, onChange, onRemove }) {
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  const real = realCadence(rule.intervalMin);
+  const drifted = real !== Number(rule.intervalMin);
+  return (
+    <div className="border rounded p-2 bg-slate-50/60 flex flex-wrap items-end gap-2">
+      <div className="min-w-0">
+        <div className="text-[10px] text-slate-500 mb-0.5">Days</div>
+        <DayChips days={rule.days} onChange={(days) => onChange({ ...rule, days })} />
+      </div>
+      <div>
+        <div className="text-[10px] text-slate-500 mb-0.5">From</div>
+        <select value={rule.startHour} onChange={(e) => onChange({ ...rule, startHour: num(e.target.value) })}
+          className="tap-target border rounded px-1 py-1 text-xs bg-white">
+          {Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{hourLabel(h)}</option>)}
+        </select>
+      </div>
+      <div>
+        <div className="text-[10px] text-slate-500 mb-0.5">To</div>
+        <select value={rule.endHour} onChange={(e) => onChange({ ...rule, endHour: num(e.target.value) })}
+          className="tap-target border rounded px-1 py-1 text-xs bg-white">
+          {Array.from({ length: 24 }, (_, i) => i + 1).map((h) => <option key={h} value={h}>{hourLabel(h)}</option>)}
+        </select>
+      </div>
+      <div>
+        <div className="text-[10px] text-slate-500 mb-0.5">Every</div>
+        <div className="flex items-center gap-1">
+          <input type="number" inputMode="numeric" value={rule.intervalMin}
+            onChange={(e) => onChange({ ...rule, intervalMin: num(e.target.value) })}
+            className="tap-target w-16 border rounded px-1 py-1 text-xs bg-white" />
+          <span className="text-[11px] text-slate-500">min</span>
+        </div>
+      </div>
+      {/* The box may not lie about what it will do — see realCadence. */}
+      {drifted ? (
+        <div className="text-[10px] text-amber-700 font-semibold self-center">runs every {real}m</div>
+      ) : null}
+      <button type="button" onClick={onRemove}
+        className="tap-target ml-auto px-2 py-1 text-[11px] font-semibold text-red-700 border border-red-200 rounded hover:bg-red-50">
+        Remove
+      </button>
+      {rule.note ? <div className="w-full text-[10px] text-slate-400">{rule.note}</div> : null}
+    </div>
+  );
+}
+
+// The resolved week, exactly as the scanner will read it. Blank = this scan does not run.
+function PlanGrid({ kind, rules }) {
+  const cell = (wd, h) => {
+    let best = null;
+    for (const r of rules) {
+      if (r.enabled === false || r.kind !== kind) continue;
+      if (!(r.days || []).includes(wd)) continue;
+      const inWin = r.startHour < r.endHour ? (h >= r.startHour && h < r.endHour) : (h >= r.startHour || h < r.endHour);
+      if (!inWin) continue;
+      const eff = realCadence(r.intervalMin);
+      if (best == null || eff < best) best = eff;
+    }
+    return best;
+  };
+  const tone = (v) => (v == null ? 'bg-slate-100 text-slate-300'
+    : v <= 15 ? 'bg-blue-600 text-white'
+      : v <= 30 ? 'bg-blue-300 text-blue-900'
+        : v <= 60 ? 'bg-blue-100 text-blue-700' : 'bg-slate-200 text-slate-600');
+  return (
+    <div className="mt-2">
+      <div className="text-[10px] text-slate-500 mb-1">Resolved week — minutes between scans. Blank means this scan does not run.</div>
+      <div className="overflow-x-auto">
+        <table className="border-separate" style={{ borderSpacing: '1px' }}>
+          <thead>
+            <tr>
+              <th className="w-8" />
+              {Array.from({ length: 24 }, (_, h) => (
+                <th key={h} className="text-[8px] text-slate-400 font-normal w-5">{h % 3 === 0 ? hourLabel(h) : ''}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {DOW_FULL.map((d, wd) => (
+              <tr key={wd}>
+                <td className="text-[9px] text-slate-500 pr-1 text-right">{d}</td>
+                {Array.from({ length: 24 }, (_, h) => {
+                  const v = cell(wd, h);
+                  return <td key={h} title={`${d} ${hourLabel(h)} — ${v == null ? 'not scanned' : `every ${v} min`}`}
+                    className={`text-[8px] text-center w-5 h-4 rounded-sm ${tone(v)}`}>{v == null ? '' : v}</td>;
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// What the whole plan costs, per day and per week, at the cadence that will ACTUALLY be
+// achieved. An estimate that flatters the plan is worse than no estimate.
+function PlanEstimate({ rules }) {
+  let est;
+  try { est = estimatePlanCalls(rules || []); } catch { return null; }
+  const busiest = Math.max(...est.perDay);
+  return (
+    <div className="mt-3 border rounded-lg bg-slate-50 px-3 py-2">
+      <div className="text-[11px] font-semibold text-slate-600 mb-1">What this plan costs</div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-600">
+        {DOW_FULL.map((d, i) => (
+          <span key={i}><span className="text-slate-400">{d}</span> <span className="font-semibold tabular-nums">{est.perDay[i]}</span></span>
+        ))}
+      </div>
+      <div className="mt-1 text-[11px] text-slate-600">
+        <span className="font-semibold tabular-nums">{est.perWeek}</span> NuVizz calls a week ·
+        busiest day <span className="font-semibold tabular-nums">{busiest}</span> ·
+        planned <span className="tabular-nums">{est.byKind.planned}</span>,
+        completed <span className="tabular-nums">{est.byKind.completed}</span>,
+        roster <span className="tabular-nums">{est.byKind.roster}</span> per week
+      </div>
+      <div className="mt-1 text-[10px] text-slate-400">
+        Discovery calls only — the per-order /stop/info enrichment rides on top and is not schedulable.
+        The daily ceiling above is the hard stop either way.
+      </div>
+    </div>
+  );
+}
+
+function ScanKindCard({ kind, info, rules, onChange }) {
+  const mine = rules.filter((r) => r.kind === kind);
+  const others = rules.filter((r) => r.kind !== kind);
+  const setMine = (next) => onChange([...others, ...next]);
+  const addRow = () => setMine([...mine, {
+    id: `${kind}-${Date.now()}`, kind, days: [1, 2, 3, 4, 5], startHour: 8, endHour: 17, intervalMin: 30,
+  }]);
+  const perDay = (() => {
+    let n = 0;
+    for (let h = 0; h < 24; h++) {
+      let best = null;
+      for (const r of mine) {
+        if (!(r.days || []).includes(2)) continue;
+        const inWin = r.startHour < r.endHour ? (h >= r.startHour && h < r.endHour) : (h >= r.startHour || h < r.endHour);
+        if (!inWin) continue;
+        const eff = realCadence(r.intervalMin);
+        if (best == null || eff < best) best = eff;
+      }
+      if (best != null) n += 60 / best;
+    }
+    return Math.round(n);
+  })();
+
+  return (
+    <div className="border rounded-lg bg-white">
+      <div className="flex flex-wrap items-baseline gap-2 px-3 py-2 border-b bg-slate-50 rounded-t-lg">
+        <span className="font-semibold text-sm text-slate-800">{info.label}</span>
+        <span className="text-[10px] font-mono text-slate-400">listDef {info.listDef}</span>
+        <span className="ml-auto text-[11px] text-slate-500">≈ {perDay} scans on a Tuesday</span>
+      </div>
+      {/* WHAT IT DOES AND WHAT IT AFFECTS — Chad asked for this by name, and it comes from
+          the same module the scheduler reads so the screen and the code cannot drift. */}
+      <div className="px-3 py-2 space-y-1 text-[11px] border-b">
+        <div><span className="font-semibold text-slate-600">What it is:</span> <span className="text-slate-600">{info.what}</span></div>
+        <div><span className="font-semibold text-slate-600">What it affects:</span> <span className="text-slate-600">{info.affects}</span></div>
+        <div className="text-slate-400">{info.costPerScan} · quiet when: {info.quietWhen}</div>
+      </div>
+      <div className="p-2 space-y-2">
+        {mine.length === 0 ? (
+          <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+            No rows — this scan will never run.
+          </div>
+        ) : null}
+        {mine.map((r, i) => (
+          <RuleRow key={r.id || i} rule={r}
+            onChange={(next) => setMine(mine.map((x, j) => (j === i ? next : x)))}
+            onRemove={() => setMine(mine.filter((_, j) => j !== i))} />
+        ))}
+        <button type="button" onClick={addRow}
+          className="tap-target px-2 py-1 text-xs font-semibold text-blue-700 border border-blue-200 rounded hover:bg-blue-50">
+          + Add a time band
+        </button>
+        <PlanGrid kind={kind} rules={rules} />
+      </div>
+    </div>
+  );
+}
+
 // Rough daily-scan-count estimate from the cadence form, so the cost impact of an
 // edit is visible before saving.
 function EstimateLine({ form }) {
@@ -12905,14 +13141,15 @@ function SchedulePanel({ onScanNow, scanning, onSaved }) {
           onChange={set('scansEnabled')}
         />
 
-        <SchedSection icon={<Clock size={12} />} title="Cadence" desc="How often the scanner runs, by ET time of day.">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <NumberField label="Day interval" hint="between scans, day band" unit="min" value={form.intervalDayMin} def={defaults.intervalDayMin} bound={bounds.intervalDayMin} onChange={set('intervalDayMin')} />
-            <NumberField label="Night interval" hint="between scans, overnight" unit="min" value={form.intervalNightMin} def={defaults.intervalNightMin} bound={bounds.intervalNightMin} onChange={set('intervalNightMin')} />
-            <NumberField label="Day band start" hint="ET hour faster cadence begins" unit="h ET" value={form.dayBandStartHour} def={defaults.dayBandStartHour} bound={bounds.dayBandStartHour} onChange={set('dayBandStartHour')} />
-            <NumberField label="Day band end" hint="ET hour it ends (exclusive)" unit="h ET" value={form.dayBandEndHour} def={defaults.dayBandEndHour} bound={bounds.dayBandEndHour} onChange={set('dayBandEndHour')} />
+        <SchedSection icon={<Clock size={12} />} title="Cadence" desc="Each NuVizz saved search on its own schedule — days of the week, time bands, and how often. Where bands overlap the TIGHTEST interval wins.">
+          <div className="space-y-3">
+            {SCAN_KIND_LIST.map((k) => (
+              <ScanKindCard key={k} kind={k} info={SCAN_INFO[k]}
+                rules={form.rules || []}
+                onChange={(rules) => setForm((f) => ({ ...f, rules }))} />
+            ))}
           </div>
-          <EstimateLine form={form} />
+          <PlanEstimate rules={form.rules || []} />
         </SchedSection>
 
         <SchedSection icon={<Gauge size={12} />} title="Spend cap" desc="Daily NuVizz call ceiling — the breaker threshold and the gauge up top.">
