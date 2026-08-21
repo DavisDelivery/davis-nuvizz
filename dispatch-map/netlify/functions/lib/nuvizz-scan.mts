@@ -585,10 +585,10 @@ export function estimateLoadRange(dateStr: string): { startNbr: number; endNbr: 
   return { startNbr: center - LOAD_WINDOW_HALF, endNbr: center + LOAD_WINDOW_HALF };
 }
 
-async function scanLoadRangeForDate(dateStr: string, startNbr: number, endNbr: number, concurrency = PROBE_CONCURRENCY) {
+async function scanLoadRangeForDate(dateStr: string, startNbr: number, endNbr: number, concurrency = PROBE_CONCURRENCY, tally?: LoadProbeTally) {
   const nums: number[] = [];
   for (let n = endNbr; n >= startNbr; n--) nums.push(n);
-  return scanLoadNumbers(dateStr, nums, concurrency);
+  return scanLoadNumbers(dateStr, nums, concurrency, tally);
 }
 
 // PURE: a stop's own scheduled delivery date (YYYY-MM-DD) from a raw load-stop,
@@ -630,12 +630,47 @@ export function loadStopsForDate(rawStops: any[], dateStr: string, loadStartDate
 // for the stops that DELIVER on dateStr (so carryover loads contribute), else null.
 // Extracted so both the set/range scan and the adaptive forward scan share one
 // definition of "a load probe".
-async function probeLoad(n: number, dateStr: string, authHeader: string, companyCode: string): Promise<any[] | null> {
+/** A counter the load scan threads through its probes so a FAILED probe is
+ *  distinguishable from an EMPTY one. See the note on LoadProbeTally below. */
+export interface LoadProbeTally { failed: number }
+
+/**
+ * PURE. Is a non-OK /load/info response a FAILURE, or just "no such load"?
+ *
+ * Exported so the distinction is pinned by a test rather than living as a bare `!== 404`
+ * inside a catch. Number-probing asks about thousands of load numbers that do not exist,
+ * so 404 is the ordinary answer and counting it would mark every healthy scan untrustworthy.
+ * 401/403 (auth expired) and 5xx (vendor down) are the vendor failing to answer, and those
+ * are exactly the ones that used to look like an empty board.
+ */
+export function isLoadProbeFailureStatus(status: number): boolean {
+  return status !== 404;
+}
+
+/**
+ * WHY THIS COUNTS FAILURES.
+ *
+ * probeLoad returns null for three completely different things: the vendor said 404 (this
+ * load number does not exist — the ordinary answer when number-probing a window), the vendor
+ * could not be reached or refused (auth, 5xx, timeout), and the load exists but holds no
+ * stops for this date. Only the FIRST and LAST are "nothing here"; the middle one is "we do
+ * not know", and collapsing it into null is what let a scan whose every call failed come
+ * back as a confident empty board.
+ *
+ * A 404 is deliberately NOT a failure. The whole scan is built on probing numbers that
+ * mostly do not exist, so counting those would mark every healthy scan untrustworthy.
+ */
+async function probeLoad(n: number, dateStr: string, authHeader: string, companyCode: string, tally?: LoadProbeTally): Promise<any[] | null> {
   const loadNbr = `${companyCode}${String(n).padStart(9, '0')}`;
   const url = `${NUVIZZ_BASE}/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`;
   try {
     const resp = await getNuvizzRequester().request(url, { headers: { Authorization: authHeader, Accept: 'application/json' }, maxRetries: 1 }, { route: '/load/info', tenant: companyCode });
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      // 404 = this load number does not exist, which is the ordinary answer here.
+      // Anything else is the vendor failing to answer a question we asked.
+      if (isLoadProbeFailureStatus(resp.status) && tally) tally.failed += 1;
+      return null;
+    }
     const d: any = await resp.json();
     const h = d?.Load?.loadHeader || {};
     const a = d?.Load?.loadAssignment || {};
@@ -661,6 +696,7 @@ async function probeLoad(n: number, dateStr: string, authHeader: string, company
     if (!kept.length) return null;
     return kept.map(({ s, i }) => ({ ...s, load: { ...header, stopSeq: i } }));
   } catch {
+    if (tally) tally.failed += 1;
     return null;
   }
 }
@@ -728,7 +764,7 @@ export async function lookupLoadStopNbrs(loadNbr: string): Promise<Set<string> |
 // Probe an EXPLICIT list of load numbers (Phase 2 lean discovery: known-active +
 // forward buffer + gap sweep). Same per-load /load/info call + date-filter as the
 // range scan — just an arbitrary set instead of a contiguous window.
-async function scanLoadNumbers(dateStr: string, numbers: number[], concurrency = PROBE_CONCURRENCY) {
+async function scanLoadNumbers(dateStr: string, numbers: number[], concurrency = PROBE_CONCURRENCY, tally?: LoadProbeTally) {
   const { companyCode } = getCreds();
   const authHeader = basicAuthHeader();
 
@@ -737,7 +773,7 @@ async function scanLoadNumbers(dateStr: string, numbers: number[], concurrency =
   let idx = 0;
   const runOne = async () => {
     while (idx < nums.length) {
-      const r = await probeLoad(nums[idx++], dateStr, authHeader, companyCode);
+      const r = await probeLoad(nums[idx++], dateStr, authHeader, companyCode, tally);
       if (r && r.length) results.push(r);
     }
   };
@@ -1198,12 +1234,12 @@ async function scanUnplannedForward(dateStr: string, fromStopNbr: number, opts: 
 // Forward load discovery: re-pull already-known active loads (status updates),
 // then walk UP from the last-known max load number for NEW loads until the
 // frontier runs dry. Returns flattened stop rows like scanLoadNumbers.
-async function scanLoadForward(dateStr: string, fromLoadNbr: number, knownActive: number[], opts: ForwardScanOpts = {}) {
+async function scanLoadForward(dateStr: string, fromLoadNbr: number, knownActive: number[], opts: ForwardScanOpts = {}, tally?: LoadProbeTally) {
   const { companyCode } = getCreds();
   const authHeader = basicAuthHeader();
-  const knownRows = knownActive.length ? await scanLoadNumbers(dateStr, knownActive) : [];
+  const knownRows = knownActive.length ? await scanLoadNumbers(dateStr, knownActive, PROBE_CONCURRENCY, tally) : [];
   const fwd = await scanForward(fromLoadNbr + 1, async (n) => {
-    const rows = await probeLoad(n, dateStr, authHeader, companyCode);
+    const rows = await probeLoad(n, dateStr, authHeader, companyCode, tally);
     const hit = !!(rows && rows.length);
     return { exists: hit, isNew: hit, record: hit ? rows : undefined };
   }, opts);
@@ -1229,6 +1265,9 @@ export interface ScanResult {
   // floor / early-stopped by design (not truncated by cap/budget/breaker) — only
   // set when includeUnplanned. observedFrontierStopNbr: highest stop number seen.
   descentComplete?: boolean;
+  // Load-probe health. See the note where loadTally is created.
+  loadProbeFailures?: number;
+  loadsComplete?: boolean;
   observedFrontierStopNbr?: number | null;
 }
 
@@ -1256,13 +1295,20 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
   // /load/info probes). includeUnplanned=false → load-only (skip the descent +
   // its findCeiling probing). At least one is always true at the call sites.
   const EMPTY_DESCENT = { records: [] as any[], complete: true, ceiling: 0, floor: 0, maxSeen: 0 };
+  // EVERY LOAD PROBE THAT COULD NOT BE ANSWERED, COUNTED. Without this the load half of a
+  // scan had no failure channel at all: probeLoad swallowed auth/5xx/network into the same
+  // null it uses for "no such load", so a scan whose every call failed produced an EMPTY
+  // load list that looked exactly like a day with no loads on it — and a full scan prunes
+  // against that. The unplanned descent has had `complete: false` for this reason since it
+  // was written; the loads never got the equivalent.
+  const loadTally: LoadProbeTally = { failed: 0 };
   const loadScan = !includeLoads
     ? Promise.resolve([] as any[])
     : useForwardLoad
-      ? scanLoadForward(dateStr, opts.forwardLoad!.start, opts.forwardLoad!.known || [])
+      ? scanLoadForward(dateStr, opts.forwardLoad!.start, opts.forwardLoad!.known || [], {}, loadTally)
       : useTargets
-        ? scanLoadNumbers(dateStr, opts.loadTargets as number[])
-        : scanLoadRangeForDate(dateStr, startNbr, endNbr);
+        ? scanLoadNumbers(dateStr, opts.loadTargets as number[], PROBE_CONCURRENCY, loadTally)
+        : scanLoadRangeForDate(dateStr, startNbr, endNbr, PROBE_CONCURRENCY, loadTally);
   const unplannedScan = !includeUnplanned
     ? Promise.resolve(EMPTY_DESCENT)
     : opts.forwardUnplanned
@@ -1311,6 +1357,11 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
     // descent ran this scan). descentComplete=false ⇒ truncated, don't trust the
     // high-water to advance the lean floor (R9).
     descentComplete: includeUnplanned ? descent.complete : undefined,
+    // How many load probes the vendor could not answer, and the verdict the write path
+    // acts on. loadsComplete=false means "this load list is not authoritative — preserve,
+    // do not prune". Undefined when loads were not scanned at all.
+    loadProbeFailures: includeLoads ? loadTally.failed : undefined,
+    loadsComplete: includeLoads ? loadTally.failed === 0 : undefined,
     observedFrontierStopNbr: includeUnplanned ? (descent.maxSeen || null) : undefined,
   };
 }

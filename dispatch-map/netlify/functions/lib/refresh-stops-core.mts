@@ -357,6 +357,30 @@ export function futureRosterCaptured(cached: { at?: string; loads?: any[] } | nu
   return (cached.loads || []).some((l: any) => l?.loadNbr);     // a number-less capture never counts
 }
 
+/**
+ * PURE. May this scan PRUNE the planned board, or must it preserve what it did not see?
+ *
+ * The three reasons a load list is not authoritative, in one place and testable:
+ *   • lean targets  — only a chosen subset of load numbers was probed
+ *   • forward walk  — only numbers above the frontier were probed
+ *   • unanswered probes — the vendor could not be reached for one or more loads
+ *
+ * The third is the one that was missing, and it is the dangerous one: the other two are
+ * deliberate and obvious, while an unanswered probe used to be indistinguishable from an
+ * empty answer. Any single unanswered probe makes the list non-authoritative — preserving a
+ * few stale rows costs a scan cycle, pruning on a failed scan deletes the day's board.
+ */
+export function loadsArePartial(opts: {
+  includeLoads: boolean;
+  loadTargets?: unknown;
+  forwardLoad?: unknown;
+  loadsComplete?: boolean;
+}): boolean {
+  if (!opts.includeLoads) return false;          // loads untouched — nothing to prune against
+  if (opts.loadTargets || opts.forwardLoad) return true;
+  return opts.loadsComplete === false;
+}
+
 export async function runRefreshStops(req: Request): Promise<Response> {
   const startedAt = Date.now();
   const now = new Date();
@@ -713,11 +737,32 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // Forward + lean both re-pulled only a SUBSET → PRESERVE un-rescanned stops
       // (never prune). Only a COMPLETE full descent / deep sweep prunes.
       const partialUnplanned = (leanUnplanned && !deepSweep) || !!forwardUnplanned || truncatedDescent;
-      const partialLoads = !!loadTargets || !!forwardLoad;
+      // A LOAD LIST WE COULD NOT FULLY FETCH IS NOT A LOAD LIST WE MAY PRUNE AGAINST.
+      //
+      // probeLoad used to fold auth/5xx/network failures into the same null it returns for
+      // "no such load", so a full scan whose every call failed produced an EMPTY load list
+      // that was indistinguishable from a day with no loads — and a full scan (no targets,
+      // no forward walk) prunes against exactly that. The result was an authoritative empty
+      // planned board, written over a real one, reported as ok:true.
+      //
+      // The asymmetry decides the threshold, and it is not close. Preserving stops we could
+      // not re-verify leaves a few stale rows until the next clean scan. Pruning on a failed
+      // scan deletes the day: the dispatchers' board, the flags, the ETAs and the 6:30
+      // completion report all go to zero at once, and nothing in the system says why. So ANY
+      // unanswered probe makes this scan non-authoritative for loads.
+      const loadsUntrustworthy = includeLoads && scan.loadsComplete === false;
+      if (loadsUntrustworthy) {
+        console.error(`[refresh] date=${date} ${scan.loadProbeFailures} load probe(s) unanswered — treating loads as PARTIAL (preserve, do not prune)`);
+      }
+      const partialLoads = loadsArePartial({ includeLoads, loadTargets, forwardLoad, loadsComplete: scan.loadsComplete });
       const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt, { includeUnplanned, includeLoads, partialLoads, partialUnplanned, rescannedLoads: loadTargets || undefined, graceFn: (fresh, ex) => { applyBoardWriteGrace(fresh, ex, Date.now()); } });
       // Only rebuild the fleet (load) index when we actually scanned loads — an
       // unplanned-only run would otherwise wipe the load index with an empty scan.
-      if (includeLoads) {
+      // Same reasoning as the prune guard above: the fleet index is REBUILT from this scan,
+      // so rebuilding it from a scan that could not reach the vendor replaces the day's load
+      // cards with whatever little came back. Skip the rebuild instead — a slightly stale
+      // fleet index is recoverable; an emptied one is the same silent hole in a second place.
+      if (includeLoads && !loadsUntrustworthy) {
         const fleet = deriveFleetSummary(scan.stops, scan.loadHeaders);
         await writeFleetIndex(TENANT, date, fleet.loads, fleet.summary, fleet.driverIndex, scan.scannedAt);
         // Cache the date's empty-loads roster too (once/day for a future date).
