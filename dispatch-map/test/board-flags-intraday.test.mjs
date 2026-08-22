@@ -96,9 +96,25 @@ test('a truck running AHEAD correctly clears the flag — that is the point, not
   assert.equal(flagFor(4, { pace: 35, firstArrival: 8 * 60 }), null);
 });
 
-test('with nothing delivered yet the walk still starts from the assumed departure', () => {
-  const row = flagFor(0);
-  assert.match(row.detail, /departs 8:00a/);
+// SUPERSEDED BY THE YARD RULE (Chad, 2026-08-22), and re-pointed rather than deleted: the
+// thing this test protects is that the ROW STATES WHERE ITS CLOCK COMES FROM, so a
+// dispatcher can tell an assumption from a measurement. What changed is which answer is
+// correct once the departure hour has passed with nothing delivered — the truck is on the
+// yard, so the clock runs from now, not from the 8:00 assumption. See yard-departure.test.mjs.
+test('with nothing delivered yet the walk says the clock runs from NOW, not from 8:00', () => {
+  const row = flagFor(0);                      // nowFor(0) is 8:05a — past the departure hour
+  assert.match(row.detail, /no movement yet, clock runs from 8:05a/);
+  assert.doesNotMatch(row.detail, /departs 8:00a/);
+});
+
+test('but before the departure hour it still reports the assumption, honestly labelled', () => {
+  const out = computeBoardFlags({
+    stops: board(0), notes, servedDate: DATE, dayKey: 'mon',
+    opts: { depot: DEPOT, nowMin: 7 * 60 },    // a 7:00a sweep: nothing is late to leave yet
+  });
+  const row = out.rows.find((r) => r.rule === 'hours_risk' && /CUST 9/.test(`${r.title} ${r.detail}`));
+  assert.ok(row, 'the 7:00a sweep should still judge this route');
+  assert.match(row.detail, /departs 8:00a \(assumed\)/);
 });
 
 test('a delivered stamp is not given another service block (the dwell already happened)', () => {
