@@ -180,7 +180,35 @@ export function selectAlertable(rows: any[], nowMin: number | null, amberGateMin
   const out: AlertCandidate[] = [];
   // A malformed env var must not silently open the gate to every amber on the board.
   const gate = Number.isFinite(amberGateMin) && amberGateMin > 0 ? amberGateMin : 0;
-  for (const r of rows || []) {
+  // A BROKEN CLOCK IS NOT A CLOCK, AND IT MUST NOT READ AS "NO CLOCK".
+  //
+  // The two clock rules below were written against `nowMin != null`, and NaN passes that
+  // test while failing every comparison it is then used in: `NaN >= closeMin` is false, so
+  // the past-close refusal lets the row through, and `closeMin - NaN > gate` is false, so
+  // the amber gate lets it through as well. An adversarial probe with Number('abc') as the
+  // clock alerted on all three rows on a test board — including one whose close was ten
+  // hours away and one whose close had already passed. A pre-day board legitimately has NO
+  // clock (the evening sweep withholds nowMin on purpose), and that must keep working; a
+  // NaN is a different thing entirely: it means a clock was PASSED and is broken, and the
+  // honest response to "I do not know what time it is" is to send nothing this sweep
+  // rather than mail whose every timing rule has silently stopped applying. The next
+  // sweep with a working clock sends normally; nothing is lost but twenty minutes.
+  if (nowMin != null && !Number.isFinite(nowMin as any)) return out;
+  const clock = Number.isFinite(nowMin as any) ? (nowMin as number) : null;
+  // A COLLAPSED ROW IS A PANEL DECISION, AND THE INBOX MUST NOT INHERIT IT.
+  //
+  // board-flags collapses a rule+tier bucket past its cap into ONE summary row with
+  // stopNbr: null. Every rule below drops such a row, which is right for a data-quality
+  // batch and wrong for freight: measured on the shipped engine, 25 amber hours_risk rows
+  // yield 25 candidates and 26 yield ZERO. The summary now carries its constituents, so the
+  // stops behind it are judged here individually — same claim key, same caps, same
+  // past-close refusal — instead of vanishing on the worst day of the week.
+  const flat = (rows || []).flatMap((r: any) => (
+    r?.collapsed && Array.isArray(r?.collapsedRows) && r.collapsedRows.length
+      ? r.collapsedRows
+      : [r]
+  ));
+  for (const r of flat) {
     if (!ALERT_RULES.has(String(r?.rule))) continue;
     if (!r?.stopNbr) continue;                     // a collapsed summary row is not a stop
     if (r?.collapsed) continue;
@@ -195,11 +223,11 @@ export function selectAlertable(rows: any[], nowMin: number | null, amberGateMin
       if (String(r?.tier) !== 'amber') continue;
       if (!gate) continue;                             // shipped default: amber stays on screen
       if (!AMBER_GATED_RULES.has(String(r?.rule))) continue;
-      if (nowMin == null) continue;                    // no clock, no measurable lead
-      if (closeMin - nowMin > gate) continue;          // the door is not close enough yet
+      if (clock == null) continue;                     // no clock, no measurable lead
+      if (closeMin - clock > gate) continue;           // the door is not close enough yet
     }
     // Rule 2 — the window has already shut. Nothing actionable is left in this message.
-    if (nowMin != null && nowMin >= closeMin) continue;
+    if (clock != null && clock >= closeMin) continue;
     out.push({
       stopNbr: String(r.stopNbr), customer: String(r.customer || r.businessName || ''),
       route: String(r.routeName || ''), closeMin, etaMin: Number(r.etaMin),
@@ -207,8 +235,12 @@ export function selectAlertable(rows: any[], nowMin: number | null, amberGateMin
       rule: String(r.rule),
     });
   }
-  // Worst first, so a cap keeps the most urgent rather than an arbitrary slice.
-  out.sort((a, b) => b.lateBy - a.lateBy);
+  // Worst first, so a cap keeps the most urgent rather than an arbitrary slice. A row with
+  // no usable lateBy sorts last rather than poisoning the comparator: `undefined - 60` is
+  // NaN, and a NaN comparator makes the whole ordering undefined, which at a cap means the
+  // stops that get dropped are chosen arbitrarily rather than by how late they are.
+  const worst = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : -Infinity);
+  out.sort((a, b) => worst(b.lateBy) - worst(a.lateBy));
   return out;
 }
 
