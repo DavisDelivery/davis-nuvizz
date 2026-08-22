@@ -129,15 +129,75 @@ export { finiteMinutes };
 // arrival row, so a screen-only R6 card still sends nothing.
 export const ALERT_RULES = new Set(['hours_risk', 'no_driver_hours']);
 
-export function selectAlertable(rows: any[], nowMin: number | null): AlertCandidate[] {
+// AMBER, BUT ONLY WHEN THE DOOR IS ABOUT TO SHUT — SHIPPED OFF.
+//
+// Chad: "some of our flags have shown up too late to do anything about." Replaying 15 sealed
+// weekdays (12,370 board stops, 1,132 with a judgeable close, 99 real misses) says the engine
+// is not mostly blind — it is mostly SILENT. Of the 99 misses, 44 ever reached red, which is
+// the only tier that emails; 39 more were seen ONLY as amber and so reached nobody, and their
+// median warning was 60 minutes. Amber is the early tier by construction: severityTier calls a
+// row amber when the predicted overrun is inside the model's own error band, which overnight
+// is 90 minutes.
+//
+// A blanket "email every amber" is the wrong answer and the corpus says so: 28 more false
+// emails across 15 days to buy 2 more catches, of 39 and 16 minutes late, with the flood
+// landing in the 7:00-8:00a sweeps where the clock is an unanchored guess against a 90-minute
+// band. Measured alert precision by how early it fires: 80% inside 30 minutes, 62% at 1-2
+// hours, 45% beyond four. Long-lead alerts are coin flips, and a coin-flip inbox is what
+// teaches customer service to stop opening it — which would cost the 44 catches the rule
+// already gets right.
+//
+// The gate is a CLIFF that was measured, not a threshold that was fitted. Of amber sightings
+// within two hours of the close, 59% (29 of 49) were real misses; beyond two hours, 7%
+// (2 of 30). At 120 minutes: recall 44.4% -> 73.7% for 20 extra false alarms over 15 days —
+// 1.45 extra catches per extra false alarm, and 73 of the 75 misses ANY tier-based rule can
+// reach. The 29 it newly catches ran a median 38 minutes late, up to 297, with 12 over an hour:
+// a truck at a shut dock and a redelivery on our own dime.
+//
+// WHY IT SHIPS AT 0 (OFF). Where to set it is Chad's call, not an engineering one, because the
+// two candidates trade different things and both are defensible:
+//   120 — maximises catches (+29 over 15 days) at +1.33 emails/day.
+//   180 — buys ZERO extra catches, but moves 11 real warnings a median 80 minutes earlier
+//         (three of them from under an hour of lead to over it, all three ending critical at
+//         44, 97 and 115 minutes late) for +0.93 emails/day.
+// If the complaint is "too late to act on", 180 is the better number. Either is one env var
+// and no deploy. At 0 this file behaves exactly as it did before.
+//
+// HONEST LIMIT ON THE NUMBERS ABOVE. They were simulated by gating at a row's FIRST sighting;
+// this gate is evaluated on every sweep, which is a strictly wider rule (a row first seen at
+// 6am and still amber at noon alerts here, and did not in the simulation). Its true position is
+// bounded: catches 73-75, false alarms 34-62. Thirty rows sit in that gap and the field that
+// would settle them (the tier at each sweep) is computed inside flag-replay-core and dropped
+// before the rows are returned. Carrying it is a Firestore-only re-run, zero vendor calls.
+//
+// Amber is gated to hours_risk ONLY. An R6 no_driver_hours card takes its tier from provenance
+// rather than from severityTier, so an amber one is not "a small predicted overrun" — it is a
+// driverless load whose hours the scanner invented, and its volume is unmeasured here.
+export const AMBER_LEAD_GATE_MIN = Number(process.env.AMBER_LEAD_GATE_MIN ?? 0);
+const AMBER_GATED_RULES = new Set(['hours_risk']);
+
+export function selectAlertable(rows: any[], nowMin: number | null, amberGateMin = AMBER_LEAD_GATE_MIN): AlertCandidate[] {
   const out: AlertCandidate[] = [];
+  // A malformed env var must not silently open the gate to every amber on the board.
+  const gate = Number.isFinite(amberGateMin) && amberGateMin > 0 ? amberGateMin : 0;
   for (const r of rows || []) {
     if (!ALERT_RULES.has(String(r?.rule))) continue;
-    if (!ALERT_TIERS.has(String(r?.tier))) continue;   // amber stays on the screen
     if (!r?.stopNbr) continue;                     // a collapsed summary row is not a stop
     if (r?.collapsed) continue;
+    // The close is parsed BEFORE the tier decision, because the amber gate is measured against
+    // it — and because Number(null) is 0 and 0 is finite, which is how a stop with no deadline
+    // once earned a midnight one (v0.56.3). finiteMinutes is the guard; it runs first.
     const closeMin = finiteMinutes(r?.closeMin);
     if (closeMin == null) continue;
+    if (!ALERT_TIERS.has(String(r?.tier))) {
+      // Not red or critical. The ONLY way past this line is an amber hours_risk row whose
+      // close is inside the gate — and only when the gate has been switched on.
+      if (String(r?.tier) !== 'amber') continue;
+      if (!gate) continue;                             // shipped default: amber stays on screen
+      if (!AMBER_GATED_RULES.has(String(r?.rule))) continue;
+      if (nowMin == null) continue;                    // no clock, no measurable lead
+      if (closeMin - nowMin > gate) continue;          // the door is not close enough yet
+    }
     // Rule 2 — the window has already shut. Nothing actionable is left in this message.
     if (nowMin != null && nowMin >= closeMin) continue;
     out.push({
