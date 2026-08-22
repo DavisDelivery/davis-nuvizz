@@ -187,7 +187,11 @@ test('the alert module imports nothing from the customer-communications engine',
   const { readFile } = await import('node:fs/promises');
   const src = await readFile(new URL('../netlify/functions/lib/flag-alert.mts', import.meta.url), 'utf8');
   const imports = [...src.matchAll(/^import .*?from '(.+?)';/gm)].map((m) => m[1]);
-  assert.deepEqual(imports, ['./email.mts'], 'the only dependency is the raw sender');
+  // flag-rows.mts is a PURE local helper (the one place a capped board row is unpacked) and
+  // is deliberately not the comms engine. The guard is about customer-communications
+  // coupling — no shared counter, config doc or budget — not about import count.
+  assert.deepEqual(imports, ['./flag-rows.mts', './email.mts'], 'the only dependencies are the raw sender and the pure row helper');
+  assert.ok(!imports.some((i) => /customer-comms|comms-config|unsubscribe/.test(i)), 'never the comms engine');
 });
 
 test('a runaway board cannot become an unbounded flood', async () => {

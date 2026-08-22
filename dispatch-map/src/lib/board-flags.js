@@ -1227,11 +1227,30 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     // stop's dismissKey onto the collapsed line, so waving off the batch wrote a key
     // belonging to one constituent — and the batch reappeared while a single stop went
     // quiet. Rebuild the key from the collapsed fingerprint rather than inheriting it.
+    // THE COLLAPSE IS A DECISION ABOUT THE PANEL, NOT ABOUT THE INBOX.
+    //
+    // The summary row carries stopNbr: null so it cannot claim to be a stop — and
+    // selectAlertable drops rows with no stopNbr, which is correct for a data-quality batch
+    // and CATASTROPHIC for a batch of freight predicted to miss its window. Measured on the
+    // shipped code: 25 amber hours_risk rows produce 25 alert candidates; 26 produce ZERO,
+    // because the 26th tips the bucket into one summary the alert path then skips. The
+    // feature goes silent on precisely the day it matters most, and a calm panel is
+    // pixel-identical to a good day (v0.55.x shipped this exact shape for reds).
+    //
+    // So the constituents ride along. The panel still shows one line; the alert path can
+    // still see the stops behind it and apply its own per-stop claim, cap and past-close
+    // rules to each. Only the alert-relevant facts are carried — this array is read by
+    // selectAlertable and by nothing that renders.
     const summaryRow = {
       ...rs[0], stopNbr: null, matchKey: null,
       title: `${rs.length} stops: ${rs[0].title.split('—')[0].trim()}`,
       detail: `Too many to list one by one (cap ${cap}) — this is a data-quality batch, not ${rs.length} separate emergencies. Work it from the stops grid.`,
       fingerprint: `collapsed|${rule}|${rs[0].tier}|${servedDate}|${rs.length}`, collapsed: rs.length,
+      collapsedRows: rs.map((r) => ({
+        rule: r.rule, tier: r.tier, stopNbr: r.stopNbr, matchKey: r.matchKey,
+        routeName: r.routeName, customer: r.customer, closeMin: r.closeMin,
+        etaMin: r.etaMin, lateBy: r.lateBy, anchored: r.anchored, detail: r.detail,
+      })),
     };
     summaryRow.dismissKey = `${rule}|${summaryRow.scope === 'occurrence' ? `${summaryRow.servedDate}|` : ''}${summaryRow.fingerprint}|t${TIER_RANK[summaryRow.tier] ?? 1}`;
     summaryRow.dismissKeys = dismissKeysFor(summaryRow);

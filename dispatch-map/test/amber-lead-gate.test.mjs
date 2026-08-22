@@ -75,3 +75,34 @@ test('collapsed summary rows and stop-less rows still send nothing', () => {
   assert.deepEqual(pick([row({ collapsed: 5 })], 13 * 60, 120), []);
   assert.deepEqual(pick([row({ stopNbr: null })], 13 * 60, 120), []);
 });
+
+// ── A BROKEN CLOCK IS NOT "NO CLOCK" ──────────────────────────────────────────
+//
+// Found by an adversarial probe, not by reasoning: with Number('abc') as nowMin, the old
+// guards let EVERY amber row through — including one whose close was ten hours out and one
+// whose close had already passed — because NaN passes `!= null` and then fails every
+// comparison it is used in. A pre-day board legitimately has no clock and must keep working.
+test('a NaN clock does not open the gate — it is treated as no clock at all', () => {
+  const far = row({ stopNbr: 'FAR', closeMin: 23 * 60 });   // ten hours out
+  const past = row({ stopNbr: 'PAST', closeMin: 6 * 60 });  // already shut
+  const near = row({ stopNbr: 'NEAR', closeMin: 14 * 60 });
+  assert.deepEqual(pick([far, past, near], Number('abc'), 120), []);
+  assert.deepEqual(pick([far, past, near], NaN, 180), []);
+  // and the real clock still behaves
+  assert.deepEqual(pick([far, past, near], 13 * 60, 120), ['NEAR']);
+});
+
+test('a NaN clock also cannot defeat the past-close refusal for red rows', () => {
+  const shut = row({ tier: 'red', stopNbr: 'SHUT', closeMin: 6 * 60 });
+  assert.deepEqual(pick([shut], Number('abc')), [], 'a shut door stays shut on a broken clock');
+  assert.deepEqual(pick([shut], 13 * 60), [], 'and on a real one');
+});
+
+test('a row with no usable lateBy sorts last instead of scrambling the order at the cap', () => {
+  const got = selectAlertable([
+    row({ stopNbr: 'X', lateBy: undefined }),
+    row({ stopNbr: 'Y', lateBy: 60 }),
+    row({ stopNbr: 'Z', lateBy: 5 }),
+  ], 13 * 60, 120).map((c) => c.stopNbr);
+  assert.deepEqual(got, ['Y', 'Z', 'X'], 'worst first, unusable last');
+});
