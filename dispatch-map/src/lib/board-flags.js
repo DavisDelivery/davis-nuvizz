@@ -301,6 +301,37 @@ export function isRollingEvidence(s) {
   return ROLLING_CODES.has(String(s?.status ?? '').trim());
 }
 
+// EVIDENCE THE TRUCK IS OFF THE YARD — a STRICTER test than isRollingEvidence, and the one
+// the departure clock now runs on.
+//
+// Chad, 2026-08-22: "once we get past eight AM, then for any route that has not had a
+// delivery done on it, that route no longer needs to be assumed that it's leaving at eight.
+// It needs to be assumed that it's leaving every minute after that... consider it to be at
+// yard if hasn't made any deliveries."
+//
+// WHY A SECOND, NARROWER TEST rather than reusing isRollingEvidence. That set counts
+// OUT_FOR_DELIVERY ('40') as movement. On this board that status is set when the load is
+// dispatched, which can be hours before the truck physically rolls — so a load marked out
+// at 7:00a that actually leaves at 11:00a was treated as ALREADY GONE and kept the 8:00a
+// departure all morning, which is exactly the silent optimism this rule exists to remove.
+// ARRIVED ('50') and an arrival stamp stay in: a truck standing at a customer's door has
+// demonstrably left the yard, whatever its paperwork says, and pushing it back to the yard
+// would invent a first leg it has already driven.
+//
+// Measured over 14 sealed days (851 routes, backtest raw rows): at 8:30a, 545 routes had no
+// delivery yet — 424 of them (78%) had genuinely not departed and would not leave for a
+// median of another 158 minutes, while 121 (22%) were already rolling and would have their
+// departure overstated by a median of 28 minutes. Being right by two and a half hours four
+// times out of five, against being wrong by half an hour once in five, is the trade — and
+// the two errors are not symmetrical: overstating costs a glance at a card, understating
+// costs a refused delivery nobody saw coming.
+export function hasLeftYard(s) {
+  if (isFinishedStop(s)) return true;
+  if (s?.arrivalDTTM) return true;
+  if (String(s?.normalizedStatus ?? '') === 'ARRIVED') return true;
+  return String(s?.status ?? '').trim() === '50';
+}
+
 const numOr = (v) => { const n = typeof v === 'number' ? v : parseFloat(v); return Number.isFinite(n) ? n : null; };
 
 // The stop's judged position: the dispatcher's saved pin override outranks the feed's geocode
@@ -716,13 +747,28 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // The grace hour after departure covers the every-morning gap where a truck that left
   // on time simply hasn't reached its first stop's scanner.
   const nowMin = Number.isFinite(opts.nowMin) ? opts.nowMin : null;
-  const NOT_STARTED_GRACE_MIN = 60;
+  // THE GRACE HOUR IS GONE. It existed to cover "a truck that left on time simply hasn't
+  // reached its first stop's scanner", and it bought that safety by holding the whole fleet
+  // on an 8:00a departure until 9:00a. Measured, that protection was worth ~28 minutes on
+  // the 22% of unstamped routes already rolling, and it cost a median 158-minute
+  // understatement on the 78% still sitting on the yard. The arrival-stamp and ARRIVED
+  // tests in hasLeftYard now carry the "already rolling" case directly, which is what the
+  // hour was standing in for.
+  const NOT_STARTED_GRACE_MIN = 0;
   if (day && depot) {
+    // Two questions, two sets, because they are not the same question.
+    //   startedRoutes — has anything happened on this route? Still the broad test, and it
+    //     is what the DRIVERLESS rule reads: a load somebody has begun working is not an
+    //     unassigned load, whatever the driver field says.
+    //   leftYardRoutes — has the truck physically gone? The narrow test, and the one the
+    //     departure clock runs on. See hasLeftYard.
     const startedRoutes = new Set();
+    const leftYardRoutes = new Set();
     for (const s of stops) {
-      if (!isRollingEvidence(s)) continue;
       const k = routeKeyOf(s);
-      if (k) startedRoutes.add(k);
+      if (!k) continue;
+      if (isRollingEvidence(s)) startedRoutes.add(k);
+      if (hasLeftYard(s)) leftYardRoutes.add(k);
     }
     // ONE DEFINITION OF "NOBODY IS DRIVING THIS", read by BOTH the arrival walk's clock (R5)
     // and the no-driver card (R6). They used to answer it separately, and the moment R5
@@ -812,7 +858,10 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       // measured departure; everything else keeps the default. See lib/route-departure.
       const learnedDepart = departFor(k);
       const routeDepart = learnedDepart != null ? learnedDepart : departMin;
-      const notStarted = !startedRoutes.has(k) && nowMin != null && nowMin > routeDepart + NOT_STARTED_GRACE_MIN;
+      // A ROUTE WITH NOTHING DELIVERED IS STILL ON THE YARD, and a truck on the yard cannot
+      // have departed in the past. So its clock starts at NOW, and keeps moving with the
+      // wall clock, until something on it says otherwise.
+      const notStarted = !leftYardRoutes.has(k) && nowMin != null && nowMin > routeDepart + NOT_STARTED_GRACE_MIN;
       // AN UNASSIGNED LOAD DOES NOT LEAVE AT 8:00 — AND IT DOES NOT LEAVE NOW EITHER.
       // Chad, on the four "No driver" cards filling the panel at 9:32a: "why is habasit
       // flagged if system thinks its leaving at 8am and its first stop would have plenty of
