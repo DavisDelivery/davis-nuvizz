@@ -187,7 +187,6 @@ export default async (req: Request): Promise<Response> => {
 
     const engineOpts = (legs: Record<string, number>) => ({
       depot: DEPOT, ...(nowMin != null ? { nowMin } : {}),
-      amberGateMin: AMBER_LEAD_GATE_MIN,
       travel: { legs, routeClasses, ...calOpts },
       ...(departByRoute ? { departByRoute } : {}),
       ...(tierFloorByStop ? { tierFloorByStop } : {}),
@@ -251,6 +250,10 @@ export default async (req: Request): Promise<Response> => {
     };
 
     const base = {
+      // THE SWITCH'S POSITION, REPORTED RATHER THAN INFERRED. A gate whose setting cannot be
+      // read from a sweep is one nobody can confirm they flipped — and a malformed env var
+      // silently resolves to off, which is indistinguishable from a quiet day.
+      amberGate: AMBER_LEAD_GATE_MIN,
       // What the clock ran on, so a sweep is inspectable: how many legs rode real drive
       // times vs the curve, whether the calibration doc existed, whether Google is wired.
       travel: {
