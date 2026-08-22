@@ -90,3 +90,39 @@ test('a collapsed batch of a NON-alerting rule stays silent — this did not wid
   }];
   assert.deepEqual(selectAlertable(rows, NOW), []);
 });
+
+// ── AND THE SAME UN-COLLAPSE MUST REACH ALL THREE CONSUMERS ──────────────────
+//
+// The first version of this fix reached the email selector only. That left the inbox and
+// the audit disagreeing about the same bad day: emails went out on a collapsed board while
+// flag history recorded nothing, so the worst day of the week was invisible to the record
+// the whole justification was measured from. The overnight texts had the cliff too.
+import { mergeSweep } from '../netlify/functions/lib/flag-history.mts';
+import { selectTextable } from '../netlify/functions/lib/flag-sms.mts';
+import { flattenForConsumers } from '../netlify/functions/lib/flag-rows.mts';
+
+const collapsedBatch = (n) => ([{
+  rule: 'hours_risk', tier: 'red', stopNbr: null, collapsed: n, scope: 'occurrence',
+  collapsedRows: Array.from({ length: n }, (_, i) => ({
+    rule: 'hours_risk', tier: 'red', stopNbr: `S${i}`, matchKey: `k${i}`, customer: `CO ${i}`,
+    routeName: 'R1', closeMin: 14 * 60, etaMin: 14 * 60 + 30, lateBy: 30, anchored: true,
+    detail: 'x', scope: 'occurrence',
+  })),
+}]);
+
+test('flag history records the stops behind a collapsed row, not zero of them', () => {
+  const { rows } = mergeSweep(null, collapsedBatch(13), 12 * 60, { emailedStops: new Set() });
+  assert.equal(Object.keys(rows).length, 13, 'the audit must see the day the caps bit');
+});
+
+test('the overnight texts see them too', () => {
+  assert.equal(selectTextable(collapsedBatch(13)).length, 8, 'capped at 8 per sweep, not silenced to 0');
+});
+
+test('a summary row that carried NO constituents is still not a stop, everywhere', () => {
+  const orphan = [{ rule: 'hours_risk', tier: 'red', stopNbr: null, collapsed: 9, scope: 'occurrence' }];
+  assert.deepEqual(flattenForConsumers(orphan), orphan, 'nothing to expand, so it passes through');
+  assert.deepEqual(selectAlertable(orphan, 12 * 60), []);
+  assert.deepEqual(Object.keys(mergeSweep(null, orphan, 12 * 60, { emailedStops: new Set() }).rows), []);
+  assert.deepEqual(selectTextable(orphan), []);
+});

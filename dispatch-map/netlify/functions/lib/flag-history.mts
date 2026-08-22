@@ -1,3 +1,4 @@
+import { flattenForConsumers } from './flag-rows.mts';
 // lib/flag-history.mts
 //
 // A HISTORY OF FLAGS, AND WHETHER THEY DID ANY GOOD.
@@ -109,10 +110,13 @@ export function mergeSweep(
   const emailed = ctx.emailedStops || new Set<string>();
   let added = 0; let updated = 0;
 
-  for (const r of rows || []) {
+  // The SAME un-collapse the inbox uses, from the same helper. Before this, a day whose caps
+  // bit sent the emails and recorded NOTHING — so the one day the board was at its worst was
+  // invisible to the audit, and to any corpus built from it.
+  for (const r of flattenForConsumers(rows)) {
     if (r?.rule !== 'hours_risk') continue;
-    if (!r?.stopNbr) continue;      // a collapsed summary row is not a stop
-    if (r?.collapsed) continue;
+    if (!r?.stopNbr) continue;      // a summary with no constituents is still not a stop
+    if (r?.collapsed) continue;     // ...and neither is one that carried none to expand
     const stopNbr = String(r.stopNbr);
     const tier = String(r.tier || 'amber');
     const closeMin = num(r.closeMin);

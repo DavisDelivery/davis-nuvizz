@@ -1,3 +1,4 @@
+import { flattenForConsumers } from './flag-rows.mts';
 // lib/flag-sms.mts
 //
 // THE EVENING FLAG TEXT — pure rules for who gets texted, about which board, saying what.
@@ -91,12 +92,18 @@ export function smsClaimPath(tenant: string, date: string, stopNbr: string): str
  * cannot empty the SMS allowance overnight.
  */
 export function selectTextable(rows: any[], cap = SMS_PER_SWEEP_CAP): any[] {
-  const out = (rows || []).filter((r) =>
+  // Same un-collapse as the email path: on a capped board this selector saw one summary row
+  // with no stopNbr and texted nobody, on exactly the night the board was worst.
+  const out = flattenForConsumers(rows).filter((r) =>
     r?.rule === 'hours_risk'
     && (r?.tier === 'critical' || r?.tier === 'red')
     && r?.scope === 'occurrence'
     && r?.stopNbr != null
     && Number.isFinite(r?.closeMin));
-  out.sort((a, b) => (b?.lateBy ?? 0) - (a?.lateBy ?? 0));
+  // `??` does not protect from NaN: `undefined ?? 0` is 0 but `NaN ?? 0` is NaN, and a NaN
+  // comparator makes the whole ordering undefined — so at the 8-per-sweep cap the texts that
+  // got dropped were chosen arbitrarily rather than by how late they were.
+  const worst = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : -Infinity);
+  out.sort((a, b) => worst(b?.lateBy) - worst(a?.lateBy));
   return out.slice(0, Math.max(0, cap));
 }

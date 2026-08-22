@@ -25,7 +25,7 @@ import { legSecondsMap, travelLegsPath, readTravelCalibration, readRouteClasses 
 import { routeDeparturePath } from './lib/route-departure.mts';
 import { flagHistoryPath } from './lib/flag-history.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
-import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, DAILY_ALERT_CAP, ALERT_TIERS, finiteMinutes } from './lib/flag-alert.mts';
+import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, DAILY_ALERT_CAP, ALERT_TIERS, AMBER_LEAD_GATE_MIN, finiteMinutes } from './lib/flag-alert.mts';
 import { emailEnabled } from './lib/email.mts';
 
 const TENANT = 'davis';
@@ -55,10 +55,27 @@ const clock = (m: number) => {
 // three modules and a code read to answer the first time it was asked. It should cost one
 // request and be provable by a test.
 
-export function heldReason(r: any, alertable: boolean, nowMin: number | null): string | null {
+export function heldReason(r: any, alertable: boolean, nowMin: number | null, amberGateMin = AMBER_LEAD_GATE_MIN): string | null {
   if (alertable) return null;
   if (r?.rule !== 'hours_risk') return 'not a receiving-hours risk';
-  if (!ALERT_TIERS.has(String(r?.tier))) return `tier is ${r?.tier} — only ${[...ALERT_TIERS].join(' and ')} email`;
+  // THE ANSWER HAS TO KNOW ABOUT THE GATE, OR IT IS A CONFIDENT LIE.
+  //
+  // "tier is amber — only critical and red email" was true until the amber lead gate
+  // existed. With the gate on it is false: amber DOES email, just not this far from the
+  // close. This endpoint's whole reason for being is to answer "why did customer service
+  // not hear about this stop", and a diagnostic that shares the alert path's blind spot is
+  // worse than none — it reads like a clean bill of health.
+  if (!ALERT_TIERS.has(String(r?.tier))) {
+    const gate = Number.isFinite(amberGateMin) && amberGateMin > 0 ? amberGateMin : 0;
+    if (String(r?.tier) !== 'amber') return `tier is ${r?.tier} — only ${[...ALERT_TIERS].join(' and ')} email`;
+    if (!gate) return 'tier is amber and the amber lead gate is off (AMBER_LEAD_GATE_MIN=0) — screen only';
+    if (r?.rule !== 'hours_risk') return 'amber, and only hours_risk rows pass the amber gate';
+    if (nowMin == null) return 'amber, and this board has no clock — the gate needs one to measure lead';
+    const closeAt = finiteMinutes(r?.closeMin);
+    if (closeAt != null && closeAt - nowMin > gate) {
+      return `amber, and its close is ${Math.round(closeAt - nowMin)} min out — outside the ${gate}-minute amber gate`;
+    }
+  }
   if (!r?.stopNbr || r?.collapsed) return 'a collapsed summary row, not an individual stop';
   // The same strict parser the gate uses — Number('') and Number(null) are both 0, which is
   // finite, so a loose check reports a stop with no deadline as "the window closed at
@@ -281,6 +298,13 @@ export default async (req: Request): Promise<Response> => {
     const nowParam = url.searchParams.get('now');
     // `?now=` lets a dispatcher ask "what will this look like at 2pm" without waiting for 2pm.
     const nowMin = nowParam ? Number(nowParam) : (date === etDayString() ? etNowMin() : null);
+    // `?gate=` rehearses the amber lead gate WITHOUT setting it in production. Shipping a
+    // switch that can only be tried by flipping it for real is not shipping it safely: this
+    // is how "what would 120 do on today's board" gets answered before anyone commits.
+    const gateParam = url.searchParams.get('gate');
+    const gateMin = gateParam != null && Number.isFinite(Number(gateParam))
+      ? Math.max(0, Number(gateParam))
+      : AMBER_LEAD_GATE_MIN;
 
     const { stops: rawStops } = await readStops(TENANT, date);
     // THE LIVE STOP INDEX DOES NOT CARRY matchKey. computeBoardFlags looks its receiving
@@ -345,9 +369,13 @@ export default async (req: Request): Promise<Response> => {
     // asked why a red flag on SIMPLY CHARLOTTE MASON sent no email, the endpoint built to
     // answer that question could not see the row either. A diagnostic that shares the bug it
     // is meant to diagnose is worse than none, because it reads like a clean bill of health.
-    const urgent = (flags.rows || []).filter((r: any) => r.rule === 'hours_risk' && ALERT_TIERS.has(String(r.tier)));
+    // Includes gated ambers: with the gate on they DO email, and a row that emailed while
+    // being absent from this list is how the endpoint would report wouldSendNow: 3 beside
+    // urgent: [] — contradicting itself in one payload.
+    const urgent = (flags.rows || []).filter((r: any) => r.rule === 'hours_risk'
+      && (ALERT_TIERS.has(String(r.tier)) || (gateMin > 0 && String(r.tier) === 'amber')));
     const askedStop = url.searchParams.get('stop');
-    const alertable = selectAlertable(flags.rows, nowMin);
+    const alertable = selectAlertable(flags.rows, nowMin, gateMin);
     const alertableSet = new Set(alertable.map((c) => c.stopNbr));
 
     // What has already been claimed today. A claim means an email was attempted; it is
@@ -389,6 +417,10 @@ export default async (req: Request): Promise<Response> => {
       explain: askedStop ? explainStop(askedStop, stops, flags.rows || [], alertableSet, nowMin, claimed, { notes, dayKey: weekdayKey(date) }) : undefined,
       alreadyClaimedToday: claimed,
       wouldSendNow: alertable.filter((c) => !claimed.some((x) => x.stopNbr === c.stopNbr)).length,
+      // The switch's position, reported rather than inferred. `effective` is what this run
+      // actually judged on (a ?gate= rehearsal overrides the env var); `configured` is what
+      // production is set to right now.
+      amberGate: { effective: gateMin, configured: AMBER_LEAD_GATE_MIN, rehearsed: gateParam != null },
       sample: alertable[0] ? buildAlert(alertable[0], date).subject : null,
     });
   } catch (e: any) {

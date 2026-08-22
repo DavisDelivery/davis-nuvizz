@@ -29,7 +29,7 @@ import { routeDeparturePath } from './lib/route-departure.mts';
 import { travelClassOf } from '../../src/lib/travel-model.js';
 import { loadVehicleRoster, vehicleTypeForStop } from './lib/tractor-flags.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
-import { selectAlertable, sendAlerts, ALERT_TO } from './lib/flag-alert.mts';
+import { selectAlertable, sendAlerts, ALERT_TO, AMBER_LEAD_GATE_MIN } from './lib/flag-alert.mts';
 import { mergeSweep, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
 import { emailEnabled } from './lib/email.mts';
 
@@ -187,6 +187,7 @@ export default async (req: Request): Promise<Response> => {
 
     const engineOpts = (legs: Record<string, number>) => ({
       depot: DEPOT, ...(nowMin != null ? { nowMin } : {}),
+      amberGateMin: AMBER_LEAD_GATE_MIN,
       travel: { legs, routeClasses, ...calOpts },
       ...(departByRoute ? { departByRoute } : {}),
       ...(tierFloorByStop ? { tierFloorByStop } : {}),

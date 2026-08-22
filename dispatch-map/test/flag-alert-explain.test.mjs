@@ -40,9 +40,27 @@ test('…and at 12:33, past a noon close, it is held — and SAYS SO', () => {
 });
 
 test('the held reason names the tier when the tier is what stopped it', () => {
-  const why = heldReason(row({ tier: 'amber' }), false, 11 * 60);
-  assert.match(why, /tier is amber/);
+  // A tier that can never email says so by naming the list that can.
+  const why = heldReason(row({ tier: 'info' }), false, 11 * 60);
+  assert.match(why, /tier is info/);
   assert.match(why, /critical and red/);
+});
+
+// AMBER IS NO LONGER A FLAT "NEVER" — IT DEPENDS ON THE GATE, AND THE ANSWER MUST SAY SO.
+// "tier is amber — only critical and red email" was true until the amber lead gate existed.
+// With the gate on it is a confident lie: amber DOES email, just not this far from the close.
+test('an amber row names the GATE, not a tier list — off, too far out, or no clock', () => {
+  const off = heldReason(row({ tier: 'amber' }), false, 11 * 60, 0);
+  assert.match(off, /amber/);
+  assert.match(off, /gate is off|AMBER_LEAD_GATE_MIN=0/);
+
+  // close is 12:00p, now is 8:00a => 240 minutes out, outside a 120-minute gate
+  const farOut = heldReason(row({ tier: 'amber' }), false, 8 * 60, 120);
+  assert.match(farOut, /outside the 120-minute amber gate/);
+  assert.match(farOut, /240 min out/);
+
+  const noClock = heldReason(row({ tier: 'amber' }), false, null, 120);
+  assert.match(noClock, /no clock/);
 });
 
 test('a collapsed summary row says it is a summary, not a stop', () => {
@@ -175,7 +193,9 @@ test('the explain surface and the alert gate read the SAME tier list', () => {
     assert.equal(selectAlertable([row({ tier })], 11 * 60).length, 1, `${tier} must alert`);
     assert.equal(heldReason(row({ tier }), true, 11 * 60), null);
   }
-  assert.match(heldReason(row({ tier: 'amber' }), false, 11 * 60), /only critical and red email/);
+  // The enumeration still derives from ALERT_TIERS — checked on a tier the gate never
+  // reaches, so this guard keeps testing drift rather than the amber wording.
+  assert.match(heldReason(row({ tier: 'info' }), false, 11 * 60), /only critical and red email/);
 });
 
 // ── "MAYBE THE PARSER NEEDS TO LEARN HOW THE NOTE WAS CONSTRUCTED" ───────────

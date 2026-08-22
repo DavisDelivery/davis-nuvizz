@@ -1,3 +1,5 @@
+import { flattenForConsumers } from './flag-rows.mts';
+export { flattenForConsumers };
 // lib/flag-alert.mts
 //
 // EMAIL CUSTOMER SERVICE THE FIRST TIME A STOP GOES CRITICAL.
@@ -74,9 +76,32 @@ export const ALERT_TO = 'customerservice@davisdelivery.com';
 // prevent, so the ceiling must never be the thing that decides.
 export const DAILY_ALERT_CAP = 500;
 
-export function alertClaimPath(tenant: string, date: string, stopNbr: string): string {
+// ONE STOP GETS AT MOST TWO MESSAGES A DAY: THE HEADS-UP, AND "IT GOT WORSE".
+//
+// The claim used to key on the stop alone, which is right while only red and critical can
+// email — the ratchet means a stop that has reached red never comes back down, so the one
+// message it earns is the urgent one. The amber gate breaks that assumption: with the gate
+// on, the FIRST message a stop earns is the early, inside-the-error-band one, and the
+// escalation to red or critical then finds the claim already taken and sends NOTHING.
+// Customer service would be told "we may run close, ETA 2:10p, 10 minutes late" and never
+// told the truck is now 105 minutes late. The mild message would arrive and the actionable
+// one would not — worse than the silence it replaced.
+//
+// So the claim carries a BAND, not a tier: 'early' for a gated amber, 'urgent' for red and
+// critical. A stop can therefore send once as a heads-up and once more if it hardens, and
+// no more than that — an escalation from red to critical shares the 'urgent' band and stays
+// a single message, which is the behaviour that shipped and the one the caps were sized for.
+export type AlertBand = 'early' | 'urgent';
+export function alertBandOf(tier: string): AlertBand {
+  return ALERT_TIERS.has(String(tier)) ? 'urgent' : 'early';
+}
+export function alertClaimPath(tenant: string, date: string, stopNbr: string, band: AlertBand = 'urgent'): string {
   const safe = String(stopNbr).replace(/[^A-Za-z0-9_.-]/g, '_');
-  return `${ALERT_COLLECTION}/${tenant}__${date}__${safe}`;
+  // The urgent band keeps the ORIGINAL key, so every claim already written today still
+  // counts and flipping the gate cannot re-send this morning's alerts.
+  return band === 'urgent'
+    ? `${ALERT_COLLECTION}/${tenant}__${date}__${safe}`
+    : `${ALERT_COLLECTION}/${tenant}__${date}__${safe}__early`;
 }
 
 export interface AlertCandidate {
@@ -174,6 +199,14 @@ export const ALERT_RULES = new Set(['hours_risk', 'no_driver_hours']);
 // rather than from severityTier, so an amber one is not "a small predicted overrun" — it is a
 // driverless load whose hours the scanner invented, and its volume is unmeasured here.
 export const AMBER_LEAD_GATE_MIN = Number(process.env.AMBER_LEAD_GATE_MIN ?? 0);
+// A SWITCH WHOSE POSITION CANNOT BE READ IS NOT A SWITCH. "120 minutes", "2h" and "120min"
+// all coerce to NaN, which the clamp below turns into 0 — off, silently, and
+// indistinguishable from a quiet day. Say so once at load, loudly, rather than letting the
+// first question after the flip be an unanswerable "did that do anything?".
+if (process.env.AMBER_LEAD_GATE_MIN != null
+    && !(Number.isFinite(AMBER_LEAD_GATE_MIN) && AMBER_LEAD_GATE_MIN >= 0)) {
+  console.error(`[flag-alert] AMBER_LEAD_GATE_MIN="${process.env.AMBER_LEAD_GATE_MIN}" is not a number of minutes — the amber gate is OFF.`);
+}
 const AMBER_GATED_RULES = new Set(['hours_risk']);
 
 export function selectAlertable(rows: any[], nowMin: number | null, amberGateMin = AMBER_LEAD_GATE_MIN): AlertCandidate[] {
@@ -195,20 +228,7 @@ export function selectAlertable(rows: any[], nowMin: number | null, amberGateMin
   // sweep with a working clock sends normally; nothing is lost but twenty minutes.
   if (nowMin != null && !Number.isFinite(nowMin as any)) return out;
   const clock = Number.isFinite(nowMin as any) ? (nowMin as number) : null;
-  // A COLLAPSED ROW IS A PANEL DECISION, AND THE INBOX MUST NOT INHERIT IT.
-  //
-  // board-flags collapses a rule+tier bucket past its cap into ONE summary row with
-  // stopNbr: null. Every rule below drops such a row, which is right for a data-quality
-  // batch and wrong for freight: measured on the shipped engine, 25 amber hours_risk rows
-  // yield 25 candidates and 26 yield ZERO. The summary now carries its constituents, so the
-  // stops behind it are judged here individually — same claim key, same caps, same
-  // past-close refusal — instead of vanishing on the worst day of the week.
-  const flat = (rows || []).flatMap((r: any) => (
-    r?.collapsed && Array.isArray(r?.collapsedRows) && r.collapsedRows.length
-      ? r.collapsedRows
-      : [r]
-  ));
-  for (const r of flat) {
+  for (const r of flattenForConsumers(rows)) {
     if (!ALERT_RULES.has(String(r?.rule))) continue;
     if (!r?.stopNbr) continue;                     // a collapsed summary row is not a stop
     if (r?.collapsed) continue;
@@ -251,9 +271,30 @@ export function buildAlert(c: AlertCandidate, date: string): { subject: string; 
   const basis = c.anchored
     ? 'projected from a real arrival already recorded on this route'
     : 'projected from the planned start — no stop on this route has reported in yet';
-  const subject = `Receiving window at risk — ${c.customer || c.stopNbr} closes ${close}, ETA ${eta}`;
+  // AN EARLY WARNING MUST NOT WEAR A CONFIRMED MISS'S CLOTHES.
+  //
+  // Amber means the predicted overrun is INSIDE the model's own error band — board-flags
+  // says of it "at this distance the model simply cannot tell late from on-time". Rendered
+  // in the red email's words, a three-minute predicted overrun against a ±90-minute band
+  // arrives byte-for-byte identical to a confident 115-minute miss, over a footer promising
+  // it is "confidently late". A rep who chases two of those, finds the truck on time and is
+  // told nothing distinguished them learns to discount the whole channel — which costs the
+  // catches the red path already gets right. So the tier is on the face of the message.
+  const early = alertBandOf(c.tier) === 'early';
+  const subject = early
+    ? `Heads-up — ${c.customer || c.stopNbr} closes ${close}, we may run it close (ETA ${eta})`
+    : `Receiving window at risk — ${c.customer || c.stopNbr} closes ${close}, ETA ${eta}`;
+  const opener = early
+    ? `${c.customer || 'Stop ' + c.stopNbr} may run past its receiving window — this is an early warning, not a confirmed miss.`
+    : `${c.customer || 'Stop ' + c.stopNbr} is predicted to miss its receiving window.`;
+  const footer = early
+    ? ['This is an EARLY WARNING, sent because the window closes soon and the estimate is past it.',
+       'The estimate at this point in the run carries real error in both directions — the stop may',
+       'still make it. If it hardens into a confident miss you will get one more message.']
+    : ['This is sent once, the first time the stop looks confidently late, and never after the',
+       'window has already closed.'];
   const text = [
-    `${c.customer || 'Stop ' + c.stopNbr} is predicted to miss its receiving window.`,
+    opener,
     '',
     `PRO / stop:     ${c.stopNbr}`,
     `Route:          ${c.route || 'unassigned'}`,
@@ -263,21 +304,20 @@ export function buildAlert(c: AlertCandidate, date: string): { subject: string; 
     '',
     `Basis: ${basis}.`,
     '',
-    'This is sent once, the first time the stop looks confidently late, and never after the',
-    'window has already closed.',
+    ...footer,
   ].join('\n');
   const esc = (v: string) => String(v).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[ch]);
   const html = `<div style="font-family:system-ui,-apple-system,sans-serif;font-size:14px;color:#0f172a">
-<p style="margin:0 0 12px"><strong>${esc(c.customer || 'Stop ' + c.stopNbr)}</strong> is predicted to miss its receiving window.</p>
+<p style="margin:0 0 12px"><strong>${esc(c.customer || 'Stop ' + c.stopNbr)}</strong> ${early ? 'may run past its receiving window — <strong>early warning</strong>, not a confirmed miss.' : 'is predicted to miss its receiving window.'}</p>
 <table style="border-collapse:collapse;font-size:14px">
 <tr><td style="padding:2px 12px 2px 0;color:#475569">PRO / stop</td><td><strong>${esc(c.stopNbr)}</strong></td></tr>
 <tr><td style="padding:2px 12px 2px 0;color:#475569">Route</td><td>${esc(c.route || 'unassigned')}</td></tr>
 <tr><td style="padding:2px 12px 2px 0;color:#475569">Receiving close</td><td>${esc(close)}</td></tr>
-<tr><td style="padding:2px 12px 2px 0;color:#475569">Estimated arrival</td><td><strong style="color:#b91c1c">${esc(eta)}</strong> (${c.lateBy} min late)</td></tr>
+<tr><td style="padding:2px 12px 2px 0;color:#475569">Estimated arrival</td><td><strong style="color:${early ? '#b45309' : '#b91c1c'}">${esc(eta)}</strong> (${c.lateBy} min late)</td></tr>
 <tr><td style="padding:2px 12px 2px 0;color:#475569">Board date</td><td>${esc(date)}</td></tr>
 </table>
 <p style="margin:12px 0 0;color:#475569">Basis: ${esc(basis)}.</p>
-<p style="margin:8px 0 0;color:#94a3b8;font-size:12px">Sent once, the first time this stop looks confidently late, and never after the window has closed.</p>
+<p style="margin:8px 0 0;color:#94a3b8;font-size:12px">${early ? 'Early warning — the window closes soon and the estimate is past it, but the estimate carries real error in both directions and the stop may still make it. One more message if it hardens.' : 'Sent once, the first time this stop looks confidently late, and never after the window has closed.'}</p>
 </div>`;
   return { subject, text, html };
 }
@@ -306,7 +346,7 @@ export async function sendAlerts(
     if (claimed >= DAILY_ALERT_CAP) { capped += 1; continue; }
     let won = false;
     try {
-      won = await io.createDocIfAbsent(alertClaimPath(tenant, date, c.stopNbr), {
+      won = await io.createDocIfAbsent(alertClaimPath(tenant, date, c.stopNbr, alertBandOf(c.tier)), {
         tenant, date, stopNbr: c.stopNbr, customer: c.customer, route: c.route,
         lateBy: c.lateBy, closeMin: c.closeMin, etaMin: c.etaMin,
         claimed_at: new Date().toISOString(),
