@@ -7,7 +7,7 @@
 // in one place: what we said at 6:30, and what turned out to be true.
 //
 // ZERO NuVizz calls.
-import { getDoc, setDoc, updateDocFields, listDocs } from './firestore.mts';
+import { getDoc, updateDocFields, listDocs, createDocIfAbsent } from './firestore.mts';
 
 export const DAY_COMPLETION_COLLECTION = 'day_completion';
 export const dayCompletionPath = (tenant: string, date: string) => `${DAY_COMPLETION_COLLECTION}/${tenant}__${date}`;
@@ -16,16 +16,43 @@ export const dayCompletionPath = (tenant: string, date: string) => `${DAY_COMPLE
  *  without turning the chart into a smear. */
 export const HISTORY_DAYS = 90;
 
+/** STRICT. Throws when Firestore could not be read — required before any write here. */
+export async function readDayCompletionStrict(tenant: string, date: string): Promise<any | null> {
+  return getDoc(dayCompletionPath(tenant, date));
+}
+
+/** Lenient: absent AND unreadable both read as "nothing recorded". Display only. */
 export async function readDayCompletion(tenant: string, date: string): Promise<any | null> {
-  try { return await getDoc(dayCompletionPath(tenant, date)); } catch { return null; }
+  try { return await readDayCompletionStrict(tenant, date); } catch { return null; }
 }
 
 /** Write the snapshot. REFUSES to overwrite an existing one — see the note above. Returns
  *  what it did so a re-run can report "already recorded" instead of pretending it wrote. */
-export async function writeDaySnapshot(tenant: string, date: string, snapshot: any): Promise<'written' | 'exists' | 'failed'> {
-  const existing = await readDayCompletion(tenant, date);
+export async function writeDaySnapshot(tenant: string, date: string, snapshot: any): Promise<'written' | 'exists' | 'unreadable' | 'failed'> {
+  // THE "ALREADY EXISTS" GUARD WAS ONLY AS GOOD AS THE READ BEHIND IT. The lenient reader
+  // returned null for BOTH "no snapshot yet" and "Firestore did not answer", so a blip let
+  // the guard pass and the maskless setDoc below overwrite the immutable 6:30 record — and
+  // drop the `reconciliation` field with it, since setDoc REPLACES. The evening email then
+  // sends a second time for the same day, because a written snapshot is what claims it.
+  let existing: any = null;
+  try {
+    existing = await readDayCompletionStrict(tenant, date);
+  } catch (e: any) {
+    console.error(`[day-completion] refusing to write ${date}: could not read the existing record (${e?.message})`);
+    return 'unreadable';
+  }
   if (existing?.snapshot) return 'exists';
-  const ok = await setDoc(dayCompletionPath(tenant, date), { tenant, date, snapshot, ...(existing?.reconciliation ? { reconciliation: existing.reconciliation } : {}) });
+  // createDocIfAbsent is an atomic create (currentDocument.exists=false). Two runs racing
+  // the same evening cannot both win, which the read-then-write above could not guarantee
+  // on its own. Only used when nothing is on file; a same-date reconciliation is preserved
+  // by the field-masked path below.
+  if (!existing) {
+    const created = await createDocIfAbsent(dayCompletionPath(tenant, date), { tenant, date, snapshot });
+    return created ? 'written' : 'exists';
+  }
+  // A record exists but carries no snapshot (reconciliation landed first). Field-masked so
+  // the write adds the snapshot WITHOUT taking the reconciliation with it.
+  const ok = await updateDocFields(dayCompletionPath(tenant, date), { tenant, date, snapshot });
   return ok ? 'written' : 'failed';
 }
 
