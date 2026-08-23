@@ -373,7 +373,15 @@ export async function sendAlerts(
       // the (rare) inversion, which costs one confusing email, not a lost alert.
       if (band === 'early' && io.exists) {
         const urgentTaken = await io.exists(alertClaimPath(tenant, date, c.stopNbr, 'urgent')).catch(() => false);
-        if (urgentTaken) { skippedAlreadySent += 1; emailedStops.add(String(c.stopNbr)); continue; }
+        // NOT added to emailedStops — the same rule the `!won` branch below states and for
+        // the same reason. An urgent CLAIM proves an attempt was made on some earlier sweep,
+        // not that a message arrived; the claim is deliberately kept even when the send
+        // failed, which is what makes it useless as proof of delivery. The sweep that
+        // actually sent already recorded the stop, and flag-history keeps that sticky
+        // (`prev.emailed || ...`), so nothing is lost by staying quiet here — while adding it
+        // turns one failed send into a permanent "Emailed CS" on the very next sweep. This
+        // function had already worked that out four lines down and then did the opposite here.
+        if (urgentTaken) { skippedAlreadySent += 1; continue; }
       }
       won = await io.createDocIfAbsent(alertClaimPath(tenant, date, c.stopNbr, band), {
         tenant, date, stopNbr: c.stopNbr, customer: c.customer, route: c.route,

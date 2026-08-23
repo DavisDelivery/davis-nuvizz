@@ -1231,7 +1231,15 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
           // any screen that wants to act per customer must not have to parse prose.
           atRisk,
           detail: `${k} has no driver assigned and has not moved — ${missNote}. ${constrained.length} stop${constrained.length === 1 ? '' : 's'} on this load carr${constrained.length === 1 ? 'ies' : 'y'} receiving hours today.${atRiskNote}${decidingTyped ? '' : ' Hours auto-detected — verify.'} Assign a driver or move the dates.`,
-          scope: 'occurrence', servedDate, fingerprint: `nodrv|${servedDate}|${k}|${first.w.closeMin}`,
+          // DISMISSING THIS CARD IS A STATEMENT ABOUT THE ROUTE, NOT ABOUT A CLOSE.
+          //
+          // The fingerprint keyed on the route's EARLIEST close, which moves through the day:
+          // once that stop delivers it leaves the open set, `first` becomes the next-earliest,
+          // the key changes, and a card the dispatcher already dismissed comes back — while
+          // the title has been printing `riskClose`, a third different value again. Nobody
+          // dismisses "DUL 2 must make 11:00a"; they dismiss "I know DUL 2 has no driver."
+          // Route plus board day is that situation, and it is stable for as long as it lasts.
+          scope: 'occurrence', servedDate, fingerprint: `nodrv|${servedDate}|${k}`,
         }));
         // ONE ROUTE, ONE CARD. Chad's screenshot: "May miss receiving hours — MCNAUGHTON
         // MCKAY ELECTRIC" (stop 5 on SUW, ~11:54a vs close 11:30a) sat three cards above

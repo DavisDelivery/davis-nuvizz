@@ -171,3 +171,95 @@ test('the strict reader propagates a failure instead of returning empty', async 
     if (prior === undefined) delete process.env.FIREBASE_SA; else process.env.FIREBASE_SA = prior;
   }
 });
+
+// ── P2: the capture must honour the scan's own "not authoritative" verdict ──
+//
+// scanDate reports loadsComplete and descentComplete; the board write path acts on both.
+// The CAPTURE path read neither, so a night where NuVizz failed most probes archived a
+// handful of stops from an 800-stop day and sealed it verified:true, complete:true — a lie
+// that is permanent (heal refuses a sealed date) and invisible (health shows green).
+
+import { scanHealthComplaint } from '../netlify/functions/lib/history-core.mts';
+
+test('an unanswered load probe blocks the capture', () => {
+  const why = scanHealthComplaint({ loadsComplete: false, loadProbeFailures: 397, descentComplete: true });
+  assert.match(why, /397 load probe/);
+});
+
+test('a truncated unplanned descent blocks it too', () => {
+  assert.match(scanHealthComplaint({ loadsComplete: true, descentComplete: false }), /descent was truncated/);
+});
+
+test('both complaints are reported together, not just the first', () => {
+  const why = scanHealthComplaint({ loadsComplete: false, loadProbeFailures: 2, descentComplete: false });
+  assert.match(why, /load probe/);
+  assert.match(why, /descent/);
+});
+
+test('a clean scan captures — the control that keeps this from blocking every night', () => {
+  assert.equal(scanHealthComplaint({ loadsComplete: true, descentComplete: true, loadProbeFailures: 0 }), null);
+});
+
+test('a half not scanned at all is NOT a complaint', () => {
+  // undefined means the run did not cover that half (unplanned-only, or loads-only). Only an
+  // explicit false is a verdict. Treating undefined as a complaint would block every capture
+  // on a lean night — the guard would be removed within a week and the hole would come back.
+  assert.equal(scanHealthComplaint({}), null);
+  assert.equal(scanHealthComplaint({ loadsComplete: true }), null);
+  assert.equal(scanHealthComplaint({ descentComplete: true }), null);
+  assert.equal(scanHealthComplaint(null), null);
+});
+
+test('the empty-capture guard does NOT cover this — 3 of 800 is not zero', () => {
+  // v0.71.0 refuses to seal a ZERO-stop capture. A scan that returned three stops out of
+  // eight hundred sails straight through it, which is why this second guard exists.
+  assert.notEqual(scanHealthComplaint({ loadsComplete: false, loadProbeFailures: 397 }), null);
+});
+
+// ── P7: a lost claim race is not proof that anything was emailed ────────────
+//
+// The claim is deliberately kept even when the send FAILED — that is what makes it useful
+// for "why no second one" and useless as proof of delivery. sendAlerts already stated this
+// rule in its `!won` branch, then did the opposite in the band-inversion branch four lines
+// above, so one failed send became a permanent "Emailed CS" on the next sweep.
+
+import { sendAlerts } from '../netlify/functions/lib/flag-alert.mts';
+
+const cand = (o = {}) => ({
+  stopNbr: '007165852', customer: 'ACME', route: 'SUW', rule: 'hours_risk',
+  tier: 'amber', lateBy: 20, closeMin: 14 * 60, etaMin: 14 * 60 + 20, ...o,
+});
+
+test('an early card that loses to a standing URGENT claim is not recorded as emailed', async () => {
+  const sent = [];
+  const res = await sendAlerts([cand()], '2026-08-21', 'davis', {
+    exists: async () => true,                 // an urgent claim already stands
+    createDocIfAbsent: async () => true,
+    send: async (m) => { sent.push(m); return { ok: true }; },
+  }, 'ops@example.com');
+  assert.equal(sent.length, 0, 'nothing was sent on this sweep');
+  assert.equal(res.skippedAlreadySent, 1);
+  assert.equal(res.emailedStops.has('007165852'), false,
+    'a standing claim proves an attempt, never a delivery');
+});
+
+test('a stop this sweep actually sent IS recorded', async () => {
+  // The control: the fix must not stop recording real sends.
+  const res = await sendAlerts([cand({ tier: 'critical' })], '2026-08-21', 'davis', {
+    exists: async () => false,
+    createDocIfAbsent: async () => true,
+    send: async () => ({ ok: true }),
+  }, 'ops@example.com');
+  assert.equal(res.sent, 1);
+  assert.equal(res.emailedStops.has('007165852'), true);
+});
+
+test('a send that FAILED is not recorded as emailed either', async () => {
+  const res = await sendAlerts([cand({ tier: 'critical' })], '2026-08-21', 'davis', {
+    exists: async () => false,
+    createDocIfAbsent: async () => true,
+    send: async () => ({ ok: false, error: 'resend 500' }),
+  }, 'ops@example.com');
+  assert.equal(res.failed, 1);
+  assert.equal(res.emailedStops.has('007165852'), false);
+});

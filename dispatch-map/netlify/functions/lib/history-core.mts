@@ -115,6 +115,7 @@ export async function captureDate(date: string): Promise<any> {
   let stops: any[];
   let sourceScannedAt: string;
   let source: 'firestore-index' | 'scan' = 'scan';
+  let scanIncomplete: string | null = null;
   // Phase 4: prefer the accumulated index, but fall back to a fresh scan if the
   // index is empty / never written (don't capture an empty snapshot for the day).
   if (LEAN_HISTORY && isFirestoreEnabled()) {
@@ -133,10 +134,34 @@ export async function captureDate(date: string): Promise<any> {
       }
       const scan = await scanDate(date);
       stops = scan.stops; sourceScannedAt = scan.scannedAt;
+      scanIncomplete = scanHealthComplaint(scan);
     }
   } else {
     const scan = await scanDate(date);
     stops = scan.stops; sourceScannedAt = scan.scannedAt;
+    scanIncomplete = scanHealthComplaint(scan);
+  }
+  // THE SCAN ALREADY TOLD US IT WAS NOT AUTHORITATIVE, AND NOBODY LISTENED.
+  //
+  // scanDate reports loadsComplete (any /load/info probe the vendor could not answer) and
+  // descentComplete (the unplanned descent reached the floor). The board write path acts on
+  // both — it refuses to prune against a scan that could not see. The CAPTURE path read
+  // neither, so a night where NuVizz failed most of its probes archived a handful of stops
+  // from an 800-stop day and sealed it verified:true, complete:true.
+  //
+  // That lie is permanent and self-defending: capture-health then shows GREEN, and
+  // classifyHealTarget refuses a sealed date, so the heal path built for exactly this hole
+  // declines to touch it. Six weeks later a customer disputes a delivery and the warehouse
+  // says it never happened.
+  //
+  // The empty-capture guard added in v0.71.0 does not cover this: three stops out of eight
+  // hundred is not zero, so it sails through. This is the same reasoning one level up —
+  // seal only what we could actually read.
+  if (scanIncomplete) {
+    stage = 'scan';
+    await recordCaptureFailure(TENANT, date, stage, `scan was not authoritative: ${scanIncomplete} — refusing to capture a partial day as complete`);
+    console.error(`[history] date=${date} NOT CAPTURED — ${scanIncomplete}`);
+    return { date, ok: false, verified: false, sealed: false, skipped: 'scan-incomplete', reason: scanIncomplete };
   }
   // Counts available on BOTH paths (the lean path has no scanDate result).
   const unplannedCount = stops.filter((s) => s && s.isPlanned === false).length;
@@ -244,6 +269,23 @@ export async function captureDate(date: string): Promise<any> {
 }
 
 // ── HTTP / scheduled entrypoint ──────────────────────────────────────────────
+/**
+ * PURE. Why this scan may not be archived as a complete day — or null when it is fine.
+ *
+ * Exported so the rule is pinned by a test instead of living inline in a 200-line function.
+ * `undefined` means the scan did not cover that half at all (an unplanned-only or loads-only
+ * run), which is not a complaint; only an explicit `false` is.
+ */
+export function scanHealthComplaint(scan: { loadsComplete?: boolean; descentComplete?: boolean; loadProbeFailures?: number } | null): string | null {
+  if (!scan) return null;
+  const bits: string[] = [];
+  if (scan.loadsComplete === false) {
+    bits.push(`${scan.loadProbeFailures ?? 'some'} load probe(s) unanswered`);
+  }
+  if (scan.descentComplete === false) bits.push('the unplanned descent was truncated');
+  return bits.length ? bits.join('; ') : null;
+}
+
 export async function runHistorySnapshot(req: Request): Promise<Response> {
   const startedAt = Date.now();
   setCallTrigger('history-snapshot'); // attribute the nightly history capture's NuVizz calls

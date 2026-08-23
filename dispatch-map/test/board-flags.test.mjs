@@ -991,3 +991,51 @@ test('an appointment route is STILL silent for every rule — that scoping is un
     businessName: 'NOPIN', lat: null, lng: null })], {}, FRI);
   assert.deepEqual(out.rows, [], 'held for an appointment is not the same as unscheduled');
 });
+
+// ── P4 (bug hunt): dismissing a no-driver card must survive the day ─────────
+//
+// The fingerprint keyed on the route's EARLIEST close, which can move while the route is
+// still driverless — so a card the dispatcher already dismissed comes back under a new key.
+//
+// Worth recording what is NOT the path: the intake said "once the earliest stop delivers".
+// It cannot. A delivered stop is rolling evidence, so R6 stops firing on that route
+// altogether (proven: both-open → 1 card, one-delivered → 0). The reachable path is a
+// dispatcher EDITING receiving hours mid-day, which changes the constrained set with no
+// movement at all. Nobody dismisses "DUL 2 must make 11:00a" anyway — they dismiss "I know
+// DUL 2 has no driver", and that is a statement about the route.
+
+test('the no-driver fingerprint survives an hours edit while the route is still driverless', () => {
+  const mk = (o) => stop({ loadNbr: 'DUL 2', routeName: 'DUL 2', driverName: null, driverUserName: null, ...o });
+  const stops = [
+    mk({ stopNbr: '1', routeSeq: 1, matchKey: 'a|k', businessName: 'EARLY CO' }),
+    mk({ stopNbr: '2', routeSeq: 2, matchKey: 'b|k', businessName: 'LATER CO', lat: 33.7, lng: -84.5 }),
+  ];
+  const opts = { opts: { ...OPTS, nowMin: 9 * 60 + 30 } };
+  const withEarly = {
+    'a|k': note({ receiving_hours: { mon: { open: '06:00', close: '11:00' } } }),
+    'b|k': note({ receiving_hours: { mon: { open: '06:00', close: '12:00' } } }),
+  };
+  // The dispatcher clears EARLY CO's hours — no truck has moved.
+  const afterEdit = { 'b|k': withEarly['b|k'] };
+  const before = run(stops, withEarly, opts).rows.find((r) => r.rule === 'no_driver_hours');
+  const after = run(stops, afterEdit, opts).rows.find((r) => r.rule === 'no_driver_hours');
+  assert.ok(before && after, 'the route has no driver in both passes');
+  assert.equal(before.fingerprint, after.fingerprint,
+    'a dismissal must not be undone by an edit to a different stop');
+  assert.equal(before.dismissKey, after.dismissKey);
+});
+
+test('a delivered stop disables the card entirely — the intake path is unreachable', () => {
+  const mk = (o) => stop({ loadNbr: 'DUL 2', routeName: 'DUL 2', driverName: null, driverUserName: null, ...o });
+  const notesObj = { 'a|k': note({ receiving_hours: { mon: { open: '06:00', close: '11:00' } } }) };
+  const opts = { opts: { ...OPTS, nowMin: 9 * 60 + 30 } };
+  const open = mk({ stopNbr: '1', routeSeq: 1, matchKey: 'a|k', businessName: 'EARLY CO' });
+  const both = run([open, mk({ stopNbr: '2', routeSeq: 2 })], notesObj, opts).rows;
+  assert.equal(both.filter((r) => r.rule === 'no_driver_hours').length, 1);
+  const delivered = run([
+    { ...open, status: '90', normalizedStatus: 'DELIVERED', deliveredDTTM: '2026-08-10T10:00' },
+    mk({ stopNbr: '2', routeSeq: 2 }),
+  ], notesObj, opts).rows;
+  assert.equal(delivered.filter((r) => r.rule === 'no_driver_hours').length, 0,
+    'a delivery is rolling evidence — the truck is moving, so "no driver" no longer applies');
+});
