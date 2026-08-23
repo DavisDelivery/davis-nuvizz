@@ -18,7 +18,7 @@
 // ── Schedule: 08:00 UTC nightly ──────────────────────────────────────────────
 // The history capture runs at 06:00 UTC and the routing shadow at 07:30. This feeds off the
 // same sealed day and is ordered after both, so a capture that runs long cannot race it.
-import { isFirestoreEnabled, getDoc, setDoc } from './lib/firestore.mts';
+import { isFirestoreEnabled, getDoc, setDoc, updateDocFields } from './lib/firestore.mts';
 import { etYesterday } from './lib/history-core.mts';
 import { listStops } from './lib/history-store.mts';
 import { scoreDay, ledgerPath, ledgerMatchKey, LEDGER_VERSION } from './lib/miss-ledger.mts';
@@ -241,6 +241,13 @@ function departureSamplesForDay(stops: any[], date: string, curve: any): Record<
   return out;
 }
 
+/** PURE. Does this windowed day-doc still need its departures computed from sealed history?
+ *  The KEY being present is the stamp — an empty map means "scanned, nothing usable", and
+ *  re-scanning it nightly would re-list ~800 stop docs for nothing. */
+export function needsDepartureBackfill(doc: any): boolean {
+  return !doc || !('departures' in doc);
+}
+
 async function writeTravelCalibration(date: string, stops: any[]) {
   // Best-effort roster: a missing/unreadable roster means class-less samples — the fleet
   // fit still runs and nothing is lost except the split, which returns when it does.
@@ -264,13 +271,48 @@ async function writeTravelCalibration(date: string, stops: any[]) {
 
   // Pool the window and refit. A day with no doc contributes nothing; the fit itself
   // falls back per-bucket to the shipped defaults wherever the pool is thin.
+  //
+  // THE DEPARTURE BACKFILL. Departures ride in day-docs only since v0.64.0 (2026-08-20), and
+  // this loop used to skip any doc without the field — so every sealed day before that date
+  // was invisible to the departure fit FOREVER, and the table had to crawl from 2 days to a
+  // full window at one day per night while two months of first-delivery stamps sat unread in
+  // the warehouse. Chad: "we have a couple months we could study to procure better results."
+  // The two-month study (66 routes, ~9 weekly windows; adversarially verified) also asked
+  // whether the window should WIDEN before this shipped. Verified answer: window size
+  // barely matters — last-week/2wk/4wk/8wk all land within ~1-2 min of each other (median
+  // abs error ~25-26) and are statistically indistinguishable; the corpus cannot even
+  // genuinely test 8 weeks (on 181 of 314 backtest rows the 4- and 8-week windows hold
+  // identical data). An earlier draft claimed 8 weeks actively HURT the drifting routes
+  // (52 vs 46) — that did not survive verification (10 routes, CI spans zero). What stands:
+  // no detectable benefit beyond a few weeks, so the fix is to FILL the existing 28-day
+  // window from history, not to widen it.
+  //
+  // Mechanics: a windowed day whose doc lacks the field gets its departures computed from the
+  // sealed stops and PATCHED in — updateDocFields, never setDoc, because these docs carry the
+  // travel-curve samples and a blind write would take the curve's history with it. An empty
+  // result still stamps the field, so a dayless weekend is scanned once, not nightly. Capped
+  // per run: the window fills over the first few nights instead of one heavy one.
+  const BACKFILL_PER_RUN = 8;
+  let departuresBackfilled = 0;
   const pooled: any[] = [];
   const daysUsed: string[] = [];
   const departureDays: Array<{ date: string; byRoute: Record<string, number> }> = [];
   for (let i = 0; i < CAL_WINDOW_DAYS; i++) {
     const d = addDays(date, -i);
     try {
-      const doc = await getDoc(travelCalDayPath(TENANT, d));
+      let doc = await getDoc(travelCalDayPath(TENANT, d));
+      if (needsDepartureBackfill(doc) && departuresBackfilled < BACKFILL_PER_RUN) {
+        try {
+          const dayStops = await listStops(TENANT, d);
+          const dep = dayStops?.length ? departureSamplesForDay(dayStops, d, DEFAULT_CURVE) : {};
+          await updateDocFields(travelCalDayPath(TENANT, d), {
+            tenant: TENANT, date: d, departures: dep,
+            departures_backfilled_at: new Date().toISOString(),
+          });
+          departuresBackfilled += 1;
+          doc = { ...(doc || {}), departures: dep };
+        } catch { /* uncaptured day — the stamp is not written, so it retries another night */ }
+      }
       if (doc?.samples?.length) { pooled.push(...doc.samples); daysUsed.push(d); }
       if (doc?.departures && Object.keys(doc.departures).length) {
         departureDays.push({ date: d, byRoute: doc.departures });
@@ -285,6 +327,7 @@ async function writeTravelCalibration(date: string, stops: any[]) {
     await setDoc(routeDeparturePath(TENANT), {
       tenant: TENANT, version: DEPARTURE_VERSION, through: date,
       days: departureDays.length, routes: Object.keys(table).length,
+      backfilledThisRun: departuresBackfilled,
       table, fitted_at: new Date().toISOString(),
     });
   } catch (e: any) { console.error('route departure fit failed (non-fatal):', e?.message); }
