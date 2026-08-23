@@ -159,8 +159,15 @@ export default async (req: Request): Promise<Response> => {
       try {
         const path = flagHistoryPath(TENANT, date);
         const prev = await getDoc(path);
+        // THE HISTORY CLOCK MUST LIVE ON THE BOARD'S OWN DAY. A 9:00pm sighting of a stop
+        // closing 8:30a TOMORROW is 690 minutes of lead — the earliest warning this system
+        // produces. Recorded with tonight's raw etMin (1260) against tomorrow's closeMin
+        // (510), leadMin came out -750 and summarize() filed the sweep's best warnings as
+        // tooLateToAct, dragging medianLeadMin down across every day the evening sweep ran.
+        // On a pre-day board (offsetDays 1) the sighting happens one day BEFORE the board,
+        // so its wall-clock minute relative to that board is etMin - 1440.
         const merged = mergeSweep(prev?.rows, flags.rows, {
-          nowMin: etMin, atISO: status.at, emailedStops: new Set<string>(),
+          nowMin: offsetDays === 1 ? etMin - 1440 : etMin, atISO: status.at, emailedStops: new Set<string>(),
         });
         await setDoc(path, {
           tenant: TENANT, date, version: FLAG_HISTORY_VERSION,

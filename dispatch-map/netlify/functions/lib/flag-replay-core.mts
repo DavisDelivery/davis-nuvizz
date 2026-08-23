@@ -28,6 +28,7 @@
 // — not "what did the system know that morning".
 import { computeBoardFlags, dayReceivingWindow, arrivalAnchor, stampMinutes } from '../../../src/lib/board-flags.js';
 import { selectAlertable } from './flag-alert.mts';
+import { flattenForConsumers } from './flag-rows.mts';
 import { weekdayKey } from './miss-ledger.mts';
 import { stopCustomerKey } from './customer-key.mts';
 
@@ -120,8 +121,13 @@ export function replayDay({ stops, notes, date, grid, depot, travel }: {
     });
     lastSkipped = flags?.checked ?? null;
 
-    const alertable = new Set(selectAlertable(flags.rows, nowMin).map((c: any) => String(c.stopNbr)));
-    for (const r of flags.rows || []) {
+    // ONE POPULATION FOR BOTH HALVES OF THE MEASUREMENT. selectAlertable flattens collapsed
+    // summary rows (v0.73.1); this loop used to iterate the raw capped list — so on a
+    // capped board one half of the function saw the constituents and the other did not,
+    // and the trajectory record disagreed with the alertable set it was scored against.
+    const rows = flattenForConsumers(flags.rows || []);
+    const alertable = new Set(selectAlertable(rows, nowMin).map((c: any) => String(c.stopNbr)));
+    for (const r of rows) {
       // THE TWO RULES THAT REACH AN INBOX. hours_risk is the primary one; no_driver_hours
       // (R6) supersedes a driverless route's hours_risk rows and, since it started carrying
       // a stop and a close, is emailable in its own right (lib/flag-alert ALERT_RULES).

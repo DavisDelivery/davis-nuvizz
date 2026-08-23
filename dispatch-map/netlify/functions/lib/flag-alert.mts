@@ -93,7 +93,11 @@ export const DAILY_ALERT_CAP = 500;
 // a single message, which is the behaviour that shipped and the one the caps were sized for.
 export type AlertBand = 'early' | 'urgent';
 export function alertBandOf(tier: string): AlertBand {
-  return ALERT_TIERS.has(String(tier)) ? 'urgent' : 'early';
+  // Fail toward LOUD. Only amber earns the soft early wording; anything unrecognised gets
+  // the urgent message and the original claim key. The reverse polarity was unreachable
+  // today (selectAlertable admits only amber past the tier gate), but the next person to
+  // widen that gate should not also have to remember to widen this.
+  return String(tier) === 'amber' ? 'early' : 'urgent';
 }
 export function alertClaimPath(tenant: string, date: string, stopNbr: string, band: AlertBand = 'urgent'): string {
   const safe = String(stopNbr).replace(/[^A-Za-z0-9_.-]/g, '_');
@@ -158,11 +162,13 @@ export const ALERT_RULES = new Set(['hours_risk', 'no_driver_hours']);
 //
 // Chad: "some of our flags have shown up too late to do anything about." Replaying 15 sealed
 // weekdays (12,370 board stops, 1,132 with a judgeable close, 99 real misses) says the engine
-// is not mostly blind — it is mostly SILENT. Of the 99 misses, 44 ever reached red, which is
-// the only tier that emails; 39 more were seen ONLY as amber and so reached nobody, and their
-// median warning was 60 minutes. Amber is the early tier by construction: severityTier calls a
-// row amber when the predicted overrun is inside the model's own error band, which overnight
-// is 90 minutes.
+// is not mostly blind — it is mostly SILENT. Of the 99 misses, 44 became email-eligible
+// before their close; 30 more reached red or critical ON THE BOARD and never emailed (most
+// crossed the line only at or after the close, when rule 2 rightly refuses); 9 topped out at
+// amber; 16 were never seen at all. Of the 39 that never went email-eligible, 31 were
+// flagged before their close with a median 60 minutes of warning. Amber is the early tier by
+// construction: severityTier calls a row amber when the predicted overrun is inside the
+// model's own error band, which overnight is 90 minutes.
 //
 // A blanket "email every amber" is the wrong answer and the corpus says so: 28 more false
 // emails across 15 days to buy 2 more catches, of 39 and 16 minutes late, with the flood
@@ -331,32 +337,62 @@ export function buildAlert(c: AlertCandidate, date: string): { subject: string; 
  */
 export async function sendAlerts(
   candidates: AlertCandidate[], date: string, tenant: string,
-  io: { createDocIfAbsent: (p: string, d: any) => Promise<boolean>; send?: typeof sendEmail },
+  io: { createDocIfAbsent: (p: string, d: any) => Promise<boolean>; exists?: (p: string) => Promise<boolean>; claimedToday?: number; send?: typeof sendEmail },
   to: string = ALERT_TO,
 ): Promise<{ sent: number; claimed: number; failed: number; skippedAlreadySent: number; capped: number; emailedStops: Set<string> }> {
   const send = io.send || sendEmail;
-  let sent = 0, claimed = 0, failed = 0, skippedAlreadySent = 0, capped = 0;
-  // WHICH STOPS A MESSAGE ACTUALLY REACHED CUSTOMER SERVICE ABOUT. Returned rather than
-  // inferred, because the caller records it as history and the last thing built here that
-  // inferred a send from an intention ran for weeks saying "routed to Google" about nothing.
-  // A stop counts when THIS run mailed it, or when an earlier sweep already claimed it —
-  // the claim is won once per stop per day, so the claim IS the record of the attempt.
+  // The runaway ceiling counts the DAY, not the invocation. `claimed` used to start at zero
+  // on every sweep, which made "DAILY"_ALERT_CAP a per-sweep throttle: the one scenario the
+  // constant exists for — a parser bug marking a whole board urgent — would simply resume
+  // twenty minutes later, 39 sweeps a day. Callers that can count today's claims seed it;
+  // callers that cannot keep the old per-sweep behaviour, which is still a ceiling.
+  let sent = 0, claimed = Number.isFinite(io.claimedToday as any) ? Number(io.claimedToday) : 0,
+    failed = 0, skippedAlreadySent = 0, capped = 0;
+  // WHICH STOPS AN URGENT MESSAGE ACTUALLY REACHED CUSTOMER SERVICE ABOUT. Returned rather
+  // than inferred, because the caller records it as history and the screen renders it as
+  // "Emailed CS" — a claim about what a human was told, so it must track sends, not
+  // intentions. Three deliberate exclusions, each a bug the session's audit caught:
+  //   * a FAILED send no longer counts — it used to be re-added by the next sweep's !won,
+  //     making "emailed: true" permanent for a stop nobody was ever told about;
+  //   * an EARLY (amber heads-up) send does not count — the study numbers and the screen
+  //     both read this field as "the urgent alert went", and letting the soft message
+  //     satisfy it would silently change what every historical number means;
+  //   * a lost race counts only when the claim it lost to was the URGENT one.
   const emailedStops = new Set<string>();
   for (const c of candidates) {
     if (claimed >= DAILY_ALERT_CAP) { capped += 1; continue; }
+    const band = alertBandOf(c.tier);
     let won = false;
     try {
-      won = await io.createDocIfAbsent(alertClaimPath(tenant, date, c.stopNbr, alertBandOf(c.tier)), {
+      // THE BANDS MUST ARRIVE IN ORDER. The early message exists to be followed by the
+      // urgent one ("one more message if it hardens"); if the urgent claim already stands,
+      // an early message now would arrive AFTER the loud one, read as reassurance, and
+      // promise a follow-up that can never come — the ratchet normally prevents red→amber,
+      // but an R6 card leaves no history row for the floor, so the order is enforced here
+      // rather than assumed. io.exists is optional: callers that cannot probe simply keep
+      // the (rare) inversion, which costs one confusing email, not a lost alert.
+      if (band === 'early' && io.exists) {
+        const urgentTaken = await io.exists(alertClaimPath(tenant, date, c.stopNbr, 'urgent')).catch(() => false);
+        if (urgentTaken) { skippedAlreadySent += 1; emailedStops.add(String(c.stopNbr)); continue; }
+      }
+      won = await io.createDocIfAbsent(alertClaimPath(tenant, date, c.stopNbr, band), {
         tenant, date, stopNbr: c.stopNbr, customer: c.customer, route: c.route,
-        lateBy: c.lateBy, closeMin: c.closeMin, etaMin: c.etaMin,
+        lateBy: c.lateBy, closeMin: c.closeMin, etaMin: c.etaMin, band, tier: c.tier,
         claimed_at: new Date().toISOString(),
       });
     } catch { failed += 1; continue; }
-    if (!won) { skippedAlreadySent += 1; emailedStops.add(String(c.stopNbr)); continue; }
+    if (!won) {
+      // NOT added to emailedStops. The claim proves an ATTEMPT was made some earlier sweep,
+      // not that a message arrived — and the sweep that actually sent already recorded the
+      // stop, which flag-history keeps sticky (`prev.emailed || ...`). Re-adding here was
+      // how one failed send became a permanent "Emailed CS" one sweep later.
+      skippedAlreadySent += 1;
+      continue;
+    }
     claimed += 1;
     const msg = buildAlert(c, date);
     const res = await send({ to: [to], subject: msg.subject, text: msg.text, html: msg.html });
-    if (res?.ok) { sent += 1; emailedStops.add(String(c.stopNbr)); } else failed += 1;
+    if (res?.ok) { sent += 1; if (band === 'urgent') emailedStops.add(String(c.stopNbr)); } else failed += 1;
   }
   return { sent, claimed, failed, skippedAlreadySent, capped, emailedStops };
 }

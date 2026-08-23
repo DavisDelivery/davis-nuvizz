@@ -101,14 +101,33 @@ import { mergeSweep } from '../netlify/functions/lib/flag-history.mts';
 import { selectTextable } from '../netlify/functions/lib/flag-sms.mts';
 import { flattenForConsumers } from '../netlify/functions/lib/flag-rows.mts';
 
-const collapsedBatch = (n) => ([{
-  rule: 'hours_risk', tier: 'red', stopNbr: null, collapsed: n, scope: 'occurrence',
-  collapsedRows: Array.from({ length: n }, (_, i) => ({
-    rule: 'hours_risk', tier: 'red', stopNbr: `S${i}`, matchKey: `k${i}`, customer: `CO ${i}`,
-    routeName: 'R1', closeMin: 14 * 60, etaMin: 14 * 60 + 30, lateBy: 30, anchored: true,
-    detail: 'x', scope: 'occurrence',
-  })),
-}]);
+// FROM THE REAL ENGINE, NOT A FIXTURE. The first version of this test hand-built the
+// collapsed row and hand-wrote `scope` onto its constituents — a field the engine's own
+// projection did not emit — so the test passed while production's overnight texts got rows
+// selectTextable dropped on its scope filter. A fixture the engine cannot produce pins
+// nothing. This builds enough genuinely-late routes through computeBoardFlags to blow the
+// RED_CAP and hands consumers exactly what the engine emits.
+const collapsedBatch = (n) => {
+  const stops = []; const notes = new Map();
+  for (let r = 0; r < n; r += 1) {
+    const key = `c${r}`;
+    stops.push({
+      stopNbr: `S${r}`, matchKey: key, businessName: `CO ${r}`, loadNbr: `R${r}`,
+      routeSeq: 1, stopType: 'DL', lat: DEPOT.lat + 3 * DEG, lng: DEPOT.lng + (r * 0.002),
+      normalizedStatus: 'PLANNED', status: '10', driverName: 'D', driverUserName: 'd',
+    });
+    // Close chosen so the unanchored walk lands in RED's band (overrun 90-180 min against
+    // the 90-minute unanchored error band): at a 2:00p sweep the yard clock projects
+    // ~2:10p against a noon close -> ~130 late -> red. Earlier closes made these CRITICAL
+    // (cap 40) and the collapse never happened, which this builder now asserts against.
+    notes.set(key, { manual_overrides: { receiving_hours: true }, receiving_hours: { mon: { open: '08:00', close: '12:00' } } });
+  }
+  const out = computeBoardFlags({ stops, notes, servedDate: '2026-08-17', dayKey: 'mon', opts: { depot: DEPOT, nowMin: 14 * 60 } });
+  const rows = out.rows.filter((x) => x.rule === 'hours_risk');
+  assert.equal(rows.length, 1, `expected ${n} late routes to collapse to one summary row, got ${rows.length} (tiers: ${[...new Set(out.rows.map((x) => x.tier))].join(',')})`);
+  assert.equal(rows[0].collapsed, n, 'the cap must actually have bitten for this test to mean anything');
+  return rows;
+};
 
 test('flag history records the stops behind a collapsed row, not zero of them', () => {
   const { rows } = mergeSweep(null, collapsedBatch(13), 12 * 60, { emailedStops: new Set() });

@@ -25,7 +25,8 @@ import { legSecondsMap, travelLegsPath, readTravelCalibration, readRouteClasses 
 import { routeDeparturePath } from './lib/route-departure.mts';
 import { flagHistoryPath } from './lib/flag-history.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
-import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, DAILY_ALERT_CAP, ALERT_TIERS, AMBER_LEAD_GATE_MIN, finiteMinutes } from './lib/flag-alert.mts';
+import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, DAILY_ALERT_CAP, ALERT_TIERS, AMBER_LEAD_GATE_MIN, alertBandOf, finiteMinutes } from './lib/flag-alert.mts';
+import { flattenForConsumers } from './lib/flag-rows.mts';
 import { emailEnabled } from './lib/email.mts';
 
 const TENANT = 'davis';
@@ -88,14 +89,14 @@ export function heldReason(r: any, alertable: boolean, nowMin: number | null, am
   return 'held for a reason this endpoint does not model — read selectAlertable';
 }
 
-export function explainRow(r: any, alertableSet: Set<string>, nowMin: number | null) {
+export function explainRow(r: any, alertableSet: Set<string>, nowMin: number | null, amberGateMin = AMBER_LEAD_GATE_MIN) {
   const alertable = alertableSet.has(String(r?.stopNbr));
   return {
     stopNbr: r?.stopNbr, customer: r?.customer, route: r?.routeName, tier: r?.tier,
     close: clock(r?.closeMin), eta: clock(r?.etaMin), lateBy: r?.lateBy,
     anchored: r?.anchored, errorBand: r?.errorMin,
     wouldEmailNow: alertable,
-    heldBecause: heldReason(r, alertable, nowMin),
+    heldBecause: heldReason(r, alertable, nowMin, amberGateMin),
   };
 }
 
@@ -246,7 +247,8 @@ export function hoursCoverage(
 export function explainStop(
   askedStop: string, stops: any[], rows: any[], alertableSet: Set<string>,
   nowMin: number | null, claimed: any[],
-  { notes = null, dayKey = null }: { notes?: Map<string, any> | null; dayKey?: string | null } = {},
+  { notes = null, dayKey = null, amberGateMin = AMBER_LEAD_GATE_MIN }:
+    { notes?: Map<string, any> | null; dayKey?: string | null; amberGateMin?: number } = {},
 ) {
   const want = normStopNbr(askedStop);
   const matches = (v: any) => normStopNbr(v) === want;
@@ -278,7 +280,7 @@ export function explainStop(
     emailedToday: alreadyClaimed,
     wouldEmailNow: row ? alertableSet.has(String(row.stopNbr)) : false,
     heldBecause: alreadyClaimed ? 'already emailed once today — one per stop per board day'
-      : (row ? heldReason(row, alertableSet.has(String(row.stopNbr)), nowMin)
+      : (row ? heldReason(row, alertableSet.has(String(row.stopNbr)), nowMin, amberGateMin)
         // NOT FLAGGED SPLITS IN TWO, and the halves need different people. No parsable
         // hours is a data gap somebody has to fill in on the customer card; hours on file
         // with no flag is the engine saying the stop makes it.
@@ -372,10 +374,16 @@ export default async (req: Request): Promise<Response> => {
     // Includes gated ambers: with the gate on they DO email, and a row that emailed while
     // being absent from this list is how the endpoint would report wouldSendNow: 3 beside
     // urgent: [] — contradicting itself in one payload.
-    const urgent = (flags.rows || []).filter((r: any) => r.rule === 'hours_risk'
+    // Flattened ONCE, used by every consumer that must see through a collapse — the urgent
+    // list, the alertable set and the per-stop explanation. On a capped day the raw list
+    // holds one summary row that cannot email; judging on it made this endpoint answer
+    // "this stop is fine" about a stop it was emailing in the same request. `counts` stays
+    // on the raw rows on purpose: the panel's numbers are the collapsed ones.
+    const flatRows = flattenForConsumers(flags.rows || []);
+    const urgent = flatRows.filter((r: any) => r.rule === 'hours_risk'
       && (ALERT_TIERS.has(String(r.tier)) || (gateMin > 0 && String(r.tier) === 'amber')));
     const askedStop = url.searchParams.get('stop');
-    const alertable = selectAlertable(flags.rows, nowMin, gateMin);
+    const alertable = selectAlertable(flatRows, nowMin, gateMin);
     const alertableSet = new Set(alertable.map((c) => c.stopNbr));
 
     // What has already been claimed today. A claim means an email was attempted; it is
@@ -385,7 +393,11 @@ export default async (req: Request): Promise<Response> => {
       const docs = await listDocs(ALERT_COLLECTION);
       claimed = (docs || [])
         .filter((d: any) => d?.tenant === TENANT && d?.date === date)
-        .map((d: any) => ({ stopNbr: d.stopNbr, customer: d.customer, lateBy: d.lateBy, claimed_at: d.claimed_at }));
+        // `band` rides along ('urgent' assumed for claims written before bands existed —
+        // that is what the un-suffixed key always was). Without it this check was
+        // band-blind: an early-claimed stop escalating to red showed as "already emailed"
+        // and disappeared from wouldSendNow on the exact sweep its urgent message was due.
+        .map((d: any) => ({ stopNbr: d.stopNbr, customer: d.customer, lateBy: d.lateBy, claimed_at: d.claimed_at, band: d.band || 'urgent' }));
     } catch { /* the collection does not exist until the first claim */ }
 
     // PROVE IT LOOKED. A bare "0 critical" is indistinguishable from "the notes never
@@ -410,13 +422,13 @@ export default async (req: Request): Promise<Response> => {
       emailConfigured: emailEnabled(), to: ALERT_TO, dailyCap: DAILY_ALERT_CAP,
       counts: { critical: flags.criticalCount ?? 0, red: flags.redCount ?? 0, amber: flags.amberCount ?? 0 },
       // Every urgent row, and for each one WHY it would or would not be emailed right now.
-      urgent: urgent.map((r: any) => explainRow(r, alertableSet, nowMin)),
+      urgent: urgent.map((r: any) => explainRow(r, alertableSet, nowMin, gateMin)),
       // ?stop=<PRO> — the answer to "why did I not get an email about THIS one", for any
       // stop on the board, flagged or not. Added because answering it once by hand meant
       // reading three modules; it should cost one request.
-      explain: askedStop ? explainStop(askedStop, stops, flags.rows || [], alertableSet, nowMin, claimed, { notes, dayKey: weekdayKey(date) }) : undefined,
+      explain: askedStop ? explainStop(askedStop, stops, flatRows, alertableSet, nowMin, claimed, { notes, dayKey: weekdayKey(date), amberGateMin: gateMin }) : undefined,
       alreadyClaimedToday: claimed,
-      wouldSendNow: alertable.filter((c) => !claimed.some((x) => x.stopNbr === c.stopNbr)).length,
+      wouldSendNow: alertable.filter((c) => !claimed.some((x) => x.stopNbr === c.stopNbr && x.band === alertBandOf(c.tier))).length,
       // The switch's position, reported rather than inferred. `effective` is what this run
       // actually judged on (a ?gate= rehearsal overrides the env var); `configured` is what
       // production is set to right now.
