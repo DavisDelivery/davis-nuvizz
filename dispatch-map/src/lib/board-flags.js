@@ -302,34 +302,58 @@ export function isRollingEvidence(s) {
 }
 
 // EVIDENCE THE TRUCK IS OFF THE YARD — a STRICTER test than isRollingEvidence, and the one
-// the departure clock now runs on.
+// the departure clock runs on.
 //
 // Chad, 2026-08-22: "once we get past eight AM, then for any route that has not had a
 // delivery done on it, that route no longer needs to be assumed that it's leaving at eight.
 // It needs to be assumed that it's leaving every minute after that... consider it to be at
-// yard if hasn't made any deliveries."
+// yard if hasn't made any deliveries." And on OUT_FOR_DELIVERY: "out for delivery happens
+// when driver checks into a load which could happen hours before their 1st delivery" — so
+// '40' is paperwork, not motion, and it is deliberately absent below.
 //
-// WHY A SECOND, NARROWER TEST rather than reusing isRollingEvidence. That set counts
-// OUT_FOR_DELIVERY ('40') as movement. On this board that status is set when the load is
-// dispatched, which can be hours before the truck physically rolls — so a load marked out
-// at 7:00a that actually leaves at 11:00a was treated as ALREADY GONE and kept the 8:00a
-// departure all morning, which is exactly the silent optimism this rule exists to remove.
-// ARRIVED ('50') and an arrival stamp stay in: a truck standing at a customer's door has
-// demonstrably left the yard, whatever its paperwork says, and pushing it back to the yard
-// would invent a first leg it has already driven.
+// THIS TESTS DELIVERY EVIDENCE, NOT TERMINAL-NESS. The first version delegated to
+// isFinishedStop, whose job is "does the driver still owe this stop anything" — a different
+// question, and the difference bit three ways before the session's own audit caught it:
+//   * A CANCELLED order ('99', surfaced as EXCEPTION on a routed load) is terminal and is
+//     not a delivery. One cancelled stop was taking its whole load off the yard, restoring
+//     the 8:00 departure, and quietly erasing a red card 20 minutes past its close.
+//   * A stamp from ANOTHER DAY said nothing about where this truck is now — the exact
+//     refusal arrivalAnchor makes 180 lines up, for the exact reason its comment gives.
+//     The two functions read the same fields; they now give the same answer.
+//   * An UNABLE-TO-DELIVER ('80') stays IN, deliberately: the driver stood at the door and
+//     could not complete — that is an attempted delivery, and the truck that attempted it
+//     is not on the yard. A bare EXCEPTION status with no code stays OUT: it cannot be told
+//     apart from a cancellation, and when the evidence is ambiguous this predicate fails
+//     toward the yard — the pessimistic side, which costs a glance at a card rather than a
+//     silent miss.
 //
-// Measured over 14 sealed days (851 routes, backtest raw rows): at 8:30a, 545 routes had no
-// delivery yet — 424 of them (78%) had genuinely not departed and would not leave for a
-// median of another 158 minutes, while 121 (22%) were already rolling and would have their
-// departure overstated by a median of 28 minutes. Being right by two and a half hours four
-// times out of five, against being wrong by half an hour once in five, is the trade — and
-// the two errors are not symmetrical: overstating costs a glance at a card, understating
-// costs a refused delivery nobody saw coming.
-export function hasLeftYard(s) {
-  if (isFinishedStop(s)) return true;
-  if (s?.arrivalDTTM) return true;
+// Measured over 14 sealed days (851 routes, backtest raw rows): departures spread p10 6:24a
+// to p90 1:25p against the assumed 8:00, and 57% of routes left LATER than assumed, by a
+// median of 170 minutes. The honest cost of running the yard clock: a route that is rolling
+// but unstamped ('40' with the wheels genuinely turning) reads later than reality by at most
+// its depot leg — median 43 minutes, p90 74 — until its first POD posts. There is no
+// compensating signal for that case in this feed (arrival stamps exist on 2 of 9,591 sealed
+// delivered stops), so the over-pessimism is ACCEPTED and bounded, not cancelled. The board
+// consequence is smaller than the departure error: the pre-existing per-stop clamp already
+// held every unanchored stop at >= now, so what the yard rule moves is the first leg, not
+// the whole morning.
+const sameDayStamp = (v, servedDate) => {
+  if (!v) return false;
+  if (!servedDate) return true;   // no board date to test against — accept, as shipped
+  const day = /^(\d{4}-\d{2}-\d{2})/.exec(String(v));
+  return !day || day[1] === servedDate;
+};
+export function hasLeftYard(s, servedDate = null) {
+  // Delivery evidence — the thing Chad's sentence is actually about.
+  if (sameDayStamp(s?.deliveredDTTM, servedDate)) return true;
+  if (String(s?.normalizedStatus ?? '') === 'DELIVERED') return true;
+  const code = String(s?.status ?? '').trim();
+  if (code === '90' || code === '91') return true;
+  if (code === '80') return true;              // attempted — the truck reached a door
+  // On-site evidence — the truck has demonstrably driven its first leg.
+  if (sameDayStamp(s?.arrivalDTTM, servedDate)) return true;
   if (String(s?.normalizedStatus ?? '') === 'ARRIVED') return true;
-  return String(s?.status ?? '').trim() === '50';
+  return code === '50';
 }
 
 const numOr = (v) => { const n = typeof v === 'number' ? v : parseFloat(v); return Number.isFinite(n) ? n : null; };
@@ -747,13 +771,15 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // The grace hour after departure covers the every-morning gap where a truck that left
   // on time simply hasn't reached its first stop's scanner.
   const nowMin = Number.isFinite(opts.nowMin) ? opts.nowMin : null;
-  // THE GRACE HOUR IS GONE. It existed to cover "a truck that left on time simply hasn't
-  // reached its first stop's scanner", and it bought that safety by holding the whole fleet
-  // on an 8:00a departure until 9:00a. Measured, that protection was worth ~28 minutes on
-  // the 22% of unstamped routes already rolling, and it cost a median 158-minute
-  // understatement on the 78% still sitting on the yard. The arrival-stamp and ARRIVED
-  // tests in hasLeftYard now carry the "already rolling" case directly, which is what the
-  // hour was standing in for.
+  // THE GRACE HOUR IS GONE, and honestly: there is NO compensating signal for the case it
+  // protected. It covered a truck genuinely in transit to its first stop — which on this
+  // board is '40', paperwork set at dispatch, indistinguishable from a load still on the
+  // dock; and the arrival stamps that could tell the difference exist on 2 of 9,591 sealed
+  // delivered stops. So a rolling-but-unstamped route now reads later than reality by up to
+  // its depot leg (median 43 min, p90 74) until the first POD posts. That over-pessimism is
+  // ACCEPTED, because the error it replaced ran the other way and bigger: 57% of routes
+  // depart later than the 8:00 assumption, by a median of 170 minutes, and an optimistic
+  // clock is the one that hides a missed close until nobody can act on it.
   const NOT_STARTED_GRACE_MIN = 0;
   if (day && depot) {
     // Two questions, two sets, because they are not the same question.
@@ -768,7 +794,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       const k = routeKeyOf(s);
       if (!k) continue;
       if (isRollingEvidence(s)) startedRoutes.add(k);
-      if (hasLeftYard(s)) leftYardRoutes.add(k);
+      if (hasLeftYard(s, servedDate)) leftYardRoutes.add(k);
     }
     // ONE DEFINITION OF "NOBODY IS DRIVING THIS", read by BOTH the arrival walk's clock (R5)
     // and the no-driver card (R6). They used to answer it separately, and the moment R5
@@ -782,8 +808,15 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     // a load nobody has taken by 1:00pm cannot start at noon either.
     const hasDriverOn = (g) => (g || []).some((s) => String(s?.driverName || s?.driverUserName || '').trim());
     const watchFrom = Number.isFinite(opts.noDriverWatchFromMin) ? opts.noDriverWatchFromMin : NO_DRIVER_WATCH_FROM_MIN;
+    // The gate reads leftYardRoutes, NOT startedRoutes. With '40' counting as "started", a
+    // driverless load that dispatch had marked out-for-delivery fell between the two rules:
+    // R5's clock said it was on the yard while this gate concluded somebody was working it,
+    // so the noon threshold never ran and the load went completely silent. One definition of
+    // "the truck has gone" now serves both rules — v0.72.0's own premise is that '40' is set
+    // at dispatch, hours before the wheels turn, and a driverless load with dispatch
+    // paperwork is exactly the load this card exists for.
     const driverlessStart = (k, g) => (
-      nowMin != null && nowMin >= watchFrom && !startedRoutes.has(k) && !hasDriverOn(g)
+      nowMin != null && nowMin >= watchFrom && !leftYardRoutes.has(k) && !hasDriverOn(g)
         ? Math.max(NO_DRIVER_START_MIN, nowMin)
         : null
     );
@@ -1164,7 +1197,17 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
           lateBy: worstHours.lateBy,
           anchored: worstHours.anchored,
         };
-        rows.push(row(tier, 'no_driver_hours', first.s, {
+        // THE ROW IS BUILT ON THE STOP THE FACTS CAME FROM. When nothing is outright
+        // unreachable, alertFacts come from worstHours — the walk's worst superseded row,
+        // usually a DIFFERENT stop from the earliest close. Building the card on first.s
+        // anyway printed one stop's PRO above another stop's customer, close and ETA, and
+        // the alert claim was written against the wrong stop — so if that first stop later
+        // earned its own real alert, the claim was already burned. One card, one stop,
+        // and every field on it belongs to that stop.
+        const cardStop = doomed.length ? first.s : {
+          stopNbr: worstHours.stopNbr, matchKey: worstHours.matchKey, routeName: worstHours.routeName,
+        };
+        rows.push(row(tier, 'no_driver_hours', cardStop, {
           ...alertFacts,
           ...(worstHours ? { supersededTier: worstHours.tier } : {}),
           title: `No driver — ${k} must make ${fmtMin(riskClose)}`,
@@ -1246,10 +1289,18 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       title: `${rs.length} stops: ${rs[0].title.split('—')[0].trim()}`,
       detail: `Too many to list one by one (cap ${cap}) — this is a data-quality batch, not ${rs.length} separate emergencies. Work it from the stops grid.`,
       fingerprint: `collapsed|${rule}|${rs[0].tier}|${servedDate}|${rs.length}`, collapsed: rs.length,
+      // EVERY FIELD A DOWNSTREAM CONSUMER FILTERS ON MUST SURVIVE THE COLLAPSE. The first
+      // projection dropped `scope` — and selectTextable filters on scope === 'occurrence',
+      // so every row the flattener recovered for the overnight texts was dropped on the
+      // very next line: thirteen reds still texted NOBODY while the email path, whose
+      // selector does not read scope, worked. The audit that caught it also caught why the
+      // test did not: the fixture hand-wrote `scope` onto constituents this projection
+      // never emitted. The fixture now comes from a real engine board.
       collapsedRows: rs.map((r) => ({
         rule: r.rule, tier: r.tier, stopNbr: r.stopNbr, matchKey: r.matchKey,
         routeName: r.routeName, customer: r.customer, closeMin: r.closeMin,
         etaMin: r.etaMin, lateBy: r.lateBy, anchored: r.anchored, detail: r.detail,
+        scope: r.scope, servedDate: r.servedDate,
       })),
     };
     summaryRow.dismissKey = `${rule}|${summaryRow.scope === 'occurrence' ? `${summaryRow.servedDate}|` : ''}${summaryRow.fingerprint}|t${TIER_RANK[summaryRow.tier] ?? 1}`;

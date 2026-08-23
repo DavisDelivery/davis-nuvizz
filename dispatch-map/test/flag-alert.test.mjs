@@ -258,10 +258,15 @@ test('sendAlerts reports WHICH stops it actually reached, not which it intended 
       assert.equal(r.failed, 2);
       assert.equal(r.emailedStops.size, 0, 'a refused send is NOT an email');
     }),
-    // Claim already held: an EARLIER sweep mailed it, so it still counts as emailed today.
+    // Claim already held: this sweep sent NOTHING, so it reports nothing. The claim proves
+    // an earlier ATTEMPT, not an arrival — the earlier sweep that genuinely sent already
+    // recorded the stop, and mergeSweep's sticky OR keeps it true for the day. Re-adding
+    // it here was how ONE failed send (claim written, Resend 500) turned into a permanent
+    // "Emailed CS" on the very next sweep — the intent-as-outcome sin this whole test
+    // exists to forbid, one branch further in.
     sendAlerts([c('a')], DATE, 'davis', io(true, false)).then((r) => {
       assert.equal(r.skippedAlreadySent, 1);
-      assert.deepEqual([...r.emailedStops], ['a'], "an earlier sweep's send still counts");
+      assert.equal(r.emailedStops.size, 0, 'a held claim is an attempt, not an arrival');
     }),
   ]);
 });

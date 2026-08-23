@@ -22,14 +22,14 @@
 // The scan itself refreshes every 15 minutes, so anything tighter re-reads the same board.
 // Cron is UTC: 11:00-23:59 UTC covers roughly 07:00-19:59 ET, which brackets the delivery
 // day either side of a DST flip without needing to be re-timed twice a year.
-import { isFirestoreEnabled, readStops, getDoc, setDoc, listFleetLoads, createDocIfAbsent, etDayString } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, getDoc, setDoc, listFleetLoads, createDocIfAbsent, etDayString, listDocs } from './lib/firestore.mts';
 import { computeBoardFlags } from '../../src/lib/board-flags.js';
 import { ensureLegs, readTravelCalibration, routeClassesPath } from './lib/travel-store.mts';
 import { routeDeparturePath } from './lib/route-departure.mts';
 import { travelClassOf } from '../../src/lib/travel-model.js';
 import { loadVehicleRoster, vehicleTypeForStop } from './lib/tractor-flags.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
-import { selectAlertable, sendAlerts, ALERT_TO, AMBER_LEAD_GATE_MIN } from './lib/flag-alert.mts';
+import { selectAlertable, sendAlerts, ALERT_TO, AMBER_LEAD_GATE_MIN, ALERT_COLLECTION } from './lib/flag-alert.mts';
 import { mergeSweep, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
 import { emailEnabled } from './lib/email.mts';
 
@@ -275,7 +275,19 @@ export default async (req: Request): Promise<Response> => {
       return J({ ...base, recorded: await writeHistory(new Set()), sent: 0, note: 'email not configured (RESEND_API_KEY unset)' });
     }
 
-    const result = await sendAlerts(candidates, date, TENANT, { createDocIfAbsent }, ALERT_TO);
+    // Seed the runaway ceiling with what the DAY has already claimed, so the cap bounds the
+    // day rather than the sweep. Best-effort: an unreadable collection seeds zero, which is
+    // the old behaviour, still a per-sweep ceiling.
+    let claimedToday = 0;
+    try {
+      const docs = await listDocs(ALERT_COLLECTION);
+      claimedToday = (docs || []).filter((d: any) => d?.tenant === TENANT && d?.date === date).length;
+    } catch { /* first claim of the day creates the collection */ }
+    const result = await sendAlerts(candidates, date, TENANT, {
+      createDocIfAbsent, claimedToday,
+      // Lets the early band refuse to follow an urgent claim (bands must arrive in order).
+      exists: async (path: string) => !!(await getDoc(path)),
+    }, ALERT_TO);
     const { emailedStops, ...counts } = result;
     return J({ ...base, recorded: await writeHistory(emailedStops), ...counts, to: ALERT_TO });
   } catch (e: any) {
