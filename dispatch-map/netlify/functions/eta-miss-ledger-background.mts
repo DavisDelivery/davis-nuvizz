@@ -277,10 +277,15 @@ async function writeTravelCalibration(date: string, stops: any[]) {
   // was invisible to the departure fit FOREVER, and the table had to crawl from 2 days to a
   // full window at one day per night while two months of first-delivery stamps sat unread in
   // the warehouse. Chad: "we have a couple months we could study to procure better results."
-  // The two-month study (66 routes, ~9 weekly windows) also settled the window SIZE before
-  // this shipped: a 4-week pool captures the whole benefit (median abs error 25 min vs 26 at
-  // 2 weeks), 8 weeks adds nothing overall and makes the ~11 drifting routes WORSE (52 vs 46)
-  // — so the fix is to FILL the existing 28-day window from history, not to widen it.
+  // The two-month study (66 routes, ~9 weekly windows; adversarially verified) also asked
+  // whether the window should WIDEN before this shipped. Verified answer: window size
+  // barely matters — last-week/2wk/4wk/8wk all land within ~1-2 min of each other (median
+  // abs error ~25-26) and are statistically indistinguishable; the corpus cannot even
+  // genuinely test 8 weeks (on 181 of 314 backtest rows the 4- and 8-week windows hold
+  // identical data). An earlier draft claimed 8 weeks actively HURT the drifting routes
+  // (52 vs 46) — that did not survive verification (10 routes, CI spans zero). What stands:
+  // no detectable benefit beyond a few weeks, so the fix is to FILL the existing 28-day
+  // window from history, not to widen it.
   //
   // Mechanics: a windowed day whose doc lacks the field gets its departures computed from the
   // sealed stops and PATCHED in — updateDocFields, never setDoc, because these docs carry the
