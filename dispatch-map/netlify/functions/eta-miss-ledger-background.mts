@@ -22,7 +22,7 @@ import { isFirestoreEnabled, getDoc, setDoc, updateDocFields } from './lib/fires
 import { etYesterday } from './lib/history-core.mts';
 import { listStops } from './lib/history-store.mts';
 import { scoreDay, ledgerPath, ledgerMatchKey, LEDGER_VERSION } from './lib/miss-ledger.mts';
-import { scoreRow, summarize, flagHistoryPath, FLAG_HISTORY_VERSION, needsOutcomeRescore } from './lib/flag-history.mts';
+import { scoreRow, summarize, flagHistoryPath, FLAG_HISTORY_VERSION, needsOutcomeRescore, ROLL_LOOKAHEAD_DAYS } from './lib/flag-history.mts';
 import { arrivalAnchor, isFinishedStop } from '../../src/lib/board-flags.js';
 import { fitCurveByClass, legSamplesFromRoutes, curveToDoc, travelClassOf, DEFAULT_CURVE } from '../../src/lib/travel-model.js';
 import { loadVehicleRoster, vehicleTypeForStop } from './lib/tractor-flags.mts';
@@ -86,9 +86,10 @@ function addDays(date: string, n: number): string {
 /**
  * Attach outcomes to the flags recorded live on `date`.
  *
- * `seenLater` — the evidence for Chad's "rolled to the next day" — comes from the NEXT
- * day's sealed board. If that day is not captured yet we pass null rather than false, so a
- * roll cannot be mislabelled as "never delivered" purely because we scored it too early.
+ * `seenLater` — the evidence for Chad's "rolled to the next day" — comes from the first
+ * LATER day that has a sealed board, which on a Friday is Monday. If no day in range is
+ * captured yet we pass null rather than false, so a roll cannot be mislabelled as "never
+ * delivered" purely because we scored it too early.
  *
  * ── WHY THIS RE-RUNS, AND WHY THAT USED TO BE IMPOSSIBLE ─────────────────────
  *
@@ -125,12 +126,22 @@ async function scoreFlagOutcomes(date: string, stops: any[]) {
   const byStop = new Map<string, any>();
   for (const s of stops) if (s?.stopNbr != null) byStop.set(String(s.stopNbr), s);
 
-  // Did the next day's board carry it? Absent capture => null => "we cannot tell yet".
+  // Did a LATER board carry it? Absent capture => null => "we cannot tell yet".
+  //
+  // This used to ask about day+1 and nothing else. On a Friday that is Saturday, Davis does
+  // not run, no board is ever captured — so every Friday flag read "unknown" permanently and
+  // the nightly sweep re-read those days until they aged out still ungraded. A fifth of the
+  // week could not answer the question this table exists to ask. Walk to the first later day
+  // that actually HAS a board; rollCheckDate bounds how far.
   let nextDay: Set<string> | null = null;
-  try {
-    const later = await listStops(TENANT, addDays(date, 1));
-    if (later?.length) nextDay = new Set(later.map((s: any) => String(s?.stopNbr)));
-  } catch { /* not captured yet */ }
+  let rollCheckedDate: string | null = null;
+  for (let i = 1; i <= ROLL_LOOKAHEAD_DAYS; i += 1) {
+    const d = addDays(date, i);
+    try {
+      const later = await listStops(TENANT, d);
+      if (later?.length) { nextDay = new Set(later.map((s: any) => String(s?.stopNbr))); rollCheckedDate = d; break; }
+    } catch { /* not captured — keep looking */ }
+  }
 
   const scoredAt = new Date().toISOString();
   const out: Record<string, any> = {};
@@ -151,6 +162,10 @@ async function scoreFlagOutcomes(date: string, stops: any[]) {
     ...doc, tenant: TENANT, date, version: FLAG_HISTORY_VERSION,
     rows: out, summary, scored_at: scoredAt,
     next_day_captured: nextDay != null,
+    // WHICH day settled it, so "rolled" is checkable rather than asserted. On a Friday this
+    // is Monday, and a reader who does not know that would otherwise have no way to tell a
+    // graded Friday from a Friday graded against the wrong day.
+    roll_checked_date: rollCheckedDate,
   });
   return summary;
 }
@@ -204,6 +219,9 @@ function calSamplesForDay(stops: any[], date: string, roster: any = null) {
     routes.get(k)!.push({
       pos: calPos(s),
       stampMin: a ? a.min : null,
+      // WHICH stamp it was, not just when. A delivered stamp has the dwell already spent —
+      // impliedDeparture has to take it back out, and it cannot if the source is dropped here.
+      stampSource: a ? a.source : null,
       seq: typeof s?.routeSeq === 'number' ? s.routeSeq : null,
     });
   }

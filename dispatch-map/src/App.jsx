@@ -44,6 +44,7 @@ import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/dista
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
 import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, isPlannedStop, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
+import { formatCompletionPct } from './lib/completion-pct.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact } from './lib/nuvizzWrite.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
@@ -88,7 +89,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.75.2';
+const APP_VERSION = '0.75.3';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -159,6 +160,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.75.3', "THE LAST OF THE HUNT — SIX MORE, AND FOUR OF THEM WERE THE SCREEN OR THE INBOX SAYING SOMETHING THAT WAS NOT TRUE. F1: A PAST-MIDNIGHT ETA PRINTED AS THE SAME TIME IN THE AFTERNOON. The board's minutes keep counting past midnight — a route that leaves late walks its last stops into tomorrow, and 12:30am is minute 1470 — and the alert email's clock never wrapped, so `h >= 12` read 24 as afternoon. The subject a customer-service rep opens said “ETA 12:30p” for a truck arriving at 12:30 IN THE MORNING: twelve hours wrong in the one direction nobody checks, because a same-day-looking time raises no question at all. Negative minutes (the evening sweep rebases onto tomorrow's board with etMin − 1440) printed “-1:-30a”. The text path had this right and its sibling did not. It also names the day now: “closes 8:30a, ETA 12:30a” reads as arriving four hours EARLY, which is the opposite of what it means. F5: “100% COMPLETE” BESIDE “1 OPEN”, IN THE SAME SUBJECT LINE. On the real 816-stop board, 815 delivered is 99.88% and plain rounding called that a finished day; four open stops on a two-day view did the same. A rate is a summary, but 100% is a CLAIM THAT NOTHING IS LEFT and it is the number somebody stops reading after. 100% is now reserved for actually done and 0% for actually nothing, with one shared rule so the screen and the evening email cannot drift apart. F4: THE APPOINTMENT WINDOW SHOWED A RAW TIMESTAMP. fmtTime12's match was anchored at the start of the string, so an ISO stamp fell through untouched — and the routing panel's Appointment window row reads scheduledFrom/To, which ARE stamps. It printed “2026-08-24T08:00:00–2026-08-24T08:05:00” where it meant “8:00a–8:05a”. Read off the digits, never through a Date: these stamps are naive ET wall-clock and a Date would roll a pre-dawn slot to the previous day. F6: “COPIED” WHETHER OR NOT ANYTHING WAS COPIED, at two sites. writeText returns a PROMISE, so its rejection never reached the try/catch around it. On http or with the permission denied the dispatcher sees the green word, pastes into NuVizz and gets whatever was on the clipboard before — usually a DIFFERENT stop's PRO. A wrong PRO pasted confidently is worse than no copy, because nothing about it looks wrong. The second site was the desktop twin of a mobile button already fixed, which is exactly what treating one screen as two views is meant to catch. F3: EVERY FRIDAY FLAG WAS PERMANENTLY “UNKNOWN”. Rolled-versus-never-delivered is settled by whether the stop turned up on a later board, and the scorer asked about day+1 and nothing else. On a Friday that is Saturday, Davis does not run, no board is ever captured — so the answer was null forever, the rescore guard stayed true, and the nightly sweep re-read those days every night until they aged out still ungraded. A fifth of the week could not answer the question the table exists to ask, and nothing went red, because a history full of shrugs looks exactly like a quiet week. It now settles on the first later day that HAS a board — Friday grades against Monday — bounded at four days so a holiday weekend is reachable and a month later still honestly reads “cannot tell”. P9: TWO CALIBRATION ERRORS THAT PARTLY CANCELLED, FIXED TOGETHER because fixing one alone shifts the bias. (a) impliedDeparture threw away WHICH stamp it had. arrivalAnchor draws the line and the forward walk honours it — an arrival means the dwell is still ahead, a delivered means it already happened — but the backward subtraction got only the minute, so every learned departure came out one dwell block LATE. Not a corner case: arrivalDTTM is on 8 stops out of 20,904, so essentially every sample was a delivered stamp and the whole table leaned one way. (b) the isotonic cummax ran over a value that FALLS BACK TO THE DEFAULT curve when a bucket is thin, so a guess became a permanent speed floor for every longer bucket, overriding real measurements that said slower. Long corridors priced too fast is the dangerous direction: an optimistic ETA on the longest legs says a truck will make a close it will miss, on the runs with the least slack. The envelope now accumulates from measurements only. The stored departure table carries a version and an older one is ignored rather than read as if it meant the same thing. P12: THE TOMBSTONE NOBODY COULD WRITE — and the promise it was not keeping. writeTombstone has existed since the warehouse-holes work with ZERO callers, so a genuine holiday sat in Capture health as a standing red weekday forever; the cost is not the square, it is that a strip carrying permanent known-wrong reds stops being read, and the night the capture ACTUALLY failed is then one more red nobody looks at. Adding a caller meant first making it keep its own comment: it said “never overwrites a real sealed manifest” and NOTHING ENFORCED THAT — it writes with setManifest, which REPLACES, so pointed at a day that ran it would erase a sealed manifest, leave counts of zero, and the heal path would then refuse to touch the no_board doc it created. An unenforced promise held up by an accident. Now a rule, with a dry run that reads what is actually stored before offering the button. P3: THE CIRCUIT BREAKER WAS A ONE-WAY LATCH IN ONE APP AND INVISIBLE IN THE OTHER. Both apps share nuvizz_ops/circuit and read it under different rules, so it broke in both directions: the parent had NO expiry, so a daily ceiling reached once latched its scans off permanently at a count of zero until somebody edited Firestore by hand; and it never wrote a day stamp, so a ceiling it tripped read as CLOSED in dispatch-map, which kept spending against a vendor that had already cut us off. One contract now, and the day is EASTERN — matching the counter the breaker bounds. A UTC day had the two on different clocks: a trip at 3pm ET released five hours early with the count still over the limit, and one at 9pm ET held 23 hours past the rollover that should have cleared it. An open breaker also says WHY and since when. 2,431 tests green."],
   ['0.75.2', "FOUR MORE FROM THE HUNT, AND EVERY ONE OF THEM A NUMBER OR A RECORD THAT FLATTERED ITSELF. P8: A REFUSED DELIVERY WAS BEING SCORED AS “DELIVERED AND SCANNED LATER”. The 6:30 snapshot is graded the next morning to separate POD lag — freight that arrived and was scanned at the yard at 7pm — from freight that actually rolled, which is the whole reason the carryover chart means anything. An 80 (unable to deliver) fell into the lag bucket, so the sentence on screen said a delivery that never happened “was delivered and scanned later”, and lateCloseRate — the reassuring number — went UP on exactly the evenings that went worst. Three stops open at 6:30 with one unscanned and two refused used to read 100% lag; it now reads 33%. Refusals get their own bucket and their own rose block on the bar; cancellations leave the denominator entirely, the same judgement `gradable` already makes on the snapshot side, because the day did not fail to deliver an order that was pulled. F2: THE “YESTERDAY, GRADED” PANEL COULD NOT RENDER AT ALL. It read the reconciliation stored on TODAY'S record, and a day is graded the NEXT morning — so the field was null every time the screen was open on today, and the panel had been dead since it shipped. It now reads the last graded day out of the history payload the charts already load (zero extra reads) and NAMES that day instead of saying “yesterday”, which on a Monday is a lie about a Friday. P5: A DRIVERLESS ROUTE CONTRIBUTED NOTHING TO THE FLAG AUDIT. The no-driver card supersedes that route's arrival cards — right for a screen and an inbox, one situation one card — by DELETING them, and flag history keeps only hours_risk rows. So the routes in the most trouble recorded no first sighting, no lead time, no worst tier and no outcome, and in that table a route with no rows looks exactly like a route with no problems. The superseded rows now ride back on their own array that only the recording path reads: the panel, the caps, the counts, the emails and the texts still see one card. P10: A SCAN THAT NEVER HAPPENED WAS STAMPED AS DONE. markScanKinds('planned','completed') ran at the TOP of the list-discovery block, ahead of every NuVizz call — so a 5xx or a throttle recorded a scan, dueKinds held the retry off for a full interval, and the board sat stale while the run reported itself handled. It also claimed a COMPLETED pull unconditionally, which the day-index write 450 lines below already refuses to claim when TWO_SCAN is off: two stamps disagreeing about one run, and the ops doc was the one lying. Stamped now by the first pull that actually came back. P11: A NIGHT THAT SEALED BUT NEVER PAINTED LOOKED IDENTICAL TO A CLEAN ONE. runPostSealHooks has always returned an `ok` and every caller discarded it, so a failed customer rollup, tractor paint or routing miner left no trace — and all of it being re-derivable is why the failure was allowed to be quiet, except nobody re-derives what nobody knows is missing, and the day goes silently absent from the engine's training set. The hooks now run before the lineage append so the lineage carries their outcome, the result is field-masked onto the manifest (setDoc REPLACES — the lazy write would have taken the seal with it), and Capture health counts and NAMES them without calling the day failed, which would only send someone hunting a capture bug that is not there. 2,401 tests green."],
   ['0.75.1', 'THREE MORE FROM THE HUNT \u2014 AND ONE OF THEM THE CODE HAD ALREADY ARGUED AGAINST ITSELF. P2: THE CAPTURE IGNORED ITS OWN SCAN-HEALTH VERDICT. scanDate reports loadsComplete (any /load/info probe the vendor could not answer) and descentComplete (did the unplanned descent reach the floor), and the BOARD write path acts on both \u2014 it refuses to prune against a scan that could not see. The CAPTURE path read neither, so a night where NuVizz failed most of its probes archived a handful of stops from an 800-stop day and sealed it verified:true, complete:true. That lie is permanent and self-defending: capture-health then shows GREEN and classifyHealTarget refuses a sealed date, so the heal path built for exactly this hole declines to touch it \u2014 and six weeks later a customer disputes a delivery and the warehouse says it never happened. The v0.71.0 empty-capture guard does not cover it, because three stops out of eight hundred is not zero. The rule is pure and exported (scanHealthComplaint) so it is pinned by tests, including the control that an UNSCANNED half reads as undefined and is NOT a complaint \u2014 treating it as one would block every lean night and the guard would be deleted within a week. P7: A LOST CLAIM RACE WAS RECORDED AS \u201cEMAILED\u201d. The alert claim is deliberately kept even when the send FAILED \u2014 that is what makes it useful for \u201cwhy no second one\u201d and useless as proof of delivery. sendAlerts states exactly this in its !won branch (\u201cRe-adding here was how one failed send became a permanent Emailed CS one sweep later\u201d) and then did the opposite four lines above, in the band-inversion branch. Now consistent, with all three paths tested: a lost race records nothing, a real send records, a failed send records nothing. P4 (partly): the row-identity half had already been fixed in main by another session; what remained was the FINGERPRINT, which keyed on the route\u2019s earliest close \u2014 a value that moves \u2014 so a dismissed card could return under a new key. Nobody dismisses \u201cDUL 2 must make 11:00a\u201d; they dismiss \u201cI know DUL 2 has no driver\u201d, so the key is now route plus board day. AND THE INTAKE\u2019S STATED PATH FOR IT WAS WRONG, WHICH IS WORTH RECORDING: it said \u201conce the earliest stop delivers\u201d. It cannot \u2014 a delivered stop is rolling evidence, so R6 stops firing on that route altogether (proven: both-open \u2192 1 card, one-delivered \u2192 0, and that is now a test). The reachable path is a dispatcher EDITING receiving hours mid-day, which changes the constrained set with no movement at all. 2,385 tests green.'],
   ['0.75.0', 'A FAILED READ IS NO LONGER A WRITE \u2014 THE BIGGEST CLASS OUT OF THE BUG HUNT, FOUR SITES, ONE SHAPE. getDoc was already right: 404 means the document genuinely does not exist, ANYTHING ELSE THROWS. Every bug in this class is a caller wrapping that in catch { return {} } and then writing the erasure back over the real record \u2014 and because these are one-document maps rewritten whole, writing an empty read DELETES EVERY OTHER ENTRY. (1) THE CARRY-FORWARD GUARD, the worst of them. A prior-index read failure left prevByNbr empty, which is indistinguishable from a brand-new day \u2014 and everything downstream rests on it: pullHealthy short-circuits TRUE on size === 0, the carry-forward loop iterates nothing, and the write runs with neither partialLoads nor partialUnplanned, i.e. a FULL PRUNE. One unreadable read deleted every board stop the pull did not happen to mention \u2014 stops mid-flight between status flips, rolled freight, anything the two saved searches miss \u2014 and the run returned ok:true because nothing threw. It now skips the date rather than pruning against a read it did not get. (2) setBoardDateOverride read the whole deferral map leniently and wrote it back; a blip deleted every OTHER stop\u2019s \u201ccustomer said not until the 30th\u201d date, which puts a truck at a dock that told us not to come. (3) markScanKinds did the same to the per-kind scan stamps, so dueKinds read the survivors as never-scanned and the schedule collapsed to \u201crun everything\u201d \u2014 the exact spend the schedule exists to bound; it now SKIPS the write on a failed read and stops swallowing the write result. (4) The 6:30 completion snapshot\u2019s immutability guard was only as good as the read behind it: null meant both \u201cnothing yet\u201d and \u201cFirestore did not answer\u201d, so a blip overwrote the immutable record AND dropped the reconciliation with it (setDoc REPLACES), and Chad got the evening email twice. It now reads strictly, creates atomically with createDocIfAbsent so two runs racing one evening cannot both win, and adds a snapshot to an existing record with a FIELD-MASKED write so the reconciliation survives. The pattern is a strict reader beside each lenient one \u2014 strict is the real implementation and the lenient twin wraps it \u2014 so display callers keep degrading quietly while every read-modify-write reads strictly. The evening report also stopped reporting all three write outcomes as \u201calready exists\u201d: unreadable and failed both mean the day has NO report, and hiding those behind a benign message is how a missing report goes unnoticed. 2,377 tests green.'],
@@ -5283,13 +5285,22 @@ function applyFilters(stops, notesByKey, filters) {
 // Right-side sidebar showing stop + metadata + edit form.
 function ProsSection({ stop }) {
   const pros = stop.pros || (stop.pro ? [stop.pro] : []);
-  const [copied, setCopied] = useState(null);
+  // NEVER REPORT AN INTENT AS AN OUTCOME. writeText returns a PROMISE, so its rejection
+  // never reached the try/catch around it — "copied" appeared whether or not anything
+  // reached the clipboard. On http, in a locked-down browser, or with the permission denied,
+  // the dispatcher sees the green word, pastes into NuVizz and gets whatever was on the
+  // clipboard BEFORE: usually the PRO of a different stop. A wrong PRO pasted confidently is
+  // worse than no copy at all, because nothing about it looks wrong.
+  const [copied, setCopied] = useState(null);      // { pro, ok }
   const copy = (pro) => {
-    try {
-      navigator.clipboard.writeText(pro);
-      setCopied(pro);
-      setTimeout(() => setCopied((c) => (c === pro ? null : c)), 1200);
-    } catch { /* clipboard blocked */ }
+    const settle = (ok) => {
+      setCopied({ pro, ok });
+      setTimeout(() => setCopied((c) => (c?.pro === pro ? null : c)), ok ? 1200 : 2500);
+    };
+    let w;
+    try { w = navigator.clipboard?.writeText(pro); } catch { w = null; }
+    if (!w?.then) { settle(false); return; }
+    w.then(() => settle(true), () => settle(false));
   };
   return (
     <div className="px-4 py-3 border-b">
@@ -5309,7 +5320,9 @@ function ProsSection({ stop }) {
               title="Click to copy"
             >
               {p}
-              {copied === p && <span className="ml-2 text-[10px] text-emerald-600 font-sans">copied</span>}
+              {copied?.pro === p && (copied.ok
+                ? <span className="ml-2 text-[10px] text-emerald-600 font-sans">copied</span>
+                : <span className="ml-2 text-[10px] text-rose-600 font-sans">copy blocked — select it by hand</span>)}
             </button>
           ))}
         </div>
@@ -12868,6 +12881,7 @@ function Placeholder({ count, hint }) {
 // scheduled weekday with nothing at all reads as missing (amber), weekends Davis
 // doesn't run are idle (muted), and recovered days show as healed/tombstone.
 const CAPTURE_HEALTH_URL = '/.netlify/functions/history-capture-health';
+const CAPTURE_TOMBSTONE_URL = '/.netlify/functions/history-tombstone';
 
 const CAPTURE_STATE_STYLE = {
   sealed: { tone: 'green', cell: 'bg-emerald-500', label: 'Sealed' },
@@ -12882,6 +12896,12 @@ function CaptureHealthPanel() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
+  // MARKING A HOLIDAY IS THE MISSING HALF OF THIS SCREEN. writeTombstone has existed since
+  // the warehouse-holes work with ZERO callers, so a day Davis simply did not run sat here
+  // as a standing red forever. The cost is not the square — it is that a strip carrying
+  // permanent known-wrong reds stops being read, and the night the capture ACTUALLY failed
+  // is then one more red among several nobody looks at.
+  const [marking, setMarking] = useState(null);   // { date, reason, checking, verdict, error }
 
   const load = useCallback(() => {
     setLoading(true); setErr('');
@@ -12892,6 +12912,35 @@ function CaptureHealthPanel() {
       .finally(() => setLoading(false));
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  // Ask the endpoint what it WOULD do before offering the button that does it.
+  const beginMark = useCallback((date) => {
+    setMarking({ date, reason: '', checking: true, verdict: null, error: '', saving: false });
+    fetch(`${CAPTURE_TOMBSTONE_URL}?date=${encodeURIComponent(date)}&dryRun=1`, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d) => setMarking((m) => (m && m.date === date
+        // The dry run runs with no reason, so a missing reason is the ONE refusal that is
+        // not about the date and must not disable the form before anything is typed.
+        ? { ...m, checking: false, verdict: { ...d, wouldWrite: d.wouldWrite || /stated reason/.test(String(d.refusal || '')) } }
+        : m)))
+      .catch((e) => setMarking((m) => (m && m.date === date ? { ...m, checking: false, error: String(e?.message || e) } : m)));
+  }, []);
+
+  const commitMark = useCallback(() => {
+    setMarking((m) => (m ? { ...m, saving: true, error: '' } : m));
+    const cur = marking;
+    if (!cur) return;
+    fetch(`${CAPTURE_TOMBSTONE_URL}?date=${encodeURIComponent(cur.date)}&reason=${encodeURIComponent(cur.reason.trim())}`, { method: 'POST' })
+      .then((r) => r.json())
+      .then((d) => {
+        // NEVER REPORT AN INTENT AS AN OUTCOME. The panel closes and reloads only when the
+        // endpoint says the write landed; a refusal stays on screen with its reason.
+        if (!d?.ok) throw new Error(d?.refusal || d?.error || 'the write was refused');
+        setMarking(null);
+        load();
+      })
+      .catch((e) => setMarking((m) => (m ? { ...m, saving: false, error: String(e?.message || e) } : m)));
+  }, [marking, load]);
 
   const days = data?.days || [];
   const attention = days.filter((d) => d.state === 'failed' || d.state === 'missing');
@@ -12950,12 +12999,58 @@ function CaptureHealthPanel() {
                     {d.state === 'failed'
                       ? <>did not seal{d.detail?.stage ? ` at ${d.detail.stage}` : ''}{d.detail?.error ? `: ${d.detail.error}` : ''}</>
                       : <>scheduled weekday with no capture</>}
+                    {/* Only offered on `missing`. A day that captured stops and failed to
+                        SEAL is a heal job, not a holiday, and burying it would erase the
+                        evidence of a real bug. */}
+                    {d.state === 'missing' ? (
+                      <button type="button" onClick={() => beginMark(d.date)}
+                        className="ml-2 text-[11px] font-semibold text-slate-500 underline underline-offset-2 hover:text-slate-800">
+                        no board that day?
+                      </button>
+                    ) : null}
                   </span>
                 </div>
               ))}
             </div>
           ) : (
             <div className="text-[12px] text-emerald-700">No holes — every scheduled day in the window is sealed.</div>
+          )}
+
+          {marking && (
+            <div className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 space-y-2">
+              <div className="text-[12px] text-slate-700">
+                Mark <span className="font-semibold">{engineDateFmt(marking.date)}</span> as a day with no board.
+              </div>
+              {/* THE DRY RUN IS PART OF THE FEATURE. This write REPLACES the day's manifest,
+                  and a tombstone on a day that ran is not undoable from any screen — the heal
+                  path refuses a no_board doc outright. So what is actually stored for that
+                  date is read and shown BEFORE the button that writes. */}
+              {marking.checking ? <div className="text-[11px] text-slate-500">Checking what is stored for that date…</div> : null}
+              {marking.verdict ? (
+                <div className="text-[11px] text-slate-600">
+                  Stored now: {marking.verdict.found?.storedStops ?? 0} stop(s)
+                  {marking.verdict.found?.manifest ? `, manifest ${marking.verdict.found.manifest.sealed ? 'SEALED' : 'present but unsealed'}` : ', no manifest'}
+                  {marking.verdict.found?.failureRecord ? `, failure record at ${marking.verdict.found.failureRecord.stage}` : ''}.
+                  {marking.verdict.wouldWrite
+                    ? <span className="text-emerald-700 font-semibold"> Safe to mark.</span>
+                    : <span className="text-rose-700 font-semibold"> Refused: {marking.verdict.refusal}</span>}
+                </div>
+              ) : null}
+              <input value={marking.reason}
+                onChange={(e) => setMarking((m) => ({ ...m, reason: e.target.value }))}
+                placeholder="Why — e.g. Thanksgiving, no dispatch"
+                className="w-full rounded border border-slate-300 px-2 py-1.5 text-[12px] min-h-[40px]" />
+              {marking.error ? <div className="text-[11px] text-rose-700">⚠ {marking.error}</div> : null}
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={commitMark}
+                  disabled={!marking.reason.trim() || marking.checking || marking.saving || marking.verdict?.wouldWrite === false}
+                  className="rounded border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-semibold min-h-[40px] disabled:opacity-40">
+                  {marking.saving ? 'Marking…' : 'Mark as no board'}
+                </button>
+                <button type="button" onClick={() => setMarking(null)}
+                  className="rounded border border-slate-200 bg-white px-3 py-1.5 text-[11px] text-slate-500 min-h-[40px]">Cancel</button>
+              </div>
+            </div>
           )}
 
           {recovered.length > 0 && (
@@ -21464,7 +21559,10 @@ function FlagStat({ value, label, tone = 'slate', hint }) {
 // stacked segments, direct labels, a legend, and a full table underneath — so identity is
 // never colour alone for anyone.
 const DC = { delivered: '#059669', open: '#d97706', unable: '#e11d48', cancelled: '#cbd5e1', ink: '#64748b', grid: '#e2e8f0' };
-const dcPct = (v) => (v == null ? '—' : `${Math.round(v * 100)}%`);
+// Plain rounding printed "100% complete" beside "1 open" on an 816-stop day — see
+// lib/completion-pct.js. One rule, shared with the evening email, so the screen and the
+// inbox cannot come to disagree about whether a day finished.
+const dcPct = (v) => formatCompletionPct(v);
 // NAME THE DAY, DO NOT ASSUME IT. The graded day is whatever day was last graded, which is
 // yesterday on a Tuesday and Friday on a Monday. Parsed as parts, never as new Date(string)
 // — that reads a bare YYYY-MM-DD as UTC midnight and prints the day before west of Greenwich.
@@ -25367,7 +25465,16 @@ function CommsDesktop(c) {
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {(c.cfgResp?.fields || []).map((f) => (
                     <button key={f}
-                      onClick={() => { navigator.clipboard?.writeText(`{{${f}}}`).catch(() => {}); c.say('tpl', 'ok', `{{${f}}} copied.`); }}
+                      // The DESKTOP twin of the mobile button above, which already reports
+                      // what actually happened. This one swallowed the rejection and said
+                      // "copied" regardless — the same bug, left in the other view, which is
+                      // exactly what treating one screen as two views is meant to prevent.
+                      onClick={() => {
+                        const w = navigator.clipboard?.writeText(`{{${f}}}`);
+                        if (!w?.then) { c.say('tpl', 'err', `Clipboard unavailable — type {{${f}}} into the body.`); return; }
+                        w.then(() => c.say('tpl', 'ok', `{{${f}}} copied.`))
+                          .catch(() => c.say('tpl', 'err', `Copy failed — type {{${f}}} into the body.`));
+                      }}
                       className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"
                     >{'{{'}{f}{'}}'}</button>
                   ))}

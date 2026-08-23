@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildCounterCommitBody, routeFieldKey, hourFieldKey, attrFieldKey, etHourString, circuitFromDoc } from '../netlify/functions/lib/firestore.mts';
+import { buildCounterCommitBody, routeFieldKey, hourFieldKey, attrFieldKey, etHourString, etDayString, circuitFromDoc } from '../netlify/functions/lib/firestore.mts';
 
 const DOC = 'projects/p/databases/(default)/documents/nuvizz_ops/calls__2026-06-18';
 
@@ -128,4 +128,39 @@ test("circuitFromDoc: today's trip stays OPEN; missing/closed docs read CLOSED",
   assert.equal(circuitFromDoc({ open: false, day: '2026-06-18' }, '2026-06-18').open, false);
   assert.equal(circuitFromDoc(null, '2026-06-18').open, false);
   assert.equal(circuitFromDoc({ open: true }, '2026-06-18').open, false, 'no day stamp → not today → closed');
+});
+
+// ── ONE DOC, TWO APPS, ONE CONTRACT (bug hunt, Aug 2026) ────────────────────
+
+test('THE PARENT APP AGREES WITH THIS ONE about nuvizz_ops/circuit', async () => {
+  // Both apps read and write the SAME breaker doc and used to do it under different rules,
+  // which broke it in both directions: the parent had NO expiry, so a daily ceiling reached
+  // once latched its scans off permanently at a count of zero until somebody edited
+  // Firestore by hand; and the parent never wrote a `day`, so a ceiling it tripped read as
+  // CLOSED here and this app kept spending against a vendor that had already cut us off.
+  const parent = await import('../../netlify/functions/lib/firestore.cjs');
+  const P = parent.default || parent;
+  for (const [doc, today, want] of [
+    [{ open: true, day: '2026-06-17' }, '2026-06-18', false],
+    [{ open: true, day: '2026-06-18' }, '2026-06-18', true],
+    [{ open: false, day: '2026-06-18' }, '2026-06-18', false],
+    [{ open: true }, '2026-06-18', false],
+    [null, '2026-06-18', false],
+  ]) {
+    assert.equal(P.circuitFromDoc(doc, today).open, want, `parent: ${JSON.stringify(doc)}`);
+    assert.equal(circuitFromDoc(doc, today).open, want, `dispatch-map: ${JSON.stringify(doc)}`);
+  }
+});
+
+test("THE BREAKER'S DAY IS THE COUNTER'S DAY — Eastern, not UTC", async () => {
+  // What trips the breaker is the daily call ceiling, and that counter is keyed on the ET
+  // calendar day. On a UTC day the two ran on different clocks: a trip at 3pm ET released
+  // five hours early with the count still over the limit, and one at 9pm ET held 23 hours
+  // past the rollover that should have cleared it.
+  const parent = await import('../../netlify/functions/lib/firestore.cjs');
+  const P = parent.default || parent;
+  const nineThirtyPmET = new Date('2026-06-18T01:30:00Z');   // 9:30pm ET on the 17th
+  assert.equal(P.etDayString(nineThirtyPmET), '2026-06-17');
+  assert.equal(etDayString(nineThirtyPmET), '2026-06-17', 'both apps stamp the same day');
+  assert.notEqual(nineThirtyPmET.toISOString().slice(0, 10), '2026-06-17', 'and UTC would have said otherwise');
 });

@@ -8,8 +8,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   impliedDeparture, departureTable, departureLookup, medianOf,
-  MIN_SAMPLES, MIN_DEPART_MIN, MAX_DEPART_MIN,
+  MIN_SAMPLES, MIN_DEPART_MIN, MAX_DEPART_MIN, DEFAULT_SERVICE_MIN, DEPARTURE_VERSION,
+  readDepartureTable,
 } from '../netlify/functions/lib/route-departure.mts';
+import { arrivalAnchor } from '../src/lib/board-flags.js';
 import { computeBoardFlags } from '../src/lib/board-flags.js';
 import { stopCustomerKey } from '../netlify/functions/lib/customer-key.mts';
 
@@ -25,6 +27,67 @@ test('a departure is backed out of the FIRST stop\'s real stamp', () => {
   assert.ok(dep != null, 'sampled');
   assert.ok(dep < 6 * 60 + 18, 'departure precedes the first arrival by the depot leg');
   assert.ok(dep > 5 * 60, 'and only by the leg, not by hours');
+});
+
+// ── WHICH STAMP IT IS DECIDES WHETHER THE DWELL COMES OUT (bug hunt, Aug 2026) ──
+//
+// arrivalAnchor draws the line and the board's forward walk honours it: an ARRIVAL means
+// the truck is on site with the service still ahead of it, a DELIVERED means the service
+// already happened. Going BACKWARDS the correction inverts — and this function was handed
+// only the minute, because both callers dropped `source`.
+
+test('a DELIVERED first stamp has the dwell taken back out — the truck arrived before it', () => {
+  const at = 6 * 60 + 18;
+  const arrival = impliedDeparture([{ seq: 1, pos: NEAR, stampMin: at, stampSource: 'arrival' }], DEPOT);
+  const delivered = impliedDeparture([{ seq: 1, pos: NEAR, stampMin: at, stampSource: 'delivered' }], DEPOT);
+  assert.equal(arrival - delivered, DEFAULT_SERVICE_MIN,
+    'the same clock minute means two different departures, and the gap is exactly one dwell');
+  assert.ok(delivered < arrival, 'a delivered stamp implies an EARLIER departure');
+});
+
+test('AND IT IS NOT A RARE CASE: arrivalDTTM is on 8 stops in 20,904, so this was every sample', () => {
+  // Whatever NuVizz gives us, arrivalAnchor prefers arrivalDTTM and falls through to
+  // deliveredDTTM. In this warehouse the first field is essentially never set, so the whole
+  // learned table was biased one way — one dwell block LATE on every route.
+  const stop = { deliveredDTTM: '2026-08-19T06:18' };
+  const a = arrivalAnchor(stop, '2026-08-19');
+  assert.equal(a.source, 'delivered', 'this is what a real sample looks like');
+  const withSource = impliedDeparture([{ seq: 1, pos: NEAR, stampMin: a.min, stampSource: a.source }], DEPOT);
+  const dropped = impliedDeparture([{ seq: 1, pos: NEAR, stampMin: a.min, stampSource: 'arrival' }], DEPOT);
+  assert.equal(dropped - withSource, DEFAULT_SERVICE_MIN, 'dropping the source read the departure late');
+});
+
+test('an UNKNOWN source is treated as delivered — the failure directions are not symmetrical', () => {
+  // Reading a departure EARLY understates risk, which costs a delivery; reading it late
+  // costs a glance. Absent provenance falls to the side the data actually is.
+  const at = 6 * 60 + 18;
+  const unknown = impliedDeparture([{ seq: 1, pos: NEAR, stampMin: at }], DEPOT);
+  const delivered = impliedDeparture([{ seq: 1, pos: NEAR, stampMin: at, stampSource: 'delivered' }], DEPOT);
+  assert.equal(unknown, delivered);
+});
+
+test('a caller with a calibrated dwell can pass its own', () => {
+  const at = 6 * 60 + 18;
+  const d14 = impliedDeparture([{ seq: 1, pos: NEAR, stampMin: at, stampSource: 'delivered' }], DEPOT, undefined, 14);
+  const d22 = impliedDeparture([{ seq: 1, pos: NEAR, stampMin: at, stampSource: 'delivered' }], DEPOT, undefined, 22);
+  assert.equal(d14 - d22, 8);
+});
+
+test('a table from an OLDER version is not read — same shape, different meaning', () => {
+  // Every value written before the dwell fix is one service block late. Nothing downstream
+  // could tell a v1 minute from a v2 one, so the board would have run its clock late all day
+  // on numbers that look perfectly reasonable — until the nightly fit happened to rewrite it.
+  const table = { WILLIAM: { departMin: 222, n: 5, spreadMin: 20 } };
+  assert.equal(readDepartureTable({ version: 1, table }), null, 'the old table is refused');
+  assert.deepEqual(readDepartureTable({ version: DEPARTURE_VERSION, table }), table);
+  assert.equal(readDepartureTable(null), null);
+  assert.equal(readDepartureTable({ version: DEPARTURE_VERSION }), null, 'no table is not a table');
+});
+
+test('a refused table is the 8:00a DEFAULT standing, not an error', () => {
+  // Same outcome as a route with too few samples: no number beats a known assumption.
+  const lookup = departureLookup(readDepartureTable({ version: 1, table: { WILLIAM: { departMin: 222, n: 9 } } }));
+  assert.equal(lookup('WILLIAM'), null, 'the caller keeps its own default');
 });
 
 test('no sample when the first stop never reported — three guesses to fix one is not a measurement', () => {

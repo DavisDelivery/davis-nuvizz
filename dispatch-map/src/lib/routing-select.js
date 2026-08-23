@@ -44,6 +44,22 @@ export function fmtTime12(t) {
   if (!t) return '';
   const s = String(t).trim();
   if (/[ap]\.?m/i.test(s)) return s.replace(/\s*([ap])\.?m\.?/i, (_, p) => p.toLowerCase());
+  // A FULL TIMESTAMP IS A TIME TOO. The match below is anchored at the start, so an ISO
+  // stamp fell straight through to `return s` — and the Appointment window row on a routing
+  // stop reads scheduledFrom/To, which ARE stamps. The panel printed
+  // "2026-08-24T08:00:00–2026-08-24T08:05:00" where it meant "8:00a–8:05a".
+  //
+  // The digits are read directly and no Date is ever constructed: these stamps are naive ET
+  // wall-clock with no offset, so handing one to Date + timeZone reads four hours early and
+  // rolls a pre-dawn slot to the previous day — the trap board-flags.stampMinutes and
+  // time-restrictions.clockMinFromStamp both document, and both avoid the same way.
+  const stamped = s.match(/[T ](\d{2}):(\d{2})/);
+  if (stamped && Number(stamped[1]) <= 23 && Number(stamped[2]) <= 59) {
+    let sh = Number(stamped[1]);
+    const sap = sh >= 12 ? 'p' : 'a';
+    sh = sh % 12; if (sh === 0) sh = 12;
+    return `${sh}:${stamped[2]}${sap}`;
+  }
   const m = s.match(/^(\d{1,2}):(\d{2})/);
   if (!m) return s;
   let h = Number(m[1]);

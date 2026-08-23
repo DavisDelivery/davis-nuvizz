@@ -135,9 +135,42 @@ test('ISOTONIC: a noisy slow far bucket cannot make longer legs read slower', ()
   const near = samplesAt(5, 30, 14, 200);
   const far = samplesAt(20, 12, 14, 40);   // 40 samples through one bad afternoon
   const fit = fitCurve([...near, ...far]);
-  const speeds = fit.curve.map(([, v]) => v);
-  for (let i = 1; i < speeds.length; i++) {
-    assert.ok(speeds[i] >= speeds[i - 1], `curve inverted at point ${i}`);
+  // THE RULE, not the shape of the array: a MEASURED inversion is flattened upward, so the
+  // far bucket's 12mph afternoon cannot make a 20-mile leg read slower than a 5-mile one.
+  const measured = fit.buckets.filter((b) => b.source === 'measured');
+  assert.equal(measured.length, 2, 'both buckets measured');
+  for (let i = 1; i < measured.length; i++) {
+    assert.ok(measured[i].usedMph >= measured[i - 1].usedMph, `measured curve inverted at bucket ${i}`);
+  }
+  const far20 = fit.buckets.find((b) => b.range === '15–30 mi');
+  assert.equal(far20.source, 'measured');
+  assert.equal(far20.measuredMph, 12, 'the bad afternoon really did measure 12');
+  assert.ok(far20.usedMph >= 30, `and it was flattened up, not shipped (${far20.usedMph})`);
+});
+
+test('AN UNMEASURED BUCKET CANNOT SET A SPEED FLOOR OVER A MEASURED ONE', () => {
+  // The cummax ran over p.mph, which falls back to the DEFAULT curve when a bucket is thin.
+  // So a guess in a middle bucket became a permanent floor for every longer bucket — real
+  // measurements saying "slower" were overwritten by an assumption, and long corridors got
+  // priced too fast. That is the dangerous direction: an optimistic ETA on the longest legs
+  // says a truck will make a close it will miss, on the runs with the least slack.
+  //
+  // Short legs measured fast, a gap where nothing was sampled, then a long bucket measured
+  // genuinely slow — a real corridor, not one bad afternoon.
+  const fit = fitCurve([...samplesAt(0.5, 12, 14, 200), ...samplesAt(42, 22, 14, 200)]);
+  const longB = fit.buckets.find((b) => b.range.startsWith('30–'));
+  assert.equal(longB.source, 'measured', 'the long bucket was measured');
+  assert.ok(Math.abs(longB.measuredMph - 22) < 3, `it measured ~22, got ${longB.measuredMph}`);
+  assert.ok(longB.usedMph <= 26,
+    `the long corridor must be priced near its measured 22mph, not at the default's 47mph guess (${longB.usedMph})`);
+
+  // And a guess is still RAISED to the measured envelope below it — a thin bucket is never
+  // allowed to read slower than something measured on a shorter leg.
+  const fast = fitCurve(samplesAt(5, 45, 14, 200));
+  const idx = fast.buckets.findIndex((b) => b.range === '4–8 mi');
+  const floor = fast.buckets[idx].usedMph;
+  for (const b of fast.buckets.slice(idx + 1)) {
+    assert.ok(b.usedMph >= floor, `unmeasured bucket ${b.range} fell below the measured floor (${b.usedMph} < ${floor})`);
   }
 });
 

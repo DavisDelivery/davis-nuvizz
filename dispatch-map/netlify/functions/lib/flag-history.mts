@@ -241,6 +241,39 @@ export function pendingOutcomeCount(doc: any): number {
 }
 
 /** PURE. Attach the nightly outcome to one accumulated flag row. */
+/**
+ * PURE. WHICH LATER BOARD SETTLES "did it roll?" — and why it is not always tomorrow.
+ *
+ * `rolled` vs `undelivered` is decided by whether the stop turned up on a later board, and
+ * the scorer asked exactly ONE question: is it on day+1. On a FRIDAY day+1 is Saturday,
+ * Davis does not run, and no board is ever captured — so `seenLater` was null forever, every
+ * Friday flag read "unknown" for good, and `needsOutcomeRescore` stayed true, which meant the
+ * nightly sweep re-read those days every night until they aged out of the window still
+ * ungraded. A fifth of the week could never answer the question the table exists to ask, and
+ * nothing went red about it: a history full of shrugs looks exactly like a quiet week.
+ *
+ * So: the first later day that HAS a board. Bounded, because the further out you look the
+ * weaker the evidence gets — a stop absent from a board a week later may have been re-dated
+ * rather than lost. Four days covers Friday→Monday with a holiday in between, which is the
+ * real calendar this runs on.
+ *
+ * `boards` maps a date to whether that day has a captured board. Returns the settling date,
+ * or null when nothing in range was captured — which is still "we cannot tell", correctly.
+ */
+export const ROLL_LOOKAHEAD_DAYS = 4;
+
+export function rollCheckDate(
+  date: string, hasBoard: (d: string) => boolean, maxDays = ROLL_LOOKAHEAD_DAYS,
+): string | null {
+  for (let i = 1; i <= maxDays; i += 1) {
+    const d = new Date(`${date}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + i);
+    const iso = d.toISOString().slice(0, 10);
+    if (hasBoard(iso)) return iso;
+  }
+  return null;
+}
+
 export function scoreRow(
   row: FlagRow,
   o: { arrivalMin: number | null; deliveredAt: string | null; finished?: boolean; seenLater?: boolean | null; scoredAt: string },

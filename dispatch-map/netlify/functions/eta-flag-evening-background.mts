@@ -41,7 +41,7 @@ import { isFirestoreEnabled, getDoc, setDoc, createDocIfAbsent, readStops, etDay
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { weekdayKey } from './lib/miss-ledger.mts';
 import { readTravelCalibration, ensureLegs } from './lib/travel-store.mts';
-import { routeDeparturePath } from './lib/route-departure.mts';
+import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mts';
 import { mergeSweep, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
 import { auditRows } from './lib/flag-rows.mts';
 import { smsEnabled, sendSms } from './lib/sms.mts';
@@ -86,7 +86,7 @@ export default async (req: Request): Promise<Response> => {
     // WHEN EACH ROUTE ACTUALLY LEAVES — the measured per-route departure, fitted nightly
     // from sealed history. Absent or thin, every route keeps the shipped 8:00a default.
     const departDoc = await getDoc(routeDeparturePath(TENANT)).catch(() => null);
-    const departByRoute = departDoc?.table || null;
+    const departByRoute = readDepartureTable(departDoc);
     // SEVERITY RATCHETS (see tierFloorLookup). A stop that texted at 1:00a must not read as
     // advisory at 6:00a because the clock crept closer to it — Chad: "the flag should remain
     // unless our updated eta is showing we will get there in time." The floor is the

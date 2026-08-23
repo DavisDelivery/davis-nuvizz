@@ -28,7 +28,7 @@ import {
   computeStopChecksum, manifestCountsFromReadback, type CaptureMeta,
 } from './history-derive.mts';
 import {
-  dayPath, setManifest, listStops, listRoutes, listDrivers, histDocId,
+  dayPath, setManifest, getManifest, listStops, listRoutes, listDrivers, histDocId,
 } from './history-store.mts';
 
 export const CAPTURE_FAILURES_COLLECTION = 'history_capture_failures';
@@ -259,18 +259,62 @@ export function classifyCaptureDay(manifest: any | null, failure: any | null, we
   return { state: 'missing', ...D };
 }
 
+/**
+ * IS THIS DATE SAFE TO TOMBSTONE? PURE, so the rule is testable and the endpoint is dumb.
+ *
+ * A tombstone says "Davis did not run that day" and it is written with setManifest, which
+ * REPLACES. Point it at a day that DID run and it erases a real sealed manifest and replaces
+ * it with counts of zero — a permanent record of a day that never happened, and one the heal
+ * path then refuses to touch (classifyHealTarget returns refuse_tombstone on a no_board doc).
+ * That is not recoverable from the screen; it needs somebody in Firestore.
+ *
+ * The comment above this function claimed "Never overwrites a real sealed manifest" for
+ * months and no code enforced it. Nothing called writeTombstone, which is the only reason it
+ * never bit — an unenforced promise held up by an accident. It is a rule now.
+ *
+ * Refuses on stored stops FIRST, because that is the fact that matters: a day with stops in
+ * the warehouse ran, whatever its manifest says or does not say.
+ */
+export function tombstoneVerdict(
+  existingManifest: any | null, storedStopCount: number, reason: string,
+): { ok: boolean; refusal?: string } {
+  if (!String(reason || '').trim()) {
+    return { ok: false, refusal: 'a tombstone needs a stated reason — "no board" with no why is a hole with a lid on it' };
+  }
+  if (Number(storedStopCount) > 0) {
+    return { ok: false, refusal: `${storedStopCount} stop(s) are stored for this date — it ran; heal it rather than burying it` };
+  }
+  if (existingManifest?.no_board) return { ok: false, refusal: 'already tombstoned' };
+  if (existingManifest && (existingManifest.verified || existingManifest.complete)) {
+    return { ok: false, refusal: 'a sealed manifest already exists for this date' };
+  }
+  return { ok: true };
+}
+
 // Tombstone: a date that genuinely has no board (typically a weekend / holiday
 // Davis didn't run). Marks the hole as intentionally empty so date-listers stop
-// treating it as missing. Never overwrites a real sealed manifest.
-export async function writeTombstone(tenant: string, date: string, reason: string): Promise<void> {
+// treating it as missing. Never overwrites a real sealed manifest — see
+// tombstoneVerdict, which is now the enforcement and not just the intention.
+export async function writeTombstone(
+  tenant: string, date: string, reason: string,
+  io: { getManifest?: typeof getManifest; countStops?: (t: string, d: string) => Promise<number> } = {},
+): Promise<{ ok: boolean; refusal?: string }> {
+  const readManifest = io.getManifest || getManifest;
+  const countStops = io.countStops || (async (t: string, d: string) => (await listStops(t, d)).length);
+  const existing = await readManifest(tenant, date);
+  const stopCount = await countStops(tenant, date);
+  const verdict = tombstoneVerdict(existing, stopCount, reason);
+  if (!verdict.ok) return verdict;
+
   await setManifest(tenant, date, {
     tenant, date,
     no_board: true,
     complete: true,
     verified: true,
     counts: { stops: 0, planned: 0, unplanned: 0, routes: 0, drivers: 0 },
-    tombstone_reason: String(reason || '').slice(0, 200),
+    tombstone_reason: String(reason).trim().slice(0, 200),
     tombstoned_at: new Date().toISOString(),
   });
   await clearCaptureFailure(tenant, date);
+  return { ok: true };
 }
