@@ -1,0 +1,109 @@
+rules_version = '2';
+
+// firestore.rules — the davismarginiq (default) database.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// READ THIS BEFORE CHANGING ANYTHING IN HERE.
+//
+// THIS FILE CURRENTLY MIRRORS THE LIVE RULES EXACTLY. It is deliberately still
+// wide open, because the app has no login yet: dispatch-map's browser talks to
+// Firestore directly with no credential (dispatch-map/src/lib/firebase.js), so
+// requiring auth here would break every note save, every routing save, and the
+// customer-notes subscription the whole map depends on — silently, because
+// several onSnapshot handlers swallow permission errors and would just show
+// stale data. See "THE CUTOVER" below.
+//
+// WHY COMMIT AN OPEN RULES FILE AT ALL: until now these rules existed ONLY in
+// the Firebase console, hand-edited, with nothing in version control to review,
+// diff, or explain them. The posture was recorded in prose in HANDOFF.md
+// (:1656-1663) and nowhere else. A security boundary that no one can read in
+// the repo is a security boundary no one is checking. This file makes the
+// current state explicit and reviewable, and gives the lockdown a diff to be.
+//
+// NOTHING IN THIS REPO DEPLOYS THIS FILE. firebase-tools is not a dependency and
+// no CI workflow references Firebase, so committing this changes NOTHING live.
+// Deploying is a deliberate act:  firebase deploy --only firestore:rules
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// WHAT IS ACTUALLY EXPOSED RIGHT NOW, so the risk is written down next to the
+// rule that causes it. With `allow read, write: if true` anyone who extracts the
+// Firebase web config from the public JS bundle has the same power as the app:
+//
+//   READ   customer_notes ......... every customer's name, address, phone,
+//                                   email, receiving hours, opt-out status
+//          sms_messages ........... full two-way SMS bodies + phone numbers
+//          history_days, nuvizz_stop_index, nuvizz_enriched,
+//          history_customers, manifest_push_log ... the fullest customer
+//                                   dataset incl. comment threads and pricing
+//
+//   WRITE  driver_auth ............ load-scan's CREDENTIAL STORE. A stranger can
+//                                   create a doc with role:'dispatcher' and a PIN
+//                                   of their choosing. The open rule on THIS
+//                                   database defeats load-scan's own login.
+//          customer_notes ......... rewrite the receiving hours the flag engine
+//                                   trusts; flip an address override → a truck
+//                                   sent to the wrong door
+//          nuvizz_board_dates ..... corrupt deferral dates → a truck sent to a
+//                                   dock that said "don't come"
+//          nuvizz_ops/* ........... force a ~2,000-call cold NuVizz scan, or
+//                                   flip the customer mailer on
+//
+// The service account used by every Netlify Function BYPASSES these rules
+// entirely, so tightening this file protects the BROWSER path only. The function
+// endpoints are a separate door and need their own gate.
+// ─────────────────────────────────────────────────────────────────────────────
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── CURRENT LIVE POSTURE — open, matching the console exactly ──────────
+    // Do not tighten this line on its own. See THE CUTOVER below.
+    match /{document=**} {
+      allow read, write: if true;
+    }
+
+    // ── THE CUTOVER (do not enable until logins ship) ──────────────────────
+    //
+    // Replace the block above with the block below ONLY when ALL of these are
+    // true, or the app breaks in the quiet direction:
+    //
+    //   1. Firebase Authentication is enabled on the davismarginiq project and
+    //      dispatch-map signs in before <Shell/> mounts (App.jsx) — Shell opens
+    //      Firestore subscriptions immediately on mount, so a gate rendered
+    //      inside it still leaks unauthenticated traffic.
+    //   2. Every dispatcher/admin has an account and has signed in once.
+    //   3. Role is carried as a custom claim (dispatcher | driver | admin).
+    //   4. It has been tested against the uat-mirror database first. Rules are
+    //      PER-DATABASE — locking (default) does not lock uat-mirror.
+    //
+    //   function signedIn()   { return request.auth != null; }
+    //   function role()       { return request.auth.token.role; }
+    //   function isStaff()    { return signedIn() && role() in ['dispatcher', 'admin']; }
+    //
+    //   // The credential store is never client-reachable. load-scan reaches it
+    //   // server-side via the service account, which ignores these rules — so
+    //   // denying everyone here costs nothing and closes the auth-bypass hole.
+    //   match /driver_auth/{doc}  { allow read, write: if false; }
+    //
+    //   // Operational config: admin only. These control NuVizz spend and the
+    //   // customer mailer, so a dispatcher does not need write here.
+    //   match /nuvizz_ops/{doc}   { allow read: if isStaff();
+    //                               allow write: if signedIn() && role() == 'admin'; }
+    //
+    //   // The dispatcher's working set — what the map and routing screens write.
+    //   match /customer_notes/{doc}          { allow read, write: if isStaff(); }
+    //   match /routing_routes/{doc}          { allow read, write: if isStaff(); }
+    //   match /routing_jobs/{doc}            { allow read, write: if isStaff(); }
+    //   match /truck_profiles/{doc}          { allow read, write: if isStaff(); }
+    //   match /bottom_panel_profiles/{doc}   { allow read, write: if isStaff(); }
+    //   match /dispatch_presence/{doc}       { allow read: if isStaff();
+    //                                          allow write: if isStaff(); }
+    //   match /sms_messages/{doc}            { allow read: if isStaff();
+    //                                          allow write: if false; }
+    //
+    //   // Everything else the browser only ever reads, or never touches at all.
+    //   // Default deny is the point: a collection added later is CLOSED until
+    //   // someone opens it on purpose, which is the opposite of today.
+    //   match /{document=**}      { allow read, write: if false; }
+  }
+}

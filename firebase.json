@@ -1,0 +1,6 @@
+{
+  "//": "Firebase CLI config — ONLY the Firestore rules/indexes live here. This repo deploys its apps through Netlify; nothing in CI runs firebase-tools, so this file is inert until someone runs `firebase deploy --only firestore:rules` deliberately. Rules are PER-DATABASE: this targets davismarginiq's (default) database. The uat-mirror database and the separate glorybounddispatch project have their own rules, still console-only.",
+  "firestore": {
+    "rules": "firestore.rules"
+  }
+}
