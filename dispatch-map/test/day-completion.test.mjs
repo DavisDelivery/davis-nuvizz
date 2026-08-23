@@ -174,12 +174,52 @@ test('a multi-order stop is not closed while any order on it is still open', () 
   assert.equal(r.stillOpen, 1, 'the dock is not done while something for it is not done');
 });
 
-test('an unable-to-deliver counts as CLOSED in reconciliation — it finished, it just failed', () => {
-  // It is a bad outcome and it is already reported as one in unableStops. Counting it again
-  // as "still open" would double-count the same failure in two places on one page.
+test('a REFUSED delivery is not POD lag and is not carryover — it gets its own bucket', () => {
+  // It finished, so it is not "still open". Nothing arrived, so calling it "delivered and
+  // scanned later" — which is the sentence the screen prints off closedAfter — is a false
+  // statement about freight that never got there, and it pushed lateCloseRate UP on exactly
+  // the days that went worst.
   const r = reconcileDay({ date: DATE, openStops: [{ stopNbr: '6' }] }, [stop({ stopNbr: '6', status: '80' })]);
+  assert.equal(r.closedAfter, 0, 'a refusal is never POD lag');
+  assert.equal(r.failedAfter, 1);
+  assert.equal(r.stillOpen, 0, 'and it is not carryover either — it is done, it is just bad');
+  assert.equal(r.lateCloseRate, 0, 'nothing open at 6:30 was merely unscanned');
+  assert.deepEqual(r.failedAfterStops, ['6']);
+});
+
+test('an order CANCELLED after 6:30 is not graded — the day did not fail to deliver it', () => {
+  // Same judgement `gradable` makes on the snapshot side: a pulled order is not work the
+  // evening failed to close, so it leaves the denominator rather than counting as a save.
+  const r = reconcileDay(
+    { date: DATE, openStops: [{ stopNbr: '7' }, { stopNbr: '8' }] },
+    [stop({ stopNbr: '7', status: '99' }), stop({ stopNbr: '8', status: '90' })],
+  );
+  assert.equal(r.openAtSnapshot, 2, 'every stop on the snapshot is still accounted for');
+  assert.equal(r.cancelledAfter, 1);
   assert.equal(r.closedAfter, 1);
-  assert.equal(r.stillOpen, 0);
+  assert.equal(r.lateCloseRate, 1, 'one gradable stop open at 6:30, and it was POD lag');
+});
+
+test('a bad evening does not read as a good one — refusals stay out of the lag rate', () => {
+  // The whole point of the split, stated as a number: three stops open at 6:30, one merely
+  // unscanned and two refused. The old grader called that 100% POD lag.
+  const r = reconcileDay(
+    { date: DATE, openStops: [{ stopNbr: 'a' }, { stopNbr: 'b' }, { stopNbr: 'c' }] },
+    [stop({ stopNbr: 'a', status: '90' }), stop({ stopNbr: 'b', status: '80' }), stop({ stopNbr: 'c', status: '80' })],
+  );
+  assert.equal(r.closedAfter, 1);
+  assert.equal(r.failedAfter, 2);
+  assert.equal(Math.round(r.lateCloseRate * 100), 33);
+});
+
+test('the four buckets always account for every stop on the snapshot', () => {
+  const r = reconcileDay(
+    { date: DATE, openStops: [{ stopNbr: 'p' }, { stopNbr: 'q' }, { stopNbr: 'r' }, { stopNbr: 's' }] },
+    [stop({ stopNbr: 'p', status: '91' }), stop({ stopNbr: 'q', status: '80' }), stop({ stopNbr: 'r', status: '99' })],
+  );
+  assert.equal(r.closedAfter + r.failedAfter + r.cancelledAfter + r.stillOpen, r.openAtSnapshot);
+  assert.equal(r.openAtSnapshot, 4);
+  assert.deepEqual(r.stillOpenStops, ['s'], 'the one that vanished is still carryover');
 });
 
 // ── the 6:30 that has to still be 6:30 in November ───────────────────────────

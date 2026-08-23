@@ -31,7 +31,7 @@ import {
   upsertStops, upsertRoutes, upsertDrivers, upsertDriverDayPointer,
 } from './history-store.mts';
 import { finalizeCaptureSeal, recordCaptureFailure, type CaptureStage } from './history-seal.mts';
-import { runPostSealHooks } from './history-postseal.mts';
+import { runPostSealHooks, recordPostSealOutcome } from './history-postseal.mts';
 
 const TENANT = 'davis';
 // Keep in sync with src/App.jsx APP_VERSION. Stamped onto every manifest/capture
@@ -115,6 +115,7 @@ export async function captureDate(date: string): Promise<any> {
   let stops: any[];
   let sourceScannedAt: string;
   let source: 'firestore-index' | 'scan' = 'scan';
+  let scanIncomplete: string | null = null;
   // Phase 4: prefer the accumulated index, but fall back to a fresh scan if the
   // index is empty / never written (don't capture an empty snapshot for the day).
   if (LEAN_HISTORY && isFirestoreEnabled()) {
@@ -133,10 +134,34 @@ export async function captureDate(date: string): Promise<any> {
       }
       const scan = await scanDate(date);
       stops = scan.stops; sourceScannedAt = scan.scannedAt;
+      scanIncomplete = scanHealthComplaint(scan);
     }
   } else {
     const scan = await scanDate(date);
     stops = scan.stops; sourceScannedAt = scan.scannedAt;
+    scanIncomplete = scanHealthComplaint(scan);
+  }
+  // THE SCAN ALREADY TOLD US IT WAS NOT AUTHORITATIVE, AND NOBODY LISTENED.
+  //
+  // scanDate reports loadsComplete (any /load/info probe the vendor could not answer) and
+  // descentComplete (the unplanned descent reached the floor). The board write path acts on
+  // both — it refuses to prune against a scan that could not see. The CAPTURE path read
+  // neither, so a night where NuVizz failed most of its probes archived a handful of stops
+  // from an 800-stop day and sealed it verified:true, complete:true.
+  //
+  // That lie is permanent and self-defending: capture-health then shows GREEN, and
+  // classifyHealTarget refuses a sealed date, so the heal path built for exactly this hole
+  // declines to touch it. Six weeks later a customer disputes a delivery and the warehouse
+  // says it never happened.
+  //
+  // The empty-capture guard added in v0.71.0 does not cover this: three stops out of eight
+  // hundred is not zero, so it sails through. This is the same reasoning one level up —
+  // seal only what we could actually read.
+  if (scanIncomplete) {
+    stage = 'scan';
+    await recordCaptureFailure(TENANT, date, stage, `scan was not authoritative: ${scanIncomplete} — refusing to capture a partial day as complete`);
+    console.error(`[history] date=${date} NOT CAPTURED — ${scanIncomplete}`);
+    return { date, ok: false, verified: false, sealed: false, skipped: 'scan-incomplete', reason: scanIncomplete };
   }
   // Counts available on BOTH paths (the lean path has no scanDate result).
   const unplannedCount = stops.filter((s) => s && s.isPlanned === false).length;
@@ -200,6 +225,23 @@ export async function captureDate(date: string): Promise<any> {
   });
   const { verified, sealed, counts, checksum } = sealRes;
 
+  // Post-seal derivations: per-customer rollup, tractor PAINT, and the routing
+  // miners. Shared with the heal path (history-postseal.runPostSealHooks) so a
+  // healed day is painted/mined identically to a cleanly-captured one. Each hook
+  // is independently guarded and re-derivable from the warehouse; a hook failure
+  // never fails the (already-sealed) capture. Zero NuVizz calls.
+  //
+  // THEY RUN BEFORE THE LINEAGE APPEND SO THE LINEAGE CAN SAY WHETHER THEY WORKED.
+  // runPostSealHooks has always returned an `ok`, and every caller discarded it: a night
+  // where the paint or a miner failed sealed green, returned ok: true and left no record
+  // anywhere a person looks. Everything here IS re-derivable — that is why a hook failure
+  // is allowed to be non-fatal — but nobody re-derives what nobody knows is missing, and an
+  // unpainted, unmined day just goes quietly absent from the engine's training set.
+  const postSeal = (verified && sealed) ? await runPostSealHooks(TENANT, date, stopRecords) : null;
+  // ...and on the manifest too, field-masked, because the capture-health strip reads
+  // manifests and would otherwise need a per-day capture scan to see this.
+  const postSealRecorded = postSeal ? await recordPostSealOutcome(TENANT, date, postSeal) : false;
+
   // Append-only lineage — recorded for EVERY run, including failures. Written
   // after the seal step so it carries the verified/sealed outcome + attempt count.
   // GUARDED: this is audit lineage, not the source of truth. If it throws it must
@@ -210,6 +252,8 @@ export async function captureDate(date: string): Promise<any> {
       tenant: TENANT, date, capture_version: version,
       captured_at: capture.captured_at, app_version: APP_VERSION, source_scanned_at: sourceScannedAt,
       checksum, intended, persisted: counts, verified, sealed,
+      post_seal_ok: postSeal ? postSeal.ok : null,
+      post_seal: postSeal ? postSeal.hooks : null,
       verify_detail: sealRes.detail,
       absent_from_this_capture: absentFromThisCapture,
       absent_kept_count: absentFromThisCapture.length,
@@ -226,14 +270,15 @@ export async function captureDate(date: string): Promise<any> {
     return { date, ok: false, verified, sealed, capture_version: version, intended, persisted: counts };
   }
 
-  // Post-seal derivations: per-customer rollup, tractor PAINT, and the routing
-  // miners. Shared with the heal path (history-postseal.runPostSealHooks) so a
-  // healed day is painted/mined identically to a cleanly-captured one. Each hook
-  // is independently guarded and re-derivable from the warehouse; a hook failure
-  // never fails the (already-sealed) capture. Zero NuVizz calls.
-  const postSeal = await runPostSealHooks(TENANT, date, stopRecords);
-
-  return { date, ok: true, verified: true, sealed: true, capture_version: version, counts, absent_kept: absentFromThisCapture.length, post_seal: postSeal.hooks };
+  return {
+    date, ok: true, verified: true, sealed: true, capture_version: version, counts,
+    absent_kept: absentFromThisCapture.length,
+    // ok is about the CAPTURE, which sealed. post_seal_ok is a separate claim and it is
+    // reported separately rather than folded in — a derivation that has to be re-run is not
+    // the same event as a night that did not seal, and collapsing them would either cry wolf
+    // on the seal or hide the derivation.
+    post_seal_ok: postSeal!.ok, post_seal: postSeal!.hooks, post_seal_recorded: postSealRecorded,
+  };
   } catch (e: any) {
     // Any unexpected throw (scan/derive/upsert/append) — the day did NOT seal, so
     // leave a LOUD, correctly-staged failure record before propagating. The seal
@@ -244,6 +289,23 @@ export async function captureDate(date: string): Promise<any> {
 }
 
 // ── HTTP / scheduled entrypoint ──────────────────────────────────────────────
+/**
+ * PURE. Why this scan may not be archived as a complete day — or null when it is fine.
+ *
+ * Exported so the rule is pinned by a test instead of living inline in a 200-line function.
+ * `undefined` means the scan did not cover that half at all (an unplanned-only or loads-only
+ * run), which is not a complaint; only an explicit `false` is.
+ */
+export function scanHealthComplaint(scan: { loadsComplete?: boolean; descentComplete?: boolean; loadProbeFailures?: number } | null): string | null {
+  if (!scan) return null;
+  const bits: string[] = [];
+  if (scan.loadsComplete === false) {
+    bits.push(`${scan.loadProbeFailures ?? 'some'} load probe(s) unanswered`);
+  }
+  if (scan.descentComplete === false) bits.push('the unplanned descent was truncated');
+  return bits.length ? bits.join('; ') : null;
+}
+
 export async function runHistorySnapshot(req: Request): Promise<Response> {
   const startedAt = Date.now();
   setCallTrigger('history-snapshot'); // attribute the nightly history capture's NuVizz calls

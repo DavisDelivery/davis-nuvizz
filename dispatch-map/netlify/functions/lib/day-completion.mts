@@ -217,9 +217,13 @@ export function buildDayCompletion(
 export interface Reconciliation {
   date: string;
   openAtSnapshot: number;
-  closedAfter: number;        // open at 6:30, finished by the time we looked again
+  closedAfter: number;        // open at 6:30, DELIVERED by the time we looked again — POD lag
+  failedAfter: number;        // 80 — it finished, and it finished badly
+  cancelledAfter: number;     // 99 — the order was pulled after the snapshot
   stillOpen: number;          // never closed — the real carryover
   closedAfterStops: string[];
+  failedAfterStops: string[];
+  cancelledAfterStops: string[];
   stillOpenStops: string[];
   lateCloseRate: number | null;
 }
@@ -237,6 +241,13 @@ export interface Reconciliation {
  * So the snapshot is kept immutable and graded later. `closedAfter` is POD lag — worth
  * watching, and a driver-coaching number, not a customer one. `stillOpen` is the carryover
  * that actually rolled to another day, and that is the line a logistics operation lives on.
+ *
+ * A REFUSED DELIVERY IS NOT POD LAG. An 80 finished, so it is not carryover either — it gets
+ * its own bucket. Folding it into `closedAfter` made the screen say a refused delivery "was
+ * delivered and scanned later", which is not a rounding error, it is a false statement about
+ * freight that never arrived, and it pushed `lateCloseRate` up on exactly the worst days.
+ * A 99 is not graded at all, for the same reason `gradable` drops cancellations: the day did
+ * not fail to deliver an order that was pulled.
  */
 export function reconcileDay(
   snapshot: { date: string; openStops: { stopNbr: string }[] }, laterStops: any[],
@@ -252,6 +263,8 @@ export function reconcileDay(
     if (prev == null || (isOpenOutcome(prev) === false && isOpenOutcome(o))) finalBy.set(n, o);
   }
   const closedAfterStops: string[] = [];
+  const failedAfterStops: string[] = [];
+  const cancelledAfterStops: string[] = [];
   const stillOpenStops: string[] = [];
   for (const { stopNbr } of snapshot?.openStops || []) {
     const n = str(stopNbr);
@@ -260,17 +273,26 @@ export function reconcileDay(
     // A stop that vanished from the later board is NOT assumed closed. It may have rolled
     // to another date under the same PRO, which is this operation's normal miss path — and
     // guessing "closed" there would silently erase the carryover the report exists to show.
-    if (o != null && !isOpenOutcome(o)) closedAfterStops.push(n);
+    if (o != null && isDeliveredOutcome(o)) closedAfterStops.push(n);
+    else if (o === 'unable') failedAfterStops.push(n);
+    else if (o === 'cancelled') cancelledAfterStops.push(n);
     else stillOpenStops.push(n);
   }
-  const openAtSnapshot = closedAfterStops.length + stillOpenStops.length;
+  const openAtSnapshot =
+    closedAfterStops.length + failedAfterStops.length + cancelledAfterStops.length + stillOpenStops.length;
+  // The denominator drops cancellations and KEEPS refusals, the same judgement `gradable`
+  // makes above: an order that was pulled is not work the evening failed to close; an order
+  // that was refused is.
+  const graded = openAtSnapshot - cancelledAfterStops.length;
   return {
     date: snapshot?.date,
     openAtSnapshot,
     closedAfter: closedAfterStops.length,
+    failedAfter: failedAfterStops.length,
+    cancelledAfter: cancelledAfterStops.length,
     stillOpen: stillOpenStops.length,
-    closedAfterStops, stillOpenStops,
-    lateCloseRate: openAtSnapshot > 0 ? closedAfterStops.length / openAtSnapshot : null,
+    closedAfterStops, failedAfterStops, cancelledAfterStops, stillOpenStops,
+    lateCloseRate: graded > 0 ? closedAfterStops.length / graded : null,
   };
 }
 

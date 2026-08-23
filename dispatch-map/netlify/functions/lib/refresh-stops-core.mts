@@ -927,8 +927,25 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   if (LIST_DISCOVERY) {
     try {
       const scannedAt = new Date().toISOString();
-      // A full list scan pulls BOTH saved searches, so it satisfies both clocks.
-      await markScanKinds(['planned', 'completed'], scannedAt).catch(() => {});
+      // THE STAMP GOES AFTER THE PULL, NOT BEFORE IT. This ran here, ahead of every NuVizz
+      // call in the path — so a 5xx or a throttle recorded a scan that never happened, and
+      // dueKinds then held the next attempt off for a FULL interval while the board sat
+      // stale. The failure is silent by construction: the outer catch preserves the
+      // last-good board, the run reports itself as handled, and the only symptom is a board
+      // that quietly stops moving. Stamping a scan is a claim about what the vendor
+      // ANSWERED, and this system does not get to report an intent as an outcome.
+      //
+      // It also claimed `completed` unconditionally. With TWO_SCAN off there is no completed
+      // saved-search pull in this path at all — the day-index stamp 450 lines below already
+      // refuses to claim one (`includeCompleted: TWO_SCAN`), so the two stamps disagreed
+      // about the same run, and the ops doc was the one lying. Stamped once per run, by the
+      // first pull that actually came back with rows.
+      let kindsStamped = false;
+      const stampScanKinds = async () => {
+        if (kindsStamped) return;
+        kindsStamped = true;
+        await markScanKinds(TWO_SCAN ? ['planned', 'completed'] : ['planned'], scannedAt).catch(() => {});
+      };
       const targets = [today];
       // Tomorrow + further planning days (LIST_HORIZON_DAYS) — all sliced from the SAME ±7d pull,
       // so e.g. Sunday writes Mon AND Tue. Gated by the same decision so far-day work only runs
@@ -947,6 +964,8 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       const overrideCount = Object.keys(boardDateOverrides).length;
       if (overrideCount) console.log(`[scan] honoring ${overrideCount} dispatcher-set board date(s)`);
       const buckets = TWO_SCAN ? await twoScanBuckets(boardDateOverrides) : null;
+      // Both saved searches answered. THIS is the moment a scan happened.
+      if (TWO_SCAN) await stampScanKinds();
 
       // ── CS NOTIFY, FIRST THING, ACROSS THE WHOLE PULL (Chad, 8/10) ───────────────
       // "DSV came in on Friday. The moment the scan picked it up on Friday, it should
@@ -1039,6 +1058,8 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         let dateStops = TWO_SCAN
           ? (buckets!.get(etDateForTargetUTC(date, today)) || []).map((s) => { s.scheduledDate = date; return s; })
           : await listScanForDate(date);
+        // Legacy path: the pull is per-day, so the first one to come back is the proof.
+        if (!TWO_SCAN) await stampScanKinds();
         if (!dateStops.length) { results.push({ date, ok: true, skipped: 'list-empty', source: 'list' }); continue; }
 
         // This day's prior index — carries same-day enriched detail forward + seeds coords.

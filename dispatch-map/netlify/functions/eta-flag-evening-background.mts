@@ -43,6 +43,7 @@ import { weekdayKey } from './lib/miss-ledger.mts';
 import { readTravelCalibration, ensureLegs } from './lib/travel-store.mts';
 import { routeDeparturePath } from './lib/route-departure.mts';
 import { mergeSweep, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
+import { auditRows } from './lib/flag-rows.mts';
 import { smsEnabled, sendSms } from './lib/sms.mts';
 import { smsRecipients, eveningTargetDate, smsText, smsClaimPath, selectTextable } from './lib/flag-sms.mts';
 
@@ -166,7 +167,7 @@ export default async (req: Request): Promise<Response> => {
         // tooLateToAct, dragging medianLeadMin down across every day the evening sweep ran.
         // On a pre-day board (offsetDays 1) the sighting happens one day BEFORE the board,
         // so its wall-clock minute relative to that board is etMin - 1440.
-        const merged = mergeSweep(prev?.rows, flags.rows, {
+        const merged = mergeSweep(prev?.rows, auditRows(flags), {
           nowMin: offsetDays === 1 ? etMin - 1440 : etMin, atISO: status.at, emailedStops: new Set<string>(),
         });
         await setDoc(path, {

@@ -111,12 +111,15 @@ async function captureHealth(): Promise<any> {
   for (const f of failures) if (f?.date) failByDate.set(String(f.date), f);
 
   const days: any[] = [];
-  const summary = { sealed: 0, healed: 0, tombstone: 0, failed: 0, missing: 0, idle_weekend: 0 };
+  // derivations_failed is NOT one of the states — it counts sealed days whose post-seal
+  // rollup/paint/mine did not run. Those days are genuinely captured; what they are missing
+  // is re-derivable, and it stays invisible unless something counts it.
+  const summary = { sealed: 0, healed: 0, tombstone: 0, failed: 0, missing: 0, idle_weekend: 0, derivations_failed: 0 };
   for (let d = from; d <= anchor; d = addDaysUTC(d, 1)) {
     const m = byDate.get(d);
     const f = failByDate.get(d);
     const weekend = isWeekend(d);
-    const { state } = classifyCaptureDay(m, f, weekend);
+    const { state, derivationsFailed } = classifyCaptureDay(m, f, weekend);
     let detail: any = null;
     if (state === 'tombstone') detail = { reason: m.tombstone_reason ?? null };
     else if (state === 'healed' || state === 'sealed') detail = { counts: m.counts ?? null };
@@ -124,7 +127,12 @@ async function captureHealth(): Promise<any> {
       ? { stage: f.stage ?? null, error: f.error ?? null, at: f.at ?? null }
       : { stage: 'unsealed_manifest', error: 'manifest present but not verified' };
     summary[state] = (summary[state] || 0) + 1;
-    days.push({ date: d, weekday: weekend ? 'weekend' : 'weekday', state, detail });
+    if (derivationsFailed.length) summary.derivations_failed += 1;
+    days.push({
+      date: d, weekday: weekend ? 'weekend' : 'weekday', state, detail,
+      // Named, so "re-run the paint for the 12th" is a thing somebody can act on.
+      derivations_failed: derivationsFailed.length ? derivationsFailed : null,
+    });
   }
 
   return { ok: true, tenant: TENANT, window: { from, to: anchor, days: WINDOW_DAYS }, summary, days };

@@ -31,3 +31,20 @@ export function flattenForConsumers(rows: any[]): any[] {
       : [r]
   ));
 }
+
+/**
+ * EVERYTHING THIS BOARD ACTUALLY PREDICTED, including what the panel chose not to show.
+ *
+ * `rows` is the panel's list: capped, and with a driverless route's hours_risk rows already
+ * superseded by the single no-driver card. That is right for a screen and for an inbox, and
+ * WRONG for the audit — flag history only keeps `hours_risk`, so folding the superseded rows
+ * away deleted the entire record for the routes in the most trouble: no first sighting, no
+ * lead time, no worst tier, no outcome. A route with no rows and a route with no problems
+ * read identically in that table.
+ *
+ * Read this ONLY from the recording path. The alert and text selectors take `rows`, because
+ * one situation is still one card and one email.
+ */
+export function auditRows(flags: any): any[] {
+  return [...(flags?.rows || []), ...(flags?.suppressedRows || [])];
+}

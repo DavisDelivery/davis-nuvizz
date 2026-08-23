@@ -236,14 +236,27 @@ export function classifyHealTarget(existingManifest: any | null, storedStopCount
 // PURE: capture-health state for one date from cheap inputs (its manifest, its
 // failure record, and whether it's a weekend). Exported for tests + reused shape.
 export function classifyCaptureDay(manifest: any | null, failure: any | null, weekend: boolean):
-  { state: 'sealed' | 'healed' | 'tombstone' | 'failed' | 'missing' | 'idle_weekend' } {
-  if (manifest && manifest.no_board) return { state: 'tombstone' };
-  if (manifest && manifest.healed) return { state: 'healed' };
-  if (manifest && (manifest.verified || manifest.complete)) return { state: 'sealed' };
-  if (failure) return { state: 'failed' };
-  if (manifest) return { state: 'failed' }; // manifest present but unsealed — still a hole
-  if (weekend) return { state: 'idle_weekend' };
-  return { state: 'missing' };
+  { state: 'sealed' | 'healed' | 'tombstone' | 'failed' | 'missing' | 'idle_weekend'; derivationsFailed: string[] } {
+  // WHICH DERIVATIONS DID NOT RUN, reported ALONGSIDE the state and never folded into it.
+  // The rollup, the tractor paint and the routing miners are re-derivable from the
+  // warehouse, so a hook failure is correctly not a failed capture — but every caller used
+  // to discard the outcome entirely, and an unpainted, unmined day then sat green while
+  // being silently absent from the engine's training set. Nobody re-derives what nobody
+  // knows is missing. Calling the whole day `failed` would be the other error: it would
+  // send someone hunting a capture problem that is not there.
+  //
+  // A manifest sealed BEFORE this field existed has no value here, and that is reported as
+  // nothing-known rather than as nothing-failed: absent is not the same as clean.
+  const derivationsFailed: string[] = Array.isArray(manifest?.post_seal_failed)
+    ? manifest.post_seal_failed.map(String) : [];
+  const D = { derivationsFailed };
+  if (manifest && manifest.no_board) return { state: 'tombstone', ...D };
+  if (manifest && manifest.healed) return { state: 'healed', ...D };
+  if (manifest && (manifest.verified || manifest.complete)) return { state: 'sealed', ...D };
+  if (failure) return { state: 'failed', ...D };
+  if (manifest) return { state: 'failed', ...D }; // manifest present but unsealed — still a hole
+  if (weekend) return { state: 'idle_weekend', ...D };
+  return { state: 'missing', ...D };
 }
 
 // Tombstone: a date that genuinely has no board (typically a weekend / holiday

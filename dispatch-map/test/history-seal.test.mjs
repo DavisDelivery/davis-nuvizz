@@ -202,6 +202,28 @@ test('classifyCaptureDay: every state', () => {
   assert.equal(classifyCaptureDay(null, null, false).state, 'missing');
 });
 
+test('a sealed day whose PAINT never ran is still sealed — and says which hooks failed', () => {
+  // runPostSealHooks always returned an `ok` and every caller threw it away, so a night
+  // where the tractor paint or a routing miner failed sealed green and left no trace
+  // anywhere a person looks. All of it is re-derivable — which is exactly why the failure
+  // was allowed to be quiet — but nobody re-derives what nobody knows is missing, and the
+  // day goes silently absent from the engine's training set.
+  const c = classifyCaptureDay({ verified: true, post_seal_ok: false, post_seal_failed: ['tractor-flags', 'service-times'] }, null, false);
+  assert.equal(c.state, 'sealed', 'the CAPTURE is fine — calling it failed sends someone hunting the wrong bug');
+  assert.deepEqual(c.derivationsFailed, ['tractor-flags', 'service-times'], 'named, so re-running them is actionable');
+});
+
+test('a manifest sealed before this field existed reports nothing-KNOWN, not nothing-failed', () => {
+  assert.deepEqual(classifyCaptureDay({ verified: true }, null, false).derivationsFailed, []);
+  assert.deepEqual(classifyCaptureDay({ verified: true, post_seal_ok: true, post_seal_failed: [] }, null, false).derivationsFailed, []);
+});
+
+test('a healed day reports its derivations too — heal is where they went missing before', () => {
+  const c = classifyCaptureDay({ healed: true, verified: true, post_seal_failed: ['routing-reference'] }, null, false);
+  assert.equal(c.state, 'healed');
+  assert.deepEqual(c.derivationsFailed, ['routing-reference']);
+});
+
 // ── the orphan becomes visible to the miner after healing ────────────────────
 
 test('healed manifest re-enters the captured-date listing the miner keys off', () => {
