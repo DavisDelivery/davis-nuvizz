@@ -22,6 +22,7 @@
 
 import { isFirestoreEnabled, readStops, etDayString } from './lib/firestore.mts';
 import { emailEnabled, sendEmail } from './lib/email.mts';
+import { adminTokenOk, testRecipientAllowed } from './lib/customer-comms.mts';
 import { buildEmail, csRecipients } from './lib/cs-notify.mts';
 import { normalizeMatchKey } from './lib/match-key.mts';
 
@@ -33,6 +34,35 @@ export default async (req: Request): Promise<Response> => {
   const J = (body: any, status = 200) => new Response(JSON.stringify(body), { status, headers });
 
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' });
+
+  // A TEST MAILER IS STILL A MAILER, AND THIS ONE WAS OPEN TO THE WORLD.
+  //
+  // GET /api/cs-notify-test?to=anyone@anywhere.com sent a real consignee's name, address,
+  // PRO, load and driver to an arbitrary address, from the SPF/DKIM-signed davisdelivery.com
+  // — no token, no method check, no recipient allowlist, and no ledger entry. Anything that
+  // fetches a URL could fire it: a link preview in a chat app, a crawler, a copied link in a
+  // ticket. It burns the same verified domain the customer delivery-email program sends from,
+  // so abuse lands on OUR sending reputation and reaches customers as us.
+  //
+  // The three gates already existed in this repo — customer-comms-test uses all of them on
+  // the same lib. This endpoint simply never adopted them.
+  //
+  //   POST-only            a GET is what a preview bot issues; a mailer is not a safe GET
+  //   adminTokenOk         the same x-comms-token gate the sibling test endpoint requires
+  //   testRecipientAllowed ?to= must match COMMS_TEST_ALLOWED_TO (defaults to @davisdelivery.com),
+  //                        so a test can never reach a customer even with the token
+  //
+  // ?dryRun=1 stays reachable without any of this: it sends nothing, and the whole point of
+  // a dry run is that anyone debugging the wiring can use it.
+  const isDryRun = new URL(req.url).searchParams.get('dryRun') === '1';
+  if (!isDryRun) {
+    if (req.method !== 'POST') {
+      return J({ ok: false, error: 'POST required — this endpoint sends real email. Use ?dryRun=1 to inspect without sending.' }, 405);
+    }
+    if (!adminTokenOk(req)) {
+      return J({ ok: false, error: 'not authorised — send COMMS_ADMIN_TOKEN as the x-comms-token header' }, 403);
+    }
+  }
 
   const url = new URL(req.url);
   const date = DATE_RE.test(String(url.searchParams.get('date') || '')) ? String(url.searchParams.get('date')) : etDayString();
@@ -46,6 +76,11 @@ export default async (req: Request): Promise<Response> => {
   // Configuration check FIRST — the #1 reason a "test" would silently do nothing.
   // NOTIFY_CS_TO wins; else csRecipients() falls back to the company CS inbox (the send path does
   // the same, so this test reflects exactly where a real scheduled email would go).
+  // An override may only ever address an internal mailbox. Without this, the token alone
+  // would still let a real consignee's details be posted to any address on earth.
+  if (toOverride && !isDryRun && !testRecipientAllowed(toOverride)) {
+    return J({ ok: false, error: 'pass ?to=<an allowed address> so a test can never reach a customer (see COMMS_TEST_ALLOWED_TO)' }, 400);
+  }
   const recipients = toOverride ? [toOverride] : csRecipients();
   if (!emailEnabled()) {
     return J({ ok: false, configured: false, reason: 'email_disabled',
