@@ -46,14 +46,28 @@ Mobile-first dispatch dashboard for Davis Delivery over the nuVizz REST API v7. 
 
 ## Environment variables (Netlify)
 
-| Var | Example |
-|---|---|
-| `NUVIZZ_DAVIS_COMPANY_CODE` | `Davis` |
-| `NUVIZZ_DAVIS_USER` | `__REDACTED__` |
-| `NUVIZZ_DAVIS_PASS` | `__REDACTED__` |
-| `NUVIZZ_ULINE_COMPANY_CODE` | `Uline` |
-| `NUVIZZ_ULINE_USER` | `__REDACTED__` |
-| `NUVIZZ_ULINE_PASS` | `__REDACTED__` |
+**Values live in Netlify, never in this repo.** Set them under
+*Site configuration → Environment variables*, on **each** site that needs them.
+
+The canonical, documented inventory is [`dispatch-map/.env.example`](dispatch-map/.env.example),
+which separates browser-visible `VITE_*` vars from server-only ones and explains what
+each does. This file deliberately does **not** reproduce it — a table of variable names
+beside a value column is a fill-in-the-blank invitation, and that is precisely how real
+NuVizz and Motive credentials came to be committed here in May 2026. They were redacted
+in June (`aef1ca2`), but redacting the working tree does not remove them from the commit
+that introduced them, and the only thing that ever makes a leaked credential safe is
+**rotating it at the vendor**.
+
+The NuVizz credential set this app needs is described in `.env.example`. Two notes that
+have bitten before:
+
+- **`NUVIZZ_DAVIS_*` is read by BOTH Netlify sites** — the parent app
+  (`netlify/functions/nuvizz.cjs`) and dispatch-map
+  (`dispatch-map/netlify/functions/lib/nuvizz-scan.mts`). Rotate the password and update
+  only one site, and the other site's scans start failing.
+- Netlify's **secret scanning** greps every file in the repo for the *values* of this
+  site's env vars and fails the deploy on a hit. Never paste a real value into any file
+  here, including a doc or a test fixture — see `dispatch-map/test/no-lifelike-addresses.test.mjs`.
 
 ## Deploy
 
