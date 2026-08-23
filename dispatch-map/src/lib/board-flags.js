@@ -587,7 +587,20 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     if (routed) return false;
     return String(s?.status ?? '').trim() === '10' || String(s?.normalizedStatus ?? '') === 'UNPLANNED';
   };
-  const open = stops.filter((s) => !isFinishedStop(s) && !isUnscheduled(s));
+  // SCOPED TO THE RULES THAT ARE ABOUT A DELIVERY HAPPENING TODAY — and no further.
+  //
+  // v0.70.3 put this on the SHARED open set, which silenced every per-stop rule for an
+  // unplanned unrouted order. Two of those rules are not statements about today at all:
+  //
+  //   no_location  "this stop never geocoded, so it cannot be lasso-selected or routed"
+  //   dup_number   "two NuVizz orders share this number"
+  //
+  // The unplanned pool is EXACTLY the set a dispatcher lassos onto routes. So the one flag
+  // that says "you cannot see this order on the map" was switched off for precisely the
+  // stops that still need a route — and a stop nobody can select is one that quietly never
+  // gets planned. Chad asked for the closed-Friday and receiving-hours cards to stop firing
+  // on unscheduled work; he did not ask to stop being told an order has no pin.
+  const open = stops.filter((s) => !isFinishedStop(s));
   // AN APPOINTMENT ROUTE IS A HOLDING PEN, NOT A TRUCK — AND THAT WAS ONLY HALF-ENFORCED.
   //
   // Chad: "need to silence any flags that are on the Uline appt route." ANY, and it was not.
@@ -618,6 +631,9 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // a board with no day or depot, which the old placement inside the hours block could not.
   const onAppointmentRoute = (s) => isAppointmentRoute(routeKeyOf(s));
   const judged = open.filter((s) => !onAppointmentRoute(s));
+  // The narrower set: work actually scheduled to be delivered today. Only the rules that
+  // assert something about TODAY read this — closed-today and the receiving-hours family.
+  const scheduledJudged = judged.filter((s) => !isUnscheduled(s));
   const noteOf = (s) => (s?.matchKey ? notes.get(s.matchKey) : null) || null;
   // RECEIVING HOURS DESCRIBE DELIVERIES, AND A PICKUP IS NOT ONE.
   //
@@ -690,7 +706,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // receiving hours on file today" counting RA pickups the engine deliberately never judges.
   // The whole point of the footer is that a quiet panel can prove it was watched; a count
   // that overstates its own coverage is the one number a dispatcher cannot check.
-  if (day) for (const s of judged) { if (receivingWindow(s)) checked.stopsWithHours += 1; }
+  if (day) for (const s of scheduledJudged) { if (receivingWindow(s)) checked.stopsWithHours += 1; }
 
   // R1 — two NuVizz orders under one stop number (the Estes twin). Proof, not a guess: the
   // scan flags this only when record ids differ. Occurrence-scoped: cleaning the portal
@@ -743,7 +759,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   }
 
   // R4 — delivering to a customer recorded closed that weekday. Tier decides red vs amber.
-  for (const s of judged) {
+  for (const s of scheduledJudged) {
     const note = noteOf(s);
     const tier = closedDayTier(note, day);
     if (!tier) continue;

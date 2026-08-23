@@ -903,11 +903,15 @@ const unscheduled = (o) => stop({ status: '10', normalizedStatus: 'UNPLANNED',
 const FRI = { servedDate: '2026-08-21', dayKey: 'fri', opts: { ...OPTS, nowMin: 11 * 60 + 34 } };
 const CLOSED_FRI = { 'ies|k': note({ closed_days: ['fri'], manual_overrides: { closed_days: true } }) };
 
-test('an unplanned, unrouted order raises nothing — it is not scheduled today', () => {
+test('an unplanned, unrouted order raises no TODAY flag — it is not scheduled today', () => {
   const out = run([unscheduled({ stopNbr: '007165852-1', matchKey: 'ies|k', businessName: 'IES COMMUNICATIONS' })],
     CLOSED_FRI, FRI);
   assert.deepEqual(out.rows, [], '"closed today" is a statement about a delivery happening today');
-  assert.equal(out.checked.stops, 0, 'and it is not counted as work being watched');
+  // It IS still watched. The exemption is scoped to the rules that assert something about
+  // today; the stop remains on the board, still judged for a missing pin or a duplicate
+  // number, and the footer must not under-report the coverage it actually has.
+  assert.equal(out.checked.stops, 1);
+  assert.equal(out.checked.stopsWithHours, 0, 'but it carries no deadline we are watching');
 });
 
 test('the rule is about the RECORD, not the dash — a plain PRO unplanned and unrouted is the same', () => {
@@ -951,4 +955,39 @@ test('90, 91, 99 and 80 have always been terminal — pinned so the real cause s
   assert.equal(isFinishedStop({ status: 91 }), true, 'as a number too');
   assert.equal(isFinishedStop({ status: ' 91 ' }), true, 'and with whitespace');
   assert.equal(isFinishedStop({ status: '20' }), false);
+});
+
+// ── the unscheduled filter must not silence the MAP rules (bug hunt, P13) ────
+//
+// v0.70.3 put isUnscheduled on the SHARED open set, so an unplanned unrouted order stopped
+// raising every per-stop rule. Two of them are not statements about today: "this stop never
+// geocoded" and "two orders share this number". The unplanned pool is exactly what a
+// dispatcher lassos onto routes, so the flag saying an order cannot be SEEN on the map was
+// switched off for the only stops still needing one.
+
+test('an unplanned unrouted order still raises NO MAP LOCATION', () => {
+  const out = run([unscheduled({ stopNbr: '9', businessName: 'NOPIN CO', lat: null, lng: null })], {}, FRI);
+  assert.equal(out.rows.filter((r) => r.rule === 'no_location').length, 1,
+    'a stop nobody can select is one that quietly never gets planned');
+});
+
+test('…and still raises a DUPLICATE NUMBER', () => {
+  const out = run([unscheduled({ stopNbr: '9', businessName: 'DUPE CO', dupNbr: true })], {}, FRI);
+  assert.equal(out.rows.filter((r) => r.rule === 'dup_number').length, 1);
+});
+
+test('but the TODAY rules stay silent on it — which was the actual ask', () => {
+  const notesObj = {
+    'ies|k': note({ closed_days: ['fri'], manual_overrides: { closed_days: true } , receiving_hours: { fri: { open: '06:00', close: '11:00' } } }),
+  };
+  const out = run([unscheduled({ stopNbr: '9', matchKey: 'ies|k', businessName: 'IES' })], notesObj, FRI);
+  assert.equal(out.rows.filter((r) => r.rule === 'closed_today').length, 0, 'not being delivered today');
+  assert.equal(out.rows.filter((r) => r.rule === 'hours_risk').length, 0);
+  assert.equal(out.checked.stopsWithHours, 0, 'and it is not counted as covered by hours');
+});
+
+test('an appointment route is STILL silent for every rule — that scoping is unchanged', () => {
+  const out = run([stop({ stopNbr: 'U1', loadNbr: 'ULINE APPT', routeName: 'ULINE APPT',
+    businessName: 'NOPIN', lat: null, lng: null })], {}, FRI);
+  assert.deepEqual(out.rows, [], 'held for an appointment is not the same as unscheduled');
 });
