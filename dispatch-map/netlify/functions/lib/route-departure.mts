@@ -32,7 +32,17 @@ export const MIN_SAMPLES = 3;
 export const MIN_DEPART_MIN = 120;
 export const MAX_DEPART_MIN = 16 * 60;
 export const DEPARTURE_COLLECTION = 'route_departures';
-export const DEPARTURE_VERSION = 1;
+// Bumped with the delivered-stamp correction below: every value stored at v1 was computed
+// from a subtraction that skipped the dwell, so it is one service block LATE. A stored table
+// at the old version must not be read as if it meant the same thing.
+export const DEPARTURE_VERSION = 2;
+/**
+ * The per-stop dwell used to back an ARRIVAL out of a DELIVERED stamp. Mirrors
+ * board-flags' FLAG_SERVICE_SEC (14 min), which is the measured residual between consecutive
+ * delivery stamps net of modelled travel — the same number the arrival walk spends forward.
+ * Callers with a calibrated per-class dwell should pass theirs.
+ */
+export const DEFAULT_SERVICE_MIN = 14;
 
 export function routeDeparturePath(tenant: string): string {
   return `${DEPARTURE_COLLECTION}/${tenant}`;
@@ -48,7 +58,13 @@ function haversineMeters(a: any, b: any): number {
   return 2 * R_EARTH * Math.asin(Math.sqrt(h));
 }
 
-export interface RouteEntry { pos: { lat: number; lng: number } | null; stampMin: number | null; seq: number | null }
+export interface RouteEntry {
+  pos: { lat: number; lng: number } | null;
+  stampMin: number | null;
+  /** Which kind of stamp `stampMin` came from — arrivalAnchor's `source`. See impliedDeparture. */
+  stampSource?: 'arrival' | 'delivered' | null;
+  seq: number | null;
+}
 
 /**
  * PURE. One day's implied departure for one route, or null when it cannot be read cleanly.
@@ -58,6 +74,7 @@ export function impliedDeparture(
   entries: RouteEntry[],
   depot: { lat: number; lng: number },
   curve?: any,
+  serviceMin: number = DEFAULT_SERVICE_MIN,
 ): number | null {
   const sequenced = (entries || []).filter((e) => Number.isFinite(e?.seq as any) && e?.pos);
   if (!sequenced.length) return null;
@@ -68,7 +85,27 @@ export function impliedDeparture(
   if (!Number.isFinite(first.stampMin as any)) return null;
   const legMin = legMinutesFromMeters(haversineMeters(depot, first.pos), curve || DEFAULT_CURVE);
   if (!Number.isFinite(legMin)) return null;
-  const dep = Math.round((first.stampMin as number) - legMin);
+  // WHICH STAMP IT IS DECIDES WHETHER THE DWELL COMES OUT TOO.
+  //
+  // arrivalAnchor already draws this line and its comment states it plainly: an ARRIVAL
+  // means the truck is on site with the service still ahead of it; a DELIVERED means the
+  // service already happened. The board's forward walk honours that (clockMin = min for a
+  // delivered, min + service for an arrival) — this backward subtraction did not, because
+  // both callers threw `source` away and passed only the minute.
+  //
+  // Backwards the correction inverts: a delivered stamp at T means the truck ARRIVED at
+  // T − service, so it left the depot at T − service − leg. Skipping it put every learned
+  // departure one dwell block LATE — and that is not a rare case: arrivalDTTM appears on 8
+  // stops out of 20,904 in the warehouse, so essentially EVERY sample is a delivered stamp
+  // and the whole table was biased one way. A departure read late makes the projected clock
+  // run late all day, which over-flags a route nobody needed to be warned about, and the
+  // fleet default this replaces (8:00a) is the number the tails get wrong in the first place.
+  //
+  // An unknown source is treated as `delivered`: that is what the data overwhelmingly is,
+  // and the failure directions are not symmetrical — reading a departure EARLY understates
+  // risk, which is the mistake that costs a delivery rather than a glance.
+  const dwell = first.stampSource === 'arrival' ? 0 : (Number.isFinite(serviceMin) ? serviceMin : DEFAULT_SERVICE_MIN);
+  const dep = Math.round((first.stampMin as number) - legMin - dwell);
   return dep >= MIN_DEPART_MIN && dep <= MAX_DEPART_MIN ? dep : null;
 }
 
@@ -109,6 +146,24 @@ export function departureTable(
     out[k] = { departMin: med, n: xs.length, spreadMin: Number.isFinite(p90 - p10) ? p90 - p10 : null };
   }
   return out;
+}
+
+/**
+ * PURE. THE TABLE, OR NOTHING — a stored doc from an older version is not read.
+ *
+ * The values are plain minutes, so a table computed under a different rule is the same SHAPE
+ * carrying a different MEANING, and nothing downstream can tell the two apart. v1 backed the
+ * departure out of a delivered stamp without removing the dwell, so every v1 value is one
+ * service block late; reading it as if it were v2 would run the board's clock late all day
+ * on numbers that look perfectly reasonable.
+ *
+ * A rejected table is not an error — it is the shipped 8:00a default standing until the
+ * nightly fit rewrites the doc, which is the same thing that happens for a route with too
+ * few samples. This module's whole posture is that no number beats a known assumption.
+ */
+export function readDepartureTable(doc: any): Record<string, any> | null {
+  if (!doc?.table) return null;
+  return Number(doc.version) === DEPARTURE_VERSION ? doc.table : null;
 }
 
 /**

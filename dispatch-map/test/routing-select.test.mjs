@@ -80,6 +80,33 @@ test('Desktop drag-box selects the same set regardless of drag direction', () =>
 });
 
 // ── Receiving-hours formatting ──
+test('fmtTime12 reads a FULL TIMESTAMP — the appointment window is stored as one', () => {
+  // The match was anchored at the start of the string, so an ISO stamp fell through to
+  // "return s" untouched — and the routing panel's Appointment window row reads
+  // scheduledFrom/To, which ARE stamps. It printed
+  // "2026-08-24T08:00:00–2026-08-24T08:05:00" where it meant "8:00a–8:05a".
+  assert.equal(fmtTime12('2026-08-24T08:00:00'), '8:00a');
+  assert.equal(fmtTime12('2026-08-24T08:05:00'), '8:05a');
+  assert.equal(fmtTime12('2026-08-24 17:30'), '5:30p');
+  assert.equal(fmtTime12('2026-08-24T00:15:00.000Z'), '12:15a');
+});
+
+test('fmtTime12 reads the DIGITS of a stamp, never a Date — these carry no offset', () => {
+  // The stamps are naive ET wall-clock. Handing one to Date + timeZone reads four hours
+  // early and rolls a pre-dawn slot to the PREVIOUS DAY — the trap board-flags.stampMinutes
+  // and time-restrictions.clockMinFromStamp both document.
+  assert.equal(fmtTime12('2026-08-24T00:15:00'), '12:15a', 'a quarter past midnight, not 8:15p on the 23rd');
+  assert.equal(fmtTime12('2026-08-24T23:45:00'), '11:45p');
+});
+
+test('fmtTime12 still refuses free text rather than inventing a clock', () => {
+  assert.equal(fmtTime12('call first'), 'call first');
+  assert.equal(fmtTime12('appt only'), 'appt only');
+  assert.equal(fmtTime12(''), '');
+  assert.equal(fmtTime12(null), '');
+  assert.equal(fmtTime12('2026-08-24T99:99:00'), '2026-08-24T99:99:00', 'an impossible clock is not a clock');
+});
+
 test('fmtTime12 converts 24h to compact 12h, passes through am/pm', () => {
   assert.equal(fmtTime12('08:00'), '8:00a');
   assert.equal(fmtTime12('14:30'), '2:30p');

@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  allPresent, finalizeCaptureSeal, classifyHealTarget, classifyCaptureDay,
+  allPresent, finalizeCaptureSeal, classifyHealTarget, classifyCaptureDay, tombstoneVerdict, writeTombstone,
 } from '../netlify/functions/lib/history-seal.mts';
 import { capturedDatesFromManifests, histDocId } from '../netlify/functions/lib/history-store.mts';
 
@@ -239,4 +239,58 @@ test('healed manifest re-enters the captured-date listing the miner keys off', (
   const afterDates = capturedDatesFromManifests(after, 'davis');
   assert.ok(afterDates.includes('2026-06-24'), 'healed day now listed → miner sees it');
   assert.deepEqual(afterDates, ['2026-06-23', '2026-06-24', '2026-06-25']);
+});
+
+// ── THE TOMBSTONE NOBODY COULD WRITE (bug hunt, Aug 2026) ───────────────────
+//
+// writeTombstone existed from the warehouse-holes work with ZERO callers, so a genuine
+// holiday sat in the Capture health strip as a standing red weekday forever. The cost is not
+// the square — it is that a strip carrying permanent known-wrong reds stops being read, and
+// the night the capture ACTUALLY failed is then one more red nobody looks at.
+//
+// Adding a caller meant first making the function keep its own promise: its comment said
+// "Never overwrites a real sealed manifest" and nothing enforced it. It writes with
+// setManifest, which REPLACES — pointed at a day that ran, it erases a sealed manifest and
+// leaves counts of zero, and classifyHealTarget then REFUSES to touch a no_board doc, so
+// there is no way back from any screen.
+
+test('a date with stored stops is REFUSED — it ran, whatever its manifest says', () => {
+  const v = tombstoneVerdict(null, 812, 'Thanksgiving');
+  assert.equal(v.ok, false);
+  assert.match(v.refusal, /812 stop/);
+});
+
+test('a SEALED manifest is refused — the write replaces, and a heal cannot undo a tombstone', () => {
+  assert.equal(tombstoneVerdict({ verified: true }, 0, 'holiday').ok, false);
+  assert.equal(tombstoneVerdict({ complete: true }, 0, 'holiday').ok, false);
+});
+
+test('a tombstone with no stated reason is refused — "no board" with no why is a hole with a lid on it', () => {
+  assert.equal(tombstoneVerdict(null, 0, '').ok, false);
+  assert.equal(tombstoneVerdict(null, 0, '   ').ok, false);
+});
+
+test('an empty weekday with a FAILURE record can be tombstoned — that is the whole use case', () => {
+  // The holiday path: nothing captured, so the nightly job left a failure record and the
+  // strip shows red. There is no board to lose.
+  assert.deepEqual(tombstoneVerdict(null, 0, 'Thanksgiving — no dispatch'), { ok: true });
+  // A manifest that is present but UNSEALED with no stops is the same hole.
+  assert.deepEqual(tombstoneVerdict({}, 0, 'July 4'), { ok: true });
+});
+
+test('tombstoning twice is refused rather than silently rewritten', () => {
+  assert.equal(tombstoneVerdict({ no_board: true, complete: true }, 0, 'holiday').refusal, 'already tombstoned');
+});
+
+test('writeTombstone RE-READS and re-judges rather than trusting the caller', async () => {
+  // The endpoint dry-runs first, so there is a window between "safe to mark" and the POST.
+  // The writer is the authority, not the screen.
+  let wrote = false;
+  const res = await writeTombstone('davis', '2026-11-26', 'Thanksgiving', {
+    getManifest: async () => null,
+    countStops: async () => { wrote = true; return 812; },
+  });
+  assert.equal(res.ok, false);
+  assert.match(res.refusal, /812 stop/);
+  assert.equal(wrote, true, 'it actually looked');
 });

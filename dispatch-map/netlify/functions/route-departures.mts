@@ -20,7 +20,7 @@ import { listStops } from './lib/history-store.mts';
 import { arrivalAnchor } from '../../src/lib/board-flags.js';
 import { DEFAULT_CURVE } from '../../src/lib/travel-model.js';
 import {
-  impliedDeparture, departureTable, routeDeparturePath, DEPARTURE_VERSION, MIN_SAMPLES,
+  impliedDeparture, departureTable, routeDeparturePath, readDepartureTable, DEPARTURE_VERSION, MIN_SAMPLES,
 } from './lib/route-departure.mts';
 
 const TENANT = 'davis';
@@ -54,6 +54,9 @@ function departuresForDay(stops: any[], date: string): Record<string, number> {
     routes.get(k)!.push({
       pos: posOf(s),
       stampMin: a ? a.min : null,
+      // WHICH stamp it was, not just when. A delivered stamp has the dwell already spent —
+      // impliedDeparture has to take it back out, and it cannot if the source is dropped here.
+      stampSource: a ? a.source : null,
       seq: typeof s?.routeSeq === 'number' ? s.routeSeq : null,
     });
   }
@@ -83,6 +86,13 @@ export default async (req: Request): Promise<Response> => {
       return J({
         ok: true, published: !!doc, minSamples: MIN_SAMPLES,
         ...(doc ? { through: doc.through, days: doc.days, routes: doc.routes, fitted_at: doc.fitted_at } : {}),
+        // PUBLISHED IS NOT THE SAME AS IN USE. A table stored under an older version is
+        // still on disk and still shown here — and the board ignores it, because the values
+        // mean something different (v1 never removed the dwell from a delivered stamp). This
+        // endpoint exists to answer "what is the board actually doing", so it must not let a
+        // stale doc read as a live one.
+        version: doc?.version ?? null, expectsVersion: DEPARTURE_VERSION,
+        usedByBoard: !!readDepartureTable(doc),
         table: doc?.table || null,
         readable: doc?.table
           ? Object.fromEntries(Object.entries<any>(doc.table).map(([k, v]) => [k, `${fmt(v.departMin)} (n=${v.n})`]))

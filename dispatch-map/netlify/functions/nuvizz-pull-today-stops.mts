@@ -286,6 +286,13 @@ export default async (req: Request): Promise<Response> => {
           // remaining headroom tenfold. See reportedDailyCeiling.
           ceiling: reportedDailyCeiling((scanCfg as any)?.dailyCeiling),
           breaker: circuit.open,
+          // WHY, AND SINCE WHEN. An open breaker refuses every scan, and "breaker: true" on
+          // its own does not tell anyone whether that is today's ceiling doing its job or a
+          // flag stuck from another day. It expires with the ET call counter it bounds, so
+          // the stamp is the thing that says which.
+          breakerReason: circuit.open ? (circuit.reason ?? null) : null,
+          breakerAt: circuit.open ? (circuit.at ?? null) : null,
+          breakerDay: circuit.day ?? null,
           mode: breakerMode(),
           // Learned scan-discovery summary (avg/max new loads/day, worst gap,
           // recommended adaptive-walk stop threshold, any parity misses).

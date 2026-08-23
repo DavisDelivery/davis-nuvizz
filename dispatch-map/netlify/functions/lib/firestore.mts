@@ -1034,23 +1034,38 @@ export async function writeScanConfig(cfg: Record<string, any>): Promise<void> {
 
 export interface CircuitState { open: boolean; reason?: string; at?: string; day?: string }
 
-// Day-scoped decision (Fix 3), exported PURE for tests: a flag tripped on a prior UTC
-// day is stale — treat as CLOSED so a yesterday-tripped breaker can't halt today's
-// scans at count 0; only an `open` flag stamped with today's day stays open.
+// Day-scoped decision (Fix 3), exported PURE for tests: a flag tripped on a prior day is
+// stale — treat as CLOSED so a yesterday-tripped breaker can't halt today's scans at count 0;
+// only an `open` flag stamped with today's day stays open.
+//
+// A DOC WITH NO `day` READS CLOSED, and that is deliberate but it is also a gap: the parent
+// app writes this same nuvizz_ops/circuit doc and never stamped one, so a ceiling the parent
+// tripped was invisible here. The parent stamps it now (netlify/functions/lib/firestore.cjs)
+// — one doc, one contract, both apps.
 export function circuitFromDoc(doc: any, today: string): CircuitState {
   if (!doc) return { open: false };
   const open = !!doc.open && doc.day === today;
   return { open, reason: doc.reason, at: doc.at, day: doc.day };
 }
 
+// THE BREAKER'S DAY IS THE COUNTER'S DAY — EASTERN, not UTC.
+//
+// What trips this is the daily call ceiling, and that counter is keyed on the ET calendar day
+// (calls__<etDay>). Scoping the breaker to the UTC day put the two on different clocks: a
+// ceiling tripped at 3pm ET released at 8pm ET — five hours early, with the ET counter still
+// over the limit — while one tripped at 9pm ET held for 23 hours, well past the rollover that
+// should have cleared it. The breaker now expires exactly when the count it is bounding
+// resets, which is the only reading of "daily" that means anything here.
 export async function readCircuit(): Promise<CircuitState> {
   const doc = await getDoc(`${OPS_COLLECTION}/circuit`);
-  return circuitFromDoc(doc, new Date().toISOString().slice(0, 10));
+  return circuitFromDoc(doc, etDayString());
 }
 
 export async function setCircuit(open: boolean, reason: string, atISO: string): Promise<void> {
-  // Stamp the UTC day of the trip so readCircuit can auto-expire it at midnight.
-  await setDoc(`${OPS_COLLECTION}/circuit`, { open, reason, at: atISO, day: atISO.slice(0, 10) });
+  // Stamp the ET day of the trip so readCircuit auto-expires it when the counter rolls.
+  await setDoc(`${OPS_COLLECTION}/circuit`, {
+    open, reason, at: atISO, day: etDayString(new Date(atISO)),
+  });
 }
 
 // ── Scan-discovery metrics (learn the real load delta / gaps) ────────────────

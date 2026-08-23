@@ -39,6 +39,8 @@
 // supplies the date and the as-of stamp so the same day can be rebuilt identically
 // tomorrow, next week, or in a test.
 
+import { formatCompletionPct } from '../../../src/lib/completion-pct.js';
+
 export type Outcome =
   | 'delivered_system'   // 90 — closed by the scan
   | 'delivered_manual'   // 91 — closed by hand in the portal
@@ -303,7 +305,9 @@ export function reconcileDay(
 // number of things needing a decision and puts the refusals ABOVE the merely-open, because
 // a refused delivery needs a call and an unscanned one usually needs nothing.
 
-const pct = (v: number | null) => (v == null ? '—' : `${Math.round(v * 100)}%`);
+// ONE RULE FOR THE SCREEN AND THE INBOX. Plain rounding turned 815 of 816 into "100%
+// complete" — in the same subject line as "1 open". See src/lib/completion-pct.js.
+const pct = (v: number | null) => formatCompletionPct(v);
 const esc = (v: any) => String(v ?? '').replace(/[&<>"]/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
 

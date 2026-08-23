@@ -339,14 +339,48 @@ async function readCallCounter(dateStr) {
   return doc && typeof doc.count === 'number' ? doc.count : 0;
 }
 
+// ── THE NUVIZZ CIRCUIT BREAKER — ONE DOC, TWO APPS, ONE CONTRACT ────────────
+//
+// `nuvizz_ops/circuit` is shared with dispatch-map, and until now the two apps read and
+// wrote it under different rules, which broke it in BOTH directions:
+//
+//   · THIS app had no expiry at all. What trips the breaker is the DAILY call ceiling, and
+//     the counter behind it (calls__<etDay>) resets every night — but the flag did not. So a
+//     ceiling reached once became a permanent latch: every scan here refused for good, at a
+//     count of zero, until somebody edited Firestore by hand. Nothing in this app could
+//     clear it and nothing said so.
+//
+//   · dispatch-map DOES expire it, by comparing a `day` stamp — and this app never wrote
+//     one, so a ceiling tripped here read as CLOSED over there and dispatch-map carried on
+//     spending against a vendor that had already cut us off.
+//
+// The day is EASTERN, matching the counter the breaker bounds and matching dispatch-map's
+// reader. A UTC day would put the flag and the count on different clocks: a trip at 3pm ET
+// would release five hours early with the count still over the limit.
+function etDayString(d = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(d);
+}
+
+// PURE, so the expiry rule is testable rather than buried in an await. A doc with no `day`
+// is a pre-fix write and reads CLOSED — same as dispatch-map, and the safe side: the worst
+// case is one more call that re-trips it, against a latch nobody could clear.
+function circuitFromDoc(doc, today) {
+  if (!doc) return { open: false };
+  return { open: !!doc.open && doc.day === today, reason: doc.reason, at: doc.at, day: doc.day };
+}
+
 async function readCircuit() {
   const doc = await getDoc(`${OPS_COLLECTION}/circuit`);
-  if (!doc) return { open: false };
-  return { open: !!doc.open, reason: doc.reason, at: doc.at };
+  return circuitFromDoc(doc, etDayString());
 }
 
 async function setCircuit(open, reason, atISO) {
-  await setDoc(`${OPS_COLLECTION}/circuit`, { open, reason, at: atISO });
+  // Stamp the ET day of the trip so readCircuit auto-expires it when the counter rolls.
+  await setDoc(`${OPS_COLLECTION}/circuit`, {
+    open, reason, at: atISO, day: etDayString(new Date(atISO)),
+  });
 }
 
 module.exports = {
@@ -370,4 +404,6 @@ module.exports = {
   readCallCounter,
   readCircuit,
   setCircuit,
+  circuitFromDoc,
+  etDayString,
 };

@@ -227,13 +227,33 @@ export function fitCurve(samples, { defaults = DEFAULT_CURVE, serviceMin = SERVI
       const mph = measured != null ? measured : curveMph(at * METERS_PER_MILE, defaults);
       pts.push({ at, mph, n: b.travels.length, measured, lo: b.lo, hi: b.hi });
     }
-    // ISOTONIC: effective speed may not fall as legs get longer. A measured inversion is
-    // noise (a bucket of 31 samples through one bad intersection), and shipping it would
-    // make a 9-mile leg predict SLOWER than a 7-mile one — cummax flattens it upward.
+    // ISOTONIC, OVER MEASUREMENTS ONLY. Effective speed may not fall as legs get longer: a
+    // measured inversion is noise (a bucket of 31 samples through one bad intersection), and
+    // shipping it would make a 9-mile leg predict SLOWER than a 7-mile one, so cummax
+    // flattens it upward.
+    //
+    // The running max used to absorb `p.mph`, which falls back to the DEFAULT curve when a
+    // bucket has too few samples. So an unmeasured bucket's guess became a permanent SPEED
+    // FLOOR for every longer bucket — including ones with real measurements saying slower —
+    // and long corridors got priced too fast. That is the dangerous direction: an ETA that
+    // is optimistic on the longest legs says a truck will make a close it will miss, on
+    // exactly the runs with the least slack to absorb it. The isotonic argument was only
+    // ever about measurement noise; a default is not a measurement and has no business
+    // setting a floor over one.
+    //
+    // A bucket with no measurement still needs a number, and the default for its distance is
+    // the honest one — raised to the measured envelope below it, never above it. That can
+    // leave `used` dipping at a measured bucket that follows a faster guess, and it should:
+    // between something we measured and something we assumed, the measurement wins.
     let run = 0;
     for (const p of pts) {
-      run = Math.max(run, Math.min(MPH_MAX, Math.max(MPH_MIN, p.mph)));
-      p.used = run;
+      const clamped = Math.min(MPH_MAX, Math.max(MPH_MIN, p.mph));
+      if (p.measured != null) {
+        run = Math.max(run, clamped);
+        p.used = run;
+      } else {
+        p.used = Math.max(run, clamped);
+      }
     }
     return pts;
   };

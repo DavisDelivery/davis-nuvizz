@@ -270,3 +270,42 @@ test('sendAlerts reports WHICH stops it actually reached, not which it intended 
     }),
   ]);
 });
+
+// ── THE CLOCK WRAPS, AND THE EMAIL DID NOT (bug hunt, Aug 2026) ─────────────
+
+test('a past-midnight ETA does not print as the SAME TIME IN THE AFTERNOON', () => {
+  // The board's minutes keep counting past midnight — a route that leaves late on a bad day
+  // walks its last stops into tomorrow, and 12:30am is minute 1470. Unwrapped, `h >= 12`
+  // read 24 as afternoon, so the subject a customer-service rep opens said "ETA 12:30p" for
+  // a truck arriving at 12:30 IN THE MORNING. Twelve hours wrong in the direction nobody
+  // checks, because a same-day-looking time raises no question at all.
+  const c = {
+    stopNbr: '007165047', customer: 'METRO', routeName: 'DUL 2', tier: 'red',
+    closeMin: 8 * 60 + 30, etaMin: 1470, lateBy: 960, anchored: false,
+  };
+  const { subject, text } = buildAlert(c, '2026-08-24');
+  assert.ok(!/12:30p/.test(subject), `printed an afternoon time for a 12:30am arrival: ${subject}`);
+  assert.match(subject, /12:30a/);
+  // AND IT SAYS WHICH DAY. "closes 8:30a, ETA 12:30a" reads as arriving four hours EARLY,
+  // which is the opposite of what it means — wrapping the clock alone does not make the
+  // sentence true.
+  assert.match(subject, /next day/);
+  assert.match(text, /12:30a/);
+});
+
+test('a same-day time is untouched — the fix must not reword the ordinary case', () => {
+  const c = { stopNbr: '1', customer: 'ACME', tier: 'red', closeMin: 14 * 60, etaMin: 14 * 60 + 35, lateBy: 35, anchored: true };
+  const { subject } = buildAlert(c, '2026-08-24');
+  assert.match(subject, /closes 2:00p, ETA 2:35p/);
+  assert.ok(!/next day|previous day/.test(subject));
+});
+
+test('a missing or negative minute prints a word, not "-1:-30a" or "NaN:NaNa"', () => {
+  // The evening sweep rebases its clock onto tomorrow's board with etMin - 1440, so a
+  // negative minute is reachable; and closeMin was formatted with no finite check at all.
+  const neg = buildAlert({ stopNbr: '1', customer: 'ACME', tier: 'red', closeMin: 14 * 60, etaMin: -30, lateBy: 5 }, '2026-08-24');
+  assert.ok(!/-1:|NaN/.test(neg.subject), neg.subject);
+  assert.match(neg.subject, /11:30p \(previous day\)/);
+  const none = buildAlert({ stopNbr: '1', customer: 'ACME', tier: 'red', closeMin: null, etaMin: null, lateBy: 5 }, '2026-08-24');
+  assert.ok(!/NaN/.test(none.subject + none.text), `${none.subject} / ${none.text}`);
+});

@@ -133,11 +133,35 @@ function finiteMinutes(v: any): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+// THE CLOCK WRAPS, AND THIS DID NOT. A projected arrival can land past midnight — a route
+// departing late on a bad day walks its last stops into tomorrow — and the board's own
+// minutes just keep counting (1470 is 12:30am). Unwrapped, `h >= 12` read 24 as afternoon
+// and the subject line a rep opens said "ETA 12:30p" for a truck arriving at 12:30 IN THE
+// MORNING. Twelve hours wrong, in the direction that looks entirely plausible: nobody
+// double-checks a same-day-looking time. Negative minutes (the evening sweep rebases its
+// clock onto tomorrow's board with etMin - 1440) printed "-1:-30a".
+//
+// Normalised the same way flag-sms.fmtMin already does it — that path got this right and
+// this one did not, which is how one message was correct and its sibling was not.
 const hhmm = (m: number) => {
-  const h = Math.floor(m / 60), x = m % 60;
-  const ampm = h >= 12 ? 'p' : 'a';
-  const h12 = h % 12 === 0 ? 12 : h % 12;
-  return `${h12}:${String(x).padStart(2, '0')}${ampm}`;
+  if (!Number.isFinite(m)) return 'unknown';
+  const mm = ((Math.round(m) % 1440) + 1440) % 1440;
+  const h12 = ((Math.floor(mm / 60) + 11) % 12) + 1;
+  const ap = mm < 720 ? 'a' : 'p';
+  return `${h12}:${String(mm % 60).padStart(2, '0')}${ap}`;
+};
+
+/**
+ * A TIME PAST MIDNIGHT HAS TO SAY SO. "closes 8:30a, ETA 12:30a" reads as arriving four
+ * hours EARLY, which is the opposite of what it means — the wrap alone is not enough to make
+ * the sentence true. Same-day times are left exactly as they were.
+ */
+const hhmmDay = (m: number) => {
+  if (!Number.isFinite(m)) return 'unknown';
+  const t = hhmm(m);
+  if (m >= 1440) return `${t} next day`;
+  if (m < 0) return `${t} (previous day)`;
+  return t;
 };
 
 /**
@@ -272,8 +296,8 @@ export function selectAlertable(rows: any[], nowMin: number | null, amberGateMin
 
 /** PURE. The message. Says what is wrong, when it closes, and what the estimate rests on. */
 export function buildAlert(c: AlertCandidate, date: string): { subject: string; text: string; html: string } {
-  const eta = Number.isFinite(c.etaMin) ? hhmm(c.etaMin) : 'unknown';
-  const close = hhmm(c.closeMin);
+  const eta = hhmmDay(c.etaMin as any);
+  const close = hhmmDay(c.closeMin as any);
   const basis = c.anchored
     ? 'projected from a real arrival already recorded on this route'
     : 'projected from the planned start — no stop on this route has reported in yet';

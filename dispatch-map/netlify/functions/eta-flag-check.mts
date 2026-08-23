@@ -22,7 +22,7 @@
 import { isFirestoreEnabled, readStops, getDoc, listDocs, etDayString } from './lib/firestore.mts';
 import { computeBoardFlags, isFinishedStop, dayReceivingWindow, parseClockMin } from '../../src/lib/board-flags.js';
 import { legSecondsMap, travelLegsPath, readTravelCalibration, readRouteClasses } from './lib/travel-store.mts';
-import { routeDeparturePath } from './lib/route-departure.mts';
+import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mts';
 import { flagHistoryPath } from './lib/flag-history.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, DAILY_ALERT_CAP, ALERT_TIERS, AMBER_LEAD_GATE_MIN, alertBandOf, finiteMinutes } from './lib/flag-alert.mts';
@@ -334,7 +334,7 @@ export default async (req: Request): Promise<Response> => {
     // Measured per-route departures, same table the sweeps judge on — so the dry twin
     // cannot disagree with the alert about when a truck leaves.
     const departDoc = await getDoc(routeDeparturePath(TENANT)).catch(() => null);
-    const departByRoute = departDoc?.table || null;
+    const departByRoute = readDepartureTable(departDoc);
     // Severity ratchets on the day's own history (see tierFloorLookup). The dry twin reads
     // the SAME floor as the sweeps and the screen — a twin that judged a row one tier calmer
     // than the board would answer "what would the alert do" with something the alert would

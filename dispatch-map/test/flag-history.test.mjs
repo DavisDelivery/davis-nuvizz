@@ -11,6 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   mergeSweep, classifyOutcome, scoreRow, summarize, worseTier, flagHistoryPath,
+  rollCheckDate, ROLL_LOOKAHEAD_DAYS,
 } from '../netlify/functions/lib/flag-history.mts';
 
 import { auditRows } from '../netlify/functions/lib/flag-rows.mts';
@@ -249,4 +250,40 @@ test('auditRows is the panel list when nothing was suppressed', () => {
   assert.deepEqual(auditRows(flags), flags.rows);
   assert.deepEqual(auditRows({ rows: [row()] }), flags.rows, 'and it tolerates the field being absent');
   assert.deepEqual(auditRows(null), []);
+});
+
+// ── EVERY FRIDAY WAS PERMANENTLY "UNKNOWN" (bug hunt, Aug 2026) ─────────────
+
+test('a FRIDAY flag is graded against MONDAY — Saturday has no board and never will', () => {
+  // "Rolled" vs "never delivered" is decided by whether the stop turned up on a later board,
+  // and the scorer asked about day+1 and nothing else. On a Friday that is Saturday, Davis
+  // does not run, no board is ever captured — so seenLater was null forever, every Friday
+  // flag read "unknown" for good, and needsOutcomeRescore stayed true, so the nightly sweep
+  // re-read those days every night until they aged out still ungraded. A fifth of the week
+  // could not answer the question the table exists to ask, and nothing went red: a history
+  // full of shrugs looks exactly like a quiet week.
+  const weekdayBoards = new Set(['2026-08-24']);            // Mon; Sat 22nd + Sun 23rd empty
+  assert.equal(rollCheckDate('2026-08-21', (d) => weekdayBoards.has(d)), '2026-08-24');
+});
+
+test('an ordinary Tuesday still settles on Wednesday — the walk changes nothing normal', () => {
+  const boards = new Set(['2026-08-19', '2026-08-20']);
+  assert.equal(rollCheckDate('2026-08-18', (d) => boards.has(d)), '2026-08-19');
+});
+
+test('a long holiday weekend is still reachable, and beyond that we say we cannot tell', () => {
+  // Fri + a Monday holiday → Tuesday, four days out, which is the real calendar this runs on.
+  assert.equal(rollCheckDate('2026-11-27', (d) => d === '2026-12-01'), '2026-12-01');
+  // Nothing captured in range is STILL "we cannot tell", not "never delivered". The further
+  // out you look the weaker the evidence, so the walk is bounded rather than unlimited.
+  assert.equal(rollCheckDate('2026-08-21', () => false), null);
+  assert.equal(rollCheckDate('2026-08-21', (d) => d === '2026-09-30'), null, 'a month later proves nothing');
+  assert.equal(ROLL_LOOKAHEAD_DAYS, 4);
+});
+
+test('AND THEN THE OUTCOME RESOLVES: the same row reads unknown, then rolled', () => {
+  const row = { closeMin: 14 * 60, arrivalMin: null, finished: false };
+  assert.equal(classifyOutcome({ ...row, seenLater: null }), 'unknown', 'before any later board existed');
+  assert.equal(classifyOutcome({ ...row, seenLater: true }), 'rolled', 'once Monday is sealed and carries it');
+  assert.equal(classifyOutcome({ ...row, seenLater: false }), 'undelivered', 'or Monday is sealed and does not');
 });
