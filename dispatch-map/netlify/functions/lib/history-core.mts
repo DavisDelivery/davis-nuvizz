@@ -31,7 +31,7 @@ import {
   upsertStops, upsertRoutes, upsertDrivers, upsertDriverDayPointer,
 } from './history-store.mts';
 import { finalizeCaptureSeal, recordCaptureFailure, type CaptureStage } from './history-seal.mts';
-import { runPostSealHooks } from './history-postseal.mts';
+import { runPostSealHooks, recordPostSealOutcome } from './history-postseal.mts';
 
 const TENANT = 'davis';
 // Keep in sync with src/App.jsx APP_VERSION. Stamped onto every manifest/capture
@@ -225,6 +225,23 @@ export async function captureDate(date: string): Promise<any> {
   });
   const { verified, sealed, counts, checksum } = sealRes;
 
+  // Post-seal derivations: per-customer rollup, tractor PAINT, and the routing
+  // miners. Shared with the heal path (history-postseal.runPostSealHooks) so a
+  // healed day is painted/mined identically to a cleanly-captured one. Each hook
+  // is independently guarded and re-derivable from the warehouse; a hook failure
+  // never fails the (already-sealed) capture. Zero NuVizz calls.
+  //
+  // THEY RUN BEFORE THE LINEAGE APPEND SO THE LINEAGE CAN SAY WHETHER THEY WORKED.
+  // runPostSealHooks has always returned an `ok`, and every caller discarded it: a night
+  // where the paint or a miner failed sealed green, returned ok: true and left no record
+  // anywhere a person looks. Everything here IS re-derivable — that is why a hook failure
+  // is allowed to be non-fatal — but nobody re-derives what nobody knows is missing, and an
+  // unpainted, unmined day just goes quietly absent from the engine's training set.
+  const postSeal = (verified && sealed) ? await runPostSealHooks(TENANT, date, stopRecords) : null;
+  // ...and on the manifest too, field-masked, because the capture-health strip reads
+  // manifests and would otherwise need a per-day capture scan to see this.
+  const postSealRecorded = postSeal ? await recordPostSealOutcome(TENANT, date, postSeal) : false;
+
   // Append-only lineage — recorded for EVERY run, including failures. Written
   // after the seal step so it carries the verified/sealed outcome + attempt count.
   // GUARDED: this is audit lineage, not the source of truth. If it throws it must
@@ -235,6 +252,8 @@ export async function captureDate(date: string): Promise<any> {
       tenant: TENANT, date, capture_version: version,
       captured_at: capture.captured_at, app_version: APP_VERSION, source_scanned_at: sourceScannedAt,
       checksum, intended, persisted: counts, verified, sealed,
+      post_seal_ok: postSeal ? postSeal.ok : null,
+      post_seal: postSeal ? postSeal.hooks : null,
       verify_detail: sealRes.detail,
       absent_from_this_capture: absentFromThisCapture,
       absent_kept_count: absentFromThisCapture.length,
@@ -251,14 +270,15 @@ export async function captureDate(date: string): Promise<any> {
     return { date, ok: false, verified, sealed, capture_version: version, intended, persisted: counts };
   }
 
-  // Post-seal derivations: per-customer rollup, tractor PAINT, and the routing
-  // miners. Shared with the heal path (history-postseal.runPostSealHooks) so a
-  // healed day is painted/mined identically to a cleanly-captured one. Each hook
-  // is independently guarded and re-derivable from the warehouse; a hook failure
-  // never fails the (already-sealed) capture. Zero NuVizz calls.
-  const postSeal = await runPostSealHooks(TENANT, date, stopRecords);
-
-  return { date, ok: true, verified: true, sealed: true, capture_version: version, counts, absent_kept: absentFromThisCapture.length, post_seal: postSeal.hooks };
+  return {
+    date, ok: true, verified: true, sealed: true, capture_version: version, counts,
+    absent_kept: absentFromThisCapture.length,
+    // ok is about the CAPTURE, which sealed. post_seal_ok is a separate claim and it is
+    // reported separately rather than folded in — a derivation that has to be re-run is not
+    // the same event as a night that did not seal, and collapsing them would either cry wolf
+    // on the seal or hide the derivation.
+    post_seal_ok: postSeal!.ok, post_seal: postSeal!.hooks, post_seal_recorded: postSealRecorded,
+  };
   } catch (e: any) {
     // Any unexpected throw (scan/derive/upsert/append) — the day did NOT seal, so
     // leave a LOUD, correctly-staged failure record before propagating. The seal

@@ -18,6 +18,8 @@
 // throw is logged loudly so a broken hook is visible in the function log. All
 // hooks are Firestore-only (ZERO NuVizz calls) and honor their own kill switches
 // (TRACTOR_FLAGS=off, ROUTING_ENGINE=off).
+import { updateDocFields } from './firestore.mts';
+import { dayPath } from './history-store.mts';
 import { updateCustomerRollupsForDay } from './history-customers.mts';
 import { updateTractorFlagsForDay } from './tractor-flags.mts';
 import { updateRoutingReferencesForDay } from './routing-reference.mts';
@@ -56,4 +58,37 @@ export async function runPostSealHooks(
     }
   }
   return { ok: Object.values(hooks).every((h) => h.ok), hooks };
+}
+
+/**
+ * RECORD WHETHER THE DERIVATIONS ACTUALLY RAN, on the day's own manifest.
+ *
+ * `runPostSealHooks` computed an `ok` and every caller threw it away, so a night where the
+ * paint or a miner failed sealed green, returned ok: true, and reported nothing anywhere a
+ * person looks. The warehouse can re-derive all of it — that is why a hook failure is
+ * allowed to be non-fatal — but nobody re-derives what nobody knows is missing, and an
+ * unpainted, unmined day is silently absent from the engine's training set.
+ *
+ * FIELD-MASKED, never setManifest: setDoc REPLACES, and this write lands on an
+ * already-sealed manifest. Writing it the lazy way would take the seal with it.
+ *
+ * Best-effort in its own right — this is a status field, and failing to write it must never
+ * turn a sealed night into a failed one. Returns whether the write landed rather than
+ * throwing, because "we could not record it" is itself something the caller may want to say.
+ */
+export async function recordPostSealOutcome(
+  tenant: string, date: string, postSeal: { ok: boolean; hooks: Record<string, { ok: boolean; error?: string }> },
+  at: string = new Date().toISOString(),
+): Promise<boolean> {
+  const failed = Object.entries(postSeal?.hooks || {}).filter(([, h]) => !h?.ok).map(([n]) => n);
+  try {
+    return await updateDocFields(dayPath(tenant, date), {
+      post_seal_ok: !!postSeal?.ok,
+      post_seal_failed: failed,
+      post_seal_at: at,
+    });
+  } catch (e: any) {
+    console.error(`[postseal] could not record derivation outcome for ${date}:`, e?.message);
+    return false;
+  }
 }

@@ -24,7 +24,7 @@ import {
 } from './lib/history-store.mts';
 import { deriveRoutes, deriveDrivers, type CaptureMeta, type DeriveCtx } from './lib/history-derive.mts';
 import { finalizeCaptureSeal, getCaptureFailure, classifyHealTarget, recordCaptureFailure } from './lib/history-seal.mts';
-import { runPostSealHooks } from './lib/history-postseal.mts';
+import { runPostSealHooks, recordPostSealOutcome } from './lib/history-postseal.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -107,9 +107,16 @@ async function healDate(date: string): Promise<any> {
   // was that heal resealed the manifest but never re-ran these, so recovered days
   // got a manifest yet their tractor_locations / routing_* were never written.
   // Same shared hook block the nightly capture uses; only after a real seal.
+  //
+  // And whether they worked is RECORDED, on the manifest, field-masked. A heal that reseals
+  // a day and then silently fails to paint it leaves exactly the hole heal exists to close.
   let postSeal: any = null;
+  let postSealOk: boolean | null = null;
   if (sealRes.sealed) {
-    postSeal = (await runPostSealHooks(TENANT, date, storedStops)).hooks;
+    const res = await runPostSealHooks(TENANT, date, storedStops);
+    postSeal = res.hooks;
+    postSealOk = res.ok;
+    await recordPostSealOutcome(TENANT, date, res);
   }
 
   return {
@@ -118,6 +125,7 @@ async function healDate(date: string): Promise<any> {
     verified: sealRes.verified,
     counts: sealRes.counts,
     checksum: sealRes.checksum,
+    post_seal_ok: postSealOk,
     post_seal: postSeal,
     original_diagnosis: {
       prior_audit_verified: priorVerified,

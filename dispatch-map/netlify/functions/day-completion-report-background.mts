@@ -148,7 +148,11 @@ export default async (): Promise<Response> => {
       const { stops: prevStops } = await readStops(TENANT, prev);
       const rec = reconcileDay(prevDoc.snapshot, prevStops || []);
       const ok = await writeDayReconciliation(TENANT, prev, rec);
-      out.reconciled = { date: prev, written: ok, closedAfter: rec.closedAfter, stillOpen: rec.stillOpen };
+      out.reconciled = {
+        date: prev, written: ok,
+        closedAfter: rec.closedAfter, failedAfter: rec.failedAfter,
+        cancelledAfter: rec.cancelledAfter, stillOpen: rec.stillOpen,
+      };
     }
   } catch (e: any) {
     out.ok = false;

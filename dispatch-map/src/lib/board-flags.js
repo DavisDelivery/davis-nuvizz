@@ -689,6 +689,8 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     (isPickupStop(s) || isOwnFacility(s)) ? null : dayReceivingWindow(noteOf(s), day)
   );
   const rows = [];
+  // Rows a later rule took off the panel. Kept, never rendered — see the R6 supersede block.
+  const suppressed = [];
   const skipped = { noRoster: false, ambiguousRoutes: [], routesNoSequence: [], routesAppointment: [], stopsNoPosition: 0 };
   for (const k of [...new Set(open.filter(onAppointmentRoute).map(routeKeyOf))]) if (k) skipped.routesAppointment.push(k);
   // What the detector actually LOOKED at — the panel shows these so a quiet board can
@@ -1257,9 +1259,24 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         // clock still lands hours before a 2:00p close, so R5 says nothing). Once the clock
         // does cross, both fire. Suppressing R5 here loses nothing: every stop it would
         // have named is already inside R6's count, and R6 names the earliest one.
+        //
+        // BUT SUPPRESSING A ROW IS A DECISION ABOUT THE PANEL AND THE INBOX, NOT ABOUT THE
+        // RECORD. These rows were deleted outright, and flag history only keeps `hours_risk`
+        // — so on a driverless route the audit recorded NOTHING: no first sighting, no lead
+        // time, no worst tier, no outcome. The one table that exists to answer "how much
+        // warning did we get, and were we right" went blind on exactly the routes with the
+        // biggest problem, and it went blind silently, because a route with no rows and a
+        // route with no trouble look the same in it.
+        //
+        // They come back on their own array instead. Nothing that renders or emails reads
+        // it — the panel, the caps, the counts, the alerts and the texts all still work off
+        // `rows` and still see one card — and the audit opts in explicitly.
         if (supersededRows.length) {
           const drop = new Set(supersededRows);
           for (let i = rows.length - 1; i >= 0; i -= 1) if (drop.has(rows[i])) rows.splice(i, 1);
+          for (const sup of supersededRows) {
+            suppressed.push({ ...sup, suppressedBy: 'no_driver_hours', suppressedRoute: k });
+          }
         }
       }
     }
@@ -1335,6 +1352,10 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
 
   return {
     rows: capped,
+    // THE ROWS THE PANEL DOES NOT SHOW. Real hours_risk predictions that a no-driver card
+    // superseded — one situation, one card — handed to the audit so the record of what this
+    // board predicted stays complete. Do NOT feed this to a renderer or to the alert path.
+    suppressedRows: suppressed,
     // criticalCount is reported separately AND folded into redCount. Every existing caller
     // reads redCount to decide whether the board is in trouble; if critical were its own
     // count only, promoting a row from red to critical would DECREASE redCount and the chip

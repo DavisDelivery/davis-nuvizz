@@ -654,6 +654,35 @@ test('a driverless route reports ONCE — the no-driver card supersedes the arri
   assert.match(noDriver[0].title, /MCNAUGHTON MCKAY ELECTRIC|must make/);
 });
 
+test('the superseded arrival card is still RECORDED — the panel hides it, the audit does not', () => {
+  // It was deleted outright, and flag history keeps only `hours_risk` — so a driverless
+  // route recorded NOTHING: no first sighting, no lead time, no worst tier, no outcome. The
+  // one table built to answer "how much warning did we get, and were we right" went blind on
+  // exactly the routes in the most trouble, and blind silently: no rows and no problems look
+  // the same in it.
+  const notesObj = {
+    'mck|k': note({ receiving_hours: { mon: { open: '08:00', close: '11:30' } }, manual_overrides: { receiving_hours: true } }),
+  };
+  const stops = [stop({ stopNbr: '5', routeSeq: 5, matchKey: 'mck|k', businessName: 'MCNAUGHTON MCKAY ELECTRIC' })];
+  const out = run(stops, notesObj, { opts: { ...OPTS, nowMin: 11 * 60 + 20 } });
+
+  assert.equal(out.rows.filter((r) => r.rule === 'hours_risk').length, 0, 'still one card on the panel');
+  const kept = (out.suppressedRows || []).filter((r) => r.rule === 'hours_risk');
+  assert.equal(kept.length, 1, 'and the prediction it replaced survives for the record');
+  assert.equal(String(kept[0].stopNbr), '5');
+  assert.equal(kept[0].suppressedBy, 'no_driver_hours');
+  assert.ok(kept[0].closeMin != null, 'without a close there is no lead time to record');
+});
+
+test('suppressedRows is EMPTY when nothing was superseded — absent is not the same as hidden', () => {
+  const notesObj = {
+    'mck|k': note({ receiving_hours: { mon: { open: '08:00', close: '11:30' } }, manual_overrides: { receiving_hours: true } }),
+  };
+  const stops = [stop({ stopNbr: '5', routeSeq: 5, matchKey: 'mck|k', driverName: 'MICHAEL THARP' })];
+  const out = run(stops, notesObj, { opts: { ...OPTS, nowMin: 11 * 60 + 20 } });
+  assert.deepEqual(out.suppressedRows, [], 'a driver is assigned — nothing was taken off the panel');
+});
+
 test('a route WITH a driver still gets its arrival card — the supersede is scoped to the route', () => {
   const notesObj = {
     'mck|k': note({ receiving_hours: { mon: { open: '08:00', close: '11:30' } }, manual_overrides: { receiving_hours: true } }),

@@ -200,8 +200,8 @@ function stubRoutes(page, emailHtml) {
     if (u.includes('nuvizz-pull-today-stops') || u.includes('nuvizz-board')) return R({ ok: true, stops: STOPS, count: STOPS.length, date: '2026-08-17' });
     if (u.includes('day-completion') && u.includes('history=1')) return R({ ok: true, days: [
       { date: '2026-08-20', open: 12, completionRate: 0.94, manualRate: 0.2, counts: {}, reconciled: null },
-      { date: '2026-08-19', open: 31, completionRate: 0.88, manualRate: 0.3, counts: {}, reconciled: { closedAfter: 24, stillOpen: 7, lateCloseRate: 0.77 } },
-      { date: '2026-08-18', open: 9, completionRate: 0.97, manualRate: 0.1, counts: {}, reconciled: { closedAfter: 8, stillOpen: 1, lateCloseRate: 0.89 } },
+      { date: '2026-08-19', open: 31, completionRate: 0.88, manualRate: 0.3, counts: {}, reconciled: { openAtSnapshot: 31, closedAfter: 22, failedAfter: 2, cancelledAfter: 0, stillOpen: 7, lateCloseRate: 0.71 } },
+      { date: '2026-08-18', open: 9, completionRate: 0.97, manualRate: 0.1, counts: {}, reconciled: { openAtSnapshot: 9, closedAfter: 8, failedAfter: 0, cancelledAfter: 0, stillOpen: 1, lateCloseRate: 0.89 } },
     ] });
     if (u.includes('day-completion')) return R({
       ok: true, date: '2026-08-20',

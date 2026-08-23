@@ -31,6 +31,7 @@ import { loadVehicleRoster, vehicleTypeForStop } from './lib/tractor-flags.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { selectAlertable, sendAlerts, ALERT_TO, AMBER_LEAD_GATE_MIN, ALERT_COLLECTION } from './lib/flag-alert.mts';
 import { mergeSweep, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
+import { auditRows } from './lib/flag-rows.mts';
 import { emailEnabled } from './lib/email.mts';
 
 const TENANT = 'davis';
@@ -234,7 +235,7 @@ export default async (req: Request): Promise<Response> => {
       try {
         const path = flagHistoryPath(TENANT, date);
         const prev = await getDoc(path);
-        const merged = mergeSweep(prev?.rows, flags.rows, {
+        const merged = mergeSweep(prev?.rows, auditRows(flags), {
           nowMin, atISO: new Date().toISOString(), emailedStops,
         });
         await setDoc(path, {

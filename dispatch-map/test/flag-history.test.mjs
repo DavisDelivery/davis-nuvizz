@@ -13,6 +13,9 @@ import {
   mergeSweep, classifyOutcome, scoreRow, summarize, worseTier, flagHistoryPath,
 } from '../netlify/functions/lib/flag-history.mts';
 
+import { auditRows } from '../netlify/functions/lib/flag-rows.mts';
+import { computeBoardFlags } from '../src/lib/board-flags.js';
+
 const NOON = 12 * 60;
 const row = (o = {}) => ({
   rule: 'hours_risk', stopNbr: '007164290', customer: 'SIMPLY CHARLOTTE MASON',
@@ -204,4 +207,46 @@ test('a day with nothing gradable reports null, not 0% and not 100%', () => {
 
 test('the day path is namespaced by tenant and date', () => {
   assert.equal(flagHistoryPath('davis', '2026-08-19'), 'eta_flag_history/davis__2026-08-19');
+});
+
+
+// ── WHAT THE RECORDING PATH IS ALLOWED TO MISS (bug hunt, Aug 2026) ──────────
+
+test('a DRIVERLESS route lands in flag history — the panel shows one card, the record keeps both', () => {
+  // The no-driver card supersedes a driverless route's hours_risk rows, which is right for a
+  // screen and an inbox: one situation, one card. It deleted them, and mergeSweep keeps only
+  // `hours_risk` — so the routes in the WORST trouble contributed nothing at all to the table
+  // that measures whether flagging works. Built from the real engine, not a hand-written row,
+  // because the whole failure was in the shape the engine actually emits.
+  const stops = [{
+    stopNbr: '5', routeSeq: 5, loadNbr: 'SUW', routeName: 'SUW', status: '20',
+    normalizedStatus: 'SCHEDULED', isPlanned: true, stopType: 'DO',
+    matchKey: 'mck|k', businessName: 'MCNAUGHTON MCKAY ELECTRIC',
+    addr1: '1 Main', city: 'Buford', lat: 34.10, lng: -84.00,
+  }];
+  const notes = new Map([['mck|k', {
+    receiving_hours: { mon: { open: '08:00', close: '11:30' } },
+    manual_overrides: { receiving_hours: true },
+  }]]);
+  const flags = computeBoardFlags({
+    stops, notes, servedDate: '2026-08-10', dayKey: 'mon', rosterRows: [],
+    opts: { depot: { lat: 34.147791, lng: -83.960911 }, departMin: 8 * 60, nowMin: 11 * 60 + 20 },
+  });
+
+  assert.equal(flags.rows.filter((r) => r.rule === 'hours_risk').length, 0, 'panel: one card');
+  const bare = sweep(null, flags.rows, 11 * 60 + 20).rows;
+  assert.deepEqual(Object.keys(bare), [], 'this is the bug: the panel list records nothing');
+
+  const { rows } = sweep(null, auditRows(flags), 11 * 60 + 20);
+  assert.deepEqual(Object.keys(rows), ['5']);
+  assert.equal(rows['5'].closeMin, 11 * 60 + 30);
+  assert.equal(rows['5'].firstSeenMin, 11 * 60 + 20, 'the first sighting is recorded at all');
+  assert.equal(rows['5'].leadMin, 10, 'and so is how much warning it gave');
+});
+
+test('auditRows is the panel list when nothing was suppressed', () => {
+  const flags = { rows: [row()], suppressedRows: [] };
+  assert.deepEqual(auditRows(flags), flags.rows);
+  assert.deepEqual(auditRows({ rows: [row()] }), flags.rows, 'and it tolerates the field being absent');
+  assert.deepEqual(auditRows(null), []);
 });

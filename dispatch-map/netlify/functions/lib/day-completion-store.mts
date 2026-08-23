@@ -83,7 +83,18 @@ export async function listDayCompletions(tenant: string, limitDays = HISTORY_DAY
       // Present only once the day has been graded. A chart must be able to tell "nothing
       // rolled" from "not graded yet" — they are the same shape and opposite meanings.
       reconciled: d.reconciliation
-        ? { closedAfter: d.reconciliation.closedAfter, stillOpen: d.reconciliation.stillOpen, lateCloseRate: d.reconciliation.lateCloseRate }
+        ? {
+            openAtSnapshot: d.reconciliation.openAtSnapshot ?? 0,
+            closedAfter: d.reconciliation.closedAfter ?? 0,
+            // Days graded before these buckets existed have no value here, and 0 is the
+            // honest reading: the old grader put refusals in closedAfter, so it is not that
+            // there were none, it is that they were never separated. The chart draws what
+            // was recorded rather than inventing a split it cannot know.
+            failedAfter: d.reconciliation.failedAfter ?? 0,
+            cancelledAfter: d.reconciliation.cancelledAfter ?? 0,
+            stillOpen: d.reconciliation.stillOpen ?? 0,
+            lateCloseRate: d.reconciliation.lateCloseRate ?? null,
+          }
         : null,
     }))
     .sort((a: any, b: any) => String(b.date).localeCompare(String(a.date)))
