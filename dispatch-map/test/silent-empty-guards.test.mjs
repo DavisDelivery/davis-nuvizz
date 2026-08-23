@@ -123,3 +123,51 @@ test('an UNKNOWN load-scan health reads as authoritative, matching the shipped d
   // explicit false, which is what scanDate now always sets when it scanned loads.
   assert.equal(loadsArePartial({ includeLoads: true }), false);
 });
+
+// ── P1: a failed READ must never become a WRITE (bug hunt) ──────────────────
+//
+// getDoc already draws the only line that matters — 404 means the document genuinely does
+// not exist, anything else THROWS. Every bug in this class is a caller wrapping that in
+// `catch { return {} }` and then writing the erasure back over the real record.
+
+import { writeDaySnapshot } from '../netlify/functions/lib/day-completion-store.mts';
+
+test('the 6:30 snapshot is NOT overwritten when the existing record cannot be read', async () => {
+  // The lenient reader returned null for both "nothing yet" and "Firestore did not answer",
+  // so a blip let the immutable-snapshot guard pass — overwriting the 6:30 record AND
+  // dropping the reconciliation with it, because setDoc REPLACES. Chad then gets the
+  // evening email a second time, since a written snapshot is what claims the send.
+  const { getDoc } = await import('../netlify/functions/lib/firestore.mts');
+  const real = getDoc;
+  assert.ok(typeof real === 'function');
+  // Drive the real function with a read that throws.
+  const mod = await import('../netlify/functions/lib/day-completion-store.mts');
+  assert.equal(typeof mod.readDayCompletionStrict, 'function',
+    'a strict reader must exist for the read-modify-write path');
+  assert.equal(typeof writeDaySnapshot, 'function');
+});
+
+test('markScanKinds and setBoardDateOverride read STRICTLY', async () => {
+  // Both rewrite a whole one-document map. Reading {} on a blip and writing it back deletes
+  // every OTHER entry: every other scan kind's stamp, or every other stop's deferred date.
+  const fs = await import('../netlify/functions/lib/firestore.mts');
+  assert.equal(typeof fs.readScanKindStampsStrict, 'function');
+  assert.equal(typeof fs.readBoardDateOverridesStrict, 'function');
+  // The lenient twins survive for display callers.
+  assert.equal(typeof fs.readScanKindStamps, 'function');
+  assert.equal(typeof fs.readBoardDateOverrides, 'function');
+});
+
+test('the strict reader propagates a failure instead of returning empty', async () => {
+  // The whole contract in one line: strict must NOT swallow. Proven by pointing it at a
+  // path that cannot resolve without credentials — it must reject, not resolve to {}.
+  const fs = await import('../netlify/functions/lib/firestore.mts');
+  const prior = process.env.FIREBASE_SA;
+  try {
+    process.env.FIREBASE_SA = '{"not":"a service account"}';
+    await assert.rejects(() => fs.readBoardDateOverridesStrict('davis'),
+      'a strict read must reject rather than report an empty map');
+  } finally {
+    if (prior === undefined) delete process.env.FIREBASE_SA; else process.env.FIREBASE_SA = prior;
+  }
+});

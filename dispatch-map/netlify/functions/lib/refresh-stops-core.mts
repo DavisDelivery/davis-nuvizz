@@ -1043,11 +1043,33 @@ export async function runRefreshStops(req: Request): Promise<Response> {
 
         // This day's prior index — carries same-day enriched detail forward + seeds coords.
         // Cross-day "already enriched" memory lives in the per-PRO registry (below), not here.
+        // "NO PRIOR INDEX" AND "COULD NOT READ THE PRIOR INDEX" ARE NOT THE SAME DAY.
+        //
+        // This catch made them identical, and everything downstream is built on prevByNbr:
+        // an empty map makes `pullHealthy` vacuously TRUE (it short-circuits on size === 0),
+        // the carry-forward loop iterates nothing, and the write below runs with neither
+        // partialLoads nor partialUnplanned — a FULL PRUNE. So one unreadable read deletes
+        // every stop on the board that this pull happens not to mention: mid-flight stops
+        // between status flips, rolled freight, anything the two saved searches miss. The
+        // run then returns ok:true, because nothing threw.
+        //
+        // Same asymmetry as the load-probe guard: skipping a cycle costs ten minutes of
+        // staleness, and pruning against a failed read costs the day's board with nothing
+        // saying why. A genuinely new day still reads as an empty map and proceeds — that
+        // path is untouched.
         const prevByNbr = new Map<string, any>();
+        let priorUnreadable = false;
         try {
           const prev = await readStops(TENANT, date);
           for (const p of (prev?.stops || [])) prevByNbr.set(String(p.stopNbr), p);
-        } catch { /* no prior index */ }
+        } catch (e: any) {
+          priorUnreadable = true;
+          console.error(`[scan] ${date}: prior index UNREADABLE (${e?.message}) — skipping this date's write rather than pruning against it`);
+        }
+        if (priorUnreadable) {
+          results.push({ date, ok: false, skipped: 'prior-index-unreadable', source: 'list' });
+          continue;
+        }
 
         // Two-scan carry-forward: the two saved searches only cover open (20,10) and
         // finished (90,91,80) stops, so a stop mid-flight (in-transit/arrived) momentarily

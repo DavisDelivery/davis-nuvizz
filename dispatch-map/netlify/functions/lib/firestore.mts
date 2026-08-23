@@ -780,6 +780,18 @@ const OPS_COLLECTION = 'nuvizz_ops';
 // acting fire.
 const SCAN_KINDS_PATH = `${OPS_COLLECTION}/scan_kinds`;
 
+/** STRICT twin of readScanKindStamps — see readBoardDateOverridesStrict for why. */
+export async function readScanKindStampsStrict(): Promise<Record<string, string>> {
+  if (!isFirestoreEnabled()) return {};
+  const doc = await getDoc(SCAN_KINDS_PATH);
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(doc || {})) {
+    if (k.startsWith('_')) continue;
+    if (typeof v === 'string' && v) out[k] = v;
+  }
+  return out;
+}
+
 export async function readScanKindStamps(): Promise<Record<string, string>> {
   if (!isFirestoreEnabled()) return {};
   const doc = await getDoc(SCAN_KINDS_PATH).catch(() => null);
@@ -795,10 +807,23 @@ export async function readScanKindStamps(): Promise<Record<string, string>> {
  *  one kind cannot erase another kind's stamp and make it look overdue. */
 export async function markScanKinds(kinds: string[], atISO: string): Promise<void> {
   if (!isFirestoreEnabled() || !kinds?.length) return;
-  const prev = await readScanKindStamps().catch(() => ({}));
+  // A FAILED READ MUST NOT BECOME A WRITE. This doc holds one stamp per scan kind and is
+  // rewritten whole, so reading {} on a blip and writing back deletes every kind that did
+  // not just run. dueKinds then reads those as never-scanned, and the per-kind schedule
+  // collapses to "run everything" — the exact spend the schedule exists to bound.
+  let prev: Record<string, string>;
+  try {
+    prev = await readScanKindStampsStrict();
+  } catch (e: any) {
+    console.error(`[firestore] markScanKinds SKIPPED — could not read prior stamps (${e?.message}); refusing to write a partial map`);
+    return;
+  }
   const next: Record<string, string> = { ...prev };
   for (const k of kinds) next[k] = atISO;
-  await setDoc(SCAN_KINDS_PATH, next as any).catch(() => {});
+  // And say so when the write itself fails, rather than swallowing it: a stamp that did not
+  // land means this kind re-runs next cycle, which is a cost question worth seeing.
+  const ok = await setDoc(SCAN_KINDS_PATH, next as any).catch(() => false);
+  if (!ok) console.error(`[firestore] markScanKinds write FAILED for ${kinds.join(',')} — stamps not advanced`);
 }
 
 /**
@@ -1377,13 +1402,31 @@ const boardDatePath = (tenant: string) => `${BOARD_DATE_COLLECTION}/${String(ten
 /** Every live dispatcher-set board date: { stopNbr: 'YYYY-MM-DD' }. Empty when unset/unreadable
  *  — an override is an ADJUSTMENT, so losing it must degrade to normal filing, never to a blank
  *  board. */
+/**
+ * STRICT. Throws when Firestore could not be read. Use this in any READ-MODIFY-WRITE.
+ *
+ * getDoc already draws the only line that matters — 404 means the document genuinely does
+ * not exist, anything else THROWS — and the lenient wrapper below erases that distinction.
+ * That erasure is harmless for a screen (show nothing) and destructive for a writer: this
+ * map is stored as ONE document, so a caller that reads {} on a blip and then writes the
+ * map back has just deleted every other stop's deferral. Those are the "customer said not
+ * until the 30th" dates; losing them puts a truck at a dock that told us not to come.
+ */
+export async function readBoardDateOverridesStrict(tenant: string): Promise<Record<string, string>> {
+  const doc = await getDoc(boardDatePath(tenant));
+  if (!doc) return {};
+  const map = JSON.parse(doc.datesJson || '{}');
+  return map && typeof map === 'object' ? map : {};
+}
+
+/** Lenient: a read failure reads as "no overrides". Only safe for display. */
 export async function readBoardDateOverrides(tenant: string): Promise<Record<string, string>> {
   try {
-    const doc = await getDoc(boardDatePath(tenant));
-    if (!doc) return {};
-    const map = JSON.parse(doc.datesJson || '{}');
-    return map && typeof map === 'object' ? map : {};
-  } catch { return {}; }
+    return await readBoardDateOverridesStrict(tenant);
+  } catch (e: any) {
+    console.error(`[firestore] readBoardDateOverrides FAILED (${e?.message}) — reporting none; do NOT write from this`);
+    return {};
+  }
 }
 
 /** PURE: drop entries whose day is before `today` (and any malformed pair). Exported for tests. */
@@ -1438,7 +1481,10 @@ export function shiftBoardStopWindow(row: any, toDate: string): { scheduledFrom?
 export async function setBoardDateOverride(tenant: string, stopNbr: string, date: string | null, at: string): Promise<{ count: number; date: string | null }> {
   if (!isFirestoreEnabled()) return { count: 0, date: null };
   const today = etDayString();
-  const cur = pruneBoardDateOverrides(await readBoardDateOverrides(tenant), today);
+  // STRICT: a read failure must abort this save, not silently rewrite the document with
+  // only the stop in hand. The throw reaches the caller, which surfaces it — a save that
+  // errors is recoverable, a save that quietly deletes everyone else's dates is not.
+  const cur = pruneBoardDateOverrides(await readBoardDateOverridesStrict(tenant), today);
   if (date) cur[String(stopNbr)] = date; else delete cur[String(stopNbr)];
   await setDoc(boardDatePath(tenant), { tenant: String(tenant || '').toLowerCase(), at, count: Object.keys(cur).length, datesJson: JSON.stringify(cur) } as any);
   return { count: Object.keys(cur).length, date: date || null };

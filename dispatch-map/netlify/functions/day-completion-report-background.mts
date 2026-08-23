@@ -105,7 +105,14 @@ export default async (): Promise<Response> => {
     // invocation must not mail the same evening twice, and the write is the claim.
     if (out.snapshot !== 'written') {
       out.emailed = false;
-      out.emailNote = 'a snapshot for this date already exists — not re-sending';
+      // Say WHICH of the three it was. "exists" is the ordinary retry case and needs no
+      // attention; "unreadable" and "failed" mean nobody was told about the day at all, and
+      // reporting those as "already exists" would hide a missing report behind a benign one.
+      out.emailNote = out.snapshot === 'exists'
+        ? 'a snapshot for this date already exists — not re-sending'
+        : out.snapshot === 'unreadable'
+          ? 'could not read the existing record, so nothing was written and nothing was sent — this day has NO report'
+          : 'the snapshot write failed, so nothing was sent — this day has NO report';
     } else if (!emailEnabled()) {
       out.emailed = false;
       out.emailNote = 'RESEND_API_KEY/RESEND_FROM not set';
