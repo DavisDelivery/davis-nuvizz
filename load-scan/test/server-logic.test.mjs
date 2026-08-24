@@ -14,7 +14,18 @@ const admin = await import('../netlify/functions/driver-admin.mts');
 test('a PIN round-trips through scrypt and never stores plaintext', async () => {
   const stored = await auth.hashPin('4821');
   assert.ok(stored.startsWith('scrypt$'), 'self-describing format');
-  assert.equal(stored.includes('4821'), false, 'the PIN must not appear in the stored value');
+  // Exact-field equality, not substring containment. The stored format is
+  // scrypt$<32 hex>$<64 hex> — 96 random hex characters — and every digit of a
+  // 4-6 digit PIN is itself a valid hex digit, so a SUBSTRING check against that
+  // random data has a real chance (~1 in 700 for a 4-digit PIN, worse for
+  // shorter) of a coincidental match that has nothing to do with a leak. That is
+  // exactly what happened here: a green suite failed in CI on pure bad luck,
+  // unrelated to anything this PR touched. What the assertion actually needs to
+  // prove — that hashPin never stores the raw PIN as itself — is deterministic
+  // as an exact-field check instead.
+  const parts = stored.split('$');
+  assert.equal(parts.length, 3, 'scrypt$salt$hash');
+  assert.ok(parts.slice(1).every((p) => p !== '4821'), 'the PIN must not be stored as a field, hashed or not');
   assert.equal(await auth.verifyPin('4821', stored), true);
   assert.equal(await auth.verifyPin('4822', stored), false);
 });
