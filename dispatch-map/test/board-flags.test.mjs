@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import {
   computeBoardFlags, parseClockMin, dayReceivingWindow, closedDayTier,
   stopPosition, isFinishedStop, RED_CAP, isAppointmentRoute,
+  severityTier, ASSUMED_CLOSE_MIN,
 } from '../src/lib/board-flags.js';
 
 const DEPOT = { lat: 34.147791, lng: -83.960911 };
@@ -1067,4 +1068,104 @@ test('a delivered stop disables the card entirely — the intake path is unreach
   ], notesObj, opts).rows;
   assert.equal(delivered.filter((r) => r.rule === 'no_driver_hours').length, 0,
     'a delivery is rolling evidence — the truck is moving, so "no driver" no longer applies');
+});
+
+// ── THE ASSUMED 5PM CLOSE ────────────────────────────────────────────────────
+//
+// Chad: "as far as our flags are concerned we should assume that all stops close at 5 pm
+// unless we have parsed otherwise from the actual orders." Before this, a stop with no hours
+// on file was invisible to the deadline rules — the quiet meant "we never looked", not
+// "this one is fine". Each test below is a way the assumption could do harm if it drifted.
+
+test('a stop with NO hours on file is now judged against a 5pm close', () => {
+  // The gap, closed. Same board, same clock; the only change is that we now have an opinion.
+  // A long chain that runs the clock past 5pm, with NOTHING on file for any customer.
+  // A late-afternoon route — the ordinary shape of the problem — with NOTHING on file.
+  const stops = [1, 2, 3].map((i) => stop({
+    stopNbr: `20${i}`, matchKey: `nh|${i}`, routeSeq: i,
+    lat: 33.60 + i / 40, lng: -84.60 - i / 40,
+  }));
+  const rows = run(stops, {}, { opts: { depot: DEPOT, departMin: 16 * 60 } }).rows.filter((x) => x.rule === 'hours_risk');
+  assert.ok(rows.length > 0, 'no hours used to mean no row at all');
+  assert.equal(rows[0].hoursTier, 'assumed');
+  assert.equal(rows[0].closeMin, ASSUMED_CLOSE_MIN);
+  assert.equal(rows[0].closeMin, 17 * 60);
+  assert.equal(rows[0].tier, 'amber', 'an assumption never leaves the panel');
+});
+
+test('an assumed close can NEVER reach red — red is what texts', () => {
+  // flag-alert.mts ships ALERT_TIERS = {critical, red}. A deadline nobody recorded must not
+  // be able to wake somebody at 5:01pm, however far past it the estimate runs.
+  for (const lateBy of [1, 30, 200, 600]) {
+    assert.equal(severityTier({ lateBy, errorMin: 15, hoursTier: 'assumed' }), 'amber', `${lateBy}m`);
+  }
+});
+
+test('real hours still outrank the assumption in both directions', () => {
+  // Louder when typed…
+  assert.equal(severityTier({ lateBy: 1, errorMin: 15, hoursTier: 'typed' }), 'red');
+  // …and still able to reach critical when auto-detected.
+  assert.equal(severityTier({ lateBy: 40, errorMin: 15, hoursTier: 'auto' }), 'critical');
+});
+
+test('a customer whose real hours run LATE than 5pm is not judged against the assumption', () => {
+  // The assumption is a fallback, never an override. A dock open till 7 keeps its 7.
+  const stops = [1, 2, 3].map((i) => stop({
+    stopNbr: `21${i}`, matchKey: `late|${i}`, businessName: 'LATE DOCK', routeSeq: i,
+    lat: 33.60 + i / 40, lng: -84.60 - i / 40,
+  }));
+  const open2330 = note({ receiving_hours: { mon: { open: '08:00', close: '23:30' } } });
+  const notes = { 'late|1': open2330, 'late|2': open2330, 'late|3': open2330 };
+  const withReal = run(stops, notes, { opts: { depot: DEPOT, departMin: 16 * 60 } }).rows.filter((x) => x.rule === 'hours_risk');
+  assert.equal(withReal.length, 0, 'a dock open till 11:30p is not judged against 5pm');
+  // The SAME board with nothing on file does flag — so the difference is the hours, not the geography.
+  assert.ok(run(stops, {}, { opts: { depot: DEPOT, departMin: 16 * 60 } }).rows.filter((x) => x.rule === 'hours_risk').length > 0);
+});
+
+test('the assumed row SAYS it is an assumption', () => {
+  // A row that reads like a fact we found on an order would send a dispatcher looking for
+  // hours that were never there.
+  const stops = [1, 2, 3].map((i) => stop({
+    stopNbr: `22${i}`, matchKey: `as|${i}`, routeSeq: i,
+    lat: 33.60 + i / 40, lng: -84.60 - i / 40,
+  }));
+  const row0 = run(stops, {}, { opts: { depot: DEPOT, departMin: 16 * 60 } }).rows.find((x) => x.rule === 'hours_risk');
+  assert.match(row0.detail, /No hours on file/i);
+  assert.match(row0.detail, /assumed a 5pm close/i);
+});
+
+test('the footer still counts hours ON FILE, not hours we assumed', () => {
+  // That number exists so a ZERO tells the dispatcher the fix is data rather than code.
+  // Counting the assumption would turn it into a stop count and destroy its only job.
+  const r = run([stop({ stopNbr: '2004', routeSeq: 1 })], {});
+  assert.equal(r.checked.stopsWithHours, 0, 'nothing is on file for this customer');
+  assert.equal(r.checked.stopsAssumedClose, 1);
+
+  const withHours = run([stop({ stopNbr: '2005', matchKey: 'k2', routeSeq: 1 })],
+    { k2: note({ receiving_hours: { mon: { open: '08:00', close: '14:00' } } }) });
+  assert.equal(withHours.checked.stopsWithHours, 1);
+  assert.equal(withHours.checked.stopsAssumedClose, 0);
+});
+
+test('pickups and our own dock are still exempt — nothing to miss', () => {
+  // An RA coming back to the warehouse has no customer receiving window, assumed or not.
+  const stops = [1, 2, 3].map((i) => stop({
+    stopNbr: `RA90${i}`, matchKey: `pu|${i}`, stopType: 'PU', routeSeq: i,
+    lat: 33.60 + i / 40, lng: -84.60 - i / 40,
+  }));
+  assert.equal(run(stops, {}, { opts: { depot: DEPOT, departMin: 16 * 60 } }).rows.filter((x) => x.rule === 'hours_risk').length, 0);
+});
+
+test('an assumed close does NOT manufacture a no-driver card', () => {
+  // R6 fires on a deadline somebody RECORDED — Chad's LVILLE case was "lund needs to be
+  // delivered by 2pm". A driverless load runs on a noon clock, so without this guard every
+  // unassigned load long enough to reach 5pm would grow a card, which is the exact
+  // decoration this rule already had to be rescued from once.
+  const stops = [1, 2, 3, 4, 5, 6].map((i) => stop({
+    stopNbr: `30${i}`, matchKey: `nd|${i}`, routeSeq: i, driverName: null,
+    lat: 34.10 + i / 50, lng: -84.00 - i / 50,
+  }));
+  const r = run(stops, {}, { nowMin: 14 * 60 });
+  assert.equal(r.rows.filter((x) => x.rule === 'no_driver_hours').length, 0,
+    'an assumption is not a recorded deadline');
 });

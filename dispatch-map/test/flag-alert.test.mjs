@@ -309,3 +309,38 @@ test('a missing or negative minute prints a word, not "-1:-30a" or "NaN:NaNa"', 
   const none = buildAlert({ stopNbr: '1', customer: 'ACME', tier: 'red', closeMin: null, etaMin: null, lateBy: 5 }, '2026-08-24');
   assert.ok(!/NaN/.test(none.subject + none.text), `${none.subject} / ${none.text}`);
 });
+
+// ── AN ASSUMED CLOSE NEVER ALERTS ────────────────────────────────────────────
+//
+// board-flags judges a stop with no hours on file against a house 5pm close ('assumed',
+// capped at amber). Amber alone keeps it off the alert path today — but AMBER_GATED_RULES
+// contains 'hours_risk', so the day the amber gate is switched on, every stop still running
+// at 4:30pm would text against a deadline nobody recorded.
+
+test('an assumed-close row is refused even with the amber gate wide open', () => {
+  const assumed = {
+    rule: 'hours_risk', stopNbr: '9001', customer: 'NO HOURS CO', tier: 'amber',
+    hoursTier: 'assumed', closeMin: 17 * 60, etaMin: 17 * 60 + 40, lateBy: 40, detail: 'x',
+  };
+  assert.equal(selectAlertable([assumed], 16 * 60 + 30, 240).length, 0,
+    'a guess must not text, whatever the gate says');
+});
+
+test('the same row with REAL auto-detected hours still passes the open gate', () => {
+  // The guard must be about provenance, not about amber — the measured gate still works.
+  const real = {
+    rule: 'hours_risk', stopNbr: '9002', customer: 'REAL HOURS CO', tier: 'amber',
+    hoursTier: 'auto', closeMin: 17 * 60, etaMin: 17 * 60 + 40, lateBy: 40, detail: 'x',
+  };
+  assert.equal(selectAlertable([real], 16 * 60 + 30, 240).length, 1);
+});
+
+test('an assumed row is refused at red too, if a ratchet ever pushes it there', () => {
+  // severityTier caps 'assumed' at amber, but the flag-history ratchet can raise a row's
+  // tier. Provenance, not tier, is what this guard reads.
+  const ratcheted = {
+    rule: 'hours_risk', stopNbr: '9003', customer: 'RATCHET CO', tier: 'red',
+    hoursTier: 'assumed', closeMin: 17 * 60, etaMin: 17 * 60 + 40, lateBy: 40, detail: 'x',
+  };
+  assert.equal(selectAlertable([ratcheted], 16 * 60, 0).length, 0);
+});

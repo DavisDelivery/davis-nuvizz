@@ -267,6 +267,16 @@ export function selectAlertable(rows: any[], nowMin: number | null, amberGateMin
     // once earned a midnight one (v0.56.3). finiteMinutes is the guard; it runs first.
     const closeMin = finiteMinutes(r?.closeMin);
     if (closeMin == null) continue;
+    // AN ASSUMED CLOSE NEVER ALERTS, WHATEVER THE GATE IS SET TO.
+    //
+    // board-flags now judges a stop with no hours on file against a house 5pm close, tiered
+    // 'assumed' and capped at amber. Amber alone would already keep it off this path — but
+    // AMBER_GATED_RULES contains 'hours_risk', so the day somebody sets AMBER_LEAD_GATE_MIN
+    // every stop still running at 4:30pm would text, against a deadline nobody recorded.
+    // That switch was measured and flipped for auto-detected hours read off real order text;
+    // it was not a decision about guesses. This guard sits ABOVE the gate deliberately, so
+    // widening the gate later cannot quietly widen this too.
+    if (String(r?.hoursTier) === 'assumed') continue;
     if (!ALERT_TIERS.has(String(r?.tier))) {
       // Not red or critical. The ONLY way past this line is an amber hours_risk row whose
       // close is inside the gate — and only when the gate has been switched on.
