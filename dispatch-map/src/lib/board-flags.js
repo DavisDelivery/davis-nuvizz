@@ -115,6 +115,30 @@ export function dayReceivingWindow(note, dayKey) {
 }
 const tierOfHours = (note) => (note?.manual_overrides?.receiving_hours === true ? 'typed' : 'auto');
 
+// ── THE ASSUMED CLOSE ────────────────────────────────────────────────────────
+//
+// Chad: "as far as our flags are concerned we should assume that all stops close at 5 pm
+// unless we have parsed otherwise from the actual orders."
+//
+// Until now a stop with no hours on file was INVISIBLE to the deadline rules. Measured by
+// running the engine: a three-stop route with no hours produces `rows: []` and
+// `stopsWithHours: 0`; the identical route with a typed 11:00a close produces a CRITICAL
+// hours_risk. So the quiet was never "this stop is fine", it was "we never looked" — and a
+// dock that shuts at five is the ordinary case, not the exception.
+//
+// WHY IT IS ITS OWN TIER, and why that matters more than the number. severityTier floors any
+// overrun against 'typed' hours at RED, and flag-alert.mts ships ALERT_TIERS = {critical,red}
+// — so red is what texts. If an ASSUMED close could reach red, every stop still running at
+// 5:01pm would text on a normal evening, for a deadline nobody ever verified. An assumption
+// may earn a place on the panel; it may not earn the right to wake somebody. 'assumed' is
+// therefore capped at amber, and severityTier is where that is enforced.
+export const ASSUMED_CLOSE_MIN = 17 * 60;   // 5:00pm ET
+
+// The window to judge a stop against when nothing has been parsed or typed. Open is null —
+// we are assuming a CLOSING time, not inventing a whole schedule, and an invented open would
+// feed the opens-late marks a fact nobody stated.
+export const assumedWindow = () => ({ openMin: null, closeMin: ASSUMED_CLOSE_MIN, tier: 'assumed' });
+
 // Per-day closed provenance. Red needs BOTH the field lock (a human has touched closed days)
 // AND the absence of a scanner fingerprint for THIS day — the lock alone is not per-day
 // evidence (it retroactively covers every day the scanner ever invented).
@@ -267,11 +291,17 @@ export function modelErrorMinutes({ anchored, hops }) {
  * amber    — predicted late, but inside the error bars. Worth showing, not worth waking
  *            anyone: at this distance the model simply cannot tell late from on-time.
  *
+ * ASSUMED hours never leave amber. The 5pm close is a house assumption for a dock nobody has
+ * recorded, not a fact read off an order, and red is the tier that texts (flag-alert.mts
+ * ALERT_TIERS = {critical, red}). A guess does not get to wake anyone at 5:01pm — it gets to
+ * appear on the panel where a dispatcher is already looking. Raising it to red is one line.
+ *
  * Auto-detected hours can still reach critical. A truck 155 minutes past a close is a
  * problem whether the 11:00 came from a dispatcher or from Uline's order text — and refusing
  * to escalate it because of where the text came from is the exact defect being fixed.
  */
 export function severityTier({ lateBy, errorMin, hoursTier }) {
+  if (hoursTier === 'assumed') return 'amber';
   if (lateBy > errorMin * 2) return 'critical';
   if (lateBy > errorMin) return 'red';
   if (hoursTier === 'typed') return 'red';
@@ -685,9 +715,18 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     const p = stopPosition(s, noteOf(s));
     return !!p && haversineMeters(p, depot) <= OWN_FACILITY_METERS;
   };
-  const receivingWindow = (s) => (
-    (isPickupStop(s) || isOwnFacility(s)) ? null : dayReceivingWindow(noteOf(s), day)
-  );
+  // THE ONE PLACE THE 5PM ASSUMPTION LIVES, and it is deliberately not dayReceivingWindow.
+  // That function is also read by the map's time marks (time-marks.js dayWindowMinutes) and
+  // by the PRO report (time-restrictions.js) — defaulting there would hang a clock icon on
+  // every pin with no hours on file, which is the exact noise v0.69.2 spent itself removing.
+  // Here it is scoped to the flag engine's deadline rules (R5 and R6) and nothing else.
+  //
+  // Pickups and our own dock keep their exemption: an RA coming back to the warehouse has no
+  // customer receiving window to miss, assumed or otherwise.
+  const receivingWindow = (s) => {
+    if (isPickupStop(s) || isOwnFacility(s)) return null;
+    return dayReceivingWindow(noteOf(s), day) || assumedWindow();
+  };
   const rows = [];
   // Rows a later rule took off the panel. Kept, never rendered — see the R6 supersede block.
   const suppressed = [];
@@ -695,7 +734,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   for (const k of [...new Set(open.filter(onAppointmentRoute).map(routeKeyOf))]) if (k) skipped.routesAppointment.push(k);
   // What the detector actually LOOKED at — the panel shows these so a quiet board can
   // prove it was watched, and so "no hours on file" is visibly a data gap, not a bug.
-  const checked = { stops: judged.length, routesJudged: 0, stopsWithHours: 0, legsTotal: 0, legsGoogle: 0 };
+  const checked = { stops: judged.length, routesJudged: 0, stopsWithHours: 0, stopsAssumedClose: 0, legsTotal: 0, legsGoogle: 0 };
   // Every leg the walk crosses, keyed and positioned, so the server sweep can prefetch
   // real drive times for exactly these pairs next pass. Deduped; order irrelevant.
   const legsWanted = new Map();
@@ -708,7 +747,16 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // receiving hours on file today" counting RA pickups the engine deliberately never judges.
   // The whole point of the footer is that a quiet panel can prove it was watched; a count
   // that overstates its own coverage is the one number a dispatcher cannot check.
-  if (day) for (const s of scheduledJudged) { if (receivingWindow(s)) checked.stopsWithHours += 1; }
+  // COUNTED ON REAL HOURS, NOT ASSUMED ONES. receivingWindow now falls back to the 5pm house
+  // assumption, so it is truthy for very nearly every stop — counting it would turn "N stops
+  // with receiving hours on file" into "N stops", and the whole point of that number is that
+  // a ZERO tells the dispatcher the fix is data rather than code. `stopsAssumedClose` is the
+  // honest companion: how many are being judged against an assumption nobody recorded.
+  if (day) for (const s of scheduledJudged) {
+    if (isPickupStop(s) || isOwnFacility(s)) continue;
+    if (dayReceivingWindow(noteOf(s), day)) checked.stopsWithHours += 1;
+    else checked.stopsAssumedClose += 1;
+  }
 
   // R1 — two NuVizz orders under one stop number (the Estes twin). Proof, not a guess: the
   // scan flags this only when record ids differ. Occurrence-scoped: cleaning the portal
@@ -1018,6 +1066,9 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
             // Machine-readable facts alongside the human sentence: the alert path must not
             // have to parse the detail string to know when the window shuts.
             lateBy, errorMin, anchored,
+            // Which kind of deadline this was judged against: 'typed' | 'auto' | 'assumed'.
+            // R6 reads it to refuse building a no-driver card out of a house assumption.
+            hoursTier: w.tier,
             closeMin: w.closeMin, etaMin: Math.round(clockMin),
             customer: s.businessName || s.stopNbr || null,
             title: `May miss receiving hours — ${s.businessName || s.stopNbr}`,
@@ -1028,7 +1079,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
             // Provenance for the ratchet, so the alert path and the history never have to
             // infer it: what the model said on its own, and whether it was held above that.
             computedTier, tierHeld,
-            detail: `Stop ${seqOf(s)} on ${k} — estimated arrival ~${fmtMin(clockMin)} vs close ${fmtMin(w.closeMin)} (${lateBy} min late); ${anchorNote}.${w.tier === 'auto' ? ' Hours auto-detected — verify.' : ''}${tierHeld ? ` Flagged earlier today — stays ${tier} while the estimate is past the close.` : ''}`,
+            detail: `Stop ${seqOf(s)} on ${k} — estimated arrival ~${fmtMin(clockMin)} vs close ${fmtMin(w.closeMin)} (${lateBy} min late); ${anchorNote}.${w.tier === 'auto' ? ' Hours auto-detected — verify.' : ''}${w.tier === 'assumed' ? ' No hours on file — assumed a 5pm close; set the real hours on the stop card.' : ''}${tierHeld ? ` Flagged earlier today — stays ${tier} while the estimate is past the close.` : ''}`,
             scope: 'occurrence', servedDate, fingerprint: `hours|${servedDate}|${k}|${s.stopNbr}|${w.closeMin}`,
           });
           rows.push(hoursRow);
@@ -1101,7 +1152,14 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
             return true;
           })
           .map((s) => ({ s, w: receivingWindow(s) }))
-          .filter((x) => x.w);
+          // REAL DEADLINES ONLY. receivingWindow now falls back to the 5pm house assumption,
+          // and a driverless load runs on a noon clock — so without this filter every
+          // unassigned load with enough stops to reach 5pm would grow a "No driver" card.
+          // That is precisely the decoration this rule already had to be rescued from once
+          // (four interchangeable cards at 9:32a, burying the one route that mattered).
+          // Chad's LVILLE case was "lund needs to be delivered by 2pm" — a deadline somebody
+          // RECORDED. An assumption is not that, and it still shows up as an R5 advisory.
+          .filter((x) => x.w && x.w.tier !== 'assumed');
         if (!constrained.length) continue;
         constrained.sort((a, b) => a.w.closeMin - b.w.closeMin);
         const first = constrained[0];
@@ -1114,8 +1172,12 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         // stopNbr — customer service heard nothing about the worst route on the board.
         // Removing the driver made the situation strictly worse and the board strictly calmer.
         const supersededRows = hoursRowsByRoute.get(k) || [];
-        const worstHours = supersededRows.length
-          ? [...supersededRows].sort((a, b) =>
+        // The card is JUSTIFIED only by rows resting on real hours, but it SUPERSEDES every
+        // hours row on the route — one card per truck is the whole point, and leaving the
+        // assumed advisories behind it would put the route on the panel twice.
+        const realRisk = supersededRows.filter((r) => r.hoursTier !== 'assumed');
+        const worstHours = realRisk.length
+          ? [...realRisk].sort((a, b) =>
             ((TIER_ORDER[a.tier] ?? 9) - (TIER_ORDER[b.tier] ?? 9)) || ((b.lateBy || 0) - (a.lateBy || 0)))[0]
           : null;
         // THE STOPS A NOON START CANNOT REACH AT ALL. No model, no geography, no estimate:
@@ -1139,7 +1201,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         // close on a noon start. It still has no driver, and somebody still has to assign
         // one; that is dispatch's ordinary work and it is visible on the board without a
         // red card claiming freight is at risk when it is not.
-        if (!supersededRows.length && !doomed.length) continue;
+        if (!realRisk.length && !doomed.length) continue;
         // Which hours the verdict RESTS ON — the unreachable ones when there are any, else
         // the whole constrained set. Drives both the tier and the auto-detected caveat, so a
         // card built on a dispatcher-typed deadline never carries "verify" and one built on

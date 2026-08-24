@@ -143,3 +143,90 @@ test('identical stored per-day hours are still a no-op (idempotent byDay writes)
   }), existing);
   assert.equal(d, null);
 });
+
+// ── DISPATCHER HOURS BEAT PARSED HOURS, AND A BLANK SKELETON IS NOT HOURS ─────
+//
+// Chad: "007166214 dispatcher set the hours for this customer. I want to make sure that
+// hours set by dispatcher override the parsed hours." These pin BOTH halves of that — the
+// lock that already worked, and the trap next door that made the scanner go silent for a
+// customer nobody had actually claimed.
+
+const BLANK_WEEK = {
+  mon: { open: '', close: '' }, tue: { open: '', close: '' }, wed: { open: '', close: '' },
+  thu: { open: '', close: '' }, fri: { open: '', close: '' }, sat: { open: '', close: '' },
+  sun: { open: '', close: '' },
+};
+
+test('THE LOCK: dispatcher-set hours are never overwritten by the parser', () => {
+  const d = write(scannedStop({ hoursResult: HOURS }), {
+    receiving_hours: { mon: { open: '06:00', close: '11:00' } },
+    manual_overrides: { receiving_hours: true },
+  });
+  assert.equal(d, null, 'an hours-only scan against a locked doc must write nothing at all');
+});
+
+test('the lock holds even when the parser reads a DIFFERENT day', () => {
+  // A day-qualified detection must not sneak in around a doc-level lock.
+  const d = write(scannedStop({
+    hoursResult: { ...HOURS, byDay: { fri: { open: '08:00', close: '12:00' } } },
+  }), {
+    receiving_hours: { mon: { open: '06:00', close: '11:00' } },
+    manual_overrides: { receiving_hours: true },
+  });
+  assert.equal(d, null);
+});
+
+test('hand-typed hours with no lock flag are STILL protected — provenance, not just the latch', () => {
+  // The second guard. Hours exist and no scanner trail claims them, so they are somebody's.
+  const d = write(scannedStop({ hoursResult: HOURS }), {
+    receiving_hours: { mon: { open: '06:00', close: '11:00' } },
+  });
+  assert.equal(d, null);
+});
+
+test('the scanner may still correct hours IT wrote', () => {
+  const d = write(scannedStop({ hoursResult: HOURS }), {
+    receiving_hours: { mon: { open: '06:00', close: '11:00' } },
+    auto_sources: { receiving_hours: ['orderInstructions'] },
+  });
+  assert.ok(d, 'scanner-owned hours are the scanner’s to update');
+  assert.deepEqual(d.payload.receiving_hours.mon, { open: '08:00', close: '14:00' });
+});
+
+test('A BLANK SEVEN-DAY SKELETON IS NOT HOURS — the trap that silenced the scanner', () => {
+  // emptyNote() seeds all seven days blank so the time inputs stay controlled, and every
+  // note save writes the whole draft. So saving a PHONE NUMBER on a customer with no note
+  // persisted this. Counting keys made scannerOwnsHours false, and the scanner then never
+  // filled hours for that customer again — a doc with no manual_overrides behaving as locked.
+  const d = write(scannedStop({ hoursResult: HOURS }), { receiving_hours: BLANK_WEEK });
+  assert.ok(d, 'blank days carry no claim — the parser must still be able to fill them');
+  assert.deepEqual(d.payload.receiving_hours.mon, { open: '08:00', close: '14:00' });
+});
+
+test('ONE real day among blanks still counts as somebody’s hours', () => {
+  // The fix must not swing the other way: a dispatcher who set Monday and left the rest
+  // blank has claimed the field, and the scanner leaves the whole thing alone.
+  const d = write(scannedStop({ hoursResult: HOURS }), {
+    receiving_hours: { ...BLANK_WEEK, mon: { open: '06:00', close: '11:00' } },
+  });
+  assert.equal(d, null);
+});
+
+test('a blank skeleton under an explicit lock is still locked', () => {
+  // The latch outranks the blank-day rule: a dispatcher who opened the editor and saved
+  // has spoken, even if what they recorded is "no hours".
+  const d = write(scannedStop({ hoursResult: HOURS }), {
+    receiving_hours: BLANK_WEEK, manual_overrides: { receiving_hours: true },
+  });
+  assert.equal(d, null);
+});
+
+test('a legacy blank STRING day carries no claim either', () => {
+  const d = write(scannedStop({ hoursResult: HOURS }), { receiving_hours: { mon: '   ' } });
+  assert.ok(d, 'whitespace is not a schedule');
+});
+
+test('a legacy string day with real text DOES carry a claim', () => {
+  const d = write(scannedStop({ hoursResult: HOURS }), { receiving_hours: { mon: '6AM-2PM' } });
+  assert.equal(d, null);
+});

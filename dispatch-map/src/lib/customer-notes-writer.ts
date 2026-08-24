@@ -162,8 +162,25 @@ export function decideWrite(
   //                mutates), which is exactly the churn this gate exists to avoid.
   const overrideHours = existing?.manual_overrides?.receiving_hours === true;
   const existingHours = (existing?.receiving_hours || {}) as Record<string, any>;
-  const scannerOwnsHours =
-    Object.keys(existingHours).length === 0 || !!existing?.auto_sources?.receiving_hours;
+  // A DOC FULL OF BLANK DAYS IS NOT A DOC WITH HOURS ON IT.
+  //
+  // emptyNote() (App.jsx) seeds receiving_hours with all seven days as { open:'', close:'' }
+  // so the <input type="time"> controls stay controlled. Every note save writes the WHOLE
+  // draft — so a dispatcher who saved a phone number, a dock note or a priority flag on a
+  // customer with no note yet persisted that blank skeleton. Counting keys alone then made
+  // `scannerOwnsHours` false (seven keys present, no auto trail), and the scanner stopped
+  // filling hours for that customer: it could keep matching "RECEIVING HOURS 8AM-2PM" on
+  // every order and would never write it. The doc looked un-owned — no manual_overrides —
+  // and behaved as locked, which is the worst of both.
+  //
+  // Blank days carry no claim, so they do not count as ownership. A day with a real open or
+  // close still does, exactly as before: that is a human's hours and the scanner leaves it.
+  const hasStoredHours = Object.values(existingHours).some((v) => (
+    typeof v === 'string'
+      ? v.trim() !== ''
+      : !!v && (String((v as any).open ?? '').trim() !== '' || String((v as any).close ?? '').trim() !== '')
+  ));
+  const scannerOwnsHours = !hasStoredHours || !!existing?.auto_sources?.receiving_hours;
   // The intended fill: a day-qualified detection ("MON-THURS 6 30-4 / FRI 8-12") writes
   // ONLY the days it names — a uniform 7-day copy would erase exactly the early-Friday
   // distinction the schedule exists to record. A plain range still fills the week.
