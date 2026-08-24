@@ -79,9 +79,67 @@ export function drawnRestrictionKeys(rawKeys, opts = {}) {
 // disagreeing: the plain pin already refused the lime for a hand-set box-only stop,
 // while the other two did not, so a dispatcher could check "No tractor trailer," save,
 // and watch the icon on the map stay exactly as lime as it was before they touched it.
-export function tractorPaintAllowed(eligibility, drawnKeys) {
-  const blocked = eligibility === 'box_only' || (drawnKeys || []).includes('no_tractor_trailer');
-  return !blocked;
+// HOW SURE ARE WE THAT A 53-FOOTER CAN'T SERVE THIS STOP?
+//
+// Chad: "unless we have manually came in and marked it not tractor trailer with the
+// override ... for the uline advisory and auto find no tractor trl tags ... make the icon
+// half red or yellow then the other half green."
+//
+// Three different things currently render as one flat "no tractor trailer" mark, and they
+// carry very different weight:
+//
+//   CONFIRMED — a dispatcher opened the stop and ticked the box. A human looked at this
+//               customer and said no. Treat as fact.
+//   ADVISORY  — a scanner found it. Either the Uline flag (uline_straight_truck, which
+//               customer-notes-writer itself labels "Uline-supplied, advisory"), or a
+//               no_tractor_trailer the scanner read out of an address line. Nobody has
+//               confirmed it, and the scanner reads free text written by other people.
+//
+// The distinction is not cosmetic: on an advisory mark a tractor may well be fine, and a
+// dispatcher who cannot tell the two apart either wastes a trailer slot on a stop that
+// would have taken one, or sends a 53-footer somewhere it physically cannot turn around.
+// Painting both the same colour throws away information the database already has.
+//
+// PROVENANCE, NOT GUESSWORK. auto_sources[flag] is written by the scanner every time it
+// detects a flag, and manual_overrides.equipment_restrictions is set the moment a
+// dispatcher edits the restriction list. So "did a person put this here" is answerable
+// from the note itself — no heuristics.
+//
+// UNKNOWN COUNTS AS CONFIRMED. A flag with no auto_sources trail was not put there by the
+// scanner, so a person put it there — and on the one that decides whether a truck can
+// physically make a delivery, the unknown case belongs on the CAUTIOUS side.
+export const ADVISORY_ONLY_KEYS = new Set(['uline_straight_truck']);
+
+export function restrictionConfidence(note, key) {
+  // The Uline flag is advisory BY DEFINITION — it is another company's free text about
+  // their own shipment, not a statement about this dock. It never hardens on its own; a
+  // dispatcher ticking the restriction list is what promotes it.
+  const manual = note?.manual_overrides?.equipment_restrictions === true;
+  if (manual) return 'confirmed';
+  if (ADVISORY_ONLY_KEYS.has(key)) return 'advisory';
+  const autoSources = note?.auto_sources?.[key];
+  const scannerPutItThere = Array.isArray(autoSources) ? autoSources.length > 0 : !!autoSources;
+  return scannerPutItThere ? 'advisory' : 'confirmed';
+}
+
+/** The trailer-blockers on this note that a HUMAN has confirmed. Advisory ones excluded. */
+export function confirmedBlockerKeys(note, drawnKeys) {
+  return (drawnKeys || []).filter(
+    (k) => TRAILER_BLOCKER_KEYS.has(k) && restrictionConfidence(note, k) === 'confirmed',
+  );
+}
+
+export function tractorPaintAllowed(eligibility, drawnKeys, note = null) {
+  // Box-only is a dispatcher choosing from a dropdown — always a human, always confirmed.
+  if (eligibility === 'box_only') return false;
+  // An ADVISORY blocker does not veto the lime; it earns the split icon instead
+  // (see restrictionConfidence). Only a confirmed "no" outranks proven history.
+  // `note` is optional so the old two-argument call still behaves as it did — absent a
+  // note there is no provenance to read, and unknown provenance means confirmed.
+  const blockers = (drawnKeys || []).filter((k) => TRAILER_BLOCKER_KEYS.has(k));
+  if (!blockers.length) return true;
+  if (!note) return !blockers.includes('no_tractor_trailer');
+  return confirmedBlockerKeys(note, blockers).length === 0;
 }
 
 // Which of the three "no icon" pin tints a stop wears, mirroring flagColor(). Kept here so

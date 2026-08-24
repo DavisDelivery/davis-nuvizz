@@ -17,6 +17,8 @@ import {
   legendIsEmpty,
   TRAILER_BLOCKER_KEYS,
   tractorPaintAllowed,
+  restrictionConfidence,
+  confirmedBlockerKeys,
 } from '../src/lib/map-legend.js';
 import { readFileSync } from 'node:fs';
 
@@ -235,5 +237,156 @@ test('the restriction-icon cluster honors the override — this was the actual b
   // no override check at all, so a checked "No tractor trailer" chip rendered its own
   // restriction icon tinted lime — the auto-paint literally painting over the manual mark
   // that exists specifically to contradict it.
-  assert.match(STOP_MARKER_ICON, /iconMarkerSvg\(restrictions, \(tractorDelivered && !noTractorOverride\) \? TRACTOR_DELIVERED_COLOR/);
+  // Whitespace-tolerant: this pins the RULE (the override gates the lime on this call),
+  // not the line wrapping — an earlier version of this assertion broke purely because the
+  // call was reformatted onto multiple lines, which is a test grading the wrong thing.
+  const call = STOP_MARKER_ICON.slice(STOP_MARKER_ICON.indexOf('iconMarkerSvg('));
+  assert.match(call.replace(/\s+/g, ' '),
+    /iconMarkerSvg\( restrictions, \(tractorDelivered && !noTractorOverride\) \? TRACTOR_DELIVERED_COLOR/);
+});
+
+// ── CONFIRMED vs ADVISORY — three things were rendering as one flat "no" ────
+//
+// Chad: "unless we have manually came in and marked it not tractor trailer with the
+// override ... for the uline advisory and auto find no tractor trl tags ... make the icon
+// half red or yellow then the other half green." A scanner's guess and a dispatcher's
+// decision are not the same claim, and the note already records which is which.
+
+test('a dispatcher who ticked the restriction list has CONFIRMED every blocker on it', () => {
+  const note = { manual_overrides: { equipment_restrictions: true }, auto_sources: { no_tractor_trailer: ['addressLine2'] } };
+  // Even though the scanner ALSO found it, the human override is the stronger claim.
+  assert.equal(restrictionConfidence(note, 'no_tractor_trailer'), 'confirmed');
+  assert.equal(restrictionConfidence(note, 'uline_straight_truck'), 'confirmed', 'the override promotes the Uline flag too');
+});
+
+test('a scanner-found no_tractor_trailer is ADVISORY until a human confirms it', () => {
+  const note = { auto_sources: { no_tractor_trailer: ['addressLine2'] } };
+  assert.equal(restrictionConfidence(note, 'no_tractor_trailer'), 'advisory');
+});
+
+test('the Uline flag is ADVISORY by definition — it is another company\'s free text', () => {
+  // customer-notes-writer labels this source "Uline-supplied, advisory" in its own header.
+  // It must not harden just because it has no auto_sources trail on this particular doc.
+  assert.equal(restrictionConfidence({}, 'uline_straight_truck'), 'advisory');
+  assert.equal(restrictionConfidence(null, 'uline_straight_truck'), 'advisory');
+});
+
+test('a hand-added flag with NO scanner trail counts as CONFIRMED — unknown goes the cautious way', () => {
+  // Nobody but a person could have put it there. On the mark that decides whether a truck
+  // can physically make the delivery, the unknown case belongs on the cautious side.
+  assert.equal(restrictionConfidence({}, 'no_tractor_trailer'), 'confirmed');
+  assert.equal(restrictionConfidence({ auto_sources: {} }, 'no_tractor_trailer'), 'confirmed');
+  assert.equal(restrictionConfidence({ auto_sources: { no_tractor_trailer: [] } }, 'no_tractor_trailer'), 'confirmed',
+    'an empty source list is not a detection');
+});
+
+test('confirmedBlockerKeys returns only the human-backed blockers', () => {
+  const note = { auto_sources: { no_tractor_trailer: ['addressLine2'] } };
+  // scanner-found no_tractor_trailer → advisory; hand-set no_53 → confirmed
+  assert.deepEqual(confirmedBlockerKeys(note, ['no_tractor_trailer', 'no_53', 'liftgate_required']), ['no_53']);
+  assert.deepEqual(confirmedBlockerKeys(note, ['no_tractor_trailer']), [], 'advisory only → nothing confirmed');
+});
+
+// ── WHAT THE SPLIT MEANS FOR THE LIME PAINT ─────────────────────────────────
+
+test('an ADVISORY blocker does not veto the tractor-delivered lime — it earns the split ring', () => {
+  // This is the whole point: "something says no, nobody has checked" is a THIRD state, and
+  // flattening it into either yes or no throws away what the map actually knows.
+  const note = { auto_sources: { no_tractor_trailer: ['addressLine2'] } };
+  assert.equal(tractorPaintAllowed(null, ['no_tractor_trailer'], note), true);
+  assert.equal(tractorPaintAllowed(null, ['uline_straight_truck'], note), true);
+});
+
+test('a CONFIRMED blocker still vetoes the lime, exactly as before', () => {
+  const note = { manual_overrides: { equipment_restrictions: true } };
+  assert.equal(tractorPaintAllowed(null, ['no_tractor_trailer'], note), false);
+  // and a hand-added one with no scanner trail
+  assert.equal(tractorPaintAllowed(null, ['no_tractor_trailer'], {}), false);
+});
+
+test('box-only is always a human choosing from a dropdown — always vetoes', () => {
+  assert.equal(tractorPaintAllowed('box_only', [], { auto_sources: {} }), false);
+  assert.equal(tractorPaintAllowed('box_only', ['no_tractor_trailer'], { manual_overrides: { equipment_restrictions: true } }), false);
+});
+
+test('the two-argument call still behaves as it did — no note, no provenance, treat as confirmed', () => {
+  // stopMarkerIcon passes the note, but the old signature must not silently start
+  // allowing lime on a stop it used to block.
+  assert.equal(tractorPaintAllowed(null, ['no_tractor_trailer']), false);
+  assert.equal(tractorPaintAllowed(null, []), true);
+});
+
+test('a non-blocker restriction never makes a stop advisory or blocked', () => {
+  const note = { auto_sources: { liftgate_required: ['orderInstructions'] } };
+  assert.equal(tractorPaintAllowed(null, ['liftgate_required'], note), true);
+  assert.deepEqual(confirmedBlockerKeys(note, ['liftgate_required']), []);
+});
+
+// ── THE SPLIT RING MUST ACTUALLY BE SPLIT ────────────────────────────────────
+//
+// Found by rendering it, not by reading it. The warn half was being handed `accent`,
+// which is `tint || def.accent` — so on a stop a tractor HAS delivered the tint (lime
+// #32CD32) overwrote the restriction's own red/amber and the ring came out lime on the
+// left, green (#16a34a) on the right. Two greens. No split.
+//
+// That is precisely the case the feature exists for — proven history on one side, an
+// unconfirmed "no" on the other — and it was the one rendering as an unbroken all-clear.
+// A dispatcher would have read it as permission.
+
+const ICON_MARKER_SVG = APP.slice(
+  APP.indexOf('function restrictionWarnColor('),
+  APP.indexOf('function stopMarkerIcon('),
+);
+assert.ok(ICON_MARKER_SVG.length > 500, 'the icon-drawing block was located in App.jsx');
+
+test('THE WARN HALF OF THE RING IS THE RESTRICTION COLOUR, NEVER THE STOP TINT', () => {
+  // Both call sites — the single icon (State B) and the cluster (State C).
+  const calls = (ICON_MARKER_SVG.match(/(?<!function )advisoryRingMarkup\([^)]*\)/g) || []);
+  assert.equal(calls.length, 2, 'both the single-icon and cluster branches draw the ring');
+  for (const call of calls) {
+    assert.match(call, /restrictionWarnColor\(/,
+      `the warn half must come from the restriction, not the tint — got ${call}`);
+    assert.ok(!/,\s*accent\s*\)/.test(call),
+      `${call} passes the tinted accent, which makes a lime-on-green ring with no split in it`);
+  }
+});
+
+test('restrictionWarnColor ignores the tint entirely — it takes only a key', () => {
+  // If this ever grows a tint parameter the defect walks straight back in.
+  const fn = ICON_MARKER_SVG.slice(0, ICON_MARKER_SVG.indexOf('function advisoryRingMarkup('));
+  assert.match(fn, /function restrictionWarnColor\(key\)\s*\{/, 'one argument: the restriction key');
+  assert.ok(!/tint/.test(fn), 'restrictionWarnColor must not consult the tint');
+  assert.match(fn, /def\.accent \|\| def\.bg/, 'it reads the icon definition');
+});
+
+test('the split ring replaces the solid stroke rather than stacking on top of it', () => {
+  // Both halves are stroked at 3.4 over an 18r circle; leaving the original 2px accent
+  // stroke underneath would show as a rim of the wrong colour on the green half.
+  const discs = ICON_MARKER_SVG.match(/<circle cx="[^"]*" cy="[^"]*" r="1[58]"[^>]*fill="white"[^>]*\/>/g) || [];
+  // Three discs live here: the single-icon disc, the cluster-slot disc, and the "+N"
+  // overflow badge. The badge carries no restriction, so it correctly keeps its plain
+  // stroke and must never grow a ring — pinning that keeps a future blanket edit honest.
+  assert.equal(discs.length, 3, 'found the single, cluster and overflow discs');
+  const withGlyph = discs.filter((d) => /advisory\.has|isAdv/.test(d));
+  assert.equal(withGlyph.length, 2, 'exactly the two restriction discs gate their stroke on the advisory set');
+  const overflow = discs.filter((d) => !/advisory\.has|isAdv/.test(d));
+  assert.equal(overflow.length, 1);
+  assert.match(overflow[0], /stroke="\$\{tint \|\| '#6b7280'\}"/, 'the +N badge keeps its plain stroke');
+});
+
+test('the two ring halves sweep OPPOSITE ways, or one covers the other', () => {
+  // Same start and end point; only the sweep flag makes them different halves. Both at 0
+  // (or both at 1) draws the same arc twice and the second colour wins the whole ring.
+  const fn = ICON_MARKER_SVG.slice(ICON_MARKER_SVG.indexOf('function advisoryRingMarkup('));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert.match(body, /A\$\{r\} \$\{r\} 0 0 0 \$\{cx\} \$\{bottom\}/, 'one half sweeps 0');
+  assert.match(body, /A\$\{r\} \$\{r\} 0 0 1 \$\{cx\} \$\{bottom\}/, 'the other sweeps 1');
+  assert.match(body, /\$\{ELIG_TRACTOR_COLOR\}/, 'the green half is the eligibility green');
+});
+
+test('the advisory set is part of the icon cache key', () => {
+  // The ring is pixels. Confirming a restriction changes the ring but changes nothing else
+  // in the key, so without this a stop keeps its stale split ring until the page reloads.
+  assert.match(STOP_MARKER_ICON, /\[\.\.\.advisoryKeys\]\.sort\(\)\.join/,
+    'advisoryKeys must be folded into cacheKey');
 });

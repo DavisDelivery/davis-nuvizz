@@ -57,6 +57,7 @@ import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS } fr
 import {
   drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
   legendIsEmpty, pinTintKind, visibleIconKeys, tractorPaintAllowed,
+  restrictionConfidence, TRAILER_BLOCKER_KEYS,
 } from './lib/map-legend.js';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
@@ -92,7 +93,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.76.4';
+const APP_VERSION = '0.76.5';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -163,6 +164,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.76.5', 'HALF RED, HALF GREEN: THE MAP NOW SHOWS HOW SURE IT IS THAT A TRACTOR CANNOT GO THERE. Chad: “unless we have manually came in and marked it not tractor trailer with the override can you do an icon for the uline advisory and auto find no tractor trl tags — can you make the icon half red or yellow then the other half green.” He is pointing at a real conflation. THREE different things were drawing as one flat mark: a dispatcher who opened the stop and ticked “No tractor trailer”; a scanner that read those words out of an address line; and Uline’s own SPL-INSTR-TEXT advisory, which customer-notes-writer itself labels advisory because Uline over-broadcasts it. Only the first is a person saying no about this dock. THE OPERATIONAL COST OF FLATTENING THEM RUNS BOTH WAYS, which is why one colour cannot carry it: treat every advisory as fact and trailer slots get burned on stops that would have taken one all day; treat every advisory as noise and a 53-footer eventually gets sent somewhere it physically cannot turn around. The dispatcher is the one who can settle it — with a phone call — but only if the board tells him which stops are still open questions. NOW IT DOES: an unconfirmed blocker draws a ring that is half the restriction’s own colour (red for no-tractor-trailer, amber for the Uline advisory) and half green; a confirmed one stays a solid ring. The glyph keeps its prohibition slash either way, so the icon still says “no tractor trailer” plainly — it just also says whether anybody has checked. PROVENANCE, NOT GUESSWORK: auto_sources[flag] is already written by the scanner on every detection and manual_overrides.equipment_restrictions the moment a dispatcher edits the list, so “did a person put this here” is read from the note itself. A flag with no scanner trail counts as CONFIRMED — on the mark that decides whether a truck can physically make a delivery, unknown belongs on the cautious side. Ticking the restriction now stamps manual_overrides, which also closes a second hole: customer-notes-writer’s legacy migration is gated on that flag, so an unstamped hand-set no_tractor_trailer could previously be downgraded to the Uline advisory by a later scan. CAUGHT BY RENDERING IT, NOT BY READING IT: the first working build passed the tinted accent into the ring, so on a stop a tractor HAS delivered the lime tint overwrote the restriction’s red and the ring came out lime-on-green — no split at all, in exactly the case the feature exists for (history says yes, a scanner says no, nobody has checked), reading as an unbroken all-clear. The warn half now always comes from the restriction, never the tint; six real marker states were rendered through the shipped glyph pipeline at true 20px draw size and looked at before and after. Five new source-level tests pin it, one proven to bite by reverting the line. The legend gained a “How sure is it?” pair showing both rings — deliberately with no count chip, because the inventory does not measure confidence and a number this panel has not counted is the kind that gets believed. 2,471 tests green.'],
   ['0.76.4', 'A “NO TRACTOR TRAILER” RESTRICTION CAN NO LONGER BE PAINTED GREEN BY OLD HISTORY. Chad, from the stop panel with the restriction already checked: “need a no tractor trailer override button that will override the green auto paint.” The lime pin (tractor_locations) is a STICKY, AUTOMATIC record — “a tractor delivered here once, ever” — and it never un-flags itself, so it can be years stale and say nothing about NOW. A dispatcher setting the vehicle-eligibility dropdown to Box-only already overrode it, on the PLAIN pin only. Checking “No tractor trailer” in Equipment restrictions — the control on the exact screen this ask was made from — did not: the numbered-route pin and the restriction-icon cluster each carried their own copy of the same color decision, and neither one remembered to check it. A dispatcher could tick the box, save, and the icon on the map stayed exactly as lime as it was a second earlier — worse, the restriction glyph itself, a truck with a slash through it, rendered in tractor-green rather than its own red, so the one icon built to say “do not send a 53-footer here” read, at a glance, as permission. THE FIX IS ONE FUNCTION, NOT THREE FIXES: tractorPaintAllowed(eligibility, drawnKeys) now lives in lib/map-legend.js beside drawnRestrictionKeys, whose output it takes as input — so it can never disagree with the badge that is or is not actually on the pin — and all three color sites (numbered pin, plain pin, icon cluster) call it once and share the answer. That is the real fix: not that the rule was wrong, but that it existed in three places and only one of them had it right, which is exactly the shape of bug a shared function stops from happening again. VERIFIED THE ONLY WAY THAT COUNTS: the real no_tractor_trailer glyph was pulled from the shipped source and rendered at its old lime tint next to its corrected red — the before is a green truck telling a driver a tractor-trailer is fine at a stop that was just marked the opposite. Nine new tests, four of them reading the shipped App.jsx source directly to confirm all three call sites use the shared function exactly once each — a fixture test proves the rule; only a source test proves the fix actually reached everywhere it needed to. One test was proven to catch the regression by reverting the icon-cluster line to its buggy form: it, and only it, failed. 2,456 tests green.'],
   ['0.76.3', 'LOAD-SCAN (v0.44.0): the dispatcher\'s truck drill-down now shows WHEN each stop was scanned, not just whether it was. Chad: "Can you start putting time stamps on these when they were scanned" — the per-stop rows (business name, "all here"/"not scanned") carried no time at all; the only timestamp on the whole screen was three taps deep, inside the collapsed scan log. Each stop now shows the time of its LAST piece next to the stop number, so "all here" at 6am reads differently than "all here" five minutes ago. Also ships v0.43.0: the camera pair-buffer\'s two remaining phantom-piece bugs — a piece id arriving seconds AFTER its NOOG fallback booked now upgrades that fallback instead of booking a second piece, and the camera callbacks are ref-routed so a long session can\'t book against a stale view of the truck. This app (dispatch-map) is unchanged; this is a version+changelog bump only, per the repo-wide policy that every merge carries one.'],
   ['0.76.2', 'THE CLOCK FACES ARE WHITE NOW — THE MAP WAS SHOWING THROUGH THEM. Chad, pointing at a teal clock sitting on a road: “the middle of icon shouldn’t be transparent should be white.” Every one of the four time marks drew its dial fill=“none”, so whatever the mark happened to land on — a yellow road, a roof, a field — ran straight through the clock face. THAT IS NOT COSMETIC AT THIS SIZE: the hands are 1.55–1.9 units wide on a 22-unit grid and draw under about 1.2px on the satellite base, so a road crossing behind them arrives at the same width and the same contrast as the hands themselves. The mark stops reading as a clock and starts reading as scribble, which is exactly when an eye skips the one stop on the screen that has a deadline on it. The dial is now filled white on all four — shuts-early, early-close, opens-late and extra-room — and the fill sits UNDER the hands and the ring, which is the half that is easy to get wrong: a white disc emitted after the hands would erase them, and it would look perfectly fine in the diff. The white outline pass that separates these marks from the base already forces every non-none fill to white, so the halo picked the change up for free rather than developing a hole in it. VERIFIED BY LOOKING, not by reading the diff: the real glyphs were pulled out of the shipped source, run through the shipped outline transform, rendered over a mock road base at 2.6x and screenshotted before and after — the road visibly crosses the faces in the before and stops at the ring in the after. Four new tests pin it at the source, and they were checked the only way that means anything: one dial was reverted to transparent and two of them failed, then it was restored and all four passed. The hands and arrows are asserted to KEEP fill=“none”, because the obvious blanket fill-swap would turn every arrow into a solid wedge. 2,447 tests green.'],
@@ -2787,8 +2789,41 @@ function scaleMarkerSpec(spec, scale) {
 }
 
 
-function iconMarkerSvg(restrictions, tint) {
+// HALF WARNING, HALF GREEN — the ring a stop wears when its trailer-blocker is only
+// ADVISORY (a scanner found it; no human has confirmed it). See map-legend
+// restrictionConfidence. The RING carries the confidence and the glyph keeps its own
+// colour and its prohibition slash, so the icon still says "no tractor trailer" plainly —
+// it just also says "nobody has checked this."
+//
+// Deliberately NOT a two-tone filled disc, which was the louder candidate: that would make
+// an UNCONFIRMED stop shout louder than a confirmed hard restriction, inverting the
+// urgency order, and a white glyph on a coloured disc loses the slash that carries the
+// actual meaning. The ring is where confidence belongs; the glyph is where the rule lives.
+// THE WARN HALF IS THE RESTRICTION'S OWN COLOUR AND NEVER THE TINT.
+//
+// Caught by rendering it: a Uline advisory on a stop a tractor has already delivered gets
+// tint = TRACTOR_DELIVERED_COLOR, and passing that tint in as the warn colour painted the
+// left half lime and the right half green — a ring with no split in it at all. That case
+// is the exact one this feature exists for ("history says yes, a scanner says no, nobody
+// has checked"), and it was the one rendering as an unbroken all-clear green.
+//
+// The tint says what the STOP's history is. The warn half says what the RESTRICTION is.
+// Letting the first overwrite the second collapses the distinction the icon is drawing.
+function restrictionWarnColor(key) {
+  const def = RESTRICTION_ICONS[resolveRestrictionKey(key)] || UNKNOWN_RESTRICTION;
+  return def.accent || def.bg || '#6b7280';
+}
+
+function advisoryRingMarkup(cx, cy, r, warnColor) {
+  const top = cy - r, bottom = cy + r;
+  return `<path d="M${cx} ${top} A${r} ${r} 0 0 0 ${cx} ${bottom}" fill="none" stroke="${warnColor}" stroke-width="3.4" stroke-linecap="round"/>`
+    + `<path d="M${cx} ${top} A${r} ${r} 0 0 1 ${cx} ${bottom}" fill="none" stroke="${ELIG_TRACTOR_COLOR}" stroke-width="3.4" stroke-linecap="round"/>`;
+}
+
+function iconMarkerSvg(restrictions, tint, opts = {}) {
   if (!restrictions || restrictions.length === 0) return null;
+  // Keys whose blocker is unconfirmed — each draws the split ring instead of a solid one.
+  const advisory = opts.advisoryKeys instanceof Set ? opts.advisoryKeys : new Set();
 
   // State B: single 36-diameter circle.
   if (restrictions.length === 1) {
@@ -2812,7 +2847,8 @@ function iconMarkerSvg(restrictions, tint) {
       : `
       <svg xmlns="http://www.w3.org/2000/svg" width="40" height="44" viewBox="0 0 40 44">
         <ellipse cx="20" cy="40" rx="12" ry="1.8" fill="black" opacity="0.18"/>
-        <circle cx="20" cy="20" r="18" fill="white" fill-opacity="0.95" stroke="${accent}" stroke-width="2"/>
+        <circle cx="20" cy="20" r="18" fill="white" fill-opacity="0.95"${advisory.has(r) ? '' : ` stroke="${accent}" stroke-width="2"`}/>
+        ${advisory.has(r) ? advisoryRingMarkup(20, 20, 18, restrictionWarnColor(r)) : ''}
         ${renderMarkerGlyph(r, 9, 9, tint)}
       </svg>`;
     return scaleMarkerSpec({
@@ -2852,8 +2888,10 @@ function iconMarkerSvg(restrictions, tint) {
     } else {
       const def = RESTRICTION_ICONS[resolveRestrictionKey(el)] || UNKNOWN_RESTRICTION;
       const accent = tint || def.accent || def.bg || '#6b7280';
+      const isAdv = advisory.has(el);
       elementsMarkup += `
-        <circle cx="${cx}" cy="${cy}" r="15" fill="white" fill-opacity="0.95" stroke="${accent}" stroke-width="2"/>
+        <circle cx="${cx}" cy="${cy}" r="15" fill="white" fill-opacity="0.95"${isAdv ? '' : ` stroke="${accent}" stroke-width="2"`}/>
+        ${isAdv ? advisoryRingMarkup(cx, cy, 15, restrictionWarnColor(el)) : ''}
         ${renderMarkerGlyph(el, cx - 11, cy - 11, tint)}
       `;
     }
@@ -2942,7 +2980,14 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   // pin, and the restriction-icon cluster below cannot answer this question three
   // different ways, which is exactly how the icon cluster ended up ignoring a
   // dispatcher's hand-checked "No tractor trailer" while the plain pin already honored it.
-  const noTractorOverride = !tractorPaintAllowed(elig, restrictions);
+  // WHICH BLOCKERS ARE UNCONFIRMED. An advisory blocker (scanner-found, or the Uline
+  // advisory flag) does NOT veto the tractor-delivered lime — it draws a half-warning,
+  // half-green ring instead, so the map can say "something says no, nobody has checked"
+  // rather than forcing that into a flat yes or no.
+  const advisoryKeys = new Set(
+    restrictions.filter((k) => TRAILER_BLOCKER_KEYS.has(k) && restrictionConfidence(note, k) === 'advisory'),
+  );
+  const noTractorOverride = !tractorPaintAllowed(elig, restrictions, note);
   const flagHue = (note?.priority_flag && FLAG_COLORS[note.priority_flag]) ? FLAG_COLORS[note.priority_flag] : null;
   const dnsStop = !!note?.do_not_send;
   // Pickups are MARKED on the pin (Chad: "Ra's should be marked as pickups and not
@@ -2960,7 +3005,10 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     + (note?.priority_flag || '') + '\x1f' + (elig || '') + '\x1f' + (tractorDelivered ? 'T' : '')
     + '\x1f' + (addrOff ? 'A' : '') + '\x1f' + (note?.delivery_window || '') + '\x1f' + count
     + '\x1f' + (pickup ? 'PU' : '')
-    + '\x1f' + (routeColor || '') + '\x1f' + (searchMatched ? 'S' : '') + '\x1f' + (plannedMuted ? 'P' : '');
+    + '\x1f' + (routeColor || '') + '\x1f' + (searchMatched ? 'S' : '') + '\x1f' + (plannedMuted ? 'P' : '')
+    // The advisory set changes the RING, so it changes the pixels — miss it here and a
+    // stop keeps a stale solid ring after a dispatcher confirms the restriction.
+    + '\x1f' + [...advisoryKeys].sort().join(',');
   const cached = __stopIconCache.get(cacheKey);
   if (cached) return cached;
 
@@ -3044,7 +3092,11 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // States B/C — restriction / receiving-hours icons; a priority flag recolors them.
     // noTractorOverride wins first: a "No tractor trailer" badge tinted lime by stale
     // history reads as permission, which is the one reading this icon may never give.
-    const spec = iconMarkerSvg(restrictions, (tractorDelivered && !noTractorOverride) ? TRACTOR_DELIVERED_COLOR : (eligColor || flagHue));
+    const spec = iconMarkerSvg(
+      restrictions,
+      (tractorDelivered && !noTractorOverride) ? TRACTOR_DELIVERED_COLOR : (eligColor || flagHue),
+      { advisoryKeys },
+    );
     result = { url: spec.url, scaledSize: new google.maps.Size(spec.width, spec.height), anchor: new google.maps.Point(spec.anchor[0], spec.anchor[1]) };
   }
   __stopIconCache.set(cacheKey, result);
@@ -4041,8 +4093,11 @@ function useLegendInventory({
   }, [stops, notes, dayKey, tractorLocs, routeStopNbrs, plannedMuted, isPlanned, selectedIds, searchMatchIds]);
 }
 
-function LegendMarkerExample({ restrictions, label }) {
-  const spec = useMemo(() => iconMarkerSvg(restrictions), [restrictions]);
+function LegendMarkerExample({ restrictions, label, advisoryKeys = null }) {
+  const spec = useMemo(
+    () => iconMarkerSvg(restrictions, null, advisoryKeys ? { advisoryKeys } : {}),
+    [restrictions, advisoryKeys],
+  );
   if (!spec) return null;
   return (
     <div className="flex items-center gap-2">
@@ -4128,6 +4183,11 @@ function TractorPaintControl({ litCount = null }) {
 // Display order for the restriction key. tractor_trailer_friendly is a POSITIVE mark and
 // gets its own section, so it is not in the prohibition list.
 const RESTRICTION_LEGEND_ORDER = Object.keys(RESTRICTION_ICONS).filter((k) => k !== 'tractor_trailer_friendly');
+
+// Module-level so their identity is stable — LegendMarkerExample memoizes on these, and a
+// fresh array every render would rebuild the data-URI on every keystroke in the filter box.
+const LEGEND_CONFIRMED_EXAMPLE = ['no_tractor_trailer'];
+const LEGEND_ADVISORY_EXAMPLE = new Set(['no_tractor_trailer']);
 
 // A count chip beside a legend row: how many stops on this board carry that mark. The number
 // is the reason the filtered legend is worth having — "6" next to a pink clock tells a
@@ -4250,6 +4310,30 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
                 <LegendCount n={!all && shapes[k]} />
               </div>
             ))}
+          </div>
+
+          {/* A LEGEND THAT DISAGREES WITH THE MAP IS WORSE THAN NO LEGEND. The split ring
+              is new mark language, and a dispatcher meeting one on the board at 6am has
+              no way to work out what half a ring means. No count chip here on purpose:
+              the inventory does not measure confidence, and printing a number this panel
+              has not counted is exactly the sort of thing that gets believed. */}
+          <div className="mt-3 pt-2 border-t border-slate-100">
+            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">How sure is it?</div>
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <LegendMarkerExample restrictions={LEGEND_CONFIRMED_EXAMPLE} label="Confirmed — someone here ticked it on the stop. Treat as fact." />
+              </div>
+              <div className="flex items-center gap-2">
+                <LegendMarkerExample
+                  restrictions={LEGEND_CONFIRMED_EXAMPLE}
+                  advisoryKeys={LEGEND_ADVISORY_EXAMPLE}
+                  label="Half ring — found automatically (a scanner, or a Uline note). Nobody has checked it. A tractor may well be fine."
+                />
+              </div>
+            </div>
+            <p className="text-slate-500 mt-1.5 leading-snug">
+              Ticking the restriction on the stop turns a half ring into a solid one.
+            </p>
           </div>
         </div>
       )}
@@ -6908,9 +6992,23 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [] }) {
   const getOpen = (day) => { const v = D.receiving_hours?.[day]; if (!v || typeof v === 'string') return ''; return v.open || ''; };
   const getClose = (day) => { const v = D.receiving_hours?.[day]; if (!v || typeof v === 'string') return ''; return v.close || ''; };
   const getLegacyString = (day) => { const v = D.receiving_hours?.[day]; return typeof v === 'string' ? v : ''; };
+  // TICKING A RESTRICTION IS A HUMAN CONFIRMING IT, AND THAT HAS TO BE RECORDED.
+  //
+  // receiving_hours and closed_days already stamp manual_overrides when a dispatcher edits
+  // them; equipment_restrictions did not, which cost two things. (1) The map could not tell
+  // a scanner's guess from a dispatcher's decision, so a Uline advisory and a confirmed
+  // "no tractor trailer" painted identically — the thing this change exists to fix.
+  // (2) customer-notes-writer's legacy migration is gated on !manual_overrides
+  // .equipment_restrictions, so an unstamped hand-set no_tractor_trailer could be silently
+  // downgraded to the advisory uline_straight_truck on a later scan. Stamping on toggle
+  // closes both. (The scanner's normal write is additive, so nothing was being erased —
+  // only that one migration path could rewrite a human's mark.)
   const toggleRestriction = (val) => {
     const cur = D.equipment_restrictions || [];
-    setD({ equipment_restrictions: cur.includes(val) ? cur.filter((x) => x !== val) : [...cur, val] });
+    setD({
+      equipment_restrictions: cur.includes(val) ? cur.filter((x) => x !== val) : [...cur, val],
+      manual_overrides: { ...(D.manual_overrides || {}), equipment_restrictions: true },
+    });
   };
   const addContact = () => setD({ contacts: [...(D.contacts || []), { name: '', phone: '', role: '' }] });
   const setContact = (i, patch) => { const next = [...(D.contacts || [])]; next[i] = { ...next[i], ...patch }; setD({ contacts: next }); };
