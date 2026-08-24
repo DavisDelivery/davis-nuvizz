@@ -4,7 +4,7 @@ import {
   LogOut, Users, ClipboardList, Camera, KeyRound, ChevronRight,
 } from 'lucide-react';
 
-import { fmtDate, fmtDateTime, etToday } from './lib/fmt.js';
+import { fmtDate, fmtDateTime, fmtTime, etToday } from './lib/fmt.js';
 import { shiftDayString } from './lib/shift.js';
 import { watchForUpdate, applyUpdate } from './lib/appupdate.js';
 import ReportScreen from './ReportScreen.jsx';
@@ -2232,6 +2232,10 @@ function StopDetailRow({ s }) {
         <div className="truncate text-slate-900">{s.businessName || `Stop ${s.stopNbr}`}</div>
         <div className="text-[11px] text-slate-500 flex flex-wrap gap-x-2">
           <span>stop {s.stopNbr}</span>
+          {/* The LAST piece's time, not the first — "all here" at 6am reads
+              differently than "all here" five minutes ago, and the dispatcher
+              could not tell the two apart before. */}
+          {s.scannedAt ? <span>scanned {fmtTime(s.scannedAt)}</span> : null}
           {s.handConfirmed ? <span className="text-sky-700">confirmed by hand</span> : null}
           {s.damagedCount > 0 ? <span className="text-amber-800 font-medium">{s.damagedCount} damaged</span> : null}
         </div>
