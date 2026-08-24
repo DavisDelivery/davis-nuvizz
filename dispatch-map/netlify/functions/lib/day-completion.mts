@@ -40,6 +40,54 @@
 // tomorrow, next week, or in a test.
 
 import { formatCompletionPct } from '../../../src/lib/completion-pct.js';
+import { isAppointmentRoute } from '../../../src/lib/board-flags.js';
+
+// ── ROUTES THIS REPORT DOES NOT SPEAK FOR ────────────────────────────────────
+//
+// Chad: "Don't include any Uline appt orders or orders off of Chad route going forward."
+//
+// Both are the same kind of thing: work that is not a delivery day's work, sitting in the
+// report's denominator and dragging the completion number down for reasons nobody can act
+// on tonight.
+//
+//   ULINE APPT — a holding pen, not a truck. Freight sits there BECAUSE it is waiting on a
+//     scheduled appointment with the customer, so "2 open at 6:30pm" is the normal state of
+//     a route that was never going out today. Matched with the SAME rule the flag engine
+//     already uses (isAppointmentRoute), rather than a second copy of the string, so a
+//     future ESTES APPT is covered the day it appears and the two screens cannot disagree
+//     about what an appointment route is.
+//
+//   CHAD — the owner's own route. He is driving it; he does not need an email at 6:30pm
+//     listing his own stops back to him.
+//
+// EXCLUDED ENTIRELY, not just hidden from the lists. Leaving them in `planned` would keep
+// them in the 97% while dropping them from the tables, which is the shape of number nobody
+// can reconcile against the board — and an unreconcilable count is worse than no count.
+//
+// Configurable, because a route name is a fact about how Davis dispatches this month and not
+// a fact about the software. DAY_REPORT_EXCLUDE_ROUTES takes a comma-separated list; the
+// default is what Chad asked for.
+const DEFAULT_EXCLUDED_ROUTES = ['CHAD'];
+
+export function excludedRouteNames(env: Record<string, any> = process.env): string[] {
+  const raw = String(env?.DAY_REPORT_EXCLUDE_ROUTES ?? '').trim();
+  if (!raw) return DEFAULT_EXCLUDED_ROUTES.slice();
+  return raw.split(',').map((x) => x.trim().toUpperCase()).filter(Boolean);
+}
+
+/**
+ * PURE. Is this route one the day report stays quiet about?
+ *
+ * EXACT match on the name, not a substring. "CHAD" must not silence a real route that merely
+ * contains it — a driver named Chadwick, a CHAattanooga lane — because a report that quietly
+ * drops a truck is the failure this whole feature exists to prevent.
+ */
+export function isExcludedRoute(name: any, excluded: string[] = excludedRouteNames()): boolean {
+  const n = String(name ?? '').trim().toUpperCase();
+  if (!n) return false;
+  if (isAppointmentRoute(n)) return true;
+  return excluded.includes(n);
+}
 
 export type Outcome =
   | 'delivered_system'   // 90 — closed by the scan
@@ -108,6 +156,10 @@ export interface DayCompletion {
   byRoute: RouteRoll[];
   openStops: OpenStop[];
   unableStops: OpenStop[];
+  // Routes deliberately left out, and how many stops each took with it. Rendered, never
+  // silent: 543 of 558 has to be reconcilable against the board or it is a number that
+  // cannot be checked, and an unreconcilable number is worse than none.
+  excluded: Array<{ route: string; stops: number }>;
 }
 
 const numOr = (v: any) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
@@ -138,7 +190,9 @@ function rowOf(s: any, outcome: Outcome): OpenStop {
  * open list collapses per stop number.
  */
 export function buildDayCompletion(
-  stops: any[], { date, asOf = null }: { date: string; asOf?: string | null },
+  stops: any[],
+  { date, asOf = null, excludeRoutes = excludedRouteNames() }:
+    { date: string; asOf?: string | null; excludeRoutes?: string[] },
 ): DayCompletion {
   const counts: Record<Outcome, number> = {
     delivered_system: 0, delivered_manual: 0, unable: 0, cancelled: 0, in_flight: 0, not_attempted: 0,
@@ -149,11 +203,21 @@ export function buildDayCompletion(
   const openSeen = new Set<string>();
   const unableSeen = new Set<string>();
   let planned = 0;
+  // What was left out, so the report can SAY so. A completion percentage a dispatcher cannot
+  // reconcile against the board is the thing this counts to avoid.
+  const excludedRoutes = new Map<string, number>();
 
   for (const s of stops || []) {
     // Planned only — see the note above.
     const isPlanned = s?.isPlanned === false ? false : (s?.isPlanned === true || !!str(s?.loadNbr || s?.routeName));
     if (!isPlanned) continue;
+    // Appointment holding pens and the owner's own route are not this report's business.
+    // Dropped BEFORE `planned` so they leave the denominator with the numerator.
+    const rk = str(s?.loadNbr || s?.routeName);
+    if (isExcludedRoute(rk, excludeRoutes)) {
+      excludedRoutes.set(rk, (excludedRoutes.get(rk) || 0) + 1);
+      continue;
+    }
     planned += 1;
 
     const outcome = stopOutcome(s);
@@ -213,6 +277,9 @@ export function buildDayCompletion(
     byRoute,
     openStops: openStops.sort(bySeq),
     unableStops: unableStops.sort(bySeq),
+    excluded: [...excludedRoutes.entries()]
+      .map(([route, n]) => ({ route, stops: n }))
+      .sort((a, b) => (b.stops - a.stops) || a.route.localeCompare(b.route)),
   };
 }
 
@@ -328,6 +395,9 @@ export function dayCompletionText(d: DayCompletion): string {
   if (d.counts.cancelled) L.push(`${d.counts.cancelled} cancelled (not counted against the day).`);
   L.push(`Closed by hand in the portal: ${d.counts.delivered_manual} of ${d.delivered} (${pct(d.manualRate)}).`);
 
+  if (d.excluded.length) {
+    L.push('', `Not counted: ${d.excluded.map((e) => `${e.route} (${e.stops})`).join(', ')} — appointment holding pens and the owner's route.`);
+  }
   if (d.unableStops.length) {
     L.push('', 'UNABLE TO DELIVER');
     for (const s of d.unableStops) L.push(`  ${s.stopNbr}  ${s.customer ?? ''} — ${s.route ?? ''}${s.driver ? ` (${s.driver})` : ''}`);
@@ -364,7 +434,17 @@ export function dayCompletionHtml(d: DayCompletion): string {
   if (d.counts.unable) H.push(row('Unable to deliver', `${d.counts.unable} — these need a call`, true));
   if (d.counts.cancelled) H.push(row('Cancelled', `${d.counts.cancelled} (not counted against the day)`));
   H.push(row('Closed by hand', `${d.counts.delivered_manual} of ${d.delivered} (${pct(d.manualRate)})`));
+  // SAY WHAT WAS LEFT OUT. Without this line the planned total cannot be reconciled against
+  // the board, and a completion percentage nobody can check is worse than none at all.
+  if (d.excluded.length) {
+    H.push(row('Not counted', `${d.excluded.map((e) => `${e.route} (${e.stops})`).join(', ')}`));
+  }
   H.push('</table>');
+  if (d.excluded.length) {
+    H.push(`<div style="color:#64748b;font-size:12px;margin:-8px 0 16px">`
+      + `Appointment holding pens and the owner's route are excluded — they are not a delivery day's work.`
+      + `</div>`);
+  }
 
   const table = (title: string, rows: OpenStop[], note?: string) => {
     if (!rows.length) return;
