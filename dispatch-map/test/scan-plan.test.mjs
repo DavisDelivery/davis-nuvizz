@@ -18,8 +18,9 @@ import assert from 'node:assert/strict';
 import {
   SCAN_KINDS, SCAN_INFO, defaultScanRules, clampScanRules, resolveInterval, ruleCoversHour,
   resolveWeekGrid, estimatePlanCalls, effectiveCadence, MAX_RULES, RULE_BOUNDS, dueKinds,
-  CRON_STEP_MIN, CRON_TOLERANCE_MIN,
+  CRON_STEP_MIN, CRON_TOLERANCE_MIN, overrideCadenceSkip,
 } from '../netlify/functions/lib/scan-plan.mts';
+import { scanDecision } from '../netlify/functions/lib/scan-schedule.mts';
 
 const MON = 1, TUE = 2, FRI = 5, SAT = 6, SUN = 0;
 const rule = (over = {}) => ({ kind: 'completed', days: [MON], startHour: 8, endHour: 17, intervalMin: 30, ...over });
@@ -290,4 +291,89 @@ test('THE DECOUPLING, ON ONE TICK: completed fires while planned waits', () => {
   const d = dueKinds(TUE, 14, defaultScanRules(), { completed: at(20), planned: at(20) }, now);
   assert.equal(d.completed.due, true, 'completed is due — this is the whole feature');
   assert.equal(d.planned.due, false, 'and the plan is not, so the fire costs 1 call not 3');
+});
+
+// ── THE LEGACY GATE MUST NOT SILENCE THE PLAN ────────────────────────────────
+//
+// Chad, 10:45am on a delivery day, Loads/Orders/Completed all reading the identical
+// "22 min ago": "I thought at this time of day we were on 15 min scans." The plan said 15;
+// nothing had run in 22. The outer ScanDecision (scan-schedule.mts's legacy single-cadence
+// gate, tied to lastLoadScanAt) was closing the whole function to EVERY kind, including
+// completed, until its own ~23-28 minute interval elapsed — the completed-only overlay never
+// touches lastLoadScanAt, so once a full scan reset it, nothing could fire again for the
+// legacy gate's full interval, no matter what the plan wanted.
+
+const decision = (over = {}) => ({ act: false, skip: 'cadence', reason: 'cadence elapsed=5<23-7', ...over });
+
+test('a cadence skip is overridden the moment ANY kind is due — this is the whole bug', () => {
+  const d = overrideCadenceSkip(decision(), false, true, false);
+  assert.equal(d.act, true);
+  assert.equal(d.skip, 'none');
+  assert.match(d.reason, /plan override/);
+  assert.match(d.reason, /completed=true/);
+});
+
+test('planned or roster alone are just as good a reason to override', () => {
+  assert.equal(overrideCadenceSkip(decision(), true, false, false).act, true);
+  assert.equal(overrideCadenceSkip(decision(), false, false, true).act, true);
+});
+
+test('nothing due means the skip stands — this must not turn into "always act"', () => {
+  const d = overrideCadenceSkip(decision(), false, false, false);
+  assert.equal(d.act, false);
+  assert.equal(d.skip, 'cadence');
+  assert.equal(d.reason, decision().reason, 'untouched — not even the reason string changes');
+});
+
+test('an ACTING decision passes through unchanged — nothing to override', () => {
+  const acting = decision({ act: true, skip: 'none', reason: 'act h=10' });
+  assert.equal(overrideCadenceSkip(acting, true, true, true), acting, 'same reference — a true no-op');
+});
+
+test('weekend blackout is NOT overridable — a real gate stays a real gate', () => {
+  // Chad's Friday-evening-through-Sunday quiet hours are a deliberate business rule, not an
+  // artifact of the old single-cadence math. A kind being "due" by the clock must not punch
+  // through it.
+  const d = overrideCadenceSkip(decision({ skip: 'weekend', reason: 'weekend blackout wd=6 h=10' }), true, true, true);
+  assert.equal(d.act, false);
+  assert.equal(d.skip, 'weekend');
+});
+
+test('the hard floor is NOT overridable — the anti-thrash minimum stays a minimum', () => {
+  const d = overrideCadenceSkip(decision({ skip: 'floor', reason: 'floor elapsed=3<10' }), true, true, true);
+  assert.equal(d.act, false);
+  assert.equal(d.skip, 'floor');
+});
+
+test('the override is silent on a truly quiet hour — nothing due, nothing skipped wrongly', () => {
+  // 2am: nothing in defaultScanRules covers it for completed or roster; only the overnight
+  // plan band watches. Confirms dueKinds and the override agree with each other on a real
+  // schedule, not just on hand-built fixtures.
+  const now = Date.parse('2026-08-25T06:00:00Z'); // 2am ET Tuesday
+  const d = dueKinds(TUE, 2, defaultScanRules(), {}, now);
+  const decided = decision({ reason: 'cadence elapsed=1<23-7' });
+  const overridden = overrideCadenceSkip(decided, d.planned.due, d.completed.due, d.roster.due);
+  assert.equal(overridden.act, true, 'the overnight plan band IS due — planned watches routing late');
+  assert.equal(d.completed.due, false, 'nothing delivers at 2am, so completed is not what triggered it');
+});
+
+test("CHAD'S EXACT SCREEN: 22 minutes elapsed at 10:45am, completed wants 15 — reproduced end to end", () => {
+  // The real numbers off the card: 638 stops, 10:45am ET Monday (a delivery day), all three
+  // feeds reading "22 min ago". Recreated from the two real inputs — the legacy gate's own
+  // decision, and what the shipped plan actually wants at that hour — without touching
+  // Firestore or NuVizz.
+  const now = Date.parse('2026-08-24T14:45:00Z'); // 10:45am EDT Monday
+  const lastLoadScanAt = new Date(now - 22 * 60000).toISOString();
+  const legacy = scanDecision(new Date(now), false, lastLoadScanAt, {});
+  assert.equal(legacy.act, false, "the legacy 30-min day-band gate says not yet at 22 minutes");
+  assert.equal(legacy.skip, 'cadence');
+
+  const rules = defaultScanRules();
+  const due = dueKinds(1, 10, rules, { completed: lastLoadScanAt }, now);
+  assert.equal(due.completed.due, true, 'done-run (15m) has cleared its own interval by 22 minutes');
+  assert.equal(due.completed.intervalMin, 15, "this hour's completed rule is the 15-minute one Chad expected");
+
+  const decided = overrideCadenceSkip(legacy, false, due.completed.due, false);
+  assert.equal(decided.act, true, 'the completed-only overlay may now actually run');
+  assert.match(decided.reason, /completed=true/);
 });

@@ -325,3 +325,51 @@ export function dueKinds(
   }
   return out;
 }
+
+/**
+ * THE LEGACY SINGLE-CADENCE GATE CAN SILENCE THE WHOLE PLAN, AND IT WAS DOING SO.
+ *
+ * Chad, at 10:45am on a delivery day, reading a status card where Loads, Orders AND
+ * Completed all showed the identical "22 min ago": "I thought at this time of day we were on
+ * 15 min scans." He was right to expect that — done-run (6am-7pm) is 15 minutes in
+ * defaultScanRules — and the card was telling the truth about what actually ran.
+ *
+ * WHY ALL THREE MATCHED. refresh-stops-core computes an outer `ScanDecision` FIRST, via the
+ * pre-decoupling scanDecision()/intervalForHour() in scan-schedule.mts — a single global
+ * cadence (30 min in the day band, by default) measured against elapsedMin since
+ * lastLoadScanAt SPECIFICALLY. Only once that gate says "act" does the function go on to ask
+ * dueKinds() which of planned/completed/roster actually wants to run this tick.
+ *
+ * The completed-only overlay does not touch lastLoadScanAt — it never calls writeStops, only
+ * applyCompletionPatches/markScanKinds/markCompletedScan. So once a full (planned) scan resets
+ * lastLoadScanAt, the outer gate stays closed for the FULL legacy interval (~23-28 minutes
+ * after tolerance) on every 5-minute cron tick — and while it is closed, the function returns
+ * before dueKinds is ever consulted. The completed rule's own 15-minute promise never gets a
+ * chance to fire on its own: it can only ever piggyback on whatever the outer load-cadence
+ * gate allows through, which is why the observed cadence tracked the OLD 30-minute band
+ * instead of the new 15-minute one, and why the three stamps landed on the same age — nothing
+ * ran in between at all.
+ *
+ * THE FIX IS NARROW ON PURPOSE. Only the 'cadence' skip reason is overridable — that is the
+ * one driven by the legacy single-interval math this plan replaced. 'weekend' (the Fri
+ * 22:00-Sun 20:00 blackout) and 'floor' (the hard 10-minute anti-thrash minimum) are real
+ * safety gates that have nothing to do with which kind is due, and stay in force exactly as
+ * written; a manual scan already bypasses this function entirely via `isManual`, so it is
+ * untouched here too.
+ */
+export function overrideCadenceSkip<T extends { act: boolean; skip: string; reason: string }>(
+  decision: T,
+  plannedDue: boolean,
+  completedDue: boolean,
+  rosterDue: boolean,
+): T {
+  if (decision.act) return decision;
+  if (decision.skip !== 'cadence') return decision;
+  if (!(plannedDue || completedDue || rosterDue)) return decision;
+  return {
+    ...decision,
+    act: true,
+    skip: 'none',
+    reason: `plan override (planned=${plannedDue} completed=${completedDue} roster=${rosterDue}); legacy gate said: ${decision.reason}`,
+  };
+}

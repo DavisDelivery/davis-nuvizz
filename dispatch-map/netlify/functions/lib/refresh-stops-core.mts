@@ -31,7 +31,7 @@ import { maxConsecutiveGap } from './scan-metrics.mts';
 import { notifyMarkedCustomers, pendingNotifyDates } from './cs-notify.mts';
 import { breakerTripped, scanIntervalElapsed, breakerMode, setDailyCeilingOverride, setCallTrigger } from './nuvizz-request.mts';
 import { scanDecision, isInRoutingWindow, clampScanConfig } from './scan-schedule.mts';
-import { clampScanRules, defaultScanRules, dueKinds } from './scan-plan.mts';
+import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip } from './scan-plan.mts';
 import { planCompletions } from './scan-completions.mts';
 
 // Reuse the CANONICAL integer parsers from nuvizz-scan so the parity log's
@@ -500,7 +500,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // Apply the configured spend cap to the per-call breaker for THIS invocation.
   setDailyCeilingOverride(typeof scanCfg.dailyCeiling === 'number' ? scanCfg.dailyCeiling : null);
 
-  const decision = scanDecision(now, isManual, lastLoadScanAt, scanCfg);
+  let decision = scanDecision(now, isManual, lastLoadScanAt, scanCfg);
 
   // ── THE SCAN PLAN — per saved search, per day, per hour ────────────────────
   //
@@ -524,6 +524,19 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   const plannedDue = isManual || due.planned.due;
   const completedDue = isManual || due.completed.due;
   const rosterDue = isManual || due.roster.due;
+
+  // THE PLAN CAN OVERRULE THE LEGACY GATE. `decision` above comes from the single global
+  // cadence this per-kind plan replaced (scanDecision/intervalForHour), measured against
+  // lastLoadScanAt specifically. The completed-only overlay never touches that stamp, so
+  // once a full scan resets it, decision.act stays false for the FULL legacy interval on
+  // every 5-minute tick — and while it is false, this whole function returns before ever
+  // asking whether completed (or roster) is independently due. Chad, at 10:45am on a
+  // delivery day, watching Loads/Orders/Completed all read the identical "22 min ago":
+  // "I thought at this time of day we were on 15 min scans." He was right to expect that
+  // — done-run is 15 minutes — and this is why it was not happening. Only the 'cadence'
+  // skip is overridable; weekend blackout and the hard floor are real safety gates and
+  // stay in force. See overrideCadenceSkip in scan-plan.mts.
+  decision = overrideCadenceSkip(decision, plannedDue, completedDue, rosterDue);
 
   // Fix 4 — exactly ONE structured line per invocation, so "why didn't it scan"
   // is answerable from the log. today/tomorrow report the DECISION's feed intent.
