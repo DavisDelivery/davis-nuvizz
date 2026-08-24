@@ -57,6 +57,33 @@ export function drawnRestrictionKeys(rawKeys, opts = {}) {
   return keys;
 }
 
+// WHETHER THE TRACTOR-DELIVERED LIME PAINT IS ALLOWED TO SHOW. Chad: "need a no
+// tractor trailer override button that will override the green auto paint."
+//
+// tractor_locations (the lime pin) is a STICKY, AUTOMATIC record: "a tractor delivered
+// here once, ever." It never un-flags itself, so it can be years stale — and it says
+// nothing about NOW. A dispatcher who has since set vehicle_eligibility to box-only, or
+// checked "No tractor trailer" in Equipment restrictions, is stating a CURRENT fact that
+// must outrank old history: a customer who called to say "no more 53-footers, we lost
+// the turning radius" needs that reflected on the map, not a lime pin still promising a
+// tractor-trailer is fine.
+//
+// Takes the ALREADY-DRAWN restriction keys (drawnRestrictionKeys' output), not the raw
+// note, so this can never disagree with the badge that is or is not actually on the pin
+// — e.g. a hand-set "tractor OK" already drops no_tractor_trailer from the drawn set
+// upstream, and that suppression must read as "paint allowed," not as this function
+// re-deciding the same question from raw data a second, possibly different, way.
+//
+// One function, three call sites (the numbered-route pin, the plain pin, and the
+// restriction-icon cluster) — the bug this closes was exactly the three sites
+// disagreeing: the plain pin already refused the lime for a hand-set box-only stop,
+// while the other two did not, so a dispatcher could check "No tractor trailer," save,
+// and watch the icon on the map stay exactly as lime as it was before they touched it.
+export function tractorPaintAllowed(eligibility, drawnKeys) {
+  const blocked = eligibility === 'box_only' || (drawnKeys || []).includes('no_tractor_trailer');
+  return !blocked;
+}
+
 // Which of the three "no icon" pin tints a stop wears, mirroring flagColor(). Kept here so
 // the swatch list in the legend and the colour on the pin cannot disagree about what purple
 // means. Returns a priority-flag key, or 'restricted', or 'plain'.

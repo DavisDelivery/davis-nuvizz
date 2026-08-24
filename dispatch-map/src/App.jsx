@@ -56,7 +56,7 @@ import { timeMarkForDay, TIME_MARK_KEYS } from './lib/time-marks.js';
 import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS } from './lib/history-range.js';
 import {
   drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
-  legendIsEmpty, pinTintKind, visibleIconKeys,
+  legendIsEmpty, pinTintKind, visibleIconKeys, tractorPaintAllowed,
 } from './lib/map-legend.js';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
@@ -92,7 +92,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.76.3';
+const APP_VERSION = '0.76.4';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -163,6 +163,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.76.4', 'A “NO TRACTOR TRAILER” RESTRICTION CAN NO LONGER BE PAINTED GREEN BY OLD HISTORY. Chad, from the stop panel with the restriction already checked: “need a no tractor trailer override button that will override the green auto paint.” The lime pin (tractor_locations) is a STICKY, AUTOMATIC record — “a tractor delivered here once, ever” — and it never un-flags itself, so it can be years stale and say nothing about NOW. A dispatcher setting the vehicle-eligibility dropdown to Box-only already overrode it, on the PLAIN pin only. Checking “No tractor trailer” in Equipment restrictions — the control on the exact screen this ask was made from — did not: the numbered-route pin and the restriction-icon cluster each carried their own copy of the same color decision, and neither one remembered to check it. A dispatcher could tick the box, save, and the icon on the map stayed exactly as lime as it was a second earlier — worse, the restriction glyph itself, a truck with a slash through it, rendered in tractor-green rather than its own red, so the one icon built to say “do not send a 53-footer here” read, at a glance, as permission. THE FIX IS ONE FUNCTION, NOT THREE FIXES: tractorPaintAllowed(eligibility, drawnKeys) now lives in lib/map-legend.js beside drawnRestrictionKeys, whose output it takes as input — so it can never disagree with the badge that is or is not actually on the pin — and all three color sites (numbered pin, plain pin, icon cluster) call it once and share the answer. That is the real fix: not that the rule was wrong, but that it existed in three places and only one of them had it right, which is exactly the shape of bug a shared function stops from happening again. VERIFIED THE ONLY WAY THAT COUNTS: the real no_tractor_trailer glyph was pulled from the shipped source and rendered at its old lime tint next to its corrected red — the before is a green truck telling a driver a tractor-trailer is fine at a stop that was just marked the opposite. Nine new tests, four of them reading the shipped App.jsx source directly to confirm all three call sites use the shared function exactly once each — a fixture test proves the rule; only a source test proves the fix actually reached everywhere it needed to. One test was proven to catch the regression by reverting the icon-cluster line to its buggy form: it, and only it, failed. 2,456 tests green.'],
   ['0.76.3', 'LOAD-SCAN (v0.44.0): the dispatcher\'s truck drill-down now shows WHEN each stop was scanned, not just whether it was. Chad: "Can you start putting time stamps on these when they were scanned" — the per-stop rows (business name, "all here"/"not scanned") carried no time at all; the only timestamp on the whole screen was three taps deep, inside the collapsed scan log. Each stop now shows the time of its LAST piece next to the stop number, so "all here" at 6am reads differently than "all here" five minutes ago. Also ships v0.43.0: the camera pair-buffer\'s two remaining phantom-piece bugs — a piece id arriving seconds AFTER its NOOG fallback booked now upgrades that fallback instead of booking a second piece, and the camera callbacks are ref-routed so a long session can\'t book against a stale view of the truck. This app (dispatch-map) is unchanged; this is a version+changelog bump only, per the repo-wide policy that every merge carries one.'],
   ['0.76.2', 'THE CLOCK FACES ARE WHITE NOW — THE MAP WAS SHOWING THROUGH THEM. Chad, pointing at a teal clock sitting on a road: “the middle of icon shouldn’t be transparent should be white.” Every one of the four time marks drew its dial fill=“none”, so whatever the mark happened to land on — a yellow road, a roof, a field — ran straight through the clock face. THAT IS NOT COSMETIC AT THIS SIZE: the hands are 1.55–1.9 units wide on a 22-unit grid and draw under about 1.2px on the satellite base, so a road crossing behind them arrives at the same width and the same contrast as the hands themselves. The mark stops reading as a clock and starts reading as scribble, which is exactly when an eye skips the one stop on the screen that has a deadline on it. The dial is now filled white on all four — shuts-early, early-close, opens-late and extra-room — and the fill sits UNDER the hands and the ring, which is the half that is easy to get wrong: a white disc emitted after the hands would erase them, and it would look perfectly fine in the diff. The white outline pass that separates these marks from the base already forces every non-none fill to white, so the halo picked the change up for free rather than developing a hole in it. VERIFIED BY LOOKING, not by reading the diff: the real glyphs were pulled out of the shipped source, run through the shipped outline transform, rendered over a mock road base at 2.6x and screenshotted before and after — the road visibly crosses the faces in the before and stops at the ring in the after. Four new tests pin it at the source, and they were checked the only way that means anything: one dial was reverted to transparent and two of them failed, then it was restored and all four passed. The hands and arrows are asserted to KEEP fill=“none”, because the obvious blanket fill-swap would turn every arrow into a solid wedge. 2,447 tests green.'],
   ['0.76.1', "THE CREDENTIAL TABLE IS OUT OF THE README — AND THE POINT IS THE SHAPE, NOT THE VALUES. The values themselves have been __REDACTED__ since aef1ca2 on 2026-06-17, so nothing secret was sitting in the working tree today. What was still there was the THING THAT CAUSED THE LEAK: a table of credential variable names beside a value column, which is a fill-in-the-blank invitation, and the blanks got filled with real NuVizz passwords in May 2026. A redacted template is still a template. It now points at dispatch-map/.env.example — the canonical inventory, which already separates browser-visible VITE_ vars from server-only ones and explains each — and says plainly that values live in Netlify and never in this repo. Two traps that have bitten before are written down beside it: NUVIZZ_DAVIS_* is read by BOTH Netlify sites (the parent app's nuvizz.cjs and dispatch-map's nuvizz-scan.mts), so rotating the password and updating only one leaves the other site's scans failing; and Netlify's secret scanning greps every file in the repo for the VALUES of this site's env vars and fails the deploy on a hit, which is why no real value may appear in any file here, doc or test fixture included. SAID OUT LOUD IN THE README BECAUSE IT IS THE PART PEOPLE GET WRONG: redacting the working tree does NOT remove a credential from the commit that introduced it, and the only thing that ever makes a leaked credential safe is ROTATING IT AT THE VENDOR. Commit 6c35e4e still holds the real NuVizz Davis and Uline passwords, it is reachable from 136 of the repo's 137 branches, and GitHub keeps it reachable by SHA through refs/pull/N/head regardless of any branch deletion or history rewrite — so scrubbing is expensive, incomplete, and does not achieve the goal. Rotation does, in about ten minutes. Docs only; no shipping code, no behaviour change."],
@@ -2936,6 +2937,12 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     getRestrictionBadgeKeys(note, { day: selectedDayKey }),
     { deliveryWindow: note?.delivery_window, eligibility: elig, resolve: resolveRestrictionKey },
   );
+  // WHETHER THE TRACTOR-DELIVERED LIME PAINT MAY SHOW HERE — see map-legend.js
+  // tractorPaintAllowed for the full rule. One function, so the numbered pin, the plain
+  // pin, and the restriction-icon cluster below cannot answer this question three
+  // different ways, which is exactly how the icon cluster ended up ignoring a
+  // dispatcher's hand-checked "No tractor trailer" while the plain pin already honored it.
+  const noTractorOverride = !tractorPaintAllowed(elig, restrictions);
   const flagHue = (note?.priority_flag && FLAG_COLORS[note.priority_flag]) ? FLAG_COLORS[note.priority_flag] : null;
   const dnsStop = !!note?.do_not_send;
   // Pickups are MARKED on the pin (Chad: "Ra's should be marked as pickups and not
@@ -2981,7 +2988,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // Numbered route pin (delivery sequence). Colored by route when a routeColor is
     // given (Routing), else by status (Map): green=delivered / blue=scheduled.
     const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
-    const color = routeColor || (tractorDelivered ? TRACTOR_DELIVERED_COLOR : (meta.color || flagColor(note)));
+    const color = routeColor || ((tractorDelivered && !noTractorOverride) ? TRACTOR_DELIVERED_COLOR : (meta.color || flagColor(note)));
     result = { url: circleMarkerSvg(color, { label: String(seq), count }), scaledSize: new google.maps.Size(30, 30), anchor: new google.maps.Point(15, 15) };
   } else if (restrictions.length === 0) {
     // State A — status drives the pin; matched stops pop orange; a priority flag,
@@ -2998,9 +3005,10 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       && addrOff;
     const color = matched ? '#f59e0b'
       : searchMatched ? SEARCH_MATCH_COLOR
-      // Dispatcher-set BOX-ONLY wins over the proven lime (same rule as the Selected window):
-      // "a tractor once delivered here" must never visually override an explicit off-limits mark.
-      : elig === 'box_only' ? ELIG_BOX_COLOR
+      // Dispatcher-set BOX-ONLY wins over the proven lime (same rule as the Selected window,
+      // and now the same shared flag the icon branch below uses): "a tractor once delivered
+      // here" must never visually override an explicit off-limits mark.
+      : noTractorOverride ? eligColor
       : tractorDelivered ? TRACTOR_DELIVERED_COLOR
       : eligColor
       || flagHue
@@ -3034,7 +3042,9 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     }
   } else {
     // States B/C — restriction / receiving-hours icons; a priority flag recolors them.
-    const spec = iconMarkerSvg(restrictions, tractorDelivered ? TRACTOR_DELIVERED_COLOR : (eligColor || flagHue));
+    // noTractorOverride wins first: a "No tractor trailer" badge tinted lime by stale
+    // history reads as permission, which is the one reading this icon may never give.
+    const spec = iconMarkerSvg(restrictions, (tractorDelivered && !noTractorOverride) ? TRACTOR_DELIVERED_COLOR : (eligColor || flagHue));
     result = { url: spec.url, scaledSize: new google.maps.Size(spec.width, spec.height), anchor: new google.maps.Point(spec.anchor[0], spec.anchor[1]) };
   }
   __stopIconCache.set(cacheKey, result);
