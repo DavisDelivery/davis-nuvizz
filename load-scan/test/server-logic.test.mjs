@@ -523,6 +523,43 @@ test('a hand-confirmed stop reconciles without a scan barcode', async () => {
   assert.equal(two.complete, true);
 });
 
+// ── A stop shows WHEN it was scanned, not just that it was ──────────────────
+//
+// "all here" reads differently at 6am than it does five minutes ago, and a
+// dispatcher had no way to tell those apart — only the collapsed scan log,
+// three taps away, carried a time at all.
+
+test('a scanned stop reports the time of its LAST piece, not its first', async () => {
+  const rows = ACT.reconcileStops(dstops, [
+    sc('OG0000000001', '1', { scannedAt: '2026-08-06T10:00:00.000Z' }),
+    sc('OG0000000002', '1', { scannedAt: '2026-08-06T10:05:00.000Z' }),
+    sc('OG0000000003', '1', { scannedAt: '2026-08-06T10:02:00.000Z' }), // out of order arrival
+  ], []);
+  const one = rows.find((r) => r.stopNbr === '1');
+  assert.equal(one.scannedAt, '2026-08-06T10:05:00.000Z', 'the latest timestamp wins, regardless of array order');
+});
+
+test('an untouched stop has no scan time — not a default, not the load time', async () => {
+  const rows = ACT.reconcileStops(dstops, [sc('OG0000000001', '1', { scannedAt: '2026-08-06T10:00:00.000Z' })], []);
+  const two = rows.find((r) => r.stopNbr === '2');
+  assert.equal(two.scannedAt, null);
+});
+
+test('a hand-confirmed stop has no scan time — the confirmation carries no per-piece clock', async () => {
+  const rows = ACT.reconcileStops(dstops, [], [{ stopNbr: '2', pieces: 2 }]);
+  const two = rows.find((r) => r.stopNbr === '2');
+  assert.equal(two.scannedAt, null);
+});
+
+test('a voided piece does not supply the stop time — only what is still on the truck counts', async () => {
+  const rows = ACT.reconcileStops(dstops, [
+    sc('OG0000000001', '1', { scannedAt: '2026-08-06T10:00:00.000Z' }),
+    sc('OG0000000002', '1', { scannedAt: '2026-08-06T11:30:00.000Z', voidedAt: '2026-08-06T11:31:00.000Z' }),
+  ], []);
+  const one = rows.find((r) => r.stopNbr === '1');
+  assert.equal(one.scannedAt, '2026-08-06T10:00:00.000Z', 'the voided piece\'s later time is not reported');
+});
+
 test('buildActivity attaches the per-stop reconciliation to the load', async () => {
   const out = ACT.buildActivity({
     date: '2026-08-06',

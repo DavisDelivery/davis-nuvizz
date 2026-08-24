@@ -93,6 +93,11 @@ export interface StopDetail {
   damagedCount: number;
   damagedOgs: string[];
   scannedOgs: string[];
+  /** When the LAST piece landed here, so the dispatcher can see whether "all
+   * here" happened at 6am or five minutes ago — not just that it happened.
+   * Null for a stop with no scan (hand-confirmed-only stops included: the
+   * confirmation has no per-piece time to show). */
+  scannedAt: string | null;
 }
 
 /**
@@ -111,6 +116,10 @@ export function reconcileStops(stops: any[], scans: any[], handConfirms: any[]):
   const hands = new Set((handConfirms || []).map((h) => String(h?.stopNbr ?? '')));
 
   const byStop = new Map<string, Map<string, any>>();
+  // The most recent scan time at each stop — independent of the og-dedup map
+  // above, so a stop is not left showing its FIRST piece's time as "when it
+  // was scanned" once later pieces have landed.
+  const lastAtByStop = new Map<string, string>();
   for (const s of active) {
     const stopNbr = String(s?.stopNbr ?? '');
     const og = String(s?.og ?? '').toUpperCase();
@@ -118,6 +127,8 @@ export function reconcileStops(stops: any[], scans: any[], handConfirms: any[]):
     if (!byStop.has(stopNbr)) byStop.set(stopNbr, new Map());
     const m = byStop.get(stopNbr)!;
     if (!m.has(og)) m.set(og, s);
+    const at = String(s?.scannedAt || '');
+    if (at && at > String(lastAtByStop.get(stopNbr) || '')) lastAtByStop.set(stopNbr, at);
   }
 
   return (stops || []).map((st) => {
@@ -144,6 +155,7 @@ export function reconcileStops(stops: any[], scans: any[], handConfirms: any[]):
       damagedCount: damaged.length,
       damagedOgs: damaged.map((x) => String(x.og).toUpperCase()),
       scannedOgs: [...m.keys()],
+      scannedAt: lastAtByStop.get(stopNbr) || null,
     };
   });
 }
