@@ -9,6 +9,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   stopOutcome, buildDayCompletion, reconcileDay, isOpenOutcome, isDeliveredOutcome,
+  dayCompletionText, isExcludedRoute, excludedRouteNames,
 } from '../netlify/functions/lib/day-completion.mts';
 
 const DATE = '2026-08-20';
@@ -277,4 +278,94 @@ test('the endpoint source never emits the recipient VALUE, only whether it is se
   // anywhere that is not wrapped in a truthiness test.
   const bare = src.match(/(?<!!!String\()process\.env\.DAY_REPORT_TO(?!\s*\|\|\s*''\)\.trim\(\))/g) || [];
   assert.deepEqual(bare, [], 'the address itself must never reach a response body');
+});
+
+// ── ROUTES THE DAY REPORT DOES NOT SPEAK FOR ─────────────────────────────────
+//
+// Chad: "Don't include any Uline appt orders or orders off of Chad route going forward."
+// ULINE APPT is a holding pen waiting on a customer appointment — "2 open at 6:30pm" is its
+// normal state, not a failure. CHAD is the owner's own route; he does not need his own stops
+// emailed back to him. Both were sitting in the denominator dragging the percentage down.
+
+const exStop = (over = {}) => ({
+  stopNbr: '900', businessName: 'ACME', loadNbr: 'SUW', routeName: 'SUW',
+  isPlanned: true, status: '90', ...over,
+});
+
+test('ULINE APPT and CHAD leave the report entirely — numerator AND denominator', () => {
+  const d = buildDayCompletion([
+    exStop({ stopNbr: '1', status: '90' }),
+    exStop({ stopNbr: '2', status: '20' }),
+    exStop({ stopNbr: '3', status: '20', loadNbr: 'ULINE APPT', routeName: 'ULINE APPT' }),
+    exStop({ stopNbr: '4', status: '20', loadNbr: 'CHAD', routeName: 'CHAD' }),
+  ], { date: '2026-08-24' });
+  assert.equal(d.planned, 2, 'the two excluded stops leave the plan, not just the tables');
+  assert.equal(d.open, 1, 'only the real open stop counts');
+  assert.equal(d.byRoute.length, 1);
+  assert.equal(d.byRoute[0].route, 'SUW');
+  assert.equal(d.openStops.length, 1);
+  assert.equal(d.openStops[0].stopNbr, '2');
+});
+
+test('the report SAYS what it left out — 543 of 558 has to be reconcilable', () => {
+  const d = buildDayCompletion([
+    exStop({ stopNbr: '1' }),
+    exStop({ stopNbr: '3', loadNbr: 'ULINE APPT', routeName: 'ULINE APPT' }),
+    exStop({ stopNbr: '4', loadNbr: 'ULINE APPT', routeName: 'ULINE APPT' }),
+    exStop({ stopNbr: '5', loadNbr: 'CHAD', routeName: 'CHAD' }),
+  ], { date: '2026-08-24' });
+  assert.deepEqual(d.excluded, [{ route: 'ULINE APPT', stops: 2 }, { route: 'CHAD', stops: 1 }]);
+  assert.match(dayCompletionText(d), /Not counted: ULINE APPT \(2\), CHAD \(1\)/);
+});
+
+test('a clean day says nothing about exclusions', () => {
+  const d = buildDayCompletion([exStop({ stopNbr: '1' })], { date: '2026-08-24' });
+  assert.deepEqual(d.excluded, []);
+  assert.doesNotMatch(dayCompletionText(d), /Not counted/);
+});
+
+test('CHAD is matched EXACTLY — a real route that merely contains it survives', () => {
+  // A report that quietly drops a truck is the failure this feature exists to prevent.
+  const d = buildDayCompletion([
+    exStop({ stopNbr: '1', status: '20', loadNbr: 'CHADWICK', routeName: 'CHADWICK' }),
+    exStop({ stopNbr: '2', status: '20', loadNbr: 'CHATTANOOGA', routeName: 'CHATTANOOGA' }),
+    exStop({ stopNbr: '3', status: '20', loadNbr: 'CHAD 2', routeName: 'CHAD 2' }),
+  ], { date: '2026-08-24' });
+  assert.equal(d.planned, 3, 'none of these is the owner’s route');
+  assert.deepEqual(d.excluded, []);
+});
+
+test('case and whitespace do not let an excluded route back in', () => {
+  const d = buildDayCompletion([
+    exStop({ stopNbr: '1', loadNbr: '  chad  ', routeName: '  chad  ' }),
+    exStop({ stopNbr: '2', loadNbr: 'uline appt', routeName: 'uline appt' }),
+  ], { date: '2026-08-24' });
+  assert.equal(d.planned, 0);
+});
+
+test('a future ESTES APPT is covered the day it appears — one appointment rule, not two', () => {
+  // Reuses the flag engine’s isAppointmentRoute rather than a second copy of the string, so
+  // the report and the board can never disagree about what an appointment route is.
+  const d = buildDayCompletion([
+    exStop({ stopNbr: '1', status: '20', loadNbr: 'ESTES APPT', routeName: 'ESTES APPT' }),
+    exStop({ stopNbr: '2', status: '20', loadNbr: 'ULINE APPT 2', routeName: 'ULINE APPT 2' }),
+  ], { date: '2026-08-24' });
+  assert.equal(d.planned, 0);
+});
+
+test('the exclusion list is configurable — a route name is not a fact about the software', () => {
+  const d = buildDayCompletion([
+    exStop({ stopNbr: '1', status: '20', loadNbr: 'CHAD', routeName: 'CHAD' }),
+    exStop({ stopNbr: '2', status: '20', loadNbr: 'ZACH', routeName: 'ZACH' }),
+  ], { date: '2026-08-24', excludeRoutes: ['ZACH'] });
+  assert.equal(d.planned, 1, 'CHAD is back in when the list says so');
+  assert.deepEqual(d.excluded, [{ route: 'ZACH', stops: 1 }]);
+});
+
+test('an appointment route is excluded even when the configured list is empty', () => {
+  // The appointment rule is structural, not a preference — it is never going out today.
+  const d = buildDayCompletion([
+    exStop({ stopNbr: '1', status: '20', loadNbr: 'ULINE APPT', routeName: 'ULINE APPT' }),
+  ], { date: '2026-08-24', excludeRoutes: [] });
+  assert.equal(d.planned, 0);
 });
