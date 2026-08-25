@@ -951,6 +951,11 @@ test('the rule is about the RECORD, not the dash — a plain PRO unplanned and u
   assert.deepEqual(out.rows, []);
 });
 
+// The route name in these two is arbitrary — they are about the closed-today rule, not about
+// any particular truck. It used to be CHAD, which now means something (the owner's own route
+// is set aside, see owner-route-flags.test.mjs) and silently took both tests to zero flags.
+// A fixture that borrows a real name is a fixture that changes meaning under you; the same
+// mistake in a different file is what stopped production deploying for seven hours.
 test('THE ORDERS STAY DECOUPLED: a delivered twin does NOT settle a live re-cut order', () => {
   // The fix this replaced coupled them, and it was wrong for a right-looking reason: dispatch
   // closes an original and re-cuts it, so the moment the re-cut genuinely needs delivering,
@@ -958,9 +963,9 @@ test('THE ORDERS STAY DECOUPLED: a delivered twin does NOT settle a live re-cut 
   // the days it mattered.
   const out = run([
     stop({ stopNbr: '007165852', matchKey: 'ies|k', businessName: 'IES', status: '91',
-      normalizedStatus: 'DELIVERED', deliveredDTTM: '2026-08-21T09:00', loadNbr: 'CHAD', routeName: 'CHAD', routeSeq: 1 }),
+      normalizedStatus: 'DELIVERED', deliveredDTTM: '2026-08-21T09:00', loadNbr: 'BEN 2', routeName: 'BEN 2', routeSeq: 1 }),
     stop({ stopNbr: '007165852-1', matchKey: 'ies|k', businessName: 'IES', status: '20',
-      loadNbr: 'CHAD', routeName: 'CHAD', routeSeq: 2 }),
+      loadNbr: 'BEN 2', routeName: 'BEN 2', routeSeq: 2 }),
   ], CLOSED_FRI, FRI);
   assert.equal(out.rows.filter((r) => r.rule === 'closed_today').length, 1,
     'the re-cut order is routed and scheduled — it must still flag');
@@ -970,7 +975,7 @@ test('BOTH halves are required — routed, or not-unplanned, keeps a stop judged
   const on = (o) => run([stop({ stopNbr: '1', matchKey: 'ies|k', businessName: 'IES', ...o })], CLOSED_FRI, FRI)
     .rows.filter((r) => r.rule === 'closed_today').length;
   assert.equal(on({ status: '10', normalizedStatus: 'UNPLANNED', loadNbr: '', routeName: '' }), 0);
-  assert.equal(on({ status: '10', normalizedStatus: 'UNPLANNED', loadNbr: 'CHAD', routeName: 'CHAD' }), 1,
+  assert.equal(on({ status: '10', normalizedStatus: 'UNPLANNED', loadNbr: 'BEN 2', routeName: 'BEN 2' }), 1,
     'routed is scheduled, whatever the status says');
   assert.equal(on({ status: '20', normalizedStatus: 'SCHEDULED', loadNbr: '', routeName: '' }), 1,
     'a stop that has left unplanned is being worked, even before a route lands');

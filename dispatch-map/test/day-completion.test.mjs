@@ -380,3 +380,57 @@ test('an appointment route is excluded even when the configured list is empty', 
   ], { date: '2026-08-24', excludeRoutes: [] });
   assert.equal(d.planned, 0);
 });
+
+// ── THE EXCLUDED ORDERS COME BACK, AT THE END ────────────────────────────────
+//
+// Chad: "I dont' want orders from the chad route showing up on my flags list. However I do
+// want them back on the end of email."
+//
+// Two different asks about the same freight, and they do not conflict. A FLAG is a call to
+// action and he is the one driving that truck, so a flag on it can only take the place of one
+// somebody could act on. The REPORT is a record of the day, and a record with a hole in it is
+// worse than a long one — he just does not want that hole moving the percentage.
+
+test('the excluded orders are listed at the END of the report, outcomes and all', () => {
+  const d = buildDayCompletion([
+    exStop({ stopNbr: '1', loadNbr: 'BEN 2', routeName: 'BEN 2' }),
+    exStop({ stopNbr: '3', loadNbr: 'CHAD', routeName: 'CHAD', businessName: 'SUNBELT RENTALS', routeSeq: 1 }),
+    exStop({ stopNbr: '4', loadNbr: 'CHAD', routeName: 'CHAD', businessName: 'COURTESY FORD', routeSeq: 2, status: '90' }),
+    exStop({ stopNbr: '5', loadNbr: 'ULINE APPT', routeName: 'ULINE APPT', businessName: 'STORD' }),
+  ], { date: '2026-08-24' });
+
+  // Still out of BOTH halves of the fraction — that was the whole point of v0.76.8.
+  assert.equal(d.gradable, 1, 'only the real route is graded');
+  assert.equal(d.excludedStops.length, 3);
+
+  const txt = dayCompletionText(d);
+  assert.match(txt, /NOT COUNTED — for reference only/);
+  assert.match(txt, /SUNBELT RENTALS/);
+  assert.match(txt, /STORD/);
+  // It says what BECAME of each one, so "not counted" cannot read as "not known".
+  assert.match(txt, /COURTESY FORD #2 — delivered/);
+
+  // LAST. Anywhere higher and work nobody is grading sits in front of work somebody has to
+  // act on tonight.
+  assert.ok(txt.indexOf('NOT COUNTED') > txt.indexOf('OPEN STOPS'),
+    'the tail comes after the stops a dispatcher acts on');
+});
+
+test('the tail carries no orders when nothing was excluded', () => {
+  const d = buildDayCompletion([exStop({ stopNbr: '1', loadNbr: 'BEN 2', routeName: 'BEN 2' })], { date: '2026-08-24' });
+  assert.deepEqual(d.excludedStops, []);
+  assert.ok(!/NOT COUNTED/.test(dayCompletionText(d)), 'no empty section on a clean day');
+});
+
+test('the excluded tail does not move the number above it', () => {
+  const withOwner = buildDayCompletion([
+    exStop({ stopNbr: '1', loadNbr: 'BEN 2', routeName: 'BEN 2', status: '90' }),
+    exStop({ stopNbr: '2', loadNbr: 'CHAD', routeName: 'CHAD' }),
+  ], { date: '2026-08-24' });
+  const without = buildDayCompletion([
+    exStop({ stopNbr: '1', loadNbr: 'BEN 2', routeName: 'BEN 2', status: '90' }),
+  ], { date: '2026-08-24' });
+  assert.equal(withOwner.completionRate, without.completionRate, '100% either way');
+  assert.equal(withOwner.gradable, without.gradable);
+  assert.equal(withOwner.excludedStops.length, 1, 'but it is still on the record');
+});
