@@ -47,6 +47,16 @@ const DEVICES = [
 const SCREENS = [
   { key: 'map', label: 'Map', nav: null },
   { key: 'routing', label: 'Routing (beta)', nav: /routing/i },
+  // The Routing rail's second layout has THREE tabs, and which one is open is remembered in
+  // localStorage — so the guard only ever saw whichever the default was. A view nobody sweeps
+  // is a view that ships its phone layout untested, which is the whole reason this file exists.
+  // Each is a full pass: same strip, different panel body, same 390 and 360 screens.
+  { key: 'routing-routes', label: 'Routing (beta) — rail on Routes', nav: /routing/i,
+    prefs: { 'routing.rightPanel': 'routes', 'routing.routesTab': 'routes' } },
+  { key: 'routing-drivers', label: 'Routing (beta) — rail on Drivers', nav: /routing/i,
+    prefs: { 'routing.rightPanel': 'routes', 'routing.routesTab': 'drivers' } },
+  { key: 'routing-loads', label: 'Routing (beta) — rail on Loads', nav: /routing/i,
+    prefs: { 'routing.rightPanel': 'routes', 'routing.routesTab': 'loads' } },
   { key: 'neworder', label: 'New Order', nav: /new order/i },
   { key: 'quote', label: 'Quote', nav: /quote/i },
   { key: 'manifest', label: 'Manifest check', nav: /manifest check/i, inMore: true },
@@ -459,6 +469,15 @@ for (const device of DEVICES) {
   page.on('dialog', (d) => d.accept());
 
   for (const screen of SCREENS) {
+    // Screens whose layout is chosen by a remembered SETTING are swept in each of their modes.
+    // The keys are cleared for every screen, not just set for the ones that want them: a value
+    // left behind by an earlier entry would silently retune a later one, and a guard measuring
+    // a screen it did not mean to measure reads as proof of the screen it named.
+    await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'domcontentloaded' });
+    await page.evaluate((prefs) => {
+      for (const k of ['routing.rightPanel', 'routing.routesTab']) { try { localStorage.removeItem(k); } catch { /* private mode */ } }
+      for (const [k, v] of Object.entries(prefs || {})) { try { localStorage.setItem(k, v); } catch { /* private mode */ } }
+    }, screen.prefs || {});
     await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle' });
     await page.waitForTimeout(1100);
     const reached = await gotoScreen(page, screen);

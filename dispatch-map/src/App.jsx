@@ -65,6 +65,7 @@ import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerC
 import { cancelsIn, cancelSummary } from './lib/cancel-guard.js';
 import { validateNewRoute } from './lib/route-create.js';
 import { mergeDayLoads, dayLoadTally } from './lib/day-loads.js';
+import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, normalizeRoutesRailTab } from './lib/right-panel.js';
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
 // The scan plan's model, shared with the scheduler that runs it — the screen and the code
@@ -93,7 +94,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.79.0';
+const APP_VERSION = '0.79.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -164,7 +165,9 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['0.79.0', 'NAME TWO DRIVERS AND THE LEARNED ENGINE DRAFTS THEIR ROUTES — the first slice of Assist, built the way Chad asked for it: “give you 2 or 3 routes like lets say a Victor and Scott then have you build it… if not I’ll move a few stops here and there then have you push it.” A new “Engine draft” card on the Routing Setup panel takes driver names, and the SAME engine that is scored nightly on the Engine tab — territory, customer habit, per-driver skid caps, learned zone ownership — picks their stops out of the day’s UNPLANNED pool, splits trips, and sequences each one from that driver’s own past routes. The drafts open as pending Compare cards, so everything after the draft is the machinery that already exists: drag stops between cards, pick the driver, and the workbench Save creates the routes in NuVizz through the verified write path. DRAFTING COSTS ZERO NUVIZZ CALLS — it reads the Firestore board cache and the engine’s learning collections, nothing else — and it cannot push anything on its own; Save remains the only door to NuVizz and it remains Chad’s hand on the handle. WHAT MAKES THE DRAFT TRUSTWORTHY IS WHAT IT REFUSES TO CLAIM: a stop that usually runs with a driver who was NOT named stays unplanned and the panel says whose it is; unfamiliar geography is handed back (“no history here — place it by hand”) instead of guessed at; a named driver is never quietly given a three-trip day (dispatch runs two — the overflow comes back with the reason); and when the engine only knows a driver from class averages, the card says so out loud. An ambiguous name (“two Victors”) is an error listing both, never a coin flip. THE ENGINE TAB ALSO STOPS LYING ABOUT ITS OWN SCOREBOARD, four ways. The “How to read” box said 1.0 was a perfect sequence score; the metric (the Amazon/MIT challenge score) is the OPPOSITE — 0 is identical, lower is better — so the flat 0.05-0.13 that read as failure was actually the engine sequencing close to dispatch, and yesterday’s 0.051 is one of the strongest numbers on the page. The version-progress row now auto-scrolls to the CURRENT engine’s card — the three newest versions (28.0→30.7→31.2 known 32.4) were rendering off the right edge, which is how a climbing engine read as a stuck one. A ▲/▼ chip comparing versions scored on non-overlapping date windows now shows grey with a ≠ (different freight is not a fair fight). And the score now logs its two factors separately (zone-order disorder vs edit distance), the co-load mean no longer counts no-co-load days as zeros, and Travel Δ shows a dash instead of a fake number when half the data is missing. 15 new tests, 2,565 green.'],
+  ['0.79.2', 'NAME TWO DRIVERS AND THE LEARNED ENGINE DRAFTS THEIR ROUTES — the first slice of Assist, built the way Chad asked for it: “give you 2 or 3 routes like lets say a Victor and Scott then have you build it… if not I’ll move a few stops here and there then have you push it.” A new “Engine draft” card on the Routing Setup panel takes driver names, and the SAME engine that is scored nightly on the Engine tab — territory, customer habit, per-driver skid caps, learned zone ownership — picks their stops out of the day’s UNPLANNED pool, splits trips, and sequences each one from that driver’s own past routes. The drafts open as pending Compare cards, so everything after the draft is the machinery that already exists: drag stops between cards, pick the driver, and the workbench Save creates the routes in NuVizz through the verified write path. DRAFTING COSTS ZERO NUVIZZ CALLS — it reads the Firestore board cache and the engine’s learning collections, nothing else — and it cannot push anything on its own; Save remains the only door to NuVizz and it remains Chad’s hand on the handle. WHAT MAKES THE DRAFT TRUSTWORTHY IS WHAT IT REFUSES TO CLAIM: a stop that usually runs with a driver who was NOT named stays unplanned and the panel says whose it is; unfamiliar geography is handed back (“no history here — place it by hand”) instead of guessed at; a named driver is never quietly given a three-trip day (dispatch runs two — the overflow comes back with the reason); and when the engine only knows a driver from class averages, the card says so out loud. An ambiguous name (“two Victors”) is an error listing both, never a coin flip. THE ENGINE TAB ALSO STOPS LYING ABOUT ITS OWN SCOREBOARD, four ways. The “How to read” box said 1.0 was a perfect sequence score; the metric (the Amazon/MIT challenge score) is the OPPOSITE — 0 is identical, lower is better — so the flat 0.05-0.13 that read as failure was actually the engine sequencing close to dispatch, and yesterday’s 0.051 is one of the strongest numbers on the page. The version-progress row now auto-scrolls to the CURRENT engine’s card — the three newest versions (28.0→30.7→31.2 known 32.4) were rendering off the right edge, which is how a climbing engine read as a stuck one. A ▲/▼ chip comparing versions scored on non-overlapping date windows now shows grey with a ≠ (different freight is not a fair fight). And the score now logs its two factors separately (zone-order disorder vs edit distance), the co-load mean no longer counts no-co-load days as zeros, and Travel Δ shows a dash instead of a fake number when half the data is missing. 15 new tests, 2,565 green.'],
+  ['0.79.1', 'THE RIGHT RAIL IS THREE TABS NOW: ROUTES, DRIVERS, LOADS — v0.79.0 PUT THE THIRD ONE BEHIND THE GEAR AND THAT WAS THE WRONG SHAPE. Chad, on the Routing beta with the rail in Routes/Drivers and the day’s loads down in the bottom grid: “I want the loads that is on the bottom panel to replace the drivers tab in the right panel but also leave the loads on the bottom panel make it a 3rd option in the settings for the right panel.” Asked whether Drivers should therefore go, he was explicit that it should not: “I just want a 3rd right panel option that is routes and loads.” SO IT WAS BUILT AS A THIRD GEAR MODE — Routes/Drivers stayed, Routes/Loads was added beside it — AND THAT WAS THE WRONG SHAPE, which he said in one sentence: “I want them to be tabs just like the routes and drivers are SO YOU CAN SWITCH THE VIEW.” HE IS RIGHT, AND THE DISTINCTION IS THE WHOLE POINT. A gear mode is a SETTING: something you choose once and live with. A tab is a VIEW: something you flick between while working. Routes, Drivers and Loads are three views of the same day — what is on this truck, who is driving it, and what is left to build — and a dispatcher moves between all three dozens of times while building a board. Putting two of them on a strip and the third behind a settings menu charges a trip into the gear for a switch that should cost one click, and it HIDES it: a panel you reach through a settings menu is a panel most people never find. So there is one strip with three tabs and no mode chooses between them. NOTHING WAS TAKEN AWAY, which was the constraint all along. Drivers keeps its place in the middle so the muscle memory of anyone already using the strip survives; Loads joins on the end; the bottom grid’s Loads tab is untouched. This is a second way in, not a move. THE COUNTS RIDE ON THE LABELS because they are what the choice turns on — 65 routes against 106 loads is the shape of how much of the day is still unbuilt. Drivers deliberately carries no count: that roster is fetched only when the tab is first opened, and a number that appears a second after you look at it is worse than no number. THE LOADS PANEL IS THE ONE THAT ALREADY EXISTED, not a new list built to look like one: same rows, same search, same Built-only filter that separates the routes carrying freight from the ninety-odd Drafts, same click-through into Compare. A 380px rail cannot hold the bottom grid’s nine columns, and a second implementation of the same data is two things that disagree by Thursday. WHICH TAB IS OPEN IS REMEMBERED NOW, which the old two-way toggle never did — which of the three you want beside the map is a working preference, and re-picking it every morning is a click paid daily. THE DEFECT THIS WOULD HAVE SHIPPED WITH, and the reason the rail’s modes are a module rather than more comparisons in the render: the mode was tested in SIX places, plus one effect that decides whether to fetch the live driver-assignment roster at all — and that effect read the mode BY NAME. A rail that renders route cards without it gives every card an EMPTY DRIVER DROPDOWN: not a cosmetic fault, but “I cannot assign this load” on a dispatch board, indistinguishable from the vendor being down. A mode DECLARES that it renders route cards and the effect asks the declaration. Pinned by a test that fails when the declaration is flipped. AND THE VALUE THE FIRST SHAPE WROTE IS MIGRATED, NOT DROPPED. The gear-mode build reached a deploy preview, so a browser can be holding routesLoads; it now lands on the strip that contains both of its panels rather than being silently reset to the tabs rail, which is a different screen and would read as the setting being ignored. Anything else unrecognised still falls back to the tabs rail rather than to a blank panel — a blank right rail on a dispatch board reads as a broken app, and there is no control on screen to escape it. TWO VIEWS, AND THE GUARD SWEEPS ALL THREE TABS. The phone gets the strip as a block above the panel rather than the desktop’s header row — there is no room beside a date and a collapse chevron at 360px, and the sheet is already dated. More to the point, verify-mobile-layout only ever saw whichever view the rail happened to default to: a panel chosen by a remembered setting is a panel the phone guard never measured, which is exactly how a screen ships untested on a phone. It walks Routes, Drivers and Loads now, at 390 and at 360, with the setting keys cleared for every screen so one entry cannot quietly retune the next. AND IT WAS DRIVEN, NOT DESCRIBED: the strip was rendered in a real browser on a desktop and a phone, the Loads tab confirmed to open from a stored preference before anything was clicked, and the three buttons MEASURED at 44px tall and 221px wide inside a 360px screen rather than assumed to fit. 12 new tests, 2,561 green.'],
+  ['0.79.0', 'THE RIGHT RAIL HAS A THIRD LAYOUT: ROUTES BESIDE THE DAY’S LOADS. Chad, on the Routing beta with the rail in Routes/Drivers and the day’s loads down in the bottom grid: “I want the loads that is on the bottom panel to replace the drivers tab in the right panel but also leave the loads on the bottom panel make it a 3rd option in the settings for the right panel.” Asked whether Drivers should therefore go, he was explicit: “I just want a 3rd right panel option that is routes and loads.” SO NOTHING WAS TAKEN AWAY. The gear’s two existing choices are byte-for-byte what they were, Drivers still lives one mode over, and the bottom grid’s Loads tab is untouched — this is a second way in, not a move. WHY IT IS THE RIGHT PAIR TO PUT SIDE BY SIDE. Building a day is two questions asked in alternation: what is on this route, and what is left to put on a route. The routes are cards you drag stops onto; the loads are the day’s real NuVizz inventory — four built, three still empty Drafts, and how far each one has actually got. Those two lived on opposite edges of the screen, so answering the second question meant leaving the first. The driver roster is a lookup you open when a name is missing, which is a different rhythm entirely and belongs in its own mode. THE LOADS SIDE IS THE PANEL THAT ALREADY EXISTED, not a new list built to look like one: same rows, same search, same Built-only filter that separates the four routes carrying freight from the ninety-odd Drafts, same click-through into Compare. A 380px rail cannot hold the bottom grid’s nine columns, and a second implementation of the same data is two things that disagree by Thursday. THE DEFECT THIS WOULD HAVE SHIPPED WITH, and it is the reason the mode list is now a module rather than three more comparisons in the render. The rail’s mode was tested in SIX places, plus one effect that decides whether to fetch the live driver-assignment roster at all — and that effect read the mode by name. A third mode that renders route cards without it gives every card an EMPTY driver dropdown: not a cosmetic fault, but “I cannot assign this load” on a dispatch board, and indistinguishable from the vendor being down. A mode now DECLARES that it renders route cards and the effect asks the declaration, so the next mode added cannot repeat it. Pinned by a test that fails when the declaration is flipped. THE STORED VALUE IS TREATED AS SOMEBODY ELSE’S. It comes out of localStorage — an older build’s word, a hand-edited one, or nothing — and anything this build cannot render falls back to the tabs rail rather than to a blank panel, because a blank right rail on a dispatch board reads as a broken app and there is no control on screen to escape it. The Loads sub-tab is its own state as well, so “drivers selected inside the loads mode” is not a thing that can be represented. Both proven by mutation: trusting the stored value, and letting the two sub-tabs share a vocabulary, each break a named test. TWO VIEWS, AND THE GUARD SWEEPS THEM NOW. The phone gets the strip as a block above the panel rather than the desktop’s header row — there is no room beside a date and a collapse chevron at 360px, and the sheet is already dated. More to the point, verify-mobile-layout only ever saw the rail’s DEFAULT layout: a mode chosen from a setting is a mode the phone guard never measured, which is exactly how a screen ships untested on a phone. It walks all three now, at 390 and at 360, with the setting keys cleared for every screen so one entry cannot quietly retune the next. AND IT WAS DRIVEN, NOT DESCRIBED: the mode was rendered in a real browser on both a desktop and a phone, the sub-tab clicked, the loads list confirmed on screen, and the new strip’s buttons MEASURED at 44px rather than assumed to clear the 40px floor. 10 new tests, 2,559 green.'],
   ['0.78.4', 'THE DEPLOY-BREAKING WORD IS A CI CHECK NOW, BECAUSE I HAVE NOW TYPED IT THREE TIMES. Netlify scans a build for the VALUES of its environment variables; NUVIZZ_DAVIS_USER is the same word as the owner’s own route, in lower case. Writing that word in lower case anywhere in the repository fails the deploy — while every check on the pull request stays green, because CI does not run that scan. IT HAS NOW HAPPENED THREE TIMES IN TWO DAYS: v0.76.8 (a route-name fixture, which cost SEVEN HOURS of deploys and three releases merged into a site that could not build them), v0.78.2 (the fix for it), and v0.78.3 — in the very change whose commit message read “a fixture that borrows a real name is a fixture that changes meaning under you”, written minutes after diagnosing exactly this. Three times is not carelessness that more care will fix; it is a missing guard. So the check runs on the PULL REQUEST now, where a red mark costs a minute, rather than at the deploy, where it costs a morning. THE GUARD NEVER TYPES THE WORD — it derives it from the shipped route list, which is the same trick the fixtures use, because a guard that had to contain the literal would be the bug. It found two more occurrences within seconds of being written that a hand-run grep had masked, which is the whole argument for having it. It also proves it can fail: a repo-scanning test that finds nothing looks identical whether it is working or broken, so a second case pins that the match it performs would fire on a real line. THE DURABLE FIX IS STILL CHAD’S TO MAKE, and it is one setting: a username is not really the secret (the password is), so SECRETS_SCAN_OMIT_KEYS on that one variable ends the class permanently. That is a security judgement, not a code change, so it is not in this diff. Until then the guard holds the line. 2 new tests, 2,549 green.'],
   ['0.78.3', 'CHAD’S OWN ROUTE IS OFF THE FLAGS LIST, AND ITS ORDERS ARE BACK AT THE END OF THE EMAIL. Chad: “I dont’ want orders from the Chad route showing up on my flags list. However I do want them back on the end of email.” Two asks about the same freight, and they do not conflict — they are the difference between a CALL TO ACTION and a RECORD. A flag is somebody being asked to do something, and he is the one driving that truck: a red telling him his own next stop is running late is the board telling him what he can see through the windscreen, and it sits on the panel in the place of a stop where a dispatcher could still make a phone call. A day report is a record, and a record with a hole in it is worse than a long one — he just did not want that hole moving the percentage. THE FLAGS SIDE reuses the judgement that already silenced the appointment holding pens rather than inventing a second one. Both now go through ONE predicate, isSetAsideRoute, at all three places the engine sets a route aside — the judged set, the arrival walk and the no-driver check — because those tested appointment-ness independently before, and a rule added to two of the three is how a stop gets judged by one and not another. MATCHED EXACTLY, on the whole normalised name: CHADWICK, CHATTANOOGA and a second truck called CHAD 2 all still get judged, which a substring match would have silenced. That is the same trap the day report walked into first and it is pinned by its own test. AND THE SILENCE IS REPORTED, in its own words — “CHAD not judged — the owner’s own route” in the panel footer, on a separate line from the appointment one, because folding it in would have labelled it “held for appointments”, which is not what happened to it. A set-aside route that says nothing is indistinguishable from one the engine simply missed. THE EMAIL SIDE keeps the orders instead of only tallying them, and prints them LAST, under everything a dispatcher acts on: route, stop, customer and what actually became of each one, so “not counted” cannot read as “not known”. They stay out of the numerator AND the denominator, so the completion figure above is byte-for-byte what it was — pinned by a test that computes the day with and without them and asserts the same rate. FOUND ON THE WAY: two existing flag tests used CHAD as a throwaway route name and silently went to zero flags. Renamed, with a note — a fixture that borrows a real name is a fixture that changes meaning under you, which is exactly what stopped production deploying for seven hours yesterday. AND ONE OF MY OWN TESTS PASSED FOR THE WRONG REASON: the first version put a bare stop on the route and asserted no flags, which is true on any route, so a mutation putting CHAD back into the judged set went straight through it. It now moves a stop that DOES flag, with a control proving it flags on an ordinary route first. 9 new tests, 2,546 green.'],
   ['0.78.2', 'PRODUCTION HAD NOT TAKEN A DEPLOY IN SEVEN HOURS, AND v0.76.8 IS WHY. The site was serving v0.76.7 from 4:24pm while v0.76.8 and v0.77.0 sat merged and green and never went live — the exact “merging is not shipping” failure this changelog warned about on 2026-08-19, happening again. THE CAUSE, and it is mine. Netlify scans a build for the VALUES of its environment variables. NUVIZZ_DAVIS_USER happens to be the same word as the owner’s own route — and the test I wrote in v0.76.8 for “don’t count orders off Chad route” had that word typed out in lower case as a fixture. One file in the whole repository contained it, it arrived in v0.76.8, and production’s last good deploy is the release immediately before. Every build since failed its secrets scan on that single line, while CI stayed green because CI does not run the secrets scan. Two releases merged into a site that could not build them. THE FIX derives the scruffy form from the configured exclusion list instead of typing it: the literal is gone from the repo, and the test now pins against the REAL list rather than a copy, so renaming the route can no longer leave a test passing against a name nothing uses. Proven to still bite by removing the case normalisation it guards. WHAT THIS SAYS ABOUT THE GATE: green CI meant nothing here, because the check that failed runs at Netlify and reports on the deploy, not on the pull request. The deploy-watch job compares the LIVE bundle version against main every 30 minutes and is the thing that would have caught it — worth reading when a merge seems not to have landed, before assuming a browser cache. 2,538 green.'],
@@ -14931,23 +14934,41 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
   );
 }
 
-// Segmented Routes | Drivers toggle for the right panel (and the mobile sheet). The right
-// panel's "Routes / Drivers" mode used to show only routes; this splits it so you can flip
-// between today's route cards and the full driver roster.
-function RoutesDriversToggle({ subTab, setSubTab, routesCount, className = '' }) {
-  const btn = (key, label) =>
-    <button
-      onClick={() => setSubTab(key)}
-      className={`px-2.5 py-1 ${key !== 'routes' ? 'border-l border-slate-300' : ''} ${subTab === key ? 'text-white' : 'text-slate-600 hover:bg-slate-50'}`}
-      style={subTab === key ? { background: BRAND } : {}}
-      aria-pressed={subTab === key}
-    >{label}</button>;
+// Segmented sub-tab toggle for the right panel (and the mobile sheet). One component so the
+// Routes/Drivers strip and the Routes/Loads strip cannot drift apart in size, colour or touch
+// target — they sit in the same header slot and a dispatcher switches modes between them.
+function RailSegmentToggle({ tabs, value, setValue, className = '' }) {
   return (
     <div className={`flex rounded-md border border-slate-300 overflow-hidden text-[12px] font-semibold shrink-0 ${className}`}>
-      {btn('routes', `Routes${routesCount ? ` (${routesCount})` : ''}`)}
-      {btn('drivers', 'Drivers')}
+      {tabs.map((t, i) => (
+        <button
+          key={t.key}
+          onClick={() => setValue(t.key)}
+          className={`px-2.5 py-1 ${i ? 'border-l border-slate-300' : ''} ${value === t.key ? 'text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+          style={value === t.key ? { background: BRAND } : {}}
+          aria-pressed={value === t.key}
+        >{t.label}</button>
+      ))}
     </div>
   );
+}
+
+// The right panel's three views of the day, in one strip. Chad, on the first cut that put Loads
+// behind its own gear mode: "I want them to be tabs just like the routes and drivers are so you
+// can switch the view." Routes is what is on this truck, Drivers is who is driving, Loads is
+// what is left to build — a dispatcher moves between all three dozens of times while building a
+// board, and none of them should cost a trip into a settings menu.
+//
+// The counts ride on the labels because the choice of which to open depends on them: 65 routes
+// against 106 loads is the shape of how much of the day is still unbuilt. Drivers carries no
+// count — the roster is fetched only when that tab is first opened, and a number that appears a
+// second after you look at it is worse than no number.
+function RoutesRailTabs({ subTab, setSubTab, routesCount, loadsCount, className = '' }) {
+  return <RailSegmentToggle className={className} value={subTab} setValue={setSubTab} tabs={[
+    { key: 'routes', label: `Routes${routesCount ? ` (${routesCount})` : ''}` },
+    { key: 'drivers', label: 'Drivers' },
+    { key: 'loads', label: `Loads${loadsCount ? ` (${loadsCount})` : ''}` },
+  ]} />;
 }
 
 // "updated 3h ago" / "updated Jun 12" stamp for the roster freshness line.
@@ -16809,15 +16830,23 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   useEffect(() => { try { localStorage.setItem('routing.selPanel', selPanelOpen ? 'on' : 'off'); } catch { /* ignore */ } }, [selPanelOpen]);
 
   // Right-panel layout version (Routing-beta only): 'tabs' = today's Stops/Loads/Result rail,
-  // 'routes' = the new live Routes/Drivers roster. Chosen from the gear settings; persisted.
+  // 'routes' = the live Routes / Drivers / Loads strip. Chosen from the gear; persisted. The
+  // values, and which of them render route cards, live in lib/right-panel.js.
   const [rightPanelMode, setRightPanelMode] = useState(() => {
-    try { return localStorage.getItem('routing.rightPanel') === 'routes' ? 'routes' : 'tabs'; } catch { return 'tabs'; }
+    try { return normalizeRightPanelMode(localStorage.getItem('routing.rightPanel')); } catch { return 'tabs'; }
   });
   useEffect(() => { try { localStorage.setItem('routing.rightPanel', rightPanelMode); } catch { /* ignore */ } }, [rightPanelMode]);
 
-  // Routes-mode sub-tab: today's route cards vs the driver roster. Driver roster is the
-  // on-demand list (shared with the mobile app); fetched lazily the first time Drivers opens.
-  const [routesSubTab, setRoutesSubTab] = useState('routes');
+  // Which of the three views is showing: today's route cards, the driver roster, or the day's
+  // loads. Chad: "I want them to be tabs just like the routes and drivers are so you can switch
+  // the view" — one strip, no settings trip. Persisted, because which one you want beside the
+  // map is a working preference and re-picking it every morning is a click paid daily. The
+  // driver roster is the on-demand list (shared with the mobile app), fetched lazily the first
+  // time Drivers opens.
+  const [routesSubTab, setRoutesSubTab] = useState(() => {
+    try { return normalizeRoutesRailTab(localStorage.getItem('routing.routesTab')); } catch { return 'routes'; }
+  });
+  useEffect(() => { try { localStorage.setItem('routing.routesTab', routesSubTab); } catch { /* ignore */ } }, [routesSubTab]);
   const [driverRoster, setDriverRoster] = useState({ drivers: null, updatedAt: null, neverScanned: false, loading: false, refreshing: false, error: null });
 
   const loadDriverRoster = useCallback(async () => {
@@ -16857,7 +16886,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
 
   // Lazy-load the roster the first time the Drivers sub-view is opened.
   useEffect(() => {
-    if (rightPanelMode === 'routes' && routesSubTab === 'drivers' && driverRoster.drivers === null && !driverRoster.loading) {
+    if (isRoutesPanelMode(rightPanelMode) && routesSubTab === 'drivers' && driverRoster.drivers === null && !driverRoster.loading) {
       loadDriverRoster();
     }
   }, [rightPanelMode, routesSubTab, driverRoster.drivers, driverRoster.loading, loadDriverRoster]);
@@ -17633,7 +17662,9 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   const [assigningKey, setAssigningKey] = useState(null);
   useEffect(() => { setAssignedOverride({}); }, [selectedDate]);   // don't carry a day's assignments onto another board
   useEffect(() => {
-    if (!liveWrite || rightPanelMode !== 'routes' || assignRosterLoaded.current) return;
+    // Every mode that renders route cards needs this: the cards' driver dropdown is populated
+    // from it, and an empty dropdown reads as a NuVizz outage rather than as a missing fetch.
+    if (!liveWrite || !isRoutesPanelMode(rightPanelMode) || assignRosterLoaded.current) return;
     assignRosterLoaded.current = true;
     let alive = true;
     callWrite('roster', {}).then((res) => {
@@ -19178,7 +19209,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     ],
   };
   const routingSettingsViews = [
-    { key: 'rightPanel', label: 'Right panel', value: rightPanelMode, setValue: setRightPanelMode, options: [{ value: 'tabs', label: 'Tabs (Stops / Loads / Result)' }, { value: 'routes', label: 'Routes / Drivers' }] },
+    { key: 'rightPanel', label: 'Right panel', value: rightPanelMode, setValue: setRightPanelMode, options: RIGHT_PANEL_MODES.map(({ value, label }) => ({ value, label })) },
     eligView,
   ];
   const routingSettingsActions = [
@@ -19473,6 +19504,31 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       onRename={renameLoad} onToggleDispatch={toggleDispatched} onDelete={deleteLoad} manageError={manageError} />
   );
 
+  // The two panels the Routes/… modes render, hoisted because each is now needed in FOUR
+  // places — desktop and mobile, Routes/Drivers and Routes/Loads. RoutingRoutesPanel takes
+  // fourteen props; four hand-copied call sites is four chances for one of them to be dropped
+  // on the phone only, which is the defect this app keeps shipping.
+  const routesPanelEl = (
+    <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} dispatchingKey={dispatchingKey} onNewRoute={liveWrite ? openNewRoute : null} />
+  );
+  // The day's real NuVizz loads — the same set and the same click-to-Compare as the bottom
+  // grid's Loads view, which Chad keeps: this is a second way in, not a move.
+  const dayLoadsPanelEl = (
+    <RoutingDayLoadsPanel rows={dayLoads} tally={dayLoadsTally}
+      onPickLoad={(r) => pickLoadToCompare(r.loadNbr || r.loadId || r.key)}
+      isOpen={(r) => wbRoutes.some((w) => w.key === r.key || (r.name && w.key === r.name) || (r.loadNbr && (w.key === r.loadNbr || w.loadNbr === r.loadNbr)))} />
+  );
+  // The strip and the panel under it. One definition, so the phone and the desktop rail can
+  // never disagree about which panel a tab opens — they are separate layouts, not separate
+  // behaviour, and the two have drifted apart in this app before.
+  const routesModeToggleEl = (
+    <RoutesRailTabs subTab={routesSubTab} setSubTab={setRoutesSubTab} routesCount={routeGroups.length} loadsCount={dayLoads.length} />
+  );
+  const routesModeBodyEl = routesSubTab === 'drivers'
+    ? <RoutingDriversPanel roster={driverRoster} routeGroups={routeGroups} onRefresh={refreshDriverRoster} onPickDriver={onPickDriver} />
+    : routesSubTab === 'loads' ? dayLoadsPanelEl
+    : routesPanelEl;
+
   // ── Mobile: map + collapsible bottom sheet (Setup / Result) ──
   // Rendered in BOTH layout branches below — RoutingScreen returns separately for mobile and
   // desktop, and a modal defined in only one is invisible on the other.
@@ -19571,7 +19627,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
             <button onClick={() => setSheetOpen((o) => !o)} className="text-xs px-2 py-1 rounded border border-slate-300" aria-label={sheetOpen ? 'Collapse' : 'Expand'}>{sheetOpen ? '▾' : '▴'}</button>
             <div className="flex-1 flex gap-1">
               <button onClick={() => { setPanelStop(null); setMobilePanel('setup'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'setup')} style={mobilePanel === 'setup' ? { background: BRAND } : {}}>Setup{tally.count ? ` (${tally.count})` : ''}</button>
-              <button onClick={() => { setPanelStop(null); setMobilePanel('loads'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'loads')} style={mobilePanel === 'loads' ? { background: BRAND } : {}}>{rightPanelMode === 'routes' ? `Routes${routeGroups.length ? ` (${routeGroups.length})` : ''}` : `Saved${loads.length ? ` (${loads.length})` : ''}`}</button>
+              <button onClick={() => { setPanelStop(null); setMobilePanel('loads'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'loads')} style={mobilePanel === 'loads' ? { background: BRAND } : {}}>{isRoutesPanelMode(rightPanelMode) ? `Routes${routeGroups.length ? ` (${routeGroups.length})` : ''}` : `Saved${loads.length ? ` (${loads.length})` : ''}`}</button>
               <button onClick={() => { setPanelStop(null); setMobilePanel('result'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'result')} style={mobilePanel === 'result' ? { background: BRAND } : {}}>Result{baseResult ? ` (${baseResult.routes.length})` : job?.status === 'running' || job?.status === 'queued' ? ' …' : ''}</button>
             </div>
           </div>
@@ -19608,13 +19664,14 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
                       : controlsContent}
                   </>
                 : mobilePanel === 'loads'
-                  ? (rightPanelMode === 'routes'
+                  ? (isRoutesPanelMode(rightPanelMode)
                       ? (
                         <>
-                          <RoutesDriversToggle subTab={routesSubTab} setSubTab={setRoutesSubTab} routesCount={routeGroups.length} className="mb-2" />
-                          {routesSubTab === 'drivers'
-                            ? <RoutingDriversPanel roster={driverRoster} routeGroups={routeGroups} onRefresh={refreshDriverRoster} onPickDriver={onPickDriver} />
-                            : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} dispatchingKey={dispatchingKey} onNewRoute={liveWrite ? openNewRoute : null} />}
+                          {/* Phone: the strip is a block of its own above the panel, not a
+                              header row beside a date and a collapse chevron — there is no
+                              room for those three at 360px, and the sheet is already dated. */}
+                          <div className="mb-2">{routesModeToggleEl}</div>
+                          {routesModeBodyEl}
                         </>
                       )
                       : loadsContent)
@@ -19759,7 +19816,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
         >
           <ChevronRight size={15} className="rotate-180" />
           <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ writingMode: 'vertical-rl' }}>
-            {rightPanelMode === 'routes' ? `Routes (${routeGroups.length})` : 'Panel'}
+            {isRoutesPanelMode(rightPanelMode) ? `Routes (${routeGroups.length})` : 'Panel'}
           </span>
         </button>
       ) : (
@@ -19784,16 +19841,14 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
             saveError={saveNoteError}
             drivers={notesDrivers}
           />
-        ) : rightPanelMode === 'routes' ? (
+        ) : isRoutesPanelMode(rightPanelMode) ? (
           <>
             <div className="flex items-center justify-between px-3 py-2 border-b shrink-0 gap-2">
-              <RoutesDriversToggle subTab={routesSubTab} setSubTab={setRoutesSubTab} routesCount={routeGroups.length} />
+              {routesModeToggleEl}
               <span className="text-[10px] uppercase tracking-wide text-slate-400 truncate">{formatDateLong(selectedDate)}</span>
               <button onClick={() => setRightCollapsed(true)} className="shrink-0 text-slate-400 hover:text-slate-700" title="Collapse panel"><ChevronRight size={15} /></button>
             </div>
-            {routesSubTab === 'drivers'
-              ? <RoutingDriversPanel roster={driverRoster} routeGroups={routeGroups} onRefresh={refreshDriverRoster} onPickDriver={onPickDriver} />
-              : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} dispatchingKey={dispatchingKey} onNewRoute={liveWrite ? openNewRoute : null} />}
+            {routesModeBodyEl}
           </>
         ) : (
         <>
@@ -20534,7 +20589,7 @@ function EngineHowToRead() {
             How far the engine’s ORDER for that same route sits from the order dispatch drove
             (the Amazon/MIT challenge metric). <b>0 is identical — lower is better.</b> Around
             0.1 the zone-level shape matches and only within-zone details differ; 0.5+ is a
-            genuinely different route. This row said the opposite until v0.79.0 — if a small
+            genuinely different route. This row said the opposite until v0.79.2 — if a small
             score ever read as a bad one, that was this text, not the engine.
           </Row>
           <Row term="Travel Δ">
