@@ -19,8 +19,10 @@ import {
   tractorPaintAllowed,
   restrictionConfidence,
   confirmedBlockerKeys,
+  isTrailerBlockerKey,
 } from '../src/lib/map-legend.js';
 import { readFileSync } from 'node:fs';
+import { loadMarkerPipeline, markerSvg, fills } from './helpers/app-markers.mjs';
 
 // ── WHICH ICONS A STOP ACTUALLY DRAWS ────────────────────────────────────────
 
@@ -322,71 +324,245 @@ test('a non-blocker restriction never makes a stop advisory or blocked', () => {
   assert.deepEqual(confirmedBlockerKeys(note, ['liftgate_required']), []);
 });
 
-// ── THE SPLIT RING MUST ACTUALLY BE SPLIT ────────────────────────────────────
+// ── THE BLOCKER MARK: WHOLE DISC, AND HALF OF IT IS THE CONFIDENCE ───────────
 //
-// Found by rendering it, not by reading it. The warn half was being handed `accent`,
-// which is `tint || def.accent` — so on a stop a tractor HAS delivered the tint (lime
-// #32CD32) overwrote the restriction's own red/amber and the ring came out lime on the
-// left, green (#16a34a) on the right. Two greens. No split.
+// Chad, a day after the split RING shipped: "I want a full half and half icon."
 //
-// That is precisely the case the feature exists for — proven history on one side, an
-// unconfirmed "no" on the other — and it was the one rendering as an unbroken all-clear.
-// A dispatcher would have read it as permission.
+// These marks draw at 20x22 CSS px, so a 3.4-wide ring split down the middle was a pixel and
+// a half of red beside a pixel and a half of green — rendered at true size over a treeline, a
+// parking lot and a grey roof, a confirmed mark and an advisory one could not be told apart on
+// any of them. The disc carries it now: a CONFIRMED trailer blocker fills solid in the
+// restriction's own colour, an ADVISORY one fills exactly half, and nothing else changes.
+//
+// These run the SHIPPED pipeline rather than grepping it (see test/helpers/app-markers.mjs).
+// The old guards here were regexes over App.jsx source text, which pin the shape of the code
+// and not the picture it draws — they would have gone green on a refactor that rendered
+// something else entirely.
 
-const ICON_MARKER_SVG = APP.slice(
-  APP.indexOf('function restrictionWarnColor('),
-  APP.indexOf('function stopMarkerIcon('),
-);
-assert.ok(ICON_MARKER_SVG.length > 500, 'the icon-drawing block was located in App.jsx');
+const P = await loadMarkerPipeline();
+const RED = '#dc2626';        // no_tractor_trailer
+const AMBER = '#f59e0b';      // uline_straight_truck
+const GREEN = '#16a34a';      // ELIG_TRACTOR_COLOR — "a 53' trailer fits"
+const LIME = '#32cd32';       // TRACTOR_DELIVERED_COLOR — proof a 53-footer has served this dock
 
-test('THE WARN HALF OF THE RING IS THE RESTRICTION COLOUR, NEVER THE STOP TINT', () => {
-  // Both call sites — the single icon (State B) and the cluster (State C).
-  const calls = (ICON_MARKER_SVG.match(/(?<!function )advisoryRingMarkup\([^)]*\)/g) || []);
-  assert.equal(calls.length, 2, 'both the single-icon and cluster branches draw the ring');
-  for (const call of calls) {
-    assert.match(call, /restrictionWarnColor\(/,
-      `the warn half must come from the restriction, not the tint — got ${call}`);
-    assert.ok(!/,\s*accent\s*\)/.test(call),
-      `${call} passes the tinted accent, which makes a lime-on-green ring with no split in it`);
-  }
+const blocker = (keys, opts = {}) => markerSvg(P.iconMarkerSvg(keys, opts.tint ?? null, {
+  blockerKeys: new Set(opts.blockers ?? keys),
+  ...(opts.advisory ? { advisoryKeys: new Set(opts.advisory) } : {}),
+}));
+
+test('A CONFIRMED BLOCKER FILLS ITS WHOLE DISC — a person said no, and it is the loudest mark', () => {
+  const svg = blocker(['no_tractor_trailer']);
+  assert.ok(fills(svg).includes(RED), 'the disc is filled in the restriction colour');
+  assert.ok(!fills(svg).includes(GREEN), 'a confirmed no has no green in it at all');
+  assert.ok(!/fill="white"\s+fill-opacity/.test(svg), 'the old white disc is gone');
+});
+
+test('AN ADVISORY BLOCKER FILLS HALF — literally half of the confirmed mark', () => {
+  const svg = blocker(['no_tractor_trailer'], { advisory: ['no_tractor_trailer'] });
+  const f = fills(svg);
+  assert.ok(f.includes(RED), 'half the restriction colour');
+  assert.ok(f.includes(GREEN), 'half the eligibility green');
+  assert.ok(f.indexOf(RED) < f.indexOf(GREEN), 'the warn half is drawn first (left)');
+});
+
+test('THE WARN HALF IS THE RESTRICTION COLOUR, NEVER THE STOP TINT', () => {
+  // The defect that broke the first working build of v0.76.5, re-pinned against the disc.
+  // A Uline advisory on a stop a tractor HAS delivered carries the lime tint; letting the
+  // tint speak painted lime beside green — two greens, no split — in precisely the case the
+  // feature exists for. A dispatcher would have read it as permission.
+  const svg = blocker(['uline_straight_truck'], { advisory: ['uline_straight_truck'], tint: LIME });
+  const f = fills(svg);
+  assert.ok(f.includes(AMBER), 'the warn half is the restriction amber');
+  assert.ok(f.includes(GREEN), 'the other half is the eligibility green');
+  assert.ok(!f.includes(LIME), 'the tractor-delivered tint must not reach the disc');
 });
 
 test('restrictionWarnColor ignores the tint entirely — it takes only a key', () => {
-  // If this ever grows a tint parameter the defect walks straight back in.
-  const fn = ICON_MARKER_SVG.slice(0, ICON_MARKER_SVG.indexOf('function advisoryRingMarkup('));
-  assert.match(fn, /function restrictionWarnColor\(key\)\s*\{/, 'one argument: the restriction key');
-  assert.ok(!/tint/.test(fn), 'restrictionWarnColor must not consult the tint');
-  assert.match(fn, /def\.accent \|\| def\.bg/, 'it reads the icon definition');
+  // If it ever grows a tint parameter the defect above walks straight back in.
+  assert.equal(P.restrictionWarnColor.length, 1, 'one argument: the restriction key');
+  assert.equal(P.restrictionWarnColor('no_tractor_trailer'), RED);
+  assert.equal(P.restrictionWarnColor('uline_straight_truck'), AMBER);
 });
 
-test('the split ring replaces the solid stroke rather than stacking on top of it', () => {
-  // Both halves are stroked at 3.4 over an 18r circle; leaving the original 2px accent
-  // stroke underneath would show as a rim of the wrong colour on the green half.
-  const discs = ICON_MARKER_SVG.match(/<circle cx="[^"]*" cy="[^"]*" r="1[58]"[^>]*fill="white"[^>]*\/>/g) || [];
-  // Three discs live here: the single-icon disc, the cluster-slot disc, and the "+N"
-  // overflow badge. The badge carries no restriction, so it correctly keeps its plain
-  // stroke and must never grow a ring — pinning that keeps a future blanket edit honest.
-  assert.equal(discs.length, 3, 'found the single, cluster and overflow discs');
-  const withGlyph = discs.filter((d) => /advisory\.has|isAdv/.test(d));
-  assert.equal(withGlyph.length, 2, 'exactly the two restriction discs gate their stroke on the advisory set');
-  const overflow = discs.filter((d) => !/advisory\.has|isAdv/.test(d));
-  assert.equal(overflow.length, 1);
-  assert.match(overflow[0], /stroke="\$\{tint \|\| '#6b7280'\}"/, 'the +N badge keeps its plain stroke');
-});
-
-test('the two ring halves sweep OPPOSITE ways, or one covers the other', () => {
+test('the two halves sweep OPPOSITE ways, or one covers the other', () => {
   // Same start and end point; only the sweep flag makes them different halves. Both at 0
-  // (or both at 1) draws the same arc twice and the second colour wins the whole ring.
-  const fn = ICON_MARKER_SVG.slice(ICON_MARKER_SVG.indexOf('function advisoryRingMarkup('));
-  const body = fn.slice(0, fn.indexOf('\n}'));
-  assert.match(body, /A\$\{r\} \$\{r\} 0 0 0 \$\{cx\} \$\{bottom\}/, 'one half sweeps 0');
-  assert.match(body, /A\$\{r\} \$\{r\} 0 0 1 \$\{cx\} \$\{bottom\}/, 'the other sweeps 1');
-  assert.match(body, /\$\{ELIG_TRACTOR_COLOR\}/, 'the green half is the eligibility green');
+  // draws the same wedge twice and the second colour wins the whole disc.
+  const svg = blocker(['no_tractor_trailer'], { advisory: ['no_tractor_trailer'] });
+  assert.match(svg, /A18 18 0 0 0 20 38 Z/, 'one half sweeps 0');
+  assert.match(svg, /A18 18 0 0 1 20 38 Z/, 'the other sweeps 1');
 });
 
-test('the advisory set is part of the icon cache key', () => {
-  // The ring is pixels. Confirming a restriction changes the ring but changes nothing else
-  // in the key, so without this a stop keeps its stale split ring until the page reloads.
+test('a filled disc keeps its white rim, or it disappears into the base map', () => {
+  // Checked on a dark treeline and a bright parking lot: without the rim the red half sinks
+  // into a brick roof and the green half into trees.
+  for (const svg of [blocker(['no_tractor_trailer']), blocker(['no_tractor_trailer'], { advisory: ['no_tractor_trailer'] })]) {
+    assert.match(svg, /stroke="white"/, 'the disc is rimmed in white');
+  }
+});
+
+test('THE PROHIBITION STILL READS: a dark slash over a white truck', () => {
+  // White is the only glyph colour that survives on both a red half and a green half — and
+  // the slash has to stop being white with it, or the mark says "trailer" without saying "no".
+  const svg = blocker(['no_tractor_trailer'], { advisory: ['no_tractor_trailer'] });
+  assert.match(svg, /<line [^>]*stroke="#111827"/, 'the slash is ink, not the restriction colour');
+  assert.ok(svg.indexOf('<line') > svg.indexOf('fill="#ffffff"'),
+    'the slash is drawn OVER the white truck — underneath, the body swallows its middle');
+  assert.ok(!/fill="white"/.test(svg.slice(svg.indexOf('<g transform'))),
+    'the wheels stop being white, or the truck loses its running gear on a white body');
+});
+
+test('THE GREEN HALF GOES BRIGHT WHEN A TRACTOR HAS ACTUALLY BEEN HERE', () => {
+  // On an unconfirmed blocker, "a 53-footer has delivered to this dock before" is the best
+  // counter-evidence a dispatcher has — it is what turns the mark into a decision instead of
+  // a shrug. Under the white disc that proof rode on the truck, painted with the tint; a white
+  // truck cannot carry it, so it moves to the half that already means "a trailer fits".
+  const B = new Set(['no_tractor_trailer']);
+  const plain = markerSvg(P.iconMarkerSvg(['no_tractor_trailer'], null, { blockerKeys: B, advisoryKeys: B }));
+  const proven = markerSvg(P.iconMarkerSvg(['no_tractor_trailer'], null, { blockerKeys: B, advisoryKeys: B, tractorProven: true }));
+  assert.ok(fills(plain).includes(GREEN), 'no proof → the eligibility green');
+  assert.ok(fills(proven).includes(LIME), 'proof → the tractor-delivered lime');
+  assert.ok(!fills(proven).includes(GREEN), 'one green or the other, never both');
+  assert.ok(fills(proven).includes(RED), 'and the warn half is untouched either way');
+});
+
+test('the proof is a BOOLEAN — a priority flag hue can never become the "a trailer fits" half', () => {
+  // The tint at the call site is `tractorDelivered ? LIME : (eligColor || flagHue)`. Handing
+  // THAT to the disc would paint a priority flag's purple as the half that means a trailer is
+  // fine — the v0.76.5 defect wearing a new coat. Only the proof itself may speak here.
+  const B = new Set(['no_tractor_trailer']);
+  const flagHue = '#a855f7';
+  const svg = markerSvg(P.iconMarkerSvg(['no_tractor_trailer'], flagHue, { blockerKeys: B, advisoryKeys: B }));
+  assert.ok(!fills(svg).includes(flagHue), 'no tint of any kind reaches a blocker disc');
+  assert.ok(fills(svg).includes(GREEN) && fills(svg).includes(RED));
+  // And a truthy-but-wrong value cannot switch it on.
+  const sloppy = markerSvg(P.iconMarkerSvg(['no_tractor_trailer'], null, { blockerKeys: B, advisoryKeys: B, tractorProven: 'yes' }));
+  assert.ok(fills(sloppy).includes(GREEN), 'only a real boolean true counts as proof');
+});
+
+test('ONLY TRAILER BLOCKERS FILL — every other restriction is untouched', () => {
+  // Liftgate and appointment have no confidence to carry. If a blanket edit ever gives them
+  // a filled disc, the board goes from a handful of loud marks to a field of them.
+  for (const key of ['liftgate_required', 'appointment_required']) {
+    const svg = markerSvg(P.iconMarkerSvg([key], null, {}));
+    assert.match(svg, /fill="white" fill-opacity="0.95"/, `${key} keeps the white disc`);
+    assert.ok(!fills(svg).includes(GREEN), `${key} must not gain an eligibility half`);
+  }
+});
+
+test('a blocker looks like itself inside a CLUSTER too', () => {
+  // A mark that changes meaning depending on how many neighbours it has is a mark nobody
+  // can learn. The liftgate beside it must still be the plain white disc.
+  const svg = blocker(['no_tractor_trailer', 'liftgate_required'], {
+    blockers: ['no_tractor_trailer'], advisory: ['no_tractor_trailer'],
+  });
+  const f = fills(svg);
+  assert.ok(f.includes(RED) && f.includes(GREEN), 'the blocker slot is split');
+  assert.match(svg, /fill="white" fill-opacity="0.95"/, 'the liftgate slot keeps its white disc');
+});
+
+test('an ALIASED blocker still gets the treatment', () => {
+  // straight_truck_only is an alias for box_truck_only. Matched raw against
+  // TRAILER_BLOCKER_KEYS it would miss, and the stop would draw as an ordinary restriction
+  // with no confidence on it at all — a scanner-found "no" presented as settled fact.
+  assert.ok(TRAILER_BLOCKER_KEYS.has('straight_truck_only'));
+  const svg = blocker(['straight_truck_only'], { advisory: ['straight_truck_only'] });
+  assert.ok(fills(svg).includes(GREEN), 'the alias draws its advisory half');
+});
+
+test('the +N overflow badge never grows a disc', () => {
+  // It carries no restriction of its own, so it has nothing to be confident about.
+  const svg = markerSvg(P.iconMarkerSvg(['no_tractor_trailer', 'liftgate_required', 'appointment_required', 'hours_early_close'], null, {
+    blockerKeys: new Set(['no_tractor_trailer']), advisoryKeys: new Set(['no_tractor_trailer']),
+  }));
+  assert.match(svg, /\+2</, 'four restrictions collapse to two plus a +2 badge');
+  assert.match(svg, /stroke="#6b7280"/, 'the badge keeps its plain neutral stroke');
+});
+
+test('BOTH sets are part of the icon cache key', () => {
+  // The disc is pixels. Confirming a restriction changes the disc and changes nothing else
+  // in the key, so without this a stop keeps its stale half-and-half until the page reloads.
+  assert.match(STOP_MARKER_ICON, /\[\.\.\.blockerKeys\]\.sort\(\)\.join/,
+    'blockerKeys must be folded into cacheKey');
   assert.match(STOP_MARKER_ICON, /\[\.\.\.advisoryKeys\]\.sort\(\)\.join/,
     'advisoryKeys must be folded into cacheKey');
+});
+
+test('"NO 53FT" IS A TRAILER BLOCKER — the app wrote one spelling and every rule read another', () => {
+  // The dispatcher's Equipment restrictions dropdown offers { value: 'no_53ft', label: 'No
+  // 53ft' } and RESTRICTION_ICONS defines the glyph under `no_53ft`, so `no_53ft` is what
+  // lands on a note. This set spelled it `no_53`, and nothing translated between them — so the
+  // most literal "a 53-footer cannot come here" mark a dispatcher can tick landed in a set
+  // that had never heard of it. Measured before the fix: confirmedBlockerKeys [] and
+  // tractorPaintAllowed TRUE, i.e. the map kept painting the stop lime — "a tractor delivered
+  // here" — on a stop a person had just said could not take one.
+  assert.ok(TRAILER_BLOCKER_KEYS.has('no_53ft'), 'the spelling the app actually writes');
+  assert.ok(TRAILER_BLOCKER_KEYS.has('no_53'), 'and the one already in stored notes and the solver');
+
+  const ticked = { equipment_restrictions: ['no_53ft'], manual_overrides: { equipment_restrictions: true } };
+  assert.equal(tractorPaintAllowed(null, ['no_53ft'], ticked), false,
+    'a hand-ticked No 53ft must suppress the tractor-delivered lime');
+  assert.deepEqual(confirmedBlockerKeys(ticked, ['no_53ft']), ['no_53ft']);
+
+  // And it draws the mark, which it never did before.
+  const svg = markerSvg(P.iconMarkerSvg(['no_53ft'], null, { blockerKeys: new Set(['no_53ft']) }));
+  assert.ok(fills(svg).includes('#dc2626'), 'No 53ft fills its disc like any other blocker');
+});
+
+test('the marker and the paint rule agree about an ALIASED blocker', () => {
+  // v0.76.4 merged these into one function precisely so a stop could not get two answers.
+  // The marker resolves aliases before asking; if these helpers do not, a badge appears on the
+  // pin that the paint rule has never heard of.
+  const resolve = (k) => (k === 'straight_truck_only' ? 'box_truck_only' : k);
+  const ticked = { manual_overrides: { equipment_restrictions: true } };
+  assert.equal(tractorPaintAllowed(null, ['straight_truck_only'], ticked, resolve), false);
+  assert.deepEqual(confirmedBlockerKeys(ticked, ['straight_truck_only'], resolve), ['straight_truck_only']);
+  assert.ok(isTrailerBlockerKey('straight_truck_only', resolve));
+  assert.ok(!isTrailerBlockerKey('liftgate_required', resolve));
+});
+
+test('confidence is read from the key AS WRITTEN, never the resolved one', () => {
+  // auto_sources is stamped by the scanner under the raw key. Resolving it for the lookup
+  // would read a field that does not exist, `scannerPutItThere` would be false, and every
+  // aliased ADVISORY would be promoted to confirmed — a scanner guess presented as a person's
+  // decision, on the mark that decides whether a truck can physically make the delivery.
+  const resolve = (k) => (k === 'straight_truck_only' ? 'box_truck_only' : k);
+  const scannerFound = { auto_sources: { straight_truck_only: ['addr1'] } };
+  assert.equal(restrictionConfidence(scannerFound, 'straight_truck_only'), 'advisory');
+  assert.deepEqual(confirmedBlockerKeys(scannerFound, ['straight_truck_only'], resolve), [],
+    'a scanner-found alias stays advisory');
+});
+
+test('EVERY legend swatch carrying a blocker says so — including the shape rows', () => {
+  // Caught by a sweep, not by looking: the "Restricted stops" rows demonstrate cluster SHAPE
+  // (one / two-three / four-plus) and every one of them uses no_tractor_trailer as its
+  // example. They passed no blockerKeys, so they built the pre-v0.78.0 white disc with a
+  // coloured ring — a mark that now appears nowhere on the board. A legend that teaches a
+  // mark the map does not draw is worse than no legend: it teaches the wrong thing with
+  // authority, and it is the exact failure this panel was rewritten to avoid.
+  const start = APP.indexOf('function MapLegendBody(');
+  assert.ok(start > 0, 'found MapLegendBody');
+  // To the next top-level declaration after it — the panel is the last thing in this block.
+  const rest = APP.slice(start + 1);
+  const nextDecl = rest.search(/\n(?:function|const) [A-Za-z]/);
+  const body = nextDecl > 0 ? rest.slice(0, nextDecl) : rest;
+  const calls = body.match(/<LegendMarkerExample[\s\S]*?\/>/g) || [];
+  assert.ok(calls.length >= 3, `expected the shape rows and the confidence pair, found ${calls.length}`);
+  for (const call of calls) {
+    // Which examples carry a blocker? Either a literal key in the call, or one of the
+    // module-level example arrays the call names.
+    const namesBlocker = /no_tractor_trailer|LEGEND_CONFIRMED_EXAMPLE|restrictions=\{restrictions\}/.test(call);
+    if (!namesBlocker) continue;
+    assert.match(call, /blockerKeys=/,
+      `a legend swatch draws a trailer blocker without declaring it:\n${call}`);
+  }
+});
+
+test('THE LEGEND DEMONSTRATES THE MARK THE MAP DRAWS', () => {
+  // A legend that disagrees with the map is worse than none — it teaches the wrong thing with
+  // authority. Both swatches are built by this same iconMarkerSvg, so the only way they can
+  // drift is if the legend forgets to say "this one is a blocker".
+  const APP_SRC = APP.slice(APP.indexOf('function LegendMarkerExample('));
+  assert.match(APP_SRC, /blockerKeys=\{LEGEND_BLOCKER_EXAMPLE\}[\s\S]{0,400}?blockerKeys=\{LEGEND_BLOCKER_EXAMPLE\}/,
+    'both the confirmed and the advisory swatch declare themselves blockers');
+  assert.ok(!/Half ring/.test(APP_SRC), 'the wording must not still describe a ring');
 });
