@@ -103,14 +103,22 @@ export function buildCustomerDriversDoc(tenant: string, matchKey: string, obs: H
 }
 
 // PURE, AS-OF (the leakage-safe reader the solver uses): habit strictly < D.
+// `drivers` carries the full ranked share list (top 4) — Phase 2.13's
+// habit_rank_aware experiment reads it to stop charging dispatch's legitimate
+// #2 at genuinely shared customers; everything else keeps reading the top-only
+// fields, so the addition is inert.
 export function habitAsOf(doc: any | null, asOfDate: string):
-  { topDriver: string; topDriverName: string | null; topShare: number; n: number } | null {
+  { topDriver: string; topDriverName: string | null; topShare: number; n: number;
+    drivers: Array<{ key: string; share: number }> } | null {
   const obs: HabitOb[] = (doc?.obs || []).filter((o: any) => String(o?.d) < asOfDate);
   if (!obs.length) return null;
   const agg = aggregateHabit(obs);
   const top = agg.drivers[0];
   if (!top) return null;
-  return { topDriver: top.driver_user_name, topDriverName: top.driver_name, topShare: top.share, n: agg.n_delivered };
+  return {
+    topDriver: top.driver_user_name, topDriverName: top.driver_name, topShare: top.share, n: agg.n_delivered,
+    drivers: agg.drivers.slice(0, 4).map((d) => ({ key: d.driver_user_name, share: d.share })),
+  };
 }
 
 // BACKFILL write path — full recompute per customer, OVERWRITE (idempotent).

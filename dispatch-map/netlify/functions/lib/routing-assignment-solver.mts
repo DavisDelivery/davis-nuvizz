@@ -85,7 +85,10 @@ export interface AssignStop {
   blocksTractor: boolean;
   // Phase 2.1: the customer's habitual driver as-of the plan date (< D), from
   // routing_customer_drivers. Null when the customer has no delivered history.
-  habit?: { topDriver: string; topShare: number; n: number } | null;
+  // `drivers` (Phase 2.13, optional): the full ranked share list, read only when
+  // cfg.habit_rank_aware is on — absent on older callers, which keeps them on
+  // top-driver-only behavior automatically.
+  habit?: { topDriver: string; topShare: number; n: number; drivers?: Array<{ key: string; share: number }> } | null;
   // Phase 2.7: the driver_keys this stop may be assigned to — its zone's trailing
   // top drivers ∪ customer habit ∪ area fallback (see candidateDriversFor). An
   // EMPTY array means unseen geography → any driver is allowed (open fallback).
@@ -103,6 +106,31 @@ function isCandidate(s: AssignStop, driverKey: string): boolean {
 export function habitStrength(habit: { topShare: number; n: number } | null | undefined, shrinkN: number): number {
   if (!habit || !(habit.n > 0)) return 0;
   return habit.topShare * (habit.n / (habit.n + Math.max(0, shrinkN)));
+}
+
+// Phase 2.13 (habit_rank_aware): this driver's own share of the customer's
+// delivered history — 0 when unranked or the ranked list wasn't provided.
+export function habitShareFor(
+  habit: { drivers?: Array<{ key: string; share: number }> } | null | undefined,
+  driverUserName: string | null,
+): number {
+  if (!habit?.drivers || !driverUserName) return 0;
+  const u = String(driverUserName).toUpperCase();
+  return habit.drivers.find((d) => d.key === u)?.share || 0;
+}
+
+// Phase 2.13 (w_candidate_rank): where this driver sits in the stop's ORDERED
+// candidate cast. 0 at rank 1, rising to 1 at the tail; 1 for a driver outside
+// a non-empty cast (the open-fallback / anyBest path); 0 when the cast is open
+// (unseen geography = no rank signal). This is the ordinal version — visit
+// SHARES are discarded upstream in topDriversInCell; share-weighting is the
+// follow-up if the ordinal experiment pays.
+export function candidateRankFrac(s: AssignStop, driverKey: string): number {
+  const c = s.candidates;
+  if (!c || c.length === 0) return 0;
+  const i = c.indexOf(driverKey);
+  if (i < 0) return 1;
+  return c.length > 1 ? i / (c.length - 1) : 0;
 }
 
 export interface AssignDriver {
@@ -144,12 +172,26 @@ function ownedBy(s: AssignStop, driverUserName: string | null, input: AssignInpu
 
 export interface AssignedTrip { stops: AssignStop[] }
 export interface AssignedShift { driver: AssignDriver; trips: AssignedTrip[] }
+// Phase 2.13 — TIE-MARGIN diagnostic: per stop, the seed-score gap between the
+// best and second-best CANDIDATE driver. A small margin means dispatch's choice
+// was genuinely ambiguous (two drivers both plausibly take the stop) — the share
+// of near-ties bounds how much of the containment-vs-agreement gap any solver
+// can ever close, which is exactly the number the Assist gate needs. Seed-score
+// units: habit ≤3, affinity ≤2, owner ±4 — a margin under 0.5 is a coin flip.
+export interface TieMarginSummary {
+  stops: number;              // stops with ≥2 feasible candidate drivers
+  mean: number;
+  p50: number;
+  share_lt_05: number;        // near-ties (margin < 0.5)
+  share_lt_1: number;
+}
 export interface AssignResult {
   date: string;
   shifts: AssignedShift[];
   unassigned: AssignStop[];   // stops no active driver could serve (equipment) — reported
   cost: number;
   drivers_used: number;
+  tie_margin: TieMarginSummary | null;
 }
 
 const isTractor = (d: AssignDriver) => String(d.truck_class || '') === 'tractor';
@@ -326,13 +368,29 @@ export function shiftCost(
     // objective non-negative for the local search).
     for (const s of t.stops) {
       if (!s.habit?.topDriver) continue;
-      if (shift.driver.driver_user_name && s.habit.topDriver === String(shift.driver.driver_user_name).toUpperCase()) continue;
+      const uname = shift.driver.driver_user_name ? String(shift.driver.driver_user_name).toUpperCase() : null;
+      if (uname && s.habit.topDriver === uname) continue;
       // Phase 2.2: FAR stops discount the habit pull. Out at the edge, geography
       // and consolidation must outweigh "the usual driver" — honoring per-customer
       // habit for a distant loop is exactly what scattered it across every driver
       // who happens to "own" one of those customers.
       const habitScale = s.miles > cfg.far_deadhead_mi ? cfg.habit_far_discount : 1;
-      cost += cfg.w_habit * habitStrength(s.habit, cfg.habit_shrink_n) * habitScale;
+      // Phase 2.13 (habit_rank_aware): charge the share mass ABOVE the assigned
+      // driver, not the full top share — a customer split 50/45 between two
+      // drivers should barely charge dispatch's legitimate #2, while a driver
+      // with no rank at that customer still pays the full pull. Off (0) is
+      // byte-identical to the top-driver-only charge.
+      const chargeShare = cfg.habit_rank_aware >= 1
+        ? Math.max(0, s.habit.topShare - habitShareFor(s.habit, uname))
+        : s.habit.topShare;
+      cost += cfg.w_habit * habitStrength({ topShare: chargeShare, n: s.habit.n }, cfg.habit_shrink_n) * habitScale;
+    }
+
+    // Phase 2.13 (w_candidate_rank): the cast is ordered for a reason — charge
+    // by the assigned driver's position in it, so the local search stops letting
+    // a #5 zone driver hold a stop the cast's #1 should have on stray pulls.
+    if (cfg.w_candidate_rank > 0) {
+      for (const s of t.stops) cost += cfg.w_candidate_rank * candidateRankFrac(s, shift.driver.driver_key);
     }
 
     const travel = tripTravelMin(t, depot, cfg, matrixCache);
@@ -525,16 +583,26 @@ export function solveAssignment(input: AssignInput): AssignResult {
     // Phase 2.1: the customer's habitual driver gets a head start proportional to
     // the habit strength; Phase 2.2 discounts that for FAR stops so a distant loop
     // isn't scattered across each customer's usual driver.
-    const habitRaw = s.habit?.topDriver && d.driver_user_name &&
-      s.habit.topDriver === String(d.driver_user_name).toUpperCase()
-      ? habitStrength(s.habit, cfg.habit_shrink_n) : 0;
+    // Phase 2.13 (habit_rank_aware): the head start goes by the driver's OWN
+    // share of the customer's history instead of top-driver-or-nothing, so the
+    // legitimate #2 at a shared account keeps a partial pull. Off = identical.
+    const uname = d.driver_user_name ? String(d.driver_user_name).toUpperCase() : null;
+    const seedShare = cfg.habit_rank_aware >= 1
+      ? (s.habit ? habitShareFor(s.habit, uname) : 0)
+      : (s.habit?.topDriver && uname && s.habit.topDriver === uname ? s.habit.topShare : 0);
+    const habitRaw = s.habit && seedShare > 0
+      ? habitStrength({ topShare: seedShare, n: s.habit.n }, cfg.habit_shrink_n) : 0;
     const habit = isFar ? habitRaw * cfg.habit_far_discount : habitRaw;
     // Phase 2.2: for a FAR stop, favor a driver already committed to the far field.
     const consolidation = isFar && (bag.get(d.driver_key) || []).some((x) => x.miles > cfg.far_deadhead_mi) ? 1 : 0;
     // Phase 2.3: learned territory owners dominate the seed for far stops.
     const owned = ownedBy(s, d.driver_user_name, input);
     const ownerBoost = owned === true ? 4 : owned === false ? -4 : 0;
-    return habit * 3 + affinity * 2 + consolidation + ownerBoost + rand() * 1e-6;
+    // Phase 2.13 (w_candidate_rank): cast rank votes in the seed at the SAME
+    // magnitude it votes in shiftCost (the habit term maps seed 3 : cost w_habit=3
+    // the same way), so seed and search agree about what rank is worth.
+    const rankPenalty = cfg.w_candidate_rank > 0 ? cfg.w_candidate_rank * candidateRankFrac(s, d.driver_key) : 0;
+    return habit * 3 + affinity * 2 + consolidation + ownerBoost - rankPenalty + rand() * 1e-6;
   };
 
   // PASS 1 — pure ownership, exactly the 2.7.0 assignment: every stop to its
@@ -543,16 +611,28 @@ export function solveAssignment(input: AssignInput): AssignResult {
   // overflows are separate questions — 2.8.0/2.8.1 conflated them, letting
   // seeding order decide the overflow (arbitrary fringe, wrong truck).
   const claim = new Map<string, number>();   // stop.id → its winning territorial score
+  const tieMargins: number[] = [];           // Phase 2.13 diagnostic — observation only
   const seedStops = [...stops].sort((a, b) =>
     (stopSkidEquiv(b, cfg) - stopSkidEquiv(a, cfg)) || (b.weight - a.weight) || a.id.localeCompare(b.id));
   for (const s of seedStops) {
     let best: AssignDriver | null = null, bestScore = -Infinity;   // best TERRITORY candidate
+    let secondScore = -Infinity;                                   // runner-up candidate (tie margin)
     let anyBest: AssignDriver | null = null, anyScore = -Infinity; // best feasible driver overall
     for (const d of drivers) {
       if (!driverCanServe(d, s)) continue;
       const score = scoreFor(s, d);
       if (score > anyScore) { anyScore = score; anyBest = d; }
-      if (isCandidate(s, d.driver_key) && score > bestScore) { bestScore = score; best = d; }
+      if (isCandidate(s, d.driver_key)) {
+        if (score > bestScore) { secondScore = bestScore; bestScore = score; best = d; }
+        else if (score > secondScore) { secondScore = score; }
+      }
+    }
+    // Margin only where a REAL cast of ≥2 exists: on an open cast (unseen
+    // geography) every driver passes isCandidate and the "margin" is 1e-6
+    // jitter — counting those as coin flips would inflate the near-tie share
+    // with stops that carry no signal at all, not genuine ambiguity.
+    if (best && secondScore > -Infinity && s.candidates && s.candidates.length >= 2) {
+      tieMargins.push(bestScore - secondScore);
     }
     const chosen = best || anyBest;
     if (!chosen) { unassigned.push(s); continue; }
@@ -560,6 +640,17 @@ export function solveAssignment(input: AssignInput): AssignResult {
     bagEq.set(chosen.driver_key, (bagEq.get(chosen.driver_key) || 0) + stopSkidEquiv(s, cfg));
     claim.set(s.id, best ? bestScore : -Infinity);  // an open-fallback stop holds no territorial claim
   }
+  const r3 = (v: number) => Math.round(v * 1000) / 1000;
+  const tieMargin: TieMarginSummary | null = tieMargins.length ? (() => {
+    const sorted = [...tieMargins].sort((a, b) => a - b);
+    return {
+      stops: sorted.length,
+      mean: r3(sorted.reduce((a, b) => a + b, 0) / sorted.length),
+      p50: r3(sorted[Math.floor(sorted.length / 2)]),
+      share_lt_05: r3(sorted.filter((m) => m < 0.5).length / sorted.length),
+      share_lt_1: r3(sorted.filter((m) => m < 1).length / sorted.length),
+    };
+  })() : null;
 
   // PASS 2 — cap the overflow, keep the core. A driver over TWO full loads
   // sheds their WEAKEST-claim stops: dispatch keeps the habitual/affinity core
@@ -663,5 +754,6 @@ export function solveAssignment(input: AssignInput): AssignResult {
     unassigned,
     cost: bestCost,
     drivers_used: finalShifts.length,
+    tie_margin: tieMargin,
   };
 }

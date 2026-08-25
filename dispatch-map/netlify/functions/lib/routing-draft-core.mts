@@ -287,7 +287,7 @@ export function buildDriverDraft(tenant: string, date: string, opts: BuildDraftO
   // ── candidates against the FULL recent roster, then the cast intersection ──
   const roster = recentRosterKeys(inputs.driverDaysBefore, date);
   for (const r of resolved) roster.add(r.driver_key); // a named driver is always in their own cast
-  const territory = territoryMapsAsOf(inputs.referencesBefore, date);
+  const territory = territoryMapsAsOf(inputs.referencesBefore, date, cfg.territory_half_life_days);
   const castKeys = new Set(resolved.map((r) => r.driver_key));
   const inPool: AssignStop[] = [];
   for (const as of mapped) {

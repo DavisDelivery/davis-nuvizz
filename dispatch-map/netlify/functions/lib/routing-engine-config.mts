@@ -172,6 +172,29 @@ export interface EngineConfig {
   weight_cap_box_lb: number;
   weight_cap_tractor_lb: number;
 
+  // ── Phase 2.13: EXPERIMENT KNOBS — all default OFF (behavior byte-identical
+  // to 2.12.1 until an experiment run proves a knob pays; the 2.9.0 lesson is
+  // that plausible solver changes lose real agreement, so nothing here touches
+  // the nightly until the labeled replay says so). Validated via the
+  // routing-engine-experiment endpoint, which overlays these per run.
+  // Rank-aware candidate cost (the 2.9.1 comment's named experiment): candidates
+  // are an ORDERED cast (habit, zone rank 1..K, area rank 1..K) but the solver
+  // treats membership as binary — the #5 zone driver can out-score the #1 on
+  // stray habit/affinity. This weight charges by position in the cast
+  // (rank 1 = 0 … last = ~1; off-cast/open = 1) in both the seed score and the
+  // shift cost, so width can finally pay (re-widen only after this holds).
+  w_candidate_rank: number;
+  // Habit runner-up (0|1): charge habit by the share mass ABOVE the assigned
+  // driver instead of the full top share whenever the assigned driver is ranked
+  // for the customer — a 50/45 split stops charging dispatch's legitimate #2 as
+  // a full violation. 0 = today's top-driver-only behavior.
+  habit_rank_aware: number;
+  // Territory recency decay (days; 0 = off = all-history counts). References
+  // already decay at reference_half_life_days, but territory visit counts and
+  // therefore candidate casts never forget — a driver who left a zone months
+  // ago still holds a top-5 slot. Half-life applied to zone/area visit counts.
+  territory_half_life_days: number;
+
   // ── Phase 2.9: candidate-set width ─────────────────────────────────────────
   // 2.9.0 tried zone-7/area-5: containment (the CEILING — actual driver ∈
   // candidates) rose 68.0→72.8% exactly as the offline sizing predicted, but
@@ -224,6 +247,7 @@ const NUMERIC_KEYS: Array<keyof EngineConfig> = [
   'skid_cap_box_soft', 'skid_cap_box_hard', 'skid_cap_tractor_soft', 'skid_cap_tractor_hard',
   'loose_per_skid', 'w_skid_soft', 'skid_cap_driver_min', 'skid_cap_driver_headroom',
   'weight_cap_box_lb', 'weight_cap_tractor_lb',
+  'w_candidate_rank', 'habit_rank_aware', 'territory_half_life_days',
   'candidate_zone_k', 'candidate_area_k',
 ];
 
@@ -287,6 +311,10 @@ export const ENGINE_CONFIG_BOUNDS: Record<Exclude<keyof EngineConfig, 'routing_c
   // Lower bound 0 = "no weight gate for this class" (never a zero-lb cap).
   weight_cap_box_lb: [0, 80_000],
   weight_cap_tractor_lb: [0, 80_000],
+  // Experiment knobs: 0 = off = 2.12.1 behavior, byte-identical.
+  w_candidate_rank: [0, 1000],
+  habit_rank_aware: [0, 1],
+  territory_half_life_days: [0, 365],
   candidate_zone_k: [1, 20],
   candidate_area_k: [1, 20],
 };
@@ -406,6 +434,10 @@ export function engineConfigDefaults(env: Record<string, string | undefined> = p
     // to make hard where the 2.1.1 learned ceiling was not.
     weight_cap_box_lb: num('WEIGHT_CAP_BOX_LB', 10_000),
     weight_cap_tractor_lb: num('WEIGHT_CAP_TRACTOR_LB', 44_000),
+    // Phase 2.13 — experiment knobs, ALL OFF by default (see interface comment).
+    w_candidate_rank: num('W_CANDIDATE_RANK', 0),
+    habit_rank_aware: num('HABIT_RANK_AWARE', 0),
+    territory_half_life_days: num('TERRITORY_HALF_LIFE_DAYS', 0),
     // Phase 2.9.1 — back to the PROVEN 5/3 (see the interface comment: 7/5
     // raised the ceiling +4.8 but cost 1.7pts realized agreement in the full
     // replay; width without a rank-aware solver is a net loss).

@@ -49,6 +49,14 @@ export const PLAN_PROPOSALS_DAILY_COLLECTION = 'plan_proposals_daily';
 const TRACTOR_LOCATIONS_COLLECTION = 'tractor_locations';
 const CUSTOMER_NOTES_COLLECTION = 'customer_notes';
 
+// Labeled offline experiments (Phase 2.13) — collection + path shared by the
+// writer (routing-engine-experiment-background) and the reader
+// (routing-engine-data), one definition so a rename can't silently 404 the reader.
+export const EXPERIMENTS_COLLECTION = 'engine_experiments';
+export function experimentPath(tenant: string, label: string): string {
+  return `${EXPERIMENTS_COLLECTION}/${tenant}__${label}`;
+}
+
 // Shared crew constants — used by the shadow (runPlanForDate) and the driver-scoped
 // draft builder (routing-draft-core.mts); one definition so the two can never drift.
 // Supervisors run occasional 1-3 stop days and are never a real route-driver pool.
@@ -227,15 +235,20 @@ export interface PlanDaySummary {
   drivers: number; trips_engine: number; trips_actual: number;
   planned_stops: number; unassigned_count: number;
   stop_agreement_pct: number | null; coload_agreement_pct: number | null; coload_precision_pct: number | null;
+  stop_agreement_known_pct: number | null; stop_agreement_fallback_pct: number | null;
+  candidate_containment_pct: number | null;
   est_travel_engine_min: number | null; est_travel_actual_min: number | null;
   matched_load_sequence_score: number | null;
+  tie_margin: any | null;   // Phase 2.13 diagnostic (see TieMarginSummary)
   ms: number;
 }
 
 // PURE-ish core (I/O only for the loaders it calls when inputs aren't preloaded).
+// opts.writeResults: false = DRY RUN — solve and score but write NOTHING (the
+// experiment harness's mode; the stored trend never learns a sweep happened).
 export async function runPlanForDate(
   tenant: string, date: string,
-  opts: { cfg?: EngineConfig; force?: boolean; inputs?: PlanInputs } = {},
+  opts: { cfg?: EngineConfig; force?: boolean; inputs?: PlanInputs; writeResults?: boolean } = {},
 ): Promise<PlanDaySummary> {
   const t0 = Date.now();
   const cfg = opts.cfg || await loadEngineConfig(tenant);
@@ -250,8 +263,12 @@ export async function runPlanForDate(
         planned_stops: existing.planned_stops ?? 0, unassigned_count: existing.unassigned_count ?? 0,
         stop_agreement_pct: existing.stop_agreement_pct ?? null, coload_agreement_pct: existing.coload_agreement_pct ?? null,
         coload_precision_pct: existing.coload_precision_pct ?? null,
+        stop_agreement_known_pct: existing.stop_agreement_known_pct ?? null,
+        stop_agreement_fallback_pct: existing.stop_agreement_fallback_pct ?? null,
+        candidate_containment_pct: existing.candidate_containment_pct ?? null,
         est_travel_engine_min: existing.est_travel_engine_min ?? null, est_travel_actual_min: existing.est_travel_actual_min ?? null,
-        matched_load_sequence_score: existing.matched_load_sequence_score ?? null, ms: Date.now() - t0,
+        matched_load_sequence_score: existing.matched_load_sequence_score ?? null,
+        tie_margin: existing.tie_margin ?? null, ms: Date.now() - t0,
       };
     }
   }
@@ -351,7 +368,7 @@ export async function runPlanForDate(
   // Phase 2.7: today's roster + the trailing zone/area ownership maps → per-stop
   // candidate driver sets. Territory is built ONCE from references < D.
   const rosterKeys = new Set(activeDrivers.map((d) => d.driver_key));
-  const territory = territoryMapsAsOf(inputs.referencesBefore, date);
+  const territory = territoryMapsAsOf(inputs.referencesBefore, date, cfg.territory_half_life_days);
 
   // ── the engine's planned stop set ──
   const assignStops: AssignStop[] = planned.map((s) => {
@@ -553,20 +570,30 @@ export async function runPlanForDate(
     })),
     engine_trips: engineTrips.map((t) => ({ driver_key: t.driverKey, seq: t.seq, stop_ids: t.orderedIds, travel_min: Math.round(t.travelMin * 10) / 10 })),
     fleet_chain: { far_first_rate: fleet.far_first_rate, reload_gap_median_min: fleet.reload_gap_median_min, source: fleet.source },
+    // Phase 2.13 — seed-score gap between the best and runner-up candidate per
+    // stop. share_lt_05 is the share of stops where dispatch's choice was a
+    // genuine coin flip — the part of the containment-vs-agreement gap NO
+    // solver can close, which is the honest denominator for the Assist gate.
+    tie_margin: result.tie_margin,
   };
-  await setDoc(planProposalPath(tenant, date), proposal);
-  await setDoc(planDailyPath(tenant, date), {
-    tenant, date, engine_version: ENGINE_VERSION, computed_at: nowIso,
-    drivers: activeDrivers.length, trips_engine, trips_actual, planned_stops: planned.length,
-    unassigned_count: result.unassigned.length,
-    stop_agreement_pct: proposal.stop_agreement_pct, coload_agreement_pct: proposal.coload_agreement_pct,
-    coload_precision_pct: proposal.coload_precision_pct,
-    stop_agreement_known_pct: proposal.stop_agreement_known_pct,
-    stop_agreement_fallback_pct: proposal.stop_agreement_fallback_pct,
-    candidate_containment_pct: proposal.candidate_containment_pct,
-    est_travel_engine_min: proposal.est_travel_engine_min, est_travel_actual_min: proposal.est_travel_actual_min,
-    matched_load_sequence_score: matchedSeqScore,
-  });
+  // DRY RUN (the experiment harness): solve + score, write nothing — a sweep
+  // must never overwrite the nightly trend or the version rollups.
+  if (opts.writeResults !== false) {
+    await setDoc(planProposalPath(tenant, date), proposal);
+    await setDoc(planDailyPath(tenant, date), {
+      tenant, date, engine_version: ENGINE_VERSION, computed_at: nowIso,
+      drivers: activeDrivers.length, trips_engine, trips_actual, planned_stops: planned.length,
+      unassigned_count: result.unassigned.length,
+      stop_agreement_pct: proposal.stop_agreement_pct, coload_agreement_pct: proposal.coload_agreement_pct,
+      coload_precision_pct: proposal.coload_precision_pct,
+      stop_agreement_known_pct: proposal.stop_agreement_known_pct,
+      stop_agreement_fallback_pct: proposal.stop_agreement_fallback_pct,
+      candidate_containment_pct: proposal.candidate_containment_pct,
+      est_travel_engine_min: proposal.est_travel_engine_min, est_travel_actual_min: proposal.est_travel_actual_min,
+      matched_load_sequence_score: matchedSeqScore,
+      tie_margin: result.tie_margin,
+    });
+  }
 
   return {
     ok: true, tenant, date,
@@ -574,8 +601,12 @@ export async function runPlanForDate(
     planned_stops: planned.length, unassigned_count: result.unassigned.length,
     stop_agreement_pct: proposal.stop_agreement_pct, coload_agreement_pct: proposal.coload_agreement_pct,
     coload_precision_pct: proposal.coload_precision_pct,
+    stop_agreement_known_pct: proposal.stop_agreement_known_pct,
+    stop_agreement_fallback_pct: proposal.stop_agreement_fallback_pct,
+    candidate_containment_pct: proposal.candidate_containment_pct,
     est_travel_engine_min: proposal.est_travel_engine_min, est_travel_actual_min: proposal.est_travel_actual_min,
-    matched_load_sequence_score: matchedSeqScore, ms: Date.now() - t0,
+    matched_load_sequence_score: matchedSeqScore,
+    tie_margin: result.tie_margin, ms: Date.now() - t0,
   };
 }
 
