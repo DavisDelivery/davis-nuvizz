@@ -47,14 +47,16 @@ const DEVICES = [
 const SCREENS = [
   { key: 'map', label: 'Map', nav: null },
   { key: 'routing', label: 'Routing (beta)', nav: /routing/i },
-  // The Routing rail has THREE layouts, chosen from the gear and remembered in localStorage,
-  // and the guard only ever saw the default one. A mode nobody sweeps is a mode that ships its
-  // phone layout untested — which is the whole reason this file exists. Each is a full pass:
-  // different sub-tab strip, different panel body, same 390 and 360 screens.
-  { key: 'routing-routes', label: 'Routing (beta) — Routes / Drivers rail', nav: /routing/i,
-    prefs: { 'routing.rightPanel': 'routes' } },
-  { key: 'routing-loads', label: 'Routing (beta) — Routes / Loads rail', nav: /routing/i,
-    prefs: { 'routing.rightPanel': 'routesLoads', 'routing.routesLoadsTab': 'loads' } },
+  // The Routing rail's second layout has THREE tabs, and which one is open is remembered in
+  // localStorage — so the guard only ever saw whichever the default was. A view nobody sweeps
+  // is a view that ships its phone layout untested, which is the whole reason this file exists.
+  // Each is a full pass: same strip, different panel body, same 390 and 360 screens.
+  { key: 'routing-routes', label: 'Routing (beta) — rail on Routes', nav: /routing/i,
+    prefs: { 'routing.rightPanel': 'routes', 'routing.routesTab': 'routes' } },
+  { key: 'routing-drivers', label: 'Routing (beta) — rail on Drivers', nav: /routing/i,
+    prefs: { 'routing.rightPanel': 'routes', 'routing.routesTab': 'drivers' } },
+  { key: 'routing-loads', label: 'Routing (beta) — rail on Loads', nav: /routing/i,
+    prefs: { 'routing.rightPanel': 'routes', 'routing.routesTab': 'loads' } },
   { key: 'neworder', label: 'New Order', nav: /new order/i },
   { key: 'quote', label: 'Quote', nav: /quote/i },
   { key: 'manifest', label: 'Manifest check', nav: /manifest check/i, inMore: true },
@@ -473,7 +475,7 @@ for (const device of DEVICES) {
     // a screen it did not mean to measure reads as proof of the screen it named.
     await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'domcontentloaded' });
     await page.evaluate((prefs) => {
-      for (const k of ['routing.rightPanel', 'routing.routesLoadsTab']) { try { localStorage.removeItem(k); } catch { /* private mode */ } }
+      for (const k of ['routing.rightPanel', 'routing.routesTab']) { try { localStorage.removeItem(k); } catch { /* private mode */ } }
       for (const [k, v] of Object.entries(prefs || {})) { try { localStorage.setItem(k, v); } catch { /* private mode */ } }
     }, screen.prefs || {});
     await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle' });
