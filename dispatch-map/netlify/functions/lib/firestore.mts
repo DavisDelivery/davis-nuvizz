@@ -1086,6 +1086,71 @@ export async function readScanMetrics(): Promise<any[]> {
   return Array.isArray(doc?.samples) ? doc.samples : [];
 }
 
+// ── The scan run ledger — what the scheduler ACTUALLY did, run by run ────────
+//
+// Chad, at 10:02 on a Tuesday, looking at a board whose three feed stamps all read "3 hr ago":
+// "Something is very wrong with my scan schedule." The only record of what the scanner had
+// decided in those three hours was one `[scan]` console line per fire, in Netlify's log
+// viewer — so the question "why did it not scan at 08:00" could not be answered from the app
+// at all, and the app is what he has open.
+//
+// Worse, the shape of the failure it has to expose is a run that STARTS and never FINISHES.
+// The scan pulls the saved searches, stamps the per-kind clocks, then writes ~700 stop docs;
+// if it dies anywhere after the pull, the per-kind clocks say the schedule is healthy while
+// the day index — which is what the board serves and what those three rows read — never
+// moves. Every symptom of that is "the board stopped updating" and nothing anywhere says so.
+//
+// So each acting fire records a row when it starts and updates it when it ends. A row with a
+// `startedAt` and no `finishedAt` IS the diagnosis: the fire began, cost its NuVizz calls, and
+// never came back. Best-effort throughout — the ledger must never be able to affect a scan.
+const SCAN_RUNS_PATH = `${OPS_COLLECTION}/scan_runs`;
+/** ~a day of fires at the 5-minute cron, which is the window anybody actually asks about. */
+const SCAN_RUNS_MAX = 120;
+
+export interface ScanRunRow {
+  id: string;
+  startedAt: string;
+  finishedAt?: string;
+  ms?: number;
+  trigger?: string;
+  etHour?: number;
+  etMin?: number;
+  weekday?: number;
+  path?: string;
+  skip?: string;
+  reason?: string;
+  due?: Record<string, any>;
+  callsBefore?: number;
+  callsAfter?: number;
+  outcome?: string;
+  error?: string;
+  dates?: any[];
+  stamped?: string[];
+}
+
+export async function readScanRuns(): Promise<ScanRunRow[]> {
+  if (!isFirestoreEnabled()) return [];
+  const doc = await getDoc(SCAN_RUNS_PATH).catch(() => null);
+  return Array.isArray(doc?.runs) ? (doc!.runs as ScanRunRow[]) : [];
+}
+
+/**
+ * Append or update one run row, keyed by `id`. A second call with the same id MERGES onto the
+ * first — that is what turns "started" into "finished" without losing the start time, and what
+ * leaves an unfinished row behind when the process dies between the two.
+ */
+export async function recordScanRun(row: ScanRunRow): Promise<void> {
+  if (!isFirestoreEnabled() || !row?.id) return;
+  try {
+    const prev = await readScanRuns();
+    const i = prev.findIndex((r) => r?.id === row.id);
+    const next = i >= 0
+      ? prev.map((r, j) => (j === i ? { ...r, ...row } : r))
+      : [...prev, row];
+    await setDoc(SCAN_RUNS_PATH, { runs: next.slice(-SCAN_RUNS_MAX), updated_at: new Date().toISOString() } as any);
+  } catch { /* best-effort: the ledger must never affect a scan */ }
+}
+
 // ── Phase 6: terminal-stop skip cache ────────────────────────────────────────
 // A stop at status 90/91 is DELIVERED and immutable, so once the unplanned descent
 // has confirmed a stop number terminal there is no reason to spend a /stop/info call

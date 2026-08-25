@@ -22,7 +22,7 @@
 
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro, lookupLoadStopNbrs } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan } from './firestore.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan, recordScanRun } from './firestore.mts';
 import { listScanForDate, mergeEnrich, twoScanBuckets, completedScanRows, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow } from './nuvizz-list.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterForDate } from './nuvizz-loads.mts';
 import { getStop } from './history-store.mts';
@@ -31,7 +31,7 @@ import { maxConsecutiveGap } from './scan-metrics.mts';
 import { notifyMarkedCustomers, pendingNotifyDates } from './cs-notify.mts';
 import { breakerTripped, scanIntervalElapsed, breakerMode, setDailyCeilingOverride, setCallTrigger } from './nuvizz-request.mts';
 import { scanDecision, isInRoutingWindow, clampScanConfig } from './scan-schedule.mts';
-import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip } from './scan-plan.mts';
+import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip, scanPath } from './scan-plan.mts';
 import { planCompletions } from './scan-completions.mts';
 
 // Reuse the CANONICAL integer parsers from nuvizz-scan so the parity log's
@@ -553,11 +553,40 @@ export async function runRefreshStops(req: Request): Promise<Response> {
 
   const json = (body: any) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
+  // ── THE RUN LEDGER ────────────────────────────────────────────────────────
+  // A durable row per acting fire, written when the run STARTS and updated when it ENDS.
+  // Chad, on a Tuesday morning: "Something is very wrong with my scan schedule" — three feed
+  // rows all reading "3 hr ago" and nothing in the app able to say why, because the only
+  // record was a console line in Netlify's log viewer.
+  //
+  // The failure mode this has to expose is a run that begins and never comes back: the pulls
+  // land, the per-kind clocks advance, and then the ~700-stop write does not finish, so the
+  // day index those three rows read never moves while the schedule looks perfectly healthy.
+  // A row with a startedAt and no finishedAt IS that diagnosis. Best-effort throughout — a
+  // ledger that can break a scan is worse than no ledger.
+  let stampedKinds: string[] = [];
+  const runId = `${now.toISOString()}__${trigger}`;
+  const startRun = async () => {
+    await recordScanRun({
+      id: runId, startedAt: now.toISOString(), trigger,
+      etHour: decision.etHour, etMin: decision.etMin, weekday: decision.weekday,
+      skip: decision.skip, reason: decision.reason, callsBefore: dayCount,
+      due: { planned: due.planned.reason, completed: due.completed.reason, roster: due.roster.reason },
+    });
+  };
+  const finishRun = async (extra: Record<string, any>) => {
+    await recordScanRun({
+      id: runId, startedAt: now.toISOString(), finishedAt: new Date().toISOString(),
+      ms: Date.now() - startedAt, callsAfter: dayCount, stamped: stampedKinds, ...extra,
+    } as any);
+  };
+
   // Kill switch (Fix 5: record halted state for the UI banner). Honors BOTH the env
   // kill switch and the UI master toggle (scan_config.scansEnabled === false).
   if (!scansEnabled() || scanCfg.scansEnabled === false) {
     if (fsOn) { try { await markScanState(TENANT, today, { halted: true, reason: 'killswitch', since: now.toISOString() }); } catch { /* */ } }
     logScan('killswitch', false, no, no);
+    await finishRun({ path: 'killswitch', outcome: 'halted' });
     return json({ ok: true, skipped: 'scans-disabled' });
   }
 
@@ -570,6 +599,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   if (await breakerTripped()) {
     try { await markScanState(TENANT, today, { halted: true, reason: 'ceiling', since: now.toISOString() }); } catch { /* */ }
     logScan('ceiling', false, no, no);
+    await finishRun({ path: 'ceiling', outcome: 'halted' });
     return json({ ok: true, skipped: 'circuit-open' });
   }
 
@@ -599,17 +629,28 @@ export async function runRefreshStops(req: Request): Promise<Response> {
     } catch (e: any) { console.warn(`[scan] load-roster ${date} skipped: ${e?.message}`); }
   };
 
-  // Next-business-day empty-loads roster — captured once per scan day, re-tried each acting
-  // cycle only until a NUMBERED roster lands (see persistLoadRoster; steady state 1 cheap
-  // PkgRoute list call/day). DECOUPLED from the next-day LOAD *scan*, which is 8pm-gated to
-  // avoid the expensive load-number probe — the roster is the cheap list endpoint, so
-  // tomorrow's empty/Draft loads (and their real load NUMBERS, which Saves are keyed by) are
-  // on the board all day. That is what lets the dispatcher build TOMORROW's routes TODAY.
-  // Runs on any acting scan >=6am ET.
-  if (decision.act && fsOn && decision.etHour >= 6 && rosterDue) {
+  // THE ROSTER RUNS WHEN THE PLAN SAYS IT DOES — today's AND the next business days' — and
+  // this is the only place it runs.
+  //
+  // Two things were wrong here and they compounded. (1) This branch carried its own
+  // `etHour >= 6` gate, written before the scan plan existed. `roster-am` opens at 04:00, so
+  // from four in the morning `rosterDue` was true and the branch that STAMPS it refused to
+  // fire — nothing could ever clear it, and since no path below is roster-only, every fire
+  // for two hours fell through to a FULL board rebuild. Replayed against the shipped plan:
+  // 10 rebuilds between 04:00 and 06:00 where the plan asks for 6, each one re-enriching and
+  // re-writing a ~700-stop board. (2) It only ever pulled the FUTURE days; today's roster was
+  // pulled unconditionally at the bottom of the list write loop, on every single full scan.
+  // So the hourly cadence the plan gives the roster — the reclaim that was supposed to pay
+  // for 15-minute completed sampling — bought nothing at all on the path production runs.
+  //
+  // Tomorrow's roster is still captured once per scan day (futureRosterCaptured), so widening
+  // this to the whole scanDates list costs one cheap PkgRoute call an hour, not two.
+  let rosterRan = false;
+  if (decision.act && fsOn && rosterDue) {
     const rosterAt = new Date().toISOString();
-    for (const d of scanDates.slice(1)) await persistLoadRoster(d, rosterAt);
+    for (const d of scanDates) await persistLoadRoster(d, rosterAt);
     await markScanKinds(['roster'], rosterAt).catch(() => {});
+    rosterRan = true;
   }
 
   // scanAndWrite — one date. includeUnplanned gates the order descent; `forced`
@@ -872,12 +913,14 @@ export async function runRefreshStops(req: Request): Promise<Response> {
 
   // Ops/testing path: ?date=… or ?days=N → full scan (loads + unplanned), forced.
   if (explicit) {
+    await startRun();
     let dates: string[];
     if (dateParam) dates = [dateParam];
     else { const n = Math.max(1, Math.min(31, parseInt(daysParam || '', 10) || DEFAULT_DAYS)); dates = scanDatesFrom(etDayString(), n); }
     for (const date of dates) await scanAndWrite(date, true, true);
     await refreshOps();
     logScan('none', true, { l: true, u: true }, { l: true, u: true });
+    await finishRun({ path: 'explicit', outcome: 'ok', dates: results });
     return json({ ok: true, tenant: TENANT, mode: 'explicit', totalMs: Date.now() - startedAt, dates: results });
   }
 
@@ -893,6 +936,13 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // an empty/failed pull writes nothing for that date, so the last-good board is
   // preserved (stale, never blank) — per Chad's call we'd just fix-forward if the
   // list endpoint ever changes, rather than fall back to the expensive probe.
+  //
+  // WHICH PATH THIS FIRE TAKES — one pure decision (scanPath), not three ifs and an implicit
+  // else. The else used to be the full rebuild, and two of the eight due-ness combinations
+  // reached it by accident; see scanPath's own note. With list discovery off there is no
+  // overlay and no roster-only fire to take, so the probe engine's behaviour is unchanged.
+  const path = LIST_DISCOVERY ? scanPath(decision.act, { plannedDue, completedDue, rosterDue }) : 'full';
+
   // ── COMPLETED-ONLY FIRE: the overlay ──────────────────────────────────────
   //
   // The plan wants 77131 far more often than 77128 through the delivery day, so most fires in
@@ -900,8 +950,9 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // It can mark an existing stop finished and nothing else — never creates, never removes,
   // never touches a route, sequence, driver or plan flag. See lib/scan-completions.mts for
   // why this is a separate path rather than a flag on the rebuild.
-  if (decision.act && LIST_DISCOVERY && fsOn && !plannedDue && completedDue) {
+  if (path === 'completed-overlay') {
     const at = new Date().toISOString();
+    await startRun();
     try {
       const rows = await completedScanRows();
       const prev = await readStops(TENANT, today).catch(() => ({ stops: [] as any[] }));
@@ -916,6 +967,9 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // shouldn't the completed scan be on a 15 min timer?" — which was unanswerable from the
       // screen because the card had no completed row to look at.
       const stamped = await markCompletedScan(TENANT, today, at);
+      stampedKinds = ['completed'];
+      await refreshOps();
+      await finishRun({ path: 'completed-overlay', outcome: stamped ? 'ok' : 'stamp-failed', dates: [{ date: today, pulled: rows.length, changed: applied.written, stamped }] });
       console.log(`[scan] completed-overlay ${today}: pulled=${rows.length} changed=${applied.written} unchanged=${plan.unchanged} notOnBoard=${plan.unknown.length} missingDoc=${applied.missing} etHour=${decision.etHour} interval=${due.completed.intervalMin}`);
       return json({
         ok: true, mode: 'completed-overlay', date: today, at,
@@ -927,17 +981,28 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // the next fire retries. It must NEVER fall through into the full rebuild, which would
       // turn a cheap tick into three calls plus enrichment.
       console.warn(`[scan] completed-overlay ${today} failed: ${e?.message}`);
+      await refreshOps();
+      await finishRun({ path: 'completed-overlay', outcome: 'error', error: String(e?.message || e).slice(0, 300) });
       return json({ ok: false, mode: 'completed-overlay', error: String(e?.message || e).slice(0, 200) });
     }
   }
 
-  // Nothing due at all this tick — the plan covers this hour but no kind has aged out yet.
-  if (decision.act && LIST_DISCOVERY && fsOn && !plannedDue && !completedDue && !rosterDue) {
-    logScan('plan-not-due', false, no, no, ` plan={planned:${due.planned.reason},completed:${due.completed.reason},roster:${due.roster.reason}}`);
-    return json({ ok: true, skipped: 'plan-not-due' });
+  // Roster-only, or nothing due at all. Either way this fire is finished: the roster (if it
+  // was due) already ran above, and there is no board work to do. Falling through from here
+  // into the full rebuild is the bug scanPath exists to make unrepresentable.
+  if (path === 'roster-only' || path === 'skip') {
+    const label = path === 'roster-only' ? 'roster-only' : 'plan-not-due';
+    logScan(label, false, no, no, ` rosterRan=${rosterRan} plan={planned:${due.planned.reason},completed:${due.completed.reason},roster:${due.roster.reason}}`);
+    // A fire with nothing due is the schedule working, not an event — recording all ~288 of
+    // those a day would bury the handful of rows anybody is ever looking for. Ask the explain
+    // endpoint what the scheduler would do right now; the ledger is what it actually DID.
+    if (rosterRan) { stampedKinds = ['roster']; await finishRun({ path: 'roster-only', outcome: 'ok' }); }
+    return json({ ok: true, skipped: label, rosterRan });
   }
 
   if (LIST_DISCOVERY) {
+    await startRun();
+    let listError: string | null = null;
     try {
       const scannedAt = new Date().toISOString();
       // THE STAMP GOES AFTER THE PULL, NOT BEFORE IT. This ran here, ahead of every NuVizz
@@ -953,11 +1018,24 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // refuses to claim one (`includeCompleted: TWO_SCAN`), so the two stamps disagreed
       // about the same run, and the ops doc was the one lying. Stamped once per run, by the
       // first pull that actually came back with rows.
+      //
+      // AND IT GOES AFTER THE WRITE, NOT AFTER THE PULL. Moving it behind the pull fixed the
+      // first half — a 5xx no longer stamps — but a run that answers the pull and then dies
+      // before the board write is stamped exactly the same as one that finished, and that is
+      // the failure Chad was looking at: three feed rows frozen at "3 hr ago" while the
+      // per-kind clocks said the schedule was healthy, because the day index (which is what
+      // the board serves and what those rows read) is only written by writeStops. Stamping
+      // after the write means an unfinished run leaves `planned` overdue, so the next fire
+      // RETRIES instead of standing down for a full interval on the strength of a scan that
+      // produced nothing. A day the vendor genuinely has no rows for still stamps — an empty
+      // answer is an answer — but a throw and an unreadable prior index do not.
       let kindsStamped = false;
       const stampScanKinds = async () => {
         if (kindsStamped) return;
+        if (!results.some((r) => r?.source === 'list' && r.ok === true)) return;
         kindsStamped = true;
-        await markScanKinds(TWO_SCAN ? ['planned', 'completed'] : ['planned'], scannedAt).catch(() => {});
+        stampedKinds = TWO_SCAN ? ['planned', 'completed'] : ['planned'];
+        await markScanKinds(stampedKinds, scannedAt).catch(() => {});
       };
       const targets = [today];
       // Tomorrow + further planning days (LIST_HORIZON_DAYS) — all sliced from the SAME ±7d pull,
@@ -977,8 +1055,6 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       const overrideCount = Object.keys(boardDateOverrides).length;
       if (overrideCount) console.log(`[scan] honoring ${overrideCount} dispatcher-set board date(s)`);
       const buckets = TWO_SCAN ? await twoScanBuckets(boardDateOverrides) : null;
-      // Both saved searches answered. THIS is the moment a scan happened.
-      if (TWO_SCAN) await stampScanKinds();
 
       // ── CS NOTIFY, FIRST THING, ACROSS THE WHOLE PULL (Chad, 8/10) ───────────────
       // "DSV came in on Friday. The moment the scan picked it up on Friday, it should
@@ -1071,9 +1147,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         let dateStops = TWO_SCAN
           ? (buckets!.get(etDateForTargetUTC(date, today)) || []).map((s) => { s.scheduledDate = date; return s; })
           : await listScanForDate(date);
-        // Legacy path: the pull is per-day, so the first one to come back is the proof.
-        if (!TWO_SCAN) await stampScanKinds();
-        if (!dateStops.length) { results.push({ date, ok: true, skipped: 'list-empty', source: 'list' }); continue; }
+        if (!dateStops.length) { results.push({ date, ok: true, skipped: 'list-empty', source: 'list' }); await stampScanKinds(); continue; }
 
         // This day's prior index — carries same-day enriched detail forward + seeds coords.
         // Cross-day "already enriched" memory lives in the per-PRO registry (below), not here.
@@ -1423,9 +1497,10 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         // a completed scan and stamps as one. With TWO_SCAN off there is no completed pull in
         // this path at all, and claiming one would date-stamp a scan that never happened.
         const meta = await writeStops(TENANT, date, dateStops, scannedAt, { includeUnplanned: true, includeLoads: true, includeCompleted: TWO_SCAN, graceFn: (fresh, ex) => { applyBoardWriteGrace(fresh, ex, Date.now()); } });
-        // Cache the date's empty-loads roster (once/day for a future date) so the Loads view can
-        // show e.g. Monday's empty loads without a per-request live fetch.
-        await persistLoadRoster(date, scannedAt);
+        // The roster is on its OWN hourly cadence and runs at the top of this function when the
+        // plan says it is due — it used to be re-pulled here on every full scan for every target
+        // date, which is a live NuVizz call per scan for a list that changes only when somebody
+        // creates a load, and it made the roster's hourly rule decorative.
         // CS notify — this hook only lived in the legacy probe path (scanAndWrite), which the
         // list-discovery config never runs, so a notify_cs-flagged customer produced NO email
         // and no status doc on any production scan. Fire it here too: best-effort, deduped
@@ -1435,6 +1510,8 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           if (n.matched) console.log(`[cs-notify] date=${date} matched=${n.matched} sent=${n.sent} failed=${n.failed}${n.skipped ? ` skipped=${n.skipped}` : ''}`);
         } catch (e: any) { console.warn(`[cs-notify] ${date} failed: ${e?.message}`); }
         results.push({ date, ok: true, source: 'list', count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount, enriched, newPros: stillNeed.length });
+        // Both saved searches answered AND a day's board actually landed. NOW a scan happened.
+        await stampScanKinds();
       }
 
       // ── Retire carried rows the live snapshot can't judge (phantom-unplanned fix) ──
@@ -1483,8 +1560,10 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // List-only: do NOT fall back to the number-probe; preserve the existing index.
       console.warn(`[scan] list-discovery error (${e?.message}); preserving last-good board (list-only, no number-probe)`);
       results.push({ ok: false, source: 'list', error: e?.message });
+      listError = String(e?.message || e).slice(0, 300);
     }
     await refreshOps();
+    await finishRun({ path: 'full', outcome: listError ? 'error' : 'ok', ...(listError ? { error: listError } : {}), dates: results });
     logScan('none', decision.act, { l: true, u: true }, { l: decision.scanTomorrowLoads, u: decision.scanTomorrowUnplanned }, ' src=list-only');
     return json({ ok: true, tenant: TENANT, mode: isManual ? 'manual' : 'scheduled', source: 'list', decision, totalMs: Date.now() - startedAt, dates: results });
   }
@@ -1493,6 +1572,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // Reaching here on a schedule means the EXPENSIVE probe engine is about to run without an
   // explicit trigger — only possible when NUVIZZ_LIST_DISCOVERY is explicitly 'off'. Say so loudly.
   console.warn(`[scan] ⚠ NUMBER-PROBE ENGINE on a ${isManual ? 'manual' : 'scheduled'} tick (NUVIZZ_LIST_DISCOVERY=off) — this is the ~3,000-call path`);
+  await startRun();
   await scanAndWrite(today, decision.scanTodayUnplanned, isManual, true);
   // Tomorrow (Fix 2): descend orders 10am-midnight, but only scan tomorrow's LOADS
   // 8pm-midnight (they don't exist earlier) — avoids ~13 empty load scans/day.
@@ -1501,6 +1581,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   }
 
   await refreshOps();
+  await finishRun({ path: 'number-probe', outcome: 'ok', dates: results });
   logScan('none', true,
     { l: true, u: decision.scanTodayUnplanned },
     { l: decision.scanTomorrowLoads, u: decision.scanTomorrowUnplanned });

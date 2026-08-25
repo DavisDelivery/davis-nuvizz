@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 import {
   SCAN_KINDS, SCAN_INFO, defaultScanRules, clampScanRules, resolveInterval, ruleCoversHour,
   resolveWeekGrid, estimatePlanCalls, effectiveCadence, MAX_RULES, RULE_BOUNDS, dueKinds,
-  CRON_STEP_MIN, CRON_TOLERANCE_MIN, overrideCadenceSkip,
+  CRON_STEP_MIN, CRON_TOLERANCE_MIN, overrideCadenceSkip, HARD_FLOOR_MIN,
 } from '../netlify/functions/lib/scan-plan.mts';
 import { scanDecision } from '../netlify/functions/lib/scan-schedule.mts';
 
@@ -148,10 +148,15 @@ test('EVERY interval a dispatcher would type is now honoured exactly', () => {
   }
 });
 
-test('the interval floor is the cron step — a number we cannot deliver is refused, not fudged', () => {
-  assert.equal(RULE_BOUNDS.intervalMin[0], CRON_STEP_MIN);
+test('the interval floor is the REAL floor — a number we cannot deliver is refused, not fudged', () => {
+  // It used to be the cron step alone (5). The scanner also enforces a hard 10-minute
+  // anti-thrash floor that overrideCadenceSkip deliberately does not override, so a 5-minute
+  // rule was a number the editor took, effectiveCadence reported back, and the scanner then
+  // held at 10 — the same "a screen that lies about a number you typed" defect the 5-minute
+  // cron step was introduced to fix, one layer down.
+  assert.equal(RULE_BOUNDS.intervalMin[0], Math.max(CRON_STEP_MIN, HARD_FLOOR_MIN));
   const [r] = clampScanRules([rule({ intervalMin: 1 })]);
-  assert.equal(r.intervalMin, CRON_STEP_MIN);
+  assert.equal(r.intervalMin, Math.max(CRON_STEP_MIN, HARD_FLOOR_MIN));
 });
 
 // ── clamping: junk is dropped, never repaired into something plausible ───────

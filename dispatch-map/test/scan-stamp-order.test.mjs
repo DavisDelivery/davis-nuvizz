@@ -49,7 +49,33 @@ test('the ops stamp cannot claim a COMPLETED pull the run did not make', () => {
   // The day-index write 450 lines below already refuses to claim one (includeCompleted:
   // TWO_SCAN); the ops doc claimed it unconditionally, so the two stamps disagreed about
   // the same run and the completed clock never came due.
-  assert.match(SRC, /markScanKinds\(TWO_SCAN \? \['planned', 'completed'\] : \['planned'\]/);
+  assert.match(SRC, /stampedKinds = TWO_SCAN \? \['planned', 'completed'\] : \['planned'\]/);
+  assert.match(SRC, /await markScanKinds\(stampedKinds, scannedAt\)/);
+});
+
+test('AND IT CANNOT CLAIM A SCAN THE BOARD NEVER RECEIVED', () => {
+  // The second half of the same rule, and the one Chad's Tuesday was made of. Moving the
+  // stamp behind the pull stopped a 5xx from claiming a scan; it did nothing for a run that
+  // answers the pull and then dies before the ~700-stop board write. Those two look identical
+  // to dueKinds, so the per-kind clocks read healthy while the DAY INDEX — the thing the
+  // board serves and the thing the status card's three feed rows read — never moves. Three
+  // rows frozen at "3 hr ago" and a schedule reporting itself fine.
+  //
+  // The guard: the helper must refuse to stamp until `results` holds a successful list
+  // outcome, and every call site must sit downstream of a results.push.
+  const defAt = SRC.indexOf('const stampScanKinds = async () => {');
+  assert.ok(defAt > 0, 'found the stamp helper');
+  const body = SRC.slice(defAt, SRC.indexOf('};', defAt));
+  assert.match(body, /results\.some\(/,
+    'the stamp helper must consult what actually landed before claiming a scan');
+
+  const firstPush = SRC.indexOf("results.push({ date, ok: true");
+  assert.ok(firstPush > 0, 'found the first successful-write record');
+  for (const m of SRC.slice(SRC.indexOf('if (LIST_DISCOVERY) {')).matchAll(/await stampScanKinds\(\)/g)) {
+    const abs = m.index + SRC.indexOf('if (LIST_DISCOVERY) {');
+    assert.ok(abs > firstPush,
+      `stampScanKinds() is called at ${abs}, ahead of any recorded outcome at ${firstPush}`);
+  }
 });
 
 test('WHY IT MATTERS: a stamp with no scan behind it holds the next attempt off', () => {

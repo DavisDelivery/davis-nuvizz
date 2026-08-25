@@ -108,11 +108,29 @@ export interface ScanRule {
   note?: string;
 }
 
-/** Safe bounds. The interval floor is the cron step — see effectiveCadence and CRON_STEP_MIN.
- *  Anything tighter is a number the box accepts and the system cannot deliver, which is worse
- *  than refusing it outright. */
+/**
+ * THE HARD ANTI-THRASH FLOOR, in minutes — nuvizz-request's MIN_SCAN_INTERVAL_MS, restated
+ * here because scan-schedule.mts already imports THIS module and the dependency cannot run
+ * both ways. Read from the same env var so the two can never disagree.
+ *
+ * It matters to the plan because scanDecision refuses any fire inside the floor with
+ * skip='floor', and overrideCadenceSkip deliberately does NOT override that one. So a rule
+ * tighter than the floor is a number the editor accepts and the scanner will not deliver.
+ */
+export const HARD_FLOOR_MIN = Math.max(
+  1,
+  Math.round((Number(process.env.NUVIZZ_MIN_SCAN_INTERVAL_MS) || 10 * 60 * 1000) / 60000),
+);
+
+/** Safe bounds. The interval floor is the LARGER of the cron step and the hard anti-thrash
+ *  floor — anything tighter is a number the box accepts and the system cannot deliver, which
+ *  is worse than refusing it outright. It used to be the cron step alone (5), so the editor
+ *  would take a 5-minute rule, `effectiveCadence` would report 5 back, and the scanner would
+ *  then hold every one of those fires at the 10-minute floor. A screen that lies about a
+ *  number you typed is the thing CRON_STEP_MIN was raised to avoid; this is the same defect
+ *  one layer down. */
 export const RULE_BOUNDS = {
-  intervalMin: [CRON_STEP_MIN, 720] as [number, number],
+  intervalMin: [Math.max(CRON_STEP_MIN, HARD_FLOOR_MIN), 720] as [number, number],
   hour: [0, 24] as [number, number],
 };
 /** More than this many rules is a table nobody can reason about, not a schedule. */
@@ -357,6 +375,43 @@ export function dueKinds(
  * written; a manual scan already bypasses this function entirely via `isManual`, so it is
  * untouched here too.
  */
+/** The four things a cron fire can turn into. */
+export type ScanPath = 'skip' | 'roster-only' | 'completed-overlay' | 'full';
+
+/**
+ * PURE. WHICH PATH THIS FIRE TAKES — the one place that decides, so no combination of due-ness
+ * can fall through to something nobody chose.
+ *
+ * refresh-stops-core used to spell this out inline as three `if`s and an implicit else, and the
+ * else was the FULL board rebuild. Two of the eight combinations landed there by accident:
+ *
+ *   • roster due, nothing else — the plan drops the load roster to hourly precisely so it stops
+ *     riding along on every fire, and a roster-only fire then paid for a whole planned rebuild
+ *     plus its enrichment. The reclaim that was supposed to fund the 15-minute completed
+ *     sampling never happened.
+ *   • roster due at 04:00–05:59 — worse, because the roster branch carried its own
+ *     `etHour >= 6` gate from before this plan existed. `roster-am` opens at 04:00, so
+ *     `rosterDue` went true at four in the morning and the branch that would have STAMPED it
+ *     refused to run. Nothing cleared it, so every fire for two hours fell through to a full
+ *     rebuild — measured at 10 rebuilds between 04:00 and 06:00 against the 6 the plan asks
+ *     for, on a board of ~700 stops.
+ *
+ * Order is by cost and by what supersedes what: a full scan rebuilds the board and so already
+ * carries whatever the completed overlay would have applied; the overlay is one call and can
+ * only mark existing stops finished; the roster is one cheap list call and touches no stops at
+ * all. Nothing due = nothing runs, which is the whole point of a plan with uncovered hours.
+ */
+export function scanPath(
+  act: boolean,
+  due: { plannedDue: boolean; completedDue: boolean; rosterDue: boolean },
+): ScanPath {
+  if (!act) return 'skip';
+  if (due.plannedDue) return 'full';
+  if (due.completedDue) return 'completed-overlay';
+  if (due.rosterDue) return 'roster-only';
+  return 'skip';
+}
+
 export function overrideCadenceSkip<T extends { act: boolean; skip: string; reason: string }>(
   decision: T,
   plannedDue: boolean,
