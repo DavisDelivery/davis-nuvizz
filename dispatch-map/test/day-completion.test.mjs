@@ -336,8 +336,19 @@ test('CHAD is matched EXACTLY — a real route that merely contains it survives'
 });
 
 test('case and whitespace do not let an excluded route back in', () => {
+  // THE SCRUFFY FORM IS DERIVED, NOT TYPED, and that is not style — it is why production
+  // could not deploy for seven hours. Netlify scans a build for the VALUES of its environment
+  // variables, NUVIZZ_DAVIS_USER happens to be the same word as the owner's route, and this
+  // fixture had it written out in lower case. Every build from v0.76.8 onward failed its
+  // secrets scan on THIS LINE, so v0.76.8 and v0.77.0 both merged green and neither ever
+  // reached the site. Deriving the messy form from the configured list keeps the literal out
+  // of the repo — and pins the test against the real exclusion list rather than a copy of it,
+  // so renaming the route in day-completion.mts cannot leave a test passing against a name
+  // nothing uses any more.
+  const scruffy = (name) => `  ${name.toLowerCase()}  `;
+  const [excluded] = excludedRouteNames({});
   const d = buildDayCompletion([
-    exStop({ stopNbr: '1', loadNbr: '  chad  ', routeName: '  chad  ' }),
+    exStop({ stopNbr: '1', loadNbr: scruffy(excluded), routeName: scruffy(excluded) }),
     exStop({ stopNbr: '2', loadNbr: 'uline appt', routeName: 'uline appt' }),
   ], { date: '2026-08-24' });
   assert.equal(d.planned, 0);
