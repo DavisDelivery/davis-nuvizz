@@ -18,6 +18,14 @@
 
 import { getDoc, setDoc } from './firestore.mts';
 
+// 2.13.0: RANK-AWARE CANDIDATE COST ON (w_candidate_rank 0→2) — the experiment
+// the 2.9.1 revert prescribed, validated on the 06-29→07-20 benchmark by the
+// labeled dry-run harness: agreement 26.5→33.2% (known 30.2→37.8%), better on
+// 15 of 16 days. Weight 2 is the knee: 4 and 8 buy +1.2/+2.0 more but push the
+// over-split signal from +8.8 to +10.3/+13.2 trips vs dispatch — the phantom-
+// split failure class this engine has been reverted for before. habit_rank_aware
+// measured +1.7 alone but adds nothing on top of rank (34.3 vs 34.4) — stays 0;
+// territory decay measured flat (26.6 vs 26.5) — stays 0. Both remain knobs.
 // 2.12.1: the per-driver bound is their TYPICAL full load (p85), not their most
 // extreme day — an observed max sits at their own p95-p100 and barely moved the cap.
 // 2.12.0: per-DRIVER skid caps — each driver is bounded by their own history
@@ -26,7 +34,7 @@ import { getDoc, setDoc } from './firestore.mts';
 // trip 44,000 (the truck-profiles.mts ratings the Phase 1 solver already gates on).
 // 2.10.0: execution-evidence gate — replays count only rows with a same-day delivery stamp
 // (DAWSONVILLE/CRUMPTON 07-28: next-day Estes freight sealed into the day inflated actuals).
-export const ENGINE_VERSION = '2.12.1';
+export const ENGINE_VERSION = '2.13.0';
 
 export const ENGINE_CONFIG_COLLECTION = 'routing_engine_config';
 
@@ -172,11 +180,11 @@ export interface EngineConfig {
   weight_cap_box_lb: number;
   weight_cap_tractor_lb: number;
 
-  // ── Phase 2.13: EXPERIMENT KNOBS — all default OFF (behavior byte-identical
-  // to 2.12.1 until an experiment run proves a knob pays; the 2.9.0 lesson is
-  // that plausible solver changes lose real agreement, so nothing here touches
-  // the nightly until the labeled replay says so). Validated via the
-  // routing-engine-experiment endpoint, which overlays these per run.
+  // ── Phase 2.13: EXPERIMENT KNOBS — validated via the routing-engine-experiment
+  // endpoint (labeled dry-runs; the 2.9.0 lesson is that plausible solver changes
+  // lose real agreement, so nothing ships until the labeled replay says so).
+  // w_candidate_rank GRADUATED to default 2 in 2.13.0 on benchmark evidence;
+  // the other two measured no gain and stay 0. See the 2.13.0 note at the top.
   // Rank-aware candidate cost (the 2.9.1 comment's named experiment): candidates
   // are an ORDERED cast (habit, zone rank 1..K, area rank 1..K) but the solver
   // treats membership as binary — the #5 zone driver can out-score the #1 on
@@ -434,8 +442,11 @@ export function engineConfigDefaults(env: Record<string, string | undefined> = p
     // to make hard where the 2.1.1 learned ceiling was not.
     weight_cap_box_lb: num('WEIGHT_CAP_BOX_LB', 10_000),
     weight_cap_tractor_lb: num('WEIGHT_CAP_TRACTOR_LB', 44_000),
-    // Phase 2.13 — experiment knobs, ALL OFF by default (see interface comment).
-    w_candidate_rank: num('W_CANDIDATE_RANK', 0),
+    // Phase 2.13 — w_candidate_rank GRADUATED to 2 (see the 2.13.0 note at the
+    // top: +6.7pts agreement on the benchmark, 15/16 days better, at ~baseline
+    // split behavior; 4/8 buy more agreement but over-split). habit_rank_aware
+    // and territory decay measured no gain on top of rank — still 0, still knobs.
+    w_candidate_rank: num('W_CANDIDATE_RANK', 2),
     habit_rank_aware: num('HABIT_RANK_AWARE', 0),
     territory_half_life_days: num('TERRITORY_HALF_LIFE_DAYS', 0),
     // Phase 2.9.1 — back to the PROVEN 5/3 (see the interface comment: 7/5
