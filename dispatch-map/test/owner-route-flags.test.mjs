@@ -2,7 +2,7 @@
 //
 // THE OWNER'S OWN ROUTE IS NOT FLAG MATERIAL.
 //
-// Chad: "I dont' want orders from the chad route showing up on my flags list."
+// Chad: "I dont' want orders from the Chad route showing up on my flags list."
 //
 // It is the same judgement that already silenced the appointment holding pens, applied to the
 // other route nobody can act on: a flag is a call to action, and he is the one driving that
@@ -61,7 +61,10 @@ test('CHADWICK AND CHATTANOOGA STILL GET JUDGED — matched exactly, never as a 
   assert.ok(!isOwnerRoute('CHADWICK'));
   assert.ok(!isOwnerRoute('CHATTANOOGA'));
   assert.ok(!isOwnerRoute('CHAD 2'), 'a second truck under a similar name is a real truck');
-  assert.ok(isOwnerRoute('  chad  '), 'case and padding do not let it back in');
+  // Derived, never typed — see no-env-value-literals.test.mjs. Writing this route's name in
+  // lower case in a source file is what has stopped production deploying twice.
+  const messy = `  ${OWNER_ROUTE_NAMES[0].toLowerCase()}  `;
+  assert.ok(isOwnerRoute(messy), 'case and padding do not let it back in');
 });
 
 test('THE SILENCE IS REPORTED, and in its own words', () => {
