@@ -20,9 +20,29 @@ import { TIME_MARK_KEYS } from './time-marks.js';
 // Restrictions that mean "a 53' trailer cannot serve this stop". A dispatcher who has marked
 // the stop tractor-OK by hand has overruled the auto-detected ones, so they stop drawing.
 // (Moved here from App.jsx so the legend and the marker share the list rather than copy it.)
+//
+// 'no_53ft' AND 'no_53' ARE BOTH HERE BECAUSE THE APP WRITES ONE AND EVERY RULE READS THE
+// OTHER. The dispatcher's Equipment restrictions dropdown offers `{ value: 'no_53ft', label:
+// 'No 53ft' }` and RESTRICTION_ICONS defines the glyph under `no_53ft` — so `no_53ft` is what
+// actually lands on a note. This set, the routing solver and its constraint switch all spell
+// it `no_53`, and nothing translates between them, so the single most literal "a 53-footer
+// cannot come here" mark a dispatcher can tick was landing in a set that had never heard of
+// it. Run against the real functions, a hand-ticked No 53ft returned confirmedBlockerKeys []
+// and tractorPaintAllowed TRUE — the map kept painting the stop lime, "a tractor delivered
+// here", which is precisely what the tractor override exists to stop.
+//
+// Both spellings are kept rather than one renamed: `no_53` is live in stored notes and in the
+// routing engine's own types, and dropping it would silently un-restrict whatever carries it.
+//
+// THE ROUTING ENGINE HAS THE SAME SPLIT AND IT IS NOT FIXED HERE. equipmentReqOk in
+// netlify/functions/lib/routing-constraints.mts matches `case 'no_53'` and falls through to
+// `default: { ok: true }` — "unknown restriction → don't block" — so an auto-build can still
+// put a 53' trailer on a stop marked No 53ft. That is a change to which truck gets which
+// stop, so it belongs in its own diff with its own tests rather than riding along inside an
+// icon change.
 export const TRAILER_BLOCKER_KEYS = new Set([
   'no_tractor_trailer', 'box_truck_only', 'straight_truck_only', 'uline_straight_truck',
-  'no_53', '26ft_max', 'no_overhead_clearance',
+  'no_53', 'no_53ft', '26ft_max', 'no_overhead_clearance',
 ]);
 
 // Why a stop draws a PIN instead of its restriction icons. Order matters only for reporting;
@@ -122,24 +142,46 @@ export function restrictionConfidence(note, key) {
   return scannerPutItThere ? 'advisory' : 'confirmed';
 }
 
-/** The trailer-blockers on this note that a HUMAN has confirmed. Advisory ones excluded. */
-export function confirmedBlockerKeys(note, drawnKeys) {
+/**
+ * Is this key a trailer blocker, ALIASES INCLUDED?
+ *
+ * The marker resolves aliases before it asks (straight_truck_only is box_truck_only under
+ * another name), so these helpers have to as well or one stop gets two answers from the pair
+ * of functions v0.76.4 merged specifically so that could not happen — a badge on the pin the
+ * paint rule has never heard of.
+ *
+ * `resolve` is injected rather than imported because the alias table lives in App.jsx and this
+ * module is the pure one. Absent, the raw key is used, which is the behaviour every existing
+ * two-argument caller already had.
+ */
+export function isTrailerBlockerKey(key, resolve) {
+  if (TRAILER_BLOCKER_KEYS.has(key)) return true;
+  const r = typeof resolve === 'function' ? resolve(key) : null;
+  return !!r && TRAILER_BLOCKER_KEYS.has(r);
+}
+
+/** The trailer-blockers on this note that a HUMAN has confirmed. Advisory ones excluded.
+ *  NOTE the asymmetry, and it is deliberate: membership is tested on the RESOLVED key, but
+ *  confidence is read with the key AS WRITTEN — auto_sources is stamped by the scanner under
+ *  the raw key, so resolving it there would look up a field that does not exist and turn every
+ *  aliased advisory into a confirmed one. */
+export function confirmedBlockerKeys(note, drawnKeys, resolve) {
   return (drawnKeys || []).filter(
-    (k) => TRAILER_BLOCKER_KEYS.has(k) && restrictionConfidence(note, k) === 'confirmed',
+    (k) => isTrailerBlockerKey(k, resolve) && restrictionConfidence(note, k) === 'confirmed',
   );
 }
 
-export function tractorPaintAllowed(eligibility, drawnKeys, note = null) {
+export function tractorPaintAllowed(eligibility, drawnKeys, note = null, resolve = null) {
   // Box-only is a dispatcher choosing from a dropdown — always a human, always confirmed.
   if (eligibility === 'box_only') return false;
   // An ADVISORY blocker does not veto the lime; it earns the split icon instead
   // (see restrictionConfidence). Only a confirmed "no" outranks proven history.
   // `note` is optional so the old two-argument call still behaves as it did — absent a
   // note there is no provenance to read, and unknown provenance means confirmed.
-  const blockers = (drawnKeys || []).filter((k) => TRAILER_BLOCKER_KEYS.has(k));
+  const blockers = (drawnKeys || []).filter((k) => isTrailerBlockerKey(k, resolve));
   if (!blockers.length) return true;
   if (!note) return !blockers.includes('no_tractor_trailer');
-  return confirmedBlockerKeys(note, blockers).length === 0;
+  return confirmedBlockerKeys(note, blockers, resolve).length === 0;
 }
 
 // Which of the three "no icon" pin tints a stop wears, mirroring flagColor(). Kept here so
