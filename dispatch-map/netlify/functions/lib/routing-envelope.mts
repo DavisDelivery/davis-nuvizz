@@ -240,22 +240,33 @@ export interface TerritoryMaps {
   zone: Map<string, Map<string, number>>;   // 0.05° cell → driver_key → visit count
   area: Map<string, Map<string, number>>;   // 0.2° cell  → driver_key → visit count
 }
-export function territoryMapsAsOf(references: ReferenceRouteDoc[], asOfDate: string): TerritoryMaps {
+// halfLifeDays (Phase 2.13, default 0 = off): recency-decay the visit counts the
+// way pickReferences already decays reference weight. All-history counts let a
+// driver who left a zone months ago keep a top-5 candidate slot and crowd out
+// the current cast; with a half-life, the cast tracks who runs the zone NOW.
+// 0 keeps every visit at weight 1 — byte-identical to the undecayed behavior.
+export function territoryMapsAsOf(references: ReferenceRouteDoc[], asOfDate: string, halfLifeDays = 0): TerritoryMaps {
   const zone = new Map<string, Map<string, number>>();
   const area = new Map<string, Map<string, number>>();
-  const bump = (m: Map<string, Map<string, number>>, key: string, drv: string) => {
+  const bump = (m: Map<string, Map<string, number>>, key: string, drv: string, w: number) => {
     let d = m.get(key); if (!d) { d = new Map(); m.set(key, d); }
-    d.set(drv, (d.get(drv) || 0) + 1);
+    d.set(drv, (d.get(drv) || 0) + w);
   };
+  const asOfMs = Date.parse(asOfDate + 'T12:00:00Z');
   for (const r of references || []) {
     if (String(r.date) >= asOfDate) continue;   // leakage guard (re-checked here)
     const drv = refDriverKey(r);
     if (!drv) continue;
+    let w = 1;
+    if (halfLifeDays > 0) {
+      const ageDays = Math.max(0, (asOfMs - Date.parse(String(r.date) + 'T12:00:00Z')) / 86_400_000);
+      w = Math.pow(0.5, ageDays / halfLifeDays);
+    }
     for (const s of r.stops || []) {
       const lat = Number(s.lat), lng = Number(s.lng);
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-      bump(zone, cellKey(lat, lng, ZONE_G), drv);
-      bump(area, cellKey(lat, lng, AREA_G), drv);
+      bump(zone, cellKey(lat, lng, ZONE_G), drv, w);
+      bump(area, cellKey(lat, lng, AREA_G), drv, w);
     }
   }
   return { zone, area };

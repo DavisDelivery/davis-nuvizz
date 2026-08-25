@@ -9,10 +9,12 @@
 //   GET ?view=plan-daily         → every assignment daily rollup (agreement trend)
 //   GET ?view=plan-day&date=…    → that date's assignment rollup + full plan proposal
 //   GET ?view=version-rollups    → one aggregate per engine version (cross-version progress)
+//   GET ?view=experiments        → every labeled experiment run (offline knob sweeps)
+//   GET ?view=experiment&label=… → one experiment run in full (per-day rows)
 import { isFirestoreEnabled, getDoc, listDocs, runQuery } from './lib/firestore.mts';
 import { ENGINE_VERSION, loadEngineConfig } from './lib/routing-engine-config.mts';
 import { PROPOSALS_COLLECTION, PROPOSALS_DAILY_COLLECTION, dailyRollupPath } from './lib/routing-engine-core.mts';
-import { PLAN_PROPOSALS_DAILY_COLLECTION, PLAN_VERSION_ROLLUPS_COLLECTION, planProposalPath, planDailyPath } from './lib/routing-plan-core.mts';
+import { PLAN_PROPOSALS_DAILY_COLLECTION, PLAN_VERSION_ROLLUPS_COLLECTION, EXPERIMENTS_COLLECTION, planProposalPath, planDailyPath, experimentPath } from './lib/routing-plan-core.mts';
 
 // Sort engine version strings numerically ("2.10.0" after "2.9.1", not before).
 function cmpVersion(a: string, b: string): number {
@@ -79,6 +81,27 @@ export default async (req: Request): Promise<Response> => {
       .filter((r: any) => r?.tenant === TENANT && r?.engine_version)
       .sort((a: any, b: any) => cmpVersion(a.engine_version, b.engine_version));
     return new Response(JSON.stringify({ ok: true, engine_version: ENGINE_VERSION, versions }), { status: 200, headers });
+  }
+
+  if (view === 'experiments') {
+    // Field-masked: the per-day map can be hundreds of KB per run — the listing
+    // pulls only the header fields instead of downloading it to throw it away.
+    const rows = await listDocs(EXPERIMENTS_COLLECTION, {
+      mask: ['tenant', 'label', 'engine_version', 'config_overlay', 'window_from', 'window_to', 'days_scored', 'skipped', 'summary', 'done', 'created_at', 'updated_at'],
+    });
+    const runs = rows
+      .filter((r: any) => r?.tenant === TENANT)
+      .sort((a: any, b: any) => String(a.label).localeCompare(String(b.label)));
+    return new Response(JSON.stringify({ ok: true, engine_version: ENGINE_VERSION, runs }), { status: 200, headers });
+  }
+
+  if (view === 'experiment') {
+    const label = url.searchParams.get('label') || '';
+    if (!/^[a-z0-9_-]{1,40}$/.test(label)) {
+      return new Response(JSON.stringify({ ok: false, error: 'bad or missing ?label' }), { status: 400, headers });
+    }
+    const run = await getDoc(experimentPath(TENANT, label));
+    return new Response(JSON.stringify({ ok: true, engine_version: ENGINE_VERSION, run }), { status: 200, headers });
   }
 
   if (view === 'plan-day') {
