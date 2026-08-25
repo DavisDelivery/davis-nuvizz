@@ -48,6 +48,22 @@ test('summarizePlanVersion: trips + travel deltas quantify the over-split gap', 
   assert.equal(r.travel_delta_pct, 24, '(10098-8141)/8141 ×100');
 });
 
+test('summarizePlanVersion: a day with no co-load score cannot drag the co-load mean down', () => {
+  // A day can carry a stop-agreement score but a null coload score (nothing was
+  // co-loaded, or an older doc predates the metric). Its stop weight must not
+  // enter the coload denominator — that would read "no co-loads scored" as
+  // "0% co-load agreement" and halve the mean.
+  const docs = [
+    day({ date: '2026-07-14', coload_agreement_pct: 40, planned_stops: 500 }),
+    day({ date: '2026-07-15', coload_agreement_pct: null, planned_stops: 500 }),
+  ];
+  const r = summarizePlanVersion(docs, '2.4.1');
+  assert.equal(r.coload_agreement_wmean, 40, 'the null-coload day is excluded, not counted as zero');
+  // No coload-scored days at all → null, never 0.
+  const none = summarizePlanVersion([day({ coload_agreement_pct: null })], '2.4.1');
+  assert.equal(none.coload_agreement_wmean, null);
+});
+
 test('summarizePlanVersion: drops unscored / zero-stop days; degenerate input never throws', () => {
   const docs = [
     day({ stop_agreement_pct: null }),           // never scored

@@ -94,7 +94,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.79.1';
+const APP_VERSION = '0.79.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -165,6 +165,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.79.2', 'NAME TWO DRIVERS AND THE LEARNED ENGINE DRAFTS THEIR ROUTES — the first slice of Assist, built the way Chad asked for it: “give you 2 or 3 routes like lets say a Victor and Scott then have you build it… if not I’ll move a few stops here and there then have you push it.” A new “Engine draft” card on the Routing Setup panel takes driver names, and the SAME engine that is scored nightly on the Engine tab — territory, customer habit, per-driver skid caps, learned zone ownership — picks their stops out of the day’s UNPLANNED pool, splits trips, and sequences each one from that driver’s own past routes. The drafts open as pending Compare cards, so everything after the draft is the machinery that already exists: drag stops between cards, pick the driver, and the workbench Save creates the routes in NuVizz through the verified write path. DRAFTING COSTS ZERO NUVIZZ CALLS — it reads the Firestore board cache and the engine’s learning collections, nothing else — and it cannot push anything on its own; Save remains the only door to NuVizz and it remains Chad’s hand on the handle. WHAT MAKES THE DRAFT TRUSTWORTHY IS WHAT IT REFUSES TO CLAIM: a stop that usually runs with a driver who was NOT named stays unplanned and the panel says whose it is; unfamiliar geography is handed back (“no history here — place it by hand”) instead of guessed at; a named driver is never quietly given a three-trip day (dispatch runs two — the overflow comes back with the reason); and when the engine only knows a driver from class averages, the card says so out loud. An ambiguous name (“two Victors”) is an error listing both, never a coin flip. THE ENGINE TAB ALSO STOPS LYING ABOUT ITS OWN SCOREBOARD, four ways. The “How to read” box said 1.0 was a perfect sequence score; the metric (the Amazon/MIT challenge score) is the OPPOSITE — 0 is identical, lower is better — so the flat 0.05-0.13 that read as failure was actually the engine sequencing close to dispatch, and yesterday’s 0.051 is one of the strongest numbers on the page. The version-progress row now auto-scrolls to the CURRENT engine’s card — the three newest versions (28.0→30.7→31.2 known 32.4) were rendering off the right edge, which is how a climbing engine read as a stuck one. A ▲/▼ chip comparing versions scored on non-overlapping date windows now shows grey with a ≠ (different freight is not a fair fight). And the score now logs its two factors separately (zone-order disorder vs edit distance), the co-load mean no longer counts no-co-load days as zeros, and Travel Δ shows a dash instead of a fake number when half the data is missing. 15 new tests, 2,565 green.'],
   ['0.79.1', 'THE RIGHT RAIL IS THREE TABS NOW: ROUTES, DRIVERS, LOADS — v0.79.0 PUT THE THIRD ONE BEHIND THE GEAR AND THAT WAS THE WRONG SHAPE. Chad, on the Routing beta with the rail in Routes/Drivers and the day’s loads down in the bottom grid: “I want the loads that is on the bottom panel to replace the drivers tab in the right panel but also leave the loads on the bottom panel make it a 3rd option in the settings for the right panel.” Asked whether Drivers should therefore go, he was explicit that it should not: “I just want a 3rd right panel option that is routes and loads.” SO IT WAS BUILT AS A THIRD GEAR MODE — Routes/Drivers stayed, Routes/Loads was added beside it — AND THAT WAS THE WRONG SHAPE, which he said in one sentence: “I want them to be tabs just like the routes and drivers are SO YOU CAN SWITCH THE VIEW.” HE IS RIGHT, AND THE DISTINCTION IS THE WHOLE POINT. A gear mode is a SETTING: something you choose once and live with. A tab is a VIEW: something you flick between while working. Routes, Drivers and Loads are three views of the same day — what is on this truck, who is driving it, and what is left to build — and a dispatcher moves between all three dozens of times while building a board. Putting two of them on a strip and the third behind a settings menu charges a trip into the gear for a switch that should cost one click, and it HIDES it: a panel you reach through a settings menu is a panel most people never find. So there is one strip with three tabs and no mode chooses between them. NOTHING WAS TAKEN AWAY, which was the constraint all along. Drivers keeps its place in the middle so the muscle memory of anyone already using the strip survives; Loads joins on the end; the bottom grid’s Loads tab is untouched. This is a second way in, not a move. THE COUNTS RIDE ON THE LABELS because they are what the choice turns on — 65 routes against 106 loads is the shape of how much of the day is still unbuilt. Drivers deliberately carries no count: that roster is fetched only when the tab is first opened, and a number that appears a second after you look at it is worse than no number. THE LOADS PANEL IS THE ONE THAT ALREADY EXISTED, not a new list built to look like one: same rows, same search, same Built-only filter that separates the routes carrying freight from the ninety-odd Drafts, same click-through into Compare. A 380px rail cannot hold the bottom grid’s nine columns, and a second implementation of the same data is two things that disagree by Thursday. WHICH TAB IS OPEN IS REMEMBERED NOW, which the old two-way toggle never did — which of the three you want beside the map is a working preference, and re-picking it every morning is a click paid daily. THE DEFECT THIS WOULD HAVE SHIPPED WITH, and the reason the rail’s modes are a module rather than more comparisons in the render: the mode was tested in SIX places, plus one effect that decides whether to fetch the live driver-assignment roster at all — and that effect read the mode BY NAME. A rail that renders route cards without it gives every card an EMPTY DRIVER DROPDOWN: not a cosmetic fault, but “I cannot assign this load” on a dispatch board, indistinguishable from the vendor being down. A mode DECLARES that it renders route cards and the effect asks the declaration. Pinned by a test that fails when the declaration is flipped. AND THE VALUE THE FIRST SHAPE WROTE IS MIGRATED, NOT DROPPED. The gear-mode build reached a deploy preview, so a browser can be holding routesLoads; it now lands on the strip that contains both of its panels rather than being silently reset to the tabs rail, which is a different screen and would read as the setting being ignored. Anything else unrecognised still falls back to the tabs rail rather than to a blank panel — a blank right rail on a dispatch board reads as a broken app, and there is no control on screen to escape it. TWO VIEWS, AND THE GUARD SWEEPS ALL THREE TABS. The phone gets the strip as a block above the panel rather than the desktop’s header row — there is no room beside a date and a collapse chevron at 360px, and the sheet is already dated. More to the point, verify-mobile-layout only ever saw whichever view the rail happened to default to: a panel chosen by a remembered setting is a panel the phone guard never measured, which is exactly how a screen ships untested on a phone. It walks Routes, Drivers and Loads now, at 390 and at 360, with the setting keys cleared for every screen so one entry cannot quietly retune the next. AND IT WAS DRIVEN, NOT DESCRIBED: the strip was rendered in a real browser on a desktop and a phone, the Loads tab confirmed to open from a stored preference before anything was clicked, and the three buttons MEASURED at 44px tall and 221px wide inside a 360px screen rather than assumed to fit. 12 new tests, 2,561 green.'],
   ['0.79.0', 'THE RIGHT RAIL HAS A THIRD LAYOUT: ROUTES BESIDE THE DAY’S LOADS. Chad, on the Routing beta with the rail in Routes/Drivers and the day’s loads down in the bottom grid: “I want the loads that is on the bottom panel to replace the drivers tab in the right panel but also leave the loads on the bottom panel make it a 3rd option in the settings for the right panel.” Asked whether Drivers should therefore go, he was explicit: “I just want a 3rd right panel option that is routes and loads.” SO NOTHING WAS TAKEN AWAY. The gear’s two existing choices are byte-for-byte what they were, Drivers still lives one mode over, and the bottom grid’s Loads tab is untouched — this is a second way in, not a move. WHY IT IS THE RIGHT PAIR TO PUT SIDE BY SIDE. Building a day is two questions asked in alternation: what is on this route, and what is left to put on a route. The routes are cards you drag stops onto; the loads are the day’s real NuVizz inventory — four built, three still empty Drafts, and how far each one has actually got. Those two lived on opposite edges of the screen, so answering the second question meant leaving the first. The driver roster is a lookup you open when a name is missing, which is a different rhythm entirely and belongs in its own mode. THE LOADS SIDE IS THE PANEL THAT ALREADY EXISTED, not a new list built to look like one: same rows, same search, same Built-only filter that separates the four routes carrying freight from the ninety-odd Drafts, same click-through into Compare. A 380px rail cannot hold the bottom grid’s nine columns, and a second implementation of the same data is two things that disagree by Thursday. THE DEFECT THIS WOULD HAVE SHIPPED WITH, and it is the reason the mode list is now a module rather than three more comparisons in the render. The rail’s mode was tested in SIX places, plus one effect that decides whether to fetch the live driver-assignment roster at all — and that effect read the mode by name. A third mode that renders route cards without it gives every card an EMPTY driver dropdown: not a cosmetic fault, but “I cannot assign this load” on a dispatch board, and indistinguishable from the vendor being down. A mode now DECLARES that it renders route cards and the effect asks the declaration, so the next mode added cannot repeat it. Pinned by a test that fails when the declaration is flipped. THE STORED VALUE IS TREATED AS SOMEBODY ELSE’S. It comes out of localStorage — an older build’s word, a hand-edited one, or nothing — and anything this build cannot render falls back to the tabs rail rather than to a blank panel, because a blank right rail on a dispatch board reads as a broken app and there is no control on screen to escape it. The Loads sub-tab is its own state as well, so “drivers selected inside the loads mode” is not a thing that can be represented. Both proven by mutation: trusting the stored value, and letting the two sub-tabs share a vocabulary, each break a named test. TWO VIEWS, AND THE GUARD SWEEPS THEM NOW. The phone gets the strip as a block above the panel rather than the desktop’s header row — there is no room beside a date and a collapse chevron at 360px, and the sheet is already dated. More to the point, verify-mobile-layout only ever saw the rail’s DEFAULT layout: a mode chosen from a setting is a mode the phone guard never measured, which is exactly how a screen ships untested on a phone. It walks all three now, at 390 and at 360, with the setting keys cleared for every screen so one entry cannot quietly retune the next. AND IT WAS DRIVEN, NOT DESCRIBED: the mode was rendered in a real browser on both a desktop and a phone, the sub-tab clicked, the loads list confirmed on screen, and the new strip’s buttons MEASURED at 44px rather than assumed to clear the 40px floor. 10 new tests, 2,559 green.'],
   ['0.78.4', 'THE DEPLOY-BREAKING WORD IS A CI CHECK NOW, BECAUSE I HAVE NOW TYPED IT THREE TIMES. Netlify scans a build for the VALUES of its environment variables; NUVIZZ_DAVIS_USER is the same word as the owner’s own route, in lower case. Writing that word in lower case anywhere in the repository fails the deploy — while every check on the pull request stays green, because CI does not run that scan. IT HAS NOW HAPPENED THREE TIMES IN TWO DAYS: v0.76.8 (a route-name fixture, which cost SEVEN HOURS of deploys and three releases merged into a site that could not build them), v0.78.2 (the fix for it), and v0.78.3 — in the very change whose commit message read “a fixture that borrows a real name is a fixture that changes meaning under you”, written minutes after diagnosing exactly this. Three times is not carelessness that more care will fix; it is a missing guard. So the check runs on the PULL REQUEST now, where a red mark costs a minute, rather than at the deploy, where it costs a morning. THE GUARD NEVER TYPES THE WORD — it derives it from the shipped route list, which is the same trick the fixtures use, because a guard that had to contain the literal would be the bug. It found two more occurrences within seconds of being written that a hand-run grep had masked, which is the whole argument for having it. It also proves it can fail: a repo-scanning test that finds nothing looks identical whether it is working or broken, so a second case pins that the match it performs would fire on a real line. THE DURABLE FIX IS STILL CHAD’S TO MAKE, and it is one setting: a username is not really the secret (the password is), so SECRETS_SCAN_OMIT_KEYS on that one variable ends the class permanently. That is a security judgement, not a code change, so it is not in this diff. Until then the guard holds the line. 2 new tests, 2,549 green.'],
@@ -19116,6 +19117,80 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     if (isMobile) { setMobilePanel('setup'); setSheetOpen(true); }
   }, [lastRequest, routesView, wbRoutes, stopById, isMobile]);
 
+  // ── Engine draft (Assist slice 1): name 2-3 drivers, the LEARNED engine drafts
+  // their routes from the day's unplanned pool. Drafting reads Firestore only
+  // (zero NuVizz calls); results land as pending Compare cards, so review, edits
+  // and the eventual push all ride the existing workbench machinery — the Save
+  // path, its gates and its verification are untouched.
+  const [draftNames, setDraftNames] = useState('');
+  const [draftBusy, setDraftBusy] = useState(false);
+  const [draftError, setDraftError] = useState(null);
+  const [draftResult, setDraftResult] = useState(null);
+
+  const stageEngineDraft = useCallback((draft) => {
+    // Same held-stop rule as stagePlanOntoLoads: a stop already staged on an open
+    // card stays there — a draft never steals from work in progress.
+    const held = new Map();
+    for (const r of wbRoutes) for (const id of r.order) held.set(String(id), r.key);
+    const existingKeys = new Set(wbRoutes.map((r) => r.key));
+    const routeNamesToday = new Set(routeGroups.map((g) => String(g.name || g.key)));
+    let next = [...wbRoutes];
+    let staged = 0, skippedHeld = 0, skippedOffBoard = 0;
+    const skippedFull = [];
+    for (const drv of draft.drivers || []) {
+      const label = String(drv.driver_user_name || drv.driver_key).toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+      for (const trip of drv.trips || []) {
+        if (!trip.stops?.length) continue;
+        let key = `${label} E${trip.seq}`;
+        let n = 0;
+        while (existingKeys.has(key) || routeNamesToday.has(key)) { n++; key = `${label} E${trip.seq}-${n}`; }
+        const ids = [];
+        for (const s of trip.stops) {
+          const id = String(s.stopNbr);
+          if (!boardStopById.has(id)) { skippedOffBoard++; continue; }
+          if (held.has(id)) { skippedHeld++; continue; }
+          held.set(id, key); ids.push(id);
+        }
+        if (!ids.length) continue;
+        if (next.length >= WB_MAX) { skippedFull.push(key); continue; }
+        existingKeys.add(key);
+        next.push({ key, name: key, loadNbr: null, loadId: null, pendingCreate: true, order: ids, baseline: [], collapsed: false });
+        staged += ids.length;
+      }
+    }
+    setWbRoutes(next);
+    const bits = [`Engine drafted ${staged} stop${staged === 1 ? '' : 's'} onto pending route card${staged === 1 ? '' : 's'} — review, adjust, pick the driver on each card, then Save to create in NuVizz`];
+    if (draft.left_unplanned?.length) bits.push(`${draft.left_unplanned.length} left unplanned (see the Engine draft panel for why)`);
+    if (skippedHeld) bits.push(`${skippedHeld} already staged on an open card (left there)`);
+    if (skippedOffBoard) bits.push(`${skippedOffBoard} no longer on the board`);
+    if (skippedFull.length) bits.push(`workbench full — couldn't open: ${skippedFull.join(', ')}`);
+    setLastAction(bits.join(' · '));
+    if (isMobile) { setMobilePanel('setup'); setSheetOpen(true); }
+  }, [wbRoutes, boardStopById, routeGroups, isMobile]);
+
+  const runEngineDraft = useCallback(async () => {
+    const names = draftNames.split(/[,;]+/).map((s) => s.trim()).filter(Boolean);
+    if (!names.length || names.length > 4) { setDraftError('Name 1–4 drivers, comma-separated.'); return; }
+    setDraftBusy(true); setDraftError(null); setDraftResult(null);
+    try {
+      const res = await fetch('/.netlify/functions/routing-draft', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: selectedDate, drivers: names }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        setDraftError([data?.error, ...(data?.details || [])].filter(Boolean).join('\n') || `draft failed (${res.status})`);
+        return;
+      }
+      setDraftResult(data);
+      stageEngineDraft(data);
+    } catch (e) {
+      setDraftError(e?.message || 'network error');
+    } finally {
+      setDraftBusy(false);
+    }
+  }, [draftNames, selectedDate, stageEngineDraft]);
+
   // Shared gear-settings config — rendered in two places: the left Setup-panel header and the
   // bottom data-grid header. The bottom gear is what stays reachable when the Setup panel is hidden,
   // so it carries every toggle EXCEPT "Bottom data grid" (turning that off from the bottom gear would
@@ -19347,6 +19422,66 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
             : useGoogle ? 'Build with Google drive-times' : 'Build (free estimate)'}
         </button>
         {!canBuild && !building && <div className="text-[11px] text-slate-400">{planMode === 'loads' ? 'Select ≥1 stop and pick ≥1 load to build.' : 'Select ≥1 stop and ≥1 truck to build.'}</div>}
+      </div>
+
+      {/* Engine draft — the learned engine (the one scored nightly on the Engine tab)
+          drafts named drivers' routes from the day's UNPLANNED pool. Zero NuVizz calls
+          to draft; the only path to NuVizz remains the workbench Save. */}
+      <div className="border rounded p-2 space-y-2">
+        <div className="font-semibold text-slate-700">4 · Engine draft <span className="text-[10px] uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">beta</span></div>
+        <div className="text-[11px] text-slate-500">
+          Name drivers and the <b>learned engine</b> drafts their routes for <b>{formatDateLong(selectedDate)}</b> from
+          the unplanned pool — only stops their own history says are theirs; everything else stays unplanned and is
+          listed with the reason. Drafts open as pending route cards: move stops, pick the driver on each card, then
+          Save sends to NuVizz exactly as always.
+        </div>
+        <input value={draftNames} onChange={(e) => setDraftNames(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && draftNames.trim() && !draftBusy) runEngineDraft(); }}
+          placeholder="Victor, Scott" className="w-full border rounded p-1.5 text-[12px]" />
+        <button onClick={runEngineDraft} disabled={draftBusy || !draftNames.trim()}
+          className="w-full py-2 rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
+          {draftBusy ? 'Drafting…' : 'Draft routes with engine'}
+        </button>
+        {draftError && <div className="text-[11px] text-red-600 whitespace-pre-wrap">{draftError}</div>}
+        {draftResult && (
+          <div className="text-[11px] text-slate-600 space-y-1.5">
+            {(draftResult.drivers || []).map((d) => (
+              <div key={d.driver_key} className="bg-slate-50 rounded p-1.5 space-y-0.5">
+                <div>
+                  <b>{d.driver_key}</b> · {d.truck_class === 'tractor' ? '53′' : 'box'} · {d.total_stops} stop{d.total_stops === 1 ? '' : 's'}
+                  {d.trips.map((t) => (
+                    <span key={t.seq} className="ml-1.5 text-slate-500" title={t.mode === 'guided' ? `sequenced from ${t.references_used} of ${d.driver_key}'s own past routes` : 'no similar past route — sequenced by geometry alone'}>
+                      T{t.seq}: {t.stops.length} stops · {Math.round(t.travel_min_est)}m{t.mode === 'unguided' ? ' · ∅ unguided' : ''}
+                    </span>
+                  ))}
+                </div>
+                {d.envelope_source !== 'driver' && (
+                  <div className="text-amber-700">engine has {d.observed_days ? `only ${d.observed_days}` : 'no'} observed day{d.observed_days === 1 ? '' : 's'} for this driver — working from {d.envelope_source === 'class' ? 'truck-class averages' : 'nothing'}; read the draft harder</div>
+                )}
+              </div>
+            ))}
+            {(draftResult.left_unplanned || []).length > 0 && (
+              <details className="bg-slate-50 rounded p-1.5">
+                <summary className="cursor-pointer font-semibold text-slate-700">
+                  {draftResult.left_unplanned.length} stop{draftResult.left_unplanned.length === 1 ? '' : 's'} left unplanned — why
+                </summary>
+                <div className="mt-1 space-y-0.5 max-h-48 overflow-y-auto">
+                  {draftResult.left_unplanned.map((s) => (
+                    <div key={s.stopNbr} className="flex gap-1.5">
+                      <span className="font-medium shrink-0">{s.businessName || s.stopNbr}</span>
+                      <span className="text-slate-500 min-w-0">{s.detail}</span>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+            {draftResult.staleness?.last_unplanned_scan_at && (
+              <div className="text-slate-400">
+                Pool as of the {new Date(draftResult.staleness.last_unplanned_scan_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} scan — freight arriving since isn’t in this draft.
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </>
   );
@@ -20451,8 +20586,11 @@ function EngineHowToRead() {
             engine only re-sequenced them.
           </Row>
           <Row term="Score">
-            0–1, how closely the engine’s ORDER for that same route matches the order dispatch
-            drove. 1.0 is identical. A low score is a disagreement, not an error.
+            How far the engine’s ORDER for that same route sits from the order dispatch drove
+            (the Amazon/MIT challenge metric). <b>0 is identical — lower is better.</b> Around
+            0.1 the zone-level shape matches and only within-zone details differ; 0.5+ is a
+            genuinely different route. This row said the opposite until v0.79.2 — if a small
+            score ever read as a bad one, that was this text, not the engine.
           </Row>
           <Row term="Travel Δ">
             Estimated driving minutes, engine minus dispatch, same distance model both sides.
@@ -21210,7 +21348,7 @@ function EngineAssignmentView({ google, mapsError }) {
           <EngineStatTile label="Co-load agreement" value={rollup.coload_agreement_pct == null ? '—' : `${rollup.coload_agreement_pct}%`} hint="Of the stop pairs dispatch co-loaded, the share the engine also co-loaded (load shape; label-symmetric)" />
           <EngineStatTile label="Co-load precision" value={rollup.coload_precision_pct == null ? '—' : `${rollup.coload_precision_pct}%`} hint="Of the engine's co-loads, the share dispatch also co-loaded" />
           <EngineStatTile label="Trips engine / actual" value={`${rollup.trips_engine ?? '—'} / ${rollup.trips_actual ?? '—'}`} />
-          <EngineStatTile label="Travel Δ (engine − dispatch)" value={rollup.est_travel_engine_min == null ? '—' : engineDeltaFmt((rollup.est_travel_engine_min || 0) - (rollup.est_travel_actual_min || 0))} hint="Estimated total driving minutes, same haversine model both sides" />
+          <EngineStatTile label="Travel Δ (engine − dispatch)" value={rollup.est_travel_engine_min == null || rollup.est_travel_actual_min == null ? '—' : engineDeltaFmt(rollup.est_travel_engine_min - rollup.est_travel_actual_min)} hint="Estimated total driving minutes, same haversine model both sides" />
           <EngineStatTile label="Matched-load seq" value={engineScoreFmt(rollup.matched_load_sequence_score)} hint="Phase-1 sequence score over engine trips that overlap an actual load ≥60%" />
         </div>
       )}
@@ -21346,6 +21484,20 @@ function EngineAssignmentView({ google, mapsError }) {
 // in its own doc; here we line them up oldest→newest with the change in agreement
 // and the trips/travel over-split gap called out.
 function EngineVersionProgress({ versions, current }) {
+  // The newest versions sort to the FAR RIGHT of a scrollable row — exactly the cards this
+  // panel exists to show. Without this scroll, a wide-enough history makes the latest engine's
+  // scorecard render off-screen and the visible row ends on an old version, which reads as a
+  // plateau (that is not hypothetical: it is how a real 31% engine was read as a stuck 26%).
+  const rowRef = useRef(null);
+  useEffect(() => {
+    const row = rowRef.current;
+    if (!row) return;
+    const cur = row.querySelector('[data-current-version="1"]');
+    // Scroll the ROW only (never scrollIntoView, which can drag the page vertically):
+    // put the current card at the right edge; no current card → show the newest end.
+    if (cur) row.scrollLeft = Math.max(0, cur.offsetLeft + cur.offsetWidth - row.clientWidth + 8);
+    else row.scrollLeft = row.scrollWidth;
+  }, [versions, current]);
   if (versions == null) return null; // still loading — stay quiet
   if (!versions.length) {
     return (
@@ -21356,28 +21508,37 @@ function EngineVersionProgress({ versions, current }) {
   }
   const fmtPct = (v) => (v == null ? '—' : `${v}%`);
   const fmtDelta = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${v}%`);
+  // YYYY-MM-DD strings compare lexicographically, so window overlap is a plain interval test.
+  const windowsOverlap = (a, b) => Boolean(a?.window_from && a?.window_to && b?.window_from && b?.window_to
+    && String(a.window_from) <= String(b.window_to) && String(b.window_from) <= String(a.window_to));
   return (
     <div className="border rounded-lg bg-white p-2">
       <div className="text-[11px] font-semibold text-slate-600 px-1 pb-1.5">
         Progress across engine versions <span className="font-normal text-slate-400">— stop agreement is stop-weighted over the whole window; trips/travel Δ are engine vs dispatch (lower is better)</span>
       </div>
-      <div className="flex gap-2 overflow-x-auto pb-1">
+      <div ref={rowRef} className="flex gap-2 overflow-x-auto pb-1">
         {versions.map((v, i) => {
           const prev = i > 0 ? versions[i - 1] : null;
           const agree = v.stop_agreement_wmean;
           const chg = prev && prev.stop_agreement_wmean != null && agree != null ? Math.round((agree - prev.stop_agreement_wmean) * 10) / 10 : null;
+          // A version scored on entirely different dates than its neighbour is being compared
+          // against different freight — the ▲/▼ then measures the week as much as the engine.
+          // Show that delta grey with a ≠, never green/red.
+          const sameFreight = prev ? windowsOverlap(prev, v) : true;
           const isCur = v.engine_version === current;
           return (
-            <div key={v.engine_version} className={`shrink-0 rounded-lg border px-2.5 py-1.5 min-w-[132px] ${isCur ? 'border-blue-300 bg-blue-50' : 'border-slate-200 bg-slate-50'}`}>
+            <div key={v.engine_version} data-current-version={isCur ? '1' : undefined} className={`shrink-0 rounded-lg border px-2.5 py-1.5 min-w-[132px] ${isCur ? 'border-blue-300 bg-blue-50' : 'border-slate-200 bg-slate-50'}`}>
               <div className="flex items-center justify-between gap-1.5">
                 <span className="text-[11px] font-bold text-slate-800">v{v.engine_version}</span>
                 {isCur && <span className="text-[8px] uppercase tracking-wide bg-blue-600 text-white px-1 py-0.5 rounded">current</span>}
               </div>
               <div className="mt-0.5 flex items-baseline gap-1">
                 <span className="text-lg font-bold tabular-nums" style={{ color: BRAND }}>{fmtPct(agree)}</span>
-                {chg != null && chg !== 0 && (
+                {chg != null && chg !== 0 && (sameFreight ? (
                   <span className={`text-[10px] font-semibold ${chg > 0 ? 'text-emerald-600' : 'text-red-500'}`}>{chg > 0 ? '▲' : '▼'} {Math.abs(chg)}</span>
-                )}
+                ) : (
+                  <span className="text-[10px] font-semibold text-slate-400" title="Scored on a different date window than the previous version — this change compares different freight, not just the engine.">≠ {chg > 0 ? '+' : '−'}{Math.abs(chg)}</span>
+                ))}
               </div>
               <div className="text-[9px] text-slate-500 leading-tight">stop agreement</div>
               <div className="mt-1 text-[9.5px] text-slate-500 tabular-nums leading-snug">
