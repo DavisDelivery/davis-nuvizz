@@ -93,7 +93,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.78.4';
+const APP_VERSION = '0.79.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -164,6 +164,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.79.0', 'NAME TWO DRIVERS AND THE LEARNED ENGINE DRAFTS THEIR ROUTES — the first slice of Assist, built the way Chad asked for it: “give you 2 or 3 routes like lets say a Victor and Scott then have you build it… if not I’ll move a few stops here and there then have you push it.” A new “Engine draft” card on the Routing Setup panel takes driver names, and the SAME engine that is scored nightly on the Engine tab — territory, customer habit, per-driver skid caps, learned zone ownership — picks their stops out of the day’s UNPLANNED pool, splits trips, and sequences each one from that driver’s own past routes. The drafts open as pending Compare cards, so everything after the draft is the machinery that already exists: drag stops between cards, pick the driver, and the workbench Save creates the routes in NuVizz through the verified write path. DRAFTING COSTS ZERO NUVIZZ CALLS — it reads the Firestore board cache and the engine’s learning collections, nothing else — and it cannot push anything on its own; Save remains the only door to NuVizz and it remains Chad’s hand on the handle. WHAT MAKES THE DRAFT TRUSTWORTHY IS WHAT IT REFUSES TO CLAIM: a stop that usually runs with a driver who was NOT named stays unplanned and the panel says whose it is; unfamiliar geography is handed back (“no history here — place it by hand”) instead of guessed at; a named driver is never quietly given a three-trip day (dispatch runs two — the overflow comes back with the reason); and when the engine only knows a driver from class averages, the card says so out loud. An ambiguous name (“two Victors”) is an error listing both, never a coin flip. THE ENGINE TAB ALSO STOPS LYING ABOUT ITS OWN SCOREBOARD, four ways. The “How to read” box said 1.0 was a perfect sequence score; the metric (the Amazon/MIT challenge score) is the OPPOSITE — 0 is identical, lower is better — so the flat 0.05-0.13 that read as failure was actually the engine sequencing close to dispatch, and yesterday’s 0.051 is one of the strongest numbers on the page. The version-progress row now auto-scrolls to the CURRENT engine’s card — the three newest versions (28.0→30.7→31.2 known 32.4) were rendering off the right edge, which is how a climbing engine read as a stuck one. A ▲/▼ chip comparing versions scored on non-overlapping date windows now shows grey with a ≠ (different freight is not a fair fight). And the score now logs its two factors separately (zone-order disorder vs edit distance), the co-load mean no longer counts no-co-load days as zeros, and Travel Δ shows a dash instead of a fake number when half the data is missing. 15 new tests, 2,565 green.'],
   ['0.78.4', 'THE DEPLOY-BREAKING WORD IS A CI CHECK NOW, BECAUSE I HAVE NOW TYPED IT THREE TIMES. Netlify scans a build for the VALUES of its environment variables; NUVIZZ_DAVIS_USER is the same word as the owner’s own route, in lower case. Writing that word in lower case anywhere in the repository fails the deploy — while every check on the pull request stays green, because CI does not run that scan. IT HAS NOW HAPPENED THREE TIMES IN TWO DAYS: v0.76.8 (a route-name fixture, which cost SEVEN HOURS of deploys and three releases merged into a site that could not build them), v0.78.2 (the fix for it), and v0.78.3 — in the very change whose commit message read “a fixture that borrows a real name is a fixture that changes meaning under you”, written minutes after diagnosing exactly this. Three times is not carelessness that more care will fix; it is a missing guard. So the check runs on the PULL REQUEST now, where a red mark costs a minute, rather than at the deploy, where it costs a morning. THE GUARD NEVER TYPES THE WORD — it derives it from the shipped route list, which is the same trick the fixtures use, because a guard that had to contain the literal would be the bug. It found two more occurrences within seconds of being written that a hand-run grep had masked, which is the whole argument for having it. It also proves it can fail: a repo-scanning test that finds nothing looks identical whether it is working or broken, so a second case pins that the match it performs would fire on a real line. THE DURABLE FIX IS STILL CHAD’S TO MAKE, and it is one setting: a username is not really the secret (the password is), so SECRETS_SCAN_OMIT_KEYS on that one variable ends the class permanently. That is a security judgement, not a code change, so it is not in this diff. Until then the guard holds the line. 2 new tests, 2,549 green.'],
   ['0.78.3', 'CHAD’S OWN ROUTE IS OFF THE FLAGS LIST, AND ITS ORDERS ARE BACK AT THE END OF THE EMAIL. Chad: “I dont’ want orders from the Chad route showing up on my flags list. However I do want them back on the end of email.” Two asks about the same freight, and they do not conflict — they are the difference between a CALL TO ACTION and a RECORD. A flag is somebody being asked to do something, and he is the one driving that truck: a red telling him his own next stop is running late is the board telling him what he can see through the windscreen, and it sits on the panel in the place of a stop where a dispatcher could still make a phone call. A day report is a record, and a record with a hole in it is worse than a long one — he just did not want that hole moving the percentage. THE FLAGS SIDE reuses the judgement that already silenced the appointment holding pens rather than inventing a second one. Both now go through ONE predicate, isSetAsideRoute, at all three places the engine sets a route aside — the judged set, the arrival walk and the no-driver check — because those tested appointment-ness independently before, and a rule added to two of the three is how a stop gets judged by one and not another. MATCHED EXACTLY, on the whole normalised name: CHADWICK, CHATTANOOGA and a second truck called CHAD 2 all still get judged, which a substring match would have silenced. That is the same trap the day report walked into first and it is pinned by its own test. AND THE SILENCE IS REPORTED, in its own words — “CHAD not judged — the owner’s own route” in the panel footer, on a separate line from the appointment one, because folding it in would have labelled it “held for appointments”, which is not what happened to it. A set-aside route that says nothing is indistinguishable from one the engine simply missed. THE EMAIL SIDE keeps the orders instead of only tallying them, and prints them LAST, under everything a dispatcher acts on: route, stop, customer and what actually became of each one, so “not counted” cannot read as “not known”. They stay out of the numerator AND the denominator, so the completion figure above is byte-for-byte what it was — pinned by a test that computes the day with and without them and asserts the same rate. FOUND ON THE WAY: two existing flag tests used CHAD as a throwaway route name and silently went to zero flags. Renamed, with a note — a fixture that borrows a real name is a fixture that changes meaning under you, which is exactly what stopped production deploying for seven hours yesterday. AND ONE OF MY OWN TESTS PASSED FOR THE WRONG REASON: the first version put a bare stop on the route and asserted no flags, which is true on any route, so a mutation putting CHAD back into the judged set went straight through it. It now moves a stop that DOES flag, with a control proving it flags on an ordinary route first. 9 new tests, 2,546 green.'],
   ['0.78.2', 'PRODUCTION HAD NOT TAKEN A DEPLOY IN SEVEN HOURS, AND v0.76.8 IS WHY. The site was serving v0.76.7 from 4:24pm while v0.76.8 and v0.77.0 sat merged and green and never went live — the exact “merging is not shipping” failure this changelog warned about on 2026-08-19, happening again. THE CAUSE, and it is mine. Netlify scans a build for the VALUES of its environment variables. NUVIZZ_DAVIS_USER happens to be the same word as the owner’s own route — and the test I wrote in v0.76.8 for “don’t count orders off Chad route” had that word typed out in lower case as a fixture. One file in the whole repository contained it, it arrived in v0.76.8, and production’s last good deploy is the release immediately before. Every build since failed its secrets scan on that single line, while CI stayed green because CI does not run the secrets scan. Two releases merged into a site that could not build them. THE FIX derives the scruffy form from the configured exclusion list instead of typing it: the literal is gone from the repo, and the test now pins against the REAL list rather than a copy, so renaming the route can no longer leave a test passing against a name nothing uses. Proven to still bite by removing the case normalisation it guards. WHAT THIS SAYS ABOUT THE GATE: green CI meant nothing here, because the check that failed runs at Netlify and reports on the deploy, not on the pull request. The deploy-watch job compares the LIVE bundle version against main every 30 minutes and is the thing that would have caught it — worth reading when a merge seems not to have landed, before assuming a browser cache. 2,538 green.'],
@@ -19085,6 +19086,80 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     if (isMobile) { setMobilePanel('setup'); setSheetOpen(true); }
   }, [lastRequest, routesView, wbRoutes, stopById, isMobile]);
 
+  // ── Engine draft (Assist slice 1): name 2-3 drivers, the LEARNED engine drafts
+  // their routes from the day's unplanned pool. Drafting reads Firestore only
+  // (zero NuVizz calls); results land as pending Compare cards, so review, edits
+  // and the eventual push all ride the existing workbench machinery — the Save
+  // path, its gates and its verification are untouched.
+  const [draftNames, setDraftNames] = useState('');
+  const [draftBusy, setDraftBusy] = useState(false);
+  const [draftError, setDraftError] = useState(null);
+  const [draftResult, setDraftResult] = useState(null);
+
+  const stageEngineDraft = useCallback((draft) => {
+    // Same held-stop rule as stagePlanOntoLoads: a stop already staged on an open
+    // card stays there — a draft never steals from work in progress.
+    const held = new Map();
+    for (const r of wbRoutes) for (const id of r.order) held.set(String(id), r.key);
+    const existingKeys = new Set(wbRoutes.map((r) => r.key));
+    const routeNamesToday = new Set(routeGroups.map((g) => String(g.name || g.key)));
+    let next = [...wbRoutes];
+    let staged = 0, skippedHeld = 0, skippedOffBoard = 0;
+    const skippedFull = [];
+    for (const drv of draft.drivers || []) {
+      const label = String(drv.driver_user_name || drv.driver_key).toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+      for (const trip of drv.trips || []) {
+        if (!trip.stops?.length) continue;
+        let key = `${label} E${trip.seq}`;
+        let n = 0;
+        while (existingKeys.has(key) || routeNamesToday.has(key)) { n++; key = `${label} E${trip.seq}-${n}`; }
+        const ids = [];
+        for (const s of trip.stops) {
+          const id = String(s.stopNbr);
+          if (!boardStopById.has(id)) { skippedOffBoard++; continue; }
+          if (held.has(id)) { skippedHeld++; continue; }
+          held.set(id, key); ids.push(id);
+        }
+        if (!ids.length) continue;
+        if (next.length >= WB_MAX) { skippedFull.push(key); continue; }
+        existingKeys.add(key);
+        next.push({ key, name: key, loadNbr: null, loadId: null, pendingCreate: true, order: ids, baseline: [], collapsed: false });
+        staged += ids.length;
+      }
+    }
+    setWbRoutes(next);
+    const bits = [`Engine drafted ${staged} stop${staged === 1 ? '' : 's'} onto pending route card${staged === 1 ? '' : 's'} — review, adjust, pick the driver on each card, then Save to create in NuVizz`];
+    if (draft.left_unplanned?.length) bits.push(`${draft.left_unplanned.length} left unplanned (see the Engine draft panel for why)`);
+    if (skippedHeld) bits.push(`${skippedHeld} already staged on an open card (left there)`);
+    if (skippedOffBoard) bits.push(`${skippedOffBoard} no longer on the board`);
+    if (skippedFull.length) bits.push(`workbench full — couldn't open: ${skippedFull.join(', ')}`);
+    setLastAction(bits.join(' · '));
+    if (isMobile) { setMobilePanel('setup'); setSheetOpen(true); }
+  }, [wbRoutes, boardStopById, routeGroups, isMobile]);
+
+  const runEngineDraft = useCallback(async () => {
+    const names = draftNames.split(/[,;]+/).map((s) => s.trim()).filter(Boolean);
+    if (!names.length || names.length > 4) { setDraftError('Name 1–4 drivers, comma-separated.'); return; }
+    setDraftBusy(true); setDraftError(null); setDraftResult(null);
+    try {
+      const res = await fetch('/.netlify/functions/routing-draft', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: selectedDate, drivers: names }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        setDraftError([data?.error, ...(data?.details || [])].filter(Boolean).join('\n') || `draft failed (${res.status})`);
+        return;
+      }
+      setDraftResult(data);
+      stageEngineDraft(data);
+    } catch (e) {
+      setDraftError(e?.message || 'network error');
+    } finally {
+      setDraftBusy(false);
+    }
+  }, [draftNames, selectedDate, stageEngineDraft]);
+
   // Shared gear-settings config — rendered in two places: the left Setup-panel header and the
   // bottom data-grid header. The bottom gear is what stays reachable when the Setup panel is hidden,
   // so it carries every toggle EXCEPT "Bottom data grid" (turning that off from the bottom gear would
@@ -19316,6 +19391,66 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
             : useGoogle ? 'Build with Google drive-times' : 'Build (free estimate)'}
         </button>
         {!canBuild && !building && <div className="text-[11px] text-slate-400">{planMode === 'loads' ? 'Select ≥1 stop and pick ≥1 load to build.' : 'Select ≥1 stop and ≥1 truck to build.'}</div>}
+      </div>
+
+      {/* Engine draft — the learned engine (the one scored nightly on the Engine tab)
+          drafts named drivers' routes from the day's UNPLANNED pool. Zero NuVizz calls
+          to draft; the only path to NuVizz remains the workbench Save. */}
+      <div className="border rounded p-2 space-y-2">
+        <div className="font-semibold text-slate-700">4 · Engine draft <span className="text-[10px] uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">beta</span></div>
+        <div className="text-[11px] text-slate-500">
+          Name drivers and the <b>learned engine</b> drafts their routes for <b>{formatDateLong(selectedDate)}</b> from
+          the unplanned pool — only stops their own history says are theirs; everything else stays unplanned and is
+          listed with the reason. Drafts open as pending route cards: move stops, pick the driver on each card, then
+          Save sends to NuVizz exactly as always.
+        </div>
+        <input value={draftNames} onChange={(e) => setDraftNames(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && draftNames.trim() && !draftBusy) runEngineDraft(); }}
+          placeholder="Victor, Scott" className="w-full border rounded p-1.5 text-[12px]" />
+        <button onClick={runEngineDraft} disabled={draftBusy || !draftNames.trim()}
+          className="w-full py-2 rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
+          {draftBusy ? 'Drafting…' : 'Draft routes with engine'}
+        </button>
+        {draftError && <div className="text-[11px] text-red-600 whitespace-pre-wrap">{draftError}</div>}
+        {draftResult && (
+          <div className="text-[11px] text-slate-600 space-y-1.5">
+            {(draftResult.drivers || []).map((d) => (
+              <div key={d.driver_key} className="bg-slate-50 rounded p-1.5 space-y-0.5">
+                <div>
+                  <b>{d.driver_key}</b> · {d.truck_class === 'tractor' ? '53′' : 'box'} · {d.total_stops} stop{d.total_stops === 1 ? '' : 's'}
+                  {d.trips.map((t) => (
+                    <span key={t.seq} className="ml-1.5 text-slate-500" title={t.mode === 'guided' ? `sequenced from ${t.references_used} of ${d.driver_key}'s own past routes` : 'no similar past route — sequenced by geometry alone'}>
+                      T{t.seq}: {t.stops.length} stops · {Math.round(t.travel_min_est)}m{t.mode === 'unguided' ? ' · ∅ unguided' : ''}
+                    </span>
+                  ))}
+                </div>
+                {d.envelope_source !== 'driver' && (
+                  <div className="text-amber-700">engine has {d.observed_days ? `only ${d.observed_days}` : 'no'} observed day{d.observed_days === 1 ? '' : 's'} for this driver — working from {d.envelope_source === 'class' ? 'truck-class averages' : 'nothing'}; read the draft harder</div>
+                )}
+              </div>
+            ))}
+            {(draftResult.left_unplanned || []).length > 0 && (
+              <details className="bg-slate-50 rounded p-1.5">
+                <summary className="cursor-pointer font-semibold text-slate-700">
+                  {draftResult.left_unplanned.length} stop{draftResult.left_unplanned.length === 1 ? '' : 's'} left unplanned — why
+                </summary>
+                <div className="mt-1 space-y-0.5 max-h-48 overflow-y-auto">
+                  {draftResult.left_unplanned.map((s) => (
+                    <div key={s.stopNbr} className="flex gap-1.5">
+                      <span className="font-medium shrink-0">{s.businessName || s.stopNbr}</span>
+                      <span className="text-slate-500 min-w-0">{s.detail}</span>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+            {draftResult.staleness?.last_unplanned_scan_at && (
+              <div className="text-slate-400">
+                Pool as of the {new Date(draftResult.staleness.last_unplanned_scan_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} scan — freight arriving since isn’t in this draft.
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </>
   );
@@ -20396,8 +20531,11 @@ function EngineHowToRead() {
             engine only re-sequenced them.
           </Row>
           <Row term="Score">
-            0–1, how closely the engine’s ORDER for that same route matches the order dispatch
-            drove. 1.0 is identical. A low score is a disagreement, not an error.
+            How far the engine’s ORDER for that same route sits from the order dispatch drove
+            (the Amazon/MIT challenge metric). <b>0 is identical — lower is better.</b> Around
+            0.1 the zone-level shape matches and only within-zone details differ; 0.5+ is a
+            genuinely different route. This row said the opposite until v0.79.0 — if a small
+            score ever read as a bad one, that was this text, not the engine.
           </Row>
           <Row term="Travel Δ">
             Estimated driving minutes, engine minus dispatch, same distance model both sides.
@@ -21155,7 +21293,7 @@ function EngineAssignmentView({ google, mapsError }) {
           <EngineStatTile label="Co-load agreement" value={rollup.coload_agreement_pct == null ? '—' : `${rollup.coload_agreement_pct}%`} hint="Of the stop pairs dispatch co-loaded, the share the engine also co-loaded (load shape; label-symmetric)" />
           <EngineStatTile label="Co-load precision" value={rollup.coload_precision_pct == null ? '—' : `${rollup.coload_precision_pct}%`} hint="Of the engine's co-loads, the share dispatch also co-loaded" />
           <EngineStatTile label="Trips engine / actual" value={`${rollup.trips_engine ?? '—'} / ${rollup.trips_actual ?? '—'}`} />
-          <EngineStatTile label="Travel Δ (engine − dispatch)" value={rollup.est_travel_engine_min == null ? '—' : engineDeltaFmt((rollup.est_travel_engine_min || 0) - (rollup.est_travel_actual_min || 0))} hint="Estimated total driving minutes, same haversine model both sides" />
+          <EngineStatTile label="Travel Δ (engine − dispatch)" value={rollup.est_travel_engine_min == null || rollup.est_travel_actual_min == null ? '—' : engineDeltaFmt(rollup.est_travel_engine_min - rollup.est_travel_actual_min)} hint="Estimated total driving minutes, same haversine model both sides" />
           <EngineStatTile label="Matched-load seq" value={engineScoreFmt(rollup.matched_load_sequence_score)} hint="Phase-1 sequence score over engine trips that overlap an actual load ≥60%" />
         </div>
       )}
@@ -21291,6 +21429,20 @@ function EngineAssignmentView({ google, mapsError }) {
 // in its own doc; here we line them up oldest→newest with the change in agreement
 // and the trips/travel over-split gap called out.
 function EngineVersionProgress({ versions, current }) {
+  // The newest versions sort to the FAR RIGHT of a scrollable row — exactly the cards this
+  // panel exists to show. Without this scroll, a wide-enough history makes the latest engine's
+  // scorecard render off-screen and the visible row ends on an old version, which reads as a
+  // plateau (that is not hypothetical: it is how a real 31% engine was read as a stuck 26%).
+  const rowRef = useRef(null);
+  useEffect(() => {
+    const row = rowRef.current;
+    if (!row) return;
+    const cur = row.querySelector('[data-current-version="1"]');
+    // Scroll the ROW only (never scrollIntoView, which can drag the page vertically):
+    // put the current card at the right edge; no current card → show the newest end.
+    if (cur) row.scrollLeft = Math.max(0, cur.offsetLeft + cur.offsetWidth - row.clientWidth + 8);
+    else row.scrollLeft = row.scrollWidth;
+  }, [versions, current]);
   if (versions == null) return null; // still loading — stay quiet
   if (!versions.length) {
     return (
@@ -21301,28 +21453,37 @@ function EngineVersionProgress({ versions, current }) {
   }
   const fmtPct = (v) => (v == null ? '—' : `${v}%`);
   const fmtDelta = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${v}%`);
+  // YYYY-MM-DD strings compare lexicographically, so window overlap is a plain interval test.
+  const windowsOverlap = (a, b) => Boolean(a?.window_from && a?.window_to && b?.window_from && b?.window_to
+    && String(a.window_from) <= String(b.window_to) && String(b.window_from) <= String(a.window_to));
   return (
     <div className="border rounded-lg bg-white p-2">
       <div className="text-[11px] font-semibold text-slate-600 px-1 pb-1.5">
         Progress across engine versions <span className="font-normal text-slate-400">— stop agreement is stop-weighted over the whole window; trips/travel Δ are engine vs dispatch (lower is better)</span>
       </div>
-      <div className="flex gap-2 overflow-x-auto pb-1">
+      <div ref={rowRef} className="flex gap-2 overflow-x-auto pb-1">
         {versions.map((v, i) => {
           const prev = i > 0 ? versions[i - 1] : null;
           const agree = v.stop_agreement_wmean;
           const chg = prev && prev.stop_agreement_wmean != null && agree != null ? Math.round((agree - prev.stop_agreement_wmean) * 10) / 10 : null;
+          // A version scored on entirely different dates than its neighbour is being compared
+          // against different freight — the ▲/▼ then measures the week as much as the engine.
+          // Show that delta grey with a ≠, never green/red.
+          const sameFreight = prev ? windowsOverlap(prev, v) : true;
           const isCur = v.engine_version === current;
           return (
-            <div key={v.engine_version} className={`shrink-0 rounded-lg border px-2.5 py-1.5 min-w-[132px] ${isCur ? 'border-blue-300 bg-blue-50' : 'border-slate-200 bg-slate-50'}`}>
+            <div key={v.engine_version} data-current-version={isCur ? '1' : undefined} className={`shrink-0 rounded-lg border px-2.5 py-1.5 min-w-[132px] ${isCur ? 'border-blue-300 bg-blue-50' : 'border-slate-200 bg-slate-50'}`}>
               <div className="flex items-center justify-between gap-1.5">
                 <span className="text-[11px] font-bold text-slate-800">v{v.engine_version}</span>
                 {isCur && <span className="text-[8px] uppercase tracking-wide bg-blue-600 text-white px-1 py-0.5 rounded">current</span>}
               </div>
               <div className="mt-0.5 flex items-baseline gap-1">
                 <span className="text-lg font-bold tabular-nums" style={{ color: BRAND }}>{fmtPct(agree)}</span>
-                {chg != null && chg !== 0 && (
+                {chg != null && chg !== 0 && (sameFreight ? (
                   <span className={`text-[10px] font-semibold ${chg > 0 ? 'text-emerald-600' : 'text-red-500'}`}>{chg > 0 ? '▲' : '▼'} {Math.abs(chg)}</span>
-                )}
+                ) : (
+                  <span className="text-[10px] font-semibold text-slate-400" title="Scored on a different date window than the previous version — this change compares different freight, not just the engine.">≠ {chg > 0 ? '+' : '−'}{Math.abs(chg)}</span>
+                ))}
               </div>
               <div className="text-[9px] text-slate-500 leading-tight">stop agreement</div>
               <div className="mt-1 text-[9.5px] text-slate-500 tabular-nums leading-snug">

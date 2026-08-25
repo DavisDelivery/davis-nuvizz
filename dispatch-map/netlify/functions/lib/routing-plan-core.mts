@@ -49,6 +49,13 @@ export const PLAN_PROPOSALS_DAILY_COLLECTION = 'plan_proposals_daily';
 const TRACTOR_LOCATIONS_COLLECTION = 'tractor_locations';
 const CUSTOMER_NOTES_COLLECTION = 'customer_notes';
 
+// Shared crew constants — used by the shadow (runPlanForDate) and the driver-scoped
+// draft builder (routing-draft-core.mts); one definition so the two can never drift.
+// Supervisors run occasional 1-3 stop days and are never a real route-driver pool.
+export const SUPERVISOR_KEYS = new Set(['CHAD_DAVIS']);
+// Fallback truck-class pin for drivers without an employees-roster record.
+export const CLASS_OVERRIDE = new Map<string, string>([['JUNIOR_THOMAS', 'tractor']]);
+
 export function planProposalPath(tenant: string, date: string): string {
   return `${PLAN_PROPOSALS_COLLECTION}/${tenant}__${date}`;
 }
@@ -99,14 +106,16 @@ export interface PlanVersionRollup {
 export function summarizePlanVersion(dayDocs: any[], version: string, tenant = 'davis', nowIso?: string): PlanVersionRollup {
   const days = (dayDocs || []).filter((d) =>
     d && d.engine_version === version && d.stop_agreement_pct != null && Number(d.planned_stops) > 0);
-  let wStop = 0, wCoload = 0, sw = 0, wKnown = 0, wKnownDen = 0;
+  let wStop = 0, wCoload = 0, wColoadDen = 0, sw = 0, wKnown = 0, wKnownDen = 0;
   let te = 0, ta = 0, tre = 0, tra = 0, pst = 0;
   let from: string | null = null, to: string | null = null;
   for (const d of days) {
     const w = Number(d.planned_stops) || 0;
     sw += w; pst += w;
     wStop += (Number(d.stop_agreement_pct) || 0) * w;
-    if (d.coload_agreement_pct != null) wCoload += (Number(d.coload_agreement_pct) || 0) * w;
+    // Own denominator, like the known segment below — dividing by the full stop
+    // weight would let a day with NO coload score drag the mean toward zero.
+    if (d.coload_agreement_pct != null) { wCoload += (Number(d.coload_agreement_pct) || 0) * w; wColoadDen += w; }
     if (d.stop_agreement_known_pct != null) { wKnown += (Number(d.stop_agreement_known_pct) || 0) * w; wKnownDen += w; }
     te += Number(d.trips_engine) || 0; ta += Number(d.trips_actual) || 0;
     tre += Number(d.est_travel_engine_min) || 0; tra += Number(d.est_travel_actual_min) || 0;
@@ -121,7 +130,7 @@ export function summarizePlanVersion(dayDocs: any[], version: string, tenant = '
     window_from: from, window_to: to,
     stop_agreement_wmean: wmean(wStop, sw),
     stop_agreement_known_wmean: wmean(wKnown, wKnownDen),
-    coload_agreement_wmean: wmean(wCoload, sw),
+    coload_agreement_wmean: wmean(wCoload, wColoadDen),
     trips_engine_total: te, trips_actual_total: ta,
     trips_delta_pct: ta > 0 ? round1(((te - ta) / ta) * 100) : null,
     travel_engine_total: Math.round(tre), travel_actual_total: Math.round(tra),
@@ -306,14 +315,12 @@ export async function runPlanForDate(
   // Phase 2.7 hygiene: supervisors run occasional 1-3 stop days — they are not a
   // real route-driver pool, so exclude them (they never become a zone candidate or
   // a dumping ground; their own stops still route to real candidate drivers).
-  const SUPERVISOR_KEYS = new Set(['CHAD_DAVIS']);
   // Phase 2.9: truck class comes from the MarginIQ employees roster
   // (vehicleType) — the source Chad actually maintains — joined through the
   // NuVizz alias/fullName fold. The hardcoded pin stays only as a fallback for
   // drivers without an employees record; unknown/blank still reads box_truck
   // (the fleet majority). Class gates tractor-blocked stops + per-class skid caps.
   const empClass = employeeClassMap(inputs.employees || []);
-  const CLASS_OVERRIDE = new Map<string, string>([['JUNIOR_THOMAS', 'tractor']]);
   const resolveClass = (key: string, raw: string | null) =>
     empClass.get(key) || CLASS_OVERRIDE.get(key) || (raw === 'tractor' ? 'tractor' : 'box_truck');
 

@@ -36,7 +36,7 @@ import { loadVehicleRoster, vehicleTypeForStop } from './tractor-flags.mts';
 import {
   DEPOT_ID, buildTravelMatrix, solveRoute, travelMinutesForOrder, type EngineStop,
 } from './routing-engine-solver.mts';
-import { scoreRoute, toScoreList } from './score.mts';
+import { scoreRouteParts, toScoreList } from './score.mts';
 
 export const PROPOSALS_COLLECTION = 'route_proposals';
 export const PROPOSALS_DAILY_COLLECTION = 'route_proposals_daily';
@@ -128,7 +128,8 @@ export function shadowScoreRoute(
   const matrix = buildTravelMatrix(points, cfg);
   const actualIds = route.stops.map((s) => s.pro);
   const proposedIds = solved.order.map((s) => s.id);
-  const score = scoreRoute(toScoreList(DEPOT_ID, actualIds), toScoreList(DEPOT_ID, proposedIds), matrix);
+  const parts = scoreRouteParts(toScoreList(DEPOT_ID, actualIds), toScoreList(DEPOT_ID, proposedIds), matrix);
+  const score = parts.score;
 
   const actualOrder = route.stops.map((s) => ({ id: s.pro, lat: s.lat, lng: s.lng, zone: s.zone }));
   const travelActual = travelMinutesForOrder(actualOrder, matrix);
@@ -171,6 +172,10 @@ export function shadowScoreRoute(
       proposed_pos: proposedPos.get(s.pro) ?? null,
     })),
     score,
+    // The score's two factors, kept separately (a flat product can't say WHICH
+    // kind of disagreement is moving — zone order vs within-zone distance).
+    seq_dev: Math.round(parts.seq_dev * 10000) / 10000,
+    erp_per_edit: Math.round(parts.erp_per_edit * 10000) / 10000,
     travel_min_actual_est: Math.round(travelActual * 10) / 10,
     travel_min_proposed_est: Math.round(travelProposed * 10) / 10,
     source_seq: route.source_seq,
@@ -255,7 +260,8 @@ export async function runShadowForDate(
   const unguidedCount = results.filter((r) => r.unguided).length;
   // Segmented means (audit finding 4): an unguided route had no teacher, so its
   // score measures a different thing — never let it dilute the guided headline.
-  const guidedScores = results.filter((r) => !r.unguided).map((r) => r.score);
+  const guided = results.filter((r) => !r.unguided);
+  const guidedScores = guided.map((r) => r.score);
   const unguidedScores = results.filter((r) => r.unguided).map((r) => r.score);
   const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 
@@ -270,6 +276,10 @@ export async function runShadowForDate(
     mean_score_guided: mean(guidedScores),
     median_score_guided: median(guidedScores),
     mean_score_unguided: mean(unguidedScores),
+    // Guided means of the score's two factors — the flat headline decomposed
+    // into "zone order wrong" (seq_dev) vs "distance of the edits" (erp).
+    mean_seq_dev_guided: mean(guided.map((r) => r.proposal.seq_dev)),
+    mean_erp_per_edit_guided: mean(guided.map((r) => r.proposal.erp_per_edit)),
     mean_travel_delta_min: meanDelta === null ? null : Math.round(meanDelta * 10) / 10,
     engine_version: ENGINE_VERSION,
     computed_at: nowIso,

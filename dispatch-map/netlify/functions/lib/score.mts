@@ -125,8 +125,20 @@ export function erpPerEdit(actual: string[], sub: string[], normMat: CostMatrix,
   return edits === 0 ? 0 : total / edits;
 }
 
-// score — the official per-route score.
-export function scoreRoute(actual: string[], sub: string[], costMat: CostMatrix, g = 1000): number {
+// score — the official per-route score, decomposed. The product compresses all
+// near-agreement outcomes into one small number, so the factors are worth keeping:
+// seq_dev is zone-level jumpiness (adjacency disorder), erp_per_edit is the
+// edit-weighted travel distance of the disagreement. A flat product can hide
+// which of the two is moving.
+export function scoreRouteParts(
+  actual: string[], sub: string[], costMat: CostMatrix, g = 1000,
+): { score: number; seq_dev: number; erp_per_edit: number } {
   const normMat = normalizeMatrix(costMat);
-  return seqDev(actual, sub) * erpPerEdit(actual, sub, normMat, g);
+  const sd = seqDev(actual, sub);
+  const erp = erpPerEdit(actual, sub, normMat, g);
+  return { score: sd * erp, seq_dev: sd, erp_per_edit: erp };
+}
+
+export function scoreRoute(actual: string[], sub: string[], costMat: CostMatrix, g = 1000): number {
+  return scoreRouteParts(actual, sub, costMat, g).score;
 }

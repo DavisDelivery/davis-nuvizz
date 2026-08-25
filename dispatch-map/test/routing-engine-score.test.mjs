@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
-  scoreRoute, seqDev, erpPerEdit, normalizeMatrix, isInvalid, toScoreList,
+  scoreRoute, scoreRouteParts, seqDev, erpPerEdit, normalizeMatrix, isInvalid, toScoreList,
 } from '../netlify/functions/lib/score.mts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -43,6 +43,16 @@ test('PARITY: every fixture case matches the official Python score and component
     assert.ok(near(seqDev(c.actual, c.sub), c.expected_seq_dev), `${c.name} seq_dev`);
     assert.ok(near(erpPerEdit(c.actual, c.sub, norm), c.expected_erp_per_edit), `${c.name} erp_per_edit`);
     assert.ok(near(scoreRoute(c.actual, c.sub, PARITY.cost), c.expected), `${c.name} score`);
+  }
+});
+
+test('scoreRouteParts: the decomposition IS the official score — factors multiply back exactly', () => {
+  for (const c of PARITY.cases) {
+    const p = scoreRouteParts(c.actual, c.sub, PARITY.cost);
+    assert.ok(near(p.seq_dev, c.expected_seq_dev), `${c.name} seq_dev part`);
+    assert.ok(near(p.erp_per_edit, c.expected_erp_per_edit), `${c.name} erp part`);
+    assert.ok(near(p.score, c.expected), `${c.name} product`);
+    assert.ok(near(p.score, p.seq_dev * p.erp_per_edit), `${c.name} product identity`);
   }
 });
 
