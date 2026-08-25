@@ -407,8 +407,14 @@ test('THE PROHIBITION STILL READS: a dark slash over a white truck', () => {
   assert.match(svg, /<line [^>]*stroke="#111827"/, 'the slash is ink, not the restriction colour');
   assert.ok(svg.indexOf('<line') > svg.indexOf('fill="#ffffff"'),
     'the slash is drawn OVER the white truck — underneath, the body swallows its middle');
-  assert.ok(!/fill="white"/.test(svg.slice(svg.indexOf('<g transform'))),
-    'the wheels stop being white, or the truck loses its running gear on a white body');
+  // THE TRUCK IS ONE WHITE SILHOUETTE. Two candidates were rendered at true size and put in
+  // front of Chad — dark wheels, or wheels left white so the shape reads as a single mark. He
+  // picked the silhouette ("i like h ink over"), and at 20px the wheels are under two pixels
+  // across, where dark ones read as grit on the glyph rather than as running gear.
+  const glyph = svg.slice(svg.indexOf('<g transform'));
+  assert.ok(!/#dc2626|#f59e0b|#16a34a/.test(glyph), 'no restriction colour survives inside the glyph');
+  const inkInGlyph = (glyph.match(/#111827/g) || []).length;
+  assert.equal(inkInGlyph, 1, 'the only ink on the glyph is the slash — the wheels stay white');
 });
 
 test('THE GREEN HALF GOES BRIGHT WHEN A TRACTOR HAS ACTUALLY BEEN HERE', () => {
