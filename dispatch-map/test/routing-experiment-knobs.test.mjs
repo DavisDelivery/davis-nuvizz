@@ -14,6 +14,10 @@ import { engineConfigDefaults } from '../netlify/functions/lib/routing-engine-co
 import { superOfZone, zoneId } from '../netlify/functions/lib/zones.mts';
 
 const CFG = engineConfigDefaults({});
+// Every test pins its knobs EXPLICITLY — when a validated lever graduates into
+// the shipped defaults, these tests keep pinning both the 0-behavior identity
+// and the on-direction without caring what the current default is.
+const OFF = { ...CFG, w_candidate_rank: 0, habit_rank_aware: 0, territory_half_life_days: 0 };
 const PREC = { zone_precision: 6, super_precision: 5, top_precision: 4 };
 const DEPOT = { lat: 34.148, lng: -83.959 };
 
@@ -44,8 +48,8 @@ test('knobs OFF: the ranked habit drivers list is INERT — same plan with or wi
   const habitBare = { topDriver: 'A', topShare: 0.5, n: 20 };
   const habitRanked = { ...habitBare, drivers: [{ key: 'A', share: 0.5 }, { key: 'B', share: 0.45 }] };
   const mk = (habit) => [aStop('s1', { habit }), aStop('s2', { habit }), aStop('s3')];
-  const r1 = solve(mk(habitBare), [A, B], CFG);
-  const r2 = solve(mk(habitRanked), [A, B], CFG);
+  const r1 = solve(mk(habitBare), [A, B], OFF);
+  const r2 = solve(mk(habitRanked), [A, B], OFF);
   const shape = (r) => r.shifts.map((sh) => [sh.driver.driver_key, sh.trips.map((t) => t.stops.map((s) => s.id))]);
   assert.deepEqual(shape(r1), shape(r2), 'defaults must not read the new field');
   assert.equal(r1.cost, r2.cost);
@@ -71,9 +75,9 @@ test('w_candidate_rank ON: the cast #1 takes a stop that stray affinity handed t
   const B = drv('B');
   const C = drv('C', new Map([[gh5, 0.9]]));
   const stops = [aStop('s1', { candidates: ['A', 'B', 'C'] })];
-  const off = solve(stops, [A, B, C], CFG);
+  const off = solve(stops, [A, B, C], OFF);
   assert.equal(driverOf(off, 's1'), 'C', 'binary membership: the affinity edge wins');
-  const on = solve(stops, [A, B, C], { ...CFG, w_candidate_rank: 3 });
+  const on = solve(stops, [A, B, C], { ...OFF, w_candidate_rank: 3 });
   assert.equal(driverOf(on, 's1'), 'A', 'rank-aware: the cast #1 wins');
 });
 
@@ -96,9 +100,9 @@ test('habit_rank_aware ON: with the usual driver OUT, the customer goes to their
   const R = drv('R', new Map([[gh5, 0.5]]));
   const X = drv('X', new Map([[gh5, 0.6]]));
   const stops = [aStop('s1', { habit, candidates: ['R', 'X'] })];
-  const off = solve(stops, [R, X], CFG);
+  const off = solve(stops, [R, X], OFF);
   assert.equal(driverOf(off, 's1'), 'X', 'top-only habit cannot tell R from a stranger');
-  const on = solve(stops, [R, X], { ...CFG, habit_rank_aware: 1 });
+  const on = solve(stops, [R, X], { ...OFF, habit_rank_aware: 1 });
   assert.equal(driverOf(on, 's1'), 'R', 'the runner-up keeps their customer');
 });
 
@@ -140,21 +144,21 @@ test('tie_margin: a genuine coin flip reads as a near-tie; a one-driver cast rec
   const gh5 = aStop('x').gh5;
   const A = drv('A', new Map([[gh5, 0.5]]));
   const B = drv('B', new Map([[gh5, 0.5]]));   // identical pull — dispatch could pick either
-  const near = solve([aStop('s1', { candidates: ['A', 'B'] })], [A, B], CFG);
+  const near = solve([aStop('s1', { candidates: ['A', 'B'] })], [A, B], OFF);
   assert.equal(near.tie_margin.stops, 1);
   assert.ok(near.tie_margin.mean < 0.01, `identical drivers ⇒ ~0 margin, got ${near.tie_margin.mean}`);
   assert.equal(near.tie_margin.share_lt_05, 1);
 
-  const solo = solve([aStop('s2', { candidates: ['A'] })], [A, B], CFG);
+  const solo = solve([aStop('s2', { candidates: ['A'] })], [A, B], OFF);
   assert.equal(solo.tie_margin, null, 'one candidate = no margin to measure');
 
   // Unseen geography: every driver passes the open fallback and the scores
   // differ only by 1e-6 jitter — that is NO SIGNAL, not a coin flip, and it
   // must not inflate the near-tie share the Assist gate reads.
-  const open = solve([aStop('s4', { candidates: [] })], [drv('A'), drv('B')], CFG);
+  const open = solve([aStop('s4', { candidates: [] })], [drv('A'), drv('B')], OFF);
   assert.equal(open.tie_margin, null, 'an open cast records no margin');
 
-  const clear = solve([aStop('s3', { habit: { topDriver: 'A', topShare: 0.9, n: 30 }, candidates: ['A', 'B'] })], [A, B], CFG);
+  const clear = solve([aStop('s3', { habit: { topDriver: 'A', topShare: 0.9, n: 30 }, candidates: ['A', 'B'] })], [A, B], OFF);
   assert.ok(clear.tie_margin.mean > 1, `a strong habit edge is not a tie, got ${clear.tie_margin.mean}`);
 });
 
@@ -162,7 +166,7 @@ test('knobs ON stay deterministic: identical runs produce identical plans', () =
   const gh5 = aStop('x').gh5;
   const A = drv('A', new Map([[gh5, 0.4]]));
   const B = drv('B', new Map([[gh5, 0.6]]));
-  const cfg = { ...CFG, w_candidate_rank: 2, habit_rank_aware: 1, territory_half_life_days: 30 };
+  const cfg = { ...OFF, w_candidate_rank: 2, habit_rank_aware: 1, territory_half_life_days: 30 };
   const mk = () => solve([aStop('s1', { candidates: ['A', 'B'] }), aStop('s2'), aStop('s3', { candidates: ['B', 'A'] })], [A, B], cfg);
   const shape = (r) => JSON.stringify({ s: r.shifts.map((sh) => [sh.driver.driver_key, sh.trips.map((t) => t.stops.map((x) => x.id))]), c: r.cost, t: r.tie_margin });
   assert.equal(shape(mk()), shape(mk()));

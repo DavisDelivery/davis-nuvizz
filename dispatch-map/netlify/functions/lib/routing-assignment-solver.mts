@@ -587,8 +587,11 @@ export function solveAssignment(input: AssignInput): AssignResult {
     // share of the customer's history instead of top-driver-or-nothing, so the
     // legitimate #2 at a shared account keeps a partial pull. Off = identical.
     const uname = d.driver_user_name ? String(d.driver_user_name).toUpperCase() : null;
-    const seedShare = cfg.habit_rank_aware >= 1
-      ? (s.habit ? habitShareFor(s.habit, uname) : 0)
+    // Rank-aware needs the ranked list; a habit object WITHOUT one (older stored
+    // shapes, tests) falls back to top-driver-or-nothing — the top driver must
+    // never LOSE their seed head start because a caller predates the list.
+    const seedShare = cfg.habit_rank_aware >= 1 && s.habit?.drivers
+      ? habitShareFor(s.habit, uname)
       : (s.habit?.topDriver && uname && s.habit.topDriver === uname ? s.habit.topShare : 0);
     const habitRaw = s.habit && seedShare > 0
       ? habitStrength({ topShare: seedShare, n: s.habit.n }, cfg.habit_shrink_n) : 0;
