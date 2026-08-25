@@ -93,7 +93,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.78.0';
+const APP_VERSION = '0.78.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -164,7 +164,9 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['0.78.0', 'A FULL HALF AND HALF ICON — THE TRAILER MARK NOW FILLS ITS WHOLE DISC, AND HALF OF IT IS THE CONFIDENCE. Chad, a day after the split ring shipped: “i want a full half and half icon.” He is right, and rendering it says why. These marks draw at 20×22 CSS px on the real map, so a 3.4-wide ring split down the middle is a pixel and a half of red beside a pixel and a half of green around a white disc — put through the shipped pipeline at TRUE size over a dark treeline, a bright parking lot and a grey roof, a confirmed mark and an unconfirmed one could not be told apart on any of the three. A distinction a dispatcher cannot see at the size it draws is not a distinction, it is a comment in the source code. THE DISC CARRIES IT NOW: a trailer blocker somebody has CONFIRMED fills solid in the restriction’s own colour, and one only a scanner found fills exactly half — half the restriction colour, half the eligibility green. The unconfirmed mark is literally half the confirmed one, which is also the plainest thing the icon could mean. THE PAIR HAD TO MOVE TOGETHER, and that is the part that is not cosmetic. Making only the advisory mark a saturated two-tone disc would leave it shouting louder than a confirmed hard restriction, and the two mistakes are not symmetrical: burning a trailer slot on a stop that would have taken one costs a slot, and sending a 53-footer to a dock a person already said no about costs a driver his morning and the customer his delivery. So the confirmed mark is the loudest thing out there and the open question is visibly half of it. THE TRUCK SURVIVED THE MOVE. White is the only glyph colour that reads on both a red half and a green half, so the wheels went dark with it — a white truck with white wheels is a box — and the prohibition slash went dark and moved ON TOP of the glyph. That is the opposite of the rule for every other mark here, on purpose: that rule exists because a RED slash over a RED letter reads as one blob, and here the slash is ink on a white truck. Drawn underneath, the body swallowed the middle of the slash and the “no” stopped reading at true size. Rendered both ways before choosing. THE GREEN HALF GOES BRIGHT WHEN A TRACTOR HAS ACTUALLY BEEN HERE. On an unconfirmed blocker, “a 53-footer has delivered to this dock before” is the best counter-evidence a dispatcher has — it is what turns the mark into a decision instead of a shrug. That proof used to ride on the truck, which was painted with the stop’s tint; a white truck cannot carry it, so it moved to the half that already means “a trailer fits”: forest green for “the rules allow it”, the brighter lime for “and one actually has”. It is handed over as a FACT, not as a colour — pass the tint in and a priority flag’s purple becomes the half that means a trailer is fine, which is the v0.76.5 defect wearing a new coat. Only the proof itself may speak there, and a test pins that a truthy-but-wrong value cannot switch it on. ONLY TRAILER BLOCKERS. Liftgate, appointment, closed-day and the clocks have no confidence to carry and are untouched — white disc, coloured ring, exactly as before — and the +N overflow badge still carries no restriction of its own. The legend’s “How sure is it?” pair is built by the SAME function the map draws with, so it cannot teach a mark that is not out there, and it says solid/half-and-half now instead of ring. It is on the phone and on desktop, because there is one legend body and three mount points. TWO OLD BUGS CLOSED ON THE WAY. The lime tractor-delivered tint still cannot reach the disc — that was the defect that broke the first working build of v0.76.5, where a Uline advisory on a stop a tractor HAD delivered painted lime beside green, no split at all, in precisely the case the feature exists for. And an ALIASED blocker (straight_truck_only, which is box_truck_only under another name) was being matched raw against the blocker set, so it missed and drew as an ordinary restriction — a scanner-found “no” presented as settled fact. Keys are compared resolved now, on both sides, and the marker and the paint rule can no longer give one stop two answers. AND A THIRD, FOUND BY SWEEPING FOR THE FIRST TWO, WHICH IS THE ONE THAT MATTERS OPERATIONALLY: “NO 53FT” WAS NOT A TRAILER BLOCKER AT ALL. The dispatcher’s Equipment restrictions dropdown writes no_53ft and the icon table defines no_53ft — but the blocker set, the routing solver and its constraint switch all spell it no_53, and nothing translates between them. So the single most literal “a 53-footer cannot come here” mark a person can tick landed in a set that had never heard of it. Run against the real functions before the fix: confirmedBlockerKeys came back EMPTY and tractorPaintAllowed came back TRUE — the map kept painting that stop lime, “a tractor delivered here”, on a stop a dispatcher had just said could not take one. It is a blocker now, in both spellings, and it draws its mark for the first time. THE SAME SPLIT IS STILL LIVE IN THE ROUTING ENGINE AND IS DELIBERATELY NOT FIXED HERE: equipmentReqOk matches case ’no_53’ and falls through to “unknown restriction → don’t block”, so an auto-build can still put a 53-footer on a stop marked No 53ft. That changes which truck gets which stop, so it belongs in its own diff with its own tests rather than riding along inside an icon change. Chad, that one is worth doing next. THE TESTS STOPPED GREPPING THE SOURCE. The old guards here were regexes over App.jsx, which pin the shape of the code rather than the picture it draws — green on a refactor that renders something else, red on a rename that renders the same thing. A new helper lifts the marker pipeline out of App.jsx and runs it, so the tests build a real marker and assert on the SVG the app hands Google Maps. Three deliberate mutations — letting the tint speak, putting the slash back underneath, and giving every restriction the filled disc — were each caught by the test named for them. 19 new tests, 2,534 green.'],
+  ['0.78.2', 'PRODUCTION HAD NOT TAKEN A DEPLOY IN SEVEN HOURS, AND v0.76.8 IS WHY. The site was serving v0.76.7 from 4:24pm while v0.76.8 and v0.77.0 sat merged and green and never went live — the exact “merging is not shipping” failure this changelog warned about on 2026-08-19, happening again. THE CAUSE, and it is mine. Netlify scans a build for the VALUES of its environment variables. NUVIZZ_DAVIS_USER happens to be the same word as the owner’s own route — and the test I wrote in v0.76.8 for “don’t count orders off Chad route” had that word typed out in lower case as a fixture. One file in the whole repository contained it, it arrived in v0.76.8, and production’s last good deploy is the release immediately before. Every build since failed its secrets scan on that single line, while CI stayed green because CI does not run the secrets scan. Two releases merged into a site that could not build them. THE FIX derives the scruffy form from the configured exclusion list instead of typing it: the literal is gone from the repo, and the test now pins against the REAL list rather than a copy, so renaming the route can no longer leave a test passing against a name nothing uses. Proven to still bite by removing the case normalisation it guards. WHAT THIS SAYS ABOUT THE GATE: green CI meant nothing here, because the check that failed runs at Netlify and reports on the deploy, not on the pull request. The deploy-watch job compares the LIVE bundle version against main every 30 minutes and is the thing that would have caught it — worth reading when a merge seems not to have landed, before assuming a browser cache. 2,538 green.'],
+  ['0.78.1', 'A MANIFEST NO LONGER SWALLOWS THE APP. Chad, at 11:14pm with a 13-page Uline manifest filling his phone: “when you load a manifest there is no way get back to the app.” He is describing a dead end, and it is a real one. THE MECHANIC, and the reason it never shows up at a desk: the Manifest history PDF link was an anchor with target="_blank". In a browser tab that opens a new tab and the back gesture brings you home. In the INSTALLED app it does not — iOS runs a home-screen web app with no address bar, no toolbar and no back gesture, so _blank navigates the same window and the document simply replaces the board. Nothing undoes it. The only way out is to kill the app and reopen it, which at 11pm on a dispatch board means losing whatever was on screen. THIS IS THE SECOND TIME. The identical trap was found on POD photos and closed there with an in-app viewer that opens OVER the app with Esc, an X and a Close under the thumb — and the manifest PDF was the same anchor one screen over, written before that viewer existed and never revisited. So the viewer is now the SHARED component: PodViewerModal delegates to it rather than keeping its own copy, the manifest opens through it, and neither can drift from the other. AND THE RULE IS A TEST NOW, because “remember not to do that” is what failed the first time. Any anchor pointing at one of our OWN function endpoints may not carry target="_blank"; external hosts are untouched, because a Google Maps link is a deliberate hand-off to the Maps app and iOS brings you back with the app switcher. The viewer keeps one “open in browser” escape hatch for anyone who wants the native reader, and it is the single anchor in the app allowed to leave — marked, and the marker is load-bearing: a second test pins that the viewer contains exactly one _blank anchor and that it is the marked one, which was added after the first version of the guard let an unmarked one through in a mutation check. 4 new tests, 2,538 green.'],
+  ['0.78.0', 'A FULL HALF AND HALF ICON — THE TRAILER MARK NOW FILLS ITS WHOLE DISC, AND HALF OF IT IS THE CONFIDENCE. Chad, a day after the split ring shipped: “i want a full half and half icon.” He is right, and rendering it says why. These marks draw at 20×22 CSS px on the real map, so a 3.4-wide ring split down the middle is a pixel and a half of red beside a pixel and a half of green around a white disc — put through the shipped pipeline at TRUE size over a dark treeline, a bright parking lot and a grey roof, a confirmed mark and an unconfirmed one could not be told apart on any of the three. A distinction a dispatcher cannot see at the size it draws is not a distinction, it is a comment in the source code. THE DISC CARRIES IT NOW: a trailer blocker somebody has CONFIRMED fills solid in the restriction’s own colour, and one only a scanner found fills exactly half — half the restriction colour, half the eligibility green. The unconfirmed mark is literally half the confirmed one, which is also the plainest thing the icon could mean. THE PAIR HAD TO MOVE TOGETHER, and that is the part that is not cosmetic. Making only the advisory mark a saturated two-tone disc would leave it shouting louder than a confirmed hard restriction, and the two mistakes are not symmetrical: burning a trailer slot on a stop that would have taken one costs a slot, and sending a 53-footer to a dock a person already said no about costs a driver his morning and the customer his delivery. So the confirmed mark is the loudest thing out there and the open question is visibly half of it. THE TRUCK SURVIVED THE MOVE. White is the only glyph colour that reads on both a red half and a green half, so the truck became one solid white SILHOUETTE and the prohibition slash went dark and moved ON TOP of it. Two candidates were rendered at true size on three map grounds and put in front of Chad — dark wheels, or wheels left white so the whole shape reads as a single mark — and he picked the silhouette: “i like h ink over”. It is the right call at 20px, where the wheels are under two pixels across and dark ones read as grit on the glyph rather than as running gear; the truck is identified by its body-and-cab outline at that size. That is the opposite of the rule for every other mark here, on purpose: that rule exists because a RED slash over a RED letter reads as one blob, and here the slash is ink on a white truck. Drawn underneath, the body swallowed the middle of the slash and the “no” stopped reading at true size. Rendered both ways before choosing. THE GREEN HALF GOES BRIGHT WHEN A TRACTOR HAS ACTUALLY BEEN HERE. On an unconfirmed blocker, “a 53-footer has delivered to this dock before” is the best counter-evidence a dispatcher has — it is what turns the mark into a decision instead of a shrug. That proof used to ride on the truck, which was painted with the stop’s tint; a white truck cannot carry it, so it moved to the half that already means “a trailer fits”: forest green for “the rules allow it”, the brighter lime for “and one actually has”. It is handed over as a FACT, not as a colour — pass the tint in and a priority flag’s purple becomes the half that means a trailer is fine, which is the v0.76.5 defect wearing a new coat. Only the proof itself may speak there, and a test pins that a truthy-but-wrong value cannot switch it on. ONLY TRAILER BLOCKERS. Liftgate, appointment, closed-day and the clocks have no confidence to carry and are untouched — white disc, coloured ring, exactly as before — and the +N overflow badge still carries no restriction of its own. The legend’s “How sure is it?” pair is built by the SAME function the map draws with, so it cannot teach a mark that is not out there, and it says solid/half-and-half now instead of ring. It is on the phone and on desktop, because there is one legend body and three mount points. TWO OLD BUGS CLOSED ON THE WAY. The lime tractor-delivered tint still cannot reach the disc — that was the defect that broke the first working build of v0.76.5, where a Uline advisory on a stop a tractor HAD delivered painted lime beside green, no split at all, in precisely the case the feature exists for. And an ALIASED blocker (straight_truck_only, which is box_truck_only under another name) was being matched raw against the blocker set, so it missed and drew as an ordinary restriction — a scanner-found “no” presented as settled fact. Keys are compared resolved now, on both sides, and the marker and the paint rule can no longer give one stop two answers. AND A THIRD, FOUND BY SWEEPING FOR THE FIRST TWO, WHICH IS THE ONE THAT MATTERS OPERATIONALLY: “NO 53FT” WAS NOT A TRAILER BLOCKER AT ALL. The dispatcher’s Equipment restrictions dropdown writes no_53ft and the icon table defines no_53ft — but the blocker set, the routing solver and its constraint switch all spell it no_53, and nothing translates between them. So the single most literal “a 53-footer cannot come here” mark a person can tick landed in a set that had never heard of it. Run against the real functions before the fix: confirmedBlockerKeys came back EMPTY and tractorPaintAllowed came back TRUE — the map kept painting that stop lime, “a tractor delivered here”, on a stop a dispatcher had just said could not take one. It is a blocker now, in both spellings, and it draws its mark for the first time. THE SAME SPLIT IS STILL LIVE IN THE ROUTING ENGINE AND IS DELIBERATELY NOT FIXED HERE: equipmentReqOk matches case ’no_53’ and falls through to “unknown restriction → don’t block”, so an auto-build can still put a 53-footer on a stop marked No 53ft. That changes which truck gets which stop, so it belongs in its own diff with its own tests rather than riding along inside an icon change. Chad, that one is worth doing next. THE TESTS STOPPED GREPPING THE SOURCE. The old guards here were regexes over App.jsx, which pin the shape of the code rather than the picture it draws — green on a refactor that renders something else, red on a rename that renders the same thing. A new helper lifts the marker pipeline out of App.jsx and runs it, so the tests build a real marker and assert on the SVG the app hands Google Maps. Three deliberate mutations — letting the tint speak, putting the slash back underneath, and giving every restriction the filled disc — were each caught by the test named for them. 19 new tests, 2,534 green.'],
   ['0.77.0', 'THE SCHEDULER WAS STARTING SCANS IT NEVER FINISHED, AND SPENDING THE MORNING REBUILDING A BOARD NOBODY ASKED IT TO. Chad, 10:02am on a Tuesday, the status card reading Loads / Orders / Completed all “updated 3 hr ago” with 923 NuVizz calls already gone against a 2,000 ceiling: “something is very wrong with my scan schedule.” Three defects, found by replaying the real decision functions over a whole delivery day at the 5-minute cron rather than reading them. (1) THE 4AM DEADLOCK. The load roster’s own rule opens at 04:00, but the branch that RUNS it carried a hard “only after 6am” gate written before the scan plan existed. So from four in the morning the roster was due, the branch that would have stamped it refused to fire, and nothing could ever clear it — and because no path was roster-only, every fire that cleared the ten-minute floor fell through to the most expensive thing the scanner can do: a full ~700-stop rebuild with enrichment. Measured on the replay: SIX rebuilds an hour at 4am and 5am where the plan asks for three, while the dock was still dark. (2) THE ROSTER’S HOURLY CADENCE WAS DECORATIVE. It was dropped to hourly in v0.69.0 specifically to stop it riding along on every fire — that reclaim is what pays for 15-minute completed sampling. It never happened: today’s roster was still re-pulled at the bottom of the write loop on every single full scan. 79 calls a day for a list that changes when somebody creates a load. Now 13. Across the day the saved-search spend drops from 233 to 157 calls, with five fewer board rebuilds. (3) THE ONE THAT FROZE THE CARD. A scan stamp is a claim about what the vendor answered. v0.76.6 moved it behind the pull so a 5xx could not claim a scan — correct, and not enough. A run that ANSWERS the pull and then dies before the 700-stop board write is stamped identically to one that finished, so the per-kind clocks read healthy while the day index — which is what the board serves and what those three feed rows read — never moves. Every symptom of that is “the board stopped updating” and nothing anywhere says so. The stamp now waits for a board write to actually land, so an unfinished run leaves the scan overdue and the next fire RETRIES instead of standing down for a full interval on the strength of nothing. AND THE JOB IS INSPECTABLE NOW, which is the real repair. A scan runs 288 times a day with nobody watching and its entire reasoning lived in one console line per fire inside Netlify’s log viewer — so “why didn’t it scan at 8am” could not be answered from the app Chad actually has open. GET nuvizz-scan-config?explain=1 now runs the real decision functions against the live stamps and says what the next fire would do and why, with the board’s three stamps and the scheduler’s own clocks side by side — when those two disagree, the scan is starting and not finishing. Beside it is a durable ledger of what recent fires DID, and any run with a start and no finish is listed by name. ZERO NuVizz calls: it is arithmetic and Firestore reads. Also: the schedule editor will no longer accept an interval below the scanner’s hard ten-minute floor — it took 5, reported 5 back, and delivered 10. 21 new tests, 2,520 green.'],
   ['0.76.8', 'THE DAY BOARD STOPS COUNTING WORK THAT WAS NEVER TODAY’S WORK. Chad, on the 6:30pm email: “Don’t include any Uline appt orders or orders off of Chad route going forward.” Both are the same kind of thing and both were sitting in the DENOMINATOR. ULINE APPT is a holding pen, not a truck — freight sits there precisely because it is waiting on a scheduled appointment with the customer, so “2 open of 2” at half six is that route’s normal resting state rather than a failure anybody can act on tonight. CHAD is the owner’s own route; he is driving it, and an email listing his eight stops back to him at 6:30pm is not information. Between them they were dragging the completion figure down for reasons nobody could do anything about, which is how a number stops being read. EXCLUDED ENTIRELY, NOT JUST HIDDEN. Dropping them from the tables while leaving them in “543 of 558” would produce a percentage that cannot be reconciled against the board — and an unreconcilable count is worse than no count, which is the lesson the Routing status card already paid for. They leave the numerator and the denominator together. AND THE REPORT SAYS SO: a “Not counted: ULINE APPT (2), CHAD (8)” line in both the text and the HTML, so the planned total can still be checked against what is on screen. THE APPOINTMENT RULE IS REUSED, NOT RE-TYPED. isAppointmentRoute already exists in the flag engine, matching the APPT token on word boundaries and verified against 111 real route names — so a future ESTES APPT or ULINE APPT 2 is covered the day it appears, and the board and the email can never disagree about what an appointment route is. CHAD IS MATCHED EXACTLY, on the whole normalised name. A substring match would have silenced CHADWICK and CHATTANOOGA, and a report that quietly drops a truck is the precise failure this feature exists to prevent. The list is configurable through DAY_REPORT_EXCLUDE_ROUTES because a route name is a fact about how Davis dispatches this month, not a fact about the software; the appointment rule is structural and applies even when that list is emptied. 8 new tests, 2,507 green.'],
   ['0.76.7', 'EVERY DOCK IS ASSUMED TO SHUT AT 5PM NOW, AND THE PARSER CAN NO LONGER BE SILENCED BY A BLANK NOTE. Chad: “as far as our flags are concerned we should assume that all stops close at 5 pm unless we have parsed otherwise from the actual orders. 007166214 dispatcher set the hours for this customer. I want to make sure that hours set by dispatcher override the parsed hours.” TAKING THE SECOND HALF FIRST, BECAUSE THE ANSWER IS THAT IT ALREADY WORKED. Verified by RUNNING decideWrite rather than reading it: a doc with manual_overrides.receiving_hours writes nothing at all on an hours scan — the early return fires before the payload is even built. There is a second guard behind it, so hand-typed hours with no latch are protected too, on provenance alone. And manual_overrides has ZERO automatic writers anywhere in the repo; only the stop card sets it, stamped in the same patch as the time input. The dispatcher already outranks the parser. WHAT WAS ACTUALLY BROKEN SAT NEXT DOOR AND POINTED THE OTHER WAY. emptyNote() seeds receiving_hours with all seven days blank so the time inputs stay controlled, and every note save writes the WHOLE draft — so a dispatcher who saved a phone number, a dock note or a priority flag on a customer with no note yet persisted that skeleton. The ownership test counted KEYS, so seven blank days read as “somebody’s hours”, and the scanner stopped filling that customer forever: it could keep matching “RECEIVING HOURS 8AM-2PM” on every order and never write it. A doc with no manual_overrides, behaving as locked. Blank days carry no claim now. One real day among blanks still does — a dispatcher who set Monday and left the rest empty has claimed the field, and an explicit latch still outranks everything. THE 5PM ASSUMPTION. A stop with no hours on file was INVISIBLE to the deadline rules: measured by running the engine, a three-stop afternoon route with nothing on file produced zero rows, and the identical route with a typed close produced a critical. The quiet was never “this one is fine”, it was “we never looked”. It lives in the flag engine’s own window lookup and deliberately NOT in dayReceivingWindow — that function also feeds the map’s time marks and the PRO report, and defaulting there would hang a clock on every pin with no hours, which is the exact noise v0.69.2 spent itself removing. Pickups and our own dock keep their exemption. IT IS ITS OWN TIER AND IT IS CAPPED AT AMBER. severityTier floors any overrun against typed hours at RED, and red is what texts — so an assumed close reaching red would mean every stop still running at 5:01pm sends a message about a deadline nobody verified. An assumption may earn a place on the panel; it may not earn the right to wake somebody. TWO PLACES THAT WOULD HAVE TURNED THE ASSUMPTION INTO NOISE, both closed. R6 builds the no-driver card, a driverless load runs on a noon clock, and every unassigned load long enough to reach 5pm would have grown one — the precise decoration that rule had to be rescued from once already. It now requires a deadline somebody RECORDED, which is what Chad’s LVILLE case was. And the alert path refuses assumed rows ABOVE the amber gate, not behind it: AMBER_GATED_RULES contains hours_risk, so the day that switch is flipped it would otherwise have carried every guess with it. The footer still counts hours ON FILE, with assumed ones counted separately — that number exists so a zero says the fix is data rather than code, and counting the assumption would have turned it into a stop count. 21 new tests, 2,499 green.'],
@@ -2880,10 +2882,15 @@ function blockerDiscMarkup(cx, cy, r, warnColor, advisory, tractorProven) {
   return disc + `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="white" stroke-width="${(r * 2.2 / 18).toFixed(2)}"/>`;
 }
 
-// The truck on a filled disc: WHITE body, dark wheels, dark prohibition slash.
+// The truck on a filled disc: a SOLID WHITE SILHOUETTE and a dark prohibition slash over it.
 //
-// White is the only colour that survives on both a red half and a green half, and the wheels
-// have to stop being white with it or the truck loses its running gear and reads as a box.
+// White is the only colour that survives on both a red half and a green half. Two candidates
+// were rendered at true size on three map grounds and put in front of Chad: a white truck with
+// DARK wheels, and a white truck whose wheels stay white so the whole shape reads as one clean
+// silhouette. He picked the silhouette — "i like h ink over" — and it is the right call at 20
+// px, where the wheels are under two pixels across and dark ones read as grit on the glyph
+// rather than as running gear. The truck is identified by its body-and-cab outline at this
+// size; the wheels are detail the eye never gets to.
 //
 // AND THE SLASH GOES OVER THE GLYPH HERE, WHICH IS THE OPPOSITE OF renderMarkerGlyph — on
 // purpose, and it is worth saying why so nobody "fixes" it back. That rule exists because a
@@ -2895,12 +2902,10 @@ function blockerDiscMarkup(cx, cy, r, warnColor, advisory, tractorProven) {
 function renderBlockerGlyph(restrictionKey, glyphX, glyphY, scale) {
   const resolved = resolveRestrictionKey(restrictionKey);
   const def = RESTRICTION_ICONS[resolved] || UNKNOWN_RESTRICTION;
-  // Order matters: park the hard-coded white wheel fills BEFORE currentColor becomes white,
-  // or the recolour cannot tell the truck's body from its wheels afterwards.
+  // currentColor is the truck body; the hard-coded white wheel fills are left alone, which is
+  // what makes it one silhouette rather than a truck with holes punched in it.
   const glyph = (def.markerGlyph || UNKNOWN_RESTRICTION.markerGlyph || '')
-    .replace(/fill="white"/g, 'fill="__WHEEL__"')
-    .replace(/currentColor/g, '#ffffff')
-    .replace(/__WHEEL__/g, BLOCKER_GLYPH_INK);
+    .replace(/currentColor/g, '#ffffff');
   const slash = def.prohibition
     ? `<line x1="2" y1="2" x2="20" y2="20" stroke="${BLOCKER_GLYPH_INK}" stroke-width="3" stroke-linecap="round"/>`
     : '';
@@ -5616,22 +5621,31 @@ function podDocUrl(d, opts = {}) {
 }
 const isPodImage = isPodImageExt;   // one source of truth (see lib/stop-card-sections.js)
 
-// In-app viewer for a POD photo / document. Opens OVER the app with a clear Close (X) —
-// previously these opened via target="_blank", which inside the installed PWA has no
-// browser chrome, so a tapped photo/BOL filled the screen with no way back. Esc / backdrop
-// / the X / the bottom Close button all dismiss it; an "open in browser" escape hatch
-// remains for anyone who wants the native viewer.
-function PodViewerModal({ doc, onClose }) {
+// IN-APP VIEWER FOR ANY DOCUMENT THIS APP CAN SERVE. Opens OVER the app with a clear
+// Close (X) instead of navigating away.
+//
+// THE TRAP THIS EXISTS TO CLOSE, twice now. A document opened with target="_blank" is fine
+// in a browser tab and is a dead end inside the INSTALLED app: iOS runs a home-screen web
+// app with no address bar, no toolbar and no back gesture, so _blank navigates the same
+// window and the document simply replaces the app. Chad, at 11:14pm with a 13-page Uline
+// manifest filling the screen: "when you load a manifest there is no way get back to the
+// app." It was found first on POD photos and fixed there; the manifest PDF link was the same
+// anchor, one screen over, and nothing stopped it being written again.
+//
+// So the viewer is now the shared component and the callers hold no opinion about how a
+// document is shown. Esc / backdrop / the X / the bottom Close all dismiss it, and the
+// "open in browser" escape hatch stays for anyone who wants the native viewer — it is the
+// ONE anchor allowed to leave, and it is marked so the guard in the tests can tell it from
+// a regression.
+function DocumentViewerModal({ src, title, subtitle, isImage = false, onClose }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
-  if (!doc) return null;
-  const src = podDocUrl(doc);
-  const isImg = isPodImage(doc.extension);
-  const label = doc.documentName || 'Proof of delivery';
-  const when = fmtClockShort(doc.createdTime);
+  const label = title;
+  const when = subtitle;
+  const isImg = isImage;
   return (
     <div
       className="fixed inset-0 z-[1400] flex flex-col bg-black/90"
@@ -5647,7 +5661,7 @@ function PodViewerModal({ doc, onClose }) {
           {/* Same 44px box as Close beside it. The phone floor rule doesn't cover <a>, and an
               inline anchor ignores min-height, so this sat at 34px next to a 44px Close — and a
               mis-tap here ejects the photo to the browser, the thing this viewer exists to stop. */}
-          <a href={src} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center p-2 rounded-full hover:bg-white/15 text-white/90" title="Open in browser" aria-label="Open in browser" style={{ minWidth: 44, minHeight: 44 }}><ExternalLink size={18} /></a>
+          <a data-escape-hatch href={src} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center p-2 rounded-full hover:bg-white/15 text-white/90" title="Open in browser" aria-label="Open in browser" style={{ minWidth: 44, minHeight: 44 }}><ExternalLink size={18} /></a>
           <button onClick={onClose} className="p-2 rounded-full hover:bg-white/15" aria-label="Close" style={{ minWidth: 44, minHeight: 44 }}><X size={22} /></button>
         </div>
       </div>
@@ -5662,6 +5676,20 @@ function PodViewerModal({ doc, onClose }) {
         <button onClick={onClose} className="px-5 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-sm font-semibold" style={{ minHeight: 44 }}>Close</button>
       </div>
     </div>
+  );
+}
+
+// A POD photo / BOL, shown in the shared viewer above.
+function PodViewerModal({ doc, onClose }) {
+  if (!doc) return null;
+  return (
+    <DocumentViewerModal
+      src={podDocUrl(doc)}
+      title={doc.documentName || 'Proof of delivery'}
+      subtitle={fmtClockShort(doc.createdTime)}
+      isImage={isPodImage(doc.extension)}
+      onClose={onClose}
+    />
   );
 }
 
@@ -25863,6 +25891,8 @@ function ManifestHistoryCard() {
   const [state, setState] = useState({ loading: true, err: null, data: null });
   const [openDate, setOpenDate] = useState(null);
   const [day, setDay] = useState({ date: null, loading: false, doc: null, err: null });
+  // Which night's manifest is open in the viewer, if any.
+  const [viewPdf, setViewPdf] = useState(null);
 
   const load = useCallback(async () => {
     setState((s) => ({ ...s, loading: true, err: null }));
@@ -25936,8 +25966,19 @@ function ManifestHistoryCard() {
                   the one before it is a truncated download or a mis-parse, not a change. */}
               {r.sawOrderCountFall ? <span className="text-[11px] font-semibold text-amber-700">a report came back short</span> : null}
             </button>
+            {/* OPENS OVER THE APP, NOT INSTEAD OF IT. This was an anchor with target="_blank",
+                which is a dead end in the installed app: iOS gives a home-screen web app no
+                address bar, no toolbar and no back gesture, so the manifest replaced the
+                board with no way back — Chad, at 11:14pm under a 13-page Uline manifest,
+                "there is no way get back to the app". Same trap PodViewerModal was written
+                for; same viewer closes it. */}
             {r.pdfStored
-              ? <a href={pdfHref(r.date)} target="_blank" rel="noreferrer" className="tap-target ml-auto px-2 py-1 text-[11px] font-semibold text-blue-700 border border-blue-200 rounded hover:bg-blue-50">PDF</a>
+              ? (
+                <button
+                  onClick={() => setViewPdf(r.date)}
+                  className="tap-target ml-auto px-2 py-1 text-[11px] font-semibold text-blue-700 border border-blue-200 rounded hover:bg-blue-50"
+                >PDF</button>
+              )
               : <span className="ml-auto text-[11px] text-amber-700">PDF not stored</span>}
           </div>
 
@@ -25991,6 +26032,15 @@ function ManifestHistoryCard() {
           ) : null}
         </div>
       ))}
+
+      {viewPdf ? (
+        <DocumentViewerModal
+          src={pdfHref(viewPdf)}
+          title={`Uline manifest — ${viewPdf}`}
+          subtitle="Close to return to the board"
+          onClose={() => setViewPdf(null)}
+        />
+      ) : null}
     </div>
   );
 }
