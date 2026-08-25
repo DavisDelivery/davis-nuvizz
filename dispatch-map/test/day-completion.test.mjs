@@ -383,7 +383,7 @@ test('an appointment route is excluded even when the configured list is empty', 
 
 // ── THE EXCLUDED ORDERS COME BACK, AT THE END ────────────────────────────────
 //
-// Chad: "I dont' want orders from the chad route showing up on my flags list. However I do
+// Chad: "I dont' want orders from the Chad route showing up on my flags list. However I do
 // want them back on the end of email."
 //
 // Two different asks about the same freight, and they do not conflict. A FLAG is a call to

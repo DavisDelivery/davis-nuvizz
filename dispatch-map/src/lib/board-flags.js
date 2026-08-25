@@ -433,7 +433,7 @@ export function isAppointmentRoute(name) {
 
 // THE OWNER'S OWN ROUTE IS NOT THE BOARD'S BUSINESS EITHER.
 //
-// Chad: "I don't want orders from the chad route showing up on my flags list."
+// Chad: "I don't want orders from the Chad route showing up on my flags list."
 //
 // It is the same category as an appointment holding pen and for the same reason: a flag is
 // only worth raising if somebody can act on it, and he is the one driving that truck. A red
@@ -694,7 +694,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // a board with no day or depot, which the old placement inside the hours block could not.
   //
   // AND THE OWNER'S OWN ROUTE RIDES THE SAME RULE — see isSetAsideRoute. Chad: "I don't want
-  // orders from the chad route showing up on my flags list." Same test as the parking lot:
+  // orders from the Chad route showing up on my flags list." Same test as the parking lot:
   // a flag nobody can act on is decoration, and he is the one driving it.
   const onAppointmentRoute = (s) => isAppointmentRoute(routeKeyOf(s));
   const onOwnerRoute = (s) => isOwnerRoute(routeKeyOf(s));
