@@ -65,7 +65,7 @@ import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerC
 import { cancelsIn, cancelSummary } from './lib/cancel-guard.js';
 import { validateNewRoute } from './lib/route-create.js';
 import { mergeDayLoads, dayLoadTally } from './lib/day-loads.js';
-import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, normalizeRoutesRailTab } from './lib/right-panel.js';
+import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab } from './lib/right-panel.js';
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
 // The scan plan's model, shared with the scheduler that runs it — the screen and the code
@@ -94,7 +94,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.79.2';
+const APP_VERSION = '0.79.3';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -165,6 +165,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.79.3', 'THE THIRD RIGHT-PANEL OPTION IS BACK — I DELETED THE THING CHAD ASKED FOR WHILE TRYING TO IMPROVE IT. He asked for it plainly and twice: “make it a 3rd option in the settings for the right panel”, and then, when asked whether Drivers should be replaced, “I just want a 3rd right panel option that is routes and loads.” v0.79.0 shipped exactly that — three modes in the gear, each flipping between its own two panels. THEN HE SAID “I want them to be tabs just like the routes and drivers are so you can switch the view”, AND v0.79.1 READ IT AS “COLLAPSE THE MODES INTO ONE STRIP”. It was not. He was talking about the SUB-TABS — that the new mode’s two panels should flip like Routes/Drivers already do, which is what they already did. He had not seen the build; production was still on v0.78.4 when he wrote it, so he was reacting to a description, and the description is the only thing that needed fixing. What shipped instead merged Routes, Drivers and Loads onto one strip and left the gear with TWO options where he had twice said three. His verdict, holding the screen: “there should be 3 right panel views not 2 i didn’t want to touch either one as they were I wanted a 3rd option.” WHAT WENT WRONG IS NOT THE READING, IT IS THAT I ACTED ON IT. An eight-word message that could mean two things, one of which UNDOES an instruction given twice in writing, is not ambiguous — the reading that contradicts a standing instruction is the one that needs checking before it is built, not after. There was a cheaper move available at every point: ask, or ship the small thing and say what I thought he meant. SO THE GEAR HAS THREE OPTIONS AGAIN: Tabs (Stops / Loads / Result), Routes / Drivers, Routes / Loads — in that order, with the first two byte-for-byte what they were. THAT INCLUDES BEHAVIOUR, NOT JUST THE LABEL: Routes/Drivers gets its unpersisted sub-tab back, because v0.79.1 quietly made it remember which panel was open and “as they were” covers that too. The new mode keeps a persisted sub-tab of its own, which is a fair default for a mode that has no prior behaviour to preserve. THE TWO SUB-TAB VOCABULARIES STAY SEPARATE, one per mode, so “drivers selected inside the Routes/Loads mode” cannot be represented — a state nothing can render is a blank panel waiting to happen, and the merged strip had made exactly that reachable. THE COUNT IS A TEST NOW, and it is the first one in the file: three options, in order, with the two originals’ labels pinned. Deleting the third mode fails three tests; folding Drivers into the loads mode fails two; RELABELLING Routes/Drivers — the subtler way to break “don’t touch either one” — fails one. Each was run as a deliberate mutation. Also pinned: both route-card modes still declare routesPanel, so the live driver-assignment roster is fetched for each and no card is left with an empty driver dropdown, which on a dispatch board is indistinguishable from NuVizz being down. AND IT WAS READ OFF THE BUILT APP, not off the source: the gear was opened in a real browser and its Right panel radio group reported back all three labels with the right one checked, then each mode’s strip was confirmed — Routes | Drivers, and Routes | Loads (7) opening straight onto Loads from a stored preference. The phone guard sweeps both route modes at 390 and 360. 12 tests, 2,566 green.'],
   ['0.79.2', 'NAME TWO DRIVERS AND THE LEARNED ENGINE DRAFTS THEIR ROUTES — the first slice of Assist, built the way Chad asked for it: “give you 2 or 3 routes like lets say a Victor and Scott then have you build it… if not I’ll move a few stops here and there then have you push it.” A new “Engine draft” card on the Routing Setup panel takes driver names, and the SAME engine that is scored nightly on the Engine tab — territory, customer habit, per-driver skid caps, learned zone ownership — picks their stops out of the day’s UNPLANNED pool, splits trips, and sequences each one from that driver’s own past routes. The drafts open as pending Compare cards, so everything after the draft is the machinery that already exists: drag stops between cards, pick the driver, and the workbench Save creates the routes in NuVizz through the verified write path. DRAFTING COSTS ZERO NUVIZZ CALLS — it reads the Firestore board cache and the engine’s learning collections, nothing else — and it cannot push anything on its own; Save remains the only door to NuVizz and it remains Chad’s hand on the handle. WHAT MAKES THE DRAFT TRUSTWORTHY IS WHAT IT REFUSES TO CLAIM: a stop that usually runs with a driver who was NOT named stays unplanned and the panel says whose it is; unfamiliar geography is handed back (“no history here — place it by hand”) instead of guessed at; a named driver is never quietly given a three-trip day (dispatch runs two — the overflow comes back with the reason); and when the engine only knows a driver from class averages, the card says so out loud. An ambiguous name (“two Victors”) is an error listing both, never a coin flip. THE ENGINE TAB ALSO STOPS LYING ABOUT ITS OWN SCOREBOARD, four ways. The “How to read” box said 1.0 was a perfect sequence score; the metric (the Amazon/MIT challenge score) is the OPPOSITE — 0 is identical, lower is better — so the flat 0.05-0.13 that read as failure was actually the engine sequencing close to dispatch, and yesterday’s 0.051 is one of the strongest numbers on the page. The version-progress row now auto-scrolls to the CURRENT engine’s card — the three newest versions (28.0→30.7→31.2 known 32.4) were rendering off the right edge, which is how a climbing engine read as a stuck one. A ▲/▼ chip comparing versions scored on non-overlapping date windows now shows grey with a ≠ (different freight is not a fair fight). And the score now logs its two factors separately (zone-order disorder vs edit distance), the co-load mean no longer counts no-co-load days as zeros, and Travel Δ shows a dash instead of a fake number when half the data is missing. 15 new tests, 2,565 green.'],
   ['0.79.1', 'THE RIGHT RAIL IS THREE TABS NOW: ROUTES, DRIVERS, LOADS — v0.79.0 PUT THE THIRD ONE BEHIND THE GEAR AND THAT WAS THE WRONG SHAPE. Chad, on the Routing beta with the rail in Routes/Drivers and the day’s loads down in the bottom grid: “I want the loads that is on the bottom panel to replace the drivers tab in the right panel but also leave the loads on the bottom panel make it a 3rd option in the settings for the right panel.” Asked whether Drivers should therefore go, he was explicit that it should not: “I just want a 3rd right panel option that is routes and loads.” SO IT WAS BUILT AS A THIRD GEAR MODE — Routes/Drivers stayed, Routes/Loads was added beside it — AND THAT WAS THE WRONG SHAPE, which he said in one sentence: “I want them to be tabs just like the routes and drivers are SO YOU CAN SWITCH THE VIEW.” HE IS RIGHT, AND THE DISTINCTION IS THE WHOLE POINT. A gear mode is a SETTING: something you choose once and live with. A tab is a VIEW: something you flick between while working. Routes, Drivers and Loads are three views of the same day — what is on this truck, who is driving it, and what is left to build — and a dispatcher moves between all three dozens of times while building a board. Putting two of them on a strip and the third behind a settings menu charges a trip into the gear for a switch that should cost one click, and it HIDES it: a panel you reach through a settings menu is a panel most people never find. So there is one strip with three tabs and no mode chooses between them. NOTHING WAS TAKEN AWAY, which was the constraint all along. Drivers keeps its place in the middle so the muscle memory of anyone already using the strip survives; Loads joins on the end; the bottom grid’s Loads tab is untouched. This is a second way in, not a move. THE COUNTS RIDE ON THE LABELS because they are what the choice turns on — 65 routes against 106 loads is the shape of how much of the day is still unbuilt. Drivers deliberately carries no count: that roster is fetched only when the tab is first opened, and a number that appears a second after you look at it is worse than no number. THE LOADS PANEL IS THE ONE THAT ALREADY EXISTED, not a new list built to look like one: same rows, same search, same Built-only filter that separates the routes carrying freight from the ninety-odd Drafts, same click-through into Compare. A 380px rail cannot hold the bottom grid’s nine columns, and a second implementation of the same data is two things that disagree by Thursday. WHICH TAB IS OPEN IS REMEMBERED NOW, which the old two-way toggle never did — which of the three you want beside the map is a working preference, and re-picking it every morning is a click paid daily. THE DEFECT THIS WOULD HAVE SHIPPED WITH, and the reason the rail’s modes are a module rather than more comparisons in the render: the mode was tested in SIX places, plus one effect that decides whether to fetch the live driver-assignment roster at all — and that effect read the mode BY NAME. A rail that renders route cards without it gives every card an EMPTY DRIVER DROPDOWN: not a cosmetic fault, but “I cannot assign this load” on a dispatch board, indistinguishable from the vendor being down. A mode DECLARES that it renders route cards and the effect asks the declaration. Pinned by a test that fails when the declaration is flipped. AND THE VALUE THE FIRST SHAPE WROTE IS MIGRATED, NOT DROPPED. The gear-mode build reached a deploy preview, so a browser can be holding routesLoads; it now lands on the strip that contains both of its panels rather than being silently reset to the tabs rail, which is a different screen and would read as the setting being ignored. Anything else unrecognised still falls back to the tabs rail rather than to a blank panel — a blank right rail on a dispatch board reads as a broken app, and there is no control on screen to escape it. TWO VIEWS, AND THE GUARD SWEEPS ALL THREE TABS. The phone gets the strip as a block above the panel rather than the desktop’s header row — there is no room beside a date and a collapse chevron at 360px, and the sheet is already dated. More to the point, verify-mobile-layout only ever saw whichever view the rail happened to default to: a panel chosen by a remembered setting is a panel the phone guard never measured, which is exactly how a screen ships untested on a phone. It walks Routes, Drivers and Loads now, at 390 and at 360, with the setting keys cleared for every screen so one entry cannot quietly retune the next. AND IT WAS DRIVEN, NOT DESCRIBED: the strip was rendered in a real browser on a desktop and a phone, the Loads tab confirmed to open from a stored preference before anything was clicked, and the three buttons MEASURED at 44px tall and 221px wide inside a 360px screen rather than assumed to fit. 12 new tests, 2,561 green.'],
   ['0.79.0', 'THE RIGHT RAIL HAS A THIRD LAYOUT: ROUTES BESIDE THE DAY’S LOADS. Chad, on the Routing beta with the rail in Routes/Drivers and the day’s loads down in the bottom grid: “I want the loads that is on the bottom panel to replace the drivers tab in the right panel but also leave the loads on the bottom panel make it a 3rd option in the settings for the right panel.” Asked whether Drivers should therefore go, he was explicit: “I just want a 3rd right panel option that is routes and loads.” SO NOTHING WAS TAKEN AWAY. The gear’s two existing choices are byte-for-byte what they were, Drivers still lives one mode over, and the bottom grid’s Loads tab is untouched — this is a second way in, not a move. WHY IT IS THE RIGHT PAIR TO PUT SIDE BY SIDE. Building a day is two questions asked in alternation: what is on this route, and what is left to put on a route. The routes are cards you drag stops onto; the loads are the day’s real NuVizz inventory — four built, three still empty Drafts, and how far each one has actually got. Those two lived on opposite edges of the screen, so answering the second question meant leaving the first. The driver roster is a lookup you open when a name is missing, which is a different rhythm entirely and belongs in its own mode. THE LOADS SIDE IS THE PANEL THAT ALREADY EXISTED, not a new list built to look like one: same rows, same search, same Built-only filter that separates the four routes carrying freight from the ninety-odd Drafts, same click-through into Compare. A 380px rail cannot hold the bottom grid’s nine columns, and a second implementation of the same data is two things that disagree by Thursday. THE DEFECT THIS WOULD HAVE SHIPPED WITH, and it is the reason the mode list is now a module rather than three more comparisons in the render. The rail’s mode was tested in SIX places, plus one effect that decides whether to fetch the live driver-assignment roster at all — and that effect read the mode by name. A third mode that renders route cards without it gives every card an EMPTY driver dropdown: not a cosmetic fault, but “I cannot assign this load” on a dispatch board, and indistinguishable from the vendor being down. A mode now DECLARES that it renders route cards and the effect asks the declaration, so the next mode added cannot repeat it. Pinned by a test that fails when the declaration is flipped. THE STORED VALUE IS TREATED AS SOMEBODY ELSE’S. It comes out of localStorage — an older build’s word, a hand-edited one, or nothing — and anything this build cannot render falls back to the tabs rail rather than to a blank panel, because a blank right rail on a dispatch board reads as a broken app and there is no control on screen to escape it. The Loads sub-tab is its own state as well, so “drivers selected inside the loads mode” is not a thing that can be represented. Both proven by mutation: trusting the stored value, and letting the two sub-tabs share a vocabulary, each break a named test. TWO VIEWS, AND THE GUARD SWEEPS THEM NOW. The phone gets the strip as a block above the panel rather than the desktop’s header row — there is no room beside a date and a collapse chevron at 360px, and the sheet is already dated. More to the point, verify-mobile-layout only ever saw the rail’s DEFAULT layout: a mode chosen from a setting is a mode the phone guard never measured, which is exactly how a screen ships untested on a phone. It walks all three now, at 390 and at 360, with the setting keys cleared for every screen so one entry cannot quietly retune the next. AND IT WAS DRIVEN, NOT DESCRIBED: the mode was rendered in a real browser on both a desktop and a phone, the sub-tab clicked, the loads list confirmed on screen, and the new strip’s buttons MEASURED at 44px rather than assumed to clear the 40px floor. 10 new tests, 2,559 green.'],
@@ -14953,20 +14954,25 @@ function RailSegmentToggle({ tabs, value, setValue, className = '' }) {
   );
 }
 
-// The right panel's three views of the day, in one strip. Chad, on the first cut that put Loads
-// behind its own gear mode: "I want them to be tabs just like the routes and drivers are so you
-// can switch the view." Routes is what is on this truck, Drivers is who is driving, Loads is
-// what is left to build — a dispatcher moves between all three dozens of times while building a
-// board, and none of them should cost a trip into a settings menu.
-//
-// The counts ride on the labels because the choice of which to open depends on them: 65 routes
-// against 106 loads is the shape of how much of the day is still unbuilt. Drivers carries no
-// count — the roster is fetched only when that tab is first opened, and a number that appears a
-// second after you look at it is worse than no number.
-function RoutesRailTabs({ subTab, setSubTab, routesCount, loadsCount, className = '' }) {
+// The right panel's "Routes / Drivers" mode: today's route cards, or the full driver roster.
+// Unchanged since it shipped, including the absence of a count on Drivers — that roster is
+// fetched only when the tab is first opened, and a number that appears a second after you look
+// at it is worse than no number.
+function RoutesDriversToggle({ subTab, setSubTab, routesCount, className = '' }) {
   return <RailSegmentToggle className={className} value={subTab} setValue={setSubTab} tabs={[
     { key: 'routes', label: `Routes${routesCount ? ` (${routesCount})` : ''}` },
     { key: 'drivers', label: 'Drivers' },
+  ]} />;
+}
+
+// The right panel's "Routes / Loads" mode — the third gear option (Chad, Aug 25). Same route
+// cards, with the day's real NuVizz loads where the driver roster would be: the list the bottom
+// grid shows, which stays exactly where it is. Both counts ride on the labels because that is
+// what the choice turns on — 65 routes against 106 loads is the shape of how much of the day is
+// still unbuilt.
+function RoutesLoadsToggle({ subTab, setSubTab, routesCount, loadsCount, className = '' }) {
+  return <RailSegmentToggle className={className} value={subTab} setValue={setSubTab} tabs={[
+    { key: 'routes', label: `Routes${routesCount ? ` (${routesCount})` : ''}` },
     { key: 'loads', label: `Loads${loadsCount ? ` (${loadsCount})` : ''}` },
   ]} />;
 }
@@ -16837,16 +16843,20 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   });
   useEffect(() => { try { localStorage.setItem('routing.rightPanel', rightPanelMode); } catch { /* ignore */ } }, [rightPanelMode]);
 
-  // Which of the three views is showing: today's route cards, the driver roster, or the day's
-  // loads. Chad: "I want them to be tabs just like the routes and drivers are so you can switch
-  // the view" — one strip, no settings trip. Persisted, because which one you want beside the
-  // map is a working preference and re-picking it every morning is a click paid daily. The
-  // driver roster is the on-demand list (shared with the mobile app), fetched lazily the first
-  // time Drivers opens.
-  const [routesSubTab, setRoutesSubTab] = useState(() => {
-    try { return normalizeRoutesRailTab(localStorage.getItem('routing.routesTab')); } catch { return 'routes'; }
+  // Routes-mode sub-tab: today's route cards vs the driver roster. Driver roster is the
+  // on-demand list (shared with the mobile app); fetched lazily the first time Drivers opens.
+  // NOT persisted, deliberately — Chad: "i didn't want to touch either one as they were", and
+  // "as they were" includes behaviour, not just the label on the gear.
+  const [routesSubTab, setRoutesSubTab] = useState('routes');
+
+  // Routes/Loads-mode sub-tab, its own state so 'drivers' can never be the selection inside a
+  // mode with no Drivers panel. Persisted: this mode is new, so there is no prior behaviour to
+  // preserve, and picking it out of the gear because you want Loads then landing on Routes
+  // every morning is a click paid daily.
+  const [routesLoadsTab, setRoutesLoadsTab] = useState(() => {
+    try { return normalizeRoutesLoadsTab(localStorage.getItem('routing.routesLoadsTab')); } catch { return 'routes'; }
   });
-  useEffect(() => { try { localStorage.setItem('routing.routesTab', routesSubTab); } catch { /* ignore */ } }, [routesSubTab]);
+  useEffect(() => { try { localStorage.setItem('routing.routesLoadsTab', routesLoadsTab); } catch { /* ignore */ } }, [routesLoadsTab]);
   const [driverRoster, setDriverRoster] = useState({ drivers: null, updatedAt: null, neverScanned: false, loading: false, refreshing: false, error: null });
 
   const loadDriverRoster = useCallback(async () => {
@@ -16886,7 +16896,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
 
   // Lazy-load the roster the first time the Drivers sub-view is opened.
   useEffect(() => {
-    if (isRoutesPanelMode(rightPanelMode) && routesSubTab === 'drivers' && driverRoster.drivers === null && !driverRoster.loading) {
+    if (hasDriversTab(rightPanelMode) && routesSubTab === 'drivers' && driverRoster.drivers === null && !driverRoster.loading) {
       loadDriverRoster();
     }
   }, [rightPanelMode, routesSubTab, driverRoster.drivers, driverRoster.loading, loadDriverRoster]);
@@ -19521,13 +19531,14 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // The strip and the panel under it. One definition, so the phone and the desktop rail can
   // never disagree about which panel a tab opens — they are separate layouts, not separate
   // behaviour, and the two have drifted apart in this app before.
-  const routesModeToggleEl = (
-    <RoutesRailTabs subTab={routesSubTab} setSubTab={setRoutesSubTab} routesCount={routeGroups.length} loadsCount={dayLoads.length} />
-  );
-  const routesModeBodyEl = routesSubTab === 'drivers'
-    ? <RoutingDriversPanel roster={driverRoster} routeGroups={routeGroups} onRefresh={refreshDriverRoster} onPickDriver={onPickDriver} />
-    : routesSubTab === 'loads' ? dayLoadsPanelEl
-    : routesPanelEl;
+  const routesModeToggleEl = rightPanelMode === 'routesLoads'
+    ? <RoutesLoadsToggle subTab={routesLoadsTab} setSubTab={setRoutesLoadsTab} routesCount={routeGroups.length} loadsCount={dayLoads.length} />
+    : <RoutesDriversToggle subTab={routesSubTab} setSubTab={setRoutesSubTab} routesCount={routeGroups.length} />;
+  const routesModeBodyEl = rightPanelMode === 'routesLoads'
+    ? (routesLoadsTab === 'loads' ? dayLoadsPanelEl : routesPanelEl)
+    : (routesSubTab === 'drivers'
+      ? <RoutingDriversPanel roster={driverRoster} routeGroups={routeGroups} onRefresh={refreshDriverRoster} onPickDriver={onPickDriver} />
+      : routesPanelEl);
 
   // ── Mobile: map + collapsible bottom sheet (Setup / Result) ──
   // Rendered in BOTH layout branches below — RoutingScreen returns separately for mobile and
