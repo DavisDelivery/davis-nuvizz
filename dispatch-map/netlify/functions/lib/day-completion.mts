@@ -40,7 +40,7 @@
 // tomorrow, next week, or in a test.
 
 import { formatCompletionPct } from '../../../src/lib/completion-pct.js';
-import { isAppointmentRoute } from '../../../src/lib/board-flags.js';
+import { isAppointmentRoute, isOwnerRoute, OWNER_ROUTE_NAMES } from '../../../src/lib/board-flags.js';
 
 // ── ROUTES THIS REPORT DOES NOT SPEAK FOR ────────────────────────────────────
 //
@@ -67,7 +67,10 @@ import { isAppointmentRoute } from '../../../src/lib/board-flags.js';
 // Configurable, because a route name is a fact about how Davis dispatches this month and not
 // a fact about the software. DAY_REPORT_EXCLUDE_ROUTES takes a comma-separated list; the
 // default is what Chad asked for.
-const DEFAULT_EXCLUDED_ROUTES = ['CHAD'];
+// The shipped list lives in the flag engine now, because BOTH read it — the board must not
+// judge the owner's own route and this report must not count it, and two copies of a route
+// name is two things to forget. The env override below still layers on top.
+const DEFAULT_EXCLUDED_ROUTES = OWNER_ROUTE_NAMES;
 
 export function excludedRouteNames(env: Record<string, any> = process.env): string[] {
   const raw = String(env?.DAY_REPORT_EXCLUDE_ROUTES ?? '').trim();
@@ -86,7 +89,7 @@ export function isExcludedRoute(name: any, excluded: string[] = excludedRouteNam
   const n = String(name ?? '').trim().toUpperCase();
   if (!n) return false;
   if (isAppointmentRoute(n)) return true;
-  return excluded.includes(n);
+  return isOwnerRoute(n, excluded);
 }
 
 export type Outcome =
@@ -160,6 +163,10 @@ export interface DayCompletion {
   // silent: 543 of 558 has to be reconcilable against the board or it is a number that
   // cannot be checked, and an unreconcilable number is worse than none.
   excluded: Array<{ route: string; stops: number }>;
+  /** The excluded orders themselves. Counted nowhere, listed at the END of the report —
+   *  Chad: "I do want them back on the end of email." Off the numerator and the denominator,
+   *  under everything a dispatcher acts on, so they inform without distorting. */
+  excludedStops: OpenStop[];
 }
 
 const numOr = (v: any) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
@@ -206,6 +213,8 @@ export function buildDayCompletion(
   // What was left out, so the report can SAY so. A completion percentage a dispatcher cannot
   // reconcile against the board is the thing this counts to avoid.
   const excludedRoutes = new Map<string, number>();
+  const excludedStops: OpenStop[] = [];
+  const excludedSeen = new Set<string>();
 
   for (const s of stops || []) {
     // Planned only — see the note above.
@@ -216,6 +225,14 @@ export function buildDayCompletion(
     const rk = str(s?.loadNbr || s?.routeName);
     if (isExcludedRoute(rk, excludeRoutes)) {
       excludedRoutes.set(rk, (excludedRoutes.get(rk) || 0) + 1);
+      // Kept, not just tallied. They stay out of every count above and are listed at the end
+      // of the report — the row carries its own outcome so the tail can say which of them
+      // actually went and which did not, without any of it touching the percentage.
+      const exRow = rowOf(s, stopOutcome(s));
+      if (exRow.stopNbr && !excludedSeen.has(exRow.stopNbr)) {
+        excludedSeen.add(exRow.stopNbr);
+        excludedStops.push(exRow);
+      }
       continue;
     }
     planned += 1;
@@ -277,6 +294,7 @@ export function buildDayCompletion(
     byRoute,
     openStops: openStops.sort(bySeq),
     unableStops: unableStops.sort(bySeq),
+    excludedStops,
     excluded: [...excludedRoutes.entries()]
       .map(([route, n]) => ({ route, stops: n }))
       .sort((a, b) => (b.stops - a.stops) || a.route.localeCompare(b.route)),
@@ -385,6 +403,30 @@ export function dayCompletionSubject(d: DayCompletion): string {
   return `Day board ${d.date} — ${bits.join(', ')}`;
 }
 
+/** Excluded rows grouped by their route, route order stable, stops in sequence. */
+function groupByRoute(rows: OpenStop[]): Array<[string, OpenStop[]]> {
+  const by = new Map<string, OpenStop[]>();
+  for (const r of rows) {
+    const k = r.route || '(unrouted)';
+    if (!by.has(k)) by.set(k, []);
+    by.get(k)!.push(r);
+  }
+  for (const list of by.values()) {
+    list.sort((a, b) => (a.seq ?? 1e9) - (b.seq ?? 1e9) || String(a.stopNbr).localeCompare(String(b.stopNbr)));
+  }
+  return [...by.entries()];
+}
+
+/** Plain words for an outcome. The tail says what became of each one, so "not counted" does
+ *  not read as "not known". */
+function outcomeWords(o: Outcome): string {
+  if (o === 'delivered_system' || o === 'delivered_manual') return 'delivered';
+  if (o === 'unable') return 'unable to deliver';
+  if (o === 'cancelled') return 'cancelled';
+  if (o === 'in_flight') return 'out for delivery';
+  return 'never attempted';
+}
+
 export function dayCompletionText(d: DayCompletion): string {
   const L: string[] = [];
   L.push(`DAY BOARD ${d.date}${d.asOf ? ` — as of ${d.asOf} ET` : ''}`);
@@ -418,6 +460,19 @@ export function dayCompletionText(d: DayCompletion): string {
   }
   L.push('', 'A stop open at 6:30 is not always a missed delivery — some are PODs not scanned yet.');
   L.push('Tomorrow morning this day is re-graded and the report records which of these actually rolled.');
+  // THE TAIL. Chad: "I do want them back on the end of email." Last, deliberately: these are
+  // out of the numerator AND the denominator, so nothing here moves the number above it, and
+  // putting them anywhere higher would put work nobody is grading in front of work somebody
+  // has to act on tonight.
+  if (d.excludedStops.length) {
+    L.push('', 'NOT COUNTED — for reference only');
+    for (const [route, rows] of groupByRoute(d.excludedStops)) {
+      L.push(`  ${route}`);
+      for (const s of rows) {
+        L.push(`    ${s.stopNbr}  ${s.customer ?? ''}${s.seq != null ? ` #${s.seq}` : ''} — ${outcomeWords(s.outcome)}`);
+      }
+    }
+  }
   return L.join('\n');
 }
 
@@ -481,6 +536,30 @@ export function dayCompletionHtml(d: DayCompletion): string {
   H.push('<div style="margin-top:18px;color:#64748b;font-size:12px;line-height:1.5">'
     + 'A stop open at 6:30 is not always a missed delivery — some are PODs that have not been scanned yet. '
     + 'Tomorrow morning this day is re-graded and the report records which of these actually rolled to another day.'
-    + '</div></div>');
+    + '</div>');
+
+  // THE TAIL. Chad: "I do want them back on the end of email." Last, and visibly set apart:
+  // these sit outside the numerator AND the denominator, so nothing here can move the figure
+  // above it — and anywhere higher would put work nobody is grading in front of work somebody
+  // has to act on tonight. Muted on purpose; it is reference, not a task list.
+  if (d.excludedStops.length) {
+    H.push('<h3 style="margin:22px 0 2px;font-size:13px;color:#64748b;border-top:1px solid #e2e8f0;padding-top:14px">'
+      + 'Not counted — for reference only</h3>');
+    H.push('<div style="color:#94a3b8;font-size:12px;margin-bottom:8px">'
+      + 'Appointment holding pens and the owner\'s route. Off the numerator and the denominator above.</div>');
+    H.push('<table style="border-collapse:collapse;width:100%;font-size:13px;color:#475569">');
+    for (const [route, rows] of groupByRoute(d.excludedStops)) {
+      H.push(`<tr><td colspan="3" style="padding:10px 0 2px;font-weight:600;color:#334155">${esc(route)}</td></tr>`);
+      for (const r of rows) {
+        H.push(`<tr style="border-top:1px solid #f1f5f9">`
+          + `<td style="padding:5px 10px 5px 0;white-space:nowrap">${esc(r.stopNbr)}${r.seq != null ? ` <span style="color:#94a3b8">#${r.seq}</span>` : ''}</td>`
+          + `<td style="padding:5px 10px 5px 0">${esc(r.customer ?? '')}</td>`
+          + `<td style="padding:5px 0;color:#64748b;white-space:nowrap">${esc(outcomeWords(r.outcome))}</td></tr>`);
+      }
+    }
+    H.push('</table>');
+  }
+
+  H.push('</div>');
   return H.join('');
 }

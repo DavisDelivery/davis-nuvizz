@@ -431,6 +431,39 @@ export function isAppointmentRoute(name) {
   return APPT_ROUTE_RE.test(String(name ?? ''));
 }
 
+// THE OWNER'S OWN ROUTE IS NOT THE BOARD'S BUSINESS EITHER.
+//
+// Chad: "I don't want orders from the chad route showing up on my flags list."
+//
+// It is the same category as an appointment holding pen and for the same reason: a flag is
+// only worth raising if somebody can act on it, and he is the one driving that truck. A red
+// telling him his own next stop is running late is the board telling him something he can
+// see through the windscreen, and it sits on the panel taking the place of a stop where a
+// dispatcher could actually make a call.
+//
+// MATCHED EXACTLY, on the whole normalised name. A substring match would silence CHADWICK
+// and CHATTANOOGA — a board that quietly stops judging a real truck is the precise failure
+// this is meant to avoid, and it is the same trap the day report walked into first.
+//
+// The list lives here rather than beside the day report because BOTH read it now, and a
+// route name is a fact about how Davis dispatches this month. day-completion.mts layers its
+// DAY_REPORT_EXCLUDE_ROUTES env override on top of this default; the browser cannot read
+// that env var, so the shipped list is the shared floor.
+export const OWNER_ROUTE_NAMES = ['CHAD'];
+
+export function isOwnerRoute(name, names = OWNER_ROUTE_NAMES) {
+  const n = String(name ?? '').trim().toUpperCase();
+  if (!n) return false;
+  return (names || []).includes(n);
+}
+
+/** Routes the flag engine deliberately does not judge: appointment holding pens and the
+ *  owner's own truck. ONE predicate, so the three places that set routes aside cannot come
+ *  to disagree about which ones. */
+export function isSetAsideRoute(name) {
+  return isAppointmentRoute(name) || isOwnerRoute(name);
+}
+
 // ── the detector ──────────────────────────────────────────────────────────────
 
 export const RED_CAP = 12;    // per rule; beyond this a rule collapses to one summary row
@@ -659,8 +692,14 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // The route is still REPORTED as not judged in the panel footer, so the silence stays a
   // visible decision rather than a gap — and it is reported from HERE, so it says so even on
   // a board with no day or depot, which the old placement inside the hours block could not.
+  //
+  // AND THE OWNER'S OWN ROUTE RIDES THE SAME RULE — see isSetAsideRoute. Chad: "I don't want
+  // orders from the chad route showing up on my flags list." Same test as the parking lot:
+  // a flag nobody can act on is decoration, and he is the one driving it.
   const onAppointmentRoute = (s) => isAppointmentRoute(routeKeyOf(s));
-  const judged = open.filter((s) => !onAppointmentRoute(s));
+  const onOwnerRoute = (s) => isOwnerRoute(routeKeyOf(s));
+  const setAside = (s) => isSetAsideRoute(routeKeyOf(s));
+  const judged = open.filter((s) => !setAside(s));
   // The narrower set: work actually scheduled to be delivered today. Only the rules that
   // assert something about TODAY read this — closed-today and the receiving-hours family.
   const scheduledJudged = judged.filter((s) => !isUnscheduled(s));
@@ -730,8 +769,12 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   const rows = [];
   // Rows a later rule took off the panel. Kept, never rendered — see the R6 supersede block.
   const suppressed = [];
-  const skipped = { noRoster: false, ambiguousRoutes: [], routesNoSequence: [], routesAppointment: [], stopsNoPosition: 0 };
+  const skipped = { noRoster: false, ambiguousRoutes: [], routesNoSequence: [], routesAppointment: [], routesOwner: [], stopsNoPosition: 0 };
   for (const k of [...new Set(open.filter(onAppointmentRoute).map(routeKeyOf))]) if (k) skipped.routesAppointment.push(k);
+  // Reported separately and in its own words. Folding the owner's route into the appointment
+  // list would label it "held for appointments", which is not what happened to it — and the
+  // whole point of reporting a set-aside route is that the silence reads as a decision.
+  for (const k of [...new Set(open.filter(onOwnerRoute).map(routeKeyOf))]) if (k) skipped.routesOwner.push(k);
   // What the detector actually LOOKED at — the panel shows these so a quiet board can
   // prove it was watched, and so "no hours on file" is visibly a data gap, not a bug.
   const checked = { stops: judged.length, routesJudged: 0, stopsWithHours: 0, stopsAssumedClose: 0, legsTotal: 0, legsGoogle: 0 };
@@ -894,7 +937,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       // Appointment routes are excluded HERE, at the one place both the arrival walk (R5)
       // and the no-driver check (R6) read from — so neither rule can fire on freight that
       // is deliberately parked waiting on a customer appointment.
-      if (isAppointmentRoute(k)) { apptRoutes.add(k); continue; }
+      if (isSetAsideRoute(k)) { apptRoutes.add(k); continue; }
       if (!byRoute.has(k)) byRoute.set(k, []);
       byRoute.get(k).push(s);
     }
@@ -908,7 +951,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     for (const s of stops) {
       const k = routeKeyOf(s);
       if (!k || ambiguousNames.has(k.toLowerCase())) continue;
-      if (isAppointmentRoute(k)) continue;
+      if (isSetAsideRoute(k)) continue;
       if (!chainByRoute.has(k)) chainByRoute.set(k, []);
       chainByRoute.get(k).push(s);
     }
