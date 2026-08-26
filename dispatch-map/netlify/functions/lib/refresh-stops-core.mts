@@ -1037,13 +1037,37 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         stampedKinds = TWO_SCAN ? ['planned', 'completed'] : ['planned'];
         await markScanKinds(stampedKinds, scannedAt).catch(() => {});
       };
-      const targets = [today];
-      // Tomorrow + further planning days (LIST_HORIZON_DAYS) — all sliced from the SAME ±7d pull,
-      // so e.g. Sunday writes Mon AND Tue. Gated by the same decision so far-day work only runs
-      // once the next-day window opens (loads/orders exist by then).
-      if (decision.scanTomorrowLoads || decision.scanTomorrowUnplanned) {
-        for (const d of scanDates.slice(1)) targets.push(d);
-      }
+      // THE WHOLE PLANNING HORIZON, ON EVERY ACTING FIRE — the hour no longer narrows it.
+      //
+      // Chad: "the calls we make today should be populating tomorrow's board." He is right, and
+      // the arithmetic is not close. The ±7d saved-search pull a few lines below is ONE call
+      // that ALREADY contains tomorrow's rows and the day after's; which of those days we WRITE
+      // is pure Firestore. So gating the write behind an ET-hour window buys no NuVizz call
+      // back — it throws away rows this scan has already paid for.
+      //
+      // What it cost in practice: tomorrow's board went unwritten from midnight to 10:00 ET
+      // every day, so a dispatcher looking at tomorrow first thing had to force a manual scan
+      // to see it. The morning this was found, the ONLY thing that wrote tomorrow before 10:00
+      // was Chad's own 06:30 manual scan — the same button he had been pressing all the
+      // previous afternoon for the same reason.
+      //
+      // The gates are inherited from the number-probe era, where a future day meant its OWN
+      // load-number window plus an order descent — genuinely expensive, and worth refusing
+      // before those orders existed. In list discovery that cost is gone. They still govern the
+      // PROBE path at the bottom of this function, which is the place they are still true.
+      //
+      // What a horizon day actually costs here:
+      //   • nothing yet    — an empty bucket takes the `list-empty` branch and writes no
+      //                      document at all, so opening the window early cannot hurt;
+      //   • rows, unseen   — one /stop/info per PRO nobody has enriched yet, registry-gated
+      //                      and therefore paid ONCE per PRO ever. Writing the day at 06:00
+      //                      instead of 10:00 does not add that call, it moves it earlier and
+      //                      spreads it — the opposite of the 122-call clump that landed in a
+      //                      single 17:00 hour the day this was found;
+      //   • rows, seen     — Firestore writes only.
+      // The load roster is unaffected: it runs on its own hourly clock across every scanDate
+      // already (see the roster block above), not per write target.
+      const targets = [...scanDates];
       // Two-scan mode pulls both saved searches ONCE up front (not per target day) and
       // buckets by date; a fetch failure throws → outer catch preserves the last-good board.
       // Dispatcher-set board dates (setStopDate — "the customer doesn't want it until the
@@ -1564,7 +1588,10 @@ export async function runRefreshStops(req: Request): Promise<Response> {
     }
     await refreshOps();
     await finishRun({ path: 'full', outcome: listError ? 'error' : 'ok', ...(listError ? { error: listError } : {}), dates: results });
-    logScan('none', decision.act, { l: true, u: true }, { l: decision.scanTomorrowLoads, u: decision.scanTomorrowUnplanned }, ' src=list-only');
+    // The log reports what this path DID, not what the hour windows would have allowed: the
+    // list path now writes the whole horizon every acting fire, so printing the (unused) feed
+    // flags here would describe a gate this path no longer consults.
+    logScan('none', decision.act, { l: true, u: true }, { l: true, u: true }, ` src=list-only horizon=${scanDates.length}d`);
     return json({ ok: true, tenant: TENANT, mode: isManual ? 'manual' : 'scheduled', source: 'list', decision, totalMs: Date.now() - startedAt, dates: results });
   }
 
