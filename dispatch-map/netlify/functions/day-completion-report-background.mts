@@ -30,8 +30,9 @@
 // index and sends nothing.
 //
 // Data diet: the stop index the scanner already maintains. ZERO NuVizz calls.
-import { isFirestoreEnabled, readStops, etDayString } from './lib/firestore.mts';
-import { buildDayCompletion, reconcileDay, dayCompletionSubject, dayCompletionText, dayCompletionHtml } from './lib/day-completion.mts';
+import { isFirestoreEnabled, readStops, etDayString, getDoc } from './lib/firestore.mts';
+import { buildDayCompletion, reconcileDay, dayCompletionSubject, dayCompletionText, dayCompletionHtml, attachFlagHistory } from './lib/day-completion.mts';
+import { flagHistoryPath } from './lib/flag-history.mts';
 import { readDayCompletion, writeDaySnapshot, writeDayReconciliation } from './lib/day-completion-store.mts';
 import { emailEnabled, sendEmail } from './lib/email.mts';
 
@@ -92,7 +93,13 @@ export default async (): Promise<Response> => {
   try {
     // ── 1. today's snapshot ──────────────────────────────────────────────────
     const { stops } = await readStops(TENANT, date);
-    const report = buildDayCompletion(stops || [], { date, asOf: '6:30p' });
+    // JOIN THE DAY'S FLAGS ON. Chad: "in the nightly 630 email for things undelivered let me
+    // know if any of the steps were flagged." A stop that ended open having been WARNED about
+    // is a different follow-up from one nothing ever saw — the first is about the response,
+    // the second about the rule. Best-effort: a history that cannot be read leaves the join
+    // marked unavailable and prints that, rather than reporting nobody was flagged.
+    const flagDoc = await getDoc(flagHistoryPath(TENANT, date)).catch(() => null);
+    const report = attachFlagHistory(buildDayCompletion(stops || [], { date, asOf: '6:30p' }), flagDoc);
     out.report = {
       planned: report.planned, gradable: report.gradable, delivered: report.delivered,
       open: report.open, counts: report.counts,

@@ -140,6 +140,16 @@ export const isDeliveredOutcome = (o: Outcome) => o === 'delivered_system' || o 
 export interface OpenStop {
   stopNbr: string; customer: string | null; route: string | null; driver: string | null;
   seq: number | null; outcome: Outcome; addr: string | null;
+  /** Was this stop flagged during the day? Filled in by attachFlagHistory; null = not joined. */
+  flag?: StopFlag | null;
+}
+
+/** What the day's flag history knows about one stop, reduced to what a 6:30pm reader needs. */
+export interface StopFlag {
+  tier: string;          // the WORST tier it ever reached, not the last one
+  leadMin: number | null;
+  sweeps: number;
+  emailed: boolean;
 }
 export interface RouteRoll {
   route: string; driver: string | null;
@@ -167,6 +177,16 @@ export interface DayCompletion {
    *  Chad: "I do want them back on the end of email." Off the numerator and the denominator,
    *  under everything a dispatcher acts on, so they inform without distorting. */
   excludedStops: OpenStop[];
+  /** Present only once attachFlagHistory has run. See that function for why absent ≠ zero. */
+  flagJoin?: FlagJoin;
+}
+
+export interface FlagJoin {
+  /** false when the day's flag history could not be read — the counts below are then unsafe. */
+  available: boolean;
+  flagged: number;
+  unflagged: number;
+  byTier: Record<string, number>;
 }
 
 const numOr = (v: any) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
@@ -427,6 +447,89 @@ function outcomeWords(o: Outcome): string {
   return 'never attempted';
 }
 
+/**
+ * attachFlagHistory(d, doc) — did the board WARN about the stops that ended the day open?
+ *
+ * Chad: "in the nightly 630 email for things undelivered let me know if any of the steps were
+ * flagged." It is the right question, and it splits one list into two different jobs:
+ *
+ *   • undelivered AND flagged   — the detector worked and the stop missed anyway. The
+ *     follow-up is about the RESPONSE: who saw it, how much warning there was, what happened.
+ *   • undelivered and NOT flagged — nothing ever warned. The follow-up is about the RULE:
+ *     the stop had no deadline on file, or the engine set it aside, or it simply did not fire.
+ *
+ * Those go to different places and today's email cannot tell them apart, so every open stop
+ * reads the same at half six.
+ *
+ * ABSENT IS NOT ZERO. If the day's flag doc cannot be read, `available` is false and no counts
+ * are claimed — because "0 of 15 were flagged" printed off an unreadable history says the
+ * detector stayed silent when the truth is that nobody looked. That is the same
+ * absence-of-evidence mistake the flag engine already had to be rescued from once.
+ *
+ * PURE: takes the doc, returns a new report. Nothing is read or written here.
+ */
+export function attachFlagHistory(d: DayCompletion, doc: any): DayCompletion {
+  const rowsRaw = doc && typeof doc === 'object' ? (doc.rows ?? doc) : null;
+  const list: any[] = Array.isArray(rowsRaw) ? rowsRaw : (rowsRaw && typeof rowsRaw === 'object' ? Object.values(rowsRaw) : []);
+  const available = !!rowsRaw && typeof rowsRaw === 'object';
+
+  const byStop = new Map<string, StopFlag>();
+  for (const r of list) {
+    const nbr = str((r as any)?.stopNbr);
+    if (!nbr) continue;
+    const tier = str((r as any)?.worstTier) || str((r as any)?.firstTier);
+    if (!tier) continue;                        // a row with no tier is not a flag anybody saw
+    const leadRaw = Number((r as any)?.leadMin);
+    byStop.set(nbr, {
+      tier,
+      leadMin: Number.isFinite(leadRaw) ? leadRaw : null,
+      sweeps: Number((r as any)?.sweeps) || 0,
+      emailed: !!(r as any)?.emailed,
+    });
+  }
+
+  const mark = (rows: OpenStop[]): OpenStop[] =>
+    rows.map((s) => ({ ...s, flag: available ? (byStop.get(str(s.stopNbr)) || null) : null }));
+
+  const openStops = mark(d.openStops || []);
+  const unableStops = mark(d.unableStops || []);
+
+  const byTier: Record<string, number> = {};
+  let flagged = 0;
+  for (const s of [...openStops, ...unableStops]) {
+    if (!s.flag) continue;
+    flagged += 1;
+    byTier[s.flag.tier] = (byTier[s.flag.tier] || 0) + 1;
+  }
+  const total = openStops.length + unableStops.length;
+
+  return {
+    ...d, openStops, unableStops,
+    flagJoin: { available, flagged: available ? flagged : 0, unflagged: available ? total - flagged : 0, byTier },
+  };
+}
+
+/** "red · 2h05m warning" — the two things a reader acts on, in one cell. */
+export function flagLabel(f: StopFlag | null | undefined): string {
+  if (!f) return '';
+  const lead = f.leadMin == null ? null
+    : f.leadMin <= 0 ? 'no warning'
+    : f.leadMin < 60 ? `${Math.round(f.leadMin)}m warning`
+    : `${Math.floor(f.leadMin / 60)}h${String(Math.round(f.leadMin % 60)).padStart(2, '0')}m warning`;
+  return [f.tier.toUpperCase(), lead].filter(Boolean).join(' · ');
+}
+
+/** The one line that answers Chad's question, or says plainly that it cannot be answered. */
+export function flagSummaryLine(d: DayCompletion): string | null {
+  const j = d.flagJoin;
+  if (!j) return null;
+  if (!j.available) return 'Flagged during the day: history unavailable — not counted (this is not "none were flagged").';
+  const total = j.flagged + j.unflagged;
+  if (!total) return null;
+  const tiers = Object.entries(j.byTier).sort((a, b) => b[1] - a[1]).map(([t, n]) => `${n} ${t}`).join(', ');
+  return `Flagged during the day: ${j.flagged} of ${total}${tiers ? ` (${tiers})` : ''} · ${j.unflagged} never flagged.`;
+}
+
 export function dayCompletionText(d: DayCompletion): string {
   const L: string[] = [];
   L.push(`DAY BOARD ${d.date}${d.asOf ? ` — as of ${d.asOf} ET` : ''}`);
@@ -436,13 +539,18 @@ export function dayCompletionText(d: DayCompletion): string {
   if (d.counts.unable) L.push(`${d.counts.unable} UNABLE TO DELIVER — these need a call.`);
   if (d.counts.cancelled) L.push(`${d.counts.cancelled} cancelled (not counted against the day).`);
   L.push(`Closed by hand in the portal: ${d.counts.delivered_manual} of ${d.delivered} (${pct(d.manualRate)}).`);
+  const flagLine = flagSummaryLine(d);
+  if (flagLine) L.push(flagLine);
 
   if (d.excluded.length) {
     L.push('', `Not counted: ${d.excluded.map((e) => `${e.route} (${e.stops})`).join(', ')} — appointment holding pens and the owner's route.`);
   }
   if (d.unableStops.length) {
     L.push('', 'UNABLE TO DELIVER');
-    for (const s of d.unableStops) L.push(`  ${s.stopNbr}  ${s.customer ?? ''} — ${s.route ?? ''}${s.driver ? ` (${s.driver})` : ''}`);
+    for (const s of d.unableStops) {
+      const f = flagLabel(s.flag);
+      L.push(`  ${s.stopNbr}  ${s.customer ?? ''} — ${s.route ?? ''}${s.driver ? ` (${s.driver})` : ''}${f ? `  [FLAGGED ${f}]` : ''}`);
+    }
   }
   const openRoutes = d.byRoute.filter((r) => r.open > 0);
   if (openRoutes.length) {
@@ -455,7 +563,8 @@ export function dayCompletionText(d: DayCompletion): string {
     L.push('', 'OPEN STOPS');
     for (const s of d.openStops) {
       const what = s.outcome === 'in_flight' ? 'out for delivery, not closed' : 'never attempted';
-      L.push(`  ${s.stopNbr}  ${s.customer ?? ''} — ${s.route ?? ''}${s.seq != null ? ` #${s.seq}` : ''} — ${what}`);
+      const f = flagLabel(s.flag);
+      L.push(`  ${s.stopNbr}  ${s.customer ?? ''} — ${s.route ?? ''}${s.seq != null ? ` #${s.seq}` : ''} — ${what}${f ? `  [FLAGGED ${f}]` : ''}`);
     }
   }
   L.push('', 'A stop open at 6:30 is not always a missed delivery — some are PODs not scanned yet.');
@@ -489,6 +598,8 @@ export function dayCompletionHtml(d: DayCompletion): string {
   if (d.counts.unable) H.push(row('Unable to deliver', `${d.counts.unable} — these need a call`, true));
   if (d.counts.cancelled) H.push(row('Cancelled', `${d.counts.cancelled} (not counted against the day)`));
   H.push(row('Closed by hand', `${d.counts.delivered_manual} of ${d.delivered} (${pct(d.manualRate)})`));
+  const flagLineHtml = flagSummaryLine(d);
+  if (flagLineHtml) H.push(row('Flagged', flagLineHtml.replace(/^Flagged during the day: /, '')));
   // SAY WHAT WAS LEFT OUT. Without this line the planned total cannot be reconciled against
   // the board, and a completion percentage nobody can check is worse than none at all.
   if (d.excluded.length) {
@@ -513,7 +624,12 @@ export function dayCompletionHtml(d: DayCompletion): string {
         + `<td style="padding:6px 10px 6px 0;color:#64748b;white-space:nowrap">${esc(s.stopNbr)}</td>`
         + `<td style="padding:6px 10px 6px 0">${esc(s.customer ?? '')}</td>`
         + `<td style="padding:6px 10px 6px 0;color:#475569;white-space:nowrap">${esc(s.route ?? '')}${s.seq != null ? ` #${s.seq}` : ''}</td>`
-        + `<td style="padding:6px 0;color:#64748b">${esc(what)}</td></tr>`);
+        + `<td style="padding:6px 10px 6px 0;color:#64748b">${esc(what)}</td>`
+        // FLAGGED, in the restriction's own colour, or an em dash. A blank cell would read as
+        // "not flagged" on a day the history could not be read at all, which is the one thing
+        // this column must never say by accident — see attachFlagHistory.
+        + `<td style="padding:6px 0;white-space:nowrap;font-weight:600;color:${s.flag ? (s.flag.tier === 'amber' ? '#b45309' : '#b91c1c') : '#cbd5e1'}">`
+        + `${s.flag ? esc(flagLabel(s.flag)) : '—'}</td></tr>`);
     }
     H.push('</table>');
   };
