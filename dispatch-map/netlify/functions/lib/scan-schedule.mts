@@ -232,7 +232,24 @@ export function scanDecision(
     };
   }
 
-  const base = { scanTodayUnplanned: false, scanTomorrowLoads: false, scanTomorrowUnplanned: false, etHour: hour, etMin: minute, weekday, intervalMin, elapsedMin };
+  // THE FEED WINDOWS ARE A FACT ABOUT THE ET HOUR, NOT ABOUT WHICH GATE OPENED THE FIRE.
+  // They used to be set only in the acting return below, so a decision that skipped here and
+  // was then flipped on by the scan plan (overrideCadenceSkip) carried all-false flags — and
+  // refresh-stops-core reads scanTomorrow* to decide whether TOMORROW gets written at all.
+  // After 13:00 ET the legacy interval is 60 while the plan fires planned every 30, and each
+  // of those full scans resets lastLoadScanAt, so this function's own act branch almost never
+  // ran in the afternoon — every fire was a plan override, none carried tomorrow, and the
+  // next day's board sat unwritten from ~13:00 ET to midnight. Chad, 8:42pm, planning
+  // tomorrow on a board reading "Loads updated 6 hr ago": "my data is stale." It was — the
+  // ~14:42 write he was looking at was the one fire where a vendor hiccup let elapsed climb
+  // past the legacy gate. Computing the windows here puts them on EVERY decision, so however
+  // a fire comes to act, it scans what the hour says it should.
+  const feeds = {
+    scanTodayUnplanned: hour >= 10 && hour < 24,
+    scanTomorrowLoads: hour >= 20 && hour < 24,
+    scanTomorrowUnplanned: hour >= 10 && hour < 24,
+  };
+  const base = { ...feeds, etHour: hour, etMin: minute, weekday, intervalMin, elapsedMin };
 
   // Weekend blackout — no work Fri 22:00 ET → Sun 20:00 ET, so no scheduled scans.
   if (isWeekendBlackout(weekday, hour, cfg)) {
@@ -248,13 +265,9 @@ export function scanDecision(
     return { act: false, ...base, skip: 'cadence', reason: `cadence elapsed=${Math.round(elapsedMin)}<${intervalMin}-${TOLERANCE_MIN}` };
   }
 
-  // Acting fire — which feeds run depends on the ET hour.
+  // Acting fire — which feeds run depends on the ET hour (already computed in base).
   return {
-    act: true,
-    scanTodayUnplanned: hour >= 10 && hour < 24,
-    scanTomorrowLoads: hour >= 20 && hour < 24,
-    scanTomorrowUnplanned: hour >= 10 && hour < 24,
-    etHour: hour, etMin: minute, weekday, intervalMin, elapsedMin, skip: 'none',
+    act: true, ...base, skip: 'none',
     reason: `act h=${hour} elapsed=${elapsedMin === Infinity ? 'inf' : Math.round(elapsedMin)}>=${intervalMin}-${TOLERANCE_MIN}`,
   };
 }

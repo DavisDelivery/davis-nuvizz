@@ -382,3 +382,42 @@ test("CHAD'S EXACT SCREEN: 22 minutes elapsed at 10:45am, completed wants 15 —
   assert.equal(decided.act, true, 'the completed-only overlay may now actually run');
   assert.match(decided.reason, /completed=true/);
 });
+
+test("CHAD'S STALE EVENING BOARD: an override fire still carries tomorrow — Aug 25 8:42pm, Aug 26 reading '6 hr ago'", () => {
+  // The real screen: 8:42pm ET Tuesday, date picker on TOMORROW, all three feeds "updated
+  // 6 hr ago" (≈14:42). Mechanism: after 13:00 ET the legacy interval is 60 minutes, the
+  // plan fires planned every 30, and every full scan resets lastLoadScanAt — so the legacy
+  // act branch (the ONLY place the scanTomorrow* flags were set) never ran. Every afternoon
+  // and evening fire was a plan override carrying all-false feed flags, and
+  // refresh-stops-core reads exactly those flags to decide whether tomorrow gets written.
+  // Tomorrow's board therefore went unwritten from ~13:00 ET to midnight — through the
+  // entire routing window, the hours a dispatcher is actually LOOKING at tomorrow.
+  const now = new Date(Date.UTC(2026, 7, 25, 15 + 4, 2, 0)); // 3:02pm EDT Tue Aug 25
+  const lastLoadScanAt = new Date(now.getTime() - 30 * 60000).toISOString();
+  const legacy = scanDecision(now, false, lastLoadScanAt, {});
+  assert.equal(legacy.act, false, 'the legacy 60-minute night-band gate refuses the 30-minute fire');
+  assert.equal(legacy.skip, 'cadence');
+
+  const due = dueKinds(TUE, 15, defaultScanRules(), { planned: lastLoadScanAt }, now.getTime());
+  assert.equal(due.planned.due, true, 'plan-day (30m) is due again');
+
+  const decided = overrideCadenceSkip(legacy, due.planned.due, due.completed.due, due.roster.due);
+  assert.equal(decided.act, true);
+  assert.equal(decided.scanTomorrowUnplanned, true, "tomorrow's orders window (10:00–24:00) rides EVERY acting fire, not just a legacy one");
+  assert.equal(decided.scanTodayUnplanned, true, "today's unplanned window too");
+  assert.equal(decided.scanTomorrowLoads, false, "tomorrow's loads still wait for the 20:00 routing window");
+});
+
+test('the routing window itself: a 9pm override fire carries tomorrow LOADS', () => {
+  // 20:00–24:00 is when tomorrow's routes are being BUILT — the one stretch of day where a
+  // stale tomorrow board is most expensive. Before the fix this window was starved too: the
+  // legacy gate stayed shut behind the plan's own 30-minute resets, so tomorrow's loads
+  // window never opened at all.
+  const now = new Date(Date.UTC(2026, 7, 25, 21 + 4, 7, 0)); // 9:07pm EDT Tue Aug 25
+  const legacy = scanDecision(now, false, new Date(now.getTime() - 30 * 60000).toISOString(), {});
+  assert.equal(legacy.act, false, 'legacy gate is shut — this fire only happens via the plan');
+  const decided = overrideCadenceSkip(legacy, true, false, false);
+  assert.equal(decided.act, true);
+  assert.equal(decided.scanTomorrowLoads, true, 'routing window: tomorrow loads scan on the override fire');
+  assert.equal(decided.scanTomorrowUnplanned, true);
+});
