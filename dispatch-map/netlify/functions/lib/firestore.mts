@@ -1105,7 +1105,10 @@ export async function readScanMetrics(): Promise<any[]> {
 // never came back. Best-effort throughout — the ledger must never be able to affect a scan.
 const SCAN_RUNS_PATH = `${OPS_COLLECTION}/scan_runs`;
 /** ~a day of fires at the 5-minute cron, which is the window anybody actually asks about. */
-const SCAN_RUNS_MAX = 120;
+// Three-ish days at the day-band cadence. Was 120 (~30 hours), which sounds like plenty until
+// somebody asks about "this morning" at 11am and the midnight run has already rolled off — the
+// exact question this ledger exists for, unanswerable by one hour.
+const SCAN_RUNS_MAX = 400;
 
 export interface ScanRunRow {
   id: string;
@@ -1126,6 +1129,15 @@ export interface ScanRunRow {
   error?: string;
   dates?: any[];
   stamped?: string[];
+  // Recorded outright rather than left as a subtraction of the two counters above.
+  calls?: number;
+  etDate?: string;
+  // Rolled up from `dates` so the cost of a run is legible without opening it.
+  enriched?: number;
+  newPros?: number;
+  stopsPulled?: number;
+  stopsChanged?: number;
+  enrichedDates?: string[];
 }
 
 export async function readScanRuns(): Promise<ScanRunRow[]> {

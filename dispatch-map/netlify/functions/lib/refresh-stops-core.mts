@@ -565,19 +565,48 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // A row with a startedAt and no finishedAt IS that diagnosis. Best-effort throughout — a
   // ledger that can break a scan is worse than no ledger.
   let stampedKinds: string[] = [];
+  // Pinned at the top of the run. dayCount is REASSIGNED by refreshOps() at every exit, so
+  // reading it twice gives the finish value both times — the difference has to be taken
+  // against a value captured before any work happened.
+  const callsAtStart = dayCount;
   const runId = `${now.toISOString()}__${trigger}`;
   const startRun = async () => {
     await recordScanRun({
       id: runId, startedAt: now.toISOString(), trigger,
       etHour: decision.etHour, etMin: decision.etMin, weekday: decision.weekday,
-      skip: decision.skip, reason: decision.reason, callsBefore: dayCount,
+      skip: decision.skip, reason: decision.reason, callsBefore: dayCount, etDate: today,
       due: { planned: due.planned.reason, completed: due.completed.reason, roster: due.roster.reason },
     });
   };
+  // The per-date rows already carry what makes a run expensive; rolling them up onto the row
+  // itself is what turns "why did 10:45 cost 42 calls" from a join into a read. `calls` is
+  // recorded outright so nobody has to subtract two counters — and so the number survives even
+  // if a counter read fails. Field names differ by path (the list path reports count/enriched,
+  // the completed overlay pulled/changed), which is exactly the trap that made the first
+  // reading of this ledger report "no data" against a ledger that had it.
+  const rollupDates = (dates: any[] | undefined) => {
+    const ds = Array.isArray(dates) ? dates : [];
+    const sum = (k: string) => ds.reduce((a, d) => a + (Number(d?.[k]) || 0), 0);
+    const enriched = sum('enriched');
+    return {
+      enriched,
+      newPros: sum('newPros'),
+      stopsPulled: sum('count') + sum('pulled'),
+      stopsChanged: sum('changed'),
+      // Which board day the money went on. A morning spike is often TOMORROW's orders
+      // arriving, and a rollup that hid that would answer the question wrongly.
+      enrichedDates: ds.filter((d) => (Number(d?.enriched) || 0) > 0).map((d) => String(d?.date)),
+    };
+  };
   const finishRun = async (extra: Record<string, any>) => {
+    const before = Number(callsAtStart);
+    const after = Number(dayCount);
+    const calls = Number.isFinite(before) && Number.isFinite(after) ? Math.max(0, after - before) : undefined;
     await recordScanRun({
       id: runId, startedAt: now.toISOString(), finishedAt: new Date().toISOString(),
-      ms: Date.now() - startedAt, callsAfter: dayCount, stamped: stampedKinds, ...extra,
+      ms: Date.now() - startedAt, callsAfter: dayCount, stamped: stampedKinds,
+      etDate: today, ...(calls === undefined ? {} : { calls }),
+      ...rollupDates((extra as any)?.dates), ...extra,
     } as any);
   };
 
@@ -996,7 +1025,10 @@ export async function runRefreshStops(req: Request): Promise<Response> {
     // A fire with nothing due is the schedule working, not an event — recording all ~288 of
     // those a day would bury the handful of rows anybody is ever looking for. Ask the explain
     // endpoint what the scheduler would do right now; the ledger is what it actually DID.
-    if (rosterRan) { stampedKinds = ['roster']; await finishRun({ path: 'roster-only', outcome: 'ok' }); }
+    // refreshOps() BEFORE finishing, like every other exit. Without it callsAfter is the
+    // value read before the scan started, so a roster-only run recorded callsAfter ===
+    // callsBefore and reported itself as free — the one path whose cost was invisible.
+    if (rosterRan) { stampedKinds = ['roster']; await refreshOps(); await finishRun({ path: 'roster-only', outcome: 'ok' }); }
     return json({ ok: true, skipped: label, rosterRan });
   }
 
