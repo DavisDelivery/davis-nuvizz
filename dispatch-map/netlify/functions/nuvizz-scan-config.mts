@@ -18,6 +18,7 @@
 import { isFirestoreEnabled, readScanConfig, writeScanConfig, getDoc, readScanKindStamps, readScanRuns, readCallStats, readCircuit, etDayString } from './lib/firestore.mts';
 import { clampScanConfig, effectiveScanConfig, scanConfigDefaults, SCAN_CONFIG_BOUNDS, scanDecision } from './lib/scan-schedule.mts';
 import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip, scanPath } from './lib/scan-plan.mts';
+import { attributeSpend } from './lib/scan-attribution.mts';
 import { breakerMode, reportedDailyCeiling } from './lib/nuvizz-request.mts';
 
 const TENANT = process.env.NUVIZZ_TENANT || 'davis';
@@ -108,6 +109,11 @@ async function explain(): Promise<any> {
       byHour: stats.byHour ?? {},
       byTrigger: stats.byTrigger ?? {},
       byApp: stats.byApp ?? {},
+      // WHERE THE DAY WENT, joined here rather than by whoever reads this. Every hour with
+      // its total, the part the scan runs account for, the remainder (live dispatcher writes
+      // — real activity that no run knows about), and for the busiest hours the one run that
+      // dominated with a sentence saying why. See lib/scan-attribution.
+      attribution: attributeSpend(runs as any, stats.byHour ?? {}, { etDate: today }),
     },
     killSwitch: {
       env: String(process.env.NUVIZZ_SCANS_ENABLED ?? '').toLowerCase() === 'false',
