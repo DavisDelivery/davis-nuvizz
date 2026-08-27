@@ -65,6 +65,7 @@ import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerC
 import { cancelsIn, cancelSummary } from './lib/cancel-guard.js';
 import { validateNewRoute } from './lib/route-create.js';
 import { mergeDayLoads, dayLoadTally } from './lib/day-loads.js';
+import { flagProvenance, provenanceLine } from './lib/flag-provenance.js';
 import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab } from './lib/right-panel.js';
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
@@ -95,7 +96,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.81.0';
+const APP_VERSION = '0.81.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -166,6 +167,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.81.1', 'A FLAG NOW SAYS WHAT TIME IT FIRST APPEARED, AND WHICH ROUTE IT APPEARED ON. Chad, at 1:23pm looking at a critical card: “What time did Ben’s flag first time show up? ... Ben’s flag should have been there from first thing this morning as it was on his second load so should have flagged early.” HE WAS RIGHT, AND THE BOARD COULD NOT TELL HIM. Pulled from the history: PRIMERICA LIFE INSURANCE was first recorded at 4:01am — TEN HOURS of warning — and by the time he saw it the card looked exactly like one that had fired a minute earlier. Two things hid it. FIRST, NO TIME ON THE CARD: every flag reads as new, so a ten-hour-old warning nobody acted on is indistinguishable from one that just appeared, which is the difference between “we are on it” and “this has been sitting here since before the drivers left”. SECOND, THE ROUTE HAD CHANGED: it first appeared on JIM 1 and was on BEN 2 by lunchtime, so looking for it on Ben’s board that morning would have found nothing — the card shows only where the stop is NOW, which makes a moved stop look like a new problem. THE DATA WAS ALREADY IN THE BROWSER. The sweep has recorded firstSeenAt, firstRoute and firstTier since the history shipped, and the board fetches that document every five minutes for the tier ratchet — then threw everything except the tier away. The card now reads “flagged 4:01am · 9h 22m ago · was amber · moved from JIM 1”, which is that exact row rendered. IT NEVER INVENTS A TIME. A flag the sweep has not recorded yet gets NO stamp rather than “just now”, because “just now” is a claim and the whole point of the line is that the card stopped making claims it could not support. Same for the route: “moved from” prints only when both sides are known and genuinely differ — case and padding are not a move — and an escalation prints only when the tier actually went up, never when it came down. Each is a mutation that fails a test named for it. TWO MAPS, NOT ONE WITH A MAGIC KEY. The first cut smuggled the provenance into the tier-floor map under a reserved name, which would have put a non-tier value in front of tierFloorLookup and made the ratchet’s input depend on a convention nothing enforces. The hook returns the two separately. ON ALL THREE PANELS — the Map’s desktop and phone mounts and the Routing rail — because a line added to one of them is a line that does not exist on a phone, which has shipped that way twice. Times render in Eastern, the only clock a dispatcher uses; a stamp from the future reads as nothing rather than a negative age. Tests are built on the REAL history row for Ben’s flag. 13 new tests.'],
   ['0.81.0', 'END-OF-NIGHT CLEANUP: HAND IT FIVE EMPTIES AND IT ROUTES THE LEFTOVERS ONTO THEM. Chad: “I’m thinking of using this more at end of night when I’m just planning the extra box truck loads — give it 5 empties and let it route the leftover unplanned stops on them.” The Engine card now has two modes. By driver is the conservative one that claims only what a driver’s history supports; Fill my loads is the opposite posture on purpose — the job is to make the leftovers GO SOMEWHERE onto the trucks provided, with geography and capacity doing the work. Zero NuVizz calls, zero writes: it reads the Firestore board and the same as-of learning the nightly uses, produces a proposal, and the only path to the vendor stays the Compare workbench’s Save. CONSERVATION IS THE PROPERTY THAT MATTERS AND IT IS PINNED BY A RANDOMISED SWEEP, NOT BY A HANDFUL OF FIXTURES: 1,000 synthetic boards — mixed truck classes, tight caps, zero-freight rows, Null Island, NaN coordinates, duplicate stop numbers, more trucks than stops — and on every one, every leftover is on exactly one truck or in the list with a reason, no truck is over its cap, and the same board twice gives the same plan. That sweep found three real defects reading never would have. CAPACITY IS A WALL HERE, NOT A PREFERENCE. The solver’s trip splitter puts a stop bigger than a driver’s cap in a trip by itself rather than strand it, which is right for the nightly plan where the cap is a learned typical load. Cleanup keeps one trip per shell, so that became the truck’s whole load and the card read “cap 6, loaded 10” — freight that will not go on the truck at the dock. Worse, that truck was then “full”, so a 1-skid stop got reported as needing another truck: it told Chad to roll a truck he did not need. A stop that fits NO picked truck is now named as too_big up front, everything past a cap comes back off and is re-offered to a truck that can take it, and equipment beats size in the precedence — a tractor-blocked 40-skid stop reads “equipment”, because the bigger truck is the trailer the customer bars. THE CLOCK AND THE DOCK, WHICH IS WHERE THE MONEY IS. A route can be capacity-legal and still undeliverable. A customer closed on the served day is pulled out and named rather than sequenced onto a truck nobody can unload; the dock’s closing time now reaches the card, and one that shuts early but landed in the back half of a run is called out by name so it can be dragged up; a liftgate-required consignee is refused a truck without one instead of the driver finding out at a residential door. All three read from the same pure functions the map draws its marks from, so the screen and the engine cannot disagree. TWO CRITICAL DEFECTS FOUND BY REVIEW AND MEASURED BEFORE THEY WERE FIXED. Two picked loads with the SAME driver collapsed into one bag — keyed by driver, not by shell — so the panel showed two cards both labelled SUW 9 holding the same four stops, SUW 2 gone, and half the picked capacity never used. And the shared stop mapping’s new coordinate guard crashed the NIGHTLY plan: finiteNum(0) is 0 and 0 != null, so a null-island row passed the finite-coord filter, came back null from the mapper and was dereferenced on the next line — which on the replay path escaped before the cursor-park block, so every retry restarted on the same row forever. One predicate now does both the filtering and the mapping. ALSO: cleanup was silently running with EMPTY service-time and habit maps, because loadPlanInputs keys its bounded reads on a field board rows do not carry and the stamping line the draft path has was simply missing — nothing errored and the plan looked normal. The sweep seed fills a fair share before a hard cap, so a big truck no longer straddles 60 miles while a small one does a single stop. And a truck loaded off a mixed box-and-tractor fleet average no longer calls that number “driver”, which was suppressing the one warning written to catch it. 46 new tests, 2,657 green.'],
   ['0.80.5', 'THE SPEND ATTRIBUTION WAS REPORTING AN IMPOSSIBLE NUMBER, ONE RELEASE AFTER I BUILT IT. Chad: “how many calls per day are we at with our scan schedule?” Reaching for the block added in v0.80.3 to answer him, it said the scan runs accounted for 2,070 calls on a day the counter recorded 1,209. Runs cannot account for more calls than were made. A tool built specifically so a question could be answered without arithmetic in someone’s head had produced a number that fails the first check anybody would apply to it. THE CAUSE IS A KINDNESS THAT WAS NOT ONE. The day filter kept rows with no etDate — “do not drop the legacy ones” — and every row written before v0.80.3 stamped that field has none. Retention had just gone from 120 rows to 400, about three days, so three days of undated runs were being counted into today. Invisible from the response beside it, because the endpoint returns only the LAST 40 rows while handing the attribution the whole ledger. Being generous with a row whose day is unknown is not generosity; it is a wrong number wearing a helpful face. Undated rows are skipped when a day is asked for, and the count of them is REPORTED, so a partial answer says out loud that it is one. A DISAGREEMENT BETWEEN THE TWO SOURCES IS NOW A SIGNAL, NOT A ROUNDING. otherCalls clamps at zero so the totals still add up, and that clamp was also hiding the fault: an hour where the runs claim more than the counter saw means the ledger and the counter disagree, which is worth seeing. It is flagged per hour and the whole day reports `consistent`. REPLAYED AGAINST THE LIVE LEDGER before and after: 2,070 attributed against 1,209 counted becomes 539 attributed, 670 unattributed, 17 undated rows skipped and named, consistent true. The gap is honest — those 17 rows genuinely cannot be placed on a day — and it closes on its own once a full day of stamped rows exists. AND THE ANSWER TO THE QUESTION, from the daily counters rather than from this block: weekdays run 963 to 1,302 calls with a median near 1,100, and have for two straight weeks; Saturdays are 4 and Sundays 140-160 on the blackout. That is about 55% of the 2,000 ceiling. What moved this week was composition, not volume — scheduled scans rose and manual scans fell as v0.80.2 moved tomorrow’s enrichment into tonight’s scheduled fires. Manual scans have been a third of some days (499, 389, 387), which is where the headroom is if it is ever wanted. Three mutations caught, including the exact live bug. 4 new tests.'],
   ['0.80.4', 'THE 6:30 REPORT NOW SAYS WHETHER THE BOARD WARNED ABOUT EACH STOP THAT ENDED THE DAY OPEN. Chad: “in the nightly 630 email for things undelivered let me know if any of the steps were flagged.” It is the right question, and the reason it matters is that it splits ONE list into TWO different jobs. A STOP THAT WAS FLAGGED AND MISSED ANYWAY is a question about the RESPONSE — the engine saw it coming, somebody had two hours of warning, and it still did not get there. That is a conversation with a person. A STOP NOTHING EVER SAW is a question about the RULE — no hours on file, a route the engine sets aside, a deadline that never registered. That is a conversation with the code. They get fixed in different ways by different people, and at half six the email presented them as the same grey list of stop numbers. EVERY ROW NOW CARRIES ITS MARK, in the text report and in the HTML table: the WORST tier the flag ever reached — not the first, because a stop that opened amber and went red is a red — and how much warning it actually gave, in the units a dispatcher thinks in: “RED · 2h05m warning”, “AMBER · 20m warning”, and “CRITICAL · no warning” for a flag that arrived after the close had already passed. Above the tables, one line answers the question outright: “Flagged during the day: 2 of 3 (1 red, 1 amber) · 1 never flagged.” ABSENT IS NOT ZERO, and that is the part with teeth. If the day’s flag history cannot be read, the report does NOT print “0 of 3 were flagged” — it says the history was unavailable and counts nothing. A zero printed off a failed read claims the detector stayed silent when the truth is that nobody looked, which is the exact absence-of-evidence error this engine already had to be rescued from once, and it is worse here because it reads as reassurance. A day that genuinely had no flags still says zero, because that is a real answer. THE JOIN IS PURE AND THE EDGE IS THIN: attachFlagHistory takes the report and the day’s history document and returns a new report, reading and writing nothing, so the rule is testable without a network. The 6:30 job reads the doc best-effort and hands it over; a history that fails to load leaves the join marked unavailable rather than failing the report, because a day report that does not arrive is worse than one with a column missing. The live preview endpoint does not read history at all and prints no flag line, rather than implying an answer it has not looked up. UNABLE-TO-DELIVER STOPS ARE JOINED TOO, not just the open ones — a refused delivery that was flagged an hour earlier is the single most actionable row in the whole email. Pinned by a mutation: dropping that list from the join fails two tests. Also pinned: using the first tier instead of the worst understates severity and fails three, and reporting an unreadable history as zero fails the test named for it. 11 new tests, 2,612 green.'],
@@ -3548,12 +3550,29 @@ function useFlagTierFloor(date) {
         const j = await r.json();
         if (cancelled || !j?.ok) return;
         const next = {};
+        const hist = {};
         for (const row of (Array.isArray(j.rows) ? j.rows : [])) {
-          if (row?.stopNbr && row?.worstTier) next[String(row.stopNbr)] = String(row.worstTier);
+          if (!row?.stopNbr) continue;
+          if (row.worstTier) next[String(row.stopNbr)] = String(row.worstTier);
+          // Chad: "we need to time stamp the flag." The sweep has recorded firstSeenAt since
+          // the history shipped and this hook was throwing it away, so a ten-hour-old warning
+          // and one that fired a minute ago printed identically on the card.
+          hist[String(row.stopNbr)] = {
+            firstSeenAt: row.firstSeenAt ?? null,
+            firstRoute: row.firstRoute ?? null,
+            firstTier: row.firstTier ?? null,
+            worstTier: row.worstTier ?? null,
+            sweeps: row.sweeps ?? 0,
+          };
         }
         // Identity-stable when nothing moved — a fresh object every few minutes would
         // invalidate the flag memo for a byte-identical payload.
-        setFloor((prev) => (prev && JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+        // TWO MAPS, NOT ONE WITH A MAGIC KEY. The tier map is handed straight to the flag
+        // engine; hiding provenance inside it under a reserved name would put a non-tier value
+        // in front of tierFloorLookup and make the ratchet's input depend on a convention
+        // nothing enforces.
+        const merged = { tiers: next, history: hist };
+        setFloor((prev) => (prev && JSON.stringify(prev) === JSON.stringify(merged) ? prev : merged));
       } catch { /* no floor — the board judges on this sweep alone */ }
     };
     load();
@@ -3634,7 +3653,7 @@ function BoardFlagsChip({ flags, open, onToggle }) {
 // ✕ to dismiss. The footer is REQUIRED honesty — what the checks could not judge (no
 // roster fetched, routes with no sequence, note coverage) — because "no flags" from a
 // detector that could not look is not the same claim as "nothing is wrong".
-function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onRestoreAll, minimized = false, onToggleMinimized }) {
+function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onRestoreAll, minimized = false, onToggleMinimized, history = null }) {
   if (!flags) return null;
   const rows = flags.rows.filter((r) => !dismissed[r.dismissKey]);
   const hiddenByDismiss = flags.rows.length - rows.length;
@@ -3705,6 +3724,17 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
             >
               <div className="text-xs font-semibold text-slate-800 leading-snug">{r.title}</div>
               <div className="text-[11px] text-slate-500 leading-snug mt-0.5">{r.detail}</div>
+              {/* WHEN did this first appear. Chad, on a critical card at 1:23pm: "what time did
+                  Ben's flag first time show up ... it should have been there from first thing
+                  this morning." It had been — 4:01am, on a DIFFERENT route — and the card could
+                  not say so. Absent when the sweep has not recorded the stop: no stamp is the
+                  honest state, "just now" would be a claim. */}
+              {(() => {
+                const line = provenanceLine(flagProvenance(history?.[String(r.stopNbr)], {
+                  currentRoute: r.routeName, nowMs: Date.now(),
+                }));
+                return line ? <div className="text-[10px] text-slate-400 leading-snug mt-0.5 tabular-nums">{line}</div> : null;
+              })()}
             </button>
             <button
               onClick={() => onDismiss(r.dismissKeys || r.dismissKey)}
@@ -9978,7 +10008,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     return () => clearInterval(id);
   }, []);
   const travelInputs = useTravelInputs();
-  const tierFloorByStop = useFlagTierFloor(selectedDate);
+  const flagHistory = useFlagTierFloor(selectedDate);
+  const tierFloorByStop = flagHistory?.tiers || null;
   const boardFlags = useMemo(() => {
     const now = new Date();
     const out = computeBoardFlags({
@@ -11527,7 +11558,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             desktop Map learned that the hard way (v0.55.3). */}
         {flagsPanelOpen && (
           <div className="fixed inset-x-2 top-16 z-[70] flex justify-center pointer-events-auto">
-            <BoardFlagsPanel flags={boardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} minimized={flagsMinimized} onToggleMinimized={toggleFlagsMinimized} />
+            <BoardFlagsPanel flags={boardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} minimized={flagsMinimized} onToggleMinimized={toggleFlagsMinimized} history={flagHistory?.history || null} />
           </div>
         )}
         {mapsError && (
@@ -11965,7 +11996,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             </div>
             {flagsPanelOpen && (
               <div className="absolute right-0 top-full mt-1 z-[70]">
-                <BoardFlagsPanel flags={boardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} minimized={flagsMinimized} onToggleMinimized={toggleFlagsMinimized} />
+                <BoardFlagsPanel flags={boardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} minimized={flagsMinimized} onToggleMinimized={toggleFlagsMinimized} history={flagHistory?.history || null} />
               </div>
             )}
             </div>
@@ -17105,7 +17136,8 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     return () => clearInterval(id);
   }, []);
   const travelInputs = useTravelInputs();
-  const tierFloorByStop = useFlagTierFloor(selectedDate);
+  const flagHistory = useFlagTierFloor(selectedDate);
+  const tierFloorByStop = flagHistory?.tiers || null;
   const routingBoardFlags = useMemo(() => {
     const now = new Date();
     const out = computeBoardFlags({
@@ -17158,7 +17190,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       </div>
       {flagsPanelOpen && (
         <div className="absolute right-0 top-full mt-1 z-[70]">
-          <BoardFlagsPanel flags={routingBoardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} minimized={flagsMinimized} onToggleMinimized={toggleFlagsMinimized} />
+          <BoardFlagsPanel flags={routingBoardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} minimized={flagsMinimized} onToggleMinimized={toggleFlagsMinimized} history={flagHistory?.history || null} />
         </div>
       )}
     </div>
