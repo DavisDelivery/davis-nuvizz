@@ -73,6 +73,19 @@ export interface FlagRow {
   outcome: Outcome;
   arrivalMin: number | null;
   deliveredAt: string | null;
+  /**
+   * WHEN A ROLL ACTUALLY LANDED. `deliveredAt` above is the stamp from the FLAG'S OWN board
+   * day, so a stop that rolled has none — it delivered on a different day, and the scorer was
+   * throwing that day's rows away after reducing them to a set of stop numbers. Measured
+   * across twelve scored days: every made and missed row had a stamp and every one of the
+   * eleven rolled rows had none, which is precisely the case where the DATE is the answer.
+   *
+   * Null when it turned up on a later board but has not delivered there yet — "rolled, still
+   * open" is a real state and must not be dressed as a delivery.
+   */
+  rolledDeliveredAt?: string | null;
+  /** The board day the roll was found on, so a date on screen is checkable rather than implied. */
+  rolledOnDate?: string | null;
   actedOn: boolean;
   scoredAt: string | null;
 }
@@ -229,6 +242,14 @@ export function classifyOutcome(o: {
 export function needsOutcomeRescore(doc: any): boolean {
   const rows = doc?.rows;
   if (!rows || !Object.keys(rows).length) return false;
+  // A ROLL WITH NO DATE IS NOT FINISHED BEING SCORED EITHER. Every rolled row written before
+  // v0.81.2 has no `rolledOnDate`, because the scorer read the later board and kept only the
+  // stop numbers off it. Those rows re-settle from the same sealed history at no NuVizz cost,
+  // and this terminates: a rolled outcome requires seenLater === true, which requires a later
+  // board, which always sets rolledOnDate. A roll that is on a later board but not yet
+  // delivered there keeps rolledDeliveredAt null forever and must NOT be the test, or the
+  // sweep would re-read that day every night for good.
+  if (Object.values<any>(rows).some((r) => r?.outcome === 'rolled' && !r?.rolledOnDate)) return true;
   if (doc.next_day_captured === true) return false;
   // Never scored at all is also pending — the nightly run may simply not have reached it.
   return true;
@@ -276,13 +297,24 @@ export function rollCheckDate(
 
 export function scoreRow(
   row: FlagRow,
-  o: { arrivalMin: number | null; deliveredAt: string | null; finished?: boolean; seenLater?: boolean | null; scoredAt: string },
+  o: {
+    arrivalMin: number | null; deliveredAt: string | null; finished?: boolean;
+    seenLater?: boolean | null; scoredAt: string;
+    /** The stamp from the LATER board, when one carried this stop. See rolledDeliveredAt. */
+    rolledDeliveredAt?: string | null;
+    rolledOnDate?: string | null;
+  },
 ): FlagRow {
+  const outcome = classifyOutcome({ closeMin: row.closeMin, arrivalMin: o.arrivalMin, finished: o.finished, seenLater: o.seenLater });
   return {
     ...row,
     arrivalMin: o.arrivalMin,
     deliveredAt: o.deliveredAt,
-    outcome: classifyOutcome({ closeMin: row.closeMin, arrivalMin: o.arrivalMin, finished: o.finished, seenLater: o.seenLater }),
+    outcome,
+    // ONLY ON A ROLL. Carrying a later-day stamp onto a row graded made or missed would put
+    // two delivery times on one record and leave the reader to guess which one counted.
+    rolledDeliveredAt: outcome === 'rolled' ? (o.rolledDeliveredAt ?? null) : null,
+    rolledOnDate: outcome === 'rolled' ? (o.rolledOnDate ?? null) : null,
     scoredAt: o.scoredAt,
   };
 }
