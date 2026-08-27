@@ -27,30 +27,29 @@
 import { readStops } from './firestore.mts';
 import { DEPOT } from './history-derive.mts';
 import { ENGINE_VERSION, loadEngineConfig, type EngineConfig } from './routing-engine-config.mts';
-import { zoneId, superOfZone, type ZonePrecisions } from './zones.mts';
+import { type ZonePrecisions } from './zones.mts';
 import { normalizeMatchKey } from './match-key.mts';
 import {
-  loadPlanInputs, employeeClassMap, SUPERVISOR_KEYS, CLASS_OVERRIDE, type PlanInputs,
+  loadPlanInputs, employeeClassMap, toAssignStop, SUPERVISOR_KEYS, CLASS_OVERRIDE, type PlanInputs,
 } from './routing-plan-core.mts';
 import {
   driverEnvelope, driverZoneAffinity, fleetTripChain, zoneOwnersAsOf,
   territoryMapsAsOf, candidateDriversFor,
 } from './routing-envelope.mts';
 import {
-  solveAssignment, restrictionsBlockTractor, capsFor, habitStrength,
+  solveAssignment, capsFor, habitStrength,
   type AssignStop, type AssignDriver,
 } from './routing-assignment-solver.mts';
-import { solveRoute, haversineMiles, type EngineStop } from './routing-engine-solver.mts';
+import { solveRoute, type EngineStop } from './routing-engine-solver.mts';
 import { pickReferences } from './routing-reference.mts';
 import { serviceTimeAsOf } from './routing-service-times.mts';
-import { habitAsOf } from './routing-customer-drivers.mts';
 
 const fold = (s: any) => String(s || '').trim().toUpperCase().replace(/\s+/g, '_');
 
 // normalizeMatchKey never returns a falsy string — an all-blank row would yield
 // the junk key "____" and every such row would collapse onto it. Guard on the
 // inputs instead: no name and no street means no usable customer identity.
-function liveMatchKey(s: any): string | null {
+export function liveMatchKey(s: any): string | null {
   if (s?.customerMatchKey) return String(s.customerMatchKey);
   if (!String(s?.businessName || '').trim() && !String(s?.addr1 || '').trim()) return null;
   return normalizeMatchKey(s?.businessName, s?.addr1, s?.city, s?.zip);
@@ -159,36 +158,35 @@ export function resolveDraftDriver(
   };
 }
 
-// Live board row → AssignStop. Mirrors runPlanForDate's mapping of history rows
-// (routing-plan-core.mts) — same NuVizz field mislabels (pallets = TOTAL pieces,
-// cartons = real skids, volume = loose), same computed depot-miles (NEVER the
-// vendor's leg distance), with two live-only substitutions: matchKey is computed
-// on the fly (live rows don't carry customerMatchKey) and strict falls back to
-// false on rows the once-per-PRO enrichment hasn't reached yet.
+// Live board row → AssignStop, via the ONE shared mapping (routing-plan-core's
+// toAssignStop, which the nightly shadow uses on warehouse rows). The only
+// live-only substitution is matchKey: warehouse rows carry customerMatchKey,
+// board rows do not and must have it computed. Everything else — the NuVizz
+// column mislabels, depot-miles, the coordinate guard, STRICT, blocksTractor —
+// is defined once, so the live paths and the scored path can never disagree
+// about what a stop IS.
 export function liveStopToAssignStop(
   s: any, cfg: EngineConfig, precisions: ZonePrecisions, inputs: PlanInputs, date: string,
 ): AssignStop | null {
-  // Number(null) is 0 and 0 is finite — a coordinate-less stop must read as
-  // MISSING, not as a real place in the Gulf of Guinea (this repo has shipped
-  // that exact bug before; see CLAUDE.md).
-  const lat = s?.lat == null || s?.lat === '' ? NaN : Number(s.lat);
-  const lng = s?.lng == null || s?.lng === '' ? NaN : Number(s.lng);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-  const mk = liveMatchKey(s);
-  const habit = mk ? habitAsOf(inputs.habitDocByKey.get(mk) ?? null, date) : null;
-  const zone = zoneId(lat, lng, precisions);
-  const num = (v: any) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
-  return {
-    id: String(s.stopNbr), lat, lng,
-    zone, gh5: superOfZone(zone, precisions),
-    pallets: num(s.pallets), skids: num(s.cartons), loose: num(s.volume), weight: num(s.weight),
-    matchKey: mk,
-    strict: String(s.timeConstraint || '').toUpperCase() === 'STRICT',
-    miles: haversineMiles(DEPOT.lat, DEPOT.lng, lat, lng),
-    blocksTractor: mk ? restrictionsBlockTractor(inputs.notesRestrictions.get(mk) || []) : false,
-    habit,
-    candidates: undefined, // stamped by the caller against the FULL recent roster
-  };
+  return toAssignStop(s, {
+    id: String(s?.stopNbr), matchKey: liveMatchKey(s), cfg, precisions,
+    habitDocByKey: inputs.habitDocByKey, notesRestrictions: inputs.notesRestrictions, date,
+    freightFloorSkids: 1,
+  });
+}
+
+// pickReferences requires the candidate route's warehouse to EQUAL the target's,
+// and live board rows carry no Whse column — so the live paths stand in the
+// warehouse the reference library is actually made of. Davis runs one warehouse;
+// if that ever changes, this returns the dominant one rather than silently
+// matching nothing (which would make every live trip unguided).
+export function modalWarehouseOf(references: any[]): string {
+  const counts = new Map<string, number>();
+  for (const r of references || []) {
+    const w = String(r?.warehouse ?? '');
+    counts.set(w, (counts.get(w) || 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '';
 }
 
 export interface LeftUnplanned {
@@ -249,6 +247,13 @@ export interface DraftResult {
 // dispatch would sign. Overflow is returned as left-unplanned instead.
 export const DRAFT_MAX_TRIPS = 2;
 
+// A dispatcher is WAITING while this runs, and Netlify kills a sync function at
+// its configured timeout with an HTML 502 the browser cannot even parse. The
+// full-day cap (90s, sized for the nightly replay) is far too long to sit behind
+// a request, so both live-board paths bound the local search instead. Measured:
+// capping costs a few percent of objective and turns a timeout into an answer.
+export const LIVE_SOLVER_MS = 12_000;
+
 export interface BuildDraftOpts {
   cfg: EngineConfig;
   inputs: PlanInputs;
@@ -262,7 +267,8 @@ export interface BuildDraftOpts {
 // two-trip cap → per-trip guided sequencing → proposal object.
 export function buildDriverDraft(tenant: string, date: string, opts: BuildDraftOpts): DraftResult {
   const t0 = Date.now();
-  const { cfg, inputs, liveStops, meta, resolved } = opts;
+  const { inputs, liveStops, meta, resolved } = opts;
+  const cfg: EngineConfig = { ...opts.cfg, assignment_ms_cap: Math.min(opts.cfg.assignment_ms_cap, LIVE_SOLVER_MS) };
   const nowIso = opts.nowIso || new Date().toISOString();
   const precisions: ZonePrecisions = { zone_precision: cfg.zone_precision, super_precision: cfg.super_precision, top_precision: cfg.top_precision };
   const notes: string[] = [];
@@ -349,9 +355,7 @@ export function buildDriverDraft(tenant: string, date: string, opts: BuildDraftO
   // ── guided sequencing per trip; two-trip cap with explicit overflow ──
   // Live rows carry no Whse field, so the reference filter's warehouse equality
   // uses the modal warehouse of the reference library (a single-warehouse fleet).
-  const whCounts = new Map<string, number>();
-  for (const r of inputs.referencesBefore) { const w = String((r as any).warehouse ?? ''); whCounts.set(w, (whCounts.get(w) || 0) + 1); }
-  const modalWarehouse = [...whCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '';
+  const modalWarehouse = modalWarehouseOf(inputs.referencesBefore);
 
   const skidEq = (s: AssignStop) => (s.skids > 0 || s.loose > 0)
     ? s.skids + s.loose / Math.max(1, cfg.loose_per_skid) : s.pallets;

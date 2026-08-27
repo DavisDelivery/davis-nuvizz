@@ -7,13 +7,13 @@
 // a habit discount for far stops, and a far-zone cohesion penalty.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
 import {
   solveAssignment, shiftCost, planCost,
 } from '../netlify/functions/lib/routing-assignment-solver.mts';
 import { fleetTripChain, zoneOwnersAsOf } from '../netlify/functions/lib/routing-envelope.mts';
 import { engineConfigDefaults } from '../netlify/functions/lib/routing-engine-config.mts';
+import { toAssignStop } from '../netlify/functions/lib/routing-plan-core.mts';
 
 const CFG = engineConfigDefaults({});
 const DEPOT = { lat: 34.148, lng: -83.959 };
@@ -229,11 +229,48 @@ test('an ISOLATED far stop (own gh5 cell, same area) still folds — cohesion is
 // far-habit discount, zone cohesion) silently no-opped. The 2.3.0 replay came
 // back byte-identical in the NW corner because of this. miles must be the
 // computed DEPOT distance, never stopDistance.
-test('plan-core computes miles as depot distance, never from NuVizz stopDistance', () => {
-  const src = readFileSync(new URL('../netlify/functions/lib/routing-plan-core.mts', import.meta.url), 'utf8');
-  const assignBlock = src.slice(src.indexOf('const assignStops'), src.indexOf('const fleet ='));
-  assert.doesNotMatch(assignBlock, /\bs\.stopDistance\b/, 'assign-stop miles must not read s.stopDistance (a leg distance)');
-  assert.match(assignBlock, /miles:\s*haversineMiles\(DEPOT\.lat,\s*DEPOT\.lng,\s*lat,\s*lng\)/, 'miles is the computed depot distance');
+test('the stop mapping computes miles as DEPOT distance, never NuVizz stopDistance', () => {
+  // Behavioural now, not a source grep: feed the ONE shared mapper a row whose
+  // stopDistance (the vendor's LEG distance from the previous stop) disagrees
+  // wildly with the truth, and prove the mapping ignores it. A Dalton stop reads
+  // ~3 mi from the last Dalton stop and ~63 from Buford; taking the vendor's
+  // number is what silently no-opped every far test in engine 2.3.0.
+  const dalton = {
+    stopNbr: 'D1', lat: 34.77, lng: -84.97, stopDistance: 3.1,
+    cartons: 4, volume: 0, pallets: 4, weight: 900, timeConstraint: null,
+  };
+  const mapped = toAssignStop(dalton, {
+    id: 'D1', matchKey: null, cfg: CFG,
+    precisions: { zone_precision: CFG.zone_precision, super_precision: CFG.super_precision, top_precision: CFG.top_precision },
+    habitDocByKey: new Map(), notesRestrictions: new Map(), date: '2026-07-16',
+  });
+  assert.ok(mapped.miles > 55, `Dalton must read as far from the depot, got ${mapped.miles}`);
+  assert.ok(Math.abs(mapped.miles - 3.1) > 50, 'the vendor leg distance must not leak into miles');
+  assert.ok(mapped.miles > CFG.far_deadhead_mi, 'and it must clear the far threshold the per-stop far rules gate on');
+});
+
+test('the stop mapping reads the NuVizz freight columns by their REAL meaning', () => {
+  // NuVizz mislabels: "cartons" is the skid count, "volume" is loose pieces,
+  // "pallets" is the total. Reading the wrong column mis-sizes every truck.
+  const mapped = toAssignStop(
+    { stopNbr: 'S1', lat: 34.1, lng: -84.0, cartons: 7, volume: 20, pallets: 27, weight: 2100, timeConstraint: 'STRICT' },
+    { id: 'S1', matchKey: null, cfg: CFG,
+      precisions: { zone_precision: CFG.zone_precision, super_precision: CFG.super_precision, top_precision: CFG.top_precision },
+      habitDocByKey: new Map(), notesRestrictions: new Map(), date: '2026-07-16' });
+  assert.equal(mapped.skids, 7, 'skids come from cartons');
+  assert.equal(mapped.loose, 20, 'loose comes from volume');
+  assert.equal(mapped.pallets, 27, 'pallets is the total-pieces column');
+  assert.equal(mapped.strict, true);
+});
+
+test('the stop mapping rejects a coordinate-less stop instead of placing it at 0,0', () => {
+  // Number(null) is 0 and 0 is finite — the guard must read the RAW value.
+  const prec = { zone_precision: CFG.zone_precision, super_precision: CFG.super_precision, top_precision: CFG.top_precision };
+  const opts = { id: 'X', matchKey: null, cfg: CFG, precisions: prec, habitDocByKey: new Map(), notesRestrictions: new Map(), date: '2026-07-16' };
+  for (const bad of [{ lat: null, lng: null }, { lat: '', lng: '' }, { lat: 34.1, lng: undefined }, { lat: 'abc', lng: -84 }]) {
+    assert.equal(toAssignStop({ stopNbr: 'X', ...bad }, opts), null, `must reject ${JSON.stringify(bad)}`);
+  }
+  assert.ok(toAssignStop({ stopNbr: 'X', lat: 34.1, lng: -84.0 }, opts), 'a real pair still maps');
 });
 
 test('near-depot assignments are untouched by the far terms (no regression on normal work)', () => {

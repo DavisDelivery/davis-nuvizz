@@ -80,6 +80,10 @@ export interface AssignStop {
   loose: number;        // loose pieces (NuVizz "volume") — a truck-fill dimension
   weight: number;
   matchKey: string | null;
+  // TRUE when the row carried no freight numbers at all (skids, loose and pallets
+  // all zero) — the caller may have substituted a floor so it is not free against
+  // the caps, and any capacity total shown to a human should say it is an estimate.
+  freight_unknown?: boolean;
   strict: boolean;      // STRICT delivery window
   miles: number;        // distance-from-origin estimate
   blocksTractor: boolean;
@@ -141,6 +145,13 @@ export interface AssignDriver {
   start_minute: number | null;
   envelope: DriverEnvelope;
   affinity: Map<string, number>;
+  // Phase 2.14 (cleanup mode): a TIGHTER bound stated by the dispatcher for this
+  // specific truck — the vehicle profile they maintain ("this 26ft box holds
+  // 14"). Applied in capsFor as a MINIMUM against the learned/class cap, so it
+  // can only ever restrict, never inflate: a profile claiming 40 skids on a box
+  // truck still lands on the class bound. Absent on every learned-driver path,
+  // which is why the shadow's behavior is unchanged.
+  cap_override?: { skids?: number | null; weightLb?: number | null };
 }
 
 export interface AssignInput {
@@ -155,6 +166,32 @@ export interface AssignInput {
   // FAR stops only — a Dalton stop outside Dalton's owner set is charged hard.
   zoneOwners?: Map<string, ZoneOwners>;
   now?: () => number;
+  // Phase 2.14 (cleanup mode): how many FULL TRUCKLOADS one driver may be seeded
+  // with before pass 2 sheds the overflow to the next truck. Default 2 — the
+  // shadow's reading of dispatch, where a driver reloads through Buford and runs
+  // a second load (85% of real over-cap driver-days did). Cleanup mode passes 1:
+  // there, each "driver" IS one empty load shell, so a second truckload on one
+  // shell while another sits empty is not a reload — it is freight that belongs
+  // on the truck Chad already provided.
+  // MEASURED on 5 box shells (cap 22), counting stops that land on the FIRST trip
+  // — the only ones that are actually on the load: a 40-stop pool that fits went
+  // 36 routed with one shell left EMPTY at the default, and 40 routed with none
+  // empty at 1; a 50-stop pool went 39 → 45. Past ~60 (freight far beyond the
+  // trucks provided) the two settings converge, so this helps exactly where an
+  // end-of-night pool sits and costs nothing where it doesn't.
+  max_loads_per_driver?: number;
+  // Phase 2.14 (cleanup mode): a PRE-ASSIGNMENT for pass 1 — stop id → driver_key.
+  // The seed's ownership score is habit + affinity + learned territory, which is
+  // exactly the signal that DOES NOT EXIST when the "drivers" are unnamed empty
+  // load shells: every term reads zero and the seed degrades to its own tie-break
+  // jitter. Measured on five clean geographic clusters and five empty shells,
+  // four of the five trucks came back straddling two towns 30-46 mi apart — a
+  // route no dispatcher would run. So a caller that HAS a better idea where the
+  // freight belongs (cleanup mode sweeps it into wedges around the depot) states
+  // it here, and everything downstream — capacity shedding, equipment gating,
+  // far-first splitting, the local search — proceeds exactly as it always does.
+  // Absent on every learned path, which is why the shadow is unchanged.
+  seedAssignment?: Map<string, string>;
 }
 
 // TOP zone of a stop — the geohash prefix property makes it a plain slice.
@@ -263,7 +300,7 @@ export function capsFor(driver: AssignDriver, cfg: EngineConfig): { soft: number
   const max = Number(pt?.skid_equiv_max);
   const hasP85 = Number.isFinite(p85) && p85 > 0;
   const hasMax = Number.isFinite(max) && max > 0;
-  if (!hasP85 && !hasMax) return { ...cls, learned: false };
+  if (!hasP85 && !hasMax) return applyCapOverride({ ...cls, learned: false }, driver);
 
   // THE BOUND IS THEIR TYPICAL FULL LOAD, NOT THEIR MOST EXTREME DAY. Using the
   // observed MAX looks principled ("never split what they've proven they can
@@ -282,7 +319,28 @@ export function capsFor(driver: AssignDriver, cfg: EngineConfig): { soft: number
   const floor = Math.max(1, Number(cfg.skid_cap_driver_min) || 1);
   const hard = Math.min(cls.hard, Math.max(floor, target));
   const soft = Math.min(hard, Math.max(floor, hasP85 ? p85 : hard));
-  return { soft, hard, weightLb: cls.weightLb, learned: true };
+  return applyCapOverride({ soft, hard, weightLb: cls.weightLb, learned: true }, driver);
+}
+
+// PURE: tighten a cap set with the dispatcher's stated per-truck bound. MIN only
+// — a stated cap may restrict what the engine loads, never license more than the
+// class/learned bound allows. A non-positive or non-finite value is "not stated"
+// and changes nothing (the same "a capacity only constrains when it is a real
+// positive number" rule classCapsFor uses for the weight rating).
+function applyCapOverride<T extends { soft: number; hard: number; weightLb: number }>(
+  caps: T, driver: AssignDriver | null | undefined,
+): T {
+  const ov = driver?.cap_override;
+  if (!ov) return caps;
+  const skids = Number(ov.skids);
+  const lb = Number(ov.weightLb);
+  const out = { ...caps };
+  if (Number.isFinite(skids) && skids > 0 && skids < out.hard) {
+    out.hard = skids;
+    out.soft = Math.min(out.soft, skids);
+  }
+  if (Number.isFinite(lb) && lb > 0 && lb < out.weightLb) out.weightLb = lb;
+  return out;
 }
 
 function tripSkidEquiv(t: AssignedTrip, cfg: EngineConfig): number {
@@ -575,7 +633,9 @@ export function solveAssignment(input: AssignInput): AssignResult {
   // ~26 box skids and handed their freight to cast #2 — right split count,
   // wrong truck (agreement 27.9→24.6). Double-tripping is a response to load,
   // not a personality trait.
-  const dayBudget = (d: AssignDriver): number => capsFor(d, cfg).hard * 2;
+  const loadsPerDriver = Number.isFinite(Number(input.max_loads_per_driver)) && Number(input.max_loads_per_driver) > 0
+    ? Number(input.max_loads_per_driver) : 2;
+  const dayBudget = (d: AssignDriver): number => capsFor(d, cfg).hard * loadsPerDriver;
   // Ownership scoring shared by both seed passes (jitter is deterministic).
   const scoreFor = (s: AssignStop, d: AssignDriver): number => {
     const affinity = d.affinity.get(s.gh5) || 0;
@@ -637,7 +697,12 @@ export function solveAssignment(input: AssignInput): AssignResult {
     if (best && secondScore > -Infinity && s.candidates && s.candidates.length >= 2) {
       tieMargins.push(bestScore - secondScore);
     }
-    const chosen = best || anyBest;
+    // A caller-stated seed wins pass 1 outright when the named driver can
+    // physically serve the stop; it is a starting point, not a constraint, so the
+    // shed pass and the local search may still move it.
+    const seededKey = input.seedAssignment?.get(s.id);
+    const seeded = seededKey ? driverByKey.get(seededKey) : undefined;
+    const chosen = (seeded && driverCanServe(seeded, s)) ? seeded : (best || anyBest);
     if (!chosen) { unassigned.push(s); continue; }
     bag.get(chosen.driver_key)!.push(s);
     bagEq.set(chosen.driver_key, (bagEq.get(chosen.driver_key) || 0) + stopSkidEquiv(s, cfg));

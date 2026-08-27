@@ -206,6 +206,10 @@ export interface PlanInputs {
   fleetServiceDoc: any | null;
   habitDocByKey: Map<string, any>;     // customer driver-habit docs (obs dated; habitAsOf applies < D)
   notesRestrictions: Map<string, any[]>; // matchKey → equipment_restrictions
+  // matchKey → the WHOLE customer note doc. Optional so the many fixtures that
+  // build a PlanInputs by hand keep compiling; a caller that needs receiving
+  // hours or closed days must handle its absence rather than assume them open.
+  noteByKey?: Map<string, any>;
   tractorCapable: Set<string>;         // matchKey → served by a tractor before (positive; carried, not a restriction)
   employees?: any[];                   // MarginIQ employees roster (vehicleType source); absent → class fallbacks
 }
@@ -228,6 +232,91 @@ export function employeeClassMap(employees: any[]): Map<string, string> {
     for (const k of names) if (k && !out.has(k)) out.set(k, vt);
   }
   return out;
+}
+
+// ── the ONE live/warehouse stop → AssignStop mapping ─────────────────────────
+//
+// Four rules live here and ONLY here, because each was learned the hard way and
+// a second copy would drift silently:
+//   • NuVizz MISLABELS its freight columns — "pallets" is TOTAL pieces, "cartons"
+//     is the real skid count, "volume" is loose pieces. The solver's caps are in
+//     skid positions, so reading the wrong column mis-sizes every truck.
+//   • MILES IS DISTANCE FROM THE DEPOT, computed here — never the vendor's
+//     stopDistance, which is the LEG distance from the previous stop. That field
+//     silently disarmed every far/territory rule (a Dalton stop reads 3 mi from
+//     the last Dalton stop, not 60 from Buford).
+//   • Number(null) is 0 and 0 is FINITE, so a coordinate-less stop must be
+//     rejected on the raw value, not on the coerced one, or it becomes a real
+//     place in the Gulf of Guinea.
+//   • blocksTractor comes from customer_notes equipment restrictions, keyed by
+//     matchKey — a stop with no usable customer identity blocks nothing.
+//
+// The CALLER resolves matchKey, because that is the one thing that genuinely
+// differs by source: warehouse rows carry customerMatchKey, live board rows do
+// not and must have it computed.
+// The coordinate test toAssignStop applies, exposed so a caller can filter with
+// the SAME rule it maps with. Without this the two drift: `finiteNum(0)` is 0 and
+// `0 != null`, so a null-island row passed the nightly's finite-coord filter,
+// reached the mapper, came back null, and the next line dereferenced it. That
+// crash took out the whole date, and on the replay path it escaped before the
+// cursor-park block, so every retry restarted on the same row forever.
+export function hasUsableCoords(raw: any): boolean {
+  const rawLat = raw?.lat, rawLng = raw?.lng;
+  if (rawLat == null || rawLat === '' || rawLng == null || rawLng === '') return false;
+  const lat = Number(rawLat), lng = Number(rawLng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+  if (lat === 0 && lng === 0) return false;
+  return Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
+}
+
+export function toAssignStop(
+  raw: any,
+  opts: {
+    id: string; matchKey: string | null; cfg: EngineConfig; precisions: ZonePrecisions;
+    habitDocByKey: Map<string, any>; notesRestrictions: Map<string, any[]>; date: string;
+    // LIVE-BOARD paths pass 1. A board row whose freight columns are all zero —
+    // an order the once-per-PRO enrichment has not reached yet — otherwise costs
+    // NOTHING against the skid cap (stopSkidEquiv falls through to pallets, which
+    // is also 0), so an unbounded number of them ride one truck and every
+    // capacity number on screen is a lie. Counting each as one position is the
+    // conservative read; the warehouse rows the nightly scores are already
+    // populated, so it stays off there and the shadow is unchanged.
+    freightFloorSkids?: number;
+  },
+): AssignStop | null {
+  // (0,0) is NULL ISLAND in the Gulf of Guinea, not a delivery — it is what a
+  // failed geocode leaves behind, and Number(null)/Number('') already coerce to
+  // it. A stop that reads 0,0 is 5,800 miles from the depot: it would dominate
+  // every far/deadhead term and get sequenced onto a real truck. Out-of-range
+  // pairs are the same class of bad data. One predicate, so a caller that
+  // filters and this function that maps can never disagree about what is usable.
+  if (!hasUsableCoords(raw)) return null;
+  const lat = Number(raw.lat), lng = Number(raw.lng);
+  const mk = opts.matchKey;
+  const zone = zoneId(lat, lng, opts.precisions);
+  const num = (v: any) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  return {
+    id: opts.id, lat, lng,
+    zone, gh5: superOfZone(zone, opts.precisions),
+    ...(() => {
+      const pallets = num(raw?.pallets), skids = num(raw?.cartons), loose = num(raw?.volume);
+      const floor = Number(opts.freightFloorSkids) || 0;
+      const unknown = pallets <= 0 && skids <= 0 && loose <= 0;
+      return {
+        pallets: unknown && floor > 0 ? floor : pallets,  // TOTAL pieces (NuVizz mislabel)
+        skids,                                            // real skid positions (NuVizz "cartons")
+        loose,                                            // real loose pieces (NuVizz "volume")
+        freight_unknown: unknown,
+      };
+    })(),
+    weight: num(raw?.weight),
+    matchKey: mk,
+    strict: String(raw?.timeConstraint || '').toUpperCase() === 'STRICT',
+    miles: haversineMiles(DEPOT.lat, DEPOT.lng, lat, lng),
+    blocksTractor: mk ? restrictionsBlockTractor(opts.notesRestrictions.get(mk) || []) : false,
+    habit: mk ? habitAsOf(opts.habitDocByKey.get(mk) ?? null, opts.date) : null,
+    candidates: undefined,   // stamped by the caller that knows the roster
+  };
 }
 
 export interface PlanDaySummary {
@@ -290,7 +379,14 @@ export async function runPlanForDate(
   const truckClassOf = (s: any) => (roster ? vehicleTypeForStop(s, roster) : null);
 
   // ── the ANSWER KEY: what dispatch did on D (all eligible planned stops) ──
-  const planned = (dateStops || []).filter((s) => routeEligible(s) && loadKeyForStop(s) && finiteNum(s.lat) != null && finiteNum(s.lng) != null);
+  // hasUsableCoords, not a finite check: finiteNum(0) is 0 and 0 != null, so a
+  // null-island row used to pass here and then come back null from the mapper.
+  // These rows were never a real place — the old inline mapping handed the solver
+  // a "delivery" 5,800 miles out — so they leave the answer key too, and the
+  // count is reported rather than silently changing the agreement denominator.
+  const planned = (dateStops || []).filter((s) => routeEligible(s) && loadKeyForStop(s) && hasUsableCoords(s));
+  const droppedNoCoords = (dateStops || []).filter((s) => routeEligible(s) && loadKeyForStop(s) && !hasUsableCoords(s)).length;
+  if (droppedNoCoords) console.warn(`[plan] ${date}: ${droppedNoCoords} planned row(s) have no usable coordinates — excluded from the answer key`);
   const stopId = (s: any) => String(s.stopNbr);
   const rawById = new Map(planned.map((s) => [stopId(s), s] as const));
 
@@ -372,36 +468,22 @@ export async function runPlanForDate(
 
   // ── the engine's planned stop set ──
   const assignStops: AssignStop[] = planned.map((s) => {
-    const id = stopId(s);
-    const lat = Number(s.lat), lng = Number(s.lng);
-    const mk = s.customerMatchKey ?? null;
-    const habit = mk ? habitAsOf(inputs.habitDocByKey.get(mk) ?? null, date) : null;
+    // ONE mapping, shared with the live-board paths (see toAssignStop above) —
+    // warehouse rows already carry customerMatchKey. `planned` is filtered by
+    // hasUsableCoords, the SAME predicate toAssignStop rejects on, so the null
+    // branch really is unreachable here and the assertion keeps the type honest.
+    const mapped = toAssignStop(s, {
+      id: stopId(s), matchKey: s.customerMatchKey ?? null, cfg, precisions,
+      habitDocByKey: inputs.habitDocByKey, notesRestrictions: inputs.notesRestrictions, date,
+    })!;
     // Habit driver → the same driver_key form the roster + territory maps use.
-    const habitKey = habit?.topDriver ? String(habit.topDriver).toUpperCase().replace(/\s+/g, '_') : null;
+    const habitKey = mapped.habit?.topDriver ? String(mapped.habit.topDriver).toUpperCase().replace(/\s+/g, '_') : null;
     return {
-      id, lat, lng,
-      zone: zoneId(lat, lng, precisions),
-      gh5: superOfZone(zoneId(lat, lng, precisions), precisions),
-      pallets: finiteNum(s.pallets) || 0,   // TOTAL pieces (NuVizz mislabel)
-      skids: finiteNum(s.cartons) || 0,     // real skids (NuVizz "cartons")
-      loose: finiteNum(s.volume) || 0,      // real loose pieces (NuVizz "volume")
-      weight: finiteNum(s.weight) || 0,
-      matchKey: mk,
-      strict: String(s.timeConstraint || '').toUpperCase() === 'STRICT',
-      // DEPOT distance, computed — NEVER NuVizz stopDistance. That field is the
-      // LEG distance from the previous stop (a Dalton stop is 3 mi from the
-      // previous Dalton stop, not 60 from Buford), which silently disarmed every
-      // per-stop far test: territory ownership, the far-habit discount, and
-      // zone cohesion all no-opped on exactly the far clusters they were built
-      // for. The far/territory terms need distance-from-depot, unambiguously.
-      miles: haversineMiles(DEPOT.lat, DEPOT.lng, lat, lng),
-      blocksTractor: mk ? restrictionsBlockTractor(inputs.notesRestrictions.get(mk) || []) : false,
-      // Phase 2.1: the customer's habitual driver, as-of < D (leakage-safe reader).
-      habit,
+      ...mapped,
       // Phase 2.7: allowed drivers — this stop's zone trailing top-5 ∪ habit ∪ the
       // coarser 0.2° area (cold-zone fallback), roster-filtered. Empty ⇒ unseen
       // geography, and the solver falls back to any feasible driver.
-      candidates: candidateDriversFor(lat, lng, habitKey, territory, rosterKeys,
+      candidates: candidateDriversFor(mapped.lat, mapped.lng, habitKey, territory, rosterKeys,
         { zoneK: cfg.candidate_zone_k, areaK: cfg.candidate_area_k }),
     };
   });
@@ -625,9 +707,17 @@ export async function loadPlanInputs(tenant: string, date: string, plannedStops:
   const referencesBefore = (refRows as any[]).filter((r) => r?.tenant === tenant) as ReferenceRouteDoc[];
 
   const notesRestrictions = new Map<string, any[]>();
+  // The WHOLE note doc, kept alongside the equipment slice. notesRows is already
+  // in memory — this is zero extra reads — and it is what lets a caller ask the
+  // two questions equipment_restrictions cannot answer: is this dock closed
+  // today, and when does it shut.
+  const noteByKey = new Map<string, any>();
   for (const n of notesRows) {
     const mk = n?.match_key || n?._id;
-    if (mk) notesRestrictions.set(String(mk), n?.equipment_restrictions || []);
+    if (mk) {
+      notesRestrictions.set(String(mk), n?.equipment_restrictions || []);
+      noteByKey.set(String(mk), n);
+    }
   }
   const tractorCapable = new Set<string>();
   for (const t of tractorRows) { const mk = t?.match_key || t?._id; if (mk) tractorCapable.add(String(mk)); }
@@ -651,5 +741,5 @@ export async function loadPlanInputs(tenant: string, date: string, plannedStops:
   };
   await Promise.all(Array.from({ length: Math.min(8, wantKeys.length || 1) }, worker));
 
-  return { driverDaysBefore, referencesBefore, serviceDocByKey, fleetServiceDoc: fleetDoc, habitDocByKey, notesRestrictions, tractorCapable, employees };
+  return { driverDaysBefore, referencesBefore, serviceDocByKey, fleetServiceDoc: fleetDoc, habitDocByKey, notesRestrictions, noteByKey, tractorCapable, employees };
 }
