@@ -67,6 +67,7 @@ import { validateNewRoute } from './lib/route-create.js';
 import { mergeDayLoads, dayLoadTally } from './lib/day-loads.js';
 import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab } from './lib/right-panel.js';
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
+import { seedStagedCard } from './lib/workbench-stage.js';
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
 // The scan plan's model, shared with the scheduler that runs it — the screen and the code
 // must not be able to disagree about what a rule means or what a scan affects.
@@ -94,7 +95,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.80.5';
+const APP_VERSION = '0.81.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -165,6 +166,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.81.0', 'END-OF-NIGHT CLEANUP: HAND IT FIVE EMPTIES AND IT ROUTES THE LEFTOVERS ONTO THEM. Chad: “I’m thinking of using this more at end of night when I’m just planning the extra box truck loads — give it 5 empties and let it route the leftover unplanned stops on them.” The Engine card now has two modes. By driver is the conservative one that claims only what a driver’s history supports; Fill my loads is the opposite posture on purpose — the job is to make the leftovers GO SOMEWHERE onto the trucks provided, with geography and capacity doing the work. Zero NuVizz calls, zero writes: it reads the Firestore board and the same as-of learning the nightly uses, produces a proposal, and the only path to the vendor stays the Compare workbench’s Save. CONSERVATION IS THE PROPERTY THAT MATTERS AND IT IS PINNED BY A RANDOMISED SWEEP, NOT BY A HANDFUL OF FIXTURES: 1,000 synthetic boards — mixed truck classes, tight caps, zero-freight rows, Null Island, NaN coordinates, duplicate stop numbers, more trucks than stops — and on every one, every leftover is on exactly one truck or in the list with a reason, no truck is over its cap, and the same board twice gives the same plan. That sweep found three real defects reading never would have. CAPACITY IS A WALL HERE, NOT A PREFERENCE. The solver’s trip splitter puts a stop bigger than a driver’s cap in a trip by itself rather than strand it, which is right for the nightly plan where the cap is a learned typical load. Cleanup keeps one trip per shell, so that became the truck’s whole load and the card read “cap 6, loaded 10” — freight that will not go on the truck at the dock. Worse, that truck was then “full”, so a 1-skid stop got reported as needing another truck: it told Chad to roll a truck he did not need. A stop that fits NO picked truck is now named as too_big up front, everything past a cap comes back off and is re-offered to a truck that can take it, and equipment beats size in the precedence — a tractor-blocked 40-skid stop reads “equipment”, because the bigger truck is the trailer the customer bars. THE CLOCK AND THE DOCK, WHICH IS WHERE THE MONEY IS. A route can be capacity-legal and still undeliverable. A customer closed on the served day is pulled out and named rather than sequenced onto a truck nobody can unload; the dock’s closing time now reaches the card, and one that shuts early but landed in the back half of a run is called out by name so it can be dragged up; a liftgate-required consignee is refused a truck without one instead of the driver finding out at a residential door. All three read from the same pure functions the map draws its marks from, so the screen and the engine cannot disagree. TWO CRITICAL DEFECTS FOUND BY REVIEW AND MEASURED BEFORE THEY WERE FIXED. Two picked loads with the SAME driver collapsed into one bag — keyed by driver, not by shell — so the panel showed two cards both labelled SUW 9 holding the same four stops, SUW 2 gone, and half the picked capacity never used. And the shared stop mapping’s new coordinate guard crashed the NIGHTLY plan: finiteNum(0) is 0 and 0 != null, so a null-island row passed the finite-coord filter, came back null from the mapper and was dereferenced on the next line — which on the replay path escaped before the cursor-park block, so every retry restarted on the same row forever. One predicate now does both the filtering and the mapping. ALSO: cleanup was silently running with EMPTY service-time and habit maps, because loadPlanInputs keys its bounded reads on a field board rows do not carry and the stamping line the draft path has was simply missing — nothing errored and the plan looked normal. The sweep seed fills a fair share before a hard cap, so a big truck no longer straddles 60 miles while a small one does a single stop. And a truck loaded off a mixed box-and-tractor fleet average no longer calls that number “driver”, which was suppressing the one warning written to catch it. 46 new tests, 2,657 green.'],
   ['0.80.5', 'THE SPEND ATTRIBUTION WAS REPORTING AN IMPOSSIBLE NUMBER, ONE RELEASE AFTER I BUILT IT. Chad: “how many calls per day are we at with our scan schedule?” Reaching for the block added in v0.80.3 to answer him, it said the scan runs accounted for 2,070 calls on a day the counter recorded 1,209. Runs cannot account for more calls than were made. A tool built specifically so a question could be answered without arithmetic in someone’s head had produced a number that fails the first check anybody would apply to it. THE CAUSE IS A KINDNESS THAT WAS NOT ONE. The day filter kept rows with no etDate — “do not drop the legacy ones” — and every row written before v0.80.3 stamped that field has none. Retention had just gone from 120 rows to 400, about three days, so three days of undated runs were being counted into today. Invisible from the response beside it, because the endpoint returns only the LAST 40 rows while handing the attribution the whole ledger. Being generous with a row whose day is unknown is not generosity; it is a wrong number wearing a helpful face. Undated rows are skipped when a day is asked for, and the count of them is REPORTED, so a partial answer says out loud that it is one. A DISAGREEMENT BETWEEN THE TWO SOURCES IS NOW A SIGNAL, NOT A ROUNDING. otherCalls clamps at zero so the totals still add up, and that clamp was also hiding the fault: an hour where the runs claim more than the counter saw means the ledger and the counter disagree, which is worth seeing. It is flagged per hour and the whole day reports `consistent`. REPLAYED AGAINST THE LIVE LEDGER before and after: 2,070 attributed against 1,209 counted becomes 539 attributed, 670 unattributed, 17 undated rows skipped and named, consistent true. The gap is honest — those 17 rows genuinely cannot be placed on a day — and it closes on its own once a full day of stamped rows exists. AND THE ANSWER TO THE QUESTION, from the daily counters rather than from this block: weekdays run 963 to 1,302 calls with a median near 1,100, and have for two straight weeks; Saturdays are 4 and Sundays 140-160 on the blackout. That is about 55% of the 2,000 ceiling. What moved this week was composition, not volume — scheduled scans rose and manual scans fell as v0.80.2 moved tomorrow’s enrichment into tonight’s scheduled fires. Manual scans have been a third of some days (499, 389, 387), which is where the headroom is if it is ever wanted. Three mutations caught, including the exact live bug. 4 new tests.'],
   ['0.80.4', 'THE 6:30 REPORT NOW SAYS WHETHER THE BOARD WARNED ABOUT EACH STOP THAT ENDED THE DAY OPEN. Chad: “in the nightly 630 email for things undelivered let me know if any of the steps were flagged.” It is the right question, and the reason it matters is that it splits ONE list into TWO different jobs. A STOP THAT WAS FLAGGED AND MISSED ANYWAY is a question about the RESPONSE — the engine saw it coming, somebody had two hours of warning, and it still did not get there. That is a conversation with a person. A STOP NOTHING EVER SAW is a question about the RULE — no hours on file, a route the engine sets aside, a deadline that never registered. That is a conversation with the code. They get fixed in different ways by different people, and at half six the email presented them as the same grey list of stop numbers. EVERY ROW NOW CARRIES ITS MARK, in the text report and in the HTML table: the WORST tier the flag ever reached — not the first, because a stop that opened amber and went red is a red — and how much warning it actually gave, in the units a dispatcher thinks in: “RED · 2h05m warning”, “AMBER · 20m warning”, and “CRITICAL · no warning” for a flag that arrived after the close had already passed. Above the tables, one line answers the question outright: “Flagged during the day: 2 of 3 (1 red, 1 amber) · 1 never flagged.” ABSENT IS NOT ZERO, and that is the part with teeth. If the day’s flag history cannot be read, the report does NOT print “0 of 3 were flagged” — it says the history was unavailable and counts nothing. A zero printed off a failed read claims the detector stayed silent when the truth is that nobody looked, which is the exact absence-of-evidence error this engine already had to be rescued from once, and it is worse here because it reads as reassurance. A day that genuinely had no flags still says zero, because that is a real answer. THE JOIN IS PURE AND THE EDGE IS THIN: attachFlagHistory takes the report and the day’s history document and returns a new report, reading and writing nothing, so the rule is testable without a network. The 6:30 job reads the doc best-effort and hands it over; a history that fails to load leaves the join marked unavailable rather than failing the report, because a day report that does not arrive is worse than one with a column missing. The live preview endpoint does not read history at all and prints no flag line, rather than implying an answer it has not looked up. UNABLE-TO-DELIVER STOPS ARE JOINED TOO, not just the open ones — a refused delivery that was flagged an hour earlier is the single most actionable row in the whole email. Pinned by a mutation: dropping that list from the join fails two tests. Also pinned: using the first tier instead of the worst understates severity and fails three, and reporting an unreadable history as zero fails the test named for it. 11 new tests, 2,612 green.'],
   ['0.80.3', 'THE SCAN LEDGER CAN ANSWER “WHAT CAUSED THE SPIKE THIS MORNING” WITHOUT SOMEBODY DOING ARITHMETIC IN THEIR HEAD. Chad, at 11am on a Wednesday: “what caused the spike in nuvizz calls this morning?” The honest answer took three separate reads and one wrong turn, and the wrong turn is the reason this release exists. A GAP WAS REPORTED IN THE LEDGER THAT WAS NOT THERE. The run rows already carried the enrichment counts — the list path writes count/enriched, the completed overlay writes pulled/changed — and the first reader looked only for the second pair, so every full run read back as “pulled 0, changed 0” and the field that would have answered the question was declared missing. It was not. The data was one key name away. A number is not a fact until the thing that produced it has been checked too, and that applies to the reader as much as to the code it reads. SO THE JOIN MOVED INTO THE ENDPOINT. nuvizz-scan-config?explain=1 returns an ATTRIBUTION block: every hour with the counter’s total, the share the scan runs account for, the remainder, and for the busiest hours the single run that dominated with a sentence saying why in freight terms — “42 calls: 37 new orders looked up (18 on 2026-08-26, 19 on 2026-08-27)”. That last clause is what actually answers it: HALF OF THAT MORNING’S SPIKE WAS TOMORROW’S BOARD filling up, which no amount of staring at an hourly bar chart would have shown. THE COUNTER STAYS THE AUTHORITY AND THE GAP IS NAMED. Runs accounted for 29 of hour nine’s 60 calls; the other 31 were live dispatcher writes no scan run knows about. Reporting only the runs under-counts the day, reporting only the counter leaves the spike unexplained — so both are printed and the difference is a labelled field rather than a discrepancy for somebody to trip over. ONE PATH WAS REPORTING ITSELF FREE. dayCount is reassigned by refreshOps(), which every exit calls before finishing — except the roster-only one, which finished with the value read BEFORE the scan started, so callsAfter equalled callsBefore and a roster run’s cost was invisible. It refreshes now, and `calls` is recorded outright against a counter pinned at the top of the run rather than left as a subtraction of two fields that could both be stale. THE ROW SAYS WHAT IT COST WITHOUT BEING OPENED: enriched, newPros, stopsPulled, stopsChanged, and which board dates the enrichment landed on, rolled up from the per-date detail at finish. Retention went from 120 rows to 400 — about thirty hours to three days — because at 11am the midnight run had ALREADY ROLLED OFF, which is the one hour a question about “this morning” most needs. FOUND BY THE TESTS, TWICE, AND BOTH THE SAME TRAP. Number(‘’) is 0 and 0 is a valid hour, so a blank key in the hourly counter invented a midnight bucket and filed the day’s calls in it; Number(null) does the same to a run row with no hour. Both are matched as digits now rather than coerced. The tests are built on the REAL rows from that morning — 09:30 and 10:45 verbatim — so they pin the answer that was actually wanted rather than a plausible one. Three mutations caught: restoring the coercion, dropping the board date from the explanation, and hiding the counter gap. 10 new tests, 2,601 green.'],
@@ -16654,6 +16656,120 @@ function VersionLogModal({ onClose }) {
   );
 }
 
+// The engine's answer, rendered so it SURVIVES staging. The Setup panel is
+// REPLACED by the Compare workbench the moment a card opens — which is the
+// moment a draft or cleanup stages — so a result rendered only inside Setup
+// vanished exactly when the dispatcher started acting on it, taking the
+// left-unplanned list with it. This renders above the swap on both layouts.
+function EngineResultPanel({ result, kind, onDismiss }) {
+  if (!result) return null;
+  const isCleanup = kind === 'cleanup';
+  const left = result.left_unplanned || [];
+  const scanAt = result.staleness?.last_unplanned_scan_at;
+  return (
+    <div className="border rounded-lg bg-white p-2 space-y-1.5 text-[11px]">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-semibold text-slate-700">
+          {isCleanup ? 'Engine cleanup' : 'Engine draft'} · {formatDateLong(result.date)}
+        </span>
+        {onDismiss && (
+          <button onClick={onDismiss} className="text-slate-400 hover:text-slate-600 shrink-0" title="Hide this summary">✕</button>
+        )}
+      </div>
+
+      {isCleanup && result.fit && (
+        <div className={`rounded p-1.5 ${result.fit.fits ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-50 text-amber-800'}`}>
+          {result.fit.fits
+            ? <>It all fits: <b>{result.fit.pool_skid_equiv}</b> skid-equivalents onto about <b>{result.fit.capacity_skid_equiv}</b> of truck.</>
+            : <>Too much for these trucks: <b>{result.fit.pool_skid_equiv}</b> skid-equivalents against about <b>{result.fit.capacity_skid_equiv}</b> — roughly <b>{result.fit.trucks_needed_estimate}</b> trucks would clear it.</>}
+        </div>
+      )}
+
+      {(isCleanup ? result.trucks : result.drivers || []).map((t) => (
+        <div key={isCleanup ? t.key : t.driver_key} className="bg-slate-50 rounded p-1.5">
+          <div>
+            <b>{isCleanup ? t.key : t.driver_key}</b>
+            <span className="text-slate-500"> · {t.truck_class === 'tractor' ? '53′' : 'box'} · </span>
+            {isCleanup ? (
+              t.stop_count
+                ? <>{t.stop_count} stop{t.stop_count === 1 ? '' : 's'} · <b>{t.skid_equiv}</b>/{t.cap.skids} skids · ~{Math.round(t.travel_min_est)}m</>
+                : <span className="text-slate-500">nothing — the pool fit on the others</span>
+            ) : (
+              <>{t.total_stops} stop{t.total_stops === 1 ? '' : 's'}</>
+            )}
+          </div>
+          {/* The two facts a note tells him to CHECK, shown where he can act on
+              them: a dock that shuts early and where it landed in the sequence,
+              and which of these are pickups. A note saying "check the pickups"
+              on a card that does not mark them is not actionable. Only the
+              stops carrying a fact are listed — a clean truck stays one line. */}
+          {isCleanup && t.stops?.some((s) => s.close_min != null || s.pickup) && (
+            <div className="mt-0.5 space-y-0.5">
+              {t.stops.map((s, i) => (s.close_min == null && !s.pickup) ? null : (
+                <div key={s.stopNbr} className={`flex gap-1.5 pl-2 ${s.early_close ? 'text-rose-700' : 'text-slate-500'}`}>
+                  <span className="shrink-0">{i + 1}.</span>
+                  <span className="font-medium shrink-0 truncate">{s.businessName || s.stopNbr}</span>
+                  <span className="min-w-0 truncate">
+                    {[s.pickup ? 'PICKUP' : null, s.close_label ? `shuts ${s.close_label}` : null].filter(Boolean).join(' · ')}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {isCleanup && (t.cap.source === 'class' || t.cap.source === 'fleet') && t.stop_count > 0 && (
+            <div className="text-amber-700">
+              no usable truck profile — loaded to {t.cap.skids} skids from {t.cap.source === 'fleet' ? 'a mixed box-and-tractor fleet average' : 'the fleet class cap'}, which is the heavy end. Set this load’s profile if it holds less.
+            </div>
+          )}
+          {!isCleanup && t.envelope_source !== 'driver' && (
+            <div className="text-amber-700">engine has {t.observed_days ? `only ${t.observed_days}` : 'no'} observed day{t.observed_days === 1 ? '' : 's'} for this driver — working from {t.envelope_source === 'class' ? 'truck-class averages' : 'nothing'}; read the draft harder</div>
+          )}
+        </div>
+      ))}
+
+      {(result.notes || []).map((n, i) => (
+        <div key={i} className="text-slate-600">{n}</div>
+      ))}
+
+      {left.length > 0 && (
+        <details className="bg-slate-50 rounded p-1.5" open={isCleanup}>
+          <summary className="cursor-pointer font-semibold text-slate-700">
+            {left.length} stop{left.length === 1 ? '' : 's'} not on a truck — why
+          </summary>
+          {/* This is the ACTION list — what he still owes and where it is. It
+              carried only a name and a sentence, and it collapsed itself exactly
+              when there was most to read. One reason line, then the stops under
+              it with the two facts that decide what he does: the city and the
+              size. */}
+          <div className="mt-1 space-y-1 max-h-64 overflow-y-auto">
+            {Object.entries(left.reduce((acc, s) => {
+              (acc[s.detail] = acc[s.detail] || []).push(s); return acc;
+            }, {})).map(([detail, group]) => (
+              <div key={detail}>
+                <div className="text-slate-500">{group.length} · {detail}</div>
+                {[...group].sort((a, b) => String(a.city || '').localeCompare(String(b.city || '')) || (b.skids || 0) - (a.skids || 0)).map((s) => (
+                  <div key={s.stopNbr} className="flex gap-1.5 pl-2">
+                    <span className="font-medium shrink-0">{s.businessName || s.stopNbr}</span>
+                    <span className="text-slate-500 min-w-0 truncate">
+                      {[s.city, s.businessName ? `#${s.stopNbr}` : null, s.skids ? `${s.skids} sk` : null].filter(Boolean).join(' · ')}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+
+      {scanAt && (
+        <div className="text-slate-400">
+          Pool as of the {new Date(scanAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} scan — freight arriving since isn’t in this.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RoutingScreen({ debugCaptureRef, presence = null }) {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
   const { stops, loading, error: stopsError, refresh: refreshStops, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, lastCompletedScanAt, ops, scanUnplannedCount } = useStops(selectedDate);
@@ -19113,17 +19229,15 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
         if (next.length >= WB_MAX) { fullSkipped.push(b.key); continue; }
         // Seed with the load's existing same-day board stops (identical rule to opening the
         // card), then append the built stops; anything staged on another open card stays there.
-        const boardStops = positionedAllRef.current.filter((s) => !s.windowExtra && (s.routeName || s.loadNbr) === b.key);
-        const baseline = orderRouteStops(boardStops).map((s) => String(s.stopNbr)).filter((id) => !held.has(id));
-        const seen = new Set(baseline);
-        const adds = [];
-        for (const id of ids) {
-          if (seen.has(id)) continue;
-          if (held.has(id)) { skippedHeld++; continue; }
-          seen.add(id); adds.push(id);
-        }
-        next.push({ key: b.key, name: b.name || b.key, loadNbr: b.loadNbr || null, loadId: b.loadId || null, order: [...baseline, ...adds], baseline, collapsed: false });
-        added += adds.length;
+        // COORD-INCLUSIVE, exactly like opening the card by hand: a stop with no
+        // geocode is still ON the truck, and leaving it out of the baseline made
+        // the declarative RWB save refuse the whole load ("N stop(s) the board
+        // isn't showing — refresh and retry", which refreshing cannot fix).
+        const boardStops = boardStopsAllRef.current.filter((s) => !s.windowExtra && (s.routeName || s.loadNbr) === b.key);
+        const seeded = seedStagedCard(orderRouteStops(boardStops).map((s) => String(s.stopNbr)), ids, held, b.key);
+        skippedHeld += seeded.skippedHeld.length;
+        next.push({ key: b.key, name: b.name || b.key, loadNbr: b.loadNbr || null, loadId: b.loadId || null, order: seeded.order, baseline: seeded.baseline, removed: seeded.removed, collapsed: false });
+        added += seeded.order.length - (seeded.baseline.length - seeded.removed.length);
       }
     }
     setWbRoutes(next);
@@ -19139,6 +19253,10 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // (zero NuVizz calls); results land as pending Compare cards, so review, edits
   // and the eventual push all ride the existing workbench machinery — the Save
   // path, its gates and its verification are untouched.
+  const [engineMode, setEngineMode] = useState(() => {
+    try { return localStorage.getItem('routing.engineMode') === 'cleanup' ? 'cleanup' : 'driver'; } catch { return 'driver'; }
+  });
+  useEffect(() => { try { localStorage.setItem('routing.engineMode', engineMode); } catch { /* private mode */ } }, [engineMode]);
   const [draftNames, setDraftNames] = useState('');
   const [draftBusy, setDraftBusy] = useState(false);
   const [draftError, setDraftError] = useState(null);
@@ -19185,26 +19303,143 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     if (isMobile) { setMobilePanel('setup'); setSheetOpen(true); }
   }, [wbRoutes, boardStopById, routeGroups, isMobile]);
 
+  // ── Engine CLEANUP: the end-of-night pass ────────────────────────────────
+  // Chad picks the empty shells in section 2 and the engine routes the whole
+  // leftover pile onto them. The cards it opens are REAL loads (loadNbr/loadId,
+  // no pendingCreate), so Save goes through commitBoard — the same verified write
+  // path as any other Compare save, no route-create and no ship-from needed.
+  // Monotonic run id shared by BOTH engine runners: whichever started last owns
+  // the result panel and the workbench.
+  const engineRunRef = useRef(0);
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+  const [cleanupError, setCleanupError] = useState(null);
+  const [cleanupResult, setCleanupResult] = useState(null);
+
+  const stageCleanupPlan = useCallback((plan) => {
+    const held = new Map();
+    for (const r of wbRoutes) for (const id of r.order) held.set(String(id), r.key);
+    let next = [...wbRoutes];
+    let staged = 0, skippedHeld = 0, skippedOffBoard = 0;
+    const skippedFull = [];
+    for (const t of plan.trucks || []) {
+      if (!t.stops?.length) continue;
+      const ids = [];
+      for (const st of t.stops) {
+        const id = String(st.stopNbr);
+        if (!boardStopById.has(id)) { skippedOffBoard++; continue; }
+        ids.push(id);
+      }
+      if (!ids.length) continue;
+      const idx = next.findIndex((r) => r.key === t.key || (t.loadId && String(r.loadId || '') === String(t.loadId)));
+      if (idx >= 0) {
+        const cur = next[idx];
+        const have = new Set(cur.order.map(String));
+        const add = ids.filter((id) => !have.has(id) && (!held.has(id) || held.get(id) === cur.key));
+        skippedHeld += ids.filter((id) => !have.has(id) && held.has(id) && held.get(id) !== cur.key).length;
+        if (add.length) { next[idx] = { ...cur, order: [...cur.order, ...add] }; staged += add.length; }
+        for (const id of add) held.set(id, cur.key);
+        continue;
+      }
+      if (next.length >= WB_MAX) { skippedFull.push(t.key); continue; }
+      const boardStops = boardStopsAllRef.current.filter((x) => !x.windowExtra && (x.routeName || x.loadNbr) === t.key);
+      const seeded = seedStagedCard(orderRouteStops(boardStops).map((x) => String(x.stopNbr)), ids, held, t.key);
+      skippedHeld += seeded.skippedHeld.length;
+      next.push({ key: t.key, name: t.name || t.key, loadNbr: t.loadNbr || null, loadId: t.loadId || null, order: seeded.order, baseline: seeded.baseline, removed: seeded.removed, collapsed: false });
+      for (const id of seeded.order) held.set(id, t.key);
+      // What was actually staged, not what was offered: a stop already held by
+      // another open card is left there, and one already on this card was never
+      // new. Counting either would report an intent as an outcome.
+      staged += seeded.order.length - (seeded.baseline.length - seeded.removed.length);
+    }
+    setWbRoutes(next);
+    // Count the cards that actually OPENED, not the loads the engine filled —
+    // with WB_MAX cards and more loads picked, the old line read "…on 9 loads"
+    // and then "couldn't open: SUW 7, SUW 8, SUW 9" in the same sentence.
+    const openedCount = plan.trucks.filter((t) => t.stop_count && !skippedFull.includes(t.key)).length;
+    const bits = [`Engine put ${staged} leftover stop${staged === 1 ? '' : 's'} on ${openedCount} load${openedCount === 1 ? '' : 's'} — review, pick each driver, then Save`];
+    if (plan.left_unplanned?.length) bits.push(`${plan.left_unplanned.length} still unplanned (see the panel for why)`);
+    if (skippedHeld) bits.push(`${skippedHeld} already staged on an open card (left there)`);
+    if (skippedOffBoard) bits.push(`${skippedOffBoard} no longer on the board`);
+    if (skippedFull.length) bits.push(`workbench full — couldn't open: ${skippedFull.join(', ')}`);
+    setLastAction(bits.join(' · '));
+    if (isMobile) { setMobilePanel('setup'); setSheetOpen(true); }
+  }, [wbRoutes, boardStopById, isMobile]);
+
+  const runEngineCleanup = useCallback(async () => {
+    if (!planTargets.length) { setCleanupError('Pick the loads to fill in “2 · Plan onto → My loads” first.'); return; }
+    // A cleanup solve takes ~12s. If the dispatcher flips mode and starts a draft
+    // meanwhile, the older run must not land on top of the newer one — it would
+    // stage a second set of cards over the first and the panel would describe one
+    // while the workbench held both.
+    const runId = ++engineRunRef.current;
+    setCleanupBusy(true); setCleanupError(null);
+    // A stop already staged on an open card is spoken for — don't route it twice.
+    const excluded = [];
+    for (const r of wbRoutes) for (const id of r.order) excluded.push(String(id));
+    // The picked load's own board stops tell us its driver, when it has one; an
+    // empty shell has none, and the card's driver picker is where that is settled.
+    const driverByName = new Map(routeGroups.map((g) => [String(g.name || g.key).toLowerCase(), g.driver || null]));
+    try {
+      const res = await fetch('/.netlify/functions/routing-cleanup', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          date: selectedDate,
+          exclude_stop_nbrs: excluded,
+          trucks: planTargets.map((t) => ({
+            key: t.display, name: t.name || null, loadNbr: t.loadNbr, loadId: t.loadId,
+            truck_class: t.profile?.capabilities?.tractor ? 'tractor' : 'box_truck',
+            max_skids: t.profile?.maxSkids ?? null,
+            max_weight_lb: t.profile?.maxWeightLbs ?? null,
+            // A liftgate-required consignee cannot be served without one. Send
+            // the capability so the engine can refuse rather than load it.
+            liftgate: t.profile?.capabilities?.liftgate === true,
+            driver_user_name: driverByName.get(String(t.display).toLowerCase()) || null,
+          })),
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (runId !== engineRunRef.current) return;      // a newer run owns the screen
+      if (!res.ok || !data?.ok) {
+        // Only a SUCCESSFUL run clears the other panel — a failed cleanup used to
+        // wipe a draft result the dispatcher was still reading.
+        setCleanupError(data?.error || `cleanup failed (${res.status})`);
+        return;
+      }
+      setDraftResult(null);
+      setCleanupResult(data);
+      stageCleanupPlan(data);
+    } catch (e) {
+      if (runId !== engineRunRef.current) return;
+      setCleanupError(e?.message || 'network error');
+    } finally {
+      if (runId === engineRunRef.current) setCleanupBusy(false);
+    }
+  }, [planTargets, selectedDate, wbRoutes, routeGroups, stageCleanupPlan]);
+
   const runEngineDraft = useCallback(async () => {
     const names = draftNames.split(/[,;]+/).map((s) => s.trim()).filter(Boolean);
     if (!names.length || names.length > 4) { setDraftError('Name 1–4 drivers, comma-separated.'); return; }
-    setDraftBusy(true); setDraftError(null); setDraftResult(null);
+    const runId = ++engineRunRef.current;   // see runEngineCleanup — last run owns the screen
+    setDraftBusy(true); setDraftError(null);
     try {
       const res = await fetch('/.netlify/functions/routing-draft', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ date: selectedDate, drivers: names }),
       });
       const data = await res.json().catch(() => null);
+      if (runId !== engineRunRef.current) return;
       if (!res.ok || !data?.ok) {
         setDraftError([data?.error, ...(data?.details || [])].filter(Boolean).join('\n') || `draft failed (${res.status})`);
         return;
       }
+      setCleanupResult(null);
       setDraftResult(data);
       stageEngineDraft(data);
     } catch (e) {
+      if (runId !== engineRunRef.current) return;
       setDraftError(e?.message || 'network error');
     } finally {
-      setDraftBusy(false);
+      if (runId === engineRunRef.current) setDraftBusy(false);
     }
   }, [draftNames, selectedDate, stageEngineDraft]);
 
@@ -19445,7 +19680,19 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
           drafts named drivers' routes from the day's UNPLANNED pool. Zero NuVizz calls
           to draft; the only path to NuVizz remains the workbench Save. */}
       <div className="border rounded p-2 space-y-2">
-        <div className="font-semibold text-slate-700">4 · Engine draft <span className="text-[10px] uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">beta</span></div>
+        <div className="flex items-center justify-between gap-2">
+          <div className="font-semibold text-slate-700">4 · Engine <span className="text-[10px] uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">beta</span></div>
+          <div className="inline-flex rounded border border-slate-300 overflow-hidden text-[11px]">
+            {/* Locked while a solve is in flight. Flipping mode unmounts the
+                running button, which is the only thing on screen saying a 12s
+                solve is still going — the dispatcher would start a second one
+                blind and get two sets of cards. */}
+            <button onClick={() => setEngineMode('driver')} disabled={draftBusy || cleanupBusy} className={`px-2 py-1 font-semibold disabled:opacity-50 ${engineMode === 'driver' ? 'text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`} style={engineMode === 'driver' ? { background: BRAND } : undefined}>By driver</button>
+            <button onClick={() => setEngineMode('cleanup')} disabled={draftBusy || cleanupBusy} className={`px-2 py-1 font-semibold border-l border-slate-300 disabled:opacity-50 ${engineMode === 'cleanup' ? 'text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`} style={engineMode === 'cleanup' ? { background: BRAND } : undefined}>Fill my loads</button>
+          </div>
+        </div>
+        {engineMode === 'driver' ? (
+        <>
         <div className="text-[11px] text-slate-500">
           Name drivers and the <b>learned engine</b> drafts their routes for <b>{formatDateLong(selectedDate)}</b> from
           the unplanned pool — only stops their own history says are theirs; everything else stays unplanned and is
@@ -19460,48 +19707,47 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
           {draftBusy ? 'Drafting…' : 'Draft routes with engine'}
         </button>
         {draftError && <div className="text-[11px] text-red-600 whitespace-pre-wrap">{draftError}</div>}
-        {draftResult && (
-          <div className="text-[11px] text-slate-600 space-y-1.5">
-            {(draftResult.drivers || []).map((d) => (
-              <div key={d.driver_key} className="bg-slate-50 rounded p-1.5 space-y-0.5">
-                <div>
-                  <b>{d.driver_key}</b> · {d.truck_class === 'tractor' ? '53′' : 'box'} · {d.total_stops} stop{d.total_stops === 1 ? '' : 's'}
-                  {d.trips.map((t) => (
-                    <span key={t.seq} className="ml-1.5 text-slate-500" title={t.mode === 'guided' ? `sequenced from ${t.references_used} of ${d.driver_key}'s own past routes` : 'no similar past route — sequenced by geometry alone'}>
-                      T{t.seq}: {t.stops.length} stops · {Math.round(t.travel_min_est)}m{t.mode === 'unguided' ? ' · ∅ unguided' : ''}
-                    </span>
-                  ))}
-                </div>
-                {d.envelope_source !== 'driver' && (
-                  <div className="text-amber-700">engine has {d.observed_days ? `only ${d.observed_days}` : 'no'} observed day{d.observed_days === 1 ? '' : 's'} for this driver — working from {d.envelope_source === 'class' ? 'truck-class averages' : 'nothing'}; read the draft harder</div>
-                )}
-              </div>
-            ))}
-            {(draftResult.left_unplanned || []).length > 0 && (
-              <details className="bg-slate-50 rounded p-1.5">
-                <summary className="cursor-pointer font-semibold text-slate-700">
-                  {draftResult.left_unplanned.length} stop{draftResult.left_unplanned.length === 1 ? '' : 's'} left unplanned — why
-                </summary>
-                <div className="mt-1 space-y-0.5 max-h-48 overflow-y-auto">
-                  {draftResult.left_unplanned.map((s) => (
-                    <div key={s.stopNbr} className="flex gap-1.5">
-                      <span className="font-medium shrink-0">{s.businessName || s.stopNbr}</span>
-                      <span className="text-slate-500 min-w-0">{s.detail}</span>
-                    </div>
-                  ))}
-                </div>
-              </details>
-            )}
-            {draftResult.staleness?.last_unplanned_scan_at && (
-              <div className="text-slate-400">
-                Pool as of the {new Date(draftResult.staleness.last_unplanned_scan_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} scan — freight arriving since isn’t in this draft.
-              </div>
-            )}
+        </>
+        ) : (
+        <>
+        <div className="text-[11px] text-slate-500">
+          End of night: tick the loads to fill in <b>2 · Plan onto</b> above, and the engine puts
+          <b> everything still unplanned</b> on <b>{formatDateLong(selectedDate)}</b> onto them — geography and truck
+          capacity, not guesswork about whose stop it is. Each load is filled to the truck profile you picked for it.
+          Anything that will not fit is listed rather than crammed on. The cards it opens are your real loads, so
+          Save goes out the usual way.
+        </div>
+        {planTargets.length > 0 ? (
+          <div className="text-[11px] text-slate-600 bg-slate-50 rounded p-1.5">
+            Filling <b>{planTargets.length}</b> load{planTargets.length === 1 ? '' : 's'}: {planTargets.map((t) => t.display).join(', ')}
           </div>
+        ) : (
+          <div className="text-[11px] text-amber-700 bg-amber-50 rounded p-1.5">
+            No loads picked yet — tick them in <b>2 · Plan onto → My loads</b> above{planMode === 'trucks' ? ' (switch that from Trucks to My loads)' : ''}.
+          </div>
+        )}
+        <button onClick={runEngineCleanup} disabled={cleanupBusy || !planTargets.length}
+          className="w-full py-2 rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
+          {cleanupBusy ? 'Routing the leftovers…' : `Fill ${planTargets.length || ''} load${planTargets.length === 1 ? '' : 's'} with the leftovers`}
+        </button>
+        {cleanupError && <div className="text-[11px] text-red-600 whitespace-pre-wrap">{cleanupError}</div>}
+        </>
         )}
       </div>
     </>
   );
+
+  // Rendered OUTSIDE controlsContent on purpose: the Setup panel is replaced by the
+  // Compare workbench the instant a card opens, which is the instant a draft or a
+  // cleanup stages — so a result rendered only inside Setup disappeared exactly
+  // when the dispatcher started working it, taking the left-unplanned list with it.
+  const engineResultContent = (cleanupResult || draftResult) ? (
+    <EngineResultPanel
+      result={cleanupResult || draftResult}
+      kind={cleanupResult ? 'cleanup' : 'draft'}
+      onDismiss={() => { setCleanupResult(null); setDraftResult(null); }}
+    />
+  ) : null;
 
   const resultContent = (
     <RoutingResultPanel job={job} result={baseResult} meta={meta} usedGoogle={usedGoogle} stopById={vStopById}
@@ -19677,6 +19923,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
                         <RoutingStopsPanel selectedStops={selectedStops} notes={notes} onRemove={removeStop} hoverId={hoverId} setHoverId={setHoverId} onOpenStop={openStop} />
                       </MobileSelectedStops>
                     )}
+                    {engineResultContent}
                     {wbRoutes.length > 0
                       ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
                       : controlsContent}
@@ -19738,11 +19985,22 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
           The Setup stack is hideable (gear → "Setup panel"); the Compare workbench always shows when
           routes are open. With the Setup panel off and no routes open, the map gets the full width. */}
       {wbRoutes.length > 0 ? (
-        <div className="shrink-0 border-r bg-white min-h-0 overflow-x-auto" style={{ width: wbWidth }}>
+        <div className="shrink-0 border-r bg-white min-h-0 flex flex-col overflow-x-auto" style={{ width: wbWidth }}>
+          {/* ONE FLOW COLUMN. RoutingWorkbench's root is `h-full`, so with a
+              sibling above it the two together came to panel + 100% of the
+              column: the outer column scrolled, the workbench's own card
+              scroller believed it had the full height, and its Save button sat
+              below the fold. The panel is a bounded, shrink-0 header with its
+              own scroll; the workbench takes the rest, and `h-full` inside
+              flex-1/min-h-0 resolves to what is actually left. */}
+          {engineResultContent && <div className="p-2 pb-0 shrink-0 max-h-[45%] overflow-y-auto">{engineResultContent}</div>}
+          <div className="flex-1 min-h-0">
           <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
+          </div>
         </div>
       ) : leftPanelOn ? (
         <div className="shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm" style={{ width: leftPanel.width }}>
+          {engineResultContent}
           {controlsContent}
         </div>
       ) : null}

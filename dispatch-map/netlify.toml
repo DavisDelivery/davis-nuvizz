@@ -26,6 +26,17 @@
   # at 22s and returns a clean JSON error. Still the cheap 2-call list path (no re-scan).
   [functions."nuvizz-stop-explorer"]
     timeout = 26
+  # The two LIVE-BOARD engine endpoints (driver drafts and end-of-night cleanup).
+  # Both are Firestore-only — ZERO NuVizz calls — but a dispatcher is waiting on a
+  # real assignment solve over a whole unplanned pool. On the 10s DEFAULT a busy
+  # evening would be killed mid-solve and answer an HTML 502 the client cannot
+  # parse (the same failure the stop explorer and the write path hit above). The
+  # cores also bound their own local search (LIVE_SOLVER_MS), so this headroom is
+  # the outer belt, not the plan.
+  [functions."routing-draft"]
+    timeout = 26
+  [functions."routing-cleanup"]
+    timeout = 26
   [functions."motive-driver-positions"]
     timeout = 10
   # "Check email now" on the Manifest check tab: one poll of every configured
