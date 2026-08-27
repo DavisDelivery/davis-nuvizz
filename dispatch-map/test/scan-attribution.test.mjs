@@ -87,6 +87,40 @@ test('another day’s runs are not counted against today', () => {
   assert.equal(a.hours.find((h) => h.hour === 10).runCalls, 0);
 });
 
+// ── THE ONE THAT SHIPPED WRONG ───────────────────────────────────────────────
+test('an UNDATED row is not counted into today — it inflated the live numbers', () => {
+  // Live, this reported runCalls 2,070 against a day total of 1,209. The ledger holds ~3 days
+  // and every row written before etDate was stamped has none, so "be generous, keep the legacy
+  // rows" silently added other days into today. An impossible number is worse than a missing
+  // one: it cannot be sanity-checked by the person reading it.
+  const undated = { ...RUN_1045, etDate: undefined };
+  const a = attributeSpend([RUN_0930, undated], BY_HOUR, { etDate: '2026-08-26' });
+  assert.equal(a.hours.find((h) => h.hour === 10).runCalls, 0);
+  assert.equal(a.skippedUndated, 1, 'and the omission is COUNTED, not silent');
+  assert.ok(a.totals.runCalls <= a.totals.calls, 'runs can never account for more than were made');
+});
+
+test('with no day asked for, every row counts and nothing is skipped', () => {
+  const a = attributeSpend([RUN_0930, { ...RUN_1045, etDate: undefined }], BY_HOUR);
+  assert.equal(a.skippedUndated, 0);
+  assert.equal(a.hours.find((h) => h.hour === 10).runCalls, 42);
+});
+
+test('runs claiming more than the counter saw is FLAGGED, not rounded away', () => {
+  // The clamp keeps the totals adding up; the flag is what says the two sources disagree.
+  const a = attributeSpend([RUN_1045], { 10: 5 }, { etDate: '2026-08-26' });
+  const h10 = a.hours.find((h) => h.hour === 10);
+  assert.equal(h10.otherCalls, 0);
+  assert.equal(h10.overAttributed, 37);
+  assert.equal(a.consistent, false);
+});
+
+test('a healthy day reports itself consistent', () => {
+  const a = attributeSpend([RUN_0900, RUN_0930, RUN_1045], BY_HOUR, { etDate: '2026-08-26' });
+  assert.equal(a.consistent, true);
+  assert.equal(a.skippedUndated, 0);
+});
+
 test('a row from before `calls` was recorded still reports its cost', () => {
   assert.equal(runCalls({ callsBefore: 10, callsAfter: 16 }), 6);
   assert.equal(runCalls({ calls: 6 }), 6);
