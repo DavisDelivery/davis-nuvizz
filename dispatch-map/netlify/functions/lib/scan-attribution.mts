@@ -81,6 +81,8 @@ export interface HourRollup {
   runs: number;
   newOrders: number;
   topRun: { at: string; calls: number; why: string } | null;
+  /** Set only when the runs claim more calls than the counter saw — a fault worth seeing. */
+  overAttributed?: number;
 }
 
 /**
@@ -93,9 +95,21 @@ export function attributeSpend(
   runs: RunLike[] | null | undefined,
   byHour: Record<string | number, any> | null | undefined,
   opts: { etDate?: string } = {},
-): { hours: HourRollup[]; busiest: HourRollup[]; totals: { calls: number; runCalls: number; otherCalls: number; newOrders: number } } {
+): { hours: HourRollup[]; busiest: HourRollup[]; totals: { calls: number; runCalls: number; otherCalls: number; newOrders: number }; skippedUndated: number; consistent: boolean } {
+  // AN UNDATED ROW CANNOT BE ATTRIBUTED TO A DAY, so when a day is asked for it is left out.
+  //
+  // The first version kept undated rows ("do not drop the legacy ones") and the result was
+  // arithmetic that could not be true: runCalls came back 2,070 against a day total of 1,209,
+  // because the ledger now holds ~3 days and every row written before etDate was stamped got
+  // counted into today. The endpoint returns only the last 40 rows but hands this function the
+  // WHOLE ledger, so the inflation was invisible in the response beside it.
+  //
+  // Being generous with a row whose day is unknown is not generosity, it is a wrong number
+  // wearing a helpful face. They are skipped and COUNTED, so a partial answer says it is one.
   const day = opts.etDate;
-  const rows = (runs || []).filter((r) => r && (!day || !r.etDate || r.etDate === day));
+  const all = (runs || []).filter(Boolean);
+  const rows = day ? all.filter((r) => r.etDate === day) : all;
+  const skippedUndated = day ? all.filter((r) => !r.etDate).length : 0;
 
   const hours = new Map<number, HourRollup>();
   const bucket = (h: number): HourRollup => {
@@ -135,12 +149,25 @@ export function attributeSpend(
   }
 
   const list = [...hours.values()].sort((a, b) => a.hour - b.hour);
-  for (const h of list) h.otherCalls = Math.max(0, h.calls - h.runCalls);
+  // A clamp at zero hides the one thing worth surfacing: runs claiming MORE calls than the
+  // counter saw means the ledger and the counter disagree, and that is a fault to report, not
+  // a negative to round away. It is flagged per hour and the clamp stays so the totals add up.
+  for (const h of list) {
+    h.otherCalls = Math.max(0, h.calls - h.runCalls);
+    if (h.runCalls > h.calls) h.overAttributed = h.runCalls - h.calls;
+  }
 
   const totals = list.reduce((a, h) => ({
     calls: a.calls + h.calls, runCalls: a.runCalls + h.runCalls,
     otherCalls: a.otherCalls + h.otherCalls, newOrders: a.newOrders + h.newOrders,
   }), { calls: 0, runCalls: 0, otherCalls: 0, newOrders: 0 });
 
-  return { hours: list, busiest: [...list].sort((a, b) => b.calls - a.calls).slice(0, 3), totals };
+  return {
+    hours: list,
+    busiest: [...list].sort((a, b) => b.calls - a.calls).slice(0, 3),
+    totals,
+    // Named, so "the runs only account for some of it" is never mistaken for the whole story.
+    skippedUndated,
+    consistent: list.every((h) => !h.overAttributed),
+  };
 }
