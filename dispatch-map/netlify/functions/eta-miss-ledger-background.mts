@@ -66,7 +66,15 @@ function makeNoteReader() {
 function stampMin(s: any, date: string): { min: number; at: string } | null {
   const a = arrivalAnchor(s, date);
   if (!a || !Number.isFinite(a.min)) return null;
-  return { min: a.min, at: String(s?.deliveredDTTM || s?.arrivalDTTM || '') };
+  // THE STAMP THE MINUTES CAME FROM — not whichever field happens to be filled in. This read
+  // `deliveredDTTM || arrivalDTTM` while arrivalAnchor prefers the opposite order AND refuses
+  // a stamp dated to another day, so a stop anchored on today's arrivalDTTM could be handed
+  // yesterday's deliveredDTTM string. Harmless while only the minutes were shown; it is a
+  // wrong DATE on screen the moment the date is shown, which is what this change does.
+  // (Checked against the 110 scored rows on file: stamp minutes equal arrivalMin on all 93
+  // that have a stamp, so this has not bitten yet. It is one field-order away from doing so.)
+  const at = a.source === 'arrival' ? s?.arrivalDTTM : s?.deliveredDTTM;
+  return { min: a.min, at: String(at || '') };
 }
 
 /** `date` and the n-1 days before it, newest first — the scheduled run's catch-up window. */
@@ -133,13 +141,23 @@ async function scoreFlagOutcomes(date: string, stops: any[]) {
   // the nightly sweep re-read those days until they aged out still ungraded. A fifth of the
   // week could not answer the question this table exists to ask. Walk to the first later day
   // that actually HAS a board; rollCheckDate bounds how far.
-  let nextDay: Set<string> | null = null;
+  // KEEP THE ROWS, NOT JUST THE NUMBERS. This reduced the later board to a Set of stop
+  // numbers, which answered "did it come back?" and threw away "and when did it land?" — the
+  // board was fetched, the stamp was in memory, and it was discarded. Measured across twelve
+  // scored days: all 34 made and all 27 missed rows carried a deliveredAt, and all 11 ROLLED
+  // rows carried none. The one outcome whose delivery happens on a different DATE was the one
+  // with no date recorded at all.
+  let nextDay: Map<string, any> | null = null;
   let rollCheckedDate: string | null = null;
   for (let i = 1; i <= ROLL_LOOKAHEAD_DAYS; i += 1) {
     const d = addDays(date, i);
     try {
       const later = await listStops(TENANT, d);
-      if (later?.length) { nextDay = new Set(later.map((s: any) => String(s?.stopNbr))); rollCheckedDate = d; break; }
+      if (later?.length) {
+        nextDay = new Map(later.map((s: any) => [String(s?.stopNbr), s]));
+        rollCheckedDate = d;
+        break;
+      }
     } catch { /* not captured — keep looking */ }
   }
 
@@ -148,11 +166,18 @@ async function scoreFlagOutcomes(date: string, stops: any[]) {
   for (const [stopNbr, row] of Object.entries<any>(tracked)) {
     const s = byStop.get(stopNbr);
     const stamp = s ? stampMin(s, date) : null;
+    // The stop as the LATER board has it. Present on the board is not the same as delivered
+    // there — a stop replanned and still open has no stamp, and "rolled, still open" must not
+    // be printed as a delivery.
+    const laterRow = nextDay && rollCheckedDate ? nextDay.get(stopNbr) : null;
+    const laterStamp = laterRow && rollCheckedDate ? stampMin(laterRow, rollCheckedDate) : null;
     out[stopNbr] = scoreRow(row, {
       arrivalMin: stamp ? stamp.min : null,
       deliveredAt: stamp ? stamp.at : null,
       finished: s ? isFinishedStop(s) : false,
       seenLater: nextDay ? nextDay.has(stopNbr) : null,
+      rolledDeliveredAt: laterStamp ? laterStamp.at : null,
+      rolledOnDate: rollCheckedDate,
       scoredAt,
     });
   }

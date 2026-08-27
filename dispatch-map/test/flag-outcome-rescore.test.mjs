@@ -46,7 +46,10 @@ test('THE BUG: a day scored before the next day existed is NOT finished', () => 
 });
 
 test('a day scored WITH the next day is finished and costs nothing further', () => {
-  assert.equal(needsOutcomeRescore(doc([row({ outcome: 'rolled' })], { next_day_captured: true })), false);
+  // The roll carries its date. From v0.81.2 that is what "finished" means for a rolled row —
+  // an undated one is a record the scorer could not write until then, and it re-settles once
+  // (see flag-roll-date.test.mjs). Everything below is the day that has nothing left to learn.
+  assert.equal(needsOutcomeRescore(doc([row({ outcome: 'rolled', rolledOnDate: '2026-08-20' })], { next_day_captured: true })), false);
   // Even with unknowns left. Once we have actually looked at the day it would have come back
   // on, "unknown" is a verdict (cancelled, exception, no stamp) rather than a missing input —
   // and re-reading a sealed pair of days for ever would be a standing cost for no new answer.
