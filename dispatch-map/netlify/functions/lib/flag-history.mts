@@ -326,6 +326,40 @@ export function scoreRow(
  * shut is not a warning, and averaging it in would flatter the number. That distinction is
  * the whole reason the column exists.
  */
+/**
+ * PURE. Did this flagged stop reach the customer AT ALL, having missed the flagged close?
+ *
+ * Chad, on the Flag history cards: "need a card here for delivered even though it didn't
+ * 'made it' make the flag time."
+ *
+ * THE DISTINCTION IS THE ONE THAT COSTS MONEY. Late is an apology; never-delivered is a truck
+ * going back out tomorrow. Before this the board could not tell them apart in one number:
+ * `missed` covers only the same-day-late case, and the roll that delivered first thing next
+ * morning — freight the customer HAS — sat under `rolled` beside rolls still sitting on a
+ * dock. So "how much of what we flagged actually got there?" had no card.
+ *
+ * TWO OUTCOMES QUALIFY, and only two:
+ *   missed  — classifyOutcome reaches it only with a stamp on the day AND a close to grade it
+ *             against, and only when the stamp is after the close. It IS a delivery.
+ *   rolled  — delivers on a LATER day, so the proof is rolledDeliveredAt. A roll that came
+ *             back on a later board but has not delivered off it keeps a null stamp for ever
+ *             (see the backfill note above), and counting it would dress freight still sitting
+ *             there as a delivery — the exact thing deliveredWhen's 'open' tone exists to stop.
+ *
+ * `made` is excluded because it made the window. `undelivered` and `unknown` are excluded
+ * because nothing says the freight arrived.
+ *
+ * DELIBERATELY OVERLAPPING. This is a roll-up across two of the exclusive buckets, not a
+ * seventh bucket — the card says so, because a reader adding the tiles up and overshooting
+ * the total is worse than not having the number.
+ */
+export function isDeliveredLate(row: Partial<FlagRow> | null | undefined): boolean {
+  if (!row || typeof row !== 'object') return false;
+  if (row.outcome === 'missed') return true;
+  if (row.outcome === 'rolled') return !!row.rolledDeliveredAt;
+  return false;
+}
+
 export function summarize(rows: FlagRow[] | Record<string, FlagRow>) {
   const list: FlagRow[] = Array.isArray(rows) ? rows : Object.values(rows || {});
   const by = (o: Outcome) => list.filter((r) => r.outcome === o).length;
@@ -337,6 +371,9 @@ export function summarize(rows: FlagRow[] | Record<string, FlagRow>) {
     made: by('made'),
     missed: by('missed'),
     rolled: by('rolled'),
+    // A ROLL-UP, not a bucket: `missed` plus the rolls that can be PROVEN to have delivered
+    // on a later day. Overlaps missed and rolled on purpose — see isDeliveredLate.
+    deliveredLate: list.filter(isDeliveredLate).length,
     undelivered: by('undelivered'),
     unknown: by('unknown'),
     emailed: list.filter((r) => r.emailed).length,

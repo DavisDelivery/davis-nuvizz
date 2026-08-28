@@ -9,9 +9,11 @@
 // an OUTCOME for weeks. So these tests are mostly about what the numbers may NOT claim.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   mergeSweep, classifyOutcome, scoreRow, summarize, worseTier, flagHistoryPath,
   rollCheckDate, ROLL_LOOKAHEAD_DAYS,
+  isDeliveredLate,
 } from '../netlify/functions/lib/flag-history.mts';
 
 import { auditRows } from '../netlify/functions/lib/flag-rows.mts';
@@ -286,4 +288,100 @@ test('AND THEN THE OUTCOME RESOLVES: the same row reads unknown, then rolled', (
   assert.equal(classifyOutcome({ ...row, seenLater: null }), 'unknown', 'before any later board existed');
   assert.equal(classifyOutcome({ ...row, seenLater: true }), 'rolled', 'once Monday is sealed and carries it');
   assert.equal(classifyOutcome({ ...row, seenLater: false }), 'undelivered', 'or Monday is sealed and does not');
+});
+
+// ── DID THE FREIGHT ACTUALLY GET THERE ───────────────────────────────────────
+//
+// Chad, on the Flag history cards: "need a card here for delivered even though it didn't
+// 'made it' make the flag time."
+//
+// The distinction is the one that costs money. Late is an apology; never-delivered is a truck
+// going back out tomorrow. No card told them apart: `missed` covers only the same-day-late
+// case, and the roll that delivered first thing next morning — freight the customer HAS — sat
+// under `rolled` beside rolls still sitting on a dock.
+
+test('MISSED IS A DELIVERY — late, but the customer has their freight', () => {
+  // classifyOutcome reaches 'missed' only WITH a stamp and a close to grade it against. The
+  // word reads like a non-delivery next to "Never delivered", which is exactly why the count
+  // needed saying out loud.
+  assert.equal(classifyOutcome({ closeMin: 900, arrivalMin: 960 }), 'missed');
+  assert.equal(isDeliveredLate({ outcome: 'missed' }), true);
+});
+
+test('A ROLL COUNTS ONLY ONCE WE CAN PROVE IT DELIVERED', () => {
+  // A roll that came back on a later board but has not delivered off it keeps a null stamp
+  // for ever. Counting it would dress freight still sitting on a dock as a delivery — the
+  // exact thing deliveredWhen's 'open' tone exists to prevent.
+  assert.equal(isDeliveredLate({ outcome: 'rolled', rolledDeliveredAt: '2026-08-28T09:12:00' }), true);
+  assert.equal(isDeliveredLate({ outcome: 'rolled', rolledDeliveredAt: null }), false);
+  assert.equal(isDeliveredLate({ outcome: 'rolled' }), false, 'no stamp is not a delivery');
+});
+
+test('on-time, never-delivered and ungradable are all excluded', () => {
+  assert.equal(isDeliveredLate({ outcome: 'made' }), false, 'it made the window');
+  assert.equal(isDeliveredLate({ outcome: 'undelivered' }), false);
+  assert.equal(isDeliveredLate({ outcome: 'unknown' }), false);
+  assert.equal(isDeliveredLate(null), false);
+  assert.equal(isDeliveredLate(undefined), false);
+  assert.equal(isDeliveredLate('missed'), false, 'a string is not a row');
+});
+
+test('the summary counts it as a ROLL-UP across two buckets, not a seventh bucket', () => {
+  // A day: one on time, two late the same day, one rolled and delivered next morning, one
+  // rolled and still sitting, one gone.
+  const rows = [
+    { outcome: 'made' },
+    { outcome: 'missed' },
+    { outcome: 'missed' },
+    { outcome: 'rolled', rolledDeliveredAt: '2026-08-28T08:40:00' },
+    { outcome: 'rolled', rolledDeliveredAt: null },
+    { outcome: 'undelivered' },
+  ];
+  const s = summarize(rows);
+  assert.equal(s.deliveredLate, 3, 'two same-day-late plus the roll that landed');
+  // The exclusive buckets are untouched — this must not shift any existing number.
+  assert.equal(s.made, 1);
+  assert.equal(s.missed, 2);
+  assert.equal(s.rolled, 2);
+  assert.equal(s.undelivered, 1);
+  assert.equal(s.flags, 6);
+  // The EXCLUSIVE buckets still partition the day exactly — this must not disturb that.
+  assert.equal(s.made + s.missed + s.rolled + s.undelivered + s.unknown, s.flags);
+  // And deliveredLate is drawn from inside missed+rolled rather than adding a bucket: it is
+  // larger than missed alone (so it picked up a roll) and never exceeds the two together.
+  assert.ok(s.deliveredLate > s.missed, 'it includes a roll that delivered');
+  assert.ok(s.deliveredLate <= s.missed + s.rolled, 'and it invents nothing outside those two');
+});
+
+test('a day where everything got there late still reports every delivery', () => {
+  const s = summarize([{ outcome: 'missed' }, { outcome: 'missed' }, { outcome: 'missed' }]);
+  assert.equal(s.deliveredLate, 3);
+});
+
+test('an empty day is zero, not undefined — the card renders a number either way', () => {
+  assert.equal(summarize([]).deliveredLate, 0);
+  assert.equal(summarize({}).deliveredLate, 0);
+});
+
+// ── THE STALE-SUMMARY TRAP ───────────────────────────────────────────────────
+
+test('A DAY SCORED BEFORE THIS FIELD EXISTED MUST NOT REPORT ZERO', () => {
+  // The endpoint prefers the summary written at score time. Every day already on file was
+  // scored without deliveredLate, so serving the stored summary straight would print a
+  // confident 0 on the one card whose job is to say freight DID arrive — the same
+  // absence-read-as-evidence error this file has been rescued from before.
+  const src = readFileSync(new URL('../netlify/functions/eta-flag-history.mts', import.meta.url), 'utf8');
+  assert.match(src, /function summaryFor\(/, 'there is a guard between the stored summary and the screen');
+  assert.match(src, /s\.deliveredLate == null\) return summarize\(/, 'a summary missing the field is re-derived');
+  assert.ok(!/summary: doc\.summary \?\? summarize/.test(src),
+    'no path may serve the stored summary without checking it carries the field');
+  // And the range roll-up has to total it, or a multi-day view reads 0 while each day is right.
+  assert.match(src, /'gradable', 'deliveredLate'\]/, 'deliveredLate is in TOTAL_KEYS');
+});
+
+test('the card is on the screen and reads the field the endpoint sends', () => {
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.match(app, /value=\{t\.deliveredLate \?\? 0\} label="Delivered late"/);
+  // Eight tiles now, so the wide grid has to make room or the last one wraps alone.
+  assert.match(app, /grid-cols-2 sm:grid-cols-4 xl:grid-cols-8/);
 });

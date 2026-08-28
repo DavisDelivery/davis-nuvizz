@@ -27,6 +27,20 @@ import { resolveRange, expandRange, selectionFromParams, isDateStr } from '../..
 
 const TENANT = 'davis';
 
+/**
+ * The day's summary, recomputed when the stored one predates a field the screen now shows.
+ *
+ * `doc.summary` is written at score time, so a day scored before deliveredLate existed simply
+ * has no such key — and reading it straight would print a confident 0 for freight that DID
+ * reach the customer, on a card whose whole job is to say so. summarize() is pure and the
+ * rows are already in the document we just read, so re-deriving costs nothing.
+ */
+function summaryFor(doc: any, rows: any): any {
+  const s = doc?.summary;
+  if (!s || s.deliveredLate == null) return summarize(rows as any);
+  return s;
+}
+
 export default async (req: Request): Promise<Response> => {
   const J = (b: any, s = 200) => new Response(JSON.stringify(b), {
     status: s, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
@@ -47,7 +61,7 @@ export default async (req: Request): Promise<Response> => {
       const rows = Object.values(doc.rows);
       return J({
         ok: true, date: one, found: true, version: doc.version ?? null,
-        summary: doc.summary ?? summarize(rows as any),
+        summary: summaryFor(doc, rows),
         scoredAt: doc.scored_at ?? null,
         nextDayCaptured: doc.next_day_captured ?? null,
         rows,
@@ -65,7 +79,7 @@ export default async (req: Request): Promise<Response> => {
         const rows = Object.values(doc.rows);
         return {
           date, found: true,
-          summary: doc.summary ?? summarize(rows as any),
+          summary: summaryFor(doc, rows),
           scoredAt: doc.scored_at ?? null,
           // A day whose flags are recorded but not yet scored is a normal state before the
           // nightly run, and the screen says so rather than showing zeroes as outcomes.
@@ -82,7 +96,7 @@ export default async (req: Request): Promise<Response> => {
     // Seeded with zeros rather than built up from {}, so a range with no data still answers
     // with every field present. An empty object forces each reader to invent its own
     // fallback, and the one that forgets prints "undefined" on a dashboard.
-    const TOTAL_KEYS = ['flags', 'made', 'missed', 'rolled', 'undelivered', 'unknown', 'emailed', 'actedOn', 'warned', 'tooLateToAct', 'gradable'] as const;
+    const TOTAL_KEYS = ['flags', 'made', 'missed', 'rolled', 'undelivered', 'unknown', 'emailed', 'actedOn', 'warned', 'tooLateToAct', 'gradable', 'deliveredLate'] as const;
     const total: any = Object.fromEntries(TOTAL_KEYS.map((k) => [k, 0]));
     for (const d of found as any[]) {
       const s = d.summary || {};
