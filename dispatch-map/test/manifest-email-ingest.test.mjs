@@ -5,8 +5,10 @@
 // Resend inbox and an in-memory Firestore — no network, no PDFs, no NuVizz.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   ingestManifestEmails, toStoredEmailRun, markerDoc, LATEST_DOC, MAX_EMAILS_PER_RUN,
+  orderOldestFirst,
 } from '../netlify/functions/lib/manifest-email-ingest.mts';
 
 // A scripted world: emails in the inbox, bytes behind download URLs, and a diff
@@ -212,4 +214,114 @@ test('the ingest works exactly as before when no archive is wired', async () => 
   assert.equal(out.outcomes[0].outcome, 'checked');
   assert.equal(out.outcomes[0].archived, undefined, 'no archive, no archive line');
   assert.ok(store.get(LATEST_DOC));
+});
+
+// ── WHICH REPORT SURVIVES THE NIGHT ──────────────────────────────────────────
+//
+// Chad, holding a stored manifest: "you're saving the wrong manifest, you should be saving
+// the last one pulled in. You're instead saving the first one."
+//
+// Uline sends one night's freight report FIVE times — a small mid-afternoon preliminary, then
+// the full report at midnight, 1am, 2am and 3am. Measured on the real 08/27/26 mail: the first
+// attachment is ~27KB and the rest are ~61KB. The manifest is append-only, so the LAST report
+// is the complete one and the first is a fragment.
+//
+// Filing is an OVERWRITE — one blob key per night, and doc.latest is replaced each time — so
+// whichever report is processed LAST is the one that survives. Gmail's messages.list returns
+// NEWEST FIRST, and this loop walked that order, which filed the oldest last. With the per-run
+// cap, successive runs then marched the archive backwards until it settled on report #1.
+
+const at = (iso) => Date.parse(iso);
+
+test('THE NEWEST REPORT IS PROCESSED LAST, BECAUSE FILING IS AN OVERWRITE', () => {
+  // The real 08/27/26 night, in the order Gmail hands it over: newest first.
+  const gmailOrder = [
+    { id: '3am', receivedAt: at('2026-08-28T03:00:59Z') },
+    { id: '2am', receivedAt: at('2026-08-28T02:00:44Z') },
+    { id: '1am', receivedAt: at('2026-08-28T01:00:29Z') },
+    { id: 'midnight', receivedAt: at('2026-08-28T00:01:23Z') },
+    { id: 'preliminary', receivedAt: at('2026-08-27T14:51:06Z') },
+  ];
+  const order = orderOldestFirst(gmailOrder).map((e) => e.id);
+  assert.deepEqual(order, ['preliminary', 'midnight', '1am', '2am', '3am']);
+  assert.equal(order[order.length - 1], '3am', 'the LAST report of the night must be filed last');
+  assert.equal(order[0], 'preliminary', 'the 27KB fragment goes first, where it gets overwritten');
+});
+
+test('the per-run cap moves the archive FORWARD in time, never backward', () => {
+  // This is why ascending order is the right fix rather than simply reversing the list at the
+  // end. Each pass files at most MAX_EMAILS_PER_RUN and ends on the NEWEST message it handled,
+  // so a backlog converges toward the latest report. Walking newest-first did the opposite:
+  // every pass ended on an older report than the one before it.
+  const night = ['preliminary', 'midnight', '1am', '2am', '3am'].map((id, i) => ({
+    id, receivedAt: at('2026-08-27T14:00:00Z') + i * 3600_000,
+  }));
+  const gmail = [...night].reverse(); // newest first, as Gmail delivers it
+
+  const passes = [];
+  let remaining = gmail;
+  while (remaining.length) {
+    const batch = orderOldestFirst(remaining).slice(0, MAX_EMAILS_PER_RUN);
+    passes.push(batch[batch.length - 1].id);            // the one that wins this pass
+    const done = new Set(batch.map((e) => e.id));
+    remaining = remaining.filter((e) => !done.has(e.id)); // markers stop re-processing
+  }
+  assert.deepEqual(passes, ['1am', '3am'], 'each pass ends newer than the last');
+  assert.equal(passes[passes.length - 1], '3am', 'the archive settles on the final report');
+
+  // And the proof the old behaviour was wrong: unsorted, it settles on the fragment.
+  const wrong = [];
+  let rem = gmail;
+  while (rem.length) {
+    const batch = rem.slice(0, MAX_EMAILS_PER_RUN);
+    wrong.push(batch[batch.length - 1].id);
+    const done = new Set(batch.map((e) => e.id));
+    rem = rem.filter((e) => !done.has(e.id));
+  }
+  assert.equal(wrong[wrong.length - 1], 'preliminary',
+    'newest-first processing settles on report #1 — the bug Chad reported');
+});
+
+test('AN UNDATED MESSAGE IS FILED FIRST, WHERE IT CANNOT OVERWRITE A KNOWN-NEWER REPORT', () => {
+  // Filing is last-write-wins. An undated message placed LAST would overwrite every report
+  // whose time we know — re-enacting this very bug if it happened to be the fragment. Placed
+  // first, the worst case is that we lose one revision we could not place. Not symmetric,
+  // so it goes on the cautious side.
+  //
+  // This also pins the total order. A comparator returning 0 for undated pairs was tried and
+  // left 'known-new' ahead of 'known-old', because 0 is not a total order and the two dated
+  // messages either side of an undated one were never compared directly.
+  const mixed = [
+    { id: 'known-new', receivedAt: at('2026-08-28T03:00:00Z') },
+    { id: 'no-stamp' },
+    { id: 'known-old', receivedAt: at('2026-08-27T14:00:00Z') },
+  ];
+  const ids = orderOldestFirst(mixed).map((e) => e.id);
+  assert.deepEqual(ids, ['no-stamp', 'known-old', 'known-new']);
+  assert.equal(ids[ids.length - 1], 'known-new', 'the newest KNOWN report still wins the night');
+});
+
+test('orderOldestFirst does not mutate the caller\'s array', () => {
+  const src = [{ id: 'b', receivedAt: 2 }, { id: 'a', receivedAt: 1 }];
+  orderOldestFirst(src);
+  assert.deepEqual(src.map((e) => e.id), ['b', 'a'], 'the input list is left alone');
+});
+
+test('an empty or single-message inbox is handled without fuss', () => {
+  assert.deepEqual(orderOldestFirst([]), []);
+  assert.deepEqual(orderOldestFirst([{ id: 'only' }]).map((e) => e.id), ['only']);
+});
+
+test('THE GMAIL ADAPTER SUPPLIES THE TIMESTAMP — without it the sort is a no-op', () => {
+  // The sort can only work if the adapter fills receivedAt in. Gmail returns internalDate
+  // (epoch ms, as a string) on format=full, which is the call list() already makes.
+  const src = readFileSync(new URL('../netlify/functions/lib/gmail-source.mts', import.meta.url), 'utf8');
+  assert.match(src, /receivedAt:\s*Number\(full\?\.internalDate\)/,
+    'gmail list() must carry internalDate through as receivedAt');
+});
+
+test('the ingest loop actually USES the ordering', () => {
+  const src = readFileSync(new URL('../netlify/functions/lib/manifest-email-ingest.mts', import.meta.url), 'utf8');
+  assert.match(src, /for \(const email of orderOldestFirst\(emails\)\)/,
+    'the loop must iterate the ordered list, not the raw one');
 });

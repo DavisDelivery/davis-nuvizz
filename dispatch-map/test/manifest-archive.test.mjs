@@ -123,11 +123,13 @@ test('what the overwrite would have destroyed is kept — and it is metadata, no
   }
   assert.equal(doc.arrivals.length, 4, 'how many came, and when');
   assert.deepEqual(doc.arrivals.map((a) => a.reportNo), [4, 3, 2, 1], 'newest first');
-  // No PDFs and no missing lists hang off an arrival — that is the whole point.
+  // No PDFs and no missing lists hang off an arrival — that is the whole point. receivedAt
+  // joins the list as metadata of exactly that kind: it is what decides which revision stands
+  // (see the supersedes rule), and it must be on the arrival to be readable per report.
   for (const a of doc.arrivals) {
     assert.equal(a.blobKey, undefined);
     assert.equal(a.missing, undefined);
-    assert.deepEqual(Object.keys(a).sort(), ['at', 'mailbox', 'missingCount', 'orders', 'reportNo']);
+    assert.deepEqual(Object.keys(a).sort(), ['at', 'mailbox', 'missingCount', 'orders', 'receivedAt', 'reportNo']);
   }
   assert.equal(doc.first_at, '2026-08-20T21:00:00Z', 'when the night first reported is write-once');
 });
@@ -210,4 +212,95 @@ test('describeDay reads as a sentence a dispatcher can act on', () => {
   const clean = foldManifestDay(null, entry({ orders: 1 }), 'davis', '2026-08-21').doc;
   assert.equal(describeDay(clean), '1 order · all on the board · 1 report tonight');
   assert.equal(describeDay(null), 'no manifest on file');
+});
+
+// ── WHICH REVISION IS THE NIGHT'S TRUTH ──────────────────────────────────────
+//
+// Chad, holding a stored manifest: "you're saving the wrong manifest, you should be saving
+// the last one pulled in. You're instead saving the first one."
+//
+// Uline sends one night's report five times. The real 08/27/26 mail: a 26,971-byte
+// preliminary at 14:51, then 61,475 / 61,498 / 61,495 / 61,474 bytes at midnight, 1am, 2am
+// and 3am. The manifest is append-only, so the LAST one is complete and the first is a
+// fragment. The ingest now reads the mailbox oldest-first — but a report that could not be
+// filed on arrival ("board not scanned yet") is deliberately left unmarked and retried, so it
+// comes BACK later in a batch with newer reports. Re-batching is designed in, so the archive
+// cannot rely on arrival order alone.
+
+const ulineNight = (label, receivedAt, orders) => entry({
+  digest: `d-${label}`, at: '2026-08-28T03:05:00Z', orders, receivedAt: Date.parse(receivedAt),
+});
+
+test('AN EARLIER REPORT CANNOT TAKE THE NIGHT FROM A LATER ONE', () => {
+  // The 3am full report is on file. The 14:51 preliminary then comes back off the retry queue.
+  const full = foldManifestDay(null, ulineNight('3am', '2026-08-28T03:00:59Z', 545), 'davis', '2026-08-27');
+  assert.equal(full.supersedes, true, 'the first report of a night always stands');
+
+  const late = foldManifestDay(full.doc, ulineNight('prelim', '2026-08-27T14:51:06Z', 76), 'davis', '2026-08-27');
+  assert.equal(late.supersedes, false, 'an earlier send may not replace a later one');
+  assert.equal(late.doc.latest.orders, 545, 'the night keeps the complete manifest');
+  assert.equal(late.doc.latest.digest, 'd-3am');
+  // It is still COUNTED and RECORDED — a report that arrived is a fact, and hiding it would
+  // make "how many came" wrong.
+  assert.equal(late.doc.reportCount, 2);
+  assert.equal(late.doc.arrivals.length, 2);
+  assert.equal(late.doc.arrivals[0].supersededByStanding, true, 'and it says it did not take the night');
+});
+
+test('the ordinary case is untouched: a later report DOES replace an earlier one', () => {
+  const prelim = foldManifestDay(null, ulineNight('prelim', '2026-08-27T14:51:06Z', 76), 'davis', '2026-08-27');
+  const full = foldManifestDay(prelim.doc, ulineNight('midnight', '2026-08-28T00:01:23Z', 545), 'davis', '2026-08-27');
+  assert.equal(full.supersedes, true);
+  assert.equal(full.doc.latest.orders, 545);
+  assert.equal(full.doc.latest.digest, 'd-midnight');
+  assert.equal(full.doc.arrivals[0].supersededByStanding, undefined, 'nothing to note when it stands');
+});
+
+test('THE WHOLE NIGHT, IN THE ORDER GMAIL USED TO HAND IT OVER, STILL ENDS CORRECT', () => {
+  // Newest first — the order that produced the bug. With the supersede rule, even this
+  // sequence settles on the complete manifest instead of the fragment.
+  const night = [
+    ['3am', '2026-08-28T03:00:59Z', 545],
+    ['2am', '2026-08-28T02:00:44Z', 544],
+    ['1am', '2026-08-28T01:00:29Z', 540],
+    ['midnight', '2026-08-28T00:01:23Z', 533],
+    ['prelim', '2026-08-27T14:51:06Z', 76],
+  ];
+  let doc = null;
+  for (const [label, when, orders] of night) {
+    doc = foldManifestDay(doc, ulineNight(label, when, orders), 'davis', '2026-08-27').doc;
+  }
+  assert.equal(doc.latest.digest, 'd-3am', 'the 3am report stands, whatever order the mail came in');
+  assert.equal(doc.latest.orders, 545);
+  assert.equal(doc.reportCount, 5, 'all five are still counted');
+  // And the "came back short" flag stays quiet: walking backwards used to make the order
+  // count fall on almost every fold, so a healthy night looked broken.
+  assert.equal(doc.sawOrderCountFall, false, 'out-of-order arrivals are not short reports');
+});
+
+test('a night with no timestamps behaves exactly as it did before', () => {
+  // Older records, and any source that cannot supply a receive time, must not change shape.
+  const a = foldManifestDay(null, entry({ digest: 'd1', orders: 100 }), 'davis', '2026-08-21');
+  assert.equal(a.supersedes, true);
+  const b = foldManifestDay(a.doc, entry({ digest: 'd2', orders: 200 }), 'davis', '2026-08-21');
+  assert.equal(b.supersedes, true, 'unknown times cannot prove an ordering, so filing order stands');
+  assert.equal(b.doc.latest.orders, 200);
+});
+
+test('a report with a time landing on a record that has none is adopted', () => {
+  // The migration case: the night was filed before receivedAt existed. Refusing here would
+  // freeze that night on whatever it happened to hold.
+  const old = foldManifestDay(null, entry({ digest: 'd1', orders: 100 }), 'davis', '2026-08-21');
+  assert.equal(old.doc.latest.receivedAt, null);
+  const now = foldManifestDay(old.doc, ulineNight('later', '2026-08-28T03:00:00Z', 545), 'davis', '2026-08-21');
+  assert.equal(now.supersedes, true);
+  assert.equal(now.doc.latest.orders, 545);
+});
+
+test('the same paper arriving twice is still a duplicate, and supersedes nothing', () => {
+  const first = foldManifestDay(null, ulineNight('3am', '2026-08-28T03:00:59Z', 545), 'davis', '2026-08-27');
+  const again = foldManifestDay(first.doc, ulineNight('3am', '2026-08-28T03:00:59Z', 545), 'davis', '2026-08-27');
+  assert.equal(again.duplicate, true);
+  assert.equal(again.supersedes, false, 'nothing to overwrite — and nothing should be uploaded');
+  assert.equal(again.doc.latest.seen, 2);
 });

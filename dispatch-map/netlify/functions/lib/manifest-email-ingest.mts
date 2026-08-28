@@ -148,6 +148,52 @@ export function resendSource(apiKey: string, fetchImpl: typeof fetch): MailSourc
   };
 }
 
+/**
+ * OLDEST FIRST, AND THAT ORDER IS THE WHOLE CORRECTNESS OF THE ARCHIVE.
+ *
+ * Chad, looking at a stored manifest: "you're saving the wrong manifest, you should be saving
+ * the last one pulled in. You're instead saving the first one."
+ *
+ * He is exactly right, and here is the mechanism. Uline sends one night's freight report
+ * FIVE times — a small mid-afternoon preliminary and then the full report at midnight, 1am,
+ * 2am and 3am. Measured on 08/27/26: the first attachment is ~27KB, the rest are ~61KB. The
+ * manifest is append-only, so the LAST one is the complete one and the first is a fragment.
+ *
+ * Gmail's messages.list returns NEWEST FIRST. This loop walked that order, and every accepted
+ * report overwrites the same blob key and replaces doc.latest — so within a batch the OLDEST
+ * message was filed LAST and won. With MAX_EMAILS_PER_RUN capping each pass, successive runs
+ * then marched the archive BACKWARDS through the night until it settled on report #1: the
+ * 27KB fragment. That is the PDF on Chad's screen.
+ *
+ * Two more things rode on the same mistake. reportNo counts in processing order, so the
+ * earliest report ended up numbered highest and labelled "latest". And foldManifestDay's
+ * append-only check (orderCountFell, surfaced as "a report came back short") compares each
+ * fold against the previous one — walking backwards makes the count fall almost every time,
+ * so that warning was firing on healthy nights.
+ *
+ * Sorting ascending fixes all three, and it converges FORWARD under the per-run cap: each
+ * pass ends on the newest message it handled, so the archive never moves backwards in time.
+ *
+ * A MESSAGE WITH NO TIMESTAMP SORTS FIRST, deliberately, and the asymmetry is the point.
+ * Filing is last-write-wins, so an undated message placed first is overwritten by every
+ * report whose time we DO know, while one placed last would overwrite all of them. The
+ * failure modes are not equal: losing an undated report we cannot place costs one revision,
+ * whereas letting it win risks re-enacting this exact bug — a fragment overwriting the
+ * complete manifest. The cautious side is first. (Gmail always supplies internalDate, so
+ * this is a defensive path, not the normal one.)
+ *
+ * Returning 0 for those pairs was tried and is WRONG: it is not a total order, so the
+ * timestamped messages either side of an undated one can be left mis-sorted relative to
+ * each other. A test caught that.
+ */
+export function orderOldestFirst(emails: MailMessage[]): MailMessage[] {
+  const key = (m: MailMessage): number => {
+    const t = Number(m?.receivedAt);
+    return Number.isFinite(t) ? t : -Infinity;
+  };
+  return [...emails].sort((a, b) => key(a) - key(b));
+}
+
 /** One mailbox's pass. Bounded by MAX_EMAILS_PER_RUN PER SOURCE, so a noisy
  *  inbox can never starve the one the report actually lands in. */
 async function ingestOneSource(src: MailSource, deps: IngestDeps, outcomes: any[]): Promise<any> {
@@ -162,7 +208,9 @@ async function ingestOneSource(src: MailSource, deps: IngestDeps, outcomes: any[
   }
 
   let processed = 0;
-  for (const email of emails) {
+  // See orderOldestFirst: the newest report of a night must be filed LAST, because filing is
+  // an overwrite and the last write wins.
+  for (const email of orderOldestFirst(emails)) {
     if (processed >= MAX_EMAILS_PER_RUN) break;
     const id = String(email?.id ?? '');
     if (!id) continue;

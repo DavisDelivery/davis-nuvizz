@@ -31,6 +31,11 @@ export interface MailMessage {
   from: string;
   subject: string;
   attachments: MailAttachment[];
+  /** WHEN THE MAILBOX RECEIVED IT, epoch ms. The ingest sorts on this so the NEWEST report
+   *  of a night is filed LAST — see orderOldestFirst in manifest-email-ingest. Optional
+   *  because a source may not expose it; an adapter that omits it gets id order, which is
+   *  the behaviour that produced the bug this field exists to fix, so fill it in if you can. */
+  receivedAt?: number | null;
 }
 
 export interface MailSource {

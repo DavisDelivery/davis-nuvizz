@@ -171,6 +171,8 @@ export function gmailSource(cfg: GmailConfig, fetchImpl: typeof fetch): MailSour
             from: headerValue(headers, 'From'),
             subject: headerValue(headers, 'Subject'),
             attachments: collectAttachments(full?.payload),
+            // Gmail's own receive time, epoch ms as a string. The ingest orders on it.
+            receivedAt: Number(full?.internalDate) || null,
           });
         } catch {
           // One unreadable message must not blind the cycle to the rest. Skipping

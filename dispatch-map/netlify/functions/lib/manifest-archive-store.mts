@@ -43,6 +43,9 @@ export async function archiveManifest(args: {
       totals: diff?.manifest?.totals ?? null,
       verified: !!diff?.manifest?.verified,
       onBoard: diff?.onBoard, boardOnly: diff?.boardOnly,
+      // When ULINE sent it. `at` is when we filed it — identical for every report in one
+      // batch, so it cannot order them. This is what decides which revision stands.
+      receivedAt: Number(email?.receivedAt) || null,
       missing: diff?.suspects || [],
       checkedAgainst: diff?.checkedAgainst || [],
     };
@@ -52,6 +55,22 @@ export async function archiveManifest(args: {
     if (probe.duplicate) {
       await setDoc(path, probe.doc);
       return { ok: true, date: day.date, dayFrom: day.from, reportNo: probe.reportNo, duplicate: true, pdfStored: true, note: 'same PDF already on file' };
+    }
+
+    // AN OLDER REPORT MAY NOT OVERWRITE A NEWER ONE'S BYTES. The fold decides this on Uline's
+    // send time (see the supersedes rule), and the decision has to be taken BEFORE the upload,
+    // because the upload is the overwrite — refusing afterwards would leave the good record
+    // pointing at the fragment's bytes. Chad: "you should be saving the last one pulled in.
+    // You're instead saving the first one."
+    if (!probe.supersedes) {
+      const kept = foldManifestDay(existing, base, tenant, day.date);
+      await setDoc(path, kept.doc);
+      return {
+        ok: true, date: day.date, dayFrom: day.from, reportNo: kept.reportNo,
+        duplicate: false, superseded: true,
+        note: 'an earlier report than the one on file — recorded, but the night keeps the later manifest',
+        pdfStored: !!existing?.latest?.pdfStored, blobKey: existing?.latest?.blobKey ?? null, bytes: buf.length,
+      };
     }
 
     // ONE COPY A NIGHT: the same key every time, so tonight's fifth report REPLACES the

@@ -134,6 +134,9 @@ export interface ReportInput {
   blobKey?: string | null;
   pdfStored?: boolean;
   pdfError?: string | null;
+  /** When the MAILBOX received this report, epoch ms. Decides which revision is the night's
+   *  truth — see the supersedes rule in foldManifestDay. */
+  receivedAt?: number | null;
 }
 
 /**
@@ -144,7 +147,8 @@ export interface ReportInput {
  * skip the upload, which is why the digest is computed before the fold rather than after.
  */
 export function foldManifestDay(existing: any, entry: ReportInput, tenant: string, date: string): {
-  doc: any; duplicate: boolean; reportNo: number; orderCountFell: boolean; priorOrders: number | null;
+  doc: any; duplicate: boolean; reportNo: number; supersedes: boolean;
+  orderCountFell: boolean; priorOrders: number | null;
 } {
   const prevLatest = existing?.latest ?? null;
   const priorArrivals: any[] = Array.isArray(existing?.arrivals) ? existing.arrivals : [];
@@ -161,6 +165,8 @@ export function foldManifestDay(existing: any, entry: ReportInput, tenant: strin
       },
       duplicate: true,
       reportNo: Number(existing?.reportCount) || 1,
+      // The same bytes already on file: nothing to supersede, nothing to overwrite.
+      supersedes: false,
       orderCountFell: false,
       priorOrders: Number(prevLatest.orders) || null,
     };
@@ -169,13 +175,36 @@ export function foldManifestDay(existing: any, entry: ReportInput, tenant: strin
   const missing = Array.isArray(entry.missing) ? entry.missing : [];
   const orders = Number(entry.orders) || 0;
   const priorOrders = prevLatest ? (Number(prevLatest.orders) || 0) : null;
-  // The invariant, used as a check: a manifest is only ever added to.
-  const orderCountFell = priorOrders != null && orders < priorOrders;
   const reportNo = (Number(existing?.reportCount) || 0) + 1;
+
+  // WHICH REPORT IS THE NIGHT'S TRUTH — decided by WHEN ULINE SENT IT, not by the order we
+  // happened to open the mail in.
+  //
+  // Chad: "you're saving the wrong manifest, you should be saving the last one pulled in.
+  // You're instead saving the first one." The ingest now walks the mailbox oldest-first, which
+  // fixes the common case — but it must not be the ONLY thing holding this up. A report that
+  // cannot be filed on arrival ("board not scanned yet") is deliberately left unmarked and
+  // retried, so it comes back later, in a batch alongside reports that are newer than it. That
+  // is a designed-in re-batching, not a rare accident, and before this guard it meant the
+  // afternoon's 27KB preliminary could overwrite the complete 61KB manifest.
+  //
+  // So the fold refuses to demote: an entry that Uline sent EARLIER than the one already on
+  // file is recorded as an arrival and nothing more. The night keeps the latest paper.
+  const incomingAt = Number(entry.receivedAt);
+  const standingAt = Number(prevLatest?.receivedAt);
+  const supersedes = !(Number.isFinite(incomingAt) && Number.isFinite(standingAt) && incomingAt < standingAt);
+
+  // The invariant, used as a check: a manifest is only ever added to. Only meaningful when
+  // this report genuinely follows the one on file — comparing a deliberately-kept older
+  // report against a newer one would flag every out-of-order arrival as a short report.
+  const orderCountFell = supersedes && priorOrders != null && orders < priorOrders;
 
   const latest = {
     reportNo,
     at: entry.at,
+    // When the MAILBOX received it. `at` is when WE filed it, which is the same for every
+    // report in one batch and therefore cannot order them.
+    receivedAt: Number.isFinite(incomingAt) ? incomingAt : null,
     lastSeenAt: entry.at,
     seen: 1,
     digest: entry.digest,
@@ -208,7 +237,14 @@ export function foldManifestDay(existing: any, entry: ReportInput, tenant: strin
   // METADATA ONLY — no PDFs, no missing lists. Just enough to answer "how many came, and did
   // the last one land", which is precisely what the overwrite would otherwise destroy.
   const arrivals = [
-    { reportNo, at: entry.at, orders, missingCount: missing.length, mailbox: entry.mailbox ?? null, ...(orderCountFell ? { orderCountFell: true } : {}) },
+    {
+      reportNo, at: entry.at, orders, missingCount: missing.length, mailbox: entry.mailbox ?? null,
+      receivedAt: Number.isFinite(incomingAt) ? incomingAt : null,
+      ...(orderCountFell ? { orderCountFell: true } : {}),
+      // Says plainly that this one arrived out of order and was NOT adopted, so the arrivals
+      // list cannot be read as "the last line is the manifest on file".
+      ...(supersedes ? {} : { supersededByStanding: true }),
+    },
     ...priorArrivals,
   ].slice(0, MAX_ARRIVALS);
 
@@ -221,11 +257,14 @@ export function foldManifestDay(existing: any, entry: ReportInput, tenant: strin
       // Any night that ever saw a shrinking report stays flagged, because the reason to look
       // does not go away when a later good report lands on top of the bad one.
       sawOrderCountFall: !!existing?.sawOrderCountFall || orderCountFell,
-      latest,
+      // An out-of-order arrival is COUNTED and RECORDED but does not take the night. The
+      // standing revision stays exactly as it was, PDF and all.
+      latest: supersedes ? latest : prevLatest,
       arrivals,
     },
     duplicate: false,
     reportNo,
+    supersedes,
     orderCountFell,
     priorOrders,
   };
