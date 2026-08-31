@@ -97,7 +97,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.81.7';
+const APP_VERSION = '0.81.8';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -168,6 +168,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.81.8', 'THE ROWS VIEWER COULD NOT TELL YOU WHETHER IT HAD THE WHOLE MANIFEST. Chad: “I’m not able to view the entire manifest.” v0.81.5 answered the readability half and left the harder half unanswerable: a parse that reads eleven of thirteen pages renders “648 orders”, labels itself 648, and looks exactly like a parse that read all thirteen — nothing on the screen disagrees with a short list. THE MANIFEST PRINTS ITS OWN FINAL TOTALS and readUlineManifest already reconciles against them, returning verified:true only for a column reading that reproduces the printed count, lbs, skids and pieces. That is the one independent check there is; the endpoint had been sending it since the viewer shipped and the screen threw it away. It now sits at the top: green “All 660 orders accounted for” with the printed figures, or amber “this list could NOT be checked against the manifest’s own printed totals — treat them as unconfirmed”, plus the parser’s own complaints, which the endpoint had been discarding entirely. The Manifest check screen has shown this banner all along; the phone is where it was actually needed. A NIGHT WHOSE PDF WAS NOT KEPT SAID “undefined orders” — both no-PDF paths returned no count and the header interpolated it, so an honest “we did not store this one” read as a broken app. A CAPPED NIGHT IS NOT A CONTRADICTION: the run stores at most 500 suspects but records the true count beside them, so both numbers are right and only the highlight is short — the banner called one of them wrong and pointed at the short side as the truth. missingTruncated has been written since the cap existed and read by nothing; it is read now, and the two cases read differently because a dispatcher does different things about them. AND THE BODY GOT SMALLER: ~660 rows served no-store were pretty-printed at one space per line and carried three columns nothing renders. Compacted and trimmed, re-fetched on every open, on a phone, on cellular. 8 new tests, and the first tests this viewer has ever had.'],
   ['0.81.7', 'TWELVE FLAGS AND EIGHT ZEROES, ON AN AFTERNOON WHERE MOST OF IT HAD ALREADY DELIVERED. Chad, at 3:53pm: “This can’t be right if there are 12 flags then there should have been 12 results or close to it as most evening was delivered by the time I check this.” He was right, and the zeroes were an artefact of WHERE the grading ran rather than of what was knowable. outcome, arrivalMin and deliveredAt were marked “filled in nightly” and only eta-miss-ledger-background ever wrote them — so a stop flagged against a 2pm close and delivered at 1:40pm read unknown for another ten hours, on the one screen whose entire purpose is to say whether the flag did any good. Meanwhile the 20-minute sweep was holding the whole board, carrying that very stamp, and throwing the answer away. MADE AND MISSED NEED ONLY TODAY: classifyOutcome reaches them from a delivery stamp and a close, both present the moment the driver delivers, so the sweep now grades them off the board it already has, using the same arrivalAnchor rule the nightly scorer uses so the two cannot disagree about a row. ROLLED and NEVER DELIVERED still wait for the overnight join and are structurally unreachable here — seenLater is held at null, because nothing today can tell freight that comes back tomorrow from freight that is gone, and guessing early would accuse a driver of losing a pallet that is on tomorrow’s board. IT NEVER WRITES scored_at. That word means the roll question has been answered; a sweep firing after the nightly join would re-grade with seenLater unavailable and quietly turn a settled rolled back into unknown, so a day that has been scored is left alone entirely. AN ABSENCE IS NOT AN ANSWER, either: a stop that has left the board — re-dated, cancelled, a short pull — keeps the grade it already earned instead of being re-graded from nothing, which would have dropped a 1:40pm delivery off the count silently, hours after it happened, on a job that runs every 20 minutes. AND THE SCREEN SAYS WHICH STATE IT IS IN: “still grading” beside real counts, not “not scored yet”, which read as “disregard these numbers” next to the freshest numbers on the row. 15 new tests.'],
   ['0.81.6', 'THE WHOLE MANIFEST, ON THE PHONE, DRAWN BY US. Chad: “Still only able to see one page of the manifest,” then “I want to see the whole pdf in the viewer and I want it sized to an iPhone.” THE CAUSE IS THE PLATFORM, NOT THE CSS: the viewer put the document in an <iframe>, and iOS WebKit collapses an embedded PDF to a single static page — no pagination, no scroll. Desktop Chrome embeds a real paginated reader, which is exactly why this never showed up at a desk. This repo had already paid for the identical lesson once and written it down: the v0.29.74 row says the Print Manifest fix was “printing from a real window instead of the on-screen iframe, which iOS Safari was collapsing to a single page.” AND BOTH ESCAPES WERE ALREADY CLOSED. Opening the PDF in a tab strands the dispatcher — in the installed app _blank navigates the SAME window with no back gesture (Chad, 11:14pm: “when you load a manifest there is no way get back to the app”), and pwa-no-dead-end.test.mjs exists to stop it being written again. So the pages are rasterised in the modal with pdf.js: every page, fitted to the phone by default, with −/Fit/+ zoom to 4x and horizontal scroll to reach the right-hand columns. Verified end to end against a real 13-page manifest driven through the built app — the viewer requested manifest-history?pdf=1, took 143,587 bytes and reported 13 pages. THE ENGINE IS LAZY, because a dispatch board must not carry a PDF renderer on every cold start to serve an archival document: both the library and its worker are dynamic imports, so they become their own Vite chunk. Measured, not assumed — the main bundle moved 2,086.99 to 2,090.81 KB, +1.24KB gzip, and the 107KB-gzip engine plus its 1.38MB worker are fetched the first time somebody opens a document. TWO MEMORY DEFECTS FOUND BY MEASURING RATHER THAN BY READING. First, every page painted at once: 13 of 13 canvases live before anything had been scrolled to, because the IntersectionObserver was rooted on the VIEWPORT and reported pages inside a scrolling div as visible. Rooted on the scroller it holds 5 of 13. Second, and worse, zoom and device pixel ratio were MULTIPLYING: a 4x page painted into a 2x backing store asks for 64x the pixels of the fitted page, measured at 105.6MB of canvas across four pages — the kind of number that ends with iOS discarding the tab. Effective resolution is capped as a PRODUCT now, and the window tightens to a single page past 2x. Same view: 6.6MB. Across the whole zoom range the viewer holds 4.9-13.2MB and it is bounded by the window rather than by the length of the document, so a 40-page manifest costs what a 3-page one costs. Nothing looks softer, because pixels per inch of paper is what the eye sees and that is what is held constant. 7 new tests; both memory guards proven to bite by reverting each. 2,731 green.'],
   ['0.81.5', 'ONLY FRIDAYS EVER REPORTED MISSING FREIGHT, AND THAT IS BECAUSE NONE OF IT WAS MISSING. Chad, on the 08-28 manifest: “says there are 68 missing off this manifest but I don’t think that is true.” He was right. Nine nights on file: 0 not-on-board on every Sun, Mon, Tue, Wed and Thu — 621/621, 692/692, 657/657, 618/618 — and then 30 on Friday 08-21 and 83 on Friday 08-28. Freight does not go astray only on Fridays. THE MECHANISM: a Friday manifest is expected to deliver MONDAY, and the nightly check runs early SATURDAY, while scheduled scans are dark for the weekend. So it opened a Monday board that was still filling. The archive proves it — Monday 08-24 read 477 stops when Friday’s manifest was checked against it, and 618 by the time Monday’s own manifest was reconciled. The 30 “missing” orders had not been written yet. A Thursday manifest, by contrast, expects FRIDAY and is checked Friday morning against a finished 649-stop board, and reports zero. THE RULE COULD NOT SEE IT because the Monday board EXISTED — 451 stops is greater than zero — and boardCoverage took existing for finished. It now asks the question that actually separates the two: HAS THE DAY COME ROUND YET. A required delivery day later than the day we are asking on is still being built and cannot disprove an order, so the run is not conclusive and the count is graded “not routed yet” rather than shouted in red. Nothing is lost by waiting: on Saturday morning there is no route to chase an order into, and the same manifest re-checked on Monday reports for real — pinned by a test. The genuine alert is untouched, also pinned: a Thursday manifest against a finished board still says missing, and the unbuilt days AFTER the expected one must not suppress it. THE COUNT NOW TRAVELS WITH ITS STANDING. coverage, grade and expectedDelivery are filed on the archive record, and a night stored before that is re-graded from checkedAgainst using its own run day rather than being assumed conclusive — because the history row printed missingCount flat red whatever the boards behind it were worth. AND THE MANIFEST IS READABLE AT LAST. Chad: “I’m not able to view the entire manifest also I want a way to see the ones not on there also. On the manifest I want you to highlight the rows missing.” Three asks, one answer: the PDF is a fixed-width 13-page document whose SKID and PRO columns sit off the right edge of a phone with no way to reach them, and it knows nothing about which orders are off the board. The rows are already parsed to do the diff, so they are served as DATA — manifest-history?rows=1 re-reads the stored PDF, marks every row against the run’s own off-board set using the same proKeys the reconciler matched on, and the new Rows viewer renders them: off-board rows highlighted with a left bar and a label, a one-tap filter down to just those, and a search across PRO, customer, city and ZIP. Two views, because a 12-column table is not a phone screen — the phone gets one card per order, the desktop the table. The PDF stays for anyone who wants the document Uline actually sent. 8 new tests, the guard proven to bite by reverting it; 2,724 green.'],
@@ -26968,7 +26969,7 @@ function ManifestRowsModal({ date, onClose }) {
         <div className="font-semibold truncate">Uline manifest — {date}</div>
         <div className="text-[11px] text-white/70">
           {state.loading ? 'Reading the stored PDF…'
-            : d ? `${d.orders} orders · ${offCount} ${unrouted ? 'not routed yet' : 'not on the board'}` : 'Close to return to the board'}
+            : d ? `${d.orders ?? 0} orders · ${offCount} ${unrouted ? 'not routed yet' : 'not on the board'}` : 'Close to return to the board'}
         </div>
       </div>
       <button onClick={onClose} className="p-2 rounded-full hover:bg-white/15" aria-label="Close" style={{ minWidth: 44, minHeight: 44 }}><X size={22} /></button>
@@ -26995,14 +26996,62 @@ function ManifestRowsModal({ date, onClose }) {
     </div>
   );
 
+  // DOES THIS LIST HAVE ALL OF IT? — the question the row count cannot answer about itself.
+  //
+  // Chad: "I'm not able to view the entire manifest." The viewer answered the readability half
+  // and left the completeness half unanswerable: a parse that read eleven of thirteen pages
+  // renders "648 orders", labels itself 648, and looks exactly like a parse that read all of
+  // them. Nothing on screen disagrees with a short list.
+  //
+  // The manifest prints its own FINAL TOTALS, and readUlineManifest already reconciles against
+  // them — it only returns verified:true for a column assignment that reproduces the printed
+  // figures. That is the one independent check there is, the endpoint has been sending it since
+  // the viewer shipped, and this screen was throwing it away. The Manifest check screen has
+  // shown exactly this banner all along; the phone view is where it is actually needed.
+  const t = d?.totals || null;
+  const Totals = d && Array.isArray(d.rows) && d.rows.length ? (
+    <div className={`flex-shrink-0 px-3 py-2 text-[11px] leading-snug ${d.verified ? 'bg-emerald-50 text-emerald-900' : 'bg-amber-50 text-amber-900'}`}>
+      {d.verified ? (
+        <>
+          <span className="font-semibold">✓ All {d.orders} orders accounted for.</span>{' '}
+          The freight adds up to the totals printed on the manifest itself
+          {t && Number.isFinite(Number(t.count)) ? ` (${t.count} orders` : ''}
+          {t && Number.isFinite(Number(t.skids)) ? `, ${t.skids} skids` : ''}
+          {t && Number.isFinite(Number(t.lbs)) ? `, ${t.lbs} lbs` : ''}
+          {t && Number.isFinite(Number(t.count)) ? ')' : ''}, so nothing was dropped reading it.
+        </>
+      ) : (
+        <>
+          <span className="font-semibold">⚠ This list could NOT be checked against the manifest’s own printed totals.</span>{' '}
+          It shows {d.orders} order{d.orders === 1 ? '' : 's'}, and there is no independent confirmation that
+          is all of them — treat the count and the freight figures as unconfirmed, and open the PDF if it matters.
+        </>
+      )}
+      {Array.isArray(d.warnings) && d.warnings.length ? (
+        <ul className="mt-1 list-disc pl-4">
+          {d.warnings.map((w, i) => <li key={i}>{String(w)}</li>)}
+        </ul>
+      ) : null}
+    </div>
+  ) : null;
+
   // The one line that says what the highlight MEANS. Without it a colour is just a colour,
   // and an amber row on a Saturday reads as a problem rather than as "not routed yet".
   const Legend = d && offCount ? (
     <div className={`flex-shrink-0 px-3 py-2 text-[11px] leading-snug ${unrouted ? 'bg-amber-50 text-amber-900' : 'bg-rose-50 text-rose-900'}`}>
       {d.verdictText || `${offCount} order${offCount === 1 ? '' : 's'} on this manifest ${offCount === 1 ? 'is' : 'are'} not on the board.`}
+      {/* "ONE OF THOSE IS WRONG" WAS ITSELF WRONG in the one case that actually produces a
+          disagreement. The night's record stores at most MAX_MISSING_ROWS suspects but keeps
+          the true count beside them, so on a capped night BOTH numbers are right and only the
+          highlight is short — and the old sentence pointed at the short side and called it the
+          truth. Now the two cases read differently, because a dispatcher does different things
+          about them: a cap means scroll past what is highlighted, a genuine disagreement means
+          do not trust either figure. */}
       {d.recordedMissing != null && d.recordedMissing !== offCount ? (
         <span className="block mt-0.5 font-semibold">
-          The run recorded {d.recordedMissing}; re-reading the PDF marks {offCount}. One of those is wrong — the rows are what you are looking at.
+          {d.missingTruncated
+            ? `The run found ${d.recordedMissing} off the board and kept the first ${offCount} of them, so only those are highlighted here. The rest are on this list, unmarked.`
+            : `The run recorded ${d.recordedMissing}; re-reading the PDF marks ${offCount}. One of those is wrong — the rows are what you are looking at.`}
         </span>
       ) : null}
     </div>
@@ -27014,6 +27063,7 @@ function ManifestRowsModal({ date, onClose }) {
       {Head}
       <div className="flex-1 min-h-0 flex flex-col bg-white mx-2 mb-2 rounded-lg overflow-hidden">
         {Controls}
+        {Totals}
         {Legend}
         {state.loading ? <div className="p-4 text-xs text-slate-500">Loading…</div> : null}
         {state.err ? <div className="p-4 text-xs text-red-600">{state.err}</div> : null}

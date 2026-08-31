@@ -57,7 +57,11 @@ function gradeForRow(l: any): { verdict: string; verdictText: string; expectedDe
 }
 
 export default async (req: Request): Promise<Response> => {
-  const J = (b: any, s = 200) => new Response(JSON.stringify(b, null, 1), {
+  // COMPACT, not pretty. This body carries ~660 manifest rows and is served no-store, so it
+  // is re-fetched in full every time the Rows viewer is opened — on a phone, on cellular, in a
+  // yard. One space of indentation per line across that structure is 43% of the payload and
+  // nothing reads it by eye.
+  const J = (b: any, s = 200) => new Response(JSON.stringify(b), {
     status: s, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
   });
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
@@ -112,10 +116,13 @@ export default async (req: Request): Promise<Response> => {
       if (!doc?.latest) return J({ ok: true, date: one, found: false, rows: [] });
       const l = doc.latest;
       if (!l.blobKey || !l.pdfStored) {
-        return J({ ok: true, date: one, found: true, rows: [], note: 'the PDF for this night was not stored, so its rows cannot be read back' });
+        // `orders: 0` MATTERS. The header renders `${d.orders} orders`, so an absent field puts
+        // the literal word "undefined" on the screen — which reads as a broken app rather than
+        // as the honest "we did not keep this night's PDF" the note underneath is saying.
+        return J({ ok: true, date: one, found: true, rows: [], orders: 0, offBoardCount: 0, note: 'the PDF for this night was not stored, so its rows cannot be read back' });
       }
       const buf = await getManifestPdf(l.blobKey);
-      if (!buf) return J({ ok: true, date: one, found: true, rows: [], note: 'the blob store did not return the PDF' });
+      if (!buf) return J({ ok: true, date: one, found: true, rows: [], orders: 0, offBoardCount: 0, note: 'the blob store did not return the PDF' });
       let parsed: any;
       try { parsed = readUlineManifest(buf); } catch (e: any) {
         return J({ ok: false, date: one, error: `could not read the stored PDF: ${String(e?.message || e).slice(0, 160)}` }, 500);
@@ -127,8 +134,13 @@ export default async (req: Request): Promise<Response> => {
       for (const m of (Array.isArray(l.missing) ? l.missing : [])) {
         for (const k of proKeys((m as any)?.pro)) offIdx.add(k);
       }
+      // ONLY WHAT THE SCREEN DRAWS. `via`, `whs` and `shipDate` are parsed and have never been
+      // rendered in the Rows viewer; carrying them multiplies a 660-row body for nothing.
       const rows = (parsed.rows || []).map((r: any) => ({
-        ...r, offBoard: proKeys(r?.pro).some((k) => offIdx.has(k)),
+        pro: r?.pro ?? null, custName: r?.custName ?? null,
+        city: r?.city ?? null, state: r?.state ?? null, zip: r?.zip ?? null,
+        lbs: r?.lbs ?? null, skids: r?.skids ?? null, pieces: r?.pieces ?? null,
+        offBoard: proKeys(r?.pro).some((k) => offIdx.has(k)),
       }));
       return J({
         ok: true, date: one, found: true,
@@ -141,6 +153,15 @@ export default async (req: Request): Promise<Response> => {
         // rows say is visible rather than quietly reconciled — the run graded a manifest, and
         // if this parse produces a different number, one of them is wrong.
         recordedMissing: Number(l.missingCount) || 0,
+        // WHY THE TWO NUMBERS CAN DISAGREE HONESTLY. archiveManifest stores at most
+        // MAX_MISSING_ROWS suspects but records the true count beside them, so on a capped
+        // night `recordedMissing` is right and `offBoardCount` is a floor. The flag has been
+        // written since the cap existed and read by nothing, which left the screen accusing one
+        // of the two numbers of being wrong when both were correct and only one was complete.
+        missingTruncated: !!l.missingTruncated,
+        // The parser's own complaints — a column layout it could not reconcile, a duplicate
+        // PRO. Computed on every read and thrown away here until now.
+        warnings: Array.isArray(parsed.warnings) ? parsed.warnings.slice(0, 20) : [],
         ...gradeForRow(l),
         reportNo: l.reportNo ?? null,
         fileName: l.fileName ?? null,
