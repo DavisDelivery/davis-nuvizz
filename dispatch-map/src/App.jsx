@@ -97,7 +97,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.81.6';
+const APP_VERSION = '0.81.7';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -168,6 +168,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.81.7', 'TWELVE FLAGS AND EIGHT ZEROES, ON AN AFTERNOON WHERE MOST OF IT HAD ALREADY DELIVERED. Chad, at 3:53pm: “This can’t be right if there are 12 flags then there should have been 12 results or close to it as most evening was delivered by the time I check this.” He was right, and the zeroes were an artefact of WHERE the grading ran rather than of what was knowable. outcome, arrivalMin and deliveredAt were marked “filled in nightly” and only eta-miss-ledger-background ever wrote them — so a stop flagged against a 2pm close and delivered at 1:40pm read unknown for another ten hours, on the one screen whose entire purpose is to say whether the flag did any good. Meanwhile the 20-minute sweep was holding the whole board, carrying that very stamp, and throwing the answer away. MADE AND MISSED NEED ONLY TODAY: classifyOutcome reaches them from a delivery stamp and a close, both present the moment the driver delivers, so the sweep now grades them off the board it already has, using the same arrivalAnchor rule the nightly scorer uses so the two cannot disagree about a row. ROLLED and NEVER DELIVERED still wait for the overnight join and are structurally unreachable here — seenLater is held at null, because nothing today can tell freight that comes back tomorrow from freight that is gone, and guessing early would accuse a driver of losing a pallet that is on tomorrow’s board. IT NEVER WRITES scored_at. That word means the roll question has been answered; a sweep firing after the nightly join would re-grade with seenLater unavailable and quietly turn a settled rolled back into unknown, so a day that has been scored is left alone entirely. AN ABSENCE IS NOT AN ANSWER, either: a stop that has left the board — re-dated, cancelled, a short pull — keeps the grade it already earned instead of being re-graded from nothing, which would have dropped a 1:40pm delivery off the count silently, hours after it happened, on a job that runs every 20 minutes. AND THE SCREEN SAYS WHICH STATE IT IS IN: “still grading” beside real counts, not “not scored yet”, which read as “disregard these numbers” next to the freshest numbers on the row. 15 new tests.'],
   ['0.81.6', 'THE WHOLE MANIFEST, ON THE PHONE, DRAWN BY US. Chad: “Still only able to see one page of the manifest,” then “I want to see the whole pdf in the viewer and I want it sized to an iPhone.” THE CAUSE IS THE PLATFORM, NOT THE CSS: the viewer put the document in an <iframe>, and iOS WebKit collapses an embedded PDF to a single static page — no pagination, no scroll. Desktop Chrome embeds a real paginated reader, which is exactly why this never showed up at a desk. This repo had already paid for the identical lesson once and written it down: the v0.29.74 row says the Print Manifest fix was “printing from a real window instead of the on-screen iframe, which iOS Safari was collapsing to a single page.” AND BOTH ESCAPES WERE ALREADY CLOSED. Opening the PDF in a tab strands the dispatcher — in the installed app _blank navigates the SAME window with no back gesture (Chad, 11:14pm: “when you load a manifest there is no way get back to the app”), and pwa-no-dead-end.test.mjs exists to stop it being written again. So the pages are rasterised in the modal with pdf.js: every page, fitted to the phone by default, with −/Fit/+ zoom to 4x and horizontal scroll to reach the right-hand columns. Verified end to end against a real 13-page manifest driven through the built app — the viewer requested manifest-history?pdf=1, took 143,587 bytes and reported 13 pages. THE ENGINE IS LAZY, because a dispatch board must not carry a PDF renderer on every cold start to serve an archival document: both the library and its worker are dynamic imports, so they become their own Vite chunk. Measured, not assumed — the main bundle moved 2,086.99 to 2,090.81 KB, +1.24KB gzip, and the 107KB-gzip engine plus its 1.38MB worker are fetched the first time somebody opens a document. TWO MEMORY DEFECTS FOUND BY MEASURING RATHER THAN BY READING. First, every page painted at once: 13 of 13 canvases live before anything had been scrolled to, because the IntersectionObserver was rooted on the VIEWPORT and reported pages inside a scrolling div as visible. Rooted on the scroller it holds 5 of 13. Second, and worse, zoom and device pixel ratio were MULTIPLYING: a 4x page painted into a 2x backing store asks for 64x the pixels of the fitted page, measured at 105.6MB of canvas across four pages — the kind of number that ends with iOS discarding the tab. Effective resolution is capped as a PRODUCT now, and the window tightens to a single page past 2x. Same view: 6.6MB. Across the whole zoom range the viewer holds 4.9-13.2MB and it is bounded by the window rather than by the length of the document, so a 40-page manifest costs what a 3-page one costs. Nothing looks softer, because pixels per inch of paper is what the eye sees and that is what is held constant. 7 new tests; both memory guards proven to bite by reverting each. 2,731 green.'],
   ['0.81.5', 'ONLY FRIDAYS EVER REPORTED MISSING FREIGHT, AND THAT IS BECAUSE NONE OF IT WAS MISSING. Chad, on the 08-28 manifest: “says there are 68 missing off this manifest but I don’t think that is true.” He was right. Nine nights on file: 0 not-on-board on every Sun, Mon, Tue, Wed and Thu — 621/621, 692/692, 657/657, 618/618 — and then 30 on Friday 08-21 and 83 on Friday 08-28. Freight does not go astray only on Fridays. THE MECHANISM: a Friday manifest is expected to deliver MONDAY, and the nightly check runs early SATURDAY, while scheduled scans are dark for the weekend. So it opened a Monday board that was still filling. The archive proves it — Monday 08-24 read 477 stops when Friday’s manifest was checked against it, and 618 by the time Monday’s own manifest was reconciled. The 30 “missing” orders had not been written yet. A Thursday manifest, by contrast, expects FRIDAY and is checked Friday morning against a finished 649-stop board, and reports zero. THE RULE COULD NOT SEE IT because the Monday board EXISTED — 451 stops is greater than zero — and boardCoverage took existing for finished. It now asks the question that actually separates the two: HAS THE DAY COME ROUND YET. A required delivery day later than the day we are asking on is still being built and cannot disprove an order, so the run is not conclusive and the count is graded “not routed yet” rather than shouted in red. Nothing is lost by waiting: on Saturday morning there is no route to chase an order into, and the same manifest re-checked on Monday reports for real — pinned by a test. The genuine alert is untouched, also pinned: a Thursday manifest against a finished board still says missing, and the unbuilt days AFTER the expected one must not suppress it. THE COUNT NOW TRAVELS WITH ITS STANDING. coverage, grade and expectedDelivery are filed on the archive record, and a night stored before that is re-graded from checkedAgainst using its own run day rather than being assumed conclusive — because the history row printed missingCount flat red whatever the boards behind it were worth. AND THE MANIFEST IS READABLE AT LAST. Chad: “I’m not able to view the entire manifest also I want a way to see the ones not on there also. On the manifest I want you to highlight the rows missing.” Three asks, one answer: the PDF is a fixed-width 13-page document whose SKID and PRO columns sit off the right edge of a phone with no way to reach them, and it knows nothing about which orders are off the board. The rows are already parsed to do the diff, so they are served as DATA — manifest-history?rows=1 re-reads the stored PDF, marks every row against the run’s own off-board set using the same proKeys the reconciler matched on, and the new Rows viewer renders them: off-board rows highlighted with a left bar and a label, a one-tap filter down to just those, and a search across PRO, customer, city and ZIP. Two views, because a 12-column table is not a phone screen — the phone gets one card per order, the desktop the table. The PDF stays for anyone who wants the document Uline actually sent. 8 new tests, the guard proven to bite by reverting it; 2,724 green.'],
   ['0.81.4', 'THE FLAG BOARD COULD NOT SAY WHETHER THE FREIGHT ACTUALLY GOT THERE. Chad, on the Flag history cards: “need a card here for delivered even though it didn’t ‘made it’ make the flag time.” THE DISTINCTION IS THE ONE THAT COSTS MONEY: late is an apology, never-delivered is a truck going back out tomorrow — and no single number told them apart. The reason is a split nobody would guess from the labels. `Missed` does NOT mean the freight failed to arrive; classifyOutcome reaches it only WITH a delivery stamp and a close to grade against, so it means “delivered, after the receiving close” — a fact stated in the tile’s hover text and nowhere a person actually looks, sitting immediately beside `Never delivered`, which is the word it reads like. Meanwhile the roll that delivered first thing next morning — freight the customer HAS — was counted only under `Rolled`, beside rolls still sitting on a dock. So “how much of what we flagged still reached the customer?” had to be assembled in someone’s head out of two tiles that each meant something else. DELIVERED LATE is that number: every Missed, plus the Rolled ones we can PROVE landed, evidenced by rolledDeliveredAt. A roll that came back on a later board but has not delivered off it keeps a null stamp for ever, and counting it would dress freight still sitting there as a delivery — the exact thing deliveredWhen’s ‘open’ tone exists to prevent. It is deliberately a ROLL-UP across two of the exclusive buckets rather than a seventh bucket, and the hint says so out loud, because a dispatcher adding the tiles up and overshooting the total is worse than not having the number. THE TRAP THIS ALMOST SHIPPED WITH, and it is the one this codebase keeps having to be rescued from: the endpoint serves `doc.summary`, written at score time. Every day already on file was scored before this field existed, so reading the stored summary straight would have printed a confident 0 on the one card whose entire job is to say freight DID arrive — absence read as evidence, on the reassuring side. A summary missing the field is now re-derived from the rows already in the same document, at zero extra reads, and the range roll-up totals it. Pinned by a test that fails the moment that guard is weakened. Eight tiles now, so the grid goes 2 / 4 / 8 and the phone lays out 2×4 with no orphan tile — verified at 390px through the real nav, not just asserted. 9 new tests, 2,717 green.'],
@@ -23151,6 +23152,11 @@ function FlagHistoryScreen() {
   // has not been marked yet.
   const foundDays = results.filter((d) => d.found).length;
   const unscoredDays = results.filter((d) => d.found && !d.scored).length;
+  // PARTIALLY GRADED IS NOT UNGRADED. The 20-minute sweep now settles Made it and Missed from
+  // the live board, so a day answers most of the question hours before the overnight join
+  // settles Rolled and Never delivered. Calling that "not scored yet" is what made a screen
+  // showing 12 flags and eight zeros read as broken.
+  const liveOnlyDays = results.filter((d) => d.found && !d.scored && d.liveScored).length;
 
   return (
     <div className="flex-1 overflow-y-auto bg-slate-50">
@@ -23229,15 +23235,32 @@ function FlagHistoryScreen() {
                 confident zero too early defeats the feature. */}
             {unscoredDays > 0 && (
               <div className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-[11px] leading-relaxed text-slate-700">
-                <strong>
-                  {unscoredDays === foundDays
-                    ? (foundDays === 1 ? 'This day has not been scored yet.' : 'No day in this range has been scored yet.')
-                    : `${unscoredDays} day${unscoredDays === 1 ? '' : 's'} in this range ${unscoredDays === 1 ? 'has' : 'have'} not been scored yet.`}
-                </strong>{' '}
-                Flags are written as they appear through the day; what actually happened to each shipment is
-                joined overnight. Until then <em>Made it</em>, <em>Missed</em> and <em>Rolled</em>
-                {unscoredDays === foundDays ? ' stay at zero' : ' undercount'} — that is “not marked yet”,
-                not “nothing went wrong”. <em>Flags raised</em> and the warning times are real now.
+                {liveOnlyDays === unscoredDays ? (
+                  <>
+                    <strong>
+                      {unscoredDays === foundDays
+                        ? (foundDays === 1 ? 'This day is still being graded.' : 'Every day in this range is still being graded.')
+                        : `${unscoredDays} day${unscoredDays === 1 ? '' : 's'} in this range ${unscoredDays === 1 ? 'is' : 'are'} still being graded.`}
+                    </strong>{' '}
+                    <em>Made it</em>, <em>Missed</em> and <em>Delivered late</em> are current — they are settled
+                    the moment a stop delivers, from the same board the flags come off. <em>Rolled</em> and
+                    <em> Never delivered</em> still read zero: nothing can tell freight that comes back tomorrow
+                    from freight that is gone until tomorrow exists, and that join runs overnight. A stop not
+                    delivered yet is counted in none of them.
+                  </>
+                ) : (
+                  <>
+                    <strong>
+                      {unscoredDays === foundDays
+                        ? (foundDays === 1 ? 'This day has not been scored yet.' : 'No day in this range has been scored yet.')
+                        : `${unscoredDays} day${unscoredDays === 1 ? '' : 's'} in this range ${unscoredDays === 1 ? 'has' : 'have'} not been scored yet.`}
+                    </strong>{' '}
+                    Flags are written as they appear through the day; what actually happened to each shipment is
+                    joined overnight. Until then <em>Made it</em>, <em>Missed</em> and <em>Rolled</em>
+                    {unscoredDays === foundDays ? ' stay at zero' : ' undercount'} — that is “not marked yet”,
+                    not “nothing went wrong”. <em>Flags raised</em> and the warning times are real now.
+                  </>
+                )}
               </div>
             )}
 
@@ -23311,7 +23334,14 @@ function FlagHistoryScreen() {
                           {s.missed > 0 && <span className="text-xs text-rose-700">{s.missed} missed</span>}
                           {s.rolled > 0 && <span className="text-xs text-amber-700">{s.rolled} rolled</span>}
                           {s.undelivered > 0 && <span className="text-xs font-semibold text-rose-700">{s.undelivered} never delivered</span>}
-                          {!d.scored && <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">not scored yet</span>}
+                          {/* "NOT SCORED YET" NEXT TO "8 MADE" READS AS "IGNORE THESE NUMBERS",
+                              which is the opposite of true once the sweep grades live. The two
+                              states are different and the badge has to say which: still grading
+                              means made/missed/late are current and only the roll question is
+                              open; not scored yet means nothing has been graded at all. */}
+                          {!d.scored && (d.liveScored
+                            ? <span className="text-[10px] font-semibold uppercase tracking-wide text-sky-600">still grading</span>
+                            : <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">not scored yet</span>)}
                           {/* Scored, but before the next day's board was sealed — so "rolled"
                               and "never delivered" were not yet separable and everything
                               unresolved reads as unknown. Saying so is the difference between

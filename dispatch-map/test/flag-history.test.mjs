@@ -14,6 +14,7 @@ import {
   mergeSweep, classifyOutcome, scoreRow, summarize, worseTier, flagHistoryPath,
   rollCheckDate, ROLL_LOOKAHEAD_DAYS,
   isDeliveredLate,
+  scoreRowsLive,
 } from '../netlify/functions/lib/flag-history.mts';
 
 import { auditRows } from '../netlify/functions/lib/flag-rows.mts';
@@ -384,4 +385,193 @@ test('the card is on the screen and reads the field the endpoint sends', () => {
   assert.match(app, /value=\{t\.deliveredLate \?\? 0\} label="Delivered late"/);
   // Eight tiles now, so the wide grid has to make room or the last one wraps alone.
   assert.match(app, /grid-cols-2 sm:grid-cols-4 xl:grid-cols-8/);
+});
+
+// ── WHAT TODAY CAN ALREADY ANSWER ────────────────────────────────────────────
+//
+// Chad, at 3:53pm on a day showing 12 flags and a zero in every outcome: "This can't be right
+// if there are 12 flags then there should have been 12 results or close to it as most evening
+// was delivered by the time I check this."
+//
+// He was right. `outcome` was marked "filled in nightly" and only the overnight job wrote it,
+// so a stop flagged against a 2pm close and delivered at 1:40pm read `unknown` for another ten
+// hours — while the 20-minute sweep held the very board carrying that stamp and threw it away.
+
+const flagRow = (stopNbr, closeMin, over = {}) => ({
+  stopNbr, customer: 'ACME', matchKey: null,
+  firstRoute: 'R1', lastRoute: 'R1', firstSeq: 1, lastSeq: 1,
+  firstSeenMin: 540, firstSeenAt: '2026-08-31T13:00:00Z', lastSeenMin: 600,
+  leadMin: closeMin == null ? null : closeMin - 540, closeMin,
+  hoursTier: null, firstTier: 'red', worstTier: 'red',
+  firstEtaMin: null, lastEtaMin: null, worstLateBy: 0, sweeps: 3,
+  anchored: true, emailed: false, outcome: 'unknown',
+  arrivalMin: null, deliveredAt: null, actedOn: false, scoredAt: null, ...over,
+});
+
+test('A STOP DELIVERED BEFORE ITS CLOSE IS "MADE" THE MOMENT IT DELIVERS', () => {
+  const rows = { A: flagRow('A', 840) }; // 2pm close
+  const board = { A: { arrivalMin: 820, deliveredAt: '2026-08-31 13:40', finished: true } };
+  const out = scoreRowsLive(rows, (n) => board[n] || null, 'NOW');
+  assert.equal(out.rows.A.outcome, 'made');
+  assert.equal(out.rows.A.arrivalMin, 820);
+  assert.equal(out.rows.A.deliveredAt, '2026-08-31 13:40');
+  assert.equal(out.decided, 1);
+});
+
+test('and one delivered after it is "missed" — also settled today', () => {
+  const out = scoreRowsLive({ A: flagRow('A', 840) },
+    () => ({ arrivalMin: 900, deliveredAt: '2026-08-31 15:00', finished: true }), 'NOW');
+  assert.equal(out.rows.A.outcome, 'missed');
+  assert.equal(out.decided, 1);
+});
+
+test('ROLLED AND UNDELIVERED ARE STRUCTURALLY UNREACHABLE HERE', () => {
+  // Nothing today can tell freight that comes back tomorrow from freight that is gone. Holding
+  // seenLater at null is what makes that a property of the code rather than a hope — if this
+  // ever reached 'undelivered' the screen would accuse a driver of losing freight that is
+  // sitting on tomorrow's board.
+  const undelivered = scoreRowsLive({ A: flagRow('A', 840) }, () => ({ arrivalMin: null, deliveredAt: null, finished: false }), 'NOW');
+  assert.equal(undelivered.rows.A.outcome, 'unknown');
+  assert.equal(undelivered.decided, 0);
+  assert.equal(undelivered.pending, 1);
+
+  // Even a stop the board calls finished with no usable stamp stays unknown, never undelivered.
+  const finishedNoStamp = scoreRowsLive({ A: flagRow('A', 840) }, () => ({ arrivalMin: null, deliveredAt: null, finished: true }), 'NOW');
+  assert.equal(finishedNoStamp.rows.A.outcome, 'unknown');
+});
+
+test('a stop with no close on file cannot be graded, and is not guessed at', () => {
+  const out = scoreRowsLive({ A: flagRow('A', null) },
+    () => ({ arrivalMin: 900, deliveredAt: '2026-08-31 15:00', finished: true }), 'NOW');
+  assert.equal(out.rows.A.outcome, 'unknown', 'a stamp with nothing to grade against is unknown');
+});
+
+test('a flagged stop that has left the board stays unknown rather than vanishing', () => {
+  const out = scoreRowsLive({ A: flagRow('A', 840) }, () => null, 'NOW');
+  assert.equal(out.rows.A.outcome, 'unknown');
+  assert.ok('A' in out.rows, 'the row is kept — a flag that was raised is a fact');
+});
+
+test('AN ABSENCE MUST NOT UN-DELIVER FREIGHT THAT ALREADY ARRIVED', () => {
+  // The failure this guards is the one Chad complained about, arriving by a different door.
+  // A stop delivered at 1:40pm grades `made`. If a later board pull no longer carries it —
+  // re-dated, cancelled, a short pull — re-grading it from nothing hands classifyOutcome a
+  // null stamp and it answers `unknown`. The delivery would drop off the count silently,
+  // hours after the driver actually made it, and nothing on the screen would say why.
+  //
+  // Runs every 20 minutes, so one absent pull is enough to do it.
+  const settled = flagRow('A', 840, { outcome: 'made', arrivalMin: 820, deliveredAt: '2026-08-31 13:40', scoredAt: 'EARLIER' });
+  const out = scoreRowsLive({ A: settled }, () => null, 'NOW');
+  assert.equal(out.rows.A.outcome, 'made', 'the delivery survives the stop leaving the board');
+  assert.equal(out.rows.A.arrivalMin, 820);
+  assert.equal(out.rows.A.deliveredAt, '2026-08-31 13:40');
+  assert.equal(out.rows.A.scoredAt, 'EARLIER', 'and it is not re-stamped as if it were re-checked');
+  assert.equal(out.decided, 1, 'it still counts as answered');
+
+  // Same for a settled miss, and for a resolver that blew up rather than returned null.
+  const missed = flagRow('B', 840, { outcome: 'missed', arrivalMin: 900, deliveredAt: 'x' });
+  const threw = scoreRowsLive({ B: missed }, () => { throw new Error('board read blew up'); }, 'NOW');
+  assert.equal(threw.rows.B.outcome, 'missed');
+  assert.equal(threw.decided, 1);
+});
+
+test('a stop that IS on the board still re-grades — the guard is absence, not stickiness', () => {
+  // The counterpart to the test above, and the reason it is a guard rather than a freeze: a
+  // stop the board can still see must follow the board. Flagged, graded `made` off a stamp,
+  // then the stamp is withdrawn (a mis-scan reversed, a delivery undone) — the row has to go
+  // back to unknown, because the freight is out there again.
+  const settled = flagRow('A', 840, { outcome: 'made', arrivalMin: 820, deliveredAt: '2026-08-31 13:40' });
+  const out = scoreRowsLive({ A: settled }, () => ({ arrivalMin: null, deliveredAt: null, finished: false }), 'NOW');
+  assert.equal(out.rows.A.outcome, 'unknown');
+  assert.equal(out.rows.A.arrivalMin, null);
+  assert.equal(out.decided, 0);
+});
+
+test('a resolver that throws costs one row its grade, never the whole sweep', () => {
+  const out = scoreRowsLive({ A: flagRow('A', 840), B: flagRow('B', 840) }, (n) => {
+    if (n === 'A') throw new Error('board read blew up');
+    return { arrivalMin: 800, deliveredAt: 'x', finished: true };
+  }, 'NOW');
+  assert.equal(out.rows.A.outcome, 'unknown');
+  assert.equal(out.rows.B.outcome, 'made');
+});
+
+test('a partly-delivered afternoon reports what it knows and no more', () => {
+  // The real shape of Chad's 3:53pm: twelve flags, most delivered, a few still running.
+  const rows = {};
+  for (let i = 0; i < 12; i++) rows[`S${i}`] = flagRow(`S${i}`, 840);
+  const out = scoreRowsLive(rows, (n) => {
+    const i = Number(n.slice(1));
+    if (i < 8) return { arrivalMin: 800, deliveredAt: 'x', finished: true };   // made
+    if (i < 10) return { arrivalMin: 900, deliveredAt: 'x', finished: true };  // missed
+    return { arrivalMin: null, deliveredAt: null, finished: false };           // still out
+  }, 'NOW');
+  const s = summarize(out.rows);
+  assert.equal(s.made, 8);
+  assert.equal(s.missed, 2);
+  assert.equal(s.unknown, 2, 'the two still running are unknown, not zero-and-forgotten');
+  assert.equal(s.rolled, 0);
+  assert.equal(s.undelivered, 0);
+  assert.equal(out.decided, 10, 'ten of twelve answered at 3:53pm instead of none');
+});
+
+test('junk in does not invent rows', () => {
+  assert.deepEqual(scoreRowsLive(null, () => null, 'NOW').rows, {});
+  assert.deepEqual(scoreRowsLive({ A: null }, () => null, 'NOW').rows, {});
+});
+
+// ── THE WIRING, AND THE ONE WAY IT COULD UNDO THE NIGHTLY JOIN ───────────────
+
+const SWEEP = readFileSync(new URL('../netlify/functions/eta-flag-alert-background.mts', import.meta.url), 'utf8');
+
+test('THE SWEEP MUST NOT RE-GRADE A DAY THE OVERNIGHT JOIN HAS ALREADY SETTLED', () => {
+  // This is the one way live scoring could do harm. scored_at means rolled and undelivered are
+  // settled from a later board; a sweep firing afterwards grades with seenLater unavailable and
+  // would quietly turn a settled `rolled` back into `unknown` — losing the answer the whole
+  // table exists to give.
+  assert.match(SWEEP, /const alreadyFinal = !!prev\?\.scored_at/);
+  assert.match(SWEEP, /alreadyFinal\s*\n?\s*\?\s*\{ rows: merged\.rows/, 'a settled day keeps its rows untouched');
+});
+
+test('the sweep records a LIVE grade, never scored_at', () => {
+  // scored_at is the overnight job's word and the API keys `scored` off it. Writing it here
+  // would tell the screen the roll question had been answered when it had not been asked.
+  const write = SWEEP.slice(SWEEP.indexOf('const writeHistory'));
+  const body = write.slice(0, write.indexOf('\n    };'));
+  assert.match(body, /live_scored_at: atISO/, 'it stamps a live grade');
+  assert.ok(!/scored_at: /.test(body.replace(/live_scored_at/g, '')), 'and never claims the overnight join ran');
+  assert.ok(!/next_day_captured/.test(body), 'nor that a later board was captured');
+});
+
+test('the live grade holds seenLater at null at the call site too', () => {
+  assert.match(SWEEP, /scoreRowsLive\(merged\.rows/, 'it grades the merged rows');
+  const lib = readFileSync(new URL('../netlify/functions/lib/flag-history.mts', import.meta.url), 'utf8');
+  const fn = lib.slice(lib.indexOf('export function scoreRowsLive'));
+  assert.match(fn.slice(0, fn.indexOf('\n}')), /seenLater: null/, 'so rolled/undelivered stay out of reach');
+});
+
+// ── AND THE SCREEN HAS TO SAY WHICH STATE IT IS IN ──────────────────────────
+
+test('a live-graded day is not labelled "not scored yet" beside its own counts', () => {
+  // The badge sat next to "8 made, 2 missed". Grey NOT SCORED YET beside real numbers tells a
+  // dispatcher to disregard them, which is precisely backwards — they are the freshest thing
+  // on the row. The two states are genuinely different and the screen must distinguish them.
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const screen = app.slice(app.indexOf('function FlagHistoryScreen('));
+  const body = screen.slice(0, screen.indexOf('\nfunction '));
+  assert.match(body, /!d\.scored && \(d\.liveScored/, 'the badge branches on the live grade');
+  assert.match(body, />still grading</, 'a partly graded day says so');
+  assert.match(body, />not scored yet</, 'and an ungraded one still says that');
+
+  // The banner too — a day answering made/missed must not be described as staying at zero.
+  assert.match(body, /const liveOnlyDays = results\.filter/);
+  assert.match(body, /still being graded\./);
+});
+
+test('the endpoint actually sends the field the screen branches on', () => {
+  // A screen reading a field nothing writes is a screen permanently in the old state, and it
+  // fails silently: every day just keeps saying "not scored yet".
+  const api = readFileSync(new URL('../netlify/functions/eta-flag-history.mts', import.meta.url), 'utf8');
+  assert.match(api, /liveScored: !!doc\.live_scored_at/);
+  assert.match(SWEEP, /live_scored_at: atISO/, 'and the sweep is what writes it');
 });

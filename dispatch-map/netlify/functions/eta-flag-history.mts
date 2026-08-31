@@ -84,6 +84,11 @@ export default async (req: Request): Promise<Response> => {
           // A day whose flags are recorded but not yet scored is a normal state before the
           // nightly run, and the screen says so rather than showing zeroes as outcomes.
           scored: !!doc.scored_at,
+          // PARTIALLY GRADED IS A THIRD STATE, and the screen was calling it "not scored".
+          // The 20-minute sweep now settles made/missed from the live board, so a day can be
+          // answering most of the question hours before the overnight join settles rolled and
+          // undelivered. Reporting that as a flat zero is what made Chad distrust the panel.
+          liveScored: !!doc.live_scored_at,
           nextDayCaptured: doc.next_day_captured ?? null,
           ...(wantRows ? { rows } : {}),
         };
