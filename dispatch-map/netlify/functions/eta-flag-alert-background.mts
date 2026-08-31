@@ -30,7 +30,8 @@ import { travelClassOf } from '../../src/lib/travel-model.js';
 import { loadVehicleRoster, vehicleTypeForStop } from './lib/tractor-flags.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { selectAlertable, sendAlerts, ALERT_TO, AMBER_LEAD_GATE_MIN, ALERT_COLLECTION } from './lib/flag-alert.mts';
-import { mergeSweep, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
+import { mergeSweep, scoreRowsLive, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
+import { arrivalAnchor, isFinishedStop } from '../../src/lib/board-flags.js';
 import { auditRows } from './lib/flag-rows.mts';
 import { emailEnabled } from './lib/email.mts';
 
@@ -235,13 +236,48 @@ export default async (req: Request): Promise<Response> => {
       try {
         const path = flagHistoryPath(TENANT, date);
         const prev = await getDoc(path);
+        const atISO = new Date().toISOString();
         const merged = mergeSweep(prev?.rows, auditRows(flags), {
-          nowMin, atISO: new Date().toISOString(), emailedStops,
+          nowMin, atISO, emailedStops,
         });
+
+        // GRADE WHAT THE BOARD ALREADY ANSWERS. Chad, at 3:53pm on 12 flags and zeros
+        // everywhere: "there should have been 12 results or close to it as most evening was
+        // delivered by the time I check this." The outcomes were written only by the nightly
+        // job, so a stop delivered at 1:40pm against a 2pm close read `unknown` for another
+        // ten hours — while THIS sweep held the board carrying that very stamp.
+        //
+        // Only made/missed are reachable from today (see scoreRowsLive); rolled and
+        // undelivered still wait for a later board, because nothing here can tell freight
+        // that comes back tomorrow from freight that is gone.
+        //
+        // SKIPPED once the overnight join has run for this day. scored_at means the fuller
+        // pass is done, and a sweep that fired afterwards would re-grade its rows with
+        // seenLater unavailable and quietly turn a settled `rolled` back into `unknown`.
+        const byStop = new Map<string, any>();
+        for (const st of stops || []) { const k = String((st as any)?.stopNbr ?? ''); if (k) byStop.set(k, st); }
+        const alreadyFinal = !!prev?.scored_at;
+        const live = alreadyFinal
+          ? { rows: merged.rows, decided: 0, pending: 0 }
+          : scoreRowsLive(merged.rows, (stopNbr) => {
+            const st = byStop.get(String(stopNbr));
+            if (!st) return null;
+            const a = arrivalAnchor(st, date);
+            const min = a && Number.isFinite(a.min) ? a.min : null;
+            // The stamp the MINUTES came from, not whichever field happens to be filled —
+            // the same rule the nightly scorer follows, so the two cannot disagree about a row.
+            const at = min == null ? null : String((a.source === 'arrival' ? st?.arrivalDTTM : st?.deliveredDTTM) || '') || null;
+            return { arrivalMin: min, deliveredAt: at, finished: isFinishedStop(st) };
+          }, atISO);
+
         await setDoc(path, {
           tenant: TENANT, date, version: FLAG_HISTORY_VERSION,
-          updated_at: new Date().toISOString(),
-          rows: merged.rows,
+          updated_at: atISO,
+          rows: live.rows,
+          // NOT scored_at — that word means the overnight join has run and rolled /
+          // undelivered are settled. This says only that today's decidable outcomes are
+          // current, so the screen can tell a live partial grade from a finished one.
+          ...(alreadyFinal ? {} : { live_scored_at: atISO, live_decided: live.decided }),
         });
         return { added: merged.added, updated: merged.updated, tracked: Object.keys(merged.rows).length };
       } catch (e: any) {

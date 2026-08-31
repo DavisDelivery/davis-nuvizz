@@ -229,6 +229,71 @@ export function classifyOutcome(o: {
 }
 
 /**
+ * WHAT TODAY CAN ALREADY ANSWER, from the board the sweep is already holding.
+ *
+ * Chad, at 3:53pm on a day showing 12 flags and zeros in every outcome: "This can't be right
+ * if there are 12 flags then there should have been 12 results or close to it as most evening
+ * was delivered by the time I check this."
+ *
+ * He is right, and the zeros were an artefact of WHERE the scoring ran rather than of what
+ * was knowable. `outcome`, `arrivalMin` and `deliveredAt` were marked "filled in nightly" and
+ * only eta-miss-ledger-background ever wrote them — so a stop flagged against a 2pm close and
+ * delivered at 1:40pm sat as `unknown` until the small hours, on a screen whose whole purpose
+ * is to say whether the flag did any good. The 20-minute sweep holds the entire board and was
+ * throwing the answer away, which is the same shape of defect as two others found this week.
+ *
+ * MADE AND MISSED NEED ONLY TODAY. classifyOutcome reaches them from a delivery stamp and a
+ * close, both of which are on the board the moment the driver delivers. ROLLED and
+ * UNDELIVERED genuinely need a later board — you cannot tell freight that came back tomorrow
+ * from freight that vanished until tomorrow exists — so `seenLater` is held at null here and
+ * classifyOutcome is structurally unable to reach either. They stay `unknown` until the
+ * overnight join, which is the honest answer rather than a guess made early.
+ *
+ * PURE. `resolve` hands back what the board says about one stop; the caller supplies it.
+ */
+export function scoreRowsLive(
+  rows: Record<string, FlagRow> | null | undefined,
+  resolve: (stopNbr: string) => { arrivalMin: number | null; deliveredAt: string | null; finished: boolean } | null,
+  scoredAt: string,
+): { rows: Record<string, FlagRow>; decided: number; pending: number } {
+  const out: Record<string, FlagRow> = {};
+  let decided = 0;
+  let pending = 0;
+  for (const [stopNbr, row] of Object.entries<FlagRow>(rows || {})) {
+    if (!row || typeof row !== 'object') continue;
+    let r: { arrivalMin: number | null; deliveredAt: string | null; finished: boolean } | null = null;
+    // A resolver that throws must not cost the sweep its whole row set — the flags are the
+    // job, this is the grading of them.
+    try { r = resolve(stopNbr); } catch { r = null; }
+
+    // AN ABSENCE IS NOT AN ANSWER. If the board no longer carries the stop we cannot see the
+    // stamp any more — which is not the same as there never having been one. Re-grading from
+    // nothing would run classifyOutcome with arrivalMin null and turn a settled `made` back
+    // into `unknown`: freight that reached the customer at 1:40pm would disappear off the very
+    // count Chad opened this panel to read, and it would do it silently, hours after the fact.
+    // A stop leaves a board for ordinary reasons — re-dated, cancelled, a partial pull — so
+    // this is not a rare shape. The row is left exactly as it stands and the next sweep that
+    // can see the stop, or the overnight join off the sealed board, settles it properly.
+    if (!r) {
+      out[stopNbr] = row;
+      if (row.outcome === 'made' || row.outcome === 'missed') decided += 1; else pending += 1;
+      continue;
+    }
+
+    const scored = scoreRow(row, {
+      arrivalMin: r.arrivalMin ?? null,
+      deliveredAt: r.deliveredAt ?? null,
+      finished: !!r.finished,
+      seenLater: null,
+      scoredAt,
+    });
+    out[stopNbr] = scored;
+    if (scored.outcome === 'made' || scored.outcome === 'missed') decided += 1; else pending += 1;
+  }
+  return { rows: out, decided, pending };
+}
+
+/**
  * PURE. Does this day's recorded flag set still have outcomes that could change?
  *
  * A day is PENDING while it has rows but was scored without the next day's sealed board —
