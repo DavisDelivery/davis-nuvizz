@@ -97,7 +97,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.81.5';
+const APP_VERSION = '0.81.6';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -168,6 +168,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.81.6', 'THE WHOLE MANIFEST, ON THE PHONE, DRAWN BY US. Chad: “Still only able to see one page of the manifest,” then “I want to see the whole pdf in the viewer and I want it sized to an iPhone.” THE CAUSE IS THE PLATFORM, NOT THE CSS: the viewer put the document in an <iframe>, and iOS WebKit collapses an embedded PDF to a single static page — no pagination, no scroll. Desktop Chrome embeds a real paginated reader, which is exactly why this never showed up at a desk. This repo had already paid for the identical lesson once and written it down: the v0.29.74 row says the Print Manifest fix was “printing from a real window instead of the on-screen iframe, which iOS Safari was collapsing to a single page.” AND BOTH ESCAPES WERE ALREADY CLOSED. Opening the PDF in a tab strands the dispatcher — in the installed app _blank navigates the SAME window with no back gesture (Chad, 11:14pm: “when you load a manifest there is no way get back to the app”), and pwa-no-dead-end.test.mjs exists to stop it being written again. So the pages are rasterised in the modal with pdf.js: every page, fitted to the phone by default, with −/Fit/+ zoom to 4x and horizontal scroll to reach the right-hand columns. Verified end to end against a real 13-page manifest driven through the built app — the viewer requested manifest-history?pdf=1, took 143,587 bytes and reported 13 pages. THE ENGINE IS LAZY, because a dispatch board must not carry a PDF renderer on every cold start to serve an archival document: both the library and its worker are dynamic imports, so they become their own Vite chunk. Measured, not assumed — the main bundle moved 2,086.99 to 2,090.81 KB, +1.24KB gzip, and the 107KB-gzip engine plus its 1.38MB worker are fetched the first time somebody opens a document. TWO MEMORY DEFECTS FOUND BY MEASURING RATHER THAN BY READING. First, every page painted at once: 13 of 13 canvases live before anything had been scrolled to, because the IntersectionObserver was rooted on the VIEWPORT and reported pages inside a scrolling div as visible. Rooted on the scroller it holds 5 of 13. Second, and worse, zoom and device pixel ratio were MULTIPLYING: a 4x page painted into a 2x backing store asks for 64x the pixels of the fitted page, measured at 105.6MB of canvas across four pages — the kind of number that ends with iOS discarding the tab. Effective resolution is capped as a PRODUCT now, and the window tightens to a single page past 2x. Same view: 6.6MB. Across the whole zoom range the viewer holds 4.9-13.2MB and it is bounded by the window rather than by the length of the document, so a 40-page manifest costs what a 3-page one costs. Nothing looks softer, because pixels per inch of paper is what the eye sees and that is what is held constant. 7 new tests; both memory guards proven to bite by reverting each. 2,731 green.'],
   ['0.81.5', 'ONLY FRIDAYS EVER REPORTED MISSING FREIGHT, AND THAT IS BECAUSE NONE OF IT WAS MISSING. Chad, on the 08-28 manifest: “says there are 68 missing off this manifest but I don’t think that is true.” He was right. Nine nights on file: 0 not-on-board on every Sun, Mon, Tue, Wed and Thu — 621/621, 692/692, 657/657, 618/618 — and then 30 on Friday 08-21 and 83 on Friday 08-28. Freight does not go astray only on Fridays. THE MECHANISM: a Friday manifest is expected to deliver MONDAY, and the nightly check runs early SATURDAY, while scheduled scans are dark for the weekend. So it opened a Monday board that was still filling. The archive proves it — Monday 08-24 read 477 stops when Friday’s manifest was checked against it, and 618 by the time Monday’s own manifest was reconciled. The 30 “missing” orders had not been written yet. A Thursday manifest, by contrast, expects FRIDAY and is checked Friday morning against a finished 649-stop board, and reports zero. THE RULE COULD NOT SEE IT because the Monday board EXISTED — 451 stops is greater than zero — and boardCoverage took existing for finished. It now asks the question that actually separates the two: HAS THE DAY COME ROUND YET. A required delivery day later than the day we are asking on is still being built and cannot disprove an order, so the run is not conclusive and the count is graded “not routed yet” rather than shouted in red. Nothing is lost by waiting: on Saturday morning there is no route to chase an order into, and the same manifest re-checked on Monday reports for real — pinned by a test. The genuine alert is untouched, also pinned: a Thursday manifest against a finished board still says missing, and the unbuilt days AFTER the expected one must not suppress it. THE COUNT NOW TRAVELS WITH ITS STANDING. coverage, grade and expectedDelivery are filed on the archive record, and a night stored before that is re-graded from checkedAgainst using its own run day rather than being assumed conclusive — because the history row printed missingCount flat red whatever the boards behind it were worth. AND THE MANIFEST IS READABLE AT LAST. Chad: “I’m not able to view the entire manifest also I want a way to see the ones not on there also. On the manifest I want you to highlight the rows missing.” Three asks, one answer: the PDF is a fixed-width 13-page document whose SKID and PRO columns sit off the right edge of a phone with no way to reach them, and it knows nothing about which orders are off the board. The rows are already parsed to do the diff, so they are served as DATA — manifest-history?rows=1 re-reads the stored PDF, marks every row against the run’s own off-board set using the same proKeys the reconciler matched on, and the new Rows viewer renders them: off-board rows highlighted with a left bar and a label, a one-tap filter down to just those, and a search across PRO, customer, city and ZIP. Two views, because a 12-column table is not a phone screen — the phone gets one card per order, the desktop the table. The PDF stays for anyone who wants the document Uline actually sent. 8 new tests, the guard proven to bite by reverting it; 2,724 green.'],
   ['0.81.4', 'THE FLAG BOARD COULD NOT SAY WHETHER THE FREIGHT ACTUALLY GOT THERE. Chad, on the Flag history cards: “need a card here for delivered even though it didn’t ‘made it’ make the flag time.” THE DISTINCTION IS THE ONE THAT COSTS MONEY: late is an apology, never-delivered is a truck going back out tomorrow — and no single number told them apart. The reason is a split nobody would guess from the labels. `Missed` does NOT mean the freight failed to arrive; classifyOutcome reaches it only WITH a delivery stamp and a close to grade against, so it means “delivered, after the receiving close” — a fact stated in the tile’s hover text and nowhere a person actually looks, sitting immediately beside `Never delivered`, which is the word it reads like. Meanwhile the roll that delivered first thing next morning — freight the customer HAS — was counted only under `Rolled`, beside rolls still sitting on a dock. So “how much of what we flagged still reached the customer?” had to be assembled in someone’s head out of two tiles that each meant something else. DELIVERED LATE is that number: every Missed, plus the Rolled ones we can PROVE landed, evidenced by rolledDeliveredAt. A roll that came back on a later board but has not delivered off it keeps a null stamp for ever, and counting it would dress freight still sitting there as a delivery — the exact thing deliveredWhen’s ‘open’ tone exists to prevent. It is deliberately a ROLL-UP across two of the exclusive buckets rather than a seventh bucket, and the hint says so out loud, because a dispatcher adding the tiles up and overshooting the total is worse than not having the number. THE TRAP THIS ALMOST SHIPPED WITH, and it is the one this codebase keeps having to be rescued from: the endpoint serves `doc.summary`, written at score time. Every day already on file was scored before this field existed, so reading the stored summary straight would have printed a confident 0 on the one card whose entire job is to say freight DID arrive — absence read as evidence, on the reassuring side. A summary missing the field is now re-derived from the rows already in the same document, at zero extra reads, and the range roll-up totals it. Pinned by a test that fails the moment that guard is weakened. Eight tiles now, so the grid goes 2 / 4 / 8 and the phone lays out 2×4 with no orphan tile — verified at 390px through the real nav, not just asserted. 9 new tests, 2,717 green.'],
   ['0.81.3', 'THE ARCHIVE WAS KEEPING THE WRONG MANIFEST — THE FIRST REPORT OF THE NIGHT INSTEAD OF THE LAST. Chad, looking at a stored PDF: “you’re saving the wrong manifest, you should be saving the last one pulled in. You’re instead saving the first one.” He is right, and it matters more than it sounds: Uline sends ONE night’s freight report five times, and they are not the same document. Measured on the real 08/27/26 mail — a 26,971-byte preliminary at 14:51, then 61,475 / 61,498 / 61,495 / 61,474 bytes at midnight, 1am, 2am and 3am. The manifest is append-only, so the last one is the complete day and the first is a fragment. Keeping the fragment means the stored proof of what Uline said we were given is roughly half a day short, and the “not on the board” list computed from it is wrong in the direction that hides missing freight. THE MECHANISM, END TO END. Filing is an OVERWRITE — one blob key per night and doc.latest replaced each time — so whichever report is processed LAST is the one that survives. Gmail’s messages.list returns NEWEST FIRST and the ingest walked that order, which files the oldest last. MAX_EMAILS_PER_RUN caps each pass at three, so with five reports pending the archive then marched BACKWARDS through the night across successive runs until it settled on report #1. Two more things rode on the same mistake: reportNo counts in processing order, so the earliest report ended up numbered highest and labelled “latest”; and the append-only check (“a report came back short”) compares each fold against the previous one, so walking backwards made the order count fall on almost every fold — that amber warning has been firing on healthy nights. TWO FIXES, BECAUSE ORDER ALONE IS NOT ENOUGH. First, the ingest now reads the mailbox OLDEST FIRST, sorting on Gmail’s own internalDate; that converges forward under the per-run cap, so the archive can no longer move backwards in time. Second — and this is the one that makes it safe — the fold now refuses to demote: a report Uline sent EARLIER than the one already on file is counted and recorded as an arrival, but does not take the night, and its bytes are never uploaded over the better ones (the decision is taken BEFORE the upload, because the upload IS the overwrite). Sorting alone would have left this one missed cycle from silently re-corrupting, because a report that cannot be filed on arrival (“board not scanned yet”) is deliberately left unmarked and retried — so it comes BACK later in a batch with newer reports. Re-batching is designed in, not a rare accident. The Manifest check tab now marks such an arrival “arrived late — not used”, so the list of reports can never be misread as “the last line is the manifest on file”. Verified against the real mailbox rather than assumed: the five 08/27/26 messages and their byte sizes are read out of Gmail, and both guards were proven to bite by reverting each in turn. 13 new tests; 2,709 green.'],
@@ -5691,6 +5692,236 @@ const isPodImage = isPodImageExt;   // one source of truth (see lib/stop-card-se
 // "open in browser" escape hatch stays for anyone who wants the native viewer — it is the
 // ONE anchor allowed to leave, and it is marked so the guard in the tests can tell it from
 // a regression.
+// THE WHOLE PDF, ON A PHONE, RENDERED BY US.
+//
+// Chad: "I want to see the whole pdf in the viewer and I want it sized to an iPhone."
+//
+// WHY AN <iframe> CANNOT DO THIS. iOS WebKit collapses an embedded PDF to a single static
+// page — no pagination, no scroll. This repo has already paid for that lesson once: the
+// v0.29.74 changelog row records the identical failure on Print Manifest, "which iOS Safari
+// was collapsing to a single page", fixed there by leaving the iframe behind. Desktop Chrome
+// embeds a real paginated reader, which is exactly why it never showed up at a desk.
+//
+// AND THE OBVIOUS ESCAPES ARE BOTH CLOSED. Opening the PDF in a new tab is banned in this
+// app and there is a test enforcing it (pwa-no-dead-end): in the installed app _blank
+// navigates the SAME window and strands the dispatcher with no back gesture — Chad, at
+// 11:14pm, "when you load a manifest there is no way get back to the app". So the pages have
+// to be drawn here, in the modal, over the board.
+//
+// SO WE RASTERISE THEM OURSELVES. pdf.js draws every page to a canvas. Loaded by DYNAMIC
+// import so the renderer is its own Vite chunk fetched the first time somebody opens a
+// document — this app's changelog has a long history of complaining about what it ships over
+// LTE, and a dispatch board must not carry a PDF engine on every cold start to serve an
+// archival document.
+//
+// ZOOM IS A CONTROL, NOT A GESTURE. index.css pins html/body/#root to overflow:hidden, so
+// page-level pinch is not something to rely on — and there is no WebKit in the build
+// environment to test a gesture against (the same wall v0.54.80 hit, which is why that fix
+// was made "by construction" rather than by chasing one engine). Buttons work on every
+// engine whether or not I can run it.
+//
+// FIT-TO-WIDTH IS THE DEFAULT AND IS DELIBERATELY NOT THE END OF IT. A Uline manifest is a
+// wide twelve-column table; fitted to 390px the whole page is visible but the type is small,
+// which is the honest tradeoff — you get the shape of the page, then zoom to read a row. The
+// zoom buttons scroll the page horizontally rather than reflowing, because a PDF has no
+// reflow and pretending otherwise would misplace columns.
+// EFFECTIVE RESOLUTION IS ZOOM x DPR, AND IT IS THE PRODUCT THAT COSTS MEMORY. Painting a 4x
+// page into a 2x backing store asks for eight times the linear detail of the fitted page and
+// sixty-four times the pixels — measured at 105MB across four pages, which is the kind of
+// number that ends with iOS discarding the tab. The product is capped instead: zoom 1 gets a
+// crisp 2x store, and past 2x the zoom is already supplying the detail so the store drops to
+// 1x. Nothing on screen looks softer, because the pixels per INCH of paper are what the eye
+// sees and that number is held constant.
+const PDF_MAX_EFFECTIVE = 2;
+const PDF_ZOOMS = [1, 1.5, 2, 3, 4];
+function pdfDpr(zoom) {
+  const device = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+  return Math.max(1, Math.min(device, PDF_MAX_EFFECTIVE / Math.max(1, zoom)));
+}
+
+function PdfPageCanvas({ pdf, pageNumber, containerWidth, zoom, active, holderRef }) {
+  const canvasRef = useRef(null);
+  const [dims, setDims] = useState(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    // LEAVING THE WINDOW FREES THE PIXELS. A canvas holds width*height*4 bytes whether or not
+    // anybody is looking at it, and zoom multiplies that by the SQUARE of the factor: the same
+    // 13 pages that cost 11MB fitted to the phone cost about 180MB at 4x. Releasing what has
+    // scrolled away bounds the cost by the size of the window rather than by the length of the
+    // document, so a 40-page manifest at full zoom costs the same as a 3-page one.
+    if (!active) {
+      if (canvas) { canvas.width = 0; canvas.height = 0; }
+      if (dims) setDims(null);
+      return undefined;
+    }
+    if (!pdf || !containerWidth) return undefined;
+    let cancelled = false;
+    let task = null;
+    (async () => {
+      try {
+        const page = await pdf.getPage(pageNumber);
+        if (cancelled) return;
+        const unit = page.getViewport({ scale: 1 });
+        // Fit the page's own width to the space available, then apply zoom on top of that.
+        const scale = ((containerWidth * zoom) / unit.width) || 1;
+        const viewport = page.getViewport({ scale });
+        const dpr = pdfDpr(zoom);
+        const c = canvasRef.current;
+        if (!c) return;
+        c.width = Math.max(1, Math.floor(viewport.width * dpr));
+        c.height = Math.max(1, Math.floor(viewport.height * dpr));
+        const ctx = c.getContext('2d');
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        task = page.render({ canvasContext: ctx, viewport });
+        await task.promise;
+        if (!cancelled) setDims({ w: Math.round(viewport.width), h: Math.round(viewport.height) });
+      } catch (e) {
+        // One page that will not draw must not take the document down — the rest are still
+        // worth reading, and the numbered placeholder says which one failed.
+        if (!cancelled && !/cancel/i.test(String(e?.message || e))) setDims(null);
+      }
+    })();
+    return () => { cancelled = true; try { task?.cancel(); } catch { /* already finished */ } };
+    // `dims` is deliberately not a dependency: it is this effect's own output, and listing it
+    // would re-enter on every successful render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, pdf, pageNumber, containerWidth, zoom]);
+
+  // THE PLACEHOLDER MUST BE THE RIGHT SIZE BEFORE THE PAGE IS DRAWN, or every page stacks at
+  // the top of the scroller, they all appear on screen at once, and the window that bounds
+  // memory never closes. US Letter at 8.5x11 is 1.294; a page that renders tells us its real
+  // ratio and the estimate is only ever used before the first one has.
+  const ratio = dims && dims.w ? dims.h / dims.w : 1.294;
+  const w = Math.max(1, Math.round(containerWidth * zoom));
+  return (
+    <div ref={holderRef} data-pdf-page={pageNumber} className="relative mx-auto mb-3 bg-white shadow"
+      style={{ width: w, height: Math.round(w * ratio) }}>
+      <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
+      {!dims ? (
+        <div className="absolute inset-0 flex items-center justify-center text-[11px] text-slate-400">page {pageNumber}</div>
+      ) : null}
+      <div className="absolute bottom-1 right-2 text-[10px] text-slate-400 tabular-nums select-none">{pageNumber}</div>
+    </div>
+  );
+}
+
+function PdfPages({ src }) {
+  const [pdf, setPdf] = useState(null);
+  const [err, setErr] = useState(null);
+  const [zoom, setZoom] = useState(1);
+  const [width, setWidth] = useState(0);
+  const [visible, setVisible] = useState(() => new Set([1, 2]));
+  const scrollRef = useRef(null);
+  const holders = useRef(new Map());
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return undefined;
+    const measure = () => setWidth(Math.max(0, el.clientWidth - 16));
+    measure();
+    if (typeof ResizeObserver === 'undefined') { window.addEventListener('resize', measure); return () => window.removeEventListener('resize', measure); }
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let doc = null;
+    (async () => {
+      try {
+        // Both imports dynamic, so the engine AND its worker land in a lazy chunk instead of
+        // the main bundle — measured at +1.2KB gzip on the cold start rather than +107KB.
+        const pdfjs = await import('pdfjs-dist');
+        const workerUrl = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default;
+        pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+        doc = await pdfjs.getDocument({ url: src }).promise;
+        if (cancelled) { try { doc.destroy(); } catch { /* nothing to free */ } return; }
+        setPdf(doc);
+      } catch (e) {
+        if (!cancelled) setErr(String(e?.message || e).slice(0, 200));
+      }
+    })();
+    return () => { cancelled = true; try { doc?.destroy(); } catch { /* nothing to free */ } };
+  }, [src]);
+
+  const pages = pdf?.numPages || 0;
+
+  // ONE observer, ROOTED ON THE SCROLLER. Rooting it on the viewport (the default) is the
+  // subtle version of this bug: it reports pages inside a scrolling div as visible before the
+  // div has laid them out, so every page paints at once and the window never bounds anything.
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || !pages || typeof IntersectionObserver === 'undefined') return undefined;
+    const io = new IntersectionObserver((entries) => {
+      setVisible((prev) => {
+        const next = new Set(prev);
+        let changed = false;
+        for (const e of entries) {
+          const n = Number(e.target.getAttribute('data-pdf-page'));
+          if (!n) continue;
+          if (e.isIntersecting && !next.has(n)) { next.add(n); changed = true; }
+          else if (!e.isIntersecting && next.has(n)) { next.delete(n); changed = true; }
+        }
+        return changed ? next : prev;
+      });
+    }, { root, rootMargin: '300px 0px' });
+    for (const el of holders.current.values()) if (el) io.observe(el);
+    return () => io.disconnect();
+  }, [pages, width]);
+
+  // THE WINDOW IS THE MEMORY CEILING, so it tightens as the pages get bigger. Fitted, a page
+  // either side costs almost nothing and stops scrolling from chasing the renderer. Zoomed
+  // past 2x a single page already fills the screen twice over, the neighbours are not on their
+  // way into view, and each one costs several times more — so they are not kept.
+  const neighbours = zoom >= 3 ? 0 : 1;
+  const active = new Set();
+  for (const n of visible) for (let d = -neighbours; d <= neighbours; d++) active.add(n + d);
+  if (!visible.size) { active.add(1); if (neighbours) active.add(2); }
+
+  const setHolder = (n) => (el) => { if (el) holders.current.set(n, el); else holders.current.delete(n); };
+  const stepZoom = (dir) => setZoom((z) => {
+    const i = PDF_ZOOMS.indexOf(z);
+    const j = Math.min(PDF_ZOOMS.length - 1, Math.max(0, (i < 0 ? 0 : i) + dir));
+    return PDF_ZOOMS[j];
+  });
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col">
+      <div className="flex-shrink-0 flex items-center gap-1 px-2 py-1.5 bg-slate-900">
+        <span className="text-[11px] text-white/70 tabular-nums mr-auto">
+          {err ? '' : pages ? `${pages} page${pages === 1 ? '' : 's'}` : 'Loading…'}
+        </span>
+        {/* Buttons, not a gesture. index.css pins the shell to overflow:hidden so page-level
+            pinch is not something to lean on, and there is no WebKit here to test a gesture
+            against — the same wall v0.54.80 hit, which is why that fix was made by
+            construction too. */}
+        <button type="button" onClick={() => stepZoom(-1)} disabled={zoom <= PDF_ZOOMS[0]}
+          className="px-3 rounded bg-white/15 text-white text-lg font-semibold leading-none disabled:opacity-30"
+          style={{ minWidth: 44, minHeight: 40 }} aria-label="Zoom out">−</button>
+        <button type="button" onClick={() => setZoom(1)}
+          className="px-2 rounded bg-white/15 text-white text-[11px] font-semibold"
+          style={{ minWidth: 44, minHeight: 40 }} aria-label="Fit the page to the screen">
+          {zoom === 1 ? 'Fit' : `${zoom}×`}
+        </button>
+        <button type="button" onClick={() => stepZoom(1)} disabled={zoom >= PDF_ZOOMS[PDF_ZOOMS.length - 1]}
+          className="px-3 rounded bg-white/15 text-white text-lg font-semibold leading-none disabled:opacity-30"
+          style={{ minWidth: 44, minHeight: 40 }} aria-label="Zoom in">+</button>
+      </div>
+
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto bg-slate-700 px-2 py-2">
+        {err ? <div className="text-[12px] text-red-300 p-3">Could not open the document: {err}</div> : null}
+        {!err && !pdf ? <div className="text-[12px] text-white/60 p-3">Loading the document…</div> : null}
+        {pdf && width > 0 ? Array.from({ length: pages }, (_, i) => (
+          <PdfPageCanvas key={i + 1} pdf={pdf} pageNumber={i + 1} containerWidth={width} zoom={zoom}
+            active={active.has(i + 1)} holderRef={setHolder(i + 1)} />
+        )) : null}
+      </div>
+    </div>
+  );
+}
+
 function DocumentViewerModal({ src, title, subtitle, isImage = false, onClose }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -5719,13 +5950,15 @@ function DocumentViewerModal({ src, title, subtitle, isImage = false, onClose })
           <button onClick={onClose} className="p-2 rounded-full hover:bg-white/15" aria-label="Close" style={{ minWidth: 44, minHeight: 44 }}><X size={22} /></button>
         </div>
       </div>
-      <div className="flex-1 min-h-0 flex items-center justify-center overflow-auto" onClick={onClose}>
-        {isImg ? (
+      {/* A PDF is DRAWN, not embedded — see PdfPages for why an iframe cannot show page two
+          on an iPhone. Images keep the simple path; they never had the problem. */}
+      {isImg ? (
+        <div className="flex-1 min-h-0 flex items-center justify-center overflow-auto" onClick={onClose}>
           <img src={src} alt={label} className="max-w-full max-h-full object-contain" onClick={(e) => e.stopPropagation()} />
-        ) : (
-          <iframe title={label} src={src} className="w-full h-full bg-white" onClick={(e) => e.stopPropagation()} />
-        )}
-      </div>
+        </div>
+      ) : (
+        <PdfPages src={src} />
+      )}
       <div className="px-4 py-2 flex-shrink-0 text-center">
         <button onClick={onClose} className="px-5 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-sm font-semibold" style={{ minHeight: 44 }}>Close</button>
       </div>
