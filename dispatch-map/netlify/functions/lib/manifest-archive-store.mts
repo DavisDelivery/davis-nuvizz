@@ -48,6 +48,13 @@ export async function archiveManifest(args: {
       receivedAt: Number(email?.receivedAt) || null,
       missing: diff?.suspects || [],
       checkedAgainst: diff?.checkedAgainst || [],
+      // WHAT THE COUNT IS WORTH. missingCount alone says nothing about whether the boards it
+      // was measured against were finished, and the history row printed it flat red for
+      // months — 83 orders "not on the board" off a Monday board that had not been built yet.
+      // Storing the grade means the screen states the count AND its standing together.
+      coverage: diff?.coverage ?? null,
+      grade: diff?.grade ?? null,
+      expectedDelivery: diff?.expectedDelivery ?? null,
     };
 
     // Fold FIRST, so the same paper arriving twice costs no upload at all.

@@ -35,6 +35,9 @@
 // Saturday and Sunday. Matches the delivery days the scan plan runs on (scan-plan.mts uses
 // weekdays 1-5), so the two never disagree about what a working day is.
 const WEEKEND = new Set([0, 6]);
+// A calendar day, spelled out. Compared as STRINGS — ISO days sort chronologically, and
+// parsing them into Dates is how this file's own comments warn a day gets lost to a timezone.
+const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Day-of-week for an ISO date, read in UTC so a local timezone cannot shift it. */
 export function isoWeekday(iso) {
@@ -138,7 +141,7 @@ export function deliveryWindow(baseIso, span = 2) {
  * that was never scanned — for a future date that is the ordinary state until the routing
  * evening runs — and it can neither confirm nor deny anything.
  */
-export function boardCoverage(boardDays, required) {
+export function boardCoverage(boardDays, required, asOf = null) {
   const days = Array.isArray(boardDays) ? boardDays.filter((d) => d && typeof d === 'object') : [];
   const withBoard = days.filter((d) => Number(d.stops) > 0);
   const empty = days.filter((d) => !(Number(d.stops) > 0));
@@ -149,6 +152,28 @@ export function boardCoverage(boardDays, required) {
   const req = Array.isArray(required) && required.length ? required.map(String) : null;
   const haveBoard = new Set(withBoard.map((d) => String(d.date)));
   const missingRequired = req ? req.filter((d) => !haveBoard.has(d)) : empty.map((d) => String(d.date));
+
+  // A BOARD FOR A DAY THAT HAS NOT ARRIVED YET IS STILL BEING BUILT, AND CANNOT DISPROVE
+  // ANYTHING. Chad, on 83 orders reported off the 08-28 manifest: "i don't think that is true."
+  // He was right, and the evidence is that ONLY FRIDAYS ever reported missing orders — 9 days
+  // on file, 0 missing on every Sun/Mon/Tue/Wed/Thu, 30 on 08-21 and 83 on 08-28.
+  //
+  // A Friday manifest is expected to deliver MONDAY, and the nightly check runs early
+  // SATURDAY — while scheduled scans are dark for the weekend. So it opened a Monday board
+  // that was still filling: 08-24 read 477 stops on Saturday and 618 by the time Monday's own
+  // manifest was reconciled. The 30 "missing" orders were never missing; they had not been
+  // written yet. A Thursday manifest, by contrast, expects FRIDAY and is checked on Friday
+  // morning against a finished 649-stop board — and reports 0.
+  //
+  // `missingRequired` could not see this: the Monday board EXISTED (451 > 0), so the run
+  // called itself conclusive. Existing is not the same as being finished. The question that
+  // separates them is not how many stops are on it — a part-built board looks like a small
+  // one — but whether the day has come round yet at all.
+  //
+  // Nothing is lost by waiting. On Saturday morning there is no route to chase an order into;
+  // the alert that matters is the one on the day the freight was due, and that one still fires.
+  const asOfDay = YMD_RE.test(String(asOf ?? '').trim()) ? String(asOf).trim() : null;
+  const pending = asOfDay && req ? req.filter((d) => d > asOfDay) : [];
   return {
     days: days.length,
     checked: withBoard.map((d) => String(d.date)),
@@ -173,7 +198,12 @@ export function boardCoverage(boardDays, required) {
     // red alert, and it does so at the moment somebody can still act on it.
     required: req || [],
     missingRequired,
-    conclusive: days.length > 0 && missingRequired.length === 0,
+    // Required delivery days that had not arrived when we looked. Named rather than folded
+    // into missingRequired, because "we never opened that board" and "that day has not
+    // happened yet" are different facts and the screen should be able to say which.
+    pending,
+    asOf: asOfDay,
+    conclusive: days.length > 0 && missingRequired.length === 0 && pending.length === 0,
     totalStops: withBoard.reduce((s, d) => s + (Number(d.stops) || 0), 0),
   };
 }
@@ -218,6 +248,13 @@ export function gradeText(grade, coverage) {
     // Name the day that actually decides — the expected delivery day we could not open —
     // falling back to any empty delivery day. "No board has been built for Saturday" is
     // noise; we never build one.
+    // THE DAY HAS NOT COME ROUND YET is a different sentence from WE NEVER OPENED THAT BOARD,
+    // and it is the one that applies to every Friday manifest. Naming an empty Wednesday when
+    // the real answer is "Monday has not happened" sends somebody looking in the wrong place.
+    const pending = (coverage?.pending || []).filter(isDeliveryDay);
+    if (pending.length) {
+      return `${n} order${s} not routed yet — ${pending.join(', ')} ${pending.length === 1 ? 'has' : 'have'} not come round yet, so ${pending.length === 1 ? 'that board is' : 'those boards are'} still being built`;
+    }
     const req = (coverage?.missingRequired || []).filter(isDeliveryDay);
     const days = req.length ? req : (coverage?.empty || []).filter(isDeliveryDay);
     const named = days.join(', ');

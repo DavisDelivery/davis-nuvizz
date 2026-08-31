@@ -131,6 +131,9 @@ export interface ReportInput {
   boardOnly?: number;
   missing?: any[];
   checkedAgainst?: any[];
+  coverage?: any;
+  grade?: any;
+  expectedDelivery?: string | null;
   blobKey?: string | null;
   pdfStored?: boolean;
   pdfError?: string | null;
@@ -225,6 +228,10 @@ export function foldManifestDay(existing: any, entry: ReportInput, tenant: strin
     missing: missing.slice(0, MAX_MISSING_ROWS),
     missingTruncated: missing.length > MAX_MISSING_ROWS,
     checkedAgainst: entry.checkedAgainst ?? [],
+    // The count's standing, filed with the count. See manifest-archive-store.
+    coverage: entry.coverage ?? null,
+    grade: entry.grade ?? null,
+    expectedDelivery: entry.expectedDelivery ?? null,
     blobKey: entry.blobKey ?? null,
     // Reported, never assumed: if the bytes did not reach the store the record says so, rather
     // than leaving a key that resolves to nothing.

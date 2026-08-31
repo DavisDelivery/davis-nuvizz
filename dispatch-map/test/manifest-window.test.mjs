@@ -241,3 +241,82 @@ test('with no required set recorded, every day must be scanned — the conservat
   assert.equal(cov.conclusive, false);
   assert.deepEqual(cov.required, []);
 });
+
+// ── A BOARD FOR A DAY THAT HAS NOT ARRIVED CANNOT DISPROVE ANYTHING ──────────
+//
+// Chad, on 83 orders reported off the 08-28 manifest: "i don't think that is true."
+//
+// He was right, and the tell is that ONLY FRIDAYS ever reported missing orders. Nine nights
+// on file at the time: 0 missing on every Sun/Mon/Tue/Wed/Thu, 30 on Fri 08-21 and 83 on
+// Fri 08-28. Freight does not go astray only on Fridays.
+//
+// A Friday manifest is expected to deliver MONDAY, and the nightly check runs early SATURDAY
+// — while scheduled scans are dark for the weekend. So it opened a Monday board that was
+// still filling. The proof is in the archive: Monday 08-24 read 477 stops when Friday's
+// manifest was checked, and 618 by the time Monday's own manifest was reconciled. The 30
+// "missing" orders had simply not been written yet.
+//
+// The old rule could not see it, because the Monday board EXISTED (451 > 0) and existing was
+// taken for finished.
+
+const FRI_08_28 = [{ date: '2026-08-31', stops: 451 }, { date: '2026-09-01', stops: 2 }, { date: '2026-09-02', stops: 0 }];
+const FRI_08_21 = [{ date: '2026-08-24', stops: 477 }, { date: '2026-08-25', stops: 2 }, { date: '2026-08-26', stops: 0 }];
+const THU_08_27 = [{ date: '2026-08-28', stops: 649 }, { date: '2026-08-31', stops: 0 }, { date: '2026-09-01', stops: 1 }];
+const suspects = (n) => Array.from({ length: n }, (_, i) => ({ pro: String(100000 + i) }));
+
+test('THE 83 OFF THE 08-28 MANIFEST IS NOT A MISSING-FREIGHT FINDING', () => {
+  const cov = boardCoverage(FRI_08_28, ['2026-08-31'], '2026-08-29');
+  assert.equal(cov.conclusive, false, 'Monday had not come round on Saturday');
+  assert.deepEqual(cov.pending, ['2026-08-31']);
+  assert.equal(gradeSuspects(suspects(83), cov).verdict, 'unrouted');
+});
+
+test('and neither was the 30 off 08-21 — the same Friday shape, a week earlier', () => {
+  const cov = boardCoverage(FRI_08_21, ['2026-08-24'], '2026-08-22');
+  assert.equal(cov.conclusive, false);
+  assert.equal(gradeSuspects(suspects(30), cov).verdict, 'unrouted');
+});
+
+test('THE REAL ALERT STILL FIRES — a finished board still says missing', () => {
+  // The cost of getting this wrong in the other direction is silence about freight that
+  // genuinely never reached NuVizz. A Thursday manifest expects FRIDAY and is checked on
+  // Friday morning against a finished 649-stop board: that verdict is chase-able and must
+  // survive. Note the later days (Mon 0, Tue 1) are unbuilt and MUST NOT suppress it — the
+  // expected day is what decides.
+  const cov = boardCoverage(THU_08_27, ['2026-08-28'], '2026-08-28');
+  assert.equal(cov.conclusive, true, 'the expected day has arrived and has a board');
+  assert.deepEqual(cov.pending, []);
+  assert.equal(gradeSuspects(suspects(5), cov).verdict, 'missing');
+});
+
+test('the same Friday manifest re-checked ON Monday reports for real', () => {
+  // Not a permanent excuse: once the day arrives the board is finished and the count means
+  // what it says. This is what makes the downgrade honest rather than a way to stay quiet.
+  const cov = boardCoverage(FRI_08_28, ['2026-08-31'], '2026-08-31');
+  assert.equal(cov.conclusive, true);
+  assert.equal(gradeSuspects(suspects(83), cov).verdict, 'missing');
+});
+
+test('the message names the day that has not come round, not an empty Wednesday', () => {
+  // gradeText fell through to coverage.empty and said "no board has been built for
+  // 2026-09-02" — true, and the wrong day. Monday is the one that decides.
+  const cov = boardCoverage(FRI_08_28, ['2026-08-31'], '2026-08-29');
+  const text = gradeText(gradeSuspects(suspects(83), cov), cov);
+  assert.match(text, /2026-08-31/);
+  assert.ok(!/2026-09-02/.test(text), 'the empty Wednesday is not the reason');
+  assert.match(text, /not come round/);
+});
+
+test('no asOf leaves the old behaviour alone — a stored run without one is not re-graded blind', () => {
+  const cov = boardCoverage(FRI_08_28, ['2026-08-31']);
+  assert.deepEqual(cov.pending, []);
+  assert.equal(cov.asOf, null);
+});
+
+test('a malformed asOf is ignored rather than being compared as a string', () => {
+  // 'today' > '2026-08-31' is true in JS string order, which would quietly mark every day
+  // pending and silence the check entirely.
+  for (const bad of ['today', '', null, undefined, '2026-8-31', 42]) {
+    assert.deepEqual(boardCoverage(FRI_08_28, ['2026-08-31'], bad).pending, [], `asOf=${String(bad)}`);
+  }
+});

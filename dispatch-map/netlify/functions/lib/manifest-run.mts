@@ -36,6 +36,10 @@ export function addDays(iso: string, n: number): string {
 export interface ManifestDiffOptions {
   dateOverride?: string | null;  // board day to diff against; default = the manifest's ship date
   spanDays?: number;             // also accept the next N DELIVERY days' boards (default 2)
+  /** The day we are asking on, YYYY-MM-DD. A required delivery day later than this has not
+   *  come round yet, so its board is still being built — see boardCoverage. Defaults to
+   *  today in ET; injectable so the rule is testable without moving the clock. */
+  asOf?: string | null;
 }
 
 /**
@@ -104,7 +108,10 @@ export async function runManifestBoardDiff(buf: Buffer, opts: ManifestDiffOption
   // for a future delivery day that is the ordinary state until the routing evening runs — so
   // it can neither confirm nor deny an order. Riding this along lets the screen tell
   // "we looked and it is not there" apart from "there is nothing to look at yet".
-  const coverage = boardCoverage(boardDays, win.required);
+  // The day we are ASKING on. A required delivery day later than this has not come round yet,
+  // so its board is still being built and cannot disprove an order — see boardCoverage.
+  const askedOn = opts.asOf || etDayString(new Date());
+  const coverage = boardCoverage(boardDays, win.required, askedOn);
   const grade = gradeSuspects(board.offBoard, coverage);
   return {
     ok: true,
