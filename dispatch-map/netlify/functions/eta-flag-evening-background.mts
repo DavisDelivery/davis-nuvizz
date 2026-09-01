@@ -24,6 +24,24 @@
 // claim-then-send, the same atomic pattern as the email path, so a retried sweep can
 // never double-text. Worst-late-first, capped per sweep.
 //
+// AND SINCE v0.82.0, THE OTHER THING A ROUTER CAN STILL FIX AT 9PM. Chad: "stops we have put
+// on a tractor that have been hardcoded as no tractor trailer by a dispatcher. Not the Uline
+// advisory ones that we pick up automatically just the dispatcher hardcoded ones." That is
+// board-flags R7 — a load running a tractor-trailer carrying a stop a human has marked as
+// unable to take one. It is not a prediction and has no clock: two recorded facts contradict,
+// and the freight does not arrive late, it does not arrive. One text per tractor LOAD (not per
+// stop — six box-only stops on one load is one wrong truck), holding its own slice of the
+// per-sweep cap so neither kind of news can silence the other.
+//
+// It needs to know which truck is on each load, so this sweep now builds the TARGET date's
+// route→class map (lib/route-classes.mts, load header first, driver roster second) instead of
+// running classless as it always has. THE ETA MODEL IS UNCHANGED BY THAT, deliberately: the
+// per-class travel curves the day sweep also passes (classCurves/classService) are NOT read
+// here, so every route keeps the fleet curve it has always had overnight and the only thing
+// the class map moves is the trailer verdict. Putting this sweep's arrival estimates on
+// per-truck clocks would change which hours rows text, which is a measurable change and not
+// this one.
+//
 // Pre-day honesty: an evening verdict is a pure 8:00a-departure projection — nothing
 // has driven yet — so the text is only sent for the tiers that survive the 90-minute
 // unanchored error band, which is exactly the "obvious" population Chad asked for.
@@ -37,7 +55,7 @@
 // Data diet: Firestore only — the stop index the scanner maintains, customer_notes,
 // the travel cache. ZERO NuVizz calls, ever, from this path.
 import { computeBoardFlags } from '../../src/lib/board-flags.js';
-import { isFirestoreEnabled, getDoc, setDoc, createDocIfAbsent, readStops, etDayString } from './lib/firestore.mts';
+import { isFirestoreEnabled, getDoc, setDoc, createDocIfAbsent, readStops, listFleetLoads, etDayString } from './lib/firestore.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { weekdayKey } from './lib/miss-ledger.mts';
 import { readTravelCalibration, ensureLegs } from './lib/travel-store.mts';
@@ -46,6 +64,7 @@ import { mergeSweep, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-hi
 import { auditRows } from './lib/flag-rows.mts';
 import { smsEnabled, sendSms } from './lib/sms.mts';
 import { smsRecipients, eveningTargetDate, smsText, smsClaimPath, selectTextable } from './lib/flag-sms.mts';
+import { readRouteClassesFor } from './lib/route-classes.mts';
 
 const TENANT = 'davis';
 const DEPOT = { name: 'Buford Terminal', lat: 34.147791, lng: -83.960911 };
@@ -103,13 +122,32 @@ export default async (req: Request): Promise<Response> => {
     } catch { /* no floor — this sweep judges on its own */ }
     const cal = await readTravelCalibration(TENANT).catch(() => null);
     const calOpts = cal ? { curve: cal.curve, serviceMin: cal.serviceMin } : {};
+    // WHICH TRUCK RUNS EACH ROUTE ON THE BOARD BEING JUDGED — and it is the TARGET date's
+    // map, never today's. Route names repeat nightly and drivers rotate, so tonight's trucks
+    // applied to tomorrow's routes would put a tractor on whatever load inherited the name.
+    // The fleet index is written per date and the tomorrow-loads scan gate opens at 20:00 ET,
+    // on the same clock this sweep runs on.
+    //
+    // THIS SWEEP NEVER PUBLISHES route_classes. That document is TODAY's operational state and
+    // the day sweep owns it; writing tomorrow's trucks into it at 9pm would put the browser's
+    // whole board on the wrong clock until 7am.
+    //
+    // An empty map is a REAL and ordinary pre-day state — loads exist before anybody has said
+    // what is pulling them — and board-flags reports it as skipped.noTruckClasses rather than
+    // reading every route as a box truck. No class, no trailer verdict.
+    const rc = await readRouteClassesFor(
+      () => listFleetLoads(TENANT, date, ['loadNbr', 'routeName', 'vehicleType']),
+      stops,
+    ).catch(() => null);
+    const routeClasses = rc?.classes && Object.keys(rc.classes).length ? rc.classes : null;
     // A pre-day board gets NO nowMin: nothing has departed, so the not-started clamp and
     // the driverless rule (R6) must stay out of it — a tomorrow route without a driver
     // yet is just tomorrow. After midnight the board is today's; nowMin is real, and the
     // pre-dawn hours keep both of those rules naturally quiet anyway.
     const nowOpt = offsetDays === 0 ? { nowMin: etMin } : {};
     const engineOpts = (legs: Record<string, number>) => ({
-      depot: DEPOT, ...nowOpt, travel: { legs, ...calOpts },
+      depot: DEPOT, ...nowOpt,
+      travel: { legs, ...calOpts, ...(routeClasses ? { routeClasses } : {}) },
       ...(departByRoute ? { departByRoute } : {}),
       ...(tierFloorByStop ? { tierFloorByStop } : {}),
     });
@@ -126,17 +164,39 @@ export default async (req: Request): Promise<Response> => {
       boardStops: stops.length, redCount: flags.redCount, amberCount: flags.amberCount,
       candidates: candidates.length, recipients: recipients.length,
       departuresKnown: departByRoute ? Object.keys(departByRoute).length : 0,
+      // WHAT THE TRAILER RULE COULD AND COULD NOT SEE. A pre-day board with no truck classes
+      // yet is the ordinary 8pm state, and a night that texted nothing because nobody had
+      // said what was pulling the loads must not read like a night with nothing wrong.
+      truckClassesKnown: !flags.checked ? null : !flags.skipped?.noTruckClasses,
+      routeClassesKnown: routeClasses ? Object.keys(routeClasses).length : 0,
+      classSource: rc?.source ?? 'none',
+      tractorRoutes: flags.checked?.tractorRoutes ?? 0,
+      trailerConflicts: flags.checked?.trailerConflicts ?? 0,
       smsEnabled: smsEnabled(), sent: 0, failed: 0, alreadyClaimed: 0,
       texted: [] as any[],
     };
 
     if (smsEnabled() && recipients.length) {
       for (const row of candidates) {
-        // Claim BEFORE sending — one text per stop per board day, no matter how many
+        // Claim BEFORE sending — one message per subject per board day, no matter how many
         // sweeps see it or how a retry lands. A claim on a failed send is kept, same
         // deliberate trade as the email path: silence over spam.
-        const claimed = await createDocIfAbsent(smsClaimPath(TENANT, date, row.stopNbr), {
-          at: status.at, tier: row.tier, closeMin: row.closeMin ?? null, etaMin: row.etaMin ?? null, etMin,
+        //
+        // THE SUBJECT IS NOT ALWAYS THE STOP. An hours row claims its stop; a trailer
+        // conflict claims its ROUTE, because that is the grain the text is sent at — one
+        // message per tractor load, not one per box-only stop on it. Keyed on the stop, a
+        // route with four conflicts would have nagged four times as they were fixed one by
+        // one, and a stop that was BOTH late and on the wrong truck would have sent whichever
+        // message came first and silently swallowed the other.
+        const trailer = row.rule === 'trailer_conflict';
+        const claimSubject = trailer
+          ? String(row.routeKey || row.routeName || row.stopNbr)
+          : String(row.stopNbr);
+        const claimed = await createDocIfAbsent(smsClaimPath(TENANT, date, claimSubject, row.rule), {
+          at: status.at, rule: row.rule ?? 'hours_risk', stopNbr: row.stopNbr ?? null,
+          routeName: row.routeKey ?? row.routeName ?? null,
+          tier: row.tier, closeMin: row.closeMin ?? null, etaMin: row.etaMin ?? null, etMin,
+          ...(trailer ? { routeConflicts: row.routeConflicts ?? 1, blockers: row.blockers ?? [] } : {}),
         });
         if (!claimed) { status.alreadyClaimed += 1; continue; }
         const text = smsText(row, date);
@@ -144,7 +204,11 @@ export default async (req: Request): Promise<Response> => {
           const r = await sendSms({ to, text });
           if (r.ok) status.sent += 1; else { status.failed += 1; console.error('flag sms failed:', r.error); }
         }
-        status.texted.push({ stopNbr: row.stopNbr, customer: row.customer ?? null, tier: row.tier });
+        status.texted.push({
+          stopNbr: row.stopNbr, customer: row.customer ?? null, tier: row.tier,
+          rule: row.rule ?? 'hours_risk',
+          ...(trailer ? { routeName: row.routeKey ?? row.routeName ?? null, routeConflicts: row.routeConflicts ?? 1 } : {}),
+        });
       }
     }
 

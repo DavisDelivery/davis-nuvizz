@@ -26,8 +26,7 @@ import { isFirestoreEnabled, readStops, getDoc, setDoc, listFleetLoads, createDo
 import { computeBoardFlags } from '../../src/lib/board-flags.js';
 import { ensureLegs, readTravelCalibration, routeClassesPath } from './lib/travel-store.mts';
 import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mts';
-import { travelClassOf } from '../../src/lib/travel-model.js';
-import { loadVehicleRoster, vehicleTypeForStop } from './lib/tractor-flags.mts';
+import { readRouteClassesFor } from './lib/route-classes.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { selectAlertable, sendAlerts, ALERT_TO, AMBER_LEAD_GATE_MIN, ALERT_COLLECTION } from './lib/flag-alert.mts';
 import { mergeSweep, scoreRowsLive, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
@@ -102,52 +101,19 @@ export default async (req: Request): Promise<Response> => {
     const departDoc = await getDoc(routeDeparturePath(TENANT)).catch(() => null);
     const departByRoute = readDepartureTable(departDoc);
     const cal = await readTravelCalibration(TENANT);
-    // WHICH TRUCK RUNS EACH ROUTE. Truthiest source first: the NuVizz load header's own
-    // vehicleType — the unit actually ASSIGNED to the load, refreshed every scan into the
-    // fleet index — then the MarginIQ roster's per-driver type where the header is silent.
-    // The roster names the driver's USUAL truck, and on the day that matters (tractor in
-    // the shop, driver in a rental box) the header knows and the roster does not. NOTE
-    // driverName is a LOAD-level field, so the per-stop "vote" below is one voice per
-    // load in practice — it exists to survive a feed that ever stops being load-level,
-    // not because ties are common.
+    // WHICH TRUCK RUNS EACH ROUTE — load header first, driver roster second. The precedence,
+    // the vote and the "unknown is not box" rule all live in lib/route-classes.mts now,
+    // because the evening sweep needs the same map and a second copy of it is how two answers
+    // to one question get born.
     let routeClasses: Record<string, string> = {};
     let classSource = 'none';
     try {
-      // Load headers: nuvizzFleet/{tenant}__{date}/loads/{loadNbr}, vehicleType field.
-      try {
-        const loads = await listFleetLoads(TENANT, date, ['loadNbr', 'routeName', 'vehicleType']);
-        for (const l of loads || []) {
-          const cls = travelClassOf(l?.vehicleType);
-          if (!cls) continue;
-          for (const key of [String(l?.loadNbr || '').trim(), String(l?.routeName || '').trim()]) {
-            if (key) routeClasses[key] = cls;
-          }
-        }
-        if (Object.keys(routeClasses).length) classSource = 'load_header';
-      } catch (e: any) {
-        console.error('fleet-index class read failed (roster will carry it):', e?.message);
-      }
-
-      const roster = await loadVehicleRoster();
-      const votes = new Map<string, Map<string, number>>();
-      for (const s of stops as any[]) {
-        const k = String(s?.loadNbr || s?.routeName || '').trim();
-        if (!k || k in routeClasses) continue;
-        // Same electorate as the nightly calibration: deliveries on judged routes only.
-        if (String(s?.stopType || '').toUpperCase() === 'PU') continue;
-        if (/\b(?:APPTS?|APPOINTMENTS?)\b/i.test(k)) continue;
-        const cls = travelClassOf(vehicleTypeForStop(s, roster));
-        if (!cls) continue;
-        if (!votes.has(k)) votes.set(k, new Map());
-        const v = votes.get(k)!;
-        v.set(cls, (v.get(cls) || 0) + 1);
-      }
-      let fromRoster = 0;
-      for (const [k, v] of votes) {
-        const ranked = [...v.entries()].sort((a, b) => b[1] - a[1]);
-        if (ranked.length === 1 || ranked[0][1] > ranked[1][1]) { routeClasses[k] = ranked[0][0]; fromRoster++; }
-      }
-      if (fromRoster) classSource = classSource === 'load_header' ? 'header+roster' : 'roster';
+      const rc = await readRouteClassesFor(
+        () => listFleetLoads(TENANT, date, ['loadNbr', 'routeName', 'vehicleType']),
+        stops,
+      );
+      routeClasses = rc.classes;
+      classSource = rc.source;
 
       // The doc is TODAY's operational state and only a real sweep of today may write it.
       // A dry run must claim nothing, and a ?date= replay writing last Friday's trucks
@@ -301,6 +267,14 @@ export default async (req: Request): Promise<Response> => {
       },
       ok: true, date, nowMin,
       critical: flags.criticalCount ?? 0, red: flags.redCount ?? 0, amber: flags.amberCount ?? 0,
+      // R7 rides the BOARD from this sweep but never this sweep's inbox: a trailer conflict
+      // is a routing problem for the router, not a heads-up for customer service, and it
+      // carries no receiving close for selectAlertable to judge. Reported anyway, because a
+      // rule that fires and is invisible in the run record is a rule nobody can audit — the
+      // overnight text sweep is where it reaches a phone.
+      trailerConflicts: flags.checked?.trailerConflicts ?? 0,
+      tractorRoutes: flags.checked?.tractorRoutes ?? 0,
+      truckClassesKnown: !flags.skipped?.noTruckClasses,
       alertable: candidates.length,
       candidates: candidates.map((c) => ({ stopNbr: c.stopNbr, customer: c.customer, lateBy: c.lateBy, rule: c.rule })),
     };
