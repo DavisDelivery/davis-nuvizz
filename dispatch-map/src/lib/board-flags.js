@@ -39,6 +39,12 @@ import { resolveLegMinutes, legKey } from './travel-model.js';
 import {
   haversineMeters, ROUTE_ROAD_FACTOR, ROUTE_AVG_SPEED_MPS,
 } from './routing-select.js';
+// The trailer-blocker vocabulary, from the module the MAP reads it from. Imported rather
+// than re-derived: "has a dispatcher hard-coded this as no-tractor-trailer" must have ONE
+// answer, or the pin and the flag card end up disagreeing about the same customer. It lives
+// in trailer-block.js rather than map-legend.js only because map-legend → time-marks →
+// board-flags would be a cycle.
+import { dispatcherTrailerBlock, trailerBlockerLabels } from './trailer-block.js';
 
 // ── time + hours parsing ──────────────────────────────────────────────────────
 
@@ -769,7 +775,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   const rows = [];
   // Rows a later rule took off the panel. Kept, never rendered — see the R6 supersede block.
   const suppressed = [];
-  const skipped = { noRoster: false, ambiguousRoutes: [], routesNoSequence: [], routesAppointment: [], routesOwner: [], stopsNoPosition: 0 };
+  const skipped = { noRoster: false, noTruckClasses: false, ambiguousRoutes: [], routesNoSequence: [], routesAppointment: [], routesOwner: [], stopsNoPosition: 0 };
   for (const k of [...new Set(open.filter(onAppointmentRoute).map(routeKeyOf))]) if (k) skipped.routesAppointment.push(k);
   // Reported separately and in its own words. Folding the owner's route into the appointment
   // list would label it "held for appointments", which is not what happened to it — and the
@@ -777,7 +783,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   for (const k of [...new Set(open.filter(onOwnerRoute).map(routeKeyOf))]) if (k) skipped.routesOwner.push(k);
   // What the detector actually LOOKED at — the panel shows these so a quiet board can
   // prove it was watched, and so "no hours on file" is visibly a data gap, not a bug.
-  const checked = { stops: judged.length, routesJudged: 0, stopsWithHours: 0, stopsAssumedClose: 0, legsTotal: 0, legsGoogle: 0 };
+  const checked = { stops: judged.length, routesJudged: 0, stopsWithHours: 0, stopsAssumedClose: 0, legsTotal: 0, legsGoogle: 0, tractorRoutes: 0, trailerConflicts: 0 };
   // Every leg the walk crosses, keyed and positioned, so the server sweep can prefetch
   // real drive times for exactly these pairs next pass. Deduped; order irrelevant.
   const legsWanted = new Map();
@@ -864,6 +870,98 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         : `The text scanner recorded this closed day${prints[0]?.text ? ` from order text: "${prints[0].text}"` : ''} — judge the evidence, then confirm with the customer or dismiss.`,
       scope: 'standing', servedDate, fingerprint: `closed|${s.matchKey || s.stopNbr}|${day}|${tier}`,
     }));
+  }
+
+  // R7 — A 53-FOOTER IS ROUTED TO A DOCK A DISPATCHER HAS SAID CANNOT TAKE ONE.
+  //
+  // Chad: "stops we have put on a tractor that have been hardcoded as no tractor trailer by
+  // a dispatcher. Not the Uline advisory ones that we pick up automatically just the
+  // dispatcher hardcoded ones."
+  //
+  // WHY THIS IS NOT A RECEIVING-HOURS RULE WEARING A HAT. Every other rule in this block is a
+  // PREDICTION — an estimate against a clock, carrying an error band, that the rest of the day
+  // can still make false. This one is two RECORDED FACTS in contradiction: a human wrote "no
+  // tractor trailer" on this location, and the load this stop is sitting on runs a tractor.
+  // Nothing about how the day goes changes either of them. So the row carries no ETA, no
+  // lateness and no error band — there is nothing to be late about. The freight does not
+  // arrive late, it does not arrive: a driver who cannot turn a 53' trailer into the lot
+  // leaves with the pallets still on it, and that is a refusal plus a redelivery on our dime.
+  //
+  // WHICH IS ALSO WHY IT DOES NOT WAIT FOR A CLOCK. The hours rules need a departure, a walk
+  // and a close to say anything. This one is knowable the moment the stop lands on the load —
+  // 8pm, while the router is still building — which is the only window in which anybody can
+  // still do the cheap thing and move it.
+  //
+  // "PUT ON A TRACTOR" HAS ONE SOURCE, NOT A SECOND OPINION. travel.routeClasses is the map
+  // the travel model already runs on: the load header's own vehicleType first (the unit
+  // actually assigned to the load), the driver roster's usual truck where the header is
+  // silent. A route with NO class is not judged and says so in `skipped` — not knowing which
+  // truck is on a load is not the same claim as knowing it is a box truck, and this engine
+  // does not get to blur the two.
+  //
+  // "DISPATCHER HARDCODED" IS dispatcherTrailerBlock's ONLY JOB, and it is the same function
+  // the map's tractor-paint override reads its confirmed/advisory split from. The amber Uline
+  // advisory the scanner lifts out of somebody else's order text is excluded there, which is
+  // exactly the exclusion Chad asked for, in one place rather than two.
+  //
+  // PICKUPS COUNT HERE, unlike in every hours rule above. Receiving hours are about taking
+  // freight IN and a pickup has none to take; a turning radius does not care which direction
+  // the pallets are going.
+  const routeClassTable = travel?.routeClasses && typeof travel.routeClasses === 'object'
+    ? travel.routeClasses : null;
+  const routeClassOf = (k) => {
+    if (!routeClassTable || !k) return null;
+    const v = routeClassTable[k];
+    return typeof v === 'string' && v ? v : null;
+  };
+  if (!routeClassTable || !Object.keys(routeClassTable).length) {
+    // No truck-class map ⇒ REPORT "not checked", never "clean" — the same discipline the
+    // route checks apply when the roster has not been fetched.
+    skipped.noTruckClasses = true;
+  } else {
+    const conflicts = [];
+    const tractorRoutes = new Set();
+    for (const s of scheduledJudged) {
+      const k = routeKeyOf(s);
+      if (!k || routeClassOf(k) !== 'tractor') continue;
+      tractorRoutes.add(k);
+      const block = dispatcherTrailerBlock(noteOf(s));
+      if (block.blocked) conflicts.push({ s, k, block });
+    }
+    checked.tractorRoutes = tractorRoutes.size;
+    checked.trailerConflicts = conflicts.length;
+    // HOW MANY ON THE SAME LOAD, because that number changes what the answer IS. One stop is
+    // "move this stop". Six on one load is "the wrong truck is on this route", and a message
+    // that lists them one at a time buries that. Stamped on every row so the panel, the text
+    // and any later consumer read the same count rather than each re-deriving it.
+    const perRoute = new Map();
+    for (const c of conflicts) perRoute.set(c.k, (perRoute.get(c.k) || 0) + 1);
+    for (const { s, k, block } of conflicts) {
+      const labels = trailerBlockerLabels(block.keys);
+      // via 'eligibility' is the Routing paint (a dropdown only a dispatcher can reach), so
+      // it is named as the paint even when restriction ticks ride along beside it.
+      const said = block.via === 'eligibility'
+        ? `painted box-truck only${labels.length ? ` (${labels.join(', ')})` : ''}`
+        : `marked ${labels.join(', ')}`;
+      const alsoN = (perRoute.get(k) || 1) - 1;
+      // TWO NAMES FOR ONE ROUTE, AND THEY ARE NOT INTERCHANGEABLE. `k` (routeKeyOf: loadNbr
+      // first) is the IDENTITY every consumer groups and claims on; the name a router says out
+      // loud is the route name. Printing the identity would put a bare load number in a text
+      // sent to somebody looking at a board full of names.
+      const label = s.routeName || s.loadNbr || k;
+      rows.push(row('red', 'trailer_conflict', s, {
+        customer: s.businessName || s.stopNbr || null,
+        // Machine-readable, so no consumer has to parse the sentence to act on it.
+        blockers: block.keys, blockedVia: block.via, routeClass: 'tractor',
+        routeKey: k, routeConflicts: perRoute.get(k) || 1, seq: seqOf(s),
+        title: `No tractor trailer — ${s.businessName || s.stopNbr}`,
+        detail: `${label} is running a tractor-trailer, but this stop is ${said} by dispatch.`
+          + `${seqOf(s) != null ? ` Stop ${seqOf(s)} on the route.` : ''}`
+          + `${alsoN > 0 ? ` ${alsoN} other stop${alsoN === 1 ? '' : 's'} on ${label} carr${alsoN === 1 ? 'ies' : 'y'} the same mark — check the truck, not just the stop.` : ''}`
+          + ` Move it to a box truck, or mark the customer tractor-OK if a 53' does fit.`,
+        scope: 'occurrence', servedDate, fingerprint: `trailer|${servedDate}|${k}|${s.stopNbr}`,
+      }));
+    }
   }
 
   // R5 — Chad's check: a route sequenced so late it lands after the customer stops receiving.
@@ -1447,6 +1545,12 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         routeName: r.routeName, customer: r.customer, closeMin: r.closeMin,
         etaMin: r.etaMin, lateBy: r.lateBy, anchored: r.anchored, detail: r.detail,
         scope: r.scope, servedDate: r.servedDate,
+        // R7's own facts. The text selector groups trailer conflicts BY ROUTE and quotes the
+        // restriction back, so routeKey/routeConflicts/blockers are filter-and-render inputs
+        // exactly as `scope` is — and the comment above is the receipt for what happens when
+        // one of those is dropped here: thirteen reds that texted nobody.
+        routeKey: r.routeKey, routeConflicts: r.routeConflicts,
+        blockers: r.blockers, blockedVia: r.blockedVia,
       })),
     };
     summaryRow.dismissKey = `${rule}|${summaryRow.scope === 'occurrence' ? `${summaryRow.servedDate}|` : ''}${summaryRow.fingerprint}|t${TIER_RANK[summaryRow.tier] ?? 1}`;

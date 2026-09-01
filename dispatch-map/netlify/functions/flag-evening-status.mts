@@ -32,15 +32,28 @@ export default async (req: Request): Promise<Response> => {
 
     const status = await getDoc(`nuvizz_ops/flag_evening_status__${date}`).catch(() => null);
 
-    // Claims are a flat collection keyed {tenant}__{date}__{stopNbr}; filter by that prefix
+    // Claims are a flat collection keyed {tenant}__{date}__{subject}; filter by that prefix
     // rather than assuming the collection only ever holds one day.
+    //
+    // THE SUBJECT IS NOT ALWAYS A STOP NUMBER. A trailer conflict claims its ROUTE and its key
+    // carries a `route_`/`__trailer` shape, so slicing the prefix off the id and calling the
+    // remainder a stop number would report "stop route_TRACTOR 2__trailer" — a stop that does
+    // not exist, in the one screen built to answer "what actually texted last night". The
+    // claim doc carries stopNbr and rule as FIELDS now; the slice is kept only as a fallback
+    // for claims written before it did.
     const prefix = `${TENANT}__${date}__`;
     let claims: any[] = [];
     try {
       const all = await listDocs(CLAIM_COLLECTION);
       claims = (all || [])
         .filter((d: any) => String(d?._id || '').startsWith(prefix))
-        .map((d: any) => ({ stopNbr: String(d._id).slice(prefix.length), ...d, _id: undefined }));
+        .map((d: any) => ({
+          ...d, _id: undefined,
+          // Computed AFTER the spread on purpose: a claim doc that carries `stopNbr: null`
+          // would otherwise overwrite the fallback with a null and lose the subject entirely.
+          stopNbr: d?.stopNbr ?? String(d._id).slice(prefix.length),
+          rule: d?.rule ?? 'hours_risk',
+        }));
     } catch { /* a missing collection is the ordinary case on a quiet night */ }
 
     return J({

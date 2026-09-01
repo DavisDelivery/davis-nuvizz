@@ -58,6 +58,15 @@ const clock = (m: number) => {
 
 export function heldReason(r: any, alertable: boolean, nowMin: number | null, amberGateMin = AMBER_LEAD_GATE_MIN): string | null {
   if (alertable) return null;
+  // R7 is not an inbox rule and never was one, so say WHY rather than filing it under a
+  // generic "not a receiving-hours risk" that reads like a bug. A trailer conflict is a
+  // routing problem for whoever is building loads, not a heads-up for customer service, and
+  // it carries no receiving close for any rule below to judge — it reaches a phone through
+  // the overnight text sweep instead. A diagnostic that cannot name the channel a rule uses
+  // sends somebody looking in the wrong inbox.
+  if (r?.rule === 'trailer_conflict') {
+    return 'a no-tractor-trailer conflict — it texts on the overnight sweep (see /flag-evening-status), it never emails';
+  }
   if (r?.rule !== 'hours_risk') return 'not a receiving-hours risk';
   // THE ANSWER HAS TO KNOW ABOUT THE GATE, OR IT IS A CONFIDENT LIE.
   //
@@ -382,6 +391,16 @@ export default async (req: Request): Promise<Response> => {
     const flatRows = flattenForConsumers(flags.rows || []);
     const urgent = flatRows.filter((r: any) => r.rule === 'hours_risk'
       && (ALERT_TIERS.has(String(r.tier)) || (gateMin > 0 && String(r.tier) === 'amber')));
+    // R7, listed separately and NOT folded into `urgent`, which is the email population. It
+    // would text tonight, not email today, and mixing the two is how a payload comes to
+    // contradict itself about what it is going to do.
+    const trailerConflicts = flatRows
+      .filter((r: any) => r.rule === 'trailer_conflict')
+      .map((r: any) => ({
+        stopNbr: r.stopNbr, customer: r.customer, route: r.routeKey ?? r.routeName,
+        tier: r.tier, blockers: r.blockers, blockedVia: r.blockedVia,
+        routeConflicts: r.routeConflicts,
+      }));
     const askedStop = url.searchParams.get('stop');
     const alertable = selectAlertable(flatRows, nowMin, gateMin);
     const alertableSet = new Set(alertable.map((c) => c.stopNbr));
@@ -409,6 +428,10 @@ export default async (req: Request): Promise<Response> => {
       notesLoaded: notes.size,
       stopsWithHoursToday: flags.checked?.stopsWithHours ?? null,
       routesJudged: flags.checked?.routesJudged ?? null,
+      // "Nothing on a tractor is mis-routed" and "nobody told us what truck is on anything"
+      // are different answers and this endpoint exists so they cannot look the same.
+      tractorRoutes: flags.checked?.tractorRoutes ?? null,
+      truckClassesKnown: !flags.skipped?.noTruckClasses,
       openStopsChecked: flags.checked?.stops ?? null,
       skipped: flags.skipped,
       sampleStopKeys: stops.slice(0, 3).map((s: any) => s?.matchKey ?? null),
@@ -423,6 +446,10 @@ export default async (req: Request): Promise<Response> => {
       counts: { critical: flags.criticalCount ?? 0, red: flags.redCount ?? 0, amber: flags.amberCount ?? 0 },
       // Every urgent row, and for each one WHY it would or would not be emailed right now.
       urgent: urgent.map((r: any) => explainRow(r, alertableSet, nowMin, gateMin)),
+      // Board-flags R7. Listed because it is on the board and in the overnight texts, and a
+      // dry run that shows only the email population would answer "is anything on the wrong
+      // truck tonight" with silence.
+      trailerConflicts,
       // ?stop=<PRO> — the answer to "why did I not get an email about THIS one", for any
       // stop on the board, flagged or not. Added because answering it once by hand meant
       // reading three modules; it should cost one request.
