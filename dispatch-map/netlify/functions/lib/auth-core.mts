@@ -253,13 +253,41 @@ export function verifySessionToken(token: any, nowMs = Date.now()): SessionClaim
   };
 }
 
-/** Pull a bearer token off a request. Header only — never the query string (it lands in logs). */
+/**
+ * Pull OUR session token off a request. Header only — never the query string (it lands in logs).
+ *
+ * x-auth-token is read FIRST, and this is a decision recorded ahead of the need, NOT a benefit
+ * already collected. Stating it the other way round would be reporting an intent as an
+ * outcome, which this codebase has been bitten by before.
+ *
+ * THE INTENT. Two token systems reach this site. The Drivers panel
+ * (src/components/DriversPanel.jsx:46) signs a dispatcher into LOAD-SCAN and sends that
+ * FOREIGN token as `Authorization: Bearer …`; loadscan-admin.mts forwards the header untouched
+ * to the other origin, which is what authorises the call there. If this function read
+ * Authorization first, the day loadscan-admin is gated requireUser would find a token it
+ * cannot verify and refuse UNCONDITIONALLY — a bad token is a 401 even in legacy mode
+ * (require-user.mts) — so the Drivers panel would 401 on every call, before AUTH_REQUIRED was
+ * ever flipped. Giving our own session its own header is the way both systems can ride one
+ * request.
+ *
+ * WHAT IS ACTUALLY TRUE TODAY. Nothing sends x-auth-token. The client's one HTTP helper
+ * (src/lib/api.js apiFetch) puts our session in `Authorization: Bearer …` like every other
+ * caller, so this branch never fires and the precedence has no effect on any live request. The
+ * ordering is here so that the conflict above is already resolved WHEN a client starts using
+ * the header — and until one does, loadscan-admin.mts must not be gated with requireUser,
+ * because the collision it describes is still real.
+ *
+ * Authorization works for every caller that carries no x-auth-token — which is, at present,
+ * all of them: the app, curl, and the tests.
+ */
 export function bearerFromHeaders(headers: { get(name: string): string | null }): string | null {
-  const auth = headers.get('authorization') || '';
-  const m = /^Bearer\s+(.+)$/i.exec(auth.trim());
-  if (m) return m[1].trim();
-  const x = headers.get('x-auth-token');
-  return x ? x.trim() : null;
+  // Only a header that actually CARRIES a value takes precedence: an empty or blank
+  // x-auth-token must not shadow a real Authorization token and turn a signed-in caller
+  // into an anonymous one.
+  const x = (headers.get('x-auth-token') || '').trim();
+  if (x) return x;
+  const m = /^Bearer\s+(.+)$/i.exec((headers.get('authorization') || '').trim());
+  return m ? m[1].trim() : null;
 }
 
 // ── Reset tokens ─────────────────────────────────────────────────────────────

@@ -18,12 +18,18 @@
 //   GET ?date=YYYY-MM-DD [&live=1]  → { ok, date, source, at, count, loads:[{loadId,name,status,trips}] }
 import { loadRosterForDate } from './lib/nuvizz-loads.mts';
 import { isFirestoreEnabled, readLoadRoster, writeLoadRoster } from './lib/firestore.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
 
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
+  // Gate at viewer: ?live=1 skips the cache and pulls the roster STRAIGHT FROM NUVIZZ — a
+  // metered call per hit on an open GET. Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
+
   const url = new URL(req.url);
   const date = url.searchParams.get('date') || '';
   const live = url.searchParams.get('live') === '1';

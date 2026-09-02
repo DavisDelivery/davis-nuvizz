@@ -23,6 +23,7 @@ import {
   ENGINE_VERSION, ENGINE_CONFIG_BOUNDS, engineConfigDefaults, engineConfigPath,
   effectiveEngineConfig, mergeEngineConfigUpdate,
 } from './lib/routing-engine-config.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
 
@@ -49,6 +50,13 @@ export default async (req: Request): Promise<Response> => {
     }
 
     if (req.method === 'POST') {
+      // Gate at admin: a POST here persists the knobs TONIGHT'S live assignment run reads —
+      // no deploy, no review, and the only record of who did it is the free-text updatedBy the
+      // caller sends. The GET stays open at this level because the editor has to render the
+      // current values to show anyone what would change. Inert until AUTH_REQUIRED=true
+      // (lib/require-user.mts).
+      const gate = await requireUser(req, { role: 'admin' });
+      if (!gate.ok) return gate.response;
       let body: any;
       try { body = await req.json(); } catch { return new Response(JSON.stringify({ ok: false, error: 'invalid JSON' }), { status: 400, headers: cors }); }
       const prior = await getDoc(engineConfigPath(TENANT)).catch(() => null);

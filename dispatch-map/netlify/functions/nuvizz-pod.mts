@@ -35,6 +35,23 @@ const DOC_COMPANY = process.env.NUVIZZ_DOC_COMPANY || '';
 const FAILOVER = (u: string) => u.replace('portal.nuvizz.com', 'contact-support.nuvizz.com');
 const MIME: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', pdf: 'application/pdf' };
 
+// DELIBERATELY NOT GATED — and this is a checked fact, not an oversight.
+//
+// This URL is loaded by the browser as an <img src> (App.jsx PodViewerModal → DocumentViewerModal
+// → <img src={podDocUrl(doc)}>, and the POD thumbnail grid does the same). An <img> request
+// carries no Authorization header and there is no way to give it one, so a requireUser gate here
+// would blank every proof-of-delivery photo on the board the moment AUTH_REQUIRED flips — a
+// dispatcher arguing a refused delivery with a customer, holding a broken image.
+//
+// WHAT IT COSTS TO LEAVE OPEN, stated rather than glossed: each hit spends metered NuVizz
+// documentapi calls, and anyone holding a documentGuid can pull that photo. The guid is not a
+// secret, it is an id.
+//
+// WHAT WOULD HAVE TO CHANGE FIRST: the photo has to arrive through something that can hold a
+// header. Either the viewer fetches the bytes itself and paints a blob: URL (DocumentViewerModal
+// ALREADY does exactly this for the PDF path — see its useEffect over `src` — so the machinery
+// exists), or this endpoint issues short-lived signed URLs. Both are client work, and both are a
+// separate decision from this pass.
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'private, max-age=300' };
   const jsonHdr = { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };

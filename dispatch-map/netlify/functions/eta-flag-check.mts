@@ -28,6 +28,7 @@ import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, DAILY_ALERT_CAP, ALERT_TIERS, AMBER_LEAD_GATE_MIN, alertBandOf, finiteMinutes } from './lib/flag-alert.mts';
 import { flattenForConsumers } from './lib/flag-rows.mts';
 import { emailEnabled } from './lib/email.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
 const DEPOT = { name: 'Buford Terminal', lat: 34.147791, lng: -83.960911 };
@@ -301,6 +302,12 @@ export function explainStop(
 
 export default async (req: Request): Promise<Response> => {
   const J = (b: any, s = 200) => new Response(JSON.stringify(b, null, 1), { status: s, headers: { 'Content-Type': 'application/json' } });
+  // Gate at viewer BEFORE the board read: this returns the whole board with each stop's
+  // customer, receiving hours and how late it is predicted to be. Inert until
+  // AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
+
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
 
   try {

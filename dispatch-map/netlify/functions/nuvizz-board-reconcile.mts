@@ -24,6 +24,7 @@
 
 import { patchBoardPlan, readLoadRoster, isFirestoreEnabled, etDayString } from './lib/firestore.mts';
 import { getCreds, lookupLoadPlan } from './lib/nuvizz-scan.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const MAX_LOADS = 40;
 
@@ -42,6 +43,16 @@ export default async (req: Request): Promise<Response> => {
       ok: false, date, error: 'run=1 requires POST',
       note: 'The reconcile spends NuVizz calls and rewrites the board cache, so it does not fire from a GET link. Preview with GET (no run=1); run with: curl -X POST "<this url>&run=1".',
     }, 405);
+  }
+
+  // Gate the RUN at dispatcher, before the roster read. run=1 spends one NuVizz /load/info per
+  // roster load (~60 on a real morning) and REWRITES the board cache every dispatcher is
+  // looking at; the GET preview spends nothing and only names what it would do, so it stays
+  // open — a dry run somebody cannot reach is a dry run that does not exist. Inert until
+  // AUTH_REQUIRED=true (lib/require-user.mts).
+  if (run) {
+    const gate = await requireUser(req, { role: 'dispatcher' });
+    if (!gate.ok) return gate.response;
   }
 
   let tenant = 'DAVIS';

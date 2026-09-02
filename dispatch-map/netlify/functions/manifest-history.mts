@@ -24,6 +24,7 @@ import { getManifestPdf, blobSelfTest, blobsAvailable } from './lib/manifest-blo
 import { boardCoverage, gradeSuspects, gradeText } from '../../src/lib/manifest-window.js';
 import { readUlineManifest } from './lib/uline-manifest.mts';
 import { proKeys } from './lib/manifest-reconcile.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -68,6 +69,24 @@ export default async (req: Request): Promise<Response> => {
 
   try {
     const url = new URL(req.url);
+
+    // HEADERLESS EXCEPTION — ?pdf=1 IS NOT GATED, and this is checked, not assumed.
+    // The JSON paths below are all reached by fetch() and can carry a bearer token. The PDF
+    // URL cannot: App.jsx hands the SAME string to three consumers, and two of them have no
+    // way to set a header — the "Open in browser" escape hatch is a plain
+    // <a data-escape-hatch href={src} target="_blank"> (App.jsx DocumentViewerModal), and the
+    // iOS share sheet gets it as navigator.share({ url: src }). Gating this branch would put
+    // a 401 behind both the moment AUTH_REQUIRED flips — a dispatcher tapping "open" on a
+    // disputed Uline manifest gets a JSON error, and a shared link is dead on arrival.
+    // Closing it needs a signed, time-limited URL (or the viewer fetching bytes only, which
+    // it already does for pdf.js) — a client change, and a separate decision.
+    const wantsPdf = url.searchParams.get('pdf') === '1';
+    if (!wantsPdf) {
+      // Gate at viewer: the manifest archive lists every night's Uline document and the
+      // orders that were missing off it. Inert until AUTH_REQUIRED=true.
+      const gate = await requireUser(req, { role: 'viewer' });
+      if (!gate.ok) return gate.response;
+    }
 
     if (url.searchParams.get('selftest') === '1') {
       const r = await blobSelfTest();

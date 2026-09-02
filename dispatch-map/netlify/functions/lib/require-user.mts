@@ -33,6 +33,13 @@ export interface Principal {
   username: string;
   displayName: string;
   role: Role;
+  /**
+   * The LIVE tokenVersion from the store (already checked to match the token's `tv`).
+   * Carried out of the gate so a caller can stamp it into something it mints — the Firebase
+   * custom token (auth-firebase-token.mts) puts it in a claim so a rules-level check, if one
+   * is ever added, can tell a current session from one issued before a demotion.
+   */
+  tokenVersion: number;
   /** true when the caller proved who they are with a valid session token */
   authenticated: boolean;
   /** true when this is the pre-login "everyone" principal (AUTH_REQUIRED off, no token) */
@@ -40,7 +47,7 @@ export interface Principal {
 }
 
 export const LEGACY_PRINCIPAL: Principal = {
-  username: 'legacy', displayName: 'Dispatch (no login)', role: 'admin', authenticated: false, legacy: true,
+  username: 'legacy', displayName: 'Dispatch (no login)', role: 'admin', tokenVersion: 0, authenticated: false, legacy: true,
 };
 
 export interface GateOptions {
@@ -114,7 +121,14 @@ export async function requireUser(req: Request, opts: GateOptions = {}): Promise
   }
   return {
     ok: true,
-    user: { username: doc.username, displayName: doc.displayName || doc.username, role, authenticated: true, legacy: false },
+    user: {
+      username: doc.username,
+      displayName: doc.displayName || doc.username,
+      role,
+      tokenVersion: Number(doc.tokenVersion) || 0,
+      authenticated: true,
+      legacy: false,
+    },
   };
 }
 

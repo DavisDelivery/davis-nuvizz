@@ -8,10 +8,16 @@
 // falls back to /stop/eventinfo by stop number. Creds stay server-side.
 import { fetchStopEvents } from './lib/nuvizz-scan.mts';
 import { setCallTrigger } from './lib/nuvizz-request.mts';
+import { requireUser } from './lib/require-user.mts';
 
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
+  // Gate at dispatcher BEFORE the vendor call: a metered NuVizz read per hit, returning a
+  // stop's full activity timeline. Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'dispatcher' });
+  if (!gate.ok) return gate.response;
+
   setCallTrigger('on-demand'); // dispatcher opened the activity timeline → on-demand
   const url = new URL(req.url);
   const stopNbr = url.searchParams.get('stopNbr') || '';

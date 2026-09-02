@@ -20,6 +20,7 @@
 //     ?force=1                        → rescore even at the current engine version
 //     ?restart=1                      → ignore the cursor, start a fresh pass
 import { isFirestoreEnabled, listDocs, getDoc, setDoc } from './lib/firestore.mts';
+import { requireUserForBackground } from './lib/background-gate.mts';
 import { HISTORY_COLLECTION } from './lib/history-store.mts';
 import { ENGINE_VERSION, loadEngineConfig } from './lib/routing-engine-config.mts';
 import { REFERENCE_ROUTES_COLLECTION, type ReferenceRouteDoc } from './lib/routing-reference.mts';
@@ -47,6 +48,20 @@ export default async (req: Request): Promise<Response> => {
   if (!isFirestoreEnabled()) {
     return new Response(JSON.stringify({ ok: false, error: 'FIREBASE_SA not set' }), { status: 200, headers });
   }
+  // GATED AT admin — the same role as routing-engine-tuning, because the Engine-tuning modal's
+  // "Re-score history" button is what fires this (App.jsx), and a re-score with somebody
+  // else's knobs is a tuning act.
+  //
+  // Netlify already answered 202 and discarded our status (lib/background-gate.mts), and this
+  // client does not poll at all — it prints "Re-score started. Give it ~12 minutes" and tells
+  // the operator to refresh the Assignment view. So a refusal here is INVISIBLE ON THE SCREEN
+  // by construction, and the honest record is nuvizz_ops/background_refusals/rows (served back
+  // by nuvizz-scan-config?explain=1) plus the log.
+  // The refusal is not written to the replay cursor doc on purpose: that doc is where a
+  // half-finished pass remembers its place, and clobbering it would silently restart the
+  // window from the oldest day — the exact treadmill the cursor was added to end.
+  const gate = await requireUserForBackground(req, 'routing-engine-plan-replay-background', { role: 'admin' });
+  if (!gate.ok) return gate.response;
   const t0 = Date.now();
   const url = new URL(req.url);
   const from = url.searchParams.get('from');

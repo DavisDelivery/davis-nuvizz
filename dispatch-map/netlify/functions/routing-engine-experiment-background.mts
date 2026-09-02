@@ -23,6 +23,7 @@
 // routing-engine-data?view=experiments. Compare labels with identical windows
 // only; the doc stores the window so that check is trivial.
 import { isFirestoreEnabled, listDocs, getDoc, setDoc } from './lib/firestore.mts';
+import { requireUserForBackground } from './lib/background-gate.mts';
 import { HISTORY_COLLECTION } from './lib/history-store.mts';
 import { ENGINE_VERSION, loadEngineConfig, clampEngineConfig, type EngineConfig } from './lib/routing-engine-config.mts';
 import { REFERENCE_ROUTES_COLLECTION, type ReferenceRouteDoc } from './lib/routing-reference.mts';
@@ -61,6 +62,15 @@ export default async (req: Request): Promise<Response> => {
   if (!isFirestoreEnabled()) {
     return new Response(JSON.stringify({ ok: false, error: 'FIREBASE_SA not set' }), { status: 200, headers });
   }
+  // GATED AT admin. A sweep replays the whole captured window and writes engine_experiments —
+  // the numbers a tuning decision gets made on. Netlify already answered 202 and discarded
+  // our status (lib/background-gate.mts), so the refusal lands in
+  // nuvizz_ops/background_refusals/rows, which nuvizz-scan-config?explain=1 serves back. It is
+  // DELIBERATELY not written onto the experiment doc:
+  // that doc is the resume cursor for a scored run, and stamping a refusal into it would
+  // destroy hours of scoring to report a permission error.
+  const gate = await requireUserForBackground(req, 'routing-engine-experiment-background', { role: 'admin' });
+  if (!gate.ok) return gate.response;
   const t0 = Date.now();
   let body: any = null;
   try { body = await req.json(); } catch { /* handled below */ }

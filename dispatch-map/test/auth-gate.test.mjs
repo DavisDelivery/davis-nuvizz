@@ -3,13 +3,16 @@
 // This app has never had a login, and turning one on is the ONE change in the security
 // plan that can lock a dispatcher out of a 700-stop morning. So these tests are mostly
 // about the ways this must NOT fail: shipping inert, never flashing a login at someone
-// already signed in, and never handing an unknown account more power than a driver.
+// already signed in, never handing an unknown account more power than a viewer, and
+// never showing two logins at once.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  gateState, roleOf, isStaff, emailAllowed, friendlyAuthError, DEFAULT_ROLE, ROLES,
+  gateState, roleOf, isStaff, roleAtLeast, resolveGateMode, roleGateReason,
+  emailAllowed, friendlyAuthError, DEFAULT_ROLE, ROLES,
 } from '../src/lib/auth-gate.js';
+import { ROLES as SERVER_ROLES, normalizeRole } from '../netlify/functions/lib/auth-core.mts';
 
 // ── SHIPPING INERT ───────────────────────────────────────────────────────────
 
@@ -45,34 +48,168 @@ test('once Firebase has reported, the answer is simply who is signed in', () => 
 
 // ── ROLES ────────────────────────────────────────────────────────────────────
 
-test('an account with NO role claim is a driver, never a dispatcher', () => {
-  // Freshly created accounts, and any created before roles existed, arrive with no
-  // claim. Defaulting those to staff would hand the board to the next person an admin
-  // creates and forgets to set. load-scan's auth module already made this call in these
-  // words — "anything unrecognized is a driver, the least-privileged role" — and the two
-  // systems must not disagree about what an unknown user can do.
-  assert.equal(roleOf({ uid: 'u1' }), DEFAULT_ROLE);
-  assert.equal(roleOf({ uid: 'u1', claims: {} }), 'driver');
-  assert.equal(roleOf(null), 'driver');
-  assert.equal(roleOf({ claims: { role: 'wizard' } }), 'driver', 'an unrecognised role is not a promotion');
-  assert.equal(roleOf({ claims: { role: '' } }), 'driver');
+test('THE SCREEN AND THE SERVER USE ONE ROLE VOCABULARY, NOT THREE', () => {
+  // The bug this replaces: auth-gate listed ['driver','loader','dispatcher','admin'] while
+  // auth-core.mts lists ['admin','dispatcher','viewer'] and firestore.rules' isStaff() reads
+  // dispatcher|admin. A real 'viewer' — the role the server hands anything it does not
+  // recognise — matched nothing here, fell to 'driver', and under the drafted rules could
+  // read NOTHING. Not an error message: a blank board at 6am with nothing to explain it.
+  assert.deepEqual([...ROLES].sort(), [...SERVER_ROLES].sort(),
+    'auth-gate.ROLES must be exactly auth-core.mts ROLES');
+  assert.equal(DEFAULT_ROLE, normalizeRole('anything-unrecognised'),
+    'and the two must fall back to the same least-privileged role');
 });
 
-test('a real role claim is honoured, case and whitespace forgiven', () => {
+test('an account with NO role is a viewer, never a dispatcher', () => {
+  // Freshly created accounts, and any created before roles existed, arrive with nothing.
+  // Defaulting those to staff would hand the board to the next person an admin creates and
+  // forgets to set. The server says it in these words — "anything unrecognised is a viewer,
+  // the least-privileged role, never a guess upward" — and the two must not disagree.
+  assert.equal(roleOf({ username: 'u1' }), DEFAULT_ROLE);
+  assert.equal(roleOf({ username: 'u1', role: '' }), 'viewer');
+  assert.equal(roleOf(null), 'viewer');
+  assert.equal(roleOf({ role: 'wizard' }), 'viewer', 'an unrecognised role is not a promotion');
+  assert.equal(roleOf({ role: 'driver' }), 'viewer', 'and neither is a role from the OTHER system');
+  assert.equal(roleOf({ claims: { role: 'loader' } }), 'viewer');
+});
+
+test('a real role is honoured from either system, case and whitespace forgiven', () => {
+  // `role` is the shape auth-login returns; `claims.role` is the Firebase custom claim.
+  // A session from either must resolve the same way or the screen and the rules disagree.
+  assert.equal(roleOf({ role: 'dispatcher' }), 'dispatcher');
+  assert.equal(roleOf({ role: '  ADMIN ' }), 'admin');
   assert.equal(roleOf({ claims: { role: 'dispatcher' } }), 'dispatcher');
-  assert.equal(roleOf({ claims: { role: '  ADMIN ' } }), 'admin');
-  assert.equal(roleOf({ claims: { role: 'Loader' } }), 'loader');
-  for (const r of ROLES) assert.equal(roleOf({ claims: { role: r } }), r);
+  for (const r of ROLES) assert.equal(roleOf({ role: r }), r);
 });
 
-test('staff is dispatcher and admin — and a driver is not staff', () => {
+test('staff is dispatcher and admin — and a viewer is not staff', () => {
   // This mirrors isStaff() in firestore.rules. If the two ever disagree, the screen and
   // the database disagree about who may edit a customer's receiving hours.
-  assert.equal(isStaff({ claims: { role: 'dispatcher' } }), true);
-  assert.equal(isStaff({ claims: { role: 'admin' } }), true);
-  assert.equal(isStaff({ claims: { role: 'driver' } }), false);
-  assert.equal(isStaff({ claims: { role: 'loader' } }), false);
+  assert.equal(isStaff({ role: 'dispatcher' }), true);
+  assert.equal(isStaff({ role: 'admin' }), true);
+  assert.equal(isStaff({ role: 'viewer' }), false);
   assert.equal(isStaff(null), false, 'nobody signed in is not staff');
+});
+
+test('roleAtLeast ranks the same way the server does', () => {
+  // Mirrors roleAtLeast() in auth-core.mts. A screen that thinks a viewer may press a
+  // dispatcher's button shows a control that can only ever answer 403.
+  assert.equal(roleAtLeast({ role: 'admin' }, 'dispatcher'), true);
+  assert.equal(roleAtLeast({ role: 'dispatcher' }, 'dispatcher'), true);
+  assert.equal(roleAtLeast({ role: 'viewer' }, 'dispatcher'), false);
+  assert.equal(roleAtLeast(null, 'viewer'), true, 'everyone clears the floor');
+  assert.equal(roleAtLeast({ role: 'dispatcher' }, 'admin'), false);
+});
+
+// ── TWO LOGINS IS ONE TOO MANY ───────────────────────────────────────────────
+
+test('THERE IS ONE LOGIN, AND IT IS THE ONE THE SERVER VERIFIES', () => {
+  // Running two is not redundancy, it is a locked-out morning: a Firebase ID token in the
+  // Authorization header parses as our session-token shape and then fails the HMAC compare,
+  // so requireUser() answers 401 even with AUTH_REQUIRED unset. When a login IS in charge it
+  // is always the server one; the retired flag never selects the Firebase one.
+  assert.equal(resolveGateMode({ serverLogin: true, firebaseLogin: true }).mode, 'server');
+  assert.equal(resolveGateMode({ serverLogin: true, firebaseLogin: false }).mode, 'server');
+  assert.equal(resolveGateMode({ serverLogin: false, firebaseLogin: false }).mode, 'off');
+  assert.equal(resolveGateMode({}).mode, 'off');
+  assert.equal(resolveGateMode().mode, 'off', 'and no argument at all is no login');
+});
+
+test('THE RETIRED FLAG ALONE MUST NOT PUT UP A PASSWORD BOX NOBODY CAN PASS', () => {
+  // THE LOCKOUT THIS EXISTS TO PREVENT, in freight terms. VITE_AUTH_ENABLED was written for
+  // a FIREBASE account list. The username/password accounts live in Firestore `app_users`
+  // and are created one at a time (auth-bootstrap → auth-admin). Setting the old flag on a
+  // site where those accounts do not exist yet does not give anybody a login — it gives the
+  // whole dispatch floor a password box with no valid password, at 6am, in front of a
+  // 700-stop board, and it is a BUILD-time flag so the only cure is a redeploy.
+  //
+  // firestore.rules states the asymmetry this repo settles such calls by: "being open one
+  // day longer costs an exposure that has already existed for months; being closed one hour
+  // early costs a refused delivery nobody can explain." So: the app, with a warning.
+  const legacy = resolveGateMode({ serverLogin: false, firebaseLogin: true });
+  assert.equal(legacy.mode, 'off', 'the retired flag alone renders the APP, not a login screen');
+  assert.equal(legacy.legacyFlagOnly, true, 'and it is flagged so the screen can say so out loud');
+});
+
+test('and the app can SAY which flag turned it on', () => {
+  // A switch whose position cannot be read is not a switch. These two booleans are the only
+  // reason the resolver returns an object: the caller reports the situation instead of
+  // re-deriving it from the flags it just handed in.
+  assert.deepEqual(resolveGateMode({ serverLogin: false, firebaseLogin: true }),
+    { mode: 'off', legacyFlagOnly: true, bothFlags: false });
+  assert.deepEqual(resolveGateMode({ serverLogin: true, firebaseLogin: true }),
+    { mode: 'server', legacyFlagOnly: false, bothFlags: true });
+  assert.deepEqual(resolveGateMode({ serverLogin: true, firebaseLogin: false }),
+    { mode: 'server', legacyFlagOnly: false, bothFlags: false });
+  assert.deepEqual(resolveGateMode({}), { mode: 'off', legacyFlagOnly: false, bothFlags: false });
+});
+
+// ── SAYING IT BEFORE THE PRESS ───────────────────────────────────────────────
+
+test('WITH NO LOGIN UP, NOTHING IS EVER GREYED OUT — that is the lockout guard', () => {
+  // Production today has no gate. The server's own requireUser() hands every caller
+  // LEGACY_PRINCIPAL (role admin), exactly the power every caller has now — so a screen that
+  // greyed controls out here would disable the whole dispatch board on a site that has no
+  // accounts at all. This is the FIRST thing the rule checks, and it is checked with the
+  // worst inputs on purpose.
+  for (const user of [null, undefined, {}, { role: 'viewer' }, { role: '' }, { role: 'nonsense' }]) {
+    assert.equal(roleGateReason(user, 'dispatcher', { gated: false }), null,
+      `no gate ⇒ allowed (user=${JSON.stringify(user)})`);
+    assert.equal(roleGateReason(user, 'admin', { gated: false }), null);
+  }
+});
+
+test('A VIEWER IS TOLD WHICH ROLE THE BUTTON NEEDS, WHICH ONE THEY HAVE, AND WHO FIXES IT', () => {
+  // Walked as a viewer before this existed, every dispatcher action failed in one of three
+  // different presentations and none of them said anything in advance. A 403 is also NOT
+  // fixed by signing out and back in, so the sentence must never send anyone to the login.
+  const reason = roleGateReason({ role: 'viewer' }, 'dispatcher');
+  assert.ok(reason, 'a viewer pressing a dispatcher control gets a sentence');
+  assert.match(reason, /dispatcher/, 'names the role needed');
+  assert.match(reason, /viewer/, 'and the role held');
+  assert.match(reason, /Chad/, 'and the person who can change it');
+  assert.ok(!/sign in|sign out|log in/i.test(reason), 'and never sends them round the login loop');
+});
+
+test('an account with NO role is a viewer here too, never a guess upward', () => {
+  // roleOf defaults to the least privilege in the server's own words. An account created
+  // without a role must not be handed the dispatcher's buttons on the strength of a blank.
+  assert.ok(roleGateReason(null, 'dispatcher'), 'nobody signed in cannot dispatch');
+  assert.ok(roleGateReason({}, 'dispatcher'), 'no role field cannot dispatch');
+  assert.ok(roleGateReason({ role: 'wat' }, 'dispatcher'), 'an unrecognised role cannot dispatch');
+});
+
+test('a dispatcher and an admin are allowed, and the rank is the server’s rank', () => {
+  assert.equal(roleGateReason({ role: 'dispatcher' }, 'dispatcher'), null);
+  assert.equal(roleGateReason({ role: 'admin' }, 'dispatcher'), null, 'admin outranks dispatcher');
+  assert.equal(roleGateReason({ role: 'viewer' }, 'viewer'), null, 'a viewer clears the viewer floor');
+  assert.ok(roleGateReason({ role: 'dispatcher' }, 'admin'), 'but a dispatcher is not an admin');
+  // The claims shape (a Firebase custom claim) resolves the same way as the app_users shape,
+  // so a session from either system produces the same answer on the same button.
+  assert.equal(roleGateReason({ claims: { role: 'dispatcher' } }, 'dispatcher'), null);
+});
+
+// ── THE SCREENS BETWEEN THE LOGIN AND THE BOARD ──────────────────────────────
+
+test('A TEMPORARY PASSWORD CANNOT BE POSTPONED PAST THE BOARD', () => {
+  // An admin creates an account with a temporary password. If the board opened first, the
+  // change would be postponed forever and three people would share one password on the
+  // dispatch whiteboard — which is the state this whole login exists to end.
+  assert.equal(gateState({ enabled: true, ready: true, user: { username: 'u' }, mustChangePassword: true }), 'must-change');
+  assert.equal(gateState({ enabled: true, ready: true, user: { username: 'u' }, mustChangePassword: false }), 'app');
+  assert.equal(gateState({ enabled: true, ready: true, user: null, mustChangePassword: true }), 'login',
+    'nobody signed in is still the login, not a password form for nobody');
+});
+
+test('AN EMAILED RESET LINK WORKS EVEN BEFORE THE LOGIN IS SWITCHED ON', () => {
+  // Rollout order: accounts are created and the reset mails go out BEFORE the gate flag is
+  // flipped. If the flag decided this, every one of those links would open the board and
+  // silently do nothing, and nobody would set a password until somebody noticed.
+  assert.equal(gateState({ enabled: false, ready: true, user: null, resetLink: true }), 'reset');
+  assert.equal(gateState({ enabled: true, ready: false, user: null, resetLink: true }), 'reset',
+    'and it does not wait on a session check it does not need');
+  assert.equal(gateState({ enabled: true, ready: true, user: { username: 'u' }, resetLink: true }), 'reset',
+    'even signed in — the person clicked a link to change a password');
 });
 
 // ── THE GOOGLE ALLOW-LIST ────────────────────────────────────────────────────
@@ -142,15 +279,31 @@ test('the gate is OUTSIDE Shell — Shell opens Firestore subscriptions on mount
   assert.match(app, /state === 'login'/, 'there is a login branch');
 });
 
-test('the login screen has its own mobile and desktop views', () => {
-  // Chad: "mobile and desktop should be treated as 2 different views." A single
-  // responsive layout here is the easy way out and it is not what this ships.
-  const src = readFileSync(new URL('../src/components/LoginScreen.jsx', import.meta.url), 'utf8');
-  assert.match(src, /if \(isMobile\)/, 'a distinct phone branch exists');
-  assert.ok(src.includes('PHONE') && src.includes('DESKTOP'), 'both views are marked out');
-  // 16px inputs on the phone: anything smaller makes iOS zoom the page on focus.
-  const phone = src.slice(src.indexOf('if (isMobile)'), src.indexOf('// ── DESKTOP'));
-  assert.match(phone, /text-base/, 'phone inputs are 16px so iOS does not zoom the page');
-  assert.match(phone, /min-h-\[4[89]px\]|min-h-\[5\dpx\]/, 'phone targets are thumb-sized');
-  assert.ok(APP.includes('isMobile={viewportWidth < MOBILE_BREAKPOINT}'), 'and the app tells it which view to be');
+test('EVERY auth screen has its own mobile and desktop view', () => {
+  // Chad: "mobile and desktop should be treated as 2 different views and quit trying to
+  // take the easy way out and make screens work for both." Four screens ship here —
+  // sign-in, forgot-password, forced change, reset-from-link — and a screen built for one
+  // view and patched for the other is the easy way out. Each is checked separately because
+  // "the file has a phone branch somewhere" is exactly how the second screen gets missed.
+  const files = {
+    'LoginScreen.jsx': ['SIGN IN', 'FORGOT PASSWORD'],
+    'PasswordScreens.jsx': ['FORCED PASSWORD CHANGE', 'RESET FROM THE EMAILED LINK'],
+  };
+  for (const [file, screens] of Object.entries(files)) {
+    const src = readFileSync(new URL(`../src/components/${file}`, import.meta.url), 'utf8');
+    for (const s of screens) assert.ok(src.includes(s), `${file} contains the ${s} screen`);
+    const phones = src.split('// ── PHONE').length - 1;
+    const desktops = src.split('// ── DESKTOP').length - 1;
+    assert.equal(phones, screens.length, `${file}: one phone view per screen`);
+    assert.equal(desktops, screens.length, `${file}: one desktop view per screen`);
+    assert.equal(src.split('if (isMobile)').length - 1, screens.length, `${file}: a distinct phone branch per screen`);
+    // 16px inputs on the phone: anything smaller makes iOS zoom the whole page on focus,
+    // and a zoomed password field in a truck cab at 6am is unusable one-handed.
+    for (const part of src.split('// ── PHONE').slice(1)) {
+      const phone = part.slice(0, part.indexOf('// ── DESKTOP') === -1 ? undefined : part.indexOf('// ── DESKTOP'));
+      assert.match(phone, /text-base/, `${file}: phone inputs are 16px so iOS does not zoom`);
+      assert.match(phone, /min-h-\[4[89]px\]|min-h-\[5\dpx\]/, `${file}: phone targets are thumb-sized`);
+    }
+  }
+  assert.ok(/isMobile=\{isMobile\}/.test(APP), 'and the app tells each screen which view to be');
 });

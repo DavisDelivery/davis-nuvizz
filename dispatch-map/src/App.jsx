@@ -19,7 +19,7 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2 } from 'lucide-react';
+  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
   query, orderBy, limit, updateDoc, deleteDoc,
@@ -43,9 +43,19 @@ import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/dista
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
 import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, isPlannedStop, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
-import { gateState } from './lib/auth-gate.js';
-import { authEnabled, observeAuth } from './lib/auth.js';
+import { gateState, resolveGateMode, roleGateReason } from './lib/auth-gate.js';
+// authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
+// resolveGateMode). The flag is still read so that setting it turns the REAL login on
+// rather than silently doing nothing.
+import { authEnabled } from './lib/auth.js';
 import LoginScreen from './components/LoginScreen.jsx';
+import { ChangePasswordScreen, ResetPasswordScreen } from './components/PasswordScreens.jsx';
+// ONE place a session token gets onto a request (see lib/api.js). Every call to our own
+// functions goes through apiFetch; nothing else may build an Authorization header.
+import { apiFetch } from './lib/api.js';
+import { reportDenied, deniedSurfaces, subscribeDenied } from './lib/permission-denied.js';
+import { serverLoginEnabled, ensureFirebaseSession, dropFirebaseSession, signOut as endSession, currentResetLink, scrubResetLink, fetchMe } from './lib/auth-client.js';
+import { getSession, setSession, subscribeSession, onAuthEvent, clearSession } from './lib/session.js';
 import { formatCompletionPct } from './lib/completion-pct.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact } from './lib/nuvizzWrite.js';
@@ -97,7 +107,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.85.0';
+const APP_VERSION = '0.86.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -168,6 +178,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.86.0', 'EVERY DOOR THAT SPENDS MONEY OR MOVES FREIGHT NOW ASKS WHO IS KNOCKING, AND THE DATABASE IS ONE SIGN-IN AWAY FROM ASKING TOO \u2014 ALL OF IT STILL SWITCHED OFF. Chad, after the audit: \u201cbuild it all in uat\u201d. This is that build. SIXTY MORE FUNCTIONS CARRY THE GATE, and two discoveries shaped how. A Netlify *-background* function answers 202 BEFORE the handler returns, so a plain 401 inside one is INVISIBLE: the first cut of this would have let a dispatcher press Scan now at 5am, read \u201cScan running \u2014 the board will refresh automatically\u201d, and get no scan and no error, ever. Refusals now land where each job\u2019s own client already looks \u2014 the routing job doc, the OCR job doc, a scan-refusal doc read on the poll the board already makes \u2014 and the button says what actually happened. AND A CRON SCHEDULE IS NOT AN ACCESS CONTROL: the seven scheduled writers take caller-chosen ?date/?days/?force, including a 31-day backfill, so only the override branch is gated and the cron path is byte-identical. That gate first shipped STRICT, which was worse than open \u2014 with no AUTH_SESSION_SECRET on the site it refused Chad too, behind a 202, so the documented curl in ATTEMPTS.md would have re-frozen nothing and said it worked. THE DATABASE HALF IS WRITTEN AND DELIBERATELY COMMENTED OUT. Firestore rules can only read request.auth, which only Firebase populates, so auth-firebase-token mints a Firebase custom token from an already-proven app_users session \u2014 reusing the RS256 signing already in firestore.mts rather than adding firebase-admin \u2014 and the rules key on the same role vocabulary the endpoints read, so the screen, the doors and the database cannot come to disagree. The cutover ships INERT because seven of the browser\u2019s ten Firestore reads swallow permission-denied: a mis-fired deploy would not be an outage, it would be a board that looks perfectly normal at 6am and is quietly missing every receiving hour and closed day until a truck reaches a shut dock. So the fail-loud pass ships FIRST. A VIEWER NO LONGER LEARNS THEIR ROLE ONE REFUSAL AT A TIME \u2014 the controls they cannot use are disabled with the reason on the tooltip, because greying out a button is the cheap mistake and a dispatcher who believes a scan ran is the expensive one. Signing out now closes BOTH doors: clearing our token alone left a deactivated dispatcher with full database read and write all afternoon while the screen showed them logged out. Also: nuvizz_secrets \u2014 the sealed Gmail token, the manifest ingest\u2019s only credential \u2014 was still browser-writable; three roles guarded less than they should (a viewer could republish the departure table every ETA on a 700-stop day is built from); and the cutover checklist had gone false in three places, in the file that IS the runbook for the most dangerous deploy here. NOTHING CHANGES until VITE_LOGIN_ENABLED and AUTH_REQUIRED are set, and neither is set on any site. 3,162 tests.'],
   ['0.85.0', 'THE DAYS DAVIS DOES NOT RUN, THE COUNT THAT IS ONLY ULINE, AND A READER THAT STOPS POLLING HOURLY FOR A FILE THAT COMES EVERY OTHER MONTH. Chad, on v0.84.0: “We need to only look at Uline pros for this not anything else. Also we don’t need to check for a forecast every hour maybe once a week we don’t get new ones but every couple of months. We don’t run for memorial labor July 4th 2 days at Thanksgiving Christmas Day and Eve and new year day.” THE CALENDAR IS THE ONE THAT MOVES FREIGHT. v0.84.0 inferred Davis’s closed days as “a weekday absent from Uline’s file that is ALSO a federal holiday”, which can only ever close a day Uline had already closed — so it could not express the day that matters most: ULINE SHIPS THE FRIDAY AFTER THANKSGIVING (234 orders in the Aug-04 file) AND DAVIS DOES NOT RUN IT. Measured on that real file, MONDAY 11/30 GOES FROM 234 ORDERS TO 582 — Wednesday’s 348 plus Friday’s 234, about ten route-days — and the shipped card would have told the roster to staff a light Monday and chipped it LIGHT. Christmas Eve moves the other way: it is now a day off, so Wednesday’s 318 wait for Monday instead of being delivered by nobody. Chad’s list is now the calendar, in its own module (davis-calendar.js) because TWO screens read it: AND THE NIGHTLY MANIFEST CHECK NOW READS IT TOO, which fixes a defect that predates this release — the check was holiday-blind, so the Wednesday before Thanksgiving expected a board on Thanksgiving Day, a board nobody will ever build, and every one of that night’s orders graded “not routed yet — no board has been built for 2026-11-26” for ever, on the heaviest freight week of the year. It now reconciles against Monday and returns a real verdict. ONLY ULINE PROS, AND THE COUNT SAYS SO. All eleven archived nights were re-parsed from their stored PDFs: 5,872 rows, 5,872 DISTINCT nine-digit PROs, every one via DA, warehouses G1 (1,719) and G6 (4,153) — so the count was already Uline-only and the first score does not move. It was an assumption; it is now a measurement. Each night records the distinct Uline PROs on the Davis lane plus the warehouse split, the scorer prefers it over the row count with an explicit finite check (0 is a real count, and `||` would lose it), the card says what it counted, and a row on our manifest that is NOT Davis’s Uline freight gets a red line instead of being quietly absorbed. THE WAREHOUSE CODE WAS A TRAP: the forecast spreadsheet says “G” and the manifest says “G1” and “G6” for the same freight, so an exact match on “G” would reject the whole file the day Uline spells one the way it already spells the other. Any Georgia code on the DA lane is now kept and SUMMED per ship date — a naive widening without the sum returned 30% of the forecast — and both real files digest bit-identically under the new rule, so no stored version is re-filed. A warehouse that is not Georgia’s is still counted and dropped, never summed in. WEEKLY, AND HONEST ABOUT IT. The reader ran 720 times a month to find something that arrives at most once; it now runs Mondays at 9am ET. That cadence introduces its own lie — the card could say “Uline has not sent it” when the truth is nobody has looked since Monday — so the line now distinguishes the two, and the “Uline is late” amber requires a successful mailbox read on or after the 8th, once their send window has closed. Replayed over 60 months × 4 send days: zero false alarms, against 26 without the gate. A successful read older than ten days reads as red on the Job panel, as an age rather than a raw timestamp, and the batch cap went from 3 to 8 so a backlog clears in one weekly pass instead of three months. ALSO FIXED, found by tracing what the change touched: an unreadable number on somebody else’s warehouse used to paint a day Georgia states perfectly as a hole and take it out of scoring; MANIFEST_DAYS_MASK is a Firestore inclusion list with no guard, so a new per-night field could be written, masked out and read as undefined with the average still looking plausible — it has one now, both directions; and the versions panel read “332/664 rows” for a file with nothing wrong, because that number counts days. 15 new tests, 2,989 green.'],
   ['0.84.0', 'ULINE’S FORECAST, AGAINST THE FREIGHT THAT ACTUALLY CAME. Chad: “find in my email the Uline forecasts they present and I want to start comparing them to what the manifest actually produce so we can try to forecast what is coming.” FOUND, by reading the mailbox: “DA - G - Uline Forecast”, monthly since June 2022 (~50 versions), one spreadsheet — estimate and high range per SHIP date, twelve months out, Saturdays absent, Sundays at ~75, weekdays 500–700. The ship date is the same key the manifest archive files a night under, so the comparison is a plain join: the Aug-04 file against the eleven archived nights scores a typical miss of 27 orders (4%), Uline running 7 high, and never once over their own high. WHAT IS ON THE SCREEN, on the Manifest check tab, phone and desktop: TONIGHT — “Ship Wed 9/2 → deliver Thu 9/3 · Uline 706 (high 781) · manifest so far 733 (#3, 21:40) · 27 over the estimate, under the high”, red only when the running count breaks Uline’s ceiling; on the phone it sits under the Gmail card, above a result list that can run to 500 cards. THE NEXT DELIVERY DAYS — Uline forecasts orders per ship date and Davis staffs drivers per delivery day, so the card rolls Fri + Sun into Tue 9/8 and reads Mon 9/7 as “Labor Day — no deliveries”. TWO CALENDARS, NOT ONE: Uline’s file says which days Uline does not ship (Labor Day, Thanksgiving, Christmas Eve and Day and the rest are simply absent from it); a delivery day is skipped only when that day is ALSO a federal holiday, plus anything in ULINE_DAVIS_CLOSED — Uline not shipping on Christmas Eve still leaves Wednesday’s 318 orders to deliver on Thursday, and a working day shown as “no deliveries” is a day nobody staffs. The Job panel lists the no-delivery days it is assuming. LIGHT is judged against the same weekday: against all days the chip was on 33 of 37 Mondays and meant nothing. A plan figure per day that only ever moves UP from Uline’s number, and only once four nights of that weekday are scored — over-staffing costs one short route, under-staffing costs refusals and carryover. HOW GOOD IS ULINE’S NUMBER — typical miss, lean, nights over their high, by weekday and by how far out, every figure with its n, and the sentence for the Uline call when a weekday has run low three of the last five weeks. THE LAST NIGHTS, coloured by a fixed rule that never changes a night’s colour after the fact: heavy at a route-day over, over-high strictly past the ceiling, a fragment flagged “check reports” rather than booked as a huge miss. WHAT IT WILL NOT DO: score the 10:51am preliminary as a 300-order under-run (a night is provisional until a report lands after 6pm), call a Sunday a hole before Monday evening’s board can exist, blame the manifest ingest for weeks before the archive began, or trust a Number(null). THE INGEST reads the same Gmail grant as the manifest with a different search, hourly; each distinct file is a version keyed by its CONTENT, so a forward is the same version seen twice and a corrected sheet is a second; an unreadable file is kept as evidence; a crash between the version write and its marker resumes without a phantom duplicate; a dry run reads and parses and writes nothing; the ~50 historical versions back-fill one quarter per press, after a preview. Zero NuVizz calls anywhere, pinned by an import guard. WHAT IS NOT BUILT: a forecast model of our own (eleven nights is not a training set), alerts of any kind, the three-year read-back of nightly PDFs from Gmail (a separate, inert PR). TONIGHT IS NOT A NIGHT YET: today’s ship date stays pending, count-so-far shown, until the 5am roll — an 8pm report is a third of the freight, not a verdict — and the strip re-reads every five minutes while visible, when a manifest run lands and when the tab comes back, stamped “as of 9:41pm”. The ledger behind the figures always reaches back 180 days whatever the screen lists. ADVERSARIALLY REVIEWED before merge, five lenses and a verify pass, every real finding fixed and pinned: Christmas Eve read as “no deliveries”; tonight’s partial count scored as a night; a strip that never refreshed; a bad-date row that could turn a weekday into a closure (such gaps are now unknown, never closed); an outlook that grouped ship dates three days short of its own last rows and read a 770-order Tuesday as “no freight”; a status endpoint that judged the masked list and said the month’s forecast was missing from the 11th; a Firestore throw mid-ingest that skipped the status write; backfill buttons that said “✓ ok” whatever happened; a Saturday that read “no forecast”; and 38 identical before-archive rows burying the real nights. 108 new tests, including the first score reproduced from the real docs.'],
   ['0.83.1', 'THE MANIFEST VIEWER HAD A WAY OUT, AND THE WAY OUT WAS THE TRAP. Chad, the morning after the in-app pages shipped: “there is no way to close out the manifest viewer.” The screenshot was not our viewer at all — it was iOS’s own PDF view, “1 of 15” in a pill and pages on black — which means the document had NAVIGATED the window. The one anchor still allowed to do that was the “Open in browser” hatch, 44px from Close. In a browser tab it opens a tab you can close; in a home-screen app there is no address bar, no toolbar and no back gesture, so the board is simply gone until the app is killed. Same link, opposite outcome, and nothing on screen could tell which world it was in. NOW IT ASKS: a tested predicate (navigator.standalone on iOS, the display-mode media query everywhere else) decides, and when it cannot tell it answers “browser”, because an extra link in a tab costs nothing and a stranded dispatcher costs the board. Inside an iPhone home-screen app the hatch does not render — the pages are already drawn there — and the one thing it was still good for, getting the file OFF the phone, is offered as Share instead: the system sheet, AirDrop or Messages, and straight back to the board. ONLY THE iPHONE, because only there is it a trap: an Android or desktop installed app opens the link in something with its own close control, and keeps the hatch. The bytes are fetched once when the viewer opens and Share fires with no download in between, because iOS refuses a share whose tap was spent waiting on the network; a share that fails says so on the screen instead of in a console nobody reads; a delivery photo shares the same way. The footer now ends “· iPhone app”, “· installed app” or “· browser tab”, so the answer the phone gave can be read back — a switch whose position cannot be read is not a switch. In a browser nothing changes. If the footer on your phone did not read 0.81.6 or later when this happened, the same screenshot has a second cause — a cached build with the old PDF link — and this fix does not reach that; say what the footer read. AND THE DROP BOX IS GONE. Chad: “there is no need for the manual manifest drop in box any longer as we are pulling it out of the emails.” Every report arrives through the Gmail ingest now, so a manual drop could only overwrite tonight’s filed result with a stale copy. What stays: the mailbox card, the last run’s verdict, the archive underneath, and the app-wide drag guard that keeps a stray PDF from navigating the app away — that was never the drop zone’s job. The unwired verify-manifest-tab script, which still fed a PDF through the deleted input, now seeds a stored run the way the ingest does and asserts nothing on the screen POSTs by hand; it passes on desktop and phone. ALSO IN THIS BUILD, INERT: the reader for Uline’s monthly forecast spreadsheet (“DA - G - Uline Forecast”, one sheet, date / estimate / upperest by ship date, twelve months out) — columns found by name, every unreadable row named, nothing wired to it yet. It is the first piece of Chad’s “compare the forecasts to what the manifest actually produces” and it ships tested so the rest can build on it. The CI unit job installs dependencies now — the reader uses SheetJS, and the first run of this PR failed in CI while passing locally because the job had never needed to install anything before. AND THE VERSION GATE LEARNED WHICH WAY IS UP: it asked only “is it still the same?”, so when this branch rebased onto a main that had moved from 0.81.8 to 0.83.0 it printed “✓ 0.83.0 → 0.81.9” — a footer that would have read OLDER than the build before it, while the deploy watchdog kept reporting the higher row. It now rejects a version that goes backwards, compared numerically so 0.83.10 is after 0.83.9. 36 new tests. The header decision is a pure rule tested on every input, after a reviewer showed the earlier shape-matching test passed five different dead ends.'],
@@ -1061,6 +1072,30 @@ const PANEL_DEFAULT_WIDTH = 320;
 const PANEL_MIN_WIDTH = 240;
 // Max width is computed at runtime as 60% of viewport — see useResizablePanel.
 const MOBILE_BREAKPOINT = 768;
+
+// WHICH LOGIN IS IN CHARGE — resolved ONCE, at module load, because both inputs are
+// build-time flags. There is only one login: the server username/password system, which is
+// the one the Netlify Functions verify. The Firebase email/password gate is RETIRED — its
+// ID token parses as our session-token shape and then fails the HMAC compare, so
+// requireUser() answers 401 even with AUTH_REQUIRED unset.
+//
+// ONLY VITE_LOGIN_ENABLED PUTS THE GATE UP. The retired flag used to turn the new login on
+// as well; see resolveGateMode() for why that was backwards. Short version: VITE_AUTH_ENABLED
+// was written for a FIREBASE account list, the app_users accounts are a different set created
+// one at a time, and honouring it on a site where they do not exist yet hands the dispatch
+// floor a password box nobody has a password for — at 6am, in front of 700 stops, curable
+// only by a redeploy. So the legacy flag alone renders the APP, and says so: in the console
+// here and on a bar the dispatcher can actually see (LegacyLoginFlagBar, in Shell). A switch
+// whose position cannot be read is not a switch.
+const GATE = resolveGateMode({ serverLogin: serverLoginEnabled(), firebaseLogin: authEnabled() });
+const LOGIN_MODE = GATE.mode;
+/** Only the retired flag is set: no gate is up, and the screen owes somebody an explanation. */
+const LEGACY_FLAG_ONLY = GATE.legacyFlagOnly;
+if (GATE.bothFlags) {
+  console.warn('[auth] VITE_LOGIN_ENABLED and VITE_AUTH_ENABLED are BOTH set. There is one login — the server username/password one. Unset VITE_AUTH_ENABLED.');
+} else if (GATE.legacyFlagOnly) {
+  console.warn('[auth] VITE_AUTH_ENABLED is the RETIRED Firebase login flag and no longer switches any login on — this app is running UNGATED. To put the login up, set VITE_LOGIN_ENABLED and REDEPLOY (it is a build-time flag).');
+}
 // Zoom level when auto-focusing a single stop/customer (building level).
 const STOP_ZOOM = 18;
 // How often the map silently re-reads the Firestore stop index (DB, not NuVizz)
@@ -1521,7 +1556,7 @@ async function fetchJsonWithRetry(url, { retries = 1, backoffMs = 1500 } = {}) {
       // cache:'no-store' — these are live ops endpoints; iOS Safari otherwise
       // serves a stale cached GET, so Refresh/auto-poll appear to "do nothing"
       // (e.g. a changed call-cap never showing up at the top).
-      const resp = await fetch(url, { cache: 'no-store' });
+      const resp = await apiFetch(url, { cache: 'no-store' });
       if (!resp.ok) {
         // Always-empty 502s from Netlify Functions when the upstream timed
         // out — surface the status, retry on 5xx.
@@ -1778,8 +1813,13 @@ function useAutoScanner(stops, notes, notesReady) {
       if (res.errors.length) {
         console.warn('Scanner write errors:', res.errors.slice(0, 3));
       }
+      // applyScannerResults already reports a REFUSED batch to the permission banner; this
+      // line is the forensic half. Silence here for weeks is how a board ends up with no
+      // receiving hours on any new customer and nobody able to say when it started.
+      if (res.denied) console.error('Auto-scanner REFUSED by the Firestore rules — receiving hours and restrictions are no longer being learned.');
       console.log(`Auto-scanner: attempted ${res.attempted}, wrote ${res.written}, override-skips ${res.overrideSkips}, migrations ${res.legacyMigrations}`);
     }).catch((err) => {
+      reportDenied('customer_notes:auto_scan', err, 'write');
       console.error('Auto-scanner failed:', err);
     });
   }, [stops, notes, notesReady]);
@@ -1932,6 +1972,13 @@ function useCustomerNotes() {
       setNotes(next);
       setReady(true);
     }, (err) => {
+      // A DENIED READ HERE IS THE WHOLE BOARD LYING. This one collection carries every
+      // receiving hour, every closed day and every equipment restriction; the empty Map
+      // this handler leaves behind looks EXACTLY like a customer base with no restrictions
+      // at all, and nothing else on the screen disagrees with it. It gets found when a
+      // truck arrives at a dock that shut at 2pm. Offline is still silent (onSnapshot
+      // reconnects on its own) — only a rules refusal reaches the banner.
+      reportDenied('customer_notes', err);
       console.error('customer_notes snapshot error', err);
       setReady(true);
     });
@@ -1951,7 +1998,12 @@ function useSmsMessages() {
     const q = query(collection(db, 'sms_messages'), orderBy('at', 'desc'), limit(500));
     const unsub = onSnapshot(q, (snap) => {
       setMessages(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    }, (err) => console.error('sms_messages snapshot error', err));
+    }, (err) => {
+      // Denied does not mean the inbox is empty, it means the inbox is invisible — and a
+      // customer's "we're closed today" text nobody sees is a wasted trip.
+      reportDenied('sms_messages', err);
+      console.error('sms_messages snapshot error', err);
+    });
     return unsub;
   }, []);
   return messages;
@@ -2203,7 +2255,7 @@ function useDriverSnapshot(driver) {
     (async () => {
       try {
         const url = `/.netlify/functions/nuvizz-driver-route?truck=${encodeURIComponent(driver.vehicleNumber || '')}&driver=${encodeURIComponent(driver.driverName || '')}`;
-        const resp = await fetch(url);
+        const resp = await apiFetch(url);
         const data = await resp.json();
         if (cancelled) return;
         if (!data || data.ok === false) {
@@ -2356,6 +2408,175 @@ function useDeployedVersion(active) {
   return info;
 }
 
+// ── THE PERMISSION BAR ───────────────────────────────────────────────────────
+//
+// WHAT IT IS FOR. Ten Firestore paths in this app swallow their own errors, and the
+// world they were written for — `allow read, write: if true` — is ending. In the new
+// world a refused rule produces a board that looks completely normal at 6am and is
+// quietly missing every receiving hour, every closed day, every equipment restriction
+// and every SMS thread; it gets found when a truck arrives at a closed dock. A denied
+// WRITE is the same failure pointed the other way: the dispatcher drags a pin onto the
+// right door, the panel closes, and nothing was saved.
+//
+// So a permission denial gets a bar, and an offline blip does NOT (lib/permission-denied.js
+// draws that line by error code). A bar that lights every time a phone crosses a dead spot
+// on the yard is wallpaper inside a week, and wallpaper is what this must never become.
+//
+// WHERE IT SITS: above both headers, beside UpdateBanner, for the same reason — a board
+// that is not showing you everything is a whole-app condition, not a per-tab one, and it
+// must not be scrollable-past or lost by changing screens.
+//
+// TWO VIEWS. The phone stacks in ONE flow container so a long list of surfaces wraps the
+// bar TALLER instead of shouldering the buttons off a 390px screen; the desktop keeps it
+// on one line with the detail spelled out.
+function usePermissionDenials() {
+  const [list, setList] = useState(deniedSurfaces);
+  useEffect(() => subscribeDenied(setList), []);
+  return list;
+}
+
+// ── TELL A VIEWER BEFORE THEY PRESS IT, NOT AFTER ────────────────────────────
+//
+// THE FAILURE THIS ENDS. auth-gate.js has exported roleAtLeast/isStaff/roleOf since the role
+// system landed and NOTHING on any screen called them. Walked as a viewer, every dispatcher
+// action failed in one of three different presentations — an amber role bar, a red permission
+// banner, or total silence — and none of them said anything in ADVANCE. A dispatcher pressing
+// Scan now and being told "Scan running — the board will refresh automatically" when their
+// role cannot scan is the same class of lie as the 202 bug in useManualScan below.
+//
+// THE LOGISTICS CALL, AND IT IS NOT SYMMETRICAL. Greying a button out costs a viewer one
+// hover and a sentence naming who can fix it. Letting them press it costs a person who
+// BELIEVES a scan ran, a plan saved, or a customer got a text — and then acts on that belief
+// for the rest of the morning. So: DISABLED, never hidden. Hidden teaches nobody what the
+// board can do or why they cannot do it, and a control that vanishes reads as a bug.
+//
+// THE SERVER IS STILL THE AUTHORITY. This is a courtesy, not a lock — requireUser() on the
+// function is what actually refuses, and it re-reads the live user document. This only stops
+// a person walking into a refusal they could have been told about.
+//
+// AND IT MUST NEVER GREY OUT A BOARD THAT HAS NO LOGIN. With no gate up (LOGIN_MODE 'off' —
+// which is production today) the server's own gate hands every caller LEGACY_PRINCIPAL, role
+// admin, exactly the power every caller has now. Answering anything but "allowed" there would
+// disable the whole dispatch board for a site with no accounts, which is precisely the
+// lockout this stream exists to prevent. That is the first line of the hook, deliberately.
+function useSignedInUser() {
+  const [s, setS] = useState(() => getSession());
+  useEffect(() => subscribeSession(setS), []);
+  return s?.user || null;
+}
+
+// Frozen and shared so the allowed answer is referentially stable — this hook is called from
+// button rows that re-render on every board poll.
+const ROLE_GATE_OPEN = Object.freeze({ allowed: true, reason: null });
+
+/**
+ * `{ allowed, reason }` for a role-gated control. THIN EDGE over roleGateReason() in
+ * lib/auth-gate.js — the rule (including the "no login up ⇒ always allowed" guard that keeps
+ * this from greying out a board with no accounts) is pure and unit-tested there; this only
+ * subscribes to the session so a demotion lands without a reload.
+ */
+function useRoleGate(need = 'dispatcher') {
+  const user = useSignedInUser();
+  const reason = roleGateReason(user, need, { gated: LOGIN_MODE === 'server' });
+  return reason ? { allowed: false, reason } : ROLE_GATE_OPEN;
+}
+
+// `atTop` is not decoration. On a home-screen iPhone the notch inset must be carried by
+// whichever bar is ACTUALLY at the top of the screen, and by exactly one of them — three
+// bars each adding env(safe-area-inset-top) is three notches of dead space above a board
+// that is already telling you something is wrong. Shell knows the order; the bars do not
+// guess it.
+function PermissionBanner({ denials, isMobile, onSignIn, atTop = true }) {
+  if (!denials || !denials.length) return null;
+  const writes = denials.filter((d) => d.mode === 'write');
+  const reads = denials.filter((d) => d.mode !== 'write');
+  const list = (arr) => arr.map((d) => d.label).join(', ');
+
+  // ── PHONE ────────────────────────────────────────────────────────────────
+  if (isMobile) {
+    return (
+      <div className="shrink-0 flex flex-col gap-1 px-4 py-2 bg-rose-700 text-white text-[12px] font-semibold"
+        style={atTop ? { paddingTop: 'calc(0.5rem + env(safe-area-inset-top))' } : undefined}>
+        <div className="flex items-start gap-2 min-w-0">
+          <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+          <span className="min-w-0">
+            {writes.length ? <>A change did NOT save — this account may not edit {list(writes)}. </> : null}
+            {reads.length ? <>The board is not showing you {list(reads)}.</> : null}
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 pl-6">
+          {onSignIn && (
+            <button onClick={onSignIn} className="rounded bg-white px-2.5 py-1 text-[11px] font-bold text-rose-700 active:bg-rose-50">Sign in again</button>
+          )}
+          <button onClick={() => window.location.reload()} className="rounded border border-rose-300 px-2.5 py-1 text-[11px] font-bold text-white active:bg-rose-600">Reload</button>
+          <span className="font-normal text-rose-100">If this stays up, tell Chad.</span>
+        </div>
+      </div>
+    );
+  }
+
+  // ── DESKTOP ──────────────────────────────────────────────────────────────
+  return (
+    <div className="shrink-0 flex flex-wrap items-center justify-center gap-x-3 gap-y-0.5 px-4 py-1.5 bg-rose-700 text-white text-xs font-semibold">
+      <AlertTriangle size={13} className="shrink-0" />
+      <span className="min-w-0">
+        {writes.length ? <>A change did NOT save — this account is not allowed to edit <span className="font-bold">{list(writes)}</span>. </> : null}
+        {reads.length ? <>This board is NOT showing you <span className="font-bold">{list(reads)}</span> — the database refused the read.</> : null}
+        <span className="font-normal text-rose-100"> Sign in again, or tell Chad if it stays.</span>
+      </span>
+      {onSignIn && (
+        <button onClick={onSignIn} className="shrink-0 rounded bg-white px-2.5 py-1 text-[11px] font-bold text-rose-700 hover:bg-rose-50">Sign in again</button>
+      )}
+      <button onClick={() => window.location.reload()} className="shrink-0 rounded border border-rose-300 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-rose-600">Reload</button>
+    </div>
+  );
+}
+
+// ── THE ROLE BAR ─────────────────────────────────────────────────────────────
+//
+// A 401 AND A 403 ARE DIFFERENT PROBLEMS AND MUST READ DIFFERENTLY.
+//   401 — the session is gone. There is nothing useful on screen any more, so the app
+//         signs out and shows the login (App() handles that; this bar never sees it).
+//   403 — signed in fine, but this account's ROLE is too low for that endpoint. Signing
+//         out and back in changes NOTHING. Telling a viewer to "sign in again" here would
+//         send them round a login loop for pressing a dispatcher's button, learning
+//         nothing each time round.
+//
+// Dismissible, because unlike a denied READ this one is not a standing condition — the
+// board in front of them is complete and correct, they simply cannot press that button.
+function RoleRefusalBar({ refusal, isMobile, onDismiss, atTop = true }) {
+  if (!refusal) return null;
+  const what = String(refusal.url || '').split('?')[0].split('/').pop() || 'that';
+
+  // ── PHONE ────────────────────────────────────────────────────────────────
+  if (isMobile) {
+    return (
+      <div className="shrink-0 flex flex-col gap-1 px-4 py-2 bg-amber-500 text-amber-950 text-[12px] font-semibold"
+        style={atTop ? { paddingTop: 'calc(0.5rem + env(safe-area-inset-top))' } : undefined}>
+        <div className="flex items-start gap-2 min-w-0">
+          <Ban size={14} className="shrink-0 mt-0.5" />
+          <span className="min-w-0">Your account is not allowed to do that ({what}). Signing out and back in will not change it — ask Chad to raise your role.</span>
+        </div>
+        <div className="pl-6">
+          <button onClick={onDismiss} className="rounded bg-amber-950 px-2.5 py-1 text-[11px] font-bold text-amber-50 active:bg-amber-900">Dismiss</button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── DESKTOP ──────────────────────────────────────────────────────────────
+  return (
+    <div className="shrink-0 flex flex-wrap items-center justify-center gap-x-3 gap-y-0.5 px-4 py-1.5 bg-amber-500 text-amber-950 text-xs font-semibold">
+      <Ban size={13} className="shrink-0" />
+      <span className="min-w-0">
+        Your account is not allowed to do that (<span className="font-bold">{what}</span>).
+        <span className="font-normal"> Signing out and back in will not change it — ask Chad to raise your role.</span>
+      </span>
+      <button onClick={onDismiss} className="shrink-0 rounded bg-amber-950 px-2.5 py-1 text-[11px] font-bold text-amber-50 hover:bg-amber-900">Dismiss</button>
+    </div>
+  );
+}
+
 function UpdateBanner() {
   const deployed = useDeployedVersion(true);
   // This bar renders ABOVE MobileAppBar, so while it is up it owns the top of the screen and the
@@ -2389,6 +2610,53 @@ function UpdateBanner() {
       >
         Reload
       </button>
+    </div>
+  );
+}
+
+// ── THE RETIRED FLAG IS SET AND NO LOGIN IS UP ───────────────────────────────
+//
+// Somebody set VITE_AUTH_ENABLED believing they were switching the login on. They were not:
+// that flag drove the RETIRED Firebase gate, and resolveGateMode() deliberately refuses to
+// let it put up the app_users login instead — those accounts are a different set, created
+// one at a time, and on a site where they do not exist yet that would be a password box the
+// whole dispatch floor cannot pass, at 6am, curable only by a redeploy.
+//
+// BUT SILENTLY RENDERING THE BOARD WOULD BE ITS OWN LIE: a security control somebody
+// believes they switched on and did not is worse than one they know is off. So the board
+// renders, unchanged, AND says out loud that it is ungated and what to set instead.
+//
+// Not dismissible, and that is on purpose — this is a deploy-configuration mistake, not a
+// passing condition, and it is fixed by an env var and a redeploy rather than by anyone at
+// the board. It is also the LAST bar in the stack for the same reason: a stale build, a
+// refused read and a refused action are all things happening to this morning; this is not.
+function LegacyLoginFlagBar({ isMobile, atTop = true }) {
+  if (!LEGACY_FLAG_ONLY) return null;
+
+  // ── PHONE ────────────────────────────────────────────────────────────────
+  if (isMobile) {
+    return (
+      <div className="shrink-0 flex flex-col gap-1 px-4 py-2 bg-slate-700 text-white text-[12px] font-semibold"
+        style={atTop ? { paddingTop: 'calc(0.5rem + env(safe-area-inset-top))' } : undefined}>
+        <div className="flex items-start gap-2 min-w-0">
+          <ShieldAlert size={14} className="shrink-0 mt-0.5" />
+          <span className="min-w-0">
+            Sign-in is <span className="font-bold">NOT</span> switched on. VITE_AUTH_ENABLED is the retired flag and no longer does anything.
+          </span>
+        </div>
+        <div className="pl-6 font-normal text-slate-300">Set VITE_LOGIN_ENABLED and redeploy. Tell Chad.</div>
+      </div>
+    );
+  }
+
+  // ── DESKTOP ──────────────────────────────────────────────────────────────
+  return (
+    <div className="shrink-0 flex flex-wrap items-center justify-center gap-x-3 gap-y-0.5 px-4 py-1.5 bg-slate-700 text-white text-xs font-semibold">
+      <ShieldAlert size={13} className="shrink-0" />
+      <span className="min-w-0">
+        Sign-in is <span className="font-bold">NOT</span> switched on — <span className="font-bold">VITE_AUTH_ENABLED</span> is the retired flag and no longer gates anything.
+        <span className="font-normal text-slate-300"> Set <span className="font-mono">VITE_LOGIN_ENABLED</span> and redeploy (it is a build-time flag). Tell Chad.</span>
+      </span>
     </div>
   );
 }
@@ -3388,6 +3656,28 @@ function HourlyCalls({ byHour, className }) {
   );
 }
 
+// How recent a refusal has to be to be about the press we just made. Measured in MINUTES on
+// the SERVER's own clock (nuvizz-pull-today-stops computes ageMin end to end), so a phone
+// whose clock is out cannot make us blame this press for an old refusal or miss its own.
+// Two minutes covers the ~60s poll below with margin, and refuses to inherit the refusal from
+// a press five minutes ago. The read endpoint separately drops anything over six hours.
+const SCAN_REFUSAL_FRESH_MIN = 2;
+
+/**
+ * PURE. Is this the refusal for the scan we just fired?
+ *
+ * Handles the absent and the malformed on purpose: a deploy whose read endpoint does not carry
+ * lastScanRefusal yet, a null ageMin, and a non-numeric one all answer NO, so the button
+ * degrades to its previous behaviour rather than inventing a refusal. Number(null) is 0 and 0
+ * is finite — the exact trap that once shipped a midnight deadline for a stop with no deadline
+ * — so the field is checked for presence before it is coerced.
+ */
+function scanRefusalIsThisPress(refusal) {
+  if (!refusal || refusal.ageMin == null) return false;
+  const age = Number(refusal.ageMin);
+  return Number.isFinite(age) && age >= 0 && age <= SCAN_REFUSAL_FRESH_MIN;
+}
+
 // Manual "Scan now" — fires the SAME cheap scheduled scan path (NUVIZZ_LIST_DISCOVERY):
 // the saved-search planned/unplanned + completed pulls + the load roster, for today AND
 // tomorrow. ~4 NuVizz calls (plus one /stop/info per genuinely-new order). It must NOT
@@ -3398,8 +3688,15 @@ function useManualScan(selectedDate, lastScannedAt, refresh) {
   const [scanning, setScanning] = useState(false);
   const [scanCooldown, setScanCooldown] = useState(false);
   const [scanErr, setScanErr] = useState(null);
+  // A manual scan spends real NuVizz calls and moves the board every dispatcher is reading,
+  // so nuvizz-manual-scan-background gates it at dispatcher. Said BEFORE the press, on the
+  // button, rather than after it in a bar — see useRoleGate.
+  const gate = useRoleGate('dispatcher');
   const manualScan = useCallback(async () => {
     if (scanning || scanCooldown) return;
+    // Belt as well as braces: the button is disabled, but a stale render or a keyboard
+    // activation must not fire a request whose only possible answer is a refusal.
+    if (!gate.allowed) { setScanErr(gate.reason); setTimeout(() => setScanErr(null), 6000); return; }
     setScanning(true); setScanErr(null);
     try {
       // Fire the ASYNC background scanner (15-min budget) in list-discovery mode (manual=1, NO
@@ -3416,10 +3713,10 @@ function useManualScan(selectedDate, lastScannedAt, refresh) {
       //     morning it outruns the 26s request cap and the gateway kills it with 502/504 (the
       //     Jul 31 "Scan refused (HTTP 504)"). Light days pass, heavy days fail — the button
       //     died exactly when a fresh scan mattered most.
-      let resp = await fetch('/.netlify/functions/nuvizz-manual-scan-background', { method: 'POST' });
-      if (!resp.ok) resp = await fetch(`/.netlify/functions/nuvizz-refresh-stops-background?manual=1`, { method: 'POST' });
+      let resp = await apiFetch('/.netlify/functions/nuvizz-manual-scan-background', { method: 'POST' });
+      if (!resp.ok) resp = await apiFetch(`/.netlify/functions/nuvizz-refresh-stops-background?manual=1`, { method: 'POST' });
       // NO ?date= on this one — with a date it flips into the ~3,000-call number-probe path.
-      if (!resp.ok) resp = await fetch('/.netlify/functions/nuvizz-manual-scan', { method: 'POST' });
+      if (!resp.ok) resp = await apiFetch('/.netlify/functions/nuvizz-manual-scan', { method: 'POST' });
       // Say WHAT failed — and say it truthfully: a 502/504 is the scan OUTRUNNING the request
       // window, not the endpoint refusing (the old wording sent the diagnosis the wrong way).
       if (!resp.ok) {
@@ -3427,16 +3724,50 @@ function useManualScan(selectedDate, lastScannedAt, refresh) {
           ? `Scan timed out (HTTP ${resp.status}) — the board is too big for the synchronous scanner; the background scanner should have taken this (report this if it persists)`
           : `Scan refused (HTTP ${resp.status}) — the scanner endpoint did not accept the request`);
       }
+      // A REFUSED SCAN MUST NOT READ AS A RUNNING ONE.
+      //
+      // nuvizz-manual-scan-background is a *-background* function: Netlify answers 202 the
+      // instant the request lands and DISCARDS whatever the handler returns, so a 401 from
+      // its role gate arrives here as resp.ok === true. Both fallbacks are skipped, the poll
+      // finds nothing changed, and the button says "Scan running — the board will refresh
+      // automatically" while nothing ran and nothing ever will. That is the reassurance
+      // version of a hardcoded success, and it is worse than an error: a dispatcher who
+      // believes a scan is running does not press it again, does not call anyone, and works
+      // a stale board until somebody notices at the dock.
+      //
+      // The channel that contradicts it is nuvizz_ops/scan_refusal, written by that gate and
+      // served straight back on `lastScanRefusal` by the poll we are already making — no
+      // extra request, no extra round trip. Degrades to the old behaviour on a deploy whose
+      // read endpoint does not carry the field yet: absent means "nothing to say".
       let updated = false;
+      let refusal = null;
       for (let i = 0; i < 20 && !updated; i++) {          // poll up to ~60s
         await new Promise((r) => setTimeout(r, 3000));
         try {
           const d = await fetchJsonWithRetry(pollUrl);
           if (d && d.lastScannedAt && d.lastScannedAt !== before) updated = true;
+          // WHY ageMin AND NOT A TIMESTAMP COMPARE — see scanRefusalIsThisPress above: `at` is
+          // the SERVER's clock and Date.now() here is the BROWSER's, and a phone a few minutes
+          // out would either blame this press for an old refusal or miss its own.
+          else if (scanRefusalIsThisPress(d?.lastScanRefusal)) refusal = d.lastScanRefusal;
         } catch { /* keep polling */ }
       }
       await refresh({ silent: true });
-      if (!updated) { setScanErr('Scan running — the board will refresh automatically'); setTimeout(() => setScanErr(null), 6000); }
+      // DELIBERATELY NOT AN EARLY BREAK on seeing a refusal. Two dispatchers share this
+      // board: if a viewer is refused at 06:00:10 and a dispatcher presses at 06:00:40, the
+      // second press SUCCEEDS and its poll would still see that fresh refusal. Only reporting
+      // it when the scan also failed to land keeps the sentence true for both of them; the
+      // cost is that the news arrives at the end of the window it already waited out.
+      if (!updated) {
+        // The server's own sentence is used VERBATIM (refusalMessage in lib/background-gate.mts
+        // already says what happened and what to do, and it was written for the person holding
+        // the phone). Re-wording it here would give one failure two vocabularies and no way to
+        // tell which one somebody was quoting. All this adds is WHICH button it was about.
+        setScanErr(refusal
+          ? `Scan did not run. ${refusal.message || `Refused (${refusal.reason || 'no reason given'}).`}`
+          : 'Scan running — the board will refresh automatically');
+        setTimeout(() => setScanErr(null), refusal ? 12000 : 6000);
+      }
       setScanCooldown(true);
       setTimeout(() => setScanCooldown(false), 60000);
     } catch (e) {
@@ -3445,8 +3776,11 @@ function useManualScan(selectedDate, lastScannedAt, refresh) {
     } finally {
       setScanning(false);
     }
-  }, [scanning, scanCooldown, refresh, selectedDate, lastScannedAt]);
-  return { scanning, scanCooldown, scanErr, manualScan };
+  }, [scanning, scanCooldown, refresh, selectedDate, lastScannedAt, gate.allowed, gate.reason]);
+  // `scanDenied` is the sentence for the button's title= and the reason to disable it; null
+  // when this account may scan (and ALWAYS null on a site with no login, where the server
+  // treats every caller as the legacy admin — see useRoleGate).
+  return { scanning, scanCooldown, scanErr, manualScan, scanDenied: gate.reason };
 }
 
 // "N unplanned in last scan" — the reference count for how many stops the list SHOULD
@@ -3515,7 +3849,7 @@ function useTravelInputs() {
     let cancelled = false;
     const load = async () => {
       try {
-        const r = await fetch('/.netlify/functions/travel-model');
+        const r = await apiFetch('/.netlify/functions/travel-model');
         const j = await r.json();
         if (cancelled || !j?.ok) return;
         const next = {
@@ -3559,7 +3893,7 @@ function useFlagTierFloor(date) {
     let cancelled = false;
     const load = async () => {
       try {
-        const r = await fetch(`/.netlify/functions/eta-flag-history?date=${encodeURIComponent(date)}`);
+        const r = await apiFetch(`/.netlify/functions/eta-flag-history?date=${encodeURIComponent(date)}`);
         const j = await r.json();
         if (cancelled || !j?.ok) return;
         const next = {};
@@ -3806,7 +4140,7 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
 // other screens (Routing renders it too). Collapsible to just the stops count; the
 // refresh icon fires the cheap manual scan (useManualScan). Pure presentation — all
 // state comes in as props so each screen wires its own useStops/useManualScan.
-function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, unplannedAt, completedAt, isToday, ops, scanErr, scanning, scanCooldown, onRefresh, collapsed, onToggleCollapsed, scanUnplannedCount, visibleUnplannedCount, drawnCount = null }) {
+function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, unplannedAt, completedAt, isToday, ops, scanErr, scanning, scanCooldown, scanDenied = null, onRefresh, collapsed, onToggleCollapsed, scanUnplannedCount, visibleUnplannedCount, drawnCount = null }) {
   // `drawnCount` (Routing) = pins actually on the map right now. The card used to publish the
   // whole day board while the map drew a filtered subset, so the number on the chip matched
   // neither the pins beneath it nor the bottom grid — Chad, counting dots: "there are more dots
@@ -3833,11 +4167,14 @@ function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, 
             {carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}
           </span>
         </button>
+        {/* DISABLED, NOT HIDDEN, for a role that cannot scan: a greyed button with a title
+            naming the role costs a hover; a button that runs nothing while looking like it
+            worked costs a morning on a stale board. */}
         <button
           onClick={onRefresh}
-          disabled={scanning || scanCooldown}
+          disabled={scanning || scanCooldown || !!scanDenied}
           className="ml-auto p-1 rounded hover:bg-slate-100 disabled:opacity-50 min-w-[44px] min-h-[44px] inline-flex items-center justify-center"
-          title={scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)'}
+          title={scanDenied || (scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)')}
         >
           <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
         </button>
@@ -4897,7 +5234,7 @@ function fetchDriverPhone(name) {
   if (!key) return Promise.resolve(null);
   if (__driverPhoneCache.has(key)) return Promise.resolve(__driverPhoneCache.get(key));
   if (__driverPhoneInFlight.has(key)) return __driverPhoneInFlight.get(key);
-  const p = fetch(`/.netlify/functions/driver-phone?name=${encodeURIComponent(String(name).trim())}`)
+  const p = apiFetch(`/.netlify/functions/driver-phone?name=${encodeURIComponent(String(name).trim())}`)
     .then((r) => r.json())
     .then((d) => (d && d.ok && d.phone ? String(d.phone) : null))
     .catch(() => null) // a failed lookup just means no number to show — never a broken panel
@@ -4921,7 +5258,7 @@ function useDriverPhone(driverName) {
 }
 
 async function postSendSms(payload) {
-  const r = await fetch('/.netlify/functions/send-sms', {
+  const r = await apiFetch('/.netlify/functions/send-sms', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
   });
   return r.json();
@@ -5989,7 +6326,7 @@ function DocumentViewerModal({ src, title, subtitle, isImage = false, onClose })
     if (isImg && !shareable) return undefined;
     (async () => {
       try {
-        const r = await fetch(src);
+        const r = await apiFetch(src);
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const bytes = await r.arrayBuffer();
         if (!dead) setDoc({ bytes, type: r.headers.get('content-type') || '' });
@@ -6100,7 +6437,7 @@ function PodDocsSection({ stop, onRefreshed }) {
     if (!pro || loading) return;
     setLoading(true); setErr(null);
     try {
-      const r = await fetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' });
+      const r = await apiFetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' });
       const d = await r.json();
       if (d.ok && d.stop) { setTried(true); onRefreshed?.(d.stop); }
       else setErr(d.reason || 'not found');
@@ -6752,7 +7089,7 @@ function StopActivityTimeline({ stopNbr, stopId, onRefreshed }) {
     const qs = new URLSearchParams();
     if (stopNbr) qs.set('stopNbr', stopNbr);
     if (stopId) qs.set('stopId', stopId);
-    fetch('/.netlify/functions/nuvizz-stop-events?' + qs.toString(), { cache: 'no-store' })
+    apiFetch('/.netlify/functions/nuvizz-stop-events?' + qs.toString(), { cache: 'no-store' })
       .then((r) => r.json())
       .then((d) => {
         if (cancelled) return;
@@ -6836,7 +7173,7 @@ function StopNuvizzNoteComposer({ stop, onRefreshed }) {
         setText('');
         // Pull the order back so the note shows in the notes list immediately.
         try {
-          const d = await fetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' }).then((x) => x.json());
+          const d = await apiFetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' }).then((x) => x.json());
           // Same wrong-twin rule as the write: never repaint this card with a record that
           // isn't the one it is showing (the by-number lookup can answer with the twin).
           if (d?.ok && d.stop && (!stop?.stopId || !d.stop.stopId || String(d.stop.stopId) === String(stop.stopId))) onRefreshed?.(d.stop);
@@ -6945,7 +7282,7 @@ function StopDeliveryDateEditor({ stop, onRefreshed }) {
           ? { kind: 'warn', text: `Moved ${out.fromDate ? `${out.fromDate} → ${date}` : `to ${date}`} in NuVizz — but ${out.boardWarning}` }
           : { kind: 'ok', text: `Moved ${out.fromDate ? `${out.fromDate} → ${date}` : `to ${date}`} in NuVizz — off this board until then.` });
         try {
-          const d = await fetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' }).then((x) => x.json());
+          const d = await apiFetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' }).then((x) => x.json());
           // The server verified the record it moved (out.stopId). Only repaint the card when
           // the lookup answered with that same record — the by-number lookup can return the
           // OTHER order sharing this number, and repainting with it is exactly how a date
@@ -7010,7 +7347,7 @@ function StopLiveDetail({ stop, onRefreshed }) {
     if (!pro || refreshing) return;
     setRefreshing(true); setRefreshErr(null);
     try {
-      const r = await fetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' });
+      const r = await apiFetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' });
       const d = await r.json();
       if (d.ok && d.stop) {
         // The funnel refuses a pull that answered with the OTHER order sharing this number
@@ -7179,7 +7516,7 @@ function StopContactBlock({ stop, note, onSaveContacts, onRefreshed, saving = fa
         // replaced. Same wrong-twin rule as the write: never repaint this card with a record
         // that isn't the one it is showing.
         try {
-          const d = await fetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' }).then((x) => x.json());
+          const d = await apiFetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' }).then((x) => x.json());
           if (d?.ok && d.stop && (!stop?.stopId || !d.stop.stopId || String(d.stop.stopId) === String(stop.stopId))) onRefreshed?.(d.stop);
         } catch { /* the contact landed; the refresh is a nicety */ }
       // amber, not red, and the saved half is stated FIRST — the number IS on file for this
@@ -7852,7 +8189,7 @@ function useProDrivers(name, historyLen) {
     if (!nm || !historyLen) { setMap(null); return; }
     if (_proDriverCache.has(nm)) { setMap(_proDriverCache.get(nm)); return; }
     let alive = true;
-    fetch(`/.netlify/functions/nuvizz-customer-history?name=${encodeURIComponent(nm)}`)
+    apiFetch(`/.netlify/functions/nuvizz-customer-history?name=${encodeURIComponent(nm)}`)
       .then((r) => r.json())
       .then((j) => {
         const m = new Map();
@@ -7896,11 +8233,11 @@ function useCustomerRecent(matchKey, name) {
     (async () => {
       let list = null;
       if (mk) {
-        const j = await fetch(`/.netlify/functions/nuvizz-customer-history?matchKey=${encodeURIComponent(mk)}`).then((r) => r.json()).catch(() => null);
+        const j = await apiFetch(`/.netlify/functions/nuvizz-customer-history?matchKey=${encodeURIComponent(mk)}`).then((r) => r.json()).catch(() => null);
         if (j?.ok) list = shape(j);
       }
       if ((!list || !list.length) && nm) {
-        const j = await fetch(`/.netlify/functions/nuvizz-customer-history?name=${encodeURIComponent(nm)}`).then((r) => r.json()).catch(() => null);
+        const j = await apiFetch(`/.netlify/functions/nuvizz-customer-history?name=${encodeURIComponent(nm)}`).then((r) => r.json()).catch(() => null);
         if (j?.ok) list = shape(j); else if (!list) list = null;
       }
       if (list != null) _custRecentCache.set(cacheKey, list);   // a failed lookup must not blank the section all session
@@ -7990,7 +8327,9 @@ function useDriverHabit(matchKey) {
     const id = `davis__${String(matchKey).replace(/[^A-Za-z0-9_.-]/g, '_')}`;
     getDoc(doc(db, 'routing_customer_drivers', id))
       .then((snap) => { if (alive && snap.exists()) setHabit(snap.data()); })
-      .catch(() => { /* habit line is best-effort */ });
+      // Best-effort by design, but a REFUSAL is not a miss — it means this collection is
+      // shut to the browser, and every stop card silently loses its usual-driver line.
+      .catch((err) => { reportDenied('routing_customer_drivers', err); });
     return () => { alive = false; };
   }, [matchKey]);
   return habit;
@@ -8058,7 +8397,7 @@ function CopyProButton({ pro }) {
   );
 }
 
-function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, drivers = [], mobile = false, side = 'right', embedded = false }) {
+function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenied = null, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, drivers = [], mobile = false, side = 'right', embedded = false }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
   // True once the dispatcher edits the draft; cleared on stop-change and save.
@@ -8180,9 +8519,14 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
                 Cancel
               </button>
             )}
+            {/* DESKTOP save bar. Disabled rather than hidden for a role that may not write
+                customer_notes: the hours on screen are still worth reading, and a Save that
+                looks pressable and writes nothing is how a customer's receiving window gets
+                "saved" into thin air. */}
             <button
               onClick={() => { dirtyRef.current = false; onSave(D); setEditing(false); }}
-              disabled={saving}
+              disabled={saving || !!saveDenied}
+              title={saveDenied || undefined}
               className="px-3 py-1.5 text-xs text-white font-semibold rounded inline-flex items-center gap-1 disabled:opacity-50"
               style={{ background: BRAND }}
             >
@@ -8666,7 +9010,13 @@ function makeDriverLabelOverlayClass(google) {
 // MOBILE_BREAKPOINT. Renders the "D" mark, "Dispatch" label, and a tap-able
 // version chip on the right. Tapping the chip toggles a small overflow menu
 // the parent owns (Diagnostics access lives here, per brief P5.1).
-function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnread = 0, presence = null, manifestBadge = 0 }) {
+// `atTop` — SAME CONTRACT AS PermissionBanner / RoleRefusalBar, and it was missing here.
+// Those two correctly gate their inset and render ABOVE this bar, so on a notched iPhone with
+// a permission bar up the inset was applied TWICE: ~47px of dead space pushing the board down
+// on the morning something is already wrong. The bar that is actually at the top carries it,
+// and Shell is the one that knows which that is (see headerAtTop) — this component never
+// guesses. Defaults true so any caller that does not pass it behaves exactly as before.
+function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnread = 0, presence = null, manifestBadge = 0, atTop = true }) {
   // Starts open so the tabs under it stay one tap away; remembered per device.
   const [moreOpen, setMoreOpen] = useState(() => {
     try { return window.localStorage.getItem('dd_more_open') !== '0'; } catch { return true; }
@@ -8683,8 +9033,13 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
         // GROWS by the safe-area inset — content sits below the notch with a full
         // 48px row, instead of the inset eating into a fixed 48px (which squeezed
         // the logo/version under the status bar on notched phones).
-        minHeight: 'calc(48px + env(safe-area-inset-top))',
-        paddingTop: 'env(safe-area-inset-top)',
+        //
+        // Both halves are conditional TOGETHER: with a bar above us the notch is already
+        // paid for, so the inset must come out of the padding AND out of the minHeight, or
+        // the row keeps the 47px it no longer needs and nothing looks fixed.
+        ...(atTop
+          ? { minHeight: 'calc(48px + env(safe-area-inset-top))', paddingTop: 'env(safe-area-inset-top)' }
+          : { minHeight: '48px' }),
       }}
     >
       <div className="flex items-center gap-2 flex-shrink-0 min-w-0">
@@ -9008,7 +9363,7 @@ function PastProSearch({ notes, initialQuery, onPickCustomer, onClose, noApi = f
     const param = isProLike ? ('pro=' + encodeURIComponent(query)) : ('name=' + encodeURIComponent(query));
     const t = setTimeout(async () => {
       try {
-        const res = await fetch('/.netlify/functions/nuvizz-customer-history?' + param);
+        const res = await apiFetch('/.netlify/functions/nuvizz-customer-history?' + param);
         const d = await res.json();
         if (cancelled) return;
         setRemote({ loading: false, customers: Array.isArray(d.customers) ? d.customers : [], error: d.ok ? null : (d.reason || null) });
@@ -9065,7 +9420,7 @@ function PastProSearch({ notes, initialQuery, onPickCustomer, onClose, noApi = f
     if (hit?.pro && hit?.date) {
       setOpening(m.key);
       try {
-        const r = await fetch('/.netlify/functions/nuvizz-customer-history?stop=' + encodeURIComponent(hit.pro) + '&date=' + encodeURIComponent(hit.date));
+        const r = await apiFetch('/.netlify/functions/nuvizz-customer-history?stop=' + encodeURIComponent(hit.pro) + '&date=' + encodeURIComponent(hit.date));
         const d = await r.json();
         if (d?.ok && d.stop) {
           // The warehouse stores the customer key as customerMatchKey; reattach matchKey
@@ -9085,7 +9440,7 @@ function PastProSearch({ notes, initialQuery, onPickCustomer, onClose, noApi = f
   const runApi = async () => {
     setApi({ loading: true });
     try {
-      const r = await fetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(query));
+      const r = await apiFetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(query));
       const d = await r.json();
       setApi(d.ok && d.stop ? { stop: d.stop } : { error: d.reason || 'not found' });
     } catch (e) { setApi({ error: e.message }); }
@@ -9662,7 +10017,7 @@ function MobileLoadsTab({ loads, onPickLoad }) {
 // stop components as the desktop sidebar (StopDataSections + ProsSection +
 // StopNotesSection) in a single scroll, so mobile has full desktop parity —
 // every edit option, one inline Edit, one Save.
-function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, drivers = [] }) {
+function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, saveDenied = null, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, drivers = [] }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -9760,9 +10115,12 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
             >
               Cancel
             </button>
+            {/* PHONE save bar — its own component and its own markup per CLAUDE.md, so it
+                needs its own gate. Same rule as the desktop sidebar above. */}
             <button
               onClick={() => { dirtyRef.current = false; onSave(D); setEditing(false); }}
-              disabled={saving}
+              disabled={saving || !!saveDenied}
+              title={saveDenied || undefined}
               className="px-4 py-2 text-sm text-white font-semibold rounded inline-flex items-center gap-1.5 disabled:opacity-50"
               style={{ background: BRAND, minHeight: 44 }}
             >
@@ -10136,7 +10494,7 @@ function buildStaticMapUrl(center, zoom, stops) {
 // POST a capture bundle to the backend, which files it as a GitHub issue.
 async function postDebugBundle(bundle) {
   const secret = import.meta.env.VITE_DEBUG_CAPTURE_SECRET;
-  const resp = await fetch('/.netlify/functions/debug-capture', {
+  const resp = await apiFetch('/.netlify/functions/debug-capture', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(secret ? { 'x-debug-secret': secret } : {}) },
     body: JSON.stringify(bundle),
@@ -10278,7 +10636,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
 
   // Manual "Scan now" — the cheap list-discovery scan, shared logic in useManualScan
   // (also used by the Routing tab's status card). See the hook for the cost notes.
-  const { scanning, scanCooldown, scanErr, manualScan } = useManualScan(selectedDate, lastScannedAt, refresh);
+  const { scanning, scanCooldown, scanErr, manualScan, scanDenied } = useManualScan(selectedDate, lastScannedAt, refresh);
 
   // Another dispatcher just SAVED (their presence doc's saveAt moved) → silently
   // re-read the Firestore board now, instead of waiting out the 2-minute poll.
@@ -10321,7 +10679,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   useEffect(() => {
     if (!routesPanelOn || !selectedDate) return;
     let cancelled = false;
-    fetch('/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(selectedDate), { cache: 'no-store' })
+    apiFetch('/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(selectedDate), { cache: 'no-store' })
       .then((r) => r.json())
       .then((j) => {
         if (cancelled) return;
@@ -10404,6 +10762,11 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   const [filters, setFilters] = useState({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
+  // Receiving hours, closed days and equipment restrictions are customer_notes writes, which
+  // firestore.rules gates at isStaff() = dispatcher|admin. Handed to BOTH stop panels — the
+  // desktop sidebar and the phone drawer are separate components with separate Save bars, and
+  // gating one and not the other is how half a fix ships.
+  const notesGate = useRoleGate('dispatcher');
   // M4.5 P3.3 — Driver marker labels are hidden by default on mobile to reduce
   // visual clutter; tapping a marker temporarily reveals the label as a side
   // effect of opening the driver-snapshot drawer (the labels stay visible while
@@ -10463,7 +10826,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   const [chatOpen, setChatOpen] = useState(false);
   useEffect(() => {
     let alive = true;
-    fetch('/.netlify/functions/ai-search')
+    apiFetch('/.netlify/functions/ai-search')
       .then((r) => r.json())
       .then((d) => { if (alive) setAiAvailable(!!d?.available); })
       .catch(() => { /* leave optimistic; POST surfaces ai_key_missing if needed */ });
@@ -10760,7 +11123,13 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         last_updated: serverTimestamp(),
       }, { merge: true });
       setMovingStop(null); setMovedTo(null);
-    } catch (e) { console.error('save location override', e); }
+    } catch (e) {
+      // firestore.rules calls a BAD override "a truck sent to the wrong door". A DENIED one
+      // is the worse cousin: the dispatcher drags the pin onto the right dock, the panel
+      // closes, and nothing was written. Never let that pass as a save.
+      reportDenied('customer_notes:location_override', e, 'write');
+      console.error('save location override', e);
+    }
     finally { setSavingLoc(false); }
   }, [movingStop, movedTo]);
   const resetStopLocation = useCallback(async () => {
@@ -10771,7 +11140,10 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         match_key: movingStop.matchKey, location_override: null, last_updated: serverTimestamp(),
       }, { merge: true });
       setMovingStop(null); setMovedTo(null);
-    } catch (e) { console.error('reset location override', e); }
+    } catch (e) {
+      reportDenied('customer_notes:location_override', e, 'write');
+      console.error('reset location override', e);
+    }
     finally { setSavingLoc(false); }
   }, [movingStop]);
 
@@ -11646,6 +12018,13 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
 
   const handleSave = async (draft) => {
     if (!db || !selectedStop) return;
+    // customer_notes create/update is isStaff() in firestore.rules (dispatcher|admin). A
+    // refused note save is the original silent failure this whole review is about: the
+    // dispatcher types the receiving hours a customer just gave them on the phone, presses
+    // Save, watches the panel close — and the flag engine keeps working off nothing. The
+    // rule now says so before the press (the button is disabled) and again here, in case
+    // the press arrived some other way.
+    if (notesGate.reason) { setSaveError(notesGate.reason); return; }
     setSaving(true);
     setSaveError(null);
     try {
@@ -11827,12 +12206,15 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                       shrinks — the row's slack comes out of the controls instead. */}
                   <span className="whitespace-nowrap">{stops.length} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}</span>
                 </button>
+                {/* PHONE — see the desktop twin below. Greyed for a role that cannot scan,
+                    with the reason on the title; the tap does nothing either way, and this
+                    way the person can find out why without pressing it. */}
                 <button
                   onClick={manualScan}
-                  disabled={scanning || scanCooldown}
+                  disabled={scanning || scanCooldown || !!scanDenied}
                   className="ml-auto p-1 rounded hover:bg-slate-100 active:bg-slate-200 disabled:opacity-50 flex-shrink-0 min-w-[44px] min-h-[44px] inline-flex items-center justify-center"
                   aria-label="Scan now"
-                  title={scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)'}
+                  title={scanDenied || (scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)')}
                 >
                   <RefreshCw size={14} className={scanning ? 'animate-spin' : ''} />
                 </button>
@@ -12051,6 +12433,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             }}
             saving={saving}
             saveError={saveError}
+            saveDenied={notesGate.reason}
           />
         )}
 
@@ -12208,6 +12591,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             onSave={handleSave}
             saving={saving}
             saveError={saveError}
+            saveDenied={notesGate.reason}
             onOpenRoute={(loadNbr) => { openRouteExplicit(loadNbr); }}
           />
         ) : (
@@ -12311,11 +12695,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                   <span>{stops.length} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}</span>
                 </button>
                 <BoardFlagsChip flags={visibleFlagCounts} open={flagsPanelOpen} onToggle={() => setFlagsPanelOpen((o) => !o)} />
+                {/* DESKTOP — its own markup, per CLAUDE.md. Same rule as the phone twin. */}
                 <button
                   onClick={manualScan}
-                  disabled={scanning || scanCooldown}
+                  disabled={scanning || scanCooldown || !!scanDenied}
                   className="ml-auto p-1 rounded hover:bg-slate-100 disabled:opacity-50 min-w-[44px] min-h-[44px] inline-flex items-center justify-center"
-                  title={scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)'}
+                  title={scanDenied || (scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)')}
                 >
                   <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
                 </button>
@@ -12746,7 +13131,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     // DEBOUNCE custom-range pulls: a native date input fires onChange per SEGMENT edit, so a
     // straight fetch would fire a pull on each keystroke. A window preset needs no debounce.
     const timer = setTimeout(() => {
-      fetch('/.netlify/functions/nuvizz-stop-explorer', {
+      apiFetch('/.netlify/functions/nuvizz-stop-explorer', {
         method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(req), signal: ctrl.signal,
       })
@@ -12869,7 +13254,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   useEffect(() => {
     if (view !== 'loads' || !boardDate) return;
     let cancelled = false;
-    fetch('/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(boardDate), { cache: 'no-store' })
+    apiFetch('/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(boardDate), { cache: 'no-store' })
       .then((r) => r.json())
       .then((j) => { if (!cancelled) setRoster(j.ok ? (j.loads || []) : []); })
       .catch(() => { if (!cancelled) setRoster([]); });
@@ -13460,17 +13845,23 @@ function StopMiniTable({ stops, notes, onPick, columns, onColumnsChange, searchQ
 
 function DiagnosticsScreen({ stops, notes, ops, lastLoadScanAt, lastUnplannedScanAt, onRefresh, refreshing }) {
   const [scanning, setScanning] = useState(false);
+  // Same gate as the Map's Scan now — the scanner spends NuVizz calls and moves everyone's
+  // board, so nuvizz-refresh-stops-background requires dispatcher. Resolved once here and
+  // handed to both panels, so the two Scan-now buttons on this screen can never disagree
+  // about who may press them.
+  const scanGate = useRoleGate('dispatcher');
   const scanNow = useCallback(async () => {
+    if (!scanGate.allowed) return;
     setScanning(true);
     try {
-      const r = await fetch(`${SCAN_NOW_URL}?manual=1`, { method: 'POST' });
+      const r = await apiFetch(`${SCAN_NOW_URL}?manual=1`, { method: 'POST' });
       if (!r.ok && r.status !== 202) throw new Error('scan unavailable');
       // Background scan runs async — re-pull stats a couple times as results land.
       setTimeout(() => onRefresh?.(), 6000);
       setTimeout(() => onRefresh?.(), 16000);
     } catch { /* the stats refresh will reflect reality either way */ }
     finally { setTimeout(() => setScanning(false), 16000); }
-  }, [onRefresh]);
+  }, [onRefresh, scanGate.allowed]);
 
   return (
     <div className={`flex-1 min-h-0 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6 ${SCREEN_DASH}`}>
@@ -13479,9 +13870,9 @@ function DiagnosticsScreen({ stops, notes, ops, lastLoadScanAt, lastUnplannedSca
         <p className="text-sm text-slate-600 mt-1">NuVizz API usage and the live scan schedule. Schedule edits apply to the running scanner.</p>
       </div>
 
-      <ApiCallsPanel ops={ops} lastLoadScanAt={lastLoadScanAt} lastUnplannedScanAt={lastUnplannedScanAt} onRefresh={onRefresh} refreshing={refreshing} onScanNow={scanNow} scanning={scanning} />
+      <ApiCallsPanel ops={ops} lastLoadScanAt={lastLoadScanAt} lastUnplannedScanAt={lastUnplannedScanAt} onRefresh={onRefresh} refreshing={refreshing} onScanNow={scanNow} scanning={scanning} scanDenied={scanGate.reason} />
       <CaptureHealthPanel />
-      <SchedulePanel onScanNow={scanNow} scanning={scanning} onSaved={onRefresh} />
+      <SchedulePanel onScanNow={scanNow} scanning={scanning} scanDenied={scanGate.reason} onSaved={onRefresh} />
 
       <details className="group">
         <summary className="cursor-pointer text-xs font-semibold text-slate-400 hover:text-slate-600 select-none">Data-quality checks (M3, in progress)</summary>
@@ -13580,7 +13971,7 @@ function CaptureHealthPanel() {
 
   const load = useCallback(() => {
     setLoading(true); setErr('');
-    fetch(CAPTURE_HEALTH_URL, { cache: 'no-store' })
+    apiFetch(CAPTURE_HEALTH_URL, { cache: 'no-store' })
       .then((r) => r.json())
       .then((d) => { if (!d?.ok) throw new Error(d?.error || 'unavailable'); setData(d); })
       .catch((e) => setErr(String(e?.message || e)))
@@ -13591,7 +13982,7 @@ function CaptureHealthPanel() {
   // Ask the endpoint what it WOULD do before offering the button that does it.
   const beginMark = useCallback((date) => {
     setMarking({ date, reason: '', checking: true, verdict: null, error: '', saving: false });
-    fetch(`${CAPTURE_TOMBSTONE_URL}?date=${encodeURIComponent(date)}&dryRun=1`, { cache: 'no-store' })
+    apiFetch(`${CAPTURE_TOMBSTONE_URL}?date=${encodeURIComponent(date)}&dryRun=1`, { cache: 'no-store' })
       .then((r) => r.json())
       .then((d) => setMarking((m) => (m && m.date === date
         // The dry run runs with no reason, so a missing reason is the ONE refusal that is
@@ -13605,7 +13996,7 @@ function CaptureHealthPanel() {
     setMarking((m) => (m ? { ...m, saving: true, error: '' } : m));
     const cur = marking;
     if (!cur) return;
-    fetch(`${CAPTURE_TOMBSTONE_URL}?date=${encodeURIComponent(cur.date)}&reason=${encodeURIComponent(cur.reason.trim())}`, { method: 'POST' })
+    apiFetch(`${CAPTURE_TOMBSTONE_URL}?date=${encodeURIComponent(cur.date)}&reason=${encodeURIComponent(cur.reason.trim())}`, { method: 'POST' })
       .then((r) => r.json())
       .then((d) => {
         // NEVER REPORT AN INTENT AS AN OUTCOME. The panel closes and reloads only when the
@@ -13846,10 +14237,10 @@ function LabelBars({ data, color = 'bg-violet-400/80' }) {
   );
 }
 
-function ApiCallsPanel({ ops, lastLoadScanAt, lastUnplannedScanAt, onRefresh, refreshing, onScanNow, scanning }) {
+function ApiCallsPanel({ ops, lastLoadScanAt, lastUnplannedScanAt, onRefresh, refreshing, onScanNow, scanning, scanDenied = null }) {
   const headerBtns = (
     <div className="flex items-center gap-2">
-      <button onClick={onScanNow} disabled={scanning}
+      <button onClick={onScanNow} disabled={scanning || !!scanDenied} title={scanDenied || undefined}
         className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap">
         <RefreshCw size={12} className={scanning ? 'animate-spin' : ''} /> Scan now
       </button>
@@ -14240,7 +14631,7 @@ function EstimateLine({ form }) {
   return <div className="text-[11px] text-slate-500 mt-2">≈ <span className="font-semibold">{total}</span> scans/day at this cadence (weekday, outside blackout).</div>;
 }
 
-function SchedulePanel({ onScanNow, scanning, onSaved }) {
+function SchedulePanel({ onScanNow, scanning, scanDenied = null, onSaved }) {
   const [data, setData] = useState(null);
   const [form, setForm] = useState(null);
   const [status, setStatus] = useState('loading'); // loading|ready|saving|saved|error
@@ -14249,7 +14640,7 @@ function SchedulePanel({ onScanNow, scanning, onSaved }) {
   const load = useCallback(async () => {
     setStatus('loading'); setErr(null);
     try {
-      const r = await fetch(SCAN_CONFIG_URL, { cache: 'no-store' });
+      const r = await apiFetch(SCAN_CONFIG_URL, { cache: 'no-store' });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'load failed');
       setData(j); setForm({ ...j.config }); setStatus('ready');
@@ -14286,7 +14677,7 @@ function SchedulePanel({ onScanNow, scanning, onSaved }) {
     setStatus('saving'); setErr(null);
     try {
       const payload = override || form;
-      const r = await fetch(SCAN_CONFIG_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const r = await apiFetch(SCAN_CONFIG_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'save failed');
       setData(j); setForm({ ...j.config }); setStatus('saved');
@@ -14300,7 +14691,7 @@ function SchedulePanel({ onScanNow, scanning, onSaved }) {
     <div className="flex items-center gap-2">
       {!persistent && <MiniBadge tone="amber"><AlertTriangle size={11} /> read-only</MiniBadge>}
       {status === 'saved' && <MiniBadge tone="green">saved</MiniBadge>}
-      <button onClick={onScanNow} disabled={scanning}
+      <button onClick={onScanNow} disabled={scanning || !!scanDenied} title={scanDenied || undefined}
         className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap">
         <RefreshCw size={12} className={scanning ? 'animate-spin' : ''} /> Scan now
       </button>
@@ -14516,7 +14907,12 @@ function useBottomPanelProfiles() {
       }
       setList(remote);
       safeWriteJSON(LS_BOTTOM_PROFILES, { list: remote });   // offline cache for next cold start
-    }, () => { /* rules/offline: keep the localStorage list already in state */ });
+    }, (err) => {
+      // Denied here quietly demotes SHARED grid layouts to whatever this ONE browser
+      // cached, so two dispatchers see different columns and neither can tell why.
+      reportDenied('bottom_panel_profiles', err);
+      /* offline: keep the localStorage list already in state */
+    });
     return () => unsub();
   }, []);
 
@@ -14524,14 +14920,23 @@ function useBottomPanelProfiles() {
     const prof = { name, s };
     setList((v) => [...v.filter((x) => x.name !== name), prof].sort((a, b) => a.name.localeCompare(b.name)));
     if (!db) { safeWriteJSON(LS_BOTTOM_PROFILES, { list: [...(safeReadJSON(LS_BOTTOM_PROFILES, null)?.list || []).filter((x) => x.name !== name), prof] }); return; }
-    try { await setDoc(doc(db, 'bottom_panel_profiles', profileDocId(name)), { name, s, updated_at: serverTimestamp() }); } catch { /* optimistic row stands */ }
+    // THE OPTIMISTIC ROW IS THE PROBLEM, NOT THE CONSOLATION. The layout is already in
+    // state, so on a refusal the dispatcher sees their saved profile in the list, uses it,
+    // and finds it gone on the next device — a SHARED layout that silently saved to nobody.
+    // A dropped connection stays silent (reportDenied classifies); a refused rule does not.
+    try { await setDoc(doc(db, 'bottom_panel_profiles', profileDocId(name)), { name, s, updated_at: serverTimestamp() }); }
+    catch (e) { reportDenied('bottom_panel_profiles', e, 'write'); }
   }, []);
 
   const removeProfile = useCallback(async (name) => {
     setList((v) => v.filter((p) => p.name !== name));
     setActiveState((a) => (a === name ? null : a));
     if (!db) { safeWriteJSON(LS_BOTTOM_PROFILES, { list: (safeReadJSON(LS_BOTTOM_PROFILES, null)?.list || []).filter((x) => x.name !== name) }); return; }
-    try { await deleteDoc(doc(db, 'bottom_panel_profiles', profileDocId(name))); } catch { /* optimistic removal stands */ }
+    // Same shape as the save above, and the same lie in the other direction: the row is
+    // already out of the list, so a refused delete looks exactly like a successful one until
+    // the profile reappears on the next reload.
+    try { await deleteDoc(doc(db, 'bottom_panel_profiles', profileDocId(name))); }
+    catch (e) { reportDenied('bottom_panel_profiles', e, 'write'); }
   }, []);
 
   return { list, active, setActive, saveProfile, removeProfile, shared: !!db };
@@ -14546,12 +14951,20 @@ function useTruckProfiles() {
     const unsub = onSnapshot(collection(db, 'truck_profiles'), async (snap) => {
       if (snap.empty) {
         // Seed defaults once; the snapshot will re-fire with them.
-        try { await Promise.all(CLIENT_DEFAULT_TRUCKS.map((p) => setDoc(doc(db, 'truck_profiles', p.id), p))); } catch { /* ignore */ }
+        //
+        // TWO BUGS LIVED ON THIS LINE. (a) A refused seed was swallowed, so a rule that will
+        // not let this account write truck_profiles said nothing at all. (b) The `return`
+        // below skips setReady(true) — correct when the seed WORKED (the re-fire sets it),
+        // and a permanent "loading…" in the Routing truck picker when it did not, because
+        // no re-fire is coming. A picker that never finishes loading is indistinguishable
+        // from a slow one, so nobody reports it; they just cannot pick a truck.
+        try { await Promise.all(CLIENT_DEFAULT_TRUCKS.map((p) => setDoc(doc(db, 'truck_profiles', p.id), p))); }
+        catch (e) { reportDenied('truck_profiles', e, 'write'); setReady(true); }
         return;
       }
       setProfiles(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       setReady(true);
-    }, () => setReady(true));
+    }, (err) => { reportDenied('truck_profiles', err); setReady(true); });
     return () => unsub();
   }, []);
   const saveProfile = useCallback(async (p) => {
@@ -14786,7 +15199,7 @@ function RoutingStopRichDetail({ stop, onRefreshed }) {
 // route/driver via RoutingStopRichDetail). Fills the rail column; closes via X or Esc.
 // Never renders empty — guards a null stop. (Replaces the old center-popup modal so a
 // clicked stop's detail always lives in the right panel — dispatcher request.)
-function RoutingStopPanel({ stop, notes, onClose, onOpenLoad, windowViolatedSet, onMoveLocation, onEditAddress, onAutoFixAddress, onOpenHistory, onText, onTextDriver, onSave, saving, saveError, drivers = [] }) {
+function RoutingStopPanel({ stop, notes, onClose, onOpenLoad, windowViolatedSet, onMoveLocation, onEditAddress, onAutoFixAddress, onOpenHistory, onText, onTextDriver, onSave, saving, saveError, saveDenied = null, drivers = [] }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -14818,6 +15231,7 @@ function RoutingStopPanel({ stop, notes, onClose, onOpenLoad, windowViolatedSet,
         onSave={onSave}
         saving={saving}
         saveError={saveError}
+        saveDenied={saveDenied}
         onMoveLocation={onMoveLocation}
         onEditAddress={onEditAddress}
         onAutoFixAddress={onAutoFixAddress}
@@ -15151,7 +15565,11 @@ function RouteStatusBadge({ status }) {
 
 // onNewRoute is OPTIONAL on purpose: this panel is also rendered by the dispatch Map screen
 // (which passes only groups/onPick), and a create button has no business there.
-function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], rosterError = null, assignLive = false, setAssignLive, onAssignDriver, assignedOverride = {}, assigningKey = null, onDispatchLoad, dispatchingKey = null, onNewRoute = null }) {
+// `writeDenied` — why this account may not assign or dispatch, or null when it may.
+// nuvizz-write is gated at dispatcher on the server. This is the pair of controls where a
+// silent refusal costs the most in freight terms: a load a dispatcher believes is DISPATCHED
+// is a driver who was never told to roll, found at the end of the day rather than the start.
+function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], rosterError = null, assignLive = false, setAssignLive, onAssignDriver, assignedOverride = {}, assigningKey = null, onDispatchLoad, dispatchingKey = null, onNewRoute = null, writeDenied = null }) {
   const [selected, setSelected] = useState(() => new Set());   // empty = All
   const [menuOpen, setMenuOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -15288,12 +15706,13 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
                     {onAssignDriver && (
                       <select
                         value={curDriverId != null ? String(curDriverId) : ''}
-                        disabled={!!rosterError || busy}
+                        disabled={!!rosterError || busy || !!writeDenied}
+                        title={writeDenied || undefined}
                         onChange={(e) => { const d = roster.find((x) => String(x.driverId) === e.target.value); if (d) onAssignDriver(g, d.driverId, d.name); }}
                         className="flex-1 min-w-0 border rounded px-1 py-1 text-[11px] bg-white"
                         aria-label={`Assign driver to ${loadDisplayName(g.name, g.loadNbr) || g.loadNbr}`}
                       >
-                        <option value="">{rosterError ? 'Driver roster unavailable' : (roster.length ? (assignLive ? 'Assign driver…' : 'Assign driver… (Beta)') : 'Loading drivers…')}</option>
+                        <option value="">{writeDenied ? 'Assigning needs the dispatcher role' : rosterError ? 'Driver roster unavailable' : (roster.length ? (assignLive ? 'Assign driver…' : 'Assign driver… (Beta)') : 'Loading drivers…')}</option>
                         {roster.map((d) => <option key={String(d.driverId)} value={String(d.driverId)}>{d.name}{d.userName ? ` (${d.userName})` : ''}</option>)}
                       </select>
                     )}
@@ -15301,8 +15720,8 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
                     {canDispatch && (
                       <button
                         onClick={() => onDispatchLoad(g)}
-                        disabled={!shownDriver || dispatching || busy}
-                        title={!shownDriver ? 'Assign a driver before dispatching' : (assignLive ? `Dispatch ${loadDisplayName(g.name, g.loadNbr) || g.loadNbr} in NuVizz now` : 'Beta — preview only, flip to ● Live to dispatch for real')}
+                        disabled={!shownDriver || dispatching || busy || !!writeDenied}
+                        title={writeDenied || (!shownDriver ? 'Assign a driver before dispatching' : (assignLive ? `Dispatch ${loadDisplayName(g.name, g.loadNbr) || g.loadNbr} in NuVizz now` : 'Beta — preview only, flip to ● Live to dispatch for real'))}
                         className="shrink-0 text-[11px] font-semibold px-2 py-1 rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         {dispatching ? '…' : 'Dispatch'}
@@ -15944,6 +16363,10 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
 // the load). Anything that needs geometry keeps using stopById.
 function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null, onRouteCreated = null }) {
   const lookup = boardStopById || stopById;
+  // Save sends this whole board to NuVizz through nuvizz-write, which requires dispatcher.
+  // Its own gate rather than a prop: this component owns the Save button and the confirm path,
+  // and a role that cannot write should be told at the button, not after the cards close.
+  const saveGate = useRoleGate('dispatcher');
   // Live-dispatch gate comes from the gear toggle (prop), aliased to the original name so the
   // many gate sites in this component (Save, Beta/Live toggle, dirty guards, confirm) are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -16194,6 +16617,10 @@ function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onTogg
     }
   };
   const onPanelSave = async () => {
+    // The one button in this app that sends a whole board to NuVizz. nuvizz-write requires
+    // dispatcher; a Save that answers 403 after the cards say "saved" is the most expensive
+    // silent failure on this screen, because the dispatcher then closes the cards.
+    if (saveGate.reason) { showToast(saveGate.reason); return; }
     const pending = dirtyRoutes.filter((r) => r.pendingCreate);
     const { loads, warnings } = buildBoardPayload();
     if (!pending.length && !loads.length) { showToast(warnings[0] || 'No changes to save.'); return; }
@@ -16549,8 +16976,8 @@ function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onTogg
           {LIVE_WRITE_FLAG && dirtyRoutes.length > 0 && (
             <button
               onClick={onPanelSave}
-              disabled={busy}
-              title={liveMode ? 'Save all staged changes to NuVizz' : 'Save (Beta — preview only, nothing sent)'}
+              disabled={busy || !!saveGate.reason}
+              title={saveGate.reason || (liveMode ? 'Save all staged changes to NuVizz' : 'Save (Beta — preview only, nothing sent)')}
               className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded disabled:opacity-60 ${liveMode ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
             >
               <Save size={12} /> {busy ? '…' : `Save (${dirtyRoutes.length})`}
@@ -17151,7 +17578,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // Stops status card (same pill as the dispatch Map, top-right of the routing map):
   // stops count + total pallets + feed freshness + NuVizz call meter. Shares the Map's
   // collapse preference and the cheap manual-scan path (~4 calls, never the number-probe).
-  const { scanning, scanCooldown, scanErr, manualScan } = useManualScan(selectedDate, lastScannedAt, refreshStops);
+  const { scanning, scanCooldown, scanErr, manualScan, scanDenied } = useManualScan(selectedDate, lastScannedAt, refreshStops);
   const [statusCollapsed, setStatusCollapsed] = useState(() => safeReadJSON(LS_STATUS_PILL_COLLAPSED, false));
   useEffect(() => { safeWriteJSON(LS_STATUS_PILL_COLLAPSED, statusCollapsed); }, [statusCollapsed]);
   // NuVizz records the pallet count in its carton field (stop.cartons) — same sum/label as the Map.
@@ -17179,6 +17606,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       scanErr={scanErr}
       scanning={scanning}
       scanCooldown={scanCooldown}
+      scanDenied={scanDenied}
       onRefresh={manualScan}
       collapsed={statusCollapsed}
       onToggleCollapsed={() => setStatusCollapsed((c) => !c)}
@@ -17202,7 +17630,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     //    Returns {patched, missing, rescued} so the Save toast can surface a miss.
     let out = null;
     try {
-      const r = await fetch('/.netlify/functions/nuvizz-board-sync', {
+      const r = await apiFetch('/.netlify/functions/nuvizz-board-sync', {
         method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ date: selectedDate, ...patch }),
       });
@@ -17360,7 +17788,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   const loadDriverRoster = useCallback(async () => {
     setDriverRoster((s) => ({ ...s, loading: true, error: null }));
     try {
-      const r = await fetch('/.netlify/functions/nuvizz-driver-roster?tenant=davis', { cache: 'no-store' });
+      const r = await apiFetch('/.netlify/functions/nuvizz-driver-roster?tenant=davis', { cache: 'no-store' });
       const d = await r.json();
       setDriverRoster({
         drivers: Array.isArray(d.drivers) ? d.drivers : [],
@@ -17378,7 +17806,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   const refreshDriverRoster = useCallback(async () => {
     setDriverRoster((s) => ({ ...s, refreshing: true, error: null }));
     try {
-      const r = await fetch('/.netlify/functions/nuvizz-driver-roster?tenant=davis&refresh=1', { method: 'POST', cache: 'no-store' });
+      const r = await apiFetch('/.netlify/functions/nuvizz-driver-roster?tenant=davis&refresh=1', { method: 'POST', cache: 'no-store' });
       const d = await r.json();
       if (d && d.ok === false) { setDriverRoster((s) => ({ ...s, refreshing: false, error: d.error || 'Refresh failed — list left unchanged' })); return; }
       setDriverRoster({
@@ -17422,7 +17850,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   useEffect(() => {
     if (!selectedDate) return;
     let cancelled = false;
-    fetch('/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(selectedDate), { cache: 'no-store' })
+    apiFetch('/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(selectedDate), { cache: 'no-store' })
       .then((r) => r.json())
       .then((j) => {
         if (cancelled) return;
@@ -18169,6 +18597,11 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   useEffect(() => { try { localStorage.setItem('routing.assignLive', assignLive ? 'on' : 'off'); } catch { /* private mode */ } }, [assignLive]);
   const [assignedOverride, setAssignedOverride] = useState({});   // route key → driver name
   const [assigningKey, setAssigningKey] = useState(null);
+  // EVERY NuVizz write goes through one door (lib/nuvizzWrite.js → nuvizz-write) and that door
+  // requires dispatcher. Said before the press on the two controls that reach it from this
+  // screen, and re-checked in the handlers: a driver "assigned" who was never assigned is a
+  // load nobody is driving, discovered at the end of the day instead of the start of it.
+  const writeGate = useRoleGate('dispatcher');
   useEffect(() => { setAssignedOverride({}); }, [selectedDate]);   // don't carry a day's assignments onto another board
   useEffect(() => {
     // Every mode that renders route cards needs this: the cards' driver dropdown is populated
@@ -18185,6 +18618,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   }, [liveWrite, rightPanelMode]);
   const onAssignDriver = useCallback(async (g, driverId, driverName) => {
     if (!driverId) return;
+    if (!writeGate.allowed) { showMapToast(writeGate.reason); return; }
     const label = loadDisplayName(g.name, g.loadNbr) || g.loadNbr;
     if (!assignLive) { showMapToast(`Beta — would assign ${driverName} to ${label} (nothing sent). Flip to ● Live to assign.`); return; }
     // The route group carries loadId only once its stops are enriched; a DRAFT/empty load has none.
@@ -18213,13 +18647,14 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     } else {
       showMapToast(`✗ Assign failed for ${label}: ${res.error || res.result?.error || 'write error'}`);
     }
-  }, [assignLive, showMapToast, selectedDate]);
+  }, [assignLive, showMapToast, selectedDate, writeGate.allowed, writeGate.reason]);
   // Routes-panel "Dispatch" button — releases an already-assigned load in NuVizz (action DISPATCH,
   // the dispatchLoad op). Same Beta/Live safety + loadId resolution as onAssignDriver above; a
   // dispatched load's status won't flip in the board until the next scheduled scan, so this only
   // toasts success/failure rather than optimistically rewriting g.status.
   const [dispatchingKey, setDispatchingKey] = useState(null);
   const onDispatchLoad = useCallback(async (g) => {
+    if (!writeGate.allowed) { showMapToast(writeGate.reason); return; }
     const label = loadDisplayName(g.name, g.loadNbr) || g.loadNbr;
     if (!assignLive) { showMapToast(`Beta — would dispatch ${label} (nothing sent). Flip to ● Live to dispatch.`); return; }
     const rosterEntry0 = loadRosterRef.current.get(String(g.name || '').trim().toLowerCase())
@@ -18258,7 +18693,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     } else {
       showMapToast(`✗ Dispatch failed for ${label}: ${res.error || res.result?.error || 'write error'}`);
     }
-  }, [assignLive, showMapToast, selectedDate]);
+  }, [assignLive, showMapToast, selectedDate, writeGate.allowed, writeGate.reason]);
   // Ninja toolbar tap: arm/disarm when a Compare route is open; otherwise coach the dispatcher to
   // open one first (the button stays tappable so the hint is reachable on mobile too).
   const onNinjaTool = useCallback(() => {
@@ -18858,8 +19293,18 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   }, [stops, driverRoster]);
   const [savingNote, setSavingNote] = useState(false);
   const [saveNoteError, setSaveNoteError] = useState(null);
+  // customer_notes create/update is isStaff() in firestore.rules. Same rule as the Map's
+  // notesGate; a separate declaration because this is a separate component with its own save
+  // and its own two panels. Declared ABOVE the callback that names it in its dependency array,
+  // which is evaluated during render.
+  const notesGate = useRoleGate('dispatcher');
   const saveStopNote = useCallback(async (draft) => {
     if (!db || !panelStop) return;
+    // The SECOND copy of the notes save — the Routing screen has its own, with its own two
+    // panels. Gating the Map's and not this one would leave exactly half the app quietly
+    // losing receiving hours, which is how this class of bug survives a review (see the
+    // location-override pair, which is duplicated the same way).
+    if (notesGate.reason) { setSaveNoteError(notesGate.reason); return; }
     setSavingNote(true); setSaveNoteError(null);
     try {
       const key = panelStop.matchKey;
@@ -18877,7 +19322,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       }, { merge: true });
       refreshStops({ silent: true });
     } catch (e) { setSaveNoteError(e.message); } finally { setSavingNote(false); }
-  }, [notes, panelStop, refreshStops]);
+  }, [notes, panelStop, refreshStops, notesGate.reason]);
   const cancelMoveLocation = useCallback(() => { setMovingStop(null); setMovedTo(null); }, []);
   const saveStopLocation = useCallback(async () => {
     if (!db || !movingStop || !movedTo) return;
@@ -18891,7 +19336,13 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
         last_updated: serverTimestamp(),
       }, { merge: true });
       setMovingStop(null); setMovedTo(null);
-    } catch (e) { console.error('save location override', e); }
+    } catch (e) {
+      // firestore.rules calls a BAD override "a truck sent to the wrong door". A DENIED one
+      // is the worse cousin: the dispatcher drags the pin onto the right dock, the panel
+      // closes, and nothing was written. Never let that pass as a save.
+      reportDenied('customer_notes:location_override', e, 'write');
+      console.error('save location override', e);
+    }
     finally { setSavingLoc(false); }
   }, [movingStop, movedTo]);
   const resetStopLocation = useCallback(async () => {
@@ -18902,7 +19353,10 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
         match_key: movingStop.matchKey, location_override: null, last_updated: serverTimestamp(),
       }, { merge: true });
       setMovingStop(null); setMovedTo(null);
-    } catch (e) { console.error('reset location override', e); }
+    } catch (e) {
+      reportDenied('customer_notes:location_override', e, 'write');
+      console.error('reset location override', e);
+    }
     finally { setSavingLoc(false); }
   }, [movingStop]);
   useEffect(() => {
@@ -19402,7 +19856,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     try {
       await setDoc(doc(db, 'routing_jobs', jobId), { id: jobId, status: 'queued', created_at: serverTimestamp(), created_by: 'dispatcher', app_version: APP_VERSION, request });
       // Fire the background build; it returns 202 and we watch the doc.
-      fetch('/.netlify/functions/routing-build-background', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jobId }) }).catch(() => {});
+      apiFetch('/.netlify/functions/routing-build-background', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jobId }) }).catch(() => {});
       const unsub = onSnapshot(doc(db, 'routing_jobs', jobId), (snap) => {
         const d = snap.data();
         if (!d) return;
@@ -19741,7 +20195,14 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     if (isMobile) { setMobilePanel('setup'); setSheetOpen(true); }
   }, [wbRoutes, boardStopById, isMobile]);
 
+  // routing-draft and routing-cleanup both require dispatcher (they solve routes that a
+  // dispatcher then Saves to NuVizz). A 12-second solve that can only ever answer 403 is the
+  // worst version of this to walk into: the button spins, the panel says "Drafting…", and the
+  // refusal arrives long enough later that it reads as a broken engine rather than a role.
+  const engineGate = useRoleGate('dispatcher');
+
   const runEngineCleanup = useCallback(async () => {
+    if (!engineGate.allowed) { setCleanupError(engineGate.reason); return; }
     if (!planTargets.length) { setCleanupError('Pick the loads to fill in “2 · Plan onto → My loads” first.'); return; }
     // A cleanup solve takes ~12s. If the dispatcher flips mode and starts a draft
     // meanwhile, the older run must not land on top of the newer one — it would
@@ -19756,7 +20217,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     // empty shell has none, and the card's driver picker is where that is settled.
     const driverByName = new Map(routeGroups.map((g) => [String(g.name || g.key).toLowerCase(), g.driver || null]));
     try {
-      const res = await fetch('/.netlify/functions/routing-cleanup', {
+      const res = await apiFetch('/.netlify/functions/routing-cleanup', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           date: selectedDate,
@@ -19790,15 +20251,16 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     } finally {
       if (runId === engineRunRef.current) setCleanupBusy(false);
     }
-  }, [planTargets, selectedDate, wbRoutes, routeGroups, stageCleanupPlan]);
+  }, [planTargets, selectedDate, wbRoutes, routeGroups, stageCleanupPlan, engineGate.allowed, engineGate.reason]);
 
   const runEngineDraft = useCallback(async () => {
+    if (!engineGate.allowed) { setDraftError(engineGate.reason); return; }
     const names = draftNames.split(/[,;]+/).map((s) => s.trim()).filter(Boolean);
     if (!names.length || names.length > 4) { setDraftError('Name 1–4 drivers, comma-separated.'); return; }
     const runId = ++engineRunRef.current;   // see runEngineCleanup — last run owns the screen
     setDraftBusy(true); setDraftError(null);
     try {
-      const res = await fetch('/.netlify/functions/routing-draft', {
+      const res = await apiFetch('/.netlify/functions/routing-draft', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ date: selectedDate, drivers: names }),
       });
@@ -19817,7 +20279,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     } finally {
       if (runId === engineRunRef.current) setDraftBusy(false);
     }
-  }, [draftNames, selectedDate, stageEngineDraft]);
+  }, [draftNames, selectedDate, stageEngineDraft, engineGate.allowed, engineGate.reason]);
 
   // Shared gear-settings config — rendered in two places: the left Setup-panel header and the
   // bottom data-grid header. The bottom gear is what stays reachable when the Setup panel is hidden,
@@ -20078,10 +20540,12 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
         <input value={draftNames} onChange={(e) => setDraftNames(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && draftNames.trim() && !draftBusy) runEngineDraft(); }}
           placeholder="Victor, Scott" className="w-full border rounded p-1.5 text-[12px]" />
-        <button onClick={runEngineDraft} disabled={draftBusy || !draftNames.trim()}
+        <button onClick={runEngineDraft} disabled={draftBusy || !draftNames.trim() || !engineGate.allowed}
+          title={engineGate.reason || undefined}
           className="w-full py-2 rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
           {draftBusy ? 'Drafting…' : 'Draft routes with engine'}
         </button>
+        {engineGate.reason && <div className="text-[11px] text-slate-500">{engineGate.reason}</div>}
         {draftError && <div className="text-[11px] text-red-600 whitespace-pre-wrap">{draftError}</div>}
         </>
         ) : (
@@ -20102,10 +20566,12 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
             No loads picked yet — tick them in <b>2 · Plan onto → My loads</b> above{planMode === 'trucks' ? ' (switch that from Trucks to My loads)' : ''}.
           </div>
         )}
-        <button onClick={runEngineCleanup} disabled={cleanupBusy || !planTargets.length}
+        <button onClick={runEngineCleanup} disabled={cleanupBusy || !planTargets.length || !engineGate.allowed}
+          title={engineGate.reason || undefined}
           className="w-full py-2 rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
           {cleanupBusy ? 'Routing the leftovers…' : `Fill ${planTargets.length || ''} load${planTargets.length === 1 ? '' : 's'} with the leftovers`}
         </button>
+        {engineGate.reason && <div className="text-[11px] text-slate-500">{engineGate.reason}</div>}
         {cleanupError && <div className="text-[11px] text-red-600 whitespace-pre-wrap">{cleanupError}</div>}
         </>
         )}
@@ -20148,7 +20614,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // fourteen props; four hand-copied call sites is four chances for one of them to be dropped
   // on the phone only, which is the defect this app keeps shipping.
   const routesPanelEl = (
-    <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} dispatchingKey={dispatchingKey} onNewRoute={liveWrite ? openNewRoute : null} />
+    <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} dispatchingKey={dispatchingKey} onNewRoute={liveWrite ? openNewRoute : null} writeDenied={writeGate.reason} />
   );
   // The day's real NuVizz loads — the same set and the same click-to-Compare as the bottom
   // grid's Loads view, which Chad keeps: this is a second way in, not a move.
@@ -20288,6 +20754,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
                 onSave={saveStopNote}
                 saving={savingNote}
                 saveError={saveNoteError}
+                saveDenied={notesGate.reason}
                 drivers={notesDrivers}
               />
             ) : (
@@ -20491,6 +20958,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
             onSave={saveStopNote}
             saving={savingNote}
             saveError={saveNoteError}
+            saveDenied={notesGate.reason}
             drivers={notesDrivers}
           />
         ) : isRoutesPanelMode(rightPanelMode) ? (
@@ -21312,7 +21780,7 @@ function EngineTuningPanel({ onClose }) {
     try {
       const body = { updatedBy: 'engine-tab', reset: resets };
       for (const [k, v] of Object.entries(edits)) { const n = Number(v); if (Number.isFinite(n)) body[k] = n; }
-      const resp = await fetch('/.netlify/functions/routing-engine-tuning', {
+      const resp = await apiFetch('/.netlify/functions/routing-engine-tuning', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
       const d = await resp.json();
@@ -21327,7 +21795,7 @@ function EngineTuningPanel({ onClose }) {
     if (!window.confirm('Re-score history with the CURRENT settings? Runs in the background (~12 min per pass, zero NuVizz). One pass covers about a week of days and then saves its place — tap again to continue from there until the whole window is done.')) return;
     setNote('');
     try {
-      await fetch('/.netlify/functions/routing-engine-plan-replay-background?force=1', { method: 'POST' });
+      await apiFetch('/.netlify/functions/routing-engine-plan-replay-background?force=1', { method: 'POST' });
       setNote('Re-score started. Give it ~12 minutes, then refresh the Assignment view — each pass picks up where the last one stopped, so keep tapping until the oldest days stop changing.');
     } catch (e) { setErr(String(e?.message || e)); }
   };
@@ -22305,6 +22773,14 @@ function useDispatchPresence(screen) {
   const publish = useCallback(() => {
     if (!db) return;
     const s = selfRef.current;
+    // A REFUSED HEARTBEAT IS THE ONE THAT MATTERS MOST HERE, AND IT WAS THE ONE SWALLOWED.
+    // The READ side already reports (see the subscribe below), so a rule that denies both
+    // read and write showed "nobody else is on the board" — while THIS device was equally
+    // invisible to everyone else. Presence exists to stop two dispatchers grabbing the same
+    // unplanned stop onto different loads and the later Save silently winning; reported
+    // one-way it would say the floor is quiet at the exact moment it is not. reportDenied is
+    // idempotent per surface, so a heartbeat every ~25s cannot turn this into a flashing
+    // bar, and a dropped connection is classified transient and stays silent.
     try {
       setDoc(doc(db, PRESENCE_COLL, identity.id), {
         deviceId: identity.id,
@@ -22317,7 +22793,7 @@ function useDispatchPresence(screen) {
         saveAt: s.saveAt || 0,
         updatedAt: Date.now(),
         appVersion: APP_VERSION,
-      }, { merge: true }).catch(() => { /* best-effort */ });
+      }, { merge: true }).catch((e) => { reportDenied('dispatch_presence:heartbeat', e, 'write'); });
     } catch { /* presence must never break the app */ }
   }, [identity.id]);
 
@@ -22355,7 +22831,7 @@ function useDispatchPresence(screen) {
     try {
       unsub = onSnapshot(collection(db, PRESENCE_COLL),
         (snap) => { docsRef.current = snap.docs.map((d) => d.data()); recompute(); },
-        () => { /* rules denied / offline — feature silently off */ });
+        (err) => { reportDenied('dispatch_presence', err); /* offline — the chip just goes quiet */ });
     } catch { /* ignore */ }
     const t = setInterval(recompute, 30000);
     return () => { if (unsub) try { unsub(); } catch { /* ignore */ } clearInterval(t); };
@@ -22434,6 +22910,24 @@ function Shell() {
   const { h: viewportHeight, w: visibleWidth, x: viewportLeft, y: viewportTop } = useViewportSize();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
   const updateAvailable = useBuildUpdate();
+  // A Firestore rule that refused a read or a write, and a function that refused this
+  // account's ROLE, are two different problems and read differently — see the two bars.
+  const denials = usePermissionDenials();
+  const [roleRefusal, setRoleRefusal] = useState(null);
+  useEffect(() => onAuthEvent((e) => { if (e.kind === 'forbidden') setRoleRefusal(e); }), []);
+  // THE NOTCH INSET BELONGS TO WHATEVER IS ACTUALLY AT THE TOP, AND TO EXACTLY ONE THING.
+  // On a home-screen iPhone every bar that adds env(safe-area-inset-top) adds ~47px, so two
+  // of them stack two notches of dead space above a board that is already telling a
+  // dispatcher something is wrong. Shell renders the bars and therefore knows the order;
+  // each one is handed "is everything above you absent?" rather than guessing. The header
+  // is last in that chain, so it carries the inset only when no bar is up — which is the
+  // ordinary case, and the reason nobody noticed the header was taking it unconditionally.
+  const headerAtTop = !updateAvailable && !denials.length && !roleRefusal && !LEGACY_FLAG_ONLY;
+  // send-sms is gated at dispatcher. A text to a customer that a viewer believes went out —
+  // "we're running late, we'll be there by 2" — and did not is a customer standing at a dock
+  // waiting on a truck nobody told them about. Resolved here and handed down, because
+  // MessagesPanel floats over every screen and is not a child of any one of them.
+  const smsGate = useRoleGate('dispatcher');
   const [chipMenuOpen, setChipMenuOpen] = useState(false);
 
   // The manifest-check flag. Read from the last stored run so a problem found
@@ -22484,7 +22978,11 @@ function Shell() {
       if (local?.at && String(local.at) >= String(server.at)) return;
       saveStored(server);
       window.dispatchEvent(new Event('dd-manifest-check-updated'));
-    }, () => { /* offline / rules hiccup — the manual path is untouched */ });
+    }, (err) => {
+      // The overnight check is the ONLY thing that says an order on Uline's manifest never
+      // reached NuVizz. Denied, the tab badge simply never lights and nobody goes looking.
+      reportDenied('nuvizz_ops/manifest_check_latest', err);
+    });
     return unsub;
   }, []);
 
@@ -22563,6 +23061,17 @@ function Shell() {
       {/* Above BOTH headers and outside the tab switch, so it can't be scrolled past or
           lost by changing screens — a stale tab is a whole-app condition, not a per-tab one. */}
       {updateAvailable && <UpdateBanner />}
+      {/* Same reasoning as UpdateBanner above: a board that is not showing you everything,
+          and an action this account may not take, are WHOLE-APP conditions. They live
+          outside the tab switch so they cannot be scrolled past or lost by changing screen. */}
+      <PermissionBanner denials={denials} isMobile={isMobile} atTop={!updateAvailable}
+        onSignIn={LOGIN_MODE === 'server' ? clearSession : null} />
+      <RoleRefusalBar refusal={roleRefusal} isMobile={isMobile} atTop={!updateAvailable && !denials.length}
+        onDismiss={() => setRoleRefusal(null)} />
+      {/* Last in the stack on purpose: a stale build, a refused read and a refused action are
+          all things happening to THIS morning; a deploy-config mistake is not. Renders nothing
+          unless only the retired flag is set. */}
+      <LegacyLoginFlagBar isMobile={isMobile} atTop={!updateAvailable && !denials.length && !roleRefusal} />
       {isMobile ? (
         <MobileAppBar
           version={APP_VERSION}
@@ -22572,9 +23081,10 @@ function Shell() {
           smsUnread={smsUnread}
           presence={presence}
           manifestBadge={moreBadge}
+          atTop={headerAtTop}
         />
       ) : (
-        <header className="shrink-0 relative z-30 flex items-center justify-between px-4 py-2 border-b bg-white" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
+        <header className="shrink-0 relative z-30 flex items-center justify-between px-4 py-2 border-b bg-white" style={headerAtTop ? { paddingTop: 'env(safe-area-inset-top)' } : undefined}>
           <div className="flex items-center gap-3 shrink-0">
             <img src="/davis-logo.jpg" alt="Davis Delivery Service" className="h-9 w-auto" />
             {/* The wordmark is the first thing to go on a narrow desktop window: the logo
@@ -22625,7 +23135,7 @@ function Shell() {
       {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
-      {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} />}
+      {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} sendDenied={smsGate.reason} />}
 
       {/* "Debug this view" — reachable from any tab; captures the active screen. */}
       <DebugCaptureSheet open={debugOpen} onClose={() => setDebugOpen(false)} captureRef={debugCaptureRef} />
@@ -22905,8 +23415,8 @@ function DayCompletionView({ isMobile }) {
     setLoading(true); setErr(null);
     try {
       const [a, b] = await Promise.all([
-        fetch('/.netlify/functions/day-completion?full=1').then((r) => r.json()),
-        fetch('/.netlify/functions/day-completion?history=1').then((r) => r.json()),
+        apiFetch('/.netlify/functions/day-completion?full=1').then((r) => r.json()),
+        apiFetch('/.netlify/functions/day-completion?history=1').then((r) => r.json()),
       ]);
       if (!a.ok) throw new Error(a.error || 'could not read today');
       setLive(a); setDays(b.ok ? (b.days || []) : []);
@@ -23228,7 +23738,7 @@ function FlagHistoryScreen() {
   const load = React.useCallback(async () => {
     setLoading(true); setErr(null);
     try {
-      const r = await fetch(`/.netlify/functions/eta-flag-history?${paramsForRange(range)}`);
+      const r = await apiFetch(`/.netlify/functions/eta-flag-history?${paramsForRange(range)}`);
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'read failed');
       setData(j);
@@ -23240,7 +23750,7 @@ function FlagHistoryScreen() {
     if (openDate === date) { setOpenDate(null); setDayRows(null); return; }
     setOpenDate(date); setDayRows(null);
     try {
-      const r = await fetch(`/.netlify/functions/eta-flag-history?date=${encodeURIComponent(date)}`);
+      const r = await apiFetch(`/.netlify/functions/eta-flag-history?date=${encodeURIComponent(date)}`);
       const j = await r.json();
       setDayRows(j.ok && j.found ? j.rows : []);
     } catch { setDayRows([]); }
@@ -23997,7 +24507,7 @@ function BulkOrderScreen() {
     pushedReqRef.current = date;
     setPushedLog((s) => ({ ...s, loading: true, error: null }));
     try {
-      const r = await fetch(`/.netlify/functions/manifest-push-log?date=${encodeURIComponent(date)}`);
+      const r = await apiFetch(`/.netlify/functions/manifest-push-log?date=${encodeURIComponent(date)}`);
       const d = await r.json();
       if (pushedReqRef.current !== date) return;   // a newer day was requested — drop this response
       setPushedLog({ loading: false, records: Array.isArray(d.records) ? d.records : [], error: d.ok ? null : (d.reason || 'load failed'), date });
@@ -24152,7 +24662,7 @@ function BulkOrderScreen() {
               setImportBusy(`Uploading "${file.name}"${busyTag} — part ${i + 1} of ${total}…`);
               let up = null;
               try {
-                up = await fetch('/.netlify/functions/manifest-upload', {
+                up = await apiFetch('/.netlify/functions/manifest-upload', {
                   method: 'POST', headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ jobId, seq: i, total, data: b64.slice(i * CHUNK, (i + 1) * CHUNK) }),
                 });
@@ -24161,7 +24671,7 @@ function BulkOrderScreen() {
                 // One retry per part — a single blip shouldn't scrap a multi-MB upload.
                 await new Promise((r) => setTimeout(r, 1500));
                 try {
-                  up = await fetch('/.netlify/functions/manifest-upload', {
+                  up = await apiFetch('/.netlify/functions/manifest-upload', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ jobId, seq: i, total, data: b64.slice(i * CHUNK, (i + 1) * CHUNK) }),
                   });
@@ -24172,7 +24682,7 @@ function BulkOrderScreen() {
             kickBody = { jobId, chunks: total, filename: file.name };
           }
           setImportBusy(`Reading "${file.name}"${busyTag} — a scanned manifest takes ~20–40s (a heavy scan can take a few minutes)…`);
-          const kick = await fetch('/.netlify/functions/manifest-ocr-background', {
+          const kick = await apiFetch('/.netlify/functions/manifest-ocr-background', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(kickBody),
           });
@@ -24183,7 +24693,7 @@ function BulkOrderScreen() {
             await new Promise((r) => setTimeout(r, 3000));
             setImportBusy(`Reading "${file.name}"${busyTag} — ${Math.round((Date.now() - t0) / 1000)}s (a scanned manifest takes ~20–40s; a heavy scan can take a few minutes)…`);
             try {
-              const pr = await fetch(`/.netlify/functions/manifest-ocr-result?job=${jobId}`);
+              const pr = await apiFetch(`/.netlify/functions/manifest-ocr-result?job=${jobId}`);
               const pd = await pr.json();
               if (pd.status === 'done') { data = pd; break; }
               if (pd.status === 'error') { fail(pd.error || 'manifest read failed'); return; }
@@ -24349,7 +24859,7 @@ function BulkOrderScreen() {
     // our own Firestore log — a hiccup never fails the create). On a clean run, jump to the receipt.
     if (pushedLogRecords.length) {
       try {
-        await fetch('/.netlify/functions/manifest-push-log', {
+        await apiFetch('/.netlify/functions/manifest-push-log', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ records: pushedLogRecords }),
         });
@@ -24541,7 +25051,7 @@ function BulkOrderScreen() {
     // (best-effort, Firestore only — a log hiccup never fails the push).
     if (pushedLogRecords.length) {
       try {
-        await fetch('/.netlify/functions/manifest-push-log', {
+        await apiFetch('/.netlify/functions/manifest-push-log', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ records: pushedLogRecords }),
         });
@@ -25219,7 +25729,7 @@ function GmailCard({ onStoredRun }) {
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch('/.netlify/functions/gmail-auth?action=status');
+      const r = await apiFetch('/.netlify/functions/gmail-auth?action=status');
       const d = await r.json();
       setStatus(d);
       setQuery(d?.query || d?.defaultQuery || '');
@@ -25261,7 +25771,7 @@ function GmailCard({ onStoredRun }) {
     try {
       // The SAME endpoint set the schedule polls (lib/mail-sources.mts), so this
       // button can never quietly test a different mailbox than runs at night.
-      const r = await fetch('/.netlify/functions/manifest-email-check', { method: 'POST' });
+      const r = await apiFetch('/.netlify/functions/manifest-email-check', { method: 'POST' });
       const d = await r.json();
       if (d?.ok === false) setErr(d.error || 'the check failed');
       else if (d?.stored) {
@@ -25280,7 +25790,7 @@ function GmailCard({ onStoredRun }) {
   const saveQuery = async () => {
     setBusy('save'); setErr(null); setNote(null);
     try {
-      const r = await fetch(withKey('/.netlify/functions/gmail-auth?action=query'), {
+      const r = await apiFetch(withKey('/.netlify/functions/gmail-auth?action=query'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query }),
       });
@@ -25295,7 +25805,7 @@ function GmailCard({ onStoredRun }) {
     if (!window.confirm(`Disconnect ${status?.email || 'this mailbox'}? The permission is revoked at Google and the automatic check stops until you connect again.`)) return;
     setBusy('disconnect'); setErr(null); setNote(null);
     try {
-      const r = await fetch(withKey('/.netlify/functions/gmail-auth?action=disconnect'), { method: 'POST' });
+      const r = await apiFetch(withKey('/.netlify/functions/gmail-auth?action=disconnect'), { method: 'POST' });
       const d = await r.json();
       if (!d?.ok) setErr(d?.error || 'could not disconnect');
       else { setNote('Disconnected.'); await load(); }
@@ -25382,7 +25892,7 @@ function GmailCard({ onStoredRun }) {
         {!active && status?.configured && (
           <div>
             Connect the mailbox the freight report arrives in and every report that lands there is checked
-            automatically — the free board diff' '}
+            automatically — the free board diff.{' '}
             <span className="font-semibold text-slate-600">Read-only access: this app can read mail and nothing else.</span>
           </div>
         )}
@@ -25696,7 +26206,7 @@ function useCommsConsole() {
   const loadLog = async (r) => {
     setLogBusy(true);
     try {
-      const l = await fetch(`/.netlify/functions/customer-comms-log?${rangeQuery(r)}`)
+      const l = await apiFetch(`/.netlify/functions/customer-comms-log?${rangeQuery(r)}`)
         .then((x) => x.json()).catch(() => null);
       setLog(l && l.ok ? l : null);
       // Collapse on every range change: carrying open days across a new range leaves
@@ -25716,8 +26226,8 @@ function useCommsConsole() {
       // before the config that had already loaded was ever applied — a broken send log took
       // the whole console down with it. It degrades to an empty log now.
       const [c, l] = await Promise.all([
-        fetch('/.netlify/functions/customer-comms-config').then((r) => r.json()),
-        fetch(`/.netlify/functions/customer-comms-log?${rangeQuery(range)}`).then((r) => r.json()).catch(() => null),
+        apiFetch('/.netlify/functions/customer-comms-config').then((r) => r.json()),
+        apiFetch(`/.netlify/functions/customer-comms-log?${rangeQuery(range)}`).then((r) => r.json()).catch(() => null),
       ]);
       if (!c.ok) throw new Error(c.error || 'config load failed');
       setCfgResp(c);
@@ -25736,7 +26246,7 @@ function useCommsConsole() {
   const putConfig = async (patch, busyKey, where) => {
     setBusy(busyKey); clear();
     try {
-      const r = await fetch('/.netlify/functions/customer-comms-config', { method: 'PUT', headers: hdrs(), body: JSON.stringify(patch) });
+      const r = await apiFetch('/.netlify/functions/customer-comms-config', { method: 'PUT', headers: hdrs(), body: JSON.stringify(patch) });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'save failed');
       // j.effectiveFrom does not exist on the PUT response — only the GET branch sets it — so
@@ -25771,7 +26281,7 @@ function useCommsConsole() {
   const runCoverage = async () => {
     setBusy('coverage'); clear(); setCoverage(null);
     try {
-      const j = await fetch(`/.netlify/functions/customer-comms-test?coverage=1&date=${covDate}&limit=600`).then((r) => r.json());
+      const j = await apiFetch(`/.netlify/functions/customer-comms-test?coverage=1&date=${covDate}&limit=600`).then((r) => r.json());
       if (!j.ok) throw new Error(j.error || 'coverage failed');
       setCoverage(j);
     } catch (e) { say('coverage', 'err', e.message); }
@@ -25787,7 +26297,7 @@ function useCommsConsole() {
       const q = new URLSearchParams({ preview: '1' });
       if (pvPro.trim()) q.set('pro', pvPro.trim());
       if (date) q.set('date', date);
-      return fetch(`/.netlify/functions/customer-comms-test?${q}`).then((r) => r.json());
+      return apiFetch(`/.netlify/functions/customer-comms-test?${q}`).then((r) => r.json());
     };
     try {
       let j = await ask(null);
@@ -25811,7 +26321,7 @@ function useCommsConsole() {
     try {
       const q = new URLSearchParams({ to });
       if (pvPro.trim()) q.set('pro', pvPro.trim());
-      const j = await fetch(`/.netlify/functions/customer-comms-test?${q}`, { method: 'POST', headers: hdrs() }).then((r) => r.json());
+      const j = await apiFetch(`/.netlify/functions/customer-comms-test?${q}`, { method: 'POST', headers: hdrs() }).then((r) => r.json());
       if (!j.ok) throw new Error(j.error || 'test send failed');
       say('test', 'ok', `Test sent to ${to} — check that inbox.`);
     } catch (e) { say('test', 'err', e.message); }
@@ -26497,7 +27007,7 @@ function UnsubscribedList({ compact = false, ready = null }) {
   const load = useCallback(async () => {
     setBusy(true); setErr(null);
     try {
-      const r = await fetch('/.netlify/functions/comms-optouts');
+      const r = await apiFetch('/.netlify/functions/comms-optouts');
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'read failed');
       setData(j);
@@ -26844,7 +27354,7 @@ function ManifestHistoryCard() {
   const load = useCallback(async () => {
     setState((s) => ({ ...s, loading: true, err: null }));
     try {
-      const r = await fetch('/.netlify/functions/manifest-history?days=30');
+      const r = await apiFetch('/.netlify/functions/manifest-history?days=30');
       const d = await r.json();
       if (!d?.ok) throw new Error(d?.error || `HTTP ${r.status}`);
       setState({ loading: false, err: null, data: d });
@@ -26857,7 +27367,7 @@ function ManifestHistoryCard() {
     setOpenDate(date);
     setDay({ date, loading: true, doc: null, err: null });
     try {
-      const r = await fetch(`/.netlify/functions/manifest-history?date=${encodeURIComponent(date)}`);
+      const r = await apiFetch(`/.netlify/functions/manifest-history?date=${encodeURIComponent(date)}`);
       const d = await r.json();
       if (!d?.ok) throw new Error(d?.error || `HTTP ${r.status}`);
       setDay({ date, loading: false, doc: d, err: null });
@@ -27049,7 +27559,7 @@ function ManifestRowsModal({ date, onClose }) {
   useEffect(() => {
     let dead = false;
     setState({ loading: true, err: null, data: null });
-    fetch(`/.netlify/functions/manifest-history?date=${encodeURIComponent(date)}&rows=1`)
+    apiFetch(`/.netlify/functions/manifest-history?date=${encodeURIComponent(date)}&rows=1`)
       .then((r) => r.json())
       .then((j) => { if (!dead) setState({ loading: false, err: j?.ok === false ? (j.error || 'could not read the manifest') : null, data: j }); })
       .catch((e) => { if (!dead) setState({ loading: false, err: String(e?.message || e), data: null }); });
@@ -27288,7 +27798,7 @@ function useUlineForecast(days = 60) {
   const load = useCallback(async () => {
     setState((s) => ({ ...s, loading: true, err: null }));
     try {
-      const r = await fetch(`/.netlify/functions/uline-forecast?days=${days}`);
+      const r = await apiFetch(`/.netlify/functions/uline-forecast?days=${days}`);
       const j = await r.json();
       // fetchedAt rides on the data so the tonight strip can print "as of 9:41pm" — a line that
       // cannot say how old it is reads as current, which at 9:40pm with three reports in is a lie.
@@ -27330,7 +27840,7 @@ const staleRun = (iso) => { const t = Date.parse(String(iso || '')); return !Num
 const fmtClock = (ms) => (Number.isFinite(Number(ms)) && Number(ms) > 0 ? new Date(Number(ms)).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : null);
 
 async function forecastPost(body) {
-  const r = await fetch('/.netlify/functions/uline-forecast', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const r = await apiFetch('/.netlify/functions/uline-forecast', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   let j = null;
   try { j = await r.json(); } catch { /* an HTML 502 has no JSON */ }
   if (!j) return { ok: false, error: `HTTP ${r.status} — the function did not answer with JSON` };
@@ -27521,7 +28031,7 @@ function ForecastDesktop({ data, reload }) {
   const [status, setStatus] = useState(null);
   const [previewed, setPreviewed] = useState(false);
   const [open, setOpen] = useState(null);
-  useEffect(() => { let dead = false; fetch('/.netlify/functions/uline-forecast?status=1').then((r) => r.json()).then((j) => { if (!dead) setStatus(j); }).catch(() => {}); return () => { dead = true; }; }, [data]);
+  useEffect(() => { let dead = false; apiFetch('/.netlify/functions/uline-forecast?status=1').then((r) => r.json()).then((j) => { if (!dead) setStatus(j); }).catch(() => {}); return () => { dead = true; }; }, [data]);
   const outlook = arr(data?.outlook);
   const scored = arr(data?.scored);
   const nights = nightsToList(data);
@@ -27842,33 +28352,242 @@ function TabBtn({ label, icon, active, onClick, badge = 0 }) {
   );
 }
 
+// ── THE SERVER ENFORCES AND THIS BUILD CANNOT SIGN IN ────────────────────────
+//
+// AUTH_REQUIRED=true (runtime, on the functions) with VITE_LOGIN_ENABLED unset (build-time,
+// in this bundle). Every gated function answers 401; there is no login screen compiled into
+// this deploy to answer them with. The board would render in full and hold nothing.
+//
+// WHY A WHOLE SCREEN AND NOT A BAR. A bar over an empty board still leaves a dispatcher
+// scrolling a board looking for their stops. This state is not "part of the app is missing",
+// it is "this deploy cannot talk to the server at all", and there is no work to be done on
+// the screen behind it. It says who can fix it and exactly what to do, because the fix is a
+// redeploy and the person reading it is not the person who does that.
+//
+// It is deliberately NOT a login screen: a password box with no sign-in code behind it is
+// worse than a sentence, and this build genuinely has none.
+function SignInRequiredScreen({ isMobile, appVersion }) {
+  const what = 'This deploy cannot sign in.';
+  const why = 'The server now requires a sign-in (AUTH_REQUIRED is on), but this build was made without the login screen (VITE_LOGIN_ENABLED), so every request is being refused and the board would show nothing.';
+  const fix = 'Set VITE_LOGIN_ENABLED and redeploy the site — or turn AUTH_REQUIRED back off, which takes effect immediately and puts the board back exactly as it was.';
+
+  // ── PHONE ──────────────────────────────────────────────────────────────────
+  // Full-bleed, one column, 16px body type (anything smaller and iOS zooms the page), the
+  // whole message readable without a scroll on a 390px screen.
+  if (isMobile) {
+    return (
+      <div className="min-h-[100dvh] bg-slate-900 text-slate-100 flex flex-col"
+        style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
+        <div className="flex-1 flex flex-col justify-center px-5 py-8 gap-4">
+          <div className="flex items-center gap-2 text-amber-400">
+            <ShieldAlert size={22} className="shrink-0" />
+            <span className="text-[17px] font-bold">{what}</span>
+          </div>
+          <p className="text-[16px] leading-relaxed text-slate-300">{why}</p>
+          <p className="text-[16px] leading-relaxed text-slate-300">{fix}</p>
+          <p className="text-[15px] font-semibold text-slate-100">Tell Chad — nothing on this phone can fix it.</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="mt-2 w-full rounded-lg bg-white px-4 py-3 text-[16px] font-bold text-slate-900 active:bg-slate-200"
+            style={{ minHeight: 52 }}
+          >
+            Try again
+          </button>
+        </div>
+        <div className="px-5 pb-4 text-[12px] text-slate-500">Dispatch Map v{appVersion}</div>
+      </div>
+    );
+  }
+
+  // ── DESKTOP ────────────────────────────────────────────────────────────────
+  // A centred card, the same shape the other pre-board screens use.
+  return (
+    <div className="min-h-[100dvh] bg-slate-900 text-slate-100 flex items-center justify-center p-6">
+      <div className="w-full max-w-xl rounded-xl border border-slate-700 bg-slate-800/70 p-7 shadow-xl">
+        <div className="flex items-center gap-2 text-amber-400">
+          <ShieldAlert size={20} className="shrink-0" />
+          <h1 className="text-lg font-bold">{what}</h1>
+        </div>
+        <p className="mt-3 text-sm leading-relaxed text-slate-300">{why}</p>
+        <p className="mt-3 text-sm leading-relaxed text-slate-300">{fix}</p>
+        <p className="mt-3 text-sm font-semibold text-slate-100">Tell Chad — this is a deploy setting, not something to fix from here.</p>
+        <div className="mt-6 flex items-center justify-between gap-3">
+          <span className="text-xs text-slate-500">Dispatch Map v{appVersion}</span>
+          <button
+            onClick={() => window.location.reload()}
+            className="rounded-lg bg-white px-4 py-2 text-sm font-bold text-slate-900 hover:bg-slate-200"
+          >
+            Try again
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // THE AUTH GATE, AND WHY IT SITS HERE RATHER THAN INSIDE Shell.
 //
 // Shell opens Firestore subscriptions the moment it mounts — useCustomerNotes
 // subscribes to the whole customer_notes collection, useSmsMessages to the message
 // threads, useDispatchPresence WRITES a presence doc. A gate rendered inside Shell
 // would still leak all of that traffic before anyone signed in, which defeats the
-// point. Nothing may mount Shell until the gate says so.
+// point. Nothing may mount Shell until the gate says so. That boundary does not move.
 //
-// SHIPS INERT. With VITE_AUTH_ENABLED unset, gateState() returns 'app' without
-// consulting anything else and this renders <Shell/> exactly as it always has — same
-// mount, same hooks, same order. That is the promise: the app works tomorrow the way
-// it worked today, until the flag is flipped deliberately.
+// WHICH LOGIN. LOGIN_MODE (module scope, above) picks ONE — the server username/password
+// system in lib/auth-client.js, or the older Firebase email/password one in lib/auth.js,
+// never both. See resolveGateMode() for why running both is a locked-out morning rather
+// than a redundancy.
+//
+// SHIPS INERT. With neither flag set, gateState() returns 'app' without consulting
+// anything else and this renders <Shell/> exactly as it always has — same mount, same
+// hooks, same order. That is the promise: the app works tomorrow the way it worked today,
+// until a flag is flipped deliberately.
 export default function App() {
-  const enabled = authEnabled();
-  const [auth, setAuth] = useState({ ready: !enabled, user: null });
-  useEffect(() => {
-    if (!enabled) return;                       // flag off: subscribe to nothing at all
-    return observeAuth((s) => setAuth(s));
-  }, [enabled]);
-
   const viewportWidth = useViewportWidth();
-  const state = gateState({ enabled, ready: auth.ready, user: auth.user });
+  const isMobile = viewportWidth < MOBILE_BREAKPOINT;
+  const serverMode = LOGIN_MODE === 'server';
 
-  // Firebase has not reported yet. Deliberately NOT the login screen: onAuthStateChanged
-  // resolves asynchronously on every load, so showing a login here would flash one at an
-  // already-signed-in dispatcher on every refresh — and a flashed login is one somebody
-  // starts typing into.
+  // THE EMAILED RESET LINK IS READ ONCE, off the URL this page loaded with, and BEFORE
+  // any flag is consulted. During rollout the accounts exist and the reset mails go out
+  // BEFORE the gate is switched on; if the flag decided this, every one of those links
+  // would open the board and silently do nothing.
+  const [resetLink, setResetLink] = useState(() => currentResetLink());
+
+  // ── the server session ────────────────────────────────────────────────────
+  const [session, setSessionState] = useState(() => (serverMode ? getSession() : null));
+  const [sessionReady, setSessionReady] = useState(!serverMode);
+  const [notice, setNotice] = useState('');
+
+  // ── WHAT THE SERVER IS ENFORCING, READ BACK RATHER THAN ASSUMED ───────────
+  //
+  // THE TRAP THIS CLOSES. AUTH_REQUIRED is a RUNTIME switch on the functions; VITE_LOGIN_ENABLED
+  // is a BUILD-time flag baked into this bundle. Set the first without the second and every
+  // gated function answers 401 while gateState() still returns 'app' — a board that renders
+  // fully, paints its pins, and answers nothing, with no login offered anywhere on it because
+  // the login screen is not in this bundle. Nobody in front of it can work out why, and the
+  // cure (redeploy) is not something a dispatcher can do at 6am.
+  //
+  // The signal was already being fetched and thrown away: auth-me returns `authRequired`, and
+  // it deliberately puts it on its 401 body too so a client with NO session can still read it.
+  // fetchMe() now carries both facts off both paths; these two flags consume them.
+  const [serverEnforcing, setServerEnforcing] = useState(false);
+  const [signInUnconfigured, setSignInUnconfigured] = useState(false);
+  // Only ever sets a flag TRUE, and only on an explicit answer. Never clears one: the useful
+  // direction is "the server told us something is wrong", and a later 502 with no body must
+  // not quietly take that sentence back off the screen.
+  const noteServerAuthFacts = useCallback((facts) => {
+    if (!facts) return;
+    if (facts.authRequired === true && !serverMode) setServerEnforcing(true);
+    if (facts.configured === false && serverMode) setSignInUnconfigured(true);
+  }, [serverMode]);
+
+  useEffect(() => {
+    if (!serverMode) return undefined;
+    return subscribeSession(setSessionState);
+  }, [serverMode]);
+
+  // ON BOOT, ASK THE SERVER WHO THIS IS — do not take the browser's word for it. A session
+  // that was revoked (sign-out elsewhere, a password change, a deactivation) still LOOKS
+  // valid in localStorage; opening the board on the strength of that cached copy is how a
+  // removed account keeps working for two more weeks. Also re-establishes the Firebase
+  // custom-token sign-in, which is the only thing that gives the Firestore rules a
+  // request.auth to read — without it the board loads and is missing every receiving hour.
+  useEffect(() => {
+    if (!serverMode) return undefined;
+    let dead = false;
+    (async () => {
+      const held = getSession();
+      if (!held) { if (!dead) setSessionReady(true); return; }
+      const me = await fetchMe();
+      if (dead) return;
+      noteServerAuthFacts(me);
+      if (!me.ok && me.status === 401) {
+        // The ONLY answer that signs anyone out here. 401 from auth-me means this exact
+        // token is dead — revoked, expired, or the account deactivated.
+        clearSession();
+        // AND THE FIREBASE IDENTITY MINTED FROM IT. The clear above drops OUR token only;
+        // Firebase holds its own refresh token in its own storage and would keep renewing
+        // this tab's Firestore access all day. Under the cutover rules that is a
+        // deactivated dispatcher still reading SMS threads and rewriting receiving hours.
+        dropFirebaseSession();
+        setNotice('Your session ended. Sign in again.');
+      } else if (!me.ok) {
+        // A 503 (user store unreachable), a 502, or no signal at all. NOT a reason to lock
+        // a dispatcher out of a 700-stop morning: the server re-verifies the token on every
+        // single call anyway, so keeping the session costs nothing and clearing it costs the
+        // morning. The two mistakes are not symmetrical, and the threshold belongs here.
+        console.warn('[auth] could not confirm the session on boot; keeping it —', me.error);
+      } else {
+        // Take the SERVER's copy of the role, not the browser's: a demotion that happened
+        // while this tab was closed would otherwise keep showing controls that can only
+        // ever answer 403. mustChangePassword is not on the Principal, so it is preserved.
+        setSession({ ...held, user: { ...held.user, ...me.user, mustChangePassword: held.user.mustChangePassword } });
+      }
+      if (me.ok || me.status !== 401) await ensureFirebaseSession();
+      if (!dead) setSessionReady(true);
+    })();
+    return () => { dead = true; };
+  }, [serverMode, noteServerAuthFacts]);
+
+  // THE PREFLIGHT — for the two boots the effect above deliberately does not cover: this
+  // build has no login at all (the production case), or it has one and nobody is signed in.
+  // Both are exactly the states where the server's enforcement switch cannot be inferred from
+  // anything on this side, and both are states a person is looking at right now.
+  //
+  // ONE request, to an endpoint that answers a token-less caller from memory (require-user
+  // returns 401 before it reads Firestore), and it never blocks the board: nothing waits on
+  // it, so a slow or dead auth-me costs the boot nothing at all.
+  useEffect(() => {
+    if (serverMode && getSession()) return undefined;   // the boot effect above already asked
+    let dead = false;
+    (async () => {
+      const facts = await fetchMe();
+      if (!dead) noteServerAuthFacts(facts);
+    })();
+    return () => { dead = true; };
+  }, [serverMode, noteServerAuthFacts]);
+
+  // A 401 from ANY function call (lib/api.js) clears the session and lands here. Said in
+  // words, because "the board just went back to the login screen" with no explanation is
+  // indistinguishable from a crash.
+  useEffect(() => onAuthEvent((e) => {
+    if (e.kind !== 'expired') return;
+    // The SECOND door, closed on the same event. lib/auth-firebase.mts calls this
+    // mitigation (1) and states it is implemented; until this line it was not wired to
+    // anything, so a revoked dispatcher lost the screen and kept the database. 'forbidden'
+    // deliberately does not come through here: a 403 means the session is perfectly valid
+    // and the role is simply too low, and dropping Firestore access for pressing a
+    // dispatcher's button would blank the board for a viewer who did nothing wrong.
+    dropFirebaseSession();
+    setNotice('Your session ended. Sign in again.');
+  }), []);
+
+  const state = gateState({
+    enabled: serverMode,
+    ready: sessionReady,
+    user: session?.user || null,
+    mustChangePassword: session?.user?.mustChangePassword === true,
+    resetLink: !!resetLink,
+  });
+
+  // The emailed link, whatever else is true. Clearing it returns to the normal flow, and
+  // the ?u=/&t= comes out of the address bar so a shared screenshot or a history entry
+  // does not carry a live reset token.
+  if (state === 'reset') {
+    return (
+      <ResetPasswordScreen
+        isMobile={isMobile}
+        appVersion={APP_VERSION}
+        link={resetLink}
+        onDone={() => { scrubResetLink(); setResetLink(null); }}
+      />
+    );
+  }
+
+  // Not resolved yet. Deliberately NOT the login screen: restoring a session re-checks the
+  // server (and Firebase reports asynchronously on every load), so showing a login here
+  // would flash one at an already-signed-in dispatcher on every refresh — and a flashed
+  // login is one somebody starts typing into.
   if (state === 'loading') {
     return (
       <div className="min-h-[100dvh] bg-slate-900 flex items-center justify-center">
@@ -27877,7 +28596,35 @@ export default function App() {
     );
   }
   if (state === 'login') {
-    return <LoginScreen isMobile={viewportWidth < MOBILE_BREAKPOINT} appVersion={APP_VERSION} />;
+    // The login screen is up. If AUTH_SESSION_SECRET is not set on the site, auth-login
+    // answers 401 'sign-in not configured' to every correct password there is — a password
+    // box nobody can pass. Say so on the screen rather than letting three people try their
+    // password four times each and conclude they have been locked out.
+    const preflight = signInUnconfigured
+      ? 'Sign-in is not switched on on the server yet (AUTH_SESSION_SECRET is not set), so no password will work from this screen. Tell Chad.'
+      : notice;
+    return <LoginScreen isMobile={isMobile} appVersion={APP_VERSION} notice={preflight} />;
+  }
+  // THE SERVER IS ENFORCING AND THIS BUILD HAS NO LOGIN. Every gated function is answering
+  // 401 and there is no sign-in screen in this bundle to fix it with, so the board below would
+  // render completely and answer nothing. Rendering it anyway is the worst of the three
+  // options: it looks like the app, so it gets used, and the first thing anybody learns is
+  // that the day's stops are missing. Checked AFTER the reset link and the login screens, so
+  // it can never take a screen away from somebody who has a way through.
+  if (serverEnforcing) {
+    return <SignInRequiredScreen isMobile={isMobile} appVersion={APP_VERSION} />;
+  }
+  // A TEMPORARY PASSWORD A PERSON MAY POSTPONE CHANGING IS A PERMANENT PASSWORD. The board
+  // is not shown until an admin-created account has picked its own.
+  if (state === 'must-change') {
+    return (
+      <ChangePasswordScreen
+        isMobile={isMobile}
+        appVersion={APP_VERSION}
+        user={session?.user}
+        onSignOut={() => { endSession(); }}
+      />
+    );
   }
   return <Shell />;
 }

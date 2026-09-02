@@ -15,6 +15,7 @@ import { isFirestoreEnabled, getDoc, listDocs, runQuery } from './lib/firestore.
 import { ENGINE_VERSION, loadEngineConfig } from './lib/routing-engine-config.mts';
 import { PROPOSALS_COLLECTION, PROPOSALS_DAILY_COLLECTION, dailyRollupPath } from './lib/routing-engine-core.mts';
 import { PLAN_PROPOSALS_DAILY_COLLECTION, PLAN_VERSION_ROLLUPS_COLLECTION, EXPERIMENTS_COLLECTION, planProposalPath, planDailyPath, experimentPath } from './lib/routing-plan-core.mts';
+import { requireUser } from './lib/require-user.mts';
 
 // Sort engine version strings numerically ("2.10.0" after "2.9.1", not before).
 function cmpVersion(a: string, b: string): number {
@@ -31,6 +32,11 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export default async (req: Request): Promise<Response> => {
   const headers = { 'Content-Type': 'application/json' };
+  // Gate at viewer: the engine's whole learning record — every day's proposals, agreement
+  // scores and experiment sweeps. Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
+
   if (!isFirestoreEnabled()) {
     return new Response(JSON.stringify({ ok: false, error: 'FIREBASE_SA not set' }), { status: 200, headers });
   }

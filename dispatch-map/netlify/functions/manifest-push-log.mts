@@ -19,6 +19,7 @@
 //   GET  ?date=YYYY-MM-DD          → { ok, date, records } for that day (empty if none).
 //   GET  ?list=1                   → { ok, days:[{date,count}] } newest-first, for the picker.
 import { isFirestoreEnabled, getDoc, setDoc, listDocs, etDayString } from './lib/firestore.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
 const COLLECTION = 'manifest_push_log';
@@ -79,6 +80,26 @@ const stripId = ({ _id, ...rest }: any) => rest;
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
+  // TWO DOORS, split the way nuvizz-board-reconcile splits its preview from its run.
+  //
+  // READING the log is a viewer's: it is the "what did I push yesterday" screen.
+  //
+  // The POST is not a read — it APPENDS to the audit trail, and this log is the record that
+  // answers "did that order actually get pushed?" when a customer says a delivery never
+  // arrived. A viewer who can append can write history into it: a row that says an order was
+  // pushed when it was not, or a duplicate that makes a single push look like two. That is the
+  // one thing an audit trail may never allow from the read-only role, so the POST is
+  // DISPATCHER — the same role that is allowed to do the pushing in the first place.
+  //
+  // The earlier "same screen reads and writes it, so gate them together" reasoning is true and
+  // beside the point: the screen is the same, the ACT is not, and the roles follow the act.
+  //
+  // Both inert until AUTH_REQUIRED=true.
+  const gate = req.method === 'POST'
+    ? await requireUser(req, { role: 'dispatcher' })
+    : await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
+
   if (!isFirestoreEnabled()) {
     return new Response(JSON.stringify({ ok: false, reason: 'log_unavailable', records: [], days: [] }), { status: 200, headers: cors });
   }

@@ -21,6 +21,7 @@
 // Response: { ok: true, issueUrl, issueNumber } | { ok: false, error }
 
 import { tokenMatches } from './lib/secure-compare.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const DEFAULT_REPO = 'DavisDelivery/davis-nuvizz';
 const MAX_BODY_CHARS = 60000; // GitHub issue body hard cap is 65536.
@@ -125,6 +126,13 @@ export default async (req: Request): Promise<Response> => {
   if (req.method !== 'POST') {
     return new Response(JSON.stringify({ ok: false, error: 'POST only' }), { status: 405, headers: CORS });
   }
+
+  // Gate at dispatcher BEFORE the shared-secret check, not instead of it. This files a
+  // GitHub issue on Davis's repo using a server-held token, so an open POST is a way to write
+  // into the company's issue tracker from anywhere. DEBUG_CAPTURE_SECRET stays as the second
+  // factor for callers outside a browser session. Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'dispatcher' });
+  if (!gate.ok) return gate.response;
 
   const requiredSecret = process.env.DEBUG_CAPTURE_SECRET;
   // Constant-time compare (lib/secure-compare.mts); unset still means open, as documented above.

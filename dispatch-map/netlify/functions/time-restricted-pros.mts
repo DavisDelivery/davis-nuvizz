@@ -41,6 +41,19 @@ import { buildTimeRestrictionRows, summarizeRows, toCsv, INCLUDE_MODES } from '.
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+// DELIBERATELY NOT GATED — a headerless consumer, recorded rather than assumed.
+//
+// Same shape as freight-class-report: ?format=csv is a Content-Disposition download opened by
+// pasting the URL, and a browser navigation carries no Authorization header. Gating it would
+// take away the report by the route it is actually used.
+//
+// WHAT IT COSTS TO LEAVE OPEN: read-only, Firestore-only, ZERO NuVizz calls by design — but the
+// rows name customers, their addresses and their receiving windows.
+//
+// WHAT WOULD HAVE TO CHANGE FIRST: an in-app fetch that hands the file over as a blob, or a
+// short-lived signed link. The JSON branch could be gated on its own today, but splitting one
+// endpoint's auth by ?format is a trap — the next person adds a format and picks the wrong side
+// — so it moves as one piece when the download does.
 export default async (req: Request): Promise<Response> => {
   const json = (b: any, s = 200) => new Response(JSON.stringify(b, null, 1), {
     status: s, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },

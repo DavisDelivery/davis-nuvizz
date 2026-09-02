@@ -79,6 +79,30 @@ POST /.netlify/functions/nuvizz-att-scan-background?date=YYYY-MM-DD   # needs th
 GET  /.netlify/functions/nuvizz-attempts?date=YYYY-MM-DD
 ```
 
+### Once `AUTH_REQUIRED=true` is set, the two POSTs need an admin session
+
+Passing `?date=` puts these on the **override** branch, which is gated at **admin**
+(`lib/background-gate.mts` → `gateScheduledOverride`). The cron path — which sends no
+query string at all — is untouched and needs nothing.
+
+```
+curl -X POST -H "Authorization: Bearer $DISPATCH_SESSION" \
+  "https://<site>/.netlify/functions/nuvizz-att-plan-snapshot-background?date=YYYY-MM-DD"
+```
+
+**READ THE 202 AS "RECEIVED", NEVER AS "DONE".** These are `*-background` functions:
+Netlify answers the caller `202 Accepted` the instant the request lands and then throws
+the handler's real response away, so a refused override looks *exactly* like an accepted
+one from curl. Confirm it actually ran:
+
+- `GET /.netlify/functions/nuvizz-scan-config?explain=1` → `backgroundRefusals` lists every
+  refused background job, newest first, with the reason. Empty means nothing was refused.
+- Then re-read the day (`nuvizz-attempts?date=…`) and check the manifest counts moved.
+
+Skipping that check is how a re-freeze silently does nothing and the evening scan is then
+run against a snapshot that was never written — a second wrong answer, with no error
+anywhere.
+
 ## Known limitation (v1)
 
 The candidate set is the morning snapshot, so an order that was created *and*

@@ -16,6 +16,7 @@
 //     ?date=YYYY-MM-DD                → single day
 //     ?from=YYYY-MM-DD&to=YYYY-MM-DD  → inclusive range
 import { isFirestoreEnabled, listDocs } from './lib/firestore.mts';
+import { requireUserForBackground } from './lib/background-gate.mts';
 import { HISTORY_COLLECTION, listStops } from './lib/history-store.mts';
 import {
   loadTractorRoster, aggregateTractorStops, writeTractorLocationsFresh,
@@ -42,6 +43,13 @@ export default async (req: Request): Promise<Response> => {
   if (!isFirestoreEnabled()) {
     return new Response(JSON.stringify({ ok: false, error: 'FIREBASE_SA not set' }), { status: 200, headers });
   }
+  // GATED AT admin. A rebuild overwrites tractor_locations wholesale — the lime pins that tell
+  // a dispatcher a 53' trailer has physically been to an address — and it is the re-tag path,
+  // so a run against a mis-set roster silently un-paints locations. Netlify already answered
+  // 202 and discarded our status (lib/background-gate.mts); run by hand, no doc a screen
+  // polls, so the refusal lands in nuvizz_ops/background_refusals.
+  const gate = await requireUserForBackground(req, 'tractor-flags-rebuild-background', { role: 'admin' });
+  if (!gate.ok) return gate.response;
   const t0 = Date.now();
   const url = new URL(req.url);
   const one = url.searchParams.get('date');

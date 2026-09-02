@@ -21,6 +21,7 @@ import { HISTORY_COLLECTION, listStops } from './lib/history-store.mts';
 import { listCaptureFailures, classifyCaptureDay } from './lib/history-seal.mts';
 import { loadKeyForStop, extractReferenceRoutes } from './lib/routing-reference.mts';
 import { loadEngineConfig } from './lib/routing-engine-config.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -140,6 +141,11 @@ async function captureHealth(): Promise<any> {
 
 export default async (req: Request): Promise<Response> => {
   const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
+  // Gate at viewer: capture health enumerates every warehoused day and its counts.
+  // Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
+
   if (!isFirestoreEnabled()) {
     return new Response(JSON.stringify({ ok: false, error: 'FIREBASE_SA not set' }), { status: 200, headers });
   }

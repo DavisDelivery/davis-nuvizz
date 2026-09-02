@@ -20,6 +20,7 @@
 // trace. The key is never logged and never echoed back to the client.
 
 import { fetchWithTimeout } from './lib/async-util.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -193,6 +194,13 @@ export default async function handler(req: Request): Promise<Response> {
   // GET → availability probe (lets the client hide the AI affordance gracefully).
   if (req.method === 'GET') return json({ available: isEnabled() });
   if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+  // Gate the POST at dispatcher, NOT the GET. The GET is an availability probe that returns
+  // one boolean and lets the client hide the AI affordance; gating it would blank the button
+  // for a viewer instead of disabling it. The POST spends an Anthropic call per query and can
+  // be asked anything, so it is the door that matters. Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'dispatcher' });
+  if (!gate.ok) return gate.response;
+
   if (!isEnabled()) return json({ error: 'ai_key_missing' }, 500);
 
   let body: any;

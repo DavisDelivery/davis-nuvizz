@@ -23,6 +23,7 @@ import { DEPOT, type EquipmentReq, type SolverTruck } from './lib/routing-types.
 import { getDoc } from './lib/firestore.mts';
 import { normalizeMatchKey } from '../../src/lib/matchKey.js';
 import { withDeadline } from './lib/async-util.mts';
+import { requireUserForBackground } from './lib/background-gate.mts';
 
 // Overall job deadline (belt-and-suspenders with the per-call 8s timeouts). A
 // normal deterministic build finishes in well under a second; this only fires if
@@ -111,6 +112,21 @@ export default async function handler(req: Request): Promise<Response> {
 
   const job = await getJob(jobId);
   if (!job) return json({ ok: false, error: 'job not found' }, 404);
+
+  // GATED AT dispatcher, AFTER the job doc is known to exist and BEFORE any stop read,
+  // Google matrix call or Anthropic call — so a refusal costs nothing and still has a doc to
+  // land in. Netlify already answered this caller 202 and discarded our status
+  // (lib/background-gate.mts), so the refusal is written onto routing_jobs/{jobId} as a
+  // terminal 'error'. That is exactly where the client is looking: App.jsx opens an
+  // onSnapshot on this doc the moment it fires the build and renders job.error, so a refused
+  // build says "not signed in" instead of spinning on 'queued' for ever.
+  const gate = await requireUserForBackground(req, 'routing-build-background', {
+    role: 'dispatcher',
+    record: async (refusal) => {
+      await updateJob(jobId, { status: 'error', error: refusal.message, finished_at: refusal.at });
+    },
+  });
+  if (!gate.ok) return gate.response;
 
   // P0 FIX: AWAIT the work to completion. This is a *-background function — the
   // platform already returned 202 to the client; the handler is allowed to run

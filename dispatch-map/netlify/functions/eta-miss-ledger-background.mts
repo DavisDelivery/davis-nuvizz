@@ -28,6 +28,7 @@ import { fitCurveByClass, legSamplesFromRoutes, curveToDoc, travelClassOf, DEFAU
 import { loadVehicleRoster, vehicleTypeForStop } from './lib/tractor-flags.mts';
 import { travelCalDayPath, travelCalCurrentPath } from './lib/travel-store.mts';
 import { impliedDeparture, departureTable, routeDeparturePath, DEPARTURE_VERSION } from './lib/route-departure.mts';
+import { gateScheduledOverride } from './lib/background-gate.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -404,8 +405,18 @@ async function calDayMissing(date: string): Promise<boolean> {
   try { return !(await getDoc(travelCalDayPath(TENANT, date))); } catch { return false; }
 }
 
+// ?force / ?from&to / ?date drive the ledger by hand. ?force is the sharp one: it discards the
+// already-scored guard, so a range plus force re-scores an arbitrary span of the miss ledger and
+// the flag-outcome rescore that grades every past red — the record the alert thresholds are
+// tuned against — while holding an instance for as long as it takes. The 08:00 UTC cron sends no
+// query string and keeps its own look-back window.
+export const OVERRIDE_PARAMS = ['force', 'from', 'to', 'date'] as const;
+
 export default async (req: Request): Promise<Response> => {
   const J = (b: any, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } });
+  // Before isFirestoreEnabled and before any read: a refused override must cost nothing.
+  const refused = await gateScheduledOverride(req, 'eta-miss-ledger-background', OVERRIDE_PARAMS);
+  if (refused) return refused;
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
 
   try {

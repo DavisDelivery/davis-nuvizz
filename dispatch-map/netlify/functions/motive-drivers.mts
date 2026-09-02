@@ -16,6 +16,8 @@
 // Caching: per-function-instance, 1 hour — a roster changes rarely, and this is
 // only read when the DNS editor is open.
 
+import { requireUser } from './lib/require-user.mts';
+
 const MOTIVE_BASE = process.env.MOTIVE_BASE_URL || 'https://api.gomotive.com/v1';
 
 interface RosterDriver {
@@ -65,6 +67,11 @@ async function fetchDriverPage(key: string, pageNo: number): Promise<{ users: an
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
+
+  // Gate at viewer BEFORE the Motive call: the driver roster, and a metered vendor request
+  // per cache miss (?nocache=1 bypasses the cache outright). Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
 
   const key = process.env.MOTIVE_API_KEY;
   if (!key) {

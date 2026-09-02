@@ -22,6 +22,8 @@
 // The client already polls the read endpoint's lastScannedAt after firing, so 202-now fits
 // the existing flow with no client-side wait change.
 import { runRefreshStops } from './lib/refresh-stops-core.mts';
+import { recordScanRun, recordScanRefusal, etDayString } from './lib/firestore.mts';
+import { requireUserForBackground } from './lib/background-gate.mts';
 
 /**
  * The inner scan URL — MANUAL LIST-DISCOVERY ONLY (pure; exported for tests).
@@ -41,5 +43,45 @@ export function manualScanUrl(reqUrl: string): string {
 }
 
 export default async (req: Request): Promise<Response> => {
+  // GATED AT dispatcher — a manual scan spends real NuVizz calls and moves the board every
+  // dispatcher is reading.
+  //
+  // WHERE THE REFUSAL GOES, AND WHAT IT STILL DOES NOT REACH. Netlify has already answered
+  // this caller 202, so the 401 below is thrown away (see lib/background-gate.mts). The
+  // refusal is therefore filed as a RUN ROW in the scan ledger — the same
+  // nuvizz_ops/scan_runs the scheduled scanner writes and nuvizz-scan-config?explain=1 reads
+  // back — with startedAt AND finishedAt set, so it can never be mistaken for the
+  // started-and-died row that ledger exists to expose. That is the honest record of "the
+  // 05:12 scan did not happen, and here is why".
+  //
+  // AND WHERE THE BUTTON CAN SEE IT. The scan ledger answers the ops question ("did the 05:12
+  // scan happen?") but it is a 400-row document and the Map's Scan-now button never reads it:
+  // App.jsx useManualScan polls nuvizz-pull-today-stops for a CHANGED lastScannedAt, sees the
+  // 202 as success, and falls through to "Scan running — the board will refresh automatically"
+  // while nothing runs. So the refusal is ALSO stamped on nuvizz_ops/scan_refusal, one tiny
+  // doc holding only the most recent one, which that same poll now serves back as
+  // `lastScanRefusal` (see nuvizz-pull-today-stops). Rendering it is the client's half.
+  //
+  // The two doc-backed alternatives were both rejected on purpose, and stay rejected: writing
+  // lastScannedAt would claim a scan that never ran, and writing markScanState({halted}) paints
+  // "Scanning paused (kill switch) — board may be stale" — wrong words — on EVERY viewer's
+  // board, which would hand one refused caller a way to red-banner the whole dispatch floor.
+  const gate = await requireUserForBackground(req, 'nuvizz-manual-scan-background', {
+    role: 'dispatcher',
+    record: async (refusal) => {
+      const at = refusal.at;
+      await recordScanRun({
+        id: `${at}__refused`, startedAt: at, finishedAt: at, ms: 0,
+        trigger: 'manual', path: 'auth', outcome: 'refused',
+        skip: 'not-signed-in', reason: refusal.reason, error: refusal.message,
+        etDate: etDayString(new Date(at)),
+      });
+      await recordScanRefusal({
+        at, reason: refusal.reason, message: refusal.message,
+        job: 'nuvizz-manual-scan-background', trigger: 'manual',
+      });
+    },
+  });
+  if (!gate.ok) return gate.response;
   return runRefreshStops(new Request(manualScanUrl(req.url), { method: 'POST' }));
 };

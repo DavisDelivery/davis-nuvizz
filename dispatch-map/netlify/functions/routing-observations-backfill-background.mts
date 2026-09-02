@@ -14,6 +14,7 @@
 //     ?date=YYYY-MM-DD                → driver-days for that day (service times still full)
 //     ?from=YYYY-MM-DD&to=YYYY-MM-DD  → driver-days for the range (service times still full)
 import { isFirestoreEnabled, listDocs } from './lib/firestore.mts';
+import { requireUserForBackground } from './lib/background-gate.mts';
 import { HISTORY_COLLECTION, listStops } from './lib/history-store.mts';
 import { loadEngineConfig } from './lib/routing-engine-config.mts';
 import { extractDriverDays, writeDriverDays } from './lib/routing-driver-days.mts';
@@ -39,6 +40,13 @@ export default async (req: Request): Promise<Response> => {
   if (!isFirestoreEnabled()) {
     return new Response(JSON.stringify({ ok: false, error: 'FIREBASE_SA not set' }), { status: 200, headers });
   }
+  // GATED AT admin. The backfill recomputes routing_driver_days, routing_service_times and
+  // routing_customer_drivers over EVERY captured date — the observation set the assignment
+  // engine reasons from — and each hit costs a full warehouse walk. Netlify already answered
+  // 202 and discarded our status (lib/background-gate.mts); run by hand, no doc a screen
+  // polls, so the refusal lands in nuvizz_ops/background_refusals.
+  const gate = await requireUserForBackground(req, 'routing-observations-backfill-background', { role: 'admin' });
+  if (!gate.ok) return gate.response;
   const t0 = Date.now();
   const url = new URL(req.url);
   const one = url.searchParams.get('date');

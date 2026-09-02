@@ -100,6 +100,18 @@ async function handle(req: Request): Promise<Response> {
     const gate = await requireUser(req, { role: 'admin' });
     if (!gate.ok) return gate.response;
   }
+  // `status` joins them at VIEWER. It was ungated and it is not a health ping: it returns the
+  // connected mailbox ADDRESS, the saved Gmail search, when it last ran and what it found —
+  // i.e. which inbox this system reads and what it looks for in it. Viewer rather than admin
+  // because the card that renders it is the same card a dispatcher opens to see whether the
+  // manifest ingest is alive; the two actions that CHANGE anything stay admin above.
+  // `start` and `callback` are untouched by design — `start` is a window.location.href
+  // navigation (App.jsx) and Google's callback is a bare redirect, so neither can carry a
+  // bearer header; both remain on GMAIL_ADMIN_SECRET alone.
+  if (action === 'status') {
+    const gate = await requireUser(req, { role: 'viewer' });
+    if (!gate.ok) return gate.response;
+  }
 
   // ── status ────────────────────────────────────────────────────────────────
   if (action === 'status') {

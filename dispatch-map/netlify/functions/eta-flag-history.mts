@@ -24,6 +24,7 @@
 import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
 import { flagHistoryPath, summarize, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
 import { resolveRange, expandRange, selectionFromParams, isDateStr } from '../../src/lib/history-range.js';
+import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
 
@@ -45,6 +46,11 @@ export default async (req: Request): Promise<Response> => {
   const J = (b: any, s = 200) => new Response(JSON.stringify(b), {
     status: s, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
   });
+  // Gate at viewer: the graded history of every red and amber flag — customer by customer,
+  // day by day. Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
+
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
 
   try {

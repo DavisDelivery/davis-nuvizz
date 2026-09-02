@@ -22,8 +22,28 @@
 // in the evening — one cheap saved-search call per run.
 
 import { runAttemptsScan } from './lib/attempts-core.mts';
+import { gateScheduledOverride } from './lib/background-gate.mts';
 
-export default runAttemptsScan;
+// ?date= drops the 20:00-23:59 ET window and re-runs the ATTEMPTS saved search against any
+// day — one metered NuVizz call per hit, unthrottled, from an unauthenticated POST. The
+// scheduled run takes no params.
+//
+// The gate is ADMIN-only and, like every other gate in this change set, SHIPS INERT: with
+// AUTH_REQUIRED unset the hand-driven override runs exactly as it always has, and the door
+// shuts on the day that switch is flipped. See gateScheduledOverride in
+// lib/background-gate.mts for why the STRICT version of this was wrong — AUTH_SESSION_SECRET
+// is not set on the production site, so strict did not mean "admins only", it meant every
+// caller got 401 "sign-in not configured", Chad included, and because this is a *-background*
+// function Netlify answers 202 and throws that 401 away: a documented runbook that silently
+// does nothing. It runs BEFORE the core is entered, so a refused override reaches no
+// Firestore read and no vendor call.
+export const OVERRIDE_PARAMS = ['date'] as const;
+
+export default async (req: Request): Promise<Response> => {
+  const refused = await gateScheduledOverride(req, 'nuvizz-att-scan-background', OVERRIDE_PARAMS);
+  if (refused) return refused;
+  return runAttemptsScan(req);
+};
 
 export const config = {
   schedule: '0 0,1,2,3 * * *',

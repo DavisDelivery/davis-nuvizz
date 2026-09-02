@@ -50,6 +50,19 @@ function daysBetween(from: string, to: string): string[] {
   return out;
 }
 
+// DELIBERATELY NOT GATED — a headerless consumer, recorded rather than assumed.
+//
+// This is a Content-Disposition CSV download opened by pasting the URL into the address bar (see
+// the ?format=csv default above). A browser navigation carries no Authorization header, so a
+// requireUser gate would make the export unreachable by the only way anybody actually runs it.
+//
+// WHAT IT COSTS TO LEAVE OPEN: it is read-only, Firestore-only, ZERO vendor calls — but the CSV
+// is a full customer shipment history (PROs, weights, dimensions) for up to a 90-day window, and
+// it is a heavy warehouse read per hit.
+//
+// WHAT WOULD HAVE TO CHANGE FIRST: either it is fetched from inside the app and handed to the
+// user as a blob download, or it gets a short-lived signed link. Until one of those exists,
+// gating this is a report Chad can no longer run.
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });

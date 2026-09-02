@@ -155,6 +155,13 @@ env (separate from the parent site). Without it the writer/reader degrade safely
    ```
    curl -X POST "https://<preview>--dd-dispatch-map.netlify.app/.netlify/functions/nuvizz-refresh-stops-background?date=2026-05-26"
    ```
+   **Once `AUTH_REQUIRED=true` is set on the site**, `?date=` is the *override*
+   branch and is gated at **admin** — add `-H "Authorization: Bearer
+   $DISPATCH_SESSION"`. The cron path (no query string) is unaffected. And note
+   that this is a `*-background` function: Netlify answers **202 whether or not
+   the call was refused**, so a 202 here means "received", not "ran". Confirm
+   with `GET /.netlify/functions/nuvizz-scan-config?explain=1` →
+   `backgroundRefusals` before believing step 3's numbers.
 2. Wait ~30s, then read:
    ```
    curl "https://<preview>--dd-dispatch-map.netlify.app/.netlify/functions/nuvizz-pull-today-stops?date=2026-05-26"

@@ -23,6 +23,8 @@
 // the in-memory cache protects against rapid re-renders (e.g. when the day-
 // snapshot sidebar opens) hammering Motive.
 
+import { requireUser } from './lib/require-user.mts';
+
 const MOTIVE_BASE = process.env.MOTIVE_BASE_URL || 'https://api.gomotive.com/v1';
 
 interface DriverPosition {
@@ -191,6 +193,11 @@ export default async (req: Request): Promise<Response> => {
     'Content-Type': 'application/json',
   };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
+
+  // Gate at viewer BEFORE the Motive call: this is live GPS for every truck in the fleet,
+  // and each hit spends a metered Motive request. Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
 
   const key = process.env.MOTIVE_API_KEY;
   if (!key) {

@@ -22,6 +22,9 @@
 
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { MessageSquare, X, Send, ArrowLeft, Search, SquarePen, Phone, AlertCircle, ChevronRight } from 'lucide-react';
+// send-sms is one of the requireUser()-gated endpoints; apiFetch is the only thing that
+// puts the session token on a request (see lib/api.js).
+import { apiFetch } from '../lib/api.js';
 
 const BRAND = '#1e5b92';
 
@@ -78,7 +81,7 @@ function fmtSeparator(iso) {
 }
 
 async function postSendSms(payload) {
-  const r = await fetch('/.netlify/functions/send-sms', {
+  const r = await apiFetch('/.netlify/functions/send-sms', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
   });
   return r.json();
@@ -92,7 +95,7 @@ function useMessagingRoster() {
     let cancelled = false;
     (async () => {
       try {
-        const r = await fetch('/.netlify/functions/messaging-roster');
+        const r = await apiFetch('/.netlify/functions/messaging-roster');
         const d = await r.json();
         if (!cancelled && d?.ok && Array.isArray(d.contacts)) setContacts(d.contacts);
       } catch { /* best-effort: customers + threads still work */ }
@@ -159,7 +162,15 @@ function GroupChip({ group }) {
 
 // ---------- main component ----------
 
-export default function MessagesPanel({ messages, seenAt = 0, onClose, customerContacts = [] }) {
+// `sendDenied` — the sentence explaining why this account may not text, or null when it may.
+// send-sms is gated at dispatcher on the server; resolved in App (LOGIN_MODE lives there) and
+// handed down, because this panel floats over every screen and is a child of none of them.
+//
+// THE FAILURE IT PREVENTS is not an error message, it is a phone call that never happened: a
+// viewer types "running late, there by 2", presses send, watches the bubble appear — and the
+// customer is standing at a dock waiting on a truck nobody told them about. The optimistic
+// echo makes a refused send look exactly like a delivered one until the bubble turns red.
+export default function MessagesPanel({ messages, seenAt = 0, onClose, customerContacts = [], sendDenied = null }) {
   const { contacts: roster } = useMessagingRoster();
   const vp = useVisualViewport();
 
@@ -260,7 +271,7 @@ export default function MessagesPanel({ messages, seenAt = 0, onClose, customerC
 
   const sendInThread = async (retryText) => {
     const text = (retryText ?? draft).trim();
-    if (!text || !active) return;
+    if (!text || !active || sendDenied) return;
     const tempId = `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     setPending((p) => [...p.filter((m) => !(m.status === 'failed' && m.text.trim() === text && m.phone === active.phone)),
       { tempId, phone: active.phone, text, at: new Date().toISOString(), direction: 'out', status: 'sending' }]);
@@ -482,15 +493,26 @@ export default function MessagesPanel({ messages, seenAt = 0, onClose, customerC
               })}
             </div>
             <div className="border-t p-2 flex-shrink-0 bg-white" style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}>
+              {/* Said ABOVE the composer, not after the press. The thread stays fully readable
+                  — reading a customer's "we're closed today" is a viewer's whole job — and
+                  only the outbound half is closed off. */}
+              {sendDenied && (
+                <div className="mb-2 flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-300 px-2.5 py-1.5 text-[12px] font-semibold text-amber-900">
+                  <AlertCircle size={13} className="shrink-0 mt-0.5" />
+                  <span className="min-w-0">You can read this thread but not reply. {sendDenied}</span>
+                </div>
+              )}
               <div className="flex items-end gap-2">
                 <textarea
                   ref={composerRef} value={draft} onChange={(e) => setDraft(e.target.value)} rows={1}
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendInThread(); } }}
-                  placeholder="Text message"
-                  className="flex-1 border border-slate-300 rounded-2xl px-3.5 py-2 text-[15px] resize-none max-h-32 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+                  placeholder={sendDenied ? 'Replying is not available for this account' : 'Text message'}
+                  disabled={!!sendDenied}
+                  className="flex-1 border border-slate-300 rounded-2xl px-3.5 py-2 text-[15px] resize-none max-h-32 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 disabled:bg-slate-100 disabled:text-slate-400"
                 />
                 <button
-                  onClick={() => sendInThread()} disabled={!draft.trim() || sending}
+                  onClick={() => sendInThread()} disabled={!draft.trim() || sending || !!sendDenied}
+                  title={sendDenied || undefined}
                   className="flex-shrink-0 w-9 h-9 rounded-full text-white flex items-center justify-center disabled:opacity-30 transition-opacity"
                   style={{ background: BRAND }} aria-label="Send"
                 >

@@ -1,4 +1,25 @@
-// auth.js — the Firebase Authentication wiring. The ENGINE, not the screen.
+// auth.js — the Firebase Authentication wiring. RETIRED as of v0.84, except for the flag.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// WHAT IS STILL USED HERE: authEnabled(), and only so that a site which set the OLD flag
+// gets the REAL login rather than nothing (see resolveGateMode in auth-gate.js).
+//
+// WHAT IS DEAD: signInWithPassword / signInWithGoogle / observeAuth / idToken. Signing in
+// this way produces a Firebase ID TOKEN, and a Firebase ID token in the Authorization
+// header parses as our session-token shape and then fails the HMAC compare — so
+// requireUser() answers 401 even in legacy mode. It can only ever hand somebody a screen
+// that says they are in and a board that behaves as if they are not. The system that signs
+// a person in is lib/auth-client.js (username/password against app_users), which is the one
+// the Netlify Functions actually verify.
+//
+// FIREBASE IS STILL IN THE PICTURE, as a CONSEQUENCE of signing in rather than as the
+// sign-in: auth-client redeems the session for a Firebase CUSTOM token and calls
+// signInWithCustomToken, because that is the only thing that gives the Firestore rules a
+// request.auth to read. Nothing below is on that path.
+//
+// Kept rather than deleted so a rollback is one import away and so nothing else in the tree
+// breaks mid-migration. Do not wire it back up.
+// ─────────────────────────────────────────────────────────────────────────────
 //
 // Firebase Auth is invisible: it checks a password, issues a signed token saying who
 // this is and what role they carry, and keeps that token fresh. The login SCREEN is a

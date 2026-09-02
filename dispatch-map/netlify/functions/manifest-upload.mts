@@ -16,6 +16,7 @@
 
 import { isFirestoreEnabled, setDoc } from './lib/firestore.mts';
 import { isValidJobId, pdfChunkDocPath, MAX_PDF_CHUNKS, MAX_CHUNK_B64_CHARS } from './manifest-ocr-background.mts';
+import { requireUser } from './lib/require-user.mts';
 
 // PURE validation, exported for tests. Returns an error string, or null when valid.
 export function validateChunkReq(body: any): string | null {
@@ -39,6 +40,12 @@ export default async (req: Request): Promise<Response> => {
 
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers });
   if (req.method !== 'POST') return J({ ok: false, error: 'POST only' }, 405);
+  // Gate at dispatcher BEFORE the body is read: each part is up to ~900 KB written straight
+  // into Firestore under a caller-chosen job id, so an open POST is unmetered storage on
+  // Davis's project. Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'dispatcher' });
+  if (!gate.ok) return gate.response;
+
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
 
   let body: any;
