@@ -7,6 +7,10 @@
 // normalizeLoads makes of it), written to nuvizz_ops/load_columns__<date> so it can be read
 // back forever without a second call.
 //
+// The call was made once, 2026-09-02T16:38Z. Answer: 21 columns, 106 loads, NO vehicle-type
+// column; the grid does carry the Load Number (rteNbr). See lib/load-columns.mts for the
+// finding and for the correction to the premise this was first written under.
+//
 // GATES, because this is a metered vendor call on an open GET:
 //   • ?confirm=1 is required — a bookmark or a prefetch must not spend it;
 //   • requireUser at dispatcher (inert until AUTH_REQUIRED=true, same as every other door);
