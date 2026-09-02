@@ -42,6 +42,15 @@ export interface ForecastRow {
   upperEst: number | null;
 }
 
+export interface DroppedRow {
+  /** 1-based spreadsheet row. */
+  row: number;
+  /** The ship date, when it could be read — so a caller can say WHICH day has no number. */
+  date: string | null;
+  reason: 'bad_date' | 'bad_number' | 'negative' | 'duplicate';
+  detail: string;
+}
+
 export interface ForecastRead {
   rows: ForecastRow[];
   warnings: string[];
@@ -49,6 +58,16 @@ export interface ForecastRead {
   from: string | null;
   to: string | null;
   sheet: string | null;
+  /** The header row as found, in file order — the evidence of what Uline sent when a file
+   *  cannot be read ("saw: date, whs, via, fcst, high"). */
+  headers: string[];
+  /** Which column each field was found in. A field ABSENT here means the column is not in
+   *  the file at all — which is a different fact from a blank cell in a column that is. */
+  cols: Partial<Record<keyof ForecastRow, number>>;
+  /** Every row that did not make it into `rows`, with its date when readable. A caller that
+   *  renders a day has to be able to tell "Uline closed" from "Uline sent an unreadable
+   *  number for that day" — the first is a fact about freight, the second about the file. */
+  dropped: DroppedRow[];
 }
 
 /** The header names Uline uses, lower-cased, with the aliases a human re-export might use. */
@@ -128,16 +147,16 @@ export function readUlineForecast(buf: Buffer | Uint8Array): ForecastRead {
   try {
     wb = XLSX.read(buf, { type: 'buffer', cellDates: false });
   } catch (e: any) {
-    return { rows: [], warnings: [`not a readable workbook: ${String(e?.message || e).slice(0, 120)}`], from: null, to: null, sheet: null };
+    return { rows: [], warnings: [`not a readable workbook: ${String(e?.message || e).slice(0, 120)}`], from: null, to: null, sheet: null, headers: [], cols: {}, dropped: [] };
   }
   const sheetName = wb.SheetNames[0] ?? null;
   const ws = sheetName ? wb.Sheets[sheetName] : null;
-  if (!ws) return { rows: [], warnings: ['workbook has no sheets'], from: null, to: null, sheet: null };
+  if (!ws) return { rows: [], warnings: ['workbook has no sheets'], from: null, to: null, sheet: null, headers: [], cols: {}, dropped: [] };
 
   // raw:false hands back the DISPLAY text (so a date cell reads "7/15/26" the way Uline wrote
   // it); numbers still come back as numbers when the cell is numeric.
   const grid: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: null });
-  if (!grid.length) return { rows: [], warnings: ['sheet is empty'], from: null, to: null, sheet: sheetName };
+  if (!grid.length) return { rows: [], warnings: ['sheet is empty'], from: null, to: null, sheet: sheetName, headers: [], cols: {}, dropped: [] };
 
   // The header is the first row that carries a `date` and an `estimate` — Uline's is row 1,
   // but a re-export with a title line above it should still read.
@@ -151,30 +170,49 @@ export function readUlineForecast(buf: Buffer | Uint8Array): ForecastRead {
     const first = resolveForecastColumns(grid[0] || []);
     return {
       rows: [], sheet: sheetName, from: null, to: null,
+      headers: (grid[0] || []).map((c) => String(c ?? '')), cols: first.cols, dropped: [],
       warnings: [`no header row with ${first.missing.join(' and ')} — first row was: ${(grid[0] || []).map((c) => String(c ?? '')).join(' | ').slice(0, 120)}`],
     };
   }
 
   const seen = new Map<string, number>();
   const rows: ForecastRow[] = [];
+  const dropped: DroppedRow[] = [];
+  const headers = (grid[headerIdx] || []).map((c) => String(c ?? ''));
   for (let i = headerIdx + 1; i < grid.length; i++) {
     const r = grid[i] || [];
     const isBlank = r.every((c) => c == null || String(c).trim() === '');
     if (isBlank) continue;
     const line = i + 1; // 1-based, as a spreadsheet shows it
     const date = forecastDateToIso(r[cols.date!]);
-    if (!date) { warnings.push(`row ${line}: unreadable date "${String(r[cols.date!] ?? '')}"`); continue; }
+    if (!date) {
+      const detail = `row ${line}: unreadable date "${String(r[cols.date!] ?? '')}"`;
+      warnings.push(detail); dropped.push({ row: line, date: null, reason: 'bad_date', detail }); continue;
+    }
+    const warehouse = cols.warehouse != null ? (String(r[cols.warehouse] ?? '').trim() || null) : null;
+    const via = cols.via != null ? (String(r[cols.via] ?? '').trim() || null) : null;
     const estimate = num(r[cols.estimate!]);
-    if (estimate == null) { warnings.push(`row ${line} (${date}): unreadable estimate "${String(r[cols.estimate!] ?? '')}"`); continue; }
-    if (estimate < 0) { warnings.push(`row ${line} (${date}): negative estimate ${estimate}`); continue; }
+    if (estimate == null) {
+      const detail = `row ${line} (${date}): unreadable estimate "${String(r[cols.estimate!] ?? '')}"`;
+      warnings.push(detail); dropped.push({ row: line, date, reason: 'bad_number', detail }); continue;
+    }
+    if (estimate < 0) {
+      const detail = `row ${line} (${date}): negative estimate ${estimate}`;
+      warnings.push(detail); dropped.push({ row: line, date, reason: 'negative', detail }); continue;
+    }
     const upperEst = cols.upperEst != null ? num(r[cols.upperEst]) : null;
     if (upperEst != null && upperEst < estimate) warnings.push(`row ${line} (${date}): high range ${upperEst} is below the estimate ${estimate}`);
-    if (seen.has(date)) { warnings.push(`row ${line}: ${date} appears twice (first at row ${seen.get(date)}) — first kept`); continue; }
-    seen.set(date, line);
+    // A DUPLICATE IS THE SAME DATE IN THE SAME LANE. Keyed on the date alone, a file that
+    // carried two warehouses (a consolidated export) would keep whichever lane was listed
+    // first for every day and silently erase the other — Georgia's rows included.
+    const laneKey = `${date}|${warehouse ?? ''}|${via ?? ''}`;
+    if (seen.has(laneKey)) {
+      const detail = `row ${line}: ${date}${warehouse || via ? ` (${[warehouse, via].filter(Boolean).join('/')})` : ''} appears twice (first at row ${seen.get(laneKey)}) — first kept`;
+      warnings.push(detail); dropped.push({ row: line, date, reason: 'duplicate', detail }); continue;
+    }
+    seen.set(laneKey, line);
     rows.push({
-      date,
-      warehouse: cols.warehouse != null ? (String(r[cols.warehouse] ?? '').trim() || null) : null,
-      via: cols.via != null ? (String(r[cols.via] ?? '').trim() || null) : null,
+      date, warehouse, via,
       viaType: cols.viaType != null ? (String(r[cols.viaType] ?? '').trim() || null) : null,
       estimate,
       upperEst,
@@ -182,7 +220,7 @@ export function readUlineForecast(buf: Buffer | Uint8Array): ForecastRead {
   }
   rows.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   return {
-    rows, warnings, sheet: sheetName,
+    rows, warnings, sheet: sheetName, headers, cols, dropped,
     from: rows.length ? rows[0].date : null,
     to: rows.length ? rows[rows.length - 1].date : null,
   };

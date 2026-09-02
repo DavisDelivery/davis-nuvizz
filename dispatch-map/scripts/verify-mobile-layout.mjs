@@ -225,6 +225,32 @@ function stubRoutes(page, emailHtml) {
       reconciliation: { openAtSnapshot: 31, closedAfter: 24, stillOpen: 7, lateCloseRate: 0.77 },
     });
     if (u.includes('manifest-check')) return R({ ok: true, days: [], missing: [], summary: { missing: 0 } });
+    // The Uline forecast card, populated: a tonight line, three outlook rows (one closed), scored and
+    // unscored nights, a hole, a pattern sentence — so 390/360 measure the real rows, not an empty state.
+    if (u.includes('uline-forecast')) return R({
+      ok: true, today: '2026-09-02', floor: '2026-08-20',
+      latest: { versionId: 'davis__2026-08-04__deadbeef', sentDate: '2026-08-04', from: '2026-07-15', to: '2027-08-13', seen: 1, rowsUsed: 332, rowsTotal: 332, ok: true, xlsxStored: true },
+      versions: [{ versionId: 'davis__2026-08-04__deadbeef', sentDate: '2026-08-04', from: '2026-07-15', to: '2027-08-13', seen: 1, rowsUsed: 332, rowsTotal: 332, ok: true, xlsxStored: true }],
+      tonight: { head: 'Ship Wed 9/2 → deliver Thu 9/3', text: 'Uline 706 (high 781) · manifest so far 733 (#3, 21:40) · 27 over the estimate, under the high', tone: 'grey', status: 'on' },
+      outlook: [
+        { deliverOn: '2026-09-03', dow: 'Thu', label: 'Thu 9/3', ships: [{ date: '2026-09-02', dow: 'Wed', est: 706, upper: 781 }], est: 706, upper: 781, plan: 706, adjusted: false, chips: [], notes: ["Uline's number — not enough nights to adjust"], status: 'ok' },
+        { deliverOn: '2026-09-07', dow: 'Mon', label: 'Mon 9/7', ships: [], est: null, upper: null, plan: null, chips: [], notes: ['Uline closed — no deliveries'], status: 'closed' },
+        { deliverOn: '2026-09-08', dow: 'Tue', label: 'Tue 9/8', ships: [{ date: '2026-09-04', dow: 'Fri', est: 504, upper: 575 }, { date: '2026-09-06', dow: 'Sun', est: 71, upper: 95 }], est: 575, upper: 670, plan: 575, adjusted: false, chips: ['LIGHT'], notes: ['Uline closed 9/7 — rolled into this day'], status: 'ok' },
+      ],
+      scored: [
+        { date: '2026-09-01', dow: 'Tue', status: 'scored', actual: 764, est: 702, upper: 773, err: 62, verdict: 'heavy', reports: 7, deliverOn: '2026-09-02' },
+        { date: '2026-08-31', dow: 'Mon', status: 'scored', actual: 652, est: 673, upper: 738, err: -21, verdict: 'on', reports: 7, deliverOn: '2026-09-01' },
+        { date: '2026-08-28', dow: 'Fri', status: 'scored', actual: 534, est: 532, upper: 604, err: 2, verdict: 'on', reports: 7, deliverOn: '2026-08-31' },
+      ],
+      unscored: [{ date: '2026-08-19', dow: 'Wed', status: 'before_archive', est: 670, reason: 'before the manifest archive began (2026-08-20)' }],
+      pending: [], holes: [{ date: '2026-08-27', dow: 'Thu', est: 667, deliverOn: '2026-08-28' }], closed: [], unforecast: [],
+      changes: [{ text: 'Uline raised the week of 9/21 by ~90/day' }], pattern: [{ text: "Tuesdays: Uline's number has run 46 low on 3 of the last 5" }],
+      stats: { windows: { 30: { n: 11, mae: 27.3, bias: -6.7, mape: 4.4, overHigh: { count: 0, rate: 0 } }, 90: { n: 11, mae: 27.3, bias: -6.7, mape: 4.4, overHigh: { count: 0, rate: 0 } }, 180: { n: 11, mae: 27.3, bias: -6.7, mape: 4.4, overHigh: { count: 0, rate: 0 } } },
+        byWeekday: { 0: { dow: 'Sun', n: 2, shown: false }, 1: { dow: 'Mon', n: 2, shown: false }, 2: { dow: 'Tue', n: 2, shown: false }, 3: { dow: 'Wed', n: 1, shown: false }, 4: { dow: 'Thu', n: 2, shown: false }, 5: { dow: 'Fri', n: 2, shown: false } },
+        byHorizon: { '≤4w': { n: 11, shown: true, mae: 27.3, bias: -6.7 }, '5–8w': { n: 0, shown: false }, '9–13w': { n: 0, shown: false }, '14w+': { n: 0, shown: false } } },
+      expectedVersionMissing: false, disagreements: [], counts: { scored: 3 }, note: null,
+      status: { lastRunAt: '2026-09-02T03:00:00Z', lastSuccessAt: '2026-09-02T03:00:00Z', lastSummary: 'nothing new (1 already judged)' }, query: 'subject:"Uline Forecast" has:attachment newer_than:45d',
+    });
     if (u.includes('roster') || u.includes('drivers')) return R({ ok: true, drivers: [{ name: 'FRANK OKINE', id: '1' }], roster: [] });
     return R({ ok: true, stops: [], entries: [], items: [], count: 0 });
   });
