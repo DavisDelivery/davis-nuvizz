@@ -253,13 +253,30 @@ export function verifySessionToken(token: any, nowMs = Date.now()): SessionClaim
   };
 }
 
-/** Pull a bearer token off a request. Header only — never the query string (it lands in logs). */
+/**
+ * Pull OUR session token off a request. Header only — never the query string (it lands in logs).
+ *
+ * x-auth-token WINS over Authorization, and that order is load-bearing, not taste. TWO token
+ * systems reach this site. The Drivers panel (src/components/DriversPanel.jsx:46) signs a
+ * dispatcher into LOAD-SCAN and sends that foreign token as `Authorization: Bearer …`;
+ * loadscan-admin.mts forwards the header untouched to the other origin, which is what
+ * authorises the call there. If this read Authorization first, the day loadscan-admin is
+ * gated requireUser would find a token it cannot verify and refuse UNCONDITIONALLY — a bad
+ * token is a 401 even in legacy mode (require-user.mts) — so the Drivers panel would 401 on
+ * every call, before AUTH_REQUIRED was ever flipped, with nothing a dispatcher could do about
+ * it. Reading our own header first lets the two systems ride the same request.
+ *
+ * Authorization still works for every caller that carries no x-auth-token — curl, the
+ * existing tests, and any client written before this header existed.
+ */
 export function bearerFromHeaders(headers: { get(name: string): string | null }): string | null {
-  const auth = headers.get('authorization') || '';
-  const m = /^Bearer\s+(.+)$/i.exec(auth.trim());
-  if (m) return m[1].trim();
-  const x = headers.get('x-auth-token');
-  return x ? x.trim() : null;
+  // Only a header that actually CARRIES a value takes precedence: an empty or blank
+  // x-auth-token must not shadow a real Authorization token and turn a signed-in caller
+  // into an anonymous one.
+  const x = (headers.get('x-auth-token') || '').trim();
+  if (x) return x;
+  const m = /^Bearer\s+(.+)$/i.exec((headers.get('authorization') || '').trim());
+  return m ? m[1].trim() : null;
 }
 
 // ── Reset tokens ─────────────────────────────────────────────────────────────

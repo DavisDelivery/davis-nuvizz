@@ -29,7 +29,13 @@ export const STOP_NBR_RE = /^[A-Za-z0-9._-]{1,64}$/;
 export default async (req: Request): Promise<Response> => {
   const cors = {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    // 'Authorization' added because WITHOUT IT THE GATE BELOW IS UNREACHABLE FROM OFF-SITE.
+    // The non-GET gate has shipped since the auth work started, but the preflight only ever
+    // allowed Content-Type — so a cross-origin DELETE carrying a bearer token was refused by
+    // the BROWSER before it left, and the moment AUTH_REQUIRED flips that becomes "delete does
+    // nothing and the console says CORS", which is the hardest kind of failure to diagnose
+    // from a screenshot.
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
     'Content-Type': 'application/json',
     'Cache-Control': 'no-store',
@@ -37,6 +43,19 @@ export default async (req: Request): Promise<Response> => {
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
 
   // Deleting a row is a dispatcher's act; reading the day is not gated.
+  //
+  // THE GET STAYS OPEN, ON PURPOSE, AND IT IS THE ONE ENDPOINT HERE WITH AN OUTSIDE CONSUMER.
+  // davis-driver-scorecard.netlify.app reads this day feed cross-origin (its client lives in
+  // this repo at docs/scorecard-attempts/AttemptsCard.jsx), and that site holds no dispatch-map
+  // session — there is no account for it to sign in as. So gating the GET would not tighten a
+  // door, it would break the driver scorecard on the day AUTH_REQUIRED flips.
+  //
+  // THAT IS A DECISION SOMEBODY STILL HAS TO MAKE, not a settled state: either the scorecard
+  // gets its own service credential (a machine account with a viewer role, or a shared key
+  // checked here), or this feed is accepted as public and the response is trimmed to what a
+  // public feed may say. Today it names customers, addresses and drivers. Whichever way it
+  // goes, it has to be chosen BEFORE the switch, because after it the failure is silent on the
+  // other site.
   if (req.method !== 'GET') {
     const gate = await requireUser(req, { role: 'dispatcher' });
     if (!gate.ok) return gate.response;

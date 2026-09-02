@@ -10,6 +10,7 @@ import { isFirestoreEnabled } from './lib/firestore.mts';
 import { listStops } from './lib/history-store.mts';
 import { todayUTC } from './lib/nuvizz-scan.mts';
 import { buildUndeliveredReport } from './lib/straggler-report.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
 
@@ -22,6 +23,11 @@ function addDaysUTC(dateStr: string, n: number): string {
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
+  // Gate at viewer BEFORE the window walk: this reads up to 31 warehoused days and returns
+  // every undelivered order with its customer. Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
+
   try {
     if (!isFirestoreEnabled()) {
       return new Response(JSON.stringify({ ok: false, error: 'FIREBASE_SA not set' }), { status: 200, headers: cors });

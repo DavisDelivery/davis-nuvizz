@@ -13,6 +13,7 @@
 //     ?date=YYYY-MM-DD                  → single day
 //     ?from=YYYY-MM-DD&to=YYYY-MM-DD    → inclusive range, processed oldest→newest
 import { isFirestoreEnabled } from './lib/firestore.mts';
+import { requireUserForBackground } from './lib/background-gate.mts';
 import { listStops } from './lib/history-store.mts';
 import { updateCustomerRollupsForDay } from './lib/history-customers.mts';
 
@@ -46,6 +47,13 @@ export default async (req: Request): Promise<Response> => {
   if (!isFirestoreEnabled()) {
     return new Response(JSON.stringify({ ok: false, error: 'FIREBASE_SA not set' }), { status: 200, headers });
   }
+  // GATED AT admin. A rebuild rewrites history_customers over up to 200 days — the rollup the
+  // customer history screen serves — and an anonymous caller could pin the function for
+  // fifteen minutes on every hit. Netlify already answered 202 and discarded our status
+  // (lib/background-gate.mts); this is run by hand and has no doc a screen polls, so the
+  // refusal lands in nuvizz_ops/background_refusals and the function log.
+  const gate = await requireUserForBackground(req, 'nuvizz-rebuild-customer-history-background', { role: 'admin' });
+  if (!gate.ok) return gate.response;
   const dates = resolveDates(new URL(req.url));
   if (!dates.length) {
     return new Response(JSON.stringify({ ok: false, error: 'pass ?date=YYYY-MM-DD or ?from=&to=' }), { status: 400, headers });

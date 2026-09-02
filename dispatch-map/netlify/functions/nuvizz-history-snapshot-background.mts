@@ -33,8 +33,22 @@
 // re-capturing day-2 (to absorb late POD) is out of scope — TODO v1.1.
 
 import { runHistorySnapshot } from './lib/history-core.mts';
+import { gateScheduledOverride } from './lib/background-gate.mts';
 
-export default runHistorySnapshot;
+// ?date= / ?from=&to= is the backfill branch: each day costs a full scanDate() — the planned
+// load-range probe plus the unplanned number-space descent — and ?from=&to= takes up to 31 of
+// them in one POST. The scheduled run takes no params and captures ET-yesterday.
+//
+// The gate is STRICT (enforced even with AUTH_REQUIRED off) and admin-only; see
+// lib/background-gate.mts for why this one branch cannot ship inert. It runs BEFORE the core
+// is entered, so a refused override reaches no Firestore read and no vendor call.
+export const OVERRIDE_PARAMS = ['date', 'from', 'to'] as const;
+
+export default async (req: Request): Promise<Response> => {
+  const refused = await gateScheduledOverride(req, 'nuvizz-history-snapshot-background', OVERRIDE_PARAMS);
+  if (refused) return refused;
+  return runHistorySnapshot(req);
+};
 
 export const config = {
   schedule: '0 6 * * *',

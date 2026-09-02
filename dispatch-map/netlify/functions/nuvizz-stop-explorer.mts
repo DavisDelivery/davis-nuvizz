@@ -12,6 +12,7 @@ import { getNuvizzRequester, setCallTrigger } from './lib/nuvizz-request.mts';
 import { getCreds, basicAuthHeader } from './lib/nuvizz-scan.mts';
 import { buildBody, normalize, cleanPeriod, coveringWindowForRange, rowInRange, LIST_MAX_RESULT, OPENAPI_BASE, SAVED_SEARCHES, fetchSavedSearchRaw, fetchSavedSearchRows, toBoardStop, boardDayFor } from './lib/nuvizz-list.mts';
 import { isFirestoreEnabled, readStops, etDayString } from './lib/firestore.mts';
+import { requireUser } from './lib/require-user.mts';
 
 // Re-exported so the existing test (test/stop-explorer.test.mjs) keeps importing them here.
 export { buildBody, normalize, cleanPeriod } from './lib/nuvizz-list.mts';
@@ -20,6 +21,11 @@ export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
   if (req.method !== 'POST') return new Response(JSON.stringify({ ok: false, error: 'POST only' }), { status: 405, headers: cors });
+  // Gate at dispatcher BEFORE the body is read and before any saved-search pull: every branch
+  // below spends metered NuVizz calls. Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'dispatcher' });
+  if (!gate.ok) return gate.response;
+
   setCallTrigger('on-demand'); // bottom-grid stop explorer pull → on-demand
 
   let body: any = {};

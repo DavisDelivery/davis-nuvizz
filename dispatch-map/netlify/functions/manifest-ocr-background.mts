@@ -18,6 +18,7 @@
 
 import { MANIFEST_SYSTEM, MANIFEST_PROMPT, extractManifestJson, normalizeManifestRows } from './lib/manifest-extract.mts';
 import { isFirestoreEnabled, setDoc, getDoc, deleteDoc } from './lib/firestore.mts';
+import { requireUserForBackground } from './lib/background-gate.mts';
 
 const MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -62,6 +63,21 @@ export default async (req: Request): Promise<Response> => {
 
   const doc = jobDocPath(jobId);
   const stamp = () => new Date().toISOString();
+
+  // GATED AT dispatcher — this spends an Anthropic vision call per drop and writes rows that
+  // go on to be pushed into NuVizz. Netlify already answered 202 and discarded our status
+  // (lib/background-gate.mts), so the refusal is written to the job doc as status:'error'.
+  // That is precisely where the client looks: App.jsx polls manifest-ocr-result?job=<id> and
+  // renders pd.error verbatim, so the dispatcher who dropped the PDF reads "not signed in"
+  // instead of watching the reader spin for six minutes and then time out.
+  //
+  // Deliberately after the jobId validation and before the chunk reassembly: a refusal must
+  // never write to an attacker-chosen document path, and must never pay for the reads.
+  const gate = await requireUserForBackground(req, 'manifest-ocr-background', {
+    role: 'dispatcher',
+    record: async (refusal) => { await setDoc(doc, { status: 'error', error: refusal.message, created_at: refusal.at }); },
+  });
+  if (!gate.ok) return gate.response;
 
   if (pdfBase64) {
     // Inline path (small PDFs) — bounded by the background-function body cap.

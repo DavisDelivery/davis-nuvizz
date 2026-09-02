@@ -33,6 +33,7 @@ import { mergeSweep, scoreRowsLive, flagHistoryPath, FLAG_HISTORY_VERSION } from
 import { arrivalAnchor, isFinishedStop } from '../../src/lib/board-flags.js';
 import { auditRows } from './lib/flag-rows.mts';
 import { emailEnabled } from './lib/email.mts';
+import { gateScheduledOverride } from './lib/background-gate.mts';
 
 const TENANT = 'davis';
 const DEPOT = { name: 'Buford Terminal', lat: 34.147791, lng: -83.960911 };
@@ -55,8 +56,18 @@ function weekdayKey(date: string): string | null {
   return Number.isNaN(dt.getTime()) ? null : ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][dt.getDay()];
 }
 
+// ?dry / ?date / ?now are the hand-driven branches. ?date and ?now REPLAY the board against a
+// clock the caller chose, which is what decides who gets an urgent customer-service email; ?dry
+// sends nothing but walks the whole board and every customer_notes doc and returns the stops,
+// their receiving hours and how late they are — a free customer-data read on an open POST. The
+// scheduled run (*/20 11-23 weekdays) sends no query string and is untouched.
+export const OVERRIDE_PARAMS = ['dry', 'date', 'now'] as const;
+
 export default async (req: Request): Promise<Response> => {
   const J = (b: any, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } });
+  // Before isFirestoreEnabled and before any read: a refused override must cost nothing.
+  const refused = await gateScheduledOverride(req, 'eta-flag-alert-background', OVERRIDE_PARAMS);
+  if (refused) return refused;
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
 
   try {

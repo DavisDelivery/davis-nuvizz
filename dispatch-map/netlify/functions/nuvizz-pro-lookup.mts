@@ -8,10 +8,16 @@
 import { lookupStopByPro, getCreds } from './lib/nuvizz-scan.mts';
 import { writeStopNotes } from './lib/firestore.mts';
 import { setCallTrigger } from './lib/nuvizz-request.mts';
+import { requireUser } from './lib/require-user.mts';
 
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
+  // Gate at dispatcher BEFORE the vendor call: every hit is a metered NuVizz /stop/info, and
+  // the answer is written back onto the stop's note fields. Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'dispatcher' });
+  if (!gate.ok) return gate.response;
+
   setCallTrigger('on-demand'); // dispatcher-initiated PRO lookup → attribute as on-demand
   const pro = new URL(req.url).searchParams.get('pro') || '';
   if (!pro.trim()) return new Response(JSON.stringify({ ok: false, reason: 'missing pro' }), { status: 400, headers: cors });

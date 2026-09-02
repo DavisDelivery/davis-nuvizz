@@ -9,7 +9,7 @@
 // — so unlike load-scan's bootstrap it is not a standing back door while the variable
 // lingers. Remove AUTH_BOOTSTRAP_SECRET from the site afterwards anyway.
 
-import { readJsonBody, jsonResponse } from './lib/require-user.mts';
+import { readJsonBody, jsonResponse, clientIp, throttled } from './lib/require-user.mts';
 import { safeEqual, normalizeUsername, normalizeEmail, passwordProblem, hashPassword, sessionsConfigured } from './lib/auth-core.mts';
 import { countActiveAdmins, createUser, newUserDoc, publicUser, storeReady } from './lib/auth-store.mts';
 
@@ -18,6 +18,19 @@ export default async (req: Request): Promise<Response> => {
   const want = String(process.env.AUTH_BOOTSTRAP_SECRET || '').trim();
   if (want.length < 16) return jsonResponse({ ok: false, error: 'bootstrap not enabled' }, 404);
   if (!storeReady()) return jsonResponse({ ok: false, error: 'user store not configured (FIREBASE_SA)' }, 503);
+
+  // THROTTLE, the same belt auth-login wears — this was the only unauthenticated auth endpoint
+  // without one. AUTH_BOOTSTRAP_SECRET is compared in constant time, but nothing was limiting
+  // how many guesses a caller could make per second, and the prize for guessing it right is
+  // THE FIRST ADMIN ACCOUNT. Tighter than login's 30/10min because a bootstrap is a
+  // once-in-the-life-of-the-site act: a human doing it correctly needs one attempt, and a
+  // handful of retries covers a fat-fingered curl. Per-instance, so this slows one hot
+  // connection rather than a distributed guess — the standing defences (secret must be set,
+  // and it REFUSES once an active admin exists) are still the real lock.
+  const ip = clientIp(req);
+  if (throttled(`bootstrap:${ip}`, 5, 10 * 60_000)) {
+    return jsonResponse({ ok: false, error: 'too many attempts — wait a few minutes' }, 429);
+  }
 
   const b = await readJsonBody(req);
   if (!b.ok) return b.response;

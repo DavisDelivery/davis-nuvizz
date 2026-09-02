@@ -12,6 +12,7 @@
 import { isFirestoreEnabled } from './lib/firestore.mts';
 import { queryCustomersByName, queryCustomersByPro, getCustomerByMatchKey } from './lib/history-customers.mts';
 import { getStop } from './lib/history-store.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -19,6 +20,11 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
+  // Gate at viewer: every past delivery for a customer — address, driver, ticket and line
+  // items. Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
+
   if (!isFirestoreEnabled()) {
     return new Response(JSON.stringify({ ok: false, reason: 'history_unavailable', customers: [] }), { status: 200, headers: cors });
   }

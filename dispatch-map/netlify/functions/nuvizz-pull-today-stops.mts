@@ -25,6 +25,7 @@ import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString,
 import { summarizeScanMetrics } from './lib/scan-metrics.mts';
 import { filterFinishedPriorDay } from './lib/nuvizz-list.mts';
 import { breakerMode, reportedDailyCeiling } from './lib/nuvizz-request.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
 
@@ -200,6 +201,14 @@ export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
 
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
+
+  // Gate at viewer: this IS the board — every stop on a day with its customer, address and
+  // status, plus the day's NuVizz spend and the ?live=1 probe path. It is also the busiest
+  // endpoint in the app (the map polls it), so the 30-second user-doc cache in
+  // lib/require-user.mts is what keeps a gated board from becoming a Firestore read per poll.
+  // Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
 
   try {
     let stops: any[];

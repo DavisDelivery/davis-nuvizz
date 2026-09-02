@@ -2,27 +2,69 @@ rules_version = '2';
 
 // firestore.rules — the davismarginiq (default) database.
 //
+// ═════════════════════════════════════════════════════════════════════════════
+// TWO RULESETS LIVE IN THIS FILE. READ THIS BEFORE CHANGING ANYTHING.
+//
+//   1. THE LIVE BLOCK — ACTIVE. Mirrors the console exactly, still deliberately
+//      open. Deploying this file TODAY applies the live block and changes
+//      nothing about who can read or write what.
+//   2. THE CUTOVER BLOCK — INERT. Commented out, between the
+//      `CUTOVER BLOCK BEGIN` / `CUTOVER BLOCK END` markers at the bottom. It is
+//      the locked-down ruleset, written and reviewed, waiting on logins.
+//
+// WHY THE CUTOVER BLOCK SHIPS COMMENTED AND NOT LIVE. dispatch-map's browser
+// sends NO credential at all today: src/lib/firebase.js calls getFirestore(app)
+// and never imports firebase/auth, and the sign-in screen that does exist is
+// inert behind VITE_AUTH_ENABLED (src/lib/auth.js:22, src/lib/auth-gate.js).
+// Under the cutover block every request from that browser arrives with
+// request.auth == null, so EVERY rule denies. And that failure is SILENT —
+// seven of the browser's ten Firestore read paths swallow permission-denied
+// (see THE SILENT-FAILURE WARNING below), so the board would come up at 6am
+// looking completely normal while missing every receiving hour, every closed
+// day and every SMS thread, until a truck arrived at a dock that was shut.
+// With the block commented, a mis-fired deploy is a no-op instead of an
+// invisible outage. That asymmetry is the whole reason for the shape of this
+// file: being open one day longer costs an exposure that has already existed
+// for months; being closed one hour early costs a refused delivery nobody can
+// explain.
+//
+// TO PERFORM THE CUTOVER: satisfy the four preconditions at the head of the
+// cutover block, then uncomment everything between the markers and DELETE the
+// live block. LEAVE THE MARKERS IN PLACE — dispatch-map/test/firestore-rules-
+// shape.test.mjs finds the ruleset by them and pins its shape either way, so
+// the markers are load-bearing for CI, not decoration.
+//
 // ─────────────────────────────────────────────────────────────────────────────
-// READ THIS BEFORE CHANGING ANYTHING IN HERE.
+// WHY COMMIT A RULES FILE AT ALL: until this file existed these rules lived
+// ONLY in the Firebase console, hand-edited, with nothing in version control to
+// review, diff, or explain them. The posture was recorded in prose in
+// dispatch-map/HANDOFF.md (:1656-1663 — "already grants `allow read, write: if
+// true` on `/{document=**}`") and nowhere else. A security boundary no one can
+// read in the repo is a security boundary no one is checking.
 //
-// THIS FILE CURRENTLY MIRRORS THE LIVE RULES EXACTLY. It is deliberately still
-// wide open, because the app has no login yet: dispatch-map's browser talks to
-// Firestore directly with no credential (dispatch-map/src/lib/firebase.js), so
-// requiring auth here would break every note save, every routing save, and the
-// customer-notes subscription the whole map depends on — silently, because
-// several onSnapshot handlers swallow permission errors and would just show
-// stale data. See "THE CUTOVER" below.
+// NOTHING IN THIS REPO DEPLOYS THIS FILE. firebase-tools is not a dependency of
+// any package.json here, and no workflow in .github/workflows (auto-merge,
+// deploy-watch, test) mentions Firebase — the apps ship through Netlify. So
+// committing this changes NOTHING live. Deploying is a deliberate act:
 //
-// WHY COMMIT AN OPEN RULES FILE AT ALL: until now these rules existed ONLY in
-// the Firebase console, hand-edited, with nothing in version control to review,
-// diff, or explain them. The posture was recorded in prose in HANDOFF.md
-// (:1656-1663) and nowhere else. A security boundary that no one can read in
-// the repo is a security boundary no one is checking. This file makes the
-// current state explicit and reviewable, and gives the lockdown a diff to be.
+//   firebase deploy --only firestore:rules
 //
-// NOTHING IN THIS REPO DEPLOYS THIS FILE. firebase-tools is not a dependency and
-// no CI workflow references Firebase, so committing this changes NOTHING live.
-// Deploying is a deliberate act:  firebase deploy --only firestore:rules
+// AND RULES ARE PER-DATABASE, which is the part that bites. firebase.json as
+// committed has ONE firestore entry — `{ "rules": "firestore.rules" }` with no
+// database named — so that command targets the (default) database and NOTHING
+// ELSE. uat-mirror is a separate database with its own rules: proving the cutover
+// on UAT does not lock production, and locking production does not lock UAT.
+//
+// So the rehearsal is not free. The UAT prod-mirror site is the one that sets
+// VITE_FIRESTORE_DATABASE=uat-mirror (src/lib/firebase.js), and it is where this
+// should be exercised against a real browser before the board Chad is looking at
+// — but firebase.json has to name that database first. Confirm the multi-database
+// deploy syntax against `firebase deploy --help` at the time rather than trusting
+// a command written here: there is no firebase-tools in this repo to check it
+// against, so anything more specific than the line above would be a guess, and a
+// guessed deploy command aimed at the wrong database is the exact mistake this
+// paragraph exists to prevent. The separate glorybounddispatch project has its
+// own rules, still console-only.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // WHAT IS ACTUALLY EXPOSED RIGHT NOW, so the risk is written down next to the
@@ -40,18 +82,81 @@ rules_version = '2';
 //                                   create a doc with role:'dispatcher' and a PIN
 //                                   of their choosing. The open rule on THIS
 //                                   database defeats load-scan's own login.
+//          app_users .............. dispatch-map's own user store — password
+//                                   hashes, roles, reset tokens. Same shape of
+//                                   hole: write yourself an admin.
 //          customer_notes ......... rewrite the receiving hours the flag engine
 //                                   trusts; flip an address override → a truck
 //                                   sent to the wrong door
 //          nuvizz_board_dates ..... corrupt deferral dates → a truck sent to a
 //                                   dock that said "don't come"
-//          nuvizz_ops/* ........... force a ~2,000-call cold NuVizz scan, or
-//                                   flip the customer mailer on
+//          nuvizz_ops/* ........... force a cold NuVizz scan (~3,000 vendor calls,
+//                                   CLAUDE.md's cost rule), or flip the customer
+//                                   mailer on
 //
 // The service account used by every Netlify Function BYPASSES these rules
 // entirely, so tightening this file protects the BROWSER path only. The function
-// endpoints are a separate door and need their own gate.
+// endpoints are a separate door with their own gate (lib/require-user.mts). BOTH
+// doors have to be shut: gating nuvizz-scan-config admin-only while this file
+// still allows the browser to write nuvizz_ops/scan_config buys nothing at all.
+//
 // ─────────────────────────────────────────────────────────────────────────────
+// THE ROLE-VOCABULARY WARNING — THREE LISTS, AND THEY DO NOT AGREE.
+//
+// SOURCE OF TRUTH: dispatch-map/netlify/functions/lib/auth-core.mts:35
+//     export type Role = 'admin' | 'dispatcher' | 'viewer';
+// The cutover block below is written against exactly that vocabulary, and
+// test/firestore-rules-shape.test.mjs imports ROLES from auth-core and fails if
+// the two ever drift — so adding a fourth role on one side only is a red build,
+// not a discovery made later at a dock.
+//
+// THE CLIENT CARRIES A DIFFERENT, OLDER LIST: src/lib/auth-gate.js
+//     export const ROLES = ['driver', 'loader', 'dispatcher', 'admin'];
+//     export const DEFAULT_ROLE = 'driver';
+// roleOf() falls back to DEFAULT_ROLE for anything not in that list. So a user
+// the server calls a 'viewer' arrives in the browser as a 'driver'.
+//
+// WHY THAT MATTERS HERE, CONCRETELY: the first draft of the cutover granted
+// everything to isStaff() = dispatcher|admin only. Under that draft a 'viewer'
+// could read NOTHING — and would not be told. Seven of the browser's ten read
+// paths swallow permission-denied (below), so the viewer gets a BLANK BOARD WITH
+// NO ERROR: no customer notes, no SMS, no tractor layer, no saved profiles, and
+// nothing on screen saying why. That is why the block below has canRead()
+// = viewer|dispatcher|admin as a separate helper from isStaff(). The rules layer
+// now lets a viewer read; auth-gate.js still has to learn the word 'viewer'
+// before that is true end to end, and it does not know it yet.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// THE SILENT-FAILURE WARNING — A BAD RULES DEPLOY IS NOT AN OUTAGE.
+//
+// An outage is loud and gets fixed. This is quiet. Of the browser's TEN Firestore
+// read paths, SEVEN discard a permission error and carry on rendering:
+//
+//   App.jsx:1934   customer_notes  → console.error, then setReady(true): the map
+//                                    renders with ZERO notes, i.e. every customer
+//                                    silently has no receiving hours and no
+//                                    closed days
+//   App.jsx:1953   sms_messages    → console.error only; the threads are empty
+//   App.jsx:7994   routing_customer_drivers → .catch(){} "best-effort"
+//   App.jsx:14519  bottom_panel_profiles → falls back to the localStorage cache,
+//                                    so it looks RIGHT and is stale
+//   App.jsx:14553  truck_profiles  → () => setReady(true)
+//   App.jsx:22357  dispatch_presence → "feature silently off"
+//   App.jsx:22485  nuvizz_ops      → "offline / rules hiccup"
+//
+// Only three surface anything: tractor_locations (App.jsx:1845), routing_routes
+// (App.jsx:14574, sets an error string) and routing_jobs (App.jsx:19405).
+//
+// TWO WRITES DO THE SAME THING. saveStopLocation and resetStopLocation — the
+// pin-override handlers, duplicated across the Map and the desktop panel
+// (App.jsx:10754, 10769 and 18885, 18900) — console.error and then clear the
+// moving state, which is the same thing they do on success. A dispatcher drags a
+// pin to the right dock door, the marker settles, and nothing was saved.
+//
+// So: rehearse on uat-mirror, and after any deploy of the cutover block CHECK THE
+// BOARD, do not check for errors. The absence of an error is what this failure
+// looks like.
+// ═════════════════════════════════════════════════════════════════════════════
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -61,20 +166,17 @@ service cloud.firestore {
     // load-scan's credential store, dispatch-map's own user store (app_users — password
     // hashes and reset tokens), and load-scan's four working collections are reached ONLY
     // through the service account (load-scan/netlify/functions/lib/firestore.mts), and
-    // dispatch-map's browser bundle never reads or writes them (grep'd in the 2026-09
-    // audit: zero references in dispatch-map/src, and load-scan/src does not import
-    // Firebase at all). So denying them here costs nothing and closes the hole where a
-    // stranger with the public web config writes driver_auth/9999 {role:'dispatcher'}
-    // and signs in with a legitimately issued token.
+    // dispatch-map's browser bundle never reads or writes them (re-grep'd at v0.84.0:
+    // zero references to any of the six in dispatch-map/src, and load-scan/src does not
+    // import Firebase at all). So denying them here costs nothing and closes the hole
+    // where a stranger with the public web config writes driver_auth/9999
+    // {role:'dispatcher'} and signs in with a legitimately issued token.
     //
     // WHY IT IS DONE INSIDE THE CATCH-ALL: Firestore grants access if ANY matching rule
-    // allows it. A separate `match /driver_auth/{doc} { allow: if false }` block beside
-    // an open `{document=**}` would be dead code — the wildcard still allows. The
+    // allows it — match order is irrelevant, the results are OR'd. A separate
+    // `match /driver_auth/{doc} { allow: if false }` beside an open `{document=**}` would
+    // be dead code, because the wildcard still allows. While the wildcard is OPEN the
     // exclusion has to live in the wildcard's own condition.
-    //
-    // DEPLOY IS STILL A DELIBERATE ACT (nothing in CI touches Firebase):
-    //   firebase deploy --only firestore:rules
-    // Test on uat-mirror first — rules are per-database.
     function serverOnlyCollection(document) {
       return document[0] in [
         'driver_auth',
@@ -86,61 +188,183 @@ service cloud.firestore {
       ];
     }
 
-    // ── CURRENT LIVE POSTURE — open for everything else, matching the console ──
-    // Do not tighten this further on its own. See THE CUTOVER below.
+    // ── THE LIVE BLOCK — open for everything else, matching the console ──
+    // Do not tighten this on its own. The cutover is one atomic swap: this block
+    // out, the block below in, once the browser is actually signing in.
     match /{document=**} {
       allow read, write: if !serverOnlyCollection(document);
     }
 
-    // ── THE CUTOVER (do not enable until logins ship) ──────────────────────
+    // ═══════════════════════════════════════════════════════════════════════
+    // ===== CUTOVER BLOCK BEGIN =====
     //
-    // Replace the block above with the block below ONLY when ALL of these are
-    // true, or the app breaks in the quiet direction:
+    // INERT. Commented out on purpose — see the top of this file. Uncomment this
+    // and delete the live block above ONLY when ALL FOUR are true, or the app
+    // breaks in the quiet direction:
     //
     //   1. Firebase Authentication is enabled on the davismarginiq project and
-    //      dispatch-map signs in before <Shell/> mounts (App.jsx) — Shell opens
-    //      Firestore subscriptions immediately on mount, so a gate rendered
-    //      inside it still leaks unauthenticated traffic.
-    //   2. Every dispatcher/admin has an account and has signed in once.
-    //   3. Role is carried as a custom claim (dispatcher | driver | admin).
-    //   4. It has been tested against the uat-mirror database first. Rules are
-    //      PER-DATABASE — locking (default) does not lock uat-mirror.
+    //      dispatch-map signs in BEFORE <Shell/> mounts. Shell opens Firestore
+    //      subscriptions on mount — useCustomerNotes subscribes to the whole
+    //      customer_notes collection and useDispatchPresence WRITES — so a gate
+    //      rendered inside it still leaks unauthenticated traffic. The gate is
+    //      already outside Shell in App(); keep it there.
+    //   2. Every admin / dispatcher / viewer has an account and has signed in once.
+    //   3. Role is carried as a Firebase custom claim, spelled with auth-core.mts:35's
+    //      vocabulary ('admin' | 'dispatcher' | 'viewer'), and src/lib/auth-gate.js
+    //      has been taught the word 'viewer' (today it maps it to 'driver').
+    //   4. It has been deployed to uat-mirror FIRST and the board was opened and
+    //      READ THERE — not merely checked for errors. Rules are PER-DATABASE.
     //
-    //   function signedIn()   { return request.auth != null; }
-    //   function role()       { return request.auth.token.role; }
-    //   function isStaff()    { return signedIn() && role() in ['dispatcher', 'admin']; }
+    // Every grant below is backed by a call site that exists in dispatch-map/src
+    // today (App.jsx line numbers as of v0.84.0). An operation with no call site
+    // gets `if false`, not isStaff(): the browser has never needed it, and a door
+    // opened "just in case" is a door.
     //
-    //   // The credential store is never client-reachable. load-scan reaches it
-    //   // server-side via the service account, which ignores these rules — so
-    //   // denying everyone here costs nothing and closes the auth-bypass hole.
-    //   match /driver_auth/{doc}  { allow read, write: if false; }
+    // ── Helpers ────────────────────────────────────────────────────────────
+    // role() rides in a Firebase custom claim on the ID token — the same claim
+    // src/lib/auth-gate.js roleOf() reads, so the screen and the database cannot
+    // come to disagree about who may edit a customer's receiving hours.
+    // signedIn() guards role(): with request.auth null, reading .token.role is an
+    // error, and && short-circuits before it happens.
     //
-    //   // Operational config: admin only. These control NuVizz spend and the
-    //   // customer mailer, so a dispatcher does not need write here.
-    //   match /nuvizz_ops/{doc}   { allow read: if isStaff();
-    //                               allow write: if signedIn() && role() == 'admin'; }
+    // function signedIn() { return request.auth != null; }
+    // function role()     { return request.auth.token.role; }
+    // function isStaff()  { return signedIn() && role() in ['dispatcher', 'admin']; }
+    // function canRead()  { return signedIn() && role() in ['viewer', 'dispatcher', 'admin']; }
     //
-    //   // The dispatcher's working set — what the map and routing screens write.
-    //   match /customer_notes/{doc}          { allow read, write: if isStaff(); }
-    //   match /routing_routes/{doc}          { allow read, write: if isStaff(); }
-    //   match /routing_jobs/{doc}            { allow read, write: if isStaff(); }
-    //   match /truck_profiles/{doc}          { allow read, write: if isStaff(); }
-    //   match /bottom_panel_profiles/{doc}   { allow read, write: if isStaff(); }
-    //   match /dispatch_presence/{doc}       { allow read: if isStaff();
-    //                                          allow write: if isStaff(); }
-    //   match /sms_messages/{doc}            { allow read: if isStaff();
-    //                                          allow write: if false; }
+    // ── Server-only: never client-reachable, in either direction ───────────
+    // These are the six from serverOnlyCollection() above. With the catch-all at
+    // the bottom denying everything, these six matches enforce NOTHING NEW — they
+    // are documentation, and a tripwire: if someone ever loosens the catch-all,
+    // these still say no. `{doc=**}` rather than `{doc}` so a subcollection added
+    // under one of them is covered too.
     //
-    //   // Read by the browser today (tractor layer, customer→driver history) but
-    //   // MISSING from the first draft of this block — the audit found both. Without
-    //   // them the default-deny below would blank the tractor pins and the driver
-    //   // history silently, because those onSnapshot handlers swallow permission errors.
-    //   match /tractor_locations/{doc}       { allow read: if isStaff(); }
-    //   match /routing_customer_drivers/{doc} { allow read: if isStaff(); }
+    // match /driver_auth/{doc=**}                 { allow read, write: if false; }
+    // match /app_users/{doc=**}                   { allow read, write: if false; }
+    // match /nuvizz_load_scans/{doc=**}           { allow read, write: if false; }
+    // match /loadscan_worklog/{doc=**}            { allow read, write: if false; }
+    // match /loadscan_assignments/{doc=**}        { allow read, write: if false; }
+    // match /load_scan_unmatched_aliases/{doc=**} { allow read, write: if false; }
     //
-    //   // Everything else the browser only ever reads, or never touches at all.
-    //   // Default deny is the point: a collection added later is CLOSED until
-    //   // someone opens it on purpose, which is the opposite of today.
-    //   match /{document=**}      { allow read, write: if false; }
+    // ── The dispatcher's working set ───────────────────────────────────────
+    //
+    // Receiving hours, closed days, address and pin overrides, opt-out status —
+    // the data the flag engine and the map trust. setDoc(..., {merge:true}) only,
+    // which is create + update.
+    //   read   App.jsx:1928 (onSnapshot over the whole collection)
+    //   write  App.jsx:5215, 5234, 10744, 10754, 10769, 11664, 18295, 18830,
+    //          18868, 18885, 18900
+    // DELETE IS DENIED because nothing in the browser deletes a note, and a
+    // deleted note is a customer whose receiving hours revert to "none known"
+    // with no trace — the flag engine then cheerfully routes a truck into a
+    // closed dock and flags nothing.
+    // match /customer_notes/{doc} {
+    //   allow read:           if canRead();
+    //   allow create, update: if isStaff();
+    //   allow delete:         if false;
+    // }
+    //
+    // Saved loads. DELETE IS REAL HERE — App.jsx:19478 deleteDoc, and 19479 reads
+    // the doc back to confirm it is gone. Denying delete would leave the row on
+    // screen and the dispatcher pressing the button again.
+    //   read   App.jsx:14574 (query, orderBy created_at)
+    //   write  App.jsx:19439 setDoc, 19460/19469 updateDoc, 19478 deleteDoc
+    // match /routing_routes/{doc} {
+    //   allow read:                   if canRead();
+    //   allow create, update, delete: if isStaff();
+    // }
+    //
+    // The routing build handshake: the browser writes a queued job, the
+    // background function fills it in, the browser watches the doc.
+    //   read   App.jsx:19405 (onSnapshot on the single job doc)
+    //   write  App.jsx:19402 setDoc
+    // No deleteDoc anywhere — jobs are left as the audit trail of a build.
+    // match /routing_jobs/{doc} {
+    //   allow read:           if canRead();
+    //   allow create, update: if isStaff();
+    //   allow delete:         if false;
+    // }
+    //
+    // Truck/trailer definitions the router plans against.
+    //   read   App.jsx:14545 (onSnapshot)
+    //   write  App.jsx:14548 (seeds CLIENT_DEFAULT_TRUCKS into an empty
+    //          collection), 14558 setDoc merge
+    // No deleteDoc: a truck deleted out from under a saved route is a route that
+    // cannot be re-opened.
+    // match /truck_profiles/{doc} {
+    //   allow read:           if canRead();
+    //   allow create, update: if isStaff();
+    //   allow delete:         if false;
+    // }
+    //
+    // Saved bottom-panel column layouts. Deleting one IS a real button.
+    //   read   App.jsx:14497 (onSnapshot)
+    //   write  App.jsx:14511, 14526 setDoc; 14533 deleteDoc
+    // match /bottom_panel_profiles/{doc} {
+    //   allow read:                   if canRead();
+    //   allow create, update, delete: if isStaff();
+    // }
+    //
+    // "Who else has the board open, and what have they staged." SIGNED-IN, NOT
+    // STAFF, and that is deliberate on both counts:
+    //   • A viewer with the board open is a person the dispatcher should be able
+    //     to see. Hiding them makes the chip lie about who is looking.
+    //   • The heartbeat publishes UNCONDITIONALLY on mount and every 25s
+    //     (App.jsx:22308/22334, PRESENCE_HEARTBEAT_MS=25000) and its failure is
+    //     swallowed (.catch(){} at 22315, "presence must never break the app"),
+    //     so denying a signed-in user the write would fail silently on every
+    //     single beat, forever, and nobody would ever see an error.
+    // The doc id is a localStorage device identity, not a uid, so there is no
+    // owner field to compare — delete cannot be narrowed to "your own doc"
+    // without inventing one. Worst case a signed-in staffer removes a presence
+    // chip and it returns on the next 25s beat.
+    //   read   App.jsx:22355 (onSnapshot)
+    //   write  App.jsx:22308 setDoc; 22335 deleteDoc on beforeunload
+    // match /dispatch_presence/{doc} {
+    //   allow read:                   if canRead();
+    //   allow create, update, delete: if signedIn();
+    // }
+    //
+    // ── Read-only to the browser ───────────────────────────────────────────
+    // Each of these is WRITTEN server-side by a Netlify Function through the
+    // service account, which bypasses these rules entirely. Every one was
+    // re-grep'd at v0.84.0: the browser has a read call site and no write of any
+    // kind — no setDoc, no updateDoc, no addDoc, no deleteDoc.
+    //
+    // Two-way SMS bodies and customer phone numbers. Written by the SMS pipe.
+    //   read App.jsx:1950 (query, newest 500)
+    // match /sms_messages/{doc}            { allow read: if canRead(); allow write: if false; }
+    //
+    // The tractor layer. Written by the nightly tractor-flags job.
+    //   read App.jsx:1845 (getDocs)
+    // match /tractor_locations/{doc}       { allow read: if canRead(); allow write: if false; }
+    //
+    // Customer→driver history behind the "habit" line on a stop.
+    //   read App.jsx:7990 (getDoc)
+    // match /routing_customer_drivers/{doc} { allow read: if canRead(); allow write: if false; }
+    //
+    // OPERATIONAL CONFIG — the circuit breaker, the scan cadence, the customer
+    // mailer switch. THE EARLIER DRAFT OF THIS BLOCK GRANTED ADMIN *WRITE* HERE.
+    // It should not, and it now does not: the browser performs ZERO writes to
+    // nuvizz_ops. Its ONLY call site in dispatch-map/src is one subscription to
+    // one document (App.jsx:22479, onSnapshot nuvizz_ops/manifest_check_latest).
+    // These documents decide whether ~3,000 NuVizz calls fire and whether 700
+    // customers get emailed; changing them is a server endpoint's job
+    // (nuvizz-scan-config, gated admin-only), where the change is authenticated,
+    // validated and logged. A browser write grant here would be the bypass around
+    // that endpoint's own gate, which is finding 5 of the audit exactly.
+    //   read App.jsx:22479
+    // match /nuvizz_ops/{doc}              { allow read: if canRead(); allow write: if false; }
+    //
+    // ── Everything else: closed ────────────────────────────────────────────
+    // DEFAULT DENY IS THE POINT. A collection added next month is CLOSED until
+    // somebody opens it on purpose — the opposite of today, where it is open until
+    // somebody notices. Position is irrelevant (Firestore OR's every matching
+    // rule, so this cannot override a grant above); it is what catches every
+    // collection no rule above named.
+    // match /{document=**}      { allow read, write: if false; }
+    //
+    // ===== CUTOVER BLOCK END =====
+    // ═══════════════════════════════════════════════════════════════════════
   }
 }

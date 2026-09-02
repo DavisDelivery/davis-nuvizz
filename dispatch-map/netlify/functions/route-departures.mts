@@ -22,6 +22,7 @@ import { DEFAULT_CURVE } from '../../src/lib/travel-model.js';
 import {
   impliedDeparture, departureTable, routeDeparturePath, readDepartureTable, DEPARTURE_VERSION, MIN_SAMPLES,
 } from './lib/route-departure.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
 const DEPOT = { lat: 34.147791, lng: -83.960911 };
@@ -72,6 +73,14 @@ const fmt = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${Str
 
 export default async (req: Request): Promise<Response> => {
   const J = (b: any, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } });
+  // Gate at viewer: ?refit=1 refits and PUBLISHES the departure table every ETA on the
+  // board is computed from, and the plain read exposes the fleet's departure behaviour.
+  // Gated together at viewer because the read is the common case; the refit branch is a
+  // candidate to raise to dispatcher once the client sends tokens. Inert until
+  // AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
+
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
 
   try {

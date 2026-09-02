@@ -14,6 +14,7 @@
 //     ?date=YYYY-MM-DD                → single day
 //     ?from=YYYY-MM-DD&to=YYYY-MM-DD  → inclusive range
 import { isFirestoreEnabled, listDocs } from './lib/firestore.mts';
+import { requireUserForBackground } from './lib/background-gate.mts';
 import { HISTORY_COLLECTION, listStops, capturedDatesFromManifests } from './lib/history-store.mts';
 import { loadEngineConfig } from './lib/routing-engine-config.mts';
 import { extractReferenceRoutes, writeReferenceRoutes } from './lib/routing-reference.mts';
@@ -33,6 +34,12 @@ export default async (req: Request): Promise<Response> => {
   if (!isFirestoreEnabled()) {
     return new Response(JSON.stringify({ ok: false, error: 'FIREBASE_SA not set' }), { status: 200, headers });
   }
+  // GATED AT admin. This rewrites routing_reference_routes — the library every engine score is
+  // measured against — over the whole warehouse. Netlify already answered 202 and discarded
+  // our status (lib/background-gate.mts); run by hand, no doc a screen polls, so the refusal
+  // lands in nuvizz_ops/background_refusals.
+  const gate = await requireUserForBackground(req, 'routing-reference-backfill-background', { role: 'admin' });
+  if (!gate.ok) return gate.response;
   const t0 = Date.now();
   const url = new URL(req.url);
   const one = url.searchParams.get('date');

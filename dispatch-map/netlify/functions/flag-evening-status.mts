@@ -18,11 +18,17 @@
 // Read-only, Firestore only, ZERO NuVizz calls. Never sends anything.
 import { isFirestoreEnabled, getDoc, listDocs, etDayString } from './lib/firestore.mts';
 import { CLAIM_COLLECTION } from './lib/flag-sms.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
 
 export default async (req: Request): Promise<Response> => {
   const J = (b: any, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } });
+  // Gate at viewer: this reports which stops customer service was emailed about tonight.
+  // Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
+
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
 
   try {

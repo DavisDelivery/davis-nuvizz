@@ -22,6 +22,9 @@
 
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { MessageSquare, X, Send, ArrowLeft, Search, SquarePen, Phone, AlertCircle, ChevronRight } from 'lucide-react';
+// send-sms is one of the requireUser()-gated endpoints; apiFetch is the only thing that
+// puts the session token on a request (see lib/api.js).
+import { apiFetch } from '../lib/api.js';
 
 const BRAND = '#1e5b92';
 
@@ -78,7 +81,7 @@ function fmtSeparator(iso) {
 }
 
 async function postSendSms(payload) {
-  const r = await fetch('/.netlify/functions/send-sms', {
+  const r = await apiFetch('/.netlify/functions/send-sms', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
   });
   return r.json();
@@ -92,7 +95,7 @@ function useMessagingRoster() {
     let cancelled = false;
     (async () => {
       try {
-        const r = await fetch('/.netlify/functions/messaging-roster');
+        const r = await apiFetch('/.netlify/functions/messaging-roster');
         const d = await r.json();
         if (!cancelled && d?.ok && Array.isArray(d.contacts)) setContacts(d.contacts);
       } catch { /* best-effort: customers + threads still work */ }

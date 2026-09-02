@@ -17,8 +17,23 @@
 // dropped, the second still finds the day not-yet-captured and runs.
 
 import { runPlanSnapshot } from './lib/attempts-core.mts';
+import { gateScheduledOverride } from './lib/background-gate.mts';
 
-export default runPlanSnapshot;
+// ?date= drops the 08:00-11:59 ET window AND the once-a-day guard, so a hand-run POST can
+// re-freeze any day's routed plan — the "who had it originally" record the evening attempt
+// scan attributes drivers from. Overwrite the wrong date and the attempt list blames the
+// wrong driver. The scheduled run takes no params.
+//
+// The gate is STRICT (enforced even with AUTH_REQUIRED off) and admin-only; see
+// lib/background-gate.mts for why this one branch cannot ship inert. It runs BEFORE the core
+// is entered, so a refused override reaches no Firestore read and no vendor call.
+export const OVERRIDE_PARAMS = ['date'] as const;
+
+export default async (req: Request): Promise<Response> => {
+  const refused = await gateScheduledOverride(req, 'nuvizz-att-plan-snapshot-background', OVERRIDE_PARAMS);
+  if (refused) return refused;
+  return runPlanSnapshot(req);
+};
 
 export const config = {
   schedule: '30 12,13 * * *',

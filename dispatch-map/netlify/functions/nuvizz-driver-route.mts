@@ -45,6 +45,7 @@
 // }
 
 import { isFirestoreEnabled, readStops } from './lib/firestore.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const MOTIVE_BASE = process.env.MOTIVE_BASE_URL || 'https://api.gomotive.com/v1';
 const TENANT = 'davis'; // index tenant key — matches nuvizz-pull-today-stops.mts
@@ -288,6 +289,11 @@ export default async (req: Request): Promise<Response> => {
     'Content-Type': 'application/json',
   };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
+
+  // Gate at viewer: a named driver's whole day — every stop, customer and address on their
+  // route. Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
 
   const url = new URL(req.url);
   const driver = url.searchParams.get('driver') || '';

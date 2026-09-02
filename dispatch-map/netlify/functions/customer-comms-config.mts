@@ -34,6 +34,16 @@ export default async (req: Request): Promise<Response> => {
 
   try {
     if (req.method === 'GET') {
+      // Gate the GET at viewer. It was open, and it is not a cheap read: readDomainStatus
+      // below calls RESEND on every hit (lib/customer-comms.mts), so an anonymous GET in a
+      // loop is a rate-limit vector against the account that sends Davis's customer mail —
+      // and if Resend starts refusing, the thing that stops is delivery confirmations to
+      // ~700 customers a day. The body also names the sender address, the template and
+      // whether an unsubscribe can even be offered. Viewer, not admin: the screen has to
+      // render for anyone allowed to look at it; the write below stays admin.
+      // Inert until AUTH_REQUIRED=true (lib/require-user.mts).
+      const gate = await requireUser(req, { role: 'viewer' });
+      if (!gate.ok) return gate.response;
       const cfg = await readConfig();
       return J({
         ok: true,

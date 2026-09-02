@@ -269,6 +269,11 @@ export function summarizeSpec(spec, count) {
 }
 
 // ── network wrappers (browser only) ──
+//
+// api.js is itself pure and dependency-free (no React, no Firebase, no npm), so importing
+// it here keeps this module unit-testable with node:test — which is the whole reason the
+// parsing half of this file has no imports at all.
+import { apiFetch } from './api.js';
 
 const ENDPOINT = '/.netlify/functions/ai-search';
 
@@ -278,7 +283,7 @@ const ENDPOINT = '/.netlify/functions/ai-search';
 async function postAi(payload) {
   let resp;
   try {
-    resp = await fetch(ENDPOINT, {
+    resp = await apiFetch(ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),

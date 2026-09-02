@@ -24,6 +24,7 @@
 //     ?from=YYYY-MM-DD&to=YYYY-MM-DD  → inclusive range
 //     ?force=1                        → rescore even at the current version
 import { isFirestoreEnabled, listDocs } from './lib/firestore.mts';
+import { requireUserForBackground } from './lib/background-gate.mts';
 import { HISTORY_COLLECTION, capturedDatesFromManifests } from './lib/history-store.mts';
 import { ENGINE_VERSION, loadEngineConfig } from './lib/routing-engine-config.mts';
 import { REFERENCE_ROUTES_COLLECTION, type ReferenceRouteDoc } from './lib/routing-reference.mts';
@@ -44,6 +45,12 @@ export default async (req: Request): Promise<Response> => {
   if (!isFirestoreEnabled()) {
     return new Response(JSON.stringify({ ok: false, error: 'FIREBASE_SA not set' }), { status: 200, headers });
   }
+  // GATED AT admin. A replay rescores every captured day into route_proposals — the Engine
+  // tab's trend — and holds an instance for twelve minutes per pass. Netlify already answered
+  // 202 and discarded our status (lib/background-gate.mts); this is fired by hand and has no
+  // doc a screen polls, so the refusal lands in nuvizz_ops/background_refusals.
+  const gate = await requireUserForBackground(req, 'routing-engine-replay-background', { role: 'admin' });
+  if (!gate.ok) return gate.response;
   const t0 = Date.now();
   const url = new URL(req.url);
   const from = url.searchParams.get('from');

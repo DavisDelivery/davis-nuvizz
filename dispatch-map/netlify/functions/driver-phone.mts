@@ -22,10 +22,17 @@
 
 import { resolveDriverPhone } from './lib/marginiq.mts';
 import { isFirestoreEnabled } from './lib/firestore.mts';
+import { requireUser } from './lib/require-user.mts';
 
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
+
+  // Gate at viewer: this turns a driver's name into their PERSONAL mobile number. An open
+  // GET here is a directory of the fleet's phones to anybody who can guess a name. Inert
+  // until AUTH_REQUIRED=true (lib/require-user.mts).
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
 
   const name = (new URL(req.url).searchParams.get('name') || '').trim();
   const reply = (body: Record<string, unknown>) =>

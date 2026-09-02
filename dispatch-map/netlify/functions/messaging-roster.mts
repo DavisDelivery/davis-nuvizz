@@ -19,10 +19,16 @@
 
 import { listEmployees } from './lib/marginiq.mts';
 import { isFirestoreEnabled } from './lib/firestore.mts';
+import { requireUser } from './lib/require-user.mts';
 
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
+
+  // Gate at viewer: the roster is every employee's name and messaging contact. Inert until
+  // AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
 
   if (!isFirestoreEnabled()) {
     // Degrade gracefully: the client still has customer contacts + existing threads.

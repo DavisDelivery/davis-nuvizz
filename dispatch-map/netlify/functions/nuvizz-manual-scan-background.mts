@@ -22,6 +22,8 @@
 // The client already polls the read endpoint's lastScannedAt after firing, so 202-now fits
 // the existing flow with no client-side wait change.
 import { runRefreshStops } from './lib/refresh-stops-core.mts';
+import { recordScanRun, etDayString } from './lib/firestore.mts';
+import { requireUserForBackground } from './lib/background-gate.mts';
 
 /**
  * The inner scan URL — MANUAL LIST-DISCOVERY ONLY (pure; exported for tests).
@@ -41,5 +43,38 @@ export function manualScanUrl(reqUrl: string): string {
 }
 
 export default async (req: Request): Promise<Response> => {
+  // GATED AT dispatcher — a manual scan spends real NuVizz calls and moves the board every
+  // dispatcher is reading.
+  //
+  // WHERE THE REFUSAL GOES, AND WHAT IT STILL DOES NOT REACH. Netlify has already answered
+  // this caller 202, so the 401 below is thrown away (see lib/background-gate.mts). The
+  // refusal is therefore filed as a RUN ROW in the scan ledger — the same
+  // nuvizz_ops/scan_runs the scheduled scanner writes and nuvizz-scan-config?explain=1 reads
+  // back — with startedAt AND finishedAt set, so it can never be mistaken for the
+  // started-and-died row that ledger exists to expose. That is the honest record of "the
+  // 05:12 scan did not happen, and here is why".
+  //
+  // WHAT IT DOES NOT DO, said plainly rather than assumed: the Map's Scan-now button
+  // (App.jsx useManualScan) polls nuvizz-pull-today-stops for a CHANGED lastScannedAt and has
+  // no other channel, so on a refusal it still falls through to "Scan running — the board
+  // will refresh automatically". Making that button say "not signed in" needs a client change
+  // in App.jsx, which this stream does not own. The two doc-backed alternatives were both
+  // rejected on purpose: writing lastScannedAt would claim a scan that never ran, and writing
+  // markScanState({halted}) paints "Scanning paused (kill switch) — board may be stale" —
+  // wrong words — on EVERY viewer's board, which hands one refused caller a way to red-banner
+  // the whole dispatch floor.
+  const gate = await requireUserForBackground(req, 'nuvizz-manual-scan-background', {
+    role: 'dispatcher',
+    record: async (refusal) => {
+      const at = refusal.at;
+      await recordScanRun({
+        id: `${at}__refused`, startedAt: at, finishedAt: at, ms: 0,
+        trigger: 'manual', path: 'auth', outcome: 'refused',
+        skip: 'not-signed-in', reason: refusal.reason, error: refusal.message,
+        etDate: etDayString(new Date(at)),
+      });
+    },
+  });
+  if (!gate.ok) return gate.response;
   return runRefreshStops(new Request(manualScanUrl(req.url), { method: 'POST' }));
 };

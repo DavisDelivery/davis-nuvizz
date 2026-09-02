@@ -49,12 +49,22 @@ import { getManifest } from './lib/history-store.mts';
 import { routingEngineDisabled, loadEngineConfig, isBoardDay, ENGINE_VERSION } from './lib/routing-engine-config.mts';
 import { runShadowForDate, listReferencesBefore } from './lib/routing-engine-core.mts';
 import { runPlanForDate, summarizePlanVersion, planVersionRollupPath, PLAN_PROPOSALS_DAILY_COLLECTION } from './lib/routing-plan-core.mts';
+import { gateScheduledOverride } from './lib/background-gate.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+// ?date / ?force drive the nightly shadow by hand. ?force discards the already-scored guard, so
+// a caller can re-score any captured day into route_proposals — the Engine tab's trend, and the
+// evidence a tuning change gets judged on — as often as they like. The 07:30 UTC cron sends no
+// query string and scores ET-yesterday.
+export const OVERRIDE_PARAMS = ['date', 'force'] as const;
+
 export default async (req: Request): Promise<Response> => {
   const headers = { 'Content-Type': 'application/json' };
+  // Before the kill-switch check and before any read: a refused override must cost nothing.
+  const refused = await gateScheduledOverride(req, 'routing-engine-shadow-background', OVERRIDE_PARAMS);
+  if (refused) return refused;
   if (routingEngineDisabled()) {
     console.log('[engine-shadow] ROUTING_ENGINE=off — nightly shadow skipped');
     return new Response(JSON.stringify({ ok: true, skipped: 'ROUTING_ENGINE=off' }), { status: 200, headers });

@@ -16,11 +16,18 @@
 // Read-only. ZERO NuVizz calls, and it writes nothing.
 import { isFirestoreEnabled, runQuery } from './lib/firestore.mts';
 import { optOutRow, sortOptOuts } from './lib/unsubscribe.mts';
+import { requireUser } from './lib/require-user.mts';
 
 export default async (req: Request): Promise<Response> => {
   const J = (b: any, s = 200) => new Response(JSON.stringify(b), {
     status: s, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
   });
+  // Gate at viewer: this lists every customer who has opted OUT of delivery texts —
+  // names and match keys — which is a mailing list of Davis's customers to anyone who
+  // guesses the URL. Inert until AUTH_REQUIRED=true (lib/require-user.mts).
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
+
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
 
   try {

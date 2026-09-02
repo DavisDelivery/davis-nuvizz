@@ -28,6 +28,7 @@
 
 import { listDocs, isFirestoreEnabled } from './lib/firestore.mts';
 import { selectWriteOps, countWriteOps } from './lib/write-log-select.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const MAX_LIMIT = 200;
 
@@ -36,6 +37,11 @@ export default async (req: Request): Promise<Response> => {
   const J = (obj: any, status = 200) => new Response(JSON.stringify(obj), { status, headers: cors });
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
   if (req.method !== 'GET') return J({ ok: false, error: 'GET only' }, 405);
+  // Gate at viewer: the write journal names every NuVizz change and who/what made it.
+  // Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
+
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'Firestore off — no write journal available' }, 200);
 
   const url = new URL(req.url);

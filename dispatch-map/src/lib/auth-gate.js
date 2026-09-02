@@ -1,7 +1,7 @@
 // auth-gate.js — WHAT THE APP SHOWS BEFORE IT SHOWS THE BOARD.
 //
-// PURE. No React, no Firebase, no window. The whole decision is one function over
-// three inputs, so the rule can be tested without a browser and cannot drift into a
+// PURE. No React, no Firebase, no window, no fetch. The whole decision is one function
+// over five inputs, so the rule can be tested without a browser and cannot drift into a
 // component where nobody can reach it.
 //
 // ─────────────────────────────────────────────────────────────────────────────
@@ -9,65 +9,120 @@
 //
 // This app has never had a login. Turning one on is the single change in the whole
 // security plan that can lock a dispatcher out of a 700-stop morning, so it lands
-// inert: with VITE_AUTH_ENABLED unset, gateState() returns 'app' before it looks at
+// inert: with the login flag unset, gateState() returns 'app' before it looks at
 // anything else, and App() renders exactly what it rendered yesterday. The flag is
 // flipped deliberately, in a quiet window, after every account exists.
 //
 // A LOGIN SCREEN IS NOT THE SECURITY. Worth stating where the code lives, because it
-// is the easiest thing in this plan to misread: the Firestore rules are still
-// `allow read, write: if true`, so anyone holding the web config out of the JS bundle
+// is the easiest thing in this plan to misread: while the Firestore rules still say
+// `allow read, write: if true`, anyone holding the web config out of the JS bundle
 // talks to the database directly and never sees this screen. This gate is a
 // PRECONDITION for the rules lockdown (rules can only check request.auth once the
 // browser actually signs in) — it is not itself the lock. See firestore.rules.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The four things the shell can be showing. */
+/** Everything the shell can be showing before (or instead of) the board. */
 export const GATE = {
-  DISABLED: 'app',      // flag off — behave exactly as before the login existed
-  LOADING: 'loading',   // Firebase has not yet told us whether anyone is signed in
-  LOGIN: 'login',       // nobody signed in
-  APP: 'app',           // signed in (or gate disabled) — mount the board
+  DISABLED: 'app',            // flag off — behave exactly as before the login existed
+  LOADING: 'loading',         // we have not yet resolved whether anyone is signed in
+  LOGIN: 'login',             // nobody signed in
+  MUST_CHANGE: 'must-change', // signed in, but the account carries mustChangePassword
+  RESET: 'reset',             // arrived on an emailed /reset-password?u=..&t=.. link
+  APP: 'app',                 // signed in (or gate disabled) — mount the board
 };
 
 /**
  * PURE. What to render.
  *
- * `enabled`  — the VITE_AUTH_ENABLED flag.
- * `ready`    — has Firebase reported an initial auth state yet? Until it has, we must
- *              NOT show the login screen: onAuthStateChanged fires asynchronously on
- *              every load, so a signed-in dispatcher would see a login flash on every
- *              refresh, and worse, might start typing into it.
- * `user`     — the signed-in user, or null.
- *
- * Returns 'app' | 'loading' | 'login'.
+ * `resetLink` — an emailed reset link, checked FIRST and regardless of the flag. During
+ *               rollout the accounts are created and the reset emails go out BEFORE the
+ *               gate is switched on; if the flag decided this, every one of those links
+ *               would open the board and silently do nothing. It requires both halves of
+ *               the link (see resetLinkParams), so a stray query string cannot reach it.
+ * `enabled`   — the login flag. Off ⇒ the app, unchanged, always.
+ * `ready`     — has the session been resolved yet? Until it has we must NOT show a login:
+ *               restoring a stored session is asynchronous (it re-checks the server), so a
+ *               signed-in dispatcher would see a login flash on every refresh — and a
+ *               flashed login is one somebody starts typing into.
+ * `user`      — the signed-in user, or null.
+ * `mustChangePassword` — an admin-created account on its first sign-in. The board is NOT
+ *               shown first: a temporary password that a person is allowed to postpone
+ *               changing is a permanent password.
  */
-export function gateState({ enabled, ready, user } = {}) {
+export function gateState({ enabled, ready, user, mustChangePassword, resetLink } = {}) {
+  if (resetLink) return GATE.RESET;        // the emailed link works with the flag either way
   if (!enabled) return GATE.DISABLED;      // flag off → the app, unchanged, always
   if (!ready) return GATE.LOADING;         // never flash a login at a signed-in user
-  return user ? GATE.APP : GATE.LOGIN;
+  if (!user) return GATE.LOGIN;
+  if (mustChangePassword) return GATE.MUST_CHANGE;
+  return GATE.APP;
 }
 
 /**
- * PURE. The role this user carries, from a Firebase custom claim.
+ * PURE. IS A LOGIN IN CHARGE, AND DID THE RETIRED FLAG TURN IT ON.
  *
- * DEFAULTS TO THE LEAST PRIVILEGE. An account with no claim yet — freshly created, or
- * created before roles existed — is a 'driver', never a dispatcher. load-scan's own
- * auth module made the same call in the same words ("anything unrecognized is a
- * driver, the least-privileged role"), and the two systems should not disagree about
- * what an unknown user can do.
+ * THERE IS ONLY ONE LOGIN NOW. The v0.76.0 FIREBASE email/password gate (VITE_AUTH_ENABLED,
+ * lib/auth.js) is RETIRED by v0.84: a Firebase ID token in the Authorization header parses
+ * as our session-token shape and then fails the HMAC compare, so requireUser() answers 401
+ * even with AUTH_REQUIRED unset. Signing into it can only ever produce a screen that says
+ * you are in and a board that behaves as if you are not. The system that signs a person in
+ * is the server username/password one (VITE_LOGIN_ENABLED, lib/auth-client.js) because it
+ * is the one the Netlify Functions actually verify.
+ *
+ * EITHER FLAG TURNS THAT ONE LOGIN ON. Whoever sets the old flag WANTS a login; handing
+ * them a broken one because they used the older name is the worst of the three options
+ * available, and quietly rendering the board instead would be a security control somebody
+ * believes they switched on and did not. The caller says which flag did it, out loud —
+ * a switch whose position cannot be read is not a switch.
+ *
+ * Returns { mode, legacyFlagOnly, bothFlags } rather than a bare string so the caller can
+ * report the situation without re-deriving it from the flags it just handed in.
  */
-export const ROLES = ['driver', 'loader', 'dispatcher', 'admin'];
-export const DEFAULT_ROLE = 'driver';
+export function resolveGateMode({ serverLogin, firebaseLogin } = {}) {
+  const server = !!serverLogin;
+  const legacy = !!firebaseLogin;
+  return {
+    mode: server || legacy ? 'server' : 'off',
+    legacyFlagOnly: legacy && !server,
+    bothFlags: server && legacy,
+  };
+}
+
+/**
+ * PURE. The role this user carries.
+ *
+ * ONE VOCABULARY, NOT THREE. This list used to read ['driver','loader','dispatcher','admin'],
+ * borrowed from load-scan, while the server's own list (netlify/functions/lib/auth-core.mts)
+ * reads ['admin','dispatcher','viewer'] and firestore.rules' isStaff() reads
+ * dispatcher|admin. That disagreement had a concrete cost: a real 'viewer' — the role the
+ * server hands anything it does not recognise — mapped to no known role here, fell to
+ * 'driver', and under the drafted rules could read NOTHING. Not an error message: a blank
+ * board at 6am with nothing on screen to explain it. The list is now the server's list.
+ *
+ * DEFAULTS TO THE LEAST PRIVILEGE, in the server's own words: "anything unrecognised is a
+ * viewer, never a guess upward". An account with no role yet is not a dispatcher.
+ *
+ * Reads `user.role` (the shape auth-login returns) and, still, `user.claims.role` (the
+ * Firebase custom claim), so a session from either system resolves the same way.
+ */
+export const ROLES = ['viewer', 'dispatcher', 'admin'];
+export const DEFAULT_ROLE = 'viewer';
 
 export function roleOf(user) {
-  const raw = String(user?.claims?.role ?? user?.role ?? '').trim().toLowerCase();
+  const raw = String(user?.role ?? user?.claims?.role ?? '').trim().toLowerCase();
   return ROLES.includes(raw) ? raw : DEFAULT_ROLE;
 }
 
-/** Staff = the roles that run the dispatch board. Mirrors the rule in firestore.rules. */
+/** Staff = the roles that run the dispatch board. Mirrors isStaff() in firestore.rules. */
 export function isStaff(user) {
   const r = roleOf(user);
   return r === 'dispatcher' || r === 'admin';
+}
+
+/** Mirrors roleAtLeast() in lib/auth-core.mts, so the screen and the server rank alike. */
+const RANK = { viewer: 0, dispatcher: 1, admin: 2 };
+export function roleAtLeast(user, need) {
+  return (RANK[roleOf(user)] ?? 0) >= (RANK[String(need || 'viewer').toLowerCase()] ?? 0);
 }
 
 /**

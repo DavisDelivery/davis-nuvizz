@@ -10,13 +10,17 @@
 // you build/reorder; a real write only happens on Save in Live mode (and only if the
 // server-side NUVIZZ_WRITE_ENABLED flag is set). A clientOpId makes a Save idempotent.
 
+import { apiFetch } from './api.js';
+
 const WRITE_FN = '/.netlify/functions/nuvizz-write';
 
 export async function callWrite(op, payload = {}, opts = {}) {
   const { dryRun = false, clientOpId, createdBy } = opts;
   let res;
   try {
-    res = await fetch(WRITE_FN, {
+    // apiFetch, not fetch: nuvizz-write is one of the endpoints requireUser() gates, and
+    // this is the single door every live NuVizz write in the app goes through.
+    res = await apiFetch(WRITE_FN, {
       method: 'POST',
       cache: 'no-store',
       headers: { 'content-type': 'application/json' },

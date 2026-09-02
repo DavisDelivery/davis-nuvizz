@@ -25,6 +25,7 @@ import { archiveManifest } from './lib/manifest-archive-store.mts';
 
 const TENANT = 'davis';
 import { buildMailSources, recordGmailRun, summarizeCycle } from './lib/mail-sources.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -40,6 +41,11 @@ export default async (req: Request): Promise<Response> => {
   // POST only: this reads mailboxes and rewrites the run every browser shows, so
   // it must not be reachable by anything that speculatively GETs a URL.
   if (req.method !== 'POST') return J({ ok: false, error: 'POST only' }, 405);
+
+  // Gate at dispatcher: this READS THE COMPANY MAILBOXES and rewrites the manifest run every
+  // browser shows. Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'dispatcher' });
+  if (!gate.ok) return gate.response;
 
   try {
     if (!isFirestoreEnabled()) return J({ ok: false, error: 'Firestore off — no board to check against' });

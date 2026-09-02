@@ -22,8 +22,22 @@
 // in the evening — one cheap saved-search call per run.
 
 import { runAttemptsScan } from './lib/attempts-core.mts';
+import { gateScheduledOverride } from './lib/background-gate.mts';
 
-export default runAttemptsScan;
+// ?date= drops the 20:00-23:59 ET window and re-runs the ATTEMPTS saved search against any
+// day — one metered NuVizz call per hit, unthrottled, from an unauthenticated POST. The
+// scheduled run takes no params.
+//
+// The gate is STRICT (enforced even with AUTH_REQUIRED off) and admin-only; see
+// lib/background-gate.mts for why this one branch cannot ship inert. It runs BEFORE the core
+// is entered, so a refused override reaches no Firestore read and no vendor call.
+export const OVERRIDE_PARAMS = ['date'] as const;
+
+export default async (req: Request): Promise<Response> => {
+  const refused = await gateScheduledOverride(req, 'nuvizz-att-scan-background', OVERRIDE_PARAMS);
+  if (refused) return refused;
+  return runAttemptsScan(req);
+};
 
 export const config = {
   schedule: '0 0,1,2,3 * * *',

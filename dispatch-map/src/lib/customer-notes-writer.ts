@@ -28,6 +28,8 @@ import type {
   ScanResult, SignalSource, FlagValue, DayCode,
   HoursScanResult, ClosedDayScanResult,
 } from './signal-scanner';
+// Dependency-free and safe to import cold (see the no-npm-install note below).
+import { reportDenied, isPermissionDenied } from './permission-denied.js';
 
 // CI runs the unit suite with NO npm install — test files may import only local modules
 // and node: builtins, and decideWrite is unit-tested directly. So this module must be
@@ -331,6 +333,13 @@ export interface ApplyResult {
   overrideSkips: number;
   legacyMigrations: number;
   errors: { matchKey: string; message: string }[];
+  /**
+   * The batch was REFUSED by the rules, not merely failed. Its own caller in App.jsx only
+   * console.error'd this, which means the auto-scanner could stop populating receiving
+   * hours entirely and the board would look completely normal — the same silent failure
+   * as a denied read, except this one gets quietly worse every day it runs.
+   */
+  denied?: boolean;
 }
 
 export async function applyScannerResults(
@@ -338,7 +347,7 @@ export async function applyScannerResults(
   stops: ScannedStop[],
   existingNotes: Map<string, ExistingNote>,
 ): Promise<ApplyResult> {
-  const result: ApplyResult = { attempted: 0, written: 0, overrideSkips: 0, legacyMigrations: 0, errors: [] };
+  const result: ApplyResult = { attempted: 0, written: 0, overrideSkips: 0, legacyMigrations: 0, errors: [], denied: false };
   if (!db) return result;
   // Lazy so this MODULE loads without firebase/firestore present (see FirestoreStamps).
   const { doc, writeBatch, serverTimestamp, deleteField } = await import('firebase/firestore');
@@ -398,6 +407,11 @@ export async function applyScannerResults(
       await batch.commit();
       result.written += slice.length;
     } catch (e: any) {
+      // A REFUSED batch is not a flaky write. It means the auto-scanner has stopped
+      // learning receiving hours, closed days and equipment restrictions for every stop,
+      // for as long as the rules say no — and the only place that ever showed was a
+      // console.error nobody has open at 6am. Report it once, to the banner.
+      if (isPermissionDenied(e)) { result.denied = true; reportDenied('customer_notes:auto_scan', e, 'write'); }
       for (const d of slice) result.errors.push({ matchKey: d.matchKey, message: e.message });
     }
   }

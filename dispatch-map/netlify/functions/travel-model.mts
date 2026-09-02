@@ -11,6 +11,7 @@
 // ZERO NuVizz calls.
 import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
 import { travelLegsPath, legSecondsMap, isGoogleRoutesEnabled, readTravelCalibration, readRouteClasses } from './lib/travel-store.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
 
@@ -21,9 +22,20 @@ export default async (req: Request): Promise<Response> => {
       'Content-Type': 'application/json',
       // Short client cache: the leg cache moves at most once per 20-minute sweep, and a
       // stale curve for a minute costs nothing. Keeps refocus-storms off Firestore.
-      'Cache-Control': 'public, max-age=60',
+      //
+      // PRIVATE, not public. The body now varies by principal — a signed-in viewer gets the
+      // curve, anyone else gets a 401 — and a shared cache in front of the site would happily
+      // serve one caller's answer to another. Vary: Authorization says so explicitly for any
+      // cache that ignores the directive.
+      'Cache-Control': 'private, max-age=60',
+      Vary: 'Authorization',
     },
   });
+  // Gate at viewer: the fleet's learned travel curve — how fast Davis's trucks actually move,
+  // by route class. Inert until AUTH_REQUIRED=true (lib/require-user.mts).
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
+
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
 
   try {

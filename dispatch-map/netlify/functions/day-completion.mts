@@ -19,14 +19,23 @@ import { isFirestoreEnabled, readStops, etDayString } from './lib/firestore.mts'
 import { emailEnabled } from './lib/email.mts';
 import { buildDayCompletion, dayCompletionSubject, dayCompletionText } from './lib/day-completion.mts';
 import { listDayCompletions, readDayCompletion, HISTORY_DAYS } from './lib/day-completion-store.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
 
 export default async (req: Request): Promise<Response> => {
   const J = (b: any, s = 200) => new Response(JSON.stringify(b, null, 1), {
     status: s,
-    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=60' },
+    // private, not public: the moment this body varies by principal (a viewer sees a board,
+    // a stranger sees a 401) a SHARED cache in front of the site can hand one caller's day
+    // to another. 60s of client-side reuse is all this ever wanted.
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'private, max-age=60', Vary: 'Authorization' },
   });
+  // Gate at viewer: the day's completion picture — every route, its stops and how far through
+  // it the driver is. Inert until AUTH_REQUIRED=true (lib/require-user.mts).
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
+
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
 
   try {

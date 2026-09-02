@@ -21,6 +21,7 @@ import {
   resolveLogRange, rollupByDay, rollupByMonth, tallyEntries, recentMonths,
   MAX_LOG_DAYS,
 } from './lib/customer-comms.mts';
+import { requireUser } from './lib/require-user.mts';
 
 // A quarter of sends at the current pace is comfortably under this; it exists so one
 // page load cannot try to serialise an unbounded list. Truncation is REPORTED, never
@@ -30,6 +31,11 @@ const MAX_ENTRIES = 2000;
 export default async (req: Request): Promise<Response> => {
   const headers = { 'Content-Type': 'application/json' };
   const J = (b: any, s = 200) => new Response(JSON.stringify(b), { status: s, headers });
+
+  // Gate at viewer: every delivery email and text this system has sent, with the
+  // customer address it went to. Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
 
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
 

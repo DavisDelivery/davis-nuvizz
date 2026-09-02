@@ -19,6 +19,7 @@
 //   GET  ?date=YYYY-MM-DD          → { ok, date, records } for that day (empty if none).
 //   GET  ?list=1                   → { ok, days:[{date,count}] } newest-first, for the picker.
 import { isFirestoreEnabled, getDoc, setDoc, listDocs, etDayString } from './lib/firestore.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
 const COLLECTION = 'manifest_push_log';
@@ -79,6 +80,14 @@ const stripId = ({ _id, ...rest }: any) => rest;
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
+  // Gate at viewer: the push log records which manifest orders were pushed into NuVizz and
+  // by whom — and its POST APPENDS to that record, so an ungated POST lets a stranger write
+  // history into the audit trail a dispatcher trusts. Both methods are held at viewer here
+  // rather than splitting them, because the client that writes it is the same screen that
+  // reads it. Inert until AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
+
   if (!isFirestoreEnabled()) {
     return new Response(JSON.stringify({ ok: false, reason: 'log_unavailable', records: [], days: [] }), { status: 200, headers: cors });
   }

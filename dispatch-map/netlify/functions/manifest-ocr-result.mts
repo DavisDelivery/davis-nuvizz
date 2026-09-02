@@ -8,10 +8,18 @@
 
 import { isFirestoreEnabled, getDoc, deleteDoc } from './lib/firestore.mts';
 import { jobDocPath, isValidJobId } from './manifest-ocr-background.mts';
+import { requireUser } from './lib/require-user.mts';
 
 export default async (req: Request): Promise<Response> => {
   const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
   const J = (body: any, status = 200) => new Response(JSON.stringify(body), { status, headers });
+
+  // Gate at viewer: the OCR result carries the manifest's customers, addresses and PROs,
+  // and the job id is the only thing standing between a stranger and somebody else's
+  // manifest. Read-only, so viewer; the reader itself is dispatcher. Inert until
+  // AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
 
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
   const jobId = String(new URL(req.url).searchParams.get('job') || '').toLowerCase();

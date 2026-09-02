@@ -15,6 +15,7 @@
 import { parseGeometryAssist } from './lib/routing-intent.mts';
 import type { Strategy } from './lib/routing-types.mts';
 import { fetchWithTimeout } from './lib/async-util.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 const DEFAULT_MODEL = 'claude-opus-4-8';
@@ -104,6 +105,12 @@ export default async function handler(req: Request): Promise<Response> {
   const json = (body: any, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
   if (req.method === 'GET') return json({ available: isAnthropicEnabled(), model: isAnthropicEnabled() ? model() : null });
   if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+  // Gate the POST at dispatcher, NOT the GET availability probe (same reasoning as
+  // ai-search): every POST action here spends an Anthropic call. Inert until
+  // AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'dispatcher' });
+  if (!gate.ok) return gate.response;
+
   if (!isAnthropicEnabled()) return json({ available: false });
   let body: any;
   try { body = await req.json(); } catch { return json({ error: 'bad json' }, 400); }

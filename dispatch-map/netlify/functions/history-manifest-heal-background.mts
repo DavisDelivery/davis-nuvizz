@@ -18,6 +18,7 @@
 // sealed manifest (verified/complete) or a tombstone; a day with no stored stops
 // is reported as un-healable (it needs a rescan, not a heal).
 import { isFirestoreEnabled } from './lib/firestore.mts';
+import { requireUserForBackground } from './lib/background-gate.mts';
 import {
   getManifest, listStops, listCaptures, appendCapture,
   upsertRoutes, upsertDrivers, upsertDriverDayPointer,
@@ -140,6 +141,15 @@ export default async (req: Request): Promise<Response> => {
   if (!isFirestoreEnabled()) {
     return new Response(JSON.stringify({ ok: false, error: 'FIREBASE_SA not set' }), { status: 200, headers });
   }
+  // GATED AT admin. This RESEALS days in the immutable history warehouse — the record every
+  // engine replay, every customer rollup and every miss-ledger score is derived from — so a
+  // stranger must not be able to reseal or repaint a day. Netlify already answered 202 and
+  // discarded our status (lib/background-gate.mts); a heal is fired by hand with curl and has
+  // no doc a screen polls, so the refusal lands in nuvizz_ops/background_refusals and the
+  // function log. Nothing else is written: a refusal must not leave a capture-failure record
+  // behind, because that would read as "the heal ran and broke", which is a different fault.
+  const gate = await requireUserForBackground(req, 'history-manifest-heal-background', { role: 'admin' });
+  if (!gate.ok) return gate.response;
   const t0 = Date.now();
   const url = new URL(req.url);
   const one = url.searchParams.get('date');

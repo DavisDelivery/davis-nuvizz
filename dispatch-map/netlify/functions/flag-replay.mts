@@ -24,12 +24,19 @@ import { listStops } from './lib/history-store.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { readTravelCalibration, ensureLegs } from './lib/travel-store.mts';
 import { sweepGrid, replayDay, judgeDay, summarizeReplay, REPLAY_VERSION } from './lib/flag-replay-core.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
 const DEPOT = { name: 'Buford Terminal', lat: 34.147791, lng: -83.960911 };
 
 export default async (req: Request): Promise<Response> => {
   const J = (b: any, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } });
+  // Gate at viewer BEFORE the day is loaded: a replay re-walks a whole sealed day at a
+  // chosen sweep interval — the most expensive read in this file. Inert until
+  // AUTH_REQUIRED=true.
+  const gate = await requireUser(req, { role: 'viewer' });
+  if (!gate.ok) return gate.response;
+
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
 
   try {
