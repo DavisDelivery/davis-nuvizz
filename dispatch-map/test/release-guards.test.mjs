@@ -17,7 +17,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { shipsCode, versionOf, changelogVersions } from '../scripts/check-version-bump.mjs';
+import { shipsCode, versionOf, changelogVersions, versionDirection } from '../scripts/check-version-bump.mjs';
 import { entryFromHtml, versionFromBundle, compareSemver, versionOf as liveVersionOf } from '../scripts/check-deploy-fresh.mjs';
 
 // ── WHAT COUNTS AS A CHANGE THAT SHIPS ───────────────────────────────────────
@@ -177,4 +177,46 @@ test("the app's own changelog is newest-first and has no duplicate versions", ()
       `out of order: ${rows[i - 1]} listed above ${rows[i]}`);
   }
   assert.equal(rows[0], liveVersionOf(src), 'the top row must be APP_VERSION');
+});
+
+// ── THE GATE MUST KNOW WHICH WAY THE NUMBER WENT ─────────────────────────────
+//
+// It asked "is it still the same?" and nothing else, so a version that went DOWN passed. A
+// branch bumped to 0.81.9 while main moved to 0.83.0; on rebase the gate printed
+// "✓ APP_VERSION 0.83.0 → 0.81.9". Merged, production's footer would have read OLDER than
+// the build before it, and the deploy watchdog — which takes the highest changelog row as
+// the live version — would have gone on reporting 0.83.0 for a bundle that said 0.81.9.
+
+test('A VERSION THAT GOES BACKWARDS IS REJECTED — the late-rebase case', () => {
+  assert.equal(versionDirection('0.83.0', '0.81.9'), 'backward');
+  assert.equal(versionDirection('0.83.0', '0.82.9'), 'backward');
+  assert.equal(versionDirection('1.0.0', '0.99.99'), 'backward');
+});
+
+test('the same version is still rejected, and only forward passes', () => {
+  assert.equal(versionDirection('0.83.0', '0.83.0'), 'same');
+  assert.equal(versionDirection('0.83.0', '0.83.1'), 'forward');
+  assert.equal(versionDirection('0.83.0', '0.84.0'), 'forward');
+  assert.equal(versionDirection('0.83.9', '1.0.0'), 'forward');
+});
+
+test('compared numerically, not as strings — 0.83.10 is AFTER 0.83.9', () => {
+  assert.equal(versionDirection('0.83.9', '0.83.10'), 'forward');
+  assert.equal(versionDirection('0.83.10', '0.83.9'), 'backward');
+});
+
+test('a first bump on a base with no version passes; garbage is named as such', () => {
+  assert.equal(versionDirection(null, '0.1.0'), 'forward');
+  assert.equal(versionDirection('', '0.1.0'), 'forward');
+  assert.equal(versionDirection('0.83.0', 'v0.83.1'), 'unparseable');
+  assert.equal(versionDirection('0.83.0', '0.83'), 'unparseable');
+  assert.equal(versionDirection('0.83.0', null), 'unparseable');
+});
+
+test('and main() actually uses it — the check is wired, not merely exported', () => {
+  const src = readFileSync(new URL('../scripts/check-version-bump.mjs', import.meta.url), 'utf8');
+  assert.match(src, /const direction = versionDirection\(wasV, nowV\)/);
+  assert.match(src, /direction === 'backward'/);
+  assert.match(src, /went BACKWARDS/);
+  assert.ok(!/wasV === nowV/.test(src), 'the old same-only check is gone');
 });

@@ -19,8 +19,7 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink,
-} from 'lucide-react';
+  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2 } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
   query, orderBy, limit, updateDoc, deleteDoc,
@@ -34,7 +33,7 @@ import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt, fo
 import { resolveStopContact, resolveStopPhone, orderContactAside, mergeSavedContact, isDialable } from './lib/stop-contact.js';
 import { readViewportSize } from './lib/viewport.js';
 import { sortStops, nextStopSort, stopSort, STOP_SORTS } from './lib/stop-sort.js';
-import { manifestIssues, manifestHeadline, manifestProvenance, toStored, loadStored, saveStored } from './lib/manifest-check-view.js';
+import { manifestIssues, manifestHeadline, manifestProvenance, loadStored, saveStored } from './lib/manifest-check-view.js';
 import { noteFreshness } from './lib/stop-notes-freshness.js';
 import { mapBaseOptions, mapLiveOptions, mapIdKey, keepView } from './lib/map-base-options.js';
 import { stopTimelineModel } from './lib/stop-timeline.js';
@@ -71,6 +70,7 @@ import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDrive
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
+import { isIosHomeScreenApp, canShareFiles, describePwaMode, viewerWayOut } from './lib/pwa-mode.js';
 // The scan plan's model, shared with the scheduler that runs it — the screen and the code
 // must not be able to disagree about what a rule means or what a scan affects.
 import {
@@ -97,7 +97,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.83.0';
+const APP_VERSION = '0.84.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -168,6 +168,8 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.84.0', 'ULINE’S FORECAST, AGAINST THE FREIGHT THAT ACTUALLY CAME. Chad: “find in my email the Uline forecasts they present and I want to start comparing them to what the manifest actually produce so we can try to forecast what is coming.” FOUND, by reading the mailbox: “DA - G - Uline Forecast”, monthly since June 2022 (~50 versions), one spreadsheet — estimate and high range per SHIP date, twelve months out, Saturdays absent, Sundays at ~75, weekdays 500–700. The ship date is the same key the manifest archive files a night under, so the comparison is a plain join: the Aug-04 file against the eleven archived nights scores a typical miss of 27 orders (4%), Uline running 7 high, and never once over their own high. WHAT IS ON THE SCREEN, on the Manifest check tab, phone and desktop: TONIGHT — “Ship Wed 9/2 → deliver Thu 9/3 · Uline 706 (high 781) · manifest so far 733 (#3, 21:40) · 27 over the estimate, under the high”, red only when the running count breaks Uline’s ceiling; on the phone it sits under the Gmail card, above a result list that can run to 500 cards. THE NEXT DELIVERY DAYS — Uline forecasts orders per ship date and Davis staffs drivers per delivery day, so the card rolls Fri + Sun into Tue 9/8 and reads Mon 9/7 as “Labor Day — no deliveries”. TWO CALENDARS, NOT ONE: Uline’s file says which days Uline does not ship (Labor Day, Thanksgiving, Christmas Eve and Day and the rest are simply absent from it); a delivery day is skipped only when that day is ALSO a federal holiday, plus anything in ULINE_DAVIS_CLOSED — Uline not shipping on Christmas Eve still leaves Wednesday’s 318 orders to deliver on Thursday, and a working day shown as “no deliveries” is a day nobody staffs. The Job panel lists the no-delivery days it is assuming. LIGHT is judged against the same weekday: against all days the chip was on 33 of 37 Mondays and meant nothing. A plan figure per day that only ever moves UP from Uline’s number, and only once four nights of that weekday are scored — over-staffing costs one short route, under-staffing costs refusals and carryover. HOW GOOD IS ULINE’S NUMBER — typical miss, lean, nights over their high, by weekday and by how far out, every figure with its n, and the sentence for the Uline call when a weekday has run low three of the last five weeks. THE LAST NIGHTS, coloured by a fixed rule that never changes a night’s colour after the fact: heavy at a route-day over, over-high strictly past the ceiling, a fragment flagged “check reports” rather than booked as a huge miss. WHAT IT WILL NOT DO: score the 10:51am preliminary as a 300-order under-run (a night is provisional until a report lands after 6pm), call a Sunday a hole before Monday evening’s board can exist, blame the manifest ingest for weeks before the archive began, or trust a Number(null). THE INGEST reads the same Gmail grant as the manifest with a different search, hourly; each distinct file is a version keyed by its CONTENT, so a forward is the same version seen twice and a corrected sheet is a second; an unreadable file is kept as evidence; a crash between the version write and its marker resumes without a phantom duplicate; a dry run reads and parses and writes nothing; the ~50 historical versions back-fill one quarter per press, after a preview. Zero NuVizz calls anywhere, pinned by an import guard. WHAT IS NOT BUILT: a forecast model of our own (eleven nights is not a training set), alerts of any kind, the three-year read-back of nightly PDFs from Gmail (a separate, inert PR). TONIGHT IS NOT A NIGHT YET: today’s ship date stays pending, count-so-far shown, until the 5am roll — an 8pm report is a third of the freight, not a verdict — and the strip re-reads every five minutes while visible, when a manifest run lands and when the tab comes back, stamped “as of 9:41pm”. The ledger behind the figures always reaches back 180 days whatever the screen lists. ADVERSARIALLY REVIEWED before merge, five lenses and a verify pass, every real finding fixed and pinned: Christmas Eve read as “no deliveries”; tonight’s partial count scored as a night; a strip that never refreshed; a bad-date row that could turn a weekday into a closure (such gaps are now unknown, never closed); an outlook that grouped ship dates three days short of its own last rows and read a 770-order Tuesday as “no freight”; a status endpoint that judged the masked list and said the month’s forecast was missing from the 11th; a Firestore throw mid-ingest that skipped the status write; backfill buttons that said “✓ ok” whatever happened; a Saturday that read “no forecast”; and 38 identical before-archive rows burying the real nights. 108 new tests, including the first score reproduced from the real docs.'],
+  ['0.83.1', 'THE MANIFEST VIEWER HAD A WAY OUT, AND THE WAY OUT WAS THE TRAP. Chad, the morning after the in-app pages shipped: “there is no way to close out the manifest viewer.” The screenshot was not our viewer at all — it was iOS’s own PDF view, “1 of 15” in a pill and pages on black — which means the document had NAVIGATED the window. The one anchor still allowed to do that was the “Open in browser” hatch, 44px from Close. In a browser tab it opens a tab you can close; in a home-screen app there is no address bar, no toolbar and no back gesture, so the board is simply gone until the app is killed. Same link, opposite outcome, and nothing on screen could tell which world it was in. NOW IT ASKS: a tested predicate (navigator.standalone on iOS, the display-mode media query everywhere else) decides, and when it cannot tell it answers “browser”, because an extra link in a tab costs nothing and a stranded dispatcher costs the board. Inside an iPhone home-screen app the hatch does not render — the pages are already drawn there — and the one thing it was still good for, getting the file OFF the phone, is offered as Share instead: the system sheet, AirDrop or Messages, and straight back to the board. ONLY THE iPHONE, because only there is it a trap: an Android or desktop installed app opens the link in something with its own close control, and keeps the hatch. The bytes are fetched once when the viewer opens and Share fires with no download in between, because iOS refuses a share whose tap was spent waiting on the network; a share that fails says so on the screen instead of in a console nobody reads; a delivery photo shares the same way. The footer now ends “· iPhone app”, “· installed app” or “· browser tab”, so the answer the phone gave can be read back — a switch whose position cannot be read is not a switch. In a browser nothing changes. If the footer on your phone did not read 0.81.6 or later when this happened, the same screenshot has a second cause — a cached build with the old PDF link — and this fix does not reach that; say what the footer read. AND THE DROP BOX IS GONE. Chad: “there is no need for the manual manifest drop in box any longer as we are pulling it out of the emails.” Every report arrives through the Gmail ingest now, so a manual drop could only overwrite tonight’s filed result with a stale copy. What stays: the mailbox card, the last run’s verdict, the archive underneath, and the app-wide drag guard that keeps a stray PDF from navigating the app away — that was never the drop zone’s job. The unwired verify-manifest-tab script, which still fed a PDF through the deleted input, now seeds a stored run the way the ingest does and asserts nothing on the screen POSTs by hand; it passes on desktop and phone. ALSO IN THIS BUILD, INERT: the reader for Uline’s monthly forecast spreadsheet (“DA - G - Uline Forecast”, one sheet, date / estimate / upperest by ship date, twelve months out) — columns found by name, every unreadable row named, nothing wired to it yet. It is the first piece of Chad’s “compare the forecasts to what the manifest actually produces” and it ships tested so the rest can build on it. The CI unit job installs dependencies now — the reader uses SheetJS, and the first run of this PR failed in CI while passing locally because the job had never needed to install anything before. AND THE VERSION GATE LEARNED WHICH WAY IS UP: it asked only “is it still the same?”, so when this branch rebased onto a main that had moved from 0.81.8 to 0.83.0 it printed “✓ 0.83.0 → 0.81.9” — a footer that would have read OLDER than the build before it, while the deploy watchdog kept reporting the higher row. It now rejects a version that goes backwards, compared numerically so 0.83.10 is after 0.83.9. 36 new tests. The header decision is a pure rule tested on every input, after a reviewer showed the earlier shape-matching test passed five different dead ends.'],
   ['0.83.0', 'THE SECURITY AUDIT LANDS, AND THE APP GETS A DOOR WITH A LOCK ON IT. Chad, on the audit: \u201cYou can do all of them but number 1 as I need to be able to run a manual scan. We need to build the backend of a user based system with usernames and passwords with password resets.\u201d Both halves are in this release. THE USER SYSTEM SHIPS INERT. Eight new endpoints (auth-login, auth-me, auth-logout, auth-change-password, auth-reset-request, auth-reset-confirm, auth-users, auth-bootstrap) over a server-only app_users collection: scrypt password hashes with the cost written into the hash so it can be raised later, an eight-strike fifteen-minute lockout whose counter restarts once a lockout has lapsed, HMAC sessions that carry a tokenVersion so deactivating or demoting someone or changing a password signs them out everywhere within thirty seconds instead of at token expiry, single-use thirty-minute reset links by email with only the hash stored, admin-issued temporary passwords for anyone without an email, a last-admin guard, and a bootstrap that refuses once an admin exists. One shared gate, requireUser, is wired into the functions that spend money or move freight (NuVizz writes, SMS, the customer mailer, the route matrix, the scan switches, board sync, tombstones, Gmail admin) and it lets a token-less request through as the pre-login \u201ceveryone\u201d until AUTH_REQUIRED=true is set on the site \u2014 so nothing changes on the morning this merges, and the switch is flipped after every dispatcher has an account, the same order the Firestore cutover prescribes. THE MANUAL SCAN KEEPS ITS DATE. What changed underneath it is that a date that is not a date is refused before anything runs, because the audit showed a crafted one walking out of the stop index and deleting a sealed history day. THE PATH GUARD IS THE OTHER BIG ONE: every Firestore path in all three apps now refuses a segment that is empty, a dot, two dots, or carries a slash, question mark or hash, which closes seven separate delete-or-overwrite-any-document findings with one helper, plus allow-lists on the attempts delete, the roster refresh tenant, the routing job id, the webhook message id and the driver-route date. ALSO IN THIS RELEASE: the root NuVizz proxy is GET-only on four read prefixes with bounded dates and load ranges and no retries on writes; the auto-merge workflow refuses fork pull requests; the build no longer pulls Quotes@main at build time with every secret in the environment; driver_auth and the load-scan collections are denied to the browser in the rules file (deploy is still a hand step); the drop-zone manifest check spans the two delivery days it was always meant to instead of zero; the work report\u2019s dead-phone fallback reads the field that is actually written; scanner-gun scans stop being stored as hand-typed; voids and damage flags are not touched here and remain the next thing on the dock list; geocoding no longer remembers a quota blip forever; security headers on all three sites; and the secrets that were compared with a plain equals sign are compared in constant time. The full findings are in the PDF Chad has; nothing with an exploit path in it is committed to a public repository.'],
   ['0.82.0', 'THE OVERNIGHT TEXTS NOW CARRY THE OTHER THING A ROUTER CAN STILL FIX AT 9PM: A 53-FOOTER POINTED AT A DOCK SOMEBODY ALREADY SAID CANNOT TAKE ONE. Chad: “stops we have put on a tractor that have been hardcoded as no tractor trailer by a dispatcher. Not the Uline advisory ones that we pick up automatically just the dispatcher hardcoded ones.” THIS IS NOT A LATENESS FLAG WEARING A HAT, and that is the whole design. Every other rule on this board is a PREDICTION — an estimate against a clock, with an error band, that the rest of the day can still make false. This one is two RECORDED FACTS in contradiction: a human wrote “no tractor trailer” on this location, and the load the stop is sitting on runs a tractor. Nothing about how the day goes changes either. So the card carries no ETA and nothing to be late about, and it does not wait for a clock: the freight does not arrive late, it does not arrive — a driver who cannot turn a 53′ trailer into the lot leaves with the pallets still on it, which is a refusal plus a redelivery on our own dime. It is knowable the moment the stop lands on the load, which is 8pm while somebody is still building it and the fix is still free. “DISPATCHER HARDCODED” IS NOT A NEW GUESS — IT IS THE MAP’S OWN ANSWER. The confirmed-versus-advisory split the pin already uses to decide whether the lime “a tractor delivered here” paint may show (v0.76.4) is the same function this reads, so the amber Uline mark a scanner lifted out of somebody else’s order text is excluded in ONE place rather than two, and the flag can never say something the pin disagrees with. A scanner-found “no tractor trailer” is excluded on the same rule; a dispatcher who has painted the stop tractor-OK silences it entirely, because that is them answering the question this rule asks. ONE TEXT PER TRACTOR LOAD, NOT PER STOP: six box-only stops on one load is one problem — the wrong truck — and six texts would bury that instead of saying it, so the message names the route, quotes the mark in the words of the dropdown it was ticked in, and counts the rest of the load. It holds its own slice of the per-sweep text cap so a bad night of either kind cannot silence the other, and its own claim key so a stop that is BOTH late and on the wrong truck sends both messages rather than one swallowing the other. AND THE EVENING SWEEP NOW KNOWS WHAT IS PULLING EACH LOAD. It had never built one at all, so it now reads the target date’s own map (load header first, driver roster second) the way the day sweep has for months — the target date’s, never today’s, because route names repeat nightly and tonight’s trucks on tomorrow’s routes would put a tractor on whatever load inherited the name. THE ARRIVAL ESTIMATES ARE DELIBERATELY UNTOUCHED: the per-truck travel curves are not read here, so every route keeps the fleet clock it has always had overnight and the only thing the new map moves is the trailer verdict — putting this sweep’s ETAs on per-truck clocks would change which lateness rows text, which is a measurable change and not this one. WHERE THAT MAP DOES NOT EXIST YET, WHICH IS MOST OF THE EVENING, THE PANEL SAYS SO: “no-tractor-trailer check off — nothing on this board says which truck runs which load”, because “we never knew what the trucks were” must not read as “nothing is mis-routed”. The flag also rides the board all day, where it clicks through to the stop like any other. 30 new tests, including one proven to bite by reverting it.'],
   ['0.81.8', 'THE ROWS VIEWER COULD NOT TELL YOU WHETHER IT HAD THE WHOLE MANIFEST. Chad: “I’m not able to view the entire manifest.” v0.81.5 answered the readability half and left the harder half unanswerable: a parse that reads eleven of thirteen pages renders “648 orders”, labels itself 648, and looks exactly like a parse that read all thirteen — nothing on the screen disagrees with a short list. THE MANIFEST PRINTS ITS OWN FINAL TOTALS and readUlineManifest already reconciles against them, returning verified:true only for a column reading that reproduces the printed count, lbs, skids and pieces. That is the one independent check there is; the endpoint had been sending it since the viewer shipped and the screen threw it away. It now sits at the top: green “All 660 orders accounted for” with the printed figures, or amber “this list could NOT be checked against the manifest’s own printed totals — treat them as unconfirmed”, plus the parser’s own complaints, which the endpoint had been discarding entirely. The Manifest check screen has shown this banner all along; the phone is where it was actually needed. A NIGHT WHOSE PDF WAS NOT KEPT SAID “undefined orders” — both no-PDF paths returned no count and the header interpolated it, so an honest “we did not store this one” read as a broken app. A CAPPED NIGHT IS NOT A CONTRADICTION: the run stores at most 500 suspects but records the true count beside them, so both numbers are right and only the highlight is short — the banner called one of them wrong and pointed at the short side as the truth. missingTruncated has been written since the cap existed and read by nothing; it is read now, and the two cases read differently because a dispatcher does different things about them. AND THE BODY GOT SMALLER: ~660 rows served no-store were pretty-printed at one space per line and carried three columns nothing renders. Compacted and trimmed, re-fetched on every open, on a phone, on cellular. 8 new tests, and the first tests this viewer has ever had.'],
@@ -5819,7 +5821,7 @@ function PdfPageCanvas({ pdf, pageNumber, containerWidth, zoom, active, holderRe
   );
 }
 
-function PdfPages({ src }) {
+function PdfPages({ src, bytes }) {
   const [pdf, setPdf] = useState(null);
   const [err, setErr] = useState(null);
   const [zoom, setZoom] = useState(1);
@@ -5840,6 +5842,7 @@ function PdfPages({ src }) {
   }, []);
 
   useEffect(() => {
+    if (!bytes) return undefined;
     let cancelled = false;
     let doc = null;
     (async () => {
@@ -5849,7 +5852,11 @@ function PdfPages({ src }) {
         const pdfjs = await import('pdfjs-dist');
         const workerUrl = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default;
         pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-        doc = await pdfjs.getDocument({ url: src }).promise;
+        // THE BYTES, NOT THE URL. The viewer fetched the document once and holds it for Share;
+        // pdf.js TRANSFERS the buffer it is given to its worker, so it gets a copy and the
+        // viewer keeps the original. Fetching by URL here would download the same ~140KB a
+        // second time (the endpoint is no-store) — on cellular, in a yard.
+        doc = await pdfjs.getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
         if (cancelled) { try { doc.destroy(); } catch { /* nothing to free */ } return; }
         setPdf(doc);
       } catch (e) {
@@ -5857,7 +5864,7 @@ function PdfPages({ src }) {
       }
     })();
     return () => { cancelled = true; try { doc?.destroy(); } catch { /* nothing to free */ } };
-  }, [src]);
+  }, [bytes]);
 
   const pages = pdf?.numPages || 0;
 
@@ -5944,6 +5951,79 @@ function DocumentViewerModal({ src, title, subtitle, isImage = false, onClose })
   const label = title;
   const when = subtitle;
   const isImg = isImage;
+
+  // THE INSTALLED APP GETS NO WAY TO LEAVE, because leaving is the trap.
+  //
+  // Chad: "there is no way to close out the manifest viewer." His screenshot was not this
+  // viewer — it was iOS's own PDF view ("1 of 15" in a pill, pages on black), which means the
+  // document had NAVIGATED the window. The one anchor still allowed to do that is the
+  // "Open in browser" hatch below, and it sat 44px from Close. In a browser tab it opens a tab
+  // you can close; in a home-screen app there is no address bar, no toolbar and no back
+  // gesture, so the board is simply gone until the app is killed. Same link, opposite outcome.
+  //
+  // So the hatch renders ONLY in a browser. Inside the installed app the pages are drawn
+  // right here (PdfPages), and the one thing the hatch was still good for — getting the file
+  // OFF the phone — is offered as Share instead, which hands the bytes to AirDrop / Messages /
+  // Files through the system sheet and comes straight back to the board.
+  // ONE decision, made by a pure rule with real inputs, rendered from its answer. See
+  // viewerWayOut for the three outcomes and why the question is "iOS home-screen app", not
+  // "installed app": Android and desktop installed apps open a link in something closable.
+  const wayOut = viewerWayOut({ iosHomeScreen: isIosHomeScreenApp(), canShareFiles: canShareFiles() });
+  const shareable = wayOut === 'share';
+
+  // THE BYTES ARE FETCHED ONCE, HERE, BEFORE ANYBODY TAPS ANYTHING — and that ordering is the
+  // whole point, not tidiness. navigator.share() must be called inside the tap's transient
+  // activation; a handler that first awaits a network download has spent it by the time the
+  // share runs, and iOS answers NotAllowedError. On cellular, in a yard, that download is
+  // seconds. So the document is fetched when the viewer opens (the pages need it anyway, and
+  // pdf.js is handed these same bytes rather than re-downloading a no-store URL), Share is
+  // disabled until they are in hand, and the tap itself does no I/O before calling share.
+  const [doc, setDoc] = useState(null);          // { bytes: ArrayBuffer, type: string } | null
+  const [docErr, setDocErr] = useState(null);
+  const [shareErr, setShareErr] = useState(null);
+  useEffect(() => {
+    let dead = false;
+    setDoc(null); setDocErr(null); setShareErr(null);
+    // An image is drawn by <img>; its bytes are only needed for Share, so only fetch them then.
+    if (isImg && !shareable) return undefined;
+    (async () => {
+      try {
+        const r = await fetch(src);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const bytes = await r.arrayBuffer();
+        if (!dead) setDoc({ bytes, type: r.headers.get('content-type') || '' });
+      } catch (e) {
+        if (!dead) setDocErr(String(e?.message || e).slice(0, 160));
+      }
+    })();
+    return () => { dead = true; };
+  }, [src, isImg, shareable]);
+
+  const shareFile = () => {
+    if (!doc) return;
+    setShareErr(null);
+    let file;
+    try {
+      const type = doc.type.split(';')[0].trim() || (isImg ? 'image/jpeg' : 'application/pdf');
+      const ext = type === 'application/pdf' ? 'pdf' : type === 'image/png' ? 'png' : type === 'image/webp' ? 'webp' : type.startsWith('image/') ? 'jpg' : 'bin';
+      const name = `${String(label || 'document').replace(/[^\w.-]+/g, '_')}.${ext}`;
+      file = new File([doc.bytes], name, { type });
+    } catch (e) {
+      setShareErr(`Could not prepare the file: ${String(e?.message || e).slice(0, 120)}`);
+      return;
+    }
+    // NO await above this line. canShare is the capability probe with the real file; a device
+    // that cannot take a FILE still gets the link, which the sheet can at least copy or text.
+    const p = navigator.canShare({ files: [file] })
+      ? navigator.share({ files: [file], title: label })
+      : navigator.share({ title: label, url: src });
+    p.catch((e) => {
+      // AbortError is the user closing the sheet — not a failure. Everything else is shown,
+      // because a button that visibly does nothing is the failure this replaces.
+      if (/abort/i.test(String(e?.name || ''))) return;
+      setShareErr(`Share failed: ${String(e?.name || e?.message || e).slice(0, 120)}`);
+    });
+  };
   return (
     <div
       className="fixed inset-0 z-[1400] flex flex-col bg-black/90"
@@ -5956,13 +6036,25 @@ function DocumentViewerModal({ src, title, subtitle, isImage = false, onClose })
           {when && <div className="text-[11px] text-white/70">{when}</div>}
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
-          {/* Same 44px box as Close beside it. The phone floor rule doesn't cover <a>, and an
-              inline anchor ignores min-height, so this sat at 34px next to a 44px Close — and a
-              mis-tap here ejects the photo to the browser, the thing this viewer exists to stop. */}
-          <a data-escape-hatch href={src} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center p-2 rounded-full hover:bg-white/15 text-white/90" title="Open in browser" aria-label="Open in browser" style={{ minWidth: 44, minHeight: 44 }}><ExternalLink size={18} /></a>
+          {wayOut === 'share' ? (
+            // iOS HOME-SCREEN APP: never an anchor out. Share hands the file to the system
+            // sheet and comes straight back to the board.
+            <button type="button" onClick={shareFile} disabled={!doc}
+              className="inline-flex items-center justify-center p-2 rounded-full hover:bg-white/15 text-white/90 disabled:opacity-40"
+              title={doc ? 'Share' : 'Share (loading…)'} aria-label="Share" style={{ minWidth: 44, minHeight: 44 }}><Share2 size={18} /></button>
+          ) : wayOut === 'hatch' ? (
+            // A BROWSER TAB, or an Android / desktop installed app: the hand-off opens somewhere
+            // with its own close control. Same 44px box as Close beside it — the phone floor rule
+            // doesn't cover <a>, and an inline anchor ignores min-height, so this once sat at
+            // 34px next to a 44px Close and a mis-tap ejected the photo.
+            <a data-escape-hatch href={src} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center p-2 rounded-full hover:bg-white/15 text-white/90" title="Open in browser" aria-label="Open in browser" style={{ minWidth: 44, minHeight: 44 }}><ExternalLink size={18} /></a>
+          ) : null /* 'none': an iOS home-screen app that cannot share files. Nothing beats a trap. */}
           <button onClick={onClose} className="p-2 rounded-full hover:bg-white/15" aria-label="Close" style={{ minWidth: 44, minHeight: 44 }}><X size={22} /></button>
         </div>
       </div>
+      {(shareErr || docErr) ? (
+        <div className="flex-shrink-0 px-4 pb-1 text-[11px] text-red-300">{shareErr || `Could not load the document: ${docErr}`}</div>
+      ) : null}
       {/* A PDF is DRAWN, not embedded — see PdfPages for why an iframe cannot show page two
           on an iPhone. Images keep the simple path; they never had the problem. */}
       {isImg ? (
@@ -5970,7 +6062,7 @@ function DocumentViewerModal({ src, title, subtitle, isImage = false, onClose })
           <img src={src} alt={label} className="max-w-full max-h-full object-contain" onClick={(e) => e.stopPropagation()} />
         </div>
       ) : (
-        <PdfPages src={src} />
+        <PdfPages src={src} bytes={doc?.bytes || null} />
       )}
       <div className="px-4 py-2 flex-shrink-0 text-center">
         <button onClick={onClose} className="px-5 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-sm font-semibold" style={{ minHeight: 44 }}>Close</button>
@@ -22378,8 +22470,9 @@ function Shell() {
   // scheduled server job runs the same free check and writes the result to ONE
   // Firestore doc. Every open tab subscribes here, and a server run newer than
   // whatever this browser holds is adopted into the same localStorage slot the
-  // manual drop uses — so the flag lights, the tab headline updates, and nobody
-  // has to drop a PDF that already checked itself. Manual runs still win when
+  // screen reads — so the flag lights, the tab headline updates, and nobody
+  // has to go looking for a report that already checked itself. (There is no
+  // manual drop any more; the ingest is the only writer.) A newer run wins when
   // they are newer; comparison is by each run's own `at` stamp.
   useEffect(() => {
     if (!db) return undefined;
@@ -22540,7 +22633,10 @@ function Shell() {
           and the top-bar chip cover the same info on small screens. */}
       {!isMobile && (
         <footer className="border-t bg-white px-4 py-1 text-[10px] text-slate-400 flex items-center justify-between">
-          <div>Dispatch Map v{APP_VERSION} · {BUILD_COMMIT}{BUILD_TIME ? ` · built ${BUILD_TIME.slice(5, 16).replace('T', ' ')}Z` : ''}</div>
+          {/* "· installed app" / "· browser tab": the one line that says which way the PDF
+              viewer will behave on THIS device. The fix for the dead end turns on that
+              predicate, and a switch whose position cannot be read is not a switch. */}
+          <div>Dispatch Map v{APP_VERSION} · {BUILD_COMMIT}{BUILD_TIME ? ` · built ${BUILD_TIME.slice(5, 16).replace('T', ' ')}Z` : ''} · {describePwaMode()}</div>
           <div className="hidden sm:block">© Davis Delivery Service</div>
         </footer>
       )}
@@ -25081,7 +25177,7 @@ function MoreMenu({ items, activeId, onPick, badge = 0 }) {
 // sure nothing is missing."
 //
 // The freight report arrives in a MAILBOX, not on this screen. Connect the
-// mailbox once and the server runs the SAME free board diff the drop zone runs,
+// mailbox once and the server runs the same free board diff on every report,
 // every half hour, on its own — the nav badge lights and nobody has to remember
 // to come here with a PDF.
 //
@@ -25285,7 +25381,7 @@ function GmailCard({ onStoredRun }) {
         {!active && status?.configured && (
           <div>
             Connect the mailbox the freight report arrives in and every report that lands there is checked
-            automatically — the same check as dropping the PDF here, run every 30 minutes.{' '}
+            automatically — the free board diff' '}
             <span className="font-semibold text-slate-600">Read-only access: this app can read mail and nothing else.</span>
           </div>
         )}
@@ -27137,26 +27233,408 @@ function ManifestRowsModal({ date, onClose }) {
   );
 }
 
-function ManifestCheckScreen() {
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ULINE FORECAST — what Uline says is coming, and how right they have been
+//
+// Chad: "find in my email the Uline forecasts they present and I want to start comparing
+// them to what the manifest actually produce so we can try to forecast what is coming."
+//
+// Everything on this card is computed by src/lib/uline-forecast-score.js on the server and
+// arrives as plain data (GET uline-forecast?days=60, Firestore + blobs only). The card reads
+// it defensively — every list as `Array.isArray(x) ? x : []` — because the layout guard's
+// generic stub is what a fresh deploy looks like too, and "no forecast on file yet" must
+// render, never a crash.
+//
+// TWO VIEWS. The phone is ONE flow column: tonight, the next delivery days, three tiles, the
+// last nights, a status line and one button. The desktop is a two-column grid with the
+// tables, the versions list and the job panel. On the PHONE the tonight line ALSO renders
+// directly under the Gmail card, above the check result — on the night with 83 unrouted
+// orders the result list is thousands of pixels long and that is exactly the night the
+// dispatcher wants "is 702 a lot for a Tuesday".
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const arr = (x) => (Array.isArray(x) ? x : []);
+const mdOf = (iso) => (iso ? `${Number(String(iso).slice(5, 7))}/${Number(String(iso).slice(8, 10))}` : '—');
+/** The nights worth a row: scored, plus the ones a person can act on (provisional, unverified,
+ *  count fell, unreadable). Nights before the archive began and dates before any forecast was in
+ *  hand are COUNTED, not listed — 38 identical grey lines hid the five that mattered. */
+const FILLER_NIGHTS = new Set(['before_archive', 'uncovered']);
+const nightsToList = (data) => [...arr(data?.scored), ...arr(data?.unscored).filter((u) => !FILLER_NIGHTS.has(u.status))].sort((a, b) => (a.date < b.date ? 1 : -1));
+const fillerCount = (data) => arr(data?.unscored).filter((u) => FILLER_NIGHTS.has(u.status)).length;
+const VERDICT_TONE = { over_high: 'text-red-700', heavy: 'text-amber-700', light_suspect: 'text-amber-700', light: 'text-slate-500', on: 'text-slate-700' };
+const VERDICT_WORD = { over_high: 'over Uline’s high', heavy: 'heavy', light_suspect: 'check reports', light: 'light', on: '' };
+const fmtErr = (e) => (e == null ? '' : e > 0 ? `+${e}` : String(e));
+
+/** How often the forecast card re-reads while the tab is visible. Firestore-only, zero NuVizz. */
+const FORECAST_REFRESH_MS = 5 * 60 * 1000;
+
+function useUlineForecast(days = 60) {
+  const [state, setState] = useState({ loading: true, err: null, data: null });
+  const load = useCallback(async () => {
+    setState((s) => ({ ...s, loading: true, err: null }));
+    try {
+      const r = await fetch(`/.netlify/functions/uline-forecast?days=${days}`);
+      const j = await r.json();
+      // fetchedAt rides on the data so the tonight strip can print "as of 9:41pm" — a line that
+      // cannot say how old it is reads as current, which at 9:40pm with three reports in is a lie.
+      setState({ loading: false, err: j?.ok === false ? (j.error || 'could not read the forecast') : null, data: j && typeof j === 'object' ? { ...j, fetchedAt: Date.now() } : j });
+    } catch (e) { setState((s) => ({ ...s, loading: false, err: String(e?.message || e) })); }
+  }, [days]);
+  // THE STRIP MUST NOT GO STALE. Loaded once on mount it said "no report yet tonight" at 9:40pm
+  // with #3 on file. So: re-read when a manifest run lands (the same event the results adopt),
+  // when the tab comes back into view, and every 5 minutes while it is visible.
+  useEffect(() => {
+    load();
+    const onVisible = () => { if (document.visibilityState === 'visible') load(); };
+    window.addEventListener('dd-manifest-check-updated', load);
+    document.addEventListener('visibilitychange', onVisible);
+    const timer = setInterval(() => { if (document.visibilityState === 'visible') load(); }, FORECAST_REFRESH_MS);
+    return () => { window.removeEventListener('dd-manifest-check-updated', load); document.removeEventListener('visibilitychange', onVisible); clearInterval(timer); };
+  }, [load]);
+  return { ...state, reload: load };
+}
+
+/** What a run or backfill actually did. The preview is the gate before a real write, so
+ *  "✓ ok" is not an answer: name the window, what was listed, and what would be written. */
+function describeForecastResult(r) {
+  const bits = [];
+  if (r?.window?.start) bits.push(`${r.window.start} → ${r.window.end}`);
+  if (r?.window && r?.listed != null) bits.push(`${r.listed} listed`);
+  if (r?.run?.summary) bits.push(r.run.summary);
+  else if (r?.summary) bits.push(r.summary);
+  const would = r?.run?.wouldWrite ?? r?.wouldWrite;
+  if (r?.dry && Array.isArray(would)) bits.push(`would write ${would.length}`);
+  if (r?.held) bits.push(r.held);
+  if (r?.done && !bits.length) bits.push('done');
+  return bits.join(' · ') || 'ok';
+}
+
+const fmtClock = (ms) => (Number.isFinite(Number(ms)) && Number(ms) > 0 ? new Date(Number(ms)).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : null);
+
+async function forecastPost(body) {
+  const r = await fetch('/.netlify/functions/uline-forecast', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  let j = null;
+  try { j = await r.json(); } catch { /* an HTML 502 has no JSON */ }
+  if (!j) return { ok: false, error: `HTTP ${r.status} — the function did not answer with JSON` };
+  if (r.status === 401 || r.status === 403) return { ok: false, error: j.error || 'sign in required' };
+  return j;
+}
+
+/** One line: is tonight's count a lot for this day? Same data on both views. */
+function ForecastTonightStrip({ data, compact = false }) {
+  const t = data?.tonight;
+  if (!t || !t.text) return null;
+  const tone = t.tone === 'red' ? 'border-red-300 bg-red-50 text-red-900' : t.tone === 'amber' ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-slate-200 bg-white text-slate-700';
+  const asOf = fmtClock(data?.fetchedAt);
+  return (
+    <div className={`rounded-lg border px-3 py-2 text-[11px] leading-snug ${tone}`} data-forecast-tonight>
+      <span className="font-semibold">{t.head}</span>{compact ? ' · ' : <br />}{t.text}{asOf ? <span className="opacity-60"> · as of {asOf}</span> : null}
+    </div>
+  );
+}
+
+function ForecastOutlookRow({ r, open, onToggle, phone }) {
+  const chipTone = (c) => (c === 'HEAVY' ? 'bg-red-100 text-red-800 border-red-200' : c === 'could be over' ? 'bg-amber-100 text-amber-800 border-amber-200' : 'bg-slate-100 text-slate-600 border-slate-200');
+  const ships = arr(r.ships);
+  const shipsTxt = ships.length ? `ships ${ships.map((x) => `${x.dow} ${x.date.slice(5).replace('-', '/').replace(/^0/, '').replace('/0', '/')}`).join(' + ')}` : '';
+  const muted = r.status === 'closed' || r.status === 'none' || r.status === 'not_forecast_yet';
+  return (
+    <li className={`border-b border-slate-100 ${muted ? 'opacity-70' : ''}`}>
+      <button type="button" onClick={onToggle} className="w-full text-left px-3 py-2 tap-target" style={{ minHeight: 44 }}>
+        <div className="flex items-baseline gap-2">
+          <span className="font-semibold text-slate-800 w-[76px] shrink-0">{r.label}</span>
+          {r.plan != null ? <span className={`font-bold tabular-nums ${phone ? 'text-lg' : 'text-base'} text-slate-900`}>plan {r.plan}</span>
+            : <span className="text-xs text-slate-500">{arr(r.notes)[0] || '—'}</span>}
+          <span className="ml-auto flex gap-1">{arr(r.chips).map((c) => <span key={c} className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${chipTone(c)}`}>{c}</span>)}</span>
+        </div>
+        {r.est != null && (
+          <div className="text-[11px] text-slate-500">
+            Uline {r.est}{r.upper != null ? ` · high ${r.upper}` : ''}{shipsTxt ? ` · ${shipsTxt}` : ''}{r.status === 'unreadable' ? ' · no readable estimate' : ''}
+          </div>
+        )}
+      </button>
+      {open && (
+        <div className="px-3 pb-2 text-[11px] text-slate-600 space-y-0.5">
+          {ships.map((x) => <div key={x.date}>{x.dow} {x.date}: {x.est}{x.upper != null ? ` (high ${x.upper})` : ''}</div>)}
+          {arr(r.notes).map((n, i) => <div key={i} className="text-slate-500">{n}</div>)}
+          {r.upper != null && <div className="text-slate-400">Uline’s high range is their own stated ceiling for the day.</div>}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function ForecastTiles({ data, phone }) {
+  const w = data?.stats?.windows || {};
+  const pick = w[90]?.n > (w[30]?.n || 0) ? w[90] : (w[30] || { n: 0 });
+  const label = pick === w[90] ? 'last 90 days' : 'last 30 days';   // a window, not a count of nights
+  const n = pick?.n || 0;
+  const tile = (k, v, sub) => (
+    <div key={k} className="bg-white border rounded p-2 min-w-0">
+      <div className="text-[10px] uppercase font-semibold text-slate-400 truncate">{k}</div>
+      <div className="text-base font-bold text-slate-800 tabular-nums">{v}</div>
+      <div className="text-[10px] text-slate-400">{sub}</div>
+    </div>
+  );
+  if (!n) return <div className="text-[11px] text-slate-500">No nights scored yet — the scorecard fills in as manifests are archived.</div>;
+  const lean = pick.bias == null ? '—' : pick.bias === 0 ? 'on' : `${Math.abs(pick.bias)} ${pick.bias < 0 ? 'high' : 'low'}`;
+  return (
+    <div className={`grid gap-2 ${phone ? 'grid-cols-3' : 'grid-cols-3'}`}>
+      {tile('typical miss', `${pick.mae}`, `${pick.mape != null ? `${pick.mape}% · ` : ''}n=${n} · ${label}`)}
+      {tile('Uline leans', lean, 'their number vs what came')}
+      {tile('over their high', `${pick.overHigh?.count ?? 0} of ${n}`, 'nights past the ceiling')}
+    </div>
+  );
+}
+
+function ForecastWeekdayRows({ data }) {
+  const bw = data?.stats?.byWeekday || {};
+  const rows = [0, 1, 2, 3, 4, 5].map((k) => bw[k]).filter(Boolean);
+  if (!rows.length) return null;
+  return (
+    <div className="text-[11px] text-slate-600 divide-y divide-slate-100 border rounded bg-white">
+      {rows.map((r) => (
+        <div key={r.dow} className="flex gap-2 px-2 py-1">
+          <span className="w-8 font-semibold">{r.dow}</span>
+          {r.shown ? <><span className="tabular-nums">n={r.n}</span><span className="tabular-nums">miss {r.mae}</span><span className="tabular-nums">leans {r.bias == null ? '—' : r.bias < 0 ? `${Math.abs(r.bias)} high` : `${r.bias} low`}</span></>
+            : <span className="text-slate-400">not enough nights yet ({r.n} of 4)</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ForecastNightLine({ n }) {
+  const scored = n.status === 'scored';
+  const tone = scored ? (VERDICT_TONE[n.verdict] || 'text-slate-700') : 'text-slate-400';
+  const md = (iso) => `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}`;
+  return (
+    <div className={`text-[11px] py-1 border-b border-slate-100 ${tone}`}>
+      <span className="font-semibold">{n.dow} {md(n.date)}</span>
+      {scored ? <> · {n.actual} vs {n.est} · {fmtErr(n.err)} {VERDICT_WORD[n.verdict] || ''}</> : <> · {n.actual != null ? `${n.actual} · ` : ''}{n.reason}</>}
+    </div>
+  );
+}
+
+function ForecastStatusLines({ data }) {
+  const lines = [];
+  // The view's note is printed ONCE, as the outlook's empty state — not here as well.
+  if (data?.expectedVersionMissing) lines.push(['amber', `${new Date(`${data.today}T12:00:00Z`).toLocaleString('en-US', { month: 'long', timeZone: 'UTC' })} forecast not received yet (Uline usually sends by the 7th)`]);
+  const holes = arr(data?.holes);
+  if (holes.length) lines.push(['amber', `${holes.length} weekday${holes.length === 1 ? '' : 's'} with no manifest on file: ${holes.map((h) => `${h.dow} ${mdOf(h.date)}`).join(', ')}`]);
+  const dis = arr(data?.disagreements);
+  if (dis.length) lines.push(['amber', `${dis.length} night${dis.length === 1 ? '' : 's'} where the archive and the read-back disagree`]);
+  const latest = data?.latest;
+  if (latest && !data?.expectedVersionMissing) lines.push(['green', `Forecast from ${latest.sentDate} · ${latest.from} to ${latest.to}${latest.seen > 1 ? ` · sent ${latest.seen}×` : ''}`]);
+  // A file that read with warnings is a file to look at — a bad row is silent everywhere else.
+  const warns = arr(latest?.warnings);
+  if (warns.length) lines.push(['amber', `the ${latest.sentDate} file read with ${warns.length} warning${warns.length === 1 ? '' : 's'}: ${warns[0]}${warns.length > 1 ? ' …' : ''}`]);
+  const hol = arr(data?.holidays);
+  if (hol.length) lines.push(['grey', `no deliveries: ${hol.map((h) => `${h.dow} ${mdOf(h.date)} ${h.reason}`).join(' · ')}`]);
+  if (!lines.length) return null;
+  const tone = { grey: 'text-slate-500', amber: 'text-amber-700', green: 'text-emerald-700', red: 'text-red-700' };
+  return <div className="space-y-0.5">{lines.map(([t, txt], i) => <div key={i} className={`text-[11px] ${tone[t]}`}>{txt}</div>)}</div>;
+}
+
+function ForecastRunButton({ onDone, label = 'Read forecast email now', body = { action: 'run' }, className = '' }) {
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState(null);
+  const [line, setLine] = useState(null);
+  const run = async () => {
+    if (busy) return;
+    setBusy(true); setLine(null);
+    const r = await forecastPost(body);
+    setLine(r.ok === false ? `✗ ${r.error || 'failed'}` : `✓ ${describeForecastResult(r)}`);
+    setBusy(false);
+    onDone?.(r);
+  };
+  return (
+    <div className={className}>
+      <button type="button" onClick={run} disabled={busy} className="tap-target px-3 py-2 text-xs font-semibold text-slate-700 border rounded hover:bg-slate-50 disabled:opacity-50" style={{ minHeight: 44 }}>{busy ? 'Reading…' : label}</button>
+      {line && <div className={`mt-1 text-[11px] ${line.startsWith('✗') ? 'text-red-700' : 'text-slate-600'}`}>{line}</div>}
+    </div>
+  );
+}
+
+function ForecastPhone({ data, reload }) {
+  const [open, setOpen] = useState(null);
+  const [allNights, setAllNights] = useState(false);
+  const [weekdays, setWeekdays] = useState(false);
+  const outlook = arr(data?.outlook).slice(0, 10);
+  const nights = nightsToList(data).slice(0, 14);
+  const scoredN = arr(data?.scored).length;
+  return (
+    <div className="space-y-3">
+      {/* Tonight's line is NOT repeated here: on the phone it sits above the results, where
+          ManifestCheckScreen puts it. The same box twice on one page is doubled furniture. */}
+      <div>
+        <div className="text-[11px] font-semibold text-slate-600 mb-1">Next delivery days</div>
+        {outlook.length ? (
+          <ul className="border rounded bg-white">{outlook.map((r) => <ForecastOutlookRow key={r.deliverOn} r={r} phone open={open === r.deliverOn} onToggle={() => setOpen(open === r.deliverOn ? null : r.deliverOn)} />)}</ul>
+        ) : <div className="text-[11px] text-slate-500">{data?.note || 'No forecast on file yet — the reader runs hourly.'}</div>}
+        {outlook.length > 0 && <div className="text-[10px] text-slate-400 mt-1">Plan = Uline’s number until 4 nights per weekday are scored ({scoredN} so far). Figures are orders, not stops.</div>}
+        {arr(data?.changes).map((c, i) => <div key={i} className="text-[11px] text-amber-700 mt-0.5">{c.text}</div>)}
+      </div>
+      <div>
+        <div className="text-[11px] font-semibold text-slate-600 mb-1">How good is Uline’s number</div>
+        {arr(data?.pattern).map((p, i) => <div key={i} className="text-[11px] text-amber-700 mb-1">{p.text}</div>)}
+        <button type="button" onClick={() => setWeekdays((v) => !v)} className="w-full text-left tap-target" style={{ minHeight: 44 }} aria-expanded={weekdays}>
+          <ForecastTiles data={data} phone />
+          <div className="text-[10px] text-blue-700 mt-1">{weekdays ? 'hide weekdays ▴' : 'by weekday ▾'}</div>
+        </button>
+        {weekdays && <div className="mt-2"><ForecastWeekdayRows data={data} /></div>}
+      </div>
+      {nights.length > 0 && (
+        <div>
+          <div className="text-[11px] font-semibold text-slate-600 mb-1">Last nights</div>
+          {(allNights ? nights : nights.slice(0, 5)).map((n) => <ForecastNightLine key={n.date} n={n} />)}
+          {nights.length > 5 && <button type="button" onClick={() => setAllNights((v) => !v)} className="tap-target text-[11px] text-blue-700 mt-1" style={{ minHeight: 44 }}>{allNights ? 'show fewer' : `show all ${nights.length}`}</button>}
+        </div>
+      )}
+      <ForecastStatusLines data={data} />
+      <ForecastRunButton onDone={() => reload?.()} />
+    </div>
+  );
+}
+
+function ForecastDesktop({ data, reload }) {
+  const [status, setStatus] = useState(null);
+  const [previewed, setPreviewed] = useState(false);
+  const [open, setOpen] = useState(null);
+  useEffect(() => { let dead = false; fetch('/.netlify/functions/uline-forecast?status=1').then((r) => r.json()).then((j) => { if (!dead) setStatus(j); }).catch(() => {}); return () => { dead = true; }; }, [data]);
+  const outlook = arr(data?.outlook);
+  const scored = arr(data?.scored);
+  const nights = nightsToList(data);
+  const filler = fillerCount(data);
+  const w = data?.stats?.windows || {};
+  const bh = data?.stats?.byHorizon || {};
+  const anyHorizon = Object.values(bh).some((x) => x?.shown);
+  const md = (iso) => (iso ? `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}` : '—');
+  const st = status?.status || null;
+  return (
+    <div className="grid gap-3 xl:grid-cols-5">
+      <div className="xl:col-span-3 space-y-3">
+        <ForecastTonightStrip data={data} compact />
+        <div className="bg-white border rounded-lg overflow-hidden">
+          <div className="px-3 py-2 border-b text-xs font-bold text-slate-700">Week ahead · delivery days{data?.latest ? <span className="font-normal text-slate-400"> · from the {data.latest.sentDate} forecast</span> : null}</div>
+          {arr(data?.changes).length > 0 && <div className="px-3 py-1.5 text-[11px] text-amber-800 bg-amber-50 border-b">{arr(data?.changes).map((c) => c.text).join(' · ')}</div>}
+          {outlook.length ? (
+            <ul>{outlook.map((r) => <ForecastOutlookRow key={r.deliverOn} r={r} open={open === r.deliverOn} onToggle={() => setOpen(open === r.deliverOn ? null : r.deliverOn)} />)}</ul>
+          ) : <div className="p-3 text-xs text-slate-500">{data?.note || 'No forecast on file yet — the reader runs hourly.'}</div>}
+          {outlook.length > 0 && <div className="px-3 py-1.5 text-[10px] text-slate-400">Plan = Uline’s number until 4 nights per weekday are scored ({scored.length} so far). Figures are orders; stops are fewer.</div>}
+        </div>
+        {nights.length > 0 && (
+          <div className="bg-white border rounded-lg overflow-hidden">
+            <div className="px-3 py-2 border-b text-xs font-bold text-slate-700">Nights · {scored.length} scored{nights.length > scored.length ? `, ${nights.length - scored.length} not scored` : ''}</div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-xs">
+                <thead className="bg-slate-50 text-slate-500"><tr>{['Ship date', 'Delivers', 'Actual', 'Est', 'High', 'Δ', 'Verdict', 'Reports'].map((h) => <th key={h} className="px-2 py-1 text-left font-semibold whitespace-nowrap">{h}</th>)}</tr></thead>
+                <tbody>
+                  {nights.map((n) => {
+                    const sc = n.status === 'scored';
+                    return (
+                      <tr key={n.date} className={`border-t ${sc ? '' : 'text-slate-400'}`}>
+                        <td className="px-2 py-1 whitespace-nowrap font-semibold">{n.dow} {n.date}</td>
+                        <td className="px-2 py-1 whitespace-nowrap">{n.deliverOn ? md(n.deliverOn) : '—'}</td>
+                        <td className="px-2 py-1 tabular-nums">{n.actual ?? '—'}</td>
+                        <td className="px-2 py-1 tabular-nums">{n.est ?? '—'}</td>
+                        <td className="px-2 py-1 tabular-nums">{n.upper ?? '—'}</td>
+                        <td className={`px-2 py-1 tabular-nums font-semibold ${sc ? VERDICT_TONE[n.verdict] || '' : ''}`}>{sc ? fmtErr(n.err) : ''}</td>
+                        <td className="px-2 py-1">{sc ? (VERDICT_WORD[n.verdict] || 'on') : n.reason}</td>
+                        <td className="px-2 py-1 tabular-nums">{n.reports ?? n.reportNo ?? '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {filler > 0 && <div className="px-3 py-1.5 text-[10px] text-slate-400">{filler} earlier night{filler === 1 ? '' : 's'} not listed — before the archive began {md(data?.floor)}, or before any forecast was in hand.</div>}
+          </div>
+        )}
+      </div>
+      <div className="xl:col-span-2 space-y-3">
+        <div className="bg-white border rounded-lg p-3 space-y-2">
+          <div className="text-xs font-bold text-slate-700">How good is Uline’s number</div>
+          {arr(data?.pattern).map((p, i) => <div key={i} className="text-[11px] text-amber-700">{p.text}</div>)}
+          <ForecastTiles data={data} />
+          {w[180]?.n > (w[90]?.n || 0) && <div className="text-[10px] text-slate-400">180 nights: miss {w[180].mae} · leans {w[180].bias} · n={w[180].n}</div>}
+          <ForecastWeekdayRows data={data} />
+          {anyHorizon ? (
+            <table className="text-[11px] w-full"><thead><tr><th className="text-left">by how far out</th>{Object.keys(bh).map((k) => <th key={k} className="text-right font-semibold">{k}</th>)}</tr></thead>
+              <tbody><tr><td>miss · lean · n</td>{Object.values(bh).map((x, i) => <td key={i} className="text-right tabular-nums">{x.shown ? `${x.mae} · ${x.bias} · ${x.n}` : '—'}</td>)}</tr></tbody></table>
+          ) : <div className="text-[10px] text-slate-400">Accuracy by how far out fills in as older forecast versions are scored — run the forecast backfill below.</div>}
+        </div>
+        <div className="bg-white border rounded-lg p-3 space-y-1">
+          <div className="text-xs font-bold text-slate-700">Forecast versions on file · {arr(data?.versions).length}</div>
+          {arr(data?.versions).slice(0, 12).map((v) => (
+            <div key={v.versionId} className="text-[11px] text-slate-600 flex flex-wrap gap-x-2">
+              <span className="font-semibold">{v.sentDate}</span>
+              {v.ok ? <span>{v.rowsUsed}/{v.rowsTotal} rows · {v.from} → {v.to}</span> : <span className="text-red-700">unreadable: {v.reason}</span>}
+              {v.seen > 1 && <span className="text-slate-400">sent {v.seen}×</span>}
+              {v.xlsxStored && <a className="text-blue-700" href={`/.netlify/functions/uline-forecast?version=${encodeURIComponent(v.versionId)}&xlsx=1`} download>xlsx</a>}
+            </div>
+          ))}
+        </div>
+        <div className="bg-white border rounded-lg p-3 space-y-2">
+          <div className="text-xs font-bold text-slate-700">Job</div>
+          <ForecastStatusLines data={data} />
+          {st ? (
+            <div className="text-[11px] text-slate-600 space-y-0.5">
+              <div>last run {st.lastRunAt ? String(st.lastRunAt).slice(0, 16).replace('T', ' ') : '—'} · last success {st.lastSuccessAt ? String(st.lastSuccessAt).slice(0, 16).replace('T', ' ') : '—'}</div>
+              {st.lastSummary && <div>{st.lastSummary}</div>}
+              {st.lastError && <div className="text-red-700">{st.lastError}</div>}
+              {st.needsReconnect && <div className="text-red-700 font-semibold">The forecast mailbox needs reconnecting — Connect Gmail on the card above.</div>}
+              <div className="text-slate-400">search: {status?.query}</div>
+              {status?.versions && <div className="text-slate-400">versions {status.versions.count} ({status.versions.unreadable} unreadable) · earliest {status.versions.earliest || '—'} · latest {status.versions.latest || '—'}</div>}
+              {status?.backfill && <div className="text-slate-400">backfill: {status.backfill.done ? 'complete' : `next window ${status.backfill.windowStart}`} · filed {status.backfill.filed ?? 0} · dup {status.backfill.duplicate ?? 0}{status.backfill.held ? ` · ${status.backfill.held}` : ''}</div>}
+            </div>
+          ) : <div className="text-[11px] text-slate-400">status not loaded</div>}
+          <div className="flex flex-wrap gap-2">
+            <ForecastRunButton label="Read now" onDone={() => reload?.()} />
+            <ForecastRunButton label="Dry run" body={{ action: 'run', dry: true }} />
+            <ForecastRunButton label="Backfill preview" body={{ action: 'backfill', dry: true }} onDone={(r) => { if (r?.ok !== false) setPreviewed(true); }} />
+            {previewed && <ForecastRunButton label="Run one backfill batch" body={{ action: 'backfill', confirm: true }} onDone={() => reload?.()} />}
+          </div>
+          <div className="text-[10px] text-slate-400">Backfill files the ~50 monthly forecasts since June 2022, one quarter per press, after a preview. Gmail and Firestore only — zero NuVizz calls.</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UlineForecastCard({ forecast, isMobile }) {
+  const { loading, err, data, reload } = forecast;
+  return (
+    <div className="bg-white border rounded-lg p-3 space-y-2" data-uline-forecast>
+      <div className="flex items-center gap-2">
+        <span className="font-semibold text-sm text-slate-800">Uline forecast</span>
+        <span className="text-[11px] text-slate-400">what Uline says is coming, and how right they have been</span>
+      </div>
+      {loading && !data ? <div className="text-xs text-slate-500">Loading…</div> : null}
+      {err ? <div className="text-xs text-red-700">{err}</div> : null}
+      {/* A failed read is the error line and nothing else — not the same sentence three times,
+          one of them phrased as if a forecast were simply not on file. */}
+      {data && data.ok !== false ? (isMobile ? <ForecastPhone data={data} reload={reload} /> : <ForecastDesktop data={data} reload={reload} />) : null}
+    </div>
+  );
+}
+
+function ManifestCheckScreen() {
   const [result, setResult] = useState(() => loadStored());
-  const [fileName, setFileName] = useState(() => loadStored()?.fileName || null);
-  const [drag, setDrag] = useState(false);
+  const isMobile = useViewportWidth() < MOBILE_BREAKPOINT;
+  const forecast = useUlineForecast(60);
 
   // ADOPT A RUN THAT ARRIVED WHILE THIS SCREEN WAS OPEN. The automatic checks
   // (the Gmail poll, the Resend poll) write one Firestore doc; Shell mirrors it
-  // into the same localStorage slot the drop zone uses and fires this event.
-  // Without this the one screen you are actually LOOKING AT is the last to know:
-  // the nav badge would update while the results under it stayed yesterday's.
-  // Only a NEWER run is adopted, so a manual drop is never overwritten by an
-  // older stored one.
+  // into the localStorage slot this screen reads and fires this event. Without
+  // this the one screen you are actually LOOKING AT is the last to know: the nav
+  // badge would update while the results under it stayed yesterday's. Only a
+  // NEWER run is adopted, so a stale mirror never overwrites a fresher one.
   useEffect(() => {
     const sync = () => {
       const stored = loadStored();
       if (!stored?.at) return;
       setResult((cur) => (cur?.at && String(cur.at) >= String(stored.at) ? cur : stored));
-      setFileName((cur) => stored.fileName || cur);
     };
     window.addEventListener('dd-manifest-check-updated', sync);
     window.addEventListener('storage', sync);
@@ -27172,36 +27650,16 @@ function ManifestCheckScreen() {
     if (!stored?.at) return;
     saveStored(stored);
     setResult(stored);
-    setFileName(stored.fileName || null);
-    setErr(null);
     window.dispatchEvent(new Event('dd-manifest-check-updated'));
   }, []);
 
-  const run = async (file) => {
-    if (!file || busy) return;
-    setBusy(true); setErr(null);
-    try {
-      const buf = await file.arrayBuffer();
-      let bin = '';
-      const bytes = new Uint8Array(buf);
-      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-      const pdfBase64 = btoa(bin);
-      const r = await fetch('/.netlify/functions/manifest-check', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pdfBase64 }),
-      });
-      const d = await r.json();
-      if (!d?.ok) { setErr(d?.error || `check failed (HTTP ${r.status})`); setResult(null); }
-      else {
-        setResult(d); setFileName(file.name);
-        saveStored(toStored(d, file.name));
-        window.dispatchEvent(new Event('dd-manifest-check-updated'));
-      }
-    } catch (e) { setErr(String(e?.message || e)); }
-    setBusy(false);
-  };
-
-  const clear = () => { setResult(null); setFileName(null); setErr(null); saveStored(null); window.dispatchEvent(new Event('dd-manifest-check-updated')); };
+  // THE DROP BOX IS GONE. Chad: "there is no need for the manual manifest drop in box any
+  // longer as we are pulling it out of the emails." Every report now arrives through the
+  // Gmail ingest (every 30 minutes, self-validating, archived with its PDF), so the only thing
+  // a manual drop could add was a way to overwrite tonight's filed result with a stale copy —
+  // and a target that swallowed a stray drag. What stays: the mailbox card, the last run's
+  // verdict as the ingest wrote it, and the archive underneath.
+  const clear = () => { setResult(null); saveStored(null); window.dispatchEvent(new Event('dd-manifest-check-updated')); };
   const { issues, level } = manifestIssues(result);
   const suspects = result?.suspects || [];
   const m = result?.manifest;
@@ -27214,39 +27672,15 @@ function ManifestCheckScreen() {
           <p className="text-xs text-slate-500 mt-0.5">
             Every order on the nightly Uline freight report is checked against what the scan put in
             Firestore — so an order the shipper handed us that never reached NuVizz shows up here.
-            Connect Gmail below and the report is found and checked on its own; or drop the PDF yourself.
-            <span className="font-semibold text-slate-600"> Zero NuVizz calls, either way.</span>
+            The report is read out of the mailbox on its own, every 30 minutes; connect it below if it is not.
+            <span className="font-semibold text-slate-600"> Zero NuVizz calls.</span>
           </p>
         </div>
 
         <GmailCard onStoredRun={adoptRun} />
-
-        {/* THE TARGET FILLS THE EMPTY SCREEN. Before a report is dropped this page is nothing
-            but the drop zone, and the zone was a ~96px strip with ~640px of inert grey under
-            it — and a PDF let go in that grey hit the BROWSER's default handler, which
-            navigates away from the app and throws the session out. There is no window-level
-            preventDefault to catch it (see the guard in the effect above). So on the empty
-            state the label claims the pane; once there are results to read, it shrinks back
-            to a strip so it isn't in the way. (The navigate-away itself is stopped app-wide
-            by the drop guard in Shell — this is about not making you aim.)
-            40vh, not the original 60: the Gmail card now sits above this, and a target sized
-            for an otherwise-empty screen pushed the connect button off the first screenful —
-            which is the one thing on this page you have to see before dropping anything. */}
-        <label
-          onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
-          onDragLeave={() => setDrag(false)}
-          onDrop={(e) => { e.preventDefault(); setDrag(false); run(e.dataTransfer?.files?.[0]); }}
-          className={`block border-2 border-dashed rounded-lg p-6 text-center cursor-pointer ${result ? '' : 'min-h-[40vh] flex flex-col items-center justify-center'} ${drag ? 'border-blue-400 bg-blue-50' : 'border-slate-300 bg-white hover:bg-slate-50'}`}
-        >
-          <input type="file" accept=".pdf" className="hidden" onChange={(e) => run(e.target.files?.[0])} disabled={busy} />
-          <FileCheck size={20} className="mx-auto text-slate-400" />
-          <div className="text-sm font-semibold text-slate-700 mt-1">
-            {busy ? 'Checking…' : 'Drop the Uline freight report PDF, or click to choose'}
-          </div>
-          {fileName && !busy && <div className="text-[11px] text-slate-400 mt-0.5">{fileName}</div>}
-        </label>
-
-        {err && <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">{err}</div>}
+        {/* ON THE PHONE, tonight's line sits HERE — above a result list that can run to 500
+            cards on the night it matters most. The desktop keeps it inside the card. */}
+        {isMobile && <ForecastTonightStrip data={forecast.data} />}
 
         {result && (
           <>
@@ -27359,6 +27793,7 @@ function ManifestCheckScreen() {
           </>
         )}
 
+        <UlineForecastCard forecast={forecast} isMobile={isMobile} />
         <ManifestHistoryCard />
       </div>
     </div>

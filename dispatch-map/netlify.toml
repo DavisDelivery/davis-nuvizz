@@ -52,6 +52,11 @@
   # where a real backlog gets worked off.
   [functions."manifest-email-check"]
     timeout = 26
+  # Uline forecast: GET is Firestore + blobs; POST reads the forecast mailbox (a batch of up to
+  # 12 spreadsheets on a backfill press, ~1–2s each). The 10s default kills that mid-batch as
+  # an HTML 502 the client cannot parse; the loop also stops itself at 18s and says so.
+  [functions."uline-forecast"]
+    timeout = 26
   # The customer delivery-email pre-flight. Both are Firestore-only (ZERO NuVizz calls) but
   # both read WIDE: ?coverage=1 lists a full day's stop index and then reads one
   # customer_notes doc per delivered stop, and ?days=30 on the log walks 30 per-day send

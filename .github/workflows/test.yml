@@ -48,9 +48,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      # The solver/repair libs and their tests import only local .mts modules and
-      # node: builtins, so Node 22's native TypeScript stripping runs them with no
-      # install step. `npm test` == `node --test "test/**/*.test.mjs"`.
+          cache: npm
+          cache-dependency-path: dispatch-map/package-lock.json
+      # This job ran with NO install step for a long time: the libs and their tests
+      # imported only local .mts modules and node: builtins, so Node 22's native
+      # TypeScript stripping ran them cold. That stopped being true in v0.83.1 —
+      # the Uline forecast reader (lib/uline-forecast.mts) uses SheetJS (`xlsx`), a
+      # runtime dependency the functions bundle already carries — and the first PR
+      # that added it failed HERE while passing locally: the test file died at
+      # import and node --test counted it as one failure, 2874 tests instead of
+      # 2885. A suite that cannot load a dependency the code ships with is not
+      # testing the code. `npm ci` with the lockfile cache costs ~10s (same as the
+      # smoke job). `npm test` == `node --test "test/**/*.test.mjs"`.
+      - run: npm ci
       - run: npm test
 
   # ── load-scan ─────────────────────────────────────────────────────────────

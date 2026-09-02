@@ -119,10 +119,31 @@ let body = await page.evaluate(() => document.body.innerText);
 /Manifest check/i.test(body) ? ok('the tab opened') : bad('the tab did not open');
 /Zero NuVizz calls/i.test(body) ? ok('the screen states its cost up front') : bad('no cost statement on the screen');
 
-// Feed it a PDF through the real file input.
-await page.setInputFiles('input[type=file]', { name: 'Uline_DA_210252748.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 stub') });
+// THERE IS NO DROP BOX ANY MORE (v0.83.1). Chad: "there is no need for the manual manifest
+// drop in box any longer as we are pulling it out of the emails." A run reaches this screen
+// the way it reaches every browser now: the ingest writes Firestore, Shell mirrors it into
+// localStorage['dd_manifest_check_last'], and the screen adopts it. So this seeds that slot
+// with a run in the stored shape (the fields toStored() keeps) and reloads, then holds the
+// screen to the same assertions it always had — plus one new one: nothing on it POSTs a PDF.
+(await page.locator('input[type=file]').count()) === 0
+  ? ok('there is no file input on the screen — the manual drop is gone')
+  : bad('a file input is still rendered on the Manifest check screen');
+const stored = {
+  at: new Date().toISOString(), fileName: 'Uline_DA_210252748.pdf',
+  checkedAgainst: CHECK.checkedAgainst, manifest: CHECK.manifest,
+  onBoard: CHECK.onBoard, boardOnly: CHECK.boardOnly, duplicatePros: CHECK.duplicatePros,
+  suspects: CHECK.suspects.slice(0, 200), suspectsTotal: CHECK.suspects.length,
+  coverage: null, grade: null,
+};
+await page.evaluate((v) => localStorage.setItem('dd_manifest_check_last', JSON.stringify(v)), stored);
+await page.reload({ waitUntil: 'networkidle' });
 await page.waitForTimeout(1200);
-checkCalls === 1 ? ok('dropping the PDF ran the check exactly once') : bad(`expected 1 check call, got ${checkCalls}`);
+// The reload lands on the map; walk back to the tab the same way a person would.
+await (MOBILE ? page.locator('button[title="Version menu"]').first() : page.getByRole('button', { name: /more/i }).first()).click();
+await page.waitForTimeout(400);
+if (MOBILE) { const mr = page.getByRole('menuitem', { name: /^more$/i }).first(); if (!(await page.getByRole('menuitem', { name: /manifest check/i }).first().isVisible().catch(() => false))) await mr.click(); await page.waitForTimeout(300); }
+await page.getByRole('menuitem', { name: /manifest check/i }).first().click(); await page.waitForTimeout(800);
+checkCalls === 0 ? ok('nothing on this screen POSTs a PDF by hand any more') : bad(`expected 0 manual check calls, got ${checkCalls}`);
 probeParam === null ? ok('and NEVER asked for the NuVizz probe') : bad(`the UI requested probe=${probeParam} — it must never spend NuVizz calls`);
 
 body = await page.evaluate(() => document.body.innerText);
