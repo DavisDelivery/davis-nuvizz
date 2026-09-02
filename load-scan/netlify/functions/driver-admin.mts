@@ -26,10 +26,10 @@
 // ZERO NuVizz calls.
 
 import { getDoc, setDoc, patchDoc, listDocs, isFirestoreEnabled } from './lib/firestore.mts';
-import { DRIVER_AUTH, UNMATCHED_ALIASES, authenticate, hashPin, isValidPinFormat, isLastActiveDispatcher, normalizeRole } from './lib/auth.mts';
+import { DRIVER_AUTH, UNMATCHED_ALIASES, authenticate, hashPin, isValidPinFormat, isLastActiveDispatcher, hasActiveDispatcher, normalizeRole } from './lib/auth.mts';
 import { normalizeDriverAlias, findAmbiguousAliases, planAliasAdd, planAliasRemove } from './lib/aliases.mts';
 import { nextDriverNumber, pinFromPhone } from './lib/driver-ids.mts';
-import { ok, bad, unauthorized, forbidden, readJson, viaProxy } from './lib/http.mts';
+import { ok, bad, unauthorized, forbidden, readJson, viaProxy, secretMatches } from './lib/http.mts';
 
 /** Strip anything that must never leave the server. */
 const publicCred = (d: any) => ({
@@ -53,11 +53,25 @@ const publicCred = (d: any) => ({
  */
 export const issuedPinMustChange = (body: any): boolean => body?.forceChange === true;
 
+/**
+ * The only shape an id may take before it is spliced into a Firestore path.
+ *
+ * driverNumber, the review-row id and resolveId all become path segments in
+ * driver_auth/ and load_scan_unmatched_aliases/. Unchecked, a body carrying
+ * `../customer_notes/X` reaches a document in a different collection — see
+ * assertSafeSegment in lib/firestore.mts, which is the backstop. This is the
+ * front door: a clean 400 with the reason, before any read happens.
+ */
+export const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+export const isValidId = (v: any): boolean => ID_RE.test(String(v ?? ''));
+const ID_HELP = 'must be 1-64 letters, digits, _ or -';
+
 function bootstrapAllowed(req: Request): boolean {
   const want = process.env.LOADSCAN_ADMIN_BOOTSTRAP_SECRET;
   if (!want || want.length < 16) return false;
-  const got = req.headers.get('x-bootstrap-secret') || '';
-  return got.length === want.length && got === want;
+  // Constant-time, like the proxy secret. `===` returns on the first wrong
+  // character, and this header is the one thing that mints a dispatcher.
+  return secretMatches(want, req.headers.get('x-bootstrap-secret') || '');
 }
 
 export default async (req: Request): Promise<Response> => {
@@ -109,6 +123,7 @@ export default async (req: Request): Promise<Response> => {
   const action = String(body?.action || '');
   console.log(`[driver-admin] ${action} via ${surface} by ${claims?.sub ?? 'bootstrap'}`);
   let driverNumber = String(body?.driverNumber ?? '').trim();
+  if (driverNumber && !isValidId(driverNumber)) return bad(`driverNumber ${ID_HELP}`);
 
   // ── Bootstrap is allowed exactly one action ────────────────────────────────
   if (isBootstrap && !isDispatcher) {
@@ -116,6 +131,14 @@ export default async (req: Request): Promise<Response> => {
     if (!driverNumber) return bad('driverNumber is required');
     const pin = String(body?.pin ?? '');
     if (!isValidPinFormat(pin)) return bad('pin must be 4-6 digits');
+    // The FIRST dispatcher, literally. The header comment says to unset the env
+    // var afterwards, but nothing enforced it, so a secret left in place was a
+    // standing way to mint dispatchers past every role check above. Once an
+    // active dispatcher exists this path is closed whether the var is set or not.
+    if (hasActiveDispatcher(await listDocs(DRIVER_AUTH))) {
+      console.warn(`[driver-admin] BOOTSTRAP refused: an active dispatcher already exists`);
+      return bad('a dispatcher already exists — sign in as one; bootstrap only creates the first', 409);
+    }
     if (await getDoc(`${DRIVER_AUTH}/${driverNumber}`)) return bad('that driverNumber already exists', 409);
 
     await setDoc(`${DRIVER_AUTH}/${driverNumber}`, {
@@ -138,6 +161,7 @@ export default async (req: Request): Promise<Response> => {
   if (action === 'resolve-unmatched') {
     const id = String(body?.id ?? '').trim();
     if (!id) return bad('id is required');
+    if (!isValidId(id)) return bad(`id ${ID_HELP}`);
     await patchDoc(`${UNMATCHED_ALIASES}/${id}`, { resolved: true, resolvedAt: new Date().toISOString() });
     return ok({ resolved: id });
   }
@@ -209,6 +233,9 @@ export default async (req: Request): Promise<Response> => {
       // board to this driver's credential. "Mark reviewed" only hides the row —
       // this is what stops it coming back tomorrow.
       if (!existing) return bad('create the driver first with action=upsert', 404);
+      // Checked BEFORE the alias write: a refusal must leave nothing half-done.
+      const resolveId = String(body?.resolveId ?? '').trim();
+      if (resolveId && !isValidId(resolveId)) return bad(`resolveId ${ID_HELP}`);
 
       const all = (await listDocs(DRIVER_AUTH)).map(publicCred);
       const plan = planAliasAdd(publicCred({ ...existing, _id: driverNumber }), body?.alias, all);
@@ -218,7 +245,6 @@ export default async (req: Request): Promise<Response> => {
 
       // Clear the review row in the SAME request. Two round trips could leave a
       // driver fixed but still flagged, or flagged-clear but still broken.
-      const resolveId = String(body?.resolveId ?? '').trim();
       if (resolveId) {
         await patchDoc(`${UNMATCHED_ALIASES}/${resolveId}`, {
           resolved: true,

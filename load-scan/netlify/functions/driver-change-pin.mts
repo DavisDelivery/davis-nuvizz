@@ -6,11 +6,19 @@
 // current one — a temp PIN that can be "changed" to itself defeats the whole
 // mustChangePin flow.
 //
+// A wrong currentPin counts against the credential exactly as a wrong PIN at
+// sign-in does. It did not: this endpoint verified the PIN and returned 401
+// with no accounting, so anyone holding a driver's 90-day token (a phone left
+// on the dock) could guess all 10,000 four-digit PINs here while driver-login
+// locked after five.
+//
 // ZERO NuVizz calls.
 
 import { getDoc, patchDoc, isFirestoreEnabled } from './lib/firestore.mts';
-import { DRIVER_AUTH, authenticate, verifyPin, hashPin, isValidPinFormat } from './lib/auth.mts';
-import { ok, bad, unauthorized, readJson } from './lib/http.mts';
+import {
+  DRIVER_AUTH, authenticate, verifyPin, hashPin, isValidPinFormat, isLockedOut, nextFailureState, LOCKOUT_MINUTES,
+} from './lib/auth.mts';
+import { ok, bad, json, unauthorized, readJson } from './lib/http.mts';
 
 export default async (req: Request): Promise<Response> => {
   if (req.method !== 'POST') return bad('POST only', 405);
@@ -33,8 +41,16 @@ export default async (req: Request): Promise<Response> => {
   if (!doc) return unauthorized();
   if (doc.active === false) return bad('inactive', 403);
 
+  if (isLockedOut(doc)) {
+    return json({ ok: false, error: 'locked', lockedUntil: doc.lockedUntil }, 423);
+  }
+
   if (!(await verifyPin(currentPin, String(doc.pinHash || '')))) {
-    return bad('current PIN is incorrect', 401);
+    const next = nextFailureState(doc);
+    await patchDoc(path, next);
+    return next.lockedUntil
+      ? json({ ok: false, error: 'locked', lockedUntil: next.lockedUntil, lockoutMinutes: LOCKOUT_MINUTES }, 423)
+      : bad('current PIN is incorrect', 401);
   }
 
   await patchDoc(path, {

@@ -122,7 +122,13 @@ function ChangePinScreen({ session, onDone }) {
       await api.changePin(session.token, currentPin, newPin);
       onDone();
     } catch (e2) {
-      setErr(e2?.message || 'Could not change the PIN.');
+      // Wrong current PINs now count and lock like sign-in does; say so rather
+      // than showing the bare 'locked' the server answers with.
+      setErr(
+        e2?.status === 423
+          ? `Too many wrong PINs. Locked until ${fmtDateTime(e2.body?.lockedUntil)}. See dispatch.`
+          : e2?.message || 'Could not change the PIN.',
+      );
     } finally {
       setBusy(false);
     }
@@ -1171,17 +1177,24 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       // uploaded here tagged with TODAY's date, moving old freight onto this load.
       const rows = (await store.queuedFor(activeLoad, manifest?.date)).filter((r) => !r.syncedAt);
       if (!rows.length) return;
-      await api.pushScans(session.token, {
-        loadNbr: activeLoad,
-        date: manifest.date,
-        expectedPieces: progress.expected,
-        sequenceFingerprint: sequenceFingerprint(stops),
-        scans: rows.filter((r) => r.kind !== 'hand')
-          .map(({ og, pro, scannedAt, stopNbr, engine: eng }) => ({ og, pro, scannedAt, stopNbr, engine: eng })),
-        handConfirms: rows.filter((r) => r.kind === 'hand')
-          .map(({ stopNbr, pieces, confirmedAt, reason }) => ({ stopNbr, pieces, confirmedAt, reason })),
-      });
-      await store.markSynced(rows.map((r) => r.key));
+      // In slices: the server refuses a push over PUSH_ROWS_MAX rows (413), and
+      // a backlog from a long dead zone that could only be sent whole would sit
+      // behind that refusal for the rest of the shift. Each slice is marked
+      // synced as it lands, so a failure part-way keeps what already arrived.
+      for (let i = 0; i < rows.length; i += api.PUSH_ROWS_MAX) {
+        const slice = rows.slice(i, i + api.PUSH_ROWS_MAX);
+        await api.pushScans(session.token, {
+          loadNbr: activeLoad,
+          date: manifest.date,
+          expectedPieces: progress.expected,
+          sequenceFingerprint: sequenceFingerprint(stops),
+          scans: slice.filter((r) => r.kind !== 'hand')
+            .map(({ og, pro, scannedAt, stopNbr, engine: eng }) => ({ og, pro, scannedAt, stopNbr, engine: eng })),
+          handConfirms: slice.filter((r) => r.kind === 'hand')
+            .map(({ stopNbr, pieces, confirmedAt, reason }) => ({ stopNbr, pieces, confirmedAt, reason })),
+        });
+        await store.markSynced(slice.map((r) => r.key));
+      }
       await refreshLocal();
     } catch {
       /* offline or server hiccup — the queue is the durable copy, try again later */

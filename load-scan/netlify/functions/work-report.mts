@@ -24,11 +24,12 @@
 // ZERO NuVizz calls.
 
 import { listDocs, readStops, getDoc, isFirestoreEnabled } from './lib/firestore.mts';
-import { authenticate } from './lib/auth.mts';
+import { DRIVER_AUTH, authenticate } from './lib/auth.mts';
+import { nameOf } from './lib/activity.mts';
 import { toManifestStop, groupIntoLoads } from './lib/manifest.mts';
 import { mergeSession, type WorkSession, type Assignment } from './lib/worklog.mts';
 import { buildShiftReport, toCsv, type ShiftReport } from './lib/workreport.mts';
-import { recentShiftDays, shiftDayString, shiftWindow } from './lib/shift.mts';
+import { addDays, recentShiftDays, shiftDayString, shiftWindow } from './lib/shift.mts';
 import { ok, bad, unauthorized, forbidden, DATE_RE } from './lib/http.mts';
 
 const WORKLOG = 'loadscan_worklog';
@@ -45,33 +46,57 @@ const TENANT = 'davis';
  * computed as real instants rather than assumed.
  */
 async function scanSessionsFor(shiftDay: string) {
-  const { start, end } = shiftWindow(shiftDay);
-  const prev = start.slice(0, 10);
   const docs = await listDocs(SESSIONS).catch(() => []);
+  return sessionsOverlappingShift(docs || [], shiftDay);
+}
+
+/**
+ * The pure half of scanSessionsFor, so the rule can be tested against a doc in
+ * the shape scan-session.mts actually writes.
+ *
+ * The per-person list is `workedBy` — see scan-session.mts and mergeWorker in
+ * lib/activity.mts. This read `workers`, a field no writer has ever set, so it
+ * returned [] for every shift, deriveFromScans never had anything to derive,
+ * and every truck loaded without a clock-in was reported as "no app activity at
+ * all" even when hundreds of scans sat in its session doc.
+ */
+export function sessionsOverlappingShift(docs: any[], shiftDay: string): any[] {
+  const { start, end } = shiftWindow(shiftDay);
+  // The evening half of the shift is dated the previous ET calendar day. This
+  // used to take `start.slice(0, 10)` — but `start` is a UTC instant, and 8pm
+  // ET is already the next day in UTC, so "previous day" came out equal to
+  // shiftDay and every session from the evening was silently dropped.
+  const prev = addDays(shiftDay, -1);
   return (docs || []).filter((d: any) => {
     const date = String(d?.date ?? '');
     if (date !== shiftDay && date !== prev) return false;
     // Keep the doc if ANY worker touched it inside the window.
-    return (d?.workers || []).some((w: any) => {
+    return (d?.workedBy || []).some((w: any) => {
       const at = String(w?.lastAt ?? w?.firstAt ?? '');
       return at >= start && at < end;
     });
   });
 }
 
-/** Fill missing sessions from scan data so a dead phone still leaves a record. */
-function deriveFromScans(sessions: WorkSession[], scanDocs: any[]): WorkSession[] {
+/**
+ * Fill missing sessions from scan data so a dead phone still leaves a record.
+ *
+ * `creds` is the driver_auth list: the session doc stores only driverNumber
+ * per worker (mergeWorker never wrote a displayName), so the name comes from
+ * the credential, the same way scan-activity resolves it.
+ */
+export function deriveFromScans(sessions: WorkSession[], scanDocs: any[], creds: any[] = []): WorkSession[] {
   let out = sessions;
   for (const doc of scanDocs || []) {
     const loadNbr = String(doc?.loadNbr ?? '');
     if (!loadNbr) continue;
-    for (const w of doc?.workers || []) {
+    for (const w of doc?.workedBy || []) {
       const worker = String(w?.driverNumber ?? '');
       if (!worker) continue;
       out = mergeSession(out, {
         worker,
         loadNbr,
-        workerName: String(w?.displayName ?? ''),
+        workerName: nameOf(creds, worker),
         role: String(w?.role ?? 'driver'),
         startedAt: String(w?.firstAt ?? ''),
         finishedAt: String(w?.lastAt ?? ''),
@@ -98,8 +123,16 @@ export default async (req: Request): Promise<Response> => {
   const endDay = String(url.searchParams.get('shiftDay') || shiftDayString());
   if (!DATE_RE.test(endDay)) return bad('shiftDay must be YYYY-MM-DD');
 
-  const days = Math.min(31, Math.max(1, Number(url.searchParams.get('days') || 1)));
+  // `?days=abc` is NaN, and Math.max(1, NaN) is NaN: the loop ran zero times,
+  // the report came back empty and the CSV filename read "loadscan-undefined".
+  const days = Math.min(31, Math.max(1, Number(url.searchParams.get('days') || 1) || 1));
   const wanted = recentShiftDays(endDay, days);
+
+  // Names for the derived rows, read once for the whole range.
+  const creds = (await listDocs(DRIVER_AUTH).catch(() => [])).map((d: any) => ({
+    driverNumber: String(d?._id ?? d?.driverNumber ?? ''),
+    displayName: String(d?.displayName || ''),
+  }));
 
   const reports: ShiftReport[] = [];
   for (const shiftDay of wanted) {
@@ -110,7 +143,7 @@ export default async (req: Request): Promise<Response> => {
     ]);
 
     let sessions: WorkSession[] = Array.isArray(worklogDoc?.sessions) ? worklogDoc.sessions : [];
-    sessions = deriveFromScans(sessions, scanDocs);
+    sessions = deriveFromScans(sessions, scanDocs, creds);
 
     const assignments: Record<string, Assignment> =
       assignDoc?.assignments && typeof assignDoc.assignments === 'object' ? assignDoc.assignments : {};

@@ -67,7 +67,8 @@ export function loadStatus(session: any, expectedPieces: number): LoadStatus {
   return 'closed_clean';
 }
 
-const nameOf = (creds: any[], driverNumber: string) => {
+/** Display name off the credential list, falling back to the number itself. */
+export const nameOf = (creds: any[], driverNumber: string) => {
   const c = (creds || []).find((x) => String(x?.driverNumber) === String(driverNumber));
   return c?.displayName || driverNumber;
 };

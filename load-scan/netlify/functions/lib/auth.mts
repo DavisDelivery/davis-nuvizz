@@ -167,6 +167,18 @@ export function isLastActiveDispatcher(
   return activeDispatchers.includes(id) && !activeDispatchers.some((n) => n !== id);
 }
 
+/**
+ * Is there ANY active dispatcher credential?
+ *
+ * Gate for the bootstrap secret: it exists to create the FIRST dispatcher and
+ * nothing else, but the env var tends to stay set after that, and a caller
+ * holding it could keep minting dispatchers indefinitely. Once one active
+ * dispatcher exists the secret has done its job and is refused.
+ */
+export function hasActiveDispatcher(creds: Array<{ role?: any; active?: any }>): boolean {
+  return (creds || []).some((c) => c?.role === 'dispatcher' && c?.active !== false);
+}
+
 // ── Lockout ──────────────────────────────────────────────────────────────────
 
 export function isLockedOut(doc: any, nowMs = Date.now()): boolean {
@@ -174,9 +186,19 @@ export function isLockedOut(doc: any, nowMs = Date.now()): boolean {
   return Number.isFinite(until) && until > nowMs;
 }
 
-/** Next credential state after a wrong PIN. Locks at MAX_FAILED_ATTEMPTS. */
+/**
+ * Next credential state after a wrong PIN. Locks at MAX_FAILED_ATTEMPTS.
+ *
+ * A lockout that has EXPIRED starts the count over. The counter is only zeroed
+ * by a successful sign-in, so a driver who sat out the 15 minutes and then
+ * fat-fingered ONE digit went from failedAttempts 5 to 6 and was locked for
+ * another 15 minutes — the lockout was effectively permanent for anyone who
+ * did not get the very next attempt right.
+ */
 export function nextFailureState(doc: any, nowMs = Date.now()): { failedAttempts: number; lockedUntil: string | null } {
-  const failed = Number(doc?.failedAttempts || 0) + 1;
+  const until = doc?.lockedUntil ? Date.parse(String(doc.lockedUntil)) : NaN;
+  const lockoutExpired = Number.isFinite(until) && until <= nowMs;
+  const failed = (lockoutExpired ? 0 : Number(doc?.failedAttempts || 0)) + 1;
   return failed >= MAX_FAILED_ATTEMPTS
     ? { failedAttempts: failed, lockedUntil: new Date(nowMs + LOCKOUT_MINUTES * 60_000).toISOString() }
     : { failedAttempts: failed, lockedUntil: null };

@@ -9,7 +9,9 @@
 // unique physical-piece ID off the Code 128 barcode.
 //
 // FOUR-LAYER PRESERVATION on the ingest path:
-//   1. raw       — every incoming scan object, byte-for-byte as the phone sent it
+//   1. raw       — every incoming scan object, as the phone sent it (a rejected
+//                  row keeps a 256-char JSON excerpt — enough to see what came
+//                  in, not enough for one bad row to bloat the doc)
 //   2. accepted  — the normalized scans that became session rows
 //   3. rejected  — anything dropped, WITH the reason, never silently discarded
 //   4. session   — the derived counts and reconciliation
@@ -22,7 +24,7 @@ import { getDoc, setDoc, isFirestoreEnabled } from './lib/firestore.mts';
 import { authenticate } from './lib/auth.mts';
 import { normalizePro } from './lib/manifest.mts';
 import { mergeWorker } from './lib/activity.mts';
-import { ok, bad, unauthorized, readJson, etDayString, DATE_RE } from './lib/http.mts';
+import { ok, bad, json, unauthorized, readJson, etDayString, DATE_RE } from './lib/http.mts';
 
 const SESSIONS = 'nuvizz_load_scans';
 const TENANT = 'davis';
@@ -34,7 +36,12 @@ export interface ScanRow {
   pro: string;
   scannedAt: string;
   stopNbr: string;
-  engine: 'native' | 'quagga' | 'manual';
+  /**
+   * 'wedge' is the scanner gun (keyboard wedge). It was missing from this list,
+   * so every gun scan was stored as 'manual' — indistinguishable in the record
+   * from a piece somebody typed in by hand.
+   */
+  engine: 'native' | 'quagga' | 'wedge' | 'manual';
   /**
    * Damaged freight that STILL WENT ON THE TRUCK. It counts toward the load like
    * any other piece — the trailer is full either way — so this changes no
@@ -86,7 +93,9 @@ export function normalizeScan(raw: any): { row?: ScanRow; reason?: string } {
 
   const engineRaw = String(raw?.engine ?? '').toLowerCase();
   const engine: ScanRow['engine'] =
-    engineRaw === 'native' || engineRaw === 'quagga' || engineRaw === 'manual' ? engineRaw : 'manual';
+    engineRaw === 'native' || engineRaw === 'quagga' || engineRaw === 'wedge' || engineRaw === 'manual'
+      ? engineRaw
+      : 'manual';
 
   const at = String(raw?.scannedAt ?? '').trim();
   const scannedAt = at && !Number.isNaN(Date.parse(at)) ? new Date(at).toISOString() : new Date().toISOString();
@@ -108,6 +117,77 @@ export function normalizeScan(raw: any): { row?: ScanRow; reason?: string } {
       voidReason: voidedAt ? String(raw?.voidReason ?? '').slice(0, 500) : '',
     },
   };
+}
+
+// ── Size caps ────────────────────────────────────────────────────────────────
+//
+// Every field below lands in ONE Firestore document per load, and a document
+// tops out at 1 MiB. Without caps a single push carrying a 900 KB `note`, or a
+// queue replaying ten thousand rows, wedges the doc past the limit and EVERY
+// later push for that truck fails — including the close-out. A push over a cap
+// is refused whole with 413 and a body naming the row, so the phone can set
+// that row aside instead of retrying it every 30 seconds for the rest of the
+// shift. The client sends its queue in slices of PUSH_ROWS_MAX (src/lib/api.js),
+// which must never exceed CAPS.rows.
+export const CAPS = {
+  /** Rows per array per push. A long dead zone flushes a few hundred. */
+  rows: 500,
+  stopNbr: 32,
+  /** reason / note / resolvedBy. */
+  text: 500,
+  /** JSON excerpt kept of a rejected row's raw object. */
+  rejectedRaw: 256,
+} as const;
+
+export interface CapViolation {
+  /** Which list the offending row is in, or 'reconciliation'. */
+  list: 'scans' | 'handConfirms' | 'reconciliation';
+  /** Row index within that list; null for the reconciliation block or a row-count breach. */
+  index: number | null;
+  detail: string;
+}
+
+/** First cap the body breaches, or null when it is within limits. */
+export function checkPayloadCaps(body: any): CapViolation | null {
+  const scans: any[] = Array.isArray(body?.scans) ? body.scans : [];
+  const hands: any[] = Array.isArray(body?.handConfirms) ? body.handConfirms : [];
+  if (scans.length > CAPS.rows) {
+    return { list: 'scans', index: null, detail: `scans has ${scans.length} rows, max ${CAPS.rows} per push` };
+  }
+  if (hands.length > CAPS.rows) {
+    return { list: 'handConfirms', index: null, detail: `handConfirms has ${hands.length} rows, max ${CAPS.rows} per push` };
+  }
+  const tooLong = (v: any, max: number) => String(v ?? '').length > max;
+  for (let i = 0; i < scans.length; i++) {
+    if (tooLong(scans[i]?.stopNbr, CAPS.stopNbr)) {
+      return { list: 'scans', index: i, detail: `scans[${i}].stopNbr is ${String(scans[i].stopNbr).length} chars, max ${CAPS.stopNbr}` };
+    }
+  }
+  for (let i = 0; i < hands.length; i++) {
+    if (tooLong(hands[i]?.stopNbr, CAPS.stopNbr)) {
+      return { list: 'handConfirms', index: i, detail: `handConfirms[${i}].stopNbr is ${String(hands[i].stopNbr).length} chars, max ${CAPS.stopNbr}` };
+    }
+    if (tooLong(hands[i]?.reason, CAPS.text)) {
+      return { list: 'handConfirms', index: i, detail: `handConfirms[${i}].reason is ${String(hands[i].reason).length} chars, max ${CAPS.text}` };
+    }
+  }
+  for (const k of ['resolvedBy', 'note'] as const) {
+    if (tooLong(body?.reconciliation?.[k], CAPS.text)) {
+      return { list: 'reconciliation', index: null, detail: `reconciliation.${k} is ${String(body.reconciliation[k]).length} chars, max ${CAPS.text}` };
+    }
+  }
+  return null;
+}
+
+/** What is kept of a rejected row: a bounded JSON excerpt, never the object itself. */
+export function rejectedExcerpt(raw: any): string {
+  let text: string;
+  try {
+    text = JSON.stringify(raw) ?? String(raw);
+  } catch {
+    text = String(raw);
+  }
+  return text.slice(0, CAPS.rejectedRaw);
 }
 
 export interface HandConfirmRow {
@@ -208,22 +288,28 @@ export default async (req: Request): Promise<Response> => {
   const date = DATE_RE.test(dateIn) ? dateIn : etDayString();
   if (!loadNbr) return bad('loadNbr is required');
 
+  // Refused BEFORE the read, so an oversized push cannot even cost a Firestore
+  // round trip. 413, not 400: the phone treats 400 like any other failure and
+  // retries, and this one will never succeed.
+  const cap = checkPayloadCaps(body);
+  if (cap) return json({ ok: false, error: 'payload_too_large', ...cap }, 413);
+
   const incomingRaw: any[] = Array.isArray(body?.scans) ? body.scans : [];
   const incomingHandRaw: any[] = Array.isArray(body?.handConfirms) ? body.handConfirms : [];
 
   // Layer 1 + 3: normalize, keeping every rejection and its reason.
   const accepted: ScanRow[] = [];
-  const rejected: Array<{ raw: any; reason: string }> = [];
+  const rejected: Array<{ raw: string; reason: string }> = [];
   for (const r of incomingRaw) {
     const { row, reason } = normalizeScan(r);
     if (row) accepted.push(row);
-    else rejected.push({ raw: r, reason: reason || 'unknown' });
+    else rejected.push({ raw: rejectedExcerpt(r), reason: reason || 'unknown' });
   }
   const acceptedHand: HandConfirmRow[] = [];
   for (const r of incomingHandRaw) {
     const { row, reason } = normalizeHandConfirm(r);
     if (row) acceptedHand.push(row);
-    else rejected.push({ raw: r, reason: reason || 'unknown hand-confirm' });
+    else rejected.push({ raw: rejectedExcerpt(r), reason: reason || 'unknown hand-confirm' });
   }
 
   const path = `${SESSIONS}/${TENANT}__${date}__${loadNbr}`;
