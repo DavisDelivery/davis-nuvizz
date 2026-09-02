@@ -111,9 +111,51 @@ test('the load header still outranks everything, and is never counted as unclass
   assert.deepEqual(rc.unclassed, []);
 });
 
-test('editDistance is the plain thing it claims to be', () => {
+test('editDistance counts an adjacent swap as ONE — Byrd and Bryd are one typo apart', () => {
   assert.equal(editDistance('BRYD', 'BOYD'), 1);
+  assert.equal(editDistance('BYRD', 'BRYD'), 1, 'a transposed pair is one edit, not two');
   assert.equal(editDistance('SEYERS', 'BRENT'), 5);
   assert.equal(editDistance('', 'ABC'), 3);
   assert.equal(editDistance('SAME', 'SAME'), 0);
+});
+
+test('a card saved as "Brent Byrd" still resolves a NuVizz "Brent  Bryd" — with no aliases[] to lean on', () => {
+  const r = buildVehicleRoster([{ fullName: 'Brenton Byrd', vehicleType: 'tractor', externalIds: { nuvizz: 'Brent Byrd' } }]);
+  assert.equal(nearestRosterAlias('Brent  Bryd', r), 'BRENT BYRD');
+  const rc = buildRouteClasses([], [stop('BRENT', 'Brent  Bryd')], r);
+  assert.equal(rc.classes.BRENT, 'tractor');
+  assert.equal(rc.sourceByRoute.BRENT, 'roster_near');
+});
+
+test('THE REAL CHAIN: NuVizz renamed him, the card kept both names, and the roster honours both — exactly, no near-match needed', () => {
+  // employees/brenton_byrd as stored after the 2026-09-02 save: alias "Brent Bryd",
+  // aliases ["Brent Boyd"]. NuVizz sent "Brent  Boyd" through Aug 26 and "Brent  Bryd" since.
+  const card = [{ fullName: 'Brenton Byrd', vehicleType: 'tractor', externalIds: { nuvizz: 'Brent Bryd' }, aliases: ['Brent Boyd'] }];
+  const r = buildVehicleRoster(card);
+  for (const asSent of ['Brent  Bryd', 'Brent  Boyd']) {
+    const rc = buildRouteClasses([], [stop('BRENT', asSent)], r, { nearMatch: false });
+    assert.equal(rc.classes.BRENT, 'tractor', `${JSON.stringify(asSent)} must resolve with the near-match OFF`);
+    assert.equal(rc.sourceByRoute.BRENT, 'roster', 'an exact join, recorded as one');
+    assert.deepEqual(rc.nearMatches, []);
+  }
+});
+
+test('a card with only aliases[] and no primary NuVizz alias is still a rostered driver', () => {
+  const r = buildVehicleRoster([{ fullName: 'X', vehicleType: 'box_truck', externalIds: {}, aliases: ['Ex Driver'] }]);
+  assert.equal(r.aliasToVehicle.get('EX DRIVER')?.vehicleType, 'box_truck');
+  assert.deepEqual(r.skippedNoAlias, []);
+});
+
+test('two cards claiming one name: the card whose PRIMARY alias it is wins', () => {
+  const r = buildVehicleRoster([
+    { fullName: 'A', vehicleType: 'box_truck', externalIds: {}, aliases: ['Shared Name'] },
+    { fullName: 'B', vehicleType: 'tractor', externalIds: { nuvizz: 'Shared Name' } },
+  ]);
+  // Order-independent: B's primary claim wins whichever card is listed first.
+  const r2 = buildVehicleRoster([
+    { fullName: 'B', vehicleType: 'tractor', externalIds: { nuvizz: 'Shared Name' } },
+    { fullName: 'A', vehicleType: 'box_truck', externalIds: {}, aliases: ['Shared Name'] },
+  ]);
+  assert.equal(r2.aliasToVehicle.get('SHARED NAME')?.name, 'B');
+  assert.equal(r.aliasToVehicle.get('SHARED NAME')?.name, 'A', 'first writer wins today — pinned so a change here is deliberate');
 });

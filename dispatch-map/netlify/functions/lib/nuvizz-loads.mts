@@ -27,7 +27,7 @@ import { OPENAPI_BASE, linkVal, periodForDate, isHashLikeId } from './nuvizz-lis
 // The saved load-list def the portal uses for the Loads grid (HAR-captured). Override
 // via env if Davis retunes it in the portal.
 const LOAD_LISTDEF = Number(process.env.NUVIZZ_LOAD_LISTDEF) || 35833;
-const LOAD_ENTITY = process.env.NUVIZZ_LOAD_ENTITY || 'PkgRoute';
+export const LOAD_ENTITY = process.env.NUVIZZ_LOAD_ENTITY || 'PkgRoute';
 const LOAD_MAX_RESULT = Number(process.env.NUVIZZ_LOAD_MAX_RESULT) || 500;
 
 // Body for the load list. The HAR's filterList is 5 sequences with seq1 = the period
