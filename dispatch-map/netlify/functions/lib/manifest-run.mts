@@ -11,6 +11,7 @@
 // human click and is deliberately NOT reachable from any scheduled path.
 
 import { isFirestoreEnabled, listDocs, etDayString } from './firestore.mts';
+import { parseClosedList } from '../../../src/lib/davis-calendar.js';
 import { readUlineManifest } from './uline-manifest.mts';
 import { deliveryWindow, manifestWindow, boardCoverage, gradeSuspects } from '../../../src/lib/manifest-window.js';
 import { reconcileAgainstBoard, summarize } from './manifest-reconcile.mts';
@@ -81,7 +82,7 @@ export async function runManifestBoardDiff(buf: Buffer, opts: ManifestDiffOption
   const override = String(opts.dateOverride || '');
   const win = override
     ? { expected: override, required: [override], dates: deliveryWindow(override, spanDays) }
-    : manifestWindow(shipIso, spanDays);
+    : manifestWindow(shipIso, spanDays, parseClosedList(process.env.ULINE_DAVIS_CLOSED));
   const base = win.expected || override || shipIso || etDayString(new Date());
   const dates = win.dates.length ? win.dates : deliveryWindow(base, spanDays);
 

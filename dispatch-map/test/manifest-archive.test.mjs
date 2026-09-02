@@ -23,6 +23,7 @@ import {
   manifestDeliveryDate, foldManifestDay, pdfDigest, manifestBlobKey, describeDay,
   MAX_ARRIVALS, MAX_MISSING_ROWS, NIGHT_ROLLOVER_HOUR,
 } from '../netlify/functions/lib/manifest-archive.mts';
+import { MANIFEST_DAYS_MASK } from '../netlify/functions/lib/uline-forecast-store.mts';
 
 const row = (shipDate, pro) => ({ shipDate, pro });
 // 12:05a ET on Aug 21 == 04:05 UTC (EDT is UTC-4).
@@ -303,4 +304,40 @@ test('the same paper arriving twice is still a duplicate, and supersedes nothing
   assert.equal(again.duplicate, true);
   assert.equal(again.supersedes, false, 'nothing to overwrite — and nothing should be uploaded');
   assert.equal(again.doc.latest.seen, 2);
+});
+
+// ── ONLY ULINE PROS: THE NIGHT RECORD ────────────────────────────────────────
+
+test('THE MASK NAMES EVERY FIELD THE SCORER READS — a field missing from it is not an error, it is silently absent from every read', () => {
+  // The sibling VERSION_LIST_MASK has had this guard since v0.84.0; MANIFEST_DAYS_MASK had none,
+  // which is how a new per-night field can be written, masked out, and read as undefined with the
+  // scorer quietly falling back and the MAE still looking plausible.
+  const { doc } = foldManifestDay(null, {
+    at: '2026-09-02T05:00:00.000Z', digest: 'd', bytes: 1, orders: 686, ulinePros: 686,
+    lanes: { 'G1/DA': 216, 'G6/DA': 470 }, offLane: 0, duplicatePros: 0,
+    verified: true, receivedAt: 1788318029000, mailbox: 'gmail', totals: { count: 686 },
+  }, 'davis', '2026-09-01');
+  for (const path of MANIFEST_DAYS_MASK) {
+    const [head, key] = path.split('.');
+    const holder = key ? doc[head] : doc;
+    assert.ok(holder && key ? key in holder : head in doc, `the mask names "${path}" which a folded doc does not carry`);
+  }
+  for (const k of ['ulinePros', 'lanes', 'offLane', 'duplicatePros']) {
+    assert.ok(MANIFEST_DAYS_MASK.includes(`latest.${k}`), `the scorer cannot see latest.${k}`);
+    assert.equal(doc.latest[k] !== undefined, true);
+  }
+  assert.equal(doc.latest.ulinePros, 686);
+  assert.deepEqual(doc.latest.lanes, { 'G1/DA': 216, 'G6/DA': 470 });
+  // A lane key carries a slash, so only the WHOLE map may be masked — never latest.lanes.G1/DA.
+  assert.ok(!MANIFEST_DAYS_MASK.some((p) => p.split('.').length > 2), 'no per-lane field path');
+});
+
+test('a report that never carried a measured Uline count records null, not a guessed number', () => {
+  const { doc } = foldManifestDay(null, { at: '2026-09-02T05:00:00.000Z', digest: 'd', bytes: 1, orders: 686, verified: true }, 'davis', '2026-09-01');
+  assert.equal(doc.latest.ulinePros, null);
+  assert.equal(doc.latest.lanes, null);
+  assert.equal(doc.latest.orders, 686, 'the row count is untouched — the new field is beside it, never a replacement');
+  // A genuine zero survives: Number.isFinite, not a truthiness test.
+  const { doc: z } = foldManifestDay(null, { at: '2026-09-02T05:00:00.000Z', digest: 'd', bytes: 1, orders: 0, ulinePros: 0, verified: true }, 'davis', '2026-09-01');
+  assert.equal(z.latest.ulinePros, 0);
 });

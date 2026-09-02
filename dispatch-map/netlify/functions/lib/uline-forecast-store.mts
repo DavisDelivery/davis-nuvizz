@@ -47,18 +47,37 @@ export const forecastBlobKey = (tenant: string, versionId: string): string => `$
 export const VERSION_LIST_MASK = [
   'version', 'tenant', 'versionId', 'sentAt', 'sentDate', 'emailIds', 'seen', 'fromAddress', 'subject', 'fileName',
   'bytes', 'bytesDigest', 'contentDigest', 'sheet', 'headers', 'ok', 'reason', 'warnings', 'rowsTotal', 'rowsUsed',
-  'rowsDropped', 'lanes', 'from', 'to', 'unreadableDates', 'weekdayMeans', 'medianBand', 'blobKey', 'xlsxStored',
+  'rowsDropped', 'lanes', 'laneRowsBy', 'from', 'to', 'unreadableDates', 'weekdayMeans', 'medianBand', 'blobKey', 'xlsxStored',
   'xlsxError', 'filedAt', 'filedBy', 'lastSeenAt',
 ];
 /** What the scorer reads off a night: never the capped `missing` list, which is the bulk of the doc. */
 export const MANIFEST_DAYS_MASK = [
   'latest.orders', 'latest.verified', 'latest.receivedAt', 'latest.reportNo', 'latest.at', 'latest.mailbox', 'latest.totals',
+  // Only Uline PROs. The WHOLE lanes map, never a per-lane path: a key like 'G1/DA' carries a
+  // slash and is not a valid Firestore field path. A field missing from this list is not an
+  // error — it is silently absent from every read, which is why the guard test exists.
+  'latest.ulinePros', 'latest.lanes', 'latest.offLane', 'latest.duplicatePros',
   'reportCount', 'sawOrderCountFall',
 ];
 
+/** The recency term has to outlast the cadence. At one read a week a `newer_than:2d` override
+ *  would find nothing, for ever, while every run reported ok — so a window shorter than
+ *  MIN_QUERY_DAYS is refused and the default stands, loudly. */
+export const MIN_QUERY_DAYS = 14;
 export function forecastQuery(env: Record<string, string | undefined> = process.env): string {
+  return forecastQueryChecked(env).query;
+}
+export function forecastQueryChecked(env: Record<string, string | undefined> = process.env): { query: string; warning: string | null } {
   const q = String(env.ULINE_FORECAST_QUERY || '').trim();
-  return q || FORECAST_QUERY_DEFAULT;
+  if (!q) return { query: FORECAST_QUERY_DEFAULT, warning: null };
+  const m = /\bnewer_than:(\d+)([dmy])\b/.exec(q);
+  if (m) {
+    const days = Number(m[1]) * (m[2] === 'd' ? 1 : m[2] === 'm' ? 30 : 365);
+    if (days < MIN_QUERY_DAYS) {
+      return { query: FORECAST_QUERY_DEFAULT, warning: `ULINE_FORECAST_QUERY asks for ${m[0]}, shorter than the ${MIN_QUERY_DAYS}-day floor for a weekly read — ignored, using the default search` };
+    }
+  }
+  return { query: q, warning: null };
 }
 export function capacityFromEnv(env: Record<string, string | undefined> = process.env): number | null {
   const n = Number(env.ULINE_FORECAST_CAPACITY);
@@ -68,10 +87,10 @@ export function routeDayFromEnv(env: Record<string, string | undefined> = proces
   const n = Number(env.ULINE_ROUTE_DAY_ORDERS);
   return Number.isFinite(n) && n > 0 ? n : null;
 }
-/** Days Davis does not run a route, beyond the federal holidays Uline also closes on: Chad's
- *  list, ISO dates separated by commas or spaces. Anything that is not a date is ignored. */
+/** ONE-OFF closures beyond Davis's fixed calendar (davis-calendar.js): a building day, a storm.
+ *  The parser is shared with the nightly manifest check so the two can never disagree. */
 export function davisClosedFromEnv(env: Record<string, string | undefined> = process.env): string[] {
-  return String(env.ULINE_DAVIS_CLOSED || '').split(/[,\s]+/).map((s) => s.trim()).filter((s) => /^\d{4}-\d{2}-\d{2}$/.test(s));
+  return parseClosedList(env.ULINE_DAVIS_CLOSED);
 }
 
 /** The forecast mailbox source: the SAME grant the manifest ingest uses, a different search.

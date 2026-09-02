@@ -34,6 +34,8 @@
 
 // Saturday and Sunday. Matches the delivery days the scan plan runs on (scan-plan.mts uses
 // weekdays 1-5), so the two never disagree about what a working day is.
+import { davisClosedDay } from './davis-calendar.js';
+
 const WEEKEND = new Set([0, 6]);
 // A calendar day, spelled out. Compared as STRINGS — ISO days sort chronologically, and
 // parsing them into Dates is how this file's own comments warn a day gets lost to a timezone.
@@ -105,8 +107,24 @@ export function expectedDeliveryDate(shipIso) {
  *              must be scanned: requiring them would make every check inconclusive, since the
  *              day after tomorrow is never routed yet.
  */
-export function manifestWindow(shipIso, slack = 2) {
-  const expected = expectedDeliveryDate(shipIso);
+/**
+ * THE DAY IT ACTUALLY DELIVERS: the shipping rule above, then rolled past any day Davis does
+ * not run (davis-calendar.js — Chad's list).
+ *
+ * expectedDeliveryDate stays the STRUCTURAL rule and is used as such elsewhere (the forecast
+ * card compares the two to say "rolled past Thanksgiving"). This is the operational answer,
+ * and the manifest check needs it: ship Wed 11/25 and the structural rule says deliver
+ * Thanksgiving Day, so the check waited for a board nobody will ever build and graded every one
+ * of that night's orders "not routed yet" — permanently, on the heaviest week of the year.
+ */
+export function davisDeliveryDate(shipIso, extra = null) {
+  let d = expectedDeliveryDate(shipIso);
+  for (let guard = 0; d && davisClosedDay(d, extra) && guard < 8; guard++) d = nextDeliveryDay(d);
+  return d;
+}
+
+export function manifestWindow(shipIso, slack = 2, extra = null) {
+  const expected = davisDeliveryDate(shipIso, extra);
   if (!expected) return { expected: null, required: [], dates: [] };
   return { expected, required: [expected], dates: deliveryWindow(expected, slack) };
 }

@@ -47,6 +47,9 @@ export interface DroppedRow {
   row: number;
   /** The ship date, when it could be read — so a caller can say WHICH day has no number. */
   date: string | null;
+  /** Whose row it was, so the lane layer can ignore a drop that was never ours. */
+  warehouse?: string | null;
+  via?: string | null;
   reason: 'bad_date' | 'bad_number' | 'negative' | 'duplicate';
   detail: string;
 }
@@ -193,21 +196,24 @@ export function readUlineForecast(buf: Buffer | Uint8Array): ForecastRead {
     const isBlank = r.every((c) => c == null || String(c).trim() === '');
     if (isBlank) continue;
     const line = i + 1; // 1-based, as a spreadsheet shows it
+    // THE LANE IS READ FIRST, so a dropped row can say WHOSE it was. Without it the lane layer
+    // cannot tell an unreadable Georgia number from an unreadable one on somebody else's
+    // warehouse, and paints a day we can read perfectly as a hole in our own forecast.
+    const warehouse = cols.warehouse != null ? (String(r[cols.warehouse] ?? '').trim() || null) : null;
+    const via = cols.via != null ? (String(r[cols.via] ?? '').trim() || null) : null;
     const date = forecastDateToIso(r[cols.date!]);
     if (!date) {
       const detail = `row ${line}: unreadable date "${String(r[cols.date!] ?? '')}"`;
-      warnings.push(detail); dropped.push({ row: line, date: null, reason: 'bad_date', detail }); continue;
+      warnings.push(detail); dropped.push({ row: line, date: null, warehouse, via, reason: 'bad_date', detail }); continue;
     }
-    const warehouse = cols.warehouse != null ? (String(r[cols.warehouse] ?? '').trim() || null) : null;
-    const via = cols.via != null ? (String(r[cols.via] ?? '').trim() || null) : null;
     const estimate = num(r[cols.estimate!]);
     if (estimate == null) {
       const detail = `row ${line} (${date}): unreadable estimate "${String(r[cols.estimate!] ?? '')}"`;
-      warnings.push(detail); dropped.push({ row: line, date, reason: 'bad_number', detail }); continue;
+      warnings.push(detail); dropped.push({ row: line, date, warehouse, via, reason: 'bad_number', detail }); continue;
     }
     if (estimate < 0) {
       const detail = `row ${line} (${date}): negative estimate ${estimate}`;
-      warnings.push(detail); dropped.push({ row: line, date, reason: 'negative', detail }); continue;
+      warnings.push(detail); dropped.push({ row: line, date, warehouse, via, reason: 'negative', detail }); continue;
     }
     const upperEst = cols.upperEst != null ? num(r[cols.upperEst]) : null;
     if (upperEst != null && upperEst < estimate) warnings.push(`row ${line} (${date}): high range ${upperEst} is below the estimate ${estimate}`);
@@ -217,7 +223,7 @@ export function readUlineForecast(buf: Buffer | Uint8Array): ForecastRead {
     const laneKey = `${date}|${warehouse ?? ''}|${via ?? ''}`;
     if (seen.has(laneKey)) {
       const detail = `row ${line}: ${date}${warehouse || via ? ` (${[warehouse, via].filter(Boolean).join('/')})` : ''} appears twice (first at row ${seen.get(laneKey)}) — first kept`;
-      warnings.push(detail); dropped.push({ row: line, date, reason: 'duplicate', detail }); continue;
+      warnings.push(detail); dropped.push({ row: line, date, warehouse, via, reason: 'duplicate', detail }); continue;
     }
     seen.set(laneKey, line);
     rows.push({

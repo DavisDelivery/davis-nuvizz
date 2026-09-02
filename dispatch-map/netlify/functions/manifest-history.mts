@@ -211,6 +211,13 @@ export default async (req: Request): Promise<Response> => {
         sawOrderCountFall: !!doc.sawOrderCountFall,
         at: l.at,
         orders: l.orders,
+        // ONLY ULINE PROS: the measured count and its warehouse split, so the history card can
+        // show what a night consists of rather than asserting it. Null on nights filed before
+        // v0.85.0 — the card prints the row count for those and says which it is.
+        ulinePros: l.ulinePros ?? null,
+        lanes: l.lanes ?? null,
+        offLane: l.offLane ?? null,
+        duplicatePros: l.duplicatePros ?? null,
         onBoard: l.onBoard,
         missingCount: l.missingCount,
         // THE COUNT'S STANDING TRAVELS WITH THE COUNT. Without this the row printed
