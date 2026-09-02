@@ -1,15 +1,23 @@
 // lib/load-columns.mts — WHAT DOES THE LOAD LIST ACTUALLY RETURN? (pure half)
 //
-// The hourly load roster (POST /entity/filterdata/PkgRoute, the portal's "Loads" grid) has
-// returned ZERO loads on every day on file, and nobody could say why, because the only thing
-// the repo keeps from that response is the normalised rows — and when normalisation finds
-// nothing, nothing is what gets written. This module summarises the RAW response so one look
-// answers the two questions that were open on 2026-09-02:
+// This module summarises the RAW load-list response (POST /entity/filterdata/PkgRoute, the
+// portal's "Loads" grid) so one look answers a question the normalised rows cannot: which
+// COLUMNS the grid carries. It was written on 2026-09-02 to settle whether the list exposes a
+// per-load vehicle type — the truthiest "is this a tractor" source, dead since the fleet index
+// stopped in April.
 //
-//   • does the list carry a per-load vehicle type (the truthiest "is this a tractor" source,
-//     dead since the fleet index stopped in April)?
-//   • why does normalizeLoads see no rows — no KeyColumn, an empty values array, a shape the
-//     column patterns miss?
+// WHAT THE ONE CALL SAID (2026-09-02, stored at nuvizz_ops/load_columns__2026-09-02): 21
+// columns, 106 rows, 106 normalised, and NO vehicle-type column. The per-load type lives only
+// on /load/info/{loadNbr} (loadHeader.vehicleType) and beside the load number on /stop/info
+// (Stop.load.vehicleType). What the grid DOES carry is rteNbr, labelled "Load Number"
+// ("DAVIS000203100") — the exact key /load/info wants — plus name, driver, status and stop
+// count, cached hourly in nuvizz_load_roster at zero extra calls.
+//
+// A CORRECTION, recorded where the mistake was made. The first version of this comment said
+// the hourly roster "has returned ZERO loads on every day on file". It had not. The roster doc
+// stores its rows as a JSON string under `loadsJson` with a `count` beside it (106 that day);
+// the ad-hoc reader that produced the zero looked for a `loads` array. A number is not a fact
+// until the thing that produced it has been checked too — that one had not been.
 //
 // PURE: takes the parsed JSON, returns a summary safe to store and read back. No network.
 import { normalizeLoads } from './nuvizz-loads.mts';

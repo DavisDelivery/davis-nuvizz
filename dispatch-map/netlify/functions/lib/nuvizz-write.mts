@@ -110,9 +110,14 @@ export async function resolveLoadNbrById(requester: RequesterLike, loadId: strin
   } catch { return null; }
 }
 
-/** Resolve a load's HUMAN loadNbr from a stop CURRENTLY ON it, via getStop → Stop.load.loadNbr
- * (assignedLoadNbr). This is the RELIABLE bridge on the live tenant: the loads-roster saved search
- * carries no load-number column, and load/static/info(routeId) returns HTTP 501 — so a stop's own
+/** NOTE (2026-09-02): the Loads grid (PkgRoute filterdata) DOES carry the load number — column
+ * rteNbr, labelled "Load Number" — and normalizeLoads reads it (roster rows carry loadNbr). The
+ * "no load-number column" this file used to describe is no longer true of the live tenant; the
+ * bridges below remain valid but are no longer the only way to a number.
+ *
+ * Resolve a load's HUMAN loadNbr from a stop CURRENTLY ON it, via getStop → Stop.load.loadNbr
+ * (assignedLoadNbr). This is the RELIABLE bridge on the live tenant: load/static/info(routeId)
+ * returns HTTP 501 — so a stop's own
  * load membership is the only place a Draft/grid load's real number (DAVIS000000123) is exposed.
  * Verified live. Null if the stop isn't on a load. */
 export async function resolveLoadNbrByStopNbr(requester: RequesterLike, stopNbr: string, creds: WriteCreds): Promise<string | null> {
@@ -125,7 +130,7 @@ export async function resolveLoadNbrByStopNbr(requester: RequesterLike, stopNbr:
 
 /**
  * resolveLoadNbrBySeeding — the LAST-RESORT loadNbr bridge for an EMPTY Draft load we only know
- * by its internal loadId (the live tenant's loads roster has no load-number column, static/info
+ * by its internal loadId (static/info
  * is HTTP 501, and an empty load has no stops to read the number from — the exact state that
  * refused every "build a load from unplanned orders" Save with "needs a load number").
  *
@@ -313,7 +318,7 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
     let loadNbrX = (loadNbr != null && String(loadNbr).trim() !== '' && !isHashLikeId(String(loadNbr))) ? String(loadNbr) : null;
     if (!loadNbrX) {
       // PREFER reading a stop CURRENTLY on the load (getStop → assignedLoadNbr) — the RELIABLE source
-      // on the live tenant, where the loads-roster saved search has no load-number column and
+      // on the live tenant, where
       // load/static/info(routeId) is HTTP 501. A reorder/unplan/empty always carries stop NUMBERS the
       // caller says are on the load (ordered ∪ removed), so probe the first of those. [verified live]
       const probeNbr = (orderedNbrs && orderedNbrs[0])
