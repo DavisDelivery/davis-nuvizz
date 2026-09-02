@@ -44,6 +44,14 @@ export { flattenForConsumers };
 // something they needed to know. Critical-only halves the volume and roughly quadruples the
 // hit rate.
 //
+// AND THE CUT FALLS WHERE THE CLOCK WAS A GUESS. Of the fourteen that survive, TWELVE were
+// anchored — the arrival was measured from a real truck stamp. Of the eight that stop, FIVE
+// were unanchored: projected from an assumed depot departure against a +/-90-minute error
+// band, which is also why they could not reach critical (critical needs lateBy > 2*errorMin,
+// so an unanchored row must be projected THREE HOURS late). The median warning barely moves,
+// 600 minutes against 540. So this is not simply a quieter inbox: it is the same inbox with
+// the guesses taken out of it.
+//
 // THE COST, NAMED, because it is not zero: SIENNA CORPORATION on 2026-08-26 carried hours a
 // dispatcher had TYPED, was projected 25 minutes past its close with eight hours of warning,
 // emailed as red — and missed. Under this policy that stop sends nothing. One real miss in
