@@ -1098,9 +1098,13 @@ test('a stop with NO hours on file is now judged against a 5pm close', () => {
   assert.equal(rows[0].tier, 'amber', 'an assumption never leaves the panel');
 });
 
-test('an assumed close can NEVER reach red — red is what texts', () => {
-  // flag-alert.mts ships ALERT_TIERS = {critical, red}. A deadline nobody recorded must not
-  // be able to wake somebody at 5:01pm, however far past it the estimate runs.
+test('an assumed close can NEVER reach red — red is what reaches a person', () => {
+  // A deadline nobody recorded must not be able to wake somebody at 5:01pm, however far past
+  // it the estimate runs. Red is what texts the router overnight (flag-sms.mts keeps its own
+  // bar); the customer-service email floor moved to CRITICAL alone on 2026-09-02
+  // (flag-alert.mts ALERT_MIN_TIER — Chad: "We are only emailing on critical"), which makes
+  // this cap matter more rather than less: it is what keeps a guess off the urgent tiers at
+  // all, and the alert path refuses 'assumed' by provenance on top of it.
   for (const lateBy of [1, 30, 200, 600]) {
     assert.equal(severityTier({ lateBy, errorMin: 15, hoursTier: 'assumed' }), 'amber', `${lateBy}m`);
   }
