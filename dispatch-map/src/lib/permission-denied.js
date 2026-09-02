@@ -92,6 +92,11 @@ export const SURFACE_LABELS = {
   bottom_panel_profiles: 'your saved grid layouts',
   truck_profiles: 'the truck profiles',
   dispatch_presence: 'who else is working the board',
+  // The WRITE half of presence needs its own words. Under the banner's write sentence
+  // ("this account is not allowed to edit …") the read label above would come out as "not
+  // allowed to edit who else is working the board", which is the wrong fact: what failed is
+  // this device publishing ITSELF, and the cost is that the other dispatchers cannot see it.
+  'dispatch_presence:heartbeat': 'your own presence — the other dispatchers cannot see that you have the board open',
   'nuvizz_ops/manifest_check_latest': "the overnight manifest check's result",
   'customer_notes:location_override': 'a moved pin (the corrected delivery location)',
   'customer_notes:auto_scan': 'the auto-scanner writing hours and restrictions',

@@ -9,7 +9,9 @@
 //
 // So every gated background job here must leave the refusal somewhere a person can read:
 // the job doc its own client polls, or the ledger that job family already keeps, and always
-// the shared nuvizz_ops/background_refusals row.
+// a row in the shared nuvizz_ops/background_refusals/rows collection — which
+// nuvizz-scan-config?explain=1 now serves back, because a ledger nothing reads is a ledger
+// that only exists for whoever opens the Firebase console.
 //
 // These tests run the REAL handlers against an in-memory Firestore and a fetch that THROWS on
 // anything that is not Firestore — so "no vendor call was made" is proven, not asserted.
@@ -33,7 +35,8 @@ import { installFirestoreFake } from './_firestore-fake.mjs';
 import { issueSessionToken } from '../netlify/functions/lib/auth-core.mts';
 import { _resetUserCacheForTests, _resetThrottleForTests } from '../netlify/functions/lib/require-user.mts';
 import {
-  requireUserForBackground, refusalMessage, appendBackgroundRefusal, BACKGROUND_REFUSALS_PATH,
+  requireUserForBackground, refusalMessage, appendBackgroundRefusal, readBackgroundRefusals,
+  pruneBackgroundRefusals, refusalRowId, BACKGROUND_REFUSALS_ROWS,
 } from '../netlify/functions/lib/background-gate.mts';
 import manualScan from '../netlify/functions/nuvizz-manual-scan-background.mts';
 import routingBuild from '../netlify/functions/routing-build-background.mts';
@@ -56,7 +59,14 @@ async function enforcing(seed, fn) {
 }
 
 const bearer = (u) => ({ authorization: `Bearer ${issueSessionToken(u).token}` });
-const refusals = (fake) => (fake.store.get(BACKGROUND_REFUSALS_PATH)?.refusals) || [];
+// The ledger is ONE DOCUMENT PER ROW (see BACKGROUND_REFUSALS_ROWS) — never an array on a
+// shared doc, which was a read-modify-write and therefore a lost update whenever two refusals
+// landed together. Read it out of the fake the way Firestore would: every doc under the rows
+// collection, oldest first.
+const refusals = (fake) => [...fake.store.entries()]
+  .filter(([k]) => k.startsWith(`${BACKGROUND_REFUSALS_ROWS}/`))
+  .map(([, v]) => v)
+  .sort((a, b) => String(a.at).localeCompare(String(b.at)));
 
 // ── the words ────────────────────────────────────────────────────────────────
 
@@ -121,7 +131,7 @@ test('a job doc write that FAILS does not swallow the refusal — the shared led
   });
 });
 
-test('the shared ledger is BOUNDED and per-caller throttled — a refusal must not become a cheaper way to spend money', async () => {
+test('the shared ledger is per-caller throttled — a refusal must not become a cheaper way to spend money', async () => {
   await enforcing({}, async (fake) => {
     _resetThrottleForTests();
     // 12 attempts from one IP; the throttle admits 10 per minute.
@@ -132,6 +142,46 @@ test('the shared ledger is BOUNDED and per-caller throttled — a refusal must n
     // A different caller is not punished for the first one's flood.
     await appendBackgroundRefusal({ job: 'other', reason: 'no-token', message: 'x', at: new Date().toISOString() }, '9.9.9.9');
     assert.equal(refusals(fake).length, 11);
+  });
+});
+
+test('CONCURRENT refusals do not lose each other — the ledger is one doc per row, never a read-modify-write', async () => {
+  // THE BUG THIS PINS. The array version read the ledger doc, pushed its row, and wrote the
+  // whole array back. Two refusals landing at once both read the same array and the second
+  // write erased the first — in the one place whose entire purpose is that a refusal is never
+  // nowhere. manifest-push-log.mts hit exactly this in production (v0.50.57) and fixed it the
+  // same way: one document per row, so separate paths can never race.
+  await enforcing({}, async (fake) => {
+    _resetThrottleForTests();
+    const at = new Date().toISOString();   // same millisecond on purpose — the worst case
+    await Promise.all(Array.from({ length: 8 }, (_, i) =>
+      appendBackgroundRefusal({ job: `concurrent-${i}`, reason: 'no-token', message: 'x', at }, `10.0.0.${i}`)));
+    assert.equal(refusals(fake).length, 8, 'all eight survived; the array version kept one');
+    assert.equal(new Set(refusals(fake).map((r) => r.job)).size, 8, 'and they are eight DIFFERENT jobs, not one written eight times');
+    // No read of the ledger happened at all — that is what makes the write atomic.
+    assert.equal(fake.log.gets.filter((p) => p.startsWith('nuvizz_ops/background_refusals')).length, 0);
+  });
+});
+
+test('refusalRowId sorts by time and cannot collide inside one millisecond', () => {
+  const early = refusalRowId('2026-09-02T09:00:00.000Z', () => 0);
+  const late = refusalRowId('2026-09-02T09:00:01.000Z', () => 0);
+  assert.ok(early < late, 'a plain id sort has to be a time sort — the prune deletes the oldest by id');
+  assert.notEqual(refusalRowId('2026-09-02T09:00:00.000Z', () => 0.1), refusalRowId('2026-09-02T09:00:00.000Z', () => 0.9));
+  assert.doesNotMatch(early, /[:.]/, 'colons and dots do not belong in a Firestore path segment');
+});
+
+test('the ledger READS BACK — 16 of 18 gates record only here, and nothing used to look', async () => {
+  // A write-only ledger is a record that exists solely for whoever thinks to open the Firebase
+  // console, which is not somewhere Chad or a dispatcher has ever been.
+  await enforcing({}, async () => {
+    _resetThrottleForTests();
+    await appendBackgroundRefusal({ job: 'older', reason: 'no-token', message: 'x', at: '2026-09-02T08:00:00.000Z' }, '1.1.1.1');
+    await appendBackgroundRefusal({ job: 'newer', reason: 'role', message: 'y', at: '2026-09-02T09:00:00.000Z' }, '1.1.1.2');
+    const rows = await readBackgroundRefusals();
+    assert.deepEqual(rows.map((r) => r.job), ['newer', 'older'], 'newest first — "what just happened" is the question being asked');
+    assert.equal(rows[0].reason, 'role');
+    assert.ok(!('_id' in rows[0]), 'the Firestore doc id is plumbing, not part of the record');
   });
 });
 
@@ -206,5 +256,73 @@ test('a DISPATCHER drop is not refused — the gate does not cost a legitimate u
     // It stops at the (deliberately unset) API key, INSIDE the reader — past the gate.
     assert.match(fake.store.get(jobDocPath(job)).error, /ANTHROPIC_API_KEY/);
     assert.equal(refusals(fake).length, 0);
+  });
+});
+
+test('an ANONYMOUS manifest drop creates NO job doc — the refusal path is not a document factory', async () => {
+  // THE HOLE THIS CLOSES. `jobId` is chosen by the caller, so writing the refusal with a plain
+  // setDoc minted one nuvizz_ops/manifest_ocr__* document per refused POST — unbounded, from
+  // exactly the requests the gate exists to turn away. routing-build-background never had this
+  // hole because its client creates routing_jobs/{id} first, so its refusal only ever writes to
+  // a document that is already there.
+  const job = 'c1b2c3d4-e5f6-7890-abcd-ef1234567890';
+  await enforcing({}, async (fake) => {
+    const r = await manifestOcr(new Request('https://x.test/.netlify/functions/manifest-ocr-background', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jobId: job, pdfBase64: 'JVBERiAxLjQ=' }),
+    }));
+    assert.equal(r.status, 401);
+    assert.equal(fake.store.get(jobDocPath(job)), undefined, 'nothing was created at the caller-chosen path');
+    // The refusal is still recorded — in the throttled, bounded, shared ledger, which is where
+    // a refusal with nobody polling for it belongs.
+    assert.equal(refusals(fake)[0].job, 'manifest-ocr-background');
+  });
+});
+
+test('a job doc that ALREADY exists is still written — a retry must not lose its error', async () => {
+  const job = 'd1b2c3d4-e5f6-7890-abcd-ef1234567890';
+  await enforcing({ [jobDocPath('d1b2c3d4-e5f6-7890-abcd-ef1234567890')]: { status: 'reading', created_at: 'x' } }, async (fake) => {
+    const r = await manifestOcr(new Request('https://x.test/.netlify/functions/manifest-ocr-background', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jobId: job, pdfBase64: 'JVBERiAxLjQ=' }),
+    }));
+    assert.equal(r.status, 401);
+    const doc = fake.store.get(jobDocPath(job));
+    assert.equal(doc.status, 'error', 'the doc it was already polling goes terminal, so the client stops');
+    assert.match(doc.error, /not signed in/);
+  });
+});
+
+test('the ledger stays BOUNDED — the prune drops the OLDEST rows and keeps the newest 100', async () => {
+  // One doc per row removed the lost update, but it also removed the array's `.slice(-100)`.
+  // A ledger that grows for ever is a different bug, not a fixed one: an anonymous POST loop is
+  // the only thing that can still write here once the gate is enforcing.
+  const seed = {};
+  for (let i = 0; i < 105; i++) {
+    const at = new Date(Date.UTC(2026, 8, 2, 0, i)).toISOString();
+    seed[`${BACKGROUND_REFUSALS_ROWS}/${refusalRowId(at, () => i / 105)}`] = { job: `j${i}`, reason: 'no-token', message: 'x', at };
+  }
+  await enforcing(seed, async (fake) => {
+    const dropped = await pruneBackgroundRefusals();
+    assert.equal(dropped, 5);
+    const left = refusals(fake);
+    assert.equal(left.length, 100);
+    assert.equal(left[0].job, 'j5', 'the five OLDEST went; the newest 100 are what anybody asks about');
+    assert.equal(left[99].job, 'j104');
+  });
+});
+
+test('one refusal pays for at most ONE prune per instance per ten minutes', async () => {
+  // The prune runs inline in a refusal, on the path of a request somebody may be waiting on.
+  // Listing the collection on every hit would make the ledger the expensive part of refusing.
+  await enforcing({}, async (fake) => {
+    _resetThrottleForTests();
+    for (let i = 0; i < 5; i++) {
+      await appendBackgroundRefusal({ job: `j${i}`, reason: 'no-token', message: 'x', at: new Date().toISOString() }, `7.7.7.${i}`);
+    }
+    assert.equal(refusals(fake).length, 5, 'every refusal was still recorded');
+    assert.equal(fake.log.lists.filter((p) => p === BACKGROUND_REFUSALS_ROWS).length, 1, 'and only the first one paid for a list');
   });
 });

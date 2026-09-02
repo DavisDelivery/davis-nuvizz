@@ -19,6 +19,7 @@
 import { MANIFEST_SYSTEM, MANIFEST_PROMPT, extractManifestJson, normalizeManifestRows } from './lib/manifest-extract.mts';
 import { isFirestoreEnabled, setDoc, getDoc, deleteDoc } from './lib/firestore.mts';
 import { requireUserForBackground } from './lib/background-gate.mts';
+import { clientIp, throttled } from './lib/require-user.mts';
 
 const MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -40,6 +41,45 @@ const MAX_B64_CHARS = 250_000;
 export const MAX_PDF_CHUNKS = 32;
 export const MAX_CHUNK_B64_CHARS = 900_000;
 const MAX_TOTAL_B64_CHARS = MAX_PDF_CHUNKS * MAX_CHUNK_B64_CHARS;
+
+/**
+ * Write a refusal onto the job doc the dispatcher's poll is watching — WITHOUT letting the
+ * refusal path become an unbounded document factory.
+ *
+ * THE PROBLEM. `jobId` comes from the caller, so `setDoc(jobDocPath(jobId), …)` on refusal
+ * means one new nuvizz_ops/manifest_ocr__* document per refused POST, unbounded, created by
+ * exactly the requests this gate exists to turn away. routing-build-background does not have
+ * this hole because its client creates routing_jobs/{id} first, so its refusal only ever
+ * writes to a document that already exists.
+ *
+ * THE RULE HERE, and why it is not simply "must already exist". This job doc is created by
+ * THIS handler, further down, so at gate time it normally does not exist yet — a strict
+ * already-exists rule would write nothing at all and hand the dispatcher back the six-minute
+ * spin-then-timeout that the whole observable-refusal pattern was built to stop. So:
+ *
+ *   • the document already exists  → always write (a retry, a chunked upload; nothing new is
+ *     created, so there is nothing to bound);
+ *   • reason === 'role'            → create it. A role refusal means the token VERIFIED and
+ *     the user document is live: this is a NAMED, revocable account, not an anonymous caller.
+ *     It is also the case that actually matters — a viewer drops a manifest, their poll of
+ *     manifest-ocr-result succeeds, and this string is what App.jsx renders verbatim;
+ *   • any other reason (no-token, bad-token, inactive, revoked, store-error) → write NOTHING.
+ *     Nobody is polling: a caller with no valid session is on the login screen, not watching a
+ *     job id. The refusal still lands in the shared ledger via lib/background-gate.mts, which
+ *     is throttled, bounded, and read back by nuvizz-scan-config?explain=1.
+ *
+ * THE THROTTLE IS FIRST, BEFORE THE READ, and that ordering matters: the getDoc that decides
+ * whether the document exists is itself a billed Firestore read, so leaving it outside the
+ * limit would let a refused flood buy reads instead of documents — the same class of mistake,
+ * one layer down. Five a minute per caller is generous for the real act, which is a person
+ * dropping one PDF.
+ */
+async function recordOcrRefusal(req: Request, doc: string, refusal: { reason: string; message: string; at: string }): Promise<void> {
+  if (throttled(`ocr-refusal:${clientIp(req)}`, 5, 60_000)) return;
+  const exists = await getDoc(doc).catch(() => null);
+  if (!exists && refusal.reason !== 'role') return;
+  await setDoc(doc, { status: 'error', error: refusal.message, created_at: refusal.at });
+}
 
 export const jobDocPath = (jobId: string) => `nuvizz_ops/manifest_ocr__${jobId}`;
 export const pdfChunkDocPath = (jobId: string, seq: number) => `nuvizz_ops/manifest_pdf__${jobId}__${seq}`;
@@ -73,9 +113,14 @@ export default async (req: Request): Promise<Response> => {
   //
   // Deliberately after the jobId validation and before the chunk reassembly: a refusal must
   // never write to an attacker-chosen document path, and must never pay for the reads.
+  //
+  // AND THE REFUSAL WRITE ITSELF IS BOUNDED — see recordOcrRefusal below. A plain setDoc here
+  // was an unbounded document factory: `jobId` is chosen by the caller, so once AUTH_REQUIRED
+  // is on, an anonymous POST loop mints one nuvizz_ops/manifest_ocr__* document per request,
+  // for ever, from an endpoint whose whole job is to refuse them.
   const gate = await requireUserForBackground(req, 'manifest-ocr-background', {
     role: 'dispatcher',
-    record: async (refusal) => { await setDoc(doc, { status: 'error', error: refusal.message, created_at: refusal.at }); },
+    record: (refusal) => recordOcrRefusal(req, doc, refusal),
   });
   if (!gate.ok) return gate.response;
 

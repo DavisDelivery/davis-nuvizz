@@ -65,7 +65,8 @@ export default async (req: Request): Promise<Response> => {
   // GATED AT admin. A sweep replays the whole captured window and writes engine_experiments —
   // the numbers a tuning decision gets made on. Netlify already answered 202 and discarded
   // our status (lib/background-gate.mts), so the refusal lands in
-  // nuvizz_ops/background_refusals. It is DELIBERATELY not written onto the experiment doc:
+  // nuvizz_ops/background_refusals/rows, which nuvizz-scan-config?explain=1 serves back. It is
+  // DELIBERATELY not written onto the experiment doc:
   // that doc is the resume cursor for a scored run, and stamping a refusal into it would
   // destroy hours of scoring to report a permission error.
   const gate = await requireUserForBackground(req, 'routing-engine-experiment-background', { role: 'admin' });

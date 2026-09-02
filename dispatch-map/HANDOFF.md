@@ -858,7 +858,12 @@ footer/chip per the standing rule.
   background writer, cron `0 6 * * *` (06:00 UTC ≈ 01:00–02:00 ET, after ET
   midnight). Background (not plain scheduled) for the 15-min budget, same reason
   as `nuvizz-refresh-stops-background`. Manual backfill: `?date=YYYY-MM-DD` or
-  `?from=...&to=...` (≤31 days).
+  `?from=...&to=...` (≤31 days). Those params are the **override** branch and are
+  gated at admin once `AUTH_REQUIRED=true` is set (`lib/background-gate.mts`) —
+  send `Authorization: Bearer <admin session>`; the cron path sends no query
+  string and is unaffected. Being a `*-background` function it answers **202 even
+  when refused**, so check `nuvizz-scan-config?explain=1` →
+  `backgroundRefusals` rather than trusting the 202.
 - `lib/history-core.mts` — shared capture core (mirrors `refresh-stops-core`):
   parse target date(s), `scanDate()`, derive, write, verify-by-readback, manifest
   last. Target for a scheduled run = the just-closed **America/New_York** day

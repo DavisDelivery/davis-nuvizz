@@ -1252,6 +1252,59 @@ export async function recordScanRun(row: ScanRunRow): Promise<void> {
   } catch { /* best-effort: the ledger must never affect a scan */ }
 }
 
+// ── The last refused scan, where the BOARD's own poll can see it ─────────────
+//
+// THE FAILURE THIS EXISTS TO PREVENT. A dispatcher presses "Scan now" at 5am on a signed-out
+// board. nuvizz-manual-scan-background is a *-background* function, so Netlify has already
+// answered 202 and thrown the handler's 401 away: `resp.ok` is TRUE in the client, both of its
+// fallbacks are skipped, and the button reports "Scan running — the board will refresh
+// automatically" while nothing runs at all.
+//
+// The refusal IS recorded — as a scan_runs row with outcome:'refused' — but that ledger is a
+// 400-row document, and re-reading it on every board poll (the busiest endpoint in the app)
+// to find one row would cost more bytes per poll than the lean stop projection above saves.
+// So the manual-scan refusal ALSO lands here: one tiny document holding only the most recent
+// one, which nuvizz-pull-today-stops can read on the poll the client is already making.
+//
+// It is deliberately NOT written into the board's own meta doc and deliberately NOT written
+// as markScanState({halted}) — that renders as "Scanning paused (kill switch) — board may be
+// stale" on EVERY viewer's board, which would hand one refused caller a way to red-banner the
+// whole dispatch floor. And it never touches lastScannedAt: claiming a scan that never ran is
+// the exact lie this whole pattern exists to stop telling.
+const SCAN_REFUSAL_PATH = `${OPS_COLLECTION}/scan_refusal`;
+
+export interface ScanRefusalRow {
+  /** ISO8601 — when the scan was refused */
+  at: string;
+  /** requireUser's own code: no-token | bad-token | inactive | revoked | role | store-error */
+  reason: string;
+  /** the sentence to put in front of the dispatcher, verbatim */
+  message: string;
+  /** the function that refused, e.g. 'nuvizz-manual-scan-background' */
+  job: string;
+  /** the scan trigger the refused run was filed under, e.g. 'manual' */
+  trigger?: string;
+}
+
+/** Best-effort: a ledger write must never be able to break the thing it is recording. */
+export async function recordScanRefusal(row: ScanRefusalRow): Promise<void> {
+  if (!isFirestoreEnabled() || !row?.at) return;
+  try { await setDoc(SCAN_REFUSAL_PATH, { ...row, updated_at: new Date().toISOString() } as any); } catch { /* best-effort */ }
+}
+
+export async function readScanRefusal(): Promise<ScanRefusalRow | null> {
+  if (!isFirestoreEnabled()) return null;
+  const doc = await getDoc(SCAN_REFUSAL_PATH).catch(() => null);
+  if (!doc || typeof doc.at !== 'string' || !doc.at) return null;
+  return {
+    at: String(doc.at),
+    reason: String(doc.reason || ''),
+    message: String(doc.message || ''),
+    job: String(doc.job || ''),
+    ...(doc.trigger ? { trigger: String(doc.trigger) } : {}),
+  };
+}
+
 // ── Phase 6: terminal-stop skip cache ────────────────────────────────────────
 // A stop at status 90/91 is DELIVERED and immutable, so once the unplanned descent
 // has confirmed a stop number terminal there is no reason to spend a /stop/info call

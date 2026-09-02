@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   resetLinkParams, friendlyServerError, passwordProblem, PASSWORD_MIN, PASSWORD_MAX,
-  signIn, changePassword, requestPasswordReset,
+  signIn, changePassword, requestPasswordReset, fetchMe,
 } from '../src/lib/auth-client.js';
 import { passwordProblem as serverPasswordProblem, PASSWORD_MIN as SERVER_MIN } from '../netlify/functions/lib/auth-core.mts';
 import { getSession, clearSession, setSession } from '../src/lib/session.js';
@@ -201,4 +201,65 @@ test('a reset request never confirms whether the account exists', async () => {
     assert.deepEqual(a, b, 'a real and a fake identifier are indistinguishable');
     assert.match(a.message, /if that account exists/i);
   } finally { f.restore(); }
+});
+
+// ── WHAT THE SERVER IS ENFORCING, CARRIED OFF BOTH ANSWERS ───────────────────
+
+test('THE ENFORCEMENT SWITCH IS READ OFF THE 401 TOO — THAT IS THE CASE THAT MATTERS', async () => {
+  // THE TRAP. AUTH_REQUIRED is a RUNTIME switch on the functions; VITE_LOGIN_ENABLED is a
+  // BUILD-time flag in the bundle. Set the first without the second and every gated function
+  // answers 401 while the app still renders the board — a screen that looks normal and holds
+  // nothing, with no login offered because the login screen is not in this build.
+  //
+  // The client in that state has NO session, so auth-me can only ever answer 401 — which is
+  // exactly why auth-me puts authRequired and configured on its 401 body. Returning a bare
+  // { ok:false } there threw away the one signal that catches this.
+  clearSession();
+  const stub = stubFetch(() => ({ status: 401, body: { ok: false, error: 'sign in required', authRequired: true, configured: true } }));
+  try {
+    const me = await fetchMe();
+    assert.equal(me.ok, false);
+    assert.equal(me.authRequired, true, 'the 401 body still tells us the server is enforcing');
+    assert.equal(me.configured, true);
+  } finally { stub.restore(); }
+});
+
+test('AN OUTAGE IS NOT A CONFIGURATION PROBLEM — absent is not false', async () => {
+  // A 502 from the platform carries no JSON at all. Reading that as "sign-in is not
+  // configured" would put a wrong and frightening sentence on the login screen during an
+  // outage, at the exact moment somebody is trying to work out whether it is them.
+  clearSession();
+  const stub = stubFetch(() => ({ status: 502, body: {} }));
+  try {
+    const me = await fetchMe();
+    assert.equal(me.ok, false);
+    assert.equal(me.authRequired, false, 'nothing said means nothing claimed');
+    assert.equal(me.configured, null, 'and "not configured" is only ever an explicit false');
+  } finally { stub.restore(); }
+});
+
+test('a server that is NOT enforcing says so, and the app stays exactly as it is', async () => {
+  // Production today: AUTH_REQUIRED unset. The board must render, unchanged, and nothing this
+  // preflight learns may put a screen in front of it.
+  clearSession();
+  const stub = stubFetch(() => ({ status: 401, body: { ok: false, error: 'sign-in not configured (AUTH_SESSION_SECRET)', authRequired: false, configured: false } }));
+  try {
+    const me = await fetchMe();
+    assert.equal(me.authRequired, false, 'no enforcement ⇒ no screen in front of the board');
+    assert.equal(me.configured, false, 'and we still learn nobody could sign in if a login were up');
+  } finally { stub.restore(); }
+});
+
+test('a signed-in answer carries the same two facts', async () => {
+  clearSession();
+  // A made-up username on purpose: a real route/owner name in lower case is an env-var VALUE
+  // the Netlify secrets scan matches, and it breaks the deploy while CI stays green.
+  setSession({ token: 'tok', expiresAt: null, user: { username: 'jrivera', role: 'admin' } });
+  const stub = stubFetch(() => ({ status: 200, body: { ok: true, user: { username: 'jrivera', role: 'admin' }, authRequired: true, configured: true } }));
+  try {
+    const me = await fetchMe();
+    assert.equal(me.ok, true);
+    assert.equal(me.authRequired, true);
+    assert.equal(me.configured, true);
+  } finally { stub.restore(); clearSession(); }
 });

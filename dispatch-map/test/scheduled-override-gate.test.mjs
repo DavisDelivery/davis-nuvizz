@@ -13,6 +13,11 @@
 // directions, because a gate that breaks the 5-minute board scan gets ripped out by lunchtime
 // and then nothing is guarded at all.
 //
+// THE THIRD DIRECTION, added after the gate shipped strict and broke a runbook: it must be
+// INERT today and SHUT after AUTH_REQUIRED=true. Every writer below is exercised on both sides
+// of that switch, because "refuses everybody, including Chad, and answers 202 while doing it"
+// passed the old two-direction test perfectly.
+//
 // Firestore is deliberately OFF here: every core answers "FIREBASE_SA not set" without
 // touching the network, so an un-refused call is visible as that answer rather than as a
 // vendor call. Global fetch throws, so any network attempt fails the test loudly.
@@ -73,17 +78,42 @@ test('overrideParams: the cron\'s empty query string is the ungated path, and a 
   assert.deepEqual(overrideParams('not a url', ['date']), [], 'a malformed URL is never an override');
 });
 
-test('the override gate is STRICT — it refuses with AUTH_REQUIRED off, because the spend is open until it does', async () => {
+// ── inert until the switch, then shut ────────────────────────────────────────
+
+test('the override gate SHIPS INERT — a documented curl runbook must not silently stop working today', async () => {
+  // THE BUG THIS PINS. This gate used to be { strict: true }: enforced even with AUTH_REQUIRED
+  // off. The argument was one-sided cost (a refused override runs nothing; a wrongly-allowed one
+  // spends ~3,000 metered calls). What it missed is that AUTH_SESSION_SECRET IS NOT SET ON THE
+  // PRODUCTION SITE — so strict did not mean "admins only", it meant requireUser answered EVERY
+  // caller 401 "sign-in not configured", Chad included, with no token that could ever pass. And
+  // because all seven are *-background functions, Netlify answers 202 and throws that 401 away.
+  //
+  // Chad follows docs/ATTEMPTS.md, POSTs nuvizz-att-plan-snapshot-background?date=2026-08-27 to
+  // re-freeze a day whose attempts blamed the wrong driver, gets 202, and nothing happens. He
+  // then runs the evening scan against a snapshot that was never written and gets a second wrong
+  // answer, with no error anywhere he would look. A runbook that silently does nothing is worse
+  // than an open endpoint, which is the lesson the whole background-gate file exists to record.
   delete process.env.AUTH_REQUIRED;
   _resetThrottleForTests();
   const none = await gateScheduledOverride(post('f'), 'f', ['date']);
   assert.equal(none, null, 'the cron path never even consults the gate');
-  const refused = await gateScheduledOverride(post('f', '?date=2026-09-01'), 'f', ['date']);
-  assert.ok(refused, 'and the hand-driven path is refused even though every other gate here is inert');
-  assert.equal(refused.status, 401);
+  const inert = await gateScheduledOverride(post('f', '?date=2026-09-01'), 'f', ['date']);
+  assert.equal(inert, null, 'and with the switch off the hand-driven path runs, like every other gate here');
 });
 
-// ── all seven, both directions ───────────────────────────────────────────────
+test('the override gate SHUTS when AUTH_REQUIRED flips — and it wants admin, not just any session', async () => {
+  process.env.AUTH_REQUIRED = 'true';
+  _resetThrottleForTests();
+  try {
+    const none = await gateScheduledOverride(post('f'), 'f', ['date']);
+    assert.equal(none, null, 'the cron still sends no query string, so the cron still never consults the gate');
+    const refused = await gateScheduledOverride(post('f', '?date=2026-09-01'), 'f', ['date']);
+    assert.ok(refused, 'the ~3,000-call cold scan is not reachable from a URL anybody can type');
+    assert.equal(refused.status, 401);
+  } finally { delete process.env.AUTH_REQUIRED; }
+});
+
+// ── all seven, both directions, both sides of the switch ─────────────────────
 
 for (const [name, handler, declared, expected] of WRITERS) {
   test(`${name}: the cron path (no query string) runs exactly as before`, async () => {
@@ -95,16 +125,33 @@ for (const [name, handler, declared, expected] of WRITERS) {
     });
   });
 
-  test(`${name}: every hand-driven override it honours is refused, and nothing runs`, async () => {
+  test(`${name}: today (switch off) every documented override still works`, async () => {
+    // The runbooks in docs/ATTEMPTS.md, RESEARCH-m5.md and HANDOFF.md are curl commands Chad
+    // actually runs. Until AUTH_REQUIRED is set they must behave exactly as they always have.
     assert.deepEqual([...declared], expected, 'the gated list must match the params the handler actually reads');
-    await withNoNetwork(async (calls) => {
+    delete process.env.AUTH_REQUIRED;
+    await withNoNetwork(async () => {
       for (const p of expected) {
         _resetThrottleForTests();
         const r = await handler(post(name, `?${p}=2026-09-01`));
-        assert.equal(r.status, 401, `?${p}= must not be reachable without an admin session`);
-        assert.equal(calls(), 0, `?${p}= must cost no vendor call — a refused ~3,000-call scan is the whole point`);
+        assert.notEqual(r.status, 401, `?${p}= must not be refused while every other gate here is inert`);
+        assert.notEqual(r.status, 403, `?${p}= must not be refused while every other gate here is inert`);
       }
     });
+  });
+
+  test(`${name}: once AUTH_REQUIRED is on, every hand-driven override is refused and nothing runs`, async () => {
+    process.env.AUTH_REQUIRED = 'true';
+    try {
+      await withNoNetwork(async (calls) => {
+        for (const p of expected) {
+          _resetThrottleForTests();
+          const r = await handler(post(name, `?${p}=2026-09-01`));
+          assert.equal(r.status, 401, `?${p}= must not be reachable without an admin session`);
+          assert.equal(calls(), 0, `?${p}= must cost no vendor call — a refused ~3,000-call scan is the whole point`);
+        }
+      });
+    } finally { delete process.env.AUTH_REQUIRED; }
   });
 }
 

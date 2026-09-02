@@ -242,11 +242,45 @@ export async function signOut() {
   clearSession();
 }
 
-/** Who does the SERVER think this is? Used on boot to catch a revoked or demoted session. */
+/**
+ * Who does the SERVER think this is, AND WHAT IS THE SERVER ENFORCING?
+ *
+ * Two jobs, and the second one is the one that was being thrown away. Used on boot to catch
+ * a revoked or demoted session — and to read back the two SITE-LEVEL facts this build cannot
+ * know about itself:
+ *
+ *   authRequired — AUTH_REQUIRED is set, so every gated function refuses a caller with no
+ *                  token. If THIS build has no login (VITE_LOGIN_ENABLED unset, a BUILD-time
+ *                  flag), that combination is a board that renders and answers nothing, with
+ *                  no login offered and no way for the person in front of it to work out why.
+ *                  Consuming this is the difference between a dead board and a sentence.
+ *   configured   — AUTH_SESSION_SECRET is set, so a sign-in can actually succeed. Without it
+ *                  auth-login answers 401 'sign-in not configured' and a login screen is a
+ *                  password box nobody can pass.
+ *
+ * BOTH ARE CARRIED OFF THE 401 TOO, and that is the whole point: auth-me deliberately puts
+ * them on its unauthenticated refusal (nothing about any account is disclosed) precisely so a
+ * client with no session — the case that matters here — can still learn them. Returning only
+ * { ok:false } on that path threw away the one signal that catches the trap.
+ */
 export async function fetchMe() {
   const r = await authCall('auth-me', { method: 'GET', auth: true });
-  if (!r.ok) return { ok: false, error: r.error, status: r.status };
-  return { ok: true, user: r.user, authRequired: r.authRequired === true };
+  if (!r.ok) {
+    return {
+      ok: false,
+      error: r.error,
+      status: r.status,
+      authRequired: r.raw?.authRequired === true,
+      // ABSENT IS NOT FALSE, and it is not true either. A 502 from the platform, or no
+      // connection at all, carries no body — and reading that as "sign-in is not configured"
+      // would put a wrong and frightening sentence on the login screen during an outage, at
+      // the moment somebody is trying to work out whether the problem is them. So the field
+      // is three-valued: the server's boolean when it sent one, null when it did not, and the
+      // caller acts only on an explicit false.
+      configured: typeof r.raw?.configured === 'boolean' ? r.raw.configured : null,
+    };
+  }
+  return { ok: true, user: r.user, authRequired: r.authRequired === true, configured: r.configured !== false };
 }
 
 // ── the password policy, mirrored ────────────────────────────────────────────

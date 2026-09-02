@@ -15,14 +15,18 @@
 // Validation/clamping is the SAME pure helper the scanner uses (scan-schedule.mts),
 // so the UI can never persist a value the scanner would reject.
 
-import { isFirestoreEnabled, readScanConfig, writeScanConfig, getDoc, readScanKindStamps, readScanRuns, readCallStats, readCircuit, etDayString } from './lib/firestore.mts';
+import { isFirestoreEnabled, readScanConfig, writeScanConfig, getDoc, readScanKindStamps, readScanRuns, readCallStats, readCircuit, readScanRefusal, etDayString } from './lib/firestore.mts';
 import { requireUser } from './lib/require-user.mts';
+import { readBackgroundRefusals } from './lib/background-gate.mts';
 import { clampScanConfig, effectiveScanConfig, scanConfigDefaults, SCAN_CONFIG_BOUNDS, scanDecision } from './lib/scan-schedule.mts';
 import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip, scanPath } from './lib/scan-plan.mts';
 import { attributeSpend } from './lib/scan-attribution.mts';
 import { breakerMode, reportedDailyCeiling } from './lib/nuvizz-request.mts';
 
 const TENANT = process.env.NUVIZZ_TENANT || 'davis';
+// Matches the `runs` list below, which shows the last 40 for the same reason: enough to cover
+// the morning somebody is asking about, short enough to read.
+const REFUSAL_ROWS_SHOWN = 40;
 
 /**
  * WHY DIDN'T IT SCAN? — the dry run, answered without scanning.
@@ -40,6 +44,12 @@ const TENANT = process.env.NUVIZZ_TENANT || 'davis';
  * and no finishedAt is called out by name — that is the shape of the failure where the pulls
  * land, the per-kind clocks advance, and the ~700-stop board write never finishes, so the
  * schedule reads healthy while the board quietly stops moving.
+ *
+ * It also answers the OTHER version of the same question — "did somebody get refused?" — by
+ * serving nuvizz_ops/background_refusals/rows (`backgroundRefusals`) and the most recent
+ * refused "Scan now" (`lastScanRefusal`). A refused background job is invisible by
+ * construction: the platform has already answered its caller 202 and thrown the 401 away, so
+ * without this the only evidence lives in a Firestore document nothing reads.
  */
 async function explain(): Promise<any> {
   const now = new Date();
@@ -49,12 +59,22 @@ async function explain(): Promise<any> {
   const rulesStored = clampScanRules((cfg as any)?.rules);
   const rules = rulesStored.length ? rulesStored : defaultScanRules();
 
-  const [meta, kindStamps, runs, stats, circuit] = await Promise.all([
+  const [meta, kindStamps, runs, stats, circuit, bgRefusals, scanRefusal] = await Promise.all([
     getDoc(`nuvizz_stop_index/${TENANT}__${today}`).catch(() => null) as Promise<any>,
     readScanKindStamps().catch(() => ({})),
     readScanRuns().catch(() => []),
     readCallStats(today).catch(() => ({ count: 0, byHour: {}, byTrigger: {}, byApp: {} } as any)),
     readCircuit().catch(() => ({ open: false } as any)),
+    // WHAT HAS BEEN REFUSED — the half of lib/background-gate.mts that was write-only.
+    // Sixteen of the eighteen gates route their ONLY durable record into
+    // nuvizz_ops/background_refusals/rows, and until this line nothing in the repo read it
+    // back: the record existed solely for whoever thought to open the Firebase console, which
+    // is not somewhere Chad or a dispatcher has ever been. This endpoint is already the ops
+    // dry run ("why didn't it scan?"), so "what did it refuse, and to whom" belongs beside it.
+    // No limit: the ledger is already bounded at 100 rows and listDocs has fetched all of them
+    // either way, so capping HERE would only make `count` below a lie about how many there are.
+    readBackgroundRefusals().catch(() => [] as any[]),
+    readScanRefusal().catch(() => null),
   ]);
 
   const lastLoadScanAt = meta?.lastLoadScanAt ?? meta?.last_scanned_at ?? null;
@@ -124,6 +144,27 @@ async function explain(): Promise<any> {
     rulesSource: rulesStored.length ? 'stored' : 'shipped-default',
     runs: (runs || []).slice(-40).reverse(),
     unfinishedRuns: unfinished,
+    // A job that was REFUSED did not run, and a scheduler that reports "nothing was due" for a
+    // job somebody hand-fired is answering a different question than the one being asked. Both
+    // shapes are here: every background refusal (newest first, with the age so "this morning"
+    // is legible), and the one refused "Scan now" the board's own poll surfaces as
+    // `lastScanRefusal` — repeated here so the two screens cannot disagree about it.
+    backgroundRefusals: {
+      // How many the ledger HOLDS, not how many are printed below — a count that silently means
+      // "up to the display cap" is the kind of number somebody reasons from and gets wrong.
+      count: bgRefusals.length,
+      showing: Math.min(bgRefusals.length, REFUSAL_ROWS_SHOWN),
+      // Empty is the healthy state and says so, rather than reading as a broken query.
+      note: bgRefusals.length
+        ? 'Background jobs refused a caller. Netlify answers a *-background function 202 and discards the 401, so this ledger is the record — the caller was told nothing.'
+        : 'No background job has refused a caller. (With AUTH_REQUIRED off every gate here is inert, so an empty ledger is the expected state.)',
+      // The stored row carries the caller's IP for a real investigation; this GET is NOT gated
+      // (only the POST is), so it must not be the thing that publishes visitor IPs to anyone
+      // who guesses the query string. Drop it here — the full row is in Firestore for the day
+      // somebody genuinely needs it.
+      rows: bgRefusals.slice(0, REFUSAL_ROWS_SHOWN).map(({ ip, ...r }: any) => ({ ...r, ageMin: ageMin(r?.at) })),
+    },
+    lastScanRefusal: scanRefusal ? { ...scanRefusal, ageMin: ageMin(scanRefusal.at) } : null,
   };
 }
 

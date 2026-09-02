@@ -55,7 +55,8 @@ export default async (req: Request): Promise<Response> => {
   // Netlify already answered 202 and discarded our status (lib/background-gate.mts), and this
   // client does not poll at all — it prints "Re-score started. Give it ~12 minutes" and tells
   // the operator to refresh the Assignment view. So a refusal here is INVISIBLE ON THE SCREEN
-  // by construction, and the honest record is nuvizz_ops/background_refusals plus the log.
+  // by construction, and the honest record is nuvizz_ops/background_refusals/rows (served back
+  // by nuvizz-scan-config?explain=1) plus the log.
   // The refusal is not written to the replay cursor doc on purpose: that doc is where a
   // half-finished pass remembers its place, and clobbering it would silently restart the
   // window from the oldest day — the exact treadmill the cursor was added to end.

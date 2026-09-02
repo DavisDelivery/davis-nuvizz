@@ -48,7 +48,8 @@ export default async (req: Request): Promise<Response> => {
   // GATED AT admin. A replay rescores every captured day into route_proposals — the Engine
   // tab's trend — and holds an instance for twelve minutes per pass. Netlify already answered
   // 202 and discarded our status (lib/background-gate.mts); this is fired by hand and has no
-  // doc a screen polls, so the refusal lands in nuvizz_ops/background_refusals.
+  // doc a screen polls, so the refusal lands in nuvizz_ops/background_refusals/rows, which
+  // nuvizz-scan-config?explain=1 serves back.
   const gate = await requireUserForBackground(req, 'routing-engine-replay-background', { role: 'admin' });
   if (!gate.ok) return gate.response;
   const t0 = Date.now();

@@ -145,8 +145,9 @@ export default async (req: Request): Promise<Response> => {
   // engine replay, every customer rollup and every miss-ledger score is derived from — so a
   // stranger must not be able to reseal or repaint a day. Netlify already answered 202 and
   // discarded our status (lib/background-gate.mts); a heal is fired by hand with curl and has
-  // no doc a screen polls, so the refusal lands in nuvizz_ops/background_refusals and the
-  // function log. Nothing else is written: a refusal must not leave a capture-failure record
+  // no doc a screen polls, so the refusal lands in nuvizz_ops/background_refusals/rows — read
+  // back by nuvizz-scan-config?explain=1, not only by whoever opens the Firebase console — and
+  // the function log. Nothing else is written: a refusal must not leave a capture-failure record
   // behind, because that would read as "the heal ran and broke", which is a different fault.
   const gate = await requireUserForBackground(req, 'history-manifest-heal-background', { role: 'admin' });
   if (!gate.ok) return gate.response;

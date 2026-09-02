@@ -32,9 +32,15 @@ export default async (req: Request): Promise<Response> => {
     // 'Authorization' added because WITHOUT IT THE GATE BELOW IS UNREACHABLE FROM OFF-SITE.
     // The non-GET gate has shipped since the auth work started, but the preflight only ever
     // allowed Content-Type — so a cross-origin DELETE carrying a bearer token was refused by
-    // the BROWSER before it left, and the moment AUTH_REQUIRED flips that becomes "delete does
-    // nothing and the console says CORS", which is the hardest kind of failure to diagnose
-    // from a screenshot.
+    // the BROWSER before it left, and that would have been "delete does nothing and the console
+    // says CORS", the hardest kind of failure to diagnose from a screenshot.
+    //
+    // NECESSARY, NOT SUFFICIENT — do not read this line as "the scorecard's delete is fixed".
+    // It opens the door; nothing walks through it yet. The scorecard's own delete
+    // (docs/scorecard-attempts/AttemptsCard.jsx:92) is a bare `fetch(url, {method:'DELETE'})`
+    // with no header, and that site holds no dispatch-map session it could put in one. So the
+    // DELETE still 401s the day AUTH_REQUIRED flips. See the block below for the decision that
+    // has to be made first, and when.
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
     'Content-Type': 'application/json',
@@ -44,18 +50,33 @@ export default async (req: Request): Promise<Response> => {
 
   // Deleting a row is a dispatcher's act; reading the day is not gated.
   //
-  // THE GET STAYS OPEN, ON PURPOSE, AND IT IS THE ONE ENDPOINT HERE WITH AN OUTSIDE CONSUMER.
+  // THE GET STAYS OPEN, ON PURPOSE, AND THIS IS THE ONE ENDPOINT HERE WITH AN OUTSIDE CONSUMER.
   // davis-driver-scorecard.netlify.app reads this day feed cross-origin (its client lives in
   // this repo at docs/scorecard-attempts/AttemptsCard.jsx), and that site holds no dispatch-map
   // session — there is no account for it to sign in as. So gating the GET would not tighten a
-  // door, it would break the driver scorecard on the day AUTH_REQUIRED flips.
+  // door, it would break the driver scorecard.
   //
-  // THAT IS A DECISION SOMEBODY STILL HAS TO MAKE, not a settled state: either the scorecard
-  // gets its own service credential (a machine account with a viewer role, or a shared key
-  // checked here), or this feed is accepted as public and the response is trimmed to what a
-  // public feed may say. Today it names customers, addresses and drivers. Whichever way it
-  // goes, it has to be chosen BEFORE the switch, because after it the failure is silent on the
-  // other site.
+  // ── OPEN DECISION — OWNER: CHAD. DUE BEFORE AUTH_REQUIRED=true IS SET. ──────────────
+  //
+  // This is not a settled state and it is not open-ended: it has a deadline, and the deadline
+  // is the switch itself, because the day it flips BOTH of these break on the other site with
+  // no error anybody over there will see:
+  //   • the DELETE (AttemptsCard.jsx:92) sends no credential at all → 401, and the row a
+  //     dispatcher removed on the scorecard silently stays;
+  //   • the GET keeps working only for as long as it stays ungated — and it is the one feed
+  //     here that names customers, addresses and drivers to the open internet.
+  //
+  // The two ways to close it, either of which settles both halves:
+  //   (a) GIVE THE SCORECARD A CREDENTIAL — a machine account with the dispatcher role, or a
+  //       shared key checked here — and change AttemptsCard.jsx to send it. Keeps the feed
+  //       private and keeps delete working.
+  //   (b) ACCEPT THE FEED AS PUBLIC, and then trim the response to what a public feed may
+  //       say (drop customer name, address and driver identity) and move the delete into the
+  //       dispatch app, where there IS a session.
+  //
+  // Do NOT flip AUTH_REQUIRED before one of those has been done. Put it on the flip checklist,
+  // not on a list of things to look at afterwards: after the flip the failure is silent, on a
+  // site nobody in this repo is watching.
   if (req.method !== 'GET') {
     const gate = await requireUser(req, { role: 'dispatcher' });
     if (!gate.ok) return gate.response;

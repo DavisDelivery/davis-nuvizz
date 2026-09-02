@@ -59,7 +59,7 @@ export function gateState({ enabled, ready, user, mustChangePassword, resetLink 
 }
 
 /**
- * PURE. IS A LOGIN IN CHARGE, AND DID THE RETIRED FLAG TURN IT ON.
+ * PURE. IS A LOGIN IN CHARGE, AND WHICH FLAG SAYS SO.
  *
  * THERE IS ONLY ONE LOGIN NOW. The v0.76.0 FIREBASE email/password gate (VITE_AUTH_ENABLED,
  * lib/auth.js) is RETIRED by v0.84: a Firebase ID token in the Authorization header parses
@@ -69,20 +69,36 @@ export function gateState({ enabled, ready, user, mustChangePassword, resetLink 
  * is the server username/password one (VITE_LOGIN_ENABLED, lib/auth-client.js) because it
  * is the one the Netlify Functions actually verify.
  *
- * EITHER FLAG TURNS THAT ONE LOGIN ON. Whoever sets the old flag WANTS a login; handing
- * them a broken one because they used the older name is the worst of the three options
- * available, and quietly rendering the board instead would be a security control somebody
- * believes they switched on and did not. The caller says which flag did it, out loud —
- * a switch whose position cannot be read is not a switch.
+ * ONLY VITE_LOGIN_ENABLED PUTS UP THE GATE, AND THIS IS THE CORRECTION THAT MATTERS.
+ * The retired flag used to turn the NEW login on as well, on the reasoning that whoever set
+ * it "wanted a login". Walk that through on a real morning: VITE_AUTH_ENABLED was written
+ * for a FIREBASE account list. The username/password accounts live in Firestore `app_users`
+ * and are created one at a time by auth-bootstrap → auth-admin. Setting the old flag on a
+ * site where those accounts have not been created yet does not hand anybody a login — it
+ * hands the whole dispatch floor a password box NOBODY ON EARTH HAS A PASSWORD FOR, at
+ * 6am, in front of a 700-stop board, with no way past it and a redeploy (it is a BUILD-time
+ * flag) as the only cure. That is the lockout this repo keeps writing rules to avoid, and
+ * firestore.rules already states the asymmetry in Chad's own terms: "being open one day
+ * longer costs an exposure that has already existed for months; being closed one hour early
+ * costs a refused delivery nobody can explain."
+ *
+ * So the legacy flag alone renders THE APP — unchanged, exactly as yesterday — and the
+ * caller says so out loud, on screen and in the console. A flag whose position cannot be
+ * read is not a switch; a flag that silently locks the board is worse than either.
  *
  * Returns { mode, legacyFlagOnly, bothFlags } rather than a bare string so the caller can
  * report the situation without re-deriving it from the flags it just handed in.
+ *   mode 'server'   — the app_users login gates the app (VITE_LOGIN_ENABLED is set).
+ *   mode 'off'      — no gate. The board renders as it always has.
+ *   legacyFlagOnly  — ONLY the retired flag is set: mode is 'off', and the caller owes the
+ *                     screen a visible warning that the login it asked for is not on.
+ *   bothFlags       — both set: the server login wins and the old flag is noise to remove.
  */
 export function resolveGateMode({ serverLogin, firebaseLogin } = {}) {
   const server = !!serverLogin;
   const legacy = !!firebaseLogin;
   return {
-    mode: server || legacy ? 'server' : 'off',
+    mode: server ? 'server' : 'off',
     legacyFlagOnly: legacy && !server,
     bothFlags: server && legacy,
   };
@@ -123,6 +139,31 @@ export function isStaff(user) {
 const RANK = { viewer: 0, dispatcher: 1, admin: 2 };
 export function roleAtLeast(user, need) {
   return (RANK[roleOf(user)] ?? 0) >= (RANK[String(need || 'viewer').toLowerCase()] ?? 0);
+}
+
+/**
+ * PURE. WHY A CONTROL IS GREYED OUT, IN A SENTENCE — or null when it is not.
+ *
+ * roleAtLeast/isStaff/roleOf above were exported the day the role system landed and NOTHING
+ * on any screen called them. Walked as a viewer, every dispatcher action failed in one of
+ * three different presentations (an amber role bar, a red permission banner, or silence) and
+ * not one of them said anything in ADVANCE. This is the sentence that does.
+ *
+ * It names the role NEEDED, the role HELD and the person who can change it, because "the
+ * button did nothing" is the complaint this whole stream exists to end, and because a 403 is
+ * NOT fixed by signing out and back in — telling somebody to try again sends them round a
+ * login loop learning nothing each time.
+ *
+ * `gated` IS THE LOCKOUT GUARD AND IT COMES FIRST. With no login up — production today —
+ * the server's own gate hands every caller LEGACY_PRINCIPAL (role admin), exactly the power
+ * every caller has now. Answering anything but "allowed" there would grey out the whole
+ * dispatch board on a site that has no accounts at all, which is the precise failure this
+ * repo keeps writing rules to avoid.
+ */
+export function roleGateReason(user, need = 'dispatcher', { gated = true } = {}) {
+  if (!gated) return null;
+  if (roleAtLeast(user, need)) return null;
+  return `Requires the ${need} role — this account is a ${roleOf(user)}. Ask Chad to raise it.`;
 }
 
 /**

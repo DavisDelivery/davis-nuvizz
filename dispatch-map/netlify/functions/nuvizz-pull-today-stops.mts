@@ -17,11 +17,14 @@
 //                     come from the already-scanned per-day indexes — no extra
 //                     NuVizz traffic — and are flagged carryover:true. Capped at 14.
 //   live=1            DEBUG: bypass the index and scan NuVizz live (may exceed
-//                     the 26s cap for the unplanned scan — not for normal use)
+//                     the 26s cap for the unplanned scan — not for normal use).
+//                     ADMIN-gated (the board read itself is viewer) and additionally
+//                     behind NUVIZZ_LIVE_READ_ENABLED=on: it is a ~3,000-call cold
+//                     number probe, not a read.
 
 import fixture from '../../test/fixtures/nuvizz-today-stops.json' with { type: 'json' };
 import { scanDate, normalizeStop } from './lib/nuvizz-scan.mts';
-import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString, readScanMetrics, readScanConfig, readActiveUnplannedSet, readCarryoverRetired } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString, readScanMetrics, readScanConfig, readActiveUnplannedSet, readCarryoverRetired, readScanRefusal } from './lib/firestore.mts';
 import { summarizeScanMetrics } from './lib/scan-metrics.mts';
 import { filterFinishedPriorDay } from './lib/nuvizz-list.mts';
 import { breakerMode, reportedDailyCeiling } from './lib/nuvizz-request.mts';
@@ -58,6 +61,11 @@ const LEAN_STOP_FIELDS = [
   'stopType', 'terms', 'timeConstraint', 'volume', 'warehouse', 'weight',
   'zip', 'raw.stopExecutionInfo', 'raw.load', 'raw.stop.from',
 ];
+
+// How old a refused "Scan now" may be and still be worth putting in front of the dispatcher.
+// Longer than the gap between pressing the button and looking back at the board; shorter than
+// a shift, so last night's refusal never lands on this morning's screen.
+const REFUSAL_MAX_AGE_MIN = 360;
 
 function addDaysUTC(dateStr: string, n: number): string {
   const d = new Date(dateStr + 'T00:00:00Z');
@@ -202,13 +210,31 @@ export default async (req: Request): Promise<Response> => {
 
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
 
-  // Gate at viewer: this IS the board — every stop on a day with its customer, address and
-  // status, plus the day's NuVizz spend and the ?live=1 probe path. It is also the busiest
-  // endpoint in the app (the map polls it), so the 30-second user-doc cache in
-  // lib/require-user.mts is what keeps a gated board from becoming a Firestore read per poll.
-  // Inert until AUTH_REQUIRED=true.
-  const gate = await requireUser(req, { role: 'viewer' });
+  // TWO DOORS, NOT ONE — split the way nuvizz-board-reconcile splits its preview from its run.
+  //
+  // The board read is gated at viewer: this IS the board — every stop on a day with its
+  // customer, address and status, plus the day's NuVizz spend. It is also the busiest endpoint
+  // in the app (the map polls it), so the 30-second user-doc cache in lib/require-user.mts is
+  // what keeps a gated board from becoming a Firestore read per poll.
+  //
+  // ?live=1 is gated at ADMIN, because it is a different act wearing the same URL: a cold full
+  // number-probe of the NuVizz number space, ~3,000 metered calls, the exact spend CLAUDE.md's
+  // hard rule forbids without Chad saying so per request. A viewer is the read-only role — the
+  // one role that must never be able to spend the vendor budget — so gating the probe at the
+  // same level as the board read was simply the wrong door. NUVIZZ_LIVE_READ_ENABLED below
+  // stays the real brake; this is the second lock, not a replacement for it.
+  //
+  // Both inert until AUTH_REQUIRED=true.
+  const gate = live
+    ? await requireUser(req, { role: 'admin' })
+    : await requireUser(req, { role: 'viewer' });
   if (!gate.ok) return gate.response;
+
+  // Kicked off HERE, not where it is used, so it overlaps the stop read instead of adding a
+  // round trip to it. This is the endpoint whose payload was halved to save 5-6s on a cold
+  // load; a serial Firestore hop for one tiny document would be giving part of that back.
+  // `.catch` is attached at creation, so a failure can never surface as an unhandled rejection.
+  const refusalPromise = isFirestoreEnabled() ? readScanRefusal().catch(() => null) : Promise.resolve(null);
 
   try {
     let stops: any[];
@@ -271,6 +297,38 @@ export default async (req: Request): Promise<Response> => {
 
     const unplannedCount = stops.filter((s) => s.isUnplanned).length;
 
+    // THE SCAN THAT WAS REFUSED, SO THE BUTTON CAN STOP SAYING IT RAN.
+    //
+    // "Scan now" fires nuvizz-manual-scan-background, which is a *-background* function:
+    // Netlify answers 202 the instant the request lands and discards the handler's 401, so
+    // resp.ok is TRUE, both client fallbacks are skipped, and the dispatcher is told "Scan
+    // running — the board will refresh automatically" while nothing runs. This is the channel
+    // that contradicts it — the refusal the gate wrote (nuvizz_ops/scan_refusal), served on the
+    // very poll the client is already making, so no extra request and no extra round trip.
+    //
+    // AGE-CAPPED at six hours. A refusal from a previous shift is history and belongs in
+    // nuvizz-scan-config?explain=1, not on this morning's board. `at` is served alongside so
+    // the client can do the strict thing and only speak up when the refusal is NEWER than the
+    // moment it pressed the button — a poll must never blame this press for the last one.
+    //
+    // Kept OUT of the ops block below: ops is a Promise.all of four reads, and one of those
+    // failing must not be able to swallow the sentence that tells a dispatcher their scan did
+    // not happen. A missing or unreadable refusal reads as "none", never as an error.
+    let lastScanRefusal: any = null;
+    const refusal = await refusalPromise;
+    const refusedMs = refusal?.at ? Date.parse(refusal.at) : NaN;
+    const refusalAgeMin = Number.isFinite(refusedMs) ? Math.round((Date.now() - refusedMs) / 60000) : null;
+    if (refusal && refusalAgeMin != null && refusalAgeMin >= 0 && refusalAgeMin <= REFUSAL_MAX_AGE_MIN) {
+      lastScanRefusal = {
+        at: refusal.at,
+        ageMin: refusalAgeMin,
+        reason: refusal.reason,
+        message: refusal.message,
+        job: refusal.job,
+        trigger: refusal.trigger ?? null,
+      };
+    }
+
     // Fix 5 — surface today's NuVizz call volume. Keyed by the ET (local) day the
     // calls happen, so "calls today" follows a normal midnight-to-midnight ET day
     // (matches the writer in nuvizz-request). Best-effort: never fail the fast
@@ -320,6 +378,7 @@ export default async (req: Request): Promise<Response> => {
       lastUnplannedScanAt,
       lastCompletedScanAt,
       scanState,
+      lastScanRefusal,
       count: stops.length,
       unplannedCount,
       carryoverCount,

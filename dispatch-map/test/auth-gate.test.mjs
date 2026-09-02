@@ -9,7 +9,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  gateState, roleOf, isStaff, roleAtLeast, resolveGateMode,
+  gateState, roleOf, isStaff, roleAtLeast, resolveGateMode, roleGateReason,
   emailAllowed, friendlyAuthError, DEFAULT_ROLE, ROLES,
 } from '../src/lib/auth-gate.js';
 import { ROLES as SERVER_ROLES, normalizeRole } from '../netlify/functions/lib/auth-core.mts';
@@ -106,17 +106,29 @@ test('roleAtLeast ranks the same way the server does', () => {
 test('THERE IS ONE LOGIN, AND IT IS THE ONE THE SERVER VERIFIES', () => {
   // Running two is not redundancy, it is a locked-out morning: a Firebase ID token in the
   // Authorization header parses as our session-token shape and then fails the HMAC compare,
-  // so requireUser() answers 401 even with AUTH_REQUIRED unset. Whichever flag is set, the
-  // login that appears is the server one — including when only the RETIRED flag is set,
-  // because whoever set it wanted a login and a broken one is worse than either the right
-  // one or none.
+  // so requireUser() answers 401 even with AUTH_REQUIRED unset. When a login IS in charge it
+  // is always the server one; the retired flag never selects the Firebase one.
   assert.equal(resolveGateMode({ serverLogin: true, firebaseLogin: true }).mode, 'server');
   assert.equal(resolveGateMode({ serverLogin: true, firebaseLogin: false }).mode, 'server');
-  assert.equal(resolveGateMode({ serverLogin: false, firebaseLogin: true }).mode, 'server',
-    'the retired flag must never produce a login screen that signs into nothing');
   assert.equal(resolveGateMode({ serverLogin: false, firebaseLogin: false }).mode, 'off');
   assert.equal(resolveGateMode({}).mode, 'off');
   assert.equal(resolveGateMode().mode, 'off', 'and no argument at all is no login');
+});
+
+test('THE RETIRED FLAG ALONE MUST NOT PUT UP A PASSWORD BOX NOBODY CAN PASS', () => {
+  // THE LOCKOUT THIS EXISTS TO PREVENT, in freight terms. VITE_AUTH_ENABLED was written for
+  // a FIREBASE account list. The username/password accounts live in Firestore `app_users`
+  // and are created one at a time (auth-bootstrap → auth-admin). Setting the old flag on a
+  // site where those accounts do not exist yet does not give anybody a login — it gives the
+  // whole dispatch floor a password box with no valid password, at 6am, in front of a
+  // 700-stop board, and it is a BUILD-time flag so the only cure is a redeploy.
+  //
+  // firestore.rules states the asymmetry this repo settles such calls by: "being open one
+  // day longer costs an exposure that has already existed for months; being closed one hour
+  // early costs a refused delivery nobody can explain." So: the app, with a warning.
+  const legacy = resolveGateMode({ serverLogin: false, firebaseLogin: true });
+  assert.equal(legacy.mode, 'off', 'the retired flag alone renders the APP, not a login screen');
+  assert.equal(legacy.legacyFlagOnly, true, 'and it is flagged so the screen can say so out loud');
 });
 
 test('and the app can SAY which flag turned it on', () => {
@@ -124,12 +136,57 @@ test('and the app can SAY which flag turned it on', () => {
   // reason the resolver returns an object: the caller reports the situation instead of
   // re-deriving it from the flags it just handed in.
   assert.deepEqual(resolveGateMode({ serverLogin: false, firebaseLogin: true }),
-    { mode: 'server', legacyFlagOnly: true, bothFlags: false });
+    { mode: 'off', legacyFlagOnly: true, bothFlags: false });
   assert.deepEqual(resolveGateMode({ serverLogin: true, firebaseLogin: true }),
     { mode: 'server', legacyFlagOnly: false, bothFlags: true });
   assert.deepEqual(resolveGateMode({ serverLogin: true, firebaseLogin: false }),
     { mode: 'server', legacyFlagOnly: false, bothFlags: false });
   assert.deepEqual(resolveGateMode({}), { mode: 'off', legacyFlagOnly: false, bothFlags: false });
+});
+
+// ── SAYING IT BEFORE THE PRESS ───────────────────────────────────────────────
+
+test('WITH NO LOGIN UP, NOTHING IS EVER GREYED OUT — that is the lockout guard', () => {
+  // Production today has no gate. The server's own requireUser() hands every caller
+  // LEGACY_PRINCIPAL (role admin), exactly the power every caller has now — so a screen that
+  // greyed controls out here would disable the whole dispatch board on a site that has no
+  // accounts at all. This is the FIRST thing the rule checks, and it is checked with the
+  // worst inputs on purpose.
+  for (const user of [null, undefined, {}, { role: 'viewer' }, { role: '' }, { role: 'nonsense' }]) {
+    assert.equal(roleGateReason(user, 'dispatcher', { gated: false }), null,
+      `no gate ⇒ allowed (user=${JSON.stringify(user)})`);
+    assert.equal(roleGateReason(user, 'admin', { gated: false }), null);
+  }
+});
+
+test('A VIEWER IS TOLD WHICH ROLE THE BUTTON NEEDS, WHICH ONE THEY HAVE, AND WHO FIXES IT', () => {
+  // Walked as a viewer before this existed, every dispatcher action failed in one of three
+  // different presentations and none of them said anything in advance. A 403 is also NOT
+  // fixed by signing out and back in, so the sentence must never send anyone to the login.
+  const reason = roleGateReason({ role: 'viewer' }, 'dispatcher');
+  assert.ok(reason, 'a viewer pressing a dispatcher control gets a sentence');
+  assert.match(reason, /dispatcher/, 'names the role needed');
+  assert.match(reason, /viewer/, 'and the role held');
+  assert.match(reason, /Chad/, 'and the person who can change it');
+  assert.ok(!/sign in|sign out|log in/i.test(reason), 'and never sends them round the login loop');
+});
+
+test('an account with NO role is a viewer here too, never a guess upward', () => {
+  // roleOf defaults to the least privilege in the server's own words. An account created
+  // without a role must not be handed the dispatcher's buttons on the strength of a blank.
+  assert.ok(roleGateReason(null, 'dispatcher'), 'nobody signed in cannot dispatch');
+  assert.ok(roleGateReason({}, 'dispatcher'), 'no role field cannot dispatch');
+  assert.ok(roleGateReason({ role: 'wat' }, 'dispatcher'), 'an unrecognised role cannot dispatch');
+});
+
+test('a dispatcher and an admin are allowed, and the rank is the server’s rank', () => {
+  assert.equal(roleGateReason({ role: 'dispatcher' }, 'dispatcher'), null);
+  assert.equal(roleGateReason({ role: 'admin' }, 'dispatcher'), null, 'admin outranks dispatcher');
+  assert.equal(roleGateReason({ role: 'viewer' }, 'viewer'), null, 'a viewer clears the viewer floor');
+  assert.ok(roleGateReason({ role: 'dispatcher' }, 'admin'), 'but a dispatcher is not an admin');
+  // The claims shape (a Firebase custom claim) resolves the same way as the app_users shape,
+  // so a session from either system produces the same answer on the same button.
+  assert.equal(roleGateReason({ claims: { role: 'dispatcher' } }, 'dispatcher'), null);
 });
 
 // ── THE SCREENS BETWEEN THE LOGIN AND THE BOARD ──────────────────────────────

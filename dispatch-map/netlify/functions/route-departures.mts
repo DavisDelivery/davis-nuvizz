@@ -73,19 +73,35 @@ const fmt = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${Str
 
 export default async (req: Request): Promise<Response> => {
   const J = (b: any, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } });
-  // Gate at viewer: ?refit=1 refits and PUBLISHES the departure table every ETA on the
-  // board is computed from, and the plain read exposes the fleet's departure behaviour.
-  // Gated together at viewer because the read is the common case; the refit branch is a
-  // candidate to raise to dispatcher once the client sends tokens. Inert until
-  // AUTH_REQUIRED=true.
-  const gate = await requireUser(req, { role: 'viewer' });
+
+  // TWO DOORS, split the way nuvizz-board-reconcile splits its preview from its run.
+  //
+  // The plain READ is a viewer's: it exposes the fleet's departure behaviour, which is the
+  // same class of thing as the board itself.
+  //
+  // ?refit=1 is NOT a read. It recomputes and PUBLISHES the departure table that every ETA on
+  // the board is derived from — so a viewer holding this URL could shift every ETA, and
+  // therefore every red flag, on a 700-stop day, and the only visible symptom would be flags
+  // that stopped firing. The read-only role must not be able to do that, so the refit branch
+  // is DISPATCHER.
+  //
+  // ?refit=1&dry=1 is held at dispatcher too, deliberately unlike board-reconcile's free
+  // preview: a dry refit publishes nothing, but it still sweeps up to 30 sealed days out of
+  // the history warehouse, and the person who needs to see the table before it lands is the
+  // person who is about to publish it. Nobody is served by making the expensive rehearsal
+  // cheaper to reach than the act.
+  //
+  // Both inert until AUTH_REQUIRED=true.
+  const url = new URL(req.url);
+  const refit = url.searchParams.get('refit') === '1';
+  const gate = refit
+    ? await requireUser(req, { role: 'dispatcher' })
+    : await requireUser(req, { role: 'viewer' });
   if (!gate.ok) return gate.response;
 
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
 
   try {
-    const url = new URL(req.url);
-    const refit = url.searchParams.get('refit') === '1';
     const dry = url.searchParams.get('dry') === '1';
     const days = Math.max(1, Math.min(MAX_DAYS, Number(url.searchParams.get('days') || 21)));
     const through = url.searchParams.get('through') || addDays(etDayString(), -1);

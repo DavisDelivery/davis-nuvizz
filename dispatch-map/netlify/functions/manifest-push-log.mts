@@ -80,12 +80,24 @@ const stripId = ({ _id, ...rest }: any) => rest;
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
-  // Gate at viewer: the push log records which manifest orders were pushed into NuVizz and
-  // by whom — and its POST APPENDS to that record, so an ungated POST lets a stranger write
-  // history into the audit trail a dispatcher trusts. Both methods are held at viewer here
-  // rather than splitting them, because the client that writes it is the same screen that
-  // reads it. Inert until AUTH_REQUIRED=true.
-  const gate = await requireUser(req, { role: 'viewer' });
+  // TWO DOORS, split the way nuvizz-board-reconcile splits its preview from its run.
+  //
+  // READING the log is a viewer's: it is the "what did I push yesterday" screen.
+  //
+  // The POST is not a read — it APPENDS to the audit trail, and this log is the record that
+  // answers "did that order actually get pushed?" when a customer says a delivery never
+  // arrived. A viewer who can append can write history into it: a row that says an order was
+  // pushed when it was not, or a duplicate that makes a single push look like two. That is the
+  // one thing an audit trail may never allow from the read-only role, so the POST is
+  // DISPATCHER — the same role that is allowed to do the pushing in the first place.
+  //
+  // The earlier "same screen reads and writes it, so gate them together" reasoning is true and
+  // beside the point: the screen is the same, the ACT is not, and the roles follow the act.
+  //
+  // Both inert until AUTH_REQUIRED=true.
+  const gate = req.method === 'POST'
+    ? await requireUser(req, { role: 'dispatcher' })
+    : await requireUser(req, { role: 'viewer' });
   if (!gate.ok) return gate.response;
 
   if (!isFirestoreEnabled()) {

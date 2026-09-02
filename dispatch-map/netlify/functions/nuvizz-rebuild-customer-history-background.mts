@@ -51,7 +51,8 @@ export default async (req: Request): Promise<Response> => {
   // customer history screen serves — and an anonymous caller could pin the function for
   // fifteen minutes on every hit. Netlify already answered 202 and discarded our status
   // (lib/background-gate.mts); this is run by hand and has no doc a screen polls, so the
-  // refusal lands in nuvizz_ops/background_refusals and the function log.
+  // refusal lands in nuvizz_ops/background_refusals/rows — served back by
+  // nuvizz-scan-config?explain=1 — and the function log.
   const gate = await requireUserForBackground(req, 'nuvizz-rebuild-customer-history-background', { role: 'admin' });
   if (!gate.ok) return gate.response;
   const dates = resolveDates(new URL(req.url));

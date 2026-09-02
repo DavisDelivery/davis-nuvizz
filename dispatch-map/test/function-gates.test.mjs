@@ -64,6 +64,25 @@ test('every endpoint in the gated set calls the gate — an ungated one here is 
   }
 });
 
+// ── SOURCE GUARD 1b: the SPLIT gates keep both halves ───────────────────────
+
+test('the split endpoints gate their acting branch above their read — collapsing one back is a regression', () => {
+  // Each of these carries a branch that does something the role its READ deserves must never be
+  // able to do. The behaviour is pinned in test/split-role-gates.test.mjs; this is the cheap
+  // guard that catches somebody "tidying" the ternary back into one call next month.
+  const SPLIT = [
+    ['route-departures', 'viewer', 'dispatcher', /refit/],          // ?refit=1 republishes every ETA's basis
+    ['manifest-push-log', 'viewer', 'dispatcher', /POST/],          // the POST appends to the push audit trail
+    ['nuvizz-pull-today-stops', 'viewer', 'admin', /live/],         // ?live=1 is a ~3,000-call cold probe
+  ];
+  for (const [name, readRole, actRole, branch] of SPLIT) {
+    const body = src(name);
+    assert.ok(new RegExp(`role: '${readRole}'`).test(body), `${name} must still serve its read at ${readRole}`);
+    assert.ok(new RegExp(`role: '${actRole}'`).test(body), `${name} must gate its acting branch at ${actRole}`);
+    assert.match(body, branch, `${name} must still name the branch the split turns on`);
+  }
+});
+
 // ── SOURCE GUARD 2: background functions get the OBSERVABLE gate ─────────────
 
 test('a *-background function without a cron must use the observable gate, never a bare requireUser', () => {
@@ -113,13 +132,21 @@ test('the three headerless endpoints stay OPEN and say why — an undocumented o
   }
 });
 
-test('nuvizz-attempts: the cross-origin GET stays open, and the preflight now ADMITS a bearer token', () => {
+test('nuvizz-attempts: the cross-origin GET stays open, the preflight ADMITS a bearer token, and the open decision has an OWNER AND A DEADLINE', () => {
   // The non-GET gate has shipped for a while, but the preflight only allowed Content-Type —
   // so a cross-origin DELETE carrying a token was refused by the browser before it left, and
   // the gate it was meant to satisfy was unreachable.
+  //
+  // THAT FIX IS NECESSARY AND NOT SUFFICIENT, which is the part worth pinning. The scorecard's
+  // delete (docs/scorecard-attempts/AttemptsCard.jsx:92) sends no credential at all, so it still
+  // 401s the day AUTH_REQUIRED flips — on a site nobody in this repo is watching. An open
+  // question with no owner and no date is how that flip happens with this unresolved.
   const body = src('nuvizz-attempts');
   assert.match(body, /'Access-Control-Allow-Headers': 'Content-Type, Authorization'/);
   assert.match(body, /davis-driver-scorecard/, 'the outside consumer must be named where somebody will see it');
+  assert.match(body, /OWNER: CHAD/, 'a decision with no owner is a decision nobody makes');
+  assert.match(body, /DUE BEFORE AUTH_REQUIRED=true IS SET/, 'and one with no deadline gets made by the switch instead');
+  assert.match(body, /AttemptsCard\.jsx:92/, 'name the exact line that breaks, so nobody has to go looking');
 });
 
 // ── BEHAVIOUR: the halves that must stay open ───────────────────────────────
