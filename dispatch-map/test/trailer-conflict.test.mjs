@@ -398,3 +398,23 @@ test('END TO END: the real engine feeds the real selector feeds the real text', 
   );
   assert.ok(text.length < 320, `two SMS segments at most: ${text.length} chars`);
 });
+
+test('A ROUTE THE CLASS MAP DOES NOT COVER IS NAMED, WITH ITS DRIVER — the Evans hole, made visible', () => {
+  // BRENT with a hard-coded no-trailer stop, but no class for BRENT in the map. The old
+  // behaviour was silence indistinguishable from "checked and fine".
+  const out = run(
+    [stop({ loadNbr: 'BRENT', routeName: 'BRENT', driverName: 'Brent  Bryd', driverUserName: 'Brent  Bryd' })],
+    HARD_NO, { MARCUS: 'tractor' },
+  );
+  assert.deepEqual(trailerRows(out), [], 'not judged — and that is the honest answer');
+  assert.deepEqual(out.skipped.routesNoTruckClass, [{ route: 'BRENT', drivers: ['Brent  Bryd'] }]);
+  assert.equal(out.skipped.noTruckClasses, false, 'a map existed; this route was simply not in it');
+});
+
+test('a covered route is never listed as unknown, and a driverless one is listed with no name', () => {
+  const out = run([
+    stop({ stopNbr: 'A', matchKey: 'acme', loadNbr: 'MARCUS', routeName: 'MARCUS', driverName: 'Marcus Young' }),
+    stop({ stopNbr: 'B', matchKey: 'beta', loadNbr: 'TRAILER 4', routeName: 'TRAILER 4', driverName: '', driverUserName: '' }),
+  ], HARD_NO, { MARCUS: 'tractor' });
+  assert.deepEqual(out.skipped.routesNoTruckClass, [{ route: 'TRAILER 4', drivers: [] }]);
+});

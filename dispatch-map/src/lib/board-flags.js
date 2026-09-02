@@ -775,7 +775,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   const rows = [];
   // Rows a later rule took off the panel. Kept, never rendered — see the R6 supersede block.
   const suppressed = [];
-  const skipped = { noRoster: false, noTruckClasses: false, ambiguousRoutes: [], routesNoSequence: [], routesAppointment: [], routesOwner: [], stopsNoPosition: 0 };
+  const skipped = { noRoster: false, noTruckClasses: false, routesNoTruckClass: [], ambiguousRoutes: [], routesNoSequence: [], routesAppointment: [], routesOwner: [], stopsNoPosition: 0 };
   for (const k of [...new Set(open.filter(onAppointmentRoute).map(routeKeyOf))]) if (k) skipped.routesAppointment.push(k);
   // Reported separately and in its own words. Folding the owner's route into the appointment
   // list would label it "held for appointments", which is not what happened to it — and the
@@ -921,13 +921,30 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   } else {
     const conflicts = [];
     const tractorRoutes = new Set();
+    // THE ROUTES THE MAP HAS NO ANSWER FOR — named, with the driver NuVizz carries, because
+    // "not judged" has to be visible to be actionable. Evans Contracting (2026-09-02) sat on a
+    // tractor with a hard-coded no-trailer mark and never texted: NuVizz spelled the driver
+    // "Brent  Bryd", the roster alias read "Brent Boyd", BRENT got no class, and every screen
+    // showed the same nothing it shows for a route that was checked and found fine.
+    const noClass = new Map();
     for (const s of scheduledJudged) {
       const k = routeKeyOf(s);
-      if (!k || routeClassOf(k) !== 'tractor') continue;
+      if (!k) continue;
+      const cls = routeClassOf(k);
+      if (!cls) {
+        if (!noClass.has(k)) noClass.set(k, new Set());
+        const d = String(s.driverName || s.driverUserName || '').trim();
+        if (d) noClass.get(k).add(d);
+        continue;
+      }
+      if (cls !== 'tractor') continue;
       tractorRoutes.add(k);
       const block = dispatcherTrailerBlock(noteOf(s));
       if (block.blocked) conflicts.push({ s, k, block });
     }
+    skipped.routesNoTruckClass = [...noClass.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([route, drivers]) => ({ route, drivers: [...drivers] }));
     checked.tractorRoutes = tractorRoutes.size;
     checked.trailerConflicts = conflicts.length;
     // HOW MANY ON THE SAME LOAD, because that number changes what the answer IS. One stop is
