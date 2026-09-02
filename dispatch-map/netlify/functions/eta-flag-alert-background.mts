@@ -118,6 +118,8 @@ export default async (req: Request): Promise<Response> => {
     // to one question get born.
     let routeClasses: Record<string, string> = {};
     let classSource = 'none';
+    let unclassedRoutes: any[] = [];
+    let nearMatches: any[] = [];
     try {
       const rc = await readRouteClassesFor(
         () => listFleetLoads(TENANT, date, ['loadNbr', 'routeName', 'vehicleType']),
@@ -125,6 +127,8 @@ export default async (req: Request): Promise<Response> => {
       );
       routeClasses = rc.classes;
       classSource = rc.source;
+      unclassedRoutes = (rc.unclassed || []).filter((u) => u.reason !== 'appointment_route');
+      nearMatches = rc.nearMatches || [];
 
       // The doc is TODAY's operational state and only a real sweep of today may write it.
       // A dry run must claim nothing, and a ?date= replay writing last Friday's trucks
@@ -286,6 +290,9 @@ export default async (req: Request): Promise<Response> => {
       trailerConflicts: flags.checked?.trailerConflicts ?? 0,
       tractorRoutes: flags.checked?.tractorRoutes ?? 0,
       truckClassesKnown: !flags.skipped?.noTruckClasses,
+      // Named, not counted — see the evening sweep. A class map with a hole in it is only
+      // useful if the hole has a route name and a driver name on it.
+      unclassedRoutes, nearMatches,
       alertable: candidates.length,
       candidates: candidates.map((c) => ({ stopNbr: c.stopNbr, customer: c.customer, lateBy: c.lateBy, rule: c.rule })),
     };

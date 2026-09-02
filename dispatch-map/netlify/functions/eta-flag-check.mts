@@ -439,6 +439,10 @@ export default async (req: Request): Promise<Response> => {
       // are different answers and this endpoint exists so they cannot look the same.
       tractorRoutes: flags.checked?.tractorRoutes ?? null,
       truckClassesKnown: !flags.skipped?.noTruckClasses,
+      // Which routes the engine judged WITHOUT a truck class, with the driver name on them.
+      // The Evans question — "it is hard coded, why no text" — was answered by exactly this
+      // list, assembled by hand from four collections. It should cost one request.
+      routesNoTruckClass: flags.skipped?.routesNoTruckClass ?? [],
       openStopsChecked: flags.checked?.stops ?? null,
       skipped: flags.skipped,
       sampleStopKeys: stops.slice(0, 3).map((s: any) => s?.matchKey ?? null),

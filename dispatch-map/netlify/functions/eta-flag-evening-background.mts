@@ -172,6 +172,12 @@ export default async (req: Request): Promise<Response> => {
       classSource: rc?.source ?? 'none',
       tractorRoutes: flags.checked?.tractorRoutes ?? 0,
       trailerConflicts: flags.checked?.trailerConflicts ?? 0,
+      // THE ROUTES THIS SWEEP COULD NOT CLASS, BY NAME, WITH THE DRIVER NUVIZZ CARRIES. The
+      // Evans miss: BRENT sat unclassed for a one-letter alias difference and no record
+      // anywhere said so — a route the map cannot class read exactly like one judged fine.
+      // A near-match is named too, so nobody mistakes it for an exact join.
+      unclassedRoutes: (rc?.unclassed ?? []).filter((u) => u.reason !== 'appointment_route'),
+      nearMatches: rc?.nearMatches ?? [],
       smsEnabled: smsEnabled(), sent: 0, failed: 0, alreadyClaimed: 0,
       texted: [] as any[],
     };
