@@ -19,8 +19,7 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink,
-} from 'lucide-react';
+  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2 } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
   query, orderBy, limit, updateDoc, deleteDoc,
@@ -34,7 +33,7 @@ import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt, fo
 import { resolveStopContact, resolveStopPhone, orderContactAside, mergeSavedContact, isDialable } from './lib/stop-contact.js';
 import { readViewportSize } from './lib/viewport.js';
 import { sortStops, nextStopSort, stopSort, STOP_SORTS } from './lib/stop-sort.js';
-import { manifestIssues, manifestHeadline, manifestProvenance, toStored, loadStored, saveStored } from './lib/manifest-check-view.js';
+import { manifestIssues, manifestHeadline, manifestProvenance, loadStored, saveStored } from './lib/manifest-check-view.js';
 import { noteFreshness } from './lib/stop-notes-freshness.js';
 import { mapBaseOptions, mapLiveOptions, mapIdKey, keepView } from './lib/map-base-options.js';
 import { stopTimelineModel } from './lib/stop-timeline.js';
@@ -71,6 +70,7 @@ import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDrive
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
+import { isIosHomeScreenApp, canShareFiles, describePwaMode, viewerWayOut } from './lib/pwa-mode.js';
 // The scan plan's model, shared with the scheduler that runs it — the screen and the code
 // must not be able to disagree about what a rule means or what a scan affects.
 import {
@@ -97,7 +97,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.83.0';
+const APP_VERSION = '0.83.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -168,6 +168,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.83.1', 'THE MANIFEST VIEWER HAD A WAY OUT, AND THE WAY OUT WAS THE TRAP. Chad, the morning after the in-app pages shipped: “there is no way to close out the manifest viewer.” The screenshot was not our viewer at all — it was iOS’s own PDF view, “1 of 15” in a pill and pages on black — which means the document had NAVIGATED the window. The one anchor still allowed to do that was the “Open in browser” hatch, 44px from Close. In a browser tab it opens a tab you can close; in a home-screen app there is no address bar, no toolbar and no back gesture, so the board is simply gone until the app is killed. Same link, opposite outcome, and nothing on screen could tell which world it was in. NOW IT ASKS: a tested predicate (navigator.standalone on iOS, the display-mode media query everywhere else) decides, and when it cannot tell it answers “browser”, because an extra link in a tab costs nothing and a stranded dispatcher costs the board. Inside an iPhone home-screen app the hatch does not render — the pages are already drawn there — and the one thing it was still good for, getting the file OFF the phone, is offered as Share instead: the system sheet, AirDrop or Messages, and straight back to the board. ONLY THE iPHONE, because only there is it a trap: an Android or desktop installed app opens the link in something with its own close control, and keeps the hatch. The bytes are fetched once when the viewer opens and Share fires with no download in between, because iOS refuses a share whose tap was spent waiting on the network; a share that fails says so on the screen instead of in a console nobody reads; a delivery photo shares the same way. The footer now ends “· iPhone app”, “· installed app” or “· browser tab”, so the answer the phone gave can be read back — a switch whose position cannot be read is not a switch. In a browser nothing changes. If the footer on your phone did not read 0.81.6 or later when this happened, the same screenshot has a second cause — a cached build with the old PDF link — and this fix does not reach that; say what the footer read. AND THE DROP BOX IS GONE. Chad: “there is no need for the manual manifest drop in box any longer as we are pulling it out of the emails.” Every report arrives through the Gmail ingest now, so a manual drop could only overwrite tonight’s filed result with a stale copy. What stays: the mailbox card, the last run’s verdict, the archive underneath, and the app-wide drag guard that keeps a stray PDF from navigating the app away — that was never the drop zone’s job. The unwired verify-manifest-tab script, which still fed a PDF through the deleted input, now seeds a stored run the way the ingest does and asserts nothing on the screen POSTs by hand; it passes on desktop and phone. ALSO IN THIS BUILD, INERT: the reader for Uline’s monthly forecast spreadsheet (“DA - G - Uline Forecast”, one sheet, date / estimate / upperest by ship date, twelve months out) — columns found by name, every unreadable row named, nothing wired to it yet. It is the first piece of Chad’s “compare the forecasts to what the manifest actually produces” and it ships tested so the rest can build on it. AND THE VERSION GATE LEARNED WHICH WAY IS UP: it asked only “is it still the same?”, so when this branch rebased onto a main that had moved from 0.81.8 to 0.83.0 it printed “✓ 0.83.0 → 0.81.9” — a footer that would have read OLDER than the build before it, while the deploy watchdog kept reporting the higher row. It now rejects a version that goes backwards, compared numerically so 0.83.10 is after 0.83.9. 36 new tests. The header decision is a pure rule tested on every input, after a reviewer showed the earlier shape-matching test passed five different dead ends.'],
   ['0.83.0', 'THE SECURITY AUDIT LANDS, AND THE APP GETS A DOOR WITH A LOCK ON IT. Chad, on the audit: \u201cYou can do all of them but number 1 as I need to be able to run a manual scan. We need to build the backend of a user based system with usernames and passwords with password resets.\u201d Both halves are in this release. THE USER SYSTEM SHIPS INERT. Eight new endpoints (auth-login, auth-me, auth-logout, auth-change-password, auth-reset-request, auth-reset-confirm, auth-users, auth-bootstrap) over a server-only app_users collection: scrypt password hashes with the cost written into the hash so it can be raised later, an eight-strike fifteen-minute lockout whose counter restarts once a lockout has lapsed, HMAC sessions that carry a tokenVersion so deactivating or demoting someone or changing a password signs them out everywhere within thirty seconds instead of at token expiry, single-use thirty-minute reset links by email with only the hash stored, admin-issued temporary passwords for anyone without an email, a last-admin guard, and a bootstrap that refuses once an admin exists. One shared gate, requireUser, is wired into the functions that spend money or move freight (NuVizz writes, SMS, the customer mailer, the route matrix, the scan switches, board sync, tombstones, Gmail admin) and it lets a token-less request through as the pre-login \u201ceveryone\u201d until AUTH_REQUIRED=true is set on the site \u2014 so nothing changes on the morning this merges, and the switch is flipped after every dispatcher has an account, the same order the Firestore cutover prescribes. THE MANUAL SCAN KEEPS ITS DATE. What changed underneath it is that a date that is not a date is refused before anything runs, because the audit showed a crafted one walking out of the stop index and deleting a sealed history day. THE PATH GUARD IS THE OTHER BIG ONE: every Firestore path in all three apps now refuses a segment that is empty, a dot, two dots, or carries a slash, question mark or hash, which closes seven separate delete-or-overwrite-any-document findings with one helper, plus allow-lists on the attempts delete, the roster refresh tenant, the routing job id, the webhook message id and the driver-route date. ALSO IN THIS RELEASE: the root NuVizz proxy is GET-only on four read prefixes with bounded dates and load ranges and no retries on writes; the auto-merge workflow refuses fork pull requests; the build no longer pulls Quotes@main at build time with every secret in the environment; driver_auth and the load-scan collections are denied to the browser in the rules file (deploy is still a hand step); the drop-zone manifest check spans the two delivery days it was always meant to instead of zero; the work report\u2019s dead-phone fallback reads the field that is actually written; scanner-gun scans stop being stored as hand-typed; voids and damage flags are not touched here and remain the next thing on the dock list; geocoding no longer remembers a quota blip forever; security headers on all three sites; and the secrets that were compared with a plain equals sign are compared in constant time. The full findings are in the PDF Chad has; nothing with an exploit path in it is committed to a public repository.'],
   ['0.82.0', 'THE OVERNIGHT TEXTS NOW CARRY THE OTHER THING A ROUTER CAN STILL FIX AT 9PM: A 53-FOOTER POINTED AT A DOCK SOMEBODY ALREADY SAID CANNOT TAKE ONE. Chad: “stops we have put on a tractor that have been hardcoded as no tractor trailer by a dispatcher. Not the Uline advisory ones that we pick up automatically just the dispatcher hardcoded ones.” THIS IS NOT A LATENESS FLAG WEARING A HAT, and that is the whole design. Every other rule on this board is a PREDICTION — an estimate against a clock, with an error band, that the rest of the day can still make false. This one is two RECORDED FACTS in contradiction: a human wrote “no tractor trailer” on this location, and the load the stop is sitting on runs a tractor. Nothing about how the day goes changes either. So the card carries no ETA and nothing to be late about, and it does not wait for a clock: the freight does not arrive late, it does not arrive — a driver who cannot turn a 53′ trailer into the lot leaves with the pallets still on it, which is a refusal plus a redelivery on our own dime. It is knowable the moment the stop lands on the load, which is 8pm while somebody is still building it and the fix is still free. “DISPATCHER HARDCODED” IS NOT A NEW GUESS — IT IS THE MAP’S OWN ANSWER. The confirmed-versus-advisory split the pin already uses to decide whether the lime “a tractor delivered here” paint may show (v0.76.4) is the same function this reads, so the amber Uline mark a scanner lifted out of somebody else’s order text is excluded in ONE place rather than two, and the flag can never say something the pin disagrees with. A scanner-found “no tractor trailer” is excluded on the same rule; a dispatcher who has painted the stop tractor-OK silences it entirely, because that is them answering the question this rule asks. ONE TEXT PER TRACTOR LOAD, NOT PER STOP: six box-only stops on one load is one problem — the wrong truck — and six texts would bury that instead of saying it, so the message names the route, quotes the mark in the words of the dropdown it was ticked in, and counts the rest of the load. It holds its own slice of the per-sweep text cap so a bad night of either kind cannot silence the other, and its own claim key so a stop that is BOTH late and on the wrong truck sends both messages rather than one swallowing the other. AND THE EVENING SWEEP NOW KNOWS WHAT IS PULLING EACH LOAD. It had never built one at all, so it now reads the target date’s own map (load header first, driver roster second) the way the day sweep has for months — the target date’s, never today’s, because route names repeat nightly and tonight’s trucks on tomorrow’s routes would put a tractor on whatever load inherited the name. THE ARRIVAL ESTIMATES ARE DELIBERATELY UNTOUCHED: the per-truck travel curves are not read here, so every route keeps the fleet clock it has always had overnight and the only thing the new map moves is the trailer verdict — putting this sweep’s ETAs on per-truck clocks would change which lateness rows text, which is a measurable change and not this one. WHERE THAT MAP DOES NOT EXIST YET, WHICH IS MOST OF THE EVENING, THE PANEL SAYS SO: “no-tractor-trailer check off — nothing on this board says which truck runs which load”, because “we never knew what the trucks were” must not read as “nothing is mis-routed”. The flag also rides the board all day, where it clicks through to the stop like any other. 30 new tests, including one proven to bite by reverting it.'],
   ['0.81.8', 'THE ROWS VIEWER COULD NOT TELL YOU WHETHER IT HAD THE WHOLE MANIFEST. Chad: “I’m not able to view the entire manifest.” v0.81.5 answered the readability half and left the harder half unanswerable: a parse that reads eleven of thirteen pages renders “648 orders”, labels itself 648, and looks exactly like a parse that read all thirteen — nothing on the screen disagrees with a short list. THE MANIFEST PRINTS ITS OWN FINAL TOTALS and readUlineManifest already reconciles against them, returning verified:true only for a column reading that reproduces the printed count, lbs, skids and pieces. That is the one independent check there is; the endpoint had been sending it since the viewer shipped and the screen threw it away. It now sits at the top: green “All 660 orders accounted for” with the printed figures, or amber “this list could NOT be checked against the manifest’s own printed totals — treat them as unconfirmed”, plus the parser’s own complaints, which the endpoint had been discarding entirely. The Manifest check screen has shown this banner all along; the phone is where it was actually needed. A NIGHT WHOSE PDF WAS NOT KEPT SAID “undefined orders” — both no-PDF paths returned no count and the header interpolated it, so an honest “we did not store this one” read as a broken app. A CAPPED NIGHT IS NOT A CONTRADICTION: the run stores at most 500 suspects but records the true count beside them, so both numbers are right and only the highlight is short — the banner called one of them wrong and pointed at the short side as the truth. missingTruncated has been written since the cap existed and read by nothing; it is read now, and the two cases read differently because a dispatcher does different things about them. AND THE BODY GOT SMALLER: ~660 rows served no-store were pretty-printed at one space per line and carried three columns nothing renders. Compacted and trimmed, re-fetched on every open, on a phone, on cellular. 8 new tests, and the first tests this viewer has ever had.'],
@@ -5819,7 +5820,7 @@ function PdfPageCanvas({ pdf, pageNumber, containerWidth, zoom, active, holderRe
   );
 }
 
-function PdfPages({ src }) {
+function PdfPages({ src, bytes }) {
   const [pdf, setPdf] = useState(null);
   const [err, setErr] = useState(null);
   const [zoom, setZoom] = useState(1);
@@ -5840,6 +5841,7 @@ function PdfPages({ src }) {
   }, []);
 
   useEffect(() => {
+    if (!bytes) return undefined;
     let cancelled = false;
     let doc = null;
     (async () => {
@@ -5849,7 +5851,11 @@ function PdfPages({ src }) {
         const pdfjs = await import('pdfjs-dist');
         const workerUrl = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default;
         pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-        doc = await pdfjs.getDocument({ url: src }).promise;
+        // THE BYTES, NOT THE URL. The viewer fetched the document once and holds it for Share;
+        // pdf.js TRANSFERS the buffer it is given to its worker, so it gets a copy and the
+        // viewer keeps the original. Fetching by URL here would download the same ~140KB a
+        // second time (the endpoint is no-store) — on cellular, in a yard.
+        doc = await pdfjs.getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
         if (cancelled) { try { doc.destroy(); } catch { /* nothing to free */ } return; }
         setPdf(doc);
       } catch (e) {
@@ -5857,7 +5863,7 @@ function PdfPages({ src }) {
       }
     })();
     return () => { cancelled = true; try { doc?.destroy(); } catch { /* nothing to free */ } };
-  }, [src]);
+  }, [bytes]);
 
   const pages = pdf?.numPages || 0;
 
@@ -5944,6 +5950,79 @@ function DocumentViewerModal({ src, title, subtitle, isImage = false, onClose })
   const label = title;
   const when = subtitle;
   const isImg = isImage;
+
+  // THE INSTALLED APP GETS NO WAY TO LEAVE, because leaving is the trap.
+  //
+  // Chad: "there is no way to close out the manifest viewer." His screenshot was not this
+  // viewer — it was iOS's own PDF view ("1 of 15" in a pill, pages on black), which means the
+  // document had NAVIGATED the window. The one anchor still allowed to do that is the
+  // "Open in browser" hatch below, and it sat 44px from Close. In a browser tab it opens a tab
+  // you can close; in a home-screen app there is no address bar, no toolbar and no back
+  // gesture, so the board is simply gone until the app is killed. Same link, opposite outcome.
+  //
+  // So the hatch renders ONLY in a browser. Inside the installed app the pages are drawn
+  // right here (PdfPages), and the one thing the hatch was still good for — getting the file
+  // OFF the phone — is offered as Share instead, which hands the bytes to AirDrop / Messages /
+  // Files through the system sheet and comes straight back to the board.
+  // ONE decision, made by a pure rule with real inputs, rendered from its answer. See
+  // viewerWayOut for the three outcomes and why the question is "iOS home-screen app", not
+  // "installed app": Android and desktop installed apps open a link in something closable.
+  const wayOut = viewerWayOut({ iosHomeScreen: isIosHomeScreenApp(), canShareFiles: canShareFiles() });
+  const shareable = wayOut === 'share';
+
+  // THE BYTES ARE FETCHED ONCE, HERE, BEFORE ANYBODY TAPS ANYTHING — and that ordering is the
+  // whole point, not tidiness. navigator.share() must be called inside the tap's transient
+  // activation; a handler that first awaits a network download has spent it by the time the
+  // share runs, and iOS answers NotAllowedError. On cellular, in a yard, that download is
+  // seconds. So the document is fetched when the viewer opens (the pages need it anyway, and
+  // pdf.js is handed these same bytes rather than re-downloading a no-store URL), Share is
+  // disabled until they are in hand, and the tap itself does no I/O before calling share.
+  const [doc, setDoc] = useState(null);          // { bytes: ArrayBuffer, type: string } | null
+  const [docErr, setDocErr] = useState(null);
+  const [shareErr, setShareErr] = useState(null);
+  useEffect(() => {
+    let dead = false;
+    setDoc(null); setDocErr(null); setShareErr(null);
+    // An image is drawn by <img>; its bytes are only needed for Share, so only fetch them then.
+    if (isImg && !shareable) return undefined;
+    (async () => {
+      try {
+        const r = await fetch(src);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const bytes = await r.arrayBuffer();
+        if (!dead) setDoc({ bytes, type: r.headers.get('content-type') || '' });
+      } catch (e) {
+        if (!dead) setDocErr(String(e?.message || e).slice(0, 160));
+      }
+    })();
+    return () => { dead = true; };
+  }, [src, isImg, shareable]);
+
+  const shareFile = () => {
+    if (!doc) return;
+    setShareErr(null);
+    let file;
+    try {
+      const type = doc.type.split(';')[0].trim() || (isImg ? 'image/jpeg' : 'application/pdf');
+      const ext = type === 'application/pdf' ? 'pdf' : type === 'image/png' ? 'png' : type === 'image/webp' ? 'webp' : type.startsWith('image/') ? 'jpg' : 'bin';
+      const name = `${String(label || 'document').replace(/[^\w.-]+/g, '_')}.${ext}`;
+      file = new File([doc.bytes], name, { type });
+    } catch (e) {
+      setShareErr(`Could not prepare the file: ${String(e?.message || e).slice(0, 120)}`);
+      return;
+    }
+    // NO await above this line. canShare is the capability probe with the real file; a device
+    // that cannot take a FILE still gets the link, which the sheet can at least copy or text.
+    const p = navigator.canShare({ files: [file] })
+      ? navigator.share({ files: [file], title: label })
+      : navigator.share({ title: label, url: src });
+    p.catch((e) => {
+      // AbortError is the user closing the sheet — not a failure. Everything else is shown,
+      // because a button that visibly does nothing is the failure this replaces.
+      if (/abort/i.test(String(e?.name || ''))) return;
+      setShareErr(`Share failed: ${String(e?.name || e?.message || e).slice(0, 120)}`);
+    });
+  };
   return (
     <div
       className="fixed inset-0 z-[1400] flex flex-col bg-black/90"
@@ -5956,13 +6035,25 @@ function DocumentViewerModal({ src, title, subtitle, isImage = false, onClose })
           {when && <div className="text-[11px] text-white/70">{when}</div>}
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
-          {/* Same 44px box as Close beside it. The phone floor rule doesn't cover <a>, and an
-              inline anchor ignores min-height, so this sat at 34px next to a 44px Close — and a
-              mis-tap here ejects the photo to the browser, the thing this viewer exists to stop. */}
-          <a data-escape-hatch href={src} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center p-2 rounded-full hover:bg-white/15 text-white/90" title="Open in browser" aria-label="Open in browser" style={{ minWidth: 44, minHeight: 44 }}><ExternalLink size={18} /></a>
+          {wayOut === 'share' ? (
+            // iOS HOME-SCREEN APP: never an anchor out. Share hands the file to the system
+            // sheet and comes straight back to the board.
+            <button type="button" onClick={shareFile} disabled={!doc}
+              className="inline-flex items-center justify-center p-2 rounded-full hover:bg-white/15 text-white/90 disabled:opacity-40"
+              title={doc ? 'Share' : 'Share (loading…)'} aria-label="Share" style={{ minWidth: 44, minHeight: 44 }}><Share2 size={18} /></button>
+          ) : wayOut === 'hatch' ? (
+            // A BROWSER TAB, or an Android / desktop installed app: the hand-off opens somewhere
+            // with its own close control. Same 44px box as Close beside it — the phone floor rule
+            // doesn't cover <a>, and an inline anchor ignores min-height, so this once sat at
+            // 34px next to a 44px Close and a mis-tap ejected the photo.
+            <a data-escape-hatch href={src} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center p-2 rounded-full hover:bg-white/15 text-white/90" title="Open in browser" aria-label="Open in browser" style={{ minWidth: 44, minHeight: 44 }}><ExternalLink size={18} /></a>
+          ) : null /* 'none': an iOS home-screen app that cannot share files. Nothing beats a trap. */}
           <button onClick={onClose} className="p-2 rounded-full hover:bg-white/15" aria-label="Close" style={{ minWidth: 44, minHeight: 44 }}><X size={22} /></button>
         </div>
       </div>
+      {(shareErr || docErr) ? (
+        <div className="flex-shrink-0 px-4 pb-1 text-[11px] text-red-300">{shareErr || `Could not load the document: ${docErr}`}</div>
+      ) : null}
       {/* A PDF is DRAWN, not embedded — see PdfPages for why an iframe cannot show page two
           on an iPhone. Images keep the simple path; they never had the problem. */}
       {isImg ? (
@@ -5970,7 +6061,7 @@ function DocumentViewerModal({ src, title, subtitle, isImage = false, onClose })
           <img src={src} alt={label} className="max-w-full max-h-full object-contain" onClick={(e) => e.stopPropagation()} />
         </div>
       ) : (
-        <PdfPages src={src} />
+        <PdfPages src={src} bytes={doc?.bytes || null} />
       )}
       <div className="px-4 py-2 flex-shrink-0 text-center">
         <button onClick={onClose} className="px-5 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-sm font-semibold" style={{ minHeight: 44 }}>Close</button>
@@ -22378,8 +22469,9 @@ function Shell() {
   // scheduled server job runs the same free check and writes the result to ONE
   // Firestore doc. Every open tab subscribes here, and a server run newer than
   // whatever this browser holds is adopted into the same localStorage slot the
-  // manual drop uses — so the flag lights, the tab headline updates, and nobody
-  // has to drop a PDF that already checked itself. Manual runs still win when
+  // screen reads — so the flag lights, the tab headline updates, and nobody
+  // has to go looking for a report that already checked itself. (There is no
+  // manual drop any more; the ingest is the only writer.) A newer run wins when
   // they are newer; comparison is by each run's own `at` stamp.
   useEffect(() => {
     if (!db) return undefined;
@@ -22540,7 +22632,10 @@ function Shell() {
           and the top-bar chip cover the same info on small screens. */}
       {!isMobile && (
         <footer className="border-t bg-white px-4 py-1 text-[10px] text-slate-400 flex items-center justify-between">
-          <div>Dispatch Map v{APP_VERSION} · {BUILD_COMMIT}{BUILD_TIME ? ` · built ${BUILD_TIME.slice(5, 16).replace('T', ' ')}Z` : ''}</div>
+          {/* "· installed app" / "· browser tab": the one line that says which way the PDF
+              viewer will behave on THIS device. The fix for the dead end turns on that
+              predicate, and a switch whose position cannot be read is not a switch. */}
+          <div>Dispatch Map v{APP_VERSION} · {BUILD_COMMIT}{BUILD_TIME ? ` · built ${BUILD_TIME.slice(5, 16).replace('T', ' ')}Z` : ''} · {describePwaMode()}</div>
           <div className="hidden sm:block">© Davis Delivery Service</div>
         </footer>
       )}
@@ -25081,7 +25176,7 @@ function MoreMenu({ items, activeId, onPick, badge = 0 }) {
 // sure nothing is missing."
 //
 // The freight report arrives in a MAILBOX, not on this screen. Connect the
-// mailbox once and the server runs the SAME free board diff the drop zone runs,
+// mailbox once and the server runs the same free board diff on every report,
 // every half hour, on its own — the nav badge lights and nobody has to remember
 // to come here with a PDF.
 //
@@ -25285,7 +25380,7 @@ function GmailCard({ onStoredRun }) {
         {!active && status?.configured && (
           <div>
             Connect the mailbox the freight report arrives in and every report that lands there is checked
-            automatically — the same check as dropping the PDF here, run every 30 minutes.{' '}
+            automatically — the free board diff' '}
             <span className="font-semibold text-slate-600">Read-only access: this app can read mail and nothing else.</span>
           </div>
         )}
@@ -27138,25 +27233,19 @@ function ManifestRowsModal({ date, onClose }) {
 }
 
 function ManifestCheckScreen() {
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState(null);
   const [result, setResult] = useState(() => loadStored());
-  const [fileName, setFileName] = useState(() => loadStored()?.fileName || null);
-  const [drag, setDrag] = useState(false);
 
   // ADOPT A RUN THAT ARRIVED WHILE THIS SCREEN WAS OPEN. The automatic checks
   // (the Gmail poll, the Resend poll) write one Firestore doc; Shell mirrors it
-  // into the same localStorage slot the drop zone uses and fires this event.
-  // Without this the one screen you are actually LOOKING AT is the last to know:
-  // the nav badge would update while the results under it stayed yesterday's.
-  // Only a NEWER run is adopted, so a manual drop is never overwritten by an
-  // older stored one.
+  // into the localStorage slot this screen reads and fires this event. Without
+  // this the one screen you are actually LOOKING AT is the last to know: the nav
+  // badge would update while the results under it stayed yesterday's. Only a
+  // NEWER run is adopted, so a stale mirror never overwrites a fresher one.
   useEffect(() => {
     const sync = () => {
       const stored = loadStored();
       if (!stored?.at) return;
       setResult((cur) => (cur?.at && String(cur.at) >= String(stored.at) ? cur : stored));
-      setFileName((cur) => stored.fileName || cur);
     };
     window.addEventListener('dd-manifest-check-updated', sync);
     window.addEventListener('storage', sync);
@@ -27172,36 +27261,16 @@ function ManifestCheckScreen() {
     if (!stored?.at) return;
     saveStored(stored);
     setResult(stored);
-    setFileName(stored.fileName || null);
-    setErr(null);
     window.dispatchEvent(new Event('dd-manifest-check-updated'));
   }, []);
 
-  const run = async (file) => {
-    if (!file || busy) return;
-    setBusy(true); setErr(null);
-    try {
-      const buf = await file.arrayBuffer();
-      let bin = '';
-      const bytes = new Uint8Array(buf);
-      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-      const pdfBase64 = btoa(bin);
-      const r = await fetch('/.netlify/functions/manifest-check', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pdfBase64 }),
-      });
-      const d = await r.json();
-      if (!d?.ok) { setErr(d?.error || `check failed (HTTP ${r.status})`); setResult(null); }
-      else {
-        setResult(d); setFileName(file.name);
-        saveStored(toStored(d, file.name));
-        window.dispatchEvent(new Event('dd-manifest-check-updated'));
-      }
-    } catch (e) { setErr(String(e?.message || e)); }
-    setBusy(false);
-  };
-
-  const clear = () => { setResult(null); setFileName(null); setErr(null); saveStored(null); window.dispatchEvent(new Event('dd-manifest-check-updated')); };
+  // THE DROP BOX IS GONE. Chad: "there is no need for the manual manifest drop in box any
+  // longer as we are pulling it out of the emails." Every report now arrives through the
+  // Gmail ingest (every 30 minutes, self-validating, archived with its PDF), so the only thing
+  // a manual drop could add was a way to overwrite tonight's filed result with a stale copy —
+  // and a target that swallowed a stray drag. What stays: the mailbox card, the last run's
+  // verdict as the ingest wrote it, and the archive underneath.
+  const clear = () => { setResult(null); saveStored(null); window.dispatchEvent(new Event('dd-manifest-check-updated')); };
   const { issues, level } = manifestIssues(result);
   const suspects = result?.suspects || [];
   const m = result?.manifest;
@@ -27214,39 +27283,12 @@ function ManifestCheckScreen() {
           <p className="text-xs text-slate-500 mt-0.5">
             Every order on the nightly Uline freight report is checked against what the scan put in
             Firestore — so an order the shipper handed us that never reached NuVizz shows up here.
-            Connect Gmail below and the report is found and checked on its own; or drop the PDF yourself.
-            <span className="font-semibold text-slate-600"> Zero NuVizz calls, either way.</span>
+            The report is read out of the mailbox on its own, every 30 minutes; connect it below if it is not.
+            <span className="font-semibold text-slate-600"> Zero NuVizz calls.</span>
           </p>
         </div>
 
         <GmailCard onStoredRun={adoptRun} />
-
-        {/* THE TARGET FILLS THE EMPTY SCREEN. Before a report is dropped this page is nothing
-            but the drop zone, and the zone was a ~96px strip with ~640px of inert grey under
-            it — and a PDF let go in that grey hit the BROWSER's default handler, which
-            navigates away from the app and throws the session out. There is no window-level
-            preventDefault to catch it (see the guard in the effect above). So on the empty
-            state the label claims the pane; once there are results to read, it shrinks back
-            to a strip so it isn't in the way. (The navigate-away itself is stopped app-wide
-            by the drop guard in Shell — this is about not making you aim.)
-            40vh, not the original 60: the Gmail card now sits above this, and a target sized
-            for an otherwise-empty screen pushed the connect button off the first screenful —
-            which is the one thing on this page you have to see before dropping anything. */}
-        <label
-          onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
-          onDragLeave={() => setDrag(false)}
-          onDrop={(e) => { e.preventDefault(); setDrag(false); run(e.dataTransfer?.files?.[0]); }}
-          className={`block border-2 border-dashed rounded-lg p-6 text-center cursor-pointer ${result ? '' : 'min-h-[40vh] flex flex-col items-center justify-center'} ${drag ? 'border-blue-400 bg-blue-50' : 'border-slate-300 bg-white hover:bg-slate-50'}`}
-        >
-          <input type="file" accept=".pdf" className="hidden" onChange={(e) => run(e.target.files?.[0])} disabled={busy} />
-          <FileCheck size={20} className="mx-auto text-slate-400" />
-          <div className="text-sm font-semibold text-slate-700 mt-1">
-            {busy ? 'Checking…' : 'Drop the Uline freight report PDF, or click to choose'}
-          </div>
-          {fileName && !busy && <div className="text-[11px] text-slate-400 mt-0.5">{fileName}</div>}
-        </label>
-
-        {err && <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">{err}</div>}
 
         {result && (
           <>
