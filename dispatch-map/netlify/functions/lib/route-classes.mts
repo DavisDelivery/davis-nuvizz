@@ -82,19 +82,28 @@ export function nearMatchEnabled(env: any = process.env): boolean {
   return !['off', '0', 'false', 'no'].includes(v);
 }
 
-// Plain Levenshtein. Surnames are short, so the O(n·m) table is nothing.
+// Edit distance WITH adjacent transposition counted as one (optimal string alignment).
+//
+// Plain Levenshtein calls BYRD -> BRYD a two — one letter out of place is a substitution
+// twice — and that is precisely the shape a surname typo takes. Chad, 2026-09-02: "it's
+// changed to Brent Byrd in MarginIQ" against a NuVizz string of "Brent  Bryd". A net that
+// cannot see a swapped pair would miss the one case it was built for. Surnames are short,
+// so the O(n·m) table is nothing.
 export function editDistance(a: string, b: string): number {
   const m = a.length, n = b.length;
   if (!m) return n; if (!n) return m;
-  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  const d: number[][] = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
+  for (let j = 1; j <= n; j++) d[0][j] = j;
   for (let i = 1; i <= m; i++) {
-    const cur = [i];
     for (let j = 1; j <= n; j++) {
-      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);   // an adjacent swap is ONE edit
+      }
     }
-    prev = cur;
   }
-  return prev[n];
+  return d[m][n];
 }
 
 const splitName = (normalized: string): { first: string; rest: string } => {

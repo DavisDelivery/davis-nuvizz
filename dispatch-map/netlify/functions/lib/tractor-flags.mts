@@ -65,6 +65,20 @@ export interface VehicleRoster {
 }
 
 // PURE: build the full driver → vehicleType roster from raw employee docs.
+//
+// EVERY NUVIZZ NAME ON THE CARD, NOT JUST THE CURRENT ONE. An employee record carries
+// `externalIds.nuvizz` (the alias the picker shows) AND an `aliases[]` list — the names the
+// card has been known by. Three joins in this repo already read both (marginiq.mts
+// resolveDriverPhone, routing-plan-core, routing-draft-core); this one read only the first,
+// and it is the one the flag sweeps' truck-class map and the tractor paint run on.
+//
+// What that cost (Brenton Byrd, 2026-09-02): NuVizz renamed him from "Brent  Boyd" to
+// "Brent  Bryd" on Aug 27. The card's alias said Boyd, so from that day the exact join
+// returned nothing for BRENT, the route had no truck class, and a hard-coded no-trailer stop
+// on it (Evans Contracting) never texted. The fix on the card — alias "Brent Bryd", with
+// "Brent Boyd" kept in aliases[] — was already the right shape; this reader just had to honour
+// it. Still NEVER the display name: aliases[] is a list of NuVizz names somebody put on the
+// card on purpose, which is exactly what externalIds.nuvizz is.
 export function buildVehicleRoster(employees: any[]): VehicleRoster {
   const aliasToVehicle = new Map<string, { vehicleType: string; name: string }>();
   const skippedNoAlias: Array<{ name: string; vehicleType: string }> = [];
@@ -73,10 +87,13 @@ export function buildVehicleRoster(employees: any[]): VehicleRoster {
     const vehicleType = String(e?.vehicleType ?? '').trim();
     if (!vehicleType) continue;
     employeeCount++;
-    const alias = normalizeDriverAlias(e?.externalIds?.nuvizz);
     const name = String(e?.fullName || '').trim() || '(unnamed)';
-    if (!alias) { skippedNoAlias.push({ name, vehicleType }); continue; }
-    aliasToVehicle.set(alias, { vehicleType, name });
+    const aliases = [e?.externalIds?.nuvizz, ...(Array.isArray(e?.aliases) ? e.aliases : [])]
+      .map(normalizeDriverAlias).filter(Boolean);
+    if (!aliases.length) { skippedNoAlias.push({ name, vehicleType }); continue; }
+    // First writer wins on a collision, and the primary alias is listed first — a name two
+    // cards both claim keeps the class of whichever card claimed it as its primary.
+    for (const alias of aliases) if (!aliasToVehicle.has(alias)) aliasToVehicle.set(alias, { vehicleType, name });
   }
   return { aliasToVehicle, employeeCount, skippedNoAlias };
 }
