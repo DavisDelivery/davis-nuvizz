@@ -106,7 +106,7 @@ test('the same ship date twice keeps the FIRST and reports the second', () => {
   ]));
   assert.equal(r.rows.length, 1);
   assert.equal(r.rows[0].estimate, 671);
-  assert.match(r.warnings[0], /2026-07-15 appears twice \(first at row 2\)/);
+  assert.match(r.warnings[0], /2026-07-15 \(G\/DA\) appears twice \(first at row 2\)/);
 });
 
 test('rows come back sorted by date whatever order they arrived in', () => {
@@ -133,4 +133,61 @@ test('resolveForecastColumns: names are case- and space-insensitive', () => {
   assert.equal(cols.date, 0);
   assert.equal(cols.estimate, 1);
   assert.equal(cols.upperEst, 2);
+});
+
+// ── WHAT THE LANE LAYER NEEDS FROM THE READER ────────────────────────────────
+
+test('A FILE WITH TWO LANES KEEPS EVERY GEORGIA ROW — the duplicate rule is per lane, not per date', () => {
+  // Keyed on the date alone, a consolidated export listing warehouse K first would win every
+  // day and Georgia would read as "no freight" on ordinary Wednesdays.
+  const r = readUlineForecast(book([
+    ['7/15/26', 'K', 'XX', 'XX', '300', '340'],
+    ['7/15/26', 'G', 'DA', 'DA', '671', '745'],
+    ['7/16/26', 'G', 'DA', 'DA', '630', '702'],
+    ['7/16/26', 'K', 'XX', 'XX', '310', '350'],
+  ]));
+  assert.equal(r.rows.length, 4, 'all four rows survive');
+  assert.deepEqual(r.rows.filter((x) => x.warehouse === 'G').map((x) => [x.date, x.estimate]), [['2026-07-15', 671], ['2026-07-16', 630]]);
+  assert.deepEqual(r.warnings, []);
+  // The same lane twice is still a duplicate.
+  const dup = readUlineForecast(book([['7/15/26', 'G', 'DA', 'DA', '671', '745'], ['7/15/26', 'G', 'DA', 'DA', '9', '9']]));
+  assert.equal(dup.rows.length, 1);
+  assert.equal(dup.dropped[0].reason, 'duplicate');
+});
+
+test('every dropped row is returned WITH ITS DATE, so a day with no readable number is never mistaken for a closed day', () => {
+  const r = readUlineForecast(book([
+    ['7/15/26', 'G', 'DA', 'DA', '671', '745'],
+    ['7/16/26', 'G', 'DA', 'DA', 'n/a', '702'],
+    ['bad', 'G', 'DA', 'DA', '600', '660'],
+  ]));
+  assert.deepEqual(r.dropped.map((d) => [d.date, d.reason]), [['2026-07-16', 'bad_number'], [null, 'bad_date']]);
+  assert.equal(r.dropped[0].row, 3, '1-based, as the spreadsheet shows it');
+});
+
+test('the header row and the resolved columns come back, so "column absent" is a fact and not a guess', () => {
+  const full = readUlineForecast(book(ULINE));
+  assert.deepEqual(full.headers, ['date', 'warehouse', 'via', 'viatype', 'estimate', 'upperest']);
+  assert.equal(full.cols.warehouse, 1);
+  assert.equal(full.cols.via, 2);
+  const noVia = readUlineForecast(book([['7/15/26', '671', '745']], { header: ['date', 'estimate', 'upperest'] }));
+  assert.equal(noVia.cols.via, undefined, 'no via column at all');
+  assert.equal(noVia.rows[0].via, null);
+  // A blank cell in a column that IS present is also null on the row — the caller tells the
+  // two apart through `cols`, which is the whole reason it is returned.
+  const blankVia = readUlineForecast(book([['7/15/26', 'G', '', 'DA', '671', '745']]));
+  assert.equal(blankVia.cols.via, 2);
+  assert.equal(blankVia.rows[0].via, null);
+  // And a file that is not a forecast still reports what it saw.
+  const junk = readUlineForecast(book([['x', 1]], { header: ['pro', 'lbs'] }));
+  assert.deepEqual(junk.headers, ['pro', 'lbs']);
+});
+
+test('a General-format date cell arrives as the STRING "46220" through raw:false and reads as a serial; d-mmm-yy reads too', () => {
+  assert.equal(forecastDateToIso(46220), '2026-07-17');
+  assert.equal(forecastDateToIso('46220'), '2026-07-17');
+  assert.equal(forecastDateToIso('18-Jul-26'), '2026-07-18');
+  assert.equal(forecastDateToIso('18-Jul-2026'), '2026-07-18');
+  assert.equal(forecastDateToIso('18-Xyz-26'), null);
+  assert.equal(forecastDateToIso('99999'), null, 'outside the plausible serial range');
 });

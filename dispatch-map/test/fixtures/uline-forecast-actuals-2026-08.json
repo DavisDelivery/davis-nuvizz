@@ -1,0 +1,181 @@
+{
+ "_note": "manifest_days.latest fields for the 11 nights on file, read from the live manifest-history endpoint (Firestore only, zero NuVizz). Fixture for the first-score pin.",
+ "nights": {
+  "2026-08-20": {
+   "orders": 686,
+   "totals": {
+    "count": 686,
+    "lbs": 328125,
+    "skids": 1072,
+    "pieces": 162
+   },
+   "verified": true,
+   "receivedAt": null,
+   "reportNo": 6,
+   "at": "2026-08-21T05:00:48.725Z",
+   "reportCount": 6,
+   "sawOrderCountFall": false,
+   "missingCount": 0
+  },
+  "2026-08-21": {
+   "orders": 505,
+   "totals": {
+    "count": 505,
+    "lbs": 236465,
+    "skids": 750,
+    "pieces": 160
+   },
+   "verified": true,
+   "receivedAt": null,
+   "reportNo": 7,
+   "at": "2026-08-22T05:00:40.956Z",
+   "reportCount": 7,
+   "sawOrderCountFall": false,
+   "missingCount": 30
+  },
+  "2026-08-23": {
+   "orders": 75,
+   "totals": {
+    "count": 75,
+    "lbs": 28309,
+    "skids": 97,
+    "pieces": 27
+   },
+   "verified": true,
+   "receivedAt": null,
+   "reportNo": 6,
+   "at": "2026-08-24T05:00:44.155Z",
+   "reportCount": 6,
+   "sawOrderCountFall": false,
+   "missingCount": 0
+  },
+  "2026-08-24": {
+   "orders": 618,
+   "totals": {
+    "count": 618,
+    "lbs": 322954,
+    "skids": 1007,
+    "pieces": 195
+   },
+   "verified": true,
+   "receivedAt": null,
+   "reportNo": 6,
+   "at": "2026-08-25T05:00:52.618Z",
+   "reportCount": 6,
+   "sawOrderCountFall": false,
+   "missingCount": 0
+  },
+  "2026-08-25": {
+   "orders": 657,
+   "totals": {
+    "count": 657,
+    "lbs": 308997,
+    "skids": 960,
+    "pieces": 178
+   },
+   "verified": true,
+   "receivedAt": null,
+   "reportNo": 7,
+   "at": "2026-08-26T05:00:49.051Z",
+   "reportCount": 7,
+   "sawOrderCountFall": false,
+   "missingCount": 0
+  },
+  "2026-08-26": {
+   "orders": 692,
+   "totals": {
+    "count": 692,
+    "lbs": 367864,
+    "skids": 1144,
+    "pieces": 195
+   },
+   "verified": true,
+   "receivedAt": null,
+   "reportNo": 7,
+   "at": "2026-08-27T05:00:50.944Z",
+   "reportCount": 7,
+   "sawOrderCountFall": false,
+   "missingCount": 0
+  },
+  "2026-08-27": {
+   "orders": 621,
+   "totals": {
+    "count": 621,
+    "lbs": 310966,
+    "skids": 927,
+    "pieces": 202
+   },
+   "verified": true,
+   "receivedAt": null,
+   "reportNo": 7,
+   "at": "2026-08-28T05:00:49.399Z",
+   "reportCount": 7,
+   "sawOrderCountFall": false,
+   "missingCount": 0
+  },
+  "2026-08-28": {
+   "orders": 534,
+   "totals": {
+    "count": 534,
+    "lbs": 282883,
+    "skids": 871,
+    "pieces": 177
+   },
+   "verified": true,
+   "receivedAt": 1787977829000,
+   "reportNo": 7,
+   "at": "2026-08-29T05:00:50.014Z",
+   "reportCount": 7,
+   "sawOrderCountFall": false,
+   "missingCount": 83
+  },
+  "2026-08-30": {
+   "orders": 68,
+   "totals": {
+    "count": 68,
+    "lbs": 28599,
+    "skids": 95,
+    "pieces": 16
+   },
+   "verified": true,
+   "receivedAt": 1788150614000,
+   "reportNo": 6,
+   "at": "2026-08-31T05:00:40.845Z",
+   "reportCount": 6,
+   "sawOrderCountFall": false,
+   "missingCount": 0
+  },
+  "2026-08-31": {
+   "orders": 652,
+   "totals": {
+    "count": 652,
+    "lbs": 335566,
+    "skids": 1052,
+    "pieces": 172
+   },
+   "verified": true,
+   "receivedAt": 1788237033000,
+   "reportNo": 7,
+   "at": "2026-09-01T05:00:46.882Z",
+   "reportCount": 7,
+   "sawOrderCountFall": false,
+   "missingCount": 0
+  },
+  "2026-09-01": {
+   "orders": 764,
+   "totals": {
+    "count": 764,
+    "lbs": 362335,
+    "skids": 1144,
+    "pieces": 240
+   },
+   "verified": true,
+   "receivedAt": 1788318029000,
+   "reportNo": 5,
+   "at": "2026-09-02T03:01:13.426Z",
+   "reportCount": 5,
+   "sawOrderCountFall": false,
+   "missingCount": 0
+  }
+ }
+}
