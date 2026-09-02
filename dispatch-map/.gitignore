@@ -6,3 +6,6 @@ dist/
 .env
 .env.local
 artifacts/
+
+# screenshot the hide-labels guard writes for a human to look at; never a build input
+hide-place-labels-check.png

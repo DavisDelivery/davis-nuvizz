@@ -51,6 +51,32 @@ export function versionOf(source) {
   return m ? m[1] : null;
 }
 
+/**
+ * WHICH WAY DID THE NUMBER MOVE? 'forward' is the only answer that passes.
+ *
+ * The gate used to ask one question — "is it still the same?" — and a version that went
+ * DOWN sailed through. That is not hypothetical: a branch bumped to 0.81.9 while main moved
+ * on to 0.83.0, and on rebase the gate printed "✓ APP_VERSION 0.83.0 → 0.81.9". Merged, that
+ * would have put a footer on production reading OLDER than the build before it, which is the
+ * one thing this file exists to make impossible — and the deploy watchdog, which takes the
+ * highest changelog row as the live version, would have kept reporting 0.83.0 while the
+ * bundle said 0.81.9. Compared numerically per part, so 0.83.10 is after 0.83.9.
+ */
+export function versionDirection(was, now) {
+  const parse = (v) => {
+    const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(v ?? '').trim());
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  };
+  const a = parse(was); const b = parse(now);
+  if (!b) return 'unparseable';
+  if (!a) return 'forward';          // no prior version on the base: anything parseable is a first bump
+  for (let i = 0; i < 3; i++) {
+    if (b[i] > a[i]) return 'forward';
+    if (b[i] < a[i]) return 'backward';
+  }
+  return 'same';
+}
+
 /** Every version string that heads a changelog row, so a bump without a row is caught. */
 export function changelogVersions(source) {
   return [...String(source || '').matchAll(/\n\s*\['(\d+\.\d+\.\d+)',/g)].map((m) => m[1]);
@@ -82,7 +108,21 @@ function main() {
     process.exit(1);
   }
 
-  if (wasV && wasV === nowV) {
+  const direction = versionDirection(wasV, nowV);
+  if (direction === 'unparseable') {
+    console.error(`✗ APP_VERSION '${nowV}' is not x.y.z.`);
+    process.exit(1);
+  }
+  if (direction === 'backward') {
+    console.error(`✗ APP_VERSION went BACKWARDS: ${wasV} on ${base} → ${nowV} here.`);
+    console.error('');
+    console.error('  main has moved past this branch. A footer that reads older than the build');
+    console.error('  before it is worse than one that did not move: it says the deploy is stale');
+    console.error('  when it is the newest thing on the site. Re-bump ABOVE ' + wasV + ' and move');
+    console.error('  the changelog row to the top.');
+    process.exit(1);
+  }
+  if (direction === 'same') {
     console.error(`✗ APP_VERSION is still ${nowV}.`);
     console.error('');
     console.error('  This change ships code, so it produces a deploy — and a deploy whose');

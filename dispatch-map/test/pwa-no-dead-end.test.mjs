@@ -71,6 +71,79 @@ test('the viewer offers a way out that is not the browser', () => {
   assert.match(blanks[0], /data-escape-hatch/, 'and it is the marked one');
 });
 
+// ── THE HATCH ITSELF WAS THE DEAD END ────────────────────────────────────────
+//
+// Chad, the morning after v0.81.6 shipped the in-app pages: "there is no way to close out the
+// manifest viewer." His screenshot was iOS's NATIVE PDF view — "1 of 15" in a pill, pages on
+// black — not ours. The document had navigated the window, and the one anchor still allowed
+// to do that was the escape hatch, 44px from Close. In a browser tab it is a tab; in the
+// installed app it is the exact trap this file exists to prevent, one mis-tap wide.
+
+test('THE VIEWER RENDERS FROM THE RULE, AND THE RULE IS TESTED ELSEWHERE WITH REAL INPUTS', () => {
+  // The rule itself — iOS home-screen app → Share or nothing, everything else → the hatch —
+  // is pinned in test/pwa-mode.test.mjs on every combination of inputs. What this file holds
+  // is thinner and harder to fake: the viewer asks that rule, with the two live predicates as
+  // its inputs, and the ONLY anchor out is rendered under the rule's 'hatch' answer.
+  const v = APP.slice(APP.indexOf('function DocumentViewerModal('));
+  const body = v.slice(0, v.indexOf('\nfunction '));
+  assert.match(APP, /import \{ isIosHomeScreenApp, canShareFiles, describePwaMode, viewerWayOut \} from '\.\/lib\/pwa-mode\.js'/);
+  assert.match(body, /const wayOut = viewerWayOut\(\{ iosHomeScreen: isIosHomeScreenApp\(\), canShareFiles: canShareFiles\(\) \}\);/,
+    'the rule is asked with the live predicates, not a constant');
+  // Every anchor in the viewer must sit inside the `wayOut === 'hatch' ? (` branch: find each
+  // <a and walk back to the nearest branch marker; it must be the hatch one.
+  const anchors = [...body.matchAll(/<a\s/g)].map((m) => m.index);
+  assert.ok(anchors.length >= 1, 'the hatch anchor exists for browsers');
+  for (const at of anchors) {
+    const before = body.slice(0, at);
+    const hatch = before.lastIndexOf("wayOut === 'hatch' ? (");
+    const share = before.lastIndexOf("wayOut === 'share' ? (");
+    assert.ok(hatch > share, `an anchor at ${at} is not under the 'hatch' answer`);
+  }
+  // And no other way to leave: no window.open, no location assignment, in this viewer.
+  assert.ok(!/window\.open\(|location\.(href|assign|replace)/.test(body), 'no other navigation out');
+});
+
+test('in the installed app the file can still leave the phone — by Share, which comes back', () => {
+  // Removing the hatch removes the only way to get the manifest to somebody else. Share hands
+  // the bytes to the system sheet (AirDrop, Messages, Files) and returns to the board; it is
+  // offered whenever the device says it can take a file — a delivery photo as much as the PDF.
+  const v = APP.slice(APP.indexOf('function DocumentViewerModal('));
+  const body = v.slice(0, v.indexOf('\nfunction '));
+  assert.match(body, /const shareable = wayOut === 'share'/);
+  assert.match(body, /aria-label="Share"/);
+  assert.match(body, /navigator\.canShare\(\{ files: \[file\] \}\)/, 'the capability is probed with the actual file');
+  assert.match(body, /navigator\.share\(\{ files: \[file\]/, 'and the FILE is what is shared');
+  assert.match(body, /minWidth: 44, minHeight: 44/, 'thumb-sized like Close beside it');
+});
+
+test('SHARE DOES NO I/O BEFORE IT CALLS share() — the tap’s activation is not spent on a download', () => {
+  // The Web Share spec rejects share() without transient activation, and an awaited network
+  // fetch inside the handler spends it: on cellular that download is seconds, and iOS answers
+  // NotAllowedError to a tap that looked perfectly ordinary. So the bytes are fetched when the
+  // viewer OPENS, the button is disabled until they are in hand, and the handler is
+  // synchronous up to the share call.
+  const v = APP.slice(APP.indexOf('function DocumentViewerModal('));
+  const body = v.slice(0, v.indexOf('\nfunction '));
+  const handler = body.slice(body.indexOf('const shareFile = '), body.indexOf('navigator.share('));
+  assert.ok(!/\bawait\b/.test(handler), `no await between the tap and share():\n${handler}`);
+  assert.ok(!/fetch\(/.test(handler), 'and no fetch in the handler at all');
+  assert.match(body, /const bytes = await r\.arrayBuffer\(\)/, 'the bytes are fetched up front');
+  assert.match(body, /disabled=\{!doc\}/, 'and Share waits for them');
+  // The same bytes feed the pages — the no-store PDF is not downloaded twice.
+  assert.match(body, /<PdfPages src=\{src\} bytes=\{doc\?\.bytes \|\| null\} \/>/);
+  assert.match(PDF_PAGES, /getDocument\(\{ data: new Uint8Array\(bytes\.slice\(0\)\) \}\)/, 'pdf.js is handed a copy, since it transfers the buffer');
+  assert.ok(!/getDocument\(\{ url/.test(PDF_PAGES), 'and never re-fetches by URL');
+});
+
+test('a share that fails says so on the screen — a button that visibly does nothing is the failure', () => {
+  const v = APP.slice(APP.indexOf('function DocumentViewerModal('));
+  const body = v.slice(0, v.indexOf('\nfunction '));
+  assert.match(body, /setShareErr\(`Share failed: /);
+  assert.match(body, /\{shareErr \|\| `Could not load the document: \$\{docErr\}`\}/, 'and it is rendered, as is a document that would not load');
+  assert.match(body, /if \(\/abort\/i\.test\(String\(e\?\.name \|\| ''\)\)\) return;/, 'closing the sheet is not a failure');
+  assert.ok(!/console\.warn\('\[viewer\] share failed'/.test(body), 'nothing goes only to the console');
+});
+
 test('POD photos and the manifest share ONE viewer, so neither can drift', () => {
   // They were separate before and the second one inherited the bug. One implementation is
   // the only version of this that stays fixed.
