@@ -29,7 +29,7 @@
 //    a person acted; it is not proof the move saved the stop, and nothing here says it was.
 //
 // 2. NEVER RENDER A PROJECTION AS A WALL-CLOCK TIME. `closeMin + worstLateBy` runs past
-//    midnight on 5 of the 206 rows on file, and a bare "4:40a" for freight projected onto the
+//    midnight on 9 of the 206 rows on file, and a bare "4:40a" for freight projected onto the
 //    small hours of the NEXT day is wrong by a day. Projections are always a DURATION past the
 //    close. Observed times — the close, the delivery, the sightings — are real clock readings
 //    and stay clock readings.
@@ -166,7 +166,9 @@ export function margin(row, boardDate) {
   const close = isMin(row?.closeMin) ? Number(row.closeMin) : null;
   const w = deliveredWhen(row, { boardDate });
   if (close == null || !w || w.minutes == null) return null;
-  if (w.tone === 'later' || w.tone === 'open') return null;   // delivered on a different day
+  // 'later'/'open' delivered on another day; 'missing' means deliveredWhen itself says the
+  // date was never recorded, so subtracting borrows the board's day and calls it observed.
+  if (w.tone === 'later' || w.tone === 'open' || w.tone === 'missing') return null;
   const by = close - w.minutes;
   return {
     min: by, sameDay: true,
@@ -189,29 +191,60 @@ const OUTCOME_TEXT = {
  * wrong sentence — six of thirteen rows in the screenshot Chad sent were in exactly that state
  * at 10:12am.
  */
-export function outcomeNote(row, { boardDate = null, dayScored = null } = {}) {
+export function outcomeNote(row, { boardDate = null, dayState = 'unknown' } = {}) {
   const key = row?.outcome || 'unknown';
   const w = deliveredWhen(row, { boardDate });
   if (key !== 'unknown') {
     return { key, text: OUTCOME_TEXT[key] || 'Outcome not recorded.', delivered: w };
   }
-  if (dayScored === false) {
-    return { key, pending: true, text: 'No delivery recorded yet — this day is still being graded.', delivered: w };
+  // THREE day states, not two. "Still being graded" and "not graded at all" are different
+  // sentences, and an unknown state must never invent either — it falls back to the settled
+  // wording rather than promising a join that may already have run.
+  if (dayState === 'live') {
+    return { key, pending: true, delivered: w,
+      text: 'No delivery recorded yet — this day is still being graded. Made and missed settle on the live board; rolled and never delivered wait for tonight\'s join.' };
+  }
+  if (dayState === 'none') {
+    return { key, pending: true, text: 'This day has not been graded at all yet.', delivered: w };
   }
   return { key, text: 'No delivery was recorded for this stop, so it could not be graded.', delivered: w };
+}
+
+/**
+ * WHY CUSTOMER SERVICE WAS OR WAS NOT TOLD.
+ *
+ * "No email" on its own reads as nobody bothering. Usually it is the rule working: 170 of the
+ * 206 flags on file were never emailed, and 154 of those are explained by three refusals that
+ * selectAlertable (flag-alert.mts:279-291) applies in exactly this order. Replayed over the
+ * stored rows in that order: 110 assumed hours, 39 never past amber, 5 raised after the door
+ * shut — leaving 16 the ladder cannot explain, which is why the last rung says only "no
+ * urgent email went out" rather than inventing a reason for them.
+ */
+export function alertNote(row) {
+  if (row?.emailed === true) return { key: 'emailed', text: 'An urgent email went to customer service.' };
+  // 1. An assumed close never alerts, and the guard sits ABOVE the amber gate on purpose —
+  //    110 of the 170. 2. Only red and critical email — 39 more. 3. The door had already shut
+  //    before the first sighting — 5 more.
+  if (row?.hoursTier === 'assumed') return { key: 'assumed', muted: true, text: 'No urgent email went out: the hours were assumed, and a stop with no recorded hours never alerts at any tier.' };
+  if (row?.worstTier === 'amber') return { key: 'amber', muted: true, text: 'No urgent email went out: it never reached red, and only red and critical email customer service.' };
+  const lead = num(row?.leadMin);
+  if (lead != null && lead <= 0) return { key: 'too_late', muted: true, text: 'No urgent email went out: the receiving window had already shut when we first saw it, and nothing actionable was left to send.' };
+  return { key: 'none', muted: true, text: 'No urgent email went out.' };
 }
 
 /** A route change after we flagged it is the one recorded sign a person acted. Position was
  *  meant to count too, but firstSeq/lastSeq are null on all 206 rows on file — the sweep has
  *  never written them — so a move is a ROUTE move and the panel does not pretend otherwise. */
 export function actionNotes(row) {
-  const out = [];
-  if (row?.emailed === true) out.push({ key: 'emailed', text: 'An urgent email went to customer service.' });
+  const out = [alertNote(row)];
   const from = String(row?.firstRoute ?? '').trim();
   const to = String(row?.lastRoute ?? '').trim();
+  // "No route change" is a FACT about the stop, not a verdict on anybody: it stayed where it
+  // was. Only 4 of the 206 flags on file ever moved, so the ordinary case must not read as
+  // an accusation.
   if (from && to && from !== to) out.push({ key: 'moved', text: `Moved from ${from} to ${to} after we flagged it.` });
-  else if (row?.actedOn === true) out.push({ key: 'acted', text: 'The stop was changed after we flagged it.' });
-  if (!out.length) out.push({ key: 'none', text: 'No email and no route change recorded.', muted: true });
+  else if (row?.actedOn === true) out.push({ key: 'acted', text: 'The stop was recorded as changed after we flagged it, though its route did not move.' });
+  else if (to) out.push({ key: 'stayed', muted: true, text: `The stop stayed on ${to}.` });
   return out;
 }
 
@@ -223,13 +256,14 @@ export function actionNotes(row) {
  * @param {object} row        a stored FlagRow, exactly as eta-flag-history returns it
  * @param {object} opts
  * @param {string} opts.boardDate   the day the flag belongs to (YYYY-MM-DD)
- * @param {boolean|null} opts.dayScored  whether the overnight join has run for that day
+ * @param {string} opts.dayState  'scored' | 'live' | 'none' | 'unknown' — how far the day's
+ *        grading has got. Flattening it to a boolean loses "not graded at all".
  */
-export function flagDetail(row, { boardDate = null, dayScored = null } = {}) {
+export function flagDetail(row, { boardDate = null, dayState = 'unknown' } = {}) {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
   const proj = projection(row);
   const m = margin(row, boardDate);
-  const out = outcomeNote(row, { boardDate, dayScored });
+  const out = outcomeNote(row, { boardDate, dayState });
   const lead = isMin(row.leadMin) ? Number(row.leadMin) : null;
   const first = row.firstTier || null; const worst = row.worstTier || null;
   const cautions = [];
