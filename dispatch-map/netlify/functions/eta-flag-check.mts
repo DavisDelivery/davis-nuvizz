@@ -25,7 +25,7 @@ import { legSecondsMap, travelLegsPath, readTravelCalibration, readRouteClasses 
 import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mts';
 import { flagHistoryPath } from './lib/flag-history.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
-import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, DAILY_ALERT_CAP, ALERT_TIERS, AMBER_LEAD_GATE_MIN, alertBandOf, finiteMinutes } from './lib/flag-alert.mts';
+import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, DAILY_ALERT_CAP, ALERT_MIN_TIER, alertTiersFor, normalizeMinTier, AMBER_LEAD_GATE_MIN, alertBandOf, finiteMinutes } from './lib/flag-alert.mts';
 import { flattenForConsumers } from './lib/flag-rows.mts';
 import { emailEnabled } from './lib/email.mts';
 import { requireUser } from './lib/require-user.mts';
@@ -57,7 +57,26 @@ const clock = (m: number) => {
 // three modules and a code read to answer the first time it was asked. It should cost one
 // request and be provable by a test.
 
-export function heldReason(r: any, alertable: boolean, nowMin: number | null, amberGateMin = AMBER_LEAD_GATE_MIN): string | null {
+// The tiers the BOARD paints as urgent — deliberately NOT the email floor. The dry run lists
+// every one of them and says which would send; a diagnostic that can only see what the mailer
+// sees is the bug this endpoint was built to fix.
+const BOARD_URGENT = new Set(['critical', 'red']);
+/** Which rows the dry run LISTS. Exported and pure so the rule above is pinned by a test
+ *  rather than by the comment: it takes no floor, on purpose. */
+export function isBoardUrgent(r: any, amberGateMin = AMBER_LEAD_GATE_MIN): boolean {
+  if (r?.rule !== 'hours_risk') return false;
+  const gate = Number.isFinite(amberGateMin) && amberGateMin > 0 ? amberGateMin : 0;
+  return BOARD_URGENT.has(String(r?.tier)) || (gate > 0 && String(r?.tier) === 'amber');
+}
+
+/** Names the tiers that email, in a sentence: "only critical emails" / "only critical and
+ *  red email". Derived from the floor so this sentence cannot drift from the gate. */
+export function tierPhrase(minTier: string = ALERT_MIN_TIER): string {
+  const tiers = [...alertTiersFor(minTier)];
+  return tiers.length === 1 ? `only ${tiers[0]} emails` : `only ${tiers.join(' and ')} email`;
+}
+
+export function heldReason(r: any, alertable: boolean, nowMin: number | null, amberGateMin = AMBER_LEAD_GATE_MIN, minTier: string = ALERT_MIN_TIER): string | null {
   if (alertable) return null;
   // R7 is not an inbox rule and never was one, so say WHY rather than filing it under a
   // generic "not a receiving-hours risk" that reads like a bug. A trailer conflict is a
@@ -76,9 +95,14 @@ export function heldReason(r: any, alertable: boolean, nowMin: number | null, am
   // close. This endpoint's whole reason for being is to answer "why did customer service
   // not hear about this stop", and a diagnostic that shares the alert path's blind spot is
   // worse than none — it reads like a clean bill of health.
-  if (!ALERT_TIERS.has(String(r?.tier))) {
+  const floor = normalizeMinTier(minTier);
+  if (!alertTiersFor(floor).has(String(r?.tier))) {
     const gate = Number.isFinite(amberGateMin) && amberGateMin > 0 ? amberGateMin : 0;
-    if (String(r?.tier) !== 'amber') return `tier is ${r?.tier} — only ${[...ALERT_TIERS].join(' and ')} email`;
+    if (String(r?.tier) !== 'amber') return `tier is ${r?.tier} — ${tierPhrase(floor)} (ALERT_MIN_TIER=${floor})`;
+    // THE FLOOR OUTRANKS THE GATE, AND THE ANSWER HAS TO SAY SO. With the floor at critical
+    // an amber cannot email even with the gate switched on, and reporting "the gate is off"
+    // when the gate is 120 would send somebody to change the wrong setting.
+    if (floor !== 'red') return `tier is amber — ${tierPhrase(floor)} (ALERT_MIN_TIER=${floor}), so the amber lead gate cannot open it`;
     if (!gate) return 'tier is amber and the amber lead gate is off (AMBER_LEAD_GATE_MIN=0) — screen only';
     if (r?.rule !== 'hours_risk') return 'amber, and only hours_risk rows pass the amber gate';
     if (nowMin == null) return 'amber, and this board has no clock — the gate needs one to measure lead';
@@ -99,14 +123,14 @@ export function heldReason(r: any, alertable: boolean, nowMin: number | null, am
   return 'held for a reason this endpoint does not model — read selectAlertable';
 }
 
-export function explainRow(r: any, alertableSet: Set<string>, nowMin: number | null, amberGateMin = AMBER_LEAD_GATE_MIN) {
+export function explainRow(r: any, alertableSet: Set<string>, nowMin: number | null, amberGateMin = AMBER_LEAD_GATE_MIN, minTier: string = ALERT_MIN_TIER) {
   const alertable = alertableSet.has(String(r?.stopNbr));
   return {
     stopNbr: r?.stopNbr, customer: r?.customer, route: r?.routeName, tier: r?.tier,
     close: clock(r?.closeMin), eta: clock(r?.etaMin), lateBy: r?.lateBy,
     anchored: r?.anchored, errorBand: r?.errorMin,
     wouldEmailNow: alertable,
-    heldBecause: heldReason(r, alertable, nowMin, amberGateMin),
+    heldBecause: heldReason(r, alertable, nowMin, amberGateMin, minTier),
   };
 }
 
@@ -257,8 +281,8 @@ export function hoursCoverage(
 export function explainStop(
   askedStop: string, stops: any[], rows: any[], alertableSet: Set<string>,
   nowMin: number | null, claimed: any[],
-  { notes = null, dayKey = null, amberGateMin = AMBER_LEAD_GATE_MIN }:
-    { notes?: Map<string, any> | null; dayKey?: string | null; amberGateMin?: number } = {},
+  { notes = null, dayKey = null, amberGateMin = AMBER_LEAD_GATE_MIN, minTier = ALERT_MIN_TIER }:
+    { notes?: Map<string, any> | null; dayKey?: string | null; amberGateMin?: number; minTier?: string } = {},
 ) {
   const want = normStopNbr(askedStop);
   const matches = (v: any) => normStopNbr(v) === want;
@@ -290,7 +314,7 @@ export function explainStop(
     emailedToday: alreadyClaimed,
     wouldEmailNow: row ? alertableSet.has(String(row.stopNbr)) : false,
     heldBecause: alreadyClaimed ? 'already emailed once today — one per stop per board day'
-      : (row ? heldReason(row, alertableSet.has(String(row.stopNbr)), nowMin, amberGateMin)
+      : (row ? heldReason(row, alertableSet.has(String(row.stopNbr)), nowMin, amberGateMin, minTier)
         // NOT FLAGGED SPLITS IN TWO, and the halves need different people. No parsable
         // hours is a data gap somebody has to fill in on the customer card; hours on file
         // with no flag is the engine saying the stop makes it.
@@ -323,6 +347,11 @@ export default async (req: Request): Promise<Response> => {
     const gateMin = gateParam != null && Number.isFinite(Number(gateParam))
       ? Math.max(0, Number(gateParam))
       : AMBER_LEAD_GATE_MIN;
+    // `?floor=red` rehearses the WIDER policy on today's real board — "what would we have
+    // sent under the old rule" — without setting ALERT_MIN_TIER in production. Chad narrowed
+    // the floor to critical on a measurement; this is how the next measurement gets taken.
+    const floorParam = url.searchParams.get('floor');
+    const minTier = floorParam != null ? normalizeMinTier(floorParam) : ALERT_MIN_TIER;
 
     const { stops: rawStops } = await readStops(TENANT, date);
     // THE LIVE STOP INDEX DOES NOT CARRY matchKey. computeBoardFlags looks its receiving
@@ -396,8 +425,16 @@ export default async (req: Request): Promise<Response> => {
     // "this stop is fine" about a stop it was emailing in the same request. `counts` stays
     // on the raw rows on purpose: the panel's numbers are the collapsed ones.
     const flatRows = flattenForConsumers(flags.rows || []);
-    const urgent = flatRows.filter((r: any) => r.rule === 'hours_risk'
-      && (ALERT_TIERS.has(String(r.tier)) || (gateMin > 0 && String(r.tier) === 'amber')));
+    // THE LIST IS THE BOARD'S URGENT ROWS, NOT THE EMAIL POPULATION — AND SCOPING IT TO THE
+    // FLOOR RE-CREATES THE ORIGINAL BUG.
+    //
+    // Narrowing this to alertTiersFor(floor) was the first thing I wrote when the floor moved
+    // to critical, and it is exactly the defect the comment above describes: with red below
+    // the floor, the endpoint built to answer "there is a red flag and no email, why" would
+    // not list the red row at all, and would answer with an empty list — a clean bill of
+    // health for the precise question it exists to answer. The floor decides what SENDS;
+    // heldBecause on each row already says so. It does not get to decide what is VISIBLE.
+    const urgent = flatRows.filter((r: any) => isBoardUrgent(r, gateMin));
     // R7, listed separately and NOT folded into `urgent`, which is the email population. It
     // would text tonight, not email today, and mixing the two is how a payload comes to
     // contradict itself about what it is going to do.
@@ -409,7 +446,7 @@ export default async (req: Request): Promise<Response> => {
         routeConflicts: r.routeConflicts,
       }));
     const askedStop = url.searchParams.get('stop');
-    const alertable = selectAlertable(flatRows, nowMin, gateMin);
+    const alertable = selectAlertable(flatRows, nowMin, gateMin, minTier);
     const alertableSet = new Set(alertable.map((c) => c.stopNbr));
 
     // What has already been claimed today. A claim means an email was attempted; it is
@@ -456,7 +493,7 @@ export default async (req: Request): Promise<Response> => {
       emailConfigured: emailEnabled(), to: ALERT_TO, dailyCap: DAILY_ALERT_CAP,
       counts: { critical: flags.criticalCount ?? 0, red: flags.redCount ?? 0, amber: flags.amberCount ?? 0 },
       // Every urgent row, and for each one WHY it would or would not be emailed right now.
-      urgent: urgent.map((r: any) => explainRow(r, alertableSet, nowMin, gateMin)),
+      urgent: urgent.map((r: any) => explainRow(r, alertableSet, nowMin, gateMin, minTier)),
       // Board-flags R7. Listed because it is on the board and in the overnight texts, and a
       // dry run that shows only the email population would answer "is anything on the wrong
       // truck tonight" with silence.
@@ -464,13 +501,19 @@ export default async (req: Request): Promise<Response> => {
       // ?stop=<PRO> — the answer to "why did I not get an email about THIS one", for any
       // stop on the board, flagged or not. Added because answering it once by hand meant
       // reading three modules; it should cost one request.
-      explain: askedStop ? explainStop(askedStop, stops, flatRows, alertableSet, nowMin, claimed, { notes, dayKey: weekdayKey(date), amberGateMin: gateMin }) : undefined,
+      explain: askedStop ? explainStop(askedStop, stops, flatRows, alertableSet, nowMin, claimed, { notes, dayKey: weekdayKey(date), amberGateMin: gateMin, minTier }) : undefined,
       alreadyClaimedToday: claimed,
       wouldSendNow: alertable.filter((c) => !claimed.some((x) => x.stopNbr === c.stopNbr && x.band === alertBandOf(c.tier))).length,
       // The switch's position, reported rather than inferred. `effective` is what this run
       // actually judged on (a ?gate= rehearsal overrides the env var); `configured` is what
       // production is set to right now.
       amberGate: { effective: gateMin, configured: AMBER_LEAD_GATE_MIN, rehearsed: gateParam != null },
+      // The other switch, reported the same way. `tiers` is the sentence the held-reasons use,
+      // so a reader never has to work out what the floor means for a given tier.
+      alertFloor: {
+        effective: minTier, configured: ALERT_MIN_TIER, rehearsed: floorParam != null,
+        tiers: [...alertTiersFor(minTier)], says: tierPhrase(minTier),
+      },
       sample: alertable[0] ? buildAlert(alertable[0], date).subject : null,
     });
   } catch (e: any) {

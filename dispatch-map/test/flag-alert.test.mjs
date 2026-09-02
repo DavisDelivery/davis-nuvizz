@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   selectAlertable, buildAlert, sendAlerts, alertClaimPath, DAILY_ALERT_CAP, ALERT_TO, ALERT_TIERS,
+  ALERT_MIN_TIER, alertTiersFor, normalizeMinTier,
 } from '../netlify/functions/lib/flag-alert.mts';
 
 const DATE = '2026-08-17';
@@ -12,31 +13,61 @@ const row = (o) => ({
   closeMin: 14 * 60, etaMin: 16 * 60, lateBy: 120, anchored: true, ...o,
 });
 
-test('EVERY urgent tier is emailed — amber alone stays on the screen', () => {
-  // Chad: "We want every red. Amber is a screen thing."
+test('ONLY CRITICAL IS EMAILED — red and amber stay on the screen', () => {
+  // Chad, 2026-09-02: "I don't want a 100 Emails. We are only emailing on critical."
   //
-  // This test used to assert the opposite, and the assertion was wrong rather than the
-  // behaviour being deliberate. v0.55.4 split the old 'red' into critical + red and the
-  // alert stayed wired to critical alone, so a stop the BOARD was painting as an urgent red
-  // flag sent nothing. Chad found it that way: "This popped up as an urgent red flag but no
-  // email was sent to customer service."
+  // This assertion has now been written three ways, so here is the record rather than an
+  // opinion. v0.55.4 split the old 'red' into critical + red and left the alert on critical
+  // alone — an ENGINEER narrowing it silently while the board still painted red as urgent,
+  // which Chad found the hard way ("This popped up as an urgent red flag but no email was
+  // sent to customer service") and v0.56.3 fixed by widening to both. This is the OWNER
+  // narrowing it out loud, with the stored history behind him: over 2026-08-25 → 09-02, of
+  // the eight red-but-never-critical stops that emailed, SEVEN made their window.
   const got = selectAlertable([
     row({ stopNbr: '1' }),
     row({ stopNbr: '2', tier: 'red', lateBy: 60 }),
     row({ stopNbr: '3', tier: 'amber' }),
   ], 10 * 60);
+  assert.deepEqual(got.map((c) => c.stopNbr), ['1']);
+});
+
+test('and ALERT_MIN_TIER=red puts every red back, without a deploy', () => {
+  // The switch is the whole reason the narrowing is safe to ship: if 2.0 emails a day turns
+  // out to be too quiet, this is one env var, not a code change and a release.
+  const got = selectAlertable([
+    row({ stopNbr: '1' }),
+    row({ stopNbr: '2', tier: 'red', lateBy: 60 }),
+    row({ stopNbr: '3', tier: 'amber' }),
+  ], 10 * 60, 0, 'red');
   assert.deepEqual(got.map((c) => c.stopNbr), ['1', '2']);
 });
 
-test('the alert tiers are exactly the tiers the board paints as urgent', () => {
-  // The screen and the inbox disagreeing is the defect above. Pinning the set means the
-  // next person to add a tier has to decide, in one place, whether it wakes anyone.
-  assert.deepEqual([...ALERT_TIERS].sort(), ['critical', 'red']);
+test('the alert tiers are exactly the floor and above', () => {
+  // Pinning the set means the next person to move this bar has to decide, in one place,
+  // whether it wakes anyone — and the floor is derived, so no downstream copy can drift.
+  assert.equal(ALERT_MIN_TIER, 'critical', 'the shipped floor');
+  assert.deepEqual([...ALERT_TIERS].sort(), ['critical']);
+  assert.equal(ALERT_TIERS.has('red'), false);
   assert.equal(ALERT_TIERS.has('amber'), false);
+  assert.deepEqual([...alertTiersFor('red')].sort(), ['critical', 'red']);
+});
+
+test('a typo in ALERT_MIN_TIER fails QUIET, not open — a bad env var must not widen the inbox', () => {
+  // The amber gate learned this the other way round: a malformed value there resolves to
+  // OFF. Same polarity here — anything unrecognised means the narrower policy, because the
+  // failure that matters is the one where nobody decided to send more email.
+  for (const bad of ['RED ', 'Red', 'red']) assert.equal(normalizeMinTier(bad), 'red', bad);
+  for (const bad of ['reds', 'critical!', '', null, undefined, 0, 'amber', 'CRITICAL']) {
+    assert.equal(normalizeMinTier(bad), 'critical', String(bad));
+  }
+  assert.deepEqual([...alertTiersFor('amber')], ['critical'], 'amber is not a floor anyone can set');
 });
 
 test('a red row carries its own numbers into the message, not a critical row\'s', () => {
-  const m = buildAlert(selectAlertable([row({ tier: 'red', lateBy: 45, etaMin: 14 * 60 + 45 })], 10 * 60)[0], DATE);
+  // Selected at the WIDE floor on purpose: this pins that buildAlert reads the row it was
+  // handed rather than assuming the top tier, which is a property of the message and not of
+  // the policy — and it keeps being tested on a red row after red stopped emailing.
+  const m = buildAlert(selectAlertable([row({ tier: 'red', lateBy: 45, etaMin: 14 * 60 + 45 })], 10 * 60, 0, 'red')[0], DATE);
   assert.match(m.text, /45 minutes late/);
   assert.match(m.html, /45 min late/);
 });
@@ -324,15 +355,26 @@ test('an assumed-close row is refused even with the amber gate wide open', () =>
   };
   assert.equal(selectAlertable([assumed], 16 * 60 + 30, 240).length, 0,
     'a guess must not text, whatever the gate says');
+  // AT BOTH FLOORS, and the wide one is the assertion that still bites. Found by running it,
+  // not by reading it: with the floor at critical this row is refused by the FLOOR, so the
+  // provenance guard could be deleted from flag-alert.mts and this test would still pass —
+  // an amber row cannot email at the critical floor for any reason. A test that passes with
+  // the rule removed has stopped testing the rule.
+  assert.equal(selectAlertable([assumed], 16 * 60 + 30, 240, 'red').length, 0,
+    'and at the wide floor, where only the provenance guard can be what refuses it');
 });
 
 test('the same row with REAL auto-detected hours still passes the open gate', () => {
   // The guard must be about provenance, not about amber — the measured gate still works.
+  // At the WIDE floor, because since 2026-09-02 the floor outranks the gate and an amber
+  // cannot email at all under the shipped one. That is asserted on the next line, so this
+  // pair is what tells the two refusals apart: provenance and floor are different rules.
   const real = {
     rule: 'hours_risk', stopNbr: '9002', customer: 'REAL HOURS CO', tier: 'amber',
     hoursTier: 'auto', closeMin: 17 * 60, etaMin: 17 * 60 + 40, lateBy: 40, detail: 'x',
   };
-  assert.equal(selectAlertable([real], 16 * 60 + 30, 240).length, 1);
+  assert.equal(selectAlertable([real], 16 * 60 + 30, 240, 'red').length, 1);
+  assert.equal(selectAlertable([real], 16 * 60 + 30, 240).length, 0, 'the shipped floor is critical');
 });
 
 test('an assumed row is refused at red too, if a ratchet ever pushes it there', () => {
@@ -343,4 +385,26 @@ test('an assumed row is refused at red too, if a ratchet ever pushes it there', 
     hoursTier: 'assumed', closeMin: 17 * 60, etaMin: 17 * 60 + 40, lateBy: 40, detail: 'x',
   };
   assert.equal(selectAlertable([ratcheted], 16 * 60, 0).length, 0);
+  assert.equal(selectAlertable([ratcheted], 16 * 60, 0, 'red').length, 0, 'at the wide floor too');
+});
+
+test('AND A RATCHETED-TO-CRITICAL GUESS IS STILL REFUSED — the guard that must not rot', () => {
+  // THIS is the case that keeps the provenance guard honest under the shipped floor, and it
+  // is the other half of what Chad said on 2026-09-02: "we are only worried about the ones
+  // that have receiving hours, everyone else we assume closing at 5". A row carrying the 5pm
+  // house guess must never email, and at the critical floor the ONLY tier that can reach the
+  // guard at all is critical — so without this row, deleting the guard breaks nothing.
+  //
+  // It is reachable: severityTier caps 'assumed' at amber, but flag-history's tier ratchet
+  // raises a row and does not re-derive provenance, which is exactly why the guard reads
+  // hoursTier rather than tier.
+  const guess = {
+    rule: 'hours_risk', stopNbr: '9004', customer: 'NO HOURS CO', tier: 'critical',
+    hoursTier: 'assumed', closeMin: 17 * 60, etaMin: 19 * 60, lateBy: 120, detail: 'x',
+  };
+  assert.equal(selectAlertable([guess], 16 * 60).length, 0, 'a 5pm guess never emails, at any tier');
+  assert.equal(selectAlertable([guess], 16 * 60, 240).length, 0, 'nor with the amber gate open');
+  assert.equal(selectAlertable([guess], 16 * 60, 240, 'red').length, 0, 'nor at the wide floor');
+  // …and the identical row with REAL hours does email, so this is provenance and not the row.
+  assert.equal(selectAlertable([{ ...guess, hoursTier: 'auto' }], 16 * 60).length, 1);
 });

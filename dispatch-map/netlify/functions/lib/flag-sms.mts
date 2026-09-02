@@ -173,8 +173,19 @@ export function smsClaimPath(tenant: string, date: string, stopNbr: string, rule
  *
  * TWO POPULATIONS, ONE CAP.
  *
- * hours_risk — the emailable rule and tiers: red and critical occurrences with a real close
- *   ("clearly obvious problems or critical ones", not ambers), worst-late first.
+ * hours_risk — red and critical occurrences with a real close ("clearly obvious problems or
+ *   critical ones", not ambers), worst-late first.
+ *
+ *   THIS BAR IS DELIBERATELY ITS OWN, AND AS OF 2026-09-02 IT IS NO LONGER THE EMAIL BAR.
+ *   Chad narrowed the customer-service email to critical alone ("I don't want a 100 Emails.
+ *   We are only emailing on critical" — flag-alert.mts ALERT_MIN_TIER) and this line
+ *   intentionally did not move with it, because the two channels buy different things. The
+ *   email asks a rep to phone a dock about a delivery that is going to be late; there is
+ *   nothing to phone about until it is confidently late. The text reaches the ROUTER at a
+ *   board at 9pm, while the load can still be rebuilt — a red he can move tonight is worth a
+ *   text and is not worth a phone call tomorrow. Narrowing this too would have been widening
+ *   Chad's instruction, so it reads its own predicate and imports nothing from the email
+ *   path.
  *
  * trailer_conflict — red occurrences, ONE PER ROUTE, worst route (most conflicting stops)
  *   first. No close is required and none exists: this row is not a prediction against a

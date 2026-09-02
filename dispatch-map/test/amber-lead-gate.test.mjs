@@ -9,13 +9,34 @@
 // maximises catches, 180 buys no extra catches but 80 more minutes of warning on 11 of them.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { selectAlertable, AMBER_LEAD_GATE_MIN } from '../netlify/functions/lib/flag-alert.mts';
+import { selectAlertable, AMBER_LEAD_GATE_MIN, ALERT_MIN_TIER } from '../netlify/functions/lib/flag-alert.mts';
 
 const row = (over = {}) => ({
   rule: 'hours_risk', tier: 'amber', stopNbr: 'S1', customer: 'ACME',
   closeMin: 14 * 60, etaMin: 14 * 60 + 20, lateBy: 20, detail: 'x', ...over,
 });
-const pick = (rows, nowMin, gate) => selectAlertable(rows, nowMin, gate).map((c) => c.stopNbr);
+// THE GATE ONLY EXISTS BELOW THE FLOOR, SO THESE TESTS RUN AT THE FLOOR THAT HAS ONE.
+//
+// Chad narrowed the email floor to critical on 2026-09-02 ("We are only emailing on
+// critical"), and the floor deliberately outranks this gate — see the first test below. The
+// gate's own arithmetic did not change, so every rule it already pinned is still pinned; it
+// is exercised at ALERT_MIN_TIER=red, which is where a gated amber can reach an inbox at all.
+const pick = (rows, nowMin, gate) => selectAlertable(rows, nowMin, gate, 'red').map((c) => c.stopNbr);
+
+test('THE FLOOR OUTRANKS THE GATE — at the shipped floor no amber emails, however wide the gate', () => {
+  // Chad: "We are only emailing on critical." That sentence has to be true unconditionally,
+  // or the day somebody sets AMBER_LEAD_GATE_MIN for the early-warning experiment the inbox
+  // quietly starts contradicting the instruction with nobody having decided anything.
+  assert.equal(ALERT_MIN_TIER, 'critical', 'the shipped floor');
+  for (const gate of [0, 120, 180, 600]) {
+    assert.deepEqual(selectAlertable([row()], 13 * 60, gate).map((c) => c.stopNbr), [],
+      `an amber 60 minutes from its close must not email with the gate at ${gate}`);
+  }
+  // and a RED is below the floor too, gate or no gate
+  assert.deepEqual(selectAlertable([row({ tier: 'red' })], 13 * 60, 180).map((c) => c.stopNbr), []);
+  // while the tier Chad kept still emails
+  assert.deepEqual(selectAlertable([row({ tier: 'critical' })], 13 * 60).map((c) => c.stopNbr), ['S1']);
+});
 
 test('SHIPPED DEFAULT IS OFF — amber still reaches nobody until somebody flips the switch', () => {
   assert.equal(AMBER_LEAD_GATE_MIN, 0);
@@ -103,6 +124,6 @@ test('a row with no usable lateBy sorts last instead of scrambling the order at 
     row({ stopNbr: 'X', lateBy: undefined }),
     row({ stopNbr: 'Y', lateBy: 60 }),
     row({ stopNbr: 'Z', lateBy: 5 }),
-  ], 13 * 60, 120).map((c) => c.stopNbr);
+  ], 13 * 60, 120, 'red').map((c) => c.stopNbr);
   assert.deepEqual(got, ['Y', 'Z', 'X'], 'worst first, unusable last');
 });

@@ -10,22 +10,39 @@
 // answer so it stays a one-request question.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { heldReason, explainStop, normStopNbr, hoursProvenance, hoursCoverage } from '../netlify/functions/eta-flag-check.mts';
+import { heldReason, explainStop, normStopNbr, hoursProvenance, hoursCoverage, isBoardUrgent } from '../netlify/functions/eta-flag-check.mts';
 import { selectAlertable, ALERT_TIERS } from '../netlify/functions/lib/flag-alert.mts';
 
 const NOON = 12 * 60;
+// The default row is CRITICAL because that is the only tier that emails since 2026-09-02
+// (Chad: "We are only emailing on critical" — flag-alert.mts ALERT_MIN_TIER). Every test
+// below that pins a rule OTHER than the tier gate needs a row the gate lets through, or it
+// stops testing its own subject. The tests about red pass tier: 'red' explicitly.
 const row = (o) => ({
-  rule: 'hours_risk', tier: 'red', stopNbr: '007164290', customer: 'SIMPLY CHARLOTTE MASON',
+  rule: 'hours_risk', tier: 'critical', stopNbr: '007164290', customer: 'SIMPLY CHARLOTTE MASON',
   routeName: 'AUBURN', closeMin: NOON, etaMin: NOON + 45, lateBy: 45, anchored: false,
   errorMin: 90, ...o,
 });
 
-test('THE CASE ON THE SCREENSHOT: a red flag before the close now emails', () => {
-  // This is the regression itself. Before the fix, tier 'red' was dropped outright and this
-  // returned zero — the board showed an urgent flag and the inbox stayed empty.
-  const got = selectAlertable([row({})], 11 * 60);
-  assert.equal(got.length, 1, 'a red row before its close must email');
-  assert.equal(got[0].customer, 'SIMPLY CHARLOTTE MASON');
+test('THE CASE ON THE SCREENSHOT: a red flag before the close is now SILENT — and the endpoint says so', () => {
+  // The incident that created this file was not "red does not email". It was that nobody
+  // could find out WHY: the board showed an urgent flag, the inbox was empty, and the
+  // diagnostic built to explain it shared the same blind spot and reported a clean board.
+  //
+  // Chad has since narrowed the policy himself — "I don't want a 100 Emails. We are only
+  // emailing on critical" — so this row is deliberately silent again. What must never come
+  // back is the silence with no explanation, which is what these three assertions pin.
+  const got = selectAlertable([row({ tier: 'red' })], 11 * 60);
+  assert.equal(got.length, 0, 'red is below the shipped floor');
+  const why = heldReason(row({ tier: 'red' }), false, 11 * 60);
+  assert.match(why, /tier is red/);
+  assert.match(why, /only critical emails/);
+  assert.match(why, /ALERT_MIN_TIER=critical/, 'and it names the switch, so the fix is findable');
+  // …and the same row at the wide floor emails exactly as it did before.
+  const wide = selectAlertable([row({ tier: 'red' })], 11 * 60, 0, 'red');
+  assert.equal(wide.length, 1);
+  assert.equal(wide[0].customer, 'SIMPLY CHARLOTTE MASON');
+  assert.equal(heldReason(row({ tier: 'red' }), true, 11 * 60, 0, 'red'), null);
 });
 
 test('…and at 12:33, past a noon close, it is held — and SAYS SO', () => {
@@ -40,27 +57,45 @@ test('…and at 12:33, past a noon close, it is held — and SAYS SO', () => {
 });
 
 test('the held reason names the tier when the tier is what stopped it', () => {
-  // A tier that can never email says so by naming the list that can.
+  // A tier that can never email says so by naming the bar that can.
   const why = heldReason(row({ tier: 'info' }), false, 11 * 60);
   assert.match(why, /tier is info/);
-  assert.match(why, /critical and red/);
+  assert.match(why, /only critical emails/);
+  // …and the sentence follows the floor rather than being written out by hand, which is how
+  // the screen and the inbox came to disagree in the first place.
+  assert.match(heldReason(row({ tier: 'info' }), false, 11 * 60, 0, 'red'), /only critical and red email/);
 });
 
 // AMBER IS NO LONGER A FLAT "NEVER" — IT DEPENDS ON THE GATE, AND THE ANSWER MUST SAY SO.
 // "tier is amber — only critical and red email" was true until the amber lead gate existed.
 // With the gate on it is a confident lie: amber DOES email, just not this far from the close.
 test('an amber row names the GATE, not a tier list — off, too far out, or no clock', () => {
-  const off = heldReason(row({ tier: 'amber' }), false, 11 * 60, 0);
+  // AT THE FLOOR THAT HAS A GATE. Under the shipped floor the answer is the floor itself,
+  // asserted in the test below: reporting "the gate is off" while AMBER_LEAD_GATE_MIN is 120
+  // would send somebody to change a setting that is not the one holding the email.
+  const off = heldReason(row({ tier: 'amber' }), false, 11 * 60, 0, 'red');
   assert.match(off, /amber/);
   assert.match(off, /gate is off|AMBER_LEAD_GATE_MIN=0/);
 
   // close is 12:00p, now is 8:00a => 240 minutes out, outside a 120-minute gate
-  const farOut = heldReason(row({ tier: 'amber' }), false, 8 * 60, 120);
+  const farOut = heldReason(row({ tier: 'amber' }), false, 8 * 60, 120, 'red');
   assert.match(farOut, /outside the 120-minute amber gate/);
   assert.match(farOut, /240 min out/);
 
-  const noClock = heldReason(row({ tier: 'amber' }), false, null, 120);
+  const noClock = heldReason(row({ tier: 'amber' }), false, null, 120, 'red');
   assert.match(noClock, /no clock/);
+});
+
+test('…but under the SHIPPED floor an amber names the floor, not the gate', () => {
+  // The gate answer would be a confident lie here: with the floor at critical the gate is
+  // not what is holding this email, and "AMBER_LEAD_GATE_MIN=0" reads as "set it and you
+  // will get these" — which is now false. Chad: "We are only emailing on critical."
+  for (const gate of [0, 120, 600]) {
+    const why = heldReason(row({ tier: 'amber' }), false, 11 * 60, gate);
+    assert.match(why, /only critical emails/);
+    assert.match(why, /the amber lead gate cannot open it/, `gate ${gate}`);
+    assert.ok(!/gate is off/.test(why), 'never blame a gate that is not the blocker');
+  }
 });
 
 test('a collapsed summary row says it is a summary, not a stop', () => {
@@ -73,6 +108,22 @@ test('a row with no receiving close says so rather than blaming the clock', () =
 
 test('an alertable row has no held reason at all', () => {
   assert.equal(heldReason(row({}), true, 11 * 60), null);
+});
+
+test('THE DRY RUN STILL LISTS RED ROWS AFTER RED STOPPED EMAILING — the list is the board, not the inbox', () => {
+  // This is the original defect, and narrowing the floor is the exact condition that brings
+  // it back. The endpoint filtered to tier === 'critical' once before; when Chad asked why a
+  // red flag on SIMPLY CHARLOTTE MASON produced no email, the tool built to answer him could
+  // not see the row and reported a clean board. A diagnostic that shares the mailer's scope
+  // answers "nothing is wrong" to the one question it exists for.
+  for (const tier of ['critical', 'red']) {
+    assert.equal(isBoardUrgent(row({ tier })), true, `${tier} must stay visible`);
+  }
+  assert.equal(isBoardUrgent(row({ tier: 'amber' })), false, 'amber is a screen thing with the gate off');
+  assert.equal(isBoardUrgent(row({ tier: 'amber' }), 120), true, 'and visible once the gate is on');
+  assert.equal(isBoardUrgent(row({ rule: 'dup_number' })), false, 'other rules are not this list');
+  // And the row it lists carries the REASON, which is the half the floor is allowed to move.
+  assert.match(heldReason(row({ tier: 'red' }), false, 11 * 60), /only critical emails/);
 });
 
 // ── explainStop ──────────────────────────────────────────────────────────────
@@ -90,8 +141,13 @@ test('explainStop distinguishes NOT FLAGGED from FLAGGED BUT HELD', () => {
 
   const held = explainStop('007164290', STOPS, [row({})], new Set(), 13 * 60, []);
   assert.equal(held.flagged, true);
-  assert.equal(held.tier, 'red');
+  assert.equal(held.tier, 'critical');
   assert.match(held.heldBecause, /window closed/);
+  // A RED row past its close reports the TIER, because that is the refusal the alert path
+  // reaches first — the floor is tested above the clock in selectAlertable, and an
+  // explanation that reorders them is explaining a different function than the one that ran.
+  const redHeld = explainStop('007164290', STOPS, [row({ tier: 'red' })], new Set(), 13 * 60, []);
+  assert.match(redHeld.heldBecause, /tier is red/);
 });
 
 test('explainStop reports an unknown PRO as not on the board', () => {
@@ -195,7 +251,7 @@ test('the explain surface and the alert gate read the SAME tier list', () => {
   }
   // The enumeration still derives from ALERT_TIERS — checked on a tier the gate never
   // reaches, so this guard keeps testing drift rather than the amber wording.
-  assert.match(heldReason(row({ tier: 'info' }), false, 11 * 60), /only critical and red email/);
+  assert.match(heldReason(row({ tier: 'info' }), false, 11 * 60), /only critical emails/);
 });
 
 // ── "MAYBE THE PARSER NEEDS TO LEARN HOW THE NOTE WAS CONSTRUCTED" ───────────

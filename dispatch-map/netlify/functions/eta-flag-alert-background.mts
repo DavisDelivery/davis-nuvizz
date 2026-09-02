@@ -28,7 +28,7 @@ import { ensureLegs, readTravelCalibration, routeClassesPath } from './lib/trave
 import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mts';
 import { readRouteClassesFor } from './lib/route-classes.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
-import { selectAlertable, sendAlerts, ALERT_TO, AMBER_LEAD_GATE_MIN, ALERT_COLLECTION } from './lib/flag-alert.mts';
+import { selectAlertable, sendAlerts, ALERT_TO, AMBER_LEAD_GATE_MIN, ALERT_MIN_TIER, ALERT_TIERS, ALERT_COLLECTION } from './lib/flag-alert.mts';
 import { mergeSweep, scoreRowsLive, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
 import { arrivalAnchor, isFinishedStop } from '../../src/lib/board-flags.js';
 import { auditRows } from './lib/flag-rows.mts';
@@ -272,6 +272,11 @@ export default async (req: Request): Promise<Response> => {
       // read from a sweep is one nobody can confirm they flipped — and a malformed env var
       // silently resolves to off, which is indistinguishable from a quiet day.
       amberGate: AMBER_LEAD_GATE_MIN,
+      // The tier floor, same reasoning. Chad narrowed it to 'critical' on 2026-09-02 —
+      // "We are only emailing on critical" — and a sweep that emails nothing on a day with
+      // four red flags is only distinguishable from a broken sweep if the floor is in the
+      // record beside the counts.
+      alertFloor: ALERT_MIN_TIER, alertTiers: [...ALERT_TIERS],
       // What the clock ran on, so a sweep is inspectable: how many legs rode real drive
       // times vs the curve, whether the calibration doc existed, whether Google is wired.
       travel: {

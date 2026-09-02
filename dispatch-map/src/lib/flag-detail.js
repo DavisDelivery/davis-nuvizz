@@ -214,19 +214,34 @@ export function outcomeNote(row, { boardDate = null, dayState = 'unknown' } = {}
  * WHY CUSTOMER SERVICE WAS OR WAS NOT TOLD.
  *
  * "No email" on its own reads as nobody bothering. Usually it is the rule working: 170 of the
- * 206 flags on file were never emailed, and 154 of those are explained by three refusals that
- * selectAlertable (flag-alert.mts:279-291) applies in exactly this order. Replayed over the
- * stored rows in that order: 110 assumed hours, 39 never past amber, 5 raised after the door
- * shut — leaving 16 the ladder cannot explain, which is why the last rung says only "no
- * urgent email went out" rather than inventing a reason for them.
+ * 206 flags on file were never emailed, and 164 of those are explained by three refusals that
+ * selectAlertable applies in exactly this order. Replayed over the stored rows against the
+ * floor as it stands today (ALERT_MIN_TIER=critical, 2026-09-02): 110 assumed hours, 50 that
+ * never reached critical, 4 raised after the door had shut — leaving 6 the ladder cannot
+ * explain, which is why the last rung says only "no urgent email went out" rather than
+ * inventing a reason for them.
+ *
+ * THESE SENTENCES DESCRIBE THE RULE, NOT A RECONSTRUCTION OF THE DAY. A red row from August
+ * emailed under the old floor and takes the first rung; a red row that did not take the
+ * second, which says the true thing — it never reached critical, and critical is what emails
+ * now. The panel does not claim to know which refusal fired at the time.
  */
 export function alertNote(row) {
   if (row?.emailed === true) return { key: 'emailed', text: 'An urgent email went to customer service.' };
   // 1. An assumed close never alerts, and the guard sits ABOVE the amber gate on purpose —
-  //    110 of the 170. 2. Only red and critical email — 39 more. 3. The door had already shut
-  //    before the first sighting — 5 more.
+  //    110 of the 170. 2. Below the floor — 50 more. 3. The door had already shut before the
+  //    first sighting — 4 more.
   if (row?.hoursTier === 'assumed') return { key: 'assumed', muted: true, text: 'No urgent email went out: the hours were assumed, and a stop with no recorded hours never alerts at any tier.' };
-  if (row?.worstTier === 'amber') return { key: 'amber', muted: true, text: 'No urgent email went out: it never reached red, and only red and critical email customer service.' };
+  // Chad, 2026-09-02: "I don't want a 100 Emails. We are only emailing on critical." Amber
+  // and red both stop here now; the sentence names critical rather than the tier the row
+  // reached, because what a dispatcher needs from this line is the BAR, not their own row's
+  // tier repeated back at them.
+  // A row that never recorded a tier at all falls THROUGH this rung. `undefined !== 'critical'`
+  // is true, and answering "it never reached critical" about a row whose tier nobody wrote
+  // down is the Number(null) mistake wearing a sentence: a measurement reported for a thing
+  // that was never measured. Caught by the helpers test, on an empty row.
+  const worst = String(row?.worstTier ?? '').trim();
+  if (worst && worst !== 'critical') return { key: 'below_floor', muted: true, text: 'No urgent email went out: it never reached critical, and only critical emails customer service.' };
   const lead = num(row?.leadMin);
   if (lead != null && lead <= 0) return { key: 'too_late', muted: true, text: 'No urgent email went out: the receiving window had already shut when we first saw it, and nothing actionable was left to send.' };
   return { key: 'none', muted: true, text: 'No urgent email went out.' };

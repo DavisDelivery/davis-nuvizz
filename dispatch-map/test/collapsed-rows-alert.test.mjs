@@ -19,6 +19,12 @@ import { selectAlertable } from '../netlify/functions/lib/flag-alert.mts';
 
 const DEPOT = { lat: 34.147791, lng: -83.960911 };
 const NOW = 13 * 60, DEG = 1 / 69.055;
+// THE CAPS ARE A RED CAP AND AN AMBER CAP, so these run at the floor those tiers can email
+// from — ALERT_MIN_TIER=red, plus the amber gate where the amber cap is the subject. The
+// defect being pinned is the collapse (a summary row carrying stopNbr: null silencing the
+// whole batch), which has nothing to do with the tier floor Chad narrowed on 2026-09-02: it
+// bites the same way at any floor, and the fixture has to reach the selector to prove it.
+const RED_FLOOR = 'red';
 
 // n single-stop routes, each predicted past a 1:30p close. `typed` decides the tier:
 // dispatcher-typed hours are red at any overrun; scanner hours stay amber inside the band.
@@ -43,8 +49,8 @@ const board = (n, { typed = false } = {}) => {
 };
 
 test('THE BAD DAY: one more red than the cap must not email zero people', () => {
-  const under = selectAlertable(board(RED_CAP, { typed: true }).rows, NOW);
-  const over = selectAlertable(board(RED_CAP + 1, { typed: true }).rows, NOW);
+  const under = selectAlertable(board(RED_CAP, { typed: true }).rows, NOW, 0, RED_FLOOR);
+  const over = selectAlertable(board(RED_CAP + 1, { typed: true }).rows, NOW, 0, RED_FLOOR);
   assert.equal(under.length, RED_CAP);
   assert.equal(over.length, RED_CAP + 1, 'the 13th red stop must not silence the other twelve');
 });
@@ -58,18 +64,18 @@ test('the panel still collapses — this is an inbox fix, not a screen change', 
 });
 
 test('same cliff on the amber side, once the gate is switched on', () => {
-  const under = selectAlertable(board(AMBER_CAP).rows, NOW, 120);
-  const over = selectAlertable(board(AMBER_CAP + 1).rows, NOW, 120);
+  const under = selectAlertable(board(AMBER_CAP).rows, NOW, 120, RED_FLOOR);
+  const over = selectAlertable(board(AMBER_CAP + 1).rows, NOW, 120, RED_FLOOR);
   assert.equal(under.length, AMBER_CAP);
   assert.equal(over.length, AMBER_CAP + 1);
 });
 
 test('and the gate still governs the recovered rows — off means off, even on a bad day', () => {
-  assert.deepEqual(selectAlertable(board(AMBER_CAP + 1).rows, NOW), []);
+  assert.deepEqual(selectAlertable(board(AMBER_CAP + 1).rows, NOW, 0, RED_FLOOR), []);
 });
 
 test('every recovered candidate carries the facts the email needs, not a placeholder', () => {
-  const [c] = selectAlertable(board(RED_CAP + 1, { typed: true }).rows, NOW);
+  const [c] = selectAlertable(board(RED_CAP + 1, { typed: true }).rows, NOW, 0, RED_FLOOR);
   assert.ok(c.stopNbr, 'a real stop number');
   assert.ok(Number.isFinite(c.closeMin), 'a real close');
   assert.ok(Number.isFinite(c.lateBy), 'a real overrun');
@@ -78,7 +84,7 @@ test('every recovered candidate carries the facts the email needs, not a placeho
 
 test('the past-close refusal still applies to recovered rows', () => {
   // now is 2:00p, after the 1:30p close: nothing actionable is left in the message.
-  assert.deepEqual(selectAlertable(board(RED_CAP + 1, { typed: true }).rows, 14 * 60), []);
+  assert.deepEqual(selectAlertable(board(RED_CAP + 1, { typed: true }).rows, 14 * 60, 0, RED_FLOOR), []);
 });
 
 test('a collapsed batch of a NON-alerting rule stays silent — this did not widen the rules', () => {
@@ -88,7 +94,7 @@ test('a collapsed batch of a NON-alerting rule stays silent — this did not wid
       rule: 'no_location', tier: 'red', stopNbr: `S${i}`, closeMin: 14 * 60, lateBy: 5,
     })),
   }];
-  assert.deepEqual(selectAlertable(rows, NOW), []);
+  assert.deepEqual(selectAlertable(rows, NOW, 0, RED_FLOOR), []);
 });
 
 // ── AND THE SAME UN-COLLAPSE MUST REACH ALL THREE CONSUMERS ──────────────────
@@ -141,7 +147,7 @@ test('the overnight texts see them too', () => {
 test('a summary row that carried NO constituents is still not a stop, everywhere', () => {
   const orphan = [{ rule: 'hours_risk', tier: 'red', stopNbr: null, collapsed: 9, scope: 'occurrence' }];
   assert.deepEqual(flattenForConsumers(orphan), orphan, 'nothing to expand, so it passes through');
-  assert.deepEqual(selectAlertable(orphan, 12 * 60), []);
+  assert.deepEqual(selectAlertable(orphan, 12 * 60, 0, RED_FLOOR), []);
   assert.deepEqual(Object.keys(mergeSweep(null, orphan, 12 * 60, { emailedStops: new Set() }).rows), []);
   assert.deepEqual(selectTextable(orphan), []);
 });

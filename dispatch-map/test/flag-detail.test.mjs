@@ -220,21 +220,34 @@ test('THE ASSUMED-HOURS CAUTION NAMES THE FIX, because that is the one thing a r
 });
 
 test('"NO EMAIL" IS USUALLY THE RULE WORKING, AND THE PANEL SAYS WHICH RULE — 170 of 206 flags were never emailed', () => {
-  // selectAlertable (flag-alert.mts:279-291) refuses in exactly this order, and the first two
-  // account for 149 of the 170: an assumed close is skipped ABOVE the amber gate on purpose,
-  // and only red and critical reach customer service.
+  // selectAlertable refuses in exactly this order, and the first two account for 160 of the
+  // 170: an assumed close is skipped ABOVE the amber gate on purpose, and since 2026-09-02
+  // only CRITICAL reaches customer service (Chad: "We are only emailing on critical").
   assert.equal(alertNote({ emailed: true }).text, 'An urgent email went to customer service.');
   assert.match(alertNote({ hoursTier: 'assumed', worstTier: 'amber' }).text, /the hours were assumed/);
-  assert.match(alertNote({ hoursTier: 'auto', worstTier: 'amber' }).text, /never reached red/);
-  assert.match(alertNote({ hoursTier: 'auto', worstTier: 'red', leadMin: -20 }).text, /already shut when we first saw it/);
-  assert.equal(alertNote({ hoursTier: 'auto', worstTier: 'red', leadMin: 300 }).text, 'No urgent email went out.');
-  // Assumed is checked FIRST, matching the code — a row that is both must not report the amber reason.
+  assert.match(alertNote({ hoursTier: 'auto', worstTier: 'amber' }).text, /never reached critical/);
+  // RED STOPS HERE NOW TOO — the rung that changed, and the reason this test exists twice.
+  assert.equal(alertNote({ hoursTier: 'auto', worstTier: 'red', leadMin: 300 }).key, 'below_floor');
+  assert.match(alertNote({ hoursTier: 'typed', worstTier: 'red', leadMin: 480 }).text, /only critical emails customer service/);
+  // The tier gate sits ABOVE the shut-door rule in selectAlertable, so a red row past its
+  // close reports the tier — the first thing that refused it, which is what the code does.
+  assert.equal(alertNote(kase('TOO_LATE').row).key, 'below_floor', 'red, so the floor stops it first');
+  // …and the shut-door rung still fires for the tier that CAN email. PURPLE INNOVATION LLC,
+  // 2026-08-27: critical, real hours, first seen 20 minutes after its 3:00p close. It missed.
+  const late = kase('CRITICAL_TOO_LATE');
+  assert.equal(late.row.emailed, false);
+  assert.equal(late.row.worstTier, 'critical');
+  assert.equal(alertNote(late.row).key, 'too_late');
+  assert.match(alertNote(late.row).text, /already shut when we first saw it/);
+  // Assumed is checked FIRST, matching the code — a row that is both must not report the tier.
   assert.equal(alertNote({ hoursTier: 'assumed', worstTier: 'amber' }).key, 'assumed');
-  for (const a of [alertNote({}), alertNote(null)]) assert.equal(a.muted, true);
-  // Every one of the 27 flags raised after the close went un-emailed; the panel explains why.
-  const tooLate = kase('TOO_LATE');
-  assert.equal(tooLate.row.emailed, false);
-  assert.equal(alertNote(tooLate.row).key, 'too_late', 'red, auto hours, and flagged 20m after the door shut');
+  // AND A ROW WITH NO RECORDED TIER MUST NOT BE TOLD IT "never reached critical" — undefined
+  // !== 'critical' is true, and that would be a measurement reported for a thing nobody
+  // measured. It falls through to the rung that claims nothing.
+  for (const a of [alertNote({}), alertNote(null), alertNote({ worstTier: '  ' })]) {
+    assert.equal(a.muted, true);
+    assert.equal(a.key, 'none', 'no tier on file — say nothing more than "no email went out"');
+  }
 });
 
 test('A STOP THAT DID NOT MOVE SAYS SO AS A FACT, not as an accusation — only 4 of 206 ever moved', () => {

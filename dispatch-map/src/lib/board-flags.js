@@ -133,9 +133,11 @@ const tierOfHours = (note) => (note?.manual_overrides?.receiving_hours === true 
 // dock that shuts at five is the ordinary case, not the exception.
 //
 // WHY IT IS ITS OWN TIER, and why that matters more than the number. severityTier floors any
-// overrun against 'typed' hours at RED, and flag-alert.mts ships ALERT_TIERS = {critical,red}
-// — so red is what texts. If an ASSUMED close could reach red, every stop still running at
-// 5:01pm would text on a normal evening, for a deadline nobody ever verified. An assumption
+// overrun against 'typed' hours at RED, and an urgent tier is what reaches a person. If an
+// ASSUMED close could reach red, every stop still running at 5:01pm would be treated as
+// urgent on a normal evening, for a deadline nobody ever verified. (The email floor itself
+// moved to CRITICAL on 2026-09-02 — flag-alert.mts ALERT_MIN_TIER — which makes that worse,
+// not better: the guard here is what keeps a guess off the panel's urgent tiers at all.) An assumption
 // may earn a place on the panel; it may not earn the right to wake somebody. 'assumed' is
 // therefore capped at amber, and severityTier is where that is enforced.
 export const ASSUMED_CLOSE_MIN = 17 * 60;   // 5:00pm ET
@@ -298,9 +300,10 @@ export function modelErrorMinutes({ anchored, hops }) {
  *            anyone: at this distance the model simply cannot tell late from on-time.
  *
  * ASSUMED hours never leave amber. The 5pm close is a house assumption for a dock nobody has
- * recorded, not a fact read off an order, and red is the tier that texts (flag-alert.mts
- * ALERT_TIERS = {critical, red}). A guess does not get to wake anyone at 5:01pm — it gets to
- * appear on the panel where a dispatcher is already looking. Raising it to red is one line.
+ * recorded, not a fact read off an order, and the urgent tiers are the ones that reach a
+ * person (flag-alert.mts emails at ALERT_MIN_TIER and above — 'critical' since 2026-09-02).
+ * A guess does not get to wake anyone at 5:01pm — it gets to appear on the panel where a
+ * dispatcher is already looking. Raising it to red is one line.
  *
  * Auto-detected hours can still reach critical. A truck 155 minutes past a close is a
  * problem whether the 11:00 came from a dispatcher or from Uline's order text — and refusing
