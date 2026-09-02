@@ -16,3 +16,16 @@
   from = "/*"
   to = "/index.html"
   status = 200
+
+# Baseline browser hardening on every response. No full Content-Security-Policy —
+# Leaflet tiles/CSS from jsdelivr, Google Maps and Firebase all load cross-origin and a
+# strict CSP written blind would blank the app; frame-ancestors alone is safe and closes
+# clickjacking together with X-Frame-Options.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    X-Frame-Options = "DENY"
+    Content-Security-Policy = "frame-ancestors 'none'"

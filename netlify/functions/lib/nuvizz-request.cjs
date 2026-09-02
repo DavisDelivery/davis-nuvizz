@@ -12,8 +12,22 @@
 
 const fs_db = require('./firestore.cjs');
 
+// The shared daily ceiling. `Number(env) || 100000` accepted an unset var, `0`, or a
+// typo as ONE HUNDRED THOUSAND — a number nobody chose, ~8x what dispatch-map's
+// mirror defaults to and ~30x a cold full probe. Trimmed, finite, at least 1, or the
+// default; nothing else. PURE so the test can pin it.
+const DEFAULT_DAILY_CEILING = 12000;
+function parseCeiling(raw, fallback = DEFAULT_DAILY_CEILING) {
+  if (raw === undefined || raw === null) return fallback;
+  const str = String(raw).trim();
+  if (str === '') return fallback;
+  const n = Math.floor(Number(str));
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return n;
+}
+
 const DEFAULT_CONFIG = {
-  dailyCeiling: Number(process.env.NUVIZZ_DAILY_CEILING) || 100000,
+  dailyCeiling: parseCeiling(process.env.NUVIZZ_DAILY_CEILING),
   maxRetries: 4,
   backoffBaseMs: 500,
   backoffFactor: 2,
@@ -95,7 +109,12 @@ function createRequester(config = {}) {
     }
     const method = (opts.method || 'GET').toUpperCase();
     const init = { method, headers: opts.headers, body: opts.body ?? undefined };
-    const maxRetries = opts.maxRetries ?? cfg.maxRetries;
+    // Retry ONLY what is safe to replay. A POST that came back 5xx (or whose socket
+    // dropped) may already have been applied server-side; replaying it up to 4x is how
+    // one /user/list pull becomes five counted calls. GET keeps the backoff, as does
+    // anything the caller explicitly marks { idempotent: true }.
+    const replayable = method === 'GET' || opts.idempotent === true;
+    const maxRetries = replayable ? (opts.maxRetries ?? cfg.maxRetries) : 0;
     if (method === 'GET') {
       const key = `${method} ${url}`;
       const existing = inflight.get(key);
@@ -126,5 +145,7 @@ module.exports = {
   breakerTripped,
   isRetryableStatus,
   computeBackoffMs,
+  parseCeiling,
+  DEFAULT_DAILY_CEILING,
   NuvizzCircuitOpenError,
 };

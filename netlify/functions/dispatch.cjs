@@ -67,7 +67,8 @@ function fsDoc(doc) {
 
 // --- Map a Glory Bound entry to the same shape our dashboard components expect ---
 // (matches normalizeStop in src/lib/normalize.js)
-function entryToStop(e, dateKey) {
+// `idx` is the entry's position in the manifest — part of the stop id, see below.
+function entryToStop(e, dateKey, idx = 0) {
   const statusRaw = (e.status || '').toString().toLowerCase();
   const bucket =
     statusRaw === 'delivered' || statusRaw === 'departed' || statusRaw === 'complete' ? 'completed' :
@@ -105,7 +106,11 @@ function entryToStop(e, dateKey) {
   }
 
   return {
-    id: String(e.id || Math.random()),
+    // Stable across requests. `String(e.id || Math.random())` gave an entry with no id a
+    // NEW key on every poll, so React remounted its row each refresh and nothing could
+    // be selected or diffed against the previous fetch. Day + position + reference is
+    // unique within a manifest and identical the next time it is served.
+    id: String(e.id || `gb-${dateKey}-${idx}-${e.refNum || 'noref'}`),
     nbr: String(e.id || ''),
     seq: null,
     type: e.stopType === 'pickup' ? 'PU' : 'DO',
@@ -215,7 +220,9 @@ function buildLoadsFromStops(stops) {
 
       totalCartons: null,
       totalPallets: null,
-      weight: loadStops.reduce((w, s) => w + (s.weight || 0), 0),
+      // Number() first: a manifest weight stored as "1200" made `+` concatenate, and
+      // the load's total became the string "01200450".
+      weight: loadStops.reduce((w, s) => w + (Number(s.weight) || 0), 0),
       weightUOM: 'lbs',
 
       stops: loadStops,
@@ -283,7 +290,7 @@ exports.handler = async (event) => {
     if (apiPath === '__today') {
       const dateKey = etToday();
       const { entries, updatedAt, notFound } = await fetchManifest(dateKey);
-      const stops = entries.map(e => entryToStop(e, dateKey));
+      const stops = entries.map((e, i) => entryToStop(e, dateKey, i));
       const loads = buildLoadsFromStops(stops);
       return {
         statusCode: 200,
@@ -307,7 +314,7 @@ exports.handler = async (event) => {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'Need date=YYYY-MM-DD' }) };
       }
       const { entries, updatedAt, notFound } = await fetchManifest(dateKey);
-      const stops = entries.map(e => entryToStop(e, dateKey));
+      const stops = entries.map((e, i) => entryToStop(e, dateKey, i));
       const loads = buildLoadsFromStops(stops);
       return {
         statusCode: 200,
@@ -325,14 +332,21 @@ exports.handler = async (event) => {
 
     // Date range (last N days)
     if (apiPath === '__range') {
-      const days = Math.min(parseInt(params.days || '7', 10), 31);
+      // parseInt('abc') is NaN, `NaN < 31` is false, the loop ran zero times and the
+      // caller got HTTP 200 with an empty `days` — indistinguishable from "no manifests".
+      const rawDays = params.days === undefined || params.days === '' ? '7' : params.days;
+      const daysNum = Number(String(rawDays).trim());
+      if (!Number.isInteger(daysNum) || daysNum < 1) {
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'bad days', hint: 'days must be an integer from 1 to 31' }) };
+      }
+      const days = Math.min(daysNum, 31);
       const results = [];
       const today = etToday();
       for (let i = 0; i < days; i++) {
         const dateKey = minusDays(today, i);
         try {
           const { entries, updatedAt, notFound } = await fetchManifest(dateKey);
-          const stops = entries.map(e => entryToStop(e, dateKey));
+          const stops = entries.map((e, i) => entryToStop(e, dateKey, i));
           const loads = buildLoadsFromStops(stops);
           results.push({ dateKey, stops, loads, summary: buildSummary(stops, loads), notFound: !!notFound, updatedAt });
         } catch (e) {
@@ -344,10 +358,13 @@ exports.handler = async (event) => {
 
     return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: `Unknown path: ${apiPath}` }) };
   } catch (err) {
+    // The stack (file paths, line numbers, the Firestore URL shape) goes to the function
+    // log, not to whoever made the request.
+    console.error('dispatch handler error:', err && err.stack ? err.stack : err);
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({ error: err.message, stack: err.stack }),
+      body: JSON.stringify({ error: err.message }),
     };
   }
 };
