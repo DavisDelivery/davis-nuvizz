@@ -9,9 +9,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  flagDetail, projection, margin, closeSource, anchorNote, sweepNote, outcomeNote, actionNotes, durText, sighting,
+  flagDetail, projection, margin, closeSource, anchorNote, sweepNote, outcomeNote, actionNotes, alertNote, durText, sighting,
   ASSUMED_CLOSE_MIN,
 } from '../src/lib/flag-detail.js';
+import { deliveredWhen } from '../src/lib/delivered-when.js';
 
 const FX = JSON.parse(readFileSync(new URL('./fixtures/flag-detail-rows.json', import.meta.url), 'utf8'));
 const shot = (name) => FX.screenshot[name].row;
@@ -21,7 +22,7 @@ const kase = (k) => FX.cases[k];
 // ── THE ROW CHAD WAS LOOKING AT ──────────────────────────────────────────────
 
 test('WALKER SCHOOL, THE CRITICAL IN THE SCREENSHOT: projected four and a half hours late, delivered an hour and three quarters early — and the panel says so', () => {
-  const d = flagDetail(shot('WALKER SCHOOL'), { boardDate: SHOT_DATE, dayScored: false });
+  const d = flagDetail(shot('WALKER SCHOOL'), { boardDate: SHOT_DATE, dayState: 'live' });
   assert.equal(d.customer, 'WALKER SCHOOL (TEBARCO)');
   assert.equal(d.pro, 'SHP30935');
   assert.equal(d.outcome.key, 'made');
@@ -34,13 +35,14 @@ test('WALKER SCHOOL, THE CRITICAL IN THE SCREENSHOT: projected four and a half h
   // whether the flag they emailed customer service about was worth the call.
   assert.ok(d.cautions.includes('It was projected 4h 30m past the close and delivered 1h 42m before the close — the projection was out by 6h 12m.'), JSON.stringify(d.cautions));
   assert.equal(d.actions[0].text, 'An urgent email went to customer service.');
+  assert.equal(d.actions[1].text, 'The stop stayed on OWUSU 1.');
   assert.equal(d.warning.text, '9h 0m of warning before the close');
   assert.equal(d.close.source.key, 'auto');
   assert.equal(d.escalation, null, 'it was critical from the first sighting');
 });
 
 test('THE 5:00p CLOSE IS A HOUSE GUESS, AND THAT IS WHY THE ROW IS AMBER — seven rows in one screenshot share it', () => {
-  const d = flagDetail(shot('MUST MINISTRIES'), { boardDate: SHOT_DATE, dayScored: false });
+  const d = flagDetail(shot('MUST MINISTRIES'), { boardDate: SHOT_DATE, dayState: 'live' });
   assert.equal(d.close.min, ASSUMED_CLOSE_MIN);
   assert.equal(d.close.source.key, 'assumed');
   assert.match(d.close.source.text, /no recorded receiving hours/);
@@ -52,8 +54,8 @@ test('THE 5:00p CLOSE IS A HOUSE GUESS, AND THAT IS WHY THE ROW IS AMBER — sev
 });
 
 test('A MOVE IS THE ONE RECORDED SIGN A PERSON ACTED — named from and to, never claimed as the cause', () => {
-  const d = flagDetail(shot('KRAIBURG TPE'), { boardDate: SHOT_DATE, dayScored: false });
-  assert.equal(d.actions[0].text, 'Moved from ALLEN C to BUFORD after we flagged it.');
+  const d = flagDetail(shot('KRAIBURG TPE'), { boardDate: SHOT_DATE, dayState: 'live' });
+  assert.equal(d.actions.at(-1).text, 'Moved from ALLEN C to BUFORD after we flagged it.');
   for (const c of [...d.cautions, ...d.actions.map((a) => a.text)]) {
     assert.ok(!/saved|because of the flag|thanks to/i.test(c), `causation claimed: ${c}`);
   }
@@ -62,13 +64,16 @@ test('A MOVE IS THE ONE RECORDED SIGN A PERSON ACTED — named from and to, neve
 test('STILL GRADING IS NOT UNGRADABLE: six of the thirteen rows had not delivered yet, and the pill said "Not gradable" for both', () => {
   const row = shot('DVA MECHANICS');
   assert.equal(row.outcome, 'unknown');
-  const live = flagDetail(row, { boardDate: SHOT_DATE, dayScored: false });
+  const live = flagDetail(row, { boardDate: SHOT_DATE, dayState: 'live' });
   assert.equal(live.outcome.pending, true);
-  assert.equal(live.outcome.text, 'No delivery recorded yet — this day is still being graded.');
+  assert.match(live.outcome.text, /^No delivery recorded yet — this day is still being graded\./);
   // The same row on a day the overnight join HAS run is a different statement.
-  const settled = flagDetail(row, { boardDate: SHOT_DATE, dayScored: true });
+  const settled = flagDetail(row, { boardDate: SHOT_DATE, dayState: 'scored' });
   assert.equal(settled.outcome.pending, undefined);
   assert.equal(settled.outcome.text, 'No delivery was recorded for this stop, so it could not be graded.');
+  // A day nothing has graded yet is a THIRD state, and an unknown one never invents either.
+  assert.equal(flagDetail(row, { boardDate: SHOT_DATE, dayState: 'none' }).outcome.text, 'This day has not been graded at all yet.');
+  assert.equal(flagDetail(row, { boardDate: SHOT_DATE }).outcome.text, 'No delivery was recorded for this stop, so it could not be graded.');
   assert.equal(live.margin, null, 'nothing delivered, so there is no margin to state');
 });
 
@@ -76,13 +81,13 @@ test('STILL GRADING IS NOT UNGRADABLE: six of the thirteen rows had not delivere
 
 test('A ROLL HAS NO MARGIN — a close on one day against a stamp on another is not a number', () => {
   const c = kase('ROLLED_DELIVERED');
-  const d = flagDetail(c.row, { boardDate: c.date, dayScored: true });
+  const d = flagDetail(c.row, { boardDate: c.date, dayState: 'scored' });
   assert.equal(d.outcome.key, 'rolled');
   assert.equal(d.outcome.delivered.tone, 'later');
   assert.match(d.outcome.delivered.note, /Aug 28/);
   assert.equal(d.margin, null, 'the margin must refuse a cross-day comparison');
   const open = kase('ROLLED_OPEN');
-  const o = flagDetail(open.row, { boardDate: open.date, dayScored: true });
+  const o = flagDetail(open.row, { boardDate: open.date, dayState: 'scored' });
   assert.equal(o.outcome.delivered.tone, 'open');
   assert.match(o.outcome.delivered.note, /still open/);
   assert.equal(o.margin, null);
@@ -91,7 +96,7 @@ test('A ROLL HAS NO MARGIN — a close on one day against a stamp on another is 
 test('A FLAG RAISED AFTER THE DOCK HAD ALREADY SHUT says so, rather than reporting negative warning', () => {
   const c = kase('TOO_LATE');
   assert.ok(c.row.leadMin < 0, 'the fixture really is a negative lead');
-  const d = flagDetail(c.row, { boardDate: c.date, dayScored: true });
+  const d = flagDetail(c.row, { boardDate: c.date, dayState: 'scored' });
   assert.equal(d.warning.tooLate, true);
   assert.equal(d.warning.text, 'flagged 20m after the close had already passed');
   assert.equal(d.outcome.key, 'undelivered');
@@ -101,7 +106,7 @@ test('A FLAG RAISED AFTER THE DOCK HAD ALREADY SHUT says so, rather than reporti
 
 test('AN ESCALATION IS PRINTED ONLY WHEN THE TIER ACTUALLY MOVED', () => {
   const c = kase('ESCALATED');
-  const d = flagDetail(c.row, { boardDate: c.date, dayScored: true });
+  const d = flagDetail(c.row, { boardDate: c.date, dayState: 'scored' });
   assert.equal(d.escalation.text, 'Escalated from amber to critical.');
   assert.equal(flagDetail(shot('MUST MINISTRIES'), { boardDate: SHOT_DATE }).escalation, null);
 });
@@ -109,7 +114,7 @@ test('AN ESCALATION IS PRINTED ONLY WHEN THE TIER ACTUALLY MOVED', () => {
 test('A ROW OLDER THAN A FIELD SAYS THE FIELD IS MISSING — it does not guess', () => {
   const c = kase('NO_HOURSTIER');
   assert.equal(c.row.hoursTier, null);
-  const d = flagDetail(c.row, { boardDate: c.date, dayScored: true });
+  const d = flagDetail(c.row, { boardDate: c.date, dayState: 'scored' });
   assert.equal(d.close.source.key, 'unknown');
   assert.match(d.close.source.text, /predates the field/);
   assert.ok(!d.cautions.some((x) => /capped at amber/.test(x)), 'an unknown source must not claim the amber cap');
@@ -117,7 +122,7 @@ test('A ROW OLDER THAN A FIELD SAYS THE FIELD IS MISSING — it does not guess',
 
 test('TYPED HOURS ARE A DISPATCHER TAKING OWNERSHIP, and are named as such — 5 of the 206 rows on file', () => {
   const c = kase('TYPED');
-  const d = flagDetail(c.row, { boardDate: c.date, dayScored: true });
+  const d = flagDetail(c.row, { boardDate: c.date, dayState: 'scored' });
   assert.equal(d.close.source.key, 'typed');
   assert.match(d.close.source.text, /a dispatcher typed/);
 });
@@ -142,7 +147,7 @@ test('an ETA exactly ON the close is on the close, not "0m past" — it happens,
 
 test('NUMBER(NULL) IS 0 AND 0 IS FINITE: an absent field is absent, never a zero dressed as a measurement', () => {
   const empty = { stopNbr: 'X', customer: 'X', outcome: 'unknown' };
-  const d = flagDetail(empty, { boardDate: '2026-09-02', dayScored: true });
+  const d = flagDetail(empty, { boardDate: '2026-09-02', dayState: 'scored' });
   assert.equal(d.close.min, null);
   assert.equal(d.warning, null, 'no leadMin is no warning line, not "0m of warning"');
   assert.equal(d.margin, null);
@@ -178,13 +183,13 @@ test('the small helpers each refuse a value they cannot read', () => {
   assert.equal(margin({ closeMin: null }, '2026-09-02'), null);
   assert.deepEqual(actionNotes({}).map((a) => a.key), ['none']);
   assert.equal(actionNotes({}).at(0).muted, true);
-  // A route that only differs by padding or case is not a move.
-  assert.deepEqual(actionNotes({ firstRoute: 'OWUSU 1', lastRoute: ' OWUSU 1' }).map((a) => a.key), ['none']);
+  // A route that only differs by padding or case is not a move — it stayed put.
+  assert.deepEqual(actionNotes({ firstRoute: 'OWUSU 1', lastRoute: ' OWUSU 1' }).map((a) => a.key), ['none', 'stayed']);
   assert.equal(outcomeNote({ outcome: 'made' }, {}).key, 'made');
 });
 
 test('ONE SIGHTING AND GONE is called out — a third of every flag on file (68 of 206)', () => {
-  const d = flagDetail({ ...shot('MUST MINISTRIES'), sweeps: 1 }, { boardDate: SHOT_DATE, dayScored: false });
+  const d = flagDetail({ ...shot('MUST MINISTRIES'), sweeps: 1 }, { boardDate: SHOT_DATE, dayState: 'live' });
   assert.equal(d.sweeps.onceOnly, true);
   assert.equal(d.sweeps.text, 'seen in one sweep and not again');
   assert.ok(d.cautions.includes('One sighting only — by the next sweep it was no longer flagged.'));
@@ -209,7 +214,42 @@ test('A FLAG FIRST SEEN THE NIGHT BEFORE SAYS SO — the shipped table printed 1
 });
 
 test('THE ASSUMED-HOURS CAUTION NAMES THE FIX, because that is the one thing a reader can act on', () => {
-  const d = flagDetail(shot('MUST MINISTRIES'), { boardDate: SHOT_DATE, dayScored: false });
+  const d = flagDetail(shot('MUST MINISTRIES'), { boardDate: SHOT_DATE, dayState: 'live' });
   const c = d.cautions.find((x) => /capped at amber/.test(x));
   assert.match(c, /recording this customer’s real receiving hours/);
+});
+
+test('"NO EMAIL" IS USUALLY THE RULE WORKING, AND THE PANEL SAYS WHICH RULE — 170 of 206 flags were never emailed', () => {
+  // selectAlertable (flag-alert.mts:279-291) refuses in exactly this order, and the first two
+  // account for 149 of the 170: an assumed close is skipped ABOVE the amber gate on purpose,
+  // and only red and critical reach customer service.
+  assert.equal(alertNote({ emailed: true }).text, 'An urgent email went to customer service.');
+  assert.match(alertNote({ hoursTier: 'assumed', worstTier: 'amber' }).text, /the hours were assumed/);
+  assert.match(alertNote({ hoursTier: 'auto', worstTier: 'amber' }).text, /never reached red/);
+  assert.match(alertNote({ hoursTier: 'auto', worstTier: 'red', leadMin: -20 }).text, /already shut when we first saw it/);
+  assert.equal(alertNote({ hoursTier: 'auto', worstTier: 'red', leadMin: 300 }).text, 'No urgent email went out.');
+  // Assumed is checked FIRST, matching the code — a row that is both must not report the amber reason.
+  assert.equal(alertNote({ hoursTier: 'assumed', worstTier: 'amber' }).key, 'assumed');
+  for (const a of [alertNote({}), alertNote(null)]) assert.equal(a.muted, true);
+  // Every one of the 27 flags raised after the close went un-emailed; the panel explains why.
+  const tooLate = kase('TOO_LATE');
+  assert.equal(tooLate.row.emailed, false);
+  assert.equal(alertNote(tooLate.row).key, 'too_late', 'red, auto hours, and flagged 20m after the door shut');
+});
+
+test('A STOP THAT DID NOT MOVE SAYS SO AS A FACT, not as an accusation — only 4 of 206 ever moved', () => {
+  const d = flagDetail(shot('WALKER SCHOOL'), { boardDate: SHOT_DATE, dayState: 'live' });
+  assert.equal(d.actions.at(-1).text, 'The stop stayed on OWUSU 1.');
+  assert.equal(d.actions.at(-1).muted, true);
+  assert.ok(!d.actions.some((a) => /nobody|no route change recorded/i.test(a.text)));
+  const moved = flagDetail(shot('KRAIBURG TPE'), { boardDate: SHOT_DATE, dayState: 'live' });
+  assert.equal(moved.actions.at(-1).text, 'Moved from ALLEN C to BUFORD after we flagged it.');
+});
+
+test('A DELIVERY WHOSE DAY WAS NEVER RECORDED HAS NO MARGIN — deliveredWhen says "date not recorded", so subtracting would borrow the board day', () => {
+  // Cannot occur in today's corpus (176/176 carry arrivalMin and deliveredAt together), which
+  // is exactly why the guard is written now rather than discovered later.
+  const row = { closeMin: 600, arrivalMin: 498, deliveredAt: null, outcome: 'made' };
+  assert.equal(deliveredWhen(row, { boardDate: '2026-09-02' }).tone, 'missing');
+  assert.equal(margin(row, '2026-09-02'), null);
 });
