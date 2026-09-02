@@ -76,6 +76,7 @@ import { validateNewRoute } from './lib/route-create.js';
 import { mergeDayLoads, dayLoadTally } from './lib/day-loads.js';
 import { flagProvenance, provenanceLine } from './lib/flag-provenance.js';
 import { deliveredWhen } from './lib/delivered-when.js';
+import { flagDetail, sighting } from './lib/flag-detail.js';
 import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab } from './lib/right-panel.js';
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
@@ -107,7 +108,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.86.3';
+const APP_VERSION = '0.87.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -178,6 +179,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.87.0', 'CLICK A FLAG AND FIND OUT WHETHER IT WAS WORTH THE PHONE CALL. Chad, on the day table: “I want to be able to click on these rows and get details.” THE DETAILS WERE ALREADY IN THE BROWSER. Every stored flag row carries eighteen fields the table never drew — what we PREDICTED at the first sighting and at the last, the worst that projection ever looked, how many sweeps saw it, whether the clock rested on a real arrival stamp or on an assumed depot departure, and where the receiving close came from. The table showed the verdict; a row now opens the case behind it. THE ROW CHAD WAS LOOKING AT, verbatim off the panel: WALKER SCHOOL (TEBARCO) was flagged at 1:00a as CRITICAL with the truck projected to arrive 4h 30m past its 10:00a close, and it delivered at 8:18a — an hour and forty-two minutes INSIDE the window. “The projection was out by 6h 12m.” That is the sentence a green “Made it” pill cannot say, and it is the one that decides whether to email customer service about the next one. AND WHY SEVEN ROWS IN ONE SCREENSHOT ALL CLOSE AT 5:00p: that is the house default for a customer with no recorded receiving hours, and severityTier caps an assumed close at amber however late the truck is — so the panel says so, and says that recording the real hours is what would let it escalate. 110 of the 206 flags on file rest on that guess; 95 of 206 were projected from a truck nobody had heard from; 68 were seen in ONE sweep and never again. Each of those is now a sentence on the flag it applies to. TWO VIEWS, because the table is a 720px sideways scroll on a phone and the sheet is the only comfortable way to read a flag there: the desktop gets a dialog with the story beside a facts rail, the phone a full-screen sheet in reading order. THREE THINGS IT REFUSES TO SAY. It never claims the flag caused the outcome — a moved route is “evidence a person acted”, which is the wording the history module already insists on. It never renders a projection as a wall-clock time, because close + worstLateBy runs past midnight on 5 of the 206 rows and a bare “4:40a” is wrong by a day. It never measures a close on one day against a delivery stamp from another, so a rolled stop has no margin at all. FOUND WHILE BUILDING IT, and fixed in the SHIPPED table too: firstSeenMin is minutes past midnight of the board day and the evening sweep records tomorrow’s board against tonight’s clock as etMin − 1440, so MCCORMICK ATLANTA PLANT’s 11pm sighting is stored as −60 — and fmtMinOfDay printed it “11:00a”. Twelve hours out, in the flattering direction, in the column that claims how much warning we had. Sightings now name their day. ALSO CAUGHT BY ITS OWN TEST: durText(null) returned “on the close”, because Number(null) is 0 and 0 is finite — the trap this repo keeps a rule about, in the first helper written after reading the rule. Verified in a real browser at 1440px and 390px, both layouts, driven off the real stored rows and wired into CI. 16 new tests, 3,219 green.'],
   ['0.86.3', 'THE ONE CALL WAS MADE, AND IT CORRECTED ME BEFORE IT ANSWERED ANYTHING ELSE. Chad: “spend one call to check and see.” One POST to the Loads grid, 2026-09-02 16:38Z, stored at nuvizz_ops/load_columns__2026-09-02. FIRST, THE CORRECTION: v0.86.2 said the hourly load roster “has returned ZERO loads on every day on file.” It had not. The roster doc stores its rows as a JSON string under loadsJson with a count beside it — 106 that day — and the reader that produced the zero was looking for a loads array that does not exist. The number was reported, put in a PR, a changelog row and two code comments before the thing that produced it had been checked. All four are corrected here, and the mistake is written next to the place it was made. THEN THE ANSWER: 21 columns, 106 loads, and NO vehicle-type column on the grid. The per-load truck type exists in NuVizz only on /load/info/{loadNbr} (loadHeader.vehicleType — proven on this tenant in April: TRACTOR TRAILER, TRAILER, STRAIGHT TRUCK) and beside the load number on /stop/info (Stop.load.vehicleType, documented). WHAT THE GRID DOES CARRY IS THE KEY TO GET THERE: rteNbr, labelled “Load Number” (DAVIS000203100), plus name, driver, status and stop count — cached hourly at zero extra calls. Three comments in nuvizz-write.mts still said the live roster “has no load-number column”; it does, normalizeLoads reads it, and those comments now say so. So the path to a real per-load truck type is one call per load with stops (≈63 today) against a load number we already hold, into the fleet index the class builder reads first — a cost decision that is raised, not made.'],
   ['0.86.2', 'THE ROSTER CARD ALREADY KNEW BOTH NAMES; THE TRUCK-CLASS JOIN READ ONLY ONE — AND ONE DELIBERATE LOOK AT THE RAW LOAD LIST. Chad, on Brenton Byrd’s card: “Something else is wrong as he was already set to the correct alias.” He was right, and the record says what: BRENT’s stops carried “Brent  Boyd” every day from Aug 10 through Aug 26 and “Brent  Bryd” from AUG 27 ON. NuVizz renamed the driver; the card’s alias was correct until the vendor’s own record moved under it, and from that day the exact join found nothing. A CORRECTION TO v0.86.1’s STORY: it said the alias “matched until last night” because the tractor-paint history showed a Sep 1 credit under Brenton Byrd. That was an inference, and wrong — last_tractor_date is set by ANY tractor driver, and every one of those Sep 1 deliveries was somebody else’s at a place he had visited before. Nothing on BRENT has matched since Aug 27. THE DEFECT: the employee card carries externalIds.nuvizz AND an aliases[] list, and three joins in this repo (driver phone, routing plan, routing draft) already read both; the truck-class roster the flag sweeps and the tractor paint run on read only the first. It reads both now — still never a display name, only names somebody put on the card on purpose — so with the card as saved today (alias “Brent Bryd”, aliases [“Brent Boyd”]) BOTH spellings resolve exactly, near-match off. Replayed on the live board. AND THE NET IS SWAP-AWARE: “it’s changed to Brent Byrd in MarginIQ” against a NuVizz string of “Brent  Bryd” is one transposed pair, which plain edit distance counted as two; an adjacent swap is one edit now, re-measured on the live roster with zero ambiguous pairs. ONE CALL TO CHECK: on whether the API exposes the per-load vehicle type — “spend one call to check and see.” NEW nuvizz-load-columns?date=&confirm=1 makes exactly one POST to the load grid the hourly roster already hits and stores the raw shape — columns, first rows, whether any column is a vehicle type, and what normalizeLoads makes of it — so it can be read back forever without a second call. It exists because that hourly roster has returned ZERO loads on every day on file and the only thing kept from the response was the empty result. Gated on &confirm=1, dispatcher, and NUVIZZ_SCANS_ENABLED; no cron. 8 new tests, including the “rows but nothing keyable” verdict measured against normalizeLoads rather than assumed.'],
   ['0.86.1', 'EVANS CONTRACTING WAS ON A TRACTOR WITH A HARD-CODED NO-TRAILER MARK AND NOBODY WAS TEXTED. Chad: “Evans contracting was put on a tractor trailer last night and no text was sent it’s hard coded. 7171235.” READ OFF THE LIVE RECORDS, NOT REASONED: the customer note IS a confirmed no-tractor-trailer — run through the real function it returns blocked — and the sweep DID text a no-trailer conflict that night, for a different load (MARCUS, 10pm). BRENT was never judged, because BRENT had no truck class: NuVizz spells the driver “Brent  Bryd” and the roster’s tractor entry for Brenton Byrd carries the alias “Brent Boyd”. One letter, an exact join, and a route the map cannot class looks on every screen exactly like a route that was checked and found fine. Fourteen of the day’s sixty-three routes were in that state. WHY THE STRONGER SOURCE DID NOT SAVE IT: the load header’s own vehicle type — the unit actually assigned, and present on 100 of 100 loads the last time it was written — comes only from the number-probe scan, which the list-discovery schedule never runs. The fleet index has not been written since April 29, so every route has been riding the roster alone for four months. TWO CHANGES. (1) A NEAR-MATCH on the roster alias: same first name, surname within one letter, and exactly one candidate — measured on the live roster before shipping, 59 aliases, zero pairs it could confuse, and “Brent  Bryd” resolves uniquely to Brent Boyd; “Trevor Seyers” against an alias reading “Trevor Brent” correctly does not. Recorded as roster_near so it is never mistaken for the exact thing, and ROUTE_CLASS_NEAR_MATCH=off turns it off without a deploy. It deliberately never reaches for a display name when the alias is missing — the alias exists because those differ. (2) EVERY UNCLASSED ROUTE IS NAMED, with the driver NuVizz carries and the closest roster fact, in the sweep status, the dry-run endpoint and the flag panel footer: “Truck unknown on BRENT (Brent  Bryd), TRAILER 1 (Seymour  Watts)… match the driver name on the MarginIQ roster to fix.” The name on the screen IS the fix. Replayed on the real board with the real note and roster: with the near-match off, Evans produces no card and no text; with it on, a red card and the text “BRENT runs a tractor-trailer — EVANS GENERAL CONTRACTORS is marked No tractor trailer by dispatch.” The roster alias itself is the durable fix and also restores the lime “a tractor delivered here” history for that driver; restoring the load-header source means the fleet index needs writing from the list path, which is a NuVizz-cost question and is raised, not done. New tests pin the near rule on the real names and the unclassed list.'],
@@ -23207,6 +23209,13 @@ const fmtMinOfDay = (m) => {
   const h12 = ((h % 12) + 12) % 12 === 0 ? 12 : ((h % 12) + 12) % 12;
   return `${h12}:${String(x).padStart(2, '0')}${ampm}`;
 };
+/** A sighting time WITH ITS DAY. The evening sweep stores tomorrow's board against tonight's
+ *  clock, so firstSeenMin can be negative and fmtMinOfDay alone reads it twelve hours wrong. */
+const fmtSighting = (m) => {
+  const s = sighting(m);
+  if (!s) return '—';
+  return s.suffix ? `${fmtMinOfDay(s.minOfDay)} ${s.suffix}` : fmtMinOfDay(s.minOfDay);
+};
 const fmtLead = (m) => {
   if (m == null) return '—';
   const v = Math.round(m);
@@ -23729,6 +23738,204 @@ function HistoryRangeBarMobile({ sel, setSel, range, today }) {
   );
 }
 
+// ── ONE FLAG, OPENED ─────────────────────────────────────────────────────────
+//
+// Chad, on the day table: "I want to be able to click on these rows and get details."
+//
+// The facts come from src/lib/flag-detail.js, which is pure and tested against the real
+// stored rows. These two components are the paint, and they are TWO components on purpose:
+// the desktop has room for the story and a facts rail side by side, the phone does not, and
+// the table itself is a 720px-wide sideways scroll on a phone — so the sheet is not a
+// convenience there, it is the only comfortable way to read a flag.
+
+/** One labelled fact. Renders nothing at all when there is no value — an empty row of dashes
+ *  is noise, and "—" next to a label reads as a measurement that came back zero. */
+function FlagFact({ label, value, hint }) {
+  if (value == null || value === '' || value === '—') return null;
+  return (
+    <div className="min-w-0">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{label}</div>
+      <div className="text-xs text-slate-800 break-words">{value}</div>
+      {hint && <div className="text-[10px] text-slate-400 leading-snug">{hint}</div>}
+    </div>
+  );
+}
+
+function FlagDetailHeader({ d, row, onClose, big }) {
+  const o = OUTCOME_STYLE[d.outcome.key] || OUTCOME_STYLE.unknown;
+  return (
+    <div className="flex items-start gap-3">
+      <div className="min-w-0 flex-1">
+        <div className={`font-bold text-slate-900 ${big ? 'text-base' : 'text-sm'} break-words`}>{d.customer}</div>
+        <div className="text-[11px] text-slate-500 mt-0.5">PRO {d.pro} · {d.boardDate}</div>
+        <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${TIER_STYLE[row.worstTier] || TIER_STYLE.amber}`}>{row.worstTier}</span>
+          <span className={`px-1.5 py-0.5 rounded border text-[10px] font-semibold ${o.cls}`}>{o.label}</span>
+          {d.outcome.pending && <span className="text-[10px] font-semibold uppercase tracking-wide text-sky-600">still grading</span>}
+        </div>
+      </div>
+      <button
+        type="button" onClick={onClose}
+        className="shrink-0 rounded-lg border px-3 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50"
+        style={{ minHeight: 44, minWidth: 64 }}
+      >Done</button>
+    </div>
+  );
+}
+
+/** THE VERDICT, in one block: what happened, and how close it came. */
+function FlagVerdict({ d }) {
+  const w = d.outcome.delivered;
+  return (
+    <div className="rounded-lg border bg-white px-3 py-2">
+      <div className="text-xs text-slate-800 leading-relaxed">{d.outcome.text}</div>
+      {w && w.minutes != null && (
+        <div className="text-xs text-slate-600 mt-1">
+          Delivered <span className="font-semibold text-slate-800">{fmtMinOfDay(w.minutes)}</span>
+          {w.note ? <span className="text-slate-400"> · {w.note}</span> : null}
+          {d.margin && <> — <span className={d.margin.inside ? 'text-emerald-700 font-semibold' : 'text-rose-700 font-semibold'}>{d.margin.text}</span></>}
+        </div>
+      )}
+      {w && w.minutes == null && w.note && <div className="text-xs text-amber-700 mt-1">{w.note}</div>}
+    </div>
+  );
+}
+
+/** WHY IT WAS FLAGGED — the arithmetic that produced the row, which the table never shows. */
+function FlagWhy({ d, row }) {
+  const p = d.projection;
+  return (
+    <div className="space-y-1.5">
+      <div className="text-[11px] font-semibold text-slate-600">Why it was flagged</div>
+      <div className="text-xs text-slate-700 leading-relaxed">
+        First seen <span className="font-semibold">{fmtSighting(d.firstSeen.min)}</span>
+        {d.firstSeen.tier ? <> as <span className="font-semibold uppercase">{d.firstSeen.tier}</span></> : null}
+        {d.firstSeen.route ? <> on {d.firstSeen.route}</> : null}
+        {p.firstText ? <>, with the truck projected to arrive <span className="font-semibold">{p.firstText}</span></> : null}.
+      </div>
+      {p.worstText && p.worstLateBy > 0 && (
+        <div className="text-xs text-slate-700 leading-relaxed">Worst it ever looked: <span className="font-semibold">{p.worstText}</span>.</div>
+      )}
+      {p.lastText && (
+        <div className="text-xs text-slate-700 leading-relaxed">
+          Last seen flagged <span className="font-semibold">{fmtSighting(d.lastSeen.min)}</span>, by then <span className="font-semibold">{p.lastText}</span>.
+        </div>
+      )}
+      {d.escalation && <div className="text-xs text-amber-800">{d.escalation.text}</div>}
+    </div>
+  );
+}
+
+/** WHAT THE FLAG RESTED ON — the honesty section. Half the flags on file are judged against a
+ *  close nobody recorded, and half are projected from a truck nobody has heard from. */
+function FlagBasis({ d }) {
+  return (
+    <div className="space-y-1.5">
+      <div className="text-[11px] font-semibold text-slate-600">What the flag rested on</div>
+      <div className="text-xs text-slate-700 leading-relaxed">
+        The <span className="font-semibold">{fmtMinOfDay(d.close.min)}</span> close is {d.close.source.text}.
+      </div>
+      {d.anchor.text && <div className="text-xs text-slate-700 leading-relaxed">{d.anchor.text}</div>}
+      {d.sweeps && <div className="text-xs text-slate-700 leading-relaxed">The flag was {d.sweeps.text}.</div>}
+    </div>
+  );
+}
+
+/** WHAT WAS DONE. Evidence a person acted — never a claim that it helped. */
+function FlagActions({ d }) {
+  return (
+    <div className="space-y-1.5">
+      <div className="text-[11px] font-semibold text-slate-600">What was done</div>
+      {d.actions.map((a) => (
+        <div key={a.key} className={`text-xs leading-relaxed ${a.muted ? 'text-slate-400' : 'text-slate-800 font-semibold'}`}>{a.text}</div>
+      ))}
+    </div>
+  );
+}
+
+function FlagCautions({ d }) {
+  if (!d.cautions.length) return null;
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 space-y-1">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-800">Worth knowing</div>
+      {d.cautions.map((c, i) => <div key={i} className="text-[11px] text-amber-900 leading-relaxed">{c}</div>)}
+    </div>
+  );
+}
+
+/** DESKTOP: a centred dialog, story on the left and a facts rail on the right — the width is
+ *  there, so use it rather than making a wide screen read like a tall phone. */
+function useEscape(onClose) {
+  React.useEffect(() => {
+    const k = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, [onClose]);
+}
+
+function FlagDetailModal({ row, boardDate, dayScored, onClose }) {
+  const d = React.useMemo(() => flagDetail(row, { boardDate, dayScored }), [row, boardDate, dayScored]);
+  useEscape(onClose);
+  if (!d) return null;
+  return (
+    <div
+      className="fixed inset-0 z-[1300] bg-slate-900/40 flex items-start justify-center p-4 sm:p-8 overflow-y-auto"
+      role="dialog" aria-modal="true" aria-label={`Flag detail for ${d.customer}`}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="w-full max-w-3xl rounded-xl bg-white shadow-xl border p-4 space-y-3">
+        <FlagDetailHeader d={d} row={row} onClose={onClose} big />
+        <FlagVerdict d={d} />
+        <div className="grid grid-cols-3 gap-4">
+          <div className="col-span-2 space-y-3">
+            <FlagWhy d={d} row={row} />
+            <FlagBasis d={d} />
+            <FlagActions d={d} />
+          </div>
+          <div className="col-span-1 space-y-2 border-l pl-4">
+            <FlagFact label="Receiving close" value={fmtMinOfDay(d.close.min)} />
+            <FlagFact label="Warning" value={d.warning?.text} />
+            <FlagFact label="First flagged" value={fmtSighting(d.firstSeen.min)} hint={d.firstSeen.tier ? `as ${d.firstSeen.tier}` : null} />
+            <FlagFact label="Last seen flagged" value={fmtSighting(d.lastSeen.min)} />
+            <FlagFact label="Worst projection" value={d.projection.worstText} />
+            <FlagFact label="Sweeps" value={d.sweeps ? String(d.sweeps.n) : null} />
+            <FlagFact label="Route" value={d.lastSeen.route} hint={d.firstSeen.route && d.firstSeen.route !== d.lastSeen.route ? `was ${d.firstSeen.route}` : null} />
+          </div>
+        </div>
+        <FlagCautions d={d} />
+      </div>
+    </div>
+  );
+}
+
+/** PHONE: a full-screen sheet, one column, in the order a thumb reads — verdict first, then
+ *  why, then what it rested on, then what was done. No facts rail: every one of those numbers
+ *  is already stated in the sentences above it, and a phone has no room to say things twice. */
+function FlagDetailSheet({ row, boardDate, dayScored, onClose }) {
+  const d = React.useMemo(() => flagDetail(row, { boardDate, dayScored }), [row, boardDate, dayScored]);
+  useEscape(onClose);
+  if (!d) return null;
+  return (
+    <div
+      data-overlay-layer
+      className="fixed inset-0 z-[1300] bg-white flex flex-col"
+      role="dialog" aria-modal="true" aria-label={`Flag detail for ${d.customer}`}
+      style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+    >
+      <div className="px-3 py-2.5 border-b bg-white">
+        <FlagDetailHeader d={d} row={row} onClose={onClose} />
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-3">
+        <FlagVerdict d={d} />
+        <FlagWhy d={d} row={row} />
+        <FlagBasis d={d} />
+        <FlagActions d={d} />
+        <FlagCautions d={d} />
+      </div>
+    </div>
+  );
+}
+
 function FlagHistoryScreen() {
   // TWO REPORTS, ONE SECTION. Chad asked for the end-of-day completion report to live "in
   // the flag section", alongside the flag outcomes rather than behind another tab in a
@@ -23746,6 +23953,9 @@ function FlagHistoryScreen() {
   const [data, setData] = React.useState(null);
   const [openDate, setOpenDate] = React.useState(null);
   const [dayRows, setDayRows] = React.useState(null);
+  // The row a dispatcher tapped, with the day it belongs to and whether that day has been
+  // graded — the detail says something different when the overnight join has not run yet.
+  const [detail, setDetail] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [err, setErr] = React.useState(null);
 
@@ -24008,13 +24218,26 @@ function FlagHistoryScreen() {
                                   <th className="py-1 pr-3">Delivered</th>
                                   <th className="py-1 pr-3">Outcome</th>
                                   <th className="py-1 pr-3">Acted on</th>
+                                  <th className="py-1 pr-3 sr-only">Details</th>
                                 </tr>
                               </thead>
                               <tbody>
                                 {[...dayRows].sort((a, b) => (a.firstSeenMin ?? 0) - (b.firstSeenMin ?? 0)).map((r) => {
                                   const o = OUTCOME_STYLE[r.outcome] || OUTCOME_STYLE.unknown;
                                   return (
-                                    <tr key={r.stopNbr} className="border-t border-slate-200 align-top">
+                                    <tr
+                                      key={r.stopNbr}
+                                      // THE WHOLE ROW IS THE TARGET. Chad: "I want to be able to
+                                      // click on these rows and get details." A link in one cell
+                                      // would be a 12px target on the screen where the table is
+                                      // already a sideways scroll.
+                                      role="button"
+                                      tabIndex={0}
+                                      aria-label={`Details for ${r.customer || r.stopNbr}`}
+                                      onClick={() => setDetail({ row: r, date: d.date, scored: !!d.scored })}
+                                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setDetail({ row: r, date: d.date, scored: !!d.scored }); } }}
+                                      className="border-t border-slate-200 align-top cursor-pointer hover:bg-white focus:bg-white focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-400"
+                                    >
                                       <td className="py-1.5 pr-3">
                                         <div className="font-semibold text-slate-800">{r.customer || r.stopNbr}</div>
                                         <div className="text-[10px] text-slate-400">PRO {r.stopNbr}{r.emailed ? ' · emailed CS' : ''}</div>
@@ -24029,7 +24252,7 @@ function FlagHistoryScreen() {
                                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${TIER_STYLE[r.worstTier] || TIER_STYLE.amber}`}>{r.worstTier}</span>
                                       </td>
                                       <td className="py-1.5 pr-3 text-slate-600">{fmtMinOfDay(r.closeMin)}</td>
-                                      <td className="py-1.5 pr-3 text-slate-600">{fmtMinOfDay(r.firstSeenMin)}</td>
+                                      <td className="py-1.5 pr-3 text-slate-600">{fmtSighting(r.firstSeenMin)}</td>
                                       <td className={`py-1.5 pr-3 ${r.leadMin != null && r.leadMin <= 0 ? 'text-rose-600 font-semibold' : 'text-slate-600'}`}>{fmtLead(r.leadMin)}</td>
                                       <td className="py-1.5 pr-3 text-slate-600">
                                         <DeliveredCell row={r} boardDate={d.date} />
@@ -24040,6 +24263,7 @@ function FlagHistoryScreen() {
                                       <td className="py-1.5 pr-3 text-slate-600">
                                         {r.actedOn ? <span className="text-slate-700 font-semibold">moved</span> : <span className="text-slate-300">—</span>}
                                       </td>
+                                      <td className="py-1.5 pr-1 text-right text-slate-300" aria-hidden="true">›</td>
                                     </tr>
                                   );
                                 })}
@@ -24056,6 +24280,11 @@ function FlagHistoryScreen() {
           </>
         )}
       </div>
+      {/* TWO VIEWS, not one with a breakpoint: the desktop has room for the story and a facts
+          rail side by side; the phone gets a full-screen sheet in reading order. */}
+      {detail && (isMobile
+        ? <FlagDetailSheet row={detail.row} boardDate={detail.date} dayScored={detail.scored} onClose={() => setDetail(null)} />
+        : <FlagDetailModal row={detail.row} boardDate={detail.date} dayScored={detail.scored} onClose={() => setDetail(null)} />)}
     </div>
   );
 }

@@ -154,6 +154,14 @@ jobs:
       # The desktop counterpart — a screen can be perfect at 390px and still waste half a
       # dispatcher's 1920px monitor, and no phone check can see that.
       - run: npm run verify:desktop
+      # A unit test proves the sentences in a flag's detail are right; it cannot prove the row
+      # is clickable or that the panel is reachable on a phone, and a panel nobody can open is
+      # the same as no panel. Drives the real bundle with the real stored rows, both layouts.
+      - run: npm run verify:flag-detail
+      - run: npm run verify:flag-detail
+        env:
+          MOBILE: '1'
+          SMOKE_PORT: '8806'
       # "Hide place labels" can only misbehave on a build that HAS a cloud mapId: Google
       # ignores the JS `styles` array on those maps, so the toggle had nothing to do on the
       # roadmap base. Honouring it means REBUILDING the map without the mapId, and the risk

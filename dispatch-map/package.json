@@ -13,7 +13,8 @@
     "smoke": "node scripts/smoke-app.mjs dist",
     "verify:hide-labels": "node scripts/verify-hide-place-labels.mjs dist",
     "verify:mobile": "node scripts/verify-mobile-layout.mjs dist",
-    "verify:desktop": "node scripts/verify-desktop-layout.mjs dist"
+    "verify:desktop": "node scripts/verify-desktop-layout.mjs dist",
+    "verify:flag-detail": "node scripts/verify-flag-detail.mjs dist"
   },
   "dependencies": {
     "@davisdelivery/quote-generator": "git+ssh://git@github.com/DavisDelivery/Quotes.git#main",
