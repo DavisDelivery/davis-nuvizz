@@ -294,6 +294,11 @@ export default async (req: Request): Promise<Response> => {
   const truck = url.searchParams.get('truck') || '';
   const userNameParam = url.searchParams.get('userName') || '';
   const date = url.searchParams.get('date') || todayUTC();
+  // The date is a Firestore path segment (nuvizz_stop_index/davis__{date}/stops). Shape-check
+  // it before it reaches readStops; a bad one is a 400, never a read of `davis__../x`.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return new Response(JSON.stringify({ ok: false, error: 'date must be YYYY-MM-DD' }), { status: 400, headers: cors });
+  }
   const bypassCache = url.searchParams.get('nocache') === '1';
 
   // Resolve userName: explicit param wins; otherwise look up by name in the

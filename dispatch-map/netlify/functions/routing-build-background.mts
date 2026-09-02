@@ -14,7 +14,7 @@
 // customer_notes. Nothing here touches the refresh functions or Phase 1 history.
 
 import { isFirestoreEnabled, readStops } from './lib/firestore.mts';
-import { getJob, updateJob } from './lib/routing-store.mts';
+import { getJob, updateJob, isRoutingJobId } from './lib/routing-store.mts';
 import { profileToSolverTruck, getTruckProfile, type TruckProfile } from './lib/truck-profiles.mts';
 import { runPipeline, type PipelineRequest, type PipelineStopInput } from './lib/routing-pipeline.mts';
 import { resolveMatrix } from './google-route-matrix.mts';
@@ -107,6 +107,7 @@ export default async function handler(req: Request): Promise<Response> {
   try { body = await req.json(); } catch { return json({ ok: false, error: 'bad json' }, 400); }
   const jobId = body?.jobId;
   if (!jobId) return json({ ok: false, error: 'jobId required' }, 400);
+  if (!isRoutingJobId(jobId)) return json({ ok: false, error: 'bad jobId' }, 400);
 
   const job = await getJob(jobId);
   if (!job) return json({ ok: false, error: 'job not found' }, 404);

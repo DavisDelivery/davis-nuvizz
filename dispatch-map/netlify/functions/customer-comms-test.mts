@@ -21,6 +21,7 @@
 // ZERO NuVizz calls — the sample stop comes from our own board cache.
 
 import { isFirestoreEnabled, readStops, etDayString } from './lib/firestore.mts';
+import { requireUser } from './lib/require-user.mts';
 import { emailEnabled, sendEmail } from './lib/email.mts';
 import {
   readConfig, buildMessage, resolveRecipient, adminTokenOk, testRecipientAllowed, DATE_RE,
@@ -33,6 +34,9 @@ export default async (req: Request): Promise<Response> => {
   const J = (b: any, s = 200) => new Response(JSON.stringify(b), { status: s, headers });
 
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
+  // User gate — inert until AUTH_REQUIRED=true on the site (lib/require-user.mts).
+  const gate = await requireUser(req, { role: 'dispatcher' });
+  if (!gate.ok) return gate.response;
 
   try {
     const url = new URL(req.url);

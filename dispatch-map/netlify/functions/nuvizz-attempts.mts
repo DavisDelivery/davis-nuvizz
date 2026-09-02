@@ -16,10 +16,15 @@
 //                       currentStatus, currentlyUnplanned, matched, detectedAt }
 
 import { isFirestoreEnabled, etDayString } from './lib/firestore.mts';
+import { requireUser } from './lib/require-user.mts';
 import { getAttemptsManifest, listAttemptItems, deleteAttemptItem } from './lib/attempts-store.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// The stopNbr on a delete becomes a Firestore document path (attempts/{day}/items/{stopNbr}).
+// Real stop numbers are digits (zero-padded PROs) or short carrier keys like AVRT-0028093763;
+// anything with a '/', '?', or '..' in it is not a stop number, it is a path. Exported for tests.
+export const STOP_NBR_RE = /^[A-Za-z0-9._-]{1,64}$/;
 
 export default async (req: Request): Promise<Response> => {
   const cors = {
@@ -31,6 +36,11 @@ export default async (req: Request): Promise<Response> => {
   };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
 
+  // Deleting a row is a dispatcher's act; reading the day is not gated.
+  if (req.method !== 'GET') {
+    const gate = await requireUser(req, { role: 'dispatcher' });
+    if (!gate.ok) return gate.response;
+  }
   const url = new URL(req.url);
   const qDate = url.searchParams.get('date');
   const date = qDate && DATE_RE.test(qDate) ? qDate : etDayString();
@@ -44,6 +54,9 @@ export default async (req: Request): Promise<Response> => {
     ? (url.searchParams.get('stopNbr') || url.searchParams.get('stop'))
     : (req.method === 'POST' ? url.searchParams.get('delete') : null)) || '';
   if (delStop) {
+    if (!STOP_NBR_RE.test(String(delStop).trim())) {
+      return new Response(JSON.stringify({ ok: false, error: 'stopNbr must be 1-64 of A-Z a-z 0-9 . _ -' }), { status: 400, headers: cors });
+    }
     if (!isFirestoreEnabled()) {
       return new Response(JSON.stringify({ ok: false, error: 'firestore-disabled' }), { status: 200, headers: cors });
     }

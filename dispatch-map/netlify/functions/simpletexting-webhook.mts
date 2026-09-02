@@ -8,7 +8,11 @@
 // triggers: ["INCOMING_MESSAGE"].
 //
 // The URL is public, so we require a shared secret (SIMPLETEXTING_WEBHOOK_SECRET)
-// in the ?token= query to reject spoofed posts.
+// in the ?token= query — or an x-webhook-token header, which keeps the secret out of
+// access logs and URL previews — to reject spoofed posts. Compared in constant time
+// (lib/secure-compare.mts). With the secret UNSET the endpoint stays open, as it always has:
+// closing it is a deploy decision (set the variable, re-register the webhook URL), not a
+// code change — but an open inbound-SMS endpoint is worth one log line per invocation.
 //
 // Inbound payload (per the API docs — SingleReportDtoWebhookMessageDto):
 //   { reportId, webhookId, type: "INCOMING_MESSAGE", values: {
@@ -18,6 +22,7 @@
 import { isFirestoreEnabled } from './lib/firestore.mts';
 import { normalizePhone } from './lib/sms.mts';
 import { recordSmsMessage } from './lib/sms-store.mts';
+import { tokenMatches } from './lib/secure-compare.mts';
 
 function asReports(body: any): any[] {
   if (Array.isArray(body)) return body;
@@ -34,8 +39,10 @@ export default async (req: Request): Promise<Response> => {
 
   const secret = process.env.SIMPLETEXTING_WEBHOOK_SECRET;
   if (secret) {
-    const token = new URL(req.url).searchParams.get('token');
-    if (token !== secret) { console.warn('[st-webhook] bad token'); return new Response('forbidden', { status: 403 }); }
+    const token = req.headers.get('x-webhook-token') || new URL(req.url).searchParams.get('token');
+    if (!tokenMatches(token, secret)) { console.warn('[st-webhook] bad token'); return new Response('forbidden', { status: 403 }); }
+  } else {
+    console.warn('[st-webhook] SIMPLETEXTING_WEBHOOK_SECRET is unset — accepting unauthenticated inbound posts (set it and re-register the webhook to close this)');
   }
 
   let body: any;

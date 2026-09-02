@@ -25,7 +25,7 @@ const FIRESTORE_BASE = 'https://firestore.googleapis.com/v1';
 let __token: { access_token: string; expires_at_ms: number } | null = null;
 let __saCache: any = null;
 
-function loadServiceAccount(): any {
+export function loadServiceAccount(): any {
   if (__saCache) return __saCache;
   const raw = process.env.FIREBASE_SA;
   if (!raw) throw new Error('FIREBASE_SA env var not set');
@@ -88,7 +88,7 @@ function base64UrlEncode(buf: Buffer | string): string {
   return Buffer.from(buf).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
 }
 
-async function getAccessToken(): Promise<string> {
+export async function getAccessToken(): Promise<string> {
   if (__token && Date.now() < __token.expires_at_ms - 60_000) return __token.access_token;
 
   const sa = loadServiceAccount();
@@ -162,10 +162,42 @@ function objectToFields(obj: any): any {
   return fields;
 }
 
+// ── Document-path guard ──────────────────────────────────────────────────────
+//
+// Every helper below builds its URL by string concatenation: `…/documents/${path}`. The
+// path is assembled by callers out of ids that come from the request (a stopNbr on the
+// attempts DELETE, a tenant on the roster read, a vendor messageId on the SMS webhook), and
+// `fetch(url)` parses that string with the WHATWG URL parser, which RESOLVES dot segments.
+// So `attempts/x/items/../../../nuvizz_ops/circuit` does not address a stop row — it
+// addresses documents/nuvizz_ops/circuit, the scanner's breaker doc, and a DELETE on it
+// re-arms a tripped breaker. A `?` in a segment ends the path early and starts a query
+// string (`stops/1?updateMask.fieldPaths=x` turns a replace into a masked patch); `#`
+// drops everything after it. Firestore ids are otherwise generous (spaces, unicode, `%`
+// from encodeURIComponent, the `:`/`@`/`+` in email-derived keys all occur in this
+// codebase), so the rule is a short forbid-list, not an allow-list: no empty segment, no
+// bare `.`/`..` (or their percent-encoded spellings, which the URL parser treats the
+// same), and none of `/ \ ? #` inside a segment. Legitimate ids in use today all pass —
+// test/firestore-path-guard.test.mjs feeds a sample of each real shape through it.
+const DOT_SEGMENT_RE = /^(?:\.|%2e){1,2}$/i;
+export function safeSegment(seg: string): string {
+  const s = String(seg ?? '');
+  if (s === '') throw new Error('firestore path: empty segment');
+  if (DOT_SEGMENT_RE.test(s)) throw new Error(`firestore path: dot segment ${JSON.stringify(s)}`);
+  if (/[/\\?#]/.test(s)) throw new Error(`firestore path: forbidden character in segment ${JSON.stringify(s)}`);
+  return s;
+}
+export function assertSafePath(path: string): string {
+  const p = String(path ?? '');
+  if (p === '') throw new Error('firestore path: empty path');
+  for (const seg of p.split('/')) safeSegment(seg);
+  return p;
+}
+
 // Exported (export-only, behavior-preserving) so the immutable history warehouse
 // (lib/history-store.mts) can reuse the same SA-JWT auth + value codecs instead
 // of duplicating the token/cache logic. The live-cache helpers below are unchanged.
 export async function getDoc(path: string): Promise<any | null> {
+  assertSafePath(path);
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${path}`;
@@ -176,6 +208,7 @@ export async function getDoc(path: string): Promise<any | null> {
 }
 
 export async function setDoc(path: string, data: any): Promise<boolean> {
+  assertSafePath(path);
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${path}`;
@@ -214,6 +247,7 @@ export async function setDoc(path: string, data: any): Promise<boolean> {
  * never had a note written.
  */
 export async function updateDocFields(path: string, data: any): Promise<boolean> {
+  assertSafePath(path);
   const keys = Object.keys(data || {});
   if (!keys.length) return false;
   const token = await getAccessToken();
@@ -250,6 +284,7 @@ export async function updateDocFields(path: string, data: any): Promise<boolean>
  * it" (skip, fine) from "Firestore is unreachable" (skip, and do NOT proceed unclaimed).
  */
 export async function createDocIfAbsent(path: string, data: any): Promise<boolean> {
+  assertSafePath(path);
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const db = `projects/${sa.project_id}/databases/${firestoreDatabase()}`;
@@ -278,6 +313,7 @@ export async function createDocIfAbsent(path: string, data: any): Promise<boolea
 // bytes streamed out of Firestore — the lean projection lever for the map feed. Read COUNT
 // (billing) is unchanged; this only trims the payload/latency. Omit for the full doc.
 export async function listDocs(collectionPath: string, opts?: { mask?: string[] }): Promise<any[]> {
+  assertSafePath(collectionPath);
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const all: any[] = [];
@@ -329,6 +365,7 @@ export async function runQuery(structuredQuery: any): Promise<any[]> {
 // List top-level collection ids (or sub-collections under `docPath` if given).
 // Used to DISCOVER the MarginIQ employees collection name from the shared DB.
 export async function listCollectionIds(docPath?: string): Promise<string[]> {
+  if (docPath) assertSafePath(docPath);
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const base = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents`;
@@ -347,6 +384,7 @@ export async function listCollectionIds(docPath?: string): Promise<string[]> {
 // and to remove an attempts-list row on request). Exported so the attempts store
 // can reuse the same SA-JWT auth instead of duplicating it.
 export async function deleteDoc(path: string): Promise<void> {
+  assertSafePath(path);
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${path}`;
@@ -469,8 +507,24 @@ export async function writeStops(
   // PRESERVE-ON-SKIP: a partial run must NOT wipe the feed it didn't scan. A
   // load-only run keeps existing status-10 orders; an unplanned-only run keeps
   // existing planned/routed stops. Docs re-scanned this run are upserted below.
+  //
+  // ZERO-STOP FLOOR (see emptyPullRefused). A scan that hands this function NOTHING for a
+  // day that currently holds rows is not allowed to prune that day. The list path already
+  // refuses to demote plans on a thin pull (ABSENT_DEMOTE_MIN_RATIO) and the probe path
+  // already preserves on an unanswered probe; this is the same asymmetry at the last gate,
+  // for the pull that came back whole and EMPTY — a saved search answering 200 with no rows,
+  // a forced ?date= scan of a day the vendor has nothing for. Pruning here deletes the
+  // dispatchers' board, the flags, the ETAs and the 6:30 report in one write and reports
+  // ok:true; refusing leaves rows that clear on the next pull that returns even one stop
+  // for the day. A day that genuinely emptied (every advance order re-dated) therefore keeps
+  // its last rows until one order lands on it again — on a delivery day that "genuinely
+  // empty" case does not occur, and on a horizon day it costs a few stale rows, not a board.
+  const emptyPullRefused = withNbr.length === 0 && existing.length > 0;
+  if (emptyPullRefused) {
+    console.error(`[writeStops] ${base}: scan returned ZERO stops but the index holds ${existing.length} — refusing to prune (preserving all; nothing deleted)`);
+  }
   const preserved = existing.filter((d) =>
-    !nextNbrs.has(String(d._id)) && preserveStopOnWrite(d, { includeUnplanned, includeLoads, partialLoads, partialUnplanned, rescannedLoads }));
+    !nextNbrs.has(String(d._id)) && (emptyPullRefused || preserveStopOnWrite(d, { includeUnplanned, includeLoads, partialLoads, partialUnplanned, rescannedLoads })));
   const preservedNbrs = new Set(preserved.map((d) => String(d._id)));
   await Promise.all(
     existing
@@ -984,6 +1038,41 @@ export async function incrementCallCounter(dateStr: string, n: number, meta?: st
   const out: any = await resp.json();
   const tr = out.writeResults?.[0]?.transformResults?.[0];
   return tr ? parseInt(tr.integerValue, 10) : NaN;
+}
+
+/**
+ * Atomically add to numeric fields on an EXISTING document, optionally setting other fields
+ * in the same commit. One documents:commit: `increments` ride as updateTransforms
+ * (integerValue), `alsoSet` rides as a masked update (updateMask.fieldPaths = its keys) so
+ * nothing else on the document is touched. `currentDocument: { exists: true }` makes a
+ * missing document a THROW, not a silent create — the caller (a failed-login counter) must
+ * not be able to mint a fresh counter row by mis-spelling the path. Same machinery as
+ * incrementCallCounter; the path goes through assertSafePath like every other helper.
+ */
+export async function incrementDocFields(path: string, increments: Record<string, number>, alsoSet?: Record<string, any>): Promise<void> {
+  assertSafePath(path);
+  const incKeys = Object.keys(increments || {});
+  const setKeys = Object.keys(alsoSet || {});
+  if (!incKeys.length && !setKeys.length) return;
+  const token = await getAccessToken();
+  const sa = loadServiceAccount();
+  const db = `projects/${sa.project_id}/databases/${firestoreDatabase()}`;
+  const write: any = {
+    update: { name: `${db}/documents/${path}`, fields: objectToFields(alsoSet || {}) },
+    // A masked update MERGES the named fields; an empty mask is still a merge of nothing,
+    // never a whole-document replace (that is the no-mask PATCH setDoc does).
+    updateMask: { fieldPaths: setKeys },
+    currentDocument: { exists: true },
+  };
+  if (incKeys.length) {
+    write.updateTransforms = incKeys.map((k) => ({ fieldPath: k, increment: { integerValue: String(Math.trunc(Number(increments[k]) || 0)) } }));
+  }
+  const resp = await fetch(`${FIRESTORE_BASE}/${db}/documents:commit`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ writes: [write] }),
+  });
+  if (!resp.ok) throw new Error(`incrementDocFields ${path} failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
 }
 
 export async function readCallCounter(dateStr: string): Promise<number> {

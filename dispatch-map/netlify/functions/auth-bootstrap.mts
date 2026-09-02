@@ -2,7 +2,7 @@
 //
 //   curl -X POST https://<site>/.netlify/functions/auth-bootstrap \
 //     -H 'Content-Type: application/json' \
-//     -d '{"secret":"<AUTH_BOOTSTRAP_SECRET>","username":"chad","password":"...","displayName":"Chad","email":"..."}'
+//     -d '{"secret":"<AUTH_BOOTSTRAP_SECRET>","username":"owner","password":"...","displayName":"Owner","email":"..."}'
 //
 // Guarded three ways: the env var must be set (unset ⇒ the endpoint does not exist),
 // the secret is compared in constant time, and it REFUSES once any active admin exists

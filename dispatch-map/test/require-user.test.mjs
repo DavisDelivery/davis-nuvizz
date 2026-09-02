@@ -17,7 +17,7 @@ const {
 } = await import('../netlify/functions/lib/require-user.mts');
 
 const USERS = {
-  chad: { username: 'chad', displayName: 'Chad', role: 'admin', active: true, tokenVersion: 2 },
+  lead: { username: 'lead', displayName: 'Lead', role: 'admin', active: true, tokenVersion: 2 },
   tina: { username: 'tina', displayName: 'Tina', role: 'dispatcher', active: true, tokenVersion: 0 },
   gone: { username: 'gone', displayName: 'Gone', role: 'dispatcher', active: false, tokenVersion: 0 },
   ro:   { username: 'ro', displayName: 'Ro', role: 'viewer', active: true, tokenVersion: 0 },
@@ -76,11 +76,11 @@ test('a deactivated user\'s still-valid token is refused on the next request', a
 });
 
 test('a token from before "sign out everywhere" / a password change is refused (tokenVersion)', async () => {
-  const stale = tokenFor('chad', 1); // store says 2
+  const stale = tokenFor('lead', 1); // store says 2
   const r = await requireUser(req(stale), { deps });
   assert.ok(!r.ok);
   assert.equal(r.reason, 'revoked');
-  const fresh = await requireUser(req(tokenFor('chad', 2)), { deps });
+  const fresh = await requireUser(req(tokenFor('lead', 2)), { deps });
   assert.ok(fresh.ok);
 });
 

@@ -22,19 +22,19 @@ const {
 // ── identifiers ──────────────────────────────────────────────────────────────
 
 test('usernames are lower-cased, trimmed, and can never be a Firestore path escape', () => {
-  assert.equal(normalizeUsername('  Chad '), 'chad');
+  assert.equal(normalizeUsername('  Ops1 '), 'ops1');
   assert.equal(normalizeUsername('dispatch_2'), 'dispatch_2');
   assert.equal(normalizeUsername('a'), null, 'too short');
   assert.equal(normalizeUsername('..'), null);
   assert.equal(normalizeUsername('../customer_notes/x'), null);
-  assert.equal(normalizeUsername('chad?x=1'), null);
-  assert.equal(normalizeUsername('chad.blyth'), null, 'dots are refused: they are path-adjacent');
+  assert.equal(normalizeUsername('ops1?x=1'), null);
+  assert.equal(normalizeUsername('ops.one'), null, 'dots are refused: they are path-adjacent');
   assert.equal(normalizeUsername(''), null);
   assert.equal(normalizeUsername(null), null);
 });
 
 test('emails: lower-cased, header-injection characters refused', () => {
-  assert.equal(normalizeEmail(' Chad@DavisDelivery.com '), 'chad@davisdelivery.com');
+  assert.equal(normalizeEmail(' Ops1@Example.com '), 'ops1@example.com');
   assert.equal(normalizeEmail('a@b'), null);
   assert.equal(normalizeEmail('a@b.com\r\nBcc: x@y.com'), null);
   assert.equal(normalizeEmail('"a b"@x.com'), null);
@@ -54,7 +54,7 @@ test('unknown roles fall to viewer, never upward', () => {
 test('password policy: length, repetition, username, common words', () => {
   assert.match(passwordProblem('short'), /at least/);
   assert.match(passwordProblem('aaaaaaaaaaaa'), /repeated/);
-  assert.match(passwordProblem('chad-is-here-2026', 'chad'), /username/);
+  assert.match(passwordProblem('ops1-is-here-2026', 'ops1'), /username/);
   assert.match(passwordProblem('password1'), /common|at least/);
   assert.equal(passwordProblem('Freight-moves-at-5am!'), null);
 });
@@ -118,18 +118,18 @@ test('lockFromCount decides on the post-increment value', () => {
 // ── session tokens ───────────────────────────────────────────────────────────
 
 test('a session token round-trips and carries the tokenVersion', () => {
-  const { token, expiresAt } = issueSessionToken({ username: 'chad', displayName: 'Chad', role: 'admin', tokenVersion: 3 });
+  const { token, expiresAt } = issueSessionToken({ username: 'ops1', displayName: 'Ops One', role: 'admin', tokenVersion: 3 });
   const c = verifySessionToken(token);
-  assert.equal(c.sub, 'chad'); assert.equal(c.role, 'admin'); assert.equal(c.tv, 3);
+  assert.equal(c.sub, 'ops1'); assert.equal(c.role, 'admin'); assert.equal(c.tv, 3);
   assert.ok(Date.parse(expiresAt) > Date.now());
 });
 
 test('a token expires, cannot be tampered with, and ignores the header alg', () => {
   const now = Date.now();
-  const { token } = issueSessionToken({ username: 'chad', role: 'admin', tokenVersion: 0 }, now);
+  const { token } = issueSessionToken({ username: 'ops1', role: 'admin', tokenVersion: 0 }, now);
   assert.equal(verifySessionToken(token, now + 15 * 86400_000), null, 'expired after the session window');
   const [h, p, s] = token.split('.');
-  const forged = Buffer.from(JSON.stringify({ sub: 'chad', role: 'admin', tv: 0, iat: 0, exp: 4102444800 })).toString('base64url');
+  const forged = Buffer.from(JSON.stringify({ sub: 'ops1', role: 'admin', tv: 0, iat: 0, exp: 4102444800 })).toString('base64url');
   assert.equal(verifySessionToken(`${h}.${forged}.${s}`, now), null, 'payload swap fails the signature');
   const noneHeader = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url');
   assert.equal(verifySessionToken(`${noneHeader}.${p}.`, now), null, 'alg:none is not a thing');
@@ -137,14 +137,14 @@ test('a token expires, cannot be tampered with, and ignores the header alg', () 
 });
 
 test('a token signed under a different secret is refused; no secret means no sessions', () => {
-  const { token } = issueSessionToken({ username: 'chad', role: 'admin', tokenVersion: 0 });
+  const { token } = issueSessionToken({ username: 'ops1', role: 'admin', tokenVersion: 0 });
   const saved = process.env.AUTH_SESSION_SECRET;
   process.env.AUTH_SESSION_SECRET = 'a-completely-different-secret-of-32-chars!';
   assert.equal(verifySessionToken(token), null);
   process.env.AUTH_SESSION_SECRET = 'short';
   assert.equal(sessionsConfigured(), false);
   assert.equal(verifySessionToken(token), null, 'fail closed');
-  assert.throws(() => issueSessionToken({ username: 'chad', role: 'admin' }));
+  assert.throws(() => issueSessionToken({ username: 'ops1', role: 'admin' }));
   process.env.AUTH_SESSION_SECRET = saved;
 });
 

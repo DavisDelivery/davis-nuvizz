@@ -18,6 +18,7 @@
 //   GET  ?tenant=davis                 → { ok, source:'cache', drivers, counts, updatedAt }
 //   GET/POST ?tenant=davis&refresh=1   → { ok, source:'live',  drivers, counts, apiCalls, refreshedAt }
 import { getCreds, basicAuthHeader } from './lib/nuvizz-scan.mts';
+import { requireUser } from './lib/require-user.mts';
 import { getNuvizzRequester, setCallTrigger } from './lib/nuvizz-request.mts';
 import { isFirestoreEnabled, readDriverRoster, writeDriverRoster } from './lib/firestore.mts';
 
@@ -120,7 +121,18 @@ export default async (req: Request): Promise<Response> => {
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
   const url = new URL(req.url);
   const tenant = (url.searchParams.get('tenant') || TENANT).toLowerCase();
+  // This deploy serves ONE tenant, and the value is a Firestore doc id (nuvizzRoster/{tenant}).
+  // Anything else is either a path (`../nuvizz_ops/circuit`) or a roster doc that does not
+  // belong to this site. Refuse it; a caller who wants Davis's roster does not need to say so.
+  if (tenant !== TENANT) {
+    return new Response(JSON.stringify({ ok: false, error: `tenant must be ${TENANT}` }), { status: 400, headers: cors });
+  }
   const refresh = req.method === 'POST' || url.searchParams.get('refresh') === '1';
+  if (refresh) {
+    // A live NuVizz pull is a dispatcher's act (inert until AUTH_REQUIRED=true).
+    const gate = await requireUser(req, { role: 'dispatcher' });
+    if (!gate.ok) return gate.response;
+  }
 
   try {
     // READ — serve the shared roster from Firestore. Zero NuVizz calls.

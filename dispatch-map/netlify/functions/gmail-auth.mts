@@ -33,6 +33,7 @@
 // Authorized redirect URIs), or set GMAIL_OAUTH_REDIRECT_URI to override.
 
 import crypto from 'node:crypto';
+import { requireUser } from './lib/require-user.mts';
 import { isFirestoreEnabled } from './lib/firestore.mts';
 import {
   buildAuthUrl, exchangeCode, gmailProfile, accessTokenFor, accountAllowed,
@@ -92,6 +93,13 @@ async function handle(req: Request): Promise<Response> {
   const adminSecret = String(process.env.GMAIL_ADMIN_SECRET || '').trim();
   const needsKey = adminSecret.length > 0;
   const keyOk = !needsKey || secretOk(url.searchParams.get('key'), adminSecret);
+  // The two admin actions the tab calls with fetch() also pass the user gate (inert until
+  // AUTH_REQUIRED=true). `start` is a browser NAVIGATION and Google's callback is a bare
+  // redirect — neither can carry a bearer header, so they stay on GMAIL_ADMIN_SECRET alone.
+  if (action === 'disconnect' || action === 'query') {
+    const gate = await requireUser(req, { role: 'admin' });
+    if (!gate.ok) return gate.response;
+  }
 
   // ── status ────────────────────────────────────────────────────────────────
   if (action === 'status') {

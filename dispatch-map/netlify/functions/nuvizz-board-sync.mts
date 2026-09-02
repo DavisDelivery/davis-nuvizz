@@ -17,6 +17,7 @@
 // board cache with state the Save already verified against NuVizz.
 
 import { patchBoardPlan, isFirestoreEnabled } from './lib/firestore.mts';
+import { requireUser } from './lib/require-user.mts';
 import { putOpRecord } from './lib/write-registries.mts';
 import { getCreds } from './lib/nuvizz-scan.mts';
 
@@ -25,6 +26,9 @@ export default async (req: Request): Promise<Response> => {
   const J = (obj: any, status = 200) => new Response(JSON.stringify(obj), { status, headers: cors });
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
   if (req.method !== 'POST') return J({ ok: false, error: 'POST only' }, 405);
+  // User gate — inert until AUTH_REQUIRED=true on the site (lib/require-user.mts).
+  const gate = await requireUser(req, { role: 'dispatcher' });
+  if (!gate.ok) return gate.response;
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'Firestore off — no board cache to sync' }, 200);
 
   let body: any;

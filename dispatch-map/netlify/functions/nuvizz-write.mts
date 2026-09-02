@@ -26,6 +26,7 @@
 //     write-enabled state. No NuVizz creds ever reach the browser (this fn is the proxy).
 
 import { WRITE_OPS, MUTATING_OPS, hoistResultError, type WriteOp } from './lib/nuvizz-write-ops.mts';
+import { requireUser } from './lib/require-user.mts';
 import { runOp, resolveWriteCreds, loadImportBlocked } from './lib/nuvizz-write.mts';
 import { rwbEngineBlocked } from './lib/nuvizz-rwb.mts';
 import { getNuvizzRequester, setCallTrigger, effectiveDailyCeiling, NuvizzCircuitOpenError } from './lib/nuvizz-request.mts';
@@ -166,6 +167,9 @@ export default async (req: Request): Promise<Response> => {
 
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
   if (req.method !== 'POST') return J({ ok: false, error: 'POST only' }, 405);
+  // User gate — inert until AUTH_REQUIRED=true on the site (lib/require-user.mts).
+  const gate = await requireUser(req, { role: 'dispatcher' });
+  if (!gate.ok) return gate.response;
 
   let body: any;
   try { body = await req.json(); } catch { return J({ ok: false, error: 'invalid JSON' }, 400); }

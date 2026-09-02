@@ -381,6 +381,16 @@ export function loadsArePartial(opts: {
   return opts.loadsComplete === false;
 }
 
+// PURE. Is `s` a real YYYY-MM-DD calendar date? Shape alone is not enough: '2026-13-45'
+// matches the regex, and the explicit path keys a forced prune on `davis__${date}` and asks
+// the vendor for that day — a day that cannot exist answers empty. Exported for tests.
+export function isValidScanDate(s: unknown): boolean {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const [y, m, d] = s.split('-').map((x) => parseInt(x, 10));
+  const t = new Date(Date.UTC(y, m - 1, d));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+}
+
 export async function runRefreshStops(req: Request): Promise<Response> {
   const startedAt = Date.now();
   const now = new Date();
@@ -388,6 +398,17 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   const isManual = url.searchParams.get('manual') === '1';
   const dateParam = url.searchParams.get('date');
   const daysParam = url.searchParams.get('days');
+  // ?date= is the forced, explicit-date scan Chad runs by hand, and it stays. What does not
+  // stay is an UNVALIDATED one: the value used to flow straight into the index key
+  // (`nuvizz_stop_index/davis__${date}`) and into a full forced scan-and-prune of whatever
+  // day that string named. Refuse anything that is not a real calendar date BEFORE any
+  // counter, ledger row, Firestore read or vendor call happens — a bad date is a 400, not a
+  // scan. A valid date behaves exactly as it always has.
+  if (dateParam != null && !isValidScanDate(dateParam)) {
+    return new Response(JSON.stringify({ ok: false, error: 'date must be a real YYYY-MM-DD calendar date', date: dateParam }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   const explicit = !!(dateParam || daysParam); // ops/testing: full forced scan of given dates
   const trigger = isManual ? 'manual' : (explicit ? 'explicit' : 'schedule');
   // Attribute every NuVizz call this run makes (list pulls + enrichment) to the right

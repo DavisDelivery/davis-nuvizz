@@ -15,6 +15,7 @@
 // auth (Firebase App Check / signed request) before exposing this widely.
 
 import { smsEnabled, sendSms } from './lib/sms.mts';
+import { requireUser } from './lib/require-user.mts';
 import { resolveDriverPhone } from './lib/marginiq.mts';
 import { recordSmsMessage } from './lib/sms-store.mts';
 import { isFirestoreEnabled, getDoc, setDoc, etDayString } from './lib/firestore.mts';
@@ -26,6 +27,9 @@ export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
   if (req.method !== 'POST') return new Response(JSON.stringify({ ok: false, error: 'POST only' }), { status: 405, headers: cors });
+  // User gate — inert until AUTH_REQUIRED=true on the site (lib/require-user.mts).
+  const gate = await requireUser(req, { role: 'dispatcher' });
+  if (!gate.ok) return gate.response;
 
   if (!smsEnabled()) {
     return new Response(JSON.stringify({ ok: false, error: 'SMS not configured (SIMPLETEXTING_API_KEY unset)' }), { status: 503, headers: cors });
