@@ -56,10 +56,40 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ── CURRENT LIVE POSTURE — open, matching the console exactly ──────────
-    // Do not tighten this line on its own. See THE CUTOVER below.
+    // ── STEP ONE OF THE LOCKDOWN — close the collections the browser never touches ──
+    //
+    // load-scan's credential store, dispatch-map's own user store (app_users — password
+    // hashes and reset tokens), and load-scan's four working collections are reached ONLY
+    // through the service account (load-scan/netlify/functions/lib/firestore.mts), and
+    // dispatch-map's browser bundle never reads or writes them (grep'd in the 2026-09
+    // audit: zero references in dispatch-map/src, and load-scan/src does not import
+    // Firebase at all). So denying them here costs nothing and closes the hole where a
+    // stranger with the public web config writes driver_auth/9999 {role:'dispatcher'}
+    // and signs in with a legitimately issued token.
+    //
+    // WHY IT IS DONE INSIDE THE CATCH-ALL: Firestore grants access if ANY matching rule
+    // allows it. A separate `match /driver_auth/{doc} { allow: if false }` block beside
+    // an open `{document=**}` would be dead code — the wildcard still allows. The
+    // exclusion has to live in the wildcard's own condition.
+    //
+    // DEPLOY IS STILL A DELIBERATE ACT (nothing in CI touches Firebase):
+    //   firebase deploy --only firestore:rules
+    // Test on uat-mirror first — rules are per-database.
+    function serverOnlyCollection(document) {
+      return document[0] in [
+        'driver_auth',
+        'app_users',
+        'nuvizz_load_scans',
+        'loadscan_worklog',
+        'loadscan_assignments',
+        'load_scan_unmatched_aliases'
+      ];
+    }
+
+    // ── CURRENT LIVE POSTURE — open for everything else, matching the console ──
+    // Do not tighten this further on its own. See THE CUTOVER below.
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if !serverOnlyCollection(document);
     }
 
     // ── THE CUTOVER (do not enable until logins ship) ──────────────────────
@@ -100,6 +130,13 @@ service cloud.firestore {
     //                                          allow write: if isStaff(); }
     //   match /sms_messages/{doc}            { allow read: if isStaff();
     //                                          allow write: if false; }
+    //
+    //   // Read by the browser today (tractor layer, customer→driver history) but
+    //   // MISSING from the first draft of this block — the audit found both. Without
+    //   // them the default-deny below would blank the tractor pins and the driver
+    //   // history silently, because those onSnapshot handlers swallow permission errors.
+    //   match /tractor_locations/{doc}       { allow read: if isStaff(); }
+    //   match /routing_customer_drivers/{doc} { allow read: if isStaff(); }
     //
     //   // Everything else the browser only ever reads, or never touches at all.
     //   // Default deny is the point: a collection added later is CLOSED until

@@ -10,6 +10,12 @@ on:
     branches: ['**']
   pull_request:
 
+# These jobs run the PR's own code (npm test, the build, Playwright). Pin the token to
+# read-only so a same-repo PR can never borrow a write token from the default
+# workflow permission — the repo default was not verifiable from the audit session.
+permissions:
+  contents: read
+
 jobs:
   # ── the version bump is a TEST now, not a request ─────────────────────────
   # CLAUDE.md has required a version bump on every merged change since 2026-08-19,
