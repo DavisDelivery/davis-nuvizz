@@ -14,7 +14,7 @@
 // constituents so the alert path can judge them individually.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeBoardFlags, AMBER_CAP, RED_CAP } from '../src/lib/board-flags.js';
+import { computeBoardFlags, AMBER_CAP, RED_CAP, CRITICAL_CAP } from '../src/lib/board-flags.js';
 import { selectAlertable } from '../netlify/functions/lib/flag-alert.mts';
 
 const DEPOT = { lat: 34.147791, lng: -83.960911 };
@@ -28,13 +28,13 @@ const RED_FLOOR = 'red';
 
 // n single-stop routes, each predicted past a 1:30p close. `typed` decides the tier:
 // dispatcher-typed hours are red at any overrun; scanner hours stay amber inside the band.
-const board = (n, { typed = false } = {}) => {
+const board = (n, { typed = false, miles = 55 } = {}) => {
   const stops = [], notes = new Map();
   for (let i = 0; i < n; i += 1) {
     const k = `c${i}`;
     stops.push({
       stopNbr: `S${i}`, matchKey: k, businessName: `CO ${i}`, loadNbr: `R${i}`, routeName: `R${i}`,
-      routeSeq: 1, stopType: 'DL', lat: DEPOT.lat + 55 * DEG, lng: DEPOT.lng,
+      routeSeq: 1, stopType: 'DL', lat: DEPOT.lat + miles * DEG, lng: DEPOT.lng,
       normalizedStatus: 'PLANNED', status: '10', driverName: 'DRV', driverUserName: 'd',
     });
     notes.set(k, {
@@ -53,6 +53,23 @@ test('THE BAD DAY: one more red than the cap must not email zero people', () => 
   const over = selectAlertable(board(RED_CAP + 1, { typed: true }).rows, NOW, 0, RED_FLOOR);
   assert.equal(under.length, RED_CAP);
   assert.equal(over.length, RED_CAP + 1, 'the 13th red stop must not silence the other twelve');
+});
+
+test('THE CLIFF THE INBOX ACTUALLY SITS ON NOW IS THE CRITICAL ONE — forty email, forty-one email nobody', () => {
+  // Since 2026-09-02 only critical emails (flag-alert ALERT_MIN_TIER), so the bucket that can
+  // silence the inbox is CRITICAL_CAP 40, not RED_CAP 12. A worse day than thirteen — and the
+  // same failure, in the same flattering direction, so it has to be pinned on this bucket too.
+  // Two hundred miles out rather than fifty-five: the ETA lands 225 minutes past the 1:30p
+  // close against a 90-minute band, which is what makes these critical rather than red
+  // (lateBy > 2 x errorMin) while the close itself is STILL AHEAD of the 1:00p clock — an
+  // earlier close would have made them critical and then had rule 2 refuse them all for a
+  // window that had already shut, which is how the first draft of this test measured zero.
+  const crit = (n) => board(n, { miles: 200 });
+  assert.equal((crit(2).rows || []).filter((r) => r.rule === 'hours_risk')[0].tier, 'critical',
+    'the fixture really is producing criticals, not reds');
+  assert.equal(selectAlertable(crit(CRITICAL_CAP).rows, NOW).length, CRITICAL_CAP);
+  assert.equal(selectAlertable(crit(CRITICAL_CAP + 1).rows, NOW).length, CRITICAL_CAP + 1,
+    'the 41st critical must not silence the other forty');
 });
 
 test('the panel still collapses — this is an inbox fix, not a screen change', () => {

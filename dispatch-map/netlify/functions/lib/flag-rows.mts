@@ -16,6 +16,14 @@
 // reachable, and it fails in the flattering direction — one calm summary line is
 // pixel-identical to a calm board.
 //
+// THAT MEASUREMENT WAS TAKEN WHEN RED EMAILED, and since 2026-09-02 it does not (flag-alert
+// ALERT_MIN_TIER=critical). It is left standing because it still describes the two consumers
+// that DID not change — the overnight texts, whose bar is still red, and the flag-history
+// recorder, which records every tier. For the inbox the cliff simply moved to the critical
+// bucket, whose cap is CRITICAL_CAP 40: forty criticals email forty people and forty-one
+// email nobody. That is a far worse day than thirteen, and it is the day this module must
+// hold up on — the failure is identical and the flattering direction is the same.
+//
 // The summary row carries its constituents' facts and this is the ONLY place that unpacks
 // them. It is a module of its own because there are three consumers of the same capped list,
 // and a fix applied to one of three is exactly how the inbox and the audit came to disagree
