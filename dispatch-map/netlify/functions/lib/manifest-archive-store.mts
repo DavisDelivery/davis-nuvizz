@@ -9,7 +9,7 @@ import {
   manifestDayPath, manifestBlobKey, manifestDeliveryDate, pdfDigest, foldManifestDay,
 } from './manifest-archive.mts';
 import { putManifestPdf } from './manifest-blobs.mts';
-import { readUlineManifest } from './uline-manifest.mts';
+import { readUlineManifest, laneSummary } from './uline-manifest.mts';
 
 /**
  * File one accepted report: store the PDF, fold the day's record, return WHAT HAPPENED.
@@ -40,6 +40,8 @@ export async function archiveManifest(args: {
       emailId: email?.id ?? null, mailbox: mailbox ?? null,
       from: email?.from ?? null, subject: email?.subject ?? null, fileName: fileName ?? null,
       orders: Number(diff?.manifest?.orders) || rows.length,
+      // Measured off the same rows, in the one place they are already parsed.
+      ...laneSummary(rows),
       totals: diff?.manifest?.totals ?? null,
       verified: !!diff?.manifest?.verified,
       onBoard: diff?.onBoard, boardOnly: diff?.boardOnly,

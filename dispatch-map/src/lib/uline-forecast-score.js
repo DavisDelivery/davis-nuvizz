@@ -41,6 +41,9 @@
 // redeliveries and carryover.
 
 import { expectedDeliveryDate, nextDeliveryDay, isDeliveryDay, isoWeekday, shiftIso } from './manifest-window.js';
+import { holidayCalendar, davisClosedDay, ulineHolidayOn, davisClosedDays } from './davis-calendar.js';
+
+export { holidayCalendar, davisClosedDay, ulineHolidayOn, davisClosedDays } from './davis-calendar.js';
 
 // ── CHAD'S NUMBERS AND THE FIXED THRESHOLDS ───────────────────────────────────
 
@@ -80,6 +83,12 @@ export const STATS_WINDOW_DAYS = 180;
 /** From the 11th with no readable version this month, the card goes amber. Uline has sent
  *  by the 7th every month since June 2022; four days of grace, not forty. */
 export const VERSION_DUE_DAY = 11;
+/** Past this many days with no successful mailbox read, the card stops blaming Uline and says
+ *  nobody has looked. One weekly cycle plus three days of slack for a missed run. */
+export const MAILBOX_STALE_DAYS = 10;
+/** Uline has sent between the 4th and the 7th every month since June 2022, so a read on the 8th
+ *  or later is a read that would have found this month's file. Before that, silence is ours. */
+export const SEND_WINDOW_CLOSES = 8;
 export const NIGHT_ROLLOVER_HOUR = 5;
 /** Horizon buckets in weeks, because that is how a staffing decision is phrased. */
 export const HORIZON_BUCKETS = [['≤4w', 0, 28], ['5–8w', 29, 56], ['9–13w', 57, 91], ['14w+', 92, Infinity]];
@@ -88,6 +97,16 @@ const ET_TZ = 'America/New_York';
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DOW_PLURAL = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
 const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+/** An ISO date out of an ISO datetime, an epoch-ms number, or nothing. Never Number(null). */
+const asIsoDate = (v) => {
+  if (v == null || v === '' || typeof v === 'boolean') return null;
+  const s = String(v);
+  if (ISO_RE.test(s.slice(0, 10)) && (s.length === 10 || s[10] === 'T' || s[10] === ' ')) return s.slice(0, 10);
+  const n = Number(v);
+  if (Number.isFinite(n) && n > 0) return etParts(n)?.date ?? null;
+  return null;
+};
 
 // ── SMALL PURE HELPERS ────────────────────────────────────────────────────────
 
@@ -167,64 +186,22 @@ export function ladderForDate(versions, shipIso) {
   return out.sort((a, b) => a.sentAt - b.sentAt);
 }
 
-// ── THE TWO CALENDARS ─────────────────────────────────────────────────────────
-
-/** US federal holidays as observed (Saturday → Friday, Sunday → Monday) for one year, iso →
- *  name. New Year's Day observed on 12/31 of the year before is listed under that year. A
- *  holiday here closes Davis ONLY when Uline's file also has no row for it (davisClosedDays). */
-export function usFederalHolidays(year) {
-  const out = new Map();
-  const y = Number(year);
-  if (!Number.isInteger(y) || y < 1970 || y > 2200) return out;
-  const iso = (yy, m, d) => `${yy}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-  const observed = (s) => { const w = isoWeekday(s); return w === 6 ? shiftIso(s, -1) : w === 0 ? shiftIso(s, 1) : s; };
-  const nthWeekday = (m, dow, n) => { let d = iso(y, m, 1); while (isoWeekday(d) !== dow) d = shiftIso(d, 1); return shiftIso(d, 7 * (n - 1)); };
-  const lastMonday = (m, lastDay) => { let d = iso(y, m, lastDay); while (isoWeekday(d) !== 1) d = shiftIso(d, -1); return d; };
-  const add = (d, name) => { if (d && d.startsWith(`${y}-`)) out.set(d, name); };
-  add(observed(iso(y, 1, 1)), "New Year's Day");
-  add(nthWeekday(1, 1, 3), 'Martin Luther King Day');
-  add(nthWeekday(2, 1, 3), "Presidents' Day");
-  add(lastMonday(5, 31), 'Memorial Day');
-  add(observed(iso(y, 6, 19)), 'Juneteenth');
-  add(observed(iso(y, 7, 4)), 'Independence Day');
-  add(nthWeekday(9, 1, 1), 'Labor Day');
-  add(nthWeekday(10, 1, 2), 'Columbus Day');
-  add(observed(iso(y, 11, 11)), 'Veterans Day');
-  add(nthWeekday(11, 4, 4), 'Thanksgiving');
-  add(observed(iso(y, 12, 25)), 'Christmas Day');
-  add(observed(iso(y + 1, 1, 1)), "New Year's Day");   // kept only when it falls on this year's 12/31
-  return out;
-}
-
-const federalCache = new Map();
-function federalFor(version) {
-  const key = `${version?.from}|${version?.to}`;
-  if (federalCache.has(key)) return federalCache.get(key);
-  const fed = new Map();
-  if (usable(version)) {
-    const y0 = Number(version.from.slice(0, 4)); const y1 = Number(version.to.slice(0, 4));
-    for (let y = y0; y <= y1; y++) for (const [d, name] of usFederalHolidays(y)) fed.set(d, name);
-  }
-  federalCache.set(key, fed);
-  return fed;
-}
-
 const unknownCache = new WeakMap();
 /** Ship dates Uline sent a row for that could not be read — plus, when the file had rows whose
- *  DATE could not be read, every non-holiday weekday gap: any one of them may be that row, and
- *  a day with no NUMBER must never be rendered as a day with no FREIGHT (Tuesday's 706 staffed
- *  for Thursday, Wednesday staffed for nothing). Uline's export has never had a bad date; one
- *  is a format change, and this is what keeps it from turning into a fake closure. */
+ *  DATE could not be read, every weekday gap that is not one of Uline's own holidays: any one of
+ *  them may be that row, and a day with no NUMBER must never be rendered as a day with no
+ *  FREIGHT (Tuesday's 706 staffed for Thursday, Wednesday staffed for nothing). Uline's export
+ *  has never had a bad date; one is a format change, and this is what keeps it from turning into
+ *  a fake closure. */
 export function unknownShipDays(version) {
   const out = new Set(Array.isArray(version?.unreadableDates) ? version.unreadableDates : []);
   if (!usable(version)) return out;
   if (unknownCache.has(version)) return unknownCache.get(version);
   const badDates = Number(version.rowsDropped?.badDate) || 0;
   if (badDates > 0) {
-    const fed = federalFor(version);
     for (let d = version.from; d <= version.to; d = shiftIso(d, 1)) {
       const w = isoWeekday(d);
-      if (w == null || w === 0 || w === 6 || fed.has(d)) continue;
+      if (w == null || w === 0 || w === 6 || ulineHolidayOn(d)) continue;
       if (estOf(version, d) == null) out.add(d);
     }
   }
@@ -235,7 +212,8 @@ export function unknownShipDays(version) {
 const closedCache = new WeakMap();
 /** ULINE'S CALENDAR: Mon–Fri ship dates inside the version's range that Uline sent NO row for
  *  (or zero) — days Uline does not ship. A date whose row could not be read is not closed, it
- *  is unknown. This set decides where freight comes FROM; it does not decide whether Davis runs. */
+ *  is unknown. This set decides where freight comes FROM; it does not decide whether Davis runs
+ *  (davisClosedDay does), and the two genuinely differ: Uline ships the day after Thanksgiving. */
 export function closedShipDays(version) {
   const closed = new Set();
   if (!usable(version)) return closed;
@@ -252,25 +230,15 @@ export function closedShipDays(version) {
   return closed;
 }
 
-/** DAVIS'S CALENDAR: days no route runs, iso → reason. A Uline-closed weekday that is ALSO a
- *  federal holiday (Labor Day, Thanksgiving, Christmas Day, New Year's, Memorial Day, the July
- *  4th observance), plus every date in `extra` (env ULINE_DAVIS_CLOSED — Chad's list, so a
- *  Christmas Eve Davis takes off is one line away). Christmas Eve is Uline-closed and NOT a
- *  federal holiday, so by default Wednesday's freight is delivered on it. */
-export function davisClosedDays(version, extra = null) {
-  const out = new Map();
-  for (const d of Array.isArray(extra) ? extra : []) if (ISO_RE.test(String(d || ''))) out.set(String(d), 'Davis closed');
-  if (!usable(version)) return out;
-  const closed = closedShipDays(version);
-  for (const [d, name] of federalFor(version)) if (closed.has(d) && !out.has(d)) out.set(d, name);
-  return out;
-}
-
-/** Where freight shipped on `shipIso` delivers, rolling past days DAVIS does not run
- *  (`noDelivery` is davisClosedDays, or any Set/Map of iso dates). */
+/** Where freight shipped on `shipIso` delivers, rolling past days DAVIS does not run.
+ *  `noDelivery` may be a predicate (iso → truthy reason) or any Set/Map of iso dates. The guard
+ *  is 8 because the longest shutdown here is two days and a weekend. */
 export function deliveryDayFor(shipIso, noDelivery) {
+  const shut = typeof noDelivery === 'function' ? noDelivery
+    : (noDelivery && typeof noDelivery.has === 'function') ? (d) => noDelivery.has(d)
+      : () => false;
   let d = expectedDeliveryDate(shipIso);
-  for (let guard = 0; d && noDelivery && noDelivery.has(d) && guard < 8; guard++) d = nextDeliveryDay(d);
+  for (let guard = 0; d && shut(d) && guard < 8; guard++) d = nextDeliveryDay(d);
   return d;
 }
 
@@ -287,12 +255,27 @@ export function deliveryDayFor(shipIso, noDelivery) {
  * complete report filed at 1am); a night with neither is excluded with that reason rather
  * than guessed at — Number(null) is 0, and 0 is 7pm on 1969-12-31.
  */
+export function actualCount(latest) {
+  const l = latest || null;
+  if (!l) return { value: null, basis: null, lanes: null, offLane: null };
+  const pros = Number(l.ulinePros);
+  const lanes = l.lanes && typeof l.lanes === 'object' ? l.lanes : null;
+  const offLane = Number.isFinite(Number(l.offLane)) ? Number(l.offLane) : null;
+  // EXPLICIT, never `l.ulinePros || l.orders`: a night on which Uline routed us nothing is a
+  // real 0, and 0 is falsy. Nights filed before v0.85.0 have no measured count and fall back to
+  // the row count, saying so — on all eleven archived nights the two are the same number.
+  if (Number.isFinite(pros)) return { value: pros, basis: 'ulinePros', lanes, offLane };
+  const orders = Number(l.orders);
+  return { value: Number.isFinite(orders) ? orders : null, basis: Number.isFinite(orders) ? 'rows' : null, lanes, offLane };
+}
+
 export function actualFromManifestDay(row, shipIso) {
   const l = row?.latest || null;
   if (!l) return { status: 'missing', actual: null, reason: 'no manifest on file' };
-  const orders = Number(l.orders);
+  const count = actualCount(l);
+  const orders = count.value;
   const reports = Number(row?.reportCount) || Number(l.reportNo) || null;
-  const base = { actual: Number.isFinite(orders) ? orders : null, reportNo: l.reportNo ?? null, reports, mailbox: l.mailbox ?? null };
+  const base = { actual: Number.isFinite(orders) ? orders : null, basis: count.basis, lanes: count.lanes, offLane: count.offLane, reportNo: l.reportNo ?? null, reports, mailbox: l.mailbox ?? null };
   if (row?.sawOrderCountFall) return { ...base, status: 'count_fell', reason: 'a report came back shorter than the one before it — the count is not trusted' };
   if (!l.verified) return { ...base, status: 'unverified', reason: 'the manifest did not reconcile against its own printed totals' };
   if (!Number.isFinite(orders)) return { ...base, status: 'unverified', reason: 'no order count on the record' };
@@ -334,17 +317,18 @@ export function classifyNight({ shipIso, version, row, floor, today, davisClosed
     if (has) return { status: 'unforecast', est: est ?? null, upper, reason: 'Uline shipped, nothing was forecast for this day' };
     return { status: 'closed', est: 0, upper: null, reason: isoWeekday(shipIso) === 6 ? 'Saturday — Uline does not ship' : 'Uline closed' };
   }
-  const deliverOn = deliveryDayFor(shipIso, davisClosedDays(v, davisClosed));
+  const shut = (iso) => davisClosedDay(iso, davisClosed);
+  const deliverOn = deliveryDayFor(shipIso, shut);
   // TONIGHT IS NOT A NIGHT YET (see the header): whatever is on file for today's ship date is
   // a count in progress. It is scored after the 5am roll; the tonight line reads it live.
   if (today && shipIso === today) {
-    const soFar = has && Number.isFinite(Number(row.latest.orders)) ? Number(row.latest.orders) : null;
+    const soFar = has ? actualCount(row.latest).value : null;
     return { status: 'pending', est, upper, deliverOn, actual: soFar, reportNo: row?.latest?.reportNo ?? null, inProgress: has,
       reason: has ? `tonight — ${soFar ?? '?'} so far (#${row.latest.reportNo ?? '?'}); scored after the 5am roll` : `reports land in the mailbox on the night of ${mdLabel(shipIso)}; filed once the ${dayLabel(deliverOn)} board is scanned` };
   }
   if (has) {
     const a = actualFromManifestDay(row, shipIso);
-    return { status: a.status === 'actual' ? 'scored' : a.status, est, upper, actual: a.actual, reportNo: a.reportNo, reports: a.reports, stamp: a.stamp ?? null, stampFrom: a.stampFrom ?? null, mailbox: a.mailbox ?? null, reason: a.reason };
+    return { status: a.status === 'actual' ? 'scored' : a.status, est, upper, actual: a.actual, basis: a.basis ?? null, lanes: a.lanes ?? null, offLane: a.offLane ?? null, reportNo: a.reportNo, reports: a.reports, stamp: a.stamp ?? null, stampFrom: a.stampFrom ?? null, mailbox: a.mailbox ?? null, reason: a.reason };
   }
   if (today && deliverOn && deliverOn > today) return { status: 'pending', est, upper, deliverOn, reason: `reports land in the mailbox on the night of ${mdLabel(shipIso)}; filed once the ${dayLabel(deliverOn)} board is scanned` };
   if (floor && shipIso < floor) return { status: 'before_archive', est, upper, reason: `before the manifest archive began (${floor})` };
@@ -476,7 +460,7 @@ export function patternSentences(pairs) {
 export function deliveryOutlook({ version, today, days = OUTLOOK_DAYS, capacity = null, bias = null, unreadableDates = null, davisClosed = null }) {
   if (!usable(version) || !ISO_RE.test(String(today || ''))) return [];
   const closed = closedShipDays(version);                       // Uline's calendar: where freight comes from
-  const noDelivery = davisClosedDays(version, davisClosed);     // Davis's calendar: whether a route runs
+  const shut = (iso) => davisClosedDay(iso, davisClosed);       // Davis's calendar: whether a route runs
   const unreadable = new Set([...(Array.isArray(unreadableDates) ? unreadableDates : []), ...unknownShipDays(version)]);
   const groups = new Map();   // deliverOn -> { ships, closedShips, unreadableShips, rolled }
   const g = (d) => { if (!groups.has(d)) groups.set(d, { ships: [], closedShips: [], unreadableShips: [], rolled: [] }); return groups.get(d); };
@@ -489,7 +473,7 @@ export function deliveryOutlook({ version, today, days = OUTLOOK_DAYS, capacity 
   for (let d = shiftIso(today, -7); d && d <= last; d = shiftIso(d, 1)) {
     const w = isoWeekday(d);
     if (w === 6) continue;                           // Uline never ships Saturday
-    const deliverOn = deliveryDayFor(d, noDelivery);
+    const deliverOn = deliveryDayFor(d, shut);
     if (!deliverOn) continue;
     if (unreadable.has(d) && covers(version, d)) { g(deliverOn).unreadableShips.push(d); continue; }
     if (closed.has(d)) { g(deliverOn).closedShips.push(d); continue; }
@@ -497,8 +481,14 @@ export function deliveryOutlook({ version, today, days = OUTLOOK_DAYS, capacity 
     if (e == null) continue;
     const grp = g(deliverOn);
     grp.ships.push({ date: d, dow: DOW[w], est: e, upper: upperOf(version, d) });
+    // EVERY day it rolled past, not just the first: Wednesday's freight before Thanksgiving
+    // skips two closed days, and a note naming only Thanksgiving leaves the Friday unexplained.
     const usual = expectedDeliveryDate(d);
-    if (usual && usual !== deliverOn) grp.rolled.push({ date: d, past: usual });
+    if (usual && usual !== deliverOn) {
+      const past = [];
+      for (let k = usual; k && k < deliverOn && past.length < 8; k = nextDeliveryDay(k)) if (shut(k)) past.push(k);
+      grp.rolled.push({ date: d, past });
+    }
   }
   // The typical delivery day FOR THAT WEEKDAY across the whole version, for LIGHT.
   const typicalByW = {};
@@ -507,7 +497,7 @@ export function deliveryOutlook({ version, today, days = OUTLOOK_DAYS, capacity 
     for (let d = version.from; d <= version.to; d = shiftIso(d, 1)) {
       if (isoWeekday(d) === 6 || closed.has(d) || unreadable.has(d)) continue;
       const e = estOf(version, d); if (e == null) continue;
-      const k = deliveryDayFor(d, noDelivery); if (!k) continue;
+      const k = deliveryDayFor(d, shut); if (!k) continue;
       byDay.set(k, (byDay.get(k) || 0) + e);
     }
     const byW = {};
@@ -520,7 +510,8 @@ export function deliveryOutlook({ version, today, days = OUTLOOK_DAYS, capacity 
   for (const d of deliveryDates) {
     const w = isoWeekday(d);
     const row = { deliverOn: d, dow: DOW[w], label: dayLabel(d), ships: [], est: null, upper: null, plan: null, adjusted: false, adjustedBy: 0, chips: [], notes: [], status: 'ok' };
-    if (noDelivery.has(d)) { row.status = 'closed'; row.notes.push(`${noDelivery.get(d)} — no deliveries`); rows.push(row); continue; }
+    const shutToday = shut(d);
+    if (shutToday) { row.status = 'closed'; row.notes.push(`${shutToday} — no deliveries`); rows.push(row); continue; }
     const grp = groups.get(d);
     if (!grp || (!grp.ships.length && !grp.unreadableShips.length)) {
       if (d > version.to) { row.status = 'not_forecast_yet'; row.notes.push(`not forecast yet — the ${version.sentDate} file runs to ${version.to}`); }
@@ -532,7 +523,7 @@ export function deliveryOutlook({ version, today, days = OUTLOOK_DAYS, capacity 
     const uppers = grp.ships.map((s) => s.upper);
     row.upper = uppers.every((u) => u != null) ? uppers.reduce((a, b) => a + b, 0) : null;
     if (grp.unreadableShips.length) { row.status = 'unreadable'; row.notes.push(`no readable estimate for ${grp.unreadableShips.map(mdLabel).join(', ')} in the ${version.sentDate} file`); }
-    if (grp.rolled.length) row.notes.push(`${grp.rolled.map((r) => `${dayLabel(r.date)} freight`).join(' + ')} rolled past ${[...new Set(grp.rolled.map((r) => noDelivery.get(r.past) || mdLabel(r.past)))].join(', ')}`);
+    if (grp.rolled.length) row.notes.push(`${grp.rolled.map((r) => `${dayLabel(r.date)} freight`).join(' + ')} rolled past ${[...new Set(grp.rolled.flatMap((r) => r.past.map((p) => shut(p) || mdLabel(p))))].join(', ')}`);
     if (grp.closedShips.length) row.notes.push(`Uline closed ${grp.closedShips.map(mdLabel).join(', ')}`);
     // The plan.
     const contributing = [...new Set(grp.ships.map((s) => isoWeekday(s.date)))];
@@ -604,11 +595,35 @@ export function diffVersions(prev, next, today) {
 /** True from the 11th when no readable version was received this calendar month. Judged on
  *  `ok` and `sentDate` alone — the status endpoint passes the MASKED list, which carries no
  *  `days`, and judging it with usable() said "missing" from the 11th of every month for ever. */
-export function expectedVersionMissing(versions, today) {
-  if (!ISO_RE.test(String(today || ''))) return false;
-  if (Number(today.slice(8, 10)) < VERSION_DUE_DAY) return false;
+export function versionStanding(versions, today, lastCheckedAt = null) {
+  if (!ISO_RE.test(String(today || ''))) return null;
+  const checked = asIsoDate(lastCheckedAt);
+  const age = checked ? daysBetween(checked, today) : null;
+  // NOBODY HAS LOOKED is a different fact from ULINE HAS NOT SENT, and only one of them is
+  // Uline's fault. On an hourly poll the two were the same sentence and it was almost always
+  // right; at a weekly cadence a disconnected mailbox would have the card blaming the shipper
+  // for a file sitting unread in it. Say which one is true.
+  if (age == null || age > MAILBOX_STALE_DAYS) {
+    return { kind: 'unchecked', lastCheckedAt: checked, days: age,
+      text: checked
+        ? `the forecast mailbox has not been read since ${mdLabel(checked)} (${age} days) — the check runs weekly; press Read now`
+        : 'the forecast mailbox has not been read yet — the check runs weekly; press Read now' };
+  }
+  if (Number(today.slice(8, 10)) < VERSION_DUE_DAY) return null;
   const month = today.slice(0, 7);
-  return !(versions || []).some((v) => !!v && v.ok !== false && String(v.sentDate || '').startsWith(month));
+  if ((versions || []).some((v) => !!v && v.ok !== false && String(v.sentDate || '').startsWith(month))) return null;
+  // AND WE MUST HAVE LOOKED SINCE ULINE'S SEND WINDOW CLOSED. At one check a week the run before
+  // the 11th can easily be the 4th — before Uline sent — and blaming them for a file we had not
+  // looked for yet fires in about one month in nine. Measured over 60 months x 4 send days: with
+  // this gate, zero false ambers on any weekday; without it, 26 on a Monday cron.
+  if (checked < `${month}-${String(SEND_WINDOW_CLOSES).padStart(2, '0')}`) return null;
+  return { kind: 'missing', lastCheckedAt: checked, days: age,
+    text: `${MONTHS[Number(month.slice(5, 7)) - 1]} forecast not received yet (Uline usually sends by the 7th; mailbox last read ${mdLabel(checked)})` };
+}
+
+/** The boolean the card has always read: Uline owes us a file. */
+export function expectedVersionMissing(versions, today, lastCheckedAt = null) {
+  return versionStanding(versions, today, lastCheckedAt)?.kind === 'missing';
 }
 
 // ── TONIGHT ───────────────────────────────────────────────────────────────────
@@ -619,19 +634,19 @@ export function tonightLine({ version, row, shipIso, today, routeDay, davisClose
   const cov = covers(v, shipIso);
   const est = cov ? estOf(v, shipIso) : null; const upper = cov ? upperOf(v, shipIso) : null;
   const closed = cov ? closedShipDays(v) : new Set();
-  const noDelivery = cov ? davisClosedDays(v, davisClosed) : new Map();
-  const deliverOn = deliveryDayFor(shipIso, noDelivery);
+  const shut = (iso) => davisClosedDay(iso, davisClosed);
+  const deliverOn = deliveryDayFor(shipIso, shut);
   const head = `Ship ${dayLabel(shipIso)} → deliver ${deliverOn ? dayLabel(deliverOn) : '—'}`;
   const out = { shipIso, deliverOn, est, upper, actual: null, reportNo: null, status: 'none', tone: 'grey', text: '', head };
   if (isoWeekday(shipIso) === 6) {
     // Saturday: Uline never ships. Not "no forecast" — that is what a short file reads as.
     const sun = shiftIso(shipIso, 1); const sunEst = cov ? estOf(v, sun) : null; const sunUp = cov ? upperOf(v, sun) : null;
     out.status = 'closed'; out.head = `${dayLabel(shipIso)} — Uline does not ship Saturdays`;
-    out.text = sunEst != null ? `next: ${dayLabel(sun)} ships → ${dayLabel(deliveryDayFor(sun, noDelivery))} · Uline ${sunEst}${sunUp != null ? ` (high ${sunUp})` : ''}` : 'no reports tonight';
+    out.text = sunEst != null ? `next: ${dayLabel(sun)} ships → ${dayLabel(deliveryDayFor(sun, shut))} · Uline ${sunEst}${sunUp != null ? ` (high ${sunUp})` : ''}` : 'no reports tonight';
     return out;
   }
   if (!cov || est == null) {
-    if (closed.has(shipIso)) { out.status = 'closed'; out.head = dayLabel(shipIso); out.text = noDelivery.has(shipIso) ? `${noDelivery.get(shipIso)} — Uline closed, no reports tonight` : 'Uline closed today — no reports tonight'; }
+    if (closed.has(shipIso)) { out.status = 'closed'; out.head = dayLabel(shipIso); const why = shut(shipIso); out.text = why ? `${why} — Uline closed, no reports tonight` : 'Uline closed today — no reports tonight'; }
     else { out.status = 'no_forecast'; out.text = `no Uline forecast for ${mdLabel(shipIso)}`; }
     return out;
   }
@@ -674,18 +689,20 @@ export function mergeActuals(manifestRows, actualRows) {
  * range overlaps the window (plus the masked list for the versions panel), `manifestRows` the
  * masked manifest_days docs, `actualRows` the back-filled nights (empty until PR 2).
  */
-export function buildView({ versions = [], manifestRows = [], actualRows = [], today, nowMs = null, capacity = null, routeDay = ROUTE_DAY_ORDERS_DEFAULT, windowDays = 60, outlookDays = OUTLOOK_DAYS, davisClosed = null } = {}) {
+export function buildView({ versions = [], manifestRows = [], actualRows = [], today, nowMs = null, capacity = null, routeDay = ROUTE_DAY_ORDERS_DEFAULT, windowDays = 60, outlookDays = OUTLOOK_DAYS, davisClosed = null, lastCheckedAt = null } = {}) {
   const t = ISO_RE.test(String(today || '')) ? today : (nowMs != null ? operatingDayET(nowMs) : null);
-  const empty = { ok: true, today: t, latest: null, versions: [], tonight: null, outlook: [], scored: [], unscored: [], pending: [], holes: [], closed: [], unforecast: [], changes: [], pattern: [], stats: { windows: {}, byWeekday: {}, byHorizon: {} }, expectedVersionMissing: false, floor: null, disagreements: [], counts: {}, holidays: [], windowDays, statsDays: STATS_WINDOW_DAYS, note: null };
+  const empty = { ok: true, today: t, latest: null, versions: [], tonight: null, outlook: [], scored: [], unscored: [], pending: [], holes: [], closed: [], unforecast: [], changes: [], pattern: [], stats: { windows: {}, byWeekday: {}, byHorizon: {} }, expectedVersionMissing: false, standing: null, floor: null, disagreements: [], counts: {}, holidays: [], windowDays, statsDays: STATS_WINDOW_DAYS, note: null };
   if (!t) return { ...empty, note: 'no operating day — nowMs or today is required' };
+  const standing = versionStanding((versions || []).filter((v) => v && v.ok !== false), t, lastCheckedAt);
   const usableVersions = (versions || []).filter(usable).sort((a, b) => Number(a.sentAt) - Number(b.sentAt));
   const latest = latestUsable(usableVersions);
   const { rows, disagreements } = mergeActuals(manifestRows, actualRows);
   const archiveDates = [...rows.keys()].sort();
   const floor = archiveDates[0] ?? null;
-  if (!latest) return { ...empty, versions: (versions || []).map(versionSummary), floor, disagreements, note: (versions || []).length ? 'no readable forecast on file yet' : 'no forecast on file yet' };
+  if (!latest) return { ...empty, versions: (versions || []).map(versionSummary), floor, disagreements, standing, note: (versions || []).length ? 'no readable forecast on file yet' : 'no forecast on file yet' };
 
   // The LISTS cover `windowDays`; the LEDGER behind the figures always reaches back 180 days.
+  const shutDay = (iso) => davisClosedDay(iso, davisClosed);
   const lo = shiftIso(t, -windowDays);
   const statsDays = Math.max(Number(windowDays) || 0, STATS_WINDOW_DAYS);
   const loStats = shiftIso(t, -statsDays);
@@ -707,7 +724,7 @@ export function buildView({ versions = [], manifestRows = [], actualRows = [], t
       const h = horizonDays(v.sentDate, d);
       const ladder = ladderForDate(usableVersions, d).map((l) => ({ ...l, err: c.actual - l.estimate }));
       for (const l of ladder) ladderPairs.push({ date: d, bucket: l.bucket, ...scorePair({ actual: c.actual, est: l.estimate, upper: l.upperEst, medianBand: v.medianBand, routeDay }) });
-      scored.push({ ...base, actual: c.actual, reportNo: c.reportNo ?? null, reports: c.reports ?? null, stampFrom: c.stampFrom ?? null, mailbox: c.mailbox ?? null, deliverOn: deliveryDayFor(d, davisClosedDays(v, davisClosed)), horizonDays: h, bucket: horizonBucket(h), ...s, ladder });
+      scored.push({ ...base, actual: c.actual, basis: c.basis ?? null, lanes: c.lanes ?? null, offLane: c.offLane ?? null, reportNo: c.reportNo ?? null, reports: c.reports ?? null, stampFrom: c.stampFrom ?? null, mailbox: c.mailbox ?? null, deliverOn: deliveryDayFor(d, shutDay), horizonDays: h, bucket: horizonBucket(h), ...s, ladder });
     } else if (c.status === 'pending') pending.push({ ...base, deliverOn: c.deliverOn, actual: c.actual ?? null, reportNo: c.reportNo ?? null, inProgress: !!c.inProgress });
     else if (c.status === 'hole') holes.push({ ...base, deliverOn: c.deliverOn });
     else if (c.status === 'closed') closed.push(base);
@@ -721,7 +738,7 @@ export function buildView({ versions = [], manifestRows = [], actualRows = [], t
   const prev = usableVersions.filter((v) => v !== latest).sort((a, b) => Number(b.sentAt) - Number(a.sentAt))[0] || null;
   const changes = prev ? diffVersions(prev, latest, t).weeks : [];
   const tonight = tonightLine({ version: latest, row: rows.get(t) || null, shipIso: t, today: t, routeDay, davisClosed });
-  const holidays = [...davisClosedDays(latest, davisClosed)].filter(([d]) => d >= t).sort(([a], [b]) => (a < b ? -1 : 1)).slice(0, 8).map(([date, reason]) => ({ date, dow: dowName(date), reason }));
+  const holidays = [...davisClosedDays(t, shiftIso(t, 400), davisClosed)].slice(0, 8).map(([date, reason]) => ({ date, dow: dowName(date), reason }));
   const listed = (xs) => xs.filter((x) => x.date >= lo);
   const newestFirst = (a, b) => (a.date < b.date ? 1 : -1);
   const scoredL = listed(scored).sort(newestFirst); const unscoredL = listed(unscored).sort(newestFirst);
@@ -735,7 +752,7 @@ export function buildView({ versions = [], manifestRows = [], actualRows = [], t
     pending: pendingL, holes: holesL, closed: closedL, unforecast: unforecastL,
     changes, pattern: patternSentences(pairs),
     stats: { windows: { 30: summarize(windowPairs(30)), 90: summarize(windowPairs(90)), 180: summarize(windowPairs(180)) }, byWeekday: byWeekday(pairs), byHorizon: byHorizon(ladderPairs), bias },
-    expectedVersionMissing: expectedVersionMissing(usableVersions, t),
+    expectedVersionMissing: standing?.kind === 'missing', standing,
     disagreements,
     counts: { scored: scoredL.length, unscored: unscoredL.length, pending: pendingL.length, holes: holesL.length, closed: closedL.length, unforecast: unforecastL.length, versions: usableVersions.length,
       scoredAll: scored.length, holesAll: holes.length,

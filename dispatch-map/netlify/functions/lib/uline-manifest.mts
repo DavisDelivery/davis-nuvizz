@@ -58,6 +58,52 @@ const toNum = (v: any): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
+/** The lane Davis runs. Uline's report carries the carrier in VIA on every row; the forecast
+ *  spreadsheet forecasts the same code. Warehouse is which Uline building it left — the report
+ *  writes G1 and G6 (never the bare "G" the forecast uses), so the WAREHOUSE is not the test of
+ *  whether freight is ours. VIA is. */
+export const DAVIS_VIA = 'DA';
+
+export interface LaneSummary {
+  /** Distinct 9-digit Uline PROs routed to Davis. THE count of the night's freight. */
+  ulinePros: number;
+  /** How that splits by warehouse/via, e.g. { 'G1/DA': 216, 'G6/DA': 470 } — a dozen bytes that
+   *  make "only Uline PROs" checkable on the screen instead of a claim in a commit message. */
+  lanes: Record<string, number>;
+  /** Rows on the report that are NOT Davis's freight. Zero on every night on file; the day it
+   *  is not, the count must not quietly absorb them. */
+  offLane: number;
+  /** Rows carrying a PRO already counted — a duplicate is one order, not two. */
+  duplicatePros: number;
+}
+
+/**
+ * PURE. What the night actually consists of.
+ *
+ * Chad, Sept 2026: "We need to only look at Uline pros for this not anything else." Every one of
+ * the 5,872 rows across the eleven archived nights is a distinct 9-digit PRO on VIA=DA, so this
+ * returns exactly rows.length today — which is the point: the number stops being an assumption
+ * and starts being a measurement, and the day a non-DA row or a repeated PRO appears on the
+ * report, the count says so instead of silently absorbing it.
+ */
+export function laneSummary(rows: UlineRow[] | null | undefined): LaneSummary {
+  const lanes: Record<string, number> = {};
+  const seen = new Set<string>();
+  let offLane = 0; let duplicatePros = 0;
+  for (const r of Array.isArray(rows) ? rows : []) {
+    const via = String(r?.via ?? '').trim().toUpperCase();
+    const pro = String(r?.pro ?? '').trim();
+    if (via !== DAVIS_VIA) { offLane += 1; continue; }
+    if (!PRO_RE.test(pro)) { offLane += 1; continue; }
+    if (seen.has(pro)) { duplicatePros += 1; continue; }
+    seen.add(pro);
+    const whs = String(r?.whs ?? '').trim().toUpperCase() || '?';
+    const key = `${whs}/${via}`;
+    lanes[key] = (lanes[key] || 0) + 1;
+  }
+  return { ulinePros: seen.size, lanes, offLane, duplicatePros };
+}
+
 // ── text extraction WITH coordinates ─────────────────────────────────────────
 // Every cell is drawn by a relative `Td` inside a BT/ET block, so tracking the
 // text-line origin gives each string a real x. Coordinates are not a nicety

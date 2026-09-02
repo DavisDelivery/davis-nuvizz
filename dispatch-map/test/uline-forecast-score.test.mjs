@@ -8,7 +8,7 @@ import {
   versionInForce, latestUsable, ladderForDate, horizonDays, horizonBucket, closedShipDays, deliveryDayFor,
   actualFromManifestDay, classifyNight, scorePair, summarize, byWeekday, byHorizon, weekdayBias, patternSentences,
   deliveryOutlook, diffVersions, expectedVersionMissing, tonightLine, mergeActuals, buildView, etParts, operatingDayET,
-  usFederalHolidays, davisClosedDays, unknownShipDays,
+  holidayCalendar, davisClosedDay, davisClosedDays, ulineHolidayOn, unknownShipDays, versionStanding, actualCount, MAILBOX_STALE_DAYS,
   ROUTE_DAY_ORDERS_DEFAULT, MIN_WEEKDAY_N, STATS_WINDOW_DAYS,
 } from '../src/lib/uline-forecast-score.js';
 
@@ -156,37 +156,75 @@ test('LABOR DAY IS CLOSED, A SATURDAY MANIFEST IS UNFORECAST, A DATE PAST THE FI
 
 // ── HOLIDAYS: THE FILE IS THE CALENDAR ────────────────────────────────────────
 
-test('TWO CALENDARS: Uline closed is not Davis closed — Labor Day rolls Friday to Tuesday, Christmas Eve keeps Wednesday\'s freight, ULINE_DAVIS_CLOSED moves it', () => {
+test("TWO CALENDARS: Uline's file says who SHIPS, Chad's list says who DELIVERS — and the day after Thanksgiving is the day they differ", () => {
+  // Uline's calendar comes from their file: the weekdays with no row.
   const uline = closedShipDays(V_AUG);
   for (const d of ['2026-09-07', '2026-11-26', '2026-12-24', '2026-12-25', '2027-01-01', '2027-05-31', '2027-07-05']) assert.ok(uline.has(d), `Uline does not ship ${d}`);
-  assert.ok(!uline.has('2026-09-08'));
-  const davis = davisClosedDays(V_AUG);
-  assert.deepEqual([...davis], [['2026-09-07', 'Labor Day'], ['2026-11-26', 'Thanksgiving'], ['2026-12-25', 'Christmas Day'], ['2027-01-01', "New Year's Day"], ['2027-05-31', 'Memorial Day'], ['2027-07-05', 'Independence Day']]);
-  assert.ok(!davis.has('2026-12-24'), 'Christmas Eve: Uline does not ship, Davis still delivers');
-  assert.equal(deliveryDayFor('2026-09-04', davis), '2026-09-08', 'Friday rolls past Labor Day');
-  assert.equal(deliveryDayFor('2026-09-06', davis), '2026-09-08', 'Sunday delivers Tuesday as always');
-  assert.equal(deliveryDayFor('2026-09-03', davis), '2026-09-04', 'an ordinary Thursday is unchanged');
-  assert.equal(deliveryDayFor('2026-12-23', davis), '2026-12-24', "Wednesday's 318 orders are delivered on Christmas Eve");
-  assert.equal(deliveryDayFor('2026-11-25', davis), '2026-11-27', 'the Wednesday before Thanksgiving delivers Friday');
-  assert.equal(deliveryDayFor('2026-12-31', davis), '2027-01-04', "New Year's Eve's freight rolls past New Year's Day to Monday");
-  // Chad's list: the day Davis takes off that Uline's file cannot know. Junk in the list is ignored.
-  const eve = davisClosedDays(V_AUG, ['2026-12-24', 'not-a-date', null]);
-  assert.equal(eve.get('2026-12-24'), 'Davis closed');
-  assert.equal(eve.size, 7);
-  assert.equal(deliveryDayFor('2026-12-23', eve), '2026-12-28', 'with Christmas Eve off, Wednesday rolls to Monday');
-  // The rule this replaces — every Uline gap is a Davis holiday — printed "no deliveries" for Christmas Eve.
-  assert.equal(deliveryDayFor('2026-12-23', uline), '2026-12-28');
-  // Federal holidays as observed: July 4th 2026 is a Saturday → Fri 7/3; Christmas 2027 → Fri 12/24; New Year's 2028 → Fri 12/31/2027.
-  assert.equal(usFederalHolidays(2026).get('2026-07-03'), 'Independence Day');
-  assert.equal(usFederalHolidays(2026).get('2026-11-26'), 'Thanksgiving');
-  assert.equal(usFederalHolidays(2027).get('2027-12-24'), 'Christmas Day');
-  assert.equal(usFederalHolidays(2027).get('2027-12-31'), "New Year's Day");
-  assert.equal(usFederalHolidays(2027).size, 12);
-  assert.equal(usFederalHolidays('nope').size, 0);
-  assert.equal(davisClosedDays(null).size, 0);
-  // A federal holiday Uline SHIPS on is a working day: the July file has a Juneteenth row.
+  assert.ok(!uline.has('2026-11-27'), 'Uline SHIPS the day after Thanksgiving — the file carries 234 orders for it');
+  assert.equal(AUG.days['2026-11-27'][0], 234);
+
+  // Davis's calendar is Chad's, Sept 2026: "We don't run for memorial labor July 4th 2 days at
+  // Thanksgiving Christmas Day and Eve and new year day." It does NOT come from Uline's file.
+  assert.deepEqual([...davisClosedDays('2026-01-01', '2027-12-31')], [
+    ['2026-01-01', "New Year's Day"], ['2026-05-25', 'Memorial Day'], ['2026-07-03', 'July 4th'],
+    ['2026-09-07', 'Labor Day'], ['2026-11-26', 'Thanksgiving'], ['2026-11-27', 'the day after Thanksgiving'],
+    ['2026-12-24', 'Christmas Eve'], ['2026-12-25', 'Christmas Day'],
+    ['2027-01-01', "New Year's Day"], ['2027-05-31', 'Memorial Day'], ['2027-07-05', 'July 4th'],
+    ['2027-09-06', 'Labor Day'], ['2027-11-25', 'Thanksgiving'], ['2027-11-26', 'the day after Thanksgiving'],
+    ['2027-12-24', 'Christmas Eve · Christmas Day'], ['2027-12-31', "New Year's Day"],
+  ]);
+  // Observance moves a fixed-date holiday the way payroll moves it. July 4 2026 is a Saturday.
+  assert.equal(davisClosedDay('2026-07-03'), 'July 4th');
+  assert.equal(davisClosedDay('2026-07-04'), null, 'a Saturday is not a delivery day to close');
+  // Christmas 2027 falls on a Saturday: its observed Friday IS the 24th, so both names land on one day.
+  assert.equal(davisClosedDay('2027-12-24'), 'Christmas Eve · Christmas Day');
+  // ULINE observes all of it EXCEPT the Friday after Thanksgiving — that is the whole difference.
+  assert.equal(ulineHolidayOn('2026-11-26'), 'Thanksgiving');
+  assert.equal(ulineHolidayOn('2026-11-27'), null, 'Uline ships it');
+  assert.equal(davisClosedDay('2026-11-27'), 'the day after Thanksgiving', 'Davis does not run it');
+  assert.equal(holidayCalendar(2026).get('2026-11-27').uline, false);
+  assert.equal(holidayCalendar('nope').size, 0);
+
+  // WHERE THE FREIGHT LANDS. The shipped v0.84.0 rule could only close a day Uline had closed,
+  // so Wednesday's 348 orders were delivered on a Friday with no drivers and Monday read 234.
+  const shut = (d) => davisClosedDay(d);
+  assert.equal(deliveryDayFor('2026-11-25', shut), '2026-11-30', 'Wednesday rolls past BOTH Thanksgiving days');
+  assert.equal(deliveryDayFor('2026-11-27', shut), '2026-11-30', "Friday's own freight was always Monday's");
+  assert.equal(deliveryDayFor('2026-12-23', shut), '2026-12-28', 'Christmas Eve is off, so Wednesday rolls to Monday');
+  assert.equal(deliveryDayFor('2026-12-31', shut), '2027-01-04', "New Year's Eve freight rolls past New Year's Day");
+  assert.equal(deliveryDayFor('2026-09-04', shut), '2026-09-08', 'Friday rolls past Labor Day');
+  assert.equal(deliveryDayFor('2026-09-06', shut), '2026-09-08', 'Sunday delivers Tuesday as always');
+  assert.equal(deliveryDayFor('2026-09-03', shut), '2026-09-04', 'an ordinary Thursday is unchanged');
+
+  // ULINE_DAVIS_CLOSED adds a one-off the calendar cannot know. Junk in the list is ignored.
+  assert.equal(davisClosedDay('2026-10-12', ['2026-10-12', 'not-a-date', null]), 'Davis closed');
+  assert.equal(davisClosedDay('2026-10-12'), null, 'Columbus Day is a working day — Davis runs it');
+  assert.equal(deliveryDayFor('2026-10-09', (d) => davisClosedDay(d, ['2026-10-12'])), '2026-10-13');
+  assert.equal(davisClosedDays('2026-12-31', '2026-01-01').size, 0, 'a backwards range is empty, not a hang');
+  assert.equal(davisClosedDays(null, null).size, 0);
+  // A federal holiday that is NOT on Chad's list is an ordinary working day: the July file ships Juneteenth.
   assert.ok(JUL.days['2026-06-19'], 'the fixture has the row');
-  assert.ok(!davisClosedDays(V_JUL).has('2026-06-19'));
+  assert.equal(davisClosedDay('2026-06-19'), null);
+  assert.equal(davisClosedDay('2026-01-19'), null, 'Martin Luther King Day: Davis runs');
+});
+
+test('THE MONDAY AFTER THANKSGIVING CARRIES TWO DAYS OF FREIGHT: 582, not 234 — measured on the real Aug-04 file', () => {
+  const by = Object.fromEntries(deliveryOutlook({ version: V_AUG, today: '2026-11-20', days: 10 }).map((r) => [r.deliverOn, r]));
+  assert.equal(by['2026-11-26'].status, 'closed');
+  assert.match(by['2026-11-26'].notes.join(' '), /Thanksgiving — no deliveries/);
+  assert.equal(by['2026-11-27'].status, 'closed');
+  assert.match(by['2026-11-27'].notes.join(' '), /the day after Thanksgiving — no deliveries/);
+  const mon = by['2026-11-30'];
+  assert.deepEqual(mon.ships.map((x) => x.date), ['2026-11-25', '2026-11-27']);
+  assert.equal(mon.est, 582, 'Wednesday 348 + Friday 234');
+  assert.match(mon.notes.join(' '), /Wed 11\/25 freight rolled past Thanksgiving, the day after Thanksgiving/);
+  assert.ok(!mon.chips.includes('LIGHT'), 'a 582 Monday against a typical 514 is not light — the shipped version called it 234 and light');
+  // Christmas Eve is now a day off, so Wednesday's 318 wait for Monday.
+  const dec = Object.fromEntries(deliveryOutlook({ version: V_AUG, today: '2026-12-21', days: 8 }).map((r) => [r.deliverOn, r]));
+  assert.equal(dec['2026-12-24'].status, 'closed');
+  assert.match(dec['2026-12-24'].notes.join(' '), /Christmas Eve — no deliveries/);
+  assert.deepEqual(dec['2026-12-28'].ships.map((x) => x.date), ['2026-12-23']);
+  assert.equal(dec['2026-12-28'].est, 318);
 });
 
 test('THE OUTLOOK ROLLS UP BY DELIVERY DAY: Tue 9/8 = Fri 9/4 + Sun 9/6, Mon 9/7 reads closed, Wed 9/9 = Tue 9/8', () => {
@@ -221,26 +259,6 @@ test('THE OUTLOOK ROLLS UP BY DELIVERY DAY: Tue 9/8 = Fri 9/4 + Sun 9/6, Mon 9/7
   assert.deepEqual(lastRow.ships.map((s) => s.date), ['2026-09-20', '2026-09-21']);
   assert.equal(lastRow.est, AUG.days['2026-09-20'][0] + AUG.days['2026-09-21'][0]);
   for (const r of rows) assert.ok(r.status !== 'none', `${r.label} inside the file must never read as no freight: ${JSON.stringify(r.notes)}`);
-  // The Monday after Thanksgiving at 234 (Friday 11/27's freight) is the LIGHT that matters — and Christmas Eve at 318 is a light Thursday, not a closed one.
-  const nov = Object.fromEntries(deliveryOutlook({ version: V_AUG, today: '2026-11-20', days: 14 }).map((r) => [r.deliverOn, r]));
-  assert.ok(nov['2026-11-30'].chips.includes('LIGHT'), JSON.stringify(nov['2026-11-30']));
-  assert.equal(nov['2026-11-30'].est, 234);
-  assert.equal(nov['2026-11-26'].status, 'closed');
-  assert.match(nov['2026-11-26'].notes.join(' '), /Thanksgiving — no deliveries/);
-  assert.deepEqual(nov['2026-11-27'].ships.map((s) => s.date), ['2026-11-25'], 'the Wednesday before Thanksgiving delivers Friday');
-  const dec = Object.fromEntries(deliveryOutlook({ version: V_AUG, today: '2026-12-21', days: 8 }).map((r) => [r.deliverOn, r]));
-  assert.equal(dec['2026-12-24'].status, 'ok');
-  assert.deepEqual(dec['2026-12-24'].ships.map((s) => s.date), ['2026-12-23']);
-  assert.equal(dec['2026-12-24'].est, 318);
-  assert.ok(dec['2026-12-24'].chips.includes('LIGHT'));
-  assert.equal(dec['2026-12-25'].status, 'closed');
-  assert.equal(dec['2026-12-28'].status, 'none', 'nothing shipped Thursday or Friday');
-  assert.match(dec['2026-12-28'].notes.join(' '), /Uline closed 12\/24, 12\/25/);
-  const eve = Object.fromEntries(deliveryOutlook({ version: V_AUG, today: '2026-12-21', days: 8, davisClosed: ['2026-12-24'] }).map((r) => [r.deliverOn, r]));
-  assert.equal(eve['2026-12-24'].status, 'closed');
-  assert.match(eve['2026-12-24'].notes.join(' '), /Davis closed — no deliveries/);
-  assert.deepEqual(eve['2026-12-28'].ships.map((s) => s.date), ['2026-12-23']);
-  assert.match(eve['2026-12-28'].notes.join(' '), /Wed 12\/23 freight rolled past Davis closed/);
 });
 
 test('THE PLAN ONLY EVER MOVES UP, only at n ≥ 4 per contributing weekday, rounded up to 5; a high-running Uline is named, not trimmed', () => {
@@ -326,12 +344,43 @@ test('an ~8-order monthly wobble is not a change note; a week raised ~90/day is'
   assert.equal(w[0].text, 'Uline raised the week of 9/21 by ~90/day');
 });
 
-test('the forecast is EXPECTED by the 11th: missing then, not before, and an unreadable one does not count', () => {
-  assert.equal(expectedVersionMissing([V_AUG], '2026-09-11'), true);
-  assert.equal(expectedVersionMissing([V_AUG], '2026-09-05'), false);
-  assert.equal(expectedVersionMissing([V_AUG, version(AUG, { sentDate: '2026-09-03', ok: false })], '2026-09-11'), true);
-  assert.equal(expectedVersionMissing([V_AUG, version(AUG, { sentDate: '2026-09-03' })], '2026-09-11'), false);
+test('THE CARD DOES NOT BLAME ULINE FOR A FILE NOBODY LOOKED FOR: expected by the 11th, but only once the mailbox has actually been read', () => {
+  const sep = [{ versionId: 'a', ok: true, sentDate: '2026-09-04', from: '2026-09-01', to: '2027-09-01', days: {} }];
+  const aug = [{ versionId: 'b', ok: true, sentDate: '2026-08-04', from: '2026-08-01', to: '2027-08-01', days: {} }];
+  const fresh = '2026-09-09T13:00:00Z';
+  // Uline owes us one: the 11th has come, nothing this month, and we looked two days ago.
+  assert.equal(versionStanding(aug, '2026-09-12', fresh).kind, 'missing');
+  assert.match(versionStanding(aug, '2026-09-12', fresh).text, /September forecast not received yet/);
+  assert.equal(expectedVersionMissing(aug, '2026-09-12', fresh), true);
+  // Not before the 11th, and never when this month's file is on file.
+  assert.equal(versionStanding(aug, '2026-09-09', fresh), null);
+  assert.equal(versionStanding(sep, '2026-09-12', fresh), null);
+  // An unreadable version does not count as received.
+  assert.equal(expectedVersionMissing([{ ...sep[0], ok: false }], '2026-09-12', fresh), true);
+  // THE WEEKLY CADENCE'S OWN TRAP: at one check a week a disconnected mailbox would have the card
+  // accusing Uline of not sending a file sitting unread in it. Say which one is actually true.
+  const stale = versionStanding(aug, '2026-09-12', '2026-08-23T13:00:00Z');
+  assert.equal(stale.kind, 'unchecked');
+  assert.equal(stale.days, 20);
+  assert.match(stale.text, /has not been read since 8\/23 \(20 days\)/);
+  assert.equal(expectedVersionMissing(aug, '2026-09-12', '2026-08-23T13:00:00Z'), false, 'not Uline\'s fault until somebody looks');
+  assert.equal(versionStanding(aug, '2026-09-12', null).kind, 'unchecked');
+  assert.match(versionStanding(aug, '2026-09-12', null).text, /has not been read yet/);
+  // AND THE SEND WINDOW. At one read a week the run before the 11th is often the 4th — BEFORE
+  // Uline sent — so blaming them then is blaming them for our own silence. Replayed over 60
+  // months x 4 send days with a Monday cron: 0 false ambers with this gate, 26 without it.
+  assert.equal(versionStanding(aug, '2026-09-12', '2026-09-04T13:00:00Z'), null, 'we looked before they sent — we do not know yet');
+  assert.equal(versionStanding(aug, '2026-09-12', '2026-09-07T13:00:00Z'), null, 'the 7th is the last day of their window');
+  assert.equal(versionStanding(aug, '2026-09-12', '2026-09-08T13:00:00Z').kind, 'missing', 'a read on the 8th would have found it');
+  // The staleness boundary, measured from a read that IS after the send window.
+  assert.equal(versionStanding(aug, '2026-09-18', '2026-09-08T13:00:00Z').kind, 'missing', `${MAILBOX_STALE_DAYS} days is still a recent read`);
+  assert.equal(versionStanding(aug, '2026-09-19', '2026-09-08T13:00:00Z').kind, 'unchecked', 'one day past the floor and the job is the story');
+  // The Number(null) trap: 0 is not an instant.
+  assert.equal(versionStanding(aug, '2026-09-12', 0).kind, 'unchecked');
+  assert.equal(versionStanding(aug, '2026-09-12', false).kind, 'unchecked');
+  assert.equal(versionStanding(aug, 'nope', fresh), null);
 });
+
 
 // ── TONIGHT ───────────────────────────────────────────────────────────────────
 
@@ -352,7 +401,11 @@ test('TONIGHT: no report, the preliminary only, over the estimate under the high
   const labor = tonightLine({ version: V_AUG, row: null, shipIso: '2026-09-07', today: '2026-09-07' });
   assert.equal(labor.text, 'Labor Day — Uline closed, no reports tonight');
   assert.equal(labor.status, 'closed');
-  assert.equal(tonightLine({ version: V_AUG, row: null, shipIso: '2026-12-24', today: '2026-12-24' }).text, 'Uline closed today — no reports tonight', 'Christmas Eve: Uline closed, Davis ran');
+  assert.equal(tonightLine({ version: V_AUG, row: null, shipIso: '2026-12-24', today: '2026-12-24' }).text, 'Christmas Eve — Uline closed, no reports tonight');
+  // The day after Thanksgiving Uline SHIPS, so reports still land that night — Davis simply does
+  // not deliver it until Monday. The strip must not read as a closed day.
+  assert.equal(tonightLine({ version: V_AUG, row: null, shipIso: '2026-11-27', today: '2026-11-27' }).status, 'no_report');
+  assert.equal(tonightLine({ version: V_AUG, row: null, shipIso: '2026-11-27', today: '2026-11-27' }).head, 'Ship Fri 11/27 → deliver Mon 11/30');
   // Saturday is not "no forecast" — that is what a short file reads as. Say what Saturday is, and what is next.
   const sat = tonightLine({ version: V_AUG, row: null, shipIso: '2026-09-05', today: '2026-09-05' });
   assert.equal(sat.status, 'closed');
@@ -464,7 +517,7 @@ test('A BAD-DATE ROW MAKES EVERY WEEKDAY GAP UNKNOWN, NOT CLOSED — Tuesday is 
   assert.ok(!closedShipDays(bad).has('2026-09-16'), 'not a closure');
   assert.ok(!unknownShipDays(bad).has('2026-09-07'), 'Labor Day is still a holiday, not an unknown');
   assert.ok(closedShipDays(bad).has('2026-09-07'));
-  assert.ok(davisClosedDays(bad).has('2026-09-07'));
+  assert.equal(davisClosedDay('2026-09-07'), 'Labor Day');
   const by = Object.fromEntries(deliveryOutlook({ version: bad, today: '2026-09-13' }).map((r) => [r.deliverOn, r]));
   assert.equal(by['2026-09-16'].status, 'ok', "Wednesday still gets Tuesday's freight");
   assert.deepEqual(by['2026-09-16'].ships.map((s) => s.date), ['2026-09-15']);
@@ -477,18 +530,25 @@ test('A BAD-DATE ROW MAKES EVERY WEEKDAY GAP UNKNOWN, NOT CLOSED — Tuesday is 
   assert.equal(unknownShipDays(null).size, 0);
 });
 
-test('expectedVersionMissing judges the MASKED list too — a version with no days but this month\'s sentDate counts', () => {
-  assert.equal(expectedVersionMissing([{ versionId: 'x', ok: true, sentDate: '2026-09-04' }], '2026-09-12'), false);
-  assert.equal(expectedVersionMissing([{ versionId: 'x', ok: false, sentDate: '2026-09-04' }], '2026-09-12'), true);
-  assert.equal(expectedVersionMissing([{ versionId: 'x', ok: true, sentDate: '2026-08-04' }], '2026-09-12'), true);
-  assert.equal(expectedVersionMissing([null, undefined], '2026-09-12'), true);
+test('versionStanding judges the MASKED list too — a version doc with no `days` still counts as received', () => {
+  const fresh = '2026-09-09T13:00:00Z';
+  assert.equal(expectedVersionMissing([{ versionId: 'x', ok: true, sentDate: '2026-09-04' }], '2026-09-12', fresh), false);
+  assert.equal(expectedVersionMissing([{ versionId: 'x', ok: false, sentDate: '2026-09-04' }], '2026-09-12', fresh), true);
+  assert.equal(expectedVersionMissing([{ versionId: 'x', ok: true, sentDate: '2026-08-04' }], '2026-09-12', fresh), true);
+  assert.equal(expectedVersionMissing([null, undefined], '2026-09-12', fresh), true);
 });
+
 
 test('the view names the days no route runs — the assumption on the Job panel that Chad can read and correct', () => {
   const v = buildView({ versions: [V_AUG], manifestRows: manifestRows(), today: TODAY });
-  assert.deepEqual(v.holidays.slice(0, 3), [{ date: '2026-09-07', dow: 'Mon', reason: 'Labor Day' }, { date: '2026-11-26', dow: 'Thu', reason: 'Thanksgiving' }, { date: '2026-12-25', dow: 'Fri', reason: 'Christmas Day' }]);
-  const extra = buildView({ versions: [V_AUG], manifestRows: manifestRows(), today: TODAY, davisClosed: ['2026-12-24'] });
-  assert.ok(extra.holidays.some((h) => h.date === '2026-12-24' && h.reason === 'Davis closed'));
+  assert.deepEqual(v.holidays.slice(0, 4), [
+    { date: '2026-09-07', dow: 'Mon', reason: 'Labor Day' },
+    { date: '2026-11-26', dow: 'Thu', reason: 'Thanksgiving' },
+    { date: '2026-11-27', dow: 'Fri', reason: 'the day after Thanksgiving' },
+    { date: '2026-12-24', dow: 'Thu', reason: 'Christmas Eve' },
+  ]);
+  const extra = buildView({ versions: [V_AUG], manifestRows: manifestRows(), today: TODAY, davisClosed: ['2026-10-12'] });
+  assert.ok(extra.holidays.some((h) => h.date === '2026-10-12' && h.reason === 'Davis closed'), JSON.stringify(extra.holidays));
   assert.equal(extra.outlook.find((r) => r.deliverOn === '2026-09-08').ships.length, 2, 'the extra list does not disturb Labor Day');
   assert.deepEqual(buildView({ versions: [], manifestRows: [], today: TODAY }).holidays, []);
 });

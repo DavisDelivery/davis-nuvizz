@@ -8,8 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   isoWeekday, isDeliveryDay, shiftIso, deliveryWindow, boardCoverage, gradeSuspects, gradeText,
-  nextDeliveryDay, expectedDeliveryDate, manifestWindow,
-} from '../src/lib/manifest-window.js';
+  nextDeliveryDay, expectedDeliveryDate, manifestWindow, davisDeliveryDate } from '../src/lib/manifest-window.js';
 
 // 2026-08-21 is a Friday. 08-22 Sat, 08-23 Sun, 08-24 Mon.
 const FRI = '2026-08-21';
@@ -319,4 +318,33 @@ test('a malformed asOf is ignored rather than being compared as a string', () =>
   for (const bad of ['today', '', null, undefined, '2026-8-31', 42]) {
     assert.deepEqual(boardCoverage(FRI_08_28, ['2026-08-31'], bad).pending, [], `asOf=${String(bad)}`);
   }
+});
+
+// ── THE CHECK READS DAVIS'S CALENDAR ─────────────────────────────────────────
+
+test('THE WEDNESDAY BEFORE THANKSGIVING RECONCILES AGAINST MONDAY, not against a board nobody will ever build', () => {
+  // Holiday-blind, manifestWindow required a board on Thanksgiving Day, so boardCoverage could
+  // never conclude and every one of that night's orders graded "not routed yet" for ever — on
+  // the heaviest freight week of the year. Ship Wed 11/25 delivers Mon 11/30 (Chad's calendar
+  // closes Thanksgiving AND the day after).
+  assert.equal(expectedDeliveryDate('2026-11-25'), '2026-11-26', 'the structural rule is unchanged');
+  assert.equal(davisDeliveryDate('2026-11-25'), '2026-11-30', 'the operational answer rolls past both closed days');
+  assert.deepEqual(manifestWindow('2026-11-25').required, ['2026-11-30']);
+  const cov = boardCoverage([{ date: '2026-11-30', stops: 582 }], manifestWindow('2026-11-25').required, '2026-11-30');
+  assert.equal(cov.conclusive, true, 'the night can now be judged at all');
+  assert.deepEqual(cov.missingRequired, []);
+  assert.equal(gradeSuspects([{ pro: '1' }, { pro: '2' }], cov).verdict, 'missing');
+  // Christmas Eve is a day off too, so Wednesday 12/23's freight is Monday 12/28's board.
+  assert.equal(davisDeliveryDate('2026-12-23'), '2026-12-28');
+  assert.deepEqual(manifestWindow('2026-12-23').required, ['2026-12-28']);
+  // Friday after Thanksgiving: Uline ships it, Davis delivers it Monday — same as any Friday.
+  assert.equal(davisDeliveryDate('2026-11-27'), '2026-11-30');
+  // An ordinary week is untouched, and so is every weekend rule above.
+  assert.equal(davisDeliveryDate('2026-09-03'), '2026-09-04');
+  assert.equal(davisDeliveryDate('2026-09-06'), '2026-09-08', 'Sunday still delivers Tuesday');
+  assert.equal(davisDeliveryDate('2026-09-04'), '2026-09-08', 'Friday rolls past Labor Day');
+  // Chad's one-off list reaches the check too, so the card and the check can never disagree.
+  assert.equal(davisDeliveryDate('2026-10-09', ['2026-10-12']), '2026-10-13');
+  assert.deepEqual(manifestWindow('2026-10-09', 2, ['2026-10-12']).required, ['2026-10-13']);
+  assert.equal(davisDeliveryDate('nope'), null);
 });

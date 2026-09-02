@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as XLSX from 'xlsx';
 import { ingestForecastEmails, backfillForecasts, backfillWindow, buildVersionDoc, contentDigest, isSpreadsheetAttachment, makeRecorder } from '../netlify/functions/lib/uline-forecast-ingest.mts';
-import { VERSION_LIST_MASK, markerPath, versionPath, STATUS_DOC, VERSIONS_COLLECTION } from '../netlify/functions/lib/uline-forecast-store.mts';
+import { VERSION_LIST_MASK, markerPath, versionPath, STATUS_DOC, VERSIONS_COLLECTION, forecastQueryChecked } from '../netlify/functions/lib/uline-forecast-store.mts';
 
 const FIX = JSON.parse(readFileSync(new URL('./fixtures/uline-forecast-2026-08-04.json', import.meta.url), 'utf8'));
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -288,4 +288,47 @@ test('the backfill window reuses ULINE_FORECAST_QUERY minus its recency term, so
   assert.equal(backfillWindow('2022-06-01', 'subject:"Uline Forecast" from:uline.example.com newer_than:45d').query, 'subject:"Uline Forecast" from:uline.example.com after:2022/06/01 before:2022/09/01');
   assert.equal(backfillWindow('2022-06-01', '').query, 'subject:"Uline Forecast" has:attachment after:2022/06/01 before:2022/09/01');
   assert.equal(backfillWindow('2022-06-01', 'has:attachment after:2020/01/01 before:2021/01/01 subject:x').query, 'has:attachment subject:x after:2022/06/01 before:2022/09/01');
+});
+
+// ── THE CADENCE, PINNED ──────────────────────────────────────────────────────
+
+test('THE READER RUNS WEEKLY, and the screen says the same thing the cron does', () => {
+  // Nothing in this repo pinned any forecast schedule: the cron could be set to an expression
+  // that never fires and every check would stay green, with the only symptom a card that goes
+  // quiet eleven days later.
+  const bg = readFileSync(new URL('../netlify/functions/uline-forecast-ingest-background.mts', import.meta.url), 'utf8');
+  const m = /schedule:\s*'([^']+)'/.exec(bg);
+  assert.ok(m, 'the background function must carry a schedule');
+  const [minute, hour, dom, month, dow] = m[1].split(' ');
+  assert.equal(m[1].split(' ').length, 5);
+  assert.equal(dom, '*'); assert.equal(month, '*');
+  assert.match(dow, /^[0-6]$/, 'a single weekday — weekly, per Chad');
+  assert.match(minute, /^\d+$/); 
+  const h = Number(hour);
+  // Netlify cron is UTC with no DST. 13:00 UTC is 8-9am ET on the SAME calendar date, which is
+  // what makes "day-of-week 1" actually mean Monday in Georgia; 00:00-04:59 UTC would not.
+  assert.ok(h >= 5 && h <= 23, `${hour}:00 UTC would fall on the previous ET day`);
+  // Chad's own words ("every hour") are quoted in the header and belong there; what must not
+  // survive is the file describing its OWN cadence as hourly.
+  assert.match(bg, /^\/\/ WEEKLY:/m, 'the header states the cadence it actually runs');
+  assert.ok(!/^\/\/ Hourly:/m.test(bg), 'the old promise is gone');
+  assert.ok(!/one Gmail list call an hour/.test(bg));
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.ok(!/the reader runs hourly/.test(app), 'the empty state must not say hourly either');
+  const ingest = readFileSync(new URL('../netlify/functions/lib/uline-forecast-ingest.mts', import.meta.url), 'utf8');
+  assert.ok(!/retry next hour/.test(ingest), 'a retry now waits a week, and the comment must say so');
+});
+
+test('A RECENCY WINDOW SHORTER THAN THE CADENCE IS REFUSED — at one read a week, newer_than:2d finds nothing for ever while every run reports ok', () => {
+  assert.equal(forecastQueryChecked({}).query, 'subject:"Uline Forecast" has:attachment newer_than:45d');
+  assert.equal(forecastQueryChecked({}).warning, null);
+  const short = forecastQueryChecked({ ULINE_FORECAST_QUERY: 'subject:"Uline Forecast" newer_than:2d' });
+  assert.equal(short.query, 'subject:"Uline Forecast" has:attachment newer_than:45d', 'the default stands');
+  assert.match(short.warning, /shorter than the 14-day floor/);
+  // A window at or above the floor is honoured, in any unit Gmail accepts.
+  for (const q of ['subject:x newer_than:14d', 'subject:x newer_than:1m', 'subject:x newer_than:1y', 'subject:x has:attachment']) {
+    assert.equal(forecastQueryChecked({ ULINE_FORECAST_QUERY: q }).query, q, q);
+    assert.equal(forecastQueryChecked({ ULINE_FORECAST_QUERY: q }).warning, null);
+  }
+  assert.equal(forecastQueryChecked({ ULINE_FORECAST_QUERY: '   ' }).query, 'subject:"Uline Forecast" has:attachment newer_than:45d');
 });
