@@ -35,7 +35,7 @@ test('EVERY LIST IS READ DEFENSIVELY — the layout guard\'s generic stub and a 
   for (const k of ['outlook', 'scored', 'unscored', 'changes', 'pattern', 'holes', 'versions', 'disagreements']) {
     assert.match(CARD, new RegExp(`arr\\(data\\?\\.${k}\\)`), `${k} is read through arr()`);
   }
-  assert.match(CARD, /No forecast on file yet — the reader runs hourly/);
+  assert.match(CARD, /No forecast on file yet — the reader runs weekly/);
   // No raw .map on a response field without the guard.
   const raw = CARD.match(/data\?\.[a-zA-Z]+\.map\(/g) || [];
   assert.deepEqual(raw, [], `raw maps on the response: ${raw.join(', ')}`);

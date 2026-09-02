@@ -125,6 +125,16 @@ export interface ReportInput {
   subject?: string | null;
   fileName?: string | null;
   orders: number;
+  /** Distinct Uline PROs on the Davis lane — the count the forecast is scored against. Absent on
+   *  every night filed before v0.85.0; those score off `orders`, which on all eleven was the
+   *  same number (verified against the stored PDFs). */
+  ulinePros?: number | null;
+  /** The warehouse/via split behind that count, e.g. { 'G1/DA': 216, 'G6/DA': 470 }. */
+  lanes?: Record<string, number> | null;
+  /** Rows on the report that were NOT Davis's freight, and rows repeating a PRO. Both zero on
+   *  every night on file; a non-zero one is the day the count changed meaning. */
+  offLane?: number | null;
+  duplicatePros?: number | null;
   totals?: any;
   verified?: boolean;
   onBoard?: number;
@@ -218,6 +228,13 @@ export function foldManifestDay(existing: any, entry: ReportInput, tenant: strin
     subject: entry.subject ?? null,
     fileName: entry.fileName ?? null,
     orders,
+    // ONLY ULINE PROS. `orders` is every row the parser read; this is the distinct Uline PROs
+    // routed to Davis, with the split that proves it. Null on an older record rather than a
+    // guessed number — a count nobody measured must never look like one that was.
+    ulinePros: Number.isFinite(Number(entry.ulinePros)) ? Number(entry.ulinePros) : null,
+    lanes: entry.lanes ?? null,
+    offLane: Number.isFinite(Number(entry.offLane)) ? Number(entry.offLane) : null,
+    duplicatePros: Number.isFinite(Number(entry.duplicatePros)) ? Number(entry.duplicatePros) : null,
     totals: entry.totals ?? null,
     verified: !!entry.verified,
     onBoard: Number(entry.onBoard) || 0,

@@ -17,7 +17,8 @@
 // and writes the marker as 'filed' without touching the version — never "sent again ×2" for
 // a file Uline sent once.
 //
-// A download or parse that THROWS leaves no marker (retry next hour). A file that reads but
+// A download or parse that THROWS leaves no marker (retried on the next WEEKLY run — or now,
+// via Read forecast email now; it used to be an hour, and the sentence outlived the schedule). A file that reads but
 // is NOT a forecast is KEPT as a version with ok:false, its headers, its reason and the
 // stored xlsx — the evidence of what Uline sent survives — and gets an 'unreadable' marker
 // so it is never re-read.
@@ -38,7 +39,9 @@ import { readUlineForecast, looksLikeUlineForecast } from './uline-forecast.mts'
 import { laneRows, canonicalRows, versionIdFor, sentDateET } from '../../../src/lib/uline-forecast-lane.js';
 import { markerPath, versionPath, forecastBlobKey, forecastQuery, VERSIONS_COLLECTION, STATUS_DOC, TENANT, FORECAST_QUERY_DEFAULT } from './uline-forecast-store.mts';
 
-export const MAX_PER_RUN_SCHEDULE = 3;
+// A weekly run must clear a backlog in one pass: at 3 a month of unjudged mail took three
+// months to work through, because the batch cap was written for an hourly job.
+export const MAX_PER_RUN_SCHEDULE = 8;
 export const MAX_PER_RUN_BACKFILL = 12;
 /** A plain HTTP function dies at its timeout mid-batch as an HTML 502; the loop stops itself
  *  first and says how far it got. */
@@ -103,6 +106,9 @@ export function buildVersionDoc(args: {
     sheet: read?.sheet ?? null, headers: lane.headers,
     ok: lane.ok, reason: lane.reason, warnings: lane.warnings.slice(0, 40),
     rowsTotal: lane.rowsTotal, rowsUsed: lane.rowsUsed, rowsDropped: lane.rowsDropped, lanes: lane.seen,
+    // The warehouse/via split of the rows actually KEPT — the forecast's answer to the same
+    // question the manifest's `lanes` answers, so the two sides can be compared like for like.
+    laneRowsBy: lane.lanes ?? null,
     from: lane.from, to: lane.to, days: lane.days, unreadableDates: lane.unreadableDates,
     weekdayMeans: lane.weekdayMeans, medianBand: lane.medianBand,
     blobKey, xlsxStored: !!stored.ok, xlsxError: stored.ok ? null : stored.error,
@@ -272,7 +278,7 @@ export function backfillWindow(startIso: string, baseQuery: string = FORECAST_QU
   const endM = m + BACKFILL_WINDOW_MONTHS;
   const end = `${y + Math.floor((endM - 1) / 12)}-${String(((endM - 1) % 12) + 1).padStart(2, '0')}-01`;
   const gq = (iso: string) => iso.replace(/-/g, '/');
-  // The SAME search the hourly job uses (ULINE_FORECAST_QUERY), with its recency term replaced by
+  // The SAME search the weekly job uses (ULINE_FORECAST_QUERY), with its recency term replaced by
   // the window — so "narrow ULINE_FORECAST_QUERY" on the held line is advice that actually works.
   const base = String(baseQuery || FORECAST_QUERY_DEFAULT).replace(/\b(newer_than|older_than|after|before):\S+/g, ' ').replace(/\s+/g, ' ').trim();
   return { start: startIso, end, query: `${base} after:${gq(startIso)} before:${gq(end)}` };

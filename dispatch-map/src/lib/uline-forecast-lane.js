@@ -15,6 +15,11 @@
 
 /** The lane this app runs. Uline's file has always carried both codes on every row. */
 export const LANE = { warehouse: 'G', via: 'DA' };
+/** A Georgia warehouse code as Uline writes it. "G" in the forecast spreadsheet; "G1" and "G6"
+ *  on the nightly manifest — the same freight, two spellings from one shipper. */
+export const GEORGIA_WHS_RE = /^G\d*$/;
+/** The ones actually seen. A new Georgia building is counted and warned about, not dropped. */
+export const KNOWN_WAREHOUSES = new Set(['G', 'G1', 'G6']);
 /** Fewer kept rows than this is a snippet or a stray sheet, not a 12-month forecast. */
 export const MIN_LANE_ROWS = 20;
 /** More rejected rows than this share of the file is a file whose date or number column
@@ -76,8 +81,17 @@ export function laneRows(read, sentDate) {
   const dropped = Array.isArray(read?.dropped) ? read.dropped : [];
   const cols = read?.cols || {};
   const warnings = [...(Array.isArray(read?.warnings) ? read.warnings : [])];
-  const rowsDropped = { otherWarehouse: {}, otherVia: {}, blankLane: 0, badDate: 0, badNumber: 0, negative: 0, duplicateDate: 0, outOfWindow: 0 };
+  const rowsDropped = { otherWarehouse: {}, otherVia: {}, blankLane: 0, badDate: 0, badNumber: 0, negative: 0, duplicateDate: 0, summedAcrossWarehouses: 0, outOfWindow: 0, otherLaneDropped: 0 };
+  const lanes = {};
+  const hasWarehouseColEarly = cols.warehouse != null; const hasViaColEarly = cols.via != null;
+  const ourDrop = (d) => {
+    const w = norm(d?.warehouse); const v = norm(d?.via);
+    if (hasViaColEarly && v && v !== LANE.via) return false;
+    if (hasWarehouseColEarly && w && !GEORGIA_WHS_RE.test(w)) return false;
+    return true;
+  };
   for (const d of dropped) {
+    if (!ourDrop(d)) { rowsDropped.otherLaneDropped += 1; continue; }
     if (d.reason === 'bad_date') rowsDropped.badDate += 1;
     else if (d.reason === 'bad_number') rowsDropped.badNumber += 1;
     else if (d.reason === 'negative') rowsDropped.negative += 1;
@@ -97,26 +111,58 @@ export function laneRows(read, sentDate) {
     // THE LANE. A column that is not in the file at all is a re-export and the row is kept
     // (Uline has never sent a second lane, so an absent column cannot be hiding one). A
     // BLANK cell in a column that IS present is a subtotal or a stray line, not Georgia.
+    // GEORGIA, ANY OF ITS BUILDINGS. The nightly manifest — the same freight from the same
+    // shipper — writes G1 and G6 and NEVER the bare "G" this spreadsheet uses. An exact match on
+    // "G" is therefore a filter on a code Uline does not spell consistently: the day their
+    // forecast breaks Georgia out the way their manifest already does, every row would be
+    // rejected and the card would go dark. So the test is a GEORGIA code (G, G1, G6, …) on the
+    // Davis lane. A warehouse that is not Georgia's is still counted and dropped, never summed
+    // in — Chad: "only look at Uline pros for this not anything else."
     if (hasWarehouseCol) {
       if (!w) { rowsDropped.blankLane += 1; continue; }
-      if (w !== LANE.warehouse) { rowsDropped.otherWarehouse[w] = (rowsDropped.otherWarehouse[w] || 0) + 1; continue; }
+      if (!GEORGIA_WHS_RE.test(w)) { rowsDropped.otherWarehouse[w] = (rowsDropped.otherWarehouse[w] || 0) + 1; continue; }
     }
     if (hasViaCol) {
       if (!v) { rowsDropped.blankLane += 1; continue; }
       if (v !== LANE.via) { rowsDropped.otherVia[v] = (rowsDropped.otherVia[v] || 0) + 1; continue; }
     }
     if (lo && hi && (r.date < lo || r.date > hi)) { rowsDropped.outOfWindow += 1; continue; }
-    if (days[r.date]) { rowsDropped.duplicateDate += 1; continue; }   // cannot happen after the reader's per-lane rule, held anyway
     const est = Number(r.estimate);
     const up = r.upperEst == null ? null : Number(r.upperEst);
-    days[r.date] = [est, Number.isFinite(up) ? up : null];
     if (Number.isFinite(up)) bands.push(up - est);
+    lanes[`${w || '?'}/${v || '?'}`] = (lanes[`${w || '?'}/${v || '?'}`] || 0) + 1;
+    if (days[r.date]) {
+      // A SECOND WAREHOUSE ON THE SAME SHIP DATE IS MORE FREIGHT, NOT A DUPLICATE — both
+      // buildings' orders land on our dock that night. (The reader has already dropped a repeat
+      // of the same date+warehouse+via, so anything reaching here is a different building.) One
+      // leg without a high makes the DAY's high unknown rather than a partial ceiling.
+      rowsDropped.summedAcrossWarehouses += 1;
+      days[r.date][0] += est;
+      days[r.date][1] = Number.isFinite(up) && days[r.date][1] != null ? days[r.date][1] + up : null;
+      continue;
+    }
+    days[r.date] = [est, Number.isFinite(up) ? up : null];
   }
   if (!hasWarehouseCol || !hasViaCol) warnings.push(`lane columns absent (${[!hasWarehouseCol && 'warehouse', !hasViaCol && 'via'].filter(Boolean).join(', ')}) — rows kept as ${LANE.warehouse}/${LANE.via}`);
+  // A warehouse Davis has never run under is worth a look even though it is counted: the freight
+  // is routed to us either way, but it is a change in how Uline writes the file.
+  const unfamiliar = Object.keys(lanes).map((k) => k.split('/')[0]).filter((w) => !KNOWN_WAREHOUSES.has(w));
+  if (unfamiliar.length) warnings.push(`warehouse${unfamiliar.length === 1 ? '' : 's'} not seen before on the ${LANE.via} lane: ${[...new Set(unfamiliar)].join(', ')} — counted, because the carrier code is ours`);
+  if (rowsDropped.summedAcrossWarehouses) warnings.push(`${rowsDropped.summedAcrossWarehouses} ship date${rowsDropped.summedAcrossWarehouses === 1 ? '' : 's'} carried more than one warehouse — the day's estimate is their sum`);
 
   // Dates Uline sent a row for that could not be read: a day with no NUMBER, which the
   // outlook must never render as a day with no FREIGHT.
-  const unreadableDates = [...new Set(dropped.filter((d) => d.date && (d.reason === 'bad_number' || d.reason === 'negative')).map((d) => d.date))].sort();
+  // OURS ONLY. A bad number on somebody else's warehouse is not a hole in Georgia's forecast —
+  // it used to paint a day the file states perfectly as "a row that could not be read" and take
+  // it out of scoring. A drop with no lane recorded is treated as ours: unattributable, so the
+  // cautious reading is the one that does not quietly drop a day.
+  const oursDrop = (d) => {
+    const w = norm(d?.warehouse); const v = norm(d?.via);
+    if (hasViaCol && v && v !== LANE.via) return false;
+    if (hasWarehouseCol && w && !GEORGIA_WHS_RE.test(w)) return false;
+    return true;
+  };
+  const unreadableDates = [...new Set(dropped.filter((d) => d.date && (d.reason === 'bad_number' || d.reason === 'negative') && oursDrop(d)).map((d) => d.date))].sort();
 
   const keys = Object.keys(days).sort();
   const rowsUsed = keys.length;
@@ -137,7 +183,7 @@ export function laneRows(read, sentDate) {
     reason = `${rejected} of ${rowsTotal} rows could not be read (${(100 * rejected / rowsTotal).toFixed(0)}%) — more than ${Math.round(MAX_REJECT_RATIO * 100)}% means the date or number column did not read`;
   }
   return {
-    ok, reason, days, unreadableDates, rowsTotal, rowsUsed, rowsDropped,
+    ok, reason, days, unreadableDates, rowsTotal, rowsUsed, rowsDropped, lanes,
     seen: { warehouses: [...seenW].sort(), vias: [...seenV].sort() },
     headers: Array.isArray(read?.headers) ? read.headers : [],
     warnings,

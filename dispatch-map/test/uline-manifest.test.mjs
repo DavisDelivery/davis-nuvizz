@@ -12,7 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseUlineManifest } from '../netlify/functions/lib/uline-manifest.mts';
+import { parseUlineManifest, laneSummary } from '../netlify/functions/lib/uline-manifest.mts';
 
 // Column x's are the real ones measured off the 8/06/26 report.
 const X = { date: 130, via: 462, whs: 642, zip: 756, name: 1206, city: 2258, state: 2968 };
@@ -168,4 +168,44 @@ test('the forward window rolls months and years correctly', () => {
   assert.equal(addDays('2026-08-31', 1), '2026-09-01');
   assert.equal(addDays('2026-12-31', 1), '2027-01-01');
   assert.equal(addDays('2026-08-06', 0), '2026-08-06');
+});
+
+// ── ONLY ULINE PROS ───────────────────────────────────────────────────────────
+
+test('THE NIGHT IS DISTINCT ULINE PROS ON THE DA LANE — Chad: "only look at Uline pros for this not anything else"', () => {
+  const row = (pro, via = 'DA', whs = 'G6') => ({ pro, via, whs, shipDate: '8/20/26', lbs: 1, skids: 1, pieces: 0 });
+  // The shape of every archived night: all DA, warehouses G1 and G6, no repeats.
+  const clean = [row('007158397', 'DA', 'G1'), row('007158398', 'DA', 'G6'), row('007158399', 'DA', 'G6')];
+  assert.deepEqual(laneSummary(clean), { ulinePros: 3, lanes: { 'G1/DA': 1, 'G6/DA': 2 }, offLane: 0, duplicatePros: 0 });
+  // The day the report is not all ours, the count must not absorb it.
+  const mixed = [...clean, row('007158400', 'AVRT'), row('007158401', 'ESTES', 'G6'), row('007158402', '')];
+  const m = laneSummary(mixed);
+  assert.equal(m.ulinePros, 3, 'three orders are ours; three are not');
+  assert.equal(m.offLane, 3);
+  assert.deepEqual(m.lanes, { 'G1/DA': 1, 'G6/DA': 2 });
+  // A PRO counted twice is one order. (Zero across all 5,872 archived rows; counted anyway.)
+  const dupe = [...clean, row('007158399', 'DA', 'G6')];
+  assert.equal(laneSummary(dupe).ulinePros, 3);
+  assert.equal(laneSummary(dupe).duplicatePros, 1);
+  // A row with no readable PRO is not an order.
+  assert.equal(laneSummary([row(''), row('12345'), row(null)]).ulinePros, 0);
+  assert.equal(laneSummary([row(''), row('12345'), row(null)]).offLane, 3);
+  // Case and stray whitespace in the lane codes are not a different lane.
+  assert.equal(laneSummary([{ ...row('007158397'), via: ' da ', whs: ' g6 ' }]).lanes['G6/DA'], 1);
+  // A row with no warehouse is still ours if the carrier is — it is filed under '?', not dropped.
+  assert.deepEqual(laneSummary([{ ...row('007158397'), whs: null }]).lanes, { '?/DA': 1 });
+  for (const empty of [null, undefined, [], 'nope']) assert.deepEqual(laneSummary(empty), { ulinePros: 0, lanes: {}, offLane: 0, duplicatePros: 0 });
+});
+
+test('the real archived nights are 100% Uline PROs on the DA lane — so the measured count equals the row count, and the first score does not move', () => {
+  // The eleven nights on file were re-parsed from the stored PDFs: 5,872 rows, 5,872 distinct
+  // 9-digit PROs, every one via DA, warehouses G1 (1,719) and G6 (4,153). This pins the SHAPE
+  // that made that true, so a parser change that broke it fails here rather than on the card.
+  const night = [];
+  for (let i = 0; i < 686; i++) night.push({ pro: String(7158000 + i).padStart(9, '0'), via: 'DA', whs: i % 3 === 0 ? 'G1' : 'G6', shipDate: '8/20/26', lbs: 1, skids: 1, pieces: 0 });
+  const s = laneSummary(night);
+  assert.equal(s.ulinePros, night.length, 'measured count equals the row count when every row is ours');
+  assert.equal(s.offLane, 0);
+  assert.equal(s.duplicatePros, 0);
+  assert.equal(s.lanes['G1/DA'] + s.lanes['G6/DA'], 686);
 });

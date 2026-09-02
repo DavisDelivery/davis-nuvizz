@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { laneRows, canonicalRows, versionIdFor, sentDateET, LANE, MIN_LANE_ROWS } from '../src/lib/uline-forecast-lane.js';
 
 const FIX = JSON.parse(readFileSync(new URL('./fixtures/uline-forecast-2026-08-04.json', import.meta.url), 'utf8'));
+const JUL = JSON.parse(readFileSync(new URL('./fixtures/uline-forecast-2026-07-07.json', import.meta.url), 'utf8'));
 /** A ForecastRead shaped like the reader's, from the real Aug-04 rows. */
 function readFrom(days, over = {}) {
   const rows = Object.keys(days).sort().map((date) => ({ date, warehouse: 'G', via: 'DA', viaType: 'DA', estimate: days[date][0], upperEst: days[date][1] }));
@@ -135,4 +136,81 @@ test('junk in: no rows, no read, still a shaped answer', () => {
   assert.deepEqual(v.days, {});
   assert.equal(v.rowsTotal, 0);
   assert.equal(v.medianBand, null);
+});
+
+test("GEORGIA'S OWN SUB-WAREHOUSES SUM, a foreign one still drops — the manifest writes G1 and G6, the forecast writes G", () => {
+  // The nightly manifest for all eleven archived nights carries WHS G1 and G6 and never the bare
+  // "G" the forecast uses. An exact match on "G" would reject the whole file the day Uline spells
+  // the forecast the way it already spells the manifest, and the card would go dark.
+  const read = readFrom({});
+  read.rows.push({ date: '2026-09-08', warehouse: 'G1', via: 'DA', viaType: 'DA', estimate: 400, upperEst: 440 });
+  read.rows.push({ date: '2026-09-08', warehouse: 'G6', via: 'DA', viaType: 'DA', estimate: 300, upperEst: 330 });
+  read.rows.push({ date: '2026-09-09', warehouse: 'K', via: 'DA', viaType: 'DA', estimate: 999, upperEst: 1000 });
+  for (let i = 0; i < 20; i++) read.rows.push({ date: `2026-09-${String(11 + i).padStart(2, '0')}`, warehouse: 'G', via: 'DA', viaType: 'DA', estimate: 100 + i, upperEst: 120 + i });
+  const v = laneRows(read, '2026-09-01');
+  assert.equal(v.ok, true);
+  assert.deepEqual(v.days['2026-09-08'], [700, 770], 'both buildings land on our dock that night');
+  assert.equal(v.days['2026-09-09'], undefined, 'a warehouse that is not Georgia is still never summed in');
+  assert.deepEqual(v.rowsDropped.otherWarehouse, { K: 1 });
+  assert.equal(v.rowsDropped.summedAcrossWarehouses, 1);
+  assert.equal(v.lanes['G1/DA'], 1);
+  assert.equal(v.lanes['G6/DA'], 1);
+  assert.match(v.warnings.join(' '), /1 ship date carried more than one warehouse/);
+  // A NEW Georgia building is counted — the carrier code is ours — and named so it is not silent.
+  const g7 = readFrom({});
+  for (let i = 0; i < 21; i++) g7.rows.push({ date: `2026-09-${String(10 + i).padStart(2, '0')}`, warehouse: 'G7', via: 'DA', viaType: 'DA', estimate: 100, upperEst: 120 });
+  const w = laneRows(g7, '2026-09-01');
+  assert.equal(w.ok, true);
+  assert.equal(w.rowsUsed, 21);
+  assert.match(w.warnings.join(' '), /warehouse not seen before on the DA lane: G7/);
+  // ONE LEG WITHOUT A HIGH makes the DAY's high unknown, never a partial ceiling.
+  const partial = readFrom({});
+  partial.rows.push({ date: '2026-09-08', warehouse: 'G1', via: 'DA', viaType: 'DA', estimate: 400, upperEst: 440 });
+  partial.rows.push({ date: '2026-09-08', warehouse: 'G6', via: 'DA', viaType: 'DA', estimate: 300, upperEst: null });
+  for (let i = 0; i < 20; i++) partial.rows.push({ date: `2026-09-${String(11 + i).padStart(2, '0')}`, warehouse: 'G', via: 'DA', viaType: 'DA', estimate: 100, upperEst: 120 });
+  assert.deepEqual(laneRows(partial, '2026-09-01').days['2026-09-08'], [700, null]);
+});
+
+test('THE VERSION IDENTITY DOES NOT MOVE: both real files are 100% G/DA, so the widened rule digests them exactly as before', () => {
+  // A lane rule that changed the content digest would re-file every historical version as new.
+  for (const fx of [FIX, JUL]) {
+    const read = readFrom(fx.days);
+    const v = laneRows(read, fx.sentDate);
+    assert.equal(v.ok, true);
+    assert.equal(v.rowsUsed, Object.keys(fx.days).length);
+    assert.equal(canonicalRows(v.days), canonicalRows(fx.days), `${fx.sentDate} digests differently under the new rule`);
+    assert.equal(v.rowsDropped.summedAcrossWarehouses, 0);
+    assert.deepEqual(v.lanes, { 'G/DA': Object.keys(fx.days).length });
+  }
+});
+
+test('A BAD ROW ON SOMEBODY ELSE\'S WAREHOUSE IS NOT A HOLE IN GEORGIA\'S FORECAST', () => {
+  // unreadableDates used to be built from every dropped row regardless of lane, so an unreadable
+  // number on a K/XX line painted a day Georgia states perfectly as "a row that could not be
+  // read" — and classifyNight took that day out of scoring entirely.
+  const read = readFrom({ '2026-11-02': [671, 745] });
+  for (let i = 3; i <= 25; i++) read.rows.push({ date: `2026-11-${String(i).padStart(2, '0')}`, warehouse: 'G', via: 'DA', viaType: 'DA', estimate: 500, upperEst: 550 });
+  read.dropped.push({ row: 40, date: '2026-11-02', warehouse: 'K', via: 'XX', reason: 'bad_number', detail: 'row 40' });
+  const v = laneRows(read, '2026-11-01');
+  assert.deepEqual(v.unreadableDates, [], 'not our row, not our hole');
+  assert.deepEqual(v.days['2026-11-02'], [671, 745], 'and the day keeps the number Uline actually sent');
+  assert.equal(v.rowsDropped.badNumber, 0);
+  assert.equal(v.rowsDropped.otherLaneDropped, 1);
+  // OUR OWN unreadable row still is a hole, on every Georgia spelling.
+  for (const whs of ['G', 'G1', 'G6']) {
+    const mine = readFrom({ '2026-11-03': [671, 745] });
+    for (let i = 4; i <= 26; i++) mine.rows.push({ date: `2026-11-${String(i).padStart(2, '0')}`, warehouse: whs, via: 'DA', viaType: 'DA', estimate: 500, upperEst: 550 });
+    mine.dropped.push({ row: 40, date: '2026-11-02', warehouse: whs, via: 'DA', reason: 'bad_number', detail: 'row 40' });
+    assert.deepEqual(laneRows(mine, '2026-11-01').unreadableDates, ['2026-11-02'], whs);
+  }
+  // A drop with NO lane recorded is treated as ours — unattributable, so take the cautious read.
+  const blind = readFrom({ '2026-11-03': [671, 745] });
+  for (let i = 4; i <= 26; i++) blind.rows.push({ date: `2026-11-${String(i).padStart(2, '0')}`, warehouse: 'G', via: 'DA', viaType: 'DA', estimate: 500, upperEst: 550 });
+  blind.dropped.push({ row: 40, date: '2026-11-02', reason: 'bad_number', detail: 'row 40' });
+  assert.deepEqual(laneRows(blind, '2026-11-01').unreadableDates, ['2026-11-02']);
+  // A bad DATE on a foreign row must not make every Georgia gap "unknown" either.
+  const foreignDate = readFrom({ '2026-11-03': [671, 745] });
+  for (let i = 4; i <= 26; i++) foreignDate.rows.push({ date: `2026-11-${String(i).padStart(2, '0')}`, warehouse: 'G', via: 'DA', viaType: 'DA', estimate: 500, upperEst: 550 });
+  foreignDate.dropped.push({ row: 41, date: null, warehouse: 'K', via: 'XX', reason: 'bad_date', detail: 'row 41' });
+  assert.equal(laneRows(foreignDate, '2026-11-01').rowsDropped.badDate, 0);
 });

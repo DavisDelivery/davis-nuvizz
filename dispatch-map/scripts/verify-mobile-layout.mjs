@@ -233,12 +233,13 @@ function stubRoutes(page, emailHtml) {
       versions: [{ versionId: 'davis__2026-08-04__deadbeef', sentDate: '2026-08-04', from: '2026-07-15', to: '2027-08-13', seen: 1, rowsUsed: 332, rowsTotal: 332, ok: true, xlsxStored: true }],
       tonight: { head: 'Ship Wed 9/2 → deliver Thu 9/3', text: 'Uline 706 (high 781) · manifest so far 733 (#3, 21:40) · 27 over the estimate, under the high', tone: 'grey', status: 'on' },
       outlook: [
+        { deliverOn: '2026-11-30', dow: 'Mon', label: 'Mon 11/30', ships: [{ date: '2026-11-25', dow: 'Wed', est: 348, upper: 424 }, { date: '2026-11-27', dow: 'Fri', est: 234, upper: 302 }], est: 582, upper: 726, plan: 582, adjusted: false, chips: [], notes: ['Wed 11/25 freight rolled past Thanksgiving, the day after Thanksgiving', 'Uline closed 11/26', "Uline's number — not enough nights to adjust"], status: 'ok' },
         { deliverOn: '2026-09-03', dow: 'Thu', label: 'Thu 9/3', ships: [{ date: '2026-09-02', dow: 'Wed', est: 706, upper: 781 }], est: 706, upper: 781, plan: 706, adjusted: false, chips: [], notes: ["Uline's number — not enough nights to adjust"], status: 'ok' },
         { deliverOn: '2026-09-07', dow: 'Mon', label: 'Mon 9/7', ships: [], est: null, upper: null, plan: null, chips: [], notes: ['Labor Day — no deliveries'], status: 'closed' },
         { deliverOn: '2026-09-08', dow: 'Tue', label: 'Tue 9/8', ships: [{ date: '2026-09-04', dow: 'Fri', est: 504, upper: 575 }, { date: '2026-09-06', dow: 'Sun', est: 71, upper: 95 }], est: 575, upper: 670, plan: 575, adjusted: false, chips: ['LIGHT'], notes: ['Fri 9/4 freight rolled past Labor Day', 'Uline closed 9/7', 'light for a Tue — typical 746'], status: 'ok' },
       ],
       scored: [
-        { date: '2026-09-01', dow: 'Tue', status: 'scored', actual: 764, est: 702, upper: 773, err: 62, verdict: 'heavy', reports: 7, deliverOn: '2026-09-02' },
+        { date: '2026-09-01', dow: 'Tue', status: 'scored', actual: 764, est: 702, upper: 773, err: 62, verdict: 'heavy', reports: 7, deliverOn: '2026-09-02', basis: 'ulinePros', lanes: { 'G1/DA': 212, 'G6/DA': 552 }, offLane: 0 },
         { date: '2026-08-31', dow: 'Mon', status: 'scored', actual: 652, est: 673, upper: 738, err: -21, verdict: 'on', reports: 7, deliverOn: '2026-09-01' },
         { date: '2026-08-28', dow: 'Fri', status: 'scored', actual: 534, est: 532, upper: 604, err: 2, verdict: 'on', reports: 7, deliverOn: '2026-08-31' },
       ],
@@ -248,7 +249,18 @@ function stubRoutes(page, emailHtml) {
       stats: { windows: { 30: { n: 11, mae: 27.3, bias: -6.7, mape: 4.4, overHigh: { count: 0, rate: 0 } }, 90: { n: 11, mae: 27.3, bias: -6.7, mape: 4.4, overHigh: { count: 0, rate: 0 } }, 180: { n: 11, mae: 27.3, bias: -6.7, mape: 4.4, overHigh: { count: 0, rate: 0 } } },
         byWeekday: { 0: { dow: 'Sun', n: 2, shown: false }, 1: { dow: 'Mon', n: 2, shown: false }, 2: { dow: 'Tue', n: 2, shown: false }, 3: { dow: 'Wed', n: 1, shown: false }, 4: { dow: 'Thu', n: 2, shown: false }, 5: { dow: 'Fri', n: 2, shown: false } },
         byHorizon: { '≤4w': { n: 11, shown: true, mae: 27.3, bias: -6.7 }, '5–8w': { n: 0, shown: false }, '9–13w': { n: 0, shown: false }, '14w+': { n: 0, shown: false } } },
-      expectedVersionMissing: false, disagreements: [], counts: { scored: 3 }, note: null,
+      // THE LONGEST LINES THE CARD CAN DRAW, so 390/360 measure them rather than an empty state:
+      // the "nobody has looked" line (the weekly cadence's own worst case) and the no-delivery
+      // list with the longest reason strings the calendar produces.
+      expectedVersionMissing: false,
+      standing: { kind: 'unchecked', lastCheckedAt: '2026-08-23', days: 20, text: 'the forecast mailbox has not been read since 8/23 (20 days) — the check runs weekly; press Read now' },
+      holidays: [
+        { date: '2026-11-26', dow: 'Thu', reason: 'Thanksgiving' },
+        { date: '2026-11-27', dow: 'Fri', reason: 'the day after Thanksgiving' },
+        { date: '2026-12-24', dow: 'Thu', reason: 'Christmas Eve' },
+        { date: '2027-12-24', dow: 'Fri', reason: 'Christmas Eve · Christmas Day' },
+      ],
+      disagreements: [], counts: { scored: 3 }, note: null,
       status: { lastRunAt: '2026-09-02T03:00:00Z', lastSuccessAt: '2026-09-02T03:00:00Z', lastSummary: 'nothing new (1 already judged)' }, query: 'subject:"Uline Forecast" has:attachment newer_than:45d',
     });
     if (u.includes('roster') || u.includes('drivers')) return R({ ok: true, drivers: [{ name: 'FRANK OKINE', id: '1' }], roster: [] });
