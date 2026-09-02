@@ -151,8 +151,35 @@ function objectToFields(obj) {
   return fields;
 }
 
+// --- Path safety ---
+// Every document path below is built by string concatenation from values that arrive
+// on a query string (date, tenant, loadNbr). A segment of `..`, or one carrying
+// `/ \ ? #`, rewrites the REST URL into a different document, a different
+// collection, or a smuggled query. The builders run each segment through safeSegment
+// so the error names the bad input, and the three core ops re-check the assembled
+// path so nothing can be concatenated around it.
+const SEGMENT_FORBIDDEN = /[\/\\?#]/;
+function safeSegment(seg) {
+  const str = seg === undefined || seg === null ? '' : String(seg);
+  if (str === '' || str === '.' || str === '..' || SEGMENT_FORBIDDEN.test(str)) {
+    throw new Error(`firestore: unsafe path segment ${JSON.stringify(str)}`);
+  }
+  return str;
+}
+function safePath(path) {
+  String(path).split('/').forEach(safeSegment);
+  return path;
+}
+
+// Firestore field-path syntax: a plain identifier stands alone; anything else must be
+// backtick-quoted or a dot inside it is read as nesting.
+function fieldPath(k) {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) ? k : '`' + k.replace(/([`\\])/g, '\\$1') + '`';
+}
+
 // --- Core Firestore operations ---
 async function getDoc(path) {
+  safePath(path);
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents/${path}`;
@@ -166,10 +193,22 @@ async function getDoc(path) {
   return docToObject(doc);
 }
 
-async function setDoc(path, data) {
+// PATCH with no updateMask REPLACES the document — every field not in `data` is deleted
+// (the same trap incrementCallCounter documents below). That is what a fresh scan wants
+// for a load doc, and it is wrong for a document somebody else also writes to. Pass
+// { merge: true } to send a field mask over `data`'s keys so only those fields change.
+async function setDoc(path, data, { merge = false } = {}) {
+  safePath(path);
   const token = await getAccessToken();
   const sa = loadServiceAccount();
-  const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents/${path}`;
+  let url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents/${path}`;
+  if (merge) {
+    const keys = Object.keys(data || {}).filter(k => data[k] !== undefined);
+    // One repeated updateMask.fieldPaths param per field, mirroring dispatch-map's
+    // updateDocFields (firestore.mts).
+    const mask = keys.map(k => `updateMask.fieldPaths=${encodeURIComponent(fieldPath(k))}`).join('&');
+    if (mask) url += `?${mask}`;
+  }
   const body = JSON.stringify({ fields: objectToFields(data) });
   const resp = await fetch(url, {
     method: 'PATCH',
@@ -184,6 +223,7 @@ async function setDoc(path, data) {
 }
 
 async function listDocs(collectionPath) {
+  safePath(collectionPath);
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const allDocs = [];
@@ -213,18 +253,18 @@ async function listDocs(collectionPath) {
 
 // --- Convenience helpers for the fleet schema ---
 function fleetParentId(tenant, dateStr) {
-  return `${tenant}__${dateStr}`;
+  return `${safeSegment(tenant)}__${safeSegment(dateStr)}`;
 }
 
 async function readLoad(tenant, dateStr, loadNbr) {
-  return await getDoc(`nuvizzFleet/${fleetParentId(tenant, dateStr)}/loads/${loadNbr}`);
+  return await getDoc(`nuvizzFleet/${fleetParentId(tenant, dateStr)}/loads/${safeSegment(loadNbr)}`);
 }
 
 async function writeLoad(tenant, dateStr, load) {
   if (!load.loadNbr) throw new Error('writeLoad: load.loadNbr required');
   // Firestore doc IDs can't have slashes. Load numbers like DAVIS000192640 are safe.
   return await setDoc(
-    `nuvizzFleet/${fleetParentId(tenant, dateStr)}/loads/${load.loadNbr}`,
+    `nuvizzFleet/${fleetParentId(tenant, dateStr)}/loads/${safeSegment(load.loadNbr)}`,
     { ...load, _updatedAt: new Date().toISOString() }
   );
 }
@@ -237,9 +277,13 @@ async function readSummary(tenant, dateStr) {
   return await getDoc(`nuvizzFleet/${fleetParentId(tenant, dateStr)}/meta/summary`);
 }
 
+// The parent doc is touched only so the meta subcollection is reachable — but it is
+// NOT ours alone. SITE B's writeFleetIndex (dispatch-map firestore.mts) stamps
+// last_scanned_at on the same doc, and a maskless PATCH here deleted that stamp on
+// every SITE A live scan — the very freshness marker the consolidated read is meant
+// to trust. MERGE the two fields we own; leave the rest.
 async function writeSummary(tenant, dateStr, summary) {
-  // Ensure parent doc exists so the meta subcollection is reachable
-  await setDoc(`nuvizzFleet/${fleetParentId(tenant, dateStr)}`, { tenant, date: dateStr });
+  await setDoc(`nuvizzFleet/${fleetParentId(tenant, dateStr)}`, { tenant, date: dateStr }, { merge: true });
   return await setDoc(
     `nuvizzFleet/${fleetParentId(tenant, dateStr)}/meta/summary`,
     { ...summary, _updatedAt: new Date().toISOString() }
@@ -265,7 +309,8 @@ async function readStopIndexMeta(tenant, dateStr) {
 }
 
 async function writeDriverIndex(tenant, dateStr, indexMap) {
-  await setDoc(`nuvizzFleet/${fleetParentId(tenant, dateStr)}`, { tenant, date: dateStr });
+  // Same merge as writeSummary — see the note there.
+  await setDoc(`nuvizzFleet/${fleetParentId(tenant, dateStr)}`, { tenant, date: dateStr }, { merge: true });
   return await setDoc(
     `nuvizzFleet/${fleetParentId(tenant, dateStr)}/meta/driverIndex`,
     { map: indexMap, _updatedAt: new Date().toISOString() }
@@ -279,12 +324,12 @@ async function writeDriverIndex(tenant, dateStr, indexMap) {
 //   nuvizzRoster/{tenant} → { users:[…], totalUsers, driverCount, _updatedAt }
 // ~80 slim user objects fit comfortably in one Firestore document (well under 1MB).
 async function readDriverRoster(tenant) {
-  return await getDoc(`nuvizzRoster/${tenant}`);
+  return await getDoc(`nuvizzRoster/${safeSegment(tenant)}`);
 }
 
 async function writeDriverRoster(tenant, roster) {
   return await setDoc(
-    `nuvizzRoster/${tenant}`,
+    `nuvizzRoster/${safeSegment(tenant)}`,
     { ...roster, _updatedAt: new Date().toISOString() }
   );
 }
@@ -295,7 +340,7 @@ const OPS_COLLECTION = 'nuvizz_ops';
 async function incrementCallCounter(dateStr, n) {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
-  const docName = `projects/${sa.project_id}/databases/(default)/documents/${OPS_COLLECTION}/calls__${dateStr}`;
+  const docName = `projects/${sa.project_id}/databases/(default)/documents/${OPS_COLLECTION}/calls__${safeSegment(dateStr)}`;
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents:commit`;
   // Per-ET-hour bucket (hour__HH) rides in the SAME commit as `count`, mirroring
   // dispatch-map (firestore.mts) so the shared doc's hour buckets always sum to the
@@ -335,7 +380,7 @@ async function incrementCallCounter(dateStr, n) {
 }
 
 async function readCallCounter(dateStr) {
-  const doc = await getDoc(`${OPS_COLLECTION}/calls__${dateStr}`);
+  const doc = await getDoc(`${OPS_COLLECTION}/calls__${safeSegment(dateStr)}`);
   return doc && typeof doc.count === 'number' ? doc.count : 0;
 }
 
@@ -406,4 +451,7 @@ module.exports = {
   setCircuit,
   circuitFromDoc,
   etDayString,
+  safeSegment,
+  safePath,
+  fieldPath,
 };

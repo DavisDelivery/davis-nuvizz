@@ -11,6 +11,7 @@
 // engine still produces routes deterministically (degraded, clearly flagged).
 
 import { fetchWithTimeout } from './lib/async-util.mts';
+import { requireUser } from './lib/require-user.mts';
 
 const ROUTES_URL = 'https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix';
 const MAX_ELEMENTS = 600;         // under Google's 625 element cap, with margin
@@ -116,6 +117,9 @@ export async function resolveMatrix(depot: LatLng, stops: LatLng[], mode: 'haver
 // free haversine estimate; pass mode:'google' to bill live Google drive-times.
 export default async function handler(req: Request): Promise<Response> {
   if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+  // User gate — inert until AUTH_REQUIRED=true on the site (lib/require-user.mts).
+  const gate = await requireUser(req, { role: 'dispatcher' });
+  if (!gate.ok) return gate.response;
   let body: any;
   try { body = await req.json(); } catch { return new Response(JSON.stringify({ error: 'bad json' }), { status: 400 }); }
   const depot = body?.depot;

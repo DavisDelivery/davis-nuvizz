@@ -15,7 +15,8 @@
 // is about to do without doing it, and that half is never the dangerous half.
 //
 // Firestore only. ZERO NuVizz calls.
-import { isFirestoreEnabled } from './lib/firestore.mts';
+import { isFirestoreEnabled, etDayString } from './lib/firestore.mts';
+import { requireUser } from './lib/require-user.mts';
 import { writeTombstone, tombstoneVerdict, getCaptureFailure } from './lib/history-seal.mts';
 import { getManifest, listStops } from './lib/history-store.mts';
 import { adminTokenOk } from './lib/customer-comms.mts';
@@ -27,6 +28,9 @@ export default async (req: Request): Promise<Response> => {
   const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
   const J = (b: any, s = 200) => new Response(JSON.stringify(b, null, 1), { status: s, headers });
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
+  // User gate — inert until AUTH_REQUIRED=true on the site (lib/require-user.mts).
+  const gate = await requireUser(req, { role: 'admin' });
+  if (!gate.ok) return gate.response;
 
   try {
     const url = new URL(req.url);
@@ -35,6 +39,12 @@ export default async (req: Request): Promise<Response> => {
     const dryRun = url.searchParams.get('dryRun') === '1' || req.method === 'GET';
 
     if (!DATE_RE.test(date)) return J({ ok: false, error: 'date=YYYY-MM-DD required' }, 400);
+    // A tombstone says "this day ran with no board". Nobody can know that about a day that
+    // has not happened yet — and a tombstone on a future date is read by the capture-health
+    // strip as "nothing to capture", which would hide a real capture failure when that day
+    // comes. Refused before the token check: the token decides who may write, not whether a
+    // future day is a fact.
+    if (date > etDayString()) return J({ ok: false, error: `date ${date} is in the future (ET today is ${etDayString()}) — a day that has not happened cannot be tombstoned` }, 400);
 
     // Read the day BEFORE deciding anything — the verdict is about what is actually there,
     // never about what the caller believes is there.

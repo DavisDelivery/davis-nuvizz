@@ -21,6 +21,7 @@
 // misconfigured RESEND_*/NOTIFY_CS_TO surfaces plainly instead of silently no-op'ing.
 
 import { isFirestoreEnabled, readStops, etDayString } from './lib/firestore.mts';
+import { requireUser } from './lib/require-user.mts';
 import { emailEnabled, sendEmail } from './lib/email.mts';
 import { adminTokenOk, testRecipientAllowed } from './lib/customer-comms.mts';
 import { buildEmail, csRecipients } from './lib/cs-notify.mts';
@@ -34,6 +35,9 @@ export default async (req: Request): Promise<Response> => {
   const J = (body: any, status = 200) => new Response(JSON.stringify(body), { status, headers });
 
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' });
+  // User gate — inert until AUTH_REQUIRED=true on the site (lib/require-user.mts).
+  const gate = await requireUser(req, { role: 'dispatcher' });
+  if (!gate.ok) return gate.response;
 
   // A TEST MAILER IS STILL A MAILER, AND THIS ONE WAS OPEN TO THE WORLD.
   //

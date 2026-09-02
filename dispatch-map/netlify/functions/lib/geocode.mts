@@ -41,15 +41,33 @@ function addrString(p: AddrParts): string {
 
 export function isGeocodeConfigured(): boolean { return !!GEOCODE_KEY; }
 
-async function geocodeOne(addr: string): Promise<GeoPoint | null> {
-  if (!GEOCODE_KEY) return null;
-  const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(addr)}&key=${GEOCODE_KEY}`;
-  const r = await fetch(url);
-  if (!r.ok) return null;
-  const j: any = await r.json();
+// Three outcomes, not two. 'found' and 'none' are ANSWERS from Google about the address and
+// are cached forever (a negative marker for 'none' is what stops an un-geocodable address
+// being retried every scan). 'error' is not an answer about the address at all — a non-2xx
+// HTTP, OVER_QUERY_LIMIT, REQUEST_DENIED, UNKNOWN_ERROR, a network failure — and it used to
+// be written to the cache as `failed: true` exactly like ZERO_RESULTS, so one throttled or
+// mis-keyed scan pinned every new address on the board with no coordinates PERMANENTLY.
+// Nothing is written for 'error'; the next scan simply asks again.
+export type GeocodeOutcome = { status: 'found'; pt: GeoPoint } | { status: 'none' } | { status: 'error'; reason: string };
+export function classifyGeocodeResponse(ok: boolean, httpStatus: number, j: any): GeocodeOutcome {
+  if (!ok) return { status: 'error', reason: `http_${httpStatus}` };
   const loc = j?.results?.[0]?.geometry?.location;
-  if (loc && typeof loc.lat === 'number' && typeof loc.lng === 'number') return { lat: loc.lat, lng: loc.lng };
-  return null; // ZERO_RESULTS / OVER_QUERY_LIMIT / etc. — caller negative-caches it
+  if (loc && typeof loc.lat === 'number' && typeof loc.lng === 'number') return { status: 'found', pt: { lat: loc.lat, lng: loc.lng } };
+  if (j?.status === 'ZERO_RESULTS') return { status: 'none' };
+  return { status: 'error', reason: String(j?.status || 'no_result') };
+}
+
+async function geocodeOne(addr: string): Promise<GeocodeOutcome> {
+  if (!GEOCODE_KEY) return { status: 'error', reason: 'no_key' };
+  const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(addr)}&key=${GEOCODE_KEY}`;
+  try {
+    const r = await fetch(url);
+    let j: any = null;
+    try { j = await r.json(); } catch { /* non-JSON body → classified below on r.ok/status */ }
+    return classifyGeocodeResponse(r.ok, r.status, j);
+  } catch (e: any) {
+    return { status: 'error', reason: e?.message || 'network' };
+  }
 }
 
 /**
@@ -75,20 +93,22 @@ export async function resolveCoords(items: AddrParts[], seed?: Map<string, GeoPo
     }
     misses.push({ key: k, str: addrString(it) });
   }
-  // Geocode the misses with bounded concurrency, writing each result (or a negative
-  // marker) back to the cache so it's a one-time cost.
+  // Geocode the misses with bounded concurrency, writing each ANSWER (coords, or a negative
+  // marker for ZERO_RESULTS) back to the cache so it's a one-time cost. An error writes
+  // nothing — see geocodeOne — so the address is retried by the next scan.
   const conc = 5;
   let idx = 0;
   const worker = async () => {
     while (idx < misses.length) {
       const { key, str } = misses[idx++];
-      const pt = await geocodeOne(str).catch(() => null);
+      const res = await geocodeOne(str);
+      if (res.status === 'error') { console.warn(`[geocode] ${str}: ${res.reason} — not cached, will retry next scan`); continue; }
       try {
-        await setDoc(`${CACHE}/${key}`, pt
-          ? { lat: pt.lat, lng: pt.lng, addr: str, ts: new Date().toISOString() }
+        await setDoc(`${CACHE}/${key}`, res.status === 'found'
+          ? { lat: res.pt.lat, lng: res.pt.lng, addr: str, ts: new Date().toISOString() }
           : { failed: true, addr: str, ts: new Date().toISOString() });
       } catch { /* cache write best-effort */ }
-      if (pt) out.set(key, pt);
+      if (res.status === 'found') out.set(key, res.pt);
     }
   };
   await Promise.all(Array.from({ length: conc }, worker));

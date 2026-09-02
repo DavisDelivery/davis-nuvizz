@@ -20,7 +20,8 @@
 //   ?tenant=davis&path=__stopsaway&loadNbr=X&stopNbr=Y → count of non-delivered stops before Y
 //   ?tenant=davis&path=__fleet&date=YYYY-MM-DD&from=N&to=N → scan load number range, return driver board
 //   ?tenant=davis&path=__driver&userName=JIM&date=... → one driver's loads+stops for a day
-//   ?tenant=davis&path=/stop/info/X/DAVIS → raw passthrough
+//   ?tenant=davis&path=/stop/info/X/DAVIS → raw passthrough (GET only; /stop/info, /stop/etainfo,
+//                                              /stop/eventinfo, /load/info — see resolvePassthroughPath)
 //
 // __fleet technique: since NuVizz v7 doesn't have a "list today's loads" endpoint, we scan
 // a range of load numbers (e.g. 192500-192800) in parallel via /load/info/, filter to the
@@ -38,6 +39,63 @@ function etToday() {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
   }).format(new Date());
+}
+
+// ── Request-parameter guards ─────────────────────────────────────────────────
+// Every `date` that reaches a cache key, a Firestore doc path or a scan window goes
+// through here. It was never validated: `date=../x` was keyed into the in-memory cache
+// and the Firestore path verbatim, and STILL drove the 601-number probe (~600 NuVizz
+// calls), because estimateLoadRange projects happily from an Invalid Date.
+// Absent/empty → today's ET day (the default every endpoint already used). Present but
+// not a real YYYY-MM-DD calendar date (2026-02-30, 2026-13-01, "abc") → null, and the
+// handler answers 400 {error:'bad date'} without touching NuVizz or Firestore.
+function parseDateParam(v) {
+  if (v === undefined || v === null || v === '') return etToday();
+  const str = String(v);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(str)) return null;
+  const [y, m, d] = str.split('-').map(n => parseInt(n, 10));
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
+  return str;
+}
+
+// Manual load-number window for __fleet (?from=&to=). Unbounded parseInt meant
+// from=0&to=999999999 built a billion-entry array in scanFleet before the first probe
+// (and each surviving entry would have been a NuVizz call). Both present, both
+// non-negative integers, from <= to, and at most MAX_LOAD_RANGE_WIDTH apart — the
+// widest window estimateLoadRange itself produces is 601, so 700 costs nothing
+// legitimate. Anything else → null and the handler 400s.
+const MAX_LOAD_RANGE_WIDTH = 700;
+function parseLoadRange(from, to) {
+  const asInt = (v) => {
+    if (typeof v === 'number') return Number.isInteger(v) && v >= 0 ? v : null;
+    if (typeof v !== 'string' || !/^\d{1,9}$/.test(v.trim())) return null;
+    return parseInt(v.trim(), 10);
+  };
+  const startNbr = asInt(from);
+  const endNbr = asInt(to);
+  if (startNbr === null || endNbr === null) return null;
+  if (startNbr > endNbr) return null;
+  if (endNbr - startNbr > MAX_LOAD_RANGE_WIDTH) return null;
+  return { startNbr, endNbr };
+}
+
+// Raw passthrough allowlist. The proxy used to forward ANY method and body to
+// `${NUVIZZ_BASE}${path}` with `path` taken straight off the query string — so
+// `path=/../../something` walked the vendor host and `path=/x?y=` smuggled a query.
+// The root client (src/lib/api.js) only ever issues GETs for these four read routes;
+// nothing else is a legitimate caller. The URL is re-derived from NUVIZZ_BASE and
+// asserted to still sit under it, so a regex slip can not become a traversal.
+const PASSTHROUGH_PREFIXES = ['/stop/info/', '/stop/etainfo/', '/stop/eventinfo/', '/load/info/'];
+function resolvePassthroughPath(path) {
+  if (typeof path !== 'string') return null;
+  if (!/^\/[A-Za-z0-9_\-\/]+$/.test(path)) return null;
+  if (path.includes('..')) return null;
+  if (!PASSTHROUGH_PREFIXES.some(p => path.startsWith(p))) return null;
+  let href;
+  try { href = new URL(path.slice(1), NUVIZZ_BASE + '/').href; } catch { return null; }
+  if (!href.startsWith(NUVIZZ_BASE + '/')) return null;
+  return path;
 }
 
 // Firestore persistence layer (cross-instance cache for fleet data)
@@ -117,9 +175,13 @@ async function fetchDocument(documentGuid, ext, objectType = '02') {
     qs.set('objectType', otype);
     if (ext) qs.set('extension', ext); // Missing field discovered in tracker portal JS
     const url = `${DOC_BASE}/doc/getdocument/${encodeURIComponent(companyCode)}?${qs.toString()}`;
-    const resp = await fetch(url, {
+    // Counted + breaker-gated like every other NuVizz call. This was a bare fetch(), so
+    // document pulls never appeared on the shared counter and carried on with the
+    // breaker open. (The tracking-chain fallback below is a call to our own other site,
+    // not to NuVizz, and is left as is.)
+    const resp = await getNuvizzRequester().request(url, {
       headers: { Authorization: basicAuthHeader(tenant), Accept: 'application/json' },
-    });
+    }, { route: '/doc/getdocument', tenant });
     const text = await resp.text();
     const info = { strategy: 'direct', tenant, companyCode, objectType: otype, url, status: resp.status, ok: resp.ok, bodyPreview: text.slice(0, 150) };
     attempts.push(info);
@@ -464,7 +526,14 @@ async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurren
         });
       }
       return summary;
-    } catch (e) { return null; }
+    } catch (e) {
+      // A REFUSED call is not a missing load. Swallowing NuvizzCircuitOpenError here
+      // turned a tripped breaker into 601 "empty" probes → an all-zero board that
+      // __refreshFleet then persisted over the last good summary. Let it out so the
+      // caller reports the refusal (503) and writes nothing.
+      if (e && e.name === 'NuvizzCircuitOpenError') throw e;
+      return null;
+    }
   };
 
   const nums = [];
@@ -750,6 +819,21 @@ function normalizeRosterUser(u) {
   };
 }
 
+// What leaves the function. The stored roster keeps NuVizz's full slim record, but the
+// Drivers screen reads userName / name / status / userId (dispatch-map's board adds
+// mobileNumber). A CDL number, its state and its expiry have NO consumer in either UI —
+// and __drivers is an unauthenticated GET, so they were being handed to anyone who
+// asked. Strip every license field on the way out, by name and by pattern.
+const ROSTER_PRIVATE_FIELDS = ['cdlNumber', 'licenseState', 'licenseExpirationDttm'];
+function publicRosterUser(u) {
+  if (!u || typeof u !== 'object') return u;
+  const out = { ...u };
+  for (const k of Object.keys(out)) {
+    if (ROSTER_PRIVATE_FIELDS.includes(k) || /license|cdl/i.test(k)) delete out[k];
+  }
+  return out;
+}
+
 async function fetchDriverRoster(tenant, { pageSize = 500 } = {}) {
   const { companyCode } = getCreds(tenant);
   const byUserName = new Map();   // dedup so we never inflate the roster with repeats
@@ -805,6 +889,7 @@ exports.handler = async (event) => {
     const fleetTenant = tenant === 'uline' ? 'davis' : tenant;
     const apiPath = params.path;
     if (!apiPath) return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'Missing ?path=' }) };
+    const badDate = () => ({ statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'bad date' }) });
 
     // Health check — just verify Basic Auth works on a cheap endpoint for each tenant
     if (apiPath === '__health') {
@@ -815,7 +900,9 @@ exports.handler = async (event) => {
           // Hit a tiny endpoint that we know responds. /stop/info/NOTAREAL/ will 400 with
           // a domain-level error meaning auth succeeded (we don't care about the 400).
           const url = `${NUVIZZ_BASE}/stop/info/__probe__/${encodeURIComponent(companyCode)}`;
-          const r = await fetch(url, { headers: { Authorization: basicAuthHeader(t), Accept: 'application/json' } });
+          // Through the shared wrapper so the probe is counted and refused when the
+          // breaker is open — a bare fetch() here was the one NuVizz call nothing saw.
+          const r = await getNuvizzRequester().request(url, { headers: { Authorization: basicAuthHeader(t), Accept: 'application/json' } }, { route: '/stop/info', tenant: t });
           const txt = await r.text();
           const authOk = r.status !== 401 && r.status !== 403;
           results[t] = { ok: authOk, status: r.status, preview: txt.slice(0, 120) };
@@ -826,10 +913,11 @@ exports.handler = async (event) => {
 
     // Today aggregator
     if (apiPath === '__today') {
-      const now = new Date();
-      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
-      const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
-      const data = await fetchLoadsAndStopsForRange(tenant, start.toISOString(), end.toISOString());
+      // Server-local midnight is UTC midnight on Netlify, so from 8pm ET the "today"
+      // window was already tomorrow's. Anchor on the same ET day every other default in
+      // this file uses (etToday); the wire format is unchanged (YYYY-MM-DDT00:00:00.000Z).
+      const day = etToday();
+      const data = await fetchLoadsAndStopsForRange(tenant, `${day}T00:00:00.000Z`, `${day}T23:59:59.000Z`);
       return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(data) };
     }
 
@@ -844,7 +932,8 @@ exports.handler = async (event) => {
 
     // Loads-by-date (simpler than today — just load nbrs, no full stop data)
     if (apiPath === '__loadsbydate') {
-      const date = params.date || etToday();
+      const date = parseDateParam(params.date);
+      if (!date) return badDate();
       const data = await fetchLoadNbrsForDate(tenant, date);
       return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(data) };
     }
@@ -938,11 +1027,19 @@ exports.handler = async (event) => {
     //   ?tenant=davis&path=__fleet&from=192500&to=192800 → manual range override
     //   ?tenant=davis&path=__fleet&nocache=1          → bypass cache
     if (apiPath === '__fleet') {
-      const dateStr = params.date || etToday();
+      const dateStr = parseDateParam(params.date);
+      if (!dateStr) return badDate();
       const bypassCache = params.nocache === '1' || params.nocache === 'true';
+      // A manual window must be complete and bounded, or it is an error — not a silent
+      // fall-through to the estimated range with the caches skipped.
+      const hasRange = params.from !== undefined || params.to !== undefined;
+      const manualRange = hasRange ? parseLoadRange(params.from, params.to) : null;
+      if (hasRange && !manualRange) {
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'bad range', hint: `from and to must both be integers, from <= to, at most ${MAX_LOAD_RANGE_WIDTH} apart` }) };
+      }
 
       // Layer 1: in-memory cache (60s, per-function-instance, fastest)
-      if (!bypassCache && !params.from && !params.to) {
+      if (!bypassCache && !manualRange) {
         const cached = getCachedFleet(fleetTenant, dateStr);
         if (cached) {
           return {
@@ -958,7 +1055,7 @@ exports.handler = async (event) => {
       // In consolidated mode Firestore IS the source of truth, so nocache must still
       // read it fresh (bypassing only the in-memory cache) — never skip to the empty
       // guard below, which would blank the board on any nocache request.
-      if ((!bypassCache || consolidatedReads()) && !params.from && !params.to) {
+      if ((!bypassCache || consolidatedReads()) && !manualRange) {
         const fsData = await readFleetFromFirestore(fleetTenant, dateStr);
         if (fsData && fsData.loads && fsData.loads.length > 0) {
           // Strip per-load stops to keep payload light — __fleet response is summary only
@@ -986,7 +1083,7 @@ exports.handler = async (event) => {
           totalDelivered: 0, totalInProgress: 0, totalExceptions: 0, uniqueDrivers: 0, pctComplete: 0,
         };
         const result = { date: dateStr, loads: [], summary: emptySummary, source: 'firestore-empty' };
-        if (!params.from && !params.to) setCachedFleet(fleetTenant, dateStr, result);
+        if (!manualRange) setCachedFleet(fleetTenant, dateStr, result);
         return {
           statusCode: 200,
           headers: { ...corsHeaders, 'X-Cache': 'CONSOLIDATED-EMPTY' },
@@ -996,9 +1093,9 @@ exports.handler = async (event) => {
 
       // Layer 3: live scan (fallback, ~10-12s)
       let startNbr, endNbr;
-      if (params.from && params.to) {
-        startNbr = parseInt(params.from, 10);
-        endNbr = parseInt(params.to, 10);
+      if (manualRange) {
+        startNbr = manualRange.startNbr;
+        endNbr = manualRange.endNbr;
       } else {
         const range = estimateLoadRange(dateStr);
         startNbr = range.startNbr;
@@ -1014,7 +1111,7 @@ exports.handler = async (event) => {
       });
 
       // Calibrate: store the actual number range for this date so next scan is tight+fast
-      if (!params.from && !params.to) calibrateLoadRange(dateStr, loads);
+      if (!manualRange) calibrateLoadRange(dateStr, loads);
 
       const summary = {
         totalLoads: loads.length,
@@ -1030,7 +1127,7 @@ exports.handler = async (event) => {
 
       // Persist to Firestore (with stops) — gives __fleetstops + __driver fast path later.
       // Fire-and-forget so we don't block the user's response on the write.
-      if (!params.from && !params.to) {
+      if (!manualRange) {
         writeFleetToFirestore(fleetTenant, dateStr, loads, summary).catch(() => null);
       }
 
@@ -1039,7 +1136,7 @@ exports.handler = async (event) => {
       const result = { date: dateStr, loads: slimLoads, summary, scannedRange: { from: startNbr, to: endNbr }, source: 'live-scan' };
 
       // In-memory cache for 60s
-      if (!params.from && !params.to) setCachedFleet(fleetTenant, dateStr, result);
+      if (!manualRange) setCachedFleet(fleetTenant, dateStr, result);
 
       return {
         statusCode: 200,
@@ -1053,7 +1150,8 @@ exports.handler = async (event) => {
     //   ?tenant=davis&path=__fleetstops&date=YYYY-MM-DD
     // Shares scan with __fleet via the same cache entry (keyed with :stops suffix).
     if (apiPath === '__fleetstops') {
-      const dateStr = params.date || etToday();
+      const dateStr = parseDateParam(params.date);
+      if (!dateStr) return badDate();
       const bypassCache = params.nocache === '1' || params.nocache === 'true';
       const stopsCacheKey = `${fleetTenant}:${dateStr}:stops`;
 
@@ -1223,7 +1321,8 @@ exports.handler = async (event) => {
     if (apiPath === '__driver') {
       const userName = (params.userName || '').toUpperCase();
       const driverNameFilter = (params.driverName || '').toUpperCase();
-      const dateStr = params.date || etToday();
+      const dateStr = parseDateParam(params.date);
+      if (!dateStr) return badDate();
       if (!userName && !driverNameFilter) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'Need userName or driverName' }) };
       }
@@ -1490,7 +1589,8 @@ exports.handler = async (event) => {
     // effect so other tabs (Stops, Map, Drivers) see the freshness.
     if (apiPath === '__refreshLoad') {
       const loadNbr = params.loadNbr;
-      const dateStr = params.date || etToday();
+      const dateStr = parseDateParam(params.date);
+      if (!dateStr) return badDate();
       if (!loadNbr) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'Need loadNbr' }) };
       }
@@ -1573,6 +1673,24 @@ exports.handler = async (event) => {
           stops: slimStops,
         };
 
+        // A load belongs on the board of ITS start date, and nothing checked. Any
+        // loadNbr could be written into any date's fleet — a carryover load opened
+        // today landed in today's doc set and was counted on two days' boards. Refuse
+        // rather than write; the caller asked for the wrong day.
+        if (loadDoc.startDate !== dateStr) {
+          return {
+            statusCode: 409,
+            headers: corsHeaders,
+            body: JSON.stringify({
+              ok: false,
+              error: `load ${loadDoc.loadNbr || loadNbr} starts ${loadDoc.startDate || '(no start date)'}, not ${dateStr} — not written`,
+              loadNbr,
+              startDate: loadDoc.startDate || null,
+              date: dateStr,
+            }),
+          };
+        }
+
         // Persist the fresh load doc to Firestore (fire-and-forget)
         if (fs_db.isFirestoreEnabled()) {
           fs_db.writeLoad(fleetTenant, dateStr, loadDoc).catch(() => null);
@@ -1600,7 +1718,8 @@ exports.handler = async (event) => {
     // Used by the explicit "refresh fleet" button on Home. Returns immediately with a
     // freshness summary; client should re-fetch __fleet/__fleetstops afterward.
     if (apiPath === '__refreshFleet') {
-      const dateStr = params.date || etToday();
+      const dateStr = parseDateParam(params.date);
+      if (!dateStr) return badDate();
 
       // Phase 4: SITE A doesn't scan. Clear the in-memory caches so the next read
       // pulls the freshest data SITE B has written, and return the current shared
@@ -1621,6 +1740,9 @@ exports.handler = async (event) => {
       }
 
       const range = estimateLoadRange(dateStr);
+      // If the breaker refuses the scan, scanFleet now THROWS (NuvizzCircuitOpenError →
+      // 503 from the outer catch) instead of returning [] — so the zeroed summary below
+      // is never built, never persisted over the last good one, never returned as "ok".
       const loads = await scanFleet(fleetTenant, {
         dateFrom: dateStr,
         dateTo: dateStr,
@@ -1675,7 +1797,7 @@ exports.handler = async (event) => {
         };
       }
 
-      const allUsers = roster.users;
+      const allUsers = roster.users.map(publicRosterUser);
       const drivers = allUsers.filter(u => u && u.isDriver);
       const enabledDrivers = drivers.filter(u => u.isEnabled);
       return {
@@ -1741,7 +1863,7 @@ exports.handler = async (event) => {
           disabledDriverCount: drivers.length - enabledDrivers.length,
           totalUsers,
           apiCalls: pagesFetched,   // how many NuVizz calls this refresh actually cost
-          drivers,
+          drivers: drivers.map(publicRosterUser),
           refreshedAt: new Date().toISOString(),
         }),
       };
@@ -1772,22 +1894,47 @@ exports.handler = async (event) => {
       };
     }
 
-    // Passthrough
+    // Raw passthrough — GET only, allowlisted read routes only (see resolvePassthroughPath).
+    if (event.httpMethod !== 'GET') {
+      return { statusCode: 405, headers: { ...corsHeaders, Allow: 'GET, OPTIONS' }, body: JSON.stringify({ error: 'passthrough is GET only' }) };
+    }
+    const safePath = resolvePassthroughPath(apiPath);
+    if (!safePath) {
+      return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'path not allowed', allowed: PASSTHROUGH_PREFIXES }) };
+    }
     const extraParams = {};
     for (const [k, v] of Object.entries(params)) {
       if (k !== 'tenant' && k !== 'path') extraParams[k] = v;
     }
-    const data = await nvFetch(tenant, apiPath, {
-      method: event.httpMethod,
-      body: event.body ? JSON.parse(event.body) : null,
-      extraParams,
-    });
+    // The Uline view's LoadDetail sends /load/info/{nbr}/ULINE with tenant=uline and
+    // has always gone out under the ULINE credential; whether NuVizz would answer that
+    // URL for the DAVIS login is a vendor fact nobody has checked, so the tenant still
+    // picks the credential here — but only ever one of the two real ones, and only for
+    // the GET read routes above.
+    const data = await nvFetch(tenant === 'uline' ? 'uline' : 'davis', safePath, { extraParams });
     return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(data) };
   } catch (err) {
+    // The vendor's raw error body (up to 500 chars of whatever NuVizz said, endpoint
+    // names included) used to be echoed to any caller as `detail`. It belongs in the
+    // function log, where someone debugging can read it — not in the browser.
+    if (err && err.body) console.error('nuvizz upstream error:', err.status, err.message, err.body);
+    const status = err && err.name === 'NuvizzCircuitOpenError' ? 503 : (err.status || 500);
     return {
-      statusCode: err.status || 500,
+      statusCode: status,
       headers: corsHeaders,
-      body: JSON.stringify({ error: err.message, detail: err.body }),
+      body: JSON.stringify({ error: err.message }),
     };
   }
 };
+
+// Pure guards, exported for netlify/functions/test/ — `exports.handler` above is what
+// Netlify binds; nothing here changes that.
+Object.assign(exports, {
+  parseDateParam,
+  parseLoadRange,
+  resolvePassthroughPath,
+  publicRosterUser,
+  etToday,
+  PASSTHROUGH_PREFIXES,
+  MAX_LOAD_RANGE_WIDTH,
+});

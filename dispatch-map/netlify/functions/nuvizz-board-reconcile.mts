@@ -2,8 +2,13 @@
 //
 // ── ONE-SHOT board ↔ NuVizz reconcile (runs ONLY on an explicit trigger) ─────
 //
-//   GET /.netlify/functions/nuvizz-board-reconcile?date=YYYY-MM-DD          → PREVIEW (ZERO NuVizz calls)
-//   GET /.netlify/functions/nuvizz-board-reconcile?date=YYYY-MM-DD&run=1    → RECONCILE
+//   GET  /.netlify/functions/nuvizz-board-reconcile?date=YYYY-MM-DD          → PREVIEW (ZERO NuVizz calls)
+//   POST /.netlify/functions/nuvizz-board-reconcile?date=YYYY-MM-DD&run=1    → RECONCILE
+//
+// The run is POST-only. It spends up to 40 NuVizz calls and rewrites the day's board cache,
+// and a GET that does that is a link: a browser prefetch, a re-opened tab, a URL pasted into
+// chat and previewed by the chat client all fire it without anyone deciding to. The preview
+// stays a plain GET (it reads Firestore and writes nothing). To run: curl -X POST '<url>&run=1'.
 //
 // Purpose: heal a board whose rows were reverted by the pre-v0.46.5 drop bug (scans
 // un-planning confirmed saves while NuVizz's list feed lagged). For every non-empty load
@@ -32,6 +37,12 @@ export default async (req: Request): Promise<Response> => {
   const date = String(url.searchParams.get('date') || etDayString(new Date()));
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return J({ ok: false, error: 'date must be YYYY-MM-DD' }, 400);
   const run = url.searchParams.get('run') === '1';
+  if (run && req.method !== 'POST') {
+    return J({
+      ok: false, date, error: 'run=1 requires POST',
+      note: 'The reconcile spends NuVizz calls and rewrites the board cache, so it does not fire from a GET link. Preview with GET (no run=1); run with: curl -X POST "<this url>&run=1".',
+    }, 405);
+  }
 
   let tenant = 'DAVIS';
   try { tenant = getCreds().companyCode; } catch { /* default tenant */ }

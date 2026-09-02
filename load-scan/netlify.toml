@@ -39,3 +39,17 @@
   from = "/*"
   to = "/index.html"
   status = 200
+
+# Security headers on every response. The function helpers already send nosniff
+# and a referrer policy on JSON, but the HTML shell and the hashed assets were
+# going out bare. No full Content-Security-Policy yet: the camera engine loads
+# Quagga from jsdelivr, and a CSP that blocks it breaks scanning outright —
+# frame-ancestors alone stops the app being framed without touching that.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    X-Frame-Options = "DENY"
+    Content-Security-Policy = "frame-ancestors 'none'"

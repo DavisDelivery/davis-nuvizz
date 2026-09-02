@@ -109,7 +109,29 @@ export default function ReportScreen({ session }) {
     return t;
   }, [reports]);
 
-  const csvHref = api.workReportCsvUrl({ shiftDay, days });
+  // The CSV goes through an authenticated fetch and a Blob, because a bare link
+  // cannot carry the token — see api.workReportCsv. Same control, same place.
+  const [csvBusy, setCsvBusy] = useState(false);
+  const downloadCsv = useCallback(async () => {
+    setCsvBusy(true);
+    setError('');
+    try {
+      const { text, filename } = await api.workReportCsv(session.token, { shiftDay, days });
+      const url = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Revoke after the click has had time to start the save; revoking
+      // synchronously cancels the download in some browsers.
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (e) {
+      setError(e.message || 'Could not export the CSV');
+    }
+    setCsvBusy(false);
+  }, [session.token, shiftDay, days]);
 
   return (
     <div className="space-y-4">
@@ -153,9 +175,14 @@ export default function ReportScreen({ session }) {
           <button type="button" onClick={load} className="rounded-lg ring-1 ring-slate-300 px-2 py-1" disabled={busy}>
             <RefreshCw className={`w-3.5 h-3.5 ${busy ? 'animate-spin' : ''}`} />
           </button>
-          <a href={csvHref} className="rounded-lg ring-1 ring-slate-300 px-2 py-1 inline-flex items-center gap-1">
+          <button
+            type="button"
+            onClick={downloadCsv}
+            disabled={csvBusy}
+            className="rounded-lg ring-1 ring-slate-300 px-2 py-1 inline-flex items-center gap-1"
+          >
             <Download className="w-3.5 h-3.5" /> CSV
-          </a>
+          </button>
         </div>
       </div>
 

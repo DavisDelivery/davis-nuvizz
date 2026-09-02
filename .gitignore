@@ -5,3 +5,13 @@ dist/
 *.log
 .env
 .env.local
+# Every env file except the documented example — .env.production and friends were not
+# covered and real NuVizz/Motive values were committed in May 2026 (redacted in aef1ca2).
+.env*
+!.env.example
+# Service-account and key material must never land here.
+*.pem
+*.p12
+*.key
+*serviceAccount*.json
+*firebase-adminsdk*.json

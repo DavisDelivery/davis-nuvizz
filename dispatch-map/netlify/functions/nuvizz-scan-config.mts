@@ -16,6 +16,7 @@
 // so the UI can never persist a value the scanner would reject.
 
 import { isFirestoreEnabled, readScanConfig, writeScanConfig, getDoc, readScanKindStamps, readScanRuns, readCallStats, readCircuit, etDayString } from './lib/firestore.mts';
+import { requireUser } from './lib/require-user.mts';
 import { clampScanConfig, effectiveScanConfig, scanConfigDefaults, SCAN_CONFIG_BOUNDS, scanDecision } from './lib/scan-schedule.mts';
 import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip, scanPath } from './lib/scan-plan.mts';
 import { attributeSpend } from './lib/scan-attribution.mts';
@@ -153,6 +154,9 @@ export default async (req: Request): Promise<Response> => {
     }
 
     if (req.method === 'POST') {
+      // User gate — inert until AUTH_REQUIRED=true on the site (lib/require-user.mts).
+      const gate = await requireUser(req, { role: 'admin' });
+      if (!gate.ok) return gate.response;
       let body: any;
       try { body = await req.json(); } catch { return new Response(JSON.stringify({ ok: false, error: 'invalid JSON' }), { status: 400, headers: cors }); }
 

@@ -15,6 +15,8 @@
 //
 // Every endpoint here requires a valid bearer token. No exceptions.
 
+import { createHash, timingSafeEqual } from 'node:crypto';
+
 const BASE_HEADERS = {
   'Content-Type': 'application/json',
   'Cache-Control': 'no-store',
@@ -65,10 +67,21 @@ export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export function viaProxy(req: Request): boolean {
   const want = process.env.LOADSCAN_ADMIN_PROXY_SECRET;
   if (!want || want.length < 16) return false;
-  const got = req.headers.get('x-proxy-secret') || '';
-  if (got.length !== want.length) return false;
-  // Constant-time compare: this value is long-lived and shared between two sites.
-  let diff = 0;
-  for (let i = 0; i < want.length; i++) diff |= want.charCodeAt(i) ^ got.charCodeAt(i);
-  return diff === 0;
+  return secretMatches(want, req.headers.get('x-proxy-secret') || '');
+}
+
+/**
+ * Constant-time equality for a long-lived shared secret.
+ *
+ * Both sides are hashed first so the comparison runs over two equal-length
+ * buffers whatever the caller sent — timingSafeEqual throws on a length
+ * mismatch, and an early `length !== length` return leaks the secret's length
+ * one byte at a time. A plain `===` short-circuits on the first differing
+ * character, which is the leak the bootstrap secret had.
+ */
+export function secretMatches(want: string, got: string): boolean {
+  if (typeof want !== 'string' || typeof got !== 'string' || !want) return false;
+  const a = createHash('sha256').update(want).digest();
+  const b = createHash('sha256').update(got).digest();
+  return timingSafeEqual(a, b);
 }

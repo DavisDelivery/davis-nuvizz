@@ -175,12 +175,30 @@ export async function listDocs(collection: string, opts?: { mask?: string[] }): 
   return out;
 }
 
-// Encode each path segment but keep the slashes that separate them.
-function encodePath(path: string): string {
+/**
+ * Refuse a path segment that would not stay inside the collection it was aimed
+ * at. encodeURIComponent('..') is '..', so `driver_auth/../customer_notes/X`
+ * encoded segment-by-segment is still `driver_auth/../customer_notes/X` on the
+ * wire and Firestore resolves it up and out of driver_auth. Every read and write
+ * in this file goes through encodePath, so this one check covers all of them —
+ * a caller that has already validated its id pays nothing, a caller that has
+ * not gets a thrown error instead of a document somewhere else.
+ */
+export function assertSafeSegment(seg: string): string {
+  if (!seg || seg === '.' || seg === '..' || /[\/\\?#]/.test(seg)) {
+    throw new Error(`unsafe Firestore path segment: ${JSON.stringify(String(seg).slice(0, 64))}`);
+  }
+  return seg;
+}
+
+// Encode each path segment but keep the slashes that separate them. An empty
+// segment (`a//b`, a leading or trailing slash) is refused too: it used to be
+// silently dropped, which is one more way for a path to land somewhere other
+// than where the caller spelled it.
+export function encodePath(path: string): string {
   return String(path)
     .split('/')
-    .filter(Boolean)
-    .map((s) => encodeURIComponent(s))
+    .map((s) => encodeURIComponent(assertSafeSegment(s)))
     .join('/');
 }
 

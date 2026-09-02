@@ -1,10 +1,14 @@
-# Build: pull the shared quote console from Quotes@main (single source of truth)
-# on every build, so dd-dispatch-map tracks the latest release instead of the
-# commit frozen in package-lock.json. Quotes is public, so github:#main resolves
-# over https (no deploy key needed); --no-save leaves package.json/lock untouched
-# and only refreshes node_modules for this build. See DavisDelivery/Quotes.
+# Build: a plain `npm run build` against the LOCKFILE. The shared quote console
+# (@davisdelivery/quote-generator) is pinned in package-lock.json to a specific
+# Quotes commit, and that pin is what ships. The build used to prepend
+# `npm i @davisdelivery/quote-generator@github:DavisDelivery/Quotes#main --no-save`
+# so every deploy tracked the branch head — which meant code nobody in this repo
+# had reviewed was pulled at build time into a process holding every server
+# secret in env (FIREBASE_SA, the NuVizz credentials, the mail and SMS keys). A
+# push to that branch, or a compromise of that repo, was a push to production
+# here. To take a newer Quotes release: bump the lockfile pin in a reviewed PR.
 [build]
-  command = "npm i @davisdelivery/quote-generator@github:DavisDelivery/Quotes#main --no-save --no-audit --no-fund && npm run build"
+  command = "npm run build"
   publish = "dist"
   functions = "netlify/functions"
 
@@ -96,6 +100,20 @@
   # Scanned-manifest OCR runs as manifest-ocr-BACKGROUND (vision over a multi-page fax
   # PDF takes 20-40s — over the 26s request cap that killed the synchronous version).
   # Background functions get Netlify's 15-min allowance; no timeout override needed.
+
+# Response headers for everything the site serves. No full Content-Security-Policy — the
+# app loads Google Maps, Firebase and fonts from several origins and a wrong CSP takes the
+# map down; frame-ancestors alone stops the app being framed (clickjacking) without touching
+# what the page itself may load. HSTS one year + subdomains; nosniff; a referrer policy that
+# keeps the ?date=/&stopNbr= query strings off third-party logs.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    X-Frame-Options = "DENY"
+    Content-Security-Policy = "frame-ancestors 'none'"
 
 # The customer-facing unsubscribe. MUST sit above the SPA catch-all below: Netlify takes the
 # FIRST matching rule, so without this "/unsubscribe" would be served index.html and the

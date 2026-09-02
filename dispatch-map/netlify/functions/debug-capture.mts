@@ -20,6 +20,8 @@
 // Request:  POST application/json — body is the dispatch-map.debug-capture/v1 bundle.
 // Response: { ok: true, issueUrl, issueNumber } | { ok: false, error }
 
+import { tokenMatches } from './lib/secure-compare.mts';
+
 const DEFAULT_REPO = 'DavisDelivery/davis-nuvizz';
 const MAX_BODY_CHARS = 60000; // GitHub issue body hard cap is 65536.
 const FN_BUILD = 'debug-capture v1'; // touch to force a full (non-empty) rebuild
@@ -125,7 +127,8 @@ export default async (req: Request): Promise<Response> => {
   }
 
   const requiredSecret = process.env.DEBUG_CAPTURE_SECRET;
-  if (requiredSecret && req.headers.get('x-debug-secret') !== requiredSecret) {
+  // Constant-time compare (lib/secure-compare.mts); unset still means open, as documented above.
+  if (requiredSecret && !tokenMatches(req.headers.get('x-debug-secret'), requiredSecret)) {
     return new Response(JSON.stringify({ ok: false, error: 'Unauthorized' }), { status: 401, headers: CORS });
   }
 

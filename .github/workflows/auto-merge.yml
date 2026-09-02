@@ -22,16 +22,23 @@ permissions:
 
 jobs:
   automerge:
-    # Only act on a SUCCESSFUL tests run that was triggered by a pull request.
+    # Only act on a SUCCESSFUL tests run that was triggered by a pull request FROM THIS
+    # REPOSITORY. workflow_run fires in the base repo for fork PRs too, with this job's
+    # write token, and `head_branch` is whatever the fork named it — so without the
+    # head_repository check a stranger could name a fork branch claude/anything, carry
+    # their own green tests, and get squash-merged into main (which Netlify deploys).
+    # Found by the 2026-09 security audit; the same-repo check closes it.
     if: >
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'pull_request'
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Squash-merge passing claude/* PRs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
 
@@ -43,8 +50,11 @@ jobs:
 
           # Find the open PR for this branch (workflow_run doesn't carry the PR number
           # reliably for all events, but head_branch is always present).
+          # Match on the exact head commit the green run was for, and never a cross-repo
+          # PR — `--head` alone matches by branch NAME, which a fork can share.
           num=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$HEAD_BRANCH" --state open \
-                  --json number --jq '.[0].number // empty')
+                  --json number,headRefOid,isCrossRepository \
+                  --jq "[.[] | select(.isCrossRepository == false and .headRefOid == \"$HEAD_SHA\")] | .[0].number // empty")
           if [ -z "$num" ]; then
             echo "No open PR for '$HEAD_BRANCH' — nothing to merge."
             exit 0

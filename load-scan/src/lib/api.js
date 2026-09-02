@@ -18,12 +18,12 @@ export class ApiError extends Error {
   }
 }
 
-async function call(path, { method = 'GET', token, body, timeoutMs = TIMEOUT_MS } = {}) {
+/** The fetch itself: bearer token, timeout, and the offline translation. */
+async function send(path, { method = 'GET', token, body, timeoutMs = TIMEOUT_MS } = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  let res;
   try {
-    res = await fetch(path, {
+    return await fetch(path, {
       method,
       signal: ctrl.signal,
       cache: 'no-store',
@@ -34,12 +34,16 @@ async function call(path, { method = 'GET', token, body, timeoutMs = TIMEOUT_MS 
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
   } catch (e) {
-    clearTimeout(timer);
     // Abort or network failure — indistinguishable from the driver's point of
     // view, and both mean "keep working locally".
     throw new ApiError(e?.name === 'AbortError' ? 'request timed out' : 'no connection', { offline: true });
+  } finally {
+    clearTimeout(timer);
   }
-  clearTimeout(timer);
+}
+
+async function call(path, opts = {}) {
+  const res = await send(path, opts);
 
   const type = res.headers.get('content-type') || '';
   if (!type.includes('application/json')) {
@@ -71,6 +75,13 @@ export const fetchManifest = (token, { date, loadNbr } = {}) => {
   const q = qs.toString();
   return call(`/.netlify/functions/load-manifest${q ? `?${q}` : ''}`, { token });
 };
+
+/**
+ * Rows per scan-session push. Mirrors CAPS.rows in netlify/functions/scan-session.mts
+ * and MUST NOT exceed it: the server answers 413 above its cap, and a queue that
+ * cannot be sent in one piece would otherwise never drain.
+ */
+export const PUSH_ROWS_MAX = 500;
 
 export const pushScans = (token, payload) =>
   call('/.netlify/functions/scan-session', { method: 'POST', token, body: payload, timeoutMs: 30_000 });
@@ -114,7 +125,7 @@ export const workReport = (token, { shiftDay, days = 1 } = {}) => {
   return call(`/.netlify/functions/work-report?${qs}`, { token });
 };
 
-/** The CSV export URL for the analyst — opened directly so the browser saves it. */
+/** The CSV export URL for the analyst. */
 export const workReportCsvUrl = ({ shiftDay, days = 1 } = {}) => {
   const qs = new URLSearchParams();
   if (shiftDay) qs.set('shiftDay', shiftDay);
@@ -122,3 +133,32 @@ export const workReportCsvUrl = ({ shiftDay, days = 1 } = {}) => {
   qs.set('format', 'csv');
   return `/.netlify/functions/work-report?${qs}`;
 };
+
+/**
+ * The CSV export itself: { text, filename }.
+ *
+ * Fetched with the bearer token, not opened as a link. A plain <a href> carries
+ * no Authorization header, and work-report requires one, so the "download" the
+ * analyst got was a file containing {"ok":false,"error":"unauthorized"}. The
+ * caller turns the text into a Blob and hands the browser that.
+ */
+export async function workReportCsv(token, { shiftDay, days = 1 } = {}) {
+  const path = workReportCsvUrl({ shiftDay, days });
+  const res = await send(path, { token, timeoutMs: 60_000 });
+  const type = res.headers.get('content-type') || '';
+  if (!res.ok || !type.includes('text/csv')) {
+    let error = `HTTP ${res.status}`;
+    if (type.includes('application/json')) {
+      try {
+        error = (await res.json())?.error || error;
+      } catch {
+        /* keep the status */
+      }
+    } else if (res.ok) {
+      error = `${path} returned ${type || 'no content-type'} instead of CSV — the function is probably not deployed`;
+    }
+    throw new ApiError(error, { status: res.status });
+  }
+  const m = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') || '');
+  return { text: await res.text(), filename: m?.[1] || `loadscan-${shiftDay || 'report'}.csv` };
+}

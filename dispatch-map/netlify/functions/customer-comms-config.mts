@@ -18,6 +18,7 @@
 // ZERO NuVizz calls.
 
 import { isFirestoreEnabled } from './lib/firestore.mts';
+import { requireUser } from './lib/require-user.mts';
 import { emailEnabled } from './lib/email.mts';
 import {
   readConfig, writeConfig, DEFAULT_HTML, MERGE_FIELDS, adminTokenOk, readDomainStatus,
@@ -63,6 +64,9 @@ export default async (req: Request): Promise<Response> => {
     // are GET/POST and the frontend has no PUT anywhere, so a PUT-only write would be the
     // one endpoint the UI cannot call with the verb it uses everywhere else.
     if (req.method === 'PUT' || req.method === 'POST') {
+      // User gate — inert until AUTH_REQUIRED=true on the site (lib/require-user.mts).
+      const gate = await requireUser(req, { role: 'admin' });
+      if (!gate.ok) return gate.response;
       if (!adminTokenOk(req)) {
         return J({ ok: false, error: 'not authorised — set COMMS_ADMIN_TOKEN on this site and send it as the x-comms-token header' }, 403);
       }

@@ -38,6 +38,7 @@ import { getDoc, setDoc, deleteDoc, listDocs, createDocIfAbsent, etDayString, et
 import { normalizeMatchKey } from './match-key.mts';
 import { emailEnabled, sendEmail } from './email.mts';
 import { unsubSecret, unsubscribeUrl } from './unsubscribe.mts';
+import { tokenMatches } from './secure-compare.mts';
 
 const OPS = 'nuvizz_ops';
 const CONFIG_DOC = `${OPS}/customer_comms_config`;
@@ -222,7 +223,9 @@ export function adminTokenOk(req: Request): boolean {
   if (!want) return true;
   const url = (() => { try { return new URL(req.url); } catch { return null; } })();
   const got = String(req.headers.get('x-comms-token') || url?.searchParams.get('token') || '').trim();
-  return !!got && got === want;
+  // Constant-time (sha256 + timingSafeEqual) — see lib/secure-compare.mts. The fail-open
+  // above is unchanged; only the comparison itself is.
+  return tokenMatches(got, want);
 }
 
 /**

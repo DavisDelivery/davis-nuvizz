@@ -25,6 +25,7 @@
 // diff between two runs of a near-max pool as a change in the inputs.
 
 import { isFirestoreEnabled } from './lib/firestore.mts';
+import { requireUser } from './lib/require-user.mts';
 import { runCleanup, type CleanupTruckInput } from './lib/routing-cleanup-core.mts';
 
 const TENANT = 'davis';
@@ -38,6 +39,9 @@ export default async (req: Request): Promise<Response> => {
   if (req.method !== 'POST') {
     return new Response(JSON.stringify({ ok: false, error: 'POST { date, trucks: [...] }' }), { status: 405, headers });
   }
+  // User gate — inert until AUTH_REQUIRED=true on the site (lib/require-user.mts).
+  const gate = await requireUser(req, { role: 'dispatcher' });
+  if (!gate.ok) return gate.response;
   let body: any = null;
   try { body = await req.json(); } catch { /* handled below */ }
   const date = String(body?.date || '');

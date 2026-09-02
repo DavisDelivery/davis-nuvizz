@@ -18,6 +18,14 @@ export function newId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID()}`;
 }
 
+// The shape of every id this app actually mints: newId → `job_<uuid>` (40 chars), the
+// client's runBuild → `job_<uuid>` or `job_<Date.now()>`. A jobId is a Firestore doc id
+// under routing_jobs/, so a '/', '?' or '..' in it is a path, not a job. Exported + tested.
+export const JOB_ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
+export function isRoutingJobId(id: unknown): boolean {
+  return typeof id === 'string' && JOB_ID_RE.test(id);
+}
+
 export async function createJob(job: any): Promise<string> {
   const id = job.id || newId('job');
   await setDoc(`${JOBS}/${id}`, { ...job, id });

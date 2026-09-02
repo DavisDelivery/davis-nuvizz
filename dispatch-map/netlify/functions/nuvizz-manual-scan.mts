@@ -12,10 +12,14 @@
 //   - caps the unplanned descent lower (maxProbes 800) so it finishes in time
 
 import { runRefreshStops } from './lib/refresh-stops-core.mts';
+import { requireUser } from './lib/require-user.mts';
 
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
+  // User gate — inert until AUTH_REQUIRED=true on the site (lib/require-user.mts).
+  const gate = await requireUser(req, { role: 'dispatcher' });
+  if (!gate.ok) return gate.response;
 
   // Force manual mode regardless of how this was invoked.
   const url = new URL(req.url);

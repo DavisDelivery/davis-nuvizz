@@ -66,8 +66,13 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(request)
         .then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put(SHELL, copy)).catch(() => {});
+          // Only a GOOD response may become the offline shell. This used to cache
+          // whatever came back, so a 5xx from a bad deploy became the page every
+          // phone opened in the yard until the next successful navigation.
+          if (res.ok) {
+            const copy = res.clone();
+            caches.open(CACHE).then((c) => c.put(SHELL, copy)).catch(() => {});
+          }
           return res;
         })
         .catch(() => caches.match(SHELL).then((hit) => hit || Response.error())),

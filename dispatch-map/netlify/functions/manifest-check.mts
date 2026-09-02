@@ -31,6 +31,7 @@
 // Never scheduled. It runs only when someone asks, and the free step is the default.
 
 import { isFirestoreEnabled } from './lib/firestore.mts';
+import { requireUser } from './lib/require-user.mts';
 import { runManifestBoardDiff, manifestDateToIso, addDays } from './lib/manifest-run.mts';
 import { classifyProbes, summarize } from './lib/manifest-reconcile.mts';
 import { lookupStopByPro } from './lib/nuvizz-scan.mts';
@@ -41,6 +42,16 @@ export { manifestDateToIso, addDays };
 const MAX_PROBE_CEILING = 100;
 const DEFAULT_PROBE_CAP = 25;
 
+// PURE. ?days= → the delivery-day span, default 2 (Uline ships tonight for tomorrow, a
+// deferred order lands the day after — the same 2 the nightly email path in
+// lib/manifest-run.mts uses). The old `Number(raw) ?? 2` never defaulted: Number(null) is 0
+// and `??` only fires on null/undefined, so the drop-zone check with no ?days= silently
+// diffed against ONE day while the email path checked two, and an order deferred a day read
+// as missing from one report and present on the other. Exported for tests.
+export function parseSpanDays(raw: string | null | undefined): number {
+  return raw == null ? 2 : Math.min(7, Math.max(0, Number(raw) || 0));
+}
+
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
   const J = (o: any, s = 200) => new Response(JSON.stringify(o, null, 1), { status: s, headers: cors });
@@ -50,8 +61,13 @@ export default async (req: Request): Promise<Response> => {
 
   const url = new URL(req.url);
   const probe = url.searchParams.get('probe') === '1';
+  if (probe) {
+    // Probing spends metered NuVizz calls — a dispatcher's act (inert until AUTH_REQUIRED=true).
+    const gate = await requireUser(req, { role: 'dispatcher' });
+    if (!gate.ok) return gate.response;
+  }
   const cap = Math.min(MAX_PROBE_CEILING, Math.max(1, Number(url.searchParams.get('max')) || DEFAULT_PROBE_CAP));
-  const spanDays = Math.min(7, Math.max(0, Number(url.searchParams.get('days')) ?? 2));
+  const spanDays = parseSpanDays(url.searchParams.get('days'));
 
   let body: any = null;
   try { body = await req.json(); } catch { return J({ ok: false, error: 'body must be JSON' }, 400); }
