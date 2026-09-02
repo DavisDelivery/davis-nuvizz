@@ -406,6 +406,40 @@
     "rolledOnDate": null
    },
    "_label": "old row, no hoursTier"
+  },
+  "CRITICAL_TOO_LATE": {
+   "date": "2026-08-27",
+   "why": "Real row. Critical, real (auto) hours, and first seen TWENTY MINUTES AFTER its 3:00p close — so no email under either the old red floor or the new critical one, and the panel must say the door had shut rather than blaming the tier. It missed.",
+   "row": {
+    "stopNbr": "007168212",
+    "customer": "PURPLE INNOVATION LLC",
+    "matchKey": "purple_innovation___1325_purple_ln__mcdonough__30252",
+    "firstRoute": "DENIS SALKIC",
+    "lastRoute": "DENIS SALKIC",
+    "firstSeq": null,
+    "lastSeq": null,
+    "firstSeenMin": 920,
+    "firstSeenAt": "2026-08-27T19:20:34.982Z",
+    "lastSeenMin": 960,
+    "leadMin": -20,
+    "closeMin": 900,
+    "hoursTier": "auto",
+    "firstTier": "red",
+    "worstTier": "critical",
+    "firstEtaMin": 920,
+    "lastEtaMin": 960,
+    "worstLateBy": 60,
+    "sweeps": 3,
+    "anchored": true,
+    "emailed": false,
+    "outcome": "missed",
+    "arrivalMin": 966,
+    "deliveredAt": "2026-08-27T16:06:00",
+    "actedOn": false,
+    "scoredAt": "2026-08-29T08:01:27.365Z",
+    "rolledDeliveredAt": null,
+    "rolledOnDate": null
+   }
   }
  }
 }

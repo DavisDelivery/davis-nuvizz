@@ -30,9 +30,31 @@ export { flattenForConsumers };
 // here — a second, invisible bar is precisely how the screen and the inbox came to disagree,
 // and how the disagreement stayed invisible for weeks.
 //
+// AND THEN, 2026-09-02, CHAD NARROWED IT AGAIN — WITH A REASON AND A NUMBER BEHIND IT.
+//
+// "I don't want a 100 Emails. We are only emailing on critical."
+//
+// This is the same line moving back, so it is worth writing down why it is not the v0.55.4
+// mistake repeating. That one was an ENGINEER quietly choosing the top tier and leaving the
+// screen saying something else; this is the OWNER choosing it out loud, and the stored flag
+// history says he is reading the inbox correctly. Measured over the seven days where every
+// row carries an hours source (2026-08-25 → 09-02, 153 rows): 22 emails went out, 3.1 a day.
+// Fourteen of them were critical and EIGHT of those fourteen missed their window. Eight were
+// red-but-never-critical, and SEVEN of those eight made it — one email in eight told anybody
+// something they needed to know. Critical-only halves the volume and roughly quadruples the
+// hit rate.
+//
+// THE COST, NAMED, because it is not zero: SIENNA CORPORATION on 2026-08-26 carried hours a
+// dispatcher had TYPED, was projected 25 minutes past its close with eight hours of warning,
+// emailed as red — and missed. Under this policy that stop sends nothing. One real miss in
+// seven days goes quiet to stop seven false alarms. That is Chad's trade to make and he has
+// made it; ALERT_MIN_TIER=red puts it back in one env var with no deploy.
+//
 // THE FOUR RULES, each of which exists because breaking it produces a specific bad morning:
-//   0. EVERY URGENT TIER, matching the board. Chad: "We want every red. Amber is a screen
-//      thing."
+//   0. THE FLOOR IS CRITICAL, and the floor is the promise. Chad: "We are only emailing on
+//      critical." Nothing below it emails — not a red, and not a gated amber however
+//      AMBER_LEAD_GATE_MIN is set, because a switch that can quietly re-open a door Chad
+//      closed is not a switch, it is a trap. ALERT_MIN_TIER widens it back to red.
 //   1. FIRST TRANSITION ONLY. One email per stop per board day, claimed atomically before
 //      the send. The board recomputes every few minutes; without the claim a truck that
 //      stays late emails customer service every sweep for the rest of the day.
@@ -69,23 +91,33 @@ export const ALERT_TO = 'customerservice@davisdelivery.com';
 // it is: an anti-runaway ceiling for a parser bug marking a whole board critical.
 //
 // It sits far above any plausible day on purpose. Only stops that carry receiving hours,
-// read RED or CRITICAL, and still have an open window can alert at all — a handful on a bad
-// day. (Measured on the 2026-08-19 board at 11:07a: 0 critical, 1 red, 2 amber — so widening
-// to red moved the day's alertable count from 0 to 1, not into the dozens.)
+// read at or above the floor, and still have an open window can alert at all — a handful on
+// a bad day. (Measured on the 2026-08-19 board at 11:07a: 0 critical, 1 red, 2 amber. And on
+// the stored flag history for 2026-08-25 → 09-02: 22 emails over 7 days at the old red
+// floor, 14 at this one — 2.0 a day. The cap has never been within two orders of magnitude
+// of the real number, which is the point of it.)
 // Suppressing a real "this truck is about to miss" is the one failure this feature exists to
 // prevent, so the ceiling must never be the thing that decides.
 export const DAILY_ALERT_CAP = 500;
 
 // ONE STOP GETS AT MOST TWO MESSAGES A DAY: THE HEADS-UP, AND "IT GOT WORSE".
 //
-// The claim used to key on the stop alone, which is right while only red and critical can
-// email — the ratchet means a stop that has reached red never comes back down, so the one
-// message it earns is the urgent one. The amber gate breaks that assumption: with the gate
+// The claim used to key on the stop alone, which is right while only the urgent tiers can
+// email — the ratchet means a stop that has reached an urgent tier never comes back down, so
+// the one message it earns is the urgent one. The amber gate breaks that assumption: with the gate
 // on, the FIRST message a stop earns is the early, inside-the-error-band one, and the
 // escalation to red or critical then finds the claim already taken and sends NOTHING.
 // Customer service would be told "we may run close, ETA 2:10p, 10 minutes late" and never
 // told the truck is now 105 minutes late. The mild message would arrive and the actionable
 // one would not — worse than the silence it replaced.
+//
+// AND THE CRITICAL FLOOR CLOSES THE HALF-PROMISE THIS COULD HAVE OPENED. Replayed through
+// sendAlerts with a fake claim store: with the gate on AND the floor at critical, an amber
+// heads-up would send and a hardening to RED would send nothing — the early message's own
+// footer says "if it hardens into a confident miss you will get one more message", and that
+// promise would be kept only for a hardening all the way to critical. It is unreachable,
+// because the floor refuses every amber before the gate is consulted; if the floor is ever
+// widened to red the gated path works exactly as it was measured. Do not separate those two.
 //
 // So the claim carries a BAND, not a tier: 'early' for a gated amber, 'urgent' for red and
 // critical. A stop can therefore send once as a heads-up and once more if it hardens, and
@@ -170,9 +202,36 @@ const hhmmDay = (m: number) => {
  * `nowMin` is the board's own clock. A row whose close has already passed is dropped here
  * rather than at send time, so the reason is testable and the caller cannot forget it.
  */
-// The tiers the BOARD paints as urgent. One list, so the screen and the inbox cannot come to
-// disagree again without someone editing this line on purpose.
-export const ALERT_TIERS = new Set(['critical', 'red']);
+// THE FLOOR, AND THE SET IT PRODUCES.
+//
+// One list, so the screen and the inbox cannot come to disagree again without someone
+// changing this floor on purpose. It is a FLOOR rather than a hand-written set because this
+// gate has now moved three times (critical → critical+red in v0.56.3 → critical again here),
+// and each time somebody had to remember every downstream place that says which tiers email.
+// Say it once, derive the rest, and there is nothing left to forget.
+export type AlertMinTier = 'critical' | 'red';
+const TIER_FLOORS: Record<AlertMinTier, string[]> = {
+  critical: ['critical'],
+  red: ['critical', 'red'],
+};
+/** The tiers that email, for a given floor. Pure — the env only supplies the default. */
+export function alertTiersFor(minTier: string): Set<string> {
+  return new Set(TIER_FLOORS[normalizeMinTier(minTier)]);
+}
+/** 'critical' | 'red', defaulting to critical. Anything unrecognised fails QUIET, not loud:
+ *  a typo in an env var must not widen the inbox Chad has just asked to narrow. */
+export function normalizeMinTier(v: unknown): AlertMinTier {
+  return String(v ?? '').trim().toLowerCase() === 'red' ? 'red' : 'critical';
+}
+export const ALERT_MIN_TIER: AlertMinTier = normalizeMinTier(process.env.ALERT_MIN_TIER);
+// A SWITCH WHOSE POSITION CANNOT BE READ IS NOT A SWITCH — the same rule the amber gate
+// below learned the hard way. "RED", "red " and "Red" all work; anything else is a typo that
+// silently means critical, so say so once at load rather than leaving it to be discovered.
+if (process.env.ALERT_MIN_TIER != null
+    && !['critical', 'red'].includes(String(process.env.ALERT_MIN_TIER).trim().toLowerCase())) {
+  console.error(`[flag-alert] ALERT_MIN_TIER="${process.env.ALERT_MIN_TIER}" is not 'critical' or 'red' — the floor is CRITICAL.`);
+}
+export const ALERT_TIERS = alertTiersFor(ALERT_MIN_TIER);
 export { finiteMinutes };
 
 // The rules that can EARN an email. no_driver_hours is here because it does not merely sit
@@ -239,8 +298,13 @@ if (process.env.AMBER_LEAD_GATE_MIN != null
 }
 const AMBER_GATED_RULES = new Set(['hours_risk']);
 
-export function selectAlertable(rows: any[], nowMin: number | null, amberGateMin = AMBER_LEAD_GATE_MIN): AlertCandidate[] {
+export function selectAlertable(rows: any[], nowMin: number | null, amberGateMin = AMBER_LEAD_GATE_MIN, minTier: string = ALERT_MIN_TIER): AlertCandidate[] {
   const out: AlertCandidate[] = [];
+  // The floor is a PARAMETER with the env as its default, exactly like the amber gate above,
+  // so the policy can be replayed both ways in a test and rehearsed on a live board through
+  // the dry-run endpoint without an env var and a deploy.
+  const floor = normalizeMinTier(minTier);
+  const tiers = alertTiersFor(floor);
   // A malformed env var must not silently open the gate to every amber on the board.
   const gate = Number.isFinite(amberGateMin) && amberGateMin > 0 ? amberGateMin : 0;
   // A BROKEN CLOCK IS NOT A CLOCK, AND IT MUST NOT READ AS "NO CLOCK".
@@ -277,9 +341,18 @@ export function selectAlertable(rows: any[], nowMin: number | null, amberGateMin
     // it was not a decision about guesses. This guard sits ABOVE the gate deliberately, so
     // widening the gate later cannot quietly widen this too.
     if (String(r?.hoursTier) === 'assumed') continue;
-    if (!ALERT_TIERS.has(String(r?.tier))) {
-      // Not red or critical. The ONLY way past this line is an amber hours_risk row whose
-      // close is inside the gate — and only when the gate has been switched on.
+    if (!tiers.has(String(r?.tier))) {
+      // BELOW THE FLOOR, AND THE FLOOR OUTRANKS THE AMBER GATE.
+      //
+      // Chad: "We are only emailing on critical." While the floor is critical that sentence
+      // has to be true unconditionally — otherwise the day somebody sets AMBER_LEAD_GATE_MIN
+      // for the early-warning experiment, ambers start emailing under a policy that says
+      // only criticals do, and the inbox contradicts the instruction with nobody having
+      // decided anything. Widening to ALERT_MIN_TIER=red restores the gated-amber path
+      // exactly as it was measured.
+      if (floor !== 'red') continue;
+      // The ONLY way past this line is an amber hours_risk row whose close is inside the
+      // gate — and only when the gate has been switched on.
       if (String(r?.tier) !== 'amber') continue;
       if (!gate) continue;                             // shipped default: amber stays on screen
       if (!AMBER_GATED_RULES.has(String(r?.rule))) continue;
