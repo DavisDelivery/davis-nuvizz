@@ -36,7 +36,7 @@ import { orderOldestFirst } from './manifest-email-ingest.mts';
 import { gmailNeedsReconnect } from './mail-sources.mts';
 import { readUlineForecast, looksLikeUlineForecast } from './uline-forecast.mts';
 import { laneRows, canonicalRows, versionIdFor, sentDateET } from '../../../src/lib/uline-forecast-lane.js';
-import { markerPath, versionPath, forecastBlobKey, VERSIONS_COLLECTION, STATUS_DOC, TENANT } from './uline-forecast-store.mts';
+import { markerPath, versionPath, forecastBlobKey, forecastQuery, VERSIONS_COLLECTION, STATUS_DOC, TENANT, FORECAST_QUERY_DEFAULT } from './uline-forecast-store.mts';
 
 export const MAX_PER_RUN_SCHEDULE = 3;
 export const MAX_PER_RUN_BACKFILL = 12;
@@ -152,77 +152,84 @@ export async function ingestForecastEmails(input: ForecastIngestDeps): Promise<a
   result.listed = emails.length;
   result.sourceName = src.name;
 
-  for (const email of orderOldestFirst(emails)) {
-    if (result.processed >= maxPerRun) { result.partial = true; result.stoppedBecause = `batch cap ${maxPerRun}`; break; }
-    if (nowMs() > deadline) { result.partial = true; result.stoppedBecause = 'time budget'; break; }
-    const id = String(email?.id ?? '');
-    if (!id) continue;
-    const marker = markerPath(src.name, id);
-    const existing = await deps.getDoc(marker);
-    if (existing) { result.alreadyMarked += 1; continue; }
+  // A Firestore or blob throw mid-loop must still reach finish(): otherwise the status doc
+  // keeps the previous run's lastOk:true and the failure is invisible from the screen.
+  try {
+    for (const email of orderOldestFirst(emails)) {
+      if (result.processed >= maxPerRun) { result.partial = true; result.stoppedBecause = `batch cap ${maxPerRun}`; break; }
+      if (nowMs() > deadline) { result.partial = true; result.stoppedBecause = 'time budget'; break; }
+      const id = String(email?.id ?? '');
+      if (!id) continue;
+      const marker = markerPath(src.name, id);
+      const existing = await deps.getDoc(marker);
+      if (existing) { result.alreadyMarked += 1; continue; }
 
-    const line: any = { id, sentAt: email.receivedAt ?? null, sentDate: sentDateET(email.receivedAt), subject: email.subject ?? null, from: email.from ?? null, attachment: null, parse: null, contentDigest: null, outcome: null, versionId: null, reason: null };
-    outcomes.push(line);
-    const atts = (email.attachments || []).filter(isSpreadsheetAttachment);
-    if (!atts.length) {
-      line.outcome = 'ignored'; line.reason = 'no spreadsheet attachment';
-      await deps.createDocIfAbsent(marker, { outcome: 'ignored', reason: line.reason, at: now(), source: src.name, from: email.from ?? null, subject: email.subject ?? null, sentAt: email.receivedAt ?? null });
-      result.processed += 1;
-      continue;
-    }
-    const att = atts[0];
-    line.attachment = att.filename ?? null;
-    let buf: Buffer | null = null;
-    try { buf = await src.download(email, att); } catch (e: any) { line.outcome = 'retry'; line.reason = `download failed: ${String(e?.message || e).slice(0, 160)}`; continue; }
-    if (!buf || !buf.length) { line.outcome = 'retry'; line.reason = 'empty attachment'; continue; }
-
-    let read: any; let lane: any;
-    try {
-      read = readForecast(buf);
-      lane = laneRows(read, line.sentDate);
-    } catch (e: any) { line.outcome = 'retry'; line.reason = `parse threw: ${String(e?.message || e).slice(0, 160)}`; continue; }
-    if (!looksLikeUlineForecast(read) && lane.ok) lane = { ...lane, ok: false, reason: `not a forecast: ${read.rows.length} rows read` };
-    line.parse = { ok: lane.ok, reason: lane.reason, rowsTotal: lane.rowsTotal, rowsUsed: lane.rowsUsed, rowsDropped: lane.rowsDropped, from: lane.from, to: lane.to, warnings: lane.warnings.slice(0, 10), headers: lane.headers };
-    if (!line.sentDate) { line.outcome = 'retry'; line.reason = 'message has no receive time — cannot date the version'; continue; }
-
-    const digest = contentDigest(lane.days);
-    line.contentDigest = digest;
-    const versionId = versionIdFor(tenant, line.sentDate, digest);
-    const at = now();
-
-    // The same content already on file? (A forward, a re-send — or our own crash-resume.)
-    let hit: any = null;
-    if (lane.ok) {
-      try { hit = (await deps.runQuery(digestQuery(digest)))[0] || null; } catch (e: any) { line.outcome = 'retry'; line.reason = `digest lookup failed: ${String(e?.message || e).slice(0, 160)}`; continue; }
-    }
-    if (hit) {
-      const hitId = String(hit.versionId || hit._id || '');
-      const ids: string[] = Array.isArray(hit.emailIds) ? hit.emailIds.map(String) : [];
-      if (ids.includes(id)) {
-        // CRASH-RESUME: our own version, written last time before the marker could be. Say so
-        // and write only the marker — seen stays 1, the email id stays listed once.
-        line.outcome = 'filed'; line.versionId = hitId; line.reason = 'resumed: version already written';
-        await deps.createDocIfAbsent(marker, { outcome: 'filed', versionId: hitId, contentDigest: digest, at, source: src.name, from: email.from ?? null, subject: email.subject ?? null, sentAt: email.receivedAt ?? null, resumed: true });
-      } else {
-        line.outcome = 'duplicate'; line.versionId = hitId; line.reason = `same content as ${hitId}`;
-        await deps.updateDocFields(versionPath(hitId), { seen: (Number(hit.seen) || 1) + 1, emailIds: [...ids, id], lastSeenAt: at });
-        await deps.createDocIfAbsent(marker, { outcome: 'duplicate', versionId: hitId, contentDigest: digest, at, source: src.name, from: email.from ?? null, subject: email.subject ?? null, sentAt: email.receivedAt ?? null });
+      const line: any = { id, sentAt: email.receivedAt ?? null, sentDate: sentDateET(email.receivedAt), subject: email.subject ?? null, from: email.from ?? null, attachment: null, parse: null, contentDigest: null, outcome: null, versionId: null, reason: null };
+      outcomes.push(line);
+      const atts = (email.attachments || []).filter(isSpreadsheetAttachment);
+      if (!atts.length) {
+        line.outcome = 'ignored'; line.reason = 'no spreadsheet attachment';
+        await deps.createDocIfAbsent(marker, { outcome: 'ignored', reason: line.reason, at: now(), source: src.name, from: email.from ?? null, subject: email.subject ?? null, sentAt: email.receivedAt ?? null });
+        result.processed += 1;
+        continue;
       }
-      result.processed += 1;
-      continue;
-    }
+      const att = atts[0];
+      line.attachment = att.filename ?? null;
+      let buf: Buffer | null = null;
+      try { buf = await src.download(email, att); } catch (e: any) { line.outcome = 'retry'; line.reason = `download failed: ${String(e?.message || e).slice(0, 160)}`; continue; }
+      if (!buf || !buf.length) { line.outcome = 'retry'; line.reason = 'empty attachment'; continue; }
 
-    // NEW CONTENT (or an unreadable file, kept as evidence): blob → version → marker.
-    const blobKey = forecastBlobKey(tenant, versionId);
-    let stored: { ok: boolean; error: string | null };
-    try { stored = await deps.putBlob(blobKey, buf, { versionId, emailId: id, fileName: att.filename ?? '' }); }
-    catch (e: any) { stored = { ok: false, error: String(e?.message || e).slice(0, 200) }; }
-    const doc = buildVersionDoc({ tenant, versionId, email, att, buf, read, lane, digest, blobKey, stored, at, filedBy });
-    await deps.setDoc(versionPath(versionId), doc);
-    const outcome = lane.ok ? 'filed' : 'unreadable';
-    line.outcome = outcome; line.versionId = versionId; line.reason = lane.ok ? null : lane.reason; line.xlsxStored = stored.ok;
-    await deps.createDocIfAbsent(marker, { outcome, versionId, contentDigest: digest, reason: lane.reason, at, source: src.name, from: email.from ?? null, subject: email.subject ?? null, sentAt: email.receivedAt ?? null });
-    result.processed += 1;
+      let read: any; let lane: any;
+      try {
+        read = readForecast(buf);
+        lane = laneRows(read, line.sentDate);
+      } catch (e: any) { line.outcome = 'retry'; line.reason = `parse threw: ${String(e?.message || e).slice(0, 160)}`; continue; }
+      if (!looksLikeUlineForecast(read) && lane.ok) lane = { ...lane, ok: false, reason: `not a forecast: ${read.rows.length} rows read` };
+      line.parse = { ok: lane.ok, reason: lane.reason, rowsTotal: lane.rowsTotal, rowsUsed: lane.rowsUsed, rowsDropped: lane.rowsDropped, from: lane.from, to: lane.to, warnings: lane.warnings.slice(0, 10), headers: lane.headers };
+      if (!line.sentDate) { line.outcome = 'retry'; line.reason = 'message has no receive time — cannot date the version'; continue; }
+
+      const digest = contentDigest(lane.days);
+      line.contentDigest = digest;
+      const versionId = versionIdFor(tenant, line.sentDate, digest);
+      const at = now();
+
+      // The same content already on file? (A forward, a re-send — or our own crash-resume.)
+      let hit: any = null;
+      if (lane.ok) {
+        try { hit = (await deps.runQuery(digestQuery(digest)))[0] || null; } catch (e: any) { line.outcome = 'retry'; line.reason = `digest lookup failed: ${String(e?.message || e).slice(0, 160)}`; continue; }
+      }
+      if (hit) {
+        const hitId = String(hit.versionId || hit._id || '');
+        const ids: string[] = Array.isArray(hit.emailIds) ? hit.emailIds.map(String) : [];
+        if (ids.includes(id)) {
+          // CRASH-RESUME: our own version, written last time before the marker could be. Say so
+          // and write only the marker — seen stays 1, the email id stays listed once.
+          line.outcome = 'filed'; line.versionId = hitId; line.reason = 'resumed: version already written';
+          await deps.createDocIfAbsent(marker, { outcome: 'filed', versionId: hitId, contentDigest: digest, at, source: src.name, from: email.from ?? null, subject: email.subject ?? null, sentAt: email.receivedAt ?? null, resumed: true });
+        } else {
+          line.outcome = 'duplicate'; line.versionId = hitId; line.reason = `same content as ${hitId}`;
+          await deps.updateDocFields(versionPath(hitId), { seen: (Number(hit.seen) || 1) + 1, emailIds: [...ids, id], lastSeenAt: at });
+          await deps.createDocIfAbsent(marker, { outcome: 'duplicate', versionId: hitId, contentDigest: digest, at, source: src.name, from: email.from ?? null, subject: email.subject ?? null, sentAt: email.receivedAt ?? null });
+        }
+        result.processed += 1;
+        continue;
+      }
+
+      // NEW CONTENT (or an unreadable file, kept as evidence): blob → version → marker.
+      const blobKey = forecastBlobKey(tenant, versionId);
+      let stored: { ok: boolean; error: string | null };
+      try { stored = await deps.putBlob(blobKey, buf, { versionId, emailId: id, fileName: att.filename ?? '' }); }
+      catch (e: any) { stored = { ok: false, error: String(e?.message || e).slice(0, 200) }; }
+      const doc = buildVersionDoc({ tenant, versionId, email, att, buf, read, lane, digest, blobKey, stored, at, filedBy });
+      await deps.setDoc(versionPath(versionId), doc);
+      const outcome = lane.ok ? 'filed' : 'unreadable';
+      line.outcome = outcome; line.versionId = versionId; line.reason = lane.ok ? null : lane.reason; line.xlsxStored = stored.ok;
+      await deps.createDocIfAbsent(marker, { outcome, versionId, contentDigest: digest, reason: lane.reason, at, source: src.name, from: email.from ?? null, subject: email.subject ?? null, sentAt: email.receivedAt ?? null });
+      result.processed += 1;
+    }
+  } catch (e: any) {
+    result.ok = false; result.error = `write failed: ${String(e?.message || e).slice(0, 200)}`;
+    result.partial = true; result.stoppedBecause = 'error';
   }
 
   const filed = outcomes.filter((o) => o.outcome === 'filed' && !o.reason).length;
@@ -236,6 +243,7 @@ export async function ingestForecastEmails(input: ForecastIngestDeps): Promise<a
   if (retry) parts.push(`${retry} to retry`);
   if (!parts.length) parts.push(result.listed ? `nothing new (${result.alreadyMarked} already judged)` : 'no matching email');
   if (result.partial) parts.push(`stopped: ${result.stoppedBecause}`);
+  if (!result.ok && result.error) parts.unshift(result.error);
   result.summary = parts.join(' · ');
   return finish(result, deps, dry, now);
 }
@@ -259,12 +267,15 @@ async function finish(result: any, deps: ForecastIngestDeps, dry: boolean, now: 
 
 /** Gmail's list caps at 100 with no paging in our source, so the history is walked in
  *  calendar quarters — ~3 forecasts each, never near the cap. */
-export function backfillWindow(startIso: string): { start: string; end: string; query: string } {
+export function backfillWindow(startIso: string, baseQuery: string = FORECAST_QUERY_DEFAULT): { start: string; end: string; query: string } {
   const [y, m] = startIso.split('-').map(Number);
   const endM = m + BACKFILL_WINDOW_MONTHS;
   const end = `${y + Math.floor((endM - 1) / 12)}-${String(((endM - 1) % 12) + 1).padStart(2, '0')}-01`;
   const gq = (iso: string) => iso.replace(/-/g, '/');
-  return { start: startIso, end, query: `subject:"Uline Forecast" has:attachment after:${gq(startIso)} before:${gq(end)}` };
+  // The SAME search the hourly job uses (ULINE_FORECAST_QUERY), with its recency term replaced by
+  // the window — so "narrow ULINE_FORECAST_QUERY" on the held line is advice that actually works.
+  const base = String(baseQuery || FORECAST_QUERY_DEFAULT).replace(/\b(newer_than|older_than|after|before):\S+/g, ' ').replace(/\s+/g, ' ').trim();
+  return { start: startIso, end, query: `${base} after:${gq(startIso)} before:${gq(end)}` };
 }
 
 export interface BackfillDeps extends Omit<ForecastIngestDeps, 'source'> {
@@ -273,6 +284,8 @@ export interface BackfillDeps extends Omit<ForecastIngestDeps, 'source'> {
   today: string;
   confirm?: boolean;
   maxResults?: number;
+  /** The search to window (default ULINE_FORECAST_QUERY / FORECAST_QUERY_DEFAULT). */
+  baseQuery?: string;
 }
 
 /**
@@ -286,7 +299,7 @@ export async function backfillForecasts(input: BackfillDeps): Promise<any> {
   if (!dry && !input.confirm) return { ok: false, error: 'backfill requires confirm:true (run a dry run first)', refused: true };
   const cursor = { windowStart: BACKFILL_START, done: false, emptySeenFor: null as string | null, filed: 0, duplicate: 0, unreadable: 0, ignored: 0, ...(input.cursor || {}) };
   if (cursor.done) return { ok: true, done: true, cursor, summary: 'backfill already complete', dry };
-  const win = backfillWindow(cursor.windowStart);
+  const win = backfillWindow(cursor.windowStart, input.baseQuery ?? forecastQuery());
   if (win.start > input.today) { cursor.done = true; return { ok: true, done: true, cursor, summary: 'backfill complete — the window is past today', dry, window: win }; }
   const source = await input.sourceFor(win.query);
   const run = await ingestForecastEmails({ ...input, source, dry, filedBy: 'backfill', maxPerRun: input.maxPerRun || MAX_PER_RUN_BACKFILL, skipStatus: true });
@@ -296,7 +309,7 @@ export async function backfillForecasts(input: BackfillDeps): Promise<any> {
   const allJudged = !run.partial && !retrying && run.ok;
   let advanced = false; let held: string | null = null;
   const next = { ...cursor };
-  if (truncated) held = `window ${win.start}–${win.end} listed ${run.listed} messages — at the cap; narrow ULINE_FORECAST_QUERY or the window before advancing`;
+  if (truncated) held = `window ${win.start}–${win.end} listed ${run.listed} messages — at the cap; narrow ULINE_FORECAST_QUERY (this window reuses its subject/has terms) before advancing`;
   else if (!run.ok) held = run.error;
   else if (!allJudged) held = run.partial ? `batch stopped (${run.stoppedBecause}) — press again to continue this window` : 'some messages must be retried';
   else if (run.listed === 0) {

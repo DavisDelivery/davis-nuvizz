@@ -101,8 +101,16 @@ export function forecastDateToIso(v: any): string | null {
     return d.toISOString().slice(0, 10);
   }
   const s = String(v).trim();
+  // raw:false hands every cell back as DISPLAY text, so a General-format date cell arrives as the
+  // string "46220" — a serial in a string's clothing — and a d-mmm-yy cell as "18-Jul-26".
+  if (/^\d{5}$/.test(s)) return forecastDateToIso(Number(s));
   let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
   if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = /^(\d{1,2})-([A-Za-z]{3})-(\d{2}|\d{4})$/.exec(s);
+  if (m) {
+    const mo = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'].indexOf(m[2].toLowerCase()) + 1;
+    if (mo > 0) return forecastDateToIso(`${mo}/${m[1]}/${m[3]}`);
+  }
   m = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/.exec(s);
   if (m) {
     const y = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
@@ -153,8 +161,9 @@ export function readUlineForecast(buf: Buffer | Uint8Array): ForecastRead {
   const ws = sheetName ? wb.Sheets[sheetName] : null;
   if (!ws) return { rows: [], warnings: ['workbook has no sheets'], from: null, to: null, sheet: null, headers: [], cols: {}, dropped: [] };
 
-  // raw:false hands back the DISPLAY text (so a date cell reads "7/15/26" the way Uline wrote
-  // it); numbers still come back as numbers when the cell is numeric.
+  // raw:false hands back the DISPLAY text for EVERY cell (a date cell reads "7/15/26" the way
+  // Uline wrote it; an estimate arrives as the string "671" and num() parses it). A date cell in
+  // General format therefore arrives as "46220" — forecastDateToIso reads that as a serial.
   const grid: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: null });
   if (!grid.length) return { rows: [], warnings: ['sheet is empty'], from: null, to: null, sheet: sheetName, headers: [], cols: {}, dropped: [] };
 

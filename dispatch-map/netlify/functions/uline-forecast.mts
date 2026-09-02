@@ -19,10 +19,10 @@
 
 import { isFirestoreEnabled, getDoc, deleteDoc, updateDocFields } from './lib/firestore.mts';
 import { requireUser, readJsonBody } from './lib/require-user.mts';
-import { buildView, operatingDayET, expectedVersionMissing, versionSummary, ROUTE_DAY_ORDERS_DEFAULT } from '../../src/lib/uline-forecast-score.js';
+import { buildView, operatingDayET, expectedVersionMissing, versionSummary, ROUTE_DAY_ORDERS_DEFAULT, STATS_WINDOW_DAYS } from '../../src/lib/uline-forecast-score.js';
 import {
   readVersionList, readVersionsForWindow, readManifestRows, readActualRows, readXlsx, buildForecastSource, realIngestDeps,
-  STATUS_DOC, markerPath, versionPath, capacityFromEnv, routeDayFromEnv, forecastQuery, XLSX_MIME, TENANT,
+  STATUS_DOC, markerPath, versionPath, capacityFromEnv, routeDayFromEnv, davisClosedFromEnv, forecastQuery, XLSX_MIME, TENANT,
 } from './lib/uline-forecast-store.mts';
 import { ingestForecastEmails, backfillForecasts, MAX_PER_RUN_BACKFILL } from './lib/uline-forecast-ingest.mts';
 
@@ -34,10 +34,12 @@ const MAX_DAYS = 180;
 function addDays(iso: string, n: number): string { const d = new Date(`${iso}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
 
 async function view(days: number, today: string) {
-  const from = addDays(today, -days);
+  // Versions in force back to the LEDGER's reach (180 days), not just the listed window:
+  // the 90/180-night figures need the file that was in hand for those nights.
+  const from = addDays(today, -Math.max(days, STATS_WINDOW_DAYS));
   const to = addDays(today, 30);
   const [{ list, full }, manifestRows, actualRows] = await Promise.all([readVersionsForWindow(from, to), readManifestRows(), readActualRows()]);
-  const v = buildView({ versions: full, manifestRows, actualRows, today, capacity: capacityFromEnv(), routeDay: routeDayFromEnv() ?? ROUTE_DAY_ORDERS_DEFAULT, windowDays: days });
+  const v = buildView({ versions: full, manifestRows, actualRows, today, capacity: capacityFromEnv(), routeDay: routeDayFromEnv() ?? ROUTE_DAY_ORDERS_DEFAULT, windowDays: days, davisClosed: davisClosedFromEnv() });
   // The panel lists EVERY version, not only those in the window — masked, so it stays small.
   v.versions = list.map(versionSummary).sort((a: any, b: any) => Number(b.sentAt) - Number(a.sentAt));
   return v;
@@ -71,7 +73,7 @@ export default async (req: Request): Promise<Response> => {
           ok: true, today, status: status || null, query: forecastQuery(),
           versions: { count: list.length, usable: usable.length, unreadable: list.length - usable.length, earliest: [...list].sort((a: any, b: any) => Number(a.sentAt) - Number(b.sentAt))[0]?.sentDate ?? null, latest: sorted[0]?.sentDate ?? null, latestOk: sorted[0] ? sorted[0].ok !== false : null },
           expectedVersionMissing: expectedVersionMissing(usable, today),
-          capacity: capacityFromEnv(), routeDay: routeDayFromEnv() ?? ROUTE_DAY_ORDERS_DEFAULT,
+          capacity: capacityFromEnv(), routeDay: routeDayFromEnv() ?? ROUTE_DAY_ORDERS_DEFAULT, davisClosed: davisClosedFromEnv(),
           backfill: status?.backfill ?? null,
         });
       }

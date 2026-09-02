@@ -68,6 +68,11 @@ export function routeDayFromEnv(env: Record<string, string | undefined> = proces
   const n = Number(env.ULINE_ROUTE_DAY_ORDERS);
   return Number.isFinite(n) && n > 0 ? n : null;
 }
+/** Days Davis does not run a route, beyond the federal holidays Uline also closes on: Chad's
+ *  list, ISO dates separated by commas or spaces. Anything that is not a date is ignored. */
+export function davisClosedFromEnv(env: Record<string, string | undefined> = process.env): string[] {
+  return String(env.ULINE_DAVIS_CLOSED || '').split(/[,\s]+/).map((s) => s.trim()).filter((s) => /^\d{4}-\d{2}-\d{2}$/.test(s));
+}
 
 /** The forecast mailbox source: the SAME grant the manifest ingest uses, a different search.
  *  cfg.query is spread over and never written back. Null when Gmail is not set up. */

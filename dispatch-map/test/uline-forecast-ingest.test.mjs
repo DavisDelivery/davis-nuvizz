@@ -101,7 +101,9 @@ test('CRASH-RESUME: the version was written but the marker was not — the retry
   // First run dies after the version write.
   const orig = w.deps.createDocIfAbsent;
   w.deps.createDocIfAbsent = async () => { throw new Error('function timed out'); };
-  await assert.rejects(ingestForecastEmails(w.deps));
+  const first = await ingestForecastEmails(w.deps);
+  assert.equal(first.ok, false, 'the throw is caught and reported, not swallowed');
+  assert.match(first.error, /write failed: function timed out/);
   assert.equal(versions(w.docs).length, 1);
   assert.equal(markers(w.docs).length, 0);
   // Second run.
@@ -264,4 +266,26 @@ test('AN EMPTY WINDOW IS HELD FOR A SECOND LOOK, then passed — a forecast whos
   const wd = world([msg('m1', sheet())]);
   const rd = await backfillForecasts({ ...wd.deps, sourceFor: async () => wd.source, cursor: { windowStart: '2026-07-01' }, today: '2026-09-02', dry: true });
   assert.equal(rd.dry, true); assert.equal(wd.docs.size, 0); assert.equal(rd.wouldAdvanceTo, '2026-10-01');
+});
+
+test('A FIRESTORE THROW MID-LOOP STILL REACHES finish(): the status doc says the run failed, not last run\'s lastOk:true', async () => {
+  const w = world([msg('m1', sheet())]);
+  w.docs.set(STATUS_DOC, { lastOk: true, lastSuccessAt: '2026-09-01T12:00:00.000Z', lastSummary: 'fine' });
+  w.deps.setDoc = async () => { throw new Error('firestore 503'); };
+  const r = await ingestForecastEmails(w.deps);
+  assert.equal(r.ok, false);
+  assert.match(r.error, /write failed: firestore 503/);
+  assert.match(r.summary, /write failed: firestore 503/);
+  assert.equal(r.statusWritten, true);
+  const st = w.docs.get(STATUS_DOC);
+  assert.equal(st.lastOk, false);
+  assert.match(st.lastError, /firestore 503/);
+  assert.equal(st.lastSuccessAt, '2026-09-01T12:00:00.000Z', 'the success time is not touched by a failure');
+  assert.equal(markers(w.docs).length, 0, 'no marker: the email is re-read next cycle');
+});
+
+test('the backfill window reuses ULINE_FORECAST_QUERY minus its recency term, so "narrow the query" is advice that works', () => {
+  assert.equal(backfillWindow('2022-06-01', 'subject:"Uline Forecast" from:uline.example.com newer_than:45d').query, 'subject:"Uline Forecast" from:uline.example.com after:2022/06/01 before:2022/09/01');
+  assert.equal(backfillWindow('2022-06-01', '').query, 'subject:"Uline Forecast" has:attachment after:2022/06/01 before:2022/09/01');
+  assert.equal(backfillWindow('2022-06-01', 'has:attachment after:2020/01/01 before:2021/01/01 subject:x').query, 'has:attachment subject:x after:2022/06/01 before:2022/09/01');
 });

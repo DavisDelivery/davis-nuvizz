@@ -234,8 +234,8 @@ function stubRoutes(page, emailHtml) {
       tonight: { head: 'Ship Wed 9/2 → deliver Thu 9/3', text: 'Uline 706 (high 781) · manifest so far 733 (#3, 21:40) · 27 over the estimate, under the high', tone: 'grey', status: 'on' },
       outlook: [
         { deliverOn: '2026-09-03', dow: 'Thu', label: 'Thu 9/3', ships: [{ date: '2026-09-02', dow: 'Wed', est: 706, upper: 781 }], est: 706, upper: 781, plan: 706, adjusted: false, chips: [], notes: ["Uline's number — not enough nights to adjust"], status: 'ok' },
-        { deliverOn: '2026-09-07', dow: 'Mon', label: 'Mon 9/7', ships: [], est: null, upper: null, plan: null, chips: [], notes: ['Uline closed — no deliveries'], status: 'closed' },
-        { deliverOn: '2026-09-08', dow: 'Tue', label: 'Tue 9/8', ships: [{ date: '2026-09-04', dow: 'Fri', est: 504, upper: 575 }, { date: '2026-09-06', dow: 'Sun', est: 71, upper: 95 }], est: 575, upper: 670, plan: 575, adjusted: false, chips: ['LIGHT'], notes: ['Uline closed 9/7 — rolled into this day'], status: 'ok' },
+        { deliverOn: '2026-09-07', dow: 'Mon', label: 'Mon 9/7', ships: [], est: null, upper: null, plan: null, chips: [], notes: ['Labor Day — no deliveries'], status: 'closed' },
+        { deliverOn: '2026-09-08', dow: 'Tue', label: 'Tue 9/8', ships: [{ date: '2026-09-04', dow: 'Fri', est: 504, upper: 575 }, { date: '2026-09-06', dow: 'Sun', est: 71, upper: 95 }], est: 575, upper: 670, plan: 575, adjusted: false, chips: ['LIGHT'], notes: ['Fri 9/4 freight rolled past Labor Day', 'Uline closed 9/7', 'light for a Tue — typical 746'], status: 'ok' },
       ],
       scored: [
         { date: '2026-09-01', dow: 'Tue', status: 'scored', actual: 764, est: 702, upper: 773, err: 62, verdict: 'heavy', reports: 7, deliverOn: '2026-09-02' },

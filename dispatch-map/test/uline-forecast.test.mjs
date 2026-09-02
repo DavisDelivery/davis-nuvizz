@@ -182,3 +182,12 @@ test('the header row and the resolved columns come back, so "column absent" is a
   const junk = readUlineForecast(book([['x', 1]], { header: ['pro', 'lbs'] }));
   assert.deepEqual(junk.headers, ['pro', 'lbs']);
 });
+
+test('a General-format date cell arrives as the STRING "46220" through raw:false and reads as a serial; d-mmm-yy reads too', () => {
+  assert.equal(forecastDateToIso(46220), '2026-07-17');
+  assert.equal(forecastDateToIso('46220'), '2026-07-17');
+  assert.equal(forecastDateToIso('18-Jul-26'), '2026-07-18');
+  assert.equal(forecastDateToIso('18-Jul-2026'), '2026-07-18');
+  assert.equal(forecastDateToIso('18-Xyz-26'), null);
+  assert.equal(forecastDateToIso('99999'), null, 'outside the plausible serial range');
+});

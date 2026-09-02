@@ -77,3 +77,53 @@ test('no anchor in the card opens our own endpoint in a new tab (the dead-end ru
   for (const a of anchors) assert.ok(!/target=["']_blank["']/.test(a), a);
   assert.match(CARD, /href=\{`\/\.netlify\/functions\/uline-forecast\?version=\$\{encodeURIComponent\(v\.versionId\)\}&xlsx=1`\} download/);
 });
+
+test('THE STRIP DOES NOT GO STALE: re-read when a manifest run lands, when the tab comes back, every 5 minutes while visible — and it says how old it is', () => {
+  const hook = CARD.slice(CARD.indexOf('function useUlineForecast('), CARD.indexOf('function describeForecastResult('));
+  assert.match(hook, /window\.addEventListener\('dd-manifest-check-updated', load\)/);
+  assert.match(hook, /document\.addEventListener\('visibilitychange', onVisible\)/);
+  assert.match(hook, /setInterval\(\(\) => \{ if \(document\.visibilityState === 'visible'\) load\(\); \}, FORECAST_REFRESH_MS\)/);
+  assert.match(hook, /removeEventListener\('dd-manifest-check-updated', load\)/);
+  assert.match(hook, /clearInterval\(timer\)/);
+  assert.match(CARD, /const FORECAST_REFRESH_MS = 5 \* 60 \* 1000/);
+  assert.match(hook, /fetchedAt: Date\.now\(\)/);
+  const strip = CARD.slice(CARD.indexOf('function ForecastTonightStrip('), CARD.indexOf('function ForecastOutlookRow('));
+  assert.match(strip, /as of \{asOf\}/);
+  // The phone strip lives ABOVE the results, once — not again inside the card.
+  const phone = CARD.slice(CARD.indexOf('function ForecastPhone('), CARD.indexOf('function ForecastDesktop('));
+  assert.ok(!/<ForecastTonightStrip/.test(phone), 'no second copy on the phone');
+});
+
+test('a run or backfill result says what it did — the preview is the gate before a real write, so "✓ ok" is not an answer', () => {
+  assert.match(CARD, /setLine\(r\.ok === false \? `✗ \$\{r\.error \|\| 'failed'\}` : `✓ \$\{describeForecastResult\(r\)\}`\)/);
+  const src = CARD.slice(CARD.indexOf('function describeForecastResult('), CARD.indexOf('const fmtClock'));
+  const describe = new Function(`${src}; return describeForecastResult;`)();   // plain JS, no React in it
+  assert.equal(describe({ ok: true, dry: true, window: { start: '2022-06-01', end: '2022-09-01' }, listed: 3, held: null, run: { summary: '3 new forecasts filed', wouldWrite: [1, 2, 3, 4, 5, 6] } }), '2022-06-01 → 2022-09-01 · 3 listed · 3 new forecasts filed · would write 6');
+  assert.equal(describe({ ok: true, window: { start: '2022-06-01', end: '2022-09-01' }, listed: 0, held: 'window 2022-06-01–2022-09-01 listed nothing — held for one more look', run: { summary: 'no matching email' } }), '2022-06-01 → 2022-09-01 · 0 listed · no matching email · window 2022-06-01–2022-09-01 listed nothing — held for one more look');
+  assert.equal(describe({ ok: true, summary: '1 new forecast filed', listed: 4 }), '1 new forecast filed');
+  assert.equal(describe({ ok: true, dry: true, summary: 'nothing new (3 already judged)', wouldWrite: [] }), 'nothing new (3 already judged) · would write 0');
+  assert.equal(describe({ ok: true, done: true }), 'done');
+  assert.equal(describe({ ok: true }), 'ok');
+  assert.equal(describe(null), 'ok');
+});
+
+test('a failed read is the error line and nothing else; the note prints once, as the empty state; the file\'s warnings and the no-delivery days are on the Job panel', () => {
+  assert.match(CARD, /\{data && data\.ok !== false \? \(isMobile \? <ForecastPhone/);
+  const status = CARD.slice(CARD.indexOf('function ForecastStatusLines('), CARD.indexOf('function ForecastRunButton('));
+  assert.ok(!/data\??\.note/.test(status), 'the note is not repeated in the status lines');
+  assert.match(status, /read with \$\{warns\.length\} warning/);
+  assert.match(status, /no deliveries: /);
+  assert.match(status, /\$\{h\.dow\} \$\{mdOf\(h\.date\)\}/, 'holes print 8/27, not 08/27, like every other date on the card');
+});
+
+test('the nights lists skip the filler — before-archive and pre-forecast days are counted, not listed; the phone tiles say they open', () => {
+  assert.match(CARD, /const FILLER_NIGHTS = new Set\(\['before_archive', 'uncovered'\]\)/);
+  const phone = CARD.slice(CARD.indexOf('function ForecastPhone('), CARD.indexOf('function ForecastDesktop('));
+  assert.match(phone, /const nights = nightsToList\(data\)\.slice\(0, 14\)/);
+  assert.match(phone, /by weekday ▾/);
+  const desk = CARD.slice(CARD.indexOf('function ForecastDesktop('), CARD.indexOf('function UlineForecastCard('));
+  assert.match(desk, /const nights = nightsToList\(data\)/);
+  assert.match(desk, /not listed — before the archive began/);
+  assert.match(desk, /Nights · \{scored\.length\} scored/);
+  assert.match(CARD, /'last 90 days' : 'last 30 days'/, 'the tile names a window, not a count of nights');
+});
