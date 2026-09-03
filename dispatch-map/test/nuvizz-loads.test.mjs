@@ -18,8 +18,8 @@ const SAMPLE = {
 test('normalizeLoads: reads loadId (KeyColumn) + link-wrapped name + status + trips (loadNbr null when no number column)', () => {
   const rows = normalizeLoads(SAMPLE);
   assert.deepEqual(rows, [
-    { loadId: '6a3560cb_VINCENT', name: 'VINCENT', loadNbr: null, status: 'Dispatched', trips: 21 },
-    { loadId: '6a3560cb_WILLIAM', name: 'WILLIAM', loadNbr: null, status: 'In-Progress', trips: 15 },
+    { loadId: '6a3560cb_VINCENT', name: 'VINCENT', loadNbr: null, status: 'Dispatched', trips: 21, vehicleType: null },
+    { loadId: '6a3560cb_WILLIAM', name: 'WILLIAM', loadNbr: null, status: 'In-Progress', trips: 15, vehicleType: null },
   ]);
   assert.deepEqual(normalizeLoads({}), []);
 });
@@ -47,7 +47,7 @@ test('normalizeLoads: captures the numeric Load Number as loadNbr, keeps the rou
     ],
   });
   assert.deepEqual(rows, [
-    { loadId: '6a3560cb_SUW', name: 'SUW', loadNbr: 'DAVIS000198197', status: 'Draft', trips: 10 },
+    { loadId: '6a3560cb_SUW', name: 'SUW', loadNbr: 'DAVIS000198197', status: 'Draft', trips: 10, vehicleType: null },
   ]);
 });
 
@@ -59,7 +59,7 @@ test('normalizeLoads: finds the Load Number by VALUE shape even when the column 
     ],
   });
   assert.deepEqual(rows, [
-    { loadId: '6a3560cb_MORGAN', name: 'MORGAN', loadNbr: 'DAVIS000198196', status: 'Dispatched', trips: null },
+    { loadId: '6a3560cb_MORGAN', name: 'MORGAN', loadNbr: 'DAVIS000198196', status: 'Dispatched', trips: null, vehicleType: null },
   ]);
 });
 
@@ -94,4 +94,46 @@ test('buildLoadBody: period as a JSON STRING in seq1, the captured saved-load de
   assert.equal(b.customListDefId, 35833);
   assert.equal(b.canSelect, true);
   assert.equal(b.page, 1);
+});
+
+// ── THE LOAD'S OWN EQUIPMENT ─────────────────────────────────────────────────
+//
+// Chad, 2026-09-02: "Loads should not be classed as tractor trailer or box truck only by the
+// driver who ends up assigned to them." The only thing entitled to class a load is the load's
+// own vehicle type. The live grid does not carry that column today (measured: 21 columns, none
+// of them a vehicle type) — so this is matched BY PATTERN and lights up with no deploy the day
+// the column is added to the saved search.
+
+test('a Vehicle Type column is read when the saved search carries one — by label OR by key', () => {
+  const grid = (col, label) => normalizeLoads({
+    filterData: [{ KeyColumn: { columnName: 'Key' }, 'route.name': { columnName: 'Load Name' }, [col]: { columnName: label } }],
+    values: [['id1', 'BRENT', 'TRACTOR TRAILER']],
+  })[0];
+  assert.equal(grid('load.vehType', 'Vehicle Type').vehicleType, 'TRACTOR TRAILER', 'found by label');
+  assert.equal(grid('load.vehicleType', 'Equipment').vehicleType, 'TRACTOR TRAILER', 'found by key');
+  assert.equal(grid('load.equipmentType', 'Equipment Type').vehicleType, 'TRACTOR TRAILER');
+  assert.equal(grid('load.truckType', 'Truck Type').vehicleType, 'TRACTOR TRAILER');
+});
+
+test('a trailer/tractor NUMBER column is not mistaken for a vehicle TYPE — a unit id is not a class', () => {
+  const r = normalizeLoads({
+    filterData: [{ KeyColumn: { columnName: 'Key' }, 'route.name': { columnName: 'Load Name' },
+                   trailerNbr: { columnName: 'Trailer Number' }, tractorId: { columnName: 'Tractor Id' } }],
+    values: [['id1', 'BRENT', '234TRCNBR', '123TRI']],
+  })[0];
+  assert.equal(r.vehicleType, null);
+});
+
+test('the live grid as it stands today reads null — no vehicle type, and no guess in its place', () => {
+  // The 21 real columns from nuvizz_ops/load_columns__2026-09-02.
+  const cols = ['KeyColumn','name','load.ref','driver.driverId','status','noOfTrips','load.totalCtn','load.volume',
+    'load.totalPlt','schEndTime','load.weight','load.origin','actStartTime','updatedTime','actEndTime','load.proNbr',
+    'statusDTTM','createdTime','plannedDist','rteNbr','canSelect'];
+  const r = normalizeLoads({
+    filterData: [Object.fromEntries(cols.map((c) => [c, { columnName: c }]))],
+    values: [['6a97ea13', 'DIXON', '', 'Brent Dixon', 'In-Progress', '11', '13', '10', '23', '', '4159', '', '', '', '', '', '', '', '32.44', 'DAVIS000203100', '']],
+  })[0];
+  assert.equal(r.vehicleType, null, 'no column, no value — never inferred from the driver beside it');
+  assert.equal(r.loadNbr, 'DAVIS000203100', 'but the load NUMBER is there, which is the key to /load/info');
+  assert.equal(r.name, 'DIXON');
 });

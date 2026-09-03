@@ -64,7 +64,7 @@ export function looksLikeLoadNbr(v: any): boolean {
 // { loadId, name, loadNbr, status, trips }. Columns are found BY PATTERN against BOTH the dotted
 // key AND the human column label (robust to layout/key differences between the portal grid and
 // the openapi entity response). Exported for tests.
-export function normalizeLoads(j: any): Array<{ loadId: string; name: string; loadNbr: string | null; status: string; trips: number | null }> {
+export function normalizeLoads(j: any): Array<{ loadId: string; name: string; loadNbr: string | null; status: string; trips: number | null; vehicleType: string | null }> {
   const colDefs: Record<string, any> = (j && j.filterData && j.filterData[0]) || {};
   const cols: string[] = Object.keys(colDefs);
   if (!cols.length) return [];
@@ -83,7 +83,18 @@ export function normalizeLoads(j: any): Array<{ loadId: string; name: string; lo
   const nameIx = cols.indexOf(find(/route.?name|load.?name/, /(nbr|number|num\b)/) ?? find(/(^|\s|\.)name/, /(nbr|number|num\b)/) ?? '');
   const statusIx = cols.indexOf(find(/status/, /dttm|date|time/) ?? '');
   const tripsIx = cols.indexOf(find(/trip|stop.?count|nooftrip/) ?? '');
-  const out: Array<{ loadId: string; name: string; loadNbr: string | null; status: string; trips: number | null }> = [];
+  // THE LOAD'S OWN EQUIPMENT, if this saved search carries it. Chad, 2026-09-02: "Loads should
+  // not be classed as tractor trailer or box truck only by the driver who ends up assigned to
+  // them." He is right — a load is created with a vehicle type; the driver on it may be in a
+  // different truck today. So the load's own column is the only thing allowed to CLASS a load.
+  //
+  // Measured 2026-09-02 (nuvizz_ops/load_columns__2026-09-02): the live Loads grid has 21
+  // columns and NONE of them is a vehicle type, so this reads null today. It is matched BY
+  // PATTERN on purpose — the moment a "Vehicle Type" column is added to the saved search in the
+  // portal, every load carries its real equipment at zero extra NuVizz calls, with no deploy.
+  // Deliberately avoids "trailer number"/"tractor number" columns: those are unit ids, not a class.
+  const vehIx = cols.indexOf(find(/vehicle.?type|equip(ment)?.?type|truck.?type/, /(nbr|number|num\b|id\b)/) ?? '');
+  const out: Array<{ loadId: string; name: string; loadNbr: string | null; status: string; trips: number | null; vehicleType: string | null }> = [];
   for (const row of ((j && j.values) || [])) {
     const loadId = String(linkVal(row[idIx]) ?? '').trim();
     if (!loadId) continue;
@@ -114,6 +125,7 @@ export function normalizeLoads(j: any): Array<{ loadId: string; name: string; lo
       loadNbr: loadNbr || null,
       status: String(linkVal(row[statusIx]) ?? '').trim(),
       trips: Number.isFinite(t) ? t : null,
+      vehicleType: vehIx >= 0 ? (String(linkVal(row[vehIx]) ?? '').trim() || null) : null,
     });
   }
   return out;
@@ -163,7 +175,7 @@ export async function loadIdsForDate(targetDateUTC: string): Promise<{ ids: Set<
 // Fetch the FULL load roster for a date (every load incl. empty ones, with status + trip
 // count) — used to surface loads that have NO orders assigned yet (a Monday load created
 // but unfilled never appears on the stop-grouped board). One deliberate call; best-effort.
-export async function loadRosterForDate(targetDateUTC: string): Promise<Array<{ loadId: string; name: string; loadNbr: string | null; status: string; trips: number | null }>> {
+export async function loadRosterForDate(targetDateUTC: string): Promise<Array<{ loadId: string; name: string; loadNbr: string | null; status: string; trips: number | null; vehicleType: string | null }>> {
   const { companyCode } = getCreds();
   const hdr = { Authorization: basicAuthHeader(), 'Content-Type': 'application/json', Accept: 'application/json' };
   const url = `${OPENAPI_BASE}/entity/filterdata/${LOAD_ENTITY}/${companyCode}`;

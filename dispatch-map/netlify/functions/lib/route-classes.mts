@@ -6,15 +6,26 @@
 // existed) no way to know which loads were running a tractor. Copying forty lines into the
 // second sweep is how two answers to one question get born, so it moved here instead.
 //
-// TRUTHIEST SOURCE FIRST, and the order is the whole design:
+// TWO SOURCES, AND THEY ARE NOT INTERCHANGEABLE — see `sourceByRoute`, which every consumer
+// must read before it acts on a class:
 //
-//   load header   the NuVizz load's own vehicleType — the unit actually ASSIGNED to this
-//                 load, refreshed into the fleet index on every scan. This is a fact about
-//                 today.
-//   roster        the MarginIQ employee roster's per-driver vehicleType, where the header is
-//                 silent. This is the driver's USUAL truck — an inference, and on exactly the
-//                 day that matters (tractor in the shop, driver in a rental box) the header
-//                 knows and the roster does not.
+//   load_header   the LOAD's own vehicleType. A fact about the load: somebody created it as a
+//                 tractor-trailer run or a straight-truck run. From the fleet index, or from
+//                 the hourly Loads grid when that saved search carries the column.
+//   roster /      the MarginIQ employee roster's per-driver vehicleType, joined through the
+//   roster_near   NuVizz alias. This is the driver's USUAL truck — an INFERENCE about a
+//                 person, not a statement about the load.
+//
+// CHAD, 2026-09-02: "Loads should not be classed as tractor trailer or box truck only by the
+// driver who ends up assigned to them." He is right, and the failure runs both ways: a tractor
+// driver in a rental box makes us flag stops that are fine, and — the dangerous one — a box
+// driver put on a tractor load makes us MISS the stop a 53-footer cannot reach. The roster
+// answers "what does this person usually drive", which is a different question from "what is
+// pulling this load", and only the second one may decide whether a trailer fits.
+//
+// So the roster class is still BUILT and still published (the travel model uses it as a proxy
+// for how a driver drives, which is a speed question, not an equipment one) — but it is
+// stamped `roster`, and the no-trailer rule refuses anything that is not `load_header`.
 //
 // A route neither source can class is ABSENT from the map, deliberately. "I do not know what
 // truck is on this load" and "it is a box truck" are different claims, and a caller that
@@ -271,12 +282,28 @@ export async function readRouteClassesFor(
   listLoads: () => Promise<any[]>,
   stops: any[],
   opts: BuildOpts = {},
+  listRoster?: () => Promise<any[]>,
 ): Promise<RouteClassResult> {
   let loads: any[] = [];
   try {
     loads = (await listLoads()) || [];
   } catch (e: any) {
     console.error('fleet-index class read failed (roster will carry it):', e?.message);
+  }
+  // THE SECOND HEADER SOURCE, AND IT COSTS NOTHING. The hourly Loads-grid cache
+  // (nuvizz_load_roster) already holds every load's number and name; if that saved search
+  // carries a vehicle-type column it holds the equipment too, and normalizeLoads reads it.
+  // The fleet index — the other header source — has not been written since 2026-04-29 because
+  // the list-discovery scan never runs the probe path that fills it, so on most days this is
+  // the ONLY route a load's own type can travel. Rows are appended AFTER the fleet index so a
+  // real fleet-index header still wins.
+  if (listRoster) {
+    try {
+      const roster = (await listRoster()) || [];
+      for (const l of roster) if (l?.vehicleType) loads.push({ loadNbr: l.loadNbr, routeName: l.name ?? l.routeName, vehicleType: l.vehicleType });
+    } catch (e: any) {
+      console.error('load-roster class read failed:', e?.message);
+    }
   }
   let roster: any = null;
   try {

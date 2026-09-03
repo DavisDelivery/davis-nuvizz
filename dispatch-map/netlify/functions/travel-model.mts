@@ -60,7 +60,10 @@ export default async (req: Request): Promise<Response> => {
       // roster — so a tractor route reads on a tractor clock in the browser too.
       classCurves: cal?.classCurves ?? null,
       classService: cal?.classService ?? null,
-      routeClasses,
+      routeClasses: routeClasses.classes,
+      // Where each class came from. A consumer deciding whether a 53-footer fits must read this:
+      // only 'load_header' is a statement about the LOAD (Chad, 2026-09-02).
+      routeClassSource: routeClasses.sources,
       // The DATE the map is valid for. Route names repeat every day (SUW runs daily) and
       // drivers rotate, so a client looking at tomorrow's or Friday's board must not walk
       // it on today's trucks — it needs this to know when to drop the map.

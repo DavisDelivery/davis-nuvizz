@@ -895,12 +895,24 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // 8pm, while the router is still building — which is the only window in which anybody can
   // still do the cheap thing and move it.
   //
-  // "PUT ON A TRACTOR" HAS ONE SOURCE, NOT A SECOND OPINION. travel.routeClasses is the map
-  // the travel model already runs on: the load header's own vehicleType first (the unit
-  // actually assigned to the load), the driver roster's usual truck where the header is
-  // silent. A route with NO class is not judged and says so in `skipped` — not knowing which
-  // truck is on a load is not the same claim as knowing it is a box truck, and this engine
-  // does not get to blur the two.
+  // "PUT ON A TRACTOR" MEANS THE LOAD SAYS SO — NOT THE DRIVER ON IT.
+  //
+  // Chad, 2026-09-02: "Loads should not be classed as tractor trailer or box truck only by the
+  // driver who ends up assigned to them." The truck-class map carries both a class AND its
+  // SOURCE, and this rule accepts only `load_header` — the load's own vehicleType. A roster
+  // class answers "what does this person usually drive", which is an inference about a person
+  // and not a statement about the load, and it is wrong in the direction that costs freight: a
+  // box-truck driver put on a tractor load reads as `box` and the stop a 53-footer cannot reach
+  // never flags at all.
+  //
+  // THE TRAVEL MODEL KEEPS THE ROSTER CLASS, deliberately (see travelForRoute above). That one
+  // picks a speed curve, and how fast a driver gets around town is a fact about the driver. This
+  // one decides whether to send a 53-footer, and that is a fact about the load.
+  //
+  // NO SOURCE MAP AT ALL ⇒ NOTHING IS JUDGED. An older caller passing only `routeClasses`
+  // cannot prove where its classes came from, and unprovenanced is exactly what this rule
+  // refuses. It reports every route it declined and why, so the silence is a visible decision
+  // rather than a clean-looking board.
   //
   // "DISPATCHER HARDCODED" IS dispatcherTrailerBlock's ONLY JOB, and it is the same function
   // the map's tractor-paint override reads its confirmed/advisory split from. The amber Uline
@@ -912,11 +924,16 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // the pallets are going.
   const routeClassTable = travel?.routeClasses && typeof travel.routeClasses === 'object'
     ? travel.routeClasses : null;
+  const routeClassSource = travel?.routeClassSource && typeof travel.routeClassSource === 'object'
+    ? travel.routeClassSource : null;
   const routeClassOf = (k) => {
     if (!routeClassTable || !k) return null;
     const v = routeClassTable[k];
     return typeof v === 'string' && v ? v : null;
   };
+  // The class, but ONLY when the LOAD is what said so. Anything else — a roster inference, or
+  // a class with no recorded source — is not an answer to "what is pulling this load".
+  const loadSaidClassOf = (k) => (routeClassSource?.[k] === 'load_header' ? routeClassOf(k) : null);
   if (!routeClassTable || !Object.keys(routeClassTable).length) {
     // No truck-class map ⇒ REPORT "not checked", never "clean" — the same discipline the
     // route checks apply when the roster has not been fetched.
@@ -933,11 +950,14 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     for (const s of scheduledJudged) {
       const k = routeKeyOf(s);
       if (!k) continue;
-      const cls = routeClassOf(k);
+      const cls = loadSaidClassOf(k);
       if (!cls) {
-        if (!noClass.has(k)) noClass.set(k, new Set());
+        // Named with WHY, because "no vehicle type on the load" and "we do not know who is
+        // driving" are different problems with different fixes — one is a NuVizz field, the
+        // other a roster card, and a single "not checked" would send somebody to the wrong one.
+        if (!noClass.has(k)) noClass.set(k, { drivers: new Set(), why: routeClassOf(k) ? 'driver_only' : 'no_class' });
         const d = String(s.driverName || s.driverUserName || '').trim();
-        if (d) noClass.get(k).add(d);
+        if (d) noClass.get(k).drivers.add(d);
         continue;
       }
       if (cls !== 'tractor') continue;
@@ -947,7 +967,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     }
     skipped.routesNoTruckClass = [...noClass.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([route, drivers]) => ({ route, drivers: [...drivers] }));
+      .map(([route, v]) => ({ route, drivers: [...v.drivers], why: v.why }));
     checked.tractorRoutes = tractorRoutes.size;
     checked.trailerConflicts = conflicts.length;
     // HOW MANY ON THE SAME LOAD, because that number changes what the answer IS. One stop is

@@ -55,7 +55,7 @@
 // Data diet: Firestore only — the stop index the scanner maintains, customer_notes,
 // the travel cache. ZERO NuVizz calls, ever, from this path.
 import { computeBoardFlags } from '../../src/lib/board-flags.js';
-import { isFirestoreEnabled, getDoc, setDoc, createDocIfAbsent, readStops, listFleetLoads, etDayString } from './lib/firestore.mts';
+import { isFirestoreEnabled, getDoc, setDoc, createDocIfAbsent, readStops, listFleetLoads, readLoadRoster, etDayString } from './lib/firestore.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { weekdayKey } from './lib/miss-ledger.mts';
 import { readTravelCalibration, ensureLegs } from './lib/travel-store.mts';
@@ -65,6 +65,7 @@ import { auditRows } from './lib/flag-rows.mts';
 import { smsEnabled, sendSms } from './lib/sms.mts';
 import { smsRecipients, eveningTargetDate, smsText, smsClaimPath, selectTextable } from './lib/flag-sms.mts';
 import { readRouteClassesFor } from './lib/route-classes.mts';
+import { ensureLoadTypes, loadRowsFromTypes } from './lib/load-types.mts';
 
 const TENANT = 'davis';
 const DEPOT = { name: 'Buford Terminal', lat: 34.147791, lng: -83.960911 };
@@ -120,6 +121,7 @@ export default async (req: Request): Promise<Response> => {
         tierFloorByStop = Object.keys(t).length ? t : null;
       }
     } catch { /* no floor — this sweep judges on its own */ }
+    let loadTypes: any = { enabled: false, cached: 0, fetched: 0, failed: 0, wanted: 0 };
     const cal = await readTravelCalibration(TENANT).catch(() => null);
     const calOpts = cal ? { curve: cal.curve, serviceMin: cal.serviceMin } : {};
     // WHICH TRUCK RUNS EACH ROUTE ON THE BOARD BEING JUDGED — and it is the TARGET date's
@@ -138,8 +140,18 @@ export default async (req: Request): Promise<Response> => {
     const rc = await readRouteClassesFor(
       () => listFleetLoads(TENANT, date, ['loadNbr', 'routeName', 'vehicleType']),
       stops,
+      {},
+      async () => {
+        // The hourly Loads-grid cache costs nothing and carries the load's own type IF that
+        // saved search has the column. Where it does not (the live grid today), ensureLoadTypes
+        // asks each load directly — once per load, cached, and only when its switch is on.
+        const roster = (await readLoadRoster(TENANT, date).catch(() => null))?.loads || [];
+        loadTypes = await ensureLoadTypes(TENANT, date, roster, stops);
+        return [...roster, ...loadRowsFromTypes(roster, loadTypes.types)];
+      },
     ).catch(() => null);
     const routeClasses = rc?.classes && Object.keys(rc.classes).length ? rc.classes : null;
+    const routeClassSource = rc?.sourceByRoute && Object.keys(rc.sourceByRoute).length ? rc.sourceByRoute : null;
     // A pre-day board gets NO nowMin: nothing has departed, so the not-started clamp and
     // the driverless rule (R6) must stay out of it — a tomorrow route without a driver
     // yet is just tomorrow. After midnight the board is today's; nowMin is real, and the
@@ -147,7 +159,7 @@ export default async (req: Request): Promise<Response> => {
     const nowOpt = offsetDays === 0 ? { nowMin: etMin } : {};
     const engineOpts = (legs: Record<string, number>) => ({
       depot: DEPOT, ...nowOpt,
-      travel: { legs, ...calOpts, ...(routeClasses ? { routeClasses } : {}) },
+      travel: { legs, ...calOpts, ...(routeClasses ? { routeClasses } : {}), ...(routeClassSource ? { routeClassSource } : {}) },
       ...(departByRoute ? { departByRoute } : {}),
       ...(tierFloorByStop ? { tierFloorByStop } : {}),
     });
@@ -170,6 +182,12 @@ export default async (req: Request): Promise<Response> => {
       truckClassesKnown: !flags.checked ? null : !flags.skipped?.noTruckClasses,
       routeClassesKnown: routeClasses ? Object.keys(routeClasses).length : 0,
       classSource: rc?.source ?? 'none',
+      // How many routes carry a class the LOAD itself stated — the only kind the no-trailer
+      // rule acts on. Zero here means that rule is silent tonight, for a data reason.
+      loadHeaderClasses: Object.values(rc?.sourceByRoute ?? {}).filter((v) => v === 'load_header').length,
+      // The switch's position and what it bought, reported rather than inferred: a no-trailer
+      // rule that judged nothing because the fetch is OFF must not read like a clean board.
+      loadTypes: { enabled: loadTypes.enabled, cached: loadTypes.cached, fetched: loadTypes.fetched, failed: loadTypes.failed, wanted: loadTypes.wanted },
       tractorRoutes: flags.checked?.tractorRoutes ?? 0,
       trailerConflicts: flags.checked?.trailerConflicts ?? 0,
       // THE ROUTES THIS SWEEP COULD NOT CLASS, BY NAME, WITH THE DRIVER NUVIZZ CARRIES. The

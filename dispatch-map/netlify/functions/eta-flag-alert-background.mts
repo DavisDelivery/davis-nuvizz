@@ -22,11 +22,12 @@
 // The scan itself refreshes every 15 minutes, so anything tighter re-reads the same board.
 // Cron is UTC: 11:00-23:59 UTC covers roughly 07:00-19:59 ET, which brackets the delivery
 // day either side of a DST flip without needing to be re-timed twice a year.
-import { isFirestoreEnabled, readStops, getDoc, setDoc, listFleetLoads, createDocIfAbsent, etDayString, listDocs } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, getDoc, setDoc, listFleetLoads, readLoadRoster, createDocIfAbsent, etDayString, listDocs } from './lib/firestore.mts';
 import { computeBoardFlags } from '../../src/lib/board-flags.js';
 import { ensureLegs, readTravelCalibration, routeClassesPath } from './lib/travel-store.mts';
 import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mts';
 import { readRouteClassesFor } from './lib/route-classes.mts';
+import { ensureLoadTypes, loadRowsFromTypes } from './lib/load-types.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { selectAlertable, sendAlerts, ALERT_TO, AMBER_LEAD_GATE_MIN, ALERT_MIN_TIER, ALERT_TIERS, ALERT_COLLECTION } from './lib/flag-alert.mts';
 import { mergeSweep, scoreRowsLive, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
@@ -116,7 +117,9 @@ export default async (req: Request): Promise<Response> => {
     // the vote and the "unknown is not box" rule all live in lib/route-classes.mts now,
     // because the evening sweep needs the same map and a second copy of it is how two answers
     // to one question get born.
+    let loadTypes: any = { enabled: false, cached: 0, fetched: 0, failed: 0, wanted: 0 };
     let routeClasses: Record<string, string> = {};
+    let routeClassSource: Record<string, string> = {};
     let classSource = 'none';
     let unclassedRoutes: any[] = [];
     let nearMatches: any[] = [];
@@ -124,8 +127,20 @@ export default async (req: Request): Promise<Response> => {
       const rc = await readRouteClassesFor(
         () => listFleetLoads(TENANT, date, ['loadNbr', 'routeName', 'vehicleType']),
         stops,
+        {},
+        // The hourly Loads-grid cache, free — the only route a load's own type travels while
+        // the fleet index stays unwritten. See lib/route-classes.mts.
+        async () => {
+          // The hourly Loads-grid cache costs nothing and carries the load's own type IF that
+          // saved search has the column. Where it does not (the live grid today), ensureLoadTypes
+          // asks each load directly — once per load, cached, and only when its switch is on.
+          const roster = (await readLoadRoster(TENANT, date).catch(() => null))?.loads || [];
+          loadTypes = await ensureLoadTypes(TENANT, date, roster, stops);
+          return [...roster, ...loadRowsFromTypes(roster, loadTypes.types)];
+        },
       );
       routeClasses = rc.classes;
+      routeClassSource = rc.sourceByRoute as Record<string, string>;
       classSource = rc.source;
       unclassedRoutes = (rc.unclassed || []).filter((u) => u.reason !== 'appointment_route');
       nearMatches = rc.nearMatches || [];
@@ -136,7 +151,10 @@ export default async (req: Request): Promise<Response> => {
       // across a whole weekend, if the replay ran on a Friday night.
       if (!dry && date === etDayString()) {
         try {
-          await setDoc(routeClassesPath(TENANT), { tenant: TENANT, date, classes: routeClasses, at: new Date().toISOString() });
+          // `sources` rides with `classes` because a class without its provenance cannot be
+          // acted on: the no-trailer rule accepts only what the LOAD said, and a map that
+          // cannot say where a class came from is one that rule must refuse wholesale.
+          await setDoc(routeClassesPath(TENANT), { tenant: TENANT, date, classes: routeClasses, sources: routeClassSource, at: new Date().toISOString() });
         } catch (e: any) {
           // The sweep would now judge on a map the browser cannot read — say so where
           // the run record shows it rather than letting screen and inbox drift apart.
@@ -170,7 +188,7 @@ export default async (req: Request): Promise<Response> => {
 
     const engineOpts = (legs: Record<string, number>) => ({
       depot: DEPOT, ...(nowMin != null ? { nowMin } : {}),
-      travel: { legs, routeClasses, ...calOpts },
+      travel: { legs, routeClasses, routeClassSource, ...calOpts },
       ...(departByRoute ? { departByRoute } : {}),
       ...(tierFloorByStop ? { tierFloorByStop } : {}),
     });
@@ -298,6 +316,7 @@ export default async (req: Request): Promise<Response> => {
       // Named, not counted — see the evening sweep. A class map with a hole in it is only
       // useful if the hole has a route name and a driver name on it.
       unclassedRoutes, nearMatches,
+      loadTypes: { enabled: loadTypes.enabled, cached: loadTypes.cached, fetched: loadTypes.fetched, failed: loadTypes.failed, wanted: loadTypes.wanted },
       alertable: candidates.length,
       candidates: candidates.map((c) => ({ stopNbr: c.stopNbr, customer: c.customer, lateBy: c.lateBy, rule: c.rule })),
     };

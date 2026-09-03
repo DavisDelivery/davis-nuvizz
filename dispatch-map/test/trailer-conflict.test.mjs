@@ -31,13 +31,21 @@ const stop = (over = {}) => ({
   ...over,
 });
 
-const run = (stops, notesObj = {}, routeClasses = { 'TRACTOR 2': 'tractor', 'BOX 1': 'box' }) =>
+// Every class here is stamped `load_header` — i.e. the LOAD said what it is. That is the only
+// provenance the rule accepts (Chad, 2026-09-02: "loads should not be classed ... by the driver
+// who ends up assigned to them"), so a fixture that omitted it would be testing the refusal
+// rather than the rule under test. `sources` overrides it where a test means to check the refusal.
+const run = (stops, notesObj = {}, routeClasses = { 'TRACTOR 2': 'tractor', 'BOX 1': 'box' }, sources = null) =>
   computeBoardFlags({
     stops, notes: new Map(Object.entries(notesObj)), rosterRows: [],
     servedDate: DATE, dayKey: 'tue',
     opts: {
       depot: DEPOT, departMin: 8 * 60,
-      travel: { legs: {}, ...(routeClasses ? { routeClasses } : {}) },
+      travel: {
+        legs: {},
+        ...(routeClasses ? { routeClasses } : {}),
+        ...(routeClasses ? { routeClassSource: sources || Object.fromEntries(Object.keys(routeClasses).map((k) => [k, 'load_header'])) } : {}),
+      },
     },
   });
 const trailerRows = (out) => out.rows.filter((r) => r.rule === 'trailer_conflict');
@@ -407,7 +415,7 @@ test('A ROUTE THE CLASS MAP DOES NOT COVER IS NAMED, WITH ITS DRIVER — the Eva
     HARD_NO, { MARCUS: 'tractor' },
   );
   assert.deepEqual(trailerRows(out), [], 'not judged — and that is the honest answer');
-  assert.deepEqual(out.skipped.routesNoTruckClass, [{ route: 'BRENT', drivers: ['Brent  Bryd'] }]);
+  assert.deepEqual(out.skipped.routesNoTruckClass, [{ route: 'BRENT', drivers: ['Brent  Bryd'], why: 'no_class' }]);
   assert.equal(out.skipped.noTruckClasses, false, 'a map existed; this route was simply not in it');
 });
 
@@ -416,5 +424,51 @@ test('a covered route is never listed as unknown, and a driverless one is listed
     stop({ stopNbr: 'A', matchKey: 'acme', loadNbr: 'MARCUS', routeName: 'MARCUS', driverName: 'Marcus Young' }),
     stop({ stopNbr: 'B', matchKey: 'beta', loadNbr: 'TRAILER 4', routeName: 'TRAILER 4', driverName: '', driverUserName: '' }),
   ], HARD_NO, { MARCUS: 'tractor' });
-  assert.deepEqual(out.skipped.routesNoTruckClass, [{ route: 'TRAILER 4', drivers: [] }]);
+  assert.deepEqual(out.skipped.routesNoTruckClass, [{ route: 'TRAILER 4', drivers: [], why: 'no_class' }]);
+});
+
+// ── A LOAD IS NOT CLASSED BY WHOEVER IS DRIVING IT ───────────────────────────
+//
+// Chad, 2026-09-02: "Loads should not be classed as tractor trailer or box truck only by the
+// driver who ends up assigned to them." The roster answers what a PERSON usually drives. Only
+// the load's own vehicle type answers what is pulling THIS load, and only that may decide
+// whether a 53-footer is being sent somewhere it cannot go.
+
+test('a class the ROSTER guessed from the driver does NOT flag — only the load may say', () => {
+  const out = run([stop()], HARD_NO, { 'TRACTOR 2': 'tractor' }, { 'TRACTOR 2': 'roster' });
+  assert.deepEqual(trailerRows(out), [], 'the driver usually drives a tractor; that is not this load');
+  assert.deepEqual(out.skipped.routesNoTruckClass, [{ route: 'TRACTOR 2', drivers: [], why: 'driver_only' }]);
+});
+
+test('the near-match rescue does not launder a roster guess into a load fact', () => {
+  const out = run([stop()], HARD_NO, { 'TRACTOR 2': 'tractor' }, { 'TRACTOR 2': 'roster_near' });
+  assert.deepEqual(trailerRows(out), []);
+  assert.equal(out.skipped.routesNoTruckClass[0].why, 'driver_only');
+});
+
+test('the SAME board flags the moment the class comes from the load itself', () => {
+  const out = run([stop()], HARD_NO, { 'TRACTOR 2': 'tractor' }, { 'TRACTOR 2': 'load_header' });
+  assert.equal(trailerRows(out).length, 1);
+  assert.deepEqual(out.skipped.routesNoTruckClass, []);
+});
+
+test('a class map with NO provenance at all is refused wholesale, not trusted', () => {
+  // An older caller (or a route_classes doc written before `sources` existed) cannot prove
+  // where its classes came from. Unprovenanced is exactly what this rule refuses.
+  const out = computeBoardFlags({
+    stops: [stop()], notes: new Map(Object.entries(HARD_NO)), rosterRows: [],
+    servedDate: DATE, dayKey: 'tue',
+    opts: { depot: DEPOT, travel: { legs: {}, routeClasses: { 'TRACTOR 2': 'tractor' } } },
+  });
+  assert.deepEqual(out.rows.filter((r) => r.rule === 'trailer_conflict'), []);
+  assert.equal(out.skipped.routesNoTruckClass[0].why, 'driver_only');
+});
+
+test('the two "not checked" reasons stay apart — one is a NuVizz field, the other a roster card', () => {
+  const out = run([
+    stop({ stopNbr: 'A', matchKey: 'acme', loadNbr: 'GUESSED', routeName: 'GUESSED', driverName: 'A Driver' }),
+    stop({ stopNbr: 'B', matchKey: 'beta', loadNbr: 'NOTHING', routeName: 'NOTHING', driverName: '' }),
+  ], HARD_NO, { GUESSED: 'tractor' }, { GUESSED: 'roster' });
+  const by = Object.fromEntries(out.skipped.routesNoTruckClass.map((r) => [r.route, r.why]));
+  assert.deepEqual(by, { GUESSED: 'driver_only', NOTHING: 'no_class' });
 });

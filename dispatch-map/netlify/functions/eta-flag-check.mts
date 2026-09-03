@@ -374,7 +374,7 @@ export default async (req: Request): Promise<Response> => {
     const [cal, legDoc, routeClasses] = await Promise.all([
       readTravelCalibration(TENANT).catch(() => null),
       getDoc(travelLegsPath(TENANT)).catch(() => null),
-      readRouteClasses(TENANT, date).catch(() => ({})),
+      readRouteClasses(TENANT, date).catch(() => ({ classes: {}, sources: {} })),
     ]);
     // Measured per-route departures, same table the sweeps judge on — so the dry twin
     // cannot disagree with the alert about when a truck leaves.
@@ -401,7 +401,7 @@ export default async (req: Request): Promise<Response> => {
         ...(departByRoute ? { departByRoute } : {}),
         ...(tierFloorByStop ? { tierFloorByStop } : {}),
         travel: {
-          legs: legSecondsMap(legDoc), routeClasses,
+          legs: legSecondsMap(legDoc), routeClasses: routeClasses.classes, routeClassSource: routeClasses.sources,
           ...(cal ? {
             curve: cal.curve, serviceMin: cal.serviceMin,
             ...(cal.classCurves ? { classCurves: cal.classCurves } : {}),

@@ -202,12 +202,14 @@ export async function readTravelCalibration(tenant: string): Promise<any | null>
 
 /** Today's route → class map, or {} when absent/stale (a map from another DAY is a lie —
  *  drivers rotate, so a stale doc must read as unknown, not as yesterday's trucks). */
-export async function readRouteClasses(tenant: string, date: string): Promise<Record<string, string>> {
+export async function readRouteClasses(tenant: string, date: string): Promise<{ classes: Record<string, string>; sources: Record<string, string> }> {
   try {
     const doc = await getDoc(routeClassesPath(tenant));
-    if (!doc || doc.date !== date || !doc.classes) return {};
-    return doc.classes;
+    if (!doc || doc.date !== date || !doc.classes) return { classes: {}, sources: {} };
+    // `sources` may be absent on a doc written before it existed. Empty is the honest answer
+    // and the no-trailer rule reads it as "cannot prove the load said so" — which is correct.
+    return { classes: doc.classes, sources: doc.sources || {} };
   } catch {
-    return {};
+    return { classes: {}, sources: {} };
   }
 }
