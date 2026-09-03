@@ -36,7 +36,18 @@ export function installFakeFirestore() {
 
   /** path -> wire-shape `fields` object, exactly as the client sent it. */
   const docs = new Map();
-  const state = { docs, calls: 0 };
+  // Firestore stamps every write with an updateTime and honours it as a write
+  // precondition; without that here, a compare-and-swap test would pass against
+  // a fake that cannot fail the swap. Monotonic and opaque, like the real one.
+  const updateTimes = new Map();
+  let writeSeq = 0;
+  const stamp = (path) => {
+    writeSeq += 1;
+    const t = `2026-01-01T00:00:00.${String(writeSeq).padStart(6, '0')}Z`;
+    updateTimes.set(path, t);
+    return t;
+  };
+  const state = { docs, updateTimes, calls: 0 };
   const realFetch = globalThis.fetch;
 
   globalThis.fetch = async (input, init = {}) => {
@@ -60,17 +71,35 @@ export function installFakeFirestore() {
       const prefix = `${path}/`;
       const documents = [...docs.entries()]
         .filter(([p]) => p.startsWith(prefix) && !p.slice(prefix.length).includes('/'))
-        .map(([p, fields]) => ({ name: name(p), fields }));
+        .map(([p, fields]) => ({ name: name(p), fields, updateTime: updateTimes.get(p) }));
       return jsonResponse({ documents });
     }
 
     if (method === 'GET') {
       const fields = docs.get(path);
-      return fields ? jsonResponse({ name: name(path), fields }) : jsonResponse({ error: 'not found' }, 404);
+      return fields
+        ? jsonResponse({ name: name(path), fields, updateTime: updateTimes.get(path) })
+        : jsonResponse({ error: 'not found' }, 404);
     }
     if (method === 'PATCH') {
       const body = JSON.parse(init.body || '{}');
       const incoming = body.fields || {};
+
+      // currentDocument preconditions, the compare half of compare-and-swap.
+      const wantTime = u.searchParams.get('currentDocument.updateTime');
+      const wantExists = u.searchParams.get('currentDocument.exists');
+      const failed = (msg) =>
+        jsonResponse({ error: { code: 400, status: 'FAILED_PRECONDITION', message: msg } }, 400);
+      if (wantTime !== null && updateTimes.get(path) !== wantTime) {
+        return failed('the stored version does not match the required base version');
+      }
+      if (wantExists === 'false' && docs.has(path)) {
+        return failed('document already exists');
+      }
+      if (wantExists === 'true' && !docs.has(path)) {
+        return failed('no such document');
+      }
+
       const mask = u.searchParams.getAll('updateMask.fieldPaths');
       if (mask.length) {
         // Field-masked merge: only the named keys change, everything else stays.
@@ -83,14 +112,20 @@ export function installFakeFirestore() {
       } else {
         docs.set(path, incoming); // full replace, like setDoc
       }
-      return jsonResponse({ name: name(path), fields: docs.get(path) });
+      return jsonResponse({ name: name(path), fields: docs.get(path), updateTime: stamp(path) });
     }
     if (method === 'DELETE') {
       docs.delete(path);
+      updateTimes.delete(path);
       return jsonResponse({});
     }
     return jsonResponse({ error: `unsupported ${method}` }, 405);
   };
+
+  // docs.clear() alone would leave stale updateTimes behind, so a fresh doc at a
+  // reused path would inherit a version the client never read.
+  const clear = docs.clear.bind(docs);
+  docs.clear = () => { clear(); updateTimes.clear(); };
 
   state.restore = () => {
     globalThis.fetch = realFetch;

@@ -493,3 +493,131 @@ test('driver-change-pin counts wrong current PINs and locks on the fifth, exactl
   assert.equal(doc.failedAttempts, 0);
   assert.equal(doc.mustChangePin, false);
 });
+
+// ── J. two loaders on one truck ──────────────────────────────────────────────
+//
+// The dock case this exists for: two people load one trailer, both phones flush
+// at once, and the handler read-merge-writes a single document. Before the
+// compare-and-swap, the second write replaced the first — one loader's pieces
+// vanished from the record while BOTH phones got a 200 and dropped their local
+// copies. The freight was on the truck and nothing knew it.
+
+/**
+ * Run two pushes with a genuine interleave: hold the first conditional write
+ * until the second push has fully landed. Without the hold the fake resolves
+ * both in whatever order the scheduler picks, which is not the race we mean.
+ */
+async function racePushes(bodyA, bodyB, loadNbr) {
+  const realFetch = globalThis.fetch;
+  let release;
+  const held = new Promise((r) => { release = r; });
+  let heldTheFirstWrite = false;
+  globalThis.fetch = async (input, init = {}) => {
+    const isWrite = String(init.method || 'GET').toUpperCase() === 'PATCH' && String(input).includes(loadNbr);
+    if (isWrite && !heldTheFirstWrite) {
+      heldTheFirstWrite = true;
+      await held;
+    }
+    return realFetch(input, init);
+  };
+  try {
+    const a = invoke(scanSession, { token: DRIVER_TOKEN, body: bodyA });
+    // Let A finish its read and arrive at the held write.
+    await new Promise((r) => setTimeout(r, 20));
+    const resB = await invoke(scanSession, { token: DISPATCHER_TOKEN, body: bodyB });
+    release();
+    return { resA: await a, resB };
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+const pieceScan = (og, stopNbr, at) => ({ og, pro: '0071576871', scannedAt: at, stopNbr, engine: 'wedge' });
+
+test('two loaders pushing one load at the same moment: neither loader\'s pieces are lost', async () => {
+  fake.docs.clear();
+  const date = '2026-08-07';
+  const loadNbr = 'DAVIS000201463';
+  const { resA, resB } = await racePushes(
+    { loadNbr, date, scans: [pieceScan('OG0000000001', '1', '2026-08-07T09:00:00.000Z')] },
+    { loadNbr, date, scans: [pieceScan('OG0000000002', '2', '2026-08-07T09:00:05.000Z')] },
+    loadNbr,
+  );
+
+  assert.equal(resB.status, 200, 'the loader who got there first is accepted');
+  assert.equal(resA.status, 200, 'and so is the one who lost the race');
+
+  const doc = await fs.getDoc(`nuvizz_load_scans/davis__${date}__${loadNbr}`);
+  assert.deepEqual(
+    doc.scans.map((s) => s.og).sort(),
+    ['OG0000000001', 'OG0000000002'],
+    'both pieces are on the load, not just the last writer\'s',
+  );
+  assert.equal(doc.scannedPieces, 2);
+  assert.equal(doc.scannedCount, 2);
+
+  const a = await resA.json();
+  assert.equal(a.attempts, 2, 'the losing write was retried against the winner\'s document, not forced over it');
+  assert.equal(a.added, 1, 'and it still reports only the piece it actually contributed');
+});
+
+test('both loaders are recorded in workedBy — the retry merges into the winner\'s row, not over it', async () => {
+  fake.docs.clear();
+  const date = '2026-08-07';
+  const loadNbr = 'DAVIS000201464';
+  await racePushes(
+    { loadNbr, date, scans: [pieceScan('OG0000000011', '1', '2026-08-07T09:00:00.000Z')] },
+    { loadNbr, date, scans: [pieceScan('OG0000000012', '2', '2026-08-07T09:00:05.000Z')] },
+    loadNbr,
+  );
+  const doc = await fs.getDoc(`nuvizz_load_scans/davis__${date}__${loadNbr}`);
+  const who = (doc.workedBy || []).map((w) => w.driverNumber).sort();
+  assert.deepEqual(who, ['1', '4471'], 'the loader and the dispatcher both survive in the history');
+});
+
+test('a push that keeps losing the race is a 409, so the phone keeps the rows queued', async () => {
+  fake.docs.clear();
+  const date = '2026-08-07';
+  const loadNbr = 'DAVIS000201465';
+  await fs.setDoc(`nuvizz_load_scans/davis__${date}__${loadNbr}`, { loadNbr, scans: [] });
+
+  // Every conditional write loses: someone else always got there first.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    if (String(init.method || 'GET').toUpperCase() === 'PATCH' && url.includes('currentDocument.updateTime')) {
+      return new Response(JSON.stringify({ error: { status: 'FAILED_PRECONDITION' } }), {
+        status: 400, headers: { 'content-type': 'application/json' },
+      });
+    }
+    return realFetch(input, init);
+  };
+  let res;
+  try {
+    res = await invoke(scanSession, {
+      token: DRIVER_TOKEN,
+      body: { loadNbr, date, scans: [pieceScan('OG0000000021', '1', '2026-08-07T09:00:00.000Z')] },
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(res.status, 409, 'not a 200 — a 200 would make the phone drop the only other copy');
+  const body = await res.json();
+  assert.equal(body.ok, false);
+  assert.equal(body.retryable, true);
+});
+
+test('a conditional write is refused outright when the document changed, and never silently overwrites', async () => {
+  fake.docs.clear();
+  await fs.setDoc('nuvizz_load_scans/probe', { v: 1 });
+  const { data, updateTime } = await fs.getDocWithMeta('nuvizz_load_scans/probe');
+  assert.equal(data.v, 1);
+  assert.ok(updateTime, 'the read carries the version the write will be judged against');
+
+  assert.equal(await fs.setDocIfUnchanged('nuvizz_load_scans/probe', { v: 2 }, updateTime), true);
+  assert.equal(await fs.setDocIfUnchanged('nuvizz_load_scans/probe', { v: 3 }, updateTime), false, 'a stale base version does not land');
+  assert.equal((await fs.getDoc('nuvizz_load_scans/probe')).v, 2, 'and the winner\'s value is still there');
+
+  assert.equal(await fs.setDocIfUnchanged('nuvizz_load_scans/probe', { v: 4 }, null), false, '"must not exist" fails once it exists');
+  assert.equal(await fs.setDocIfUnchanged('nuvizz_load_scans/fresh', { v: 1 }, null), true, 'and succeeds when it truly does not');
+});

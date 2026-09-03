@@ -145,6 +145,54 @@ export async function setDoc(path: string, data: any): Promise<void> {
   if (!resp.ok) throw new Error(`setDoc ${path} failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
 }
 
+/**
+ * A read that ALSO returns the document's updateTime, so the caller can write
+ * back conditionally. Separate from getDoc() on purpose: the updateTime is
+ * write-machinery, and a handler that spreads a read document into a write must
+ * not carry it into Firestore as a field.
+ */
+export async function getDocWithMeta(path: string): Promise<{ data: any | null; updateTime: string | null }> {
+  const resp = await req(encodePath(path));
+  if (resp.status === 404) return { data: null, updateTime: null };
+  if (!resp.ok) throw new Error(`getDocWithMeta ${path} failed: ${resp.status}`);
+  const raw: any = await resp.json();
+  return { data: decodeDoc(raw), updateTime: typeof raw?.updateTime === 'string' ? raw.updateTime : null };
+}
+
+/**
+ * Firestore says "somebody wrote first" with more than one status depending on
+ * which precondition was used and how the request was routed, so all of them are
+ * treated as the same answer. Anything else is a real error and is thrown.
+ */
+function wroteFirst(status: number, body: string): boolean {
+  if (status === 409 || status === 412) return true;
+  return status === 400 && /FAILED_PRECONDITION|ABORTED|ALREADY_EXISTS/i.test(body);
+}
+
+/**
+ * COMPARE AND SWAP. A full overwrite that lands only if the document is still
+ * byte-for-byte the version the caller read; pass updateTime: null to mean "and
+ * it must still not exist".
+ *
+ * Returns false — it does not throw — when someone else got there first, because
+ * that is not a failure, it is the signal to re-read and merge again. Read-then-
+ * setDoc without this is a lost update every time two people work one load at
+ * once, which on a dock is the normal case, not the edge case.
+ */
+export async function setDocIfUnchanged(path: string, data: any, updateTime: string | null): Promise<boolean> {
+  const guard = updateTime
+    ? `currentDocument.updateTime=${encodeURIComponent(updateTime)}`
+    : 'currentDocument.exists=false';
+  const resp = await req(`${encodePath(path)}?${guard}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ fields: encodeFields(data) }),
+  });
+  if (resp.ok) return true;
+  const text = await resp.text();
+  if (wroteFirst(resp.status, text)) return false;
+  throw new Error(`setDocIfUnchanged ${path} failed: ${resp.status} ${text.slice(0, 200)}`);
+}
+
 /** Merge-patch only the supplied keys, leaving every other field intact. */
 export async function patchDoc(path: string, data: any): Promise<void> {
   const keys = Object.keys(data || {});

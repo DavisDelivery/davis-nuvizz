@@ -69,7 +69,8 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 
 ### W1.1 — critical and high (10 items)
 
-- [ ] **`load-scan/netlify/functions/scan-session.mts:316`** — Concurrent pushes to one load lose scans; the phone marks them synced anyway  
+- [x] **`load-scan/netlify/functions/scan-session.mts:316`** — Concurrent pushes to one load lose scans; the phone marks them synced anyway  
+      *Done v0.90.3:* compare-and-swap with an updateTime precondition and a merge-into-the-winner retry; a push that keeps losing is a 409, never a 200.  
       *Fix:* Send the PATCH with a `currentDocument.updateTime` precondition taken from the getDoc and retry the read-merge-write on a 412 (or use a Firestore commit/transaction); alternatively make the phone only mark rows synced that appear in the response's merged OG l…  
       <sub>CRITICAL · async-race · A6-S31-1 · reproduced by running the code</sub>
 - [ ] **`load-scan/netlify/functions/scan-session.mts:355`** — Deactivated/demoted load-scan credentials keep writing for 90 days (token role only)  
