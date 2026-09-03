@@ -70,6 +70,40 @@ export function isReportHour(hour: number, minute: number): boolean {
   return hour === REPORT_HOUR_ET && minute >= REPORT_MINUTE_ET;
 }
 
+/**
+ * PURE. Is it PAST 6:30 in Georgia — i.e. could tonight's report already have been sent?
+ *
+ * ── THE SECOND FIRING IS A SPARE, AND IT WAS BEING THROWN AWAY ──────────────
+ * Chad, at half past midnight: "Where is my end of day email I'm supposed to receive at
+ * 6:30 pm it didn't come today." On 2026-09-02 the 22:30 UTC run produced nothing — no
+ * email in the send log, and no snapshot in Firestore either, while 09-01 has one. The
+ * board was healthy (841 planned, 808 delivered), every email gate was open, and another
+ * scheduled function on the same site ran at 22:55 UTC, so neither the data nor the
+ * recipient nor the platform explains it. One invocation simply did not produce a report.
+ *
+ * AND NOTHING COVERED FOR IT. The cron fires twice (22:30 and 23:30 UTC) for one reason:
+ * daylight saving. Whichever lands on 18:xx ET does the work and the other returns
+ * immediately — so a night when the primary firing fails has no second chance at all, and
+ * the only detector is Chad noticing an absence hours later. An absent email is the worst
+ * possible alarm: it looks identical to a delayed one, a filtered one and a deleted one.
+ *
+ * So the spare now covers. It runs only when it is genuinely PAST report time and the day
+ * has no snapshot yet — and the existing write-once rule already stops a double send,
+ * because the email is sent only when the snapshot write returns 'written'.
+ *
+ * The DST arithmetic works out in both directions, which is the whole reason this is a
+ * separate predicate with its own tests:
+ *   EDT  22:30 UTC → 18:30 ET (primary)  ·  23:30 UTC → 19:30 ET (spare, past → covers)
+ *   EST  22:30 UTC → 17:30 ET (early, NOT past → stands down)  ·  23:30 UTC → 18:30 ET (primary)
+ * In winter the earlier firing must NOT cover, because 6:30 has not happened yet — and a
+ * naive "the other slot retries" rule would have mailed a half-finished day every evening
+ * from November to March.
+ */
+export function isAfterReportTime(hour: number, minute: number): boolean {
+  if (hour > REPORT_HOUR_ET) return true;
+  return hour === REPORT_HOUR_ET && minute >= REPORT_MINUTE_ET;
+}
+
 /** PURE. The ET calendar day before `date` — the day this run reconciles. */
 export function previousDay(date: string): string {
   const [y, m, d] = String(date).split('-').map(Number);
@@ -83,12 +117,27 @@ export default async (): Promise<Response> => {
   if (!isFirestoreEnabled()) return J({ ok: false, error: 'FIREBASE_SA not set' }, 500);
 
   const { hour, minute } = etParts();
-  if (!isReportHour(hour, minute)) {
+  const primary = isReportHour(hour, minute);
+  // The spare firing. It does nothing on an ordinary evening — the primary run has already
+  // written the snapshot by now, and this returns after a single getDoc.
+  const late = !primary && isAfterReportTime(hour, minute);
+  if (!primary && !late) {
     return J({ ok: true, note: 'not the 6:30p ET firing — the other UTC slot owns this one', etHour: hour, etMinute: minute });
   }
 
   const date = etDayString();
-  const out: any = { ok: true, date, etHour: hour, etMinute: minute };
+  const out: any = { ok: true, date, etHour: hour, etMinute: minute, firing: primary ? 'primary' : 'spare' };
+
+  if (late) {
+    // ONE READ, THEN OUT. Asking Firestore whether tonight already reported is the entire
+    // cost of the safety net on a normal day.
+    const already = await readDayCompletion(TENANT, date).catch(() => null);
+    if (already?.snapshot) {
+      out.note = 'the 6:30p run already reported tonight — nothing to cover for';
+      return J(out);
+    }
+    out.note = 'the 6:30p run left no snapshot for tonight — the spare firing is covering';
+  }
 
   try {
     // ── 1. today's snapshot ──────────────────────────────────────────────────
@@ -99,7 +148,12 @@ export default async (): Promise<Response> => {
     // the second about the rule. Best-effort: a history that cannot be read leaves the join
     // marked unavailable and prints that, rather than reporting nobody was flagged.
     const flagDoc = await getDoc(flagHistoryPath(TENANT, date)).catch(() => null);
-    const report = attachFlagHistory(buildDayCompletion(stops || [], { date, asOf: '6:30p' }), flagDoc);
+    // WHAT TIME THIS READING IS OF, honestly. A spare run happens an hour later, and
+    // stamping it '6:30p' would put a time on the report that nothing observed — the same
+    // class of mistake as reporting an intent as an outcome. A late report says it is late,
+    // which is also how Chad finds out the primary run failed without having to ask.
+    const asOf = primary ? '6:30p' : `${((hour + 11) % 12) + 1}:${String(minute).padStart(2, '0')}p (late — the 6:30 run did not report)`;
+    const report = attachFlagHistory(buildDayCompletion(stops || [], { date, asOf }), flagDoc);
     out.report = {
       planned: report.planned, gradable: report.gradable, delivered: report.delivered,
       open: report.open, counts: report.counts,
