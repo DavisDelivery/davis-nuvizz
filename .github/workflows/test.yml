@@ -162,6 +162,17 @@ jobs:
         env:
           MOBILE: '1'
           SMOKE_PORT: '8806'
+      # The route preflight fires while a router is BUILDING, so the thing that can break it
+      # is not the arithmetic (unit-tested) but the screen: a load that will not open into
+      # Compare, a badge that squeezes the customer's name out of the row, a banner nobody
+      # can reach on a phone. Drives the real bundle, opens a real load, both layouts.
+      - run: npm run verify:route-preflight
+        env:
+          SMOKE_PORT: '8807'
+      - run: npm run verify:route-preflight
+        env:
+          MOBILE: '1'
+          SMOKE_PORT: '8808'
       # "Hide place labels" can only misbehave on a build that HAS a cloud mapId: Google
       # ignores the JS `styles` array on those maps, so the toggle had nothing to do on the
       # roadmap base. Honouring it means REBUILDING the map without the mapId, and the risk
