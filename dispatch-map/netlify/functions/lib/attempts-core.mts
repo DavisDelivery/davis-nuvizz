@@ -31,7 +31,7 @@
 
 import { nowET } from './scan-schedule.mts';
 import { etDayString, isFirestoreEnabled, readStops } from './firestore.mts';
-import { isAttemptShipment } from './nuvizz-scan.mts';
+import { isAttemptShipment, scansEnabled } from './nuvizz-scan.mts';
 import { fetchSavedSearchRows, fromRows, SAVED_SEARCHES } from './nuvizz-list.mts';
 import { setCallTrigger } from './nuvizz-request.mts';
 import { driverKeyFor, stopMatchKey } from './history-derive.mts';
@@ -252,7 +252,12 @@ async function runGated(
     return json(200, { ok: false, error: 'FIREBASE_SA not set' });
   }
   const { date, isManual } = resolveAttemptDate(req);
-  const enabled = attEnabled();
+  // BOTH switches, not just this job's own. attEnabled() is deliberately independent so the
+  // attempts work can be stopped without touching the board scan — but the reverse was also
+  // true and was not deliberate: NUVIZZ_SCANS_ENABLED=false, the switch somebody flips to
+  // stop ALL vendor traffic, left these jobs calling. The master switch now wins, which also
+  // makes a mirror deploy silent here (isMirrorDeploy).
+  const enabled = attEnabled() && scansEnabled();
   // alreadyDone applies only to once-per-day jobs (the snapshot). The scan omits it so
   // every in-window fire re-runs — attempts accumulate through the evening, and a manual
   // run must never block the scheduled one (the bug that lost 6/25's evening attempts).
