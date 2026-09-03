@@ -81,6 +81,7 @@ import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDrive
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
+import { routePreflight } from './lib/route-preflight.js';
 import { isIosHomeScreenApp, canShareFiles, describePwaMode, viewerWayOut } from './lib/pwa-mode.js';
 // The scan plan's model, shared with the scheduler that runs it — the screen and the code
 // must not be able to disagree about what a rule means or what a scan affects.
@@ -108,7 +109,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.88.3';
+const APP_VERSION = '0.89.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -179,6 +180,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.89.0', 'THE ROUTE IS JUDGED WHILE YOU BUILD IT, NOT AFTER IT IS DRIVEN. Chad: “can we have flags pop in the routing page if we build a route that system immediately thinks won’t make it on time.” THE JUDGEMENT WAS ALREADY ON THAT SCREEN AND POINTED AT THE WRONG THING. Routing has run computeBoardFlags since the flag panel shipped — over the BOARD, meaning each stop in the route and position NuVizz currently holds for it. A Compare card is a sequence that exists nowhere yet, so the panel was describing the arrangement the router was in the middle of replacing. Every open card now re-walks ITS OWN order through the same engine: stage a stop, drag a row, hit Re-sequence, and the verdict moves with the list. TWO SENTENCES, NOT ONE, because they are two different jobs. “30m late” means you have it in the wrong place — drag it up. “CAN’T MAKE 12:00P” means moving it up cannot help: it is unreachable from the yard before that dock shuts, measured with the same leg function the walk uses. Telling a router to re-order a route that cannot be re-ordered into working costs him the one thing he is short of. IT NEVER BLOCKS THE SAVE. A router routinely knows what the model does not — the customer takes late, the driver has a key, the hours on file are stale — and a build that cannot be saved because a model disagrees is a build that gets done in the vendor portal instead, where nothing here sees it at all. AND IT SAYS WHAT IT COULD NOT LOOK AT. A stop with no pin is not fine, it is unexamined; the banner counts those separately, because a preflight that reports a clean route while silently skipping four stops is worse than no preflight — it is believed. A CORRECTION THAT CAME OUT OF BUILDING IT, and it was a live disagreement rather than a gap: every server sweep has passed the measured per-route departure table since v0.64.0, and BOTH browser calls to the flag engine passed none — so this screen walked every route from an assumed 8:00 while the email judging the same route tonight walked it from that truck’s own median. The fleet departs at a median 08:23, which makes 8:00 fair in the middle and wrong in the tails (p10 05:46, p90 13:50): a route that really rolls at 1:50p read clean on screen and lit up in the inbox, and nobody could tell why. The browser reads the same table now — one Firestore document, zero NuVizz calls — and the card says whether the departure it judged from was measured or assumed, because those are different claims. THE BUG THIS FEATURE’S OWN FIRST DRAFT SHIPPED WITH, caught by running it rather than reading it: the board callers hand the engine the clock, so the preflight did too. A draft has no driver, and past 7:00a the engine correctly reads that as a driverless load — it restarts the walk from NOON and supersedes every receiving-hours row with one “no driver” card. Measured on a three-stop draft closing at 1:00p: with no clock the walk gives 8:20a, 9:01a, 9:47a and nothing is late; with a 9:00a clock it gives 12:20p, 1:01p, 1:47p — two stops past their close — and the panel showed ZERO flags. A route with two stops going to miss rendered as a clean build. The preflight takes no clock at all now, and a clock passed by mistake cannot change it. TWO VIEWS. The badge sits on its own line under the customer name on both, because the first cut put it beside the name and turned “PREFLIGHT CO E” into “PR…” — a warning that costs you the name of the customer it is warning about. Verified in a real browser at 1600px and 390px, opening a real load into Compare, and wired into CI at both widths. Zero NuVizz calls, zero Google calls: 2.9 ms for 60 stops. NOT YET COVERED, and named rather than left to be discovered: the engine Build’s Result cards, which print their own ETAs from a different and more optimistic model — putting this verdict beside those would give one card two clocks, and reconciling them is a bigger change than this one. 15 new tests, 3,244 green.'],
   ['0.88.3', 'THE 6:30 REPORT DID NOT COME, AND NOTHING COVERED FOR IT. Chad, at half past midnight: \u201cWhere is my end of day email I\u2019m supposed to receive at 6:30 pm it didn\u2019t come today.\u201d HE WAS RIGHT AND THE EVIDENCE IS UNAMBIGUOUS: no send in the mail log for 2026-09-02 \u2014 a clean gap from 20:07 to 22:55 UTC with the 22:30 slot inside it \u2014 and no snapshot in Firestore either, while 09-01 has one stamped 6:30p. The snapshot is written BEFORE the email and is what gates it, so the run never reached the send. Nothing else explains it: the board was healthy (841 planned, 808 delivered, 31 open, 2 unable), the dry-run twin reports emailConfigured/recipientConfigured true and disabled false, the schedule 30 22,23 was unchanged, and another cron on the same site sent at 22:55 UTC that evening. One invocation produced nothing. THE REAL DEFECT IS THAT NOTHING NOTICED. The cron fires twice for one reason \u2014 daylight saving \u2014 and whichever lands on 18:xx ET works while the other returns immediately, so a failed primary firing had no second chance and the only detector was Chad noticing an absence six hours later. An absent email is the worst possible alarm: it is pixel-identical to a delayed one, a filtered one and a deleted one. THE SPARE NOW COVERS, and only when it should: isAfterReportTime gates it, so in summer 23:30 UTC (7:30p ET) covers a failed 22:30, and in WINTER 22:30 UTC lands at 5:30p ET and stands down \u2014 a naive \u201cthe other slot retries\u201d rule would have mailed a half-finished board every evening from November to March and looked like it was working. It costs one getDoc on an ordinary night: the snapshot already exists, so it returns. The existing write-once rule prevents a double send with no new logic, because the email fires only when the write returns \u2018written\u2019. AND A LATE REPORT SAYS IT IS LATE \u2014 asOf carries the real reading time instead of a hardcoded \u20186:30p\u2019, because stamping a 7:30 reading 6:30 is the same class of mistake as reporting an intent as an outcome, and it is also how Chad learns the primary run failed without having to ask. 7 new tests, 3 mutations killed.'],
   ['0.88.2', 'THE COLLAPSE CLIFF MOVED WITH THE EMAIL FLOOR, AND NOBODY WAS TESTING THE NEW ONE. flag-rows.mts exists because board-flags collapses a rule+tier bucket past its cap into ONE summary row carrying no stop number, and every consumer drops it — so TWELVE red hours_risk rows email twelve people and THIRTEEN email NOBODY, silently, because one calm summary line is pixel-identical to a calm board. That measurement was taken when red emailed. Since v0.88.0 it does not, so for the inbox the cliff is now the CRITICAL bucket, cap 40: forty criticals email forty people and forty-one email nobody. A far worse day than thirteen, the identical failure, the same flattering direction — and untested until now. The module comment says which consumers the old measurement still describes (the overnight texts, whose bar is still red, and the history recorder, which records every tier) rather than being quietly left to read as current. AND THE FIRST DRAFT OF THAT TEST MEASURED ZERO, which is the part worth keeping: a receiving close early enough to make the rows critical is also a close that has ALREADY SHUT, so rule 2 correctly refused all forty and the test would have passed for the wrong reason had it been written the other way round. The fixture moves the stops two hundred miles from the depot instead — 225 minutes past a 1:30p close against a 90-minute band, with the close still ahead of the clock. 3,229 green.'],
   ['0.88.1', 'THE CUT FALLS WHERE THE CLOCK WAS A GUESS — the strongest thing that can be said for v0.88.0, and it was not visible until it was counted. Of the fourteen emails that survive the critical floor, TWELVE were anchored: the arrival was measured from a real truck stamp. Of the eight that stop, FIVE were unanchored — projected from an assumed depot departure against a ±90-minute error band, which is also WHY they could not reach critical, because critical needs the overrun to beat twice the model’s own error and an unanchored row must therefore be projected three hours late. The median warning barely moves, 600 minutes against 540. So narrowing the inbox did not simply make it quieter; it took the guesses out of it and left the measurements. AND ONE COMMENT THAT WOULD HAVE TAUGHT THE NEXT READER THE WRONG POLICY: a board-flags test still said “flag-alert.mts ships ALERT_TIERS = {critical, red}”. It ships a floor now. The rule that test pins — an assumed 5pm close can never leave amber — is unchanged and still passes; only the sentence explaining why was stale, and a stale explanation inside a test is worse than none, because it reads as verified. 3,228 green.'],
@@ -3883,6 +3885,59 @@ function useTravelInputs() {
     return () => { cancelled = true; clearInterval(id); };
   }, []);
   return travel;
+}
+
+// WHEN EACH TRUCK ACTUALLY LEAVES — the table the SWEEPS have used since v0.64.0 and the
+// browser never has.
+//
+// Found while building the routing preflight, and it is a live disagreement rather than a
+// gap: every server sweep passes departByRoute (eta-flag-alert-background.mts:174,
+// eta-flag-check.mts:401, eta-flag-evening-background.mts:151) while both browser calls to
+// computeBoardFlags passed none — so the screen has been walking every route from an assumed
+// 8:00 while the email that judges the same route tonight walks it from that route's measured
+// median. Over sealed history the fleet departs at a median 08:23, which makes 8:00 fair in
+// the middle and wrong in the tails: p10 05:46, p90 13:50. A route that really rolls at 1:50p
+// reads clean on the screen and lights up in the inbox, and nobody could tell why.
+//
+// One Firestore document, read-only, ZERO NuVizz calls — the same doc the nightly fit
+// publishes. `usedByBoard` is the endpoint's own version check: a table written under the old
+// version means something different (v1 never removed the dwell) and is refused there rather
+// than being re-derived here, so the browser cannot start believing a number the board does
+// not. Null until it lands and on any failure, which every consumer treats as "keep 8:00".
+function useRouteDepartures() {
+  const [table, setTable] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const r = await apiFetch('/.netlify/functions/route-departures');
+        const j = await r.json();
+        if (cancelled || !j?.ok) return;
+        const next = j.usedByBoard && j.table && Object.keys(j.table).length ? j.table : null;
+        // Identity-stable when nothing moved — the fit runs nightly, so a fresh object every
+        // five minutes would invalidate every flag memo on the screen for identical bytes.
+        setTable((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+      } catch { /* the 8:00 default carries the board */ }
+    };
+    load();
+    const id = setInterval(load, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+  return table;
+}
+
+/** A route's measured departure, or null so the caller keeps its own default. Case- and
+ *  space-insensitive: a board key is a human-typed load name, and "JEAN " is "jean". */
+function departureFor(table, routeKey) {
+  if (!table) return null;
+  const want = String(routeKey ?? '').trim().toLowerCase();
+  if (!want) return null;
+  for (const [k, v] of Object.entries(table)) {
+    if (String(k).trim().toLowerCase() !== want) continue;
+    const m = Number(v && typeof v === 'object' ? v.departMin : v);
+    return Number.isFinite(m) ? m : null;
+  }
+  return null;
 }
 
 // THE SEVERITY FLOOR FOR THIS BOARD DAY — { stopNbr: worstTier } as the sweeps recorded it.
@@ -10731,6 +10786,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     return () => clearInterval(id);
   }, []);
   const travelInputs = useTravelInputs();
+  const departTable = useRouteDepartures();
   const flagHistory = useFlagTierFloor(selectedDate);
   const tierFloorByStop = flagHistory?.tiers || null;
   const boardFlags = useMemo(() => {
@@ -10746,6 +10802,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         // Severity ratchets on what this board day has already seen — a row that reached
         // red does not slide back to advisory while it is still predicted past the close.
         ...(tierFloorByStop ? { tierFloorByStop } : {}),
+        // WHEN THE TRUCK LEAVES, from the table the sweeps have used since v0.64.0. Passing
+        // it here is a CORRECTION, not a new feature: without it this screen walked every
+        // route from 8:00 while the email judging the same route tonight walked it from that
+        // route's measured median, so a card could read clean and still produce an alert.
+        // Same one-table-for-everyone discipline as the tiers.
+        ...(departTable ? { departByRoute: departTable } : {}),
         // The route→class map is only true for ITS day — route names repeat daily and
         // drivers rotate, so a Friday map applied to Monday's planning board would walk
         // Monday's routes on Friday's trucks. Same gate discipline as nowMin above.
@@ -10758,7 +10820,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     });
     const classesLive = !!(travelInputs?.classCurves && travelInputs?.routeClasses && travelInputs.routeClassesDate === selectedDate);
     return { ...out, travelMeta: travelInputs ? { ...travelInputs.meta, classes: classesLive, routeClassCount: classesLive ? Object.keys(travelInputs.routeClasses).length : 0 } : null };
-  }, [stops, notes, rosterRawRows, selectedDate, flagsClockTick, travelInputs, tierFloorByStop]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [stops, notes, rosterRawRows, selectedDate, flagsClockTick, travelInputs, tierFloorByStop, departTable]); // eslint-disable-line react-hooks/exhaustive-deps
   // The chip's number excludes dismissed rows — a cleared list must read as cleared.
   const visibleFlagCounts = useMemo(() => {
     const live = boardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]);
@@ -16111,7 +16173,91 @@ function LiveCommitConfirm({ confirm, liveMode, busy, title, onCancel, onConfirm
   );
 }
 
-function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
+// ── THE PREFLIGHT ON A COMPARE CARD ─────────────────────────────────────────
+//
+// Chad: "can we have flags pop in the routing page if we build a route that system
+// immediately thinks won't make it on time."
+//
+// TWO SENTENCES, NOT ONE, because they are two different jobs for the router:
+//   "3rd · 30m late"      — you have this in the wrong place. Drag it up.
+//   "can't make 12:00p"   — moving it up cannot help; it is unreachable from the yard before
+//                           that dock shuts. That is a phone call or tomorrow's board, and
+//                           telling him to re-order costs him the one thing he is short of.
+//
+// IT NEVER BLOCKS THE SAVE. A router routinely knows things the model does not — the customer
+// takes late, the driver has a key, the receiving hours on file are stale. A build that
+// cannot be saved because a model disagrees is a build that gets done in the vendor portal
+// instead, and then nothing here sees it at all.
+const durMin = (m) => {
+  const v = Math.abs(Math.round(Number(m) || 0));
+  return v >= 60 ? `${Math.floor(v / 60)}h ${v % 60}m` : `${v}m`;
+};
+
+/** One stop's verdict, inline on its row. Renders NOTHING for a stop that makes its window —
+ *  a green tick on every good row is a wall of ticks, and the eye stops seeing the red one. */
+function PreflightStopBadge({ v, isMobile }) {
+  if (!v || !v.late) return null;
+  const style = TIER_STYLE[v.tier] || TIER_STYLE.amber;
+  const text = v.hopeless
+    ? `can’t make ${fmtMin(v.closeMin)}`
+    : `${durMin(v.lateBy)} late`;
+  const title = v.hopeless
+    ? `Unreachable in any order: the earliest we could be there from the yard is ${fmtMin(v.earliestMin)} and they close at ${fmtMin(v.closeMin)}.`
+    : `Estimated arrival ${fmtMin(v.etaMin)} against a ${fmtMin(v.closeMin)} close${v.hoursTier === 'assumed' ? ' (no hours on file — 5pm assumed)' : v.hoursTier === 'auto' ? ' (hours auto-detected — verify)' : ''}. Moving it earlier on the route should clear it.`;
+  return (
+    <span
+      title={title}
+      className={`inline-flex items-center gap-1 rounded px-1 py-[1px] font-bold uppercase tracking-wide ${style} ${isMobile ? 'text-[10px] px-1.5 py-0.5' : 'text-[9px]'}`}
+    >
+      {v.hopeless ? <Ban size={9} /> : <Clock size={9} />}{text}
+    </span>
+  );
+}
+
+/** The route's own verdict, above its stop list. Two views: the desktop gets one dense line
+ *  with the basis beside it; the phone stacks them, in flow, so nothing can land on top of
+ *  the list below when the text wraps. */
+function PreflightBanner({ pre, isMobile }) {
+  if (!pre) return null;
+  const { lateCount, hopelessCount, worstTier, unjudged, late } = pre;
+  // A route with nothing to say says nothing — except when it could not look, which is not
+  // the same thing and must never render as a clean bill of health.
+  if (!lateCount && !unjudged.total) return null;
+  const worst = late.reduce((a, b) => ((b.lateBy || 0) > (a?.lateBy || 0) ? b : a), null);
+  const tone = worstTier === 'critical' || worstTier === 'red'
+    ? 'bg-rose-50 border-rose-200 text-rose-800'
+    : worstTier === 'amber' ? 'bg-amber-50 border-amber-200 text-amber-800'
+      : 'bg-slate-50 border-slate-200 text-slate-600';
+  const headline = lateCount
+    ? `${lateCount} stop${lateCount === 1 ? '' : 's'} projected past ${lateCount === 1 ? 'its' : 'their'} close`
+    : `${unjudged.total} stop${unjudged.total === 1 ? '' : 's'} could not be checked`;
+  // The basis, always, because "late" measured from a departure nobody has ever observed is
+  // a different claim from one measured off this truck's own habit — and the router deciding
+  // whether to redo his morning is entitled to know which.
+  const basis = `from ${pre.departure.source === 'measured' ? 'this load’s measured' : 'an assumed'} ${fmtMin(pre.departure.min)} departure`;
+  // "worst 2h 0m" beside "1 unreachable in any order" is the same stop measured twice, and a
+  // lateness figure means nothing for a stop that cannot be reached at all — so it is dropped
+  // once every late stop is unreachable. It is the number to show when SOME can be re-ordered.
+  const allHopeless = lateCount > 0 && hopelessCount === lateCount;
+  const parts = [
+    hopelessCount ? `${hopelessCount} unreachable in any order` : null,
+    lateCount && worst && !allHopeless ? `worst ${durMin(worst.lateBy)}` : null,
+    unjudged.total ? `${unjudged.total} not checked (no pin)` : null,
+  ].filter(Boolean);
+  return (
+    <div className={`px-2 py-1 border-t text-[10px] ${tone}`}>
+      <div className={isMobile ? 'flex flex-col gap-0.5' : 'flex items-center gap-1.5 flex-wrap'}>
+        <span className="inline-flex items-center gap-1 font-semibold">
+          <AlertTriangle size={11} className="shrink-0" />{headline}
+        </span>
+        {parts.length > 0 && <span className="opacity-90">{parts.join(' · ')}</span>}
+        <span className={`opacity-70 ${isMobile ? '' : 'ml-auto'}`}>{basis}</span>
+      </div>
+    </div>
+  );
+}
+
+function RoutingWorkbenchCard({ route, preflight = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
   // The live-dispatch UI gate is now the gear toggle (prop) rather than the module-level
   // ?write=1/env const. Aliased to the original name so the gate sites below are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -16122,6 +16268,10 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
   // must show exactly what Save will send, so an unresolved id renders as a stub row.
   const rows = route.order.map((id) => stopById.get(String(id)) || { stopNbr: String(id), __unresolved: true });
   const unresolvedCount = rows.filter((s) => s.__unresolved).length;
+  const preflightByStop = useMemo(
+    () => new Map((preflight?.stops || []).map((v) => [String(v.stopNbr), v])),
+    [preflight],
+  );
   const unmappedCount = rows.filter((s) => !s.__unresolved && (s.lat == null || s.lng == null)).length;
   // Orders staged for removal (in `removed` but no longer in the live order) — shown in the footer.
   const removedRows = (route.removed || [])
@@ -16260,6 +16410,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
           </div>
         )}
       </div>
+      {!route.collapsed && <PreflightBanner pre={preflight} isMobile={isMobile} />}
       {!route.collapsed && (
         <ol
           className={`${isMobile ? 'max-h-[40vh]' : 'flex-1'} min-h-0 overflow-y-auto divide-y`}
@@ -16271,6 +16422,11 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
             const id = String(s.stopNbr);
             const isExp = expanded.has(id);
             const nextMi = nextMiById.get(id);
+            // This stop's preflight verdict, or null. Keyed by stop number rather than by
+            // position: the badge must follow the STOP when the list is reordered, and a
+            // positional lookup would leave the warning sitting on whatever row inherited
+            // the index — the most convincing possible way to be wrong.
+            const pf = preflightByStop.get(id) || null;
             // STUB ROW — the id is in this card's order (so Save WILL send it) but the board
             // no longer carries the stop. Shown rather than hidden so the card can't
             // under-report what it's about to save; not draggable/expandable (there's no
@@ -16305,7 +16461,18 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
                   {isExp ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                 </button>
                 <div className="min-w-0 flex-1">
+                  {/* THE NAME KEEPS THE LINE. The first cut put the badge beside it, and on a
+                      Compare card — a ~300px column on the desktop and narrower on a phone —
+                      "PREFLIGHT CO E" became "PR…". A warning that costs the router the name
+                      of the customer it is warning about is a bad trade: he cannot act on
+                      "PR…". So the verdict sits on its OWN line underneath, in flow, on both
+                      views; the phone gets more vertical room because a thumb needs it. */}
                   <div className="truncate font-medium text-slate-800">{s.businessName || id}</div>
+                  {pf?.late && (
+                    <div className={isMobile ? 'mt-1' : 'mt-0.5'}>
+                      <PreflightStopBadge v={pf} isMobile={isMobile} />
+                    </div>
+                  )}
                   {/* City · skids · loose. The card header totals loose for the whole route, so a
                       per-stop breakdown was the missing half — you could see 21 loose on BRIAN with
                       no way to tell WHICH stops carried it. Shown only when the stop actually has
@@ -16382,7 +16549,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
 // ungeocoded ones. Card membership, display, freight totals and the Save payload all use
 // boardStopById so what the card shows == what Save sends (a coord-less stop is still on
 // the load). Anything that needs geometry keeps using stopById.
-function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null, onRouteCreated = null }) {
+function RoutingWorkbench({ wbRoutes, preflightByKey = null, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null, onRouteCreated = null }) {
   const lookup = boardStopById || stopById;
   // Save sends this whole board to NuVizz through nuvizz-write, which requires dispatcher.
   // Its own gate rather than a prop: this component owns the Save button and the confirm path,
@@ -17040,6 +17207,7 @@ function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onTogg
           <RoutingWorkbenchCard
             key={r.key}
             route={r}
+            preflight={preflightByKey?.get?.(r.key) || null}
             stopById={lookup}
             otherKeys={wbRoutes.map((x) => x.key).filter((k) => k !== r.key)}
             ninjaMode={ninjaMode}
@@ -17929,6 +18097,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     return () => clearInterval(id);
   }, []);
   const travelInputs = useTravelInputs();
+  const departTable = useRouteDepartures();
   const flagHistory = useFlagTierFloor(selectedDate);
   const tierFloorByStop = flagHistory?.tiers || null;
   const routingBoardFlags = useMemo(() => {
@@ -17943,6 +18112,12 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
         // Severity ratchets on what this board day has already seen — a row that reached
         // red does not slide back to advisory while it is still predicted past the close.
         ...(tierFloorByStop ? { tierFloorByStop } : {}),
+        // WHEN THE TRUCK LEAVES, from the table the sweeps have used since v0.64.0. Passing
+        // it here is a CORRECTION, not a new feature: without it this screen walked every
+        // route from 8:00 while the email judging the same route tonight walked it from that
+        // route's measured median, so a card could read clean and still produce an alert.
+        // Same one-table-for-everyone discipline as the tiers.
+        ...(departTable ? { departByRoute: departTable } : {}),
         // The route→class map is only true for ITS day — route names repeat daily and
         // drivers rotate, so a Friday map applied to Monday's planning board would walk
         // Monday's routes on Friday's trucks. Same gate discipline as nowMin above.
@@ -17955,7 +18130,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     });
     const classesLive = !!(travelInputs?.classCurves && travelInputs?.routeClasses && travelInputs.routeClassesDate === selectedDate);
     return { ...out, travelMeta: travelInputs ? { ...travelInputs.meta, classes: classesLive, routeClassCount: classesLive ? Object.keys(travelInputs.routeClasses).length : 0 } : null };
-  }, [stops, notes, loadRosterList, selectedDate, flagsClockTick, travelInputs, tierFloorByStop]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [stops, notes, loadRosterList, selectedDate, flagsClockTick, travelInputs, tierFloorByStop, departTable]); // eslint-disable-line react-hooks/exhaustive-deps
   const visibleFlagCounts = useMemo(() => {
     const live = routingBoardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]);
     return {
@@ -18979,6 +19154,47 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     wbRoutesColored.forEach((rv) => rv.order.forEach((id, idx) => m.set(String(id), { color: rv.color, seq: idx + 1 })));
     return m;
   }, [wbRoutesColored]);
+
+  // THE PREFLIGHT — judge the route he is BUILDING, not the one NuVizz is holding.
+  //
+  // Chad: "can we have flags pop in the routing page if we build a route that system
+  // immediately thinks won't make it on time." The flag panel two hundred lines up already
+  // answers that question about the BOARD; a Compare card is a sequence that exists nowhere
+  // yet, so until now the panel was describing the arrangement he was in the middle of
+  // replacing. routePreflight re-walks the card's own order through the same engine.
+  //
+  // Computed for every open card in ONE memo rather than inside the card, because the inputs
+  // (notes, travel calibration, departures, the board date) all live here and the card should
+  // not have to be handed six of them to draw a badge. 2.9 ms for 60 stops, so re-running it
+  // on every drag is free — and it MUST re-run on every drag or it is answering about a list
+  // that is no longer on the screen.
+  const wbPreflight = useMemo(() => {
+    const m = new Map();
+    if (!wbRoutes.length) return m;
+    // DELIBERATELY NO CLOCK — see routePreflight's own comment. Handing the board clock to a
+    // driverless draft makes the engine restart the walk from noon and replace every
+    // receiving-hours row with one "no driver" card, so a route with two stops going to miss
+    // renders as a clean build. Measured, not assumed.
+    const travel = travelInputs
+      ? (travelInputs.routeClasses && travelInputs.routeClassesDate !== selectedDate
+        ? { ...travelInputs, routeClasses: undefined }
+        : travelInputs)
+      : null;
+    for (const r of wbRoutes) {
+      // The REAL load name, because the engine reads it for the truck-class curve and for the
+      // appointment / owner / set-aside route rules. A placeholder would opt the draft out of
+      // all four and quietly judge a tractor-trailer on a box truck's clock.
+      const routeKey = r.name || r.loadNbr || r.key;
+      const measured = departureFor(departTable, routeKey);
+      m.set(r.key, routePreflight({
+        order: r.order, stopById, notes, routeKey,
+        servedDate: selectedDate, dayKey: weekdayKeyFromDate(selectedDate),
+        depot: ROUTING_DEPOT, travel,
+        ...(measured != null ? { departMin: measured, departureSource: 'measured' } : {}),
+      }));
+    }
+    return m;
+  }, [wbRoutes, stopById, notes, selectedDate, travelInputs, departTable, flagsClockTick]); // eslint-disable-line react-hooks/exhaustive-deps
   const effectiveRouteInfo = wbRoutesColored.length ? wbRouteInfo : routeInfo;
 
   // The plan to persist on Save — engine result with any manual order applied.
@@ -20789,7 +21005,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
                     )}
                     {engineResultContent}
                     {wbRoutes.length > 0
-                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
+                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
                       : controlsContent}
                   </>
                 : mobilePanel === 'loads'
@@ -20859,7 +21075,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
               flex-1/min-h-0 resolves to what is actually left. */}
           {engineResultContent && <div className="p-2 pb-0 shrink-0 max-h-[45%] overflow-y-auto">{engineResultContent}</div>}
           <div className="flex-1 min-h-0">
-          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
           </div>
         </div>
       ) : leftPanelOn ? (
