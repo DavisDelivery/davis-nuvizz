@@ -14,7 +14,7 @@
 // Dispatcher role required — it is a staff activity report.
 
 import { listDocs, readStops, isFirestoreEnabled } from './lib/firestore.mts';
-import { DRIVER_AUTH, authenticate, normalizeRole } from './lib/auth.mts';
+import { DRIVER_AUTH, authenticate, liveClaims, normalizeRole } from './lib/auth.mts';
 import { toManifestStop, groupIntoLoads } from './lib/manifest.mts';
 import { buildActivity } from './lib/activity.mts';
 import { ok, bad, unauthorized, forbidden, etDayString, DATE_RE, viaProxy } from './lib/http.mts';
@@ -25,8 +25,15 @@ const SESSIONS = 'nuvizz_load_scans';
 export default async (req: Request): Promise<Response> => {
   if (req.method !== 'GET') return bad('GET only', 405);
 
-  const claims = authenticate(req);
-  if (!claims) return unauthorized();
+  const gate = await liveClaims(authenticate(req));
+  if (!gate.ok) {
+    // A credential that was deactivated or demoted stops working on the NEXT
+    // request, not at token expiry three months later.
+    if (gate.reason === 'inactive') return forbidden('credential is not active');
+    if (gate.reason === 'store-error') return bad('not configured', 503);
+    return unauthorized();
+  }
+  const claims = gate.claims;
   if (!isFirestoreEnabled()) return bad('not configured', 503);
   if (claims.role !== 'dispatcher') return forbidden('dispatcher role required');
 

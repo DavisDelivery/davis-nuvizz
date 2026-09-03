@@ -21,10 +21,10 @@
 // ZERO NuVizz calls.
 
 import { getDocWithMeta, setDocIfUnchanged, isFirestoreEnabled } from './lib/firestore.mts';
-import { authenticate } from './lib/auth.mts';
+import { authenticate, liveClaims } from './lib/auth.mts';
 import { normalizePro } from './lib/manifest.mts';
 import { mergeWorker } from './lib/activity.mts';
-import { ok, bad, json, unauthorized, readJson, etDayString, DATE_RE } from './lib/http.mts';
+import { ok, bad, json, unauthorized, forbidden, readJson, etDayString, DATE_RE } from './lib/http.mts';
 
 const SESSIONS = 'nuvizz_load_scans';
 const TENANT = 'davis';
@@ -249,38 +249,75 @@ export function mergeHandConfirms(
   return { handConfirms, added, duplicates };
 }
 
+/** The flags a loader can change AFTER the piece was first booked. */
+const flagsOf = (r: ScanRow) => ({
+  voidedAt: r.voidedAt ?? null,
+  voidReason: r.voidReason ?? '',
+  damaged: !!r.damaged,
+  damageNote: r.damageNote ?? '',
+});
+const sameFlags = (a: ScanRow, b: ScanRow) => {
+  const x = flagsOf(a); const y = flagsOf(b);
+  return x.voidedAt === y.voidedAt && x.voidReason === y.voidReason && x.damaged === y.damaged && x.damageNote === y.damageNote;
+};
+
 /**
  * Merge incoming scans into the existing set, keyed by OG.
  *
  * First write of an OG wins on timestamp — a replay must not move a piece's
  * scannedAt forward, or the dock timeline becomes fiction.
+ *
+ * BUT A RE-PUSH IS NOT ALWAYS A REPLAY. When a loader takes a scan back or marks
+ * a piece damaged, the phone clears syncedAt on the row it already sent and
+ * pushes it again — that is the only way the flag can travel. Discarding it as a
+ * duplicate meant a void or a damage flag could never reach here at all: the
+ * office kept counting a piece the dock had let go of, and a claim nobody raised
+ * because nobody was told. So a duplicate OG updates the FLAGS (last writer
+ * wins; the phone that holds the piece is the one that knows) while the identity
+ * of the scan — when it happened, who read it, which stop — stays as first
+ * written.
  */
-export function mergeScans(existing: ScanRow[], incoming: ScanRow[]): { scans: ScanRow[]; added: number; duplicates: number } {
+export function mergeScans(
+  existing: ScanRow[],
+  incoming: ScanRow[],
+): { scans: ScanRow[]; added: number; duplicates: number; updated: number } {
   const byOg = new Map<string, ScanRow>();
   for (const r of existing) byOg.set(r.og, r);
 
   let added = 0;
   let duplicates = 0;
+  let updated = 0;
   for (const r of incoming) {
-    if (byOg.has(r.og)) {
+    const prior = byOg.get(r.og);
+    if (prior) {
       duplicates++;
+      if (!sameFlags(prior, r)) {
+        byOg.set(r.og, { ...prior, ...flagsOf(r) });
+        updated++;
+      }
       continue;
     }
     byOg.set(r.og, r);
     added++;
   }
   const scans = [...byOg.values()].sort((a, b) => a.scannedAt.localeCompare(b.scannedAt));
-  return { scans, added, duplicates };
+  return { scans, added, duplicates, updated };
 }
+
+/** Pieces actually on the truck: a tombstoned scan is freight the dock let go of. */
+export const liveScanRows = (scans: ScanRow[]) => scans.filter((s) => !s.voidedAt);
 
 export default async (req: Request): Promise<Response> => {
   if (req.method !== 'POST') return bad('POST only', 405);
   // Authenticate BEFORE any configuration check: a caller with no token must not
-  // be able to learn whether this site is configured.
-  const claims = authenticate(req);
-  if (!claims) return unauthorized();
+  // be able to learn whether this site is configured. The signature check is
+  // sync and touches nothing, so that property survives the live-credential
+  // read below.
+  const token = authenticate(req);
+  if (!token) return unauthorized();
 
   if (!isFirestoreEnabled()) return bad('not configured', 503);
+
 
   const body = await readJson(req);
   const loadNbr = String(body?.loadNbr ?? '').trim();
@@ -293,6 +330,17 @@ export default async (req: Request): Promise<Response> => {
   // retries, and this one will never succeed.
   const cap = checkPayloadCaps(body);
   if (cap) return json({ ok: false, error: 'payload_too_large', ...cap }, 413);
+
+  // Then the credential itself. A deactivated loader kept pushing scans and
+  // closing loads for the rest of the token's 90 days, on a phone nobody could
+  // reach; the phone only drops its token on a 401, so nothing else stopped it.
+  const gate = await liveClaims(token);
+  if (!gate.ok) {
+    if (gate.reason === 'inactive') return forbidden('credential is not active');
+    if (gate.reason === 'store-error') return bad('not configured', 503);
+    return unauthorized();
+  }
+  const claims = gate.claims;
 
   const incomingRaw: any[] = Array.isArray(body?.scans) ? body.scans : [];
   const incomingHandRaw: any[] = Array.isArray(body?.handConfirms) ? body.handConfirms : [];
@@ -338,7 +386,7 @@ export default async (req: Request): Promise<Response> => {
     const priorScans: ScanRow[] = Array.isArray(prior?.scans) ? prior.scans : [];
     const priorHand: HandConfirmRow[] = Array.isArray(prior?.handConfirms) ? prior.handConfirms : [];
 
-    const { scans, added, duplicates } = mergeScans(priorScans, accepted);
+    const { scans, added, duplicates, updated } = mergeScans(priorScans, accepted);
     const { handConfirms, added: handAdded, duplicates: handDuplicates } = mergeHandConfirms(priorHand, acceptedHand);
 
     const incomingSeq = String(body?.sequenceFingerprint ?? '').trim();
@@ -349,7 +397,11 @@ export default async (req: Request): Promise<Response> => {
     const expectedPieces = Number(body?.expectedPieces ?? prior?.expectedPieces ?? 0) || 0;
     // Pieces verified by barcode, and pieces a person vouched for — counted
     // together for reconciliation, stored apart so the difference survives.
-    const scannedPieces = scans.length;
+    // Tombstones stay in `scans` for the record but are NOT on the truck, so
+    // they must not be counted: a load whose pieces were all voided read as
+    // fully loaded, and a close-out reconciled against a number the dock had
+    // already retracted.
+    const scannedPieces = liveScanRows(scans).length;
     const confirmedPieces = handConfirms.reduce((n, h) => n + h.pieces, 0);
     const scannedCount = scannedPieces + confirmedPieces;
 
@@ -418,6 +470,7 @@ export default async (req: Request): Promise<Response> => {
         confirmedPieces,
         added,
         duplicates,
+        updated,
         handAdded,
         handDuplicates,
         rejected: rejected.length,

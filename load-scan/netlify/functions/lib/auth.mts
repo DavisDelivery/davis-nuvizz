@@ -10,6 +10,7 @@
 // Tokens: HMAC-SHA256 JWT, 90-day expiry, signed with LOADSCAN_JWT_SECRET.
 
 import { randomBytes, scrypt as _scrypt, timingSafeEqual, createHmac } from 'node:crypto';
+import { getDoc } from './firestore.mts';
 
 const scrypt = (pin: string, salt: Buffer, len = 32): Promise<Buffer> =>
   new Promise((resolve, reject) => _scrypt(pin, salt, len, (err, dk) => (err ? reject(err) : resolve(dk))));
@@ -144,6 +145,44 @@ export function authenticate(req: Request): TokenClaims | null {
   const raw = req.headers.get('authorization') || '';
   const m = /^Bearer\s+(.+)$/i.exec(raw.trim());
   return m ? verifyToken(m[1]) : null;
+}
+
+/**
+ * THE LIVE CREDENTIAL, not the 90-day claim in the token.
+ *
+ * A token is good for TOKEN_DAYS and carries the role it was minted with, so a
+ * handler that trusts it alone keeps serving somebody who was deactivated or
+ * demoted this morning — for up to three months, on a device nobody can reach.
+ * driver-admin and load-manifest already re-read the credential for exactly this
+ * reason; this is that check, in one place, for every handler that writes or
+ * reads staff data.
+ *
+ * The token signature is verified BEFORE this reads anything, so a caller with a
+ * bad token still learns nothing about the store, and a store that is unreachable
+ * fails CLOSED rather than falling back to what the token claimed.
+ */
+export type LiveAuth =
+  | { ok: true; claims: TokenClaims; cred: any }
+  | { ok: false; reason: 'no-token' | 'unknown' | 'inactive' | 'store-error' };
+
+export async function liveClaims(claims: TokenClaims | null): Promise<LiveAuth> {
+  if (!claims) return { ok: false, reason: 'no-token' };
+  let cred: any;
+  try {
+    cred = await getDoc(`${DRIVER_AUTH}/${claims.sub}`);
+  } catch {
+    return { ok: false, reason: 'store-error' };
+  }
+  if (!cred) return { ok: false, reason: 'unknown' };
+  if (cred.active === false) return { ok: false, reason: 'inactive' };
+  // Role from the document, never from the token: a demotion takes effect on the
+  // next request, not at expiry.
+  return { ok: true, claims: { ...claims, role: normalizeRole(cred.role) }, cred };
+}
+
+/** Verify the bearer token AND the credential behind it, in one call. */
+export function authenticateLive(req: Request): Promise<LiveAuth> {
+  return liveClaims(authenticate(req));
 }
 
 // ── Role guard ───────────────────────────────────────────────────────────────

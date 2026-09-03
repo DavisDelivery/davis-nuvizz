@@ -24,7 +24,7 @@
 // ZERO NuVizz calls.
 
 import { listDocs, readStops, getDoc, isFirestoreEnabled } from './lib/firestore.mts';
-import { DRIVER_AUTH, authenticate } from './lib/auth.mts';
+import { DRIVER_AUTH, authenticate, liveClaims } from './lib/auth.mts';
 import { nameOf } from './lib/activity.mts';
 import { toManifestStop, groupIntoLoads } from './lib/manifest.mts';
 import { mergeSession, type WorkSession, type Assignment } from './lib/worklog.mts';
@@ -114,8 +114,15 @@ export function deriveFromScans(sessions: WorkSession[], scanDocs: any[], creds:
 export default async (req: Request): Promise<Response> => {
   if (req.method !== 'GET') return bad('GET only', 405);
 
-  const claims = authenticate(req);
-  if (!claims) return unauthorized();
+  const gate = await liveClaims(authenticate(req));
+  if (!gate.ok) {
+    // A credential that was deactivated or demoted stops working on the NEXT
+    // request, not at token expiry three months later.
+    if (gate.reason === 'inactive') return forbidden('credential is not active');
+    if (gate.reason === 'store-error') return bad('not configured', 503);
+    return unauthorized();
+  }
+  const claims = gate.claims;
   if (!isFirestoreEnabled()) return bad('not configured', 503);
   if (claims.role !== 'dispatcher') return forbidden('dispatcher role required');
 

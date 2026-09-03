@@ -13,7 +13,7 @@ import { loadSession, saveSession, clearSession, daysRemaining } from './lib/ses
 import * as api from './lib/api.js';
 import * as store from './lib/offline.js';
 import { startScanner } from './lib/scanner.js';
-import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, createScanGate, findUpgradeableNoog, sortForLoading, splitPickups, renumberPositions, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, shouldFreezeSequence, classifyBarcode } from './lib/scan-logic.js';
+import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, createScanGate, findUpgradeableNoog, sortForLoading, splitPickups, renumberPositions, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, shouldFreezeSequence, classifyBarcode, activeScans } from './lib/scan-logic.js';
 import { createWedgeAccumulator, WEDGE_PAIR_WINDOW_MS } from './lib/wedge.js';
 import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
@@ -935,7 +935,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   // ONLY while freight is aboard. An empty trailer has no order to protect, and
   // freezing one there tells a loader to distrust a screen that is simply right.
   const [loadedSeq, setLoadedSeq] = useState(null);
-  const piecesAboard = scans.length > 0 || handConfirms.length > 0;
+  const piecesAboard = activeScans(scans).length > 0 || handConfirms.length > 0;
   const resequenced = shouldFreezeSequence({ loadedSeq, stops, piecesAboard });
 
   const displayStops = useMemo(() => {
@@ -966,7 +966,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       // Nothing aboard means nothing to protect. Drop any stamp so the next
       // first piece records the order the route says NOW — otherwise a load
       // whose freight was all voided keeps defending an order nobody loaded to.
-      if (v && !(scans.length > 0 || handConfirms.length > 0)) {
+      if (v && !(activeScans(scans).length > 0 || handConfirms.length > 0)) {
         await store.clearLoadedSequence(activeLoad, date);
         if (alive) setLoadedSeq(null);
         return;
@@ -975,7 +975,13 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
     })();
     return () => { alive = false; };
   }, [activeLoad, manifest?.date, scans.length, handConfirms.length]);
-  const scannedOgs = useMemo(() => new Set(scans.map((s) => String(s.og).toUpperCase())), [scans]);
+  // Tombstones excluded: a voided piece is NOT on the truck, so scanning it again
+  // is the loader putting it back (enqueueScan revives the row), not a duplicate.
+  // Counting them here made that scan bounce off as ALREADY SCANNED forever.
+  const scannedOgs = useMemo(
+    () => new Set(activeScans(scans).map((s) => String(s.og).toUpperCase())),
+    [scans],
+  );
 
   // Rehydrate this load's scans from the local queue — the UI's source of truth.
   const refreshLocal = useCallback(async () => {
@@ -1117,7 +1123,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
           if (engineName !== 'wedge' && !gate.current.allow(pro7, now)) return null;
         }
 
-        const already = liveScans.filter((s2) => normalizePro(s2.pro) === pro7).length;
+        const already = activeScans(liveScans).filter((s2) => normalizePro(s2.pro) === pro7).length;
         if (already > 0 && isScanner) {
           return refuse({ pro: pro7, count: already });
         }
@@ -1188,8 +1194,19 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
           date: manifest.date,
           expectedPieces: progress.expected,
           sequenceFingerprint: sequenceFingerprint(stops),
+          // voidedAt/voidReason/damaged/damageNote ride along DELIBERATELY. The
+          // phone re-pushes a row precisely to carry one of these up (voidScan
+          // and markDamaged clear syncedAt for no other reason), so a projection
+          // that drops them meant a take-back or a damage flag could never leave
+          // the device however carefully it was stored.
           scans: slice.filter((r) => r.kind !== 'hand')
-            .map(({ og, pro, scannedAt, stopNbr, engine: eng }) => ({ og, pro, scannedAt, stopNbr, engine: eng })),
+            .map(({ og, pro, scannedAt, stopNbr, engine: eng, voidedAt, voidReason, damaged, damageNote }) => ({
+              og, pro, scannedAt, stopNbr, engine: eng,
+              voidedAt: voidedAt || null,
+              voidReason: voidReason || '',
+              damaged: !!damaged,
+              damageNote: damageNote || '',
+            })),
           handConfirms: slice.filter((r) => r.kind === 'hand')
             .map(({ stopNbr, pieces, confirmedAt, reason }) => ({ stopNbr, pieces, confirmedAt, reason })),
         });
@@ -3378,7 +3395,14 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
 
-  const date = etToday();
+  // THE SHIFT DAY, not the calendar day. Loaders work 8pm to 8am (see
+  // lib/shift.js), so the shift that starts at 8pm Sunday is the one labelled
+  // Monday and is loading Monday's freight. Keyed on the calendar day, a loader
+  // who clocked on at 8:30pm opened YESTERDAY's manifest — freight already
+  // delivered — while the assignment board and the report they appear on had
+  // already rolled to tomorrow. One key, or the four hours either side of
+  // midnight belong to two different days at once.
+  const date = shiftDayString();
 
   const getManifest = useCallback(
     async (opts = {}) => {

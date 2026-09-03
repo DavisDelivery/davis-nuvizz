@@ -17,10 +17,10 @@
 //
 // ZERO NuVizz calls.
 
-import { getDoc, setDoc, isFirestoreEnabled } from './lib/firestore.mts';
-import { authenticate } from './lib/auth.mts';
+import { updateDocSafely, isFirestoreEnabled } from './lib/firestore.mts';
+import { authenticate, liveClaims } from './lib/auth.mts';
 import { mergeSession, normalizeEvent, type WorkSession } from './lib/worklog.mts';
-import { ok, bad, unauthorized, readJson } from './lib/http.mts';
+import { ok, bad, json, unauthorized, forbidden, readJson } from './lib/http.mts';
 
 const WORKLOG = 'loadscan_worklog';
 const TENANT = 'davis';
@@ -30,8 +30,15 @@ const docPath = (shiftDay: string) => `${WORKLOG}/${TENANT}__${shiftDay}`;
 export default async (req: Request): Promise<Response> => {
   if (req.method !== 'POST') return bad('POST only', 405);
 
-  const claims = authenticate(req);
-  if (!claims) return unauthorized();
+  const gate = await liveClaims(authenticate(req));
+  if (!gate.ok) {
+    // A credential that was deactivated or demoted stops working on the NEXT
+    // request, not at token expiry three months later.
+    if (gate.reason === 'inactive') return forbidden('credential is not active');
+    if (gate.reason === 'store-error') return bad('not configured', 503);
+    return unauthorized();
+  }
+  const claims = gate.claims;
   if (!isFirestoreEnabled()) return bad('not configured', 503);
 
   const body = await readJson(req);
@@ -59,20 +66,25 @@ export default async (req: Request): Promise<Response> => {
     byDay.set(shiftDay, list);
   }
 
+  // ONE document holds the whole shift's clock-ins, so two people starting a
+  // truck at the same moment both read it, both merged only their own event, and
+  // the second write erased the first: a start that was never recorded, and no
+  // way to tell afterwards. Compare-and-swap, and merge into whoever won.
   const written: string[] = [];
+  const conflicted: string[] = [];
   for (const [shiftDay, events] of byDay) {
-    const doc = await getDoc(docPath(shiftDay));
-    let sessions: WorkSession[] = Array.isArray(doc?.sessions) ? doc.sessions : [];
-    for (const e of events) sessions = mergeSession(sessions, e);
-
-    await setDoc(docPath(shiftDay), {
-      tenant: TENANT,
-      shiftDay,
-      sessions,
-      updatedAt: new Date().toISOString(),
+    const outcome = await updateDocSafely(docPath(shiftDay), (doc) => {
+      let sessions: WorkSession[] = Array.isArray(doc?.sessions) ? doc.sessions : [];
+      for (const e of events) sessions = mergeSession(sessions, e);
+      return { tenant: TENANT, shiftDay, sessions, updatedAt: new Date().toISOString() };
     });
-    written.push(shiftDay);
+    if (outcome === 'written') written.push(shiftDay);
+    else conflicted.push(shiftDay);
   }
 
+  // Never a silent success: the phone retries what did not land.
+  if (conflicted.length) {
+    return json({ ok: false, error: 'busy — another write for this shift landed first; retry', retryable: true, conflicted, shiftDays: written }, 409);
+  }
   return ok({ ok: true, shiftDays: written, accepted: incoming.length - rejected.length, rejected });
 };

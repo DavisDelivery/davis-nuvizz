@@ -29,7 +29,8 @@ import { readStops, getDoc, setDoc, isFirestoreEnabled, readLoadRoster } from '.
 import { DRIVER_AUTH, UNMATCHED_ALIASES, authenticate, normalizeRole } from './lib/auth.mts';
 import { DriverCred, normalizeDriverAlias, stopBelongsToDriver } from './lib/aliases.mts';
 import { toManifestStop, groupIntoLoads, loadSummaries } from './lib/manifest.mts';
-import { ok, bad, unauthorized, etDayString, DATE_RE } from './lib/http.mts';
+import { ok, bad, unauthorized, DATE_RE } from './lib/http.mts';
+import { shiftDayString } from './lib/shift.mts';
 
 const TENANT = 'davis';
 
@@ -44,7 +45,9 @@ export default async (req: Request): Promise<Response> => {
 
   const url = new URL(req.url);
   const dateParam = String(url.searchParams.get('date') || '');
-  const date = DATE_RE.test(dateParam) ? dateParam : etDayString();
+  // Default to the SHIFT day for the same reason the phone sends one: between
+  // 8pm and midnight the calendar day is the shift that already finished.
+  const date = DATE_RE.test(dateParam) ? dateParam : shiftDayString();
   const loadOverride = String(url.searchParams.get('loadNbr') || '').trim();
 
   const warnings: string[] = [];
