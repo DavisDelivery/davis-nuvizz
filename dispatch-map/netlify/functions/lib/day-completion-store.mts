@@ -56,6 +56,85 @@ export async function writeDaySnapshot(tenant: string, date: string, snapshot: a
   return ok ? 'written' : 'failed';
 }
 
+/**
+ * THE HEARTBEAT: proof the job ran, written before it does anything that can fail.
+ *
+ * The 2026-09-02 report never arrived and a 67-agent investigation could not determine why —
+ * because this job leaves NO trace of having run. Its only durable outputs are the snapshot
+ * and the email, which are precisely the two things missing when it fails, and Netlify
+ * discards a *-background* function's HTTP response, so the run's own status report goes
+ * nowhere. "Never invoked" and "invoked and died" are pixel-identical from outside.
+ *
+ * One row, written first, separates them for ever. Heartbeat but no snapshot: the platform
+ * delivered the invocation and the code failed. Neither: the invocation never arrived.
+ *
+ * ITS OWN COLLECTION, DELIBERATELY. Not a field on the day_completion document — creating
+ * that document early would make writeDaySnapshot see an existing record and take its
+ * field-masked path instead of the ATOMIC create-if-absent, losing the only thing that stops
+ * two racing firings both claiming the evening and both mailing. A diagnostic must not
+ * weaken the guard it exists to explain.
+ *
+ * Best-effort by construction: a heartbeat that could fail the run would be a diagnostic
+ * that causes outages.
+ */
+export const DAY_REPORT_RUN_COLLECTION = 'day_report_runs';
+export const dayReportRunPath = (tenant: string, date: string) => `${DAY_REPORT_RUN_COLLECTION}/${tenant}__${date}`;
+
+/** PURE. One field per firing, so three firings on one ET day cannot overwrite each other.
+ *  Digits only — a field path with a colon would need escaping, and this is the key an
+ *  incident gets read by. */
+export function firingKey(etHour: number, etMinute: number): string {
+  const h = String(Math.max(0, Math.min(23, Math.trunc(etHour) || 0))).padStart(2, '0');
+  const m = String(Math.max(0, Math.min(59, Math.trunc(etMinute) || 0))).padStart(2, '0');
+  return `et${h}${m}`;
+}
+
+export async function recordRun(
+  tenant: string, date: string,
+  run: { etHour: number; etMinute: number; firing: string; at: string },
+): Promise<boolean> {
+  try {
+    return await updateDocFields(dayReportRunPath(tenant, date), {
+      tenant, date,
+      [firingKey(run.etHour, run.etMinute)]: {
+        at: run.at, firing: run.firing, etHour: run.etHour, etMinute: run.etMinute,
+      },
+    });
+  } catch (e: any) {
+    console.error(`[day-completion] heartbeat failed for ${date}: ${e?.message}`);
+    return false;
+  }
+}
+
+/**
+ * DID ANYONE ACTUALLY GET TOLD? Stamped only after a send the mailer confirmed.
+ *
+ * THE HOLE THIS CLOSES WAS WORSE THAN THE OUTAGE IT WAS FOUND CHASING. The evening job
+ * claims a day by WRITING THE SNAPSHOT and sends afterwards, gated on that write — so the
+ * day is marked done before anybody has been told. Run with Resend returning 429: the
+ * snapshot lands, the failure is recorded in a response Netlify discards, the handler
+ * returns HTTP 200 ok:true, and the spare an hour later sees a snapshot, concludes the
+ * evening reported, and stands down. That report is then unsendable by anything in this
+ * codebase, for ever, while every status field says success. Briefly unsetting
+ * DAY_REPORT_TO does the same.
+ *
+ * A snapshot is a claim that the board was READ. It was being used as a claim that the owner
+ * was TOLD. Those are different facts; this is the second one.
+ *
+ * Field-masked: this document also carries the immutable 6:30 snapshot and the next day's
+ * reconciliation, and setDoc REPLACES in this codebase.
+ */
+export async function markDayReportSent(tenant: string, date: string, to: string, at: string): Promise<boolean> {
+  return updateDocFields(dayCompletionPath(tenant, date), { sent: { at, to } });
+}
+
+/** PURE. Does this stored day still owe somebody an email? Absent document and a document
+ *  with no `sent` stamp both mean nobody was mailed — the second is the case that used to be
+ *  invisible. Deliberately NOT keyed on the snapshot: that was the bug. */
+export function needsSending(doc: any): boolean {
+  return !doc?.sent?.at;
+}
+
 /** Field-masked, because this document is not ours alone — the snapshot half must survive.
  *  setDoc REPLACES in this codebase, and using it here would take the 6:30 record with it. */
 export async function writeDayReconciliation(tenant: string, date: string, reconciliation: any): Promise<boolean> {
