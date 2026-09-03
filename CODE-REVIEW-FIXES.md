@@ -73,37 +73,47 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
       *Done v0.90.3:* compare-and-swap with an updateTime precondition and a merge-into-the-winner retry; a push that keeps losing is a 409, never a 200.  
       *Fix:* Send the PATCH with a `currentDocument.updateTime` precondition taken from the getDoc and retry the read-merge-write on a 412 (or use a Firestore commit/transaction); alternatively make the phone only mark rows synced that appear in the response's merged OG l…  
       <sub>CRITICAL · async-race · A6-S31-1 · reproduced by running the code</sub>
-- [ ] **`load-scan/netlify/functions/scan-session.mts:355`** — Deactivated/demoted load-scan credentials keep writing for 90 days (token role only)  
+- [x] **`load-scan/netlify/functions/scan-session.mts:355`** — Deactivated/demoted load-scan credentials keep writing for 90 days (token role only)    
+      *Done v0.93.0:* live credential re-read on every write (liveClaims), role from the document.
       *Fix:* Add an `authenticateLive(req)` helper in lib/auth.mts that verifies the token, reads driver_auth/{sub}, refuses `active === false`, and returns the LIVE role; use it in scan-session, work-session, load-assign, scan-activity, work-report and driver-alias-repor…  
       <sub>CRITICAL · security · X-authgates-2 · reproduced by running the code</sub>
-- [ ] **`load-scan/src/App.jsx:1191`** — flushQueue strips voidedAt/damaged before upload — voids and damage never leave the phone  
+- [x] **`load-scan/src/App.jsx:1191`** — flushQueue strips voidedAt/damaged before upload — voids and damage never leave the phone    
+      *Done v0.93.0:* flushQueue now sends voidedAt/voidReason/damaged/damageNote.
       *Fix:* Send `voidedAt, voidReason, damaged, damageNote` in the scan projection (and have scan-session's mergeScans accept an update for an OG it already holds, at least for those four fields).  
       <sub>CRITICAL · data-contract · A6-S32-3 · reproduced by running the code</sub>
-- [ ] **`load-scan/netlify/functions/scan-session.mts:259`** — mergeScans drops a re-pushed void/damage as a duplicate; server never sees either  
+- [x] **`load-scan/netlify/functions/scan-session.mts:259`** — mergeScans drops a re-pushed void/damage as a duplicate; server never sees either    
+      *Done v0.93.0:* mergeScans updates flags on a known OG instead of discarding the re-push.
       *Fix:* In mergeScans, when the OG already exists, merge the tombstone/flag fields (voidedAt/voidReason latest-wins, damaged sticky) while keeping the first scannedAt; compute scannedPieces from rows with no voidedAt; and have the client send those fields.  
       <sub>High · logic · A6-S31-4 · reproduced by running the code</sub>
-- [ ] **`load-scan/netlify/functions/scan-session.mts:296`** — Deactivated credential can still push scans and close loads for up to 90 days  
+- [x] **`load-scan/netlify/functions/scan-session.mts:296`** — Deactivated credential can still push scans and close loads for up to 90 days    
+      *Done v0.93.0:* same live-credential gate.
       *Fix:* In every authenticated handler (or inside authenticate), fetch `driver_auth/<sub>` and refuse when `active === false`; cheaper long-term: store a `tokenVersion` on the credential, embed it in the token, and bump it on deactivate/demote.  
       <sub>High · security · A6-S31-18 · reproduced by running the code</sub>
-- [ ] **`load-scan/netlify/functions/work-session.mts:64`** — Concurrent clock-ins on one shift day overwrite each other; starts lost for good  
+- [x] **`load-scan/netlify/functions/work-session.mts:64`** — Concurrent clock-ins on one shift day overwrite each other; starts lost for good    
+      *Done v0.93.0:* compare-and-swap via updateDocSafely.
       *Fix:* Store one document per session id (`loadscan_worklog/{tenant}__{shiftDay}/sessions/{worker__load}`) written with a field-masked PATCH, or add an updateTime precondition with retry on the shared doc.  
       <sub>High · async-race · A6-S31-2 · reproduced by running the code</sub>
-- [ ] **`load-scan/src/App.jsx:978`** — Re-scanning a voided piece is swallowed as ALREADY SCANNED, never revived  
+- [x] **`load-scan/src/App.jsx:978`** — Re-scanning a voided piece is swallowed as ALREADY SCANNED, never revived    
+      *Done v0.93.0:* scannedOgs built from activeScans, so a voided piece revives.
       *Fix:* Build `scannedOgs` (and the `already` count at line 1120) from `activeScans(scans)` so tombstoned rows do not count as on the truck; `enqueueScan` already revives a voided row when the OG comes back.  
       <sub>High · logic · A6-S32-1 · reproduced by running the code</sub>
-- [ ] **`load-scan/src/App.jsx:3381`** — Manifest and scan-session date use the ET calendar day; shift day (assignments, report board) rolls at 8pm  
+- [x] **`load-scan/src/App.jsx:3381`** — Manifest and scan-session date use the ET calendar day; shift day (assignments, report board) rolls at 8pm    
+      *Done v0.93.0:* manifest and session keyed on shiftDayString().
       *Fix:* Derive the manifest/session date from `shiftDayString()` (the client copy already exists in lib/shift.js) so board, assignments, queue scoping and session docs share one key; keep etToday only for the dispatcher's activity picker if that is wanted.  
       <sub>High · date-time · A6-S32-6 · reproduced by running the code</sub>
-- [ ] **`load-scan/src/AssignScreen.jsx:80`** — Concurrent taps: later response or rollback wipes other in-flight assignments  
+- [x] **`load-scan/src/AssignScreen.jsx:80`** — Concurrent taps: later response or rollback wipes other in-flight assignments    
+      *Done v0.93.0:* load-assign writes are compare-and-swap; a lost tap is a 409, not a silent drop.
       *Fix:* Serialize writes (queue toggles or disable all rows while any save is in flight) and apply server responses with a functional update that only replaces the loadNbr(s) the request changed; on the server, use a transaction or field-masked update per loadNbr ins…  
       <sub>High · async-race · A6-S33-14 · reproduced by running the code</sub>
-- [ ] **`load-scan/src/lib/offline.js:136`** — Voids and damage flags never reach the server; office keeps counting voided pieces  
+- [x] **`load-scan/src/lib/offline.js:136`** — Voids and damage flags never reach the server; office keeps counting voided pieces    
+      *Done v0.93.0:* the flags now ride the flush projection and land server-side.
       *Fix:* Send voidedAt/voidReason/damaged/damageNote/damagedAt in the flushQueue projection, and change mergeScans so an incoming row for a known OG updates those flag fields (keeping the earlier scannedAt) instead of being discarded as a duplicate.  
       <sub>High · data-contract · A6-S33-13 · reproduced by running the code</sub>
 
 ### W1.2 — medium (4 items)
 
-- [ ] **`load-scan/netlify/functions/scan-session.mts:331`** — scannedPieces counts voided tombstones as pieces on the truck  
+- [x] **`load-scan/netlify/functions/scan-session.mts:331`** — scannedPieces counts voided tombstones as pieces on the truck    
+      *Done v0.93.0:* scannedPieces counts live rows only.
       *Fix:* const live = scans.filter((s) => !s.voidedAt); const scannedPieces = live.length; (keep the tombstones in `scans` for the record).  
       <sub>Med · logic · A6-S31-16 · reproduced by running the code</sub>
 - [ ] **`load-scan/netlify/functions/scan-session.mts:345`** — Derived timing uses push instants, not scan times; a dead-zone flush yields ~0 minutes  
@@ -112,7 +122,8 @@ Every item carries its finding id (for example `A4-S21-2`). The same id appears 
 - [ ] **`load-scan/netlify/functions/scan-session.mts:365`** — workedBy.pieces adds hand-confirm ROWS, not pieces — a 5-piece Averitt stop counts as 1  
       *Fix:* Credit the worker with the sum of pieces on the newly added hand-confirm rows (e.g. `added + acceptedHand.filter(added).reduce((n,h)=>n+h.pieces,0)`), not the row count.  
       <sub>Med · logic · A6-S31-7 · reproduced by running the code</sub>
-- [ ] **`load-scan/src/App.jsx:938`** — piecesAboard counts voided tombstones, so an all-voided load keeps the resequence freeze  
+- [x] **`load-scan/src/App.jsx:938`** — piecesAboard counts voided tombstones, so an all-voided load keeps the resequence freeze    
+      *Done v0.93.0:* piecesAboard from activeScans.
       *Fix:* Compute `piecesAboard` (and the effect's check at line 969) from `activeScans(scans).length > 0 || handConfirms.length > 0`.  
       <sub>Med · logic · A6-S32-4 · reproduced by running the code</sub>
 

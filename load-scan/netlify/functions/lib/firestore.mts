@@ -193,6 +193,37 @@ export async function setDocIfUnchanged(path: string, data: any, updateTime: str
   throw new Error(`setDocIfUnchanged ${path} failed: ${resp.status} ${text.slice(0, 200)}`);
 }
 
+/**
+ * Read-modify-write a whole document without losing a concurrent writer's work.
+ *
+ * `build` is handed the document as it is RIGHT NOW and returns what should
+ * replace it, or null to write nothing. If someone else writes in between, build
+ * is called again with THEIR document — so the merge happens against reality
+ * rather than against a snapshot that has already gone stale.
+ *
+ * Returns 'written' when it landed, 'skipped' when build declined, and 'conflict'
+ * when every attempt lost. A caller that gets 'conflict' must not report success:
+ * on this app the phone is holding the only other copy of that work.
+ *
+ * scan-session runs this same pattern inline because it needs the merged counts
+ * back out of the loop for its reply; everything else should use this.
+ */
+export async function updateDocSafely(
+  path: string,
+  build: (prior: any | null) => any | null,
+  opts: { attempts?: number } = {},
+): Promise<'written' | 'skipped' | 'conflict'> {
+  const attempts = Math.max(1, opts.attempts ?? 5);
+  for (let i = 1; i <= attempts; i++) {
+    const { data, updateTime } = await getDocWithMeta(path);
+    const next = build(data);
+    if (next == null) return 'skipped';
+    if (await setDocIfUnchanged(path, next, updateTime)) return 'written';
+    if (i < attempts) await new Promise((r) => setTimeout(r, 20 * i + Math.floor(Math.random() * 30)));
+  }
+  return 'conflict';
+}
+
 /** Merge-patch only the supplied keys, leaving every other field intact. */
 export async function patchDoc(path: string, data: any): Promise<void> {
   const keys = Object.keys(data || {});

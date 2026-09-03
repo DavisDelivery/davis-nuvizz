@@ -22,6 +22,8 @@ const changePin = await import('../netlify/functions/driver-change-pin.mts');
 const login = await import('../netlify/functions/driver-login.mts');
 const scanSession = await import('../netlify/functions/scan-session.mts');
 const workReport = await import('../netlify/functions/work-report.mts');
+const workSession = await import('../netlify/functions/work-session.mts');
+const loadAssign = await import('../netlify/functions/load-assign.mts');
 const api = await import('../src/lib/api.js');
 
 const DISPATCHER_TOKEN = auth.issueToken('1', 'Dispatcher', 'dispatcher');
@@ -43,6 +45,17 @@ const invoke = (mod, { method = 'POST', body, token, headers = {}, query = '' } 
 
 const seedDispatcher = () =>
   fs.setDoc('driver_auth/1', { driverNumber: '1', displayName: 'Dispatcher', role: 'dispatcher', active: true, pinHash: '' });
+
+/**
+ * The credentials behind the two test tokens. Every writing handler now re-reads
+ * the live credential rather than trusting the 90-day token, so a test that
+ * clears the store and then drives one has to put them back — exactly as
+ * production would have them.
+ */
+const seedCreds = async () => {
+  await seedDispatcher();
+  await fs.setDoc('driver_auth/4471', { driverNumber: '4471', displayName: 'Brad Goodroe', role: 'driver', active: true, pinHash: '' });
+};
 
 // ── A. Firestore paths stay inside their collection ──────────────────────────
 
@@ -81,6 +94,7 @@ test('an id is 1-64 of [A-Za-z0-9_-], which every real credential and review-row
 
 test('a dispatcher posting a traversal driverNumber gets 400, and nothing is read or written', async () => {
   fake.docs.clear();
+  await seedCreds();
   await seedDispatcher();
   const before = fake.calls;
   const res = await invoke(admin, { token: DISPATCHER_TOKEN, body: { action: 'clear-lockout', driverNumber: '../customer_notes/X' } });
@@ -92,6 +106,7 @@ test('a dispatcher posting a traversal driverNumber gets 400, and nothing is rea
 
 test('resolve-unmatched and add-alias refuse a traversal review-row id', async () => {
   fake.docs.clear();
+  await seedCreds();
   await seedDispatcher();
   await fs.setDoc('driver_auth/4471', { driverNumber: '4471', displayName: 'Brad Goodroe', role: 'driver', active: true, nuvizzAliases: [] });
 
@@ -117,6 +132,7 @@ test('the bootstrap secret is compared in constant time and a wrong one is a pla
   assert.equal(http.secretMatches('abc', undefined), false);
 
   fake.docs.clear();
+  await seedCreds();
   const res = await invoke(admin, {
     headers: { 'x-bootstrap-secret': 'bootstrap-secret-that-is-long-enougH' },
     body: { action: 'bootstrap-dispatcher', driverNumber: '2', pin: '1234' },
@@ -133,6 +149,7 @@ test('hasActiveDispatcher: only an ACTIVE dispatcher counts', () => {
 });
 
 test('the bootstrap secret creates the FIRST dispatcher and is then refused, even if the env var stays set', async () => {
+  // Deliberately NOT seeded: the whole point is an empty store with nobody in it.
   fake.docs.clear();
   const bootstrap = (driverNumber) =>
     invoke(admin, {
@@ -188,6 +205,7 @@ test('deriveFromScans builds a derived session with the name off the credential'
 
 test('a truck scanned on the gun with no clock-in shows on the report as derived, not "no app activity at all"', async () => {
   fake.docs.clear();
+  await seedCreds();
   await seedDispatcher();
   await fs.setDoc('driver_auth/4471', { driverNumber: '4471', displayName: 'Brad Goodroe', role: 'driver', active: true });
 
@@ -220,6 +238,7 @@ test('a truck scanned on the gun with no clock-in shows on the report as derived
 
 test('?days=abc is one day, not NaN — and the CSV filename does not read "undefined"', async () => {
   fake.docs.clear();
+  await seedCreds();
   await seedDispatcher();
   let res = await invoke(workReport, { method: 'GET', token: DISPATCHER_TOKEN, query: '?shiftDay=2026-08-07&days=abc' });
   assert.equal(res.status, 200);
@@ -246,6 +265,7 @@ test('a gun (wedge) scan is stored as wedge, not as a hand-typed piece', async (
   assert.equal(scanSession.normalizeScan({ og: 'OG6028479182', pro: '7152411', engine: 'laser' }).row.engine, 'manual', 'unknown still falls back');
 
   fake.docs.clear();
+  await seedCreds();
   await invoke(scanSession, {
     token: DRIVER_TOKEN,
     body: { loadNbr: 'GUN', date: '2026-08-07', scans: [{ og: 'OG6028479182', pro: '7152411', engine: 'wedge' }] },
@@ -286,6 +306,7 @@ test('checkPayloadCaps names the first breach: row count, stopNbr, reason, recon
 
 test('an oversized push is 413 with the offending row named, and costs no Firestore read', async () => {
   fake.docs.clear();
+  await seedCreds();
   const before = fake.calls;
   const res = await invoke(scanSession, {
     token: DRIVER_TOKEN,
@@ -319,6 +340,7 @@ test('the phone\'s slice size never exceeds the server cap, or a backlog could n
 
 test('an ordinary push, and its replay, are unchanged for a legitimate driver', async () => {
   fake.docs.clear();
+  await seedCreds();
   const body = {
     loadNbr: 'STEVEN',
     date: '2026-08-07',
@@ -446,6 +468,7 @@ test('one wrong PIN after a lockout has EXPIRED is failure #1, not a fresh 15-mi
 
 test('driver-login: a wrong PIN after the lockout has passed is a plain reject with the counter restarted', async () => {
   fake.docs.clear();
+  await seedCreds();
   await fs.setDoc('driver_auth/4471', {
     driverNumber: '4471', displayName: 'Brad Goodroe', role: 'driver', active: true,
     pinHash: await auth.hashPin('1234'), failedAttempts: 5, lockedUntil: new Date(Date.now() - 60_000).toISOString(),
@@ -459,6 +482,7 @@ test('driver-login: a wrong PIN after the lockout has passed is a plain reject w
 
 test('driver-change-pin counts wrong current PINs and locks on the fifth, exactly like sign-in', async () => {
   fake.docs.clear();
+  await seedCreds();
   await fs.setDoc('driver_auth/4471', {
     driverNumber: '4471', displayName: 'Brad Goodroe', role: 'driver', active: true,
     pinHash: await auth.hashPin('1234'), failedAttempts: 0, lockedUntil: null,
@@ -536,6 +560,7 @@ const pieceScan = (og, stopNbr, at) => ({ og, pro: '0071576871', scannedAt: at, 
 
 test('two loaders pushing one load at the same moment: neither loader\'s pieces are lost', async () => {
   fake.docs.clear();
+  await seedCreds();
   const date = '2026-08-07';
   const loadNbr = 'DAVIS000201463';
   const { resA, resB } = await racePushes(
@@ -563,6 +588,7 @@ test('two loaders pushing one load at the same moment: neither loader\'s pieces 
 
 test('both loaders are recorded in workedBy — the retry merges into the winner\'s row, not over it', async () => {
   fake.docs.clear();
+  await seedCreds();
   const date = '2026-08-07';
   const loadNbr = 'DAVIS000201464';
   await racePushes(
@@ -577,6 +603,7 @@ test('both loaders are recorded in workedBy — the retry merges into the winner
 
 test('a push that keeps losing the race is a 409, so the phone keeps the rows queued', async () => {
   fake.docs.clear();
+  await seedCreds();
   const date = '2026-08-07';
   const loadNbr = 'DAVIS000201465';
   await fs.setDoc(`nuvizz_load_scans/davis__${date}__${loadNbr}`, { loadNbr, scans: [] });
@@ -609,6 +636,7 @@ test('a push that keeps losing the race is a 409, so the phone keeps the rows qu
 
 test('a conditional write is refused outright when the document changed, and never silently overwrites', async () => {
   fake.docs.clear();
+  await seedCreds();
   await fs.setDoc('nuvizz_load_scans/probe', { v: 1 });
   const { data, updateTime } = await fs.getDocWithMeta('nuvizz_load_scans/probe');
   assert.equal(data.v, 1);
@@ -620,4 +648,264 @@ test('a conditional write is refused outright when the document changed, and nev
 
   assert.equal(await fs.setDocIfUnchanged('nuvizz_load_scans/probe', { v: 4 }, null), false, '"must not exist" fails once it exists');
   assert.equal(await fs.setDocIfUnchanged('nuvizz_load_scans/fresh', { v: 1 }, null), true, 'and succeeds when it truly does not');
+});
+
+// ── K. a void and a damage flag must reach the server ────────────────────────
+//
+// The loader takes a scan back, or marks a piece damaged. Both are recorded on
+// the phone and both cleared syncedAt so the row would flush again — and then
+// the flags were dropped twice over: the flush projection did not send them, and
+// mergeScans discarded the re-push as a duplicate before looking. So the office
+// kept counting a piece the dock had let go of, and a claim nobody raised
+// because nobody was told.
+
+test('mergeScans carries a void back for an OG it already holds, without moving the scan time', () => {
+  const first = { og: 'OG0000000001', pro: '0071576871', scannedAt: '2026-08-07T09:00:00.000Z', stopNbr: '1', engine: 'wedge' };
+  const voided = { ...first, scannedAt: '2026-08-07T11:00:00.000Z', voidedAt: '2026-08-07T10:30:00.000Z', voidReason: 'wrong truck' };
+
+  const r = scanSession.mergeScans([first], [voided]);
+  assert.equal(r.scans.length, 1);
+  assert.equal(r.added, 0, 'not a new piece');
+  assert.equal(r.duplicates, 1);
+  assert.equal(r.updated, 1, 'but the flags did change, and the caller is told');
+  assert.equal(r.scans[0].voidedAt, '2026-08-07T10:30:00.000Z');
+  assert.equal(r.scans[0].voidReason, 'wrong truck');
+  assert.equal(r.scans[0].scannedAt, '2026-08-07T09:00:00.000Z', 'the dock timeline is not rewritten by a re-push');
+});
+
+test('mergeScans carries a damage flag, and an un-mark, for a piece already stored', () => {
+  const first = { og: 'OG0000000002', pro: '0071576871', scannedAt: '2026-08-07T09:00:00.000Z', stopNbr: '1', engine: 'wedge' };
+  const damaged = { ...first, damaged: true, damageNote: 'corner crushed' };
+  const one = scanSession.mergeScans([first], [damaged]);
+  assert.equal(one.scans[0].damaged, true);
+  assert.equal(one.scans[0].damageNote, 'corner crushed');
+  assert.equal(one.updated, 1);
+
+  // The loader looked again and it was the shrink wrap, not the freight.
+  const cleared = scanSession.mergeScans(one.scans, [{ ...first, damaged: false, damageNote: '' }]);
+  assert.equal(cleared.scans[0].damaged, false, 'the phone that holds the piece is the one that knows');
+  assert.equal(cleared.updated, 1);
+});
+
+test('a replay with nothing changed is still a plain duplicate, not an update', () => {
+  const row = { og: 'OG0000000003', pro: '0071576871', scannedAt: '2026-08-07T09:00:00.000Z', stopNbr: '1', engine: 'wedge' };
+  const r = scanSession.mergeScans([row], [row]);
+  assert.equal(r.added, 0);
+  assert.equal(r.duplicates, 1);
+  assert.equal(r.updated, 0);
+});
+
+test('a voided piece is not counted as freight on the truck', async () => {
+  fake.docs.clear();
+  await seedCreds();
+  const date = '2026-08-07';
+  const loadNbr = 'DAVIS000201470';
+  const row = (og) => ({ og, pro: '0071576871', scannedAt: '2026-08-07T09:00:00.000Z', stopNbr: '1', engine: 'wedge' });
+
+  await invoke(scanSession, { token: DRIVER_TOKEN, body: { loadNbr, date, scans: [row('OG0000000101'), row('OG0000000102')] } });
+  let doc = await fs.getDoc(`nuvizz_load_scans/davis__${date}__${loadNbr}`);
+  assert.equal(doc.scannedPieces, 2);
+
+  const res = await invoke(scanSession, {
+    token: DRIVER_TOKEN,
+    body: { loadNbr, date, scans: [{ ...row('OG0000000102'), voidedAt: '2026-08-07T10:00:00.000Z', voidReason: 'not ours' }] },
+  });
+  const body = await res.json();
+  assert.equal(body.updated, 1, 'the void landed');
+  assert.equal(body.scannedPieces, 1, 'and the piece count follows it down');
+
+  doc = await fs.getDoc(`nuvizz_load_scans/davis__${date}__${loadNbr}`);
+  assert.equal(doc.scannedPieces, 1);
+  assert.equal(doc.scannedCount, 1);
+  assert.equal(doc.scans.length, 2, 'the tombstone is kept for the record, it just is not freight');
+  assert.equal(doc.scans.find((s) => s.og === 'OG0000000102').voidedAt, '2026-08-07T10:00:00.000Z');
+});
+
+test('the flush projection sends the four flag fields, or a void can never leave the phone', async () => {
+  // Read the real source: this is a contract between two files that no unit test
+  // of either one alone can see.
+  const app = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const flush = app.slice(app.indexOf('const rows = (await store.queuedFor(activeLoad, manifest?.date)).filter'));
+  const projection = flush.slice(flush.indexOf('scans: slice.filter'), flush.indexOf('handConfirms: slice.filter'));
+  for (const field of ['voidedAt', 'voidReason', 'damaged', 'damageNote']) {
+    assert.ok(projection.includes(field), `flushQueue must send ${field}`);
+  }
+});
+
+// ── L. a credential that was switched off stops working NOW ──────────────────
+//
+// Tokens live 90 days and carry the role they were minted with. Every writing
+// handler used to trust that claim alone, so somebody deactivated or demoted
+// this morning kept pushing scans, closing loads and reading staff reports for
+// the rest of the three months — on a phone nobody can reach, since the app only
+// drops its token on a 401.
+
+const deactivate = (n) => fs.patchDoc(`driver_auth/${n}`, { active: false });
+const demote = (n) => fs.patchDoc(`driver_auth/${n}`, { role: 'driver' });
+
+test('a deactivated loader cannot push another scan, even with a token minted before', async () => {
+  fake.docs.clear();
+  await seedCreds();
+  const push = () => invoke(scanSession, {
+    token: DRIVER_TOKEN,
+    body: { loadNbr: 'STEVEN', date: '2026-08-07', scans: [{ og: 'OG6028479182', pro: '7152411', stopNbr: '1', engine: 'wedge' }] },
+  });
+
+  assert.equal((await push()).status, 200, 'works while the credential is active');
+  await deactivate('4471');
+  const res = await push();
+  assert.equal(res.status, 403, 'and stops on the very next request, not at token expiry');
+  assert.match((await res.json()).error, /not active/);
+});
+
+test('a deactivated credential cannot clock in or close a load either', async () => {
+  fake.docs.clear();
+  await seedCreds();
+  await deactivate('4471');
+  const res = await invoke(scanSession, {
+    token: DRIVER_TOKEN,
+    body: { loadNbr: 'STEVEN', date: '2026-08-07', close: true, expectedPieces: 0 },
+  });
+  assert.equal(res.status, 403);
+  const work = await invoke(scanSession, { token: DRIVER_TOKEN, body: { loadNbr: 'STEVEN', date: '2026-08-07', scans: [] } });
+  assert.equal(work.status, 403);
+});
+
+test('a credential deleted outright is a 401, not a silent pass', async () => {
+  fake.docs.clear();
+  await seedCreds();
+  fake.docs.delete('driver_auth/4471');
+  const res = await invoke(scanSession, {
+    token: DRIVER_TOKEN,
+    body: { loadNbr: 'STEVEN', date: '2026-08-07', scans: [] },
+  });
+  assert.equal(res.status, 401);
+});
+
+test('a demoted dispatcher loses the staff reports on the next request, not in 90 days', async () => {
+  fake.docs.clear();
+  await seedCreds();
+  assert.equal((await invoke(workReport, { method: 'GET', token: DISPATCHER_TOKEN, query: '?days=1' })).status, 200);
+
+  await demote('1');
+  for (const [name, mod] of [['work-report', workReport]]) {
+    const res = await invoke(mod, { method: 'GET', token: DISPATCHER_TOKEN, query: '?days=1' });
+    assert.equal(res.status, 403, `${name} still trusted the token's role`);
+  }
+});
+
+test('the live role, not the token role, is what lands in the load record', async () => {
+  fake.docs.clear();
+  await seedCreds();
+  // The token says driver; the credential was promoted to loader this morning.
+  await fs.patchDoc('driver_auth/4471', { role: 'loader' });
+  await invoke(scanSession, {
+    token: DRIVER_TOKEN,
+    body: { loadNbr: 'PROMOTED', date: '2026-08-07', scans: [{ og: 'OG6028479182', pro: '7152411', stopNbr: '1', engine: 'wedge' }] },
+  });
+  const doc = await fs.getDoc('nuvizz_load_scans/davis__2026-08-07__PROMOTED');
+  assert.equal(doc.workedBy[0].role, 'loader', 'the history records who they are now, not who the token said');
+});
+
+test('an unreachable credential store fails CLOSED — never back to what the token claimed', async () => {
+  fake.docs.clear();
+  await seedCreds();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    if (String(input).includes('driver_auth')) return new Response('boom', { status: 503 });
+    return realFetch(input, init);
+  };
+  let res;
+  try {
+    res = await invoke(scanSession, {
+      token: DRIVER_TOKEN,
+      body: { loadNbr: 'STEVEN', date: '2026-08-07', scans: [{ og: 'OG6028479182', pro: '7152411', stopNbr: '1', engine: 'wedge' }] },
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(res.status, 503, 'no write happens on a credential read we could not make');
+  assert.equal(await fs.getDoc('nuvizz_load_scans/davis__2026-08-07__STEVEN'), null);
+});
+
+// ── M. one operating day, everywhere ─────────────────────────────────────────
+
+test('the phone keys its manifest and session on the SHIFT day, not the calendar day', async () => {
+  const app = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.match(app, /const date = shiftDayString\(\);/,
+    'a loader on at 8:30pm must not open the manifest for the day that just ended');
+  assert.doesNotMatch(app.slice(app.indexOf('const getManifest')  - 800, app.indexOf('const getManifest')),
+    /const date = etToday\(\);/);
+});
+
+test('8pm ET: the manifest day, the assignment board and the report all say the same day', async () => {
+  const clientShift = await import('../src/lib/shift.js');
+  const serverShift = await import('../netlify/functions/lib/shift.mts');
+  // 2026-09-06 is a Sunday; 20:30 EDT is 00:30 UTC on the 7th.
+  const at = new Date('2026-09-07T00:30:00Z');
+  assert.equal(clientShift.shiftDayString(at), '2026-09-07', 'the shift that ends Monday morning');
+  assert.equal(serverShift.shiftDayString(at), '2026-09-07', 'and the server agrees');
+});
+
+// ── N. concurrent clock-ins and concurrent assignments ───────────────────────
+
+test('two workers clocking onto trucks at the same moment: both starts survive', async () => {
+  fake.docs.clear();
+  await seedCreds();
+  const shiftDay = '2026-09-07';
+  const at = '2026-09-07T01:00:00.000Z';
+
+  const realFetch = globalThis.fetch;
+  let release; const held = new Promise((r) => { release = r; });
+  let heldOne = false;
+  globalThis.fetch = async (input, init = {}) => {
+    const isWrite = String(init.method || 'GET').toUpperCase() === 'PATCH' && String(input).includes('loadscan_worklog');
+    if (isWrite && !heldOne) { heldOne = true; await held; }
+    return realFetch(input, init);
+  };
+  let a, b;
+  try {
+    a = invoke(workSession, { token: DRIVER_TOKEN, body: { events: [{ kind: 'start', loadNbr: 'TRUCK-A', at }] } });
+    await new Promise((r) => setTimeout(r, 20));
+    b = await invoke(workSession, { token: DISPATCHER_TOKEN, body: { events: [{ kind: 'start', loadNbr: 'TRUCK-B', at }] } });
+    release();
+    a = await a;
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(a.status, 200);
+  assert.equal(b.status, 200);
+  const doc = await fs.getDoc(`loadscan_worklog/davis__${shiftDay}`);
+  const trucks = (doc.sessions || []).map((s) => s.loadNbr).sort();
+  assert.deepEqual(trucks, ['TRUCK-A', 'TRUCK-B'], 'neither start was erased by the other');
+});
+
+test('two assignment taps in flight: the second does not drop the first load', async () => {
+  fake.docs.clear();
+  await seedCreds();
+  const shiftDay = '2026-09-07';
+
+  const realFetch = globalThis.fetch;
+  let release; const held = new Promise((r) => { release = r; });
+  let heldOne = false;
+  globalThis.fetch = async (input, init = {}) => {
+    const isWrite = String(init.method || 'GET').toUpperCase() === 'PATCH' && String(input).includes('loadscan_assignments');
+    if (isWrite && !heldOne) { heldOne = true; await held; }
+    return realFetch(input, init);
+  };
+  let a, b;
+  try {
+    a = invoke(loadAssign, { token: DISPATCHER_TOKEN, body: { shiftDay, loadNbr: 'TRUCK-A', loaders: ['4471'] } });
+    await new Promise((r) => setTimeout(r, 20));
+    b = await invoke(loadAssign, { token: DISPATCHER_TOKEN, body: { shiftDay, loadNbr: 'TRUCK-B', loaders: ['1'] } });
+    release();
+    a = await a;
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(a.status, 200);
+  assert.equal(b.status, 200);
+  const doc = await fs.getDoc(`loadscan_assignments/davis__${shiftDay}`);
+  assert.deepEqual(Object.keys(doc.assignments || {}).sort(), ['TRUCK-A', 'TRUCK-B'],
+    'a truck must not lose its loaders because another was assigned at the same moment');
 });
