@@ -33,7 +33,7 @@
 import { isFirestoreEnabled, readStops, etDayString, getDoc } from './lib/firestore.mts';
 import { buildDayCompletion, reconcileDay, dayCompletionSubject, dayCompletionText, dayCompletionHtml, attachFlagHistory } from './lib/day-completion.mts';
 import { flagHistoryPath } from './lib/flag-history.mts';
-import { readDayCompletion, writeDaySnapshot, writeDayReconciliation } from './lib/day-completion-store.mts';
+import { readDayCompletion, writeDaySnapshot, writeDayReconciliation, markDayReportSent, needsSending, recordRun } from './lib/day-completion-store.mts';
 import { emailEnabled, sendEmail } from './lib/email.mts';
 
 const TENANT = 'davis';
@@ -118,25 +118,35 @@ export default async (): Promise<Response> => {
 
   const { hour, minute } = etParts();
   const primary = isReportHour(hour, minute);
-  // The spare firing. It does nothing on an ordinary evening — the primary run has already
-  // written the snapshot by now, and this returns after a single getDoc.
+  // A spare firing. It does nothing on an ordinary evening — somebody has already been told
+  // by now, and this returns after a single getDoc.
   const late = !primary && isAfterReportTime(hour, minute);
   if (!primary && !late) {
-    return J({ ok: true, note: 'not the 6:30p ET firing — the other UTC slot owns this one', etHour: hour, etMinute: minute });
+    return J({ ok: true, note: 'not the 6:30p ET firing — another UTC slot owns this one', etHour: hour, etMinute: minute });
   }
 
   const date = etDayString();
   const out: any = { ok: true, date, etHour: hour, etMinute: minute, firing: primary ? 'primary' : 'spare' };
 
+  // HEARTBEAT FIRST, before anything that can throw. This is the row that tells the next
+  // investigation whether the invocation arrived at all — the question that could not be
+  // answered about 2026-09-02.
+  out.heartbeat = await recordRun(TENANT, date, {
+    etHour: hour, etMinute: minute, firing: primary ? 'primary' : 'spare', at: new Date().toISOString(),
+  });
+
+  // WHAT A SPARE COVERS FOR is decided by whether anybody was TOLD, never by whether a
+  // snapshot exists. Guarding on the snapshot was a live hole — see needsSending.
+  let priorDoc: any = null;
   if (late) {
-    // ONE READ, THEN OUT. Asking Firestore whether tonight already reported is the entire
-    // cost of the safety net on a normal day.
-    const already = await readDayCompletion(TENANT, date).catch(() => null);
-    if (already?.snapshot) {
-      out.note = 'the 6:30p run already reported tonight — nothing to cover for';
+    priorDoc = await readDayCompletion(TENANT, date).catch(() => null);
+    if (!needsSending(priorDoc)) {
+      out.note = 'this evening has already been reported — nothing to cover for';
       return J(out);
     }
-    out.note = 'the 6:30p run left no snapshot for tonight — the spare firing is covering';
+    out.note = priorDoc?.snapshot
+      ? 'the 6:30p run recorded the day but never told anybody — this firing is sending it'
+      : 'the 6:30p run left no snapshot for tonight — this firing is covering';
   }
 
   try {
@@ -162,18 +172,35 @@ export default async (): Promise<Response> => {
     out.snapshot = await writeDaySnapshot(TENANT, date, report);
 
     // ── 2. the email ─────────────────────────────────────────────────────────
-    // Sent only when the snapshot was WRITTEN, never when it already existed. A retried
-    // invocation must not mail the same evening twice, and the write is the claim.
-    if (out.snapshot !== 'written') {
+    //
+    // GATED ON "NOBODY HAS BEEN TOLD YET", not on "we just wrote the snapshot". The old gate
+    // deduplicated on the wrong fact: it made the WRITE the claim that the evening had
+    // reported, so a run that wrote and then failed to send left the day sealed and
+    // unmailable for ever while returning HTTP 200 ok:true. `sent` is the claim now, stamped
+    // only after the mailer confirms. Double-send protection is unchanged in practice — an
+    // ordinary retry finds `sent` on file and stands down.
+    //
+    // 'exists' is therefore no longer automatically a stand-down: it is the NORMAL state for
+    // a spare covering a failed send.
+    const blocked = out.snapshot === 'unreadable'
+      ? 'could not read the existing record, so nothing was written and nothing was sent — this day has NO report'
+      : out.snapshot === 'failed'
+        ? 'the snapshot write failed, so nothing was sent — this day has NO report'
+        : null;
+    // A snapshot we just wrote cannot already have been sent, so that case needs no read.
+    // Otherwise a spare already holds the document it checked, and a primary that found an
+    // existing snapshot reads it here.
+    const onFile = blocked || out.snapshot === 'written'
+      ? null
+      : (priorDoc ?? await readDayCompletion(TENANT, date).catch(() => null));
+    out.alreadySent = !needsSending(onFile);
+
+    if (blocked) {
       out.emailed = false;
-      // Say WHICH of the three it was. "exists" is the ordinary retry case and needs no
-      // attention; "unreadable" and "failed" mean nobody was told about the day at all, and
-      // reporting those as "already exists" would hide a missing report behind a benign one.
-      out.emailNote = out.snapshot === 'exists'
-        ? 'a snapshot for this date already exists — not re-sending'
-        : out.snapshot === 'unreadable'
-          ? 'could not read the existing record, so nothing was written and nothing was sent — this day has NO report'
-          : 'the snapshot write failed, so nothing was sent — this day has NO report';
+      out.emailNote = blocked;
+    } else if (out.alreadySent) {
+      out.emailed = false;
+      out.emailNote = 'this date has already been reported to somebody — not re-sending';
     } else if (!emailEnabled()) {
       out.emailed = false;
       out.emailNote = 'RESEND_API_KEY/RESEND_FROM not set';
@@ -196,6 +223,9 @@ export default async (): Promise<Response> => {
       out.emailed = res.ok;
       out.to = to;
       if (!res.ok) out.emailError = res.error;
+      // ONLY ON A CONFIRMED SEND. This stamp is what stands the next firing down, so writing
+      // it on a failure would recreate the exact hole it replaced.
+      if (res.ok) out.sentStamped = await markDayReportSent(TENANT, date, to, new Date().toISOString());
     }
 
     // ── 3. yesterday, graded ─────────────────────────────────────────────────
@@ -224,4 +254,16 @@ export default async (): Promise<Response> => {
 
 // 22:30 UTC = 6:30p ET while the clocks are ahead; 23:30 UTC = 6:30p ET once they go back.
 // isReportHour above throws away whichever one is not 6:30 in Georgia today.
-export const config = { schedule: '30 22,23 * * *' };
+//
+// ── AND 00:30 UTC, BECAUSE WINTER HAD NO SPARE AT ALL ───────────────────────
+// Two slots gave summer a primary (18:30 ET) and a spare (19:30 ET). In EST the first lands
+// at 17:30 ET and correctly stands down, which makes the SECOND the primary and leaves
+// nothing after it — 133 days a year with no cover, starting eight weeks after the spare
+// shipped, in the season when short days and heavy freight make this board matter most.
+// Found by sweeping both firings across 730 calendar days, not by reading the cron.
+//
+// 00:30 UTC is 20:30 ET in summer and 19:30 ET in winter — after 6:30 either way, so
+// isAfterReportTime accepts it unchanged. It falls on the PREVIOUS ET calendar day, which is
+// the day it must report on, and etDayString derives that from ET rather than UTC, so the
+// date keys itself correctly. A test sweeps all 730 days and holds both claims.
+export const config = { schedule: '30 0,22,23 * * *' };
