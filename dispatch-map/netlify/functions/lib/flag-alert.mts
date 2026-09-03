@@ -80,6 +80,72 @@ import { sendEmail } from './email.mts';
 
 export const ALERT_COLLECTION = 'eta_flag_alerts';
 export const ALERT_TO = 'customerservice@davisdelivery.com';
+
+// WHO ELSE GETS TOLD, AND WHY THIS IS A LIST RATHER THAN A NAME.
+//
+// Chad, 2026-09-03: "Also I didn't get either email to customer service today. You need to
+// test the email path." The path was fine. Both emails had gone and Resend's own record marks
+// both DELIVERED — FABLE HOMEGOODS at 11:00:50a ET, VALVOLINE 0203 at 3:20:22p — and
+// customerservice@ is not on the suppression list. He did not get them because he was never a
+// recipient: ALERT_TO was one hardcoded address, there was no CC, no override, and the one
+// call site passed it as a bare string.
+//
+// THAT IS THE ACTUAL DEFECT, and it is not a mail bug — it is that "the mailer is broken" and
+// "you are not on the list" look identical from an inbox. He receives the review alerts from
+// the same domain and the same Resend account, so from where he sits the flag alert had
+// simply stopped working. A recipient list nobody can read is the same class of problem as a
+// switch whose position cannot be read, and this repo already has a rule about those.
+//
+// THE OPERATIONAL SHAPE, WHICH IS WHY THE TO LINE DOES NOT CHANGE. The person who ACTS on a
+// receiving-window alert is customer service: they phone the consignee and ask to be received
+// late. customerservice@ stays the addressee for exactly that reason — two names on the TO
+// line is two people making the same call, or neither making it because each assumed the
+// other would. Everyone added here is WATCHING the miss, not working it, so they are CC.
+//
+// INTERNAL ADDRESSES ONLY, AND NOTHING IS DROPPED IN SILENCE. The message names a customer,
+// its PRO, its route, and the fact that Davis is about to miss their window. A typo in an env
+// var must not put that in a stranger's inbox, so a non-internal entry is refused — and then
+// REPORTED BY NAME on the dry run, because a recipient quietly discarded would recreate the
+// precise failure this change exists to end.
+export const ALERT_INTERNAL_SUFFIXES = ['@davisdelivery.com', '@davisdeliveryservice.com'];
+
+const EMAILISH = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
+
+/**
+ * PURE. Split ALERT_CC into the extra recipients and the entries it refused.
+ *
+ * Commas, semicolons and newlines all separate, because an env var pasted out of a chat
+ * message arrives with whatever the person typed. `primary` is excluded from the result, so
+ * putting customerservice@ in ALERT_CC cannot address the same mailbox twice.
+ */
+export function parseAlertCc(raw: unknown, primary: string = ALERT_TO): { cc: string[]; rejected: string[] } {
+  const cc: string[] = [];
+  const rejected: string[] = [];
+  const seen = new Set<string>([String(primary ?? '').trim().toLowerCase()]);
+  for (const part of String(raw ?? '').split(/[,;\n]/)) {
+    const addr = part.trim();
+    if (!addr) continue;
+    const lc = addr.toLowerCase();
+    if (seen.has(lc)) continue;
+    if (!EMAILISH.test(lc) || !ALERT_INTERNAL_SUFFIXES.some((suffix) => lc.endsWith(suffix))) {
+      rejected.push(addr);
+      continue;
+    }
+    seen.add(lc);
+    cc.push(lc);
+  }
+  return { cc, rejected };
+}
+
+const parsedAlertCc = parseAlertCc(process.env.ALERT_CC);
+export const ALERT_CC = parsedAlertCc.cc;
+/** Entries of ALERT_CC that will never be mailed, kept so the dry run can name them. */
+export const ALERT_CC_REJECTED = parsedAlertCc.rejected;
+
+/** Everyone this alert is addressed to, customer service first. */
+export function alertRecipients(cc: string[] = ALERT_CC, to: string = ALERT_TO): string[] {
+  return [to, ...cc];
+}
 // DELIBERATELY NOT THE CUSTOMER-COMMS CAP, AND DELIBERATELY NOT ITS NUMBER EITHER.
 //
 // Chad, twice: "the flag emails should not be bound to the resend cap we set for customer
@@ -463,9 +529,17 @@ export function buildAlert(c: AlertCandidate, date: string): { subject: string; 
 export async function sendAlerts(
   candidates: AlertCandidate[], date: string, tenant: string,
   io: { createDocIfAbsent: (p: string, d: any) => Promise<boolean>; exists?: (p: string) => Promise<boolean>; claimedToday?: number; send?: typeof sendEmail },
-  to: string = ALERT_TO,
+  to: string | string[] = alertRecipients(),
 ): Promise<{ sent: number; claimed: number; failed: number; skippedAlreadySent: number; capped: number; emailedStops: Set<string> }> {
   const send = io.send || sendEmail;
+  // A SINGLE ADDRESS STAYS LEGAL. Every caller and every test before this change passed one
+  // string, and a string spread into an array becomes ['c','u','s','t',...] — a shape Resend
+  // rejects, which would have turned "add a CC" into "email nobody".
+  const recipients = (Array.isArray(to) ? to : [to]).map((v) => String(v ?? '').trim()).filter(Boolean);
+  // AND IT IS NEVER EMPTY. An empty list makes every send fail while `failed` ticks up
+  // somewhere nobody reads, so the feature would go silent looking healthy. Customer service
+  // is the floor: an alert reaching only them is the old behaviour, which is recoverable.
+  if (!recipients.length) recipients.push(ALERT_TO);
   // The runaway ceiling counts the DAY, not the invocation. `claimed` used to start at zero
   // on every sweep, which made "DAILY"_ALERT_CAP a per-sweep throttle: the one scenario the
   // constant exists for — a parser bug marking a whole board urgent — would simply resume
@@ -524,7 +598,7 @@ export async function sendAlerts(
     }
     claimed += 1;
     const msg = buildAlert(c, date);
-    const res = await send({ to: [to], subject: msg.subject, text: msg.text, html: msg.html });
+    const res = await send({ to: recipients, subject: msg.subject, text: msg.text, html: msg.html });
     if (res?.ok) { sent += 1; if (band === 'urgent') emailedStops.add(String(c.stopNbr)); } else failed += 1;
   }
   return { sent, claimed, failed, skippedAlreadySent, capped, emailedStops };

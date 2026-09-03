@@ -25,7 +25,7 @@ import { legSecondsMap, travelLegsPath, readTravelCalibration, readRouteClasses 
 import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mts';
 import { flagHistoryPath } from './lib/flag-history.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
-import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, DAILY_ALERT_CAP, ALERT_MIN_TIER, alertTiersFor, normalizeMinTier, AMBER_LEAD_GATE_MIN, alertBandOf, finiteMinutes } from './lib/flag-alert.mts';
+import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, alertRecipients, ALERT_CC_REJECTED, DAILY_ALERT_CAP, ALERT_MIN_TIER, alertTiersFor, normalizeMinTier, AMBER_LEAD_GATE_MIN, alertBandOf, finiteMinutes } from './lib/flag-alert.mts';
 import { flattenForConsumers } from './lib/flag-rows.mts';
 import { emailEnabled } from './lib/email.mts';
 import { requireUser } from './lib/require-user.mts';
@@ -489,7 +489,13 @@ export default async (req: Request): Promise<Response> => {
     return J({
       ok: true, dryRun: true, date, diag,
       now: nowMin != null ? clock(nowMin) : null,
-      emailConfigured: emailEnabled(), to: ALERT_TO, dailyCap: DAILY_ALERT_CAP,
+      // WHO WOULD ACTUALLY BE MAILED, read back rather than assumed. Chad asked why he had
+      // not received an alert that Resend records as delivered; the answer was that he was
+      // never a recipient, and there was no way to see that without reading the source.
+      // ccRejected is the other half: an ALERT_CC entry that is malformed or not an internal
+      // address is refused, and it says so here instead of vanishing.
+      emailConfigured: emailEnabled(), to: ALERT_TO, recipients: alertRecipients(),
+      ccRejected: ALERT_CC_REJECTED, dailyCap: DAILY_ALERT_CAP,
       counts: { critical: flags.criticalCount ?? 0, red: flags.redCount ?? 0, amber: flags.amberCount ?? 0 },
       // Every urgent row, and for each one WHY it would or would not be emailed right now.
       urgent: urgent.map((r: any) => explainRow(r, alertableSet, nowMin, gateMin, minTier)),
