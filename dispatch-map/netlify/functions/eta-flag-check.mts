@@ -99,10 +99,9 @@ export function heldReason(r: any, alertable: boolean, nowMin: number | null, am
   if (!alertTiersFor(floor).has(String(r?.tier))) {
     const gate = Number.isFinite(amberGateMin) && amberGateMin > 0 ? amberGateMin : 0;
     if (String(r?.tier) !== 'amber') return `tier is ${r?.tier} — ${tierPhrase(floor)} (ALERT_MIN_TIER=${floor})`;
-    // THE FLOOR OUTRANKS THE GATE, AND THE ANSWER HAS TO SAY SO. With the floor at critical
-    // an amber cannot email even with the gate switched on, and reporting "the gate is off"
-    // when the gate is 120 would send somebody to change the wrong setting.
-    if (floor !== 'red') return `tier is amber — ${tierPhrase(floor)} (ALERT_MIN_TIER=${floor}), so the amber lead gate cannot open it`;
+    // AMBER ANSWERS TO ITS OWN SWITCH, NOT TO THE TIER FLOOR. Between v0.88.0 and v0.91.0 this
+    // line named the floor, which sent whoever read it to change the wrong setting: the early
+    // warning is gated by AMBER_LEAD_GATE_MIN and always was.
     if (!gate) return 'tier is amber and the amber lead gate is off (AMBER_LEAD_GATE_MIN=0) — screen only';
     if (r?.rule !== 'hours_risk') return 'amber, and only hours_risk rows pass the amber gate';
     if (nowMin == null) return 'amber, and this board has no clock — the gate needs one to measure lead';

@@ -119,13 +119,13 @@ export const DAILY_ALERT_CAP = 500;
 // told the truck is now 105 minutes late. The mild message would arrive and the actionable
 // one would not — worse than the silence it replaced.
 //
-// AND THE CRITICAL FLOOR CLOSES THE HALF-PROMISE THIS COULD HAVE OPENED. Replayed through
-// sendAlerts with a fake claim store: with the gate on AND the floor at critical, an amber
-// heads-up would send and a hardening to RED would send nothing — the early message's own
-// footer says "if it hardens into a confident miss you will get one more message", and that
-// promise would be kept only for a hardening all the way to critical. It is unreachable,
-// because the floor refuses every amber before the gate is consulted; if the floor is ever
-// widened to red the gated path works exactly as it was measured. Do not separate those two.
+// THE HALF-PROMISE IS REACHABLE AGAIN, AND THE WORDING NOW MATCHES IT. With the gate on and
+// the floor at critical, an amber heads-up sends and a hardening to RED sends nothing — only a
+// hardening to CRITICAL earns the second message. That was briefly impossible (v0.88.0 put the
+// floor above the gate) and is deliberate again: the early warning and the urgent alert answer
+// to different switches. The footer no longer promises "if it hardens into a confident miss",
+// which was true only at the red floor; it says "if it hardens past the alert floor", which is
+// true at either.
 //
 // So the claim carries a BAND, not a tier: 'early' for a gated amber, 'urgent' for red and
 // critical. A stop can therefore send once as a heads-up and once more if it hardens, and
@@ -350,17 +350,27 @@ export function selectAlertable(rows: any[], nowMin: number | null, amberGateMin
     // widening the gate later cannot quietly widen this too.
     if (String(r?.hoursTier) === 'assumed') continue;
     if (!tiers.has(String(r?.tier))) {
-      // BELOW THE FLOOR, AND THE FLOOR OUTRANKS THE AMBER GATE.
+      // BELOW THE FLOOR. TWO DIFFERENT QUESTIONS, TWO DIFFERENT SWITCHES.
       //
-      // Chad: "We are only emailing on critical." While the floor is critical that sentence
-      // has to be true unconditionally — otherwise the day somebody sets AMBER_LEAD_GATE_MIN
-      // for the early-warning experiment, ambers start emailing under a policy that says
-      // only criticals do, and the inbox contradicts the instruction with nobody having
-      // decided anything. Widening to ALERT_MIN_TIER=red restores the gated-amber path
-      // exactly as it was measured.
-      if (floor !== 'red') continue;
-      // The ONLY way past this line is an amber hours_risk row whose close is inside the
-      // gate — and only when the gate has been switched on.
+      // v0.88.0 made the floor outrank the amber gate, so that "we are only emailing on
+      // critical" would be true no matter how the gate was set. That was the right reading of
+      // the instruction and the wrong piece of engineering, and VALVOLINE 0203 on 2026-09-03
+      // is what showed it. First seen 1:40p projected to arrive 3:32p against a 3:30p close —
+      // TWO minutes late, correctly amber, because two minutes is inside any error band. It
+      // drifted all afternoon to 4:14p and only cleared twice the model's error at 3:20p, so
+      // the urgent email went out TEN MINUTES before the door shut. Chad: "should have flagged
+      // critical and sent much earlier!"
+      //
+      // Nothing about the tier rule is wrong there — at 1:40p there was nothing to be
+      // confident about. What was missing is the EARLY message, and the mechanism for it is
+      // the amber lead gate right below: a stop projected past its close whose close is nearly
+      // here. That is a different claim from "confidently late", it carries different wording
+      // and its own claim band, and it answers to its own switch. Folding it under the tier
+      // floor meant the two things Chad wants — a quieter urgent inbox AND an earlier
+      // heads-up — could not both be had, which was never the intent.
+      //
+      // So the floor governs the URGENT band, and the gate governs the EARLY one. Red still
+      // cannot email while the floor is critical; that promise is unchanged and tested.
       if (String(r?.tier) !== 'amber') continue;
       if (!gate) continue;                             // shipped default: amber stays on screen
       if (!AMBER_GATED_RULES.has(String(r?.rule))) continue;
@@ -411,7 +421,7 @@ export function buildAlert(c: AlertCandidate, date: string): { subject: string; 
   const footer = early
     ? ['This is an EARLY WARNING, sent because the window closes soon and the estimate is past it.',
        'The estimate at this point in the run carries real error in both directions — the stop may',
-       'still make it. If it hardens into a confident miss you will get one more message.']
+       'still make it. If it hardens past the alert floor you will get one more message.']
     : ['This is sent once, the first time the stop looks confidently late, and never after the',
        'window has already closed.'];
   const text = [
@@ -438,7 +448,7 @@ export function buildAlert(c: AlertCandidate, date: string): { subject: string; 
 <tr><td style="padding:2px 12px 2px 0;color:#475569">Board date</td><td>${esc(date)}</td></tr>
 </table>
 <p style="margin:12px 0 0;color:#475569">Basis: ${esc(basis)}.</p>
-<p style="margin:8px 0 0;color:#94a3b8;font-size:12px">${early ? 'Early warning — the window closes soon and the estimate is past it, but the estimate carries real error in both directions and the stop may still make it. One more message if it hardens.' : 'Sent once, the first time this stop looks confidently late, and never after the window has closed.'}</p>
+<p style="margin:8px 0 0;color:#94a3b8;font-size:12px">${early ? 'Early warning — the window closes soon and the estimate is past it, but the estimate carries real error in both directions and the stop may still make it. One more message if it hardens past the alert floor.' : 'Sent once, the first time this stop looks confidently late, and never after the window has closed.'}</p>
 </div>`;
   return { subject, text, html };
 }

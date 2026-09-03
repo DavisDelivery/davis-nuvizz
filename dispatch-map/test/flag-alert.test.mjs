@@ -366,15 +366,16 @@ test('an assumed-close row is refused even with the amber gate wide open', () =>
 
 test('the same row with REAL auto-detected hours still passes the open gate', () => {
   // The guard must be about provenance, not about amber — the measured gate still works.
-  // At the WIDE floor, because since 2026-09-02 the floor outranks the gate and an amber
-  // cannot email at all under the shipped one. That is asserted on the next line, so this
-  // pair is what tells the two refusals apart: provenance and floor are different rules.
+  // At the SHIPPED floor, because the gate answers to its own switch: an amber inside the gate
+  // is the EARLY message and is not refused on the tier floor's behalf (v0.91.0, after
+  // VALVOLINE 0203 emailed ten minutes before its close). Provenance is still a separate rule,
+  // which the assumed-hours case above pins.
   const real = {
     rule: 'hours_risk', stopNbr: '9002', customer: 'REAL HOURS CO', tier: 'amber',
     hoursTier: 'auto', closeMin: 17 * 60, etaMin: 17 * 60 + 40, lateBy: 40, detail: 'x',
   };
-  assert.equal(selectAlertable([real], 16 * 60 + 30, 240, 'red').length, 1);
-  assert.equal(selectAlertable([real], 16 * 60 + 30, 240).length, 0, 'the shipped floor is critical');
+  assert.equal(selectAlertable([real], 16 * 60 + 30, 240).length, 1, 'the gate opens it at either floor');
+  assert.equal(selectAlertable([real], 16 * 60 + 30, 0).length, 0, 'and the gate off is what shuts it');
 });
 
 test('an assumed row is refused at red too, if a ratchet ever pushes it there', () => {

@@ -86,16 +86,17 @@ test('an amber row names the GATE, not a tier list — off, too far out, or no c
   assert.match(noClock, /no clock/);
 });
 
-test('…but under the SHIPPED floor an amber names the floor, not the gate', () => {
-  // The gate answer would be a confident lie here: with the floor at critical the gate is
-  // not what is holding this email, and "AMBER_LEAD_GATE_MIN=0" reads as "set it and you
-  // will get these" — which is now false. Chad: "We are only emailing on critical."
-  for (const gate of [0, 120, 600]) {
-    const why = heldReason(row({ tier: 'amber' }), false, 11 * 60, gate);
-    assert.match(why, /only critical emails/);
-    assert.match(why, /the amber lead gate cannot open it/, `gate ${gate}`);
-    assert.ok(!/gate is off/.test(why), 'never blame a gate that is not the blocker');
-  }
+test('AN AMBER NAMES THE GATE, at the shipped floor too — that is the setting that governs it', () => {
+  // v0.88.0 made this line name the FLOOR, which sent whoever read it to change the wrong
+  // setting: an amber has never been gated by the tier floor, and since v0.91.0 it is not
+  // refused on the floor's behalf either. "AMBER_LEAD_GATE_MIN=0" is the true answer, and it
+  // is the one that tells a reader what to change to get the early warning Chad asked for.
+  const why = heldReason(row({ tier: 'amber' }), false, 11 * 60, 0);
+  assert.match(why, /gate is off|AMBER_LEAD_GATE_MIN=0/);
+  assert.ok(!/only critical emails/.test(why), 'the floor is not what holds an amber');
+  // …and with the gate open it is not held at all, at the shipped critical floor.
+  assert.equal(selectAlertable([row({ tier: 'amber' })], 11 * 60, 120).length, 1,
+    'the early warning is available without widening the urgent floor');
 });
 
 test('a collapsed summary row says it is a summary, not a stop', () => {
