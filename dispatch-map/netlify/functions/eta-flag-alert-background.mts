@@ -28,7 +28,7 @@ import { ensureLegs, readTravelCalibration, routeClassesPath } from './lib/trave
 import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mts';
 import { readRouteClassesFor } from './lib/route-classes.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
-import { selectAlertable, sendAlerts, ALERT_TO, AMBER_LEAD_GATE_MIN, ALERT_MIN_TIER, ALERT_TIERS, ALERT_COLLECTION } from './lib/flag-alert.mts';
+import { selectAlertable, sendAlerts, ALERT_TO, alertRecipients, ALERT_CC_REJECTED, AMBER_LEAD_GATE_MIN, ALERT_MIN_TIER, ALERT_TIERS, ALERT_COLLECTION } from './lib/flag-alert.mts';
 import { mergeSweep, scoreRowsLive, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
 import { arrivalAnchor, isFinishedStop } from '../../src/lib/board-flags.js';
 import { auditRows } from './lib/flag-rows.mts';
@@ -317,13 +317,18 @@ export default async (req: Request): Promise<Response> => {
       const docs = await listDocs(ALERT_COLLECTION);
       claimedToday = (docs || []).filter((d: any) => d?.tenant === TENANT && d?.date === date).length;
     } catch { /* first claim of the day creates the collection */ }
+    const recipients = alertRecipients();
     const result = await sendAlerts(candidates, date, TENANT, {
       createDocIfAbsent, claimedToday,
       // Lets the early band refuse to follow an urgent claim (bands must arrive in order).
       exists: async (path: string) => !!(await getDoc(path)),
-    }, ALERT_TO);
+    }, recipients);
     const { emailedStops, ...counts } = result;
-    return J({ ...base, recorded: await writeHistory(emailedStops), ...counts, to: ALERT_TO });
+    // `to` stays the addressee and `recipients` is everyone the message reached, because a
+    // run log that collapses the two cannot answer "was Chad on this one" after the fact —
+    // which is the question that started this. ccRejected names the ALERT_CC entries that
+    // were refused, so a typo shows up here rather than as a person who never gets mail.
+    return J({ ...base, recorded: await writeHistory(emailedStops), ...counts, to: ALERT_TO, recipients, ccRejected: ALERT_CC_REJECTED });
   } catch (e: any) {
     return J({ ok: false, error: String(e?.message || e) }, 500);
   }
