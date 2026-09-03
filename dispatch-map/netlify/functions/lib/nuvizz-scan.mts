@@ -21,7 +21,7 @@
 
 import { getNuvizzRequester } from './nuvizz-request.mts';
 import type { ScanState, KnownLoad } from './firestore.mts';
-import { readTerminalStops, mergeTerminalStops } from './firestore.mts';
+import { readTerminalStops, mergeTerminalStops, firestoreDatabase } from './firestore.mts';
 
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
 
@@ -313,12 +313,39 @@ export function todayUTC(): string {
 }
 
 // ── Runaway-scan kill switch (P0, Jun 2026) ──────────────────────────────────
-// Every NuVizz scan path checks this. Set Netlify env NUVIZZ_SCANS_ENABLED=false
-// on the site to short-circuit ALL number-space scanning (load + unplanned) without
-// a code change — the map/app keep reading the last-written Firestore index, but no
-// new NuVizz traffic is generated. Default is ENABLED (only the literal string
-// "false" disables) so a missing/blank var never silently kills live data.
+// Set Netlify env NUVIZZ_SCANS_ENABLED=false on the site to short-circuit ALL
+// number-space scanning (load + unplanned) without a code change — the map/app keep
+// reading the last-written Firestore index, but no new NuVizz traffic is generated.
+// Default is ENABLED (only the literal string "false" disables) so a missing/blank var
+// never silently kills live data.
+//
+// The header used to claim "Every NuVizz scan path checks this" and it was NOT TRUE:
+// nuvizz-history-snapshot-background went straight to runHistorySnapshot with no gate of
+// any kind, and the attempts jobs read only their own NUVIZZ_ATT_ENABLED. Both now call
+// this, so the sentence is true — see the call sites in history-core and attempts-core.
+
+/**
+ * A MIRROR DEPLOY DOES NOT SCAN, AND NOT BECAUSE SOMEBODY REMEMBERED TO SET A VARIABLE.
+ *
+ * Chad, 2026-09-03, on the UAT site: "I do not want uat running scans cut it off." Read off
+ * that site before the change: 109 NuVizz calls that day, every one attributed to
+ * `scheduled_scan`, kill switch reading `{env: false, config: false}` — nobody had switched
+ * it off, because the switch defaults OPEN and nothing about a mirror deploy made it shut.
+ *
+ * FIRESTORE_DATABASE is the one thing that is ALWAYS true of a mirror and never true of
+ * production: the prod-mirror sets it (v0.38.1, `uat-mirror`) precisely so its scans and
+ * counters land in a separate database, and production leaves it unset. So a deploy writing
+ * to a NAMED database is by definition not the production board, and has no business
+ * generating vendor traffic. Keying on that rather than on a scans flag means a new mirror is
+ * born silent instead of scanning until somebody notices the bill.
+ *
+ * Production is untouched: unset → firestoreDatabase() returns '(default)' → not a mirror.
+ */
+export function isMirrorDeploy(): boolean {
+  return firestoreDatabase() !== '(default)';
+}
 export function scansEnabled(): boolean {
+  if (isMirrorDeploy()) return false;
   return String(process.env.NUVIZZ_SCANS_ENABLED ?? '').trim().toLowerCase() !== 'false';
 }
 

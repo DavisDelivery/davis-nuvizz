@@ -20,7 +20,7 @@
 //      fresh manifest over a half-written set. On mismatch: log loudly, no clean
 //      manifest, non-200 for manual runs.
 
-import { scanDate } from './nuvizz-scan.mts';
+import { scanDate, scansEnabled } from './nuvizz-scan.mts';
 import { setCallTrigger } from './nuvizz-request.mts';
 import { isFirestoreEnabled, readStops } from './firestore.mts';
 import {
@@ -313,6 +313,20 @@ export async function runHistorySnapshot(req: Request): Promise<Response> {
   if (!isFirestoreEnabled()) {
     console.error('history-snapshot: FIREBASE_SA not set on this site — cannot write warehouse');
     return new Response(JSON.stringify({ ok: false, error: 'FIREBASE_SA not set' }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // THE MASTER SWITCH, WHICH THIS JOB DID NOT HONOUR. It is the most expensive scheduled
+  // NuVizz caller in the app — ~690 calls a night when lean discovery is off (see the
+  // LEAN_HISTORY note above) — and it had NO gate: not the kill switch, not a flag of its
+  // own. Setting NUVIZZ_SCANS_ENABLED=false silenced the 5-minute refresh and left this
+  // firing at 06:00 UTC, which is the worst possible shape for a switch somebody flips to
+  // stop spending money. It also means a mirror deploy is now silent here too
+  // (isMirrorDeploy), which is the reason this was found.
+  if (!scansEnabled()) {
+    console.log('history-snapshot: scans disabled for this deploy — skipped (no NuVizz calls).');
+    return new Response(JSON.stringify({ ok: true, skipped: 'scans-disabled' }), {
       status: 200, headers: { 'Content-Type': 'application/json' },
     });
   }
