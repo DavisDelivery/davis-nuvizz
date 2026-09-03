@@ -20,7 +20,7 @@
 //
 // ZERO NuVizz calls.
 
-import { getDoc, setDoc, isFirestoreEnabled } from './lib/firestore.mts';
+import { getDocWithMeta, setDocIfUnchanged, isFirestoreEnabled } from './lib/firestore.mts';
 import { authenticate } from './lib/auth.mts';
 import { normalizePro } from './lib/manifest.mts';
 import { mergeWorker } from './lib/activity.mts';
@@ -313,90 +313,131 @@ export default async (req: Request): Promise<Response> => {
   }
 
   const path = `${SESSIONS}/${TENANT}__${date}__${loadNbr}`;
-  const prior = await getDoc(path);
-  const priorScans: ScanRow[] = Array.isArray(prior?.scans) ? prior.scans : [];
-  const priorHand: HandConfirmRow[] = Array.isArray(prior?.handConfirms) ? prior.handConfirms : [];
 
-  const { scans, added, duplicates } = mergeScans(priorScans, accepted);
-  const { handConfirms, added: handAdded, duplicates: handDuplicates } = mergeHandConfirms(priorHand, acceptedHand);
+  // READ, MERGE, WRITE — AND CHECK NOBODY MOVED IT UNDER US.
+  //
+  // Two loaders on one truck is the normal case at 5am, not the edge case. Both
+  // phones flush, both handlers read the same document, each merges only its own
+  // scans into what it read, and the second write replaces the first: one
+  // loader's pieces are gone from the record. Both requests answered 200, so
+  // both phones marked those rows synced and the local queue — the only other
+  // copy — dropped them too. The freight was on the truck and the system had no
+  // idea.
+  //
+  // So the write carries the updateTime we read as a precondition. If it does
+  // not land, someone else wrote in between, and the answer is not to give up
+  // but to read THEIR document and merge into that. Only if the load is so busy
+  // that five attempts all lose does the caller get a 409, which is the one
+  // honest reply: the phone leaves the rows unsynced and flushes them again.
+  const MAX_ATTEMPTS = 5;
+  let reply: any = null;
+  let refusal: Response | null = null;
 
-  const incomingSeq = String(body?.sequenceFingerprint ?? '').trim();
-  const priorSeq = String(prior?.loadedAgainstSequence ?? '').trim();
-  const loadedAgainstSequence = priorSeq || incomingSeq || null;
-  const sequenceChanged = !!(priorSeq && incomingSeq && priorSeq !== incomingSeq) || !!prior?.sequenceChanged;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const { data: prior, updateTime } = await getDocWithMeta(path);
+    const priorScans: ScanRow[] = Array.isArray(prior?.scans) ? prior.scans : [];
+    const priorHand: HandConfirmRow[] = Array.isArray(prior?.handConfirms) ? prior.handConfirms : [];
 
-  const expectedPieces = Number(body?.expectedPieces ?? prior?.expectedPieces ?? 0) || 0;
-  // Pieces verified by barcode, and pieces a person vouched for — counted
-  // together for reconciliation, stored apart so the difference survives.
-  const scannedPieces = scans.length;
-  const confirmedPieces = handConfirms.reduce((n, h) => n + h.pieces, 0);
-  const scannedCount = scannedPieces + confirmedPieces;
+    const { scans, added, duplicates } = mergeScans(priorScans, accepted);
+    const { handConfirms, added: handAdded, duplicates: handDuplicates } = mergeHandConfirms(priorHand, acceptedHand);
 
-  // reconciliation is driver-authored on close-out; carry it through untouched
-  // unless this request is the one closing the load.
-  const closing = body?.close === true;
-  const reconciliation = closing
-    ? {
-        scannedCount,
-        shortCount: Math.max(0, expectedPieces - scannedCount),
-        overCount: Math.max(0, scannedCount - expectedPieces),
-        resolvedBy: String(body?.reconciliation?.resolvedBy ?? '').trim() || null,
-        note: String(body?.reconciliation?.note ?? '').trim() || null,
+    const incomingSeq = String(body?.sequenceFingerprint ?? '').trim();
+    const priorSeq = String(prior?.loadedAgainstSequence ?? '').trim();
+    const loadedAgainstSequence = priorSeq || incomingSeq || null;
+    const sequenceChanged = !!(priorSeq && incomingSeq && priorSeq !== incomingSeq) || !!prior?.sequenceChanged;
+
+    const expectedPieces = Number(body?.expectedPieces ?? prior?.expectedPieces ?? 0) || 0;
+    // Pieces verified by barcode, and pieces a person vouched for — counted
+    // together for reconciliation, stored apart so the difference survives.
+    const scannedPieces = scans.length;
+    const confirmedPieces = handConfirms.reduce((n, h) => n + h.pieces, 0);
+    const scannedCount = scannedPieces + confirmedPieces;
+
+    // reconciliation is driver-authored on close-out; carry it through untouched
+    // unless this request is the one closing the load.
+    const closing = body?.close === true;
+    const reconciliation = closing
+      ? {
+          scannedCount,
+          shortCount: Math.max(0, expectedPieces - scannedCount),
+          overCount: Math.max(0, scannedCount - expectedPieces),
+          resolvedBy: String(body?.reconciliation?.resolvedBy ?? '').trim() || null,
+          note: String(body?.reconciliation?.note ?? '').trim() || null,
+          at: new Date().toISOString(),
+        }
+      : prior?.reconciliation ?? null;
+
+    // A load must not close silently with a mismatch. Re-judged on every attempt
+    // against the document we actually merged into: the scans that arrived while
+    // we were losing the race count toward the total the driver is closing on.
+    if (closing && scannedCount !== expectedPieces && !reconciliation?.resolvedBy) {
+      refusal = bad('cannot close with a piece-count mismatch and no resolution — set reconciliation.resolvedBy', 409);
+      break;
+    }
+
+    const landed = await setDocIfUnchanged(path, {
+      tenant: TENANT,
+      date,
+      loadNbr,
+      driverNumber: String(claims.sub),
+      // Everyone who touched this load, with their role — a loader who loads the
+      // truck and a driver who scans it later are both part of its history, and a
+      // single overwritten driverNumber erased whichever came first.
+      workedBy: mergeWorker(prior?.workedBy, {
+        driverNumber: String(claims.sub),
+        role: String((claims as any).role || 'driver'),
+        pieces: added + handAdded,
         at: new Date().toISOString(),
-      }
-    : prior?.reconciliation ?? null;
+      }),
+      startedAt: prior?.startedAt || new Date().toISOString(),
+      closedAt: closing ? new Date().toISOString() : prior?.closedAt || null,
+      expectedPieces,
+      scannedCount,
+      scannedPieces,
+      confirmedPieces,
+      scans,
+      handConfirms,
+      // The route order this trailer was physically loaded against. First write
+      // wins — if a later push carries a different one, dispatch resequenced
+      // mid-load and the freight on the truck no longer matches the manifest.
+      loadedAgainstSequence,
+      sequenceChanged,
+      reconciliation,
+      // Layer 3, persisted: rejects accumulate rather than overwrite, so a bad
+      // label pattern is still visible days later.
+      rejected: [...(Array.isArray(prior?.rejected) ? prior.rejected : []), ...rejected].slice(-200),
+      updatedAt: new Date().toISOString(),
+    }, updateTime);
 
-  // A load must not close silently with a mismatch.
-  if (closing && scannedCount !== expectedPieces && !reconciliation?.resolvedBy) {
-    return bad('cannot close with a piece-count mismatch and no resolution — set reconciliation.resolvedBy', 409);
+    if (landed) {
+      reply = {
+        loadNbr,
+        date,
+        scannedCount,
+        scannedPieces,
+        confirmedPieces,
+        added,
+        duplicates,
+        handAdded,
+        handDuplicates,
+        rejected: rejected.length,
+        rejectedDetail: rejected.slice(0, 20),
+        closed: closing,
+        attempts: attempt,
+      };
+      break;
+    }
+    // Somebody wrote first. Back off a little so two phones retrying together do
+    // not keep colliding on the same instant, then read their document and merge
+    // into it.
+    if (attempt < MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, 20 * attempt + Math.floor(Math.random() * 30)));
   }
 
-  await setDoc(path, {
-    tenant: TENANT,
-    date,
-    loadNbr,
-    driverNumber: String(claims.sub),
-    // Everyone who touched this load, with their role — a loader who loads the
-    // truck and a driver who scans it later are both part of its history, and a
-    // single overwritten driverNumber erased whichever came first.
-    workedBy: mergeWorker(prior?.workedBy, {
-      driverNumber: String(claims.sub),
-      role: String((claims as any).role || 'driver'),
-      pieces: added + handAdded,
-      at: new Date().toISOString(),
-    }),
-    startedAt: prior?.startedAt || new Date().toISOString(),
-    closedAt: closing ? new Date().toISOString() : prior?.closedAt || null,
-    expectedPieces,
-    scannedCount,
-    scannedPieces,
-    confirmedPieces,
-    scans,
-    handConfirms,
-    // The route order this trailer was physically loaded against. First write
-    // wins — if a later push carries a different one, dispatch resequenced
-    // mid-load and the freight on the truck no longer matches the manifest.
-    loadedAgainstSequence,
-    sequenceChanged,
-    reconciliation,
-    // Layer 3, persisted: rejects accumulate rather than overwrite, so a bad
-    // label pattern is still visible days later.
-    rejected: [...(Array.isArray(prior?.rejected) ? prior.rejected : []), ...rejected].slice(-200),
-    updatedAt: new Date().toISOString(),
-  });
+  if (refusal) return refusal;
+  if (!reply) {
+    // Never a silent success: the phone must keep these rows queued.
+    return json({ ok: false, error: 'busy — another push for this load landed first; retry', retryable: true }, 409);
+  }
 
-  return ok({
-    loadNbr,
-    date,
-    scannedCount,
-    scannedPieces,
-    confirmedPieces,
-    added,
-    duplicates,
-    handAdded,
-    handDuplicates,
-    rejected: rejected.length,
-    rejectedDetail: rejected.slice(0, 20),
-    closed: closing,
-  });
+  return ok(reply);
 };
