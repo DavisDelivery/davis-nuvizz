@@ -9,7 +9,7 @@
 //   M4: live Motive driver overlay (toggle)
 //   M5: route polylines — not implemented this session, see HANDOFF.md
 
-import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Loader as GoogleMapsLoader } from '@googlemaps/js-api-loader';
 import { MarkerClusterer } from '@googlemaps/markerclusterer';
@@ -80,6 +80,10 @@ import { flagDetail, sighting } from './lib/flag-detail.js';
 import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab } from './lib/right-panel.js';
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
+import { dropSide, dropSideClass } from './lib/drop-side.js';
+// w-40. Named once so the measurement and the Tailwind class can never disagree about how
+// wide the panel being placed actually is.
+const STATUS_MENU_W = 160;
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
 import { routePreflight } from './lib/route-preflight.js';
 import { isIosHomeScreenApp, canShareFiles, describePwaMode, viewerWayOut } from './lib/pwa-mode.js';
@@ -109,7 +113,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.93.0';
+const APP_VERSION = '0.93.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -180,6 +184,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.93.1', 'THE IPAD IS A TOUCH DEVICE RUNNING THE MOUSE LAYOUT, AND NOTHING HAD EVER LOOKED AT IT. Chad, on an iPad: \u201cFORMATTING ISSUES ON IPAD ALSO I CANT SEE MY ROUTES.\u201d The routes half was not a bug \u2014 he was parked on Tue Sep 8, whose board really is empty (0 planned; Sep 7 is Labor Day) \u2014 but the SCREEN was arguing with him about it, and the formatting half was real and structural. THE GAP: this app has two views, phone below 768px and desktop above it, so a 1024-1194px iPad gets the layout designed for a mouse. Every guard the build had looks at one end \u2014 the phone one at 390/360 checks collisions and the 44px floor, the desktop one at 1440/1920 measures occupancy and has no collision check at all. A tablet was measured by neither. First sweep at iPad width: FORTY-THREE controls under the touch floor (nav tabs 32px, Build/Engine 26px, one at 18x26) and a Status dropdown hanging off the screen. THE FLOOR ALREADY EXISTED AND WAS GATED TO 767px \u2014 index.css has the whole fingertip block, capped by a width the touch device is on the wrong side of. The cap comes off and `pointer: coarse` keeps doing the work: a mouse monitor is `pointer: fine` and is untouched, which the guard proves by leaving 43 small targets at 1440 while iPad goes to zero. The sortable column headers needed one more thing \u2014 a table cell IGNORES min-height, so that rule read as satisfied while the headers measured 29px; `height` is a minimum on a cell and is what does the work. (And `th[onclick]` has never matched anything: React attaches handlers as properties.) THE DROPDOWN, AND MY OWN FIX FOR IT. `right-0` on a 160px panel puts it off the LEFT edge once the toolbar wraps and Status lands at x\u224877 \u2014 Chad photographed a menu reading \u201cnned / d / sit / eted\u201d. Hard-coding `left-0` instead is the same bug mirrored, and the new tablet guard caught that on the Map screen within one run, where the panel ran to x=1156 on a 1080px screen. The side is MEASURED now (lib/drop-side), because what moved the button was a toolbar wrapping at a width nobody enumerated, and no call site can know that. THE GUARD CAUGHT TWO THINGS I DID WRONG, which is the argument for having it: a missing useLayoutEffect import that `vite build` compiles happily and that blanked the entire app \u2014 and its own first version reporting \u201c\u2713 every screen works (0 states checked)\u201d over that blank app, because an unreachable screen was a skip rather than a failure. Both fixed; it now fails on a screen it cannot reach and on a run that measured less than it should have. ALSO the \u201c564 of 2 stops\u201d chip: numerator counted the day PLUS the grid\u2019s 7-day window, denominator counted the selected day alone, so a ratio 282x its own denominator. AND a false positive in the shared measurement \u2014 an email preview\u2019s iframe content is ink the DOM cannot read across, so a working screen read as 526px of dead space. 8 new tests, 6 mutations killed, 40 tablet states green, phones and desktop unchanged.'],
   ['0.93.0', 'THE DOCK KEPT ITS OWN COUNSEL: A VOID, A DAMAGE FLAG AND A DEACTIVATION ALL STOPPED AT THE PHONE. Three fixes from W1 of the code review. (1) A loader takes a scan back or marks a piece damaged; both are recorded locally and both clear syncedAt so the row re-flushes \u2014 and the flags were dropped twice over, once by a flushQueue projection that did not send them and once by mergeScans discarding the re-push as a duplicate before it looked. The office kept counting a piece the dock had let go of, and a claim nobody raised because nobody was told. mergeScans now updates the flags on a known OG (last writer wins) while keeping the first scannedAt, tombstones stop counting as freight in scannedPieces and piecesAboard, and re-scanning a voided piece revives it instead of bouncing off as ALREADY SCANNED. (2) Tokens live 90 days and carried their own role, so somebody deactivated or demoted this morning kept pushing scans, closing loads and reading staff reports for the rest of the three months \u2014 on a phone nobody can reach, since the app only drops its token on a 401. liveClaims() re-reads the credential on every write, six handlers use it, the role now comes from the document, and an unreachable store fails closed. (3) One operating day everywhere: the phone keyed its manifest and session on the calendar day while assignments and the report board rolled at 8pm, so a loader on at 8:30pm opened the manifest for the shift that had just ended. Plus the clock-in and assignment documents got the same compare-and-swap the scan session got in v0.90.3, via a shared updateDocSafely. 319 load-scan tests, every new one verified against the old code first.'],
   ['0.92.1', 'TWO LOADERS ON ONE TRUCK, AND ONE OF THEM DISAPPEARED. scan-session read the session document, merged its own scans into what it read, and wrote the whole thing back. When both phones flushed at once \u2014 the normal case at 5am, not the edge case \u2014 the second write replaced the first and one loader\u2019s pieces were gone from the record. Both requests answered 200, so both phones marked those rows synced and the local queue, the only other copy, dropped them too: the freight was on the truck and nothing knew it. The write now carries the updateTime it read as a Firestore precondition, and a write that does not land re-reads the WINNER\u2019S document and merges into that, up to five times. A push that keeps losing gets a 409, never a 200, so the phone keeps the rows queued and flushes them again. New in load-scan lib/firestore.mts: getDocWithMeta and setDocIfUnchanged, a real compare-and-swap; the test fake now models updateTime and honours the precondition, so a swap test cannot pass against a fake that could not fail it. Verified both ways \u2014 the three new race tests fail against the old handler and pass against this one. First item of W1 in CODE-REVIEW-FIXES.md (finding A6-S31-1, critical).'],
   ['0.92.0', 'THE ALERT EMAIL WAS NOT BROKEN — CHAD WAS NEVER ON IT, AND NOTHING ANYWHERE COULD TELL HIM THAT. Chad: “Also I didn’t get either email to customer service today. You need to test the email path.” TESTED, AND IT WORKS: a message sent from the alerts’ own sender through the same Resend account reached his inbox in seconds, not spam. Both of the day’s alerts are in the provider’s record as DELIVERED — FABLE HOMEGOODS 11:00:50a ET (closes 12:00p, ETA 1:32p) and VALVOLINE 0203 3:20:22p (closes 3:30p, ETA 4:21p) — and the customer-service address is not on the suppression list. A CORRECTION I OWE FIRST: I had told him the history flag proved those sends completed. It did not. That flag only records that Resend returned a 2xx, which is acceptance, not delivery; the provider’s own record is what says delivered, and I should have read it before claiming it. Reporting an intent as an outcome is the one thing this repo has a rule about, and I did it again. THE ACTUAL DEFECT is that “the mailer is broken” and “you are not a recipient” look identical from an inbox. ALERT_TO was one hardcoded constant, no CC, no environment override, handed to the only send site as a bare string — and he receives the review alerts from the same domain and the same account, so from where he sat the flag alert had simply stopped working. A recipient list nobody can read is the same class of problem as a switch whose position cannot be read. SO THE LIST IS NOW READABLE AND EXTENSIBLE. ALERT_CC takes internal addresses — commas, semicolons or newlines, deduped case-insensitively, the primary excluded so nobody is mailed twice. The dry run and the run log both report `recipients` (everyone the message went to) alongside `to` (the addressee), so “was he on that one” is answerable after the fact instead of by reading source. CUSTOMER SERVICE STAYS THE ADDRESSEE, deliberately: they are the desk that phones the consignee and asks to be received late, and two names on a TO line is two people making that call or neither, each assuming the other had. Everyone added is watching the miss, not working it. INTERNAL DOMAINS ONLY, AND REFUSALS ARE NAMED. The body carries a customer, its PRO, its route and the fact that Davis is about to miss their window; one typo in a console variable must not put that in a stranger’s inbox. A refused entry is reported by name on the dry run rather than vanishing, because a recipient dropped in silence recreates the exact failure this change exists to end. SHIPS INERT: with ALERT_CC unset the behaviour is byte-for-byte the old one, which the first test asserts across eight shapes of “unset”. Setting it is a one-variable decision and it is Chad’s. THE ONE THING STILL UNKNOWABLE FROM HERE: the provider can say the receiving server accepted both messages, not which folder Google filed them in. If customer service never saw them, that is a mailbox rule inside customerservice@ and searching it for “Receiving window at risk” settles it in one look. 11 new tests, 7 mutations killed — including the one that mattered, a string spread into an array of single letters, which would have turned “add a CC” into “email nobody”. 3,278 green.'],
@@ -13098,6 +13103,16 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const [roster, setRoster] = useState([]);
   const [statusSel, setStatusSel] = useState(() => new Set()); // empty = all
   const [statusOpen, setStatusOpen] = useState(false);
+  // WHICH SIDE THE STATUS PANEL HANGS FROM, measured against the viewport when it opens.
+  // useLayoutEffect, not useEffect: the panel is already painted by the time an effect runs,
+  // so a flip decided there is a visible jump on a device where this matters most.
+  const statusBtnRef = useRef(null);
+  const [statusDropSide, setStatusDropSide] = useState('left');
+  useLayoutEffect(() => {
+    if (!statusOpen || !statusBtnRef.current) return;
+    const r = statusBtnRef.current.getBoundingClientRect();
+    setStatusDropSide(dropSide(r, STATUS_MENU_W, window.innerWidth));
+  }, [statusOpen]);
   // NuVizz live pull (desktop toolbar): when nvWindow is set, the grid shows stops
   // fetched straight from NuVizz's stop list (any delivery-date window / status)
   // instead of today's board — e.g. "all unplanned ±7 days". Driver is a local
@@ -13650,13 +13665,22 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
             {view === 'stops' && (
               <div className="relative">
                 <button
+                  ref={statusBtnRef}
                   onClick={() => { setStatusOpen((v) => !v); setOpen(true); }}
                   className={'inline-flex items-center gap-1 px-2 py-1 rounded text-xs border ' + (statusSel.size ? 'border-blue-400 text-blue-700 bg-blue-50' : 'border-slate-300 text-slate-600 hover:bg-slate-50')}
                 >
                   <Filter size={12} /> Status{statusSel.size ? ` (${statusSel.size})` : ''}
                 </button>
                 {statusOpen && (
-                  <div className="absolute right-0 bottom-full mb-1 w-40 bg-white border border-slate-200 rounded-lg shadow-lg z-20 p-1">
+                  // WHICH EDGE IT HANGS FROM IS MEASURED, NOT ASSUMED — see lib/drop-side.
+                  // `right-0` put this 160px panel off the LEFT of an iPad once the toolbar
+                  // wrapped and Status landed at x≈77 (Chad's screenshot: "nned / d / sit /
+                  // eted"). Hard-coding `left-0` instead just mirrored the bug — the tablet
+                  // guard caught it on the Map screen, where the same control sits near the
+                  // right edge and the panel ran to x=1156 on a 1080px screen.
+                  // data-overlay-layer: a dropdown EXISTS to cover what is under it, and the
+                  // layout guards need to know that is deliberate rather than a collision.
+                  <div data-overlay-layer className={`absolute ${dropSideClass(statusDropSide)} bottom-full mb-1 w-40 max-w-[calc(100vw-1rem)] bg-white border border-slate-200 rounded-lg shadow-lg z-20 p-1`}>
                     {TABLE_STATUS_BUCKETS.map((b) => (
                       // tap-target-y: a <label> around a checkbox is invisible to the phone floor
                       // in index.css (which covers button/input/select, and checkboxes are
@@ -17786,7 +17810,20 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // evaluated until it's called, and both call sites are below the declaration.
   const statusCard = () => (
     <StopsStatusCard
-      stopCount={stops.length}
+      // THE POOL THE MAP DRAWS FROM, not the selected day's board.
+      //
+      // Chad, on an iPad, reading "564 of 2 stops": a ratio where the numerator is 282x the
+      // denominator is not a filter notice, it is a nonsense. The two numbers were counting
+      // different populations. `drawnCount` comes from drawnStops <- positioned <-
+      // mapBaseStops, which is the selected day PLUS whatever the bottom grid's window is
+      // showing (his was "Last 7 days" = 3,582 rows). `stopCount` was `stops.length` — the
+      // selected day alone, and he was parked three days out on a board with two rows on it.
+      // So the map was busy with a week of pins while the chip claimed a board of 2.
+      //
+      // The denominator has to be the set drawnStops is a SUBSET of, or the ratio cannot mean
+      // anything. positionedAll is exactly that: everything the map could draw, before the
+      // grid's status/driver filter takes any of it away.
+      stopCount={positionedAll.length}
       // What the map is ACTUALLY drawing, so the chip can't disagree with the pins under it.
       drawnCount={drawnStops.length}
       totalPallets={boardTotalPallets}
