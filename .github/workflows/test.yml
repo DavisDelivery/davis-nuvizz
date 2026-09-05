@@ -179,6 +179,15 @@ jobs:
         env:
           MOBILE: '1'
           SMOKE_PORT: '8808'
+      # WHAT THE LOADS TAB SHOWS. Chad found the rail listing his built routes twice and the
+      # empty trailers nowhere; splitDayLoads is unit-tested, but the defect was WIRING — the
+      # panel was handed the wrong list — and no unit test can see that. This drives the real
+      # bundle against a board carrying all four kinds of load, on the desktop rail AND the
+      # phone's bottom sheet (two taps there, not one), and checks the two empty states say
+      # different things: "nothing left to fill" and "this day was never scanned".
+      - run: npm run verify:loads-tab
+        env:
+          SMOKE_PORT: '8809'
       # "Hide place labels" can only misbehave on a build that HAS a cloud mapId: Google
       # ignores the JS `styles` array on those maps, so the toggle had nothing to do on the
       # roadmap base. Honouring it means REBUILDING the map without the mapId, and the risk

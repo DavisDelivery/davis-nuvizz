@@ -151,12 +151,48 @@ export function mergeDayLoads(routeGroups = [], rosterList = []) {
   return rows.sort(compareLoads);
 }
 
-/** Counts for the tab label + header line: how much of the day is actually built. */
-export function dayLoadTally(rows = []) {
-  let withOrders = 0, empty = 0, stops = 0;
-  for (const r of rows) {
-    if (r.empty || r.count === 0) empty += 1;
-    else { withOrders += 1; stops += r.count; }
+/**
+ * PURE. Split the day's loads into the three things the rail has to say about them.
+ *
+ * Chad, on the Routing rail showing Routes (3) beside Loads (3) — the same three loads twice:
+ * "Where are all my empty loads. Routes are loads that have stops on them and loads should
+ * just be all the empty loads."
+ *
+ * That is a definition, and the rail was not honouring it. `Routes` lists the board's route
+ * groups, which are built OUT OF stops, so every row there carries orders by construction.
+ * `Loads` listed the merged roster — every load INCLUDING those same built ones — so the
+ * second tab was the first tab plus extras, and the empty shells he was looking for sat among
+ * rows he had just read next door. On a 99-load Draft day that is the whole point of the tab.
+ *
+ * ── WHY THREE BUCKETS AND NOT TWO ────────────────────────────────────────────
+ * The obvious split is "has orders" / "has none", and it LOSES A LOAD. `Routes` is not the
+ * loads with orders, it is the loads ON THE BOARD: a roster load can carry trips in NuVizz
+ * while none of its stops have reached this day's board (mergeDayLoads leaves it
+ * `count > 0, onBoard: false`). Split on the count and that load is in neither tab — invisible
+ * on a screen whose entire job is showing the dispatcher what exists. So the partition is by
+ * `onBoard`, which is exactly what Routes renders, and the off-board remainder gets its own
+ * bucket and its own line in the panel rather than being silently dropped or quietly mixed in
+ * with the Drafts.
+ *
+ * routed ∪ empty ∪ offBoard = every row, and no row is in two of them. Whatever a load is,
+ * it is on exactly one tab, and the tab it is on answers a question the dispatcher is asking.
+ *
+ * The panel's header counts these buckets and nothing else. It used to borrow "built" from a
+ * whole-day tally that counted every row carrying orders, and the browser guard caught it in
+ * its first run: an off-board load was counted as built, so the header read "3 built in
+ * Routes" beside a Routes tab holding two. That tally had no other caller and is gone — a
+ * count sourced from somewhere other than the list it describes is a bug waiting for a board
+ * shaped the wrong way.
+ */
+export function splitDayLoads(rows = []) {
+  const routed = [];
+  const empty = [];
+  const offBoard = [];
+  for (const r of rows || []) {
+    if (!r) continue;
+    if (r.onBoard) routed.push(r);
+    else if (r.empty || !(Number(r.count) > 0)) empty.push(r);
+    else offBoard.push(r);
   }
-  return { total: rows.length, withOrders, empty, stops };
+  return { routed, empty, offBoard };
 }

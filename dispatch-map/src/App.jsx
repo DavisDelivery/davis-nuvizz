@@ -73,7 +73,7 @@ import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } fr
 import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerChipLabel, latestPeerSaveAt, PRESENCE_HEARTBEAT_MS } from './lib/presence.js';
 import { cancelsIn, cancelSummary } from './lib/cancel-guard.js';
 import { validateNewRoute } from './lib/route-create.js';
-import { mergeDayLoads, dayLoadTally } from './lib/day-loads.js';
+import { mergeDayLoads, splitDayLoads } from './lib/day-loads.js';
 import { flagProvenance, provenanceLine } from './lib/flag-provenance.js';
 import { deliveredWhen } from './lib/delivered-when.js';
 import { flagDetail, sighting } from './lib/flag-detail.js';
@@ -113,7 +113,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.93.1';
+const APP_VERSION = '0.93.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -184,6 +184,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.93.2', 'ROUTES AND LOADS WERE THE SAME LIST, AND THE EMPTY TRAILERS WERE THE ONES BURIED. Chad, on the Routing rail reading Routes (3) beside Loads (3) with the same three loads under both: “Where are all my empty loads. Routes are loads that have stops on them and loads should just be all the empty loads.” That is a definition, not a preference, and the rail was not honouring it. Routes is built OUT OF stops, so every row there carries freight by construction — and the Loads tab was being fed the MERGED roster, which is those same loads PLUS everything else. On his Sep 8 board that made the second tab a copy of the first; on a normal 99-Draft morning it buries the empty shells a dispatcher is hunting behind ninety rows he has just read next door. The tell was already sitting in the code: a “Built only” toggle in the search bar whose entire job was hiding what the tab is for. It is gone with the mixed list that needed it. THE SPLIT IS BY WHAT IS ON THE BOARD, NOT BY THE STOP COUNT, and that is the only interesting engineering here. The obvious rule — has orders / has none — LOSES A LOAD: NuVizz can say a load carries twelve trips while none of its stops have reached this day’s board, and Routes cannot show it either because there is no group to show. Split on the count and that load is on NEITHER tab, invisible on the screen whose whole job is telling the dispatcher what exists. So splitDayLoads partitions by onBoard — exactly what Routes renders — and the off-board remainder gets its own amber section under its own heading rather than being dropped or quietly mixed in with the Drafts. routed ∪ empty ∪ offBoard is every row, and no row is in two of them. ABSENT IS NOT ZERO, AND THE TAB NOW SAYS WHICH. “NuVizz has no empty loads for this day” and “we never pulled this day’s roster” produce an identical blank list and call for opposite actions — nothing to do, versus press ↻. Sep 8 sat in the second state and the panel said the first. A NEW BROWSER GUARD, AND IT EARNED ITS KEEP IN ITS FIRST RUN. The defect Chad reported was WIRING — the panel was handed the wrong list — and no unit test can see that, so verify-loads-tab drives the real bundle against a fixture board carrying all four kinds of load, on the desktop rail AND the phone’s bottom sheet, which is two taps there and not one. It immediately failed on my own header: “built” was borrowed from a whole-day tally that counts every row with orders, so the off-board load was counted as built and the header read “3 built in Routes” beside a Routes tab holding two. Every number now comes off the same split the rows do, and that tally — which had no other caller left — is deleted rather than left lying about meaning something subtly different. The guard is checked BOTH WAYS: run against origin/main it fails on the exact bug (“CHAD is repeated on the Loads tab”), which is the only thing that makes a green run mean anything. The bottom grid’s Loads view is untouched and still lists every load on the day — this is the rail’s tab changing meaning, not a set going missing. 6 new tests, 6 mutations killed, 6 browser states on two views, 3,292 green.'],
   ['0.93.1', 'THE IPAD IS A TOUCH DEVICE RUNNING THE MOUSE LAYOUT, AND NOTHING HAD EVER LOOKED AT IT. Chad, on an iPad: \u201cFORMATTING ISSUES ON IPAD ALSO I CANT SEE MY ROUTES.\u201d The routes half was not a bug \u2014 he was parked on Tue Sep 8, whose board really is empty (0 planned; Sep 7 is Labor Day) \u2014 but the SCREEN was arguing with him about it, and the formatting half was real and structural. THE GAP: this app has two views, phone below 768px and desktop above it, so a 1024-1194px iPad gets the layout designed for a mouse. Every guard the build had looks at one end \u2014 the phone one at 390/360 checks collisions and the 44px floor, the desktop one at 1440/1920 measures occupancy and has no collision check at all. A tablet was measured by neither. First sweep at iPad width: FORTY-THREE controls under the touch floor (nav tabs 32px, Build/Engine 26px, one at 18x26) and a Status dropdown hanging off the screen. THE FLOOR ALREADY EXISTED AND WAS GATED TO 767px \u2014 index.css has the whole fingertip block, capped by a width the touch device is on the wrong side of. The cap comes off and `pointer: coarse` keeps doing the work: a mouse monitor is `pointer: fine` and is untouched, which the guard proves by leaving 43 small targets at 1440 while iPad goes to zero. The sortable column headers needed one more thing \u2014 a table cell IGNORES min-height, so that rule read as satisfied while the headers measured 29px; `height` is a minimum on a cell and is what does the work. (And `th[onclick]` has never matched anything: React attaches handlers as properties.) THE DROPDOWN, AND MY OWN FIX FOR IT. `right-0` on a 160px panel puts it off the LEFT edge once the toolbar wraps and Status lands at x\u224877 \u2014 Chad photographed a menu reading \u201cnned / d / sit / eted\u201d. Hard-coding `left-0` instead is the same bug mirrored, and the new tablet guard caught that on the Map screen within one run, where the panel ran to x=1156 on a 1080px screen. The side is MEASURED now (lib/drop-side), because what moved the button was a toolbar wrapping at a width nobody enumerated, and no call site can know that. THE GUARD CAUGHT TWO THINGS I DID WRONG, which is the argument for having it: a missing useLayoutEffect import that `vite build` compiles happily and that blanked the entire app \u2014 and its own first version reporting \u201c\u2713 every screen works (0 states checked)\u201d over that blank app, because an unreachable screen was a skip rather than a failure. Both fixed; it now fails on a screen it cannot reach and on a run that measured less than it should have. ALSO the \u201c564 of 2 stops\u201d chip: numerator counted the day PLUS the grid\u2019s 7-day window, denominator counted the selected day alone, so a ratio 282x its own denominator. AND a false positive in the shared measurement \u2014 an email preview\u2019s iframe content is ink the DOM cannot read across, so a working screen read as 526px of dead space. 8 new tests, 6 mutations killed, 40 tablet states green, phones and desktop unchanged.'],
   ['0.93.0', 'THE DOCK KEPT ITS OWN COUNSEL: A VOID, A DAMAGE FLAG AND A DEACTIVATION ALL STOPPED AT THE PHONE. Three fixes from W1 of the code review. (1) A loader takes a scan back or marks a piece damaged; both are recorded locally and both clear syncedAt so the row re-flushes \u2014 and the flags were dropped twice over, once by a flushQueue projection that did not send them and once by mergeScans discarding the re-push as a duplicate before it looked. The office kept counting a piece the dock had let go of, and a claim nobody raised because nobody was told. mergeScans now updates the flags on a known OG (last writer wins) while keeping the first scannedAt, tombstones stop counting as freight in scannedPieces and piecesAboard, and re-scanning a voided piece revives it instead of bouncing off as ALREADY SCANNED. (2) Tokens live 90 days and carried their own role, so somebody deactivated or demoted this morning kept pushing scans, closing loads and reading staff reports for the rest of the three months \u2014 on a phone nobody can reach, since the app only drops its token on a 401. liveClaims() re-reads the credential on every write, six handlers use it, the role now comes from the document, and an unreachable store fails closed. (3) One operating day everywhere: the phone keyed its manifest and session on the calendar day while assignments and the report board rolled at 8pm, so a loader on at 8:30pm opened the manifest for the shift that had just ended. Plus the clock-in and assignment documents got the same compare-and-swap the scan session got in v0.90.3, via a shared updateDocSafely. 319 load-scan tests, every new one verified against the old code first.'],
   ['0.92.1', 'TWO LOADERS ON ONE TRUCK, AND ONE OF THEM DISAPPEARED. scan-session read the session document, merged its own scans into what it read, and wrote the whole thing back. When both phones flushed at once \u2014 the normal case at 5am, not the edge case \u2014 the second write replaced the first and one loader\u2019s pieces were gone from the record. Both requests answered 200, so both phones marked those rows synced and the local queue, the only other copy, dropped them too: the freight was on the truck and nothing knew it. The write now carries the updateTime it read as a Firestore precondition, and a write that does not land re-reads the WINNER\u2019S document and merges into that, up to five times. A push that keeps losing gets a 409, never a 200, so the phone keeps the rows queued and flushes them again. New in load-scan lib/firestore.mts: getDocWithMeta and setDocIfUnchanged, a real compare-and-swap; the test fake now models updateTime and honours the precondition, so a swap test cannot pass against a fake that could not fail it. Verified both ways \u2014 the three new race tests fail against the old handler and pass against this one. First item of W1 in CODE-REVIEW-FIXES.md (finding A6-S31-1, critical).'],
@@ -18425,7 +18426,21 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // same set the bottom grid's Loads view shows; the rail used to show saved optimizer plans
   // instead, which is why real routes never appeared in a column labelled Loads.
   const dayLoads = useMemo(() => mergeDayLoads(routeGroups, loadRosterList), [routeGroups, loadRosterList]);
-  const dayLoadsTally = useMemo(() => dayLoadTally(dayLoads), [dayLoads]);
+  // THE TWO TABS MEAN TWO DIFFERENT THINGS. Chad, looking at Routes (3) beside Loads (3)
+  // listing the same three loads: "Where are all my empty loads. Routes are loads that have
+  // stops on them and loads should just be all the empty loads." Routes already lists every
+  // load on the board — a route group is built OUT OF stops — so a Loads tab fed the merged
+  // roster was Routes plus extras, and the empty shells he wanted sat among rows he had just
+  // read next door. splitDayLoads partitions by onBoard (see §L there for why not by count).
+  const dayLoadsSplit = useMemo(() => splitDayLoads(dayLoads), [dayLoads]);
+  // Rows the Loads tab is responsible for: the empty ones, plus any load NuVizz says carries
+  // orders whose stops have not reached the board. The count on the tab is the count in the
+  // panel, so the two can never disagree about how much is over there.
+  const dayLoadsCount = dayLoadsSplit.empty.length + dayLoadsSplit.offBoard.length;
+  // Whether we have this day's roster AT ALL. An empty Loads tab has two completely different
+  // meanings — "NuVizz has no empty loads for this day" and "we have not pulled the roster" —
+  // and they look identical on screen. The panel says which.
+  const dayRosterKnown = loadRosterList.length > 0;
 
   // Workbench handlers — open a route into the side-by-side cards, tune it, close it.
   const openRouteInWorkbench = useCallback((key) => {
@@ -20897,10 +20912,10 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   const routesPanelEl = (
     <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} dispatchingKey={dispatchingKey} onNewRoute={liveWrite ? openNewRoute : null} writeDenied={writeGate.reason} />
   );
-  // The day's real NuVizz loads — the same set and the same click-to-Compare as the bottom
-  // grid's Loads view, which Chad keeps: this is a second way in, not a move.
+  // The day's loads that are NOT on the board — the empty ones the dispatcher still has to
+  // fill. Same click-to-Compare as the bottom grid's Loads view, which Chad keeps in full.
   const dayLoadsPanelEl = (
-    <RoutingDayLoadsPanel rows={dayLoads} tally={dayLoadsTally}
+    <RoutingDayLoadsPanel rows={dayLoadsSplit.empty} offBoard={dayLoadsSplit.offBoard} builtCount={dayLoadsSplit.routed.length} rosterKnown={dayRosterKnown}
       onPickLoad={(r) => pickLoadToCompare(r.loadNbr || r.loadId || r.key)}
       isOpen={(r) => wbRoutes.some((w) => w.key === r.key || (r.name && w.key === r.name) || (r.loadNbr && (w.key === r.loadNbr || w.loadNbr === r.loadNbr)))} />
   );
@@ -20908,7 +20923,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // never disagree about which panel a tab opens — they are separate layouts, not separate
   // behaviour, and the two have drifted apart in this app before.
   const routesModeToggleEl = rightPanelMode === 'routesLoads'
-    ? <RoutesLoadsToggle subTab={routesLoadsTab} setSubTab={setRoutesLoadsTab} routesCount={routeGroups.length} loadsCount={dayLoads.length} />
+    ? <RoutesLoadsToggle subTab={routesLoadsTab} setSubTab={setRoutesLoadsTab} routesCount={routeGroups.length} loadsCount={dayLoadsCount} />
     : <RoutesDriversToggle subTab={routesSubTab} setSubTab={setRoutesSubTab} routesCount={routeGroups.length} />;
   const routesModeBodyEl = rightPanelMode === 'routesLoads'
     ? (routesLoadsTab === 'loads' ? dayLoadsPanelEl : routesPanelEl)
@@ -21279,7 +21294,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
                 onOpen={(l) => { setViewedLoad(l); setDesktopRail('result'); }}
                 onRename={renameLoad} onToggleDispatch={toggleDispatched} onDelete={deleteLoad} manageError={manageError} />
             ) : (
-              <RoutingDayLoadsPanel rows={dayLoads} tally={dayLoadsTally}
+              <RoutingDayLoadsPanel rows={dayLoadsSplit.empty} offBoard={dayLoadsSplit.offBoard} builtCount={dayLoadsSplit.routed.length} rosterKnown={dayRosterKnown}
                 onPickLoad={(r) => pickLoadToCompare(r.loadNbr || r.loadId || r.key)}
                 isOpen={(r) => wbRoutes.some((w) => w.key === r.key || (r.name && w.key === r.name) || (r.loadNbr && (w.key === r.loadNbr || w.loadNbr === r.loadNbr)))} />
             )}
@@ -21490,80 +21505,126 @@ function SavedLoadManageBar({ load, onClose, onRename, onToggleDispatch, onDelet
 // The live, shared Loads list — fed by useSavedLoads (onSnapshot). Sortable;
 // explicit loading / empty / error. Each row opens the load on the map.
 /**
- * RoutingDayLoadsPanel (§L) — the day's NuVizz LOADS in the right rail.
+ * RoutingDayLoadsPanel (§L) — the day's EMPTY loads in the right rail.
  *
  * Chad, Jul 31: "eroutes never end up on the column even though it says its what its for."
  * The rail's Loads tab listed SAVED PLANS (optimizer output, Firestore) while the bottom grid
- * beside it listed 99 real loads — two different things wearing the same word. This panel is
- * the same set the bottom grid shows: routes built on the board, plus the day's empty Drafts,
- * which exist only in the roster because they have no stops to group.
+ * beside it listed 99 real loads — two different things wearing the same word. So it was
+ * rewired to the day's real NuVizz loads.
+ *
+ * Chad, Sep 5, on a board reading Routes (3) and Loads (3) with the same three loads in both:
+ * "Where are all my empty loads. Routes are loads that have stops on them and loads should
+ * just be all the empty loads." The rewire had made this tab the MERGED roster — built routes
+ * AND empty shells — which on a normal day is Routes plus extras, and on a 99-Draft day
+ * buries the shells behind 90-odd rows the dispatcher has already read next door. The
+ * "Built only" toggle that used to live up here was the tell: a filter whose whole job was
+ * hiding what the tab is for.
+ *
+ * So this panel now lists what Routes does not: the loads with no orders on them yet — the
+ * trailers still to be filled — plus (in its own section, never mixed in) any load NuVizz says
+ * carries orders whose stops have not reached the board, because a load that appears on
+ * neither tab is a load nobody plans. splitDayLoads owns that partition.
  *
  * Clicking a row opens it in Compare, exactly like the bottom grid's Loads row.
  */
-function RoutingDayLoadsPanel({ rows, tally, onPickLoad, isOpen }) {
-  const [q, setQ] = useState('');
-  const [hideEmpty, setHideEmpty] = useState(false);
-  const shown = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    return rows.filter((r) => {
-      if (hideEmpty && (r.empty || r.count === 0)) return false;
-      if (!needle) return true;
-      return [r.display, r.name, r.loadNbr, r.driver].filter(Boolean).join(' ').toLowerCase().includes(needle);
-    });
-  }, [rows, q, hideEmpty, ]);
+function DayLoadRow({ r, onPickLoad, isOpen }) {
+  const pct = r.count ? Math.round((100 * r.delivered) / r.count) : 0;
+  const open = isOpen ? isOpen(r) : false;
   return (
-    <div className="flex-1 min-h-0 flex flex-col">
+    <button onClick={() => onPickLoad(r)}
+      className={`w-full text-left px-3 py-2 hover:bg-slate-50 ${open ? 'bg-blue-50' : ''}`}>
+      <div className="flex items-center gap-2">
+        <span className="font-semibold text-[12px] text-blue-700 truncate flex-1 min-w-0">{loadDisplayName(r.name, r.loadNbr) || r.display}</span>
+        {r.empty
+          ? <span className="shrink-0 px-1.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200" title={r.status ? `Load status: ${r.status}` : 'No orders assigned yet'}>No orders yet</span>
+          : <span className="shrink-0 text-[11px] font-semibold tabular-nums" style={{ color: pct === 100 ? '#16a34a' : BRAND }}>{pct}%</span>}
+      </div>
+      <div className="mt-0.5 flex items-center gap-2 text-[11px] text-slate-500">
+        <span className="truncate flex-1 min-w-0">{r.driver || (r.empty ? (r.status || 'Draft') : 'No driver')}</span>
+        {!r.empty && <span className="shrink-0 tabular-nums">{r.count} stop{r.count === 1 ? '' : 's'}{r.onBoard ? ` · ${r.skids} sk · ${r.loose} loose` : ''}</span>}
+      </div>
+      {/* Two loads CAN share a name — a route cancelled and rebuilt leaves both on the
+          day. They always have different NUMBERS, so show the number: it is the only
+          thing that tells them apart, and the dispatcher needs it for the portal. */}
+      {r.ambiguous && r.loadNbr && (
+        <div className="mt-0.5 text-[10px] text-amber-700 font-mono">
+          {r.status || 'load'} · {r.loadNbr}
+        </div>
+      )}
+      {r.unattributed && (
+        <div className="mt-0.5 text-[10px] text-amber-700">⚠ {r.count} order(s) on the board under this name — two loads share it, so which one holds them can&apos;t be told from the board.</div>
+      )}
+    </button>
+  );
+}
+
+function dayLoadMatches(r, needle) {
+  if (!needle) return true;
+  return [r.display, r.name, r.loadNbr, r.driver].filter(Boolean).join(' ').toLowerCase().includes(needle);
+}
+
+function RoutingDayLoadsPanel({ rows, offBoard = [], builtCount = 0, onPickLoad, isOpen, rosterKnown = false }) {
+  const [q, setQ] = useState('');
+  const needle = q.trim().toLowerCase();
+  const shown = useMemo(() => rows.filter((r) => dayLoadMatches(r, needle)), [rows, needle]);
+  const shownOff = useMemo(() => offBoard.filter((r) => dayLoadMatches(r, needle)), [offBoard, needle]);
+  const total = rows.length + offBoard.length;
+  const showing = shown.length + shownOff.length;
+  return (
+    // data-day-loads-panel: scripts/verify-loads-tab.mjs reads THIS subtree and only this one.
+    // The bottom grid also lists loads (deliberately — Chad keeps that view in full), so a
+    // guard that read document.innerText would let a grid row stand in for a rail row and pass
+    // a tab showing the wrong list. Same idea as data-overlay-layer: the markup says what it
+    // is rather than the guard guessing from the shape of the tree.
+    <div data-day-loads-panel className="flex-1 min-h-0 flex flex-col">
       <div className="sticky top-0 z-20 bg-white border-b px-2 py-1.5 flex items-center gap-1.5 shrink-0">
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search loads / driver"
+        {/* No "Built only" toggle any more — every row here is a load with no orders on it, so
+            the filter would have had nothing left to hide but the tab's whole contents. */}
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search empty loads / driver"
           className="flex-1 min-w-0 text-[12px] border border-slate-300 rounded px-2 py-1" />
-        {/* On a board that is mostly Drafts, this is the difference between browsing 99 rows
-            and browsing the handful that actually carry freight. */}
-        <button onClick={() => setHideEmpty((v) => !v)}
-          title={hideEmpty ? 'Showing only loads that carry orders — click to show empty Drafts too' : 'Showing every load on the day — click to hide the empty Drafts'}
-          className={`text-[11px] font-semibold px-2 py-1 rounded border shrink-0 ${hideEmpty ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}>
-          Built only
-        </button>
       </div>
+      {/* EVERY NUMBER HERE COMES OFF THE SAME SPLIT THE ROWS DO. The first draft borrowed
+          `built` from the whole-day tally, and the browser guard caught it in its first run:
+          the tally counts every row carrying orders, so a load NuVizz says has twelve trips
+          whose stops never reached the board was counted as built in Routes — a header
+          reading "3 built in Routes" beside a Routes tab holding two. A count sourced from
+          somewhere other than the list it describes is exactly how that happens. */}
       <div className="px-3 py-1.5 text-[11px] text-slate-500 border-b bg-slate-50 shrink-0">
-        {tally.withOrders} built · {tally.empty} empty · {tally.stops} stops
-        {shown.length !== rows.length ? ` · showing ${shown.length}` : ''}
+        {rows.length} empty · {builtCount} built in <b>Routes</b>
+        {offBoard.length ? ` · ${offBoard.length} not on the board` : ''}
+        {showing !== total ? ` · showing ${showing}` : ''}
       </div>
-      {rows.length === 0 ? (
-        <div className="p-4 text-[12px] text-slate-400">No loads on this day&apos;s board yet. Use <b>＋ New route</b> in the Routes panel to make one.</div>
-      ) : shown.length === 0 ? (
+      {total === 0 ? (
+        // ABSENT IS NOT ZERO. "NuVizz has no empty loads for this day" and "we never pulled
+        // this day's roster" produce the identical blank list, and they call for opposite
+        // actions — one is nothing to do, the other is press ↻. Sep 8 sat in the second state
+        // and the panel said the first.
+        rosterKnown ? (
+          <div className="p-4 text-[12px] text-slate-400">Every load on this day already carries orders — they&apos;re all in <b>Routes</b>. Nothing empty left to fill.</div>
+        ) : (
+          <div className="p-4 text-[12px] text-slate-400">This day&apos;s load roster hasn&apos;t been pulled yet, so we can&apos;t say what&apos;s empty. Use <b>↻</b> to scan the day.</div>
+        )
+      ) : showing === 0 ? (
         <div className="p-4 text-[12px] text-slate-400">No loads match.</div>
       ) : (
-        <div className="flex-1 min-h-0 overflow-y-auto divide-y">
-          {shown.map((r) => {
-            const pct = r.count ? Math.round((100 * r.delivered) / r.count) : 0;
-            const open = isOpen ? isOpen(r) : false;
-            return (
-              <button key={r.key} onClick={() => onPickLoad(r)}
-                className={`w-full text-left px-3 py-2 hover:bg-slate-50 ${open ? 'bg-blue-50' : ''}`}>
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold text-[12px] text-blue-700 truncate flex-1 min-w-0">{loadDisplayName(r.name, r.loadNbr) || r.display}</span>
-                  {r.empty
-                    ? <span className="shrink-0 px-1.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200" title={r.status ? `Load status: ${r.status}` : 'No orders assigned yet'}>No orders yet</span>
-                    : <span className="shrink-0 text-[11px] font-semibold tabular-nums" style={{ color: pct === 100 ? '#16a34a' : BRAND }}>{pct}%</span>}
-                </div>
-                <div className="mt-0.5 flex items-center gap-2 text-[11px] text-slate-500">
-                  <span className="truncate flex-1 min-w-0">{r.driver || (r.empty ? (r.status || 'Draft') : 'No driver')}</span>
-                  {!r.empty && <span className="shrink-0 tabular-nums">{r.count} stop{r.count === 1 ? '' : 's'}{r.onBoard ? ` · ${r.skids} sk · ${r.loose} loose` : ''}</span>}
-                </div>
-                {/* Two loads CAN share a name — a route cancelled and rebuilt leaves both on the
-                    day. They always have different NUMBERS, so show the number: it is the only
-                    thing that tells them apart, and the dispatcher needs it for the portal. */}
-                {r.ambiguous && r.loadNbr && (
-                  <div className="mt-0.5 text-[10px] text-amber-700 font-mono">
-                    {r.status || 'load'} · {r.loadNbr}
-                  </div>
-                )}
-                {r.unattributed && (
-                  <div className="mt-0.5 text-[10px] text-amber-700">⚠ {r.count} order(s) on the board under this name — two loads share it, so which one holds them can&apos;t be told from the board.</div>
-                )}
-              </button>
-            );
-          })}
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          <div className="divide-y">
+            {shown.map((r) => <DayLoadRow key={r.key} r={r} onPickLoad={onPickLoad} isOpen={isOpen} />)}
+          </div>
+          {/* Its own section, under its own heading. These loads carry orders in NuVizz but
+              none of their stops are on this day's board, so Routes cannot show them either —
+              and a load on neither tab is a load nobody plans. Kept out of the list above so
+              the tab stays what Chad asked for. */}
+          {shownOff.length > 0 && (
+            <>
+              <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-amber-800 bg-amber-50 border-y border-amber-200">
+                Has orders, not on the board ({shownOff.length})
+              </div>
+              <div className="divide-y">
+                {shownOff.map((r) => <DayLoadRow key={r.key} r={r} onPickLoad={onPickLoad} isOpen={isOpen} />)}
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>
