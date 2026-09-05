@@ -154,6 +154,12 @@ jobs:
       # The desktop counterpart — a screen can be perfect at 390px and still waste half a
       # dispatcher's 1920px monitor, and no phone check can see that.
       - run: npm run verify:desktop
+
+      # THE VIEW NOBODY WAS LOOKING AT. The phone guard runs at 390/360 and the desktop one
+      # at 1440/1920 measuring occupancy only — so a tablet, which gets the DESKTOP layout on
+      # a TOUCH device, was checked by neither. The first sweep found 43 controls under the
+      # 44px floor and a dropdown hanging off the edge of Chad's iPad.
+      - run: npm run verify:tablet
       # A unit test proves the sentences in a flag's detail are right; it cannot prove the row
       # is clickable or that the panel is reachable on a phone, and a panel nobody can open is
       # the same as no panel. Drives the real bundle with the real stored rows, both layouts.

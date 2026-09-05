@@ -21,11 +21,27 @@ body { position: fixed; inset: 0; font-family: system-ui, -apple-system, sans-se
 /* iOS Safari AUTO-ZOOMS the page whenever a focused form control's computed
    font-size is under 16px — and nearly every input here is 12-14px, so on a
    phone every tap into a field lurched the viewport ~33% in and the user had
-   to pinch back out. On touch phones, render form controls at 16px instead:
+   to pinch back out. iPad Safari does the same thing. On any coarse pointer,
+   render form controls at 16px instead:
    the zoom never triggers and pinch-zoom stays available (we deliberately do
    NOT set maximum-scale=1, which would kill accessibility zoom). Checkboxes
    also get a bigger box here — the grid's 13px squares were sub-fingertip. */
-@media (max-width: 767px) and (pointer: coarse) {
+/* ── AND THE SAME FLOOR ON A TABLET, WHICH IS WHY IT WAS MISSING ────────────
+   Chad, on an iPad: "FORMATTING ISSUES ON IPAD". Measured on his width: FORTY-THREE
+   controls under the floor — the top nav tabs at 32px, Build/Engine at 26px, the
+   dispatcher chip at 27px, one control at 18x26 — and the reason is this line. The app
+   switches to the phone layout below 768px, so an iPad gets the DESKTOP layout; this block
+   was capped at 767px, so the touch floor stopped exactly where the touch device started.
+   Every guard the app has looks at phones (390/360) or mouse desktops (1440/1920), and the
+   desktop one only measures how much display width a screen uses — it has no collision,
+   clipping or touch check at all. Nothing had ever looked at a tablet.
+
+   THE WIDTH CAP COMES OFF; `pointer: coarse` KEEPS DOING THE WORK. A mouse-driven monitor
+   is `pointer: fine` and is untouched by every rule below — the cap was never what
+   protected desktop, the pointer type was. A touch laptop now gets the floor too, which is
+   right: the thing that decides whether 32px is big enough is the finger, not the pixel
+   count. scripts/verify-tablet-layout.mjs holds it at iPad landscape and portrait. */
+@media (pointer: coarse) {
   input, select, textarea { font-size: 16px !important; }
   input[type="checkbox"] { width: 18px; height: 18px; }
   /* FINGERTIP FLOOR — NOW THE DEFAULT, NOT AN OPT-IN.
@@ -40,7 +56,7 @@ body { position: fixed; inset: 0; font-family: system-ui, -apple-system, sans-se
      `.tap-dense` is the deliberate opt-out for a row that genuinely must stay tight.
      The failure mode flips from "silently missed" to "excused on purpose", and
      scripts/verify-mobile-layout.mjs fails the build on anything still under 40px.
-     Desktop is untouched — this whole block is phone-only. */
+     A mouse desktop is untouched — `pointer: coarse` is what gates this block. */
   /* `summary` is in this list because it is a real control that looks like text: a bare
      <summary class="text-xs"> is a 16px line box, and a thumb aimed at it mostly misses —
      and a miss just scrolls the page, so the section reads as unopenable. */
@@ -63,7 +79,13 @@ body { position: fixed; inset: 0; font-family: system-ui, -apple-system, sans-se
     min-height: 44px;
   }
   a[href] { display: inline-flex; align-items: center; }
-  th[onclick], th.cursor-pointer { min-height: 44px; }
+  /* A TABLE CELL IGNORES min-height, which is why this rule read as satisfied and the
+     headers measured 29px on an iPad anyway. On a table-cell box `height` is treated as a
+     MINIMUM, so that is the property that does the work here. (And `th[onclick]` has never
+     matched anything in this app: React attaches handlers as properties, not as inline
+     attributes — the class is what identifies a sortable header. Kept for hand-written
+     markup, but it is not what makes this rule fire.) */
+  th[onclick], th.cursor-pointer { height: 44px; }
   /* An icon-only control has no text to widen it, so it needs the horizontal floor too.
      :has() keeps this precise — a button whose only child is an icon. */
   button:has(> svg:only-child), a:has(> svg:only-child), [role="button"]:has(> svg:only-child) {
