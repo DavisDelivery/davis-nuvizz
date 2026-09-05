@@ -16,7 +16,8 @@
     "verify:desktop": "node scripts/verify-desktop-layout.mjs dist",
     "verify:flag-detail": "node scripts/verify-flag-detail.mjs dist",
     "verify:route-preflight": "node scripts/verify-route-preflight.mjs dist",
-    "verify:tablet": "node scripts/verify-tablet-layout.mjs dist"
+    "verify:tablet": "node scripts/verify-tablet-layout.mjs dist",
+    "verify:loads-tab": "node scripts/verify-loads-tab.mjs dist"
   },
   "dependencies": {
     "@davisdelivery/quote-generator": "git+ssh://git@github.com/DavisDelivery/Quotes.git#main",

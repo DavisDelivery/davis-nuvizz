@@ -13,7 +13,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { mergeDayLoads, dayLoadTally } from '../src/lib/day-loads.js';
+import { mergeDayLoads, splitDayLoads } from '../src/lib/day-loads.js';
 
 // A routeGroups entry as computeRouteGroups builds it (trimmed to what the merge reads).
 const group = (over = {}) => ({
@@ -118,13 +118,11 @@ test("Chad's board shape: working routes sort above the Drafts", () => {
   assert.equal(rows.length, 10);
   assert.deepEqual(rows.slice(0, 2).map((r) => r.name), ['SUW 2', 'TRAILER 6']);
   assert.ok(rows.slice(2).every((r) => r.empty));
-  assert.deepEqual(dayLoadTally(rows), { total: 10, withOrders: 2, empty: 8, stops: 21 });
 });
 
 test('junk never becomes a row, and missing inputs are survivable', () => {
   assert.deepEqual(mergeDayLoads(), []);
   assert.deepEqual(mergeDayLoads(null, null), []);
-  assert.deepEqual(dayLoadTally(), { total: 0, withOrders: 0, empty: 0, stops: 0 });
   const rows = mergeDayLoads([], [null, undefined, roster({ name: 'OK', loadId: 'hexOK' })]);
   assert.deepEqual(rows.map((r) => r.name), ['OK']);
 });
@@ -134,4 +132,84 @@ test('a nameless roster load still shows, falling back to its number for display
   assert.equal(rows.length, 1);
   assert.equal(rows[0].display, 'DAVIS000200500');
   assert.equal(rows[0].ambiguous, false, 'a blank name is never a collision');
+});
+
+// ── splitDayLoads — the Routes tab and the Loads tab stop being the same list ──────────────
+//
+// Chad, Sep 5, on a rail reading Routes (3) beside Loads (3) with the same three loads under
+// both: "Where are all my empty loads. Routes are loads that have stops on them and loads
+// should just be all the empty loads."
+
+test("Chad's rule: the built loads are in Routes, and Loads holds only the empty ones", () => {
+  const rows = mergeDayLoads(
+    [group({ key: 'CHAD', name: 'CHAD', loadId: 'hexC', count: 11 }),
+     group({ key: 'ESTES', name: 'ESTES', loadId: 'hexE', count: 8 })],
+    [roster({ name: 'CHAD', loadId: 'hexC', loadNbr: 'DAVIS000200601', status: 'Dispatched', trips: 11 }),
+     roster({ name: 'ESTES', loadId: 'hexE', loadNbr: 'DAVIS000200602', status: 'Planned', trips: 8 }),
+     roster({ name: '1 SATL', loadId: 'hexA', loadNbr: 'DAVIS000200603', trips: 0 }),
+     roster({ name: '1 WATL', loadId: 'hexB', loadNbr: 'DAVIS000200604', trips: 0 })],
+  );
+  const { routed, empty, offBoard } = splitDayLoads(rows);
+  assert.deepEqual(routed.map((r) => r.name), ['CHAD', 'ESTES'], 'Routes keeps the loads carrying freight');
+  assert.deepEqual(empty.map((r) => r.name), ['1 SATL', '1 WATL'], 'and Loads is the empty trailers, nothing else');
+  assert.deepEqual(offBoard, []);
+});
+
+test('the two tabs never show the same load twice — that was the whole complaint', () => {
+  const rows = mergeDayLoads(
+    [group({ key: 'CHAD', name: 'CHAD', loadId: 'hexC', count: 11 })],
+    [roster({ name: 'CHAD', loadId: 'hexC', loadNbr: 'DAVIS000200601', trips: 11, status: 'Dispatched' }),
+     roster({ name: 'ALPHA', loadId: 'hexA', loadNbr: 'DAVIS000200605', trips: 0 })],
+  );
+  const { routed, empty, offBoard } = splitDayLoads(rows);
+  const seen = [...routed, ...empty, ...offBoard].map((r) => r.key);
+  assert.equal(seen.length, rows.length, 'every row landed in exactly one bucket…');
+  assert.equal(new Set(seen).size, rows.length, '…and none landed in two');
+});
+
+test('a load with orders whose stops never reached the board goes to Loads, NOT nowhere', () => {
+  // The reason the split is by onBoard and not by stop count. NuVizz says TRAILER 9 carries 12
+  // trips; none of its stops are on this day's board, so computeRouteGroups has no group for it
+  // and the Routes tab cannot show it. Splitting on the count would leave it on neither tab —
+  // a real load, invisible on the screen whose job is showing the dispatcher what exists.
+  const rows = mergeDayLoads(
+    [group({ key: 'CHAD', name: 'CHAD', loadId: 'hexC', count: 11 })],
+    [roster({ name: 'CHAD', loadId: 'hexC', loadNbr: 'DAVIS000200601', trips: 11, status: 'Dispatched' }),
+     roster({ name: 'TRAILER 9', loadId: 'hex9', loadNbr: 'DAVIS000200609', trips: 12, status: 'Planned' }),
+     roster({ name: 'ALPHA', loadId: 'hexA', loadNbr: 'DAVIS000200605', trips: 0 })],
+  );
+  const { routed, empty, offBoard } = splitDayLoads(rows);
+  assert.deepEqual(routed.map((r) => r.name), ['CHAD']);
+  assert.deepEqual(offBoard.map((r) => r.name), ['TRAILER 9'], 'it is on the Loads tab, in its own section');
+  assert.deepEqual(empty.map((r) => r.name), ['ALPHA'], 'and it is NOT mixed in with the empty trailers');
+  assert.equal(offBoard[0].count, 12, 'showing the orders NuVizz says it carries');
+});
+
+test('an all-Draft day is all Loads and no Routes — the 99-Draft board this tab exists for', () => {
+  const rows = mergeDayLoads([], ['1 SATL', '1 WATL', '1M', 'AB', 'ALPHA'].map((name, i) =>
+    roster({ name, loadNbr: `DAVIS0002007${i}0`, loadId: `hexD${i}`, trips: 0 })));
+  const { routed, empty, offBoard } = splitDayLoads(rows);
+  assert.equal(routed.length, 0);
+  assert.equal(empty.length, 5);
+  assert.equal(offBoard.length, 0);
+});
+
+test("a row that declares itself empty is empty, whatever its count says", () => {
+  // The row's `empty` flag is what the panel RENDERS off — an empty row shows the amber
+  // "No orders yet" chip instead of a percentage. So the bucket has to agree with the chip:
+  // sorting a self-declared-empty row into "has orders, not on the board" would put a row
+  // reading "No orders yet" under a heading that says it has orders.
+  const { empty, offBoard } = splitDayLoads([{ key: 'stale', onBoard: false, empty: true, count: 5 }]);
+  assert.deepEqual(empty.map((r) => r.key), ['stale']);
+  assert.deepEqual(offBoard, []);
+});
+
+test('splitDayLoads survives the absent and the malformed', () => {
+  assert.deepEqual(splitDayLoads(), { routed: [], empty: [], offBoard: [] });
+  assert.deepEqual(splitDayLoads(null), { routed: [], empty: [], offBoard: [] });
+  const { routed, empty, offBoard } = splitDayLoads([null, undefined,
+    { key: 'a', count: 3, onBoard: true }, { key: 'b', onBoard: false }, { key: 'c', count: '4', onBoard: false }]);
+  assert.deepEqual(routed.map((r) => r.key), ['a']);
+  assert.deepEqual(empty.map((r) => r.key), ['b'], 'a row with no count at all is empty, not off-board');
+  assert.deepEqual(offBoard.map((r) => r.key), ['c'], 'and a numeric string count still counts');
 });
