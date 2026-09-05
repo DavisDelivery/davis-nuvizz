@@ -127,6 +127,12 @@ jobs:
   # fixed one (passes). Separate job so the fast no-install `unit` gate is unchanged.
   smoke:
     runs-on: ubuntu-latest
+    # A CEILING, BECAUSE A HUNG JOB IS WORSE THAN A RED ONE. This job drives eight real
+    # browser guards; the first version of verify-loads-tab had no timeout of its own and sat
+    # here for forty minutes with the log ending mid-run, blocking a merge and telling nobody
+    # anything. GitHub's default is SIX HOURS. The guard now has its own watchdog; this is the
+    # backstop for the next one that does not. A healthy run is ~6 minutes.
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: dispatch-map

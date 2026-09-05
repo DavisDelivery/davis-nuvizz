@@ -81,6 +81,7 @@ import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDrive
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
 import { dropSide, dropSideClass } from './lib/drop-side.js';
+import { rosterFreshness, ageLabel } from './lib/roster-freshness.js';
 // w-40. Named once so the measurement and the Tailwind class can never disagree about how
 // wide the panel being placed actually is.
 const STATUS_MENU_W = 160;
@@ -113,7 +114,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.93.2';
+const APP_VERSION = '0.93.3';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -184,6 +185,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.93.3', 'THE EMPTY LOADS WERE NOT DROPPED BY THE SCREEN — THE ROSTER BEHIND IT WAS A FROZEN SNAPSHOT, AND NOTHING SAID SO. Chad: “You have changed something because even on the bottom panel the empty loads are missing.” FIRST, THE PREMISE, CORRECTED WITH EVIDENCE RATHER THAN ARGUMENT: nothing of mine was running. Both sites served v0.93.1 (version.json read straight off dd-dispatch-map and dd-dispatch-map-uat) and the Routes/Loads change was still an unmerged PR. THEN THE MEASUREMENT, because “the grid is fine” is worth nothing unstated: the bottom grid was driven in a real browser against a roster of 100 empty Drafts on THREE builds — v0.93.0, the live v0.93.1 and v0.93.2 — and rendered 102 of 102 rows every time, at iPad and laptop sizes. The grid was never dropping them. THE ROSTER IT WAS HANDED HAD NONE, AND HERE IS WHY THAT CAN PERSIST. The roster is a cache, and for a FUTURE date the scanner captures it ONCE per ET scan day (futureRosterCaptured) on a premise Chad gave about TOMORROW — “the shells are generated up front, the set doesn’t change through the day.” True for tomorrow. Not true for a day two or three out, and this weekend is the case that proves it: from Saturday the horizon reaches Tuesday, Monday is Labor Day, and Tuesday’s empty trailers are not created yet. Whatever the morning capture saw is what the board shows until the next scan day. AND THE ESCAPE HATCH HAD NO CALLER. nuvizz-loads-roster has documented ?live=1 since it was written — skip the cache, pull from NuVizz, write the fresh one back, one vendor call. Three fetch sites in the client, not one of them passing it. An override nothing can reach is not an override, the same way a switch whose position cannot be read is not a switch. SO BOTH LOADS SURFACES NOW SAY WHAT THEY ARE SHOWING AND CAN REFRESH IT: the rail’s Loads tab and the bottom grid’s Loads view each carry one line — “3 loads · cached 6h ago” — and a Refresh that spends exactly one call and says so on the control. Staleness is deliberately NOT a minutes threshold; the only stale signal is the fact that a capture was taken on an EARLIER ET day, which is the scanner’s own rule rather than an invented invisible bar. AND ABSENT STOPPED READING AS ZERO IN TWO MORE PLACES: the rail tested `loadRosterList.length > 0`, which cannot tell “the vendor says none” from “we never got an answer” — both are an empty array — and it pointed the reader at ↻, the SCAN button, which does not refresh a future day’s roster at all; the grid’s “No loads on the current board” said the same thing whether the roster was empty or unreadable. WHAT v0.93.1 DID DO, since it deployed hours before he wrote: on an iPad the touch floor now applies, so the grid’s sortable header is 44px instead of 29 and the Loads view shows 7 rows where it showed 8. Measured, mine, and not what he was looking at — the empty loads sort to the top of that list, not below the fold. THE GUARD DRIVES THE WHOLE STORY: a cache holding only the built loads, a different answer waiting live, press Refresh, watch ?live=1 go out and the empty trailers arrive — on the rail AND the grid, on desktop AND phone. It also caught its own first version clicking a Refresh belonging to another surface. 10 new tests, 9 mutations killed, 12 browser states. The tests caught a real one on the way: `new Date(null)` is the epoch, not an invalid date, so a roster with no timestamp read as captured on 1969-12-31 and painted a stale warning on a stamp that simply was not there. AND THE GUARD ITSELF NEEDED A CEILING, RECORDED HERE BECAUSE IT COST A BUILD CYCLE: the smoke job it joined ran twenty minutes without finishing — three times its healthy six — on two runs, and the log could not be read while in progress. A CORRECTION TO MY OWN FIRST ACCOUNT OF THAT, which said forty minutes and named this guard as the cause: the elapsed was twenty, and being the only step that changed is a suspicion, not a measurement. I never proved where it stalled, and saying I had would have been the plausible-story failure this repo has a rule about. What IS true is that it shipped without the `process.exit` every sibling browser guard ends with, and a step that cannot finish is worse than one that fails. It now carries a hard watchdog (8 minutes, proven to fire and exit 1 by running it at six seconds), a 15-second cap on every locator wait, an elapsed stamp on every state so the next stall names itself instead of being guessed at, and the closeAllConnections + explicit exit the siblings use — run time 100s → 52s. The smoke job gained a 30-minute ceiling as the backstop: GitHub’s default is SIX HOURS, and a job that never returns blocks every merge behind it while telling nobody anything. AND THEN THE ROSTER LINE ITSELF BROKE THE PHONE, which CI caught and I had not: verify-route-preflight went red on its MOBILE pass — “the load did not open in Compare” — and the measurement says why. The line shipped as a fixed row above the grid’s scroller, which on a 390px phone pushed the first load row from y=443 to y=496, and elementFromPoint at that spot returned a bottom-sheet TAB rather than the row: the content had slid under the sheet, and the tap that opens a route landed on furniture. The phone-layout guard could not see it, correctly — the row is still REACHABLE, just not where it was — which is the argument for having a guard that opens a real load as well as one that measures pixels. I had run route-preflight on the desktop and not on the phone, and this repo has shipped a screen into one navigation and not the other twice. SO IT IS TWO PLACEMENTS OF ONE LINE, not a breakpoint patch on one: the desktop pins it above the scroller, where a header row costs nothing in a tall pane; the phone puts it INSIDE, where it scrolls with the rows and costs no fixed height at all. Written once and placed twice, because writing the markup twice is exactly how the two views drift. Phone preflight green three runs out of three, desktop green, and every other guard unchanged. 3,302 green.'],
   ['0.93.2', 'ROUTES AND LOADS WERE THE SAME LIST, AND THE EMPTY TRAILERS WERE THE ONES BURIED. Chad, on the Routing rail reading Routes (3) beside Loads (3) with the same three loads under both: “Where are all my empty loads. Routes are loads that have stops on them and loads should just be all the empty loads.” That is a definition, not a preference, and the rail was not honouring it. Routes is built OUT OF stops, so every row there carries freight by construction — and the Loads tab was being fed the MERGED roster, which is those same loads PLUS everything else. On his Sep 8 board that made the second tab a copy of the first; on a normal 99-Draft morning it buries the empty shells a dispatcher is hunting behind ninety rows he has just read next door. The tell was already sitting in the code: a “Built only” toggle in the search bar whose entire job was hiding what the tab is for. It is gone with the mixed list that needed it. THE SPLIT IS BY WHAT IS ON THE BOARD, NOT BY THE STOP COUNT, and that is the only interesting engineering here. The obvious rule — has orders / has none — LOSES A LOAD: NuVizz can say a load carries twelve trips while none of its stops have reached this day’s board, and Routes cannot show it either because there is no group to show. Split on the count and that load is on NEITHER tab, invisible on the screen whose whole job is telling the dispatcher what exists. So splitDayLoads partitions by onBoard — exactly what Routes renders — and the off-board remainder gets its own amber section under its own heading rather than being dropped or quietly mixed in with the Drafts. routed ∪ empty ∪ offBoard is every row, and no row is in two of them. ABSENT IS NOT ZERO, AND THE TAB NOW SAYS WHICH. “NuVizz has no empty loads for this day” and “we never pulled this day’s roster” produce an identical blank list and call for opposite actions — nothing to do, versus press ↻. Sep 8 sat in the second state and the panel said the first. A NEW BROWSER GUARD, AND IT EARNED ITS KEEP IN ITS FIRST RUN. The defect Chad reported was WIRING — the panel was handed the wrong list — and no unit test can see that, so verify-loads-tab drives the real bundle against a fixture board carrying all four kinds of load, on the desktop rail AND the phone’s bottom sheet, which is two taps there and not one. It immediately failed on my own header: “built” was borrowed from a whole-day tally that counts every row with orders, so the off-board load was counted as built and the header read “3 built in Routes” beside a Routes tab holding two. Every number now comes off the same split the rows do, and that tally — which had no other caller left — is deleted rather than left lying about meaning something subtly different. The guard is checked BOTH WAYS: run against origin/main it fails on the exact bug (“CHAD is repeated on the Loads tab”), which is the only thing that makes a green run mean anything. The bottom grid’s Loads view is untouched and still lists every load on the day — this is the rail’s tab changing meaning, not a set going missing. 6 new tests, 6 mutations killed, 6 browser states on two views, 3,292 green.'],
   ['0.93.1', 'THE IPAD IS A TOUCH DEVICE RUNNING THE MOUSE LAYOUT, AND NOTHING HAD EVER LOOKED AT IT. Chad, on an iPad: \u201cFORMATTING ISSUES ON IPAD ALSO I CANT SEE MY ROUTES.\u201d The routes half was not a bug \u2014 he was parked on Tue Sep 8, whose board really is empty (0 planned; Sep 7 is Labor Day) \u2014 but the SCREEN was arguing with him about it, and the formatting half was real and structural. THE GAP: this app has two views, phone below 768px and desktop above it, so a 1024-1194px iPad gets the layout designed for a mouse. Every guard the build had looks at one end \u2014 the phone one at 390/360 checks collisions and the 44px floor, the desktop one at 1440/1920 measures occupancy and has no collision check at all. A tablet was measured by neither. First sweep at iPad width: FORTY-THREE controls under the touch floor (nav tabs 32px, Build/Engine 26px, one at 18x26) and a Status dropdown hanging off the screen. THE FLOOR ALREADY EXISTED AND WAS GATED TO 767px \u2014 index.css has the whole fingertip block, capped by a width the touch device is on the wrong side of. The cap comes off and `pointer: coarse` keeps doing the work: a mouse monitor is `pointer: fine` and is untouched, which the guard proves by leaving 43 small targets at 1440 while iPad goes to zero. The sortable column headers needed one more thing \u2014 a table cell IGNORES min-height, so that rule read as satisfied while the headers measured 29px; `height` is a minimum on a cell and is what does the work. (And `th[onclick]` has never matched anything: React attaches handlers as properties.) THE DROPDOWN, AND MY OWN FIX FOR IT. `right-0` on a 160px panel puts it off the LEFT edge once the toolbar wraps and Status lands at x\u224877 \u2014 Chad photographed a menu reading \u201cnned / d / sit / eted\u201d. Hard-coding `left-0` instead is the same bug mirrored, and the new tablet guard caught that on the Map screen within one run, where the panel ran to x=1156 on a 1080px screen. The side is MEASURED now (lib/drop-side), because what moved the button was a toolbar wrapping at a width nobody enumerated, and no call site can know that. THE GUARD CAUGHT TWO THINGS I DID WRONG, which is the argument for having it: a missing useLayoutEffect import that `vite build` compiles happily and that blanked the entire app \u2014 and its own first version reporting \u201c\u2713 every screen works (0 states checked)\u201d over that blank app, because an unreachable screen was a skip rather than a failure. Both fixed; it now fails on a screen it cannot reach and on a run that measured less than it should have. ALSO the \u201c564 of 2 stops\u201d chip: numerator counted the day PLUS the grid\u2019s 7-day window, denominator counted the selected day alone, so a ratio 282x its own denominator. AND a false positive in the shared measurement \u2014 an email preview\u2019s iframe content is ink the DOM cannot read across, so a working screen read as 526px of dead space. 8 new tests, 6 mutations killed, 40 tablet states green, phones and desktop unchanged.'],
   ['0.93.0', 'THE DOCK KEPT ITS OWN COUNSEL: A VOID, A DAMAGE FLAG AND A DEACTIVATION ALL STOPPED AT THE PHONE. Three fixes from W1 of the code review. (1) A loader takes a scan back or marks a piece damaged; both are recorded locally and both clear syncedAt so the row re-flushes \u2014 and the flags were dropped twice over, once by a flushQueue projection that did not send them and once by mergeScans discarding the re-push as a duplicate before it looked. The office kept counting a piece the dock had let go of, and a claim nobody raised because nobody was told. mergeScans now updates the flags on a known OG (last writer wins) while keeping the first scannedAt, tombstones stop counting as freight in scannedPieces and piecesAboard, and re-scanning a voided piece revives it instead of bouncing off as ALREADY SCANNED. (2) Tokens live 90 days and carried their own role, so somebody deactivated or demoted this morning kept pushing scans, closing loads and reading staff reports for the rest of the three months \u2014 on a phone nobody can reach, since the app only drops its token on a 401. liveClaims() re-reads the credential on every write, six handlers use it, the role now comes from the document, and an unreachable store fails closed. (3) One operating day everywhere: the phone keyed its manifest and session on the calendar day while assignments and the report board rolled at 8pm, so a loader on at 8:30pm opened the manifest for the shift that had just ended. Plus the clock-in and assignment documents got the same compare-and-swap the scan session got in v0.90.3, via a shared updateDocSafely. 319 load-scan tests, every new one verified against the old code first.'],
@@ -13097,11 +13099,27 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // notably "Unplanned only" — don't empty it. Falls back to the visible stops.
   const loadSrc = loadStops || stops;
   const [q, setQ] = useState('');
+  // TWO VIEWS, NOT ONE WITH A BREAKPOINT PATCH — and the roster line below is where it bites.
+  // On a desktop the grid pane is tall and a header row costs nothing. On a 390px phone it is
+  // one of about six visible rows, and the first version of that row pushed the grid's content
+  // 53px down, straight under the bottom sheet's tab strip: measured at y=443 before and y=496
+  // after, with elementFromPoint returning a sheet tab instead of the row. verify-route-preflight
+  // caught it on the phone — the row was still reachable by scrolling, which is why the mobile
+  // layout guard did not. So the phone puts the line INSIDE the scroller, where it scrolls with
+  // the rows and costs no fixed height, and the desktop keeps it pinned above them.
+  const gridIsPhone = useViewportWidth() < MOBILE_BREAKPOINT;
   const [view, setView] = useState('stops'); // 'stops' | 'loads'
   // The day's full load ROSTER (incl. empty loads with no orders yet), pulled on demand
   // when the Loads view is open. Empty loads can't appear from stop-grouping (no stops to
   // group), so we merge these in. Follows the selected board date.
   const [roster, setRoster] = useState([]);
+  // ...and the ENVELOPE it arrived in — { ok, source, at, count }. Kept because the rows alone
+  // cannot answer the question Chad asked of this screen: an empty Loads list means either
+  // "NuVizz has no empty loads for this day" or "the roster we are showing was captured hours
+  // ago and has not been pulled since", and those call for opposite actions. See
+  // lib/roster-freshness.js for why a three-day-out roster can be wrong and stay wrong.
+  const [rosterMeta, setRosterMeta] = useState(null);
+  const [rosterBusy, setRosterBusy] = useState(false);
   const [statusSel, setStatusSel] = useState(() => new Set()); // empty = all
   const [statusOpen, setStatusOpen] = useState(false);
   // WHICH SIDE THE STATUS PANEL HANGS FROM, measured against the viewport when it opens.
@@ -13357,15 +13375,60 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // is ALWAYS board-day-scoped (its grouped loads come from `stops`, the board day), so the
   // Stops-view date window (nvWindow) must NOT gate it — gating it here made every empty
   // draft load vanish from Loads the moment a day range was set on the Stops grid.
+  //
+  // `live` is the endpoint's documented override: skip the cache, pull the roster straight
+  // from NuVizz, and write the fresh one back. It costs exactly ONE vendor call and until now
+  // it had NO CALLER — three fetch sites in this file, not one of them passing it — so a day
+  // whose roster the scanner captures once (any future date) could not be refreshed by anyone
+  // at all. The Refresh control below is the caller it was written for.
+  const pullRoster = useCallback((live = false) => {
+    if (!boardDate) return;
+    if (live) setRosterBusy(true);
+    const url = '/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(boardDate) + (live ? '&live=1' : '');
+    return apiFetch(url, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((j) => {
+        setRoster(j && j.ok ? (j.loads || []) : []);
+        // The envelope, not just the rows — and on a failure a FALSE envelope rather than a
+        // missing one, so "we asked and got nothing back" never renders as "there is nothing".
+        setRosterMeta(j && j.ok ? { ok: true, source: j.source, at: j.at, count: j.count } : { ok: false });
+      })
+      .catch(() => { setRoster([]); setRosterMeta({ ok: false }); })
+      .finally(() => { if (live) setRosterBusy(false); });
+  }, [boardDate]);
   useEffect(() => {
     if (view !== 'loads' || !boardDate) return;
     let cancelled = false;
+    // The cheap path on open: cache-first, zero vendor calls. Only the button goes live.
     apiFetch('/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(boardDate), { cache: 'no-store' })
       .then((r) => r.json())
-      .then((j) => { if (!cancelled) setRoster(j.ok ? (j.loads || []) : []); })
-      .catch(() => { if (!cancelled) setRoster([]); });
+      .then((j) => {
+        if (cancelled) return;
+        setRoster(j && j.ok ? (j.loads || []) : []);
+        setRosterMeta(j && j.ok ? { ok: true, source: j.source, at: j.at, count: j.count } : { ok: false });
+      })
+      .catch(() => { if (!cancelled) { setRoster([]); setRosterMeta({ ok: false }); } });
     return () => { cancelled = true; };
   }, [view, boardDate]);
+  const rosterState = useMemo(() => rosterFreshness(rosterMeta), [rosterMeta]);
+  // One definition, two placements. Writing the markup twice is how the phone and the desktop
+  // drift apart, and this app has shipped that twice; writing it once and PLACING it twice is
+  // what "two views" actually asks for.
+  const rosterLine = (
+    <div className="flex items-center gap-2 px-3 py-1 border-b bg-slate-50 text-[11px] shrink-0">
+      <span className={rosterState.tone === 'absent' || rosterState.tone === 'stale' ? 'text-amber-700' : 'text-slate-500'}>
+        Load roster: {rosterState.label}
+      </span>
+      <button
+        onClick={() => pullRoster(true)}
+        disabled={rosterBusy || !boardDate}
+        title="Pull this day's load roster straight from NuVizz — one vendor call. The board caches a future day's roster once per day, so this is the only way to see loads created since."
+        className="ml-auto shrink-0 px-2 py-0.5 rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+      >
+        {rosterBusy ? 'Refreshing…' : 'Refresh roster'}
+      </button>
+    </div>
+  );
 
   // Loads view — group the same board (the `stops` we're handed) by loadNbr so
   // dispatchers can browse current loads instead of individual stops. Each row
@@ -13843,7 +13906,15 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
         </div>
       )}
       {open && view === 'loads' && (
+        <>
+        {/* WHAT THIS LIST IS, AND HOW OLD IT IS. Always in flow, never floating over the rows:
+            when the label wraps, what is below it MOVES. Desktop pins it above the scroller;
+            the phone puts it inside, as the first thing in the scroll — see gridIsPhone. The
+            refresh is one NuVizz call and says so on the control, because a dispatcher
+            spending a metered call should be told, once. */}
+        {!gridIsPhone && rosterLine}
         <div className="overflow-auto flex-1 min-h-0">
+          {gridIsPhone && rosterLine}
           <table className="text-[11px] border-collapse mx-auto" style={{ minWidth: loadCols.reduce((a, c) => a + c.w, 0) }}>
             <thead className="sticky top-0 bg-slate-50 z-10">
               <tr>
@@ -13856,7 +13927,15 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
               {sortedLoadRows.length === 0 && (
                 // Left-aligned for the same reason as the Stops empty state above: centred in a
                 // ~1,050px-wide table, this line sits off the right edge of a phone screen.
-                <tr><td colSpan={loadCols.length} className="px-3 py-4 text-slate-400 italic text-left">No loads on the current board.</td></tr>
+                // ABSENT IS NOT ZERO, and this line said the same thing for both. "The day
+                // has no loads" and "we could not read the roster" send a dispatcher in
+                // opposite directions, and on Sep 5 the screen said the first while the
+                // second was true.
+                <tr><td colSpan={loadCols.length} className="px-3 py-4 text-slate-400 italic text-left">
+                  {rosterState.known
+                    ? 'No loads on the current board.'
+                    : 'No built loads on this board, and this day’s load roster could not be read — so we can’t say whether there are empty loads. Try Refresh roster.'}
+                </td></tr>
               )}
               {sortedLoadRows.map((g) => (
                 <tr
@@ -13873,6 +13952,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
             </tbody>
           </table>
         </div>
+        </>
       )}
     </div>
   );
@@ -15896,18 +15976,12 @@ function RoutesLoadsToggle({ subTab, setSubTab, routesCount, loadsCount, classNa
 }
 
 // "updated 3h ago" / "updated Jun 12" stamp for the roster freshness line.
+// ONE age vocabulary for both rosters. The driver roster and the load roster describe the
+// same kind of fact — when did we last hear from NuVizz about this — and two copies of the
+// rules is two chances for them to answer differently. Behaviour is unchanged: lib/
+// roster-freshness.js carries this exact implementation, pinned by its own tests.
 function fmtRosterAge(iso) {
-  if (!iso) return null;
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return null;
-  const mins = Math.round((Date.now() - then) / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.round(hrs / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
+  return ageLabel(iso, new Date());
 }
 
 // Right-panel Drivers view: the on-demand roster (from /.netlify/functions/nuvizz-driver-roster)
@@ -18081,53 +18155,83 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // production dispatch kept reading Draft here. An override wins over the stale roster and is
   // DROPPED the moment the roster itself reports a non-Draft status (agreement — scans caught up).
   const dispatchOverrideRef = useRef(new Map());
+  // The roster's ENVELOPE ({ ok, source, at, count }) and a live refresh, for the same reason
+  // the bottom grid grew them: an empty Loads tab means either "this day has no empty loads"
+  // or "the roster behind it was captured hours ago and nothing has pulled it since", and the
+  // screen could say neither. lib/roster-freshness.js carries the why.
+  const [dayRosterMeta, setDayRosterMeta] = useState(null);
+  const [dayRosterBusy, setDayRosterBusy] = useState(false);
+  // Everything the roster response feeds, in one place so the cache path and the live refresh
+  // can never diverge — the status map, the identity index, the raw rows and the envelope.
+  const applyDayRoster = useCallback((j) => {
+    // Status map via the shared builder: it writes the by-id keys AND the '#amb:' markers
+    // that stop a name shared by two loads from deciding either one's status (§S).
+    const rosterLoads = (j && j.ok) ? (j.loads || []) : [];
+    const status = buildRosterStatusMap(rosterLoads);
+    const index = new Map();
+    const owners = new Map();   // name lc → { load, ambiguous }
+    const asEntry = (l) => ({ loadId: l?.loadId ? String(l.loadId) : null, name: l?.name || '', loadNbr: l?.loadNbr ? String(l.loadNbr) : null });
+    if (j && j.ok) for (const l of rosterLoads) {
+      const nm = String(l.name || '').trim().toLowerCase();
+      const entry = asEntry(l);
+      if (nm) {
+        // Two roster loads sharing a NAME → last-write-wins here could hand one load's
+        // number/id to the other's card. But a CANCELLED load holds no planned work, so
+        // "the active and canceled one" (Chad's two STEVENs) is not a real contest — the
+        // LIVE load owns the name. Only two LIVE loads are ambiguous, and identity
+        // consumers (openRouteInWorkbench / onAssignDriver) still refuse those.
+        if (!owners.has(nm)) owners.set(nm, resolveNameOwner(nm, rosterLoads));
+        const own = owners.get(nm);
+        if (own.ambiguous) index.set(nm, { ...entry, ambiguous: true });
+        else index.set(nm, asEntry(own.load || l));
+      }
+      if (l.loadId) { index.set(String(l.loadId), entry); }
+      // Also key by the REAL load number: an empty load's Loads-grid row is keyed by it since
+      // 0.32.25 (loadNbr || loadId), so opening one must resolve back to the entry — without
+      // this the card had no loadId/loadNbr and assign/save failed on every empty load.
+      if (l.loadNbr) index.set(String(l.loadNbr), entry);
+    }
+    // Confirmed-dispatch overrides beat the stale snapshot; agreement retires them.
+    for (const [k, v] of dispatchOverrideRef.current) {
+      const raw = String(status.get(k) || '').toLowerCase();
+      if (raw && !raw.includes('draft')) dispatchOverrideRef.current.delete(k); // roster caught up
+      else status.set(k, v);
+    }
+    loadRosterRef.current = index;
+    setLoadStatusByName(status);
+    setLoadRosterList(j && j.ok ? (j.loads || []) : []);
+    setDayRosterMeta(j && j.ok ? { ok: true, source: j.source, at: j.at, count: j.count } : { ok: false });
+  }, []);
+  const clearDayRoster = useCallback(() => {
+    loadRosterRef.current = new Map();
+    setLoadStatusByName(new Map());
+    setLoadRosterList([]);
+    // A FALSE envelope, not a missing one: "we asked and got nothing back" must never render
+    // as "there is nothing", which is the whole absent-is-not-zero rule.
+    setDayRosterMeta({ ok: false });
+  }, []);
   useEffect(() => {
     if (!selectedDate) return;
     let cancelled = false;
+    // Cache-first on open — zero vendor calls. Only the Refresh control goes live.
     apiFetch('/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(selectedDate), { cache: 'no-store' })
       .then((r) => r.json())
-      .then((j) => {
-        if (cancelled) return;
-        // Status map via the shared builder: it writes the by-id keys AND the '#amb:' markers
-        // that stop a name shared by two loads from deciding either one's status (§S).
-        const rosterLoads = (j && j.ok) ? (j.loads || []) : [];
-        const status = buildRosterStatusMap(rosterLoads);
-        const index = new Map();
-        const owners = new Map();   // name lc → { load, ambiguous }
-        const asEntry = (l) => ({ loadId: l?.loadId ? String(l.loadId) : null, name: l?.name || '', loadNbr: l?.loadNbr ? String(l.loadNbr) : null });
-        if (j && j.ok) for (const l of rosterLoads) {
-          const nm = String(l.name || '').trim().toLowerCase();
-          const entry = asEntry(l);
-          if (nm) {
-            // Two roster loads sharing a NAME → last-write-wins here could hand one load's
-            // number/id to the other's card. But a CANCELLED load holds no planned work, so
-            // "the active and canceled one" (Chad's two STEVENs) is not a real contest — the
-            // LIVE load owns the name. Only two LIVE loads are ambiguous, and identity
-            // consumers (openRouteInWorkbench / onAssignDriver) still refuse those.
-            if (!owners.has(nm)) owners.set(nm, resolveNameOwner(nm, rosterLoads));
-            const own = owners.get(nm);
-            if (own.ambiguous) index.set(nm, { ...entry, ambiguous: true });
-            else index.set(nm, asEntry(own.load || l));
-          }
-          if (l.loadId) { index.set(String(l.loadId), entry); }
-          // Also key by the REAL load number: an empty load's Loads-grid row is keyed by it since
-          // 0.32.25 (loadNbr || loadId), so opening one must resolve back to the entry — without
-          // this the card had no loadId/loadNbr and assign/save failed on every empty load.
-          if (l.loadNbr) index.set(String(l.loadNbr), entry);
-        }
-        // Confirmed-dispatch overrides beat the stale snapshot; agreement retires them.
-        for (const [k, v] of dispatchOverrideRef.current) {
-          const raw = String(status.get(k) || '').toLowerCase();
-          if (raw && !raw.includes('draft')) dispatchOverrideRef.current.delete(k); // roster caught up
-          else status.set(k, v);
-        }
-        loadRosterRef.current = index;
-        setLoadStatusByName(status);
-        setLoadRosterList(j && j.ok ? (j.loads || []) : []);
-      })
-      .catch(() => { if (!cancelled) { loadRosterRef.current = new Map(); setLoadStatusByName(new Map()); setLoadRosterList([]); } });
+      .then((j) => { if (!cancelled) applyDayRoster(j); })
+      .catch(() => { if (!cancelled) clearDayRoster(); });
     return () => { cancelled = true; };
-  }, [rightPanelMode, selectedDate]);
+  }, [rightPanelMode, selectedDate, applyDayRoster, clearDayRoster]);
+  // ONE NuVizz call, on an explicit press. `?live=1` is the endpoint's own documented override
+  // and until now nothing in this client passed it, so a future day's roster — captured once
+  // per scan day — could not be refreshed by anybody.
+  const refreshDayRoster = useCallback(() => {
+    if (!selectedDate) return;
+    setDayRosterBusy(true);
+    apiFetch('/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(selectedDate) + '&live=1', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((j) => applyDayRoster(j))
+      .catch(() => clearDayRoster())
+      .finally(() => setDayRosterBusy(false));
+  }, [selectedDate, applyDayRoster, clearDayRoster]);
 
   // Board Flags on Routing too — Chad, staring at a driverless LVILLE with a 2:00p LUND
   // close on THIS screen: the chip only existed on the dispatch Map, so Routing could never
@@ -18440,7 +18544,11 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // Whether we have this day's roster AT ALL. An empty Loads tab has two completely different
   // meanings — "NuVizz has no empty loads for this day" and "we have not pulled the roster" —
   // and they look identical on screen. The panel says which.
-  const dayRosterKnown = loadRosterList.length > 0;
+  // WAS: `loadRosterList.length > 0`, which conflated two different noes. A roster that came
+  // back holding nothing and a roster that never came back are the same empty array, and the
+  // tab said the same thing for both — the exact failure this panel was rebuilt to end one
+  // version ago. The envelope knows the difference; the array never could.
+  const dayRosterState = useMemo(() => rosterFreshness(dayRosterMeta), [dayRosterMeta]);
 
   // Workbench handlers — open a route into the side-by-side cards, tune it, close it.
   const openRouteInWorkbench = useCallback((key) => {
@@ -20915,7 +21023,8 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // The day's loads that are NOT on the board — the empty ones the dispatcher still has to
   // fill. Same click-to-Compare as the bottom grid's Loads view, which Chad keeps in full.
   const dayLoadsPanelEl = (
-    <RoutingDayLoadsPanel rows={dayLoadsSplit.empty} offBoard={dayLoadsSplit.offBoard} builtCount={dayLoadsSplit.routed.length} rosterKnown={dayRosterKnown}
+    <RoutingDayLoadsPanel rows={dayLoadsSplit.empty} offBoard={dayLoadsSplit.offBoard} builtCount={dayLoadsSplit.routed.length}
+      roster={dayRosterState} onRefreshRoster={refreshDayRoster} rosterBusy={dayRosterBusy}
       onPickLoad={(r) => pickLoadToCompare(r.loadNbr || r.loadId || r.key)}
       isOpen={(r) => wbRoutes.some((w) => w.key === r.key || (r.name && w.key === r.name) || (r.loadNbr && (w.key === r.loadNbr || w.loadNbr === r.loadNbr)))} />
   );
@@ -21294,7 +21403,8 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
                 onOpen={(l) => { setViewedLoad(l); setDesktopRail('result'); }}
                 onRename={renameLoad} onToggleDispatch={toggleDispatched} onDelete={deleteLoad} manageError={manageError} />
             ) : (
-              <RoutingDayLoadsPanel rows={dayLoadsSplit.empty} offBoard={dayLoadsSplit.offBoard} builtCount={dayLoadsSplit.routed.length} rosterKnown={dayRosterKnown}
+              <RoutingDayLoadsPanel rows={dayLoadsSplit.empty} offBoard={dayLoadsSplit.offBoard} builtCount={dayLoadsSplit.routed.length}
+                roster={dayRosterState} onRefreshRoster={refreshDayRoster} rosterBusy={dayRosterBusy}
                 onPickLoad={(r) => pickLoadToCompare(r.loadNbr || r.loadId || r.key)}
                 isOpen={(r) => wbRoutes.some((w) => w.key === r.key || (r.name && w.key === r.name) || (r.loadNbr && (w.key === r.loadNbr || w.loadNbr === r.loadNbr)))} />
             )}
@@ -21563,7 +21673,9 @@ function dayLoadMatches(r, needle) {
   return [r.display, r.name, r.loadNbr, r.driver].filter(Boolean).join(' ').toLowerCase().includes(needle);
 }
 
-function RoutingDayLoadsPanel({ rows, offBoard = [], builtCount = 0, onPickLoad, isOpen, rosterKnown = false }) {
+const ROSTER_ABSENT = { known: false, live: false, stale: false, count: 0, age: null, tone: 'absent', label: 'Load roster not pulled for this day' };
+
+function RoutingDayLoadsPanel({ rows, offBoard = [], builtCount = 0, onPickLoad, isOpen, roster = ROSTER_ABSENT, onRefreshRoster, rosterBusy = false }) {
   const [q, setQ] = useState('');
   const needle = q.trim().toLowerCase();
   const shown = useMemo(() => rows.filter((r) => dayLoadMatches(r, needle)), [rows, needle]);
@@ -21594,15 +21706,35 @@ function RoutingDayLoadsPanel({ rows, offBoard = [], builtCount = 0, onPickLoad,
         {offBoard.length ? ` · ${offBoard.length} not on the board` : ''}
         {showing !== total ? ` · showing ${showing}` : ''}
       </div>
+      {/* WHERE THIS LIST CAME FROM AND WHEN. A future day's roster is captured ONCE per scan
+          day, so "3 loads · cached 6h ago" is a completely different fact from "3 loads" —
+          and the refresh is the only thing in the app that can move it. One vendor call, on
+          an explicit press, said so on the control. In flow above the list, so a wrapped
+          label pushes the rows down instead of sitting on them. */}
+      <div className="px-3 py-1 text-[10px] border-b bg-white shrink-0 flex items-center gap-2">
+        <span className={roster.tone === 'absent' || roster.tone === 'stale' ? 'text-amber-700' : 'text-slate-500'}>{roster.label}</span>
+        {onRefreshRoster && (
+          <button onClick={onRefreshRoster} disabled={rosterBusy}
+            title="Pull this day's load roster straight from NuVizz — one vendor call. The board caches a future day's roster once per day, so this is the only way to see loads created since."
+            className="ml-auto shrink-0 px-2 py-0.5 rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-100 disabled:opacity-50">
+            {rosterBusy ? 'Refreshing…' : 'Refresh'}
+          </button>
+        )}
+      </div>
       {total === 0 ? (
-        // ABSENT IS NOT ZERO. "NuVizz has no empty loads for this day" and "we never pulled
-        // this day's roster" produce the identical blank list, and they call for opposite
-        // actions — one is nothing to do, the other is press ↻. Sep 8 sat in the second state
-        // and the panel said the first.
-        rosterKnown ? (
-          <div className="p-4 text-[12px] text-slate-400">Every load on this day already carries orders — they&apos;re all in <b>Routes</b>. Nothing empty left to fill.</div>
+        // ABSENT IS NOT ZERO. "NuVizz has no empty loads for this day" and "we could not read
+        // this day's roster" produce the identical blank list and call for opposite actions.
+        // The previous version of this branch tested `loadRosterList.length > 0`, which cannot
+        // tell those apart — an empty answer and no answer are the same empty array — and it
+        // pointed at ↻, the SCAN button, which does not refresh a future day's roster at all.
+        // The envelope knows, and Refresh is the control that actually moves it.
+        roster.known ? (
+          <div className="p-4 text-[12px] text-slate-400">
+            Every load on this day already carries orders — they&apos;re all in <b>Routes</b>. Nothing empty left to fill.
+            {roster.stale ? <> This roster was captured <b>{roster.age}</b>, before today — <b>Refresh</b> to see loads created since.</> : null}
+          </div>
         ) : (
-          <div className="p-4 text-[12px] text-slate-400">This day&apos;s load roster hasn&apos;t been pulled yet, so we can&apos;t say what&apos;s empty. Use <b>↻</b> to scan the day.</div>
+          <div className="p-4 text-[12px] text-slate-400">This day&apos;s load roster could not be read, so we can&apos;t say what&apos;s empty. Try <b>Refresh</b> — it pulls the roster straight from NuVizz.</div>
         )
       ) : showing === 0 ? (
         <div className="p-4 text-[12px] text-slate-400">No loads match.</div>
