@@ -31,7 +31,7 @@ import { maxConsecutiveGap } from './scan-metrics.mts';
 import { notifyMarkedCustomers, pendingNotifyDates } from './cs-notify.mts';
 import { breakerTripped, scanIntervalElapsed, breakerMode, setDailyCeilingOverride, setCallTrigger } from './nuvizz-request.mts';
 import { scanDecision, isInRoutingWindow, clampScanConfig } from './scan-schedule.mts';
-import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip, scanPath } from './scan-plan.mts';
+import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip, scanPath, rosterMayRunOnBlackout } from './scan-plan.mts';
 import { planCompletions } from './scan-completions.mts';
 
 // Reuse the CANONICAL integer parsers from nuvizz-scan so the parity log's
@@ -558,6 +558,18 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // skip is overridable; weekend blackout and the hard floor are real safety gates and
   // stay in force. See overrideCadenceSkip in scan-plan.mts.
   decision = overrideCadenceSkip(decision, plannedDue, completedDue, rosterDue);
+  // THE WEEKEND CARVE-OUT FOR THE ROSTER, AND ONLY THE ROSTER. The blackout stops scheduled
+  // scans Fri 22:00 → Sun 20:00 because nothing is delivering — right for planned and
+  // completed, wrong for the one list that says which loads EXIST, because Saturday is when
+  // next week gets planned. Chad: "the loads use to populate just fine." They did, until
+  // v0.77.0 put this pull behind a plan whose windows were drawn around the delivery day.
+  // rosterMayRunOnBlackout refuses if either expensive kind is also due, so this can never
+  // become a board rebuild on a day nothing is moving; the path is forced to 'roster-only'
+  // below rather than going through scanPath, which would answer 'full' for a flipped `act`.
+  // Off with NUVIZZ_ROSTER_WEEKEND=0 — one cheap list call an hour, ~46 across a weekend.
+  const rosterWeekendOn = !/^(0|false|off|no)$/i.test(String(process.env.NUVIZZ_ROSTER_WEEKEND ?? '').trim());
+  const rosterOnlyOnBlackout = rosterWeekendOn
+    && rosterMayRunOnBlackout(decision, plannedDue, completedDue, rosterDue);
 
   // Fix 4 — exactly ONE structured line per invocation, so "why didn't it scan"
   // is answerable from the log. today/tomorrow report the DECISION's feed intent.
@@ -696,7 +708,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // Tomorrow's roster is still captured once per scan day (futureRosterCaptured), so widening
   // this to the whole scanDates list costs one cheap PkgRoute call an hour, not two.
   let rosterRan = false;
-  if (decision.act && fsOn && rosterDue) {
+  if ((decision.act || rosterOnlyOnBlackout) && fsOn && rosterDue) {
     const rosterAt = new Date().toISOString();
     for (const d of scanDates) await persistLoadRoster(d, rosterAt);
     await markScanKinds(['roster'], rosterAt).catch(() => {});
@@ -991,7 +1003,11 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // else. The else used to be the full rebuild, and two of the eight due-ness combinations
   // reached it by accident; see scanPath's own note. With list discovery off there is no
   // overlay and no roster-only fire to take, so the probe engine's behaviour is unchanged.
-  const path = LIST_DISCOVERY ? scanPath(decision.act, { plannedDue, completedDue, rosterDue }) : 'full';
+  // The carve-out short-circuits scanPath deliberately — see rosterMayRunOnBlackout for why a
+  // flipped `act` through scanPath is the expensive accident this avoids.
+  const path = LIST_DISCOVERY
+    ? (rosterOnlyOnBlackout ? 'roster-only' : scanPath(decision.act, { plannedDue, completedDue, rosterDue }))
+    : 'full';
 
   // ── COMPLETED-ONLY FIRE: the overlay ──────────────────────────────────────
   //

@@ -136,9 +136,14 @@ test('THE 4AM STORM IS GONE: 04:00-05:59 rebuilds the board at the cadence the p
 
 test('the roster is pulled about once an hour, not on every fire', () => {
   const day = replayTuesday();
-  // roster-am (04:00-13:00) + roster-eve (20:00-24:00) = 13 covered hours at 60 minutes.
-  assert.ok(day.rosterPulls <= 14, `roster pulled ${day.rosterPulls}× in a day`);
-  assert.ok(day.rosterPulls >= 10, `roster pulled only ${day.rosterPulls}× — it stopped running`);
+  // roster-day covers 04:00-24:00 = 20 hours at 60 minutes. It used to be roster-am
+  // (04:00-13:00) + roster-eve (20:00-24:00) = 13, and the seven-hour afternoon gap between
+  // them is one of the two holes that stopped Chad's empty loads populating; the other was the
+  // whole weekend. The RULE this pins is unchanged and is still the one that matters: about
+  // once an hour, NOT on every fire — before v0.77.0 it rode along on all ~33 of them.
+  assert.ok(day.rosterPulls <= 21, `roster pulled ${day.rosterPulls}× in a day`);
+  assert.ok(day.rosterPulls >= 16, `roster pulled only ${day.rosterPulls}× — it stopped running`);
+  assert.ok(day.rosterPulls < day.full, 'still far fewer roster pulls than board rebuilds');
 });
 
 test("a whole delivery Tuesday still fits inside the day's call budget", () => {
