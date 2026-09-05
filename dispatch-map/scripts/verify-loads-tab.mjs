@@ -27,11 +27,15 @@ const fails = [];
 const ok = (m) => console.log(`  \x1b[32m✓\x1b[0m ${m}`);
 const bad = (m) => { fails.push(m); console.error(`  \x1b[31m✗\x1b[0m ${m}`); };
 
-// A HARD CEILING ON THE WHOLE RUN, because the first version of this guard did not have one
-// and hung a CI job for forty minutes. Fourteen browser contexts, each with clicks that
-// `.catch()` their own timeouts, is a lot of places for a wait to go quiet — and a guard that
+// A HARD CEILING ON THE WHOLE RUN. The first version of this guard had none, and the smoke
+// job it joined then ran twenty minutes without finishing — three times its healthy six — on
+// two runs, with the log unreadable while in progress. WHAT THAT DOES NOT ESTABLISH is that
+// this guard was the thing stalling: it was the only step that changed, which is a suspicion,
+// not a measurement, and the log that would have settled it could not be read. So the fix is
+// not aimed at a diagnosis nobody has. Fourteen browser contexts, each with clicks that
+// `.catch()` their own timeouts, is a lot of places for a wait to go quiet, and a step that
 // never finishes is worse than one that fails: red tells you something, a spinner tells you
-// nothing and blocks the merge either way. Locally the whole run is ~100s.
+// nothing and blocks the merge either way. Locally the whole run is ~52s.
 const GUARD_MS = Number(process.env.LOADS_TAB_TIMEOUT_MS) || 8 * 60 * 1000;
 const PAGE_MS = Number(process.env.LOADS_TAB_ACTION_MS) || 15000;
 const watchdog = setTimeout(() => {
@@ -155,8 +159,9 @@ const t0 = Date.now();
 const secs = () => `${((Date.now() - t0) / 1000).toFixed(0)}s`;
 
 async function run(label, { mobile, roster, liveRoster, rosterFail }, check) {
-  // The elapsed stamp is not decoration: when this guard hung a CI job, the log ended mid-run
-  // with no way to tell WHICH state it stopped on. Now the last line printed names it.
+  // The elapsed stamp is not decoration: the run that would not finish left a log nobody could
+  // read, so "which of the fourteen states was it on" had no answer at all. Now the last line
+  // printed names it, and the next stall diagnoses itself instead of being guessed at.
   console.log(`\n${label}  [${secs()}]`);
   const { page, ctx, errors, asked } = await openLoadsTab({ mobile, roster, liveRoster, rosterFail });
   // ON A PHONE THE RAIL IS TWO TAPS, NOT ONE, and they are not the taps the desktop takes —
