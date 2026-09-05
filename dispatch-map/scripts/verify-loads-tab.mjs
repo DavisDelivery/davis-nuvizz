@@ -27,6 +27,18 @@ const fails = [];
 const ok = (m) => console.log(`  \x1b[32m✓\x1b[0m ${m}`);
 const bad = (m) => { fails.push(m); console.error(`  \x1b[31m✗\x1b[0m ${m}`); };
 
+// A HARD CEILING ON THE WHOLE RUN, because the first version of this guard did not have one
+// and hung a CI job for forty minutes. Fourteen browser contexts, each with clicks that
+// `.catch()` their own timeouts, is a lot of places for a wait to go quiet — and a guard that
+// never finishes is worse than one that fails: red tells you something, a spinner tells you
+// nothing and blocks the merge either way. Locally the whole run is ~100s.
+const GUARD_MS = Number(process.env.LOADS_TAB_TIMEOUT_MS) || 8 * 60 * 1000;
+const PAGE_MS = Number(process.env.LOADS_TAB_ACTION_MS) || 15000;
+const watchdog = setTimeout(() => {
+  console.error(`\n\x1b[31m✗ verify-loads-tab exceeded ${Math.round(GUARD_MS / 1000)}s — failing rather than hanging the build\x1b[0m`);
+  process.exit(1);
+}, GUARD_MS);
+
 // A FIXTURE BOARD WITH ALL FOUR KINDS OF LOAD ON IT, which is the only way to tell the buckets
 // apart: two loads built on the board, three empty trailers, and one the roster says carries
 // twelve orders whose stops have not arrived. That last one is the reason the split is by
@@ -78,6 +90,9 @@ async function openLoadsTab({ mobile, roster, liveRoster, rosterFail }) {
     ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 }
     : { viewport: { width: 1600, height: 1000 } });
   const page = await ctx.newPage();
+  // Every locator wait is bounded. Without this a `.click().catch(() => {})` on a control that
+  // never appears sits on Playwright's 30s default, and there are a dozen of them here.
+  page.setDefaultTimeout(PAGE_MS);
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   // The rail mode and sub-tab are persisted choices, and Chad's are Routes/Loads + Loads.
@@ -136,8 +151,13 @@ async function panelText(page) {
   });
 }
 
+const t0 = Date.now();
+const secs = () => `${((Date.now() - t0) / 1000).toFixed(0)}s`;
+
 async function run(label, { mobile, roster, liveRoster, rosterFail }, check) {
-  console.log(`\n${label}`);
+  // The elapsed stamp is not decoration: when this guard hung a CI job, the log ended mid-run
+  // with no way to tell WHICH state it stopped on. Now the last line printed names it.
+  console.log(`\n${label}  [${secs()}]`);
   const { page, ctx, errors, asked } = await openLoadsTab({ mobile, roster, liveRoster, rosterFail });
   // ON A PHONE THE RAIL IS TWO TAPS, NOT ONE, and they are not the taps the desktop takes —
   // which is the whole reason this guard walks both views. The bottom sheet's middle tab is
@@ -260,7 +280,7 @@ async function gridLoadsText(page) {
 
 for (const mobile of [false, true]) {
   const view = mobile ? 'phone 390px' : 'desktop 1600px';
-  console.log(`\nThe bottom grid's Loads view — ${view}`);
+  console.log(`\nThe bottom grid's Loads view — ${view}  [${secs()}]`);
   const { page, ctx, errors, asked } = await openLoadsTab({ mobile, roster: BUILT, liveRoster: [...BUILT, ...EMPTIES] });
   // The grid's own Stops/Loads toggle reads "Loads <count>"; the rail's reads "Loads (N)".
   const opened = await page.evaluate(() => {
@@ -305,7 +325,15 @@ for (const mobile of [false, true]) {
   await ctx.close();
 }
 
+clearTimeout(watchdog);
 await browser.close();
 server.close();
-if (fails.length) { console.error(`\n\x1b[31m${fails.length} problem(s) with the Loads tab\x1b[0m`); process.exit(1); }
-console.log('\n\x1b[32m✓ the Loads tab shows the empty loads, on both views\x1b[0m');
+// closeAllConnections: a keep-alive socket Chromium left open makes server.close() wait for
+// it forever, and the process then never exits even though every check has finished. The
+// explicit exit is what verify-route-preflight and verify-flag-detail both do, for this
+// reason; this guard shipped without it and that is the deviation that cost the build.
+server.closeAllConnections?.();
+console.log(fails.length
+  ? `\n\x1b[31m${fails.length} problem(s) with the Loads tab\x1b[0m  [${secs()}]`
+  : `\n\x1b[32m✓ the Loads tab shows the empty loads, on both views\x1b[0m  [${secs()}]`);
+process.exit(fails.length ? 1 : 0);
