@@ -573,6 +573,24 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // backfills over a few ticks instead of firing thousands of /stop/info at once. Was
   // 10000 (effectively unbounded), which let the registry cold-start spike to ~1,400.
   const ENRICH_MAX = Number(process.env.NUVIZZ_ENRICH_MAX_PER_SCAN) || 250;
+  // THE CAP IS SPENT ONCE PER RUN, NOT ONCE PER DATE — and for a long time it was not.
+  //
+  // ENRICH_MAX is applied where the enrichment happens, which is INSIDE `for (const date of
+  // targets)`. So the "hard per-scan cap" its name and its comment both promised was really a
+  // per-DATE cap, and one run could spend ENRICH_MAX × the horizon. Measured against the real
+  // scanner with a stubbed vendor, feeding each of three dates more new PROs than the cap:
+  // 400/date → 750 /stop/info. 250/date → 750. 100/date → 300. The bound was 3× what it said.
+  //
+  // 750 is 37.5% of the enforced 2,000/day ceiling in a single fire, and it is NOT a property
+  // of the manual button: `isManual` appears nowhere between the date loop and this block, so a
+  // scheduled tick on a cold registry pays exactly the same. That is the shape of the burst
+  // this backstop was added to prevent, arriving through the backstop itself.
+  //
+  // So the budget now lives OUT here and is decremented as the dates consume it. The first date
+  // may still take the whole allowance; what it can no longer do is hand a fresh one to the
+  // next date. A board that needs more than the cap backfills over the following ticks, which
+  // is exactly what the original comment claimed already happened.
+  let enrichBudget = ENRICH_MAX;
   const ENRICH_CONC = Number(process.env.NUVIZZ_ENRICH_CONC) || 8;
   // Demotion verify (Jul 9 SEAAGRI): max planned→unplanned flips VERIFIED per scan via one
   // /stop/info each before the board is allowed to drop a stop off its route. 0 disables.
@@ -1669,18 +1687,19 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           } catch (e: any) { regOk = false; console.warn(`[scan] ${date}: enrichment registry read failed (${e?.message}); SKIPPING enrichment this cycle to avoid a burst`); }
         }
         // Enrichment: one direct /stop/info per genuinely-new PRO (bounded concurrency, capped).
-        // The hard per-scan cap (ENRICH_MAX) is a backstop: even a cold/empty registry can never
-        // burst more than ENRICH_MAX calls in one scan — a cold board backfills over a few ticks.
-        // A registry read that ERRORED for a PRO (regUnresolved) is treated as UNKNOWN, not "new":
-        // it is excluded here so a transient Firestore blip can never cause a re-enrichment spike.
+        // The cap is the RUN's remaining budget (enrichBudget), not a fresh ENRICH_MAX for each
+        // date — see where it is declared for the measurement that showed why. A registry read
+        // that ERRORED for a PRO (regUnresolved) is treated as UNKNOWN, not "new": it is excluded
+        // here so a transient Firestore blip can never cause a re-enrichment spike.
         let enriched = 0;
         const stillNeed = (ENRICH && regOk) ? toEnrich.filter((s) => !s.enriched && !regUnresolved.has(String(s.stopNbr))) : [];
-        if (stillNeed.length > ENRICH_MAX) console.warn(`[scan] ${date}: ${stillNeed.length} PROs need enrichment; capping at ENRICH_MAX=${ENRICH_MAX} this scan (rest next tick)`);
-        if (ENRICH && stillNeed.length) {
+        if (stillNeed.length > enrichBudget) console.warn(`[scan] ${date}: ${stillNeed.length} PROs need enrichment; ${enrichBudget} left of this run's ENRICH_MAX=${ENRICH_MAX} budget (rest next tick)`);
+        if (ENRICH && stillNeed.length && enrichBudget > 0) {
           // Observability: log WHICH PROs we're about to enrich + a sample, so a future "spike"
           // is self-diagnosing (cross-check these against the registry to catch any miss).
-          console.log(`[scan] ${date}: enriching ${Math.min(stillNeed.length, ENRICH_MAX)} new PRO(s) via /stop/info — sample ${JSON.stringify(stillNeed.slice(0, 10).map((s) => String(s.stopNbr)))}`);
-          const batch = stillNeed.slice(0, ENRICH_MAX);
+          console.log(`[scan] ${date}: enriching ${Math.min(stillNeed.length, enrichBudget)} new PRO(s) via /stop/info — sample ${JSON.stringify(stillNeed.slice(0, 10).map((s) => String(s.stopNbr)))}`);
+          const batch = stillNeed.slice(0, enrichBudget);
+          enrichBudget -= batch.length;
           let i = 0;
           const worker = async () => {
             while (i < batch.length) {
