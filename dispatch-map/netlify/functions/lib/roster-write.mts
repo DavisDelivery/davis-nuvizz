@@ -54,6 +54,8 @@ export interface RosterCache {
   emptyStreak?: number | null;
   /** When the most recent empty answer was observed. */
   emptyAt?: string | null;
+  /** What the pull that wrote this document saw (period sent, rows back, rows kept). Absent before v0.93.12. */
+  pull?: { period: string; httpStatus: number; cols: number; rows: number; kept: number } | null;
 }
 
 export interface RosterWriteVerdict {
@@ -134,9 +136,19 @@ export function explainRosterRow(date: string, cached: RosterCache | null | unde
   const loads = Array.isArray(cached.loads) ? cached.loads : [];
   const empties = loads.filter((l: any) => !(Number(l?.trips) > 0)).length;
   const numbered = loads.filter((l: any) => l?.loadNbr).length;
+  const pull = cached.pull && typeof cached.pull === 'object' ? cached.pull : null;
+  // THE PULL BESIDE THE WRITE. "captured but EMPTY" is a sentence about the document; it cannot
+  // say whether the vendor answered zero rows for the period or answered rows the parser kept
+  // none of, and those two send a reader in opposite directions. Documents written since
+  // v0.93.12 carry the pull; older ones say so rather than guess.
+  const pullNote = !pull ? null
+    : pull.rows === 0 ? `the vendor answered ZERO rows for period ${pull.period} (${pull.cols} column defs)`
+      : pull.kept === 0 ? `the vendor answered ${pull.rows} row(s) for period ${pull.period} and the parser KEPT NONE`
+        : `${pull.kept} of ${pull.rows} row(s) kept for period ${pull.period}`;
   return {
     date, cached: true, count: loads.length, empties, built: loads.length - empties, numbered,
     at: cached.at ?? null, emptyStreak: streakOf(cached), emptyAt: cached.emptyAt ?? null,
+    pull, pullNote: pullNote ?? 'written before the pull was recorded (pre-v0.93.12) — the log line [roster] <date> has it',
     note: loads.length === 0 ? 'captured but EMPTY — the scan wrote a roster with no loads in it'
       : empties === 0 ? 'captured, but every load carries trips — there are no empty loads in it'
         : `${empties} empty load(s) available to the Loads panels`,

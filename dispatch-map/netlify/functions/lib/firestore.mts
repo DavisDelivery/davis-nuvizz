@@ -1513,12 +1513,16 @@ export async function writeFleetIndex(
 const LOAD_ROSTER_COLLECTION = 'nuvizz_load_roster';
 export async function writeLoadRoster(
   tenant: string, dateStr: string, loads: any[], scannedAt: string,
-  meta: { emptyStreak?: number; emptyAt?: string | null } = {},
+  meta: { emptyStreak?: number; emptyAt?: string | null; pull?: { period: string; httpStatus: number; cols: number; rows: number; kept: number } | null } = {},
 ): Promise<void> {
   await setDoc(`${LOAD_ROSTER_COLLECTION}/${parentId(tenant, dateStr)}`, {
     tenant, date: dateStr, at: scannedAt, count: (loads || []).length, loadsJson: JSON.stringify(loads || []),
     emptyStreak: Number(meta.emptyStreak) || 0,
     emptyAt: meta.emptyAt ?? null,
+    // What the pull that produced this document actually saw — period sent, rows returned, rows
+    // kept — so ?explain=1 can tell "the vendor said none" from "the parser dropped them" at
+    // zero call cost. Stored as a JSON string like loadsJson, for the same codec reason.
+    pullJson: meta.pull ? JSON.stringify(meta.pull) : null,
   } as any);
 }
 /**
@@ -1538,17 +1542,20 @@ export async function markLoadRosterEmpty(
 }
 export async function readLoadRoster(
   tenant: string, dateStr: string,
-): Promise<{ at: string | null; loads: any[]; emptyStreak: number; emptyAt: string | null } | null> {
+): Promise<{ at: string | null; loads: any[]; emptyStreak: number; emptyAt: string | null; pull: { period: string; httpStatus: number; cols: number; rows: number; kept: number } | null } | null> {
   const doc = await getDoc(`${LOAD_ROSTER_COLLECTION}/${parentId(tenant, dateStr)}`);
   if (!doc) return null;
   let loads: any[] = [];
   try { loads = JSON.parse(doc.loadsJson || '[]'); } catch { loads = []; }
+  let pull: any = null;
+  try { pull = doc.pullJson ? JSON.parse(doc.pullJson) : null; } catch { pull = null; }
   const streak = Number(doc.emptyStreak);
   return {
     at: doc.at || doc._updatedAt || null,
     loads,
     emptyStreak: Number.isFinite(streak) && streak > 0 ? Math.floor(streak) : 0,
     emptyAt: doc.emptyAt || null,
+    pull: pull && typeof pull === 'object' ? pull : null,
   };
 }
 

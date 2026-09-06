@@ -13483,12 +13483,6 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     arr.sort((a, b) => String(a.driverName || '~').localeCompare(String(b.driverName || '~')) || String(a.routeName || a.loadNbr).localeCompare(String(b.routeName || b.loadNbr)));
     return arr;
   }, [loadSrc, q, roster, rosterByName]);
-  // The composition of the list actually rendered below — read by the roster line.
-  const loadRowMix = useMemo(() => {
-    let built = 0, empty = 0, offBoard = 0;
-    for (const g of loadRows) { if (g.offBoard) offBoard += 1; else if (g.empty) empty += 1; else built += 1; }
-    return { built, empty, offBoard };
-  }, [loadRows]);
   // TWO PLACEMENTS AND TWO SHAPES, because a phone is not a narrow desktop. On a laptop this
   // is one row in a tall pane and everything fits beside the Refresh button. At 390px it is
   // three pieces of text and a control competing for the width, and truncating the one that
@@ -13497,19 +13491,9 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // way: as a fixed row above it, it pushed the first load row 53px down and under the
   // bottom sheet's tab strip). Desktop keeps one non-wrapping row.
   const rosterLine = (
-    <div className={'flex items-center gap-2 px-3 py-1 border-b bg-slate-50 text-[11px] shrink-0 ' + (gridIsPhone ? 'flex-wrap' : 'flex-nowrap')}>
-      <span className={(gridIsPhone ? '' : 'min-w-0 truncate ') + (rosterState.tone === 'absent' || rosterState.tone === 'stale' ? 'text-amber-700' : 'text-slate-500')}>
+    <div className="flex items-center gap-2 px-3 py-1 border-b bg-slate-50 text-[11px] shrink-0">
+      <span className={rosterState.tone === 'absent' || rosterState.tone === 'stale' ? 'text-amber-700' : 'text-slate-500'}>
         Load roster: {rosterState.label}
-      </span>
-      {/* WHAT THE ROWS BELOW ARE MADE OF. Chad, on this exact grid: "routes is only supposed
-          to show loads with stops on them and that is what the bottom panel is doing." When
-          every load on the day happens to be built, this view IS the Routes list — the same
-          rows, correctly — and nothing on screen said whether that was the day or a fault.
-          Now it does. Counted off the rows themselves and never off a separate tally:
-          v0.93.2's guard caught exactly that bug on the rail's header, where a count sourced
-          from somewhere other than the list it described disagreed with it. */}
-      <span className={(gridIsPhone ? '' : 'min-w-0 truncate ') + 'text-slate-400'}>
-        · {loadRowMix.built} with stops, {loadRowMix.empty} empty{loadRowMix.offBoard ? `, ${loadRowMix.offBoard} not on this board` : ''}
       </span>
     </div>
   );

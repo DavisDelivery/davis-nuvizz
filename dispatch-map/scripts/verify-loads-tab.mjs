@@ -298,8 +298,9 @@ for (const mobile of [false, true]) {
   // THE CACHE IS THE ONLY SOURCE NOW. This block used to open on a BUILT-only capture and press
   // Refresh to bring the rest in; with the button gone, the roster the scanner captured IS what
   // the grid shows, so the fixture seeds it directly. The assertions below are unchanged and
-  // still the ones that matter — every empty renders, the off-board load is not called empty,
-  // and the composition line is counted off the rows.
+  // still the ones that matter — every empty renders, and the off-board load is not called
+  // empty. (A line saying what the rows were made of used to be asserted here too; Chad:
+  // "I don't need the panel to state what they are" — it is gone, and so is the assertion.)
   //
   // The BUILT-only case did not disappear with the button: it is asserted in the rail block
   // above ("with a capture that has no empties, it shows none"), which is where the
@@ -327,21 +328,6 @@ for (const mobile of [false, true]) {
       // panel on the bottom." With a roster holding only the built loads, the grid's Loads
       // view IS the Routes list — the same two rows, correctly — and until now nothing on the
       // screen said whether that was the day or a fault. The line has to be readable off the
-      // rows it sits above, so it is asserted against them and not against a constant.
-      // MEASURED, NOT ASSUMED. `truncate` leaves innerText intact, so a text assertion alone
-      // would pass on a line the dispatcher cannot actually read. This checks the pixels: the
-      // span must not be clipped by its own box on either view.
-      const mix = await page.evaluate(() => {
-        const el = Array.from(document.querySelectorAll('span')).find((x) => /with stops, \d+ empty/.test(x.innerText || ''));
-        if (!el) return null;
-        const r = el.getBoundingClientRect();
-        return { text: el.innerText.trim(), clipped: el.scrollWidth > el.clientWidth + 1, w: Math.round(r.width), visible: r.width > 40 && r.height > 0 };
-      });
-      if (!mix) bad(`the grid does not say its composition (${view})`);
-      else if (mix.clipped || !mix.visible) bad(`the composition line is clipped at ${mix.w}px (${view}): ${JSON.stringify(mix.text)}`);
-      else ok(`the composition line is fully readable at ${mix.w}px — ${JSON.stringify(mix.text)}`);
-      if (/2 with stops, 3 empty, 1 not on this board/.test(before)) ok('the grid says what its rows are made of — 2 with stops, 3 empty, 1 not on this board');
-      else bad(`the grid's composition line does not match its rows (${view}): ${JSON.stringify(mix && mix.text)}`);
       // NO REFRESH ON THE GRID EITHER — the same removal, on the other surface. Writing this
       // assertion once per view is what stops the two drifting: this repo has shipped a control
       // into one navigation and not the other twice.
@@ -380,8 +366,6 @@ for (const mobile of [false, true]) {
           if (!/No orders yet/.test(row || '')) ok('…and it does not also claim it has no orders');
           else bad(`the off-board row still says "No orders yet" (${view}): ${JSON.stringify(row)}`);
         } else bad(`the off-board load ${OFF_BOARD.name} never reached the grid (${view})`);
-        if (/2 with stops, 3 empty, 1 not on this board/.test(after || '')) ok('…and the composition line is counted off those rows, not a separate tally');
-        else bad(`the composition line does not match the rows (${view}): ${JSON.stringify(((after || '').match(/Load roster:[^\n]*/) || [''])[0])}`);
       }
     }
   }

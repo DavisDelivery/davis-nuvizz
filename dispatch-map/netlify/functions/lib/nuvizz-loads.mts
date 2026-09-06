@@ -200,11 +200,48 @@ export async function loadIdsForDate(targetDateUTC: string): Promise<{ ids: Set<
 // count) — used to surface loads that have NO orders assigned yet (a Monday load created
 // but unfilled never appears on the stop-grouped board). One deliberate call; best-effort.
 export async function loadRosterForDate(targetDateUTC: string): Promise<Array<{ loadId: string; name: string; loadNbr: string | null; status: string; trips: number | null }>> {
+  return (await loadRosterPull(targetDateUTC)).loads;
+}
+
+/**
+ * What ONE roster pull actually saw, beside what it kept — the numbers that would have ended
+ * two days of guessing in the first reply.
+ *
+ * Chad, Sunday 11:37, board on Tue Sep 8, after a manual scan: "Load roster: 0 loads · cached
+ * just now". From outside the system that sentence has three different causes and they are
+ * pixel-identical: the vendor answered ZERO ROWS for that period; the vendor answered rows and
+ * normalizeLoads kept NONE (no filterData column defs → [] with no throw, or an id column the
+ * patterns do not match); or the period string asked NuVizz for a day other than the one on
+ * screen. Nothing on this path recorded which. `[scan] load-roster 2026-09-08: empty answer over
+ * an empty/absent cache` is a true sentence about the WRITE and says nothing about the PULL.
+ *
+ * So the pull now reports itself: the period it sent, the HTTP status, how many column defs
+ * and rows came back, and how many rows survived normalisation. It is logged on every pull
+ * (the Netlify function log answers "vendor 0 or parser 0" for any date, forever, at zero
+ * cost) and stored beside the roster so ?explain=1 can show it without a call. CLAUDE.md: build
+ * the free diagnostic first.
+ */
+export interface RosterPullMeta { period: string; httpStatus: number; cols: number; rows: number; kept: number }
+export async function loadRosterPull(targetDateUTC: string): Promise<{
+  loads: Array<{ loadId: string; name: string; loadNbr: string | null; status: string; trips: number | null }>;
+  pull: RosterPullMeta;
+}> {
   const { companyCode } = getCreds();
   const hdr = { Authorization: basicAuthHeader(), 'Content-Type': 'application/json', Accept: 'application/json' };
   const url = `${OPENAPI_BASE}/entity/filterdata/${LOAD_ENTITY}/${companyCode}`;
-  const body = JSON.stringify(buildLoadBody(periodForDate(targetDateUTC)));
+  const period = periodForDate(targetDateUTC);
+  const body = JSON.stringify(buildLoadBody(period));
   const resp = await getNuvizzRequester().request(url, { method: 'POST', headers: hdr, body }, { route: '/entity/filterdata(roster)', tenant: companyCode });
   if (!resp.ok) throw new Error(`load roster filterdata ${resp.status}`);
-  return normalizeLoads(await resp.json());
+  const j: any = await resp.json();
+  const cols = Object.keys((j && j.filterData && j.filterData[0]) || {}).length;
+  const rows = Array.isArray(j?.values) ? j.values.length : 0;
+  const loads = normalizeLoads(j);
+  const pull: RosterPullMeta = { period, httpStatus: resp.status, cols, rows, kept: loads.length };
+  // One line per pull, and it names the date AND the period so a reader can see with their own
+  // eyes whether "+2d" is the day the dispatcher had on screen.
+  console.log(`[roster] ${targetDateUTC} period=${period} http=${resp.status} cols=${cols} rows=${rows} kept=${loads.length}`
+    + (rows > 0 && loads.length === 0 ? ' ← ROWS CAME BACK AND THE PARSER KEPT NONE' : '')
+    + (cols === 0 ? ' ← NO COLUMN DEFS: not the grid shape the code expects' : ''));
+  return { loads, pull };
 }

@@ -24,7 +24,7 @@ import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildSca
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan, recordScanRun, markLoadRosterEmpty } from './firestore.mts';
 import { listScanForDate, mergeEnrich, twoScanBuckets, completedScanRows, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow } from './nuvizz-list.mts';
-import { loadIdsForDate, dropForeignLoadStops, loadRosterForDate } from './nuvizz-loads.mts';
+import { loadIdsForDate, dropForeignLoadStops, loadRosterPull } from './nuvizz-loads.mts';
 import { getStop } from './history-store.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
@@ -829,7 +829,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       const cached = await readLoadRoster(TENANT, date).catch(() => null);
       // A MANUAL SCAN ALWAYS PULLS — see skipFutureRosterPull for why that was the bug.
       if (skipFutureRosterPull({ frozen, isManual, cached, now: new Date() })) return;
-      const roster = await loadRosterForDate(date);
+      const { loads: roster, pull } = await loadRosterPull(date);
       // AN EMPTY ANSWER MAY NOT SILENTLY ERASE A GOOD ROSTER. loadRosterForDate returns [] with
       // no throw whenever the response carries no column defs, and writeLoadRoster is a REPLACE
       // — so one odd 200 takes a hundred loads off both Loads panels, and nothing on screen can
@@ -841,6 +841,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         await writeLoadRoster(TENANT, date, roster, scannedAt, {
           emptyStreak: verdict.emptyStreak,
           emptyAt: roster.length ? null : scannedAt,
+          pull,
         });
       } else {
         // Field-masked, so the refusal cannot take the loads it exists to protect with it.

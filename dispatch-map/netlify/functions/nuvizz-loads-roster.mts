@@ -17,7 +17,7 @@
 //
 //   GET ?date=YYYY-MM-DD [&live=1]  → { ok, date, source, at, count, loads:[{loadId,name,status,trips}] }
 //   GET ?explain=1[&days=5][&from=]  → what the CACHE holds for each date, ZERO vendor calls
-import { loadRosterForDate, shouldServeCachedRoster } from './lib/nuvizz-loads.mts';
+import { loadRosterPull, shouldServeCachedRoster } from './lib/nuvizz-loads.mts';
 import { isFirestoreEnabled, readLoadRoster, writeLoadRoster, markLoadRosterEmpty, etDayString } from './lib/firestore.mts';
 import { acceptRosterWrite, explainRosterRow } from './lib/roster-write.mts';
 import { requireUser } from './lib/require-user.mts';
@@ -121,7 +121,7 @@ export default async (req: Request): Promise<Response> => {
       }
     }
     // 2) Live fetch — one deliberate call — then cache it so the next read is free.
-    const loads = await loadRosterForDate(date);
+    const { loads, pull } = await loadRosterPull(date);
     const at = new Date().toISOString();
     if (isFirestoreEnabled()) {
       try {
@@ -133,7 +133,7 @@ export default async (req: Request): Promise<Response> => {
         const prior = cached ?? await readLoadRoster(TENANT, date).catch(() => null);
         const verdict = acceptRosterWrite(prior, loads);
         if (verdict.write) {
-          await writeLoadRoster(TENANT, date, loads, at, { emptyStreak: verdict.emptyStreak, emptyAt: loads.length ? null : at });
+          await writeLoadRoster(TENANT, date, loads, at, { emptyStreak: verdict.emptyStreak, emptyAt: loads.length ? null : at, pull });
         } else {
           // Field-masked, so the refusal cannot take the loads it exists to protect with it.
           await markLoadRosterEmpty(TENANT, date, verdict.emptyStreak, at);
@@ -146,7 +146,7 @@ export default async (req: Request): Promise<Response> => {
         }
       } catch { /* cache best-effort */ }
     }
-    return new Response(JSON.stringify({ ok: true, date, source: 'live', at, count: loads.length, loads }), { status: 200, headers: cors });
+    return new Response(JSON.stringify({ ok: true, date, source: 'live', at, count: loads.length, loads, pull }), { status: 200, headers: cors });
   } catch (e: any) {
     return new Response(JSON.stringify({ ok: false, reason: e?.message || 'roster failed' }), { status: 502, headers: cors });
   }
