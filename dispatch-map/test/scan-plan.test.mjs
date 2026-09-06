@@ -18,7 +18,8 @@ import assert from 'node:assert/strict';
 import {
   SCAN_KINDS, SCAN_INFO, defaultScanRules, clampScanRules, resolveInterval, ruleCoversHour,
   resolveWeekGrid, estimatePlanCalls, effectiveCadence, MAX_RULES, RULE_BOUNDS, dueKinds,
-  CRON_STEP_MIN, CRON_TOLERANCE_MIN, overrideCadenceSkip, HARD_FLOOR_MIN, rosterMayRunOnBlackout } from '../netlify/functions/lib/scan-plan.mts';
+  CRON_STEP_MIN, CRON_TOLERANCE_MIN, overrideCadenceSkip, HARD_FLOOR_MIN,
+} from '../netlify/functions/lib/scan-plan.mts';
 import { scanDecision } from '../netlify/functions/lib/scan-schedule.mts';
 
 const MON = 1, TUE = 2, FRI = 5, SAT = 6, SUN = 0;
@@ -74,52 +75,15 @@ test('completed is NOT pulled 10pm-4am — six hours a day where a pull returns 
   assert.equal(resolveInterval('planned', TUE, 2, rules), 20);
 });
 
-test('Saturday is silent for COMPLETED only — the two PLANNING feeds both run', () => {
-  // This assertion has now moved twice, and both moves are the same argument arriving one
-  // feed at a time. The blackout's premise is "nothing is DELIVERING on a Saturday", and that
-  // is an argument about `completed` and nothing else. v0.93.4 exempted the roster: it lists
-  // the loads that EXIST, and Saturday is when next week gets planned. This exempts `planned`
-  // for the identical reason — it is the freight COMING, not the freight that moved, and a
-  // dispatcher planning Monday on a Saturday needs the orders as much as the trailers. Chad:
-  // "I want to see Monday's and Tuesday's of next week's loads here like this so I can start
-  // planning them today or tomorrow."
+test('Saturday is silent, and Sunday evening wakes up for Monday routing', () => {
   const rules = defaultScanRules();
-  for (let h = 0; h < 24; h++) {
-    assert.equal(resolveInterval('completed', SAT, h, rules), null, `Sat ${h}:00 completed must stay off`);
-  }
-  for (let h = 4; h < 24; h++) {
-    assert.equal(resolveInterval('roster', SAT, h, rules), 60, `Sat ${h}:00 roster must run`);
-  }
-  for (const h of [0, 1, 2, 3]) {
-    assert.equal(resolveInterval('roster', SAT, h, rules), null, `Sat ${h}:00 roster stays off overnight`);
-  }
-  // Planned runs the working day and stops — nobody is planning at 3am on a Saturday, and an
-  // always-on rule would be spending the board's budget for nothing.
-  for (let h = 8; h < 20; h++) {
-    assert.equal(resolveInterval('planned', SAT, h, rules), 60, `Sat ${h}:00 planned must run`);
-  }
-  for (const h of [0, 4, 7, 20, 23]) {
-    assert.equal(resolveInterval('planned', SAT, h, rules), null, `Sat ${h}:00 planned stays off`);
-  }
-  assert.equal(resolveInterval('planned', SUN, 21, rules), 30, 'Sunday evening builds Monday');
-  assert.equal(resolveInterval('planned', SUN, 9, rules), 60, 'Sunday daytime plans next week');
-});
-
-test('the roster has NO uncovered hour between 4am and midnight, any day of the week', () => {
-  // The two holes Chad actually fell into, named so a future edit that reopens either one
-  // fails here rather than on his board: every weekday 13:00-20:00 (roster-am closed at 13:00
-  // and roster-eve did not open until 20:00), and Friday 13:00 → Monday 04:00, a sixty-three
-  // hour freeze straight through the weekend he plans in.
-  const rules = defaultScanRules();
-  for (let wd = 0; wd < 7; wd++) {
-    for (let h = 4; h < 24; h++) {
-      assert.equal(resolveInterval('roster', wd, h, rules), 60, `day ${wd} ${h}:00 roster uncovered`);
+  for (const kind of SCAN_KINDS) {
+    for (let h = 0; h < 24; h++) {
+      assert.equal(resolveInterval(kind, SAT, h, rules), null, `Sat ${h}:00 ${kind}`);
     }
   }
-  // The specific afternoon hole, called out by name.
-  for (const h of [13, 14, 15, 16, 17, 18, 19]) {
-    assert.equal(resolveInterval('roster', TUE, h, rules), 60, `Tue ${h}:00 was the afternoon hole`);
-  }
+  assert.equal(resolveInterval('planned', SUN, 21, rules), 30, 'Sunday evening builds Monday');
+  assert.equal(resolveInterval('planned', SUN, 9, rules), null, 'Sunday daytime stays quiet');
 });
 
 // ── resolution rules ─────────────────────────────────────────────────────────
@@ -266,15 +230,7 @@ test('the default plan stays comfortably inside the daily ceiling', () => {
   // stay a small fraction of it — a plan that spends the budget on list pulls starves the
   // /stop/info reads that give new orders their address and pin.
   assert.ok(busiest < 300, `busiest day ${busiest} must stay well under the 2,000 ceiling`);
-  // Saturday is the roster (20, hourly 04:00-24:00) plus the planning pull (12, hourly
-  // 08:00-20:00) and nothing else. Measured: the whole plan went 740 -> 764 calls a week for
-  // the weekend planning window, which is +24 against a 2,000/DAY ceiling and against the
-  // ~3,000 one cold full scan costs. The number is pinned rather than bounded so that letting
-  // COMPLETED onto a Saturday — the one feed the blackout is genuinely right about, and the
-  // expensive-by-cadence one at 15 minutes — fails here instead of quietly tripling the day.
-  assert.equal(est.perDay[SAT], 32, 'Saturday is the roster + the weekend planning pull');
-  assert.ok(est.perWeek < 800, `${est.perWeek}/week must stay a rounding error against the ceiling`);
-  assert.ok(est.byKind.roster <= 140, `roster ${est.byKind.roster}/week must stay a cheap list pull`);
+  assert.equal(est.perDay[SAT], 0, 'nothing on Saturday');
   assert.ok(est.byKind.completed > 200, 'completed is still sampled hard through the delivery day');
 });
 
@@ -464,50 +420,4 @@ test('the routing window itself: a 9pm override fire carries tomorrow LOADS', ()
   assert.equal(decided.act, true);
   assert.equal(decided.scanTomorrowLoads, true, 'routing window: tomorrow loads scan on the override fire');
   assert.equal(decided.scanTomorrowUnplanned, true);
-});
-
-// ── the weekend carve-out ────────────────────────────────────────────────────
-//
-// A rule covering Saturday is not enough on its own: the weekend blackout (Fri 22:00 → Sun
-// 20:00 ET) stops the scan from acting at all, so nothing would read that rule. This is the
-// narrow permission that lets the roster — and only the roster — run anyway.
-
-const blacked = { act: false, skip: 'weekend' };
-
-test('on a blacked-out Saturday the roster may run, because that is when next week is planned', () => {
-  assert.equal(rosterMayRunOnBlackout(blacked, false, false, true), true);
-});
-
-test('it NEVER lets an expensive kind ride along — that is the whole point of not flipping act', () => {
-  // scanPath asks plannedDue FIRST and answers 'full'. If this permission were granted while
-  // planned was due, a stored config with a Saturday planned rule would buy a ~700-stop board
-  // rebuild plus enrichment on a day nothing is delivering. Both refusals are load-bearing.
-  assert.equal(rosterMayRunOnBlackout(blacked, true, false, true), false, 'planned due → refuse');
-  assert.equal(rosterMayRunOnBlackout(blacked, false, true, true), false, 'completed due → refuse');
-  assert.equal(rosterMayRunOnBlackout(blacked, true, true, true), false, 'both due → refuse');
-});
-
-test('a roster that is not due does not get a carve-out', () => {
-  assert.equal(rosterMayRunOnBlackout(blacked, false, false, false), false);
-});
-
-test('only the WEEKEND skip is carved out — the hard floor and the cadence are not ours', () => {
-  // The anti-thrash floor is a real safety gate; cadence has its own override (and one that
-  // goes through scanPath properly). Widening this to either would be a cost bug.
-  assert.equal(rosterMayRunOnBlackout({ act: false, skip: 'floor' }, false, false, true), false);
-  assert.equal(rosterMayRunOnBlackout({ act: false, skip: 'cadence' }, false, false, true), false);
-  assert.equal(rosterMayRunOnBlackout({ act: false, skip: 'none' }, false, false, true), false);
-});
-
-test('a scan that is already acting needs no carve-out', () => {
-  // Belt and braces: granting it here would force the roster-only path over a fire that was
-  // legitimately going to rebuild the board, silently skipping the rebuild.
-  assert.equal(rosterMayRunOnBlackout({ act: true, skip: 'weekend' }, false, false, true), false);
-  assert.equal(rosterMayRunOnBlackout({ act: true, skip: 'none' }, false, false, true), false);
-});
-
-test('a missing or malformed decision is refused, not assumed', () => {
-  assert.equal(rosterMayRunOnBlackout(null, false, false, true), false);
-  assert.equal(rosterMayRunOnBlackout(undefined, false, false, true), false);
-  assert.equal(rosterMayRunOnBlackout({}, false, false, true), false, 'no skip reason → no carve-out');
 });
