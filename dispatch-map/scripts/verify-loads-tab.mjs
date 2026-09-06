@@ -233,37 +233,46 @@ for (const mobile of [false, true]) {
   // ── CHAD'S SATURDAY, DRIVEN END TO END ────────────────────────────────────
   // The cache holds this morning's capture — three loads, all of them carrying stops, taken
   // before Tuesday's empty trailers existed. NuVizz would say something different right now.
-  // A future day's roster is captured ONCE per scan day, so nothing in the app moved it, and
-  // `?live=1` — the endpoint's own documented override — had no caller anywhere in the client.
-  await run(`A stale capture, and the refresh that fixes it — ${view}`,
+  // NO REFRESH CONTROL, AND NO SURFACE MAY SPEND A CALL ON ITS OWN.
+  //
+  // This block used to press a "Refresh" on the tab and assert a ?live=1 went out. Chad: "I
+  // don't need a roster refresh button remove it." Since v0.93.9 the Scan now control pulls the
+  // roster for the board date on screen AND the next business day, so a second control bought
+  // nothing and cost a second copy of the state — this rail and the bottom grid each held their
+  // own roster, so refreshing one left the other showing the older answer for the same day.
+  //
+  // The rule is now the opposite of what it was, so the test is too: opening the tab spends
+  // NOTHING, there is no Refresh inside it, and the freshness line still says how old the list
+  // is — which is the only thing that can tell "no empty loads" from "nobody asked today".
+  await run(`The Loads tab spends nothing and offers no Refresh — ${view}`,
     { mobile, roster: BUILT, liveRoster: [...BUILT, ...EMPTIES] }, async (text, page, { asked }) => {
-      if (!EMPTIES.some((e) => text.includes(e.name))) ok('before the refresh: no empty loads, because the capture has none');
-      else bad(`the cached roster already showed empties — the fixture is wrong (${view})`);
       if (asked.includes('live')) bad(`something spent a live roster call without being asked (${view})`);
-      else ok('…and nothing has spent a vendor call yet — the open is cache-only');
+      else ok('opening the tab spends no vendor call — cache only');
 
-      // Scoped to the panel ON PURPOSE: other surfaces carry a Refresh too, and a guard that
-      // clicked one of those would report the tab working while it does nothing.
-      const clicked = await page.evaluate(() => {
+      const found = await page.evaluate(() => {
         const panel = document.querySelector('[data-day-loads-panel]');
-        if (!panel) return { ok: false, why: 'no panel' };
-        const b = Array.from(panel.querySelectorAll('button')).find((x) => /^Refresh/i.test((x.innerText || '').trim()));
-        if (!b) return { ok: false, why: 'no Refresh inside the panel', buttons: Array.from(panel.querySelectorAll('button')).map((x) => (x.innerText || '').trim()).slice(0, 8) };
-        b.click();
-        return { ok: true };
+        if (!panel) return { panel: false };
+        return {
+          panel: true,
+          refresh: Array.from(panel.querySelectorAll('button'))
+            .map((x) => (x.innerText || '').trim()).filter((t) => /^Refresh/i.test(t)),
+        };
       });
-      if (!clicked.ok) { bad(`no Refresh control on the Loads tab (${view}): ${JSON.stringify(clicked)}`); return; }
-      ok('there is a Refresh control on the tab, and it is inside the tab');
-      await page.waitForTimeout(1400);
+      if (!found.panel) { bad(`no Loads panel at all (${view})`); return; }
+      if (found.refresh.length) bad(`a Refresh control is still on the Loads tab (${view}): ${JSON.stringify(found.refresh)}`);
+      else ok('there is no Refresh control on the tab');
 
-      if (asked.includes('live')) ok('pressing it asks the roster endpoint for ?live=1 — the override that had no caller');
-      else bad(`Refresh did not request a live roster (${view}); asks were ${JSON.stringify(asked)}`);
-      const after = await panelText(page);
-      const back = EMPTIES.filter((e) => (after || '').includes(e.name)).length;
-      if (back === EMPTIES.length) ok(`…and all ${EMPTIES.length} empty trailers arrive on the tab`);
-      else bad(`only ${back}/${EMPTIES.length} empties came back after Refresh (${view})`);
-      if (/straight from NuVizz/i.test(after || '')) ok('…and the line says the list is now straight from NuVizz');
-      else bad(`the freshness line still claims a cache after a live pull (${view})`);
+      // The line is what survives the button, so it has to be there. Matched on the rail's own
+      // wording (rosterFreshness -> "N loads · cached 6h ago"), NOT the grid's "Load roster:"
+      // prefix — the two surfaces render the same fact with different chrome, and asserting one
+      // panel's copy against the other's is how a green run stops meaning anything.
+      if (/·\s*(cached|straight from NuVizz)/i.test(text || '') || /not pulled/i.test(text || '')) {
+        ok('…and the freshness line still says where the list came from');
+      } else bad(`the freshness line is gone too (${view}) — absent can no longer be told from zero`);
+
+      await page.waitForTimeout(600);
+      if (asked.includes('live')) bad(`the tab spent a live call with nobody pressing anything (${view})`);
+      else ok('…and still nothing has reached NuVizz');
     });
 }
 
@@ -286,7 +295,17 @@ async function gridLoadsText(page) {
 for (const mobile of [false, true]) {
   const view = mobile ? 'phone 390px' : 'desktop 1600px';
   console.log(`\nThe bottom grid's Loads view — ${view}  [${secs()}]`);
-  const { page, ctx, errors, asked } = await openLoadsTab({ mobile, roster: BUILT, liveRoster: [...BUILT, ...EMPTIES, OFF_BOARD] });
+  // THE CACHE IS THE ONLY SOURCE NOW. This block used to open on a BUILT-only capture and press
+  // Refresh to bring the rest in; with the button gone, the roster the scanner captured IS what
+  // the grid shows, so the fixture seeds it directly. The assertions below are unchanged and
+  // still the ones that matter — every empty renders, the off-board load is not called empty,
+  // and the composition line is counted off the rows.
+  //
+  // The BUILT-only case did not disappear with the button: it is asserted in the rail block
+  // above ("with a capture that has no empties, it shows none"), which is where the
+  // absent-is-not-zero rule lives.
+  const FULL_ROSTER = [...BUILT, ...EMPTIES, OFF_BOARD];
+  const { page, ctx, errors, asked } = await openLoadsTab({ mobile, roster: FULL_ROSTER, liveRoster: FULL_ROSTER });
   // The grid's own Stops/Loads toggle reads "Loads <count>"; the rail's reads "Loads (N)".
   const opened = await page.evaluate(() => {
     const b = Array.from(document.querySelectorAll('button')).find((x) => /^Loads\s+\d+$/.test((x.innerText || '').replace(/\n/g, ' ').trim()));
@@ -302,8 +321,8 @@ for (const mobile of [false, true]) {
     else {
       if (/cached/i.test(before)) ok('the grid says the roster it is showing is a cache, and how old');
       else bad(`no roster freshness line on the grid (${view}): ${JSON.stringify(before.slice(0, 200))}`);
-      if (!EMPTIES.some((e) => before.includes(e.name))) ok('…and with a capture that has no empties, it shows none');
-      else bad(`the cached roster already showed empties — fixture wrong (${view})`);
+      if (EMPTIES.every((e) => before.includes(e.name))) ok(`…and all ${EMPTIES.length} empty trailers are on it, straight from the capture`);
+      else bad(`the grid dropped empties the capture holds (${view})`);
       // CHAD'S EXACT REPORT, RENDERED. "the routes panel on right is now populating my loads
       // panel on the bottom." With a roster holding only the built loads, the grid's Loads
       // view IS the Routes list — the same two rows, correctly — and until now nothing on the
@@ -321,24 +340,26 @@ for (const mobile of [false, true]) {
       if (!mix) bad(`the grid does not say its composition (${view})`);
       else if (mix.clipped || !mix.visible) bad(`the composition line is clipped at ${mix.w}px (${view}): ${JSON.stringify(mix.text)}`);
       else ok(`the composition line is fully readable at ${mix.w}px — ${JSON.stringify(mix.text)}`);
-      if (/2 with stops, 0 empty/.test(before)) ok('the grid says what its rows are made of — 2 with stops, 0 empty');
-      else bad(`the grid does not say its composition (${view}): ${JSON.stringify((before.match(/Load roster:[^\n]*/) || [''])[0])}`);
-      const clicked = await page.evaluate(() => {
+      if (/2 with stops, 3 empty, 1 not on this board/.test(before)) ok('the grid says what its rows are made of — 2 with stops, 3 empty, 1 not on this board');
+      else bad(`the grid's composition line does not match its rows (${view}): ${JSON.stringify(mix && mix.text)}`);
+      // NO REFRESH ON THE GRID EITHER — the same removal, on the other surface. Writing this
+      // assertion once per view is what stops the two drifting: this repo has shipped a control
+      // into one navigation and not the other twice.
+      const stillThere = await page.evaluate(() => {
         const tables = Array.from(document.querySelectorAll('table'));
         const t = tables.find((tb) => /%\s*Done/i.test(tb.querySelector('thead')?.innerText || ''));
         const pane = t?.closest('.overflow-auto')?.parentElement;
-        const b = pane && Array.from(pane.querySelectorAll('button')).find((x) => /^Refresh/i.test((x.innerText || '').trim()));
-        if (!b) return false;
-        b.click();
-        return true;
+        if (!pane) return null;
+        return Array.from(pane.querySelectorAll('button'))
+          .map((x) => (x.innerText || '').trim()).filter((t2) => /^Refresh/i.test(t2));
       });
-      if (!clicked) bad(`no Refresh control on the grid's Loads view (${view})`);
-      else {
-        ok('there is a Refresh control on the grid, inside the Loads pane');
-        await page.waitForTimeout(1400);
-        if (asked.includes('live')) ok('pressing it pulls the roster straight from NuVizz');
-        else bad(`the grid's Refresh did not request a live roster (${view}); asks were ${JSON.stringify(asked)}`);
-        const after = await gridLoadsText(page);
+      if (stillThere === null) bad(`could not find the grid's Loads pane (${view})`);
+      else if (stillThere.length) bad(`a Refresh control is still on the grid (${view}): ${JSON.stringify(stillThere)}`);
+      else ok('there is no Refresh control on the grid either');
+      if (asked.includes('live')) bad(`the grid spent a live roster call on open (${view}); asks were ${JSON.stringify(asked)}`);
+      else ok('…and opening the Loads view spends no vendor call');
+      {
+        const after = before;
         const back = EMPTIES.filter((e) => (after || '').includes(e.name)).length;
         if (back === EMPTIES.length) ok(`…and all ${EMPTIES.length} empty trailers arrive in the grid`);
         else bad(`only ${back}/${EMPTIES.length} empties came back in the grid (${view})`);
@@ -359,8 +380,8 @@ for (const mobile of [false, true]) {
           if (!/No orders yet/.test(row || '')) ok('…and it does not also claim it has no orders');
           else bad(`the off-board row still says "No orders yet" (${view}): ${JSON.stringify(row)}`);
         } else bad(`the off-board load ${OFF_BOARD.name} never reached the grid (${view})`);
-        if (/2 with stops, 3 empty, 1 not on this board/.test(after || '')) ok('…and the composition line follows the new rows');
-        else bad(`the composition line did not follow the refresh (${view}): ${JSON.stringify(((after || '').match(/Load roster:[^\n]*/) || [''])[0])}`);
+        if (/2 with stops, 3 empty, 1 not on this board/.test(after || '')) ok('…and the composition line is counted off those rows, not a separate tally');
+        else bad(`the composition line does not match the rows (${view}): ${JSON.stringify(((after || '').match(/Load roster:[^\n]*/) || [''])[0])}`);
       }
     }
   }
