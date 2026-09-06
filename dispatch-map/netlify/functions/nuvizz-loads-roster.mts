@@ -59,9 +59,27 @@ export default async (req: Request): Promise<Response> => {
     const from = /^\d{4}-\d{2}-\d{2}$/.test(fromRaw) ? fromRaw : etDayString();
     const base = Date.parse(from + 'T00:00:00Z');
     const dates = Array.from({ length: days }, (_, i) => new Date(base + i * 86400000).toISOString().slice(0, 10));
+    // A DIAGNOSTIC THAT SWALLOWS ITS OWN ERRORS IS WORSE THAN NO DIAGNOSTIC.
+    //
+    // The obvious spelling here is `readLoadRoster(...).catch(() => null)`, and it was — which
+    // turns a Firestore failure into `null`, which explainRosterRow reports as "this date has
+    // never been captured". That is the SAME sentence a genuinely absent document gets, and the
+    // two send a reader in opposite directions: one says "the scan has not run", the other says
+    // "the store is unreachable and every panel on the site is about to look empty". This whole
+    // evening has been one version of that confusion after another, so the one endpoint built to
+    // END it may not add a fresh one. A read that throws is reported AS a read that threw.
     const rows = [];
-    for (const d of dates) rows.push(explainRosterRow(d, await readLoadRoster(TENANT, d).catch(() => null)));
-    return J({ ok: true, tenant: TENANT, from, days, calls: 0, rows });
+    let readErrors = 0;
+    for (const d of dates) {
+      try {
+        rows.push(explainRosterRow(d, await readLoadRoster(TENANT, d)));
+      } catch (e: any) {
+        readErrors++;
+        rows.push({ date: d, cached: null, error: String(e?.message || e).slice(0, 300),
+          note: 'FIRESTORE READ FAILED — this is NOT "never captured"; the store could not be reached' });
+      }
+    }
+    return J({ ok: readErrors === 0, tenant: TENANT, from, days, calls: 0, readErrors, rows });
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return new Response(JSON.stringify({ ok: false, reason: 'missing or bad date (YYYY-MM-DD)' }), { status: 400, headers: cors });
