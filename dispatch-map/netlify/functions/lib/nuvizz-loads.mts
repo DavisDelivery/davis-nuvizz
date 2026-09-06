@@ -140,27 +140,27 @@ export function normalizeLoads(j: any): Array<{ loadId: string; name: string; lo
 //
 // `etDay` is injected rather than imported so this stays pure and clock-testable.
 /**
- * JULY'S FRESHNESS, BOUNDED. Chad: "6 weeks ago there was no issue with the loads screen and
- * roster scans." Checked against v0.52.4 (2026-07-26): the endpoint then served a cache only
- * when it held rows and went LIVE on every other open — so a dispatcher opening Tuesday on a
- * Sunday got NuVizz's answer as of that moment, every time, at up to three calls an open. The
- * v0.93.5 rule closed that amplification and, in the same stroke, froze an empty capture for
- * the rest of the ET day: after the 11:37 manual scan wrote "0 loads", every open until
- * midnight showed 0 without asking again. Freshness he had was traded for calls.
+ * MAY A CACHED ROSTER ANSWER THIS READ, OR MUST IT COST A NUVIZZ CALL? (PURE)
  *
- * The bound puts it back without the bill: an empty capture is this scan day's answer for ONE
- * roster interval — the same 60 minutes the scan plan gives the roster (asserted equal in the
- * tests, so the two cannot drift) — and then one live re-ask, re-cached. While a day stays
- * empty that is at most one call an hour per date, three at worst if the client's fetch sites
- * race on the same open; July spent three on EVERY open. NUVIZZ_ROSTER_AUTO_LIVE=0 still
- * refuses every automatic call; this only decides what the cache may answer.
+ * Chad, 2026-09-06: "The roster for future dates only needs to be called once a day as they
+ * will not change." So a capture taken THIS ET day is this day's answer, full stop — empty or
+ * not — and the panels serve it without spending anything. The one way to re-ask inside the
+ * day is the manual Scan, which always pulls. (A bound that re-asked an empty capture every
+ * hour was committed and reverted the same afternoon; it was July's freshness put back, and
+ * July's freshness is not what he wants.)
+ *
+ * The distinction that stays is EXISTENCE, not length:
+ *   • no doc at all      → nobody has ever asked for this day. Go live once. (Absent is not zero.)
+ *   • rows               → serve, whatever the age; the surfaces label how old it is.
+ *   • empty, from today  → this scan day's answer IS "none". Serve it, free.
+ *   • empty, from before → stale AND empty: nobody has asked today. Go live once.
+ *
+ * `etDayOf` is injected so this stays pure and clock-testable.
  */
-export const ROSTER_EMPTY_RECHECK_MIN = 60;
 export function shouldServeCachedRoster(
   cached: { at?: string | null; loads?: any[] } | null | undefined,
   etDayOf: (d: Date) => string,
   now: Date = new Date(),
-  emptyMaxAgeMs: number = ROSTER_EMPTY_RECHECK_MIN * 60_000,
 ): boolean {
   if (!cached) return false;
   if ((cached.loads?.length ?? 0) > 0) return true;
@@ -170,10 +170,7 @@ export function shouldServeCachedRoster(
   if (!cached.at) return false;
   const at = new Date(cached.at);
   if (!Number.isFinite(at.getTime())) return false;
-  let sameDay = false;
-  try { sameDay = etDayOf(at) === etDayOf(now); } catch { return false; }
-  if (!sameDay) return false;
-  return (now.getTime() - at.getTime()) < emptyMaxAgeMs;
+  try { return etDayOf(at) === etDayOf(now); } catch { return false; }
 }
 
 // A board stop's load identity, when known (enriched stops carry raw.load.loadId; the

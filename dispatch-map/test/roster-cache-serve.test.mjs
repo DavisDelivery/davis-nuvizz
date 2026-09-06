@@ -33,28 +33,15 @@ test('a cache WITH ROWS is served whatever its age — the surfaces label the ag
   assert.equal(shouldServeCachedRoster(old, etDay, NOW), true);
 });
 
-test('an EMPTY capture taken today is this scan day’s answer for ONE roster interval — served, free', () => {
-  const emptyRecent = { at: iso('2026-09-05T21:20:00Z'), loads: [] };   // 30 min before NOW, same ET day
-  assert.equal(shouldServeCachedRoster(emptyRecent, etDay, NOW), true);
+test('an EMPTY capture taken today is this scan day’s answer — served, free, whatever the hour', () => {
+  // Chad, 2026-09-06: "The roster for future dates only needs to be called once a day as they
+  // will not change." An empty taken at 10:00 ET is still the day's answer at 17:50 ET. The
+  // manual Scan is the way to re-ask; the endpoint does not do it on its own.
+  const emptyToday = { at: iso('2026-09-05T14:00:00Z'), loads: [] };   // 10:00 ET, same ET day, 7h40m before NOW
+  assert.equal(shouldServeCachedRoster(emptyToday, etDay, NOW), true);
 });
 
-test('JULY’S FRESHNESS, BOUNDED: an empty capture older than the roster interval is re-asked', () => {
-  // Chad: "6 weeks ago there was no issue." v0.52.4 went live on every open of an empty day;
-  // v0.93.5 froze the empty until midnight. This is the middle: 59 minutes served, 61 re-asked.
-  const t = (minAgo) => ({ at: new Date(NOW.getTime() - minAgo * 60_000).toISOString(), loads: [] });
-  assert.equal(shouldServeCachedRoster(t(59), etDay, NOW), true, '59 min: still this hour’s answer');
-  assert.equal(shouldServeCachedRoster(t(61), etDay, NOW), false, '61 min: one live re-ask');
-  assert.equal(shouldServeCachedRoster(t(240), etDay, NOW), false, 'the 11:37 empty at 15:37 is re-asked, not shown');
-});
-
-test('the bound IS the scan plan’s roster cadence — asserted equal so the two cannot drift', async () => {
-  const { defaultScanRules } = await import('../netlify/functions/lib/scan-plan.mts');
-  const { ROSTER_EMPTY_RECHECK_MIN } = await import('../netlify/functions/lib/nuvizz-loads.mts');
-  const rosterIntervals = [...new Set(defaultScanRules().filter((r) => r.kind === 'roster').map((r) => r.intervalMin))];
-  assert.deepEqual(rosterIntervals, [ROSTER_EMPTY_RECHECK_MIN], `plan roster interval(s) ${rosterIntervals} must equal the recheck bound`);
-});
-
-test('a NON-EMPTY cache is never subject to the bound — rows are served whatever their age', () => {
+test('a NON-EMPTY cache is served whatever its age', () => {
   const oldRows = { at: iso('2026-09-05T02:00:00Z'), loads: [{ loadId: 'a', name: 'BEN 2' }] };
   assert.equal(shouldServeCachedRoster(oldRows, etDay, NOW), true);
 });
@@ -84,6 +71,6 @@ test('an unreadable stamp reads as NOT today — never an exception, never the e
 });
 
 test('a malformed doc with no loads array is not served', () => {
-  assert.equal(shouldServeCachedRoster({ at: iso('2026-09-05T21:30:00Z') }, etDay, NOW), true, 'no loads array but a fresh stamp — served as an empty within the bound');
+  assert.equal(shouldServeCachedRoster({ at: iso('2026-09-05T14:00:00Z') }, etDay, NOW), true, 'no loads array but a stamp from today — served as an empty');
   assert.equal(shouldServeCachedRoster({ loads: undefined }, etDay, NOW), false, 'no rows and no stamp → live');
 });

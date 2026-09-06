@@ -1,55 +1,59 @@
 // test/roster-horizon-freeze.test.mjs
 //
-// THE THIRD DAY IN THE HORIZON WAS STILL FROZEN AFTER v0.93.4.
+// THE ROSTER FOR A FUTURE DATE IS CALLED ONCE A DAY. Chad, 2026-09-06: "The roster for future
+// dates only needs to be called once a day as they will not change."
 //
-// v0.93.4 gave the load roster an hour-by-hour schedule on all seven days, which fixed WHEN
-// the scanner asks. It did not change what happens once it has asked: every FUTURE date
-// short-circuits on futureRosterCaptured, so the first good capture of the ET day stands
-// until midnight however many times the roster fires afterwards.
-//
-// The premise behind that freeze is Chad's, and it is about TOMORROW — "the shells are
-// generated up front, the set doesn't change through the day." True there. Not true two or
-// three days out, and the weekend Chad reported this on is the case that proves it: from
-// Saturday the horizon reaches Tuesday, Monday is Labor Day, and Tuesday's empty trailers
-// are not created yet. The 08:00 capture is a list of nothing, and it WAS the answer for the
-// rest of the day — which is exactly what both Loads surfaces were faithfully showing.
+// That sentence is the rule, and this file pins it against the two ways it was broken this
+// week: v0.93.5 let the third horizon day re-pull hourly (a switch, since removed), and the
+// endpoint briefly re-asked an empty capture every hour (committed and reverted the same day).
+// Today is the one date that re-pulls every roster fire — its loads are being built and
+// dispatched all day — and a manual press is the one caller that always pulls.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { rosterFreezeApplies, scanDatesFrom } from '../netlify/functions/lib/refresh-stops-core.mts';
+import { rosterFreezeApplies, futureRosterCaptured, skipFutureRosterPull, scanDatesFrom } from '../netlify/functions/lib/refresh-stops-core.mts';
 
-// Chad's weekend, from the Saturday he was looking at it. LIST_HORIZON_DAYS is 3.
 const SAT = '2026-09-05';
-const HORIZON = scanDatesFrom(SAT, 3);
-const [today, tomorrow, dayThree] = HORIZON;
+const [today, tomorrow, dayThree] = scanDatesFrom(SAT, 3);   // Sat, Mon (Labor Day), Tue
+const NOW = new Date('2026-09-05T15:00:00Z');                  // 11:00 ET Saturday
+const numbered = (at) => ({ at, loads: [{ loadId: 'a', name: 'BEN 2', loadNbr: 'DAVIS000198197', status: 'Draft', trips: 0 }] });
 
-test('the horizon from Saturday really is today + the next two business days', () => {
-  assert.deepEqual(HORIZON, ['2026-09-05', '2026-09-07', '2026-09-08'], 'Sat, Mon, Tue');
+test('the horizon from Saturday is today + the next two business days', () => {
+  assert.deepEqual([today, tomorrow, dayThree], ['2026-09-05', '2026-09-07', '2026-09-08']);
 });
 
-test('TODAY never freezes — it has always re-pulled on every fire, under either setting', () => {
-  assert.equal(rosterFreezeApplies(today, today, tomorrow, true), false);
-  assert.equal(rosterFreezeApplies(today, today, tomorrow, false), false);
+test('TODAY never freezes — it re-pulls on every roster fire', () => {
+  assert.equal(rosterFreezeApplies(today, today), false);
 });
 
-test('TOMORROW still freezes — its load set is fixed, so re-pulling it 20x a day buys nothing', () => {
-  assert.equal(rosterFreezeApplies(tomorrow, today, tomorrow, true), true);
+test('EVERY future date freezes — tomorrow AND the day after, no third-day exception', () => {
+  assert.equal(rosterFreezeApplies(tomorrow, today), true);
+  assert.equal(rosterFreezeApplies(dayThree, today), true, 'v0.93.5 let this one re-pull hourly; Chad: once a day');
 });
 
-test('THE FIX: the day BEYOND tomorrow re-pulls — its trailers may not exist yet', () => {
-  // Tuesday Sep 8, seen from Saturday. This is the date Chad had open.
-  assert.equal(rosterFreezeApplies(dayThree, today, tomorrow, true), false);
+test('a frozen date captured THIS ET day with numbers is left alone for the rest of the day', () => {
+  const cached = numbered('2026-09-05T08:05:00Z');            // 04:05 ET this morning
+  assert.equal(futureRosterCaptured(cached, NOW), true);
+  assert.equal(skipFutureRosterPull({ frozen: true, isManual: false, cached, now: NOW }), true, 'scheduled: skip');
 });
 
-test('NUVIZZ_ROSTER_HORIZON_REFRESH=off restores the old freeze on every future date', () => {
-  assert.equal(rosterFreezeApplies(dayThree, today, tomorrow, false), true);
-  assert.equal(rosterFreezeApplies(tomorrow, today, tomorrow, false), true);
-  assert.equal(rosterFreezeApplies(today, today, tomorrow, false), false, 'today is never frozen either way');
+test('yesterday’s capture does not count today — the day starts with one pull', () => {
+  const cached = numbered('2026-09-04T16:00:00Z');
+  assert.equal(futureRosterCaptured(cached, NOW), false);
+  assert.equal(skipFutureRosterPull({ frozen: true, isManual: false, cached, now: NOW }), false);
 });
 
-test('a horizon of two has no third day, so the switch changes nothing there', () => {
-  const [t, tm] = scanDatesFrom(SAT, 2);
-  for (const on of [true, false]) {
-    assert.equal(rosterFreezeApplies(t, t, tm, on), false);
-    assert.equal(rosterFreezeApplies(tm, t, tm, on), true);
-  }
+test('an EMPTY capture does not count as captured — there is no roster yet to leave alone', () => {
+  // "They will not change" is a statement about a roster that exists. Zero rows is not a roster
+  // that will not change; it is a day nobody has built yet, and the once-a-day pull has not
+  // yet found anything to be once-a-day ABOUT. Same rule since Jul 1 for a number-less list.
+  assert.equal(futureRosterCaptured({ at: '2026-09-05T08:05:00Z', loads: [] }, NOW), false);
+});
+
+test('A MANUAL PRESS ALWAYS PULLS — the one exception, because a human asking is information the cadence cannot have', () => {
+  const cached = numbered('2026-09-05T08:05:00Z');
+  assert.equal(skipFutureRosterPull({ frozen: true, isManual: true, cached, now: NOW }), false);
+});
+
+test('there is no environment switch that widens this any more', () => {
+  assert.equal(rosterFreezeApplies.length, 2, 'rosterFreezeApplies(date, today) — no horizon-refresh flag');
 });
