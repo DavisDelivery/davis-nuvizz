@@ -22,7 +22,7 @@
 
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro, lookupLoadStopNbrs } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan, recordScanRun } from './firestore.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan, recordScanRun, markLoadRosterEmpty } from './firestore.mts';
 import { listScanForDate, mergeEnrich, twoScanBuckets, completedScanRows, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow } from './nuvizz-list.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterForDate } from './nuvizz-loads.mts';
 import { getStop } from './history-store.mts';
@@ -32,6 +32,7 @@ import { notifyMarkedCustomers, pendingNotifyDates } from './cs-notify.mts';
 import { breakerTripped, scanIntervalElapsed, breakerMode, setDailyCeilingOverride, setCallTrigger } from './nuvizz-request.mts';
 import { scanDecision, isInRoutingWindow, clampScanConfig } from './scan-schedule.mts';
 import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip, scanPath, rosterMayRunOnBlackout, plannedMayRunOnBlackout } from './scan-plan.mts';
+import { acceptRosterWrite } from './roster-write.mts';
 import { planCompletions } from './scan-completions.mts';
 
 // Reuse the CANONICAL integer parsers from nuvizz-scan so the parity log's
@@ -381,6 +382,33 @@ export function futureRosterCaptured(cached: { at?: string; loads?: any[] } | nu
 export function rosterFreezeApplies(date: string, today: string, tomorrow: string, horizonRefreshOn = true): boolean {
   if (date === today) return false;
   return horizonRefreshOn ? date === tomorrow : true;
+}
+
+/**
+ * PURE. May this roster pull be SKIPPED because the date was already captured today?
+ *
+ * Chad: "i need it to fire when i manually refresh ... If I'm working on Saturday or Sunday its
+ * to plan loads for following week like i was trying to do for Tuesday but all my empty loads
+ * weren't there."
+ *
+ * rosterFreezeApplies + futureRosterCaptured are the once-per-ET-day rule for a frozen date,
+ * and they were applied to EVERY caller — including a human pressing Scan now. So the first
+ * capture of the day won outright, and if that capture ran before the loads he was planning
+ * existed, nothing in the app could move it until the next ET day. The one control that means
+ * "get me the current answer" did nothing for the date he was looking at, and said nothing
+ * about it either.
+ *
+ * A human asking is information the cadence cannot have: it means the answer we hold is not the
+ * one they need. So a manual scan always pulls. Today, and every unfrozen horizon date, were
+ * never skipped by anybody and still are not. Exported for tests.
+ */
+export function skipFutureRosterPull(opts: {
+  frozen: boolean; isManual: boolean;
+  cached: { at?: string; loads?: any[] } | null | undefined; now: Date;
+}): boolean {
+  if (!opts || !opts.frozen) return false;
+  if (opts.isManual) return false;
+  return futureRosterCaptured(opts.cached, opts.now);
 }
 
 /**
@@ -746,13 +774,30 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   const persistLoadRoster = async (date: string, scannedAt: string) => {
     if (!fsOn) return;
     try {
-      if (freezeApplies(date)) {
-        const cached = await readLoadRoster(TENANT, date).catch(() => null);
-        if (futureRosterCaptured(cached, new Date())) return;
-      }
+      const frozen = freezeApplies(date);
+      // Read the cached doc ONCE and reuse it for the freeze short-circuit AND the thin-write
+      // guard below — two reads of one document is a round trip wasted on every roster pull.
+      const cached = await readLoadRoster(TENANT, date).catch(() => null);
+      // A MANUAL SCAN ALWAYS PULLS — see skipFutureRosterPull for why that was the bug.
+      if (skipFutureRosterPull({ frozen, isManual, cached, now: new Date() })) return;
       const roster = await loadRosterForDate(date);
-      await writeLoadRoster(TENANT, date, roster, scannedAt);
-      console.log(`[scan] load-roster ${date}: cached ${roster.length} load(s)${freezeApplies(date) ? ' (next-day, once/day once numbered)' : ''}`);
+      // AN EMPTY ANSWER MAY NOT SILENTLY ERASE A GOOD ROSTER. loadRosterForDate returns [] with
+      // no throw whenever the response carries no column defs, and writeLoadRoster is a REPLACE
+      // — so one odd 200 takes a hundred loads off both Loads panels, and nothing on screen can
+      // tell that from a day the vendor really has none. The board prune and the fleet-index
+      // rebuild already refuse the identical shape of mistake; the roster was the write without
+      // it. See lib/roster-write.mts for the streak that lets a genuinely emptied day still land.
+      const verdict = acceptRosterWrite(cached, roster);
+      if (verdict.write) {
+        await writeLoadRoster(TENANT, date, roster, scannedAt, {
+          emptyStreak: verdict.emptyStreak,
+          emptyAt: roster.length ? null : scannedAt,
+        });
+      } else {
+        // Field-masked, so the refusal cannot take the loads it exists to protect with it.
+        await markLoadRosterEmpty(TENANT, date, verdict.emptyStreak, scannedAt).catch(() => {});
+      }
+      console.log(`[scan] load-roster ${date}: ${verdict.reason}${frozen ? ' (frozen date, once/day once numbered)' : ''}`);
     } catch (e: any) { console.warn(`[scan] load-roster ${date} skipped: ${e?.message}`); }
   };
 
@@ -946,11 +991,15 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       if (includeLoads && !loadsUntrustworthy) {
         const fleet = deriveFleetSummary(scan.stops, scan.loadHeaders);
         await writeFleetIndex(TENANT, date, fleet.loads, fleet.summary, fleet.driverIndex, scan.scannedAt);
-        // Cache the date's empty-loads roster too (once/day for a future date).
-        // THE ROSTER ON ITS OWN CLOCK. It used to be pulled on every acting fire — ~33 calls a
-        // day for a list that only changes when somebody creates a load. Hourly is plenty, and
-        // that reclaim pays for most of the extra completed sampling.
-        if (rosterDue) await persistLoadRoster(date, scan.scannedAt);
+        // THE ROSTER IS NOT PULLED HERE. It runs once per fire at the top of this function, for
+        // every scanDate — see the rosterDue branch there. This line pulled it a SECOND time for
+        // the same date: v0.77.0 added the top-of-function loop and left this one behind. It is
+        // dead on the path production runs (list discovery never reaches scanAndWrite), so
+        // removing it reclaims nothing today — measured with a stubbed vendor, a manual
+        // list-discovery scan makes 5 vendor calls, 3 of them roster, one per scan date. What it
+        // does remove is a real double-pull on the two paths that DO reach here — an explicit
+        // ?date= run and NUVIZZ_LIST_DISCOVERY=off — and a second chance for an odd empty answer
+        // to land on a cache that was just written correctly.
       }
       // Phase 1 (shadow mode): persist scan_state + log what lean discovery WOULD
       // probe (known-active loads + buffer) vs the wide window we ACTUALLY probed.

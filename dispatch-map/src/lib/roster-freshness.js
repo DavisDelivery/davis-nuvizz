@@ -91,7 +91,11 @@ export function ageLabel(iso, now = new Date()) {
  *   tone   — 'absent' | 'stale' | 'cached' | 'live', for the caller's colours
  */
 export function rosterFreshness(meta, now = new Date()) {
-  const ok = !!(meta && meta.ok === true);
+  // `source: 'none'` is the endpoint saying "I hold nothing for this date, and I did not spend
+  // a call to find out" — an automatic read never reaches NuVizz any more. It answers ok:true
+  // because nothing went wrong, and it must still read as ABSENT here: a date we have never
+  // captured is not a date with no loads, and the two call for opposite actions.
+  const ok = !!(meta && meta.ok === true) && meta.source !== 'none';
   if (!ok) {
     return { known: false, live: false, stale: false, count: 0, age: null, tone: 'absent',
       label: 'Load roster not pulled for this day' };

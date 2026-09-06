@@ -1511,17 +1511,45 @@ export async function writeFleetIndex(
 // Stored as a single JSON field (an array of {loadId,name,status,trips}) to sidestep
 // the value codec's nested array-of-map handling. One doc per tenant+date.
 const LOAD_ROSTER_COLLECTION = 'nuvizz_load_roster';
-export async function writeLoadRoster(tenant: string, dateStr: string, loads: any[], scannedAt: string): Promise<void> {
+export async function writeLoadRoster(
+  tenant: string, dateStr: string, loads: any[], scannedAt: string,
+  meta: { emptyStreak?: number; emptyAt?: string | null } = {},
+): Promise<void> {
   await setDoc(`${LOAD_ROSTER_COLLECTION}/${parentId(tenant, dateStr)}`, {
     tenant, date: dateStr, at: scannedAt, count: (loads || []).length, loadsJson: JSON.stringify(loads || []),
+    emptyStreak: Number(meta.emptyStreak) || 0,
+    emptyAt: meta.emptyAt ?? null,
   } as any);
 }
-export async function readLoadRoster(tenant: string, dateStr: string): Promise<{ at: string | null; loads: any[] } | null> {
+/**
+ * Record that a pull came back EMPTY without replacing the loads we still hold.
+ *
+ * A field-masked update, not a setDoc: setDoc REPLACES here, so bumping a counter the lazy way
+ * would take the very roster this refusal exists to protect with it. Same rule as the
+ * receiving-hours write that shipped broken once — never blind-write a document you do not own
+ * the whole of. See lib/roster-write.mts for what the counter is for.
+ */
+export async function markLoadRosterEmpty(
+  tenant: string, dateStr: string, emptyStreak: number, emptyAt: string,
+): Promise<void> {
+  await updateDocFields(`${LOAD_ROSTER_COLLECTION}/${parentId(tenant, dateStr)}`, {
+    emptyStreak: Number(emptyStreak) || 0, emptyAt,
+  } as any);
+}
+export async function readLoadRoster(
+  tenant: string, dateStr: string,
+): Promise<{ at: string | null; loads: any[]; emptyStreak: number; emptyAt: string | null } | null> {
   const doc = await getDoc(`${LOAD_ROSTER_COLLECTION}/${parentId(tenant, dateStr)}`);
   if (!doc) return null;
   let loads: any[] = [];
   try { loads = JSON.parse(doc.loadsJson || '[]'); } catch { loads = []; }
-  return { at: doc.at || doc._updatedAt || null, loads };
+  const streak = Number(doc.emptyStreak);
+  return {
+    at: doc.at || doc._updatedAt || null,
+    loads,
+    emptyStreak: Number.isFinite(streak) && streak > 0 ? Math.floor(streak) : 0,
+    emptyAt: doc.emptyAt || null,
+  };
 }
 
 // ── Driver roster (on-demand, long-lived; SHARED with the parent app) ─────────
