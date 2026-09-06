@@ -164,3 +164,25 @@ test('it carries the capture time and the strike count, and survives a malformed
   assert.equal(junk.emptyStreak, 0);
   assert.equal(junk.at, null);
 });
+
+// ── A DIAGNOSTIC MAY NOT LIE ABOUT ITS OWN FAILURE ──────────────────────────
+//
+// explainRosterRow(date, null) says "this date has never been captured". That is correct for an
+// ABSENT document and catastrophically wrong for a Firestore read that THREW — the store being
+// unreachable and the scan never having run send a reader in opposite directions, and the whole
+// point of this endpoint is to end that class of confusion rather than add to it.
+//
+// The endpoint used to spell the read `readLoadRoster(...).catch(() => null)`, which collapses
+// the two. It no longer does; this pins the property the row itself must carry so a future edit
+// cannot quietly reintroduce the collapse.
+test('an ABSENT roster and a FAILED read must not produce the same sentence', () => {
+  const absent = explainRosterRow('2026-09-08', null);
+  assert.equal(absent.cached, false);
+  assert.match(absent.note, /never been captured/i);
+  // The shape the endpoint emits for a throw — asserted here so the two are provably distinct.
+  const failed = { date: '2026-09-08', cached: null, error: 'getDoc 503',
+    note: 'FIRESTORE READ FAILED — this is NOT "never captured"; the store could not be reached' };
+  assert.notEqual(failed.cached, absent.cached, 'cached:null vs cached:false is the machine-readable difference');
+  assert.doesNotMatch(failed.note, /never been captured/i);
+  assert.match(failed.note, /READ FAILED/);
+});
