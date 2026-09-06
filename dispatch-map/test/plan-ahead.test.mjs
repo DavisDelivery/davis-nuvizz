@@ -50,3 +50,7 @@ test('a shell row key can never collide with a NuVizz load number', () => {
   assert.equal(shellRowKey('SUW 2'), `${SHELL_ROW_PREFIX}SUW 2`);
   assert.ok(!/^[A-Za-z]{2,}\d{5,}$/.test(shellRowKey('DAVIS000200601')), 'even a number-shaped name gets the prefix');
 });
+
+test('a name longer than NuVizz\'s route-name cap is never offered — Save would refuse it on every tap', () => {
+  assert.deepEqual(planAheadNames({ shells: { names: ['BRETT SPRADLEY TRAILER', 'SUW 2', 'ABCDEFGHIJKLMNOPQRST'] } }), ['SUW 2', 'ABCDEFGHIJKLMNOPQRST']);
+});

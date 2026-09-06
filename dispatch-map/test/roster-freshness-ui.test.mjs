@@ -155,3 +155,17 @@ test('an EMPTY capture from an EARLIER day is still STALE, not "no loads" — no
   assert.equal(r.tone, 'stale');
   assert.match(r.label, /^0 loads · cached .* \(before today\)$/);
 });
+
+test('a PAST day captured empty today (a manual Scan on yesterday) says "holds no loads" — no "yet", and flags past', () => {
+  const r = rosterFreshness({ ok: true, source: 'cache', date: '2026-09-04', at: new Date(NOW.getTime() - 60000).toISOString(), count: 0,
+    pull: { period: '-1d', httpStatus: 200, cols: 21, rows: 0, kept: 0 } }, NOW);
+  assert.equal(r.tone, 'empty');
+  assert.equal(r.past, true);
+  assert.equal(r.label, 'NuVizz holds no loads for this day · NuVizz answered 0 rows 1m ago');
+});
+
+test('a FUTURE day captured empty today is "yet", and is not past', () => {
+  const r = rosterFreshness({ ok: true, source: 'cache', date: '2026-09-08', at: NOW.toISOString(), count: 0 }, NOW);
+  assert.equal(r.past, false);
+  assert.match(r.label, /^NuVizz has no loads for this day yet/);
+});

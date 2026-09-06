@@ -21,7 +21,7 @@
 import { loadRosterPull, shouldServeCachedRoster } from './lib/nuvizz-loads.mts';
 import { isFirestoreEnabled, readLoadRoster, writeLoadRoster, markLoadRosterEmpty, etDayString } from './lib/firestore.mts';
 import { acceptRosterWrite, explainRosterRow } from './lib/roster-write.mts';
-import { shellLookbackDates, standardShellNames, shouldOfferShells, SHELL_SOURCES } from './lib/roster-shells.mts';
+import { shellLookbackDates, standardShellNames, shouldOfferShells, pickShellSources, closedDayReason } from './lib/roster-shells.mts';
 import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
@@ -39,21 +39,40 @@ const TENANT = 'davis';
 // opens the pending route card that Save turns into a real NuVizz route with its stops.
 //
 // Best-effort and silent on failure: the roster answer must never be lost to the shells.
+//
+// THE STANDARD SET IS READ ONCE AND REMEMBERED. Three client surfaces fetch this endpoint on
+// every date change, and the look-back is up to ten roster documents. The set changes at most
+// once a day (when a new generated day is captured), so a function instance keeps it for a few
+// minutes per viewed date rather than re-reading it for every panel.
+const STANDARD_TTL_MS = 5 * 60 * 1000;
+const standardMemo = new Map<string, { at: number; names: string[]; from: string[] }>();
+async function standardSetFor(date: string): Promise<{ names: string[]; from: string[] }> {
+  const hit = standardMemo.get(date);
+  if (hit && Date.now() - hit.at < STANDARD_TTL_MS) return hit;
+  // All candidate days are read together — one round trip, not ten in a row — and the sources
+  // are the most recent that LOOK GENERATED (see pickShellSources): a day Chad half-built by
+  // hand must not shrink the next day's list.
+  const dates = shellLookbackDates(date);
+  const docs = await Promise.all(dates.map((d) => readLoadRoster(TENANT, d).catch(() => null)));
+  const candidates = dates.map((d, i) => ({ date: d, loads: docs[i]?.loads ?? [] }));
+  const sources = pickShellSources(candidates);
+  const out = { at: Date.now(), names: standardShellNames(sources), from: sources.map((s) => s.date) };
+  standardMemo.set(date, out);
+  return out;
+}
 async function planAheadShells(date: string, rosterLoads: any[]): Promise<{ names: string[]; from: string[] } | null> {
   try {
     const today = etDayString();
     if (date < today) return null;
-    const sources: { date: string; loads: any[] }[] = [];
-    for (const d of shellLookbackDates(date)) {
-      if (sources.length >= SHELL_SOURCES) break;
-      const doc = await readLoadRoster(TENANT, d).catch(() => null);
-      if (doc && doc.loads.length > 0) sources.push({ date: d, loads: doc.loads });
-    }
-    const names = standardShellNames(sources);
+    // A closed day is settled before a single document is read.
+    if (closedDayReason(date)) return null;
+    const { names, from } = await standardSetFor(date);
     const verdict = shouldOfferShells(date, today, rosterLoads, names);
-    return verdict.offer ? { names, from: sources.map((s) => s.date) } : null;
+    return verdict.offer ? { names, from } : null;
   } catch { return null; }
 }
+/** Tests only: forget the remembered standard sets. */
+export function _resetShellMemo(): void { standardMemo.clear(); }
 
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
@@ -153,7 +172,10 @@ export default async (req: Request): Promise<Response> => {
         return J({
           ok: true, date, source: 'none', at: cached?.at ?? null, count: 0, loads: [],
           note: 'no cached roster for this date — automatic reads are set never to spend a NuVizz call (NUVIZZ_ROSTER_AUTO_LIVE=0); use ?live=1',
-          shells: await planAheadShells(date, []),
+          // NO SHELLS ON AN UNVERIFIED DAY. This branch holds nothing for the date — it has not
+          // asked NuVizz — so it may not call a single route "not in NuVizz yet". A Scan now
+          // captures the day, and the capture decides.
+          shells: null,
         });
       }
     }
