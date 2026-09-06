@@ -17,7 +17,8 @@
 //
 //   GET ?date=YYYY-MM-DD [&live=1]  → { ok, date, source, at, count, loads:[{loadId,name,status,trips}] }
 import { loadRosterForDate } from './lib/nuvizz-loads.mts';
-import { isFirestoreEnabled, readLoadRoster, writeLoadRoster } from './lib/firestore.mts';
+import { isFirestoreEnabled, readLoadRoster, writeLoadRoster, markLoadRosterEmpty } from './lib/firestore.mts';
+import { acceptRosterWrite, shouldSpendLiveRoster } from './lib/roster-write.mts';
 import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
@@ -38,16 +39,48 @@ export default async (req: Request): Promise<Response> => {
   }
   try {
     // 1) Cached roster (scanner-persisted) — instant, no NuVizz call. Skipped on ?live=1.
+    let cached = null as Awaited<ReturnType<typeof readLoadRoster>> | null;
     if (!live && isFirestoreEnabled()) {
-      const cached = await readLoadRoster(TENANT, date).catch(() => null);
+      cached = await readLoadRoster(TENANT, date).catch(() => null);
       if (cached && cached.loads.length) {
         return new Response(JSON.stringify({ ok: true, date, source: 'cache', at: cached.at, count: cached.loads.length, loads: cached.loads }), { status: 200, headers: cors });
+      }
+      // AN EMPTY CACHE USED TO MEAN "PAY AGAIN", EVERY TIME. The fall-through below is the
+      // never-captured path and is right for that — but the client has THREE automatic fetch
+      // sites (the Map routes panel, the bottom grid's Loads view, the Routing rail), so once a
+      // date's roster was genuinely empty every page load and every date change spent three
+      // NuVizz calls to be told the same nothing, and wrote the same nothing back. Chad,
+      // counting: "each refresh is causing like 14 calls when it should only be 3 or 4."
+      // A recorded empty is now served for free inside its cooldown, and retried after it, so a
+      // day that fills up later still lands without anybody pressing anything.
+      const spend = shouldSpendLiveRoster(cached, Date.now());
+      if (!spend.spend) {
+        return new Response(JSON.stringify({
+          ok: true, date, source: 'cache-empty', at: cached?.at ?? null, count: 0, loads: [], note: spend.reason,
+        }), { status: 200, headers: cors });
       }
     }
     // 2) Live fetch — one deliberate call — then cache it so the next read is free.
     const loads = await loadRosterForDate(date);
     const at = new Date().toISOString();
-    if (isFirestoreEnabled()) { try { await writeLoadRoster(TENANT, date, loads, at); } catch { /* cache best-effort */ } }
+    if (isFirestoreEnabled()) {
+      try {
+        // Same guard the scanner uses: an empty answer may not erase a roster we still hold.
+        const prior = cached ?? await readLoadRoster(TENANT, date).catch(() => null);
+        const verdict = acceptRosterWrite(prior, loads);
+        if (verdict.write) {
+          await writeLoadRoster(TENANT, date, loads, at, { emptyStreak: verdict.emptyStreak, emptyAt: loads.length ? null : at });
+        } else {
+          await markLoadRosterEmpty(TENANT, date, verdict.emptyStreak, at);
+          // Answer with what we HOLD, not with the nothing we were just handed — the whole
+          // point of refusing the write is that the held list is the better answer.
+          return new Response(JSON.stringify({
+            ok: true, date, source: 'cache', at: prior?.at ?? null,
+            count: prior?.loads.length ?? 0, loads: prior?.loads ?? [], note: verdict.reason,
+          }), { status: 200, headers: cors });
+        }
+      } catch { /* cache best-effort */ }
+    }
     return new Response(JSON.stringify({ ok: true, date, source: 'live', at, count: loads.length, loads }), { status: 200, headers: cors });
   } catch (e: any) {
     return new Response(JSON.stringify({ ok: false, reason: e?.message || 'roster failed' }), { status: 502, headers: cors });
