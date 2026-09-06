@@ -73,6 +73,16 @@ const EMPTIES = ['1 SATL', '1 WATL', 'ALPHA'].map((name, i) => ({
 const OFF_BOARD = { loadId: 'ld-t9', name: 'TRAILER 9', loadNbr: 'DAVIS000200609', status: 'Planned', trips: 12 };
 // A capture stamp the page can render an age from. Fixed, so the assertions never race a clock.
 const ROSTER_AT = new Date(Date.now() - 6 * 3600 * 1000).toISOString();
+// v0.93.13 — A DAY NUVIZZ HAS NOT CREATED YET. The one call Chad approved on Sunday Sep 6 said
+// NuVizz held ZERO loads for Tue Sep 8 (21 column defs, 0 rows). The endpoint now sends the
+// standard route names the last captured days agree on, and both Loads surfaces offer them as
+// "Not in NuVizz yet" — a tap opens the pending route card that Save creates in NuVizz. CHAD
+// and ESTES are deliberately in this list: they are already built on the fixture board, and a
+// route the board holds must never be offered as a shell.
+const SHELLS = { names: ['1 SATL', 'ATL', 'CHAD', 'ESTES', 'SUW 2', 'TRAILER 3'], from: ['2026-09-04', '2026-09-03', '2026-09-02'] };
+const ZERO_PULL = { period: '+2d', httpStatus: 200, cols: 21, rows: 0, kept: 0 };
+// The New-route pre-flight refuses a card without a ship-from address; the fixture supplies one.
+const SHIP_FROM = { name: 'Davis Delivery', addr1: '1 Fixture Way', city: 'BUFORD', state: 'GA', zip: '30518' };
 
 try { if (!(await stat(DIST)).isDirectory()) throw new Error('nd'); }
 catch { console.error(`no build at ${DIST} — run \`npm run build\` first`); process.exit(1); }
@@ -89,7 +99,7 @@ await new Promise((r) => server.listen(PORT, '127.0.0.1', r));
 const browser = await chromium.launch({ ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}), args: ['--no-sandbox'] });
 
 /** Open Routing with the rail on Routes/Loads, Loads selected, and this roster in the vendor. */
-async function openLoadsTab({ mobile, roster, liveRoster, rosterFail }) {
+async function openLoadsTab({ mobile, roster, liveRoster, rosterFail, shells = null, pull = null, shipFrom = null }) {
   const ctx = await browser.newContext(mobile
     ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 }
     : { viewport: { width: 1600, height: 1000 } });
@@ -100,9 +110,12 @@ async function openLoadsTab({ mobile, roster, liveRoster, rosterFail }) {
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   // The rail mode and sub-tab are persisted choices, and Chad's are Routes/Loads + Loads.
-  await page.addInitScript(() => {
-    try { localStorage.setItem('routing.rightPanel', 'routesLoads'); localStorage.setItem('routing.routesLoadsTab', 'loads'); } catch { /* ignore */ }
-  });
+  await page.addInitScript((origin) => {
+    try {
+      localStorage.setItem('routing.rightPanel', 'routesLoads'); localStorage.setItem('routing.routesLoadsTab', 'loads');
+      if (origin) localStorage.setItem('dd_neworder_origin', JSON.stringify(origin));
+    } catch { /* ignore */ }
+  }, shipFrom);
   const asked = [];
   await page.route('**/.netlify/functions/**', (route) => {
     const u = route.request().url();
@@ -116,7 +129,8 @@ async function openLoadsTab({ mobile, roster, liveRoster, rosterFail }) {
       const live = /[?&]live=1/.test(u);
       asked.push(live ? 'live' : 'cache');
       const rows = live && liveRoster ? liveRoster : roster;
-      return json({ ok: true, source: live ? 'live' : 'cache', at: ROSTER_AT, count: rows.length, loads: rows });
+      return json({ ok: true, source: live ? 'live' : 'cache', at: ROSTER_AT, count: rows.length, loads: rows,
+        ...(pull ? { pull } : {}), ...(shells ? { shells } : {}) });
     }
     if (u.includes('nuvizz-pull-today-stops')) return json({ ok: true, stops: STOPS, count: STOPS.length, source: 'fixture' });
     if (u.includes('route-departures')) return json({ ok: true, published: false, usedByBoard: false, table: null });
@@ -158,12 +172,12 @@ async function panelText(page) {
 const t0 = Date.now();
 const secs = () => `${((Date.now() - t0) / 1000).toFixed(0)}s`;
 
-async function run(label, { mobile, roster, liveRoster, rosterFail }, check) {
+async function run(label, { mobile, roster, liveRoster, rosterFail, shells, pull, shipFrom }, check) {
   // The elapsed stamp is not decoration: the run that would not finish left a log nobody could
   // read, so "which of the fourteen states was it on" had no answer at all. Now the last line
   // printed names it, and the next stall diagnoses itself instead of being guessed at.
   console.log(`\n${label}  [${secs()}]`);
-  const { page, ctx, errors, asked } = await openLoadsTab({ mobile, roster, liveRoster, rosterFail });
+  const { page, ctx, errors, asked } = await openLoadsTab({ mobile, roster, liveRoster, rosterFail, shells, pull, shipFrom });
   // ON A PHONE THE RAIL IS TWO TAPS, NOT ONE, and they are not the taps the desktop takes —
   // which is the whole reason this guard walks both views. The bottom sheet's middle tab is
   // labelled with the MODE ("Routes (1)"), not with the sub-tab; the Routes/Loads toggle only
@@ -229,6 +243,52 @@ for (const mobile of [false, true]) {
     if (/2 loads · cached/i.test(text)) ok('…and says how old the roster behind that claim is');
     else bad(`no roster age on a cached roster (${view}): ${JSON.stringify((text.split('\n').find((l) => /cached|roster/i.test(l)) || '').slice(0, 120))}`);
   });
+
+  // ── CHAD'S SUNDAY (v0.93.13): A DAY NUVIZZ HAS NOT CREATED YET ─────────────
+  // The capture is from today and EMPTY — NuVizz answered zero rows — and the endpoint sent the
+  // standard shells. The tab must say what zero means, list the shells it can still offer (not
+  // the routes the board already holds), and turn a tap into a pending route card without
+  // spending a call. On the phone the card must also raise the sheet.
+  await run(`A day NuVizz has not created yet — ${view}`,
+    { mobile, roster: [], shells: SHELLS, pull: ZERO_PULL, shipFrom: SHIP_FROM }, async (text, page, { asked }) => {
+      if (/NuVizz has no loads for this day yet/i.test(text)) ok('the line says NuVizz has no loads for the day');
+      else bad(`an empty capture does not say NuVizz has nothing (${view}): ${JSON.stringify(text.slice(0, 220))}`);
+      if (/NuVizz answered 0 rows/i.test(text)) ok('…and says what the capture saw');
+      else bad(`the line does not carry what the pull saw (${view})`);
+      if (/Every load on this day already carries orders/i.test(text)) bad(`an uncreated day still claims every load is built (${view})`);
+      else ok('…and no longer claims every load is built');
+      if (/Not in NuVizz yet/i.test(text)) ok('the shells sit under a heading that says what they are');
+      else bad(`no "Not in NuVizz yet" heading on the tab (${view}): ${JSON.stringify(text.slice(0, 220))}`);
+      const offered = await page.evaluate(() => Array.from(document.querySelectorAll('[data-day-loads-panel] [data-plan-shell]')).map((b) => b.getAttribute('data-plan-shell')));
+      const expect = SHELLS.names.filter((n) => n !== 'CHAD' && n !== 'ESTES');
+      if (expect.every((n) => offered.includes(n))) ok(`all ${expect.length} shells the board lacks are offered`);
+      else bad(`shells missing from the tab (${view}): ${JSON.stringify(expect.filter((n) => !offered.includes(n)))} offered=${JSON.stringify(offered)}`);
+      if (offered.includes('CHAD') || offered.includes('ESTES')) bad(`a route already built on the board is offered as a shell (${view}): ${JSON.stringify(offered)}`);
+      else ok('…and a route already on the board is not');
+      // TAP ONE. A pending card opens with the name filled in; the shell leaves the offer list;
+      // nothing goes to NuVizz.
+      await page.locator('[data-day-loads-panel] [data-plan-shell="SUW 2"]').first().click().catch(() => {});
+      await page.waitForTimeout(1200);
+      // A PENDING card has no "Cancel route" (closing it IS its cancel) — its marker is the
+      // "not sent" badge in the card header, beside the route name.
+      const card = await page.evaluate(() => {
+        const heads = Array.from(document.querySelectorAll('button[aria-expanded]')).filter((b) => /not sent/i.test(b.innerText || ''));
+        const sheetUp = !!document.querySelector('button[aria-label="Collapse"]');
+        return { cards: heads.length, named: heads.some((h) => /SUW 2/.test(h.innerText || '')), sheetUp };
+      });
+      if (card.cards === 1 && card.named) ok('tapping SUW 2 opens ONE pending route card carrying that name');
+      else bad(`tapping a shell did not open its card (${view}): ${JSON.stringify(card)}`);
+      if (mobile) {
+        if (card.sheetUp) ok('…and on the phone the card raises the sheet');
+        else bad('the card opened into a collapsed sheet (phone)');
+      }
+      const after = await panelText(page).catch(() => null);
+      const still = await page.evaluate(() => !!document.querySelector('[data-day-loads-panel] [data-plan-shell="SUW 2"]'));
+      if (!still) ok('…and SUW 2 is no longer offered while its card is open');
+      else bad(`SUW 2 is still offered as a shell while its card is open (${view}): ${JSON.stringify((after || '').slice(0, 160))}`);
+      if (asked.includes('live')) bad(`the uncreated day spent a live roster call (${view}); asks were ${JSON.stringify(asked)}`);
+      else ok('…and none of it spent a vendor call');
+    });
 
   // ── CHAD'S SATURDAY, DRIVEN END TO END ────────────────────────────────────
   // The cache holds this morning's capture — three loads, all of them carrying stops, taken
@@ -395,6 +455,60 @@ for (const mobile of [false, true]) {
     else bad(`card 2 from the grid: cards=${await cardsUp()}, ESTES visible in the sheet=${seen} (phone)`);
   }
   if (errors.length) bad(`grid ${view}: page errors — ${errors.join(' | ')}`);
+  await ctx.close();
+}
+
+// ── AND THE GRID ON AN UNCREATED DAY (v0.93.13) ───────────────────────────────────────────
+// Same fixture as the rail's Sunday: an empty capture from today plus the standard shells. The
+// grid lists them as rows with a "Not in NuVizz yet" chip, a tap opens the pending card, and a
+// route the board already holds is not offered. Both views, because the grid is one component
+// with two placements and this repo has shipped a control into one and not the other twice.
+for (const mobile of [false, true]) {
+  const view = mobile ? 'phone 390px' : 'desktop 1600px';
+  console.log(`\nThe bottom grid on a day NuVizz has not created — ${view}  [${secs()}]`);
+  const { page, ctx, errors, asked } = await openLoadsTab({ mobile, roster: [], shells: SHELLS, pull: ZERO_PULL, shipFrom: SHIP_FROM });
+  const opened = await page.evaluate(() => {
+    const b = Array.from(document.querySelectorAll('button')).find((x) => /^Loads\s+\d+$/.test((x.innerText || '').replace(/\n/g, ' ').trim()));
+    if (!b) return false;
+    b.click();
+    return true;
+  });
+  if (!opened) bad(`the bottom grid's Loads view is not reachable (${view})`);
+  else {
+    await page.waitForTimeout(1400);
+    const text = await gridLoadsText(page);
+    if (text == null) bad(`the bottom grid's Loads table never rendered (${view})`);
+    else {
+      if (/NuVizz has no loads for this day yet/i.test(text)) ok('the grid\'s roster line says NuVizz has no loads for the day');
+      else bad(`the grid's roster line does not say NuVizz has nothing (${view}): ${JSON.stringify(text.slice(0, 200))}`);
+      const rows = await page.evaluate(() => Array.from(document.querySelectorAll('tr[data-plan-shell]')).map((tr) => ({ name: tr.getAttribute('data-plan-shell'), text: (tr.innerText || '').replace(/\s+/g, ' ').trim() })));
+      const expect = SHELLS.names.filter((n) => n !== 'CHAD' && n !== 'ESTES');
+      const names = rows.map((r) => r.name);
+      if (expect.every((n) => names.includes(n))) ok(`all ${expect.length} shells the board lacks are rows on the grid`);
+      else bad(`shell rows missing from the grid (${view}): ${JSON.stringify(expect.filter((n) => !names.includes(n)))}`);
+      if (names.includes('CHAD') || names.includes('ESTES')) bad(`the grid offers a route the board already holds (${view}): ${JSON.stringify(names)}`);
+      else ok('…and not the routes already built on the board');
+      if (rows.length && rows.every((r) => /Not in NuVizz yet/.test(r.text))) ok('…each labelled "Not in NuVizz yet"');
+      else bad(`a shell row on the grid is not labelled (${view}): ${JSON.stringify(rows.slice(0, 3))}`);
+      if (rows.length && !rows.some((r) => /No orders yet|Not on this board|\d+%/.test(r.text))) ok('…and none of them is called an empty load, an off-board load, or given a % done');
+      else bad(`a shell row borrows a real load's label (${view}): ${JSON.stringify(rows.slice(0, 3))}`);
+      await page.locator('tr[data-plan-shell="SUW 2"]').first().click().catch(() => {});
+      await page.waitForTimeout(1200);
+      const card = await page.evaluate(() => {
+        const heads = Array.from(document.querySelectorAll('button[aria-expanded]')).filter((b) => /not sent/i.test(b.innerText || ''));
+        return { cards: heads.length, named: heads.some((h) => /SUW 2/.test(h.innerText || '')), sheetUp: !!document.querySelector('button[aria-label="Collapse"]') };
+      });
+      if (card.cards === 1 && card.named) ok('tapping the SUW 2 row opens ONE pending route card carrying that name');
+      else bad(`tapping a shell row did not open its card (${view}): ${JSON.stringify(card)}`);
+      if (mobile) {
+        if (card.sheetUp) ok('…and on the phone the card raises the sheet');
+        else bad('the card from the grid opened into a collapsed sheet (phone)');
+      }
+      if (asked.includes('live')) bad(`the grid spent a live roster call on an uncreated day (${view})`);
+      else ok('…and none of it spent a vendor call');
+    }
+  }
+  if (errors.length) bad(`grid uncreated day ${view}: page errors — ${errors.join(' | ')}`);
   await ctx.close();
 }
 

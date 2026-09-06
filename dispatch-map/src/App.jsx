@@ -82,6 +82,7 @@ import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './l
 import { seedStagedCard } from './lib/workbench-stage.js';
 import { dropSide, dropSideClass } from './lib/drop-side.js';
 import { rosterFreshness, ageLabel } from './lib/roster-freshness.js';
+import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
 // w-40. Named once so the measurement and the Tailwind class can never disagree about how
 // wide the panel being placed actually is.
 const STATUS_MENU_W = 160;
@@ -114,7 +115,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.93.12';
+const APP_VERSION = '0.93.13';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -185,6 +186,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.93.13', 'THE LOADS PANELS NOW LIST THE STANDARD ROUTES FOR A DAY NUVIZZ HAS NOT CREATED YET, AND A TAP OPENS THE ROUTE CARD THAT SAVE TURNS INTO A REAL NUVIZZ LOAD. Chad, Sunday, the board on Tue Sep 8: “You can spend the call I just want my problem fixed. I want to build loads on the weekend for next week and if I put the map on the date I want to build on and do a manual scan the loads should show up even if on the weekend.” THE ONE CALL HE APPROVED, 13:51 ET, nuvizz-load-columns?date=2026-09-08&confirm=1: HTTP 200, 21 column definitions, ZERO rows for period +2d. The request is byte-identical to July’s and the same query kept 106 of 106 rows on Sep 2, so the scan is not the problem — NuVizz holds no loads for Tuesday. Every pull since Friday noon said the same (Sep 8 asked six times, empty each time; the last non-empty capture was Friday, for Friday), and a scan cannot show a load the vendor has not created. WHAT THE APP CAN DO IS WHAT CHAD DESIGNED ON AUG 3 FOR EXACTLY THIS HOLE: ＋ New route opens a pending Compare card and Save creates the route in NuVizz with its whole stop list. What that flow lacked was the LIST — he should not have to type SUW 2 from memory fifty times on a Sunday. So, for a day on or after today whose roster is empty or missing more than half the usual names, the roster endpoint also returns the STANDARD SHELLS: the route names the last three captured delivery days agree on (a name on two of three is a recurring route; a one-day name is a driver on his own trailer and is left out), read from the roster cache — Firestore only, never a vendor call, proven by a test whose vendor fetch throws. Both Loads surfaces list them under “Not in NuVizz yet — tap to open a route card”, the rail and the bottom grid, desktop and phone; the screen subtracts what the roster, the board and the open cards already hold, so after he saves SUW 2 the other ninety-nine are still offered and SUW 2 is not offered twice. A tap runs the New-route pre-flight (a name already on the board, a missing ship-from address) and opens the card with the name filled in; nothing is sent until Save, exactly as the modal says. On the phone the card raises the sheet, the same way a card from the grid does since v0.93.12. AND THE LINE SAYS WHAT ZERO MEANS: “0 loads · cached just now” — what Chad read for two days — now reads “NuVizz has no loads for this day yet · NuVizz answered 0 rows 8m ago”, from the pull record every capture carries since v0.93.12; the rail no longer tells him “every load already carries orders” on a day that has none. SAID OUT LOUD, BECAUSE IT IS A DISPATCH FACT THE CODE CANNOT SEE: in July tomorrow’s shells existed the morning before (v0.32.16, v0.33.8 captured 102 of them on Jul 1 for Jul 2). This weekend Monday’s and Tuesday’s did not exist by Sunday afternoon. Whoever or whatever generates them in NuVizz — a static-route job, a portal action, a person at 5am — did not run for the holiday week, and when it does run on Tuesday a route he built Sunday will sit beside the generated empty of the same name; the board tells them apart by number (v0.54.25) and the empty twin gets cancelled. Whether NuVizz can be set to generate further ahead is the question that makes this moot, and it is his to ask the vendor. 46 new tests; the loads-tab guard drives the uncreated day on both surfaces and both views and taps a shell into a card.'],
   ['0.93.12', 'THE PHONE OPENS ON THE MAP WITH ONE DATE PICKER; THE NARRATION LINE IS GONE FOR REAL; EVERY ROSTER PULL RECORDS WHAT IT SAW; AND A FUTURE DAY’S ROSTER IS CALLED ONCE A DAY. Chad, Sunday, phone on Tue Sep 8: “Still not fixed … 2 ways to set dates on mobile. Which wastes very limited space. Also there is a ton of wasted white spaces on mobile.” Then: “6 weeks ago there was no issue with the loads screen and roster scans.” Then: “The roster for future dates only needs to be called once a day as they will not change.” FOUR THINGS, EACH CHECKED RATHER THAN ARGUED. (1) THE ROSTER, AGAINST JULY. The clone was shallow — nothing before Aug 25 — so it was deepened and the roster path diffed against v0.52.4 (Jul 26). The request to NuVizz is byte-identical: periodForDate, the 35833 body, normalizeLoads, unchanged in six weeks. What changed: v0.69.0/v0.77.0 (Aug 21/25) moved the roster from “re-ask every future day on every scan” to two hourly windows, an engineering reclaim not a Chad schedule, left alone at his instruction; and v0.93.5 (mine) let the third horizon day re-pull HOURLY behind a switch. Chad’s rule settles that one: once a day, every future date, no exceptions but the manual Scan, which always pulls. The switch and the re-pull are gone; today still re-pulls every roster fire because its loads are being built and dispatched all day; an empty capture still does not count as captured, because zero rows is not a roster that will not change, it is a day nobody has built yet. A bound that re-asked an empty capture hourly on the endpoint was committed and reverted the same afternoon for the same reason. AND EVERY PULL NOW RECORDS WHAT IT SAW: the period sent, HTTP status, column defs, rows returned, rows kept — one log line per pull, stored beside the roster, read back by ?explain=1 in words (“the vendor answered ZERO rows for period +2d” versus “answered 106 rows and the parser KEPT NONE”). “0 loads · cached just now” had three pixel-identical causes and nothing recorded which; from this deploy that question costs nothing. What NuVizz actually holds for Sep 8 is still one call away and was asked for, not guessed. (2) THE “N WITH STOPS, N EMPTY” LINE IS REMOVED. Asked for twice; my removal commit landed thirty minutes after #820 squash-merged, so it has been live through v0.93.11. Gone, with its guard assertions. (3) ONE DATE PICKER ON THE PHONE, IN ONE HOME. Measured in a real browser at 390 and 360: two identical date+Today+gear trios 161px apart (the grid’s headerRight and the Setup header), and the grid toolbar wrapping to FOUR rows — 216px of chrome for six controls — under a map squeezed to 68px. Both copies go; the one home is a board row that is the first child of the bottom sheet, above the tab strip and outside every body the workbench or stop panel replaces, so it survives all four states in which one of the old copies vanished: Setup open, a Compare card open, the sheet collapsed, the grid switched off. The phone gear lists only what a phone can act on and carries the grid toggle so a grid switched off can be switched back on. (4) THE PHONE OPENS ON THE MAP. Sheet collapsed by default (every flow that needs it opens it itself), and ONE bottom surface at a time: opening the grid drops the sheet, opening the sheet folds the grid, and a Compare card raises the sheet whenever the card list GROWS — the first version fired only on 0→1, so a second card tapped from the grid rendered into a collapsed sheet and looked like nothing happened; the review predicted it and the guard now pins it. The phone grid is one bar when collapsed and two rows when open. SAID OUT LOUD BECAUSE IT IS AN EXCEPTION TO A CHAD RULE: v0.47.0 says the collapsed bar must be identical to the open one; on the phone the collapsed bar now hides Profiles, search and Status — except while a search term or status filter is LIVE, because those reach the map and a filter with no visible control is the v0.45.6 trap. Every hidden control auto-opens the grid on use. Cost: comparing two loads from the grid is four taps where it was two. Measured at 390x844 in Chad’s state: 253px given back to the map; at rest 409px. Desktop #root.innerHTML byte-identical to the untouched baseline at 1600x1000, grid open and closed — untouched by measurement, not by reading. THREE INDEPENDENT PROPOSALS, EACH ADVERSARIALLY REVIEWED twice (guards; a dispatcher planning 700 stops from a cab), synthesised from the winner with the others’ best grafted in, and the whole edit set applied to a scratch build and run against every guard before a line of it touched this branch. Six new routing probes in the phone guard and a two-card assertion in the loads-tab guard.'],
   ['0.93.11', 'THE ROSTER REFRESH BUTTON IS GONE — BOTH OF THEM. Chad: “I don’t need a roster refresh button remove it.” He is right, and the reason is that the control he already presses does the job now: v0.93.9 made a manual Scan now pull the load roster for the board date on screen AND the next business day, so a separate per-panel refresh bought nothing. WHAT IT COST TO KEEP. There were TWO of them — the Routing rail’s Loads tab and the bottom grid’s Loads view — each with its own copy of the roster state, both keyed on the same selected date and neither aware of the other. So one dispatcher intent (“refresh the loads”) was two vendor calls if he pressed both, and pressing only one left the OTHER panel still showing the older answer for the same day. Two surfaces quietly disagreeing about the same fact is the defect underneath the button, and deleting the button is what fixes it rather than another sync. WHAT GOES WITH IT: the ?live=1 fetch on both surfaces, the two busy flags, the rail’s refreshDayRoster callback and its props, and the grid’s pullRoster (which had exactly one caller — the button). Both panels are now purely cache-first: they render what the scanner captured and spend nothing on open, which is also the last client path that could reach NuVizz without a scan. WHAT STAYS, DELIBERATELY: the freshness line on both. “3 loads · cached 6h ago” is a completely different fact from “3 loads”, and it is the only thing on the screen that can tell “this day has no empty loads” from “nobody has asked today” — the absent-is-not-zero rule this repo has now been bitten by in four places. The grid’s could-not-read message no longer says “Try Refresh roster”; it points at Scan now, which is the control that actually moves it. The endpoint keeps ?live=1 — it is still the documented override and the scanner’s own guard path uses it — it simply has no caller in the client again. THE BROWSER GUARD WAS REWRITTEN, NOT RELAXED, because the rule it pinned is the rule that changed. It used to press Refresh and assert a ?live=1 went out; it now asserts the opposite on BOTH surfaces and BOTH views — no Refresh control inside either panel, and no vendor call spent on open or afterwards. The downstream coverage that mattered is kept and re-sourced: every empty trailer renders, TRAILER 9 is still labelled “Not on this board · 12 trips” rather than “No orders yet”, and the composition line is still counted off the rows — all driven now from the CAPTURE instead of from a press. One assertion in the rewrite failed honestly on the first run and was fixed rather than loosened: it looked for the grid’s “Load roster:” prefix inside the RAIL, and the two surfaces word the same fact differently — asserting one panel’s copy against the other’s is how a green run stops meaning anything. 3,360 green, loads-tab guard green on desktop and phone.'],
   ['0.93.10', 'THE BACKSTOP AGAINST A CALL BURST WAS ITSELF BURSTING, BY EXACTLY THREE TIMES. Chad: “check and see how many calls are being made when the refresh button is hit because looked like too many today.” The button turned out to be five calls and the day’s spike was the weekend schedule (fixed in v0.93.9) — but auditing the press turned up something worse sitting under both. ENRICH_MAX is the one guard on the only unbounded amplifier the scanner has: one /stop/info per genuinely-new PRO, and a registry that is cold or keyed wrong makes EVERY stop look new. Its env var is named NUVIZZ_ENRICH_MAX_PER_SCAN and its comment promised that “even a cold/empty registry can never burst more than ENRICH_MAX calls in one scan”. It was applied INSIDE `for (const date of targets)`, so it was really a per-DATE cap and the true bound was ENRICH_MAX × the horizon. Measured against the real scanner with a stubbed vendor, three dates each carrying more new PROs than the cap: 400/date → 750 /stop/info, 250/date → 750, 100/date → 300. After: 250, 250, 250. SEVEN HUNDRED AND FIFTY IS 37.5% OF THE ENFORCED 2,000/DAY CEILING IN ONE FIRE — the precise shape of burst this backstop was added to prevent, arriving through the backstop itself. And it is NOT a property of the button: `isManual` appears nowhere between the date loop and the enrichment block, so a SCHEDULED tick on a cold registry pays exactly the same. Two of those in a day trip the circuit breaker and leave the board half-written. The budget now lives outside the date loop and is decremented as the dates consume it. The first date may still take the whole allowance; what it can no longer do is hand a fresh one to the next date. A board needing more than the cap backfills over the following ticks — which is what the original comment claimed already happened. ONE BEHAVIOUR CHANGE WORTH KNOWING: a genuinely busy morning that used to enrich 300 across three dates in one pass now does 250 and defers 50 to the next tick, ~15 minutes later. NUVIZZ_ENRICH_MAX_PER_SCAN finally means what it says and can be raised if that ever bites. CHECKED BOTH WAYS, which is the only thing that makes green mean anything: against the previous commit three of the four new tests fail naming the count (750 where 250 is required), and the fourth — a light board that must still enrich every new PRO in one pass — passes on both, so the fix is bounded to the case it was for. A shape test could not have caught this: the cap was present, correct-looking, and in the wrong scope. 4 new tests, 3,360 green.'],
@@ -13110,7 +13112,7 @@ const LOAD_BUCKET_STYLE = {
 // the actual culprit was the map panel's Unplanned only (Chad: "says i don't have any
 // planned orders today however i have like 600 of them"). Defaults keep Routing, which
 // passes the whole board, behaving exactly as before.
-function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange, onSearchMatchChange = null, onStatusFilterChange = null, planVersion = 0, highlightIds = null, rootRef = null, boardTotal = null, upstreamFilterLabels = [] }) {
+function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange, onSearchMatchChange = null, onStatusFilterChange = null, planVersion = 0, highlightIds = null, rootRef = null, boardTotal = null, upstreamFilterLabels = [], planShells = null, onPlanShell = null }) {
   // Loads view groups the FULL board's loads (loadStops) so stop-level filters —
   // notably "Unplanned only" — don't empty it. Falls back to the visible stops.
   const loadSrc = loadStops || stops;
@@ -13411,7 +13413,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       .then((j) => {
         if (cancelled) return;
         setRoster(j && j.ok ? (j.loads || []) : []);
-        setRosterMeta(j && j.ok ? { ok: true, source: j.source, at: j.at, count: j.count } : { ok: false });
+        setRosterMeta(j && j.ok ? { ok: true, source: j.source, at: j.at, count: j.count, pull: j.pull || null } : { ok: false });
       })
       .catch(() => { if (!cancelled) { setRoster([]); setRosterMeta({ ok: false }); } });
     return () => { cancelled = true; };
@@ -13480,10 +13482,31 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
         arr.push({ loadNbr: r.loadNbr || r.loadId, routeName: nm, driverName: '', count: trips, buckets: {}, pallets: 0, loose: 0, weight: 0, empty: trips === 0, offBoard: trips > 0, rosterStatus: r.status, realId: r.loadNbr || r.loadId || null });
       }
     }
+    // THE STANDARD SHELLS FOR A DAY NUVIZZ HAS NOT CREATED YET (v0.93.13). Chad, Sunday, the
+    // board on Tue Sep 8: "if I put the map on the date I want to build on and do a manual
+    // scan the loads should show up even if on the weekend." The one call he approved showed
+    // NuVizz held ZERO loads for that day, so no scan could list them — but the routes he
+    // builds every week are known from the last captured days, and the Routing screen can
+    // already create a route in NuVizz from a pending card (＋ New route, Aug 3). These rows
+    // are those names: tap one and the same pending card opens with the name filled in. Only
+    // offered where a tap can act (onPlanShell) — on the dispatch Map there is no Compare, and a
+    // row nobody can act on is decoration.
+    if (onPlanShell && Array.isArray(planShells) && planShells.length) {
+      const haveNames = new Set(arr.map((g) => String(g.routeName || '').trim().toLowerCase()).filter(Boolean));
+      for (const nm of planShells) {
+        const name = String(nm || '').trim();
+        if (!name || haveNames.has(name.toLowerCase())) continue;
+        haveNames.add(name.toLowerCase());
+        arr.push({ loadNbr: shellRowKey(name), routeName: name, driverName: '', count: 0, buckets: {}, pallets: 0, loose: 0, weight: 0, shell: true, realId: null });
+      }
+    }
     if (needle) arr = arr.filter((g) => [g.loadNbr, g.routeName, g.driverName].filter(Boolean).join(' ').toLowerCase().includes(needle));
-    arr.sort((a, b) => String(a.driverName || '~').localeCompare(String(b.driverName || '~')) || String(a.routeName || a.loadNbr).localeCompare(String(b.routeName || b.loadNbr)));
+    // Driver A→Z, then loads with no driver, then the shells NuVizz does not hold yet — real
+    // rows always ahead of names that are only an offer.
+    const driverKey = (g) => g.driverName || (g.shell ? '~~' : '~');
+    arr.sort((a, b) => String(driverKey(a)).localeCompare(String(driverKey(b))) || String(a.routeName || a.loadNbr).localeCompare(String(b.routeName || b.loadNbr)));
     return arr;
-  }, [loadSrc, q, roster, rosterByName]);
+  }, [loadSrc, q, roster, rosterByName, planShells, onPlanShell]);
   // TWO PLACEMENTS AND TWO SHAPES, because a phone is not a narrow desktop. On a laptop this
   // is one row in a tall pane and everything fits beside the Refresh button. At 390px it is
   // three pieces of text and a control competing for the width, and truncating the one that
@@ -13493,7 +13516,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // bottom sheet's tab strip). Desktop keeps one non-wrapping row.
   const rosterLine = (
     <div className="flex items-center gap-2 px-3 py-1 border-b bg-slate-50 text-[11px] shrink-0">
-      <span className={rosterState.tone === 'absent' || rosterState.tone === 'stale' ? 'text-amber-700' : 'text-slate-500'}>
+      <span className={rosterState.tone === 'absent' || rosterState.tone === 'stale' || rosterState.tone === 'empty' ? 'text-amber-700' : 'text-slate-500'}>
         Load roster: {rosterState.label}
       </span>
     </div>
@@ -13505,12 +13528,14 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     // An OFF-BOARD load has no stops HERE to be done or not done, so '—' rather than a 0% that
     // reads as "nothing delivered yet" on a load that may be half run. Same reason as empty.
     { k: 'pct', label: '% Done', w: 70, align: 'right',
-      get: (g) => (g.empty || g.offBoard) ? '—' : (() => { const p = g.count ? Math.round(100 * (g.buckets.completed || 0) / g.count) : 0; return <span className="font-semibold tabular-nums" style={{ color: p === 100 ? '#16a34a' : BRAND }}>{p}%</span>; })(),
-      sortVal: (g) => ((g.empty || g.offBoard) ? -1 : (g.count ? (g.buckets.completed || 0) / g.count : 0)) },
+      get: (g) => (g.empty || g.offBoard || g.shell) ? '—' : (() => { const p = g.count ? Math.round(100 * (g.buckets.completed || 0) / g.count) : 0; return <span className="font-semibold tabular-nums" style={{ color: p === 100 ? '#16a34a' : BRAND }}>{p}%</span>; })(),
+      sortVal: (g) => ((g.empty || g.offBoard || g.shell) ? -1 : (g.count ? (g.buckets.completed || 0) / g.count : 0)) },
     { k: 'loadId', label: 'Load ID', w: 130,
       get: (g) => g.realId ? <span className="font-mono text-[11px] text-slate-500" title={g.realId}>{g.realId}</span> : '—',
       sortVal: (g) => g.realId || '' },
-    { k: 'status', label: 'Status', w: 240, get: (g) => (g.offBoard
+    { k: 'status', label: 'Status', w: 240, get: (g) => (g.shell
+        ? <span className="inline-flex items-center gap-1 px-1.5 rounded text-[10px] font-medium bg-sky-50 text-sky-800 border border-sky-200" title="NuVizz has not created this route for the day yet. Tap the row to open a route card; Save creates it in NuVizz with its stops.">Not in NuVizz yet · tap to plan</span>
+        : g.offBoard
         ? <span className="inline-flex items-center gap-1 px-1.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200" title={'NuVizz says this load carries ' + g.count + ' trip(s), but none of its stops are on this day\u2019s board' + (g.rosterStatus ? ' \u00b7 load status: ' + g.rosterStatus : '')}>Not on this board · {g.count} trip{g.count === 1 ? '' : 's'}{g.rosterStatus ? ' · ' + g.rosterStatus : ''}</span>
         : g.empty
         ? <span className="inline-flex items-center gap-1 px-1.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200" title={g.rosterStatus ? ('Load status: ' + g.rosterStatus) : 'No orders assigned yet'}>No orders yet{g.rosterStatus ? ' · ' + g.rosterStatus : ''}</span>
@@ -13520,7 +13545,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
             ? <span key={b.k} className={'px-1.5 rounded text-[10px] font-medium ' + (LOAD_BUCKET_STYLE[b.k] || '')} title={b.label}>{b.label} {g.buckets[b.k]}</span>
             : null)}
         </span>
-      )), sortVal: (g) => ((g.empty || g.offBoard) ? -1 : (g.count ? (g.buckets.completed || 0) / g.count : 0)) /* % delivered; empty AND off-board loads sort first */ },
+      )), sortVal: (g) => ((g.empty || g.offBoard || g.shell) ? -1 : (g.count ? (g.buckets.completed || 0) / g.count : 0)) /* % delivered; empty, off-board AND shell rows sort first */ },
     { k: 'pallets', label: 'Pallets', w: 70, align: 'right', get: (g) => g.pallets || '—', sortVal: (g) => g.pallets },
     { k: 'loose', label: 'Loose', w: 64, align: 'right', get: (g) => g.loose || '—', sortVal: (g) => g.loose },
     { k: 'weight', label: 'Weight', w: 90, align: 'right', get: (g) => g.weight ? Math.round(g.weight).toLocaleString() : '—', sortVal: (g) => g.weight },
@@ -13975,14 +14000,17 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                 // second was true.
                 <tr><td colSpan={loadCols.length} className="px-3 py-4 text-slate-400 italic text-left">
                   {rosterState.known
-                    ? 'No loads on the current board.'
+                    ? (rosterState.count === 0 ? 'NuVizz has no loads for this day yet.' : 'No loads on the current board.')
                     : 'No built loads on this board, and this day’s load roster could not be read — so we can’t say whether there are empty loads. Press Scan now to pull it.'}
                 </td></tr>
               )}
               {sortedLoadRows.map((g) => (
                 <tr
                   key={g.loadNbr}
-                  onClick={() => onPickLoad && onPickLoad(g.loadNbr)}
+                  // A shell row opens a PENDING route card (the ＋ New route path) — there is no
+                  // load in NuVizz to open. Named in the markup so the loads-tab guard can tap it.
+                  data-plan-shell={g.shell ? g.routeName : undefined}
+                  onClick={() => (g.shell ? (onPlanShell && onPlanShell(g.routeName)) : (onPickLoad && onPickLoad(g.loadNbr)))}
                   className="cursor-pointer hover:bg-blue-50"
                 >
                   {loadCols.map((c) => (
@@ -18215,6 +18243,9 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // or "the roster behind it was captured hours ago and nothing has pulled it since", and the
   // screen could say neither. lib/roster-freshness.js carries the why.
   const [dayRosterMeta, setDayRosterMeta] = useState(null);
+  // The standard shells the endpoint offers for a day NuVizz has not created yet (v0.93.13) —
+  // { names, from } or null. See planAheadNames for what the screen subtracts before showing them.
+  const [dayShells, setDayShells] = useState(null);
   // Everything the roster response feeds, in one place so the cache path and the live refresh
   // can never diverge — the status map, the identity index, the raw rows and the envelope.
   const applyDayRoster = useCallback((j) => {
@@ -18254,12 +18285,14 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     loadRosterRef.current = index;
     setLoadStatusByName(status);
     setLoadRosterList(j && j.ok ? (j.loads || []) : []);
-    setDayRosterMeta(j && j.ok ? { ok: true, source: j.source, at: j.at, count: j.count } : { ok: false });
+    setDayRosterMeta(j && j.ok ? { ok: true, source: j.source, at: j.at, count: j.count, pull: j.pull || null } : { ok: false });
+    setDayShells(j && j.ok && j.shells && Array.isArray(j.shells.names) ? j.shells : null);
   }, []);
   const clearDayRoster = useCallback(() => {
     loadRosterRef.current = new Map();
     setLoadStatusByName(new Map());
     setLoadRosterList([]);
+    setDayShells(null);
     // A FALSE envelope, not a missing one: "we asked and got nothing back" must never render
     // as "there is nothing", which is the whole absent-is-not-zero rule.
     setDayRosterMeta({ ok: false });
@@ -19615,6 +19648,16 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       ? { ...r, pendingCreate: false, name: entry.name, loadNbr: entry.loadNbr ?? r.loadNbr, loadId: entry.loadId ?? r.loadId }
       : r)));
   }, []);
+  // A STANDARD SHELL TAPPED ON EITHER LOADS SURFACE opens the same pending card ＋ New route
+  // opens, with the name already filled in — nothing is sent to NuVizz until Save, exactly as
+  // the modal says. The pre-flight is the modal's own (validateNewRoute): a name already on the
+  // board, a missing ship-from address, a name NuVizz would cap — each is a sentence in the
+  // toast rather than a card that fails on Save.
+  const onPlanShell = useCallback((name) => {
+    const check = validateNewRoute({ routeName: name, date: selectedDate, existingNames: routeGroups.map((g) => g.name || g.key), hasOrigin: !!readShipFromOrigin() });
+    if (!check.ok) { showMapToast(check.error); return; }
+    createNewRoute(name, check.loadNbr);
+  }, [selectedDate, routeGroups, showMapToast, createNewRoute]);
 
   // Frame ALL of a driver's stops (they may run multiple routes). Lighter than onPickRoute —
   // it only fits the map bounds, it doesn't open every route in the workbench.
@@ -21107,9 +21150,15 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   );
   // The day's loads that are NOT on the board — the empty ones the dispatcher still has to
   // fill. Same click-to-Compare as the bottom grid's Loads view, which Chad keeps in full.
+  // The shells this screen can still offer for the day: the endpoint's standard names minus
+  // what the roster, the board and the open cards already hold. [] on any ordinary day.
+  const shellNames = useMemo(() => planAheadNames({
+    shells: dayShells, rosterLoads: loadRosterList,
+    boardNames: routeGroups.map((g) => g.name || g.key), pendingNames: wbRoutes.map((w) => w.name || w.key),
+  }), [dayShells, loadRosterList, routeGroups, wbRoutes]);
   const dayLoadsPanelEl = (
     <RoutingDayLoadsPanel rows={dayLoadsSplit.empty} offBoard={dayLoadsSplit.offBoard} builtCount={dayLoadsSplit.routed.length}
-      roster={dayRosterState}
+      roster={dayRosterState} shells={shellNames} onPlanShell={onPlanShell}
       onPickLoad={(r) => pickLoadToCompare(r.loadNbr || r.loadId || r.key)}
       isOpen={(r) => wbRoutes.some((w) => w.key === r.key || (r.name && w.key === r.name) || (r.loadNbr && (w.key === r.loadNbr || w.loadNbr === r.loadNbr)))} />
   );
@@ -21212,6 +21261,8 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
             setOpen={(v) => { setBottomTableOpen(v); if (v) setSheetOpen(false); }}
             onPick={pickStopFromTable}
             onPickLoad={pickLoadToCompare}
+            planShells={shellNames}
+            onPlanShell={onPlanShell}
             onWindowRowsChange={setGridWindowStops}
             onSearchMatchChange={setSearchMatchIds}
             onStatusFilterChange={setStatusFilterIds}
@@ -21423,6 +21474,8 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
           setOpen={setBottomTableOpen}
           onPick={pickStopFromTable}
           onPickLoad={pickLoadToCompare}
+          planShells={shellNames}
+          onPlanShell={onPlanShell}
           headerRight={bottomGridHeaderRight}
           onWindowRowsChange={setGridWindowStops}
           onSearchMatchChange={setSearchMatchIds}
@@ -21505,7 +21558,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
                 onRename={renameLoad} onToggleDispatch={toggleDispatched} onDelete={deleteLoad} manageError={manageError} />
             ) : (
               <RoutingDayLoadsPanel rows={dayLoadsSplit.empty} offBoard={dayLoadsSplit.offBoard} builtCount={dayLoadsSplit.routed.length}
-                roster={dayRosterState}
+                roster={dayRosterState} shells={shellNames} onPlanShell={onPlanShell}
                 onPickLoad={(r) => pickLoadToCompare(r.loadNbr || r.loadId || r.key)}
                 isOpen={(r) => wbRoutes.some((w) => w.key === r.key || (r.name && w.key === r.name) || (r.loadNbr && (w.key === r.loadNbr || w.loadNbr === r.loadNbr)))} />
             )}
@@ -21776,13 +21829,30 @@ function dayLoadMatches(r, needle) {
 
 const ROSTER_ABSENT = { known: false, live: false, stale: false, count: 0, age: null, tone: 'absent', label: 'Load roster not pulled for this day' };
 
-function RoutingDayLoadsPanel({ rows, offBoard = [], builtCount = 0, onPickLoad, isOpen, roster = ROSTER_ABSENT }) {
+function RoutingDayLoadsPanel({ rows, offBoard = [], builtCount = 0, onPickLoad, isOpen, roster = ROSTER_ABSENT, shells = [], onPlanShell = null }) {
   const [q, setQ] = useState('');
   const needle = q.trim().toLowerCase();
   const shown = useMemo(() => rows.filter((r) => dayLoadMatches(r, needle)), [rows, needle]);
   const shownOff = useMemo(() => offBoard.filter((r) => dayLoadMatches(r, needle)), [offBoard, needle]);
-  const total = rows.length + offBoard.length;
-  const showing = shown.length + shownOff.length;
+  // The standard shells NuVizz does not hold for this day (v0.93.13) — offered only where a
+  // tap can open a route card. Filtered by the same search box as the loads.
+  const shellList = onPlanShell ? (shells || []) : [];
+  const shownShells = useMemo(() => shellList.filter((n) => !needle || String(n).toLowerCase().includes(needle)), [shellList, needle]);
+  const total = rows.length + offBoard.length + shellList.length;
+  const showing = shown.length + shownOff.length + shownShells.length;
+  const shellsSection = shownShells.length > 0 ? (
+    <>
+      {/* Its own section, under its own heading, like the off-board loads: these are NAMES,
+          not loads. NuVizz holds nothing for them on this day; a tap opens the pending card
+          that ＋ New route opens, and Save creates the route in NuVizz with its stops. */}
+      <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-sky-800 bg-sky-50 border-y border-sky-200">
+        Not in NuVizz yet — tap to open a route card ({shownShells.length})
+      </div>
+      <div className="divide-y">
+        {shownShells.map((name) => <PlanShellRow key={name} name={name} onPlanShell={onPlanShell} />)}
+      </div>
+    </>
+  ) : null;
   return (
     // data-day-loads-panel: scripts/verify-loads-tab.mjs reads THIS subtree and only this one.
     // The bottom grid also lists loads (deliberately — Chad keeps that view in full), so a
@@ -21805,6 +21875,7 @@ function RoutingDayLoadsPanel({ rows, offBoard = [], builtCount = 0, onPickLoad,
       <div className="px-3 py-1.5 text-[11px] text-slate-500 border-b bg-slate-50 shrink-0">
         {rows.length} empty · {builtCount} built in <b>Routes</b>
         {offBoard.length ? ` · ${offBoard.length} not on the board` : ''}
+        {shellList.length ? ` · ${shellList.length} not in NuVizz yet` : ''}
         {showing !== total ? ` · showing ${showing}` : ''}
       </div>
       {/* WHERE THIS LIST CAME FROM AND WHEN. A future day's roster is captured ONCE per scan
@@ -21817,7 +21888,7 @@ function RoutingDayLoadsPanel({ rows, offBoard = [], builtCount = 0, onPickLoad,
           can tell "no empty loads" from "nobody has asked today". In flow above the list, so a
           wrapped label pushes the rows down instead of sitting on them. */}
       <div className="px-3 py-1 text-[10px] border-b bg-white shrink-0">
-        <span className={roster.tone === 'absent' || roster.tone === 'stale' ? 'text-amber-700' : 'text-slate-500'}>{roster.label}</span>
+        <span className={roster.tone === 'absent' || roster.tone === 'stale' || roster.tone === 'empty' ? 'text-amber-700' : 'text-slate-500'}>{roster.label}</span>
       </div>
       {total === 0 ? (
         // ABSENT IS NOT ZERO. "NuVizz has no empty loads for this day" and "we could not read
@@ -21827,10 +21898,21 @@ function RoutingDayLoadsPanel({ rows, offBoard = [], builtCount = 0, onPickLoad,
         // pointed at ↻, the SCAN button, which does not refresh a future day's roster at all.
         // The envelope knows, and Refresh is the control that actually moves it.
         roster.known ? (
-          <div className="p-4 text-[12px] text-slate-400">
-            Every load on this day already carries orders — they&apos;re all in <b>Routes</b>. Nothing empty left to fill.
-            {roster.stale ? <> This roster was captured <b>{roster.age}</b>, before today — <b>Refresh</b> to see loads created since.</> : null}
-          </div>
+          // ZERO LOADS AT ALL is not "every load is built". For two days the screen told Chad
+          // the second when the first was true (NuVizz held nothing for Tue Sep 8), and the
+          // two call for different work: one is done, the other has not started.
+          roster.count === 0 ? (
+            <div className="p-4 text-[12px] text-slate-400">
+              NuVizz has no loads for this day yet — nothing has been created for it in the vendor.
+              Use <b>＋ New route</b> to build one; it is created in NuVizz when you Save.
+              {roster.stale ? <> This roster was captured <b>{roster.age}</b>, before today — press <b>Scan now</b> to ask again.</> : null}
+            </div>
+          ) : (
+            <div className="p-4 text-[12px] text-slate-400">
+              Every load on this day already carries orders — they&apos;re all in <b>Routes</b>. Nothing empty left to fill.
+              {roster.stale ? <> This roster was captured <b>{roster.age}</b>, before today — press <b>Scan now</b> to see loads created since.</> : null}
+            </div>
+          )
         ) : (
           <div className="p-4 text-[12px] text-slate-400">This day&apos;s load roster could not be read, so we can&apos;t say what&apos;s empty. Try <b>Refresh</b> — it pulls the roster straight from NuVizz.</div>
         )
@@ -21838,9 +21920,11 @@ function RoutingDayLoadsPanel({ rows, offBoard = [], builtCount = 0, onPickLoad,
         <div className="p-4 text-[12px] text-slate-400">No loads match.</div>
       ) : (
         <div className="flex-1 min-h-0 overflow-y-auto">
-          <div className="divide-y">
-            {shown.map((r) => <DayLoadRow key={r.key} r={r} onPickLoad={onPickLoad} isOpen={isOpen} />)}
-          </div>
+          {shown.length > 0 && (
+            <div className="divide-y">
+              {shown.map((r) => <DayLoadRow key={r.key} r={r} onPickLoad={onPickLoad} isOpen={isOpen} />)}
+            </div>
+          )}
           {/* Its own section, under its own heading. These loads carry orders in NuVizz but
               none of their stops are on this day's board, so Routes cannot show them either —
               and a load on neither tab is a load nobody plans. Kept out of the list above so
@@ -21855,9 +21939,25 @@ function RoutingDayLoadsPanel({ rows, offBoard = [], builtCount = 0, onPickLoad,
               </div>
             </>
           )}
+          {shellsSection}
         </div>
       )}
     </div>
+  );
+}
+
+// One standard shell NuVizz does not hold for the day. The button is the whole row, like
+// DayLoadRow, and the markup names it (data-plan-shell) so the loads-tab guard can tap it.
+function PlanShellRow({ name, onPlanShell }) {
+  return (
+    <button onClick={() => onPlanShell(name)} data-plan-shell={name}
+      className="w-full text-left px-3 py-2 hover:bg-sky-50">
+      <div className="flex items-center gap-2">
+        <span className="font-semibold text-[12px] text-blue-700 truncate flex-1 min-w-0">{name}</span>
+        <span className="shrink-0 px-1.5 rounded text-[10px] font-medium bg-sky-50 text-sky-800 border border-sky-200" title="NuVizz has not created this route for the day yet. Tap to open a route card; Save creates it in NuVizz with its stops.">Not in NuVizz yet</span>
+      </div>
+      <div className="mt-0.5 text-[11px] text-slate-500">Tap to open a route card · created in NuVizz when you Save</div>
+    </button>
   );
 }
 

@@ -88,7 +88,8 @@ export function ageLabel(iso, now = new Date()) {
  *            has refreshed it). Never a guess about minutes.
  *   age    — ageLabel of the capture, or null
  *   label  — one line a dispatcher can act on
- *   tone   — 'absent' | 'stale' | 'cached' | 'live', for the caller's colours
+ *   tone   — 'absent' | 'stale' | 'cached' | 'live' | 'empty', for the caller's colours
+ *            ('empty' = captured today and NuVizz holds no loads for the day yet)
  */
 export function rosterFreshness(meta, now = new Date()) {
   // `source: 'none'` is the endpoint saying "I hold nothing for this date, and I did not spend
@@ -111,6 +112,17 @@ export function rosterFreshness(meta, now = new Date()) {
   const stale = !live && !!capturedDay && !!today && capturedDay !== today;
   const loads = `${count} load${count === 1 ? '' : 's'}`;
   if (live) return { known: true, live: true, stale: false, count, age, tone: 'live', label: `${loads} · straight from NuVizz` };
+  // ZERO, CAPTURED TODAY, IS A FACT ABOUT NUVIZZ, AND THE LINE SAYS SO. "0 loads · cached just
+  // now" is what Chad read for two days on Tue Sep 8, and it reads like a broken cache. It is
+  // not: the endpoint serves an empty capture only when it was taken this ET day, and a
+  // capture is what the vendor answered (the pull that wrote it is beside it since v0.93.12).
+  // The honest sentence is that NuVizz has not created the day's loads yet — which is also the
+  // sentence that tells him what to do next: create them, from the shells listed below it.
+  if (count === 0 && !stale) {
+    const asked = meta.pull && Number(meta.pull.rows) === 0 ? 'NuVizz answered 0 rows' : 'nothing came back';
+    return { known: true, live: false, stale: false, count: 0, age, tone: 'empty',
+      label: `NuVizz has no loads for this day yet · ${asked} ${age || 'at an unknown time'}` };
+  }
   if (!age) return { known: true, live: false, stale, count, age: null, tone: stale ? 'stale' : 'cached', label: `${loads} · cached, time unknown` };
   return { known: true, live: false, stale, count, age, tone: stale ? 'stale' : 'cached',
     label: `${loads} · cached ${age}${stale ? ' (before today)' : ''}` };
