@@ -74,18 +74,18 @@ test('completed is NOT pulled 10pm-4am — six hours a day where a pull returns 
   assert.equal(resolveInterval('planned', TUE, 2, rules), 20);
 });
 
-test('Saturday is silent for the two DELIVERY feeds — and the roster is the exception', () => {
-  // The rule this pins CHANGED, deliberately, and the reason is worth stating where the
-  // assertion is. Saturday delivers nothing, so planned and completed can only come back
-  // unchanged and stay off all day. The roster is not a delivery feed: it lists the loads that
-  // EXIST, and Saturday is when next week gets planned. Chad, on a Saturday looking at
-  // Tuesday: "Where are all my empty loads", and then "the loads use to populate just fine."
-  // They did — until v0.77.0 put the roster behind windows drawn around the delivery day.
+test('Saturday is silent for COMPLETED only — the two PLANNING feeds both run', () => {
+  // This assertion has now moved twice, and both moves are the same argument arriving one
+  // feed at a time. The blackout's premise is "nothing is DELIVERING on a Saturday", and that
+  // is an argument about `completed` and nothing else. v0.93.4 exempted the roster: it lists
+  // the loads that EXIST, and Saturday is when next week gets planned. This exempts `planned`
+  // for the identical reason — it is the freight COMING, not the freight that moved, and a
+  // dispatcher planning Monday on a Saturday needs the orders as much as the trailers. Chad:
+  // "I want to see Monday's and Tuesday's of next week's loads here like this so I can start
+  // planning them today or tomorrow."
   const rules = defaultScanRules();
-  for (const kind of ['planned', 'completed']) {
-    for (let h = 0; h < 24; h++) {
-      assert.equal(resolveInterval(kind, SAT, h, rules), null, `Sat ${h}:00 ${kind} must stay off`);
-    }
+  for (let h = 0; h < 24; h++) {
+    assert.equal(resolveInterval('completed', SAT, h, rules), null, `Sat ${h}:00 completed must stay off`);
   }
   for (let h = 4; h < 24; h++) {
     assert.equal(resolveInterval('roster', SAT, h, rules), 60, `Sat ${h}:00 roster must run`);
@@ -93,8 +93,16 @@ test('Saturday is silent for the two DELIVERY feeds — and the roster is the ex
   for (const h of [0, 1, 2, 3]) {
     assert.equal(resolveInterval('roster', SAT, h, rules), null, `Sat ${h}:00 roster stays off overnight`);
   }
+  // Planned runs the working day and stops — nobody is planning at 3am on a Saturday, and an
+  // always-on rule would be spending the board's budget for nothing.
+  for (let h = 8; h < 20; h++) {
+    assert.equal(resolveInterval('planned', SAT, h, rules), 60, `Sat ${h}:00 planned must run`);
+  }
+  for (const h of [0, 4, 7, 20, 23]) {
+    assert.equal(resolveInterval('planned', SAT, h, rules), null, `Sat ${h}:00 planned stays off`);
+  }
   assert.equal(resolveInterval('planned', SUN, 21, rules), 30, 'Sunday evening builds Monday');
-  assert.equal(resolveInterval('planned', SUN, 9, rules), null, 'Sunday daytime stays quiet');
+  assert.equal(resolveInterval('planned', SUN, 9, rules), 60, 'Sunday daytime plans next week');
 });
 
 test('the roster has NO uncovered hour between 4am and midnight, any day of the week', () => {
@@ -258,10 +266,14 @@ test('the default plan stays comfortably inside the daily ceiling', () => {
   // stay a small fraction of it — a plan that spends the budget on list pulls starves the
   // /stop/info reads that give new orders their address and pin.
   assert.ok(busiest < 300, `busiest day ${busiest} must stay well under the 2,000 ceiling`);
-  // Saturday is no longer zero, and the number is the whole argument for the change: 20 is
-  // the roster and nothing else — one cheap list call an hour, 04:00-24:00. If a future edit
-  // lets planned or completed onto a Saturday this jumps by an order of magnitude and fails.
-  assert.equal(est.perDay[SAT], 20, 'Saturday is the roster alone, hourly');
+  // Saturday is the roster (20, hourly 04:00-24:00) plus the planning pull (12, hourly
+  // 08:00-20:00) and nothing else. Measured: the whole plan went 740 -> 764 calls a week for
+  // the weekend planning window, which is +24 against a 2,000/DAY ceiling and against the
+  // ~3,000 one cold full scan costs. The number is pinned rather than bounded so that letting
+  // COMPLETED onto a Saturday — the one feed the blackout is genuinely right about, and the
+  // expensive-by-cadence one at 15 minutes — fails here instead of quietly tripling the day.
+  assert.equal(est.perDay[SAT], 32, 'Saturday is the roster + the weekend planning pull');
+  assert.ok(est.perWeek < 800, `${est.perWeek}/week must stay a rounding error against the ceiling`);
   assert.ok(est.byKind.roster <= 140, `roster ${est.byKind.roster}/week must stay a cheap list pull`);
   assert.ok(est.byKind.completed > 200, 'completed is still sampled hard through the delivery day');
 });

@@ -169,6 +169,12 @@ export function defaultScanRules(): ScanRule[] {
     { id: 'plan-small-hours', kind: 'planned', days: deliveryDays, startHour: 0, endHour: 5, intervalMin: 20, note: 'Routing runs late; the plan is still moving.' },
     { id: 'plan-rollout', kind: 'planned', days: deliveryDays, startHour: 5, endHour: 10, intervalMin: 15, note: 'Trucks rolling and dispatch still editing — the plan changes fastest here.' },
     { id: 'plan-day', kind: 'planned', days: deliveryDays, startHour: 10, endHour: 20, intervalMin: 30, note: 'Running day — the plan is largely settled.' },
+    // THE WEEKEND IS WHEN NEXT WEEK GETS PLANNED, and `planned` had no rule for it — zero hours
+    // on Saturday, nothing before 20:00 on Sunday. v0.93.4 gave the ROSTER the weekend, so the
+    // trailers for Monday and Tuesday show up; this is the freight to put on them. Without it a
+    // Saturday dispatcher is planning Monday against Friday evening's picture of it, and an
+    // order that landed since is invisible. Hourly through the working day, off overnight.
+    { id: 'plan-weekend', kind: 'planned', days: [6, 0], startHour: 8, endHour: 20, intervalMin: 60, note: 'Next week is planned on the weekend — this is the freight to plan.' },
     // ── completed (77131) — the ETA anchor. Chad's bands. ────────────────────
     { id: 'done-early', kind: 'completed', days: deliveryDays, startHour: 4, endHour: 6, intervalMin: 30, note: 'First trucks rolling — a few early deliveries.' },
     { id: 'done-run', kind: 'completed', days: deliveryDays, startHour: 6, endHour: 19, intervalMin: 15, note: 'The delivery day — every stamp re-anchors a route clock.' },
@@ -433,6 +439,46 @@ export function scanPath(
   if (due.completedDue) return 'completed-overlay';
   if (due.rosterDue) return 'roster-only';
   return 'skip';
+}
+
+/**
+ * PURE. May the PLANNED scan run during the weekend blackout?
+ *
+ * Chad, on a Saturday evening: "I want to see Monday's and Tuesday's of next week's loads
+ * here like this so I can start planning them today or tomorrow."
+ *
+ * v0.93.4 gave the ROSTER the weekend, which is half of what that sentence needs: the roster
+ * is the list of trailers, and he can now see Monday's and Tuesday's shells. It is not what he
+ * plans ONTO them. The orders are 77128, and `planned` has no weekend rule at all — resolved
+ * against the shipped plan it runs zero hours on Saturday and nothing before 20:00 on Sunday.
+ * So on a Saturday the freight he is looking at for Monday is Friday evening's picture of it,
+ * and an order that landed since is invisible on the screen he is planning from.
+ *
+ * The blackout's premise is "nothing is delivering, so a pull can only come back empty." That
+ * is exactly right for `completed` and it is not an argument about `planned`, which describes
+ * what is COMING, not what moved. The weekend is when Davis plans the week.
+ *
+ * WHY THIS IS A SEPARATE FUNCTION AND NOT A FLAG ON THE ROSTER ONE. rosterMayRunOnBlackout
+ * REFUSES outright when planned is due, deliberately — it exists so a cheap list call can slip
+ * through a blackout and it must never let a ~700-stop rebuild ride along on that permission.
+ * Adding a weekend `planned` rule therefore SILENCES the roster carve-out as a side effect,
+ * which would have traded one gap for another without a line of code looking wrong. The two
+ * have to be reasoned about together, so they are two named permissions and the caller grants
+ * the roster its run under either one.
+ *
+ * `completed` is still refused: nothing is delivering, so that pull genuinely can only come
+ * back with what it already had. The hard floor and the cadence gate are untouched.
+ */
+export function plannedMayRunOnBlackout(
+  decision: { act: boolean; skip: string },
+  plannedDue: boolean,
+  completedDue: boolean,
+): boolean {
+  if (!decision || decision.act) return false;          // already running; nothing to carve out
+  if (decision.skip !== 'weekend') return false;        // the floor and cadence are not ours
+  if (!plannedDue) return false;
+  if (completedDue) return false;                       // nothing delivered; that pull is empty by construction
+  return true;
 }
 
 /**
