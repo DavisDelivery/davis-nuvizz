@@ -369,6 +369,31 @@ for (const mobile of [false, true]) {
       }
     }
   }
+  // v0.93.12, PHONE ONLY — A CARD OPENED FROM THE GRID MUST BE SEEN. The phone's sheet now starts
+  // collapsed and drops whenever the grid opens, so a Compare card opened while the sheet is down
+  // has to raise the sheet itself — for the SECOND card as much as the first (the effect that does
+  // it used to fire only on 0 → 1). Tap CHAD in the Loads view (card 1: sheet up, grid folds), reopen
+  // the grid on Stops (sheet drops), tap an ESTES stop (card 2). A card rendered into a collapsed
+  // sheet is a tap that did nothing a dispatcher can see — which is exactly what the review of this
+  // layout predicted, so the guard pins it. Runs LAST in this block: it folds the grid's table.
+  if (mobile && opened) {
+    const tapCell = (re) => page.evaluate((src) => { const r = new RegExp(src); const t = Array.from(document.querySelectorAll('td')).find((c) => r.test((c.innerText || '').trim())); if (!t) return false; t.click(); return true; }, re);
+    const sheetUp = () => page.evaluate(() => !!document.querySelector('button[aria-label="Collapse"]'));
+    const cardsUp = () => page.evaluate(() => Array.from(document.querySelectorAll('button')).filter((b) => /Cancel route/.test(b.innerText || '')).length);
+    if (!(await tapCell('^CHAD$'))) bad('no CHAD row to tap in the grid (phone)');
+    await page.waitForTimeout(1200);
+    if ((await sheetUp()) && (await cardsUp()) === 1) ok('tapping CHAD in the grid opens its card AND raises the sheet');
+    else bad(`card 1 from the grid: sheet up=${await sheetUp()}, cards=${await cardsUp()} (phone)`);
+    await page.evaluate(() => { const b = Array.from(document.querySelectorAll('button')).find((x) => /^Stops\s+\d+/.test((x.innerText || '').replace(/\n/g, ' ').trim())); if (b) b.click(); });
+    await page.waitForTimeout(800);
+    if (!(await sheetUp())) ok('reopening the grid drops the sheet — one bottom surface at a time');
+    else bad('the sheet stayed up while the grid opened (phone)');
+    if (!(await tapCell('^ESTES CO 1$'))) bad('no ESTES stop row to tap in the grid (phone)');
+    await page.waitForTimeout(1200);
+    const seen = await page.evaluate(() => { const c = document.querySelector('button[aria-label="Collapse"]'); const sheet = c && c.closest('.border-t.bg-white.flex.flex-col'); return !!sheet && /ESTES/.test(sheet.innerText || ''); });
+    if ((await cardsUp()) === 2 && seen) ok('a planned ESTES stop tapped in the grid opens a SECOND card and raises the sheet to show it');
+    else bad(`card 2 from the grid: cards=${await cardsUp()}, ESTES visible in the sheet=${seen} (phone)`);
+  }
   if (errors.length) bad(`grid ${view}: page errors — ${errors.join(' | ')}`);
   await ctx.close();
 }
