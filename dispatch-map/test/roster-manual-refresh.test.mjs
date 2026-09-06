@@ -46,8 +46,8 @@ test('AN UNFROZEN DATE IS NEVER SKIPPED BY ANYBODY — today, and the rest of th
   // rosterFreezeApplies is what decides this, and the two cases it answers false for are the
   // live board and (with horizon refresh on) every date past tomorrow. Both must reach the
   // vendor on every roster fire, manual or scheduled — a captured cache is irrelevant to them.
-  assert.equal(rosterFreezeApplies('2026-09-05', '2026-09-05', '2026-09-07'), false, 'today never freezes');
-  assert.equal(rosterFreezeApplies('2026-09-08', '2026-09-05', '2026-09-07'), false, 'day 3 does not freeze');
+  assert.equal(rosterFreezeApplies('2026-09-05', '2026-09-05'), false, 'today never freezes');
+  assert.equal(rosterFreezeApplies('2026-09-08', '2026-09-05'), true, 'every future date freezes — Chad: once a day');
   for (const isManual of [true, false]) {
     assert.equal(
       skipFutureRosterPull({ frozen: false, isManual, cached: CAPTURED, now: NOW_SAT }),

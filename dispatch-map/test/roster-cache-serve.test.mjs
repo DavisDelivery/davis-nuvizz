@@ -33,9 +33,17 @@ test('a cache WITH ROWS is served whatever its age — the surfaces label the ag
   assert.equal(shouldServeCachedRoster(old, etDay, NOW), true);
 });
 
-test('THE FIX: an EMPTY capture taken today is this scan day’s answer — served, free', () => {
-  const emptyToday = { at: iso('2026-09-05T14:00:00Z'), loads: [] };   // 10:00 ET, same ET day
+test('an EMPTY capture taken today is this scan day’s answer — served, free, whatever the hour', () => {
+  // Chad, 2026-09-06: "The roster for future dates only needs to be called once a day as they
+  // will not change." An empty taken at 10:00 ET is still the day's answer at 17:50 ET. The
+  // manual Scan is the way to re-ask; the endpoint does not do it on its own.
+  const emptyToday = { at: iso('2026-09-05T14:00:00Z'), loads: [] };   // 10:00 ET, same ET day, 7h40m before NOW
   assert.equal(shouldServeCachedRoster(emptyToday, etDay, NOW), true);
+});
+
+test('a NON-EMPTY cache is served whatever its age', () => {
+  const oldRows = { at: iso('2026-09-05T02:00:00Z'), loads: [{ loadId: 'a', name: 'BEN 2' }] };
+  assert.equal(shouldServeCachedRoster(oldRows, etDay, NOW), true);
 });
 
 test('an EMPTY capture from an earlier ET day is stale AND empty — worth one call', () => {
@@ -63,6 +71,6 @@ test('an unreadable stamp reads as NOT today — never an exception, never the e
 });
 
 test('a malformed doc with no loads array is not served', () => {
-  assert.equal(shouldServeCachedRoster({ at: iso('2026-09-05T14:00:00Z') }, etDay, NOW), true, 'empty-today still serves');
+  assert.equal(shouldServeCachedRoster({ at: iso('2026-09-05T14:00:00Z') }, etDay, NOW), true, 'no loads array but a stamp from today — served as an empty');
   assert.equal(shouldServeCachedRoster({ loads: undefined }, etDay, NOW), false, 'no rows and no stamp → live');
 });

@@ -24,7 +24,7 @@ import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildSca
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan, recordScanRun, markLoadRosterEmpty } from './firestore.mts';
 import { listScanForDate, mergeEnrich, twoScanBuckets, completedScanRows, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow } from './nuvizz-list.mts';
-import { loadIdsForDate, dropForeignLoadStops, loadRosterForDate } from './nuvizz-loads.mts';
+import { loadIdsForDate, dropForeignLoadStops, loadRosterPull } from './nuvizz-loads.mts';
 import { getStop } from './history-store.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
@@ -396,27 +396,20 @@ export function futureRosterCaptured(cached: { at?: string; loads?: any[] } | nu
 /**
  * PURE. Does the ONCE-PER-ET-DAY roster freeze apply to this date?
  *
- * futureRosterCaptured answers "has this future date been captured today"; this answers the
- * question before it — "is this a date the freeze should govern at all". They were the same
- * question (`date !== today`) and they are not.
+ * Chad, 2026-09-06: "The roster for future dates only needs to be called once a day as they
+ * will not change." That is the rule, and it is the whole rule: TODAY re-pulls on every roster
+ * fire (its loads are being built and dispatched all day); EVERY future date is captured once
+ * per ET day and then left alone until tomorrow. futureRosterCaptured decides "captured" — a
+ * numbered, non-empty list taken this ET day — and skipFutureRosterPull carries the one
+ * exception, a manual press, which always pulls because a human asking is information the
+ * cadence cannot have.
  *
- * v0.93.4 gave the roster a schedule on all seven days, which fixes WHEN the scanner asks. It
- * does not change what happens after the first ask: every future date short-circuits, so the
- * first good capture of the ET day stands until midnight however often the roster then fires.
- *
- * Chad's premise was about TOMORROW — "the shells are generated up front, the set doesn't
- * change through the day" — and there it holds; re-pulling a fixed list twenty times a day
- * buys nothing. Two or three days out it does not hold, and this weekend is the case that
- * proves it: from Saturday the horizon reaches Tuesday, Monday is Labor Day, and Tuesday's
- * empty trailers are not created yet. The 08:00 capture is a list of nothing, and under the
- * old rule that list WAS the answer for the rest of the day — which is what both Loads
- * surfaces were faithfully showing.
- *
- * `today` never freezes under either setting; that has always re-pulled every fire.
+ * v0.93.5 scoped this freeze to tomorrow and let the third horizon day re-pull hourly
+ * (NUVIZZ_ROSTER_HORIZON_REFRESH). Chad's rule says otherwise, so that switch and that re-pull
+ * are gone: one capture a day, every future date, no exceptions but the button.
  */
-export function rosterFreezeApplies(date: string, today: string, tomorrow: string, horizonRefreshOn = true): boolean {
-  if (date === today) return false;
-  return horizonRefreshOn ? date === tomorrow : true;
+export function rosterFreezeApplies(date: string, today: string): boolean {
+  return date !== today;
 }
 
 /**
@@ -799,27 +792,9 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // remains the on-demand override). Today's roster refreshes each load-scan as before.
   // Best-effort: a hiccup is logged, never affects the scan.
   //
-  // AND THE ONCE-A-DAY RULE ONLY APPLIES WHERE ITS PREMISE DOES — TOMORROW. v0.93.4 gave the
-  // roster an hour-by-hour schedule on all seven days, which fixes WHEN the scanner asks. It
-  // does not fix what happens to the third date in the horizon once it has asked: every
-  // future date short-circuits on futureRosterCaptured, so the first good capture of the ET
-  // day is still frozen until midnight however often the roster fires afterwards.
-  //
-  // Chad's premise was about the NEXT day specifically — "the shells are generated up front,
-  // the set doesn't change through the day" — and there it holds. Two or three days out it
-  // does not, and this weekend is the case that proves it: from Saturday the horizon reaches
-  // Tuesday, Monday is Labor Day, and Tuesday's empty trailers are not created yet. The
-  // 08:00 capture is a list of nothing, and under the old rule it stood as the answer for the
-  // rest of the day no matter how many times the roster ran. So the freeze is scoped to
-  // `tomorrow`, and everything beyond it re-pulls on the roster's own cadence.
-  //
-  // IT IS A SPEND, SO IT IS A SWITCH. One extra PkgRoute list call per roster fire — ~20
-  // fires a day, so ~20 calls against a 2,000/day ceiling, and the same order as the roster
-  // itself. Default on, because it is the difference between a trailer created at 3pm being
-  // visible at 4pm and being visible tomorrow. NUVIZZ_ROSTER_HORIZON_REFRESH=0 restores the
-  // once-per-ET-day capture for every future date without a deploy.
-  const horizonRefreshOn = !/^(0|false|off|no)$/i.test(String(process.env.NUVIZZ_ROSTER_HORIZON_REFRESH ?? '').trim());
-  const freezeApplies = (date: string) => rosterFreezeApplies(date, today, tomorrow, horizonRefreshOn);
+  // ONCE A DAY FOR EVERY FUTURE DATE — Chad's rule, see rosterFreezeApplies. Today always
+  // re-pulls; a manual press always pulls (skipFutureRosterPull).
+  const freezeApplies = (date: string) => rosterFreezeApplies(date, today);
   const persistLoadRoster = async (date: string, scannedAt: string) => {
     if (!fsOn) return;
     try {
@@ -829,7 +804,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       const cached = await readLoadRoster(TENANT, date).catch(() => null);
       // A MANUAL SCAN ALWAYS PULLS — see skipFutureRosterPull for why that was the bug.
       if (skipFutureRosterPull({ frozen, isManual, cached, now: new Date() })) return;
-      const roster = await loadRosterForDate(date);
+      const { loads: roster, pull } = await loadRosterPull(date);
       // AN EMPTY ANSWER MAY NOT SILENTLY ERASE A GOOD ROSTER. loadRosterForDate returns [] with
       // no throw whenever the response carries no column defs, and writeLoadRoster is a REPLACE
       // — so one odd 200 takes a hundred loads off both Loads panels, and nothing on screen can
@@ -841,6 +816,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         await writeLoadRoster(TENANT, date, roster, scannedAt, {
           emptyStreak: verdict.emptyStreak,
           emptyAt: roster.length ? null : scannedAt,
+          pull,
         });
       } else {
         // Field-masked, so the refusal cannot take the loads it exists to protect with it.

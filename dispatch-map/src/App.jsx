@@ -114,7 +114,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.93.11';
+const APP_VERSION = '0.93.12';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -185,6 +185,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.93.12', 'THE PHONE OPENS ON THE MAP WITH ONE DATE PICKER; THE NARRATION LINE IS GONE FOR REAL; EVERY ROSTER PULL RECORDS WHAT IT SAW; AND A FUTURE DAY’S ROSTER IS CALLED ONCE A DAY. Chad, Sunday, phone on Tue Sep 8: “Still not fixed … 2 ways to set dates on mobile. Which wastes very limited space. Also there is a ton of wasted white spaces on mobile.” Then: “6 weeks ago there was no issue with the loads screen and roster scans.” Then: “The roster for future dates only needs to be called once a day as they will not change.” FOUR THINGS, EACH CHECKED RATHER THAN ARGUED. (1) THE ROSTER, AGAINST JULY. The clone was shallow — nothing before Aug 25 — so it was deepened and the roster path diffed against v0.52.4 (Jul 26). The request to NuVizz is byte-identical: periodForDate, the 35833 body, normalizeLoads, unchanged in six weeks. What changed: v0.69.0/v0.77.0 (Aug 21/25) moved the roster from “re-ask every future day on every scan” to two hourly windows, an engineering reclaim not a Chad schedule, left alone at his instruction; and v0.93.5 (mine) let the third horizon day re-pull HOURLY behind a switch. Chad’s rule settles that one: once a day, every future date, no exceptions but the manual Scan, which always pulls. The switch and the re-pull are gone; today still re-pulls every roster fire because its loads are being built and dispatched all day; an empty capture still does not count as captured, because zero rows is not a roster that will not change, it is a day nobody has built yet. A bound that re-asked an empty capture hourly on the endpoint was committed and reverted the same afternoon for the same reason. AND EVERY PULL NOW RECORDS WHAT IT SAW: the period sent, HTTP status, column defs, rows returned, rows kept — one log line per pull, stored beside the roster, read back by ?explain=1 in words (“the vendor answered ZERO rows for period +2d” versus “answered 106 rows and the parser KEPT NONE”). “0 loads · cached just now” had three pixel-identical causes and nothing recorded which; from this deploy that question costs nothing. What NuVizz actually holds for Sep 8 is still one call away and was asked for, not guessed. (2) THE “N WITH STOPS, N EMPTY” LINE IS REMOVED. Asked for twice; my removal commit landed thirty minutes after #820 squash-merged, so it has been live through v0.93.11. Gone, with its guard assertions. (3) ONE DATE PICKER ON THE PHONE, IN ONE HOME. Measured in a real browser at 390 and 360: two identical date+Today+gear trios 161px apart (the grid’s headerRight and the Setup header), and the grid toolbar wrapping to FOUR rows — 216px of chrome for six controls — under a map squeezed to 68px. Both copies go; the one home is a board row that is the first child of the bottom sheet, above the tab strip and outside every body the workbench or stop panel replaces, so it survives all four states in which one of the old copies vanished: Setup open, a Compare card open, the sheet collapsed, the grid switched off. The phone gear lists only what a phone can act on and carries the grid toggle so a grid switched off can be switched back on. (4) THE PHONE OPENS ON THE MAP. Sheet collapsed by default (every flow that needs it opens it itself), and ONE bottom surface at a time: opening the grid drops the sheet, opening the sheet folds the grid, and a Compare card raises the sheet whenever the card list GROWS — the first version fired only on 0→1, so a second card tapped from the grid rendered into a collapsed sheet and looked like nothing happened; the review predicted it and the guard now pins it. The phone grid is one bar when collapsed and two rows when open. SAID OUT LOUD BECAUSE IT IS AN EXCEPTION TO A CHAD RULE: v0.47.0 says the collapsed bar must be identical to the open one; on the phone the collapsed bar now hides Profiles, search and Status — except while a search term or status filter is LIVE, because those reach the map and a filter with no visible control is the v0.45.6 trap. Every hidden control auto-opens the grid on use. Cost: comparing two loads from the grid is four taps where it was two. Measured at 390x844 in Chad’s state: 253px given back to the map; at rest 409px. Desktop #root.innerHTML byte-identical to the untouched baseline at 1600x1000, grid open and closed — untouched by measurement, not by reading. THREE INDEPENDENT PROPOSALS, EACH ADVERSARIALLY REVIEWED twice (guards; a dispatcher planning 700 stops from a cab), synthesised from the winner with the others’ best grafted in, and the whole edit set applied to a scratch build and run against every guard before a line of it touched this branch. Six new routing probes in the phone guard and a two-card assertion in the loads-tab guard.'],
   ['0.93.11', 'THE ROSTER REFRESH BUTTON IS GONE — BOTH OF THEM. Chad: “I don’t need a roster refresh button remove it.” He is right, and the reason is that the control he already presses does the job now: v0.93.9 made a manual Scan now pull the load roster for the board date on screen AND the next business day, so a separate per-panel refresh bought nothing. WHAT IT COST TO KEEP. There were TWO of them — the Routing rail’s Loads tab and the bottom grid’s Loads view — each with its own copy of the roster state, both keyed on the same selected date and neither aware of the other. So one dispatcher intent (“refresh the loads”) was two vendor calls if he pressed both, and pressing only one left the OTHER panel still showing the older answer for the same day. Two surfaces quietly disagreeing about the same fact is the defect underneath the button, and deleting the button is what fixes it rather than another sync. WHAT GOES WITH IT: the ?live=1 fetch on both surfaces, the two busy flags, the rail’s refreshDayRoster callback and its props, and the grid’s pullRoster (which had exactly one caller — the button). Both panels are now purely cache-first: they render what the scanner captured and spend nothing on open, which is also the last client path that could reach NuVizz without a scan. WHAT STAYS, DELIBERATELY: the freshness line on both. “3 loads · cached 6h ago” is a completely different fact from “3 loads”, and it is the only thing on the screen that can tell “this day has no empty loads” from “nobody has asked today” — the absent-is-not-zero rule this repo has now been bitten by in four places. The grid’s could-not-read message no longer says “Try Refresh roster”; it points at Scan now, which is the control that actually moves it. The endpoint keeps ?live=1 — it is still the documented override and the scanner’s own guard path uses it — it simply has no caller in the client again. THE BROWSER GUARD WAS REWRITTEN, NOT RELAXED, because the rule it pinned is the rule that changed. It used to press Refresh and assert a ?live=1 went out; it now asserts the opposite on BOTH surfaces and BOTH views — no Refresh control inside either panel, and no vendor call spent on open or afterwards. The downstream coverage that mattered is kept and re-sourced: every empty trailer renders, TRAILER 9 is still labelled “Not on this board · 12 trips” rather than “No orders yet”, and the composition line is still counted off the rows — all driven now from the CAPTURE instead of from a press. One assertion in the rewrite failed honestly on the first run and was fixed rather than loosened: it looked for the grid’s “Load roster:” prefix inside the RAIL, and the two surfaces word the same fact differently — asserting one panel’s copy against the other’s is how a green run stops meaning anything. 3,360 green, loads-tab guard green on desktop and phone.'],
   ['0.93.10', 'THE BACKSTOP AGAINST A CALL BURST WAS ITSELF BURSTING, BY EXACTLY THREE TIMES. Chad: “check and see how many calls are being made when the refresh button is hit because looked like too many today.” The button turned out to be five calls and the day’s spike was the weekend schedule (fixed in v0.93.9) — but auditing the press turned up something worse sitting under both. ENRICH_MAX is the one guard on the only unbounded amplifier the scanner has: one /stop/info per genuinely-new PRO, and a registry that is cold or keyed wrong makes EVERY stop look new. Its env var is named NUVIZZ_ENRICH_MAX_PER_SCAN and its comment promised that “even a cold/empty registry can never burst more than ENRICH_MAX calls in one scan”. It was applied INSIDE `for (const date of targets)`, so it was really a per-DATE cap and the true bound was ENRICH_MAX × the horizon. Measured against the real scanner with a stubbed vendor, three dates each carrying more new PROs than the cap: 400/date → 750 /stop/info, 250/date → 750, 100/date → 300. After: 250, 250, 250. SEVEN HUNDRED AND FIFTY IS 37.5% OF THE ENFORCED 2,000/DAY CEILING IN ONE FIRE — the precise shape of burst this backstop was added to prevent, arriving through the backstop itself. And it is NOT a property of the button: `isManual` appears nowhere between the date loop and the enrichment block, so a SCHEDULED tick on a cold registry pays exactly the same. Two of those in a day trip the circuit breaker and leave the board half-written. The budget now lives outside the date loop and is decremented as the dates consume it. The first date may still take the whole allowance; what it can no longer do is hand a fresh one to the next date. A board needing more than the cap backfills over the following ticks — which is what the original comment claimed already happened. ONE BEHAVIOUR CHANGE WORTH KNOWING: a genuinely busy morning that used to enrich 300 across three dates in one pass now does 250 and defers 50 to the next tick, ~15 minutes later. NUVIZZ_ENRICH_MAX_PER_SCAN finally means what it says and can be raised if that ever bites. CHECKED BOTH WAYS, which is the only thing that makes green mean anything: against the previous commit three of the four new tests fail naming the count (750 where 250 is required), and the fourth — a light board that must still enrich every new PRO in one pass — passes on both, so the fix is bounded to the case it was for. A shape test could not have caught this: the cap was present, correct-looking, and in the wrong scope. 4 new tests, 3,360 green.'],
   ['0.93.9', 'THE SCHEDULE IS BACK TO WHAT IT WAS, AND THE BUTTON CARRIES THE WEEKEND INSTEAD. Chad, after watching the alternative land on his own call counter: “I want my schedule to be just what it was unless I hit the manual refresh as well as if I have it set for a future date when I hit the refresh button it should pull the load roster for that day and the next.” WHY HE IS RIGHT, WITH THE NUMBER THAT SETTLES IT. Two releases tried to make weekend planning refresh itself by letting scheduled scans through the weekend blackout — v0.93.4 carved out the ROSTER, v0.93.6 carved out PLANNED as well. Replayed against the shipped plan over all 288 fires of a 5-minute cron day, together they took a SATURDAY from ZERO scheduled vendor calls to SIXTY-FIVE: twelve full ~700-stop board rebuilds, plus forty-one roster pulls, before he pressed anything, with enrichment riding on top of the twelve and not even counted. Sunday went 33 to 81. That is what “looked like too many today” was. Both carve-outs are DELETED — rosterMayRunOnBlackout and plannedMayRunOnBlackout are gone from the plan, not left exported and uncalled, and NUVIZZ_ROSTER_WEEKEND and NUVIZZ_PLANNED_WEEKEND go with the branches they gated rather than lingering as dead switches nobody can find the meaning of. roster-am (Mon–Fri 04:00–13:00) and roster-eve (Sun–Thu 20:00–24:00) are back byte-for-byte from the pre-v0.93.4 file. Measured after: Saturday 0 calls, Sunday 25, Tuesday 171. A MANUAL PRESS IS NOW THE ONLY THING THAT REACHES NUVIZZ ON A SATURDAY, and that was already true — the blackout has always been bypassed by isManual and only by isManual. AND THE PRESS FOLLOWS THE BOARD ON SCREEN, which is the better engineering the widening was reaching for. A SCHEDULE cannot know which day he is looking at, so it guessed by covering every day; a PRESS knows exactly, and that is information the cadence cannot have. rosterDatesFor: a manual refresh taken on a FUTURE board pulls that date and the next BUSINESS day and nothing else — two calls aimed where he is working, against three aimed at a horizon anchored on a day he is not looking at. It reaches dates outside the scan horizon entirely, which is the point of a button. On today’s board, or a past one, it is the normal horizon unchanged, because narrowing there would quietly REMOVE a date the button used to refresh. Next BUSINESS day, not next calendar day, for the same reason scanDatesFrom steps that way: “Friday and the next” must mean Monday, or the second call buys a day that is empty by construction. THE NEW PARAMETER IS DELIBERATELY NOT ?date=, AND THAT IS THE WHOLE DESIGN. `date` and `days` set `explicit` in runRefreshStops and flip it into the number-probe engine — the ~3,000-metered-call cold scan the hard rule in CLAUDE.md exists to forbid. `viewedDate` reaches nothing but rosterDatesFor: it cannot force the scan, cannot widen the stop horizon, cannot raise the call count above what the horizon already cost, is honoured ONLY on a manual press so the cron cannot be steered with it, and is re-validated at the endpoint so anything that is not a real YYYY-MM-DD is silently dropped to “the normal horizon” rather than erroring or widening. Tests pin all of it, including that ?date= and ?days= are still structurally unreachable through the manual URL builder and that overrideParams still matches exact keys — if it ever matched by substring, `viewedDate` contains `date` and every press would be refused. THE WEEKEND TEST FILE WAS REWRITTEN RATHER THAN DELETED, because the rule it pinned is the rule that changed: it now drives all 288 Saturday fires and fails if ANY of them acts, asserts the two carve-out functions do not exist, and asserts Sunday evening still opens — “just what it was” cuts both ways. It also corrects the blackout edges several comments in this repo had wrong: they are Fri 23:00 → Sun 19:00 ET, not 22:00/20:00. 17 new tests, 3,356 green.'],
@@ -13483,12 +13484,6 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     arr.sort((a, b) => String(a.driverName || '~').localeCompare(String(b.driverName || '~')) || String(a.routeName || a.loadNbr).localeCompare(String(b.routeName || b.loadNbr)));
     return arr;
   }, [loadSrc, q, roster, rosterByName]);
-  // The composition of the list actually rendered below — read by the roster line.
-  const loadRowMix = useMemo(() => {
-    let built = 0, empty = 0, offBoard = 0;
-    for (const g of loadRows) { if (g.offBoard) offBoard += 1; else if (g.empty) empty += 1; else built += 1; }
-    return { built, empty, offBoard };
-  }, [loadRows]);
   // TWO PLACEMENTS AND TWO SHAPES, because a phone is not a narrow desktop. On a laptop this
   // is one row in a tall pane and everything fits beside the Refresh button. At 390px it is
   // three pieces of text and a control competing for the width, and truncating the one that
@@ -13497,19 +13492,9 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // way: as a fixed row above it, it pushed the first load row 53px down and under the
   // bottom sheet's tab strip). Desktop keeps one non-wrapping row.
   const rosterLine = (
-    <div className={'flex items-center gap-2 px-3 py-1 border-b bg-slate-50 text-[11px] shrink-0 ' + (gridIsPhone ? 'flex-wrap' : 'flex-nowrap')}>
-      <span className={(gridIsPhone ? '' : 'min-w-0 truncate ') + (rosterState.tone === 'absent' || rosterState.tone === 'stale' ? 'text-amber-700' : 'text-slate-500')}>
+    <div className="flex items-center gap-2 px-3 py-1 border-b bg-slate-50 text-[11px] shrink-0">
+      <span className={rosterState.tone === 'absent' || rosterState.tone === 'stale' ? 'text-amber-700' : 'text-slate-500'}>
         Load roster: {rosterState.label}
-      </span>
-      {/* WHAT THE ROWS BELOW ARE MADE OF. Chad, on this exact grid: "routes is only supposed
-          to show loads with stops on them and that is what the bottom panel is doing." When
-          every load on the day happens to be built, this view IS the Routes list — the same
-          rows, correctly — and nothing on screen said whether that was the day or a fault.
-          Now it does. Counted off the rows themselves and never off a separate tally:
-          v0.93.2's guard caught exactly that bug on the rail's header, where a count sourced
-          from somewhere other than the list it described disagreed with it. */}
-      <span className={(gridIsPhone ? '' : 'min-w-0 truncate ') + 'text-slate-400'}>
-        · {loadRowMix.built} with stops, {loadRowMix.empty} empty{loadRowMix.offBoard ? `, ${loadRowMix.offBoard} not on this board` : ''}
       </span>
     </div>
   );
@@ -13611,6 +13596,15 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     flashSaved();
   };
   const deleteProfile = (name) => removeProfile(name);
+  // THE PHONE FOLD. Collapsed, the phone grid is ONE bar — chevron + Stops/Loads (+ the no-location
+  // chip, which is a warning and stays) — and Profiles / search / Status exist only while the grid
+  // is OPEN… or while one of them is doing something. A search term highlights map pins and a
+  // status filter HIDES them (onSearchMatchChange / onStatusFilterChange reach the map), so a hidden
+  // live filter would be the invisible-filter trap that blanked this grid once already (v0.45.6):
+  // the control that is changing the map stays on screen, with its clear, until it is cleared.
+  // Desktop never folds (gridIsPhone false).
+  const phoneFilterActive = !!q || statusSel.size > 0;
+  const phoneBarFolded = gridIsPhone && !open && !phoneFilterActive;
 
   return (
     <div ref={rootRef} data-overlay-layer className="absolute left-0 right-0 bottom-0 z-[12] bg-white border-t border-slate-200 shadow-[0_-2px_10px_rgba(0,0,0,0.10)] flex flex-col" style={{ height: open ? height : undefined, maxHeight: open ? 'calc(100% - 4rem)' : undefined }}>
@@ -13665,11 +13659,18 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
           </div>
         )}
         {/* PROFILES — save/switch the bar settings (view · status · window · driver · sort). */}
-        {/* basis-full on a phone: this bar WRAPS, so the button lands wherever the first row runs
-            out (~250px in on a 390px screen) and the 16rem popup below is anchored to its LEFT
-            edge — which put the name box and Save button off the right of the screen, with
-            nothing able to scroll to them. Its own line pins the popup to the bar's left edge. */}
-        <div className="relative basis-full sm:basis-auto">
+        {/* PHONE: Profiles STARTS row 2 (the zero-height basis-full spacer breaks the line) and
+            search / Status follow it on the same row: Profiles ~95 + 8 + search 130 (+ 8 + Status 72)
+            fits the 336px a 360px phone has (with the no-location chip also on that row, search
+            wraps to a third row at 360 and still fits at 390 — flex-wrap, nothing hidden). Profiles
+            must START a row: its 16rem popup is anchored to its LEFT edge, and when it once landed
+            ~250px into row 1 the name box and Save were off the right of the screen with nothing
+            able to scroll to them — that is what basis-full, a whole 44px line to itself, used to
+            buy. Folded (collapsed, no filter live) the phone hides Profiles entirely and the map
+            above gets the height back. The spacer renders only when unfolded: a zero-height flex
+            line still costs the 8px row gap. Desktop keeps its class string untouched. */}
+        {gridIsPhone && !phoneBarFolded && <div className="basis-full h-0" aria-hidden="true" />}
+        <div className={gridIsPhone ? 'relative' + (phoneBarFolded ? ' hidden' : '') : 'relative basis-full sm:basis-auto'}>
           <button
             onClick={() => setProfilesOpen((v) => !v)}
             title="Saved views — save the current bar settings as a profile and switch between them"
@@ -13734,10 +13735,18 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
             <MapPin size={12} /> {unmappedCount} no location{unmappedOnly ? ' · showing' : ''}
           </button>
         )}
-        {/* Toolbar controls stay in the bar whether the grid is open OR collapsed (Chad: the
-            collapsed bar must be identical). Only the TABLE below hides when collapsed; using any
-            control auto-opens the grid so its effect is visible. */}
-        {true && (
+        {/* DESKTOP: toolbar controls stay in the bar whether the grid is open OR collapsed (Chad,
+            v0.47.0: the collapsed bar must be identical). Only the TABLE below hides when collapsed;
+            using any control auto-opens the grid so its effect is visible.
+            PHONE EXCEPTION (v0.93.12, said out loud because it is an exception to a Chad rule): the
+            collapsed phone bar is chevron + Stops/Loads (+ the no-location chip) ONLY. Search cannot
+            share row 1 at 360px (44 + 8 + 186 + 8 + 130 > 336), so keeping it meant two rows of
+            chrome — 120px — under a COLLAPSED grid on a screen whose point is the map. Every hidden
+            control auto-opens the grid on use, so each is one tap further away, not gone; and the
+            row comes back by itself while a search term or a status filter is live
+            (phoneFilterActive) — those reach the MAP, and a filter with no visible control is the
+            v0.45.6 trap. */}
+        {!phoneBarFolded && (
           <>
             {/* min-w so the box never shrinks to an icon (hiding a stray term that blanks the grid);
                 a clear-× so leftover search text is always dismissable and highlighted when present. */}
@@ -17446,7 +17455,12 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, stopById, boardStop
 // Routing panel-settings menu — a gear button opening a small popover of panel on/off toggles
 // (`panels`: { key, label, on, setOn }) plus optional single-choice view switchers
 // (`views`: { key, label, value, setValue, options: [{ value, label }] }).
-function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = false }) {
+// capHeight (the phone's board-row gear only): the open menu is taller than the space above a
+// 50% bottom sheet on a 740px phone; capped at half the viewport with its own scroll so the
+// whole list stays reachable. panelsFirst (same caller): the panel switches render ABOVE the
+// view pickers so "Live dispatch" — the switch that decides whether Save writes to NuVizz — is
+// above that fold, not a scroll away. Desktop callers pass neither and render exactly as before.
+function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = false, capHeight = false, panelsFirst = false }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -17457,39 +17471,47 @@ function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = f
     window.addEventListener('keydown', onKey);
     return () => { document.removeEventListener('mousedown', onDoc); window.removeEventListener('keydown', onKey); };
   }, [open]);
+  // The two blocks the popover holds, hoisted so the caller can ORDER them (panelsFirst). Same
+  // elements, same classes; only the order differs, and only when a caller asks.
+  const viewsEl = views.map((v) => (
+    <div key={v.key} className="mb-1.5">
+      <div className="font-semibold text-slate-700 px-1 pb-1 mb-1 border-b">{v.label}</div>
+      {/* tap-target-y (phone-only, index.css): the 44px floor covers buttons and inputs, but
+          this row is a <label> around a radio — both exempt — so it stayed ~30px. */}
+      {v.options.map((o) => (
+        <label key={o.value} className="tap-target-y flex items-center gap-2 px-1 py-1.5 rounded hover:bg-slate-50 cursor-pointer">
+          <input type="radio" name={`rt-view-${v.key}`} checked={v.value === o.value} onChange={() => v.setValue(o.value)} />
+          <span className="text-slate-700">{o.label}</span>
+        </label>
+      ))}
+    </div>
+  ));
+  const panelsEl = panels.length > 0 ? (
+    <>
+      <div className="font-semibold text-slate-700 px-1 pb-1 mb-1 border-b">Panels</div>
+      {/* tap-target-y (phone-only, index.css): the 44px floor covers buttons and inputs, but
+          this row is a <label> around a checkbox — both exempt — so it stayed ~30px. */}
+      {panels.map((p) => (
+        <label key={p.key} className="tap-target-y flex items-center justify-between gap-2 px-1 py-1.5 rounded hover:bg-slate-50 cursor-pointer">
+          <span className="text-slate-700">{p.label}</span>
+          <input type="checkbox" checked={p.on} onChange={(e) => p.setOn(e.target.checked)} />
+        </label>
+      ))}
+    </>
+  ) : null;
   return (
     <div className="relative shrink-0" ref={ref}>
       <button onClick={() => setOpen((o) => !o)} className={`p-1.5 rounded border ${open ? 'border-slate-400 bg-slate-100' : 'border-slate-300 hover:bg-slate-50'} text-slate-600`} title="Panel settings" aria-label="Panel settings" aria-expanded={open}>
         <Settings size={16} />
       </button>
       {open && (
-        <div className={`absolute right-0 z-30 w-60 bg-white border border-slate-300 rounded-lg shadow-xl p-2 text-[12px] ${dropUp ? 'bottom-full mb-1' : 'mt-1'}`}>
-          {views.map((v) => (
-            <div key={v.key} className="mb-1.5">
-              <div className="font-semibold text-slate-700 px-1 pb-1 mb-1 border-b">{v.label}</div>
-              {/* tap-target-y (phone-only, index.css): the 44px floor covers buttons and inputs, but
-                  this row is a <label> around a radio — both exempt — so it stayed ~30px. */}
-              {v.options.map((o) => (
-                <label key={o.value} className="tap-target-y flex items-center gap-2 px-1 py-1.5 rounded hover:bg-slate-50 cursor-pointer">
-                  <input type="radio" name={`rt-view-${v.key}`} checked={v.value === o.value} onChange={() => v.setValue(o.value)} />
-                  <span className="text-slate-700">{o.label}</span>
-                </label>
-              ))}
-            </div>
-          ))}
-          {panels.length > 0 && (
-            <>
-              <div className="font-semibold text-slate-700 px-1 pb-1 mb-1 border-b">Panels</div>
-              {/* tap-target-y (phone-only, index.css): the 44px floor covers buttons and inputs, but
-                  this row is a <label> around a checkbox — both exempt — so it stayed ~30px. */}
-              {panels.map((p) => (
-                <label key={p.key} className="tap-target-y flex items-center justify-between gap-2 px-1 py-1.5 rounded hover:bg-slate-50 cursor-pointer">
-                  <span className="text-slate-700">{p.label}</span>
-                  <input type="checkbox" checked={p.on} onChange={(e) => p.setOn(e.target.checked)} />
-                </label>
-              ))}
-            </>
-          )}
+        // data-overlay-layer: a dropdown EXISTS to cover what is under it (the same declaration the
+        // grid's Status dropdown carries), so the layout guards read it as a deliberate layer and not
+        // as its labels colliding with the tab strip or the map's tally chip beneath it.
+        <div data-overlay-layer className={`absolute right-0 z-30 w-60 bg-white border border-slate-300 rounded-lg shadow-xl p-2 text-[12px] ${dropUp ? 'bottom-full mb-1' : 'mt-1'}${capHeight ? ' max-h-[50vh] overflow-y-auto overscroll-contain' : ''}`}>
+          {panelsFirst && panelsEl}
+          {viewsEl}
+          {!panelsFirst && panelsEl}
           {actions.length > 0 && (
             <div className="mt-1 pt-1 border-t flex flex-col gap-1">
               {actions.map((a) => (
@@ -20403,11 +20425,24 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // Responsive: desktop = three side rails; mobile = full map + a collapsible
   // bottom sheet that toggles between the Setup controls and the Result.
   const [mobilePanel, setMobilePanel] = useState('setup');
-  const [sheetOpen, setSheetOpen] = useState(true);
+  // THE PHONE OPENS ON THE MAP, sheet collapsed. A dispatcher's first move on a phone is to find and
+  // box the unplanned pins, and everything for that — Box/Lasso/Ninja, the tally chip, Filters, the
+  // status card — lives on the map, which a 50% sheet over a 300px grid had squeezed to 68px on a
+  // 390x844 phone. Every flow that needs the sheet opens it itself: the tally chip, the three sheet
+  // tabs, pickLoadToCompare, the staging callbacks, the job done|error effect, the stop-panel effect
+  // and the Compare-card effect below. Desktop has no sheet; the value is unused there.
+  const [sheetOpen, setSheetOpen] = useState(() => !isMobile);
   // 'error' as well as 'done': a failed build only re-enabled the Build button, and the reason
   // ("Build failed: …") lives in the Result panel — which nothing switched the phone to, so the
   // failure was completely silent on a phone.
   useEffect(() => { if (job?.status === 'done' || job?.status === 'error') { setMobilePanel('result'); setSheetOpen(true); } }, [job?.status]);
+  // PHONE: ONE BOTTOM SURFACE AT A TIME. With the grid open (300px) AND the sheet open (50%) the map
+  // was 68px tall on a 390x844 phone — not a planning surface — and the map's tool rail and status
+  // card, pinned at the top of the map container, sat on top of the grid's toolbar. So: opening the
+  // sheet folds the grid to its bar (this effect); opening the grid drops the sheet (the wrapped
+  // setOpen at the phone BottomStopsTable call site). The grid stays MOUNTED, so its view, search
+  // term and status filter survive the fold; one tap on its bar brings it back. Desktop: no-op.
+  useEffect(() => { if (isMobile && sheetOpen) setBottomTableOpen(false); }, [isMobile, sheetOpen]);
   // Opening a stop's detail (map click, incl. paint mode) reveals the bottom sheet if collapsed.
   useEffect(() => { if (panelStop) setSheetOpen(true); }, [panelStop]);
   // Tap a load in the bottom Loads grid → OPEN IT IN COMPARE (so you can ninja stops onto it),
@@ -20438,12 +20473,17 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       return next;
     });
   }, [wbRoutes.length, isMobile]);
-  // Mobile: when the FIRST route is opened into the Compare panel, jump to the Setup tab (which
-  // hosts the Compare workbench + the Ninja toggle) and open the sheet — otherwise opening a route
-  // from the Routes tab looks like nothing happened and Ninja mode is never seen.
+  // Mobile: whenever a route is opened into the Compare panel — the FIRST one or any later one —
+  // jump to the Setup tab (which hosts the Compare workbench + the Ninja toggle) and open the sheet.
+  // This used to fire for the first card only (0 → 1). With the sheet collapsed by default and the
+  // grid dropping it whenever it opens, a planned stop tapped in the grid's Stops view while a card
+  // is already open (pickStopFromTable → openRouteInWorkbench, 1 → 2) rendered its card into a
+  // COLLAPSED sheet: the tap looked like it did nothing. Any GROWTH opens the sheet now. A stop
+  // added to an existing card (ninja, staging) does not grow the list, so the sheet stays dropped
+  // while a dispatcher is tapping pins.
   const prevWbLenRef = useRef(0);
   useEffect(() => {
-    if (isMobile && wbRoutes.length > 0 && prevWbLenRef.current === 0) { setMobilePanel('setup'); setSheetOpen(true); }
+    if (isMobile && wbRoutes.length > prevWbLenRef.current) { setMobilePanel('setup'); setSheetOpen(true); }
     prevWbLenRef.current = wbRoutes.length;
   }, [wbRoutes.length, isMobile]);
 
@@ -20744,9 +20784,21 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   const liveWriteToggle = { key: 'liveWrite', label: 'Live dispatch (assign driver + dispatch)', on: liveWrite, setOn: setLiveWrite };
   const leftGearPanels = [leftPanelToggle, selPanelToggle, bottomGridToggle, hideStemToggle, liveWriteToggle];
   const bottomGearPanels = [leftPanelToggle, selPanelToggle, hideStemToggle, liveWriteToggle];
+  // PHONE gear (the board row's — the only gear on a phone). Only switches that change something on
+  // a phone: no "Setup panel" (the phone has no left panel; leftPanelOn's one phone effect was
+  // gating the grid's date copy, now gone) and no "Floating selected-stops panel" (desktop-only
+  // since issue #232). The grid toggle IS here: a grid switched off must be switchable back on from
+  // something that still exists, and on a phone this gear is that something.
+  const phoneGearPanels = [bottomGridToggle, hideStemToggle, liveWriteToggle];
   // The settings gear (+ a compact date picker when the Setup panel is hidden) for the bottom
   // data-grid header — keeps date selection and every panel toggle reachable with the left panel off.
-  const bottomGridHeaderRight = (
+  // PHONE: null. On a phone the board-date picker and the settings gear have exactly ONE home — the
+  // bottom sheet's board row (see the isMobile composition below). A copy living in the grid vanished
+  // the moment the grid was toggled off, a copy living in the Setup body vanished the moment a Compare
+  // card opened, and with Setup open BOTH were on screen 161px apart (Chad, Sep 8, phone screenshot:
+  // "2 ways to set dates on mobile. Which wastes very limited space"). Desktop keeps this header-right
+  // exactly as it was: its left panel is hideable and has no strip.
+  const bottomGridHeaderRight = isMobile ? null : (
     <div className="flex items-center gap-1.5 shrink-0">
       {!leftPanelOn && <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={() => setSelectedDate(todayInET())} compact />}
       <RoutingSettingsMenu views={routingSettingsViews} panels={bottomGearPanels} actions={routingSettingsActions} dropUp />
@@ -20755,17 +20807,23 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
 
   const controlsContent = (
     <>
-      <div className="flex items-center justify-between gap-2">
-        <div className="font-bold text-slate-800">Routing <span className="text-[10px] uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">beta</span></div>
-        <div className="flex items-center gap-1.5">
-          <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={() => setSelectedDate(todayInET())} compact />
-          <RoutingSettingsMenu
-            views={routingSettingsViews}
-            panels={leftGearPanels}
-            actions={routingSettingsActions}
-          />
+      {/* DESKTOP ONLY. On a phone the date picker and the gear live in the sheet's board row — the one
+          strip that survives the workbench replacing this body, the sheet collapsing and the grid
+          being switched off — and this row was the second copy of both (44px + the 12px space-y gap,
+          at the top of a sheet that is half the screen). The stops line below stays on both. */}
+      {!isMobile && (
+        <div className="flex items-center justify-between gap-2">
+          <div className="font-bold text-slate-800">Routing <span className="text-[10px] uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">beta</span></div>
+          <div className="flex items-center gap-1.5">
+            <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={() => setSelectedDate(todayInET())} compact />
+            <RoutingSettingsMenu
+              views={routingSettingsViews}
+              panels={leftGearPanels}
+              actions={routingSettingsActions}
+            />
+          </div>
         </div>
-      </div>
+      )}
       <div className="text-[11px] text-slate-500">{loading ? 'Loading stops…' : `${positioned.length} stops on ${formatDateLong(selectedDate)}`}{stopsError ? ` · ${stopsError}` : ''}</div>
 
       {/* Selection tools — all touch-native (no drag-to-draw). */}
@@ -21134,13 +21192,14 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
               overlay here covered the stops and tool rail (issue #232), so it's desktop-only now. */}
           {/* The dispatch-Map data grid — Stops/Loads spreadsheet, route-able. Toggleable (gear).
 
-              headerRight is passed here as well as on the desktop call below. It used to be
-              desktop-only, and DatePicker + the settings gear render in exactly two places —
-              here and controlsContent, which the Setup tab swaps out for the workbench the
-              moment a Compare card is open, i.e. the normal working state. So on a phone,
-              opening one route removed the board-date picker and the gear from the entire
-              screen: no Live-dispatch toggle, no right-panel switch, no eligibility brush,
-              and the only way back was "Back to Setup", which closes every open card. */}
+              headerRight is NULL on the phone (bottomGridHeaderRight). The picker and the gear used
+              to render in two places — here and controlsContent, which the workbench swaps out the
+              moment a Compare card is open — so with Setup open there were two of each on one 390px
+              screen, and with the grid toggled off and a route open there were none. Both now live
+              in the sheet's board row below, which no state removes. On the phone this grid is ONE
+              bar when collapsed and two rows when open (phoneBarFolded in BottomStopsTable), and
+              opening it drops the sheet — one bottom surface at a time (the sheetOpen effect beside
+              the job effect folds it back when the sheet opens). */}
           {bottomGridOn && <BottomStopsTable
             rootRef={bottomGridRef}
             stops={stops}
@@ -21150,7 +21209,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
             notes={notes}
             totalCount={stops.length}
             open={bottomTableOpen}
-            setOpen={setBottomTableOpen}
+            setOpen={(v) => { setBottomTableOpen(v); if (v) setSheetOpen(false); }}
             onPick={pickStopFromTable}
             onPickLoad={pickLoadToCompare}
             onWindowRowsChange={setGridWindowStops}
@@ -21161,6 +21220,21 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
           />}
         </div>
         <div className="border-t bg-white flex flex-col shrink-0" style={{ height: sheetOpen ? '50%' : 'auto' }}>
+          {/* THE PHONE'S ONLY BOARD-DATE PICKER AND SETTINGS GEAR. This row is outside the sheetOpen
+              gate and outside the body the workbench / stop panel replace, so it is on screen with
+              Setup open, with a Compare card open, with the sheet collapsed and with the grid switched
+              off — the four states in which one of the two old copies used to vanish. ONE flow row:
+              date 170 + Today 50.5 + gap 8 + gear 44 = 278.5px inside the 344px a 360px phone has;
+              collapsed, this row and the tab strip below ARE the sheet. dropUp: from a row at the
+              bottom of the viewport a drop-DOWN menu opens off-screen. capHeight + panelsFirst: the
+              open menu is ~570px tall, more than the space above a 50% sheet on a 740px phone, so it
+              is capped and scrolls, with the panel switches — Live dispatch first — above the fold. */}
+          <div className="flex items-center gap-2 px-2 py-1.5 border-b">
+            <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={() => setSelectedDate(todayInET())} compact />
+            <div className="ml-auto">
+              <RoutingSettingsMenu views={routingSettingsViews} panels={phoneGearPanels} actions={routingSettingsActions} dropUp capHeight panelsFirst />
+            </div>
+          </div>
           <div className="flex items-center gap-2 px-2 py-1.5 border-b">
             <button onClick={() => setSheetOpen((o) => !o)} className="text-xs px-2 py-1 rounded border border-slate-300" aria-label={sheetOpen ? 'Collapse' : 'Expand'}>{sheetOpen ? '▾' : '▴'}</button>
             <div className="flex-1 flex gap-1">

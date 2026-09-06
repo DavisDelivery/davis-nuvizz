@@ -74,6 +74,39 @@ const SCREENS = [
 // stayed green while the operator mis-tapped a 30px "Send to NuVizz" at a dock. Each probe
 // opens one of those surfaces and the screen is measured again inside it.
 const PROBES = {
+  // ROUTING NOW OPENS ON THE MAP (v0.93.12): sheet collapsed, grid folded to one bar. The rest-state
+  // sweep therefore sees neither the Setup body nor the rail nor the grid's table — each is one tap
+  // away and is measured here, so coverage MOVED, it did not shrink. The gear probe also carries the
+  // one claim MEASURE cannot make: it judges horizontal overflow only, and this menu drops UP from
+  // the bottom of the screen, so "fully inside the viewport, Live dispatch readable without a
+  // scroll" is asserted by hand.
+  routing: [
+    { name: 'Setup sheet open', open: async (page) => { await page.getByRole('button', { name: /^setup/i }).first().click(); await page.waitForTimeout(600); return page.getByText(/Select stops/i).first().isVisible().catch(() => false); } },
+    { name: 'Grid open on Stops', open: async (page) => { await page.getByRole('button', { name: /^stops \d+/i }).first().click(); await page.waitForTimeout(600); return page.getByText(/^Stop #$/).first().isVisible().catch(() => false); } },
+    { name: 'Grid open on Loads', open: async (page) => { await page.getByRole('button', { name: /^loads \d+/i }).first().click(); await page.waitForTimeout(800); return page.getByText(/Load roster/i).first().isVisible().catch(() => false); } },
+    {
+      name: 'Board-row gear open',
+      open: async (page) => {
+        await page.locator('button[aria-label="Panel settings"]').last().click();
+        await page.waitForTimeout(400);
+        return page.evaluate(() => {
+          const lbl = [...document.querySelectorAll('label')].find((l) => /Live dispatch/.test(l.textContent || ''));
+          const menu = lbl && lbl.closest('[data-overlay-layer]');
+          if (!menu) return false;
+          const m = menu.getBoundingClientRect(); const r = lbl.getBoundingClientRect();
+          // Below the 48px app header, above the bottom of the screen, and the switch inside the
+          // painted part of the menu (not scrolled under its own fold).
+          return m.top >= 48 && m.bottom <= window.innerHeight && r.top >= m.top && r.bottom <= m.bottom;
+        });
+      },
+    },
+  ],
+  'routing-drivers': [
+    { name: 'Routes sheet open', open: async (page) => { await page.getByRole('button', { name: /^routes/i }).first().click(); await page.waitForTimeout(600); return page.getByRole('button', { name: /^collapse$/i }).first().isVisible().catch(() => false); } },
+  ],
+  'routing-loads': [
+    { name: 'Routes / Loads sheet open', open: async (page) => { await page.getByRole('button', { name: /^routes/i }).first().click(); await page.waitForTimeout(600); return page.locator('[data-day-loads-panel]').first().isVisible().catch(() => false); } },
+  ],
   map: [
     {
       name: 'Stops sheet',

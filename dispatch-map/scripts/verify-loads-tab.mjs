@@ -298,8 +298,9 @@ for (const mobile of [false, true]) {
   // THE CACHE IS THE ONLY SOURCE NOW. This block used to open on a BUILT-only capture and press
   // Refresh to bring the rest in; with the button gone, the roster the scanner captured IS what
   // the grid shows, so the fixture seeds it directly. The assertions below are unchanged and
-  // still the ones that matter — every empty renders, the off-board load is not called empty,
-  // and the composition line is counted off the rows.
+  // still the ones that matter — every empty renders, and the off-board load is not called
+  // empty. (A line saying what the rows were made of used to be asserted here too; Chad:
+  // "I don't need the panel to state what they are" — it is gone, and so is the assertion.)
   //
   // The BUILT-only case did not disappear with the button: it is asserted in the rail block
   // above ("with a capture that has no empties, it shows none"), which is where the
@@ -327,21 +328,6 @@ for (const mobile of [false, true]) {
       // panel on the bottom." With a roster holding only the built loads, the grid's Loads
       // view IS the Routes list — the same two rows, correctly — and until now nothing on the
       // screen said whether that was the day or a fault. The line has to be readable off the
-      // rows it sits above, so it is asserted against them and not against a constant.
-      // MEASURED, NOT ASSUMED. `truncate` leaves innerText intact, so a text assertion alone
-      // would pass on a line the dispatcher cannot actually read. This checks the pixels: the
-      // span must not be clipped by its own box on either view.
-      const mix = await page.evaluate(() => {
-        const el = Array.from(document.querySelectorAll('span')).find((x) => /with stops, \d+ empty/.test(x.innerText || ''));
-        if (!el) return null;
-        const r = el.getBoundingClientRect();
-        return { text: el.innerText.trim(), clipped: el.scrollWidth > el.clientWidth + 1, w: Math.round(r.width), visible: r.width > 40 && r.height > 0 };
-      });
-      if (!mix) bad(`the grid does not say its composition (${view})`);
-      else if (mix.clipped || !mix.visible) bad(`the composition line is clipped at ${mix.w}px (${view}): ${JSON.stringify(mix.text)}`);
-      else ok(`the composition line is fully readable at ${mix.w}px — ${JSON.stringify(mix.text)}`);
-      if (/2 with stops, 3 empty, 1 not on this board/.test(before)) ok('the grid says what its rows are made of — 2 with stops, 3 empty, 1 not on this board');
-      else bad(`the grid's composition line does not match its rows (${view}): ${JSON.stringify(mix && mix.text)}`);
       // NO REFRESH ON THE GRID EITHER — the same removal, on the other surface. Writing this
       // assertion once per view is what stops the two drifting: this repo has shipped a control
       // into one navigation and not the other twice.
@@ -380,10 +366,33 @@ for (const mobile of [false, true]) {
           if (!/No orders yet/.test(row || '')) ok('…and it does not also claim it has no orders');
           else bad(`the off-board row still says "No orders yet" (${view}): ${JSON.stringify(row)}`);
         } else bad(`the off-board load ${OFF_BOARD.name} never reached the grid (${view})`);
-        if (/2 with stops, 3 empty, 1 not on this board/.test(after || '')) ok('…and the composition line is counted off those rows, not a separate tally');
-        else bad(`the composition line does not match the rows (${view}): ${JSON.stringify(((after || '').match(/Load roster:[^\n]*/) || [''])[0])}`);
       }
     }
+  }
+  // v0.93.12, PHONE ONLY — A CARD OPENED FROM THE GRID MUST BE SEEN. The phone's sheet now starts
+  // collapsed and drops whenever the grid opens, so a Compare card opened while the sheet is down
+  // has to raise the sheet itself — for the SECOND card as much as the first (the effect that does
+  // it used to fire only on 0 → 1). Tap CHAD in the Loads view (card 1: sheet up, grid folds), reopen
+  // the grid on Stops (sheet drops), tap an ESTES stop (card 2). A card rendered into a collapsed
+  // sheet is a tap that did nothing a dispatcher can see — which is exactly what the review of this
+  // layout predicted, so the guard pins it. Runs LAST in this block: it folds the grid's table.
+  if (mobile && opened) {
+    const tapCell = (re) => page.evaluate((src) => { const r = new RegExp(src); const t = Array.from(document.querySelectorAll('td')).find((c) => r.test((c.innerText || '').trim())); if (!t) return false; t.click(); return true; }, re);
+    const sheetUp = () => page.evaluate(() => !!document.querySelector('button[aria-label="Collapse"]'));
+    const cardsUp = () => page.evaluate(() => Array.from(document.querySelectorAll('button')).filter((b) => /Cancel route/.test(b.innerText || '')).length);
+    if (!(await tapCell('^CHAD$'))) bad('no CHAD row to tap in the grid (phone)');
+    await page.waitForTimeout(1200);
+    if ((await sheetUp()) && (await cardsUp()) === 1) ok('tapping CHAD in the grid opens its card AND raises the sheet');
+    else bad(`card 1 from the grid: sheet up=${await sheetUp()}, cards=${await cardsUp()} (phone)`);
+    await page.evaluate(() => { const b = Array.from(document.querySelectorAll('button')).find((x) => /^Stops\s+\d+/.test((x.innerText || '').replace(/\n/g, ' ').trim())); if (b) b.click(); });
+    await page.waitForTimeout(800);
+    if (!(await sheetUp())) ok('reopening the grid drops the sheet — one bottom surface at a time');
+    else bad('the sheet stayed up while the grid opened (phone)');
+    if (!(await tapCell('^ESTES CO 1$'))) bad('no ESTES stop row to tap in the grid (phone)');
+    await page.waitForTimeout(1200);
+    const seen = await page.evaluate(() => { const c = document.querySelector('button[aria-label="Collapse"]'); const sheet = c && c.closest('.border-t.bg-white.flex.flex-col'); return !!sheet && /ESTES/.test(sheet.innerText || ''); });
+    if ((await cardsUp()) === 2 && seen) ok('a planned ESTES stop tapped in the grid opens a SECOND card and raises the sheet to show it');
+    else bad(`card 2 from the grid: cards=${await cardsUp()}, ESTES visible in the sheet=${seen} (phone)`);
   }
   if (errors.length) bad(`grid ${view}: page errors — ${errors.join(' | ')}`);
   await ctx.close();
