@@ -23,6 +23,8 @@
 //
 // PURE. No Firestore, no clock, no network — every rule here is testable on data.
 
+import { davisClosedDay, isoWeekday } from '../../../src/lib/davis-calendar.js';
+
 export interface ShellSource { date: string; loads: any[] }
 
 /** How many recent captured days have to be found before the standard set is taken. */
@@ -33,6 +35,38 @@ export const SHELL_LOOKBACK_DAYS = 14;
 export const SHELL_MIN_AGREEMENT = 2;
 
 const key = (v: any): string => String(v ?? '').trim().toLowerCase();
+const trips = (l: any): number => { const n = Number(l?.trips); return Number.isFinite(n) ? n : 0; };
+
+/**
+ * Does this roster look like a day NUVIZZ GENERATED, rather than one a dispatcher built by hand?
+ *
+ * The shape tells them apart, not the size. A generated day arrives as a hundred-odd Draft
+ * shells with ZERO trips, and the ones nobody fills stay at zero (Draft or Cancelled) all day —
+ * every captured weekday from Aug 24 to Sep 4 held 41–53 of them at its final write. A day the
+ * dispatcher built ahead from this list holds only routes WITH stops, because NuVizz refuses to
+ * create an empty route (reason 903). So: at least one empty load ⇒ generated.
+ */
+export function looksGenerated(loads: any[] | null | undefined): boolean {
+  return (loads || []).some((l) => l && key(l.name) && trips(l) === 0);
+}
+
+/**
+ * Pick the days the standard set is read from: the most recent captured weekdays that look
+ * GENERATED, up to SHELL_SOURCES. A day Chad half-built by hand must not be a source — sixty
+ * routes he got to on Sunday would outvote the forty he did not, and Wednesday's list would
+ * shrink to whatever he happened to build. `candidates` come most recent first, as
+ * shellLookbackDates orders them; days with no loads are skipped either way.
+ */
+export function pickShellSources(candidates: ShellSource[], max = SHELL_SOURCES): ShellSource[] {
+  const out: ShellSource[] = [];
+  for (const c of candidates || []) {
+    if (out.length >= max) break;
+    if (!c || !Array.isArray(c.loads) || c.loads.length === 0) continue;
+    if (!looksGenerated(c.loads)) continue;
+    out.push(c);
+  }
+  return out;
+}
 
 /**
  * Calendar days strictly BEFORE `fromDate`, most recent first, weekdays only (the roster is
@@ -85,29 +119,50 @@ export function standardShellNames(sources: ShellSource[]): string[] {
 }
 
 /**
- * shouldOfferShells(date, today, rosterLoads, standard) → may the endpoint attach the shells?
+ * shouldOfferShells(date, today, rosterLoads, standard, closed?) → may the endpoint attach the shells?
  *
- *   • a PAST date       → never. Nothing gets built onto yesterday.
- *   • no standard names → never. There is nothing to offer.
- *   • an EMPTY roster   → yes. This is Chad's Sunday: NuVizz answered zero rows for the day.
- *   • a roster missing MORE THAN HALF of the standard names → yes. This is the same Sunday an
- *     hour later: he saved "SUW 2" and "ATL", the next scan captured those two, and the other
- *     hundred shells still need creating. Ninety-eight missing of a hundred is "NuVizz has not
- *     generated this day"; three missing of a hundred is an ordinary day with three routes
- *     cancelled, and offering those three as "not in NuVizz yet" would be noise on every
- *     normal morning.
+ *   • a PAST date        → never. Nothing gets built onto yesterday.
+ *   • a CLOSED day       → never. Saturday, Sunday, Labor Day, Christmas: Davis runs nothing, and
+ *                          a date picker that landed one day off must not hand out a hundred
+ *                          routes to build onto a day nobody drives. The calendar is the repo's
+ *                          own (davis-calendar.js); `closed` may be passed in for a pure test.
+ *   • no standard names  → never. There is nothing to offer.
+ *   • an EMPTY roster    → yes. This is Chad's Sunday: NuVizz answered zero rows for the day.
+ *   • a roster with NO EMPTY load → yes, for every standard name it lacks. This is the same
+ *     Sunday an hour later: he saved 51 routes, the scan captured 51 loads with stops, and the
+ *     other 49 still need creating. The first version offered only while MORE THAN HALF were
+ *     missing, which took the list away at route 51 and printed "every load already carries
+ *     orders" — the false sentence v0.93.12 was fixing, one version later. A day NuVizz
+ *     generated is told by its SHAPE (looksGenerated), not its size.
+ *   • a GENERATED roster → only when more than half the standard names are missing anyway (a
+ *     capture that caught generation half-way). An ordinary morning with three routes
+ *     cancelled must not offer three shells as "not in NuVizz yet".
  *
  * `missing` is returned so a caller can log or show it; the endpoint sends the full standard
  * list and the client subtracts what the board already has (roster, board groups, cards).
  */
 export function shouldOfferShells(
   date: string, today: string, rosterLoads: any[] | null | undefined, standard: string[],
-): { offer: boolean; missing: string[] } {
+  closed: string | null = closedDayReason(date),
+): { offer: boolean; missing: string[]; closed: string | null } {
   const std = Array.isArray(standard) ? standard : [];
-  if (!std.length) return { offer: false, missing: [] };
-  if (String(date ?? '') < String(today ?? '')) return { offer: false, missing: [] };
-  const have = new Set((rosterLoads || []).map((l) => key(l?.name)).filter(Boolean));
+  if (!std.length) return { offer: false, missing: [], closed };
+  if (String(date ?? '') < String(today ?? '')) return { offer: false, missing: [], closed };
+  if (closed) return { offer: false, missing: [], closed };
+  const loads = (rosterLoads || []).filter((l) => l && key(l.name));
+  const have = new Set(loads.map((l) => key(l.name)));
   const missing = std.filter((n) => !have.has(key(n)));
-  const offer = have.size === 0 || missing.length * 2 > std.length;
-  return { offer, missing };
+  if (!missing.length) return { offer: false, missing, closed };
+  const offer = have.size === 0 || !looksGenerated(loads) || missing.length * 2 > std.length;
+  return { offer, missing, closed };
+}
+
+/** Why Davis runs nothing on `date` (a weekend, a named holiday), or null. */
+export function closedDayReason(date: string): string | null {
+  const d = String(date ?? '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
+  const wd = isoWeekday(d);          // getUTCDay(): 0 = Sunday … 6 = Saturday
+  if (wd === 6) return 'Saturday';
+  if (wd === 0) return 'Sunday';
+  return davisClosedDay(d) || null;
 }

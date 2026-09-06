@@ -7,13 +7,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { installFirestoreFake } from './_firestore-fake.mjs';
-import { shellLookbackDates } from '../netlify/functions/lib/roster-shells.mts';
+import { shellLookbackDates, closedDayReason } from '../netlify/functions/lib/roster-shells.mts';
 
 const etDay = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
 const TODAY = etDay(new Date());
 const addDays = (iso, n) => new Date(Date.parse(iso + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
 // The next weekday after today — "the day I want to build on", viewed from whatever today is.
-const VIEWED = (() => { let d = addDays(TODAY, 1); while ([0, 6].includes(new Date(d + 'T00:00:00Z').getUTCDay())) d = addDays(d, 1); return d; })();
+const VIEWED = (() => { let d = addDays(TODAY, 1); while (closedDayReason(d)) d = addDays(d, 1); return d; })();
+// The next Saturday on or after today — a day Davis does not run.
+const SATURDAY = (() => { let d = TODAY; while (new Date(d + 'T00:00:00Z').getUTCDay() !== 6) d = addDays(d, 1); return d; })();
 // The three captured delivery days before it, as the endpoint will find them.
 const SOURCES = shellLookbackDates(VIEWED).slice(0, 3);
 const PAST = addDays(SOURCES[2], -7);
@@ -37,6 +39,7 @@ async function read(seed, date) {
   const { restore, log } = installFirestoreFake(seed);   // no onOther → any vendor fetch THROWS
   try {
     const mod = await import('../netlify/functions/nuvizz-loads-roster.mts');
+    mod._resetShellMemo();                                 // each test seeds its own week
     const res = await mod.default(new Request(`https://x.netlify.app/.netlify/functions/nuvizz-loads-roster?date=${date}`));
     return { status: res.status, body: await res.json(), log };
   } finally { restore?.(); }
@@ -79,12 +82,32 @@ test('with nothing captured in the look-back window there is nothing to offer �
   assert.equal(body.shells, null);
 });
 
-test('automatic reads switched off (NUVIZZ_ROSTER_AUTO_LIVE=0): a never-captured day answers source:none WITH the shells', async () => {
+test('automatic reads switched off (NUVIZZ_ROSTER_AUTO_LIVE=0): a never-captured day answers source:none and NO shells — nothing verified, nothing offered', async () => {
   process.env.NUVIZZ_ROSTER_AUTO_LIVE = '0';
   try {
     const { body } = await read(seedWeek(), VIEWED);
     assert.equal(body.ok, true);
     assert.equal(body.source, 'none');
-    assert.deepEqual(body.shells.names, ['ATL', 'DIXON', 'SUW 2'], 'the day he wants to build on is still plannable');
+    assert.equal(body.shells, null, 'the endpoint has not asked NuVizz about this day, so it may not call anything "not in NuVizz yet"');
   } finally { delete process.env.NUVIZZ_ROSTER_AUTO_LIVE; }
+});
+
+test('A HALF-BUILT DAY IS NOT A SOURCE: the sixty routes he built by hand do not outvote the forty he did not', async () => {
+  // The most recent captured weekday holds only built routes (no Draft shell at zero trips):
+  // it is skipped, and the three generated days behind it decide the list.
+  const built = Array.from({ length: 3 }, (_, i) => load(`HAND ${i}`, 40 + i, 7));
+  const hand = rosterDoc(SOURCES[0], built, `${SOURCES[0]}T16:00:00Z`);
+  const seed = { ...seedWeek(), [`nuvizz_load_roster/davis__${SOURCES[0]}`]: hand,
+    [`nuvizz_load_roster/davis__${shellLookbackDates(VIEWED)[3]}`]: rosterDoc(shellLookbackDates(VIEWED)[3], [load('SUW 2', 50), load('ATL', 51), load('DIXON', 52, 11)], `${shellLookbackDates(VIEWED)[3]}T16:00:00Z`),
+    [`nuvizz_load_roster/davis__${VIEWED}`]: emptyDoc(VIEWED) };
+  const { body } = await read(seed, VIEWED);
+  assert.deepEqual(body.shells.names, ['ATL', 'DIXON', 'SUW 2']);
+  assert.ok(!body.shells.from.includes(SOURCES[0]), 'the hand-built day is not among the sources');
+  assert.ok(!body.shells.names.some((n) => /^HAND/.test(n)));
+});
+
+test('a CLOSED day (the next Saturday) gets no shells even with an empty capture from today', async () => {
+  const { body } = await read({ ...seedWeek(), [`nuvizz_load_roster/davis__${SATURDAY}`]: emptyDoc(SATURDAY) }, SATURDAY);
+  assert.equal(body.ok, true);
+  assert.equal(body.shells, null);
 });

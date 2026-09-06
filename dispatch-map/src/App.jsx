@@ -115,7 +115,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.93.13';
+const APP_VERSION = '0.93.14';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -186,6 +186,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.93.14', 'THE REVIEW OF v0.93.13 CHANGED FOUR OF ITS RULES, AND THE BOT HAD MERGED IT BEFORE THE FIXES LANDED. v0.93.13 was reviewed adversarially — three lenses, a refuter each — while its PR was open; the repo’s auto-merge took the green PR at its first commit, so the findings ship here, one version later, unchanged in substance. (1) The first offer rule hid the list at route 51 of 100: it offered shells only while MORE THAN HALF the standard names were missing, so after Chad saved half a day and the scan captured it the tab printed “every load already carries orders” again. A generated day is now told by its SHAPE, not its size — it holds Draft shells at zero trips, and a day built by hand holds only routes with stops because NuVizz refuses an empty route — so a hand-built day keeps offering every name it lacks. (2) A half-built day was counted as a source, so sixty routes built by hand would have outvoted the forty not yet built and shrunk the next day’s list; only generated-looking days are sources now, read together in one round trip and remembered for five minutes. (3) The seventh shell tap was silent: Compare caps at six cards and the refusal went to the New-route modal, which was not open — reproduced in a real browser on both views by the refuter — so the tap now says “Compare is full” where it happened, and the guard opens six cards and taps a seventh. (4) Closed days: a Saturday, a Sunday or Labor Day landed on by a date picker one day off must not hand out a hundred routes to build onto a day nobody drives; the repo’s own calendar (davis-calendar.js) settles it before a document is read. Also from the review: no shells on a day nobody has asked NuVizz about (source none); a name over NuVizz’s 20-character cap is never offered; the grid’s row order is a numeric tier (driven, driverless, shell) because under ICU collation the old “~” sentinel sorted above letters; a past day captured empty today says “holds no loads” without “yet” and no invitation to build; and the guard’s empty-day fixture is stamped minutes ago, not six hours, so a CI run between midnight and 6am ET cannot cross the ET day and go red for nothing. Not done, said plainly: labelling Tuesday’s empty twin of a route built Sunday as such on the Loads tab — the pair already shows both numbers (v0.54.25). 60 new tests; the loads-tab guard drives the uncreated day on both surfaces and both views, taps a shell into a card, brings the panel back to prove the name left the offer, and taps a seventh into the cap.'],
   ['0.93.13', 'THE LOADS PANELS NOW LIST THE STANDARD ROUTES FOR A DAY NUVIZZ HAS NOT CREATED YET, AND A TAP OPENS THE ROUTE CARD THAT SAVE TURNS INTO A REAL NUVIZZ LOAD. Chad, Sunday, the board on Tue Sep 8: “You can spend the call I just want my problem fixed. I want to build loads on the weekend for next week and if I put the map on the date I want to build on and do a manual scan the loads should show up even if on the weekend.” THE ONE CALL HE APPROVED, 13:51 ET, nuvizz-load-columns?date=2026-09-08&confirm=1: HTTP 200, 21 column definitions, ZERO rows for period +2d. The request is byte-identical to July’s and the same query kept 106 of 106 rows on Sep 2, so the scan is not the problem — NuVizz holds no loads for Tuesday. Every pull since Friday noon said the same (Sep 8 asked six times, empty each time; the last non-empty capture was Friday, for Friday), and a scan cannot show a load the vendor has not created. WHAT THE APP CAN DO IS WHAT CHAD DESIGNED ON AUG 3 FOR EXACTLY THIS HOLE: ＋ New route opens a pending Compare card and Save creates the route in NuVizz with its whole stop list. What that flow lacked was the LIST — he should not have to type SUW 2 from memory fifty times on a Sunday. So, for a day on or after today whose roster is empty or missing more than half the usual names, the roster endpoint also returns the STANDARD SHELLS: the route names the last three captured delivery days agree on (a name on two of three is a recurring route; a one-day name is a driver on his own trailer and is left out), read from the roster cache — Firestore only, never a vendor call, proven by a test whose vendor fetch throws. Both Loads surfaces list them under “Not in NuVizz yet — tap to open a route card”, the rail and the bottom grid, desktop and phone; the screen subtracts what the roster, the board and the open cards already hold, so after he saves SUW 2 the other ninety-nine are still offered and SUW 2 is not offered twice. A tap runs the New-route pre-flight (a name already on the board, a missing ship-from address) and opens the card with the name filled in; nothing is sent until Save, exactly as the modal says. On the phone the card raises the sheet, the same way a card from the grid does since v0.93.12. AND THE LINE SAYS WHAT ZERO MEANS: “0 loads · cached just now” — what Chad read for two days — now reads “NuVizz has no loads for this day yet · NuVizz answered 0 rows 8m ago”, from the pull record every capture carries since v0.93.12; the rail no longer tells him “every load already carries orders” on a day that has none. SAID OUT LOUD, BECAUSE IT IS A DISPATCH FACT THE CODE CANNOT SEE: in July tomorrow’s shells existed the morning before (v0.32.16, v0.33.8 captured 102 of them on Jul 1 for Jul 2). This weekend Monday’s and Tuesday’s did not exist by Sunday afternoon. Whoever or whatever generates them in NuVizz — a static-route job, a portal action, a person at 5am — did not run for the holiday week, and when it does run on Tuesday a route he built Sunday will sit beside the generated empty of the same name; the board tells them apart by number (v0.54.25) and the empty twin gets cancelled. Whether NuVizz can be set to generate further ahead is the question that makes this moot, and it is his to ask the vendor. 46 new tests; the loads-tab guard drives the uncreated day on both surfaces and both views and taps a shell into a card.'],
   ['0.93.12', 'THE PHONE OPENS ON THE MAP WITH ONE DATE PICKER; THE NARRATION LINE IS GONE FOR REAL; EVERY ROSTER PULL RECORDS WHAT IT SAW; AND A FUTURE DAY’S ROSTER IS CALLED ONCE A DAY. Chad, Sunday, phone on Tue Sep 8: “Still not fixed … 2 ways to set dates on mobile. Which wastes very limited space. Also there is a ton of wasted white spaces on mobile.” Then: “6 weeks ago there was no issue with the loads screen and roster scans.” Then: “The roster for future dates only needs to be called once a day as they will not change.” FOUR THINGS, EACH CHECKED RATHER THAN ARGUED. (1) THE ROSTER, AGAINST JULY. The clone was shallow — nothing before Aug 25 — so it was deepened and the roster path diffed against v0.52.4 (Jul 26). The request to NuVizz is byte-identical: periodForDate, the 35833 body, normalizeLoads, unchanged in six weeks. What changed: v0.69.0/v0.77.0 (Aug 21/25) moved the roster from “re-ask every future day on every scan” to two hourly windows, an engineering reclaim not a Chad schedule, left alone at his instruction; and v0.93.5 (mine) let the third horizon day re-pull HOURLY behind a switch. Chad’s rule settles that one: once a day, every future date, no exceptions but the manual Scan, which always pulls. The switch and the re-pull are gone; today still re-pulls every roster fire because its loads are being built and dispatched all day; an empty capture still does not count as captured, because zero rows is not a roster that will not change, it is a day nobody has built yet. A bound that re-asked an empty capture hourly on the endpoint was committed and reverted the same afternoon for the same reason. AND EVERY PULL NOW RECORDS WHAT IT SAW: the period sent, HTTP status, column defs, rows returned, rows kept — one log line per pull, stored beside the roster, read back by ?explain=1 in words (“the vendor answered ZERO rows for period +2d” versus “answered 106 rows and the parser KEPT NONE”). “0 loads · cached just now” had three pixel-identical causes and nothing recorded which; from this deploy that question costs nothing. What NuVizz actually holds for Sep 8 is still one call away and was asked for, not guessed. (2) THE “N WITH STOPS, N EMPTY” LINE IS REMOVED. Asked for twice; my removal commit landed thirty minutes after #820 squash-merged, so it has been live through v0.93.11. Gone, with its guard assertions. (3) ONE DATE PICKER ON THE PHONE, IN ONE HOME. Measured in a real browser at 390 and 360: two identical date+Today+gear trios 161px apart (the grid’s headerRight and the Setup header), and the grid toolbar wrapping to FOUR rows — 216px of chrome for six controls — under a map squeezed to 68px. Both copies go; the one home is a board row that is the first child of the bottom sheet, above the tab strip and outside every body the workbench or stop panel replaces, so it survives all four states in which one of the old copies vanished: Setup open, a Compare card open, the sheet collapsed, the grid switched off. The phone gear lists only what a phone can act on and carries the grid toggle so a grid switched off can be switched back on. (4) THE PHONE OPENS ON THE MAP. Sheet collapsed by default (every flow that needs it opens it itself), and ONE bottom surface at a time: opening the grid drops the sheet, opening the sheet folds the grid, and a Compare card raises the sheet whenever the card list GROWS — the first version fired only on 0→1, so a second card tapped from the grid rendered into a collapsed sheet and looked like nothing happened; the review predicted it and the guard now pins it. The phone grid is one bar when collapsed and two rows when open. SAID OUT LOUD BECAUSE IT IS AN EXCEPTION TO A CHAD RULE: v0.47.0 says the collapsed bar must be identical to the open one; on the phone the collapsed bar now hides Profiles, search and Status — except while a search term or status filter is LIVE, because those reach the map and a filter with no visible control is the v0.45.6 trap. Every hidden control auto-opens the grid on use. Cost: comparing two loads from the grid is four taps where it was two. Measured at 390x844 in Chad’s state: 253px given back to the map; at rest 409px. Desktop #root.innerHTML byte-identical to the untouched baseline at 1600x1000, grid open and closed — untouched by measurement, not by reading. THREE INDEPENDENT PROPOSALS, EACH ADVERSARIALLY REVIEWED twice (guards; a dispatcher planning 700 stops from a cab), synthesised from the winner with the others’ best grafted in, and the whole edit set applied to a scratch build and run against every guard before a line of it touched this branch. Six new routing probes in the phone guard and a two-card assertion in the loads-tab guard.'],
   ['0.93.11', 'THE ROSTER REFRESH BUTTON IS GONE — BOTH OF THEM. Chad: “I don’t need a roster refresh button remove it.” He is right, and the reason is that the control he already presses does the job now: v0.93.9 made a manual Scan now pull the load roster for the board date on screen AND the next business day, so a separate per-panel refresh bought nothing. WHAT IT COST TO KEEP. There were TWO of them — the Routing rail’s Loads tab and the bottom grid’s Loads view — each with its own copy of the roster state, both keyed on the same selected date and neither aware of the other. So one dispatcher intent (“refresh the loads”) was two vendor calls if he pressed both, and pressing only one left the OTHER panel still showing the older answer for the same day. Two surfaces quietly disagreeing about the same fact is the defect underneath the button, and deleting the button is what fixes it rather than another sync. WHAT GOES WITH IT: the ?live=1 fetch on both surfaces, the two busy flags, the rail’s refreshDayRoster callback and its props, and the grid’s pullRoster (which had exactly one caller — the button). Both panels are now purely cache-first: they render what the scanner captured and spend nothing on open, which is also the last client path that could reach NuVizz without a scan. WHAT STAYS, DELIBERATELY: the freshness line on both. “3 loads · cached 6h ago” is a completely different fact from “3 loads”, and it is the only thing on the screen that can tell “this day has no empty loads” from “nobody has asked today” — the absent-is-not-zero rule this repo has now been bitten by in four places. The grid’s could-not-read message no longer says “Try Refresh roster”; it points at Scan now, which is the control that actually moves it. The endpoint keeps ?live=1 — it is still the documented override and the scanner’s own guard path uses it — it simply has no caller in the client again. THE BROWSER GUARD WAS REWRITTEN, NOT RELAXED, because the rule it pinned is the rule that changed. It used to press Refresh and assert a ?live=1 went out; it now asserts the opposite on BOTH surfaces and BOTH views — no Refresh control inside either panel, and no vendor call spent on open or afterwards. The downstream coverage that mattered is kept and re-sourced: every empty trailer renders, TRAILER 9 is still labelled “Not on this board · 12 trips” rather than “No orders yet”, and the composition line is still counted off the rows — all driven now from the CAPTURE instead of from a press. One assertion in the rewrite failed honestly on the first run and was fixed rather than loosened: it looked for the grid’s “Load roster:” prefix inside the RAIL, and the two surfaces word the same fact differently — asserting one panel’s copy against the other’s is how a green run stops meaning anything. 3,360 green, loads-tab guard green on desktop and phone.'],
@@ -13413,7 +13414,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       .then((j) => {
         if (cancelled) return;
         setRoster(j && j.ok ? (j.loads || []) : []);
-        setRosterMeta(j && j.ok ? { ok: true, source: j.source, at: j.at, count: j.count, pull: j.pull || null } : { ok: false });
+        setRosterMeta(j && j.ok ? { ok: true, source: j.source, at: j.at, count: j.count, pull: j.pull || null, date: j.date || null } : { ok: false });
       })
       .catch(() => { if (!cancelled) { setRoster([]); setRosterMeta({ ok: false }); } });
     return () => { cancelled = true; };
@@ -13500,11 +13501,14 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
         arr.push({ loadNbr: shellRowKey(name), routeName: name, driverName: '', count: 0, buckets: {}, pallets: 0, loose: 0, weight: 0, shell: true, realId: null });
       }
     }
-    if (needle) arr = arr.filter((g) => [g.loadNbr, g.routeName, g.driverName].filter(Boolean).join(' ').toLowerCase().includes(needle));
-    // Driver A→Z, then loads with no driver, then the shells NuVizz does not hold yet — real
-    // rows always ahead of names that are only an offer.
-    const driverKey = (g) => g.driverName || (g.shell ? '~~' : '~');
-    arr.sort((a, b) => String(driverKey(a)).localeCompare(String(driverKey(b))) || String(a.routeName || a.loadNbr).localeCompare(String(b.routeName || b.loadNbr)));
+    // A shell's row key is "shell:NAME" — never part of the search, or typing "sh" matches all of them.
+    if (needle) arr = arr.filter((g) => [g.shell ? null : g.loadNbr, g.routeName, g.driverName].filter(Boolean).join(' ').toLowerCase().includes(needle));
+    // Loads with a driver A→Z, then loads with no driver, then the shells NuVizz does not hold
+    // yet — real rows always ahead of names that are only an offer. A numeric tier, not a
+    // sentinel string: under ICU collation "~" sorts BEFORE letters, so the old '~' put every
+    // driverless load above the driven ones and would have put the shells above everything.
+    const tier = (g) => (g.shell ? 2 : (g.driverName ? 0 : 1));
+    arr.sort((a, b) => (tier(a) - tier(b)) || String(a.driverName || '').localeCompare(String(b.driverName || '')) || String(a.routeName || a.loadNbr).localeCompare(String(b.routeName || b.loadNbr)));
     return arr;
   }, [loadSrc, q, roster, rosterByName, planShells, onPlanShell]);
   // TWO PLACEMENTS AND TWO SHAPES, because a phone is not a narrow desktop. On a laptop this
@@ -13534,7 +13538,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       get: (g) => g.realId ? <span className="font-mono text-[11px] text-slate-500" title={g.realId}>{g.realId}</span> : '—',
       sortVal: (g) => g.realId || '' },
     { k: 'status', label: 'Status', w: 240, get: (g) => (g.shell
-        ? <span className="inline-flex items-center gap-1 px-1.5 rounded text-[10px] font-medium bg-sky-50 text-sky-800 border border-sky-200" title="NuVizz has not created this route for the day yet. Tap the row to open a route card; Save creates it in NuVizz with its stops.">Not in NuVizz yet · tap to plan</span>
+        ? <span className="inline-flex items-center gap-1 px-1.5 rounded text-[10px] font-medium bg-sky-50 text-sky-800 border border-sky-200" title="NuVizz has not created this route for the day yet. Tap the row to open a route card, add its orders, then Save creates it in NuVizz. If NuVizz later creates its own copy of this route, cancel the empty twin.">Not in NuVizz yet · tap to plan</span>
         : g.offBoard
         ? <span className="inline-flex items-center gap-1 px-1.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200" title={'NuVizz says this load carries ' + g.count + ' trip(s), but none of its stops are on this day\u2019s board' + (g.rosterStatus ? ' \u00b7 load status: ' + g.rosterStatus : '')}>Not on this board · {g.count} trip{g.count === 1 ? '' : 's'}{g.rosterStatus ? ' · ' + g.rosterStatus : ''}</span>
         : g.empty
@@ -14000,7 +14004,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                 // second was true.
                 <tr><td colSpan={loadCols.length} className="px-3 py-4 text-slate-400 italic text-left">
                   {rosterState.known
-                    ? (rosterState.count === 0 ? 'NuVizz has no loads for this day yet.' : 'No loads on the current board.')
+                    ? (rosterState.tone === 'empty' ? (rosterState.past ? 'NuVizz holds no loads for this day.' : 'NuVizz has no loads for this day yet.') : 'No loads on the current board.')
                     : 'No built loads on this board, and this day’s load roster could not be read — so we can’t say whether there are empty loads. Press Scan now to pull it.'}
                 </td></tr>
               )}
@@ -18285,7 +18289,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     loadRosterRef.current = index;
     setLoadStatusByName(status);
     setLoadRosterList(j && j.ok ? (j.loads || []) : []);
-    setDayRosterMeta(j && j.ok ? { ok: true, source: j.source, at: j.at, count: j.count, pull: j.pull || null } : { ok: false });
+    setDayRosterMeta(j && j.ok ? { ok: true, source: j.source, at: j.at, count: j.count, pull: j.pull || null, date: j.date || null } : { ok: false });
     setDayShells(j && j.ok && j.shells && Array.isArray(j.shells.names) ? j.shells : null);
   }, []);
   const clearDayRoster = useCallback(() => {
@@ -19654,10 +19658,15 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // board, a missing ship-from address, a name NuVizz would cap — each is a sentence in the
   // toast rather than a card that fails on Save.
   const onPlanShell = useCallback((name) => {
+    // THE CARD CAP, SAID WHERE THE TAP HAPPENED. createNewRoute refuses a seventh card by
+    // setting newRouteError, which only the ＋ New route modal renders — and no modal is open
+    // here. Without this line the seventh shell of a Sunday build was a tap that did nothing a
+    // dispatcher could see (the review reproduced it in a browser, both views).
+    if (wbRoutes.length >= WB_MAX) { showMapToast(`Compare is full (${WB_MAX} routes) — close a saved card first, then tap ${name} again.`); return; }
     const check = validateNewRoute({ routeName: name, date: selectedDate, existingNames: routeGroups.map((g) => g.name || g.key), hasOrigin: !!readShipFromOrigin() });
     if (!check.ok) { showMapToast(check.error); return; }
     createNewRoute(name, check.loadNbr);
-  }, [selectedDate, routeGroups, showMapToast, createNewRoute]);
+  }, [wbRoutes.length, selectedDate, routeGroups, showMapToast, createNewRoute]);
 
   // Frame ALL of a driver's stops (they may run multiple routes). Lighter than onPickRoute —
   // it only fits the map bounds, it doesn't open every route in the workbench.
@@ -21848,6 +21857,12 @@ function RoutingDayLoadsPanel({ rows, offBoard = [], builtCount = 0, onPickLoad,
       <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-sky-800 bg-sky-50 border-y border-sky-200">
         Not in NuVizz yet — tap to open a route card ({shownShells.length})
       </div>
+      {/* The one cost of building ahead, said where the tap happens rather than only in a
+          changelog: whatever generates the day's routes in NuVizz will make its own empty of
+          the same name when it runs, and that twin is the dispatcher's to cancel. */}
+      <div className="px-3 py-1 text-[10px] text-sky-900/70 bg-sky-50/60 border-b border-sky-100">
+        Save creates the route in NuVizz with its orders. If NuVizz later creates its own copy, cancel the empty twin.
+      </div>
       <div className="divide-y">
         {shownShells.map((name) => <PlanShellRow key={name} name={name} onPlanShell={onPlanShell} />)}
       </div>
@@ -21903,8 +21918,10 @@ function RoutingDayLoadsPanel({ rows, offBoard = [], builtCount = 0, onPickLoad,
           // two call for different work: one is done, the other has not started.
           roster.count === 0 ? (
             <div className="p-4 text-[12px] text-slate-400">
-              NuVizz has no loads for this day yet — nothing has been created for it in the vendor.
-              Use <b>＋ New route</b> to build one; it is created in NuVizz when you Save.
+              {roster.past
+                ? <>NuVizz holds no loads for this day.</>
+                : <>NuVizz has no loads for this day yet — nothing has been created for it in the vendor.
+                  Use <b>＋ New route</b> to build one; it is created in NuVizz with its orders when you Save.</>}
               {roster.stale ? <> This roster was captured <b>{roster.age}</b>, before today — press <b>Scan now</b> to ask again.</> : null}
             </div>
           ) : (
@@ -21956,7 +21973,7 @@ function PlanShellRow({ name, onPlanShell }) {
         <span className="font-semibold text-[12px] text-blue-700 truncate flex-1 min-w-0">{name}</span>
         <span className="shrink-0 px-1.5 rounded text-[10px] font-medium bg-sky-50 text-sky-800 border border-sky-200" title="NuVizz has not created this route for the day yet. Tap to open a route card; Save creates it in NuVizz with its stops.">Not in NuVizz yet</span>
       </div>
-      <div className="mt-0.5 text-[11px] text-slate-500">Tap to open a route card · created in NuVizz when you Save</div>
+      <div className="mt-0.5 text-[11px] text-slate-500">Tap to open a route card · add its orders, then Save creates it in NuVizz</div>
     </button>
   );
 }

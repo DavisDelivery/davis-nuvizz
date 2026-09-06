@@ -10,8 +10,11 @@
 //                                       or one this screen created and synced); same thing
 //   • a name already on a CARD       — a pending route card is open for it; tapping the shell
 //                                       again must not offer a second card for the same name
+//   • a name longer than NuVizz's cap — Save would refuse it; see below
 //
 // What is left is what a dispatcher can still create for the day, in the endpoint's order.
+
+import { ROUTE_FIELD_MAX } from './route-create.js';
 
 const key = (v) => String(v ?? '').trim().toLowerCase();
 
@@ -33,6 +36,10 @@ export function planAheadNames({ shells, rosterLoads = [], boardNames = [], pend
   for (const n of names) {
     const k = key(n);
     if (!k || taken.has(k) || seen.has(k)) continue;
+    // A name NuVizz would refuse on Save (its route-name cap) is never offered: a row that
+    // toasts a refusal on every tap is a dead row that reads as tappable. He can make that one
+    // in the portal, where the cap does not apply the same way.
+    if (String(n).trim().length > ROUTE_FIELD_MAX) continue;
     seen.add(k);
     out.push(String(n).trim());
   }

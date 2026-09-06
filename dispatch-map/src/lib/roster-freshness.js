@@ -90,6 +90,8 @@ export function ageLabel(iso, now = new Date()) {
  *   label  — one line a dispatcher can act on
  *   tone   — 'absent' | 'stale' | 'cached' | 'live' | 'empty', for the caller's colours
  *            ('empty' = captured today and NuVizz holds no loads for the day yet)
+ *   past   — only with tone 'empty': the day is before today (meta.date), so nothing gets
+ *            built onto it and the label drops the "yet"
  */
 export function rosterFreshness(meta, now = new Date()) {
   // `source: 'none'` is the endpoint saying "I hold nothing for this date, and I did not spend
@@ -120,8 +122,12 @@ export function rosterFreshness(meta, now = new Date()) {
   // sentence that tells him what to do next: create them, from the shells listed below it.
   if (count === 0 && !stale) {
     const asked = meta.pull && Number(meta.pull.rows) === 0 ? 'NuVizz answered 0 rows' : 'nothing came back';
-    return { known: true, live: false, stale: false, count: 0, age, tone: 'empty',
-      label: `NuVizz has no loads for this day yet · ${asked} ${age || 'at an unknown time'}` };
+    // "yet" is a promise about a day still to come. A past day captured today (a manual Scan
+    // pulls the roster for whatever date is on screen) simply held nothing — no "yet", and the
+    // surfaces do not invite anyone to build onto it.
+    const past = /^\d{4}-\d{2}-\d{2}$/.test(String(meta.date ?? '')) && !!today && String(meta.date) < today;
+    return { known: true, live: false, stale: false, count: 0, age, tone: 'empty', past,
+      label: `${past ? 'NuVizz holds no loads for this day' : 'NuVizz has no loads for this day yet'} · ${asked} ${age || 'at an unknown time'}` };
   }
   if (!age) return { known: true, live: false, stale, count, age: null, tone: stale ? 'stale' : 'cached', label: `${loads} · cached, time unknown` };
   return { known: true, live: false, stale, count, age, tone: stale ? 'stale' : 'cached',
