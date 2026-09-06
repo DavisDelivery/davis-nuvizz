@@ -16,8 +16,8 @@
 // already has. Creds stay server-side.
 //
 //   GET ?date=YYYY-MM-DD [&live=1]  → { ok, date, source, at, count, loads:[{loadId,name,status,trips}] }
-import { loadRosterForDate } from './lib/nuvizz-loads.mts';
-import { isFirestoreEnabled, readLoadRoster, writeLoadRoster } from './lib/firestore.mts';
+import { loadRosterForDate, shouldServeCachedRoster } from './lib/nuvizz-loads.mts';
+import { isFirestoreEnabled, readLoadRoster, writeLoadRoster, etDayString } from './lib/firestore.mts';
 import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
@@ -38,10 +38,14 @@ export default async (req: Request): Promise<Response> => {
   }
   try {
     // 1) Cached roster (scanner-persisted) — instant, no NuVizz call. Skipped on ?live=1.
+    // WHEN a cache may answer is a rule with four cases and a clock, so it lives in
+    // nuvizz-loads.mts as a pure function with its own tests rather than inline here. The
+    // short version: an EMPTY answer is still an answer, and throwing it away used to cost a
+    // metered call on every one of the client's five fetch sites, forever.
     if (!live && isFirestoreEnabled()) {
       const cached = await readLoadRoster(TENANT, date).catch(() => null);
-      if (cached && cached.loads.length) {
-        return new Response(JSON.stringify({ ok: true, date, source: 'cache', at: cached.at, count: cached.loads.length, loads: cached.loads }), { status: 200, headers: cors });
+      if (shouldServeCachedRoster(cached, etDayString)) {
+        return new Response(JSON.stringify({ ok: true, date, source: 'cache', at: cached!.at, count: cached!.loads.length, loads: cached!.loads }), { status: 200, headers: cors });
       }
     }
     // 2) Live fetch — one deliberate call — then cache it so the next read is free.

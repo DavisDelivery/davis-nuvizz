@@ -286,7 +286,7 @@ async function gridLoadsText(page) {
 for (const mobile of [false, true]) {
   const view = mobile ? 'phone 390px' : 'desktop 1600px';
   console.log(`\nThe bottom grid's Loads view — ${view}  [${secs()}]`);
-  const { page, ctx, errors, asked } = await openLoadsTab({ mobile, roster: BUILT, liveRoster: [...BUILT, ...EMPTIES] });
+  const { page, ctx, errors, asked } = await openLoadsTab({ mobile, roster: BUILT, liveRoster: [...BUILT, ...EMPTIES, OFF_BOARD] });
   // The grid's own Stops/Loads toggle reads "Loads <count>"; the rail's reads "Loads (N)".
   const opened = await page.evaluate(() => {
     const b = Array.from(document.querySelectorAll('button')).find((x) => /^Loads\s+\d+$/.test((x.innerText || '').replace(/\n/g, ' ').trim()));
@@ -304,6 +304,25 @@ for (const mobile of [false, true]) {
       else bad(`no roster freshness line on the grid (${view}): ${JSON.stringify(before.slice(0, 200))}`);
       if (!EMPTIES.some((e) => before.includes(e.name))) ok('…and with a capture that has no empties, it shows none');
       else bad(`the cached roster already showed empties — fixture wrong (${view})`);
+      // CHAD'S EXACT REPORT, RENDERED. "the routes panel on right is now populating my loads
+      // panel on the bottom." With a roster holding only the built loads, the grid's Loads
+      // view IS the Routes list — the same two rows, correctly — and until now nothing on the
+      // screen said whether that was the day or a fault. The line has to be readable off the
+      // rows it sits above, so it is asserted against them and not against a constant.
+      // MEASURED, NOT ASSUMED. `truncate` leaves innerText intact, so a text assertion alone
+      // would pass on a line the dispatcher cannot actually read. This checks the pixels: the
+      // span must not be clipped by its own box on either view.
+      const mix = await page.evaluate(() => {
+        const el = Array.from(document.querySelectorAll('span')).find((x) => /with stops, \d+ empty/.test(x.innerText || ''));
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { text: el.innerText.trim(), clipped: el.scrollWidth > el.clientWidth + 1, w: Math.round(r.width), visible: r.width > 40 && r.height > 0 };
+      });
+      if (!mix) bad(`the grid does not say its composition (${view})`);
+      else if (mix.clipped || !mix.visible) bad(`the composition line is clipped at ${mix.w}px (${view}): ${JSON.stringify(mix.text)}`);
+      else ok(`the composition line is fully readable at ${mix.w}px — ${JSON.stringify(mix.text)}`);
+      if (/2 with stops, 0 empty/.test(before)) ok('the grid says what its rows are made of — 2 with stops, 0 empty');
+      else bad(`the grid does not say its composition (${view}): ${JSON.stringify((before.match(/Load roster:[^\n]*/) || [''])[0])}`);
       const clicked = await page.evaluate(() => {
         const tables = Array.from(document.querySelectorAll('table'));
         const t = tables.find((tb) => /%\s*Done/i.test(tb.querySelector('thead')?.innerText || ''));
@@ -323,6 +342,25 @@ for (const mobile of [false, true]) {
         const back = EMPTIES.filter((e) => (after || '').includes(e.name)).length;
         if (back === EMPTIES.length) ok(`…and all ${EMPTIES.length} empty trailers arrive in the grid`);
         else bad(`only ${back}/${EMPTIES.length} empties came back in the grid (${view})`);
+        // AND THE OFF-BOARD LOAD IS NOT CALLED EMPTY. `empty` was hardcoded true for every
+        // roster row the board had no stops for, so TRAILER 9 — which NuVizz says carries
+        // twelve trips — rendered "No orders yet" beside a Stops column reading 12. Two cells
+        // contradicting each other, and the wrong one is the one that gets acted on: nobody
+        // plans freight onto a load that already has twelve stops. The rail has shown this
+        // bucket under its own heading since v0.93.2; the grid was still calling it empty.
+        if ((after || '').includes(OFF_BOARD.name)) {
+          ok(`the off-board load ${OFF_BOARD.name} reaches the grid at all`);
+          const row = await page.evaluate((name) => {
+            const tr = Array.from(document.querySelectorAll('tr')).find((r) => (r.innerText || '').includes(name));
+            return tr ? (tr.innerText || '').replace(/\s+/g, ' ').trim() : null;
+          }, OFF_BOARD.name);
+          if (/Not on this board/.test(row || '')) ok(`…labelled "Not on this board · ${OFF_BOARD.trips} trips", not "No orders yet"`);
+          else bad(`the grid calls a ${OFF_BOARD.trips}-trip load empty (${view}): ${JSON.stringify(row)}`);
+          if (!/No orders yet/.test(row || '')) ok('…and it does not also claim it has no orders');
+          else bad(`the off-board row still says "No orders yet" (${view}): ${JSON.stringify(row)}`);
+        } else bad(`the off-board load ${OFF_BOARD.name} never reached the grid (${view})`);
+        if (/2 with stops, 3 empty, 1 not on this board/.test(after || '')) ok('…and the composition line follows the new rows');
+        else bad(`the composition line did not follow the refresh (${view}): ${JSON.stringify(((after || '').match(/Load roster:[^\n]*/) || [''])[0])}`);
       }
     }
   }

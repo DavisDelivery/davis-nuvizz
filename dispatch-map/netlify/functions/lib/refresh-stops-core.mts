@@ -358,6 +358,32 @@ export function futureRosterCaptured(cached: { at?: string; loads?: any[] } | nu
 }
 
 /**
+ * PURE. Does the ONCE-PER-ET-DAY roster freeze apply to this date?
+ *
+ * futureRosterCaptured answers "has this future date been captured today"; this answers the
+ * question before it — "is this a date the freeze should govern at all". They were the same
+ * question (`date !== today`) and they are not.
+ *
+ * v0.93.4 gave the roster a schedule on all seven days, which fixes WHEN the scanner asks. It
+ * does not change what happens after the first ask: every future date short-circuits, so the
+ * first good capture of the ET day stands until midnight however often the roster then fires.
+ *
+ * Chad's premise was about TOMORROW — "the shells are generated up front, the set doesn't
+ * change through the day" — and there it holds; re-pulling a fixed list twenty times a day
+ * buys nothing. Two or three days out it does not hold, and this weekend is the case that
+ * proves it: from Saturday the horizon reaches Tuesday, Monday is Labor Day, and Tuesday's
+ * empty trailers are not created yet. The 08:00 capture is a list of nothing, and under the
+ * old rule that list WAS the answer for the rest of the day — which is what both Loads
+ * surfaces were faithfully showing.
+ *
+ * `today` never freezes under either setting; that has always re-pulled every fire.
+ */
+export function rosterFreezeApplies(date: string, today: string, tomorrow: string, horizonRefreshOn = true): boolean {
+  if (date === today) return false;
+  return horizonRefreshOn ? date === tomorrow : true;
+}
+
+/**
  * PURE. May this scan PRUNE the planned board, or must it preserve what it did not see?
  *
  * The three reasons a load list is not authoritative, in one place and testable:
@@ -678,16 +704,38 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // the day (steady state: 1 cheap PkgRoute list call/day; the manual Refresh button (?live=1)
   // remains the on-demand override). Today's roster refreshes each load-scan as before.
   // Best-effort: a hiccup is logged, never affects the scan.
+  //
+  // AND THE ONCE-A-DAY RULE ONLY APPLIES WHERE ITS PREMISE DOES — TOMORROW. v0.93.4 gave the
+  // roster an hour-by-hour schedule on all seven days, which fixes WHEN the scanner asks. It
+  // does not fix what happens to the third date in the horizon once it has asked: every
+  // future date short-circuits on futureRosterCaptured, so the first good capture of the ET
+  // day is still frozen until midnight however often the roster fires afterwards.
+  //
+  // Chad's premise was about the NEXT day specifically — "the shells are generated up front,
+  // the set doesn't change through the day" — and there it holds. Two or three days out it
+  // does not, and this weekend is the case that proves it: from Saturday the horizon reaches
+  // Tuesday, Monday is Labor Day, and Tuesday's empty trailers are not created yet. The
+  // 08:00 capture is a list of nothing, and under the old rule it stood as the answer for the
+  // rest of the day no matter how many times the roster ran. So the freeze is scoped to
+  // `tomorrow`, and everything beyond it re-pulls on the roster's own cadence.
+  //
+  // IT IS A SPEND, SO IT IS A SWITCH. One extra PkgRoute list call per roster fire — ~20
+  // fires a day, so ~20 calls against a 2,000/day ceiling, and the same order as the roster
+  // itself. Default on, because it is the difference between a trailer created at 3pm being
+  // visible at 4pm and being visible tomorrow. NUVIZZ_ROSTER_HORIZON_REFRESH=0 restores the
+  // once-per-ET-day capture for every future date without a deploy.
+  const horizonRefreshOn = !/^(0|false|off|no)$/i.test(String(process.env.NUVIZZ_ROSTER_HORIZON_REFRESH ?? '').trim());
+  const freezeApplies = (date: string) => rosterFreezeApplies(date, today, tomorrow, horizonRefreshOn);
   const persistLoadRoster = async (date: string, scannedAt: string) => {
     if (!fsOn) return;
     try {
-      if (date !== today) {
+      if (freezeApplies(date)) {
         const cached = await readLoadRoster(TENANT, date).catch(() => null);
         if (futureRosterCaptured(cached, new Date())) return;
       }
       const roster = await loadRosterForDate(date);
       await writeLoadRoster(TENANT, date, roster, scannedAt);
-      console.log(`[scan] load-roster ${date}: cached ${roster.length} load(s)${date !== today ? ' (next-day, once/day once numbered)' : ''}`);
+      console.log(`[scan] load-roster ${date}: cached ${roster.length} load(s)${freezeApplies(date) ? ' (next-day, once/day once numbered)' : ''}`);
     } catch (e: any) { console.warn(`[scan] load-roster ${date} skipped: ${e?.message}`); }
   };
 
