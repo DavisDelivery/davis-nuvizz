@@ -31,7 +31,7 @@ import { maxConsecutiveGap } from './scan-metrics.mts';
 import { notifyMarkedCustomers, pendingNotifyDates } from './cs-notify.mts';
 import { breakerTripped, scanIntervalElapsed, breakerMode, setDailyCeilingOverride, setCallTrigger } from './nuvizz-request.mts';
 import { scanDecision, isInRoutingWindow, clampScanConfig } from './scan-schedule.mts';
-import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip, scanPath, rosterMayRunOnBlackout } from './scan-plan.mts';
+import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip, scanPath, rosterMayRunOnBlackout, plannedMayRunOnBlackout } from './scan-plan.mts';
 import { planCompletions } from './scan-completions.mts';
 
 // Reuse the CANONICAL integer parsers from nuvizz-scan so the parity log's
@@ -596,6 +596,23 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   const rosterWeekendOn = !/^(0|false|off|no)$/i.test(String(process.env.NUVIZZ_ROSTER_WEEKEND ?? '').trim());
   const rosterOnlyOnBlackout = rosterWeekendOn
     && rosterMayRunOnBlackout(decision, plannedDue, completedDue, rosterDue);
+  // AND THE ORDERS, WHICH IS THE OTHER HALF OF PLANNING A MONDAY ON A SATURDAY. Chad: "I want
+  // to see Monday's and Tuesday's of next week's loads here like this so I can start planning
+  // them today or tomorrow." The roster carve-out above gives him the trailers; 77128 is the
+  // freight, and it had no weekend rule at all, so a Saturday board showed Friday evening's
+  // picture of Monday.
+  //
+  // NOTE THE INTERACTION, which is the whole reason plannedMayRunOnBlackout is its own
+  // function: rosterMayRunOnBlackout REFUSES when planned is due, so simply adding a weekend
+  // `planned` rule would have switched the roster carve-out off as a side effect and traded
+  // one gap for another with nothing looking wrong. The roster block below therefore runs
+  // under EITHER permission.
+  //
+  // Off with NUVIZZ_PLANNED_WEEKEND=0. Cost is ~23 saved-search calls across a weekend; the
+  // enrichment it triggers is for orders that would have been enriched on Monday anyway, so
+  // that half is moved earlier rather than added.
+  const plannedWeekendOn = !/^(0|false|off|no)$/i.test(String(process.env.NUVIZZ_PLANNED_WEEKEND ?? '').trim());
+  const plannedOnBlackout = plannedWeekendOn && plannedMayRunOnBlackout(decision, plannedDue, completedDue);
 
   // Fix 4 — exactly ONE structured line per invocation, so "why didn't it scan"
   // is answerable from the log. today/tomorrow report the DECISION's feed intent.
@@ -756,7 +773,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // Tomorrow's roster is still captured once per scan day (futureRosterCaptured), so widening
   // this to the whole scanDates list costs one cheap PkgRoute call an hour, not two.
   let rosterRan = false;
-  if ((decision.act || rosterOnlyOnBlackout) && fsOn && rosterDue) {
+  if ((decision.act || rosterOnlyOnBlackout || plannedOnBlackout) && fsOn && rosterDue) {
     const rosterAt = new Date().toISOString();
     for (const d of scanDates) await persistLoadRoster(d, rosterAt);
     await markScanKinds(['roster'], rosterAt).catch(() => {});
@@ -1034,8 +1051,12 @@ export async function runRefreshStops(req: Request): Promise<Response> {
     return json({ ok: true, tenant: TENANT, mode: 'explicit', totalMs: Date.now() - startedAt, dates: results });
   }
 
-  // Cadence gate (Fix 1: elapsed-time, not wall-clock minute).
-  if (!decision.act) {
+  // Cadence gate (Fix 1: elapsed-time, not wall-clock minute). A weekend PLANNED fire is the
+  // one thing allowed past a `weekend` skip here — it is the board work Chad plans against on
+  // a Saturday, and it has to reach the list path below rather than return as skipped. The
+  // roster carve-out deliberately does NOT come through: its work is already done above and
+  // there is no board work for it to do.
+  if (!decision.act && !plannedOnBlackout) {
     logScan(decision.skip, false, no, no);
     return json({ ok: true, skipped: decision.skip, reason: decision.reason });
   }
@@ -1054,7 +1075,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // The carve-out short-circuits scanPath deliberately — see rosterMayRunOnBlackout for why a
   // flipped `act` through scanPath is the expensive accident this avoids.
   const path = LIST_DISCOVERY
-    ? (rosterOnlyOnBlackout ? 'roster-only' : scanPath(decision.act, { plannedDue, completedDue, rosterDue }))
+    ? (rosterOnlyOnBlackout ? 'roster-only' : scanPath(decision.act || plannedOnBlackout, { plannedDue, completedDue, rosterDue }))
     : 'full';
 
   // ── COMPLETED-ONLY FIRE: the overlay ──────────────────────────────────────
