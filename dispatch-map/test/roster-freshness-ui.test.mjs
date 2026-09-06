@@ -23,6 +23,17 @@ import { rosterFreshness, ageLabel, etDay } from '../src/lib/roster-freshness.js
 
 const NOW = new Date('2026-09-05T18:00:00Z'); // 2:00p ET, Saturday
 
+test("source:'none' is ABSENT — the endpoint held nothing and did not spend a call to check", () => {
+  // What the endpoint answers under NUVIZZ_ROSTER_AUTO_LIVE=0, the switch that stops an
+  // AUTOMATIC read ever reaching NuVizz (Chad: "Nothing should be calling nuvizz on Saturday
+  // except for a manual scan"). The honest answer is "not pulled", with the Refresh button
+  // beside it — never "this day has no loads".
+  const r = rosterFreshness({ ok: true, source: 'none', at: null, count: 0 }, NOW);
+  assert.equal(r.known, false);
+  assert.equal(r.tone, 'absent');
+  assert.match(r.label, /not pulled/i);
+});
+
 test('a roster that never came back is ABSENT — never "there are no loads"', () => {
   // The distinction the old `loadRosterList.length > 0` test could not make: an empty answer
   // and no answer are the same empty array, and they send a dispatcher opposite ways.
