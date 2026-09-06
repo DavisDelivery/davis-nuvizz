@@ -129,3 +129,29 @@ test('an evening capture is not stale just because UTC has rolled over', () => {
   const r = rosterFreshness({ ok: true, source: 'cache', at, count: 99 }, now);
   assert.equal(r.stale, false, 'twenty minutes old, same ET day — not "before today"');
 });
+
+// ── v0.93.13: ZERO, CAPTURED TODAY, SAYS WHAT IT IS ─────────────────────────────────────────
+// Chad read "0 loads · cached just now" on Tue Sep 8 for two days and it looked like a broken
+// cache. It was NuVizz's answer: the one call he approved returned 21 column defs and 0 rows.
+// The line now says so, and says what the capture saw when it knows.
+test('an EMPTY capture taken today reads as "NuVizz has no loads for this day yet", with what the pull saw', () => {
+  const r = rosterFreshness({ ok: true, source: 'cache', at: new Date(NOW.getTime() - 8 * 60000).toISOString(), count: 0,
+    pull: { period: '+2d', httpStatus: 200, cols: 21, rows: 0, kept: 0 } }, NOW);
+  assert.equal(r.known, true);
+  assert.equal(r.count, 0);
+  assert.equal(r.tone, 'empty');
+  assert.equal(r.label, 'NuVizz has no loads for this day yet · NuVizz answered 0 rows 8m ago');
+});
+
+test('…and without a recorded pull (a document from before v0.93.12) it still says the day is empty, without inventing what was seen', () => {
+  const r = rosterFreshness({ ok: true, source: 'cache', at: new Date(NOW.getTime() - 60 * 60000).toISOString(), count: 0 }, NOW);
+  assert.equal(r.tone, 'empty');
+  assert.equal(r.label, 'NuVizz has no loads for this day yet · nothing came back 1h ago');
+});
+
+test('an EMPTY capture from an EARLIER day is still STALE, not "no loads" — nobody has asked today', () => {
+  const r = rosterFreshness({ ok: true, source: 'cache', at: '2026-09-04T16:00:00Z', count: 0 }, NOW);
+  assert.equal(r.stale, true);
+  assert.equal(r.tone, 'stale');
+  assert.match(r.label, /^0 loads · cached .* \(before today\)$/);
+});

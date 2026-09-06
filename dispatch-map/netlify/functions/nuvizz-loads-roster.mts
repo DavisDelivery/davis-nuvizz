@@ -15,14 +15,45 @@
 // Best-effort: an error returns ok:false and the UI just shows the stop-grouped loads it
 // already has. Creds stay server-side.
 //
-//   GET ?date=YYYY-MM-DD [&live=1]  → { ok, date, source, at, count, loads:[{loadId,name,status,trips}] }
+//   GET ?date=YYYY-MM-DD [&live=1]  → { ok, date, source, at, count, loads:[{loadId,name,status,trips}],
+//                                       pull?, shells?: { names, from } — see planAheadShells below }
 //   GET ?explain=1[&days=5][&from=]  → what the CACHE holds for each date, ZERO vendor calls
 import { loadRosterPull, shouldServeCachedRoster } from './lib/nuvizz-loads.mts';
 import { isFirestoreEnabled, readLoadRoster, writeLoadRoster, markLoadRosterEmpty, etDayString } from './lib/firestore.mts';
 import { acceptRosterWrite, explainRosterRow } from './lib/roster-write.mts';
+import { shellLookbackDates, standardShellNames, shouldOfferShells, SHELL_SOURCES } from './lib/roster-shells.mts';
 import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
+
+// ── THE STANDARD SHELLS, FOR A DAY NUVIZZ HAS NOT CREATED YET ─────────────────────────────
+//
+// Chad, Sunday Sep 6, the board on Tue Sep 8: "I want to build loads on the weekend for next
+// week and if I put the map on the date I want to build on and do a manual scan the loads
+// should show up even if on the weekend." The one call he approved answered it: NuVizz holds
+// ZERO loads for Tuesday (21 column defs, 0 rows, period +2d, 13:51 ET). A scan cannot show a
+// load the vendor has not created. So for a day on or after today whose roster is empty (or
+// missing most of the standard names), the envelope carries `shells`: the route names the
+// last three captured delivery days agree on, read from the roster cache — Firestore only,
+// never a vendor call — so both Loads surfaces can list them as "not in NuVizz yet" and a tap
+// opens the pending route card that Save turns into a real NuVizz route with its stops.
+//
+// Best-effort and silent on failure: the roster answer must never be lost to the shells.
+async function planAheadShells(date: string, rosterLoads: any[]): Promise<{ names: string[]; from: string[] } | null> {
+  try {
+    const today = etDayString();
+    if (date < today) return null;
+    const sources: { date: string; loads: any[] }[] = [];
+    for (const d of shellLookbackDates(date)) {
+      if (sources.length >= SHELL_SOURCES) break;
+      const doc = await readLoadRoster(TENANT, d).catch(() => null);
+      if (doc && doc.loads.length > 0) sources.push({ date: d, loads: doc.loads });
+    }
+    const names = standardShellNames(sources);
+    const verdict = shouldOfferShells(date, today, rosterLoads, names);
+    return verdict.offer ? { names, from: sources.map((s) => s.date) } : null;
+  } catch { return null; }
+}
 
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
@@ -94,7 +125,12 @@ export default async (req: Request): Promise<Response> => {
     if (!live && isFirestoreEnabled()) {
       cached = await readLoadRoster(TENANT, date).catch(() => null);
       if (shouldServeCachedRoster(cached, etDayString)) {
-        return new Response(JSON.stringify({ ok: true, date, source: 'cache', at: cached!.at, count: cached!.loads.length, loads: cached!.loads }), { status: 200, headers: cors });
+        // `pull` is what the capture that wrote this document saw (v0.93.12) — the surfaces use
+        // it to say "NuVizz answered 0 rows at 1:51 PM" instead of "0 loads · cached just now".
+        return J({
+          ok: true, date, source: 'cache', at: cached!.at, count: cached!.loads.length, loads: cached!.loads,
+          pull: cached!.pull ?? null, shells: await planAheadShells(date, cached!.loads),
+        });
       }
       // ── MAY AN AUTOMATIC READ SPEND A CALL AT ALL? THAT IS CHAD'S CALL, SO IT IS A SWITCH ──
       //
@@ -114,10 +150,11 @@ export default async (req: Request): Promise<Response> => {
       // changes without the flag) and he can flip it without a deploy.
       const autoLiveOn = !/^(0|false|off|no)$/i.test(String(process.env.NUVIZZ_ROSTER_AUTO_LIVE ?? '').trim());
       if (!autoLiveOn) {
-        return new Response(JSON.stringify({
+        return J({
           ok: true, date, source: 'none', at: cached?.at ?? null, count: 0, loads: [],
           note: 'no cached roster for this date — automatic reads are set never to spend a NuVizz call (NUVIZZ_ROSTER_AUTO_LIVE=0); use ?live=1',
-        }), { status: 200, headers: cors });
+          shells: await planAheadShells(date, []),
+        });
       }
     }
     // 2) Live fetch — one deliberate call — then cache it so the next read is free.
@@ -139,14 +176,15 @@ export default async (req: Request): Promise<Response> => {
           await markLoadRosterEmpty(TENANT, date, verdict.emptyStreak, at);
           // Answer with what we HOLD, not with the nothing we were just handed — the whole
           // point of refusing the write is that the held list is the better answer.
-          return new Response(JSON.stringify({
+          return J({
             ok: true, date, source: 'cache', at: prior?.at ?? null,
             count: prior?.loads.length ?? 0, loads: prior?.loads ?? [], note: verdict.reason,
-          }), { status: 200, headers: cors });
+            pull: prior?.pull ?? null, shells: await planAheadShells(date, prior?.loads ?? []),
+          });
         }
       } catch { /* cache best-effort */ }
     }
-    return new Response(JSON.stringify({ ok: true, date, source: 'live', at, count: loads.length, loads, pull }), { status: 200, headers: cors });
+    return J({ ok: true, date, source: 'live', at, count: loads.length, loads, pull, shells: await planAheadShells(date, loads) });
   } catch (e: any) {
     return new Response(JSON.stringify({ ok: false, reason: e?.message || 'roster failed' }), { status: 502, headers: cors });
   }
