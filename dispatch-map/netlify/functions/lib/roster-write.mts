@@ -109,3 +109,35 @@ export function acceptRosterWrite(
     reason: `REFUSED: empty answer would erase ${heldCount} held load(s) (${streak}/${ACCEPT_EMPTY_AFTER} strikes)`,
   };
 }
+
+/**
+ * PURE. What does the cache hold for one date, in the terms the question is actually asked in?
+ *
+ * Chad, three rounds in: "the problem is the roster scan not populating the loads panel you are
+ * fixing the wrong thing." He was right every time, and the reason it took three rounds is that
+ * nothing could ANSWER the question — "the scan wrote a roster" and "the panel got nothing" are
+ * the same blank screen from outside, and telling them apart meant spending a vendor call.
+ *
+ * The number that settles it is not `count`. A roster of three loads that all carry trips and a
+ * roster that failed look identical on the Loads panels, because those panels exist to show the
+ * loads with NO trips — the ones the stop-grouped board cannot render. So this reports `empties`
+ * first and says in words which of the three states a date is in:
+ *
+ *   never captured        — no document at all
+ *   captured but empty    — a document holding zero loads
+ *   captured, no empties  — a real roster in which every load carries trips
+ *   N empty load(s)       — working
+ */
+export function explainRosterRow(date: string, cached: RosterCache | null | undefined): Record<string, any> {
+  if (!cached) return { date, cached: false, note: 'no roster document — this date has never been captured' };
+  const loads = Array.isArray(cached.loads) ? cached.loads : [];
+  const empties = loads.filter((l: any) => !(Number(l?.trips) > 0)).length;
+  const numbered = loads.filter((l: any) => l?.loadNbr).length;
+  return {
+    date, cached: true, count: loads.length, empties, built: loads.length - empties, numbered,
+    at: cached.at ?? null, emptyStreak: streakOf(cached), emptyAt: cached.emptyAt ?? null,
+    note: loads.length === 0 ? 'captured but EMPTY — the scan wrote a roster with no loads in it'
+      : empties === 0 ? 'captured, but every load carries trips — there are no empty loads in it'
+        : `${empties} empty load(s) available to the Loads panels`,
+  };
+}

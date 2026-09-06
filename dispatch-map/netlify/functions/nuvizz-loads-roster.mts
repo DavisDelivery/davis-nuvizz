@@ -18,15 +18,17 @@
 // already has. Creds stay server-side.
 //
 //   GET ?date=YYYY-MM-DD [&live=1]  → { ok, date, source, at, count, loads:[{loadId,name,status,trips}] }
+//   GET ?explain=1[&days=5][&from=]  → what the CACHE holds for each date, ZERO vendor calls
 import { loadRosterForDate } from './lib/nuvizz-loads.mts';
-import { isFirestoreEnabled, readLoadRoster, writeLoadRoster, markLoadRosterEmpty } from './lib/firestore.mts';
-import { acceptRosterWrite } from './lib/roster-write.mts';
+import { isFirestoreEnabled, readLoadRoster, writeLoadRoster, markLoadRosterEmpty, etDayString } from './lib/firestore.mts';
+import { acceptRosterWrite, explainRosterRow } from './lib/roster-write.mts';
 import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
 
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
+  const J = (b: any, st = 200) => new Response(JSON.stringify(b), { status: st, headers: cors });
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
   // Gate at viewer: ?live=1 skips the cache and pulls the roster STRAIGHT FROM NUVIZZ — a
   // metered call per hit on an open GET. Inert until AUTH_REQUIRED=true.
@@ -36,6 +38,33 @@ export default async (req: Request): Promise<Response> => {
   const url = new URL(req.url);
   const date = url.searchParams.get('date') || '';
   const live = url.searchParams.get('live') === '1';
+
+  // ── ?explain=1 — IS THE ROSTER POPULATING? Answered with data, at ZERO vendor cost ──────
+  //
+  // Chad, three rounds into this: "the problem is the roster scan not populating the loads
+  // panel you are fixing the wrong thing." He was right each time, and the reason it took
+  // three rounds is that nothing could ANSWER the question. "The scan wrote a roster" and "the
+  // panel got nothing" are the same blank screen, and from outside the system the only way to
+  // tell them apart was to spend a NuVizz call and hope.
+  //
+  // So: one read of the cache documents for a window of dates — what each holds, when it was
+  // captured, and how many empty loads are in it — and NOTHING else. No vendor call on any
+  // path through this branch. CLAUDE.md asks every job that acts on its own to have a way to
+  // say what it is about to do without doing it; the roster had none, and four rounds of my
+  // guessing is what that costs.
+  //
+  //   GET ?explain=1[&days=5][&from=YYYY-MM-DD]
+  if (url.searchParams.get('explain') === '1') {
+    if (!isFirestoreEnabled()) return J({ ok: false, error: 'Firestore not configured — nothing to explain' }, 503);
+    const days = Math.max(1, Math.min(14, Number(url.searchParams.get('days')) || 5));
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get('from') || '')
+      ? String(url.searchParams.get('from')) : etDayString();
+    const base = Date.parse(from + 'T00:00:00Z');
+    const dates = Array.from({ length: days }, (_, i) => new Date(base + i * 86400000).toISOString().slice(0, 10));
+    const rows = [];
+    for (const d of dates) rows.push(explainRosterRow(d, await readLoadRoster(TENANT, d).catch(() => null)));
+    return J({ ok: true, tenant: TENANT, from, days, calls: 0, rows });
+  }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return new Response(JSON.stringify({ ok: false, reason: 'missing or bad date (YYYY-MM-DD)' }), { status: 400, headers: cors });
   }

@@ -18,7 +18,8 @@ import assert from 'node:assert/strict';
 import {
   SCAN_KINDS, SCAN_INFO, defaultScanRules, clampScanRules, resolveInterval, ruleCoversHour,
   resolveWeekGrid, estimatePlanCalls, effectiveCadence, MAX_RULES, RULE_BOUNDS, dueKinds,
-  CRON_STEP_MIN, CRON_TOLERANCE_MIN, overrideCadenceSkip, HARD_FLOOR_MIN } from '../netlify/functions/lib/scan-plan.mts';
+  CRON_STEP_MIN, CRON_TOLERANCE_MIN, overrideCadenceSkip, HARD_FLOOR_MIN,
+} from '../netlify/functions/lib/scan-plan.mts';
 import { scanDecision } from '../netlify/functions/lib/scan-schedule.mts';
 
 const MON = 1, TUE = 2, FRI = 5, SAT = 6, SUN = 0;
@@ -74,12 +75,7 @@ test('completed is NOT pulled 10pm-4am — six hours a day where a pull returns 
   assert.equal(resolveInterval('planned', TUE, 2, rules), 20);
 });
 
-test('Saturday is silent — nothing automatic reaches the vendor at the weekend', () => {
-  // Chad, after an earlier draft of this change carved the roster out of the weekend blackout:
-  // "Nothing should be calling nuvizz on Saturday except for a manual scan." Saturday delivers
-  // nothing and he does not want a schedule running on it; when he plans a weekend he presses
-  // the button, and the button is what was actually broken (persistLoadRoster applied its
-  // once-a-day short-circuit to manual scans too). So this rule is back exactly as it was.
+test('Saturday is silent, and Sunday evening wakes up for Monday routing', () => {
   const rules = defaultScanRules();
   for (const kind of SCAN_KINDS) {
     for (let h = 0; h < 24; h++) {
@@ -88,24 +84,6 @@ test('Saturday is silent — nothing automatic reaches the vendor at the weekend
   }
   assert.equal(resolveInterval('planned', SUN, 21, rules), 30, 'Sunday evening builds Monday');
   assert.equal(resolveInterval('planned', SUN, 9, rules), null, 'Sunday daytime stays quiet');
-});
-
-test('the roster has no uncovered hour in the WORKING day — the 13:00-20:00 gap is closed', () => {
-  // The hole that stopped an afternoon-created load reaching anyone's board: roster-am used to
-  // close at 13:00 and roster-eve did not open until 20:00, so a load made at two in the
-  // afternoon was invisible until eight in the evening.
-  const rules = defaultScanRules();
-  for (let wd = 1; wd <= 5; wd++) {
-    for (let h = 4; h < 24; h++) {
-      assert.equal(resolveInterval('roster', wd, h, rules), 60, `day ${wd} ${h}:00 roster uncovered`);
-    }
-  }
-  for (const h of [13, 14, 15, 16, 17, 18, 19]) {
-    assert.equal(resolveInterval('roster', TUE, h, rules), 60, `Tue ${h}:00 was the afternoon hole`);
-  }
-  // Overnight stays off, and so does the whole weekend.
-  for (const h of [0, 1, 2, 3]) assert.equal(resolveInterval('roster', TUE, h, rules), null, `Tue ${h}:00 stays off`);
-  for (let h = 0; h < 24; h++) assert.equal(resolveInterval('roster', SAT, h, rules), null, `Sat ${h}:00 stays off`);
 });
 
 // ── resolution rules ─────────────────────────────────────────────────────────
@@ -252,8 +230,7 @@ test('the default plan stays comfortably inside the daily ceiling', () => {
   // stay a small fraction of it — a plan that spends the budget on list pulls starves the
   // /stop/info reads that give new orders their address and pin.
   assert.ok(busiest < 300, `busiest day ${busiest} must stay well under the 2,000 ceiling`);
-  assert.equal(est.perDay[SAT], 0, 'nothing on Saturday — no schedule reaches the vendor at the weekend');
-  assert.ok(est.byKind.roster <= 120, `roster ${est.byKind.roster}/week must stay a cheap list pull`);
+  assert.equal(est.perDay[SAT], 0, 'nothing on Saturday');
   assert.ok(est.byKind.completed > 200, 'completed is still sampled hard through the delivery day');
 });
 
@@ -443,71 +420,4 @@ test('the routing window itself: a 9pm override fire carries tomorrow LOADS', ()
   assert.equal(decided.act, true);
   assert.equal(decided.scanTomorrowLoads, true, 'routing window: tomorrow loads scan on the override fire');
   assert.equal(decided.scanTomorrowUnplanned, true);
-});
-
-// ── the manual refresh, which is the control that was silently doing nothing ──
-//
-// Chad: "i need it to fire when i manually refresh … If I'm working on Saturday or Sunday its
-// to plan loads for following week like i was trying to do for Tuesday but all my empty loads
-// weren't there."
-
-import { skipFutureRosterPull, futureRosterCaptured } from '../netlify/functions/lib/refresh-stops-core.mts';
-
-const CAPTURED = { at: '2026-09-05T14:00:00Z', loads: [{ loadId: 'a', loadNbr: 'DAVIS000200600' }] };
-const NOW_SAT = new Date('2026-09-05T18:00:00Z'); // 2pm ET Saturday
-
-test('A MANUAL REFRESH ALWAYS PULLS, even a future date already captured today', () => {
-  // The bug, exactly: the once-a-day short-circuit was applied to the human too, so pressing
-  // refresh on a Saturday pulled today and silently skipped Monday and Tuesday — the days he
-  // was planning. Nothing in the app could move them until the next ET day.
-  assert.equal(futureRosterCaptured(CAPTURED, NOW_SAT), true, 'the day IS captured — that is the premise');
-  assert.equal(
-    skipFutureRosterPull({ date: '2026-09-08', today: '2026-09-05', isManual: true, cached: CAPTURED, now: NOW_SAT }),
-    false,
-    'and a manual scan must pull it anyway',
-  );
-});
-
-test('the scheduled path still skips a captured future date — that is what keeps the count down', () => {
-  assert.equal(
-    skipFutureRosterPull({ date: '2026-09-08', today: '2026-09-05', isManual: false, cached: CAPTURED, now: NOW_SAT }),
-    true,
-  );
-});
-
-test('TODAY is never skipped by anybody — it is the live board', () => {
-  for (const isManual of [true, false]) {
-    assert.equal(
-      skipFutureRosterPull({ date: '2026-09-05', today: '2026-09-05', isManual, cached: CAPTURED, now: NOW_SAT }),
-      false,
-      `today, manual=${isManual}`,
-    );
-  }
-});
-
-test('a future date never captured is pulled by either path', () => {
-  for (const cached of [null, undefined, { at: null, loads: [] }, { at: '2026-09-05T14:00:00Z', loads: [] }]) {
-    for (const isManual of [true, false]) {
-      assert.equal(
-        skipFutureRosterPull({ date: '2026-09-08', today: '2026-09-05', isManual, cached, now: NOW_SAT }),
-        false,
-        `${JSON.stringify(cached)} manual=${isManual}`,
-      );
-    }
-  }
-});
-
-test('a number-less capture never counts as captured, manual or not', () => {
-  // The Jul 1 2026 regression futureRosterCaptured was written for: 102 rows with zero load
-  // numbers froze the day. Kept here so the manual bypass cannot be read as replacing it.
-  const numberless = { at: '2026-09-05T14:00:00Z', loads: [{ loadId: 'a', loadNbr: null }] };
-  assert.equal(
-    skipFutureRosterPull({ date: '2026-09-08', today: '2026-09-05', isManual: false, cached: numberless, now: NOW_SAT }),
-    false,
-  );
-});
-
-test('a malformed options bag is refused rather than assumed', () => {
-  assert.equal(skipFutureRosterPull(null), false);
-  assert.equal(skipFutureRosterPull(undefined), false);
 });

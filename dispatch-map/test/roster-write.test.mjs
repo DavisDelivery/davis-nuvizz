@@ -96,3 +96,71 @@ test('every verdict carries a reason, because a refusal must never be silent', (
     assert.ok(v.reason && v.reason.length > 8, 'write verdicts explain themselves');
   }
 });
+
+// ── ?explain=1 — the question "is the roster populating?" answered with data ──
+//
+// Chad, three rounds in: "the problem is the roster scan not populating the loads panel you are
+// fixing the wrong thing." He was right each time, and it took three rounds because nothing
+// could answer it: from outside, "the scan wrote a roster" and "the panel got nothing" are the
+// same blank screen.
+
+import { explainRosterRow } from '../netlify/functions/lib/roster-write.mts';
+
+test('the three failure states read DIFFERENTLY, which is the entire point', () => {
+  const never = explainRosterRow('2026-09-08', null);
+  assert.equal(never.cached, false);
+  assert.match(never.note, /never been captured/);
+
+  const emptyDoc = explainRosterRow('2026-09-08', { at: '2026-09-05T12:00:00Z', loads: [] });
+  assert.equal(emptyDoc.cached, true);
+  assert.equal(emptyDoc.count, 0);
+  assert.match(emptyDoc.note, /captured but EMPTY/);
+
+  const builtOnly = explainRosterRow('2026-09-08', {
+    at: '2026-09-05T12:00:00Z',
+    loads: [{ loadId: 'a', loadNbr: 'D1', trips: 11 }, { loadId: 'b', loadNbr: 'D2', trips: 8 }],
+  });
+  assert.equal(builtOnly.empties, 0);
+  assert.equal(builtOnly.built, 2);
+  assert.match(builtOnly.note, /no empty loads in it/);
+});
+
+test('EMPTIES is the number that matters, not count — a working roster says so', () => {
+  // The Loads panels exist to show loads with NO trips. A roster of 3 built loads and a broken
+  // roster look identical on screen; `empties` is what tells them apart.
+  const r = explainRosterRow('2026-09-08', {
+    at: '2026-09-05T12:00:00Z',
+    loads: [
+      { loadId: 'a', loadNbr: 'D1', trips: 11 },
+      { loadId: 'b', loadNbr: 'D2', trips: 0 },
+      { loadId: 'c', loadNbr: 'D3', trips: null },
+      { loadId: 'd', loadNbr: 'D4' },
+    ],
+  });
+  assert.equal(r.count, 4);
+  assert.equal(r.empties, 3, 'trips 0, null and absent all count as empty');
+  assert.equal(r.built, 1);
+  assert.match(r.note, /3 empty load\(s\)/);
+});
+
+test('it reports the numbered count, because a number-less capture is its own known failure', () => {
+  // The Jul 1 2026 regression: 102 rows with zero load numbers froze the day and every evening
+  // Save was refused. `numbered` makes that visible instead of inferred.
+  const r = explainRosterRow('2026-09-08', {
+    at: '2026-09-05T12:00:00Z',
+    loads: [{ loadId: 'a', loadNbr: null, trips: 0 }, { loadId: 'b', loadNbr: 'D2', trips: 0 }],
+  });
+  assert.equal(r.numbered, 1);
+  assert.equal(r.empties, 2);
+});
+
+test('it carries the capture time and the strike count, and survives a malformed document', () => {
+  const r = explainRosterRow('2026-09-08', { at: '2026-09-05T12:00:00Z', loads: [], emptyStreak: 2, emptyAt: '2026-09-05T12:00:00Z' });
+  assert.equal(r.at, '2026-09-05T12:00:00Z');
+  assert.equal(r.emptyStreak, 2);
+  const junk = explainRosterRow('2026-09-08', { loads: 'not-an-array', emptyStreak: 'x' });
+  assert.equal(junk.count, 0);
+  assert.equal(junk.empties, 0);
+  assert.equal(junk.emptyStreak, 0);
+  assert.equal(junk.at, null);
+});

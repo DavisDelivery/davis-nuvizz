@@ -177,26 +177,7 @@ export function defaultScanRules(): ScanRule[] {
     { id: 'done-late', kind: 'completed', days: deliveryDays, startHour: 19, endHour: 22, intervalMin: 180, note: 'One sweep for the tail of a long day.' },
     // 10pm-4am: NOT PULLED. Nothing is delivering, so the call can only come back empty.
     // ── load roster (35833) ──────────────────────────────────────────────────
-    //
-    // Chad: "the loads use to populate just fine." They did. Before v0.77.0 (2026-08-24) the
-    // roster was pulled UNCONDITIONALLY inside every scan of every date, so any fire refreshed
-    // the empty loads. v0.77.0 put it behind this plan to reclaim calls and drew its windows
-    // the way the other two feeds are drawn: around the DELIVERY day, Mon-Fri 04:00-13:00 plus
-    // Sun-Thu 20:00-24:00. That left every weekday 13:00-20:00 uncovered — seven hours in the
-    // middle of the working day, during which a load created at two in the afternoon reached
-    // nobody's board until eight in the evening. THAT hole is closed here: one weekday window,
-    // 04:00 to midnight.
-    //
-    // THE WEEKEND IS DELIBERATELY NOT COVERED, and that is Chad's instruction rather than an
-    // omission: "Nothing should be calling nuvizz on Saturday except for a manual scan." An
-    // earlier draft of this change covered all seven days and carved the roster out of the
-    // weekend blackout so that Saturday planning would refresh itself. He does not want it,
-    // and the reason he does not need it is that the thing actually broken was the BUTTON:
-    // persistLoadRoster applied its once-per-scan-day short-circuit to manual scans too, so
-    // pressing refresh on a Saturday pulled today and silently skipped Monday and Tuesday —
-    // the exact days he was planning. A human pressing refresh now always pulls; the schedule
-    // stays off at the weekend, which is cheaper and is what he asked for.
-    { id: 'roster-day', kind: 'roster', days: deliveryDays, startHour: 4, endHour: 24, intervalMin: 60, note: 'The whole working day — a load created at 2pm reached no board until 8pm under the old 13:00 close.' },
+    { id: 'roster-am', kind: 'roster', days: deliveryDays, startHour: 4, endHour: 13, intervalMin: 60, note: 'Enough to keep yesterday’s routes off today’s board.' },
     { id: 'roster-eve', kind: 'roster', days: routingNights, startHour: 20, endHour: 24, intervalMin: 60, note: 'Tomorrow’s loads appear during routing.' },
   ];
 }
