@@ -14,15 +14,17 @@
 //      every read fell through to a LIVE call — and the client has THREE automatic fetch sites,
 //      so a page load cost three, and a date change three more, each rewriting the same nothing.
 //
+// That third one is now fixed in the endpoint rather than here: an automatic read never spends
+// a vendor call at all, so there is no cooldown to tune and no clock to reason about. Chad:
+// "i don't need 10 and i need it to fire when i manually refresh."
+//
 // This repo already refuses this exact shape of mistake twice: the scan will not prune a board
 // it could not fully see, and finalizeCaptureSeal will not seal a zero-stop capture. The roster
 // was the third and had no guard at all.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
-  acceptRosterWrite, shouldSpendLiveRoster, ACCEPT_EMPTY_AFTER, EMPTY_COOLDOWN_MIN,
-} from '../netlify/functions/lib/roster-write.mts';
+import { acceptRosterWrite, ACCEPT_EMPTY_AFTER } from '../netlify/functions/lib/roster-write.mts';
 
 const held = (n, over = {}) => ({ at: '2026-09-05T12:00:00Z', loads: Array.from({ length: n }, (_, i) => ({ loadId: `l${i}` })), ...over });
 const rows = (n) => Array.from({ length: n }, (_, i) => ({ loadId: `f${i}` }));
@@ -89,51 +91,8 @@ test('a non-array answer is treated as empty, not as one load', () => {
   }
 });
 
-// ── the live-call cooldown ───────────────────────────────────────────────────
-
-test('a never-captured date pulls — that is what the fall-through is FOR', () => {
-  assert.equal(shouldSpendLiveRoster(null, Date.parse('2026-09-05T18:00:00Z')).spend, true);
-  assert.equal(shouldSpendLiveRoster({ loads: [] }, Date.parse('2026-09-05T18:00:00Z')).spend, true,
-    'an empty doc with no observation stamp is the same case');
-});
-
-test('a recorded empty is served free inside the cooldown — the 14-calls fix', () => {
-  const now = Date.parse('2026-09-05T18:00:00Z');
-  const justNow = { loads: [], emptyAt: '2026-09-05T17:58:00Z' };
-  assert.equal(shouldSpendLiveRoster(justNow, now).spend, false, 'two minutes ago — do not pay again');
-  // Three automatic fetch sites × every page load is what this turns into one call per window.
-  const three = [justNow, justNow, justNow].map((c) => shouldSpendLiveRoster(c, now).spend);
-  assert.deepEqual(three, [false, false, false], 'all three client fetch sites are free');
-});
-
-test('…and retried after it, so a day that fills up later still lands on its own', () => {
-  const now = Date.parse('2026-09-05T18:00:00Z');
-  const old = { loads: [], emptyAt: new Date(now - (EMPTY_COOLDOWN_MIN + 1) * 60000).toISOString() };
-  assert.equal(shouldSpendLiveRoster(old, now).spend, true);
-  // Exactly at the boundary counts as elapsed — the cooldown is a floor, not a fence.
-  const exact = { loads: [], emptyAt: new Date(now - EMPTY_COOLDOWN_MIN * 60000).toISOString() };
-  assert.equal(shouldSpendLiveRoster(exact, now).spend, true);
-});
-
-test('a non-empty cache is never a live call — it is served directly', () => {
-  assert.equal(shouldSpendLiveRoster(held(106), Date.parse('2026-09-05T18:00:00Z')).spend, false);
-});
-
-test('an unreadable stamp or clock PULLS — "cannot tell" is never "recently"', () => {
-  // Assuming freshness from a stamp we could not parse would hide a real outage behind a
-  // cooldown that never expires.
-  const now = Date.parse('2026-09-05T18:00:00Z');
-  for (const at of ['rubbish', '', null, undefined]) {
-    assert.equal(shouldSpendLiveRoster({ loads: [], emptyAt: at }, now).spend, true, `emptyAt=${JSON.stringify(at)}`);
-  }
-  assert.equal(shouldSpendLiveRoster({ loads: [], emptyAt: '2026-09-05T17:58:00Z' }, NaN).spend, true, 'unusable clock');
-});
-
 test('every verdict carries a reason, because a refusal must never be silent', () => {
   for (const v of [acceptRosterWrite(held(9), []), acceptRosterWrite(null, rows(2)), acceptRosterWrite({ loads: [] }, [])]) {
     assert.ok(v.reason && v.reason.length > 8, 'write verdicts explain themselves');
-  }
-  for (const c of [null, held(9), { loads: [], emptyAt: '2026-09-05T17:58:00Z' }]) {
-    assert.ok(shouldSpendLiveRoster(c, Date.parse('2026-09-05T18:00:00Z')).reason.length > 8);
   }
 });

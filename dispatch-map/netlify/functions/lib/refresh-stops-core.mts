@@ -31,7 +31,7 @@ import { maxConsecutiveGap } from './scan-metrics.mts';
 import { notifyMarkedCustomers, pendingNotifyDates } from './cs-notify.mts';
 import { breakerTripped, scanIntervalElapsed, breakerMode, setDailyCeilingOverride, setCallTrigger } from './nuvizz-request.mts';
 import { scanDecision, isInRoutingWindow, clampScanConfig } from './scan-schedule.mts';
-import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip, scanPath, rosterMayRunOnBlackout } from './scan-plan.mts';
+import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip, scanPath } from './scan-plan.mts';
 import { acceptRosterWrite } from './roster-write.mts';
 import { planCompletions } from './scan-completions.mts';
 
@@ -359,6 +359,33 @@ export function futureRosterCaptured(cached: { at?: string; loads?: any[] } | nu
 }
 
 /**
+ * PURE. May this roster pull be SKIPPED because the day was already captured?
+ *
+ * Chad: "i need it to fire when i manually refresh … If I'm working on Saturday or Sunday its
+ * to plan loads for following week like i was trying to do for Tuesday but all my empty loads
+ * weren't there."
+ *
+ * futureRosterCaptured is the once-per-scan-day rule for a FUTURE date, and it was applied to
+ * every caller — including a human pressing the button. So the first capture of the day won,
+ * and if that capture ran before the following week's loads existed (which, on a weekend, is
+ * exactly when it runs) nothing in the app could move it until the next ET day. Pressing the
+ * one control that means "get me the current answer" did nothing at all for the days he was
+ * planning, and said nothing about it either.
+ *
+ * A human asking is information the cadence cannot have: it means the answer we hold is not
+ * the one they need. So manual always pulls. TODAY is never skipped by anybody — it is the
+ * live board. Exported for tests.
+ */
+export function skipFutureRosterPull(opts: {
+  date: string; today: string; isManual: boolean;
+  cached: { at?: string; loads?: any[] } | null | undefined; now: Date;
+}): boolean {
+  if (!opts || opts.date === opts.today) return false;   // today always pulls
+  if (opts.isManual) return false;                        // a human asked — always pull
+  return futureRosterCaptured(opts.cached, opts.now);
+}
+
+/**
  * PURE. May this scan PRUNE the planned board, or must it preserve what it did not see?
  *
  * The three reasons a load list is not authoritative, in one place and testable:
@@ -559,18 +586,13 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // skip is overridable; weekend blackout and the hard floor are real safety gates and
   // stay in force. See overrideCadenceSkip in scan-plan.mts.
   decision = overrideCadenceSkip(decision, plannedDue, completedDue, rosterDue);
-  // THE WEEKEND CARVE-OUT FOR THE ROSTER, AND ONLY THE ROSTER. The blackout stops scheduled
-  // scans Fri 22:00 → Sun 20:00 because nothing is delivering — right for planned and
-  // completed, wrong for the one list that says which loads EXIST, because Saturday is when
-  // next week gets planned. Chad: "the loads use to populate just fine." They did, until
-  // v0.77.0 put this pull behind a plan whose windows were drawn around the delivery day.
-  // rosterMayRunOnBlackout refuses if either expensive kind is also due, so this can never
-  // become a board rebuild on a day nothing is moving; the path is forced to 'roster-only'
-  // below rather than going through scanPath, which would answer 'full' for a flipped `act`.
-  // Off with NUVIZZ_ROSTER_WEEKEND=0 — one cheap list call an hour, ~46 across a weekend.
-  const rosterWeekendOn = !/^(0|false|off|no)$/i.test(String(process.env.NUVIZZ_ROSTER_WEEKEND ?? '').trim());
-  const rosterOnlyOnBlackout = rosterWeekendOn
-    && rosterMayRunOnBlackout(decision, plannedDue, completedDue, rosterDue);
+  // NOTHING AUTOMATIC RUNS AT THE WEEKEND, and that is Chad's rule, not an inference:
+  // "Nothing should be calling nuvizz on Saturday except for a manual scan." An earlier
+  // draft of this fix carved the roster out of the weekend blackout so Saturday planning
+  // would refresh itself; he does not want that, and he is right that he does not need it —
+  // when he works a weekend he presses the button, and the button is now the thing that
+  // was actually broken (see persistLoadRoster). The blackout therefore stands unqualified:
+  // Fri 22:00 → Sun 20:00 ET, no scheduled fire of any kind reaches the vendor.
 
   // Fix 4 — exactly ONE structured line per invocation, so "why didn't it scan"
   // is answerable from the log. today/tomorrow report the DECISION's feed intent.
@@ -688,7 +710,8 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       let cachedForWrite: Awaited<ReturnType<typeof readLoadRoster>> | null = null;
       if (date !== today) {
         cachedForWrite = await readLoadRoster(TENANT, date).catch(() => null);
-        if (futureRosterCaptured(cachedForWrite, new Date())) return;
+        // A MANUAL SCAN ALWAYS PULLS — see skipFutureRosterPull for why that was the bug.
+        if (skipFutureRosterPull({ date, today, isManual, cached: cachedForWrite, now: new Date() })) return;
       }
       const roster = await loadRosterForDate(date);
       // AN EMPTY ANSWER MAY NOT SILENTLY ERASE A GOOD ROSTER. loadRosterForDate returns [] with
@@ -730,7 +753,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // Tomorrow's roster is still captured once per scan day (futureRosterCaptured), so widening
   // this to the whole scanDates list costs one cheap PkgRoute call an hour, not two.
   let rosterRan = false;
-  if ((decision.act || rosterOnlyOnBlackout) && fsOn && rosterDue) {
+  if (decision.act && fsOn && rosterDue) {
     const rosterAt = new Date().toISOString();
     for (const d of scanDates) await persistLoadRoster(d, rosterAt);
     await markScanKinds(['roster'], rosterAt).catch(() => {});
@@ -1028,11 +1051,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // else. The else used to be the full rebuild, and two of the eight due-ness combinations
   // reached it by accident; see scanPath's own note. With list discovery off there is no
   // overlay and no roster-only fire to take, so the probe engine's behaviour is unchanged.
-  // The carve-out short-circuits scanPath deliberately — see rosterMayRunOnBlackout for why a
-  // flipped `act` through scanPath is the expensive accident this avoids.
-  const path = LIST_DISCOVERY
-    ? (rosterOnlyOnBlackout ? 'roster-only' : scanPath(decision.act, { plannedDue, completedDue, rosterDue }))
-    : 'full';
+  const path = LIST_DISCOVERY ? scanPath(decision.act, { plannedDue, completedDue, rosterDue }) : 'full';
 
   // ── COMPLETED-ONLY FIRE: the overlay ──────────────────────────────────────
   //

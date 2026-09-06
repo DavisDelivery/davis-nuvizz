@@ -8,9 +8,11 @@
 // SOURCE PREFERENCE:
 //   1. The cached roster the background scanner persists per date (incl. the next business
 //      day, captured ONCE — next-day loads are static). Instant, zero NuVizz calls.
-//   2. Fallback: one live PkgRoute filterdata call (the portal's "Loads" grid,
-//      customListDefId 35833), which is then cached so the next read is free.
-//   ?live=1 forces the live pull (and refreshes the cache) — for an explicit "refresh".
+//   2. NO automatic fallback. A date with no cached roster answers source:'none' rather than
+//      spending a call, because three client fetch sites x every page load is how a missing
+//      roster turned into fourteen NuVizz calls a refresh.
+//   ?live=1 is the ONLY way this endpoint reaches the vendor: one PkgRoute filterdata call
+//      (the portal's "Loads" grid, customListDefId 35833), cached so the next read is free.
 //
 // Best-effort: an error returns ok:false and the UI just shows the stop-grouped loads it
 // already has. Creds stay server-side.
@@ -18,7 +20,7 @@
 //   GET ?date=YYYY-MM-DD [&live=1]  → { ok, date, source, at, count, loads:[{loadId,name,status,trips}] }
 import { loadRosterForDate } from './lib/nuvizz-loads.mts';
 import { isFirestoreEnabled, readLoadRoster, writeLoadRoster, markLoadRosterEmpty } from './lib/firestore.mts';
-import { acceptRosterWrite, shouldSpendLiveRoster } from './lib/roster-write.mts';
+import { acceptRosterWrite } from './lib/roster-write.mts';
 import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
@@ -45,20 +47,23 @@ export default async (req: Request): Promise<Response> => {
       if (cached && cached.loads.length) {
         return new Response(JSON.stringify({ ok: true, date, source: 'cache', at: cached.at, count: cached.loads.length, loads: cached.loads }), { status: 200, headers: cors });
       }
-      // AN EMPTY CACHE USED TO MEAN "PAY AGAIN", EVERY TIME. The fall-through below is the
-      // never-captured path and is right for that — but the client has THREE automatic fetch
-      // sites (the Map routes panel, the bottom grid's Loads view, the Routing rail), so once a
-      // date's roster was genuinely empty every page load and every date change spent three
-      // NuVizz calls to be told the same nothing, and wrote the same nothing back. Chad,
-      // counting: "each refresh is causing like 14 calls when it should only be 3 or 4."
-      // A recorded empty is now served for free inside its cooldown, and retried after it, so a
-      // day that fills up later still lands without anybody pressing anything.
-      const spend = shouldSpendLiveRoster(cached, Date.now());
-      if (!spend.spend) {
-        return new Response(JSON.stringify({
-          ok: true, date, source: 'cache-empty', at: cached?.at ?? null, count: 0, loads: [], note: spend.reason,
-        }), { status: 200, headers: cors });
-      }
+      // AN AUTOMATIC READ NEVER SPENDS A VENDOR CALL. This used to fall through to a live
+      // pull whenever the cache was empty — the never-captured path — and the client has THREE
+      // automatic fetch sites (the Map routes panel, the bottom grid's Loads view, the Routing
+      // rail), so a date with no roster cost three NuVizz calls per page load and three more
+      // per board-date change, each writing the same nothing back. Chad, counting: "each
+      // refresh is causing like 14 calls when it should only be 3 or 4", and, on the weekend:
+      // "Nothing should be calling nuvizz on Saturday except for a manual scan."
+      //
+      // So the rule is now one sentence with no clock in it: the scheduled scan and an
+      // explicit ?live=1 refresh are the only things that reach NuVizz. A date we have never
+      // captured answers `source:'none'` — which the freshness line renders as "not pulled",
+      // with the Refresh button right beside it — rather than quietly spending a call to find
+      // out. Absent stays distinguishable from zero, which is the whole point.
+      return new Response(JSON.stringify({
+        ok: true, date, source: 'none', at: cached?.at ?? null, count: 0, loads: [],
+        note: 'no cached roster for this date — automatic reads never spend a NuVizz call; use ?live=1',
+      }), { status: 200, headers: cors });
     }
     // 2) Live fetch — one deliberate call — then cache it so the next read is free.
     const loads = await loadRosterForDate(date);

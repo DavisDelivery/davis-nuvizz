@@ -33,17 +33,18 @@
 //                         "refuse forever" is not an option: a stale list a dispatcher acts on
 //                         is its own kind of wrong. A blip does not repeat; a real emptying
 //                         does.
-//   shouldSpendLiveRoster — once a live pull HAS come back empty, stop paying for the same
-//                         answer on every page load. The endpoint records when it happened;
-//                         inside the cooldown the empty is served from cache for free.
+// The amplification is fixed a different way, and a simpler one than the ten-minute cooldown
+// this module first carried. Chad: "i don't need 10 and i need it to fire when i manually
+// refresh. Nothing should be calling nuvizz on Saturday except for a manual scan." So the read
+// endpoint no longer spends a vendor call on its own AT ALL: an automatic read is cache-only,
+// and the only things that reach NuVizz are the scheduled scan and an explicit refresh. Three
+// fetch sites × every page load now costs nothing, on any day of the week, with no clock and
+// no window to reason about.
 //
 // PURE. No Firestore, no network, no clock of its own — every decision is testable on data.
 
 /** How many consecutive empty answers before we believe the day really has no loads. */
 export const ACCEPT_EMPTY_AFTER = Math.max(1, Number(process.env.NUVIZZ_ROSTER_EMPTY_STREAK) || 3);
-
-/** Minutes an observed-empty roster is served from cache before another live call is spent. */
-export const EMPTY_COOLDOWN_MIN = Math.max(1, Number(process.env.NUVIZZ_ROSTER_EMPTY_COOLDOWN_MIN) || 10);
 
 export interface RosterCache {
   at?: string | null;
@@ -107,33 +108,4 @@ export function acceptRosterWrite(
     emptyStreak: streak,
     reason: `REFUSED: empty answer would erase ${heldCount} held load(s) (${streak}/${ACCEPT_EMPTY_AFTER} strikes)`,
   };
-}
-
-/**
- * shouldSpendLiveRoster(cached, nowMs) → should the read endpoint spend a NuVizz call?
- *
- * Only reached when the cache is empty, because a non-empty cache is served directly. The
- * question is whether "empty" means "never captured" (pull it — that is what the fallback is
- * for) or "we asked recently and the answer was nothing" (do not pay for the same nothing on
- * every page load, from three fetch sites, for every viewer).
- *
- * Absent doc, or an empty doc that never recorded WHEN it went empty, is the never-captured
- * case and pulls. A recorded empty is served for EMPTY_COOLDOWN_MIN minutes and then retried,
- * so a day that fills up later still lands within ten minutes without anybody pressing
- * anything. An unparseable stamp pulls — never treat "cannot tell" as "recently".
- */
-export function shouldSpendLiveRoster(
-  cached: RosterCache | null | undefined,
-  nowMs: number,
-  cooldownMin: number = EMPTY_COOLDOWN_MIN,
-): { spend: boolean; reason: string } {
-  if (!cached) return { spend: true, reason: 'no cached roster — this is the never-captured case' };
-  if (rows(cached.loads) > 0) return { spend: false, reason: 'cache is non-empty and is served directly' };
-  if (!cached.emptyAt) return { spend: true, reason: 'empty cache with no observation stamp — pull it' };
-  const at = Date.parse(String(cached.emptyAt));
-  if (!Number.isFinite(at)) return { spend: true, reason: 'unreadable empty stamp — pull rather than assume' };
-  const ageMin = (Number(nowMs) - at) / 60000;
-  if (!Number.isFinite(ageMin)) return { spend: true, reason: 'unusable clock — pull rather than assume' };
-  if (ageMin >= cooldownMin) return { spend: true, reason: `last empty ${Math.round(ageMin)}m ago — retry` };
-  return { spend: false, reason: `empty observed ${Math.round(Math.max(0, ageMin))}m ago — inside the ${cooldownMin}m cooldown` };
 }
