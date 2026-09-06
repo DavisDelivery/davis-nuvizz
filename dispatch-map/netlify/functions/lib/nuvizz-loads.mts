@@ -119,6 +119,42 @@ export function normalizeLoads(j: any): Array<{ loadId: string; name: string; lo
   return out;
 }
 
+// ── May a CACHED roster answer this read, or must it cost a NuVizz call? (PURE) ─────
+//
+// The old rule was `cached.loads.length` — a cache with rows is served, anything else goes
+// live. That threw away the one answer it most needed to keep. A day the vendor genuinely
+// reports NO loads for produced an empty doc, which failed the test, so every read went live;
+// the live pull then wrote another empty doc, which failed it again. It never converged. With
+// five fetch sites for this endpoint in the client — the Map screen's Routes panel, the
+// Routing rail, the bottom grid and two refresh controls, several re-firing on ordinary UI
+// state — one such day turned every panel toggle into a metered PkgRoute call. Chad, having
+// counted them: "each refresh is causing like 14 calls when it should only be 3 or 4."
+//
+// The distinction the old rule was reaching for is real and is kept, but it lives in the
+// doc's EXISTENCE, not its length:
+//   • no doc at all      → nobody has ever asked for this day. Go live. (Absent is not zero.)
+//   • rows               → serve it, whatever its age. Stale beats spending a call on every
+//                          read; the surfaces label the age and carry a Refresh.
+//   • empty, from today  → this scan day's answer IS "none". Serve it, free.
+//   • empty, from before → stale AND empty. Worth one call to find out if that changed.
+//
+// `etDay` is injected rather than imported so this stays pure and clock-testable.
+export function shouldServeCachedRoster(
+  cached: { at?: string | null; loads?: any[] } | null | undefined,
+  etDayOf: (d: Date) => string,
+  now: Date = new Date(),
+): boolean {
+  if (!cached) return false;
+  if ((cached.loads?.length ?? 0) > 0) return true;
+  // The stamp is checked BEFORE it is trusted: `new Date(null)` is the epoch — a valid Date
+  // that would read as captured in 1969 — and Intl throws outright on an unparseable one.
+  // Either way an unreadable stamp means "not today", never an exception.
+  if (!cached.at) return false;
+  const at = new Date(cached.at);
+  if (!Number.isFinite(at.getTime())) return false;
+  try { return etDayOf(at) === etDayOf(now); } catch { return false; }
+}
+
 // A board stop's load identity, when known (enriched stops carry raw.load.loadId; the
 // bare list rows do not). null when the stop has no load id yet.
 export function stopLoadId(s: any): string | null {
