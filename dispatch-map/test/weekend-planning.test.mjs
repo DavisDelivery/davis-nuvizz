@@ -1,114 +1,109 @@
 // test/weekend-planning.test.mjs
 //
-// PLANNING MONDAY ON A SATURDAY NEEDS BOTH HALVES.
+// PLANNING MONDAY ON A SATURDAY IS THE BUTTON'S JOB, NOT THE SCHEDULE'S.
 //
-// Chad, 18:17 on Saturday Sep 5, looking at the Routing screen: "I want to see Monday's and
-// Tuesday's of next week's loads here like this so I can start planning them today or
-// tomorrow."
+// THE HISTORY, KEPT BECAUSE IT IS THE WHOLE ARGUMENT. Chad wanted next week's loads visible on
+// a weekend so he could plan them. Two releases tried to do that by letting scheduled scans
+// through the weekend blackout: v0.93.4 carved out the ROSTER, v0.93.6 carved out PLANNED as
+// well (the freight he plans ONTO those trailers). Both were defensible and both were wrong,
+// and the number is why. Replayed against the shipped plan on the 5-minute cron, they took a
+// SATURDAY from 0 scheduled vendor calls to 65 — twelve full ~700-stop board rebuilds plus
+// forty-one roster pulls, before he touched anything. He watched that land on his own counter
+// and said: "I want my schedule to be just what it was unless I hit the manual refresh."
 //
-// v0.93.4 gave the ROSTER the weekend, so the empty trailers for Monday and Tuesday appear.
-// That is the list of what he can fill. It is not what he fills them WITH — the orders are
-// 77128 (`planned`), and that had no weekend rule at all: zero hours on Saturday, nothing
-// before 20:00 on Sunday. A Saturday board therefore showed Friday evening's picture of
-// Monday's freight, and anything that landed since was invisible on the screen he plans from.
+// So the carve-outs are GONE — rosterMayRunOnBlackout and plannedMayRunOnBlackout are deleted,
+// not disabled, and their env switches with them. The blackout stands unqualified.
 //
-// THE INTERACTION IS THE INTERESTING PART. rosterMayRunOnBlackout refuses outright when
-// planned is due — deliberately, so a cheap list call can never carry a ~700-stop rebuild
-// through a blackout on its permission. So adding a weekend `planned` rule SILENCES the roster
-// carve-out as a side effect: one gap traded for another, with no line of code looking wrong.
-// These tests pin both halves running on the same Saturday fire.
+// AND THE NEED THEY WERE BUILT FOR IS MET THE OTHER WAY, which is the better engineering
+// anyway: a schedule cannot know which board is on screen, so it guessed by widening. A press
+// knows exactly. "if I have it set for a future date when I hit the refresh button it should
+// pull the load roster for that day and the next" — rosterDatesFor, tested next door in
+// roster-viewed-date.test.mjs. Two calls, aimed where he is working, when he asks for them.
+//
+// These tests pin the silence. A future release that reintroduces a weekend scheduled fire —
+// under any name, for any feed — fails here.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  defaultScanRules, resolveInterval, scanPath,
-  rosterMayRunOnBlackout, plannedMayRunOnBlackout,
-} from '../netlify/functions/lib/scan-plan.mts';
-import { isWeekendBlackout } from '../netlify/functions/lib/scan-schedule.mts';
+import * as plan from '../netlify/functions/lib/scan-plan.mts';
+import { defaultScanRules, resolveInterval, dueKinds, scanPath, overrideCadenceSkip } from '../netlify/functions/lib/scan-plan.mts';
+import { scanDecision, isWeekendBlackout } from '../netlify/functions/lib/scan-schedule.mts';
 import { scanDatesFrom } from '../netlify/functions/lib/refresh-stops-core.mts';
 
 const SAT = 6, SUN = 0, MON = 1;
-const weekendSkip = { act: false, skip: 'weekend' };
 
-test('the days Chad wants to plan are already in the horizon from Saturday AND Sunday', () => {
-  // Sep 5 2026 is the Saturday; Sep 7 is Labor Day Monday, Sep 8 the Tuesday.
+test('THE CARVE-OUT FUNCTIONS ARE GONE, not merely unused', () => {
+  // Left exported-but-uncalled they are one import away from coming back by accident, and the
+  // next person reading the plan cannot tell a dead permission from a live one.
+  assert.equal(plan.rosterMayRunOnBlackout, undefined, 'rosterMayRunOnBlackout must not exist');
+  assert.equal(plan.plannedMayRunOnBlackout, undefined, 'plannedMayRunOnBlackout must not exist');
+});
+
+test('NO RULE OF ANY KIND COVERS A SATURDAY HOUR — the schedule is silent all day', () => {
+  const rules = defaultScanRules();
+  for (let hour = 0; hour < 24; hour++) {
+    for (const kind of ['planned', 'completed', 'roster']) {
+      assert.equal(resolveInterval(kind, SAT, hour, rules), null,
+        `${kind} is scheduled at Sat ${hour}:00 — Saturday must be silent`);
+    }
+  }
+});
+
+test('and the blackout would refuse them even if a rule appeared', () => {
+  // Belt and braces, and they are independent: the rules say "not scheduled", the blackout says
+  // "not now". Losing either one alone must not put calls back on a Saturday.
+  for (let hour = 0; hour < 24; hour++) {
+    assert.equal(isWeekendBlackout(SAT, hour), true, `Sat ${hour}:00 ET must be inside the blackout`);
+  }
+});
+
+test('A WHOLE SATURDAY ON THE 5-MINUTE CRON SPENDS NOTHING — the number he asked for', () => {
+  // The replay that produced the 65. Driving the real scanDecision/dueKinds/scanPath over all
+  // 288 fires of the day, nothing may act. This is the test that fails if anyone reintroduces
+  // a weekend fire under a new name.
+  const rules = defaultScanRules();
+  const stamps = { planned: '2026-09-04T12:00:00Z', completed: '2026-09-04T12:00:00Z', roster: '2026-09-04T12:00:00Z' };
+  let acted = 0;
+  for (let t = Date.parse('2026-09-05T04:00:00Z'); t < Date.parse('2026-09-06T04:00:00Z'); t += 5 * 60000) {
+    const at = new Date(t);
+    let d = scanDecision(at, false, stamps.planned, {});
+    const due = dueKinds(d.weekday, d.etHour, rules, stamps, t);
+    d = overrideCadenceSkip(d, due.planned.due, due.completed.due, due.roster.due);
+    if (d.act) acted++;
+    if (scanPath(d.act, { plannedDue: due.planned.due, completedDue: due.completed.due, rosterDue: due.roster.due }) !== 'skip') acted++;
+  }
+  assert.equal(acted, 0, `${acted} Saturday fires acted — the schedule must be silent`);
+});
+
+test('a MANUAL press is the one thing that still reaches the vendor on a Saturday', () => {
+  // The blackout is bypassed by isManual and only by isManual. Without this the revert would
+  // have taken his weekend planning away entirely instead of moving it onto the button.
+  const sat = new Date('2026-09-05T18:00:00Z'); // 2pm ET Saturday
+  assert.equal(scanDecision(sat, false, null, {}).act, false, 'scheduled: silent');
+  assert.equal(scanDecision(sat, true, null, {}).act, true, 'manual: runs');
+});
+
+test('the days he plans are still reachable from the board — the horizon never was the problem', () => {
   assert.deepEqual(scanDatesFrom('2026-09-05', 3), ['2026-09-05', '2026-09-07', '2026-09-08']);
   assert.deepEqual(scanDatesFrom('2026-09-06', 3), ['2026-09-06', '2026-09-07', '2026-09-08']);
 });
 
-test('PLANNED now runs on Saturday and Sunday daytime — the hours a dispatcher plans in', () => {
+test('SUNDAY EVENING STILL OPENS, exactly as it did before any of this', () => {
+  // "Just what it was" cuts both ways: the routing window from 20:00 Sunday is original
+  // behaviour and reverting must not have taken it too.
   const rules = defaultScanRules();
-  for (const [wd, label] of [[SAT, 'Sat'], [SUN, 'Sun']]) {
-    assert.equal(resolveInterval('planned', wd, 10, rules), 60, `${label} 10:00`);
-    assert.equal(resolveInterval('planned', wd, 17, rules), 60, `${label} 17:00 — Chad's screenshot`);
-    assert.equal(resolveInterval('planned', wd, 3, rules), null, `${label} 03:00 — nobody plans at 3am`);
-  }
+  assert.equal(resolveInterval('planned', SUN, 21, rules), 30, 'plan-eve covers Sunday night');
+  assert.equal(resolveInterval('roster', SUN, 21, rules), 60, 'roster-eve too');
+  // The real edges are Fri 23:00 -> Sun 19:00 ET, not the 22/20 quoted in older comments.
+  assert.equal(isWeekendBlackout(SUN, 19), false, 'Sunday reopens AT 19:00 ET');
+  assert.equal(isWeekendBlackout(SUN, 18), true, '...and 6pm Sunday is still inside it');
+  assert.equal(isWeekendBlackout(5, 23), true, 'Friday closes at 23:00 ET');
+  assert.equal(isWeekendBlackout(5, 22), false, '...and 10pm Friday still scans');
 });
 
-test('COMPLETED stays dark all weekend — nothing delivered, so that pull is empty by construction', () => {
-  const rules = defaultScanRules();
-  for (const wd of [SAT, SUN]) {
-    for (let h = 0; h < 24; h++) assert.equal(resolveInterval('completed', wd, h, rules), null, `wd${wd} ${h}:00`);
-  }
-});
-
-test('the delivery-day bands are untouched — this adds the weekend, it does not retune the week', () => {
+test('the delivery-day bands are untouched — this removed the weekend, it did not retune the week', () => {
   const rules = defaultScanRules();
   assert.equal(resolveInterval('planned', MON, 7, rules), 15, 'plan-rollout');
   assert.equal(resolveInterval('planned', MON, 12, rules), 30, 'plan-day');
   assert.equal(resolveInterval('completed', MON, 10, rules), 15, 'done-run');
-});
-
-// ── the two permissions, and the interaction between them ────────────────────
-
-test('a due PLANNED scan gets through the weekend blackout', () => {
-  assert.equal(plannedMayRunOnBlackout(weekendSkip, true, false), true);
-});
-
-test('...and it becomes a full board scan, not a roster-only tick', () => {
-  const plannedOnBlackout = plannedMayRunOnBlackout(weekendSkip, true, false);
-  assert.equal(scanPath(weekendSkip.act || plannedOnBlackout, { plannedDue: true, completedDue: false, rosterDue: true }), 'full');
-});
-
-test('THE INTERACTION: the roster carve-out goes quiet once planned is due, so the caller must grant it under either permission', () => {
-  // This is the regression the two-function split exists to make visible. On a Saturday fire
-  // with the new rule BOTH are due, and rosterMayRunOnBlackout answers false — correctly, by
-  // its own contract. The roster still has to run.
-  assert.equal(rosterMayRunOnBlackout(weekendSkip, true, false, true), false, 'refuses, as designed');
-  const rosterOnlyOnBlackout = rosterMayRunOnBlackout(weekendSkip, true, false, true);
-  const plannedOnBlackout = plannedMayRunOnBlackout(weekendSkip, true, false);
-  assert.equal(weekendSkip.act || rosterOnlyOnBlackout || plannedOnBlackout, true,
-    'refresh-stops-core runs the roster under EITHER permission — the trailers must not vanish when the freight arrives');
-});
-
-test('a weekend fire with nothing due still runs nothing', () => {
-  assert.equal(plannedMayRunOnBlackout(weekendSkip, false, false), false);
-  assert.equal(rosterMayRunOnBlackout(weekendSkip, false, false, false), false);
-});
-
-test('COMPLETED can never ride through on the planned permission', () => {
-  assert.equal(plannedMayRunOnBlackout(weekendSkip, true, true), false);
-});
-
-test('only the WEEKEND skip is carved out — the hard floor and the cadence gate stand', () => {
-  for (const skip of ['floor', 'cadence']) {
-    assert.equal(plannedMayRunOnBlackout({ act: false, skip }, true, false), false, skip);
-  }
-});
-
-test('an already-acting decision is left alone', () => {
-  assert.equal(plannedMayRunOnBlackout({ act: true, skip: 'none' }, true, false), false);
-});
-
-test('every weekend hour that plans is inside the blackout, so the carve-out is load-bearing', () => {
-  // If this ever stops being true the rule is being served by something else and the carve-out
-  // is dead code pretending to work.
-  const rules = defaultScanRules();
-  const carved = [];
-  for (const wd of [SAT, SUN]) {
-    for (let h = 0; h < 24; h++) {
-      if (resolveInterval('planned', wd, h, rules) == null) continue;
-      if (isWeekendBlackout(wd, h, {})) carved.push(`${wd}:${h}`);
-    }
-  }
-  assert.ok(carved.length >= 20, `expected the weekend planning hours to need the carve-out, got ${carved.length}`);
+  assert.equal(resolveInterval('roster', MON, 6, rules), 60, 'roster-am');
 });

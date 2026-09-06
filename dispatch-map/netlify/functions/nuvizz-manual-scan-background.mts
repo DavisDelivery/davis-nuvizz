@@ -39,6 +39,21 @@ export function manualScanUrl(reqUrl: string): string {
   const url = new URL(reqUrl);
   const clean = new URL(url.origin + url.pathname);
   clean.searchParams.set('manual', '1');
+  // `viewedDate` — the board the dispatcher is looking at — is the ONE other parameter allowed
+  // through, and it is re-validated here rather than trusted. Chad: "if I have it set for a
+  // future date when I hit the refresh button it should pull the load roster for that day and
+  // the next." runRefreshStops reads it only in rosterDatesFor.
+  //
+  // WHY THIS IS SAFE WHERE `?date=` IS NOT: `date` and `days` set `explicit` in runRefreshStops
+  // and flip it into the ~3,000-call number-probe engine, which is why this builder discards
+  // them and a test pins that they are structurally unreachable. `viewedDate` reaches nothing
+  // but the roster horizon — same call count, aimed at the day on screen. Anything that is not
+  // a real YYYY-MM-DD is dropped, so a typo silently means "the normal horizon", never an error
+  // and never a wider scan.
+  const viewed = url.searchParams.get('viewedDate') || '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(viewed) && Number.isFinite(Date.parse(viewed + 'T00:00:00Z'))) {
+    clean.searchParams.set('viewedDate', viewed);
+  }
   return clean.toString();
 }
 

@@ -162,19 +162,12 @@ export const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 export function defaultScanRules(): ScanRule[] {
   const deliveryDays = [1, 2, 3, 4, 5];         // Mon-Fri — days freight actually moves
   const routingNights = [0, 1, 2, 3, 4];        // Sun-Thu evenings — the night before one
-  const allDays = [0, 1, 2, 3, 4, 5, 6];        // the roster is about PLANNING, not delivering
   return [
     // ── planned / unplanned (77128) — Chad's bands ───────────────────────────
     { id: 'plan-eve', kind: 'planned', days: routingNights, startHour: 20, endHour: 24, intervalMin: 30, note: 'Routing opens — routes are being built for tomorrow.' },
     { id: 'plan-small-hours', kind: 'planned', days: deliveryDays, startHour: 0, endHour: 5, intervalMin: 20, note: 'Routing runs late; the plan is still moving.' },
     { id: 'plan-rollout', kind: 'planned', days: deliveryDays, startHour: 5, endHour: 10, intervalMin: 15, note: 'Trucks rolling and dispatch still editing — the plan changes fastest here.' },
     { id: 'plan-day', kind: 'planned', days: deliveryDays, startHour: 10, endHour: 20, intervalMin: 30, note: 'Running day — the plan is largely settled.' },
-    // THE WEEKEND IS WHEN NEXT WEEK GETS PLANNED, and `planned` had no rule for it — zero hours
-    // on Saturday, nothing before 20:00 on Sunday. v0.93.4 gave the ROSTER the weekend, so the
-    // trailers for Monday and Tuesday show up; this is the freight to put on them. Without it a
-    // Saturday dispatcher is planning Monday against Friday evening's picture of it, and an
-    // order that landed since is invisible. Hourly through the working day, off overnight.
-    { id: 'plan-weekend', kind: 'planned', days: [6, 0], startHour: 8, endHour: 20, intervalMin: 60, note: 'Next week is planned on the weekend — this is the freight to plan.' },
     // ── completed (77131) — the ETA anchor. Chad's bands. ────────────────────
     { id: 'done-early', kind: 'completed', days: deliveryDays, startHour: 4, endHour: 6, intervalMin: 30, note: 'First trucks rolling — a few early deliveries.' },
     { id: 'done-run', kind: 'completed', days: deliveryDays, startHour: 6, endHour: 19, intervalMin: 15, note: 'The delivery day — every stamp re-anchors a route clock.' },
@@ -183,31 +176,9 @@ export function defaultScanRules(): ScanRule[] {
     // three hours that usually carry a handful of stops.
     { id: 'done-late', kind: 'completed', days: deliveryDays, startHour: 19, endHour: 22, intervalMin: 180, note: 'One sweep for the tail of a long day.' },
     // 10pm-4am: NOT PULLED. Nothing is delivering, so the call can only come back empty.
-    // ── load roster (35833) — EVERY DAY, and here is why it is not shaped like the others ──
-    //
-    // Chad, twice, on a Saturday looking at Tuesday: "Where are all my empty loads" and then
-    // "the loads use to populate just fine." They did. Before v0.77.0 (2026-08-24) the roster
-    // was pulled UNCONDITIONALLY inside every scan of every date — `await persistLoadRoster(...)`
-    // with no gate on it — so any fire at all refreshed the empty loads. v0.77.0 put it behind
-    // this plan to reclaim calls, and drew its windows the way the other two are drawn: around
-    // the DELIVERY day. roster-am was Mon-Fri 04:00-13:00 and roster-eve Sun-Thu 20:00-24:00.
-    //
-    // That is the right shape for planned and completed and the WRONG shape for this one. The
-    // other two describe freight moving; this one describes what a dispatcher can still fill,
-    // and he plans on Saturday afternoons and on weekday afternoons — precisely the hours those
-    // two rules left uncovered. The holes it left: every weekday 13:00-20:00, and from Friday
-    // 13:00 all the way to Monday 04:00, a sixty-three hour freeze across the weekend he does
-    // his planning in. The board showed him whatever Friday lunchtime had seen, for three days,
-    // with nothing on screen admitting it.
-    //
-    // ONE RULE, ALL SEVEN DAYS, 04:00-24:00, hourly — no uncovered hour to reason about. The
-    // cost is the argument: this is the cheapest call the scanner makes (one list pull, cached
-    // afterwards), and 20 fires a day across 7 days is ~20 calls/day against a 2,000 ceiling.
-    // Before v0.77.0 the same list cost ~33 a day. So restoring it is 40% CHEAPER than the
-    // behaviour it restores, not new spend — which is why it ships on rather than behind a
-    // switch. (Saturday additionally needs the blackout carve-out below; a rule alone cannot
-    // reach a day on which no scan fires at all.)
-    { id: 'roster-day', kind: 'roster', days: allDays, startHour: 4, endHour: 24, intervalMin: 60, note: 'The empty loads are the planning surface — a dispatcher reading next week on a Saturday needs them as much as a Tuesday morning does.' },
+    // ── load roster (35833) ──────────────────────────────────────────────────
+    { id: 'roster-am', kind: 'roster', days: deliveryDays, startHour: 4, endHour: 13, intervalMin: 60, note: 'Enough to keep yesterday’s routes off today’s board.' },
+    { id: 'roster-eve', kind: 'roster', days: routingNights, startHour: 20, endHour: 24, intervalMin: 60, note: 'Tomorrow’s loads appear during routing.' },
   ];
 }
 
@@ -439,80 +410,6 @@ export function scanPath(
   if (due.completedDue) return 'completed-overlay';
   if (due.rosterDue) return 'roster-only';
   return 'skip';
-}
-
-/**
- * PURE. May the PLANNED scan run during the weekend blackout?
- *
- * Chad, on a Saturday evening: "I want to see Monday's and Tuesday's of next week's loads
- * here like this so I can start planning them today or tomorrow."
- *
- * v0.93.4 gave the ROSTER the weekend, which is half of what that sentence needs: the roster
- * is the list of trailers, and he can now see Monday's and Tuesday's shells. It is not what he
- * plans ONTO them. The orders are 77128, and `planned` has no weekend rule at all — resolved
- * against the shipped plan it runs zero hours on Saturday and nothing before 20:00 on Sunday.
- * So on a Saturday the freight he is looking at for Monday is Friday evening's picture of it,
- * and an order that landed since is invisible on the screen he is planning from.
- *
- * The blackout's premise is "nothing is delivering, so a pull can only come back empty." That
- * is exactly right for `completed` and it is not an argument about `planned`, which describes
- * what is COMING, not what moved. The weekend is when Davis plans the week.
- *
- * WHY THIS IS A SEPARATE FUNCTION AND NOT A FLAG ON THE ROSTER ONE. rosterMayRunOnBlackout
- * REFUSES outright when planned is due, deliberately — it exists so a cheap list call can slip
- * through a blackout and it must never let a ~700-stop rebuild ride along on that permission.
- * Adding a weekend `planned` rule therefore SILENCES the roster carve-out as a side effect,
- * which would have traded one gap for another without a line of code looking wrong. The two
- * have to be reasoned about together, so they are two named permissions and the caller grants
- * the roster its run under either one.
- *
- * `completed` is still refused: nothing is delivering, so that pull genuinely can only come
- * back with what it already had. The hard floor and the cadence gate are untouched.
- */
-export function plannedMayRunOnBlackout(
-  decision: { act: boolean; skip: string },
-  plannedDue: boolean,
-  completedDue: boolean,
-): boolean {
-  if (!decision || decision.act) return false;          // already running; nothing to carve out
-  if (decision.skip !== 'weekend') return false;        // the floor and cadence are not ours
-  if (!plannedDue) return false;
-  if (completedDue) return false;                       // nothing delivered; that pull is empty by construction
-  return true;
-}
-
-/**
- * PURE. May the LOAD ROSTER — and nothing else — run during the weekend blackout?
- *
- * The blackout (Fri 22:00 → Sun 20:00 ET) stops scheduled scans because Davis is not
- * delivering, and for planned and completed that is exactly right: nothing is moving, so those
- * pulls can only come back unchanged. The roster is a different question. It lists the loads
- * that EXIST, it is one cheap list call, and Saturday is when next week gets planned — so the
- * blackout was silently taking away the one thing a dispatcher is on the board for at the
- * weekend. Chad found it the only way left: "the loads use to populate just fine."
- *
- * DELIBERATELY NOT `overrideCadenceSkip` WITH ANOTHER SKIP REASON ADDED. That function flips
- * `act`, and a flipped `act` is handed to scanPath, which asks plannedDue FIRST and answers
- * 'full' — a whole board rebuild plus enrichment, on a day nothing is delivering, the moment
- * anybody adds a Saturday planned rule to the stored config. The cost rule in CLAUDE.md exists
- * because of exactly that class of accident. So this returns a narrow permission instead: the
- * caller uses it to run the roster pull and to force the 'roster-only' path directly, and it
- * refuses the moment either expensive kind is also due.
- *
- * Returns false unless ALL of: the scan is skipping, the reason is the weekend blackout, the
- * roster is due, and neither planned nor completed is.
- */
-export function rosterMayRunOnBlackout(
-  decision: { act: boolean; skip: string },
-  plannedDue: boolean,
-  completedDue: boolean,
-  rosterDue: boolean,
-): boolean {
-  if (!decision || decision.act) return false;          // already running; nothing to carve out
-  if (decision.skip !== 'weekend') return false;        // the floor and cadence are not ours
-  if (!rosterDue) return false;
-  if (plannedDue || completedDue) return false;         // never let an expensive kind ride along
-  return true;
 }
 
 export function overrideCadenceSkip<T extends { act: boolean; skip: string; reason: string }>(
