@@ -18,7 +18,55 @@ Project-level guidance for Claude Code in this repository.
   Default to investigating in **code only**; if real numbers are
   needed, ask Chad for them rather than scanning.
 - When a task seems to need fresh data, STOP and ask first — state the
-  expected call cost — instead of scanning.
+  expected call cost — instead of scanning. **Ask; do not guess.** This rule
+  forbids spending calls, not asking for them — see *ASK FOR THE CALL* below,
+  which exists because I read it the wrong way for a whole evening.
+
+## ASK FOR THE CALL. NEVER GUESS INSTEAD. (Chad, Sep 2026)
+
+- Chad, after an evening of it: **"you can always ask for a call instead of
+  just wasting my time guessing at things."**
+- The cost rule above says never spend a NuVizz call without permission. It
+  has never said to GUESS instead, and reading it that way is how a whole
+  evening gets burned. **Asking is always available, always cheap, and always
+  better than a confident wrong answer.** "May I spend one call on X?" is a
+  complete, correct, professional answer. Four paragraphs of inference is not.
+- **What this cost, on 2026-09-05, in one sitting.** Chad reported his empty
+  loads missing. I answered four times without the one fact that decided it:
+  first that nothing of mine was deployed (true, and irrelevant), then that
+  NuVizz probably had no loads for Tuesday yet (a guess), then a scan-cadence
+  fix (wrong thing — he said so), then a weekend carve-out he explicitly did
+  not want (**and it merged and went live before he could stop it, so he had
+  to be told to revert something already running**). The actual bug was a
+  dedup discarding the evening roster pull. **One call, or one look at the
+  cached roster document, would have pointed at it in the first reply.** He
+  said "you are fixing the wrong thing" twice before I stopped.
+- **The asymmetry is not close.** One list call is ~1 of a 2,000/day ceiling
+  and takes a second. A wrong diagnosis costs Chad's evening, and it can SHIP
+  — a guess that reaches main is a change he has to notice, reverse and
+  re-verify on his own dispatch board.
+- **What to do instead, every time the answer depends on data not in the
+  repo:** say so in one line, name the exact endpoint and parameters, state
+  the call cost, say precisely what the result would settle — then STOP and
+  wait. Do not "proceed under the assumption" and do not bury the ask under a
+  fix nobody asked for.
+
+      I can't tell from the code whether the Sep 8 roster was captured.
+      `nuvizz-load-columns?date=2026-09-08&confirm=1` is ONE call and
+      returns the raw row/column count. Say the word and I'll run it.
+
+- **Build the free diagnostic FIRST when one is possible.** Better than
+  asking for a call is needing no call at all. Before guessing, ask whether a
+  Firestore read, a stored summary, or a new `?explain=1` on an existing
+  endpoint could answer it for nothing — and if so, build that and read it.
+  The roster went four rounds undiagnosed because "the scan wrote nothing"
+  and "the panel got nothing" were the same blank screen; a zero-cost
+  `?explain=1` was ten minutes of work and should have been the first move.
+  This is the same rule as **make it inspectable** below, arriving from the
+  other direction.
+- **A guess presented as a finding is the worst output this repo produces**
+  (see the section below). "I cannot tell from here" is never a failure; it
+  is the honest half of an answer, and the other half is the question.
 
 ## NEVER REASON AT ME — CHECK THE CODE (Chad, Aug 2026)
 
