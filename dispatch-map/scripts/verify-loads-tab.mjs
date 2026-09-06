@@ -188,16 +188,10 @@ async function run(label, { mobile, roster, liveRoster, rosterFail, shells, pull
   // labelled with the MODE ("Routes (1)"), not with the sub-tab; the Routes/Loads toggle only
   // exists once that sheet panel is open, and the persisted sub-tab decides which half shows.
   if (mobile) {
-    await page.getByRole('button', { name: /^Routes/ }).first().click().catch(() => {});
+    // v0.93.15: Loads is a tab of the sheet strip (Setup · Routes · Loads · Result), addressed by
+    // its own name. By role, `/^Loads/` would find the grid's "Loads 3" button first in DOM order.
+    await page.locator('[data-sheet-tab="loads"]').first().click().catch(() => {});
     await page.waitForTimeout(800);
-    // Belt and braces: if the persisted sub-tab did not survive, take the toggle by hand.
-    const seen = await page.evaluate(() => !!document.querySelector('[data-day-loads-panel]')
-      || Array.from(document.querySelectorAll('input'))
-        .some((i) => /^Search .*loads/i.test(i.getAttribute('placeholder') || '')));
-    if (!seen) {
-      await page.getByRole('button', { name: /^Loads/ }).first().click().catch(() => {});
-      await page.waitForTimeout(700);
-    }
   }
   const text = await panelText(page);
   if (text == null) bad(`${label}: the Loads panel never rendered (no search field found)`);
@@ -292,7 +286,7 @@ for (const mobile of [false, true]) {
       // Bring the panel back first, and treat its absence as a failure, never as success.
       const reopenLoads = async () => {
         if (!mobile) return;
-        await page.getByRole('button', { name: /^Routes/ }).first().click().catch(() => {});
+        await page.locator('[data-sheet-tab="loads"]').first().click().catch(() => {});
         await page.waitForTimeout(700);
       };
       await reopenLoads();

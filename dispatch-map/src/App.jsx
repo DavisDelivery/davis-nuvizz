@@ -115,7 +115,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.93.14';
+const APP_VERSION = '0.93.15';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -186,6 +186,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.93.15', 'THE PHONE ROUTING SCREEN SPENDS THREE ROWS ON ITS CHROME WHERE IT SPENT SIX. Chad, Sunday, phone on v0.93.14: “Still a ton of wasted white space. Need to format this much better.” MEASURED FIRST, in a real browser at 390×844 in his exact state (sheet open on Routes): between the bottom of the map and the first route card sat 283px of rows — the grid bar (59), the board row with the date and gear (57), the sheet strip (57), a SECOND strip inside the sheet reading Routes/Loads under a tab that already said Routes (46 plus 12 of padding), the search row (57) — and above the map a 59px row holding one 132px Build/Engine control, 70% empty. Every one of those rows was a full-width band for one or two small controls. WHAT MOVED, AND WHERE, each into space another row already had free: (1) the settings gear into the APP BAR, the one strip nothing scrolls away, which had 44px to spare beside the version chip — a portal into a slot the bar exposes, dropping DOWN from the top and capped to the viewport; (2) the board date into the GRID’S COLLAPSED BAR, which had ~120px free beside Stops/Loads, as a compact control — “Today · 9/6” or “Tue 9/8 ▾” with the phone’s own native date wheel riding invisibly on top, so nothing custom can get the date wrong — where the old native input alone was 170px and could never share a row; the sheet renders the same control in a row of its own only while the grid is switched off, so there is one date on screen in every state and never two (the v0.93.12 rule); (3) Routes and Loads (or Drivers) into the SHEET STRIP ITSELF — Setup · Routes · Loads · Result — so the second strip and its repeated word are gone; (4) the Build/Engine row OFF the Build screen — Engine is a gear action, and the Engine screen keeps the row so the way back is always on screen; (5) the Stops/Loads toggle drops its icons on the phone, and the Routes/Loads panel body loses a step of padding. The desktop is untouched. Two views, not one layout patched. The mobile guard’s Routes/Loads probe and the loads-tab guard address the sheet’s Loads tab by its own name now (data-sheet-tab), because by role “Loads” would land on the grid’s Loads button first and open the wrong thing — which is also what makes the probe fail on the previous build.'],
   ['0.93.14', 'THE REVIEW OF v0.93.13 CHANGED FOUR OF ITS RULES, AND THE BOT HAD MERGED IT BEFORE THE FIXES LANDED. v0.93.13 was reviewed adversarially — three lenses, a refuter each — while its PR was open; the repo’s auto-merge took the green PR at its first commit, so the findings ship here, one version later, unchanged in substance. (1) The first offer rule hid the list at route 51 of 100: it offered shells only while MORE THAN HALF the standard names were missing, so after Chad saved half a day and the scan captured it the tab printed “every load already carries orders” again. A generated day is now told by its SHAPE, not its size — it holds Draft shells at zero trips, and a day built by hand holds only routes with stops because NuVizz refuses an empty route — so a hand-built day keeps offering every name it lacks. (2) A half-built day was counted as a source, so sixty routes built by hand would have outvoted the forty not yet built and shrunk the next day’s list; only generated-looking days are sources now, read together in one round trip and remembered for five minutes. (3) The seventh shell tap was silent: Compare caps at six cards and the refusal went to the New-route modal, which was not open — reproduced in a real browser on both views by the refuter — so the tap now says “Compare is full” where it happened, and the guard opens six cards and taps a seventh. (4) Closed days: a Saturday, a Sunday or Labor Day landed on by a date picker one day off must not hand out a hundred routes to build onto a day nobody drives; the repo’s own calendar (davis-calendar.js) settles it before a document is read. Also from the review: no shells on a day nobody has asked NuVizz about (source none); a name over NuVizz’s 20-character cap is never offered; the grid’s row order is a numeric tier (driven, driverless, shell) because under ICU collation the old “~” sentinel sorted above letters; a past day captured empty today says “holds no loads” without “yet” and no invitation to build; and the guard’s empty-day fixture is stamped minutes ago, not six hours, so a CI run between midnight and 6am ET cannot cross the ET day and go red for nothing. Not done, said plainly: labelling Tuesday’s empty twin of a route built Sunday as such on the Loads tab — the pair already shows both numbers (v0.54.25). 60 new tests; the loads-tab guard drives the uncreated day on both surfaces and both views, taps a shell into a card, brings the panel back to prove the name left the offer, and taps a seventh into the cap.'],
   ['0.93.13', 'THE LOADS PANELS NOW LIST THE STANDARD ROUTES FOR A DAY NUVIZZ HAS NOT CREATED YET, AND A TAP OPENS THE ROUTE CARD THAT SAVE TURNS INTO A REAL NUVIZZ LOAD. Chad, Sunday, the board on Tue Sep 8: “You can spend the call I just want my problem fixed. I want to build loads on the weekend for next week and if I put the map on the date I want to build on and do a manual scan the loads should show up even if on the weekend.” THE ONE CALL HE APPROVED, 13:51 ET, nuvizz-load-columns?date=2026-09-08&confirm=1: HTTP 200, 21 column definitions, ZERO rows for period +2d. The request is byte-identical to July’s and the same query kept 106 of 106 rows on Sep 2, so the scan is not the problem — NuVizz holds no loads for Tuesday. Every pull since Friday noon said the same (Sep 8 asked six times, empty each time; the last non-empty capture was Friday, for Friday), and a scan cannot show a load the vendor has not created. WHAT THE APP CAN DO IS WHAT CHAD DESIGNED ON AUG 3 FOR EXACTLY THIS HOLE: ＋ New route opens a pending Compare card and Save creates the route in NuVizz with its whole stop list. What that flow lacked was the LIST — he should not have to type SUW 2 from memory fifty times on a Sunday. So, for a day on or after today whose roster is empty or missing more than half the usual names, the roster endpoint also returns the STANDARD SHELLS: the route names the last three captured delivery days agree on (a name on two of three is a recurring route; a one-day name is a driver on his own trailer and is left out), read from the roster cache — Firestore only, never a vendor call, proven by a test whose vendor fetch throws. Both Loads surfaces list them under “Not in NuVizz yet — tap to open a route card”, the rail and the bottom grid, desktop and phone; the screen subtracts what the roster, the board and the open cards already hold, so after he saves SUW 2 the other ninety-nine are still offered and SUW 2 is not offered twice. A tap runs the New-route pre-flight (a name already on the board, a missing ship-from address) and opens the card with the name filled in; nothing is sent until Save, exactly as the modal says. On the phone the card raises the sheet, the same way a card from the grid does since v0.93.12. AND THE LINE SAYS WHAT ZERO MEANS: “0 loads · cached just now” — what Chad read for two days — now reads “NuVizz has no loads for this day yet · NuVizz answered 0 rows 8m ago”, from the pull record every capture carries since v0.93.12; the rail no longer tells him “every load already carries orders” on a day that has none. SAID OUT LOUD, BECAUSE IT IS A DISPATCH FACT THE CODE CANNOT SEE: in July tomorrow’s shells existed the morning before (v0.32.16, v0.33.8 captured 102 of them on Jul 1 for Jul 2). This weekend Monday’s and Tuesday’s did not exist by Sunday afternoon. Whoever or whatever generates them in NuVizz — a static-route job, a portal action, a person at 5am — did not run for the holiday week, and when it does run on Tuesday a route he built Sunday will sit beside the generated empty of the same name; the board tells them apart by number (v0.54.25) and the empty twin gets cancelled. Whether NuVizz can be set to generate further ahead is the question that makes this moot, and it is his to ask the vendor. 46 new tests; the loads-tab guard drives the uncreated day on both surfaces and both views and taps a shell into a card.'],
   ['0.93.12', 'THE PHONE OPENS ON THE MAP WITH ONE DATE PICKER; THE NARRATION LINE IS GONE FOR REAL; EVERY ROSTER PULL RECORDS WHAT IT SAW; AND A FUTURE DAY’S ROSTER IS CALLED ONCE A DAY. Chad, Sunday, phone on Tue Sep 8: “Still not fixed … 2 ways to set dates on mobile. Which wastes very limited space. Also there is a ton of wasted white spaces on mobile.” Then: “6 weeks ago there was no issue with the loads screen and roster scans.” Then: “The roster for future dates only needs to be called once a day as they will not change.” FOUR THINGS, EACH CHECKED RATHER THAN ARGUED. (1) THE ROSTER, AGAINST JULY. The clone was shallow — nothing before Aug 25 — so it was deepened and the roster path diffed against v0.52.4 (Jul 26). The request to NuVizz is byte-identical: periodForDate, the 35833 body, normalizeLoads, unchanged in six weeks. What changed: v0.69.0/v0.77.0 (Aug 21/25) moved the roster from “re-ask every future day on every scan” to two hourly windows, an engineering reclaim not a Chad schedule, left alone at his instruction; and v0.93.5 (mine) let the third horizon day re-pull HOURLY behind a switch. Chad’s rule settles that one: once a day, every future date, no exceptions but the manual Scan, which always pulls. The switch and the re-pull are gone; today still re-pulls every roster fire because its loads are being built and dispatched all day; an empty capture still does not count as captured, because zero rows is not a roster that will not change, it is a day nobody has built yet. A bound that re-asked an empty capture hourly on the endpoint was committed and reverted the same afternoon for the same reason. AND EVERY PULL NOW RECORDS WHAT IT SAW: the period sent, HTTP status, column defs, rows returned, rows kept — one log line per pull, stored beside the roster, read back by ?explain=1 in words (“the vendor answered ZERO rows for period +2d” versus “answered 106 rows and the parser KEPT NONE”). “0 loads · cached just now” had three pixel-identical causes and nothing recorded which; from this deploy that question costs nothing. What NuVizz actually holds for Sep 8 is still one call away and was asked for, not guessed. (2) THE “N WITH STOPS, N EMPTY” LINE IS REMOVED. Asked for twice; my removal commit landed thirty minutes after #820 squash-merged, so it has been live through v0.93.11. Gone, with its guard assertions. (3) ONE DATE PICKER ON THE PHONE, IN ONE HOME. Measured in a real browser at 390 and 360: two identical date+Today+gear trios 161px apart (the grid’s headerRight and the Setup header), and the grid toolbar wrapping to FOUR rows — 216px of chrome for six controls — under a map squeezed to 68px. Both copies go; the one home is a board row that is the first child of the bottom sheet, above the tab strip and outside every body the workbench or stop panel replaces, so it survives all four states in which one of the old copies vanished: Setup open, a Compare card open, the sheet collapsed, the grid switched off. The phone gear lists only what a phone can act on and carries the grid toggle so a grid switched off can be switched back on. (4) THE PHONE OPENS ON THE MAP. Sheet collapsed by default (every flow that needs it opens it itself), and ONE bottom surface at a time: opening the grid drops the sheet, opening the sheet folds the grid, and a Compare card raises the sheet whenever the card list GROWS — the first version fired only on 0→1, so a second card tapped from the grid rendered into a collapsed sheet and looked like nothing happened; the review predicted it and the guard now pins it. The phone grid is one bar when collapsed and two rows when open. SAID OUT LOUD BECAUSE IT IS AN EXCEPTION TO A CHAD RULE: v0.47.0 says the collapsed bar must be identical to the open one; on the phone the collapsed bar now hides Profiles, search and Status — except while a search term or status filter is LIVE, because those reach the map and a filter with no visible control is the v0.45.6 trap. Every hidden control auto-opens the grid on use. Cost: comparing two loads from the grid is four taps where it was two. Measured at 390x844 in Chad’s state: 253px given back to the map; at rest 409px. Desktop #root.innerHTML byte-identical to the untouched baseline at 1600x1000, grid open and closed — untouched by measurement, not by reading. THREE INDEPENDENT PROPOSALS, EACH ADVERSARIALLY REVIEWED twice (guards; a dispatcher planning 700 stops from a cab), synthesised from the winner with the others’ best grafted in, and the whole edit set applied to a scratch build and run against every guard before a line of it touched this branch. Six new routing probes in the phone guard and a two-card assertion in the loads-tab guard.'],
@@ -5135,6 +5136,36 @@ function DatePicker({ selectedDate, onChange, onToday, compact }) {
   );
 }
 
+// THE PHONE'S BOARD DATE, AS ONE COMPACT CONTROL. A native <input type="date"> is 170px wide at
+// text-xs (the browser draws the full mm/dd/yyyy plus its own icon), which is why the date could
+// never share a row with anything on a 360px phone and always cost a row of its own. This is a
+// 76–90px button that READS "Today · 9/6" or "Tue 9/8" and carries the native input as an
+// invisible overlay, so a tap still opens the phone's own date wheel — nothing custom to get
+// wrong — and a route back to today appears only while the board is on another day.
+function PhoneDateControl({ selectedDate, onChange, onToday }) {
+  const today = isTodayET(selectedDate);
+  const d = new Date(`${selectedDate}T12:00:00`);
+  const label = Number.isNaN(d.getTime()) ? selectedDate
+    : `${today ? 'Today' : d.toLocaleDateString('en-US', { weekday: 'short' })} · ${d.getMonth() + 1}/${d.getDate()}`;
+  return (
+    <div className="flex items-center gap-1.5 shrink-0">
+      <label className="relative inline-flex items-center min-h-[44px] px-2 rounded border border-slate-300 bg-white text-xs font-semibold text-slate-700 whitespace-nowrap" title="Board date">
+        <span aria-hidden="true">{label} ▾</span>
+        <input
+          type="date"
+          value={selectedDate}
+          onChange={(e) => { if (e.target.value) onChange(e.target.value); }}
+          className="absolute inset-0 w-full h-full opacity-0"
+          aria-label="Select delivery date"
+        />
+      </label>
+      {!today && (
+        <button onClick={onToday} className="min-h-[44px] px-2 text-[11px] font-semibold rounded border border-blue-300 text-blue-700 bg-white whitespace-nowrap" title="Jump back to today">Today</button>
+      )}
+    </div>
+  );
+}
+
 // Opens Google Street View for a stop — by coordinates when we have them (drops
 // the pano right at the dock), else a Maps search on the address. New tab.
 function StreetViewLink({ stop, className }) {
@@ -9159,6 +9190,11 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
         <span className="font-semibold text-[14px] leading-none truncate">Dispatch</span>
       </div>
       <div className="relative flex items-center gap-1.5">
+        {/* A SLOT FOR THE SCREEN'S OWN CONTROL. On a phone the app bar is the one strip nothing
+            scrolls away, so the Routing screen puts its settings gear here (a portal, see
+            RoutingScreen) instead of spending a whole 57px row on it below the map. Empty on
+            every other screen — `empty:hidden` so an empty slot costs no gap. */}
+        <div id="phone-appbar-slot" className="flex items-center gap-1.5 empty:hidden" />
         {/* Presence: shows only when another dispatcher is on (space is tight on phones). */}
         <PresenceChip presence={presence} compact />
         <button
@@ -13662,14 +13698,14 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
             onClick={() => { setView('stops'); setOpen(true); }}
             className={'inline-flex items-center gap-1.5 px-2.5 py-1 ' + (view === 'stops' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50')}
           >
-            <LayoutList size={13} /> Stops
+            {!gridIsPhone && <LayoutList size={13} />} Stops
             <span className="font-normal opacity-60">{rows.length}{nvWindow ? (nvTotal && nvTotal !== rows.length ? `/${nvTotal.toLocaleString()}` : '') : (totalCount != null && totalCount !== rows.length ? `/${totalCount}` : '')}</span>
           </button>
           <button
             onClick={() => { setView('loads'); setOpen(true); }}
             className={'inline-flex items-center gap-1.5 px-2.5 py-1 border-l border-slate-200 ' + (view === 'loads' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50')}
           >
-            <Truck size={13} /> Loads
+            {!gridIsPhone && <Truck size={13} />} Loads
             <span className="font-normal opacity-60">{loadRows.length}</span>
           </button>
         </div>
@@ -17492,7 +17528,7 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, stopById, boardStop
 // whole list stays reachable. panelsFirst (same caller): the panel switches render ABOVE the
 // view pickers so "Live dispatch" — the switch that decides whether Save writes to NuVizz — is
 // above that fold, not a scroll away. Desktop callers pass neither and render exactly as before.
-function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = false, capHeight = false, panelsFirst = false }) {
+function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = false, capHeight = false, panelsFirst = false, tone = 'panel' }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -17533,7 +17569,10 @@ function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = f
   ) : null;
   return (
     <div className="relative shrink-0" ref={ref}>
-      <button onClick={() => setOpen((o) => !o)} className={`p-1.5 rounded border ${open ? 'border-slate-400 bg-slate-100' : 'border-slate-300 hover:bg-slate-50'} text-slate-600`} title="Panel settings" aria-label="Panel settings" aria-expanded={open}>
+      <button onClick={() => setOpen((o) => !o)} className={tone === 'appbar'
+        // On the blue app bar: white on translucent white, a full 44px square, no grey border.
+        ? `inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded text-white ${open ? 'bg-white/30' : 'bg-white/15 active:bg-white/25'}`
+        : `p-1.5 rounded border ${open ? 'border-slate-400 bg-slate-100' : 'border-slate-300 hover:bg-slate-50'} text-slate-600`} title="Panel settings" aria-label="Panel settings" aria-expanded={open}>
         <Settings size={16} />
       </button>
       {open && (
@@ -17954,7 +17993,7 @@ function EngineResultPanel({ result, kind, onDismiss }) {
   );
 }
 
-function RoutingScreen({ debugCaptureRef, presence = null }) {
+function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }) {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
   const { stops, loading, error: stopsError, refresh: refreshStops, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, lastCompletedScanAt, ops, scanUnplannedCount } = useStops(selectedDate);
   // Stops status card (same pill as the dispatch Map, top-right of the routing map):
@@ -20826,6 +20865,10 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     eligView,
   ];
   const routingSettingsActions = [
+    // PHONE ONLY (onOpenEngine is passed only there): the Engine view used to own a 59px row above
+    // the map for a control used once a week. It is a gear action now; the Engine screen keeps the
+    // Build/Engine row so the way back is on screen.
+    ...(onOpenEngine ? [{ key: 'engine', label: '⇄ Engine view (shadow routing)', onClick: onOpenEngine }] : []),
     { key: 'versionLog', label: `ⓘ Version history (v${APP_VERSION})`, onClick: () => setVersionLogOpen(true) },
     { key: 'reset', label: '↺ Reset layout to defaults', onClick: resetRoutingLayout },
   ];
@@ -20850,7 +20893,19 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // card opened, and with Setup open BOTH were on screen 161px apart (Chad, Sep 8, phone screenshot:
   // "2 ways to set dates on mobile. Which wastes very limited space"). Desktop keeps this header-right
   // exactly as it was: its left panel is hideable and has no strip.
-  const bottomGridHeaderRight = isMobile ? null : (
+  // PHONE (v0.93.15): the compact date rides at the right of the grid's collapsed bar — the bar had
+  // ~120px free beside Stops/Loads, and the date used to cost a 57px row of its own below it. When
+  // the grid is switched off the sheet renders the same control in its own row (see the isMobile
+  // composition) — one date on screen in every state, never two (the v0.93.12 rule).
+  const phoneDateEl = isMobile ? <PhoneDateControl selectedDate={selectedDate} onChange={setSelectedDate} onToday={() => setSelectedDate(todayInET())} /> : null;
+  // The settings gear on a phone lives in the APP BAR (a portal into MobileAppBar's slot): the bar
+  // is the one strip nothing scrolls away, and it had 44px to spare. Drops DOWN from there, capped
+  // to the viewport, panel switches first. The slot exists only after the shell's first commit,
+  // so it is looked up in an effect rather than during render.
+  const [appBarSlot, setAppBarSlot] = useState(null);
+  useEffect(() => { setAppBarSlot(isMobile ? document.getElementById('phone-appbar-slot') : null); }, [isMobile]);
+  const phoneGearEl = isMobile ? <RoutingSettingsMenu views={routingSettingsViews} panels={phoneGearPanels} actions={routingSettingsActions} capHeight panelsFirst tone="appbar" /> : null;
+  const bottomGridHeaderRight = isMobile ? phoneDateEl : (
     <div className="flex items-center gap-1.5 shrink-0">
       {!leftPanelOn && <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={() => setSelectedDate(todayInET())} compact />}
       <RoutingSettingsMenu views={routingSettingsViews} panels={bottomGearPanels} actions={routingSettingsActions} dropUp />
@@ -21199,9 +21254,24 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   ) : null;
 
   if (isMobile) {
-    const tabCls = (on) => `tap-target-y flex-1 py-1.5 text-xs font-semibold rounded inline-flex items-center justify-center ${on ? 'text-white' : 'text-slate-600 bg-slate-100'}`;
+    const tabCls = (on) => `tap-target-y flex-1 min-w-0 px-1 py-1.5 text-xs font-semibold rounded inline-flex items-center justify-center truncate ${on ? 'text-white' : 'text-slate-600 bg-slate-100'}`;
+    // THE SHEET STRIP IS THE WHOLE NAVIGATION (v0.93.15). Routes and Loads (or Drivers) used to be a
+    // second strip INSIDE the sheet body under a first strip that already said "Routes" — 54px and a
+    // repeated word. They are tabs of the one strip now: Setup · Routes · Loads · Result.
+    const goPanel = (panel, sub) => {
+      setPanelStop(null); setMobilePanel(panel); setSheetOpen(true);
+      if (sub === 'routes' || sub === 'loads') setRoutesLoadsTab(sub);
+      if (sub === 'routes' || sub === 'drivers') setRoutesSubTab(sub);
+    };
+    const routesMode = isRoutesPanelMode(rightPanelMode);
+    const secondSub = rightPanelMode === 'routesLoads' ? 'loads' : (hasDriversTab(rightPanelMode) ? 'drivers' : null);
+    const subOn = (sub) => mobilePanel === 'loads' && (sub === 'loads' ? routesLoadsTab === 'loads' : sub === 'drivers' ? routesSubTab === 'drivers' : (rightPanelMode === 'routesLoads' ? routesLoadsTab !== 'loads' : routesSubTab !== 'drivers'));
+    const stripTab = (key, on, onClick, label) => (
+      <button key={key} data-sheet-tab={key} onClick={onClick} className={tabCls(on)} style={on ? { background: BRAND } : {}}>{label}</button>
+    );
     return (
       <div className="flex-1 flex flex-col min-h-0">
+        {appBarSlot && createPortal(phoneGearEl, appBarSlot)}
         <div className="flex-1 relative min-w-0">
           <div ref={mapDiv} className="absolute inset-0" />
           <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} satellite={routeSatellite} setSatellite={setRouteSatellite} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
@@ -21289,18 +21359,25 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
               bottom of the viewport a drop-DOWN menu opens off-screen. capHeight + panelsFirst: the
               open menu is ~570px tall, more than the space above a 50% sheet on a 740px phone, so it
               is capped and scrolls, with the panel switches — Live dispatch first — above the fold. */}
-          <div className="flex items-center gap-2 px-2 py-1.5 border-b">
-            <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={() => setSelectedDate(todayInET())} compact />
-            <div className="ml-auto">
-              <RoutingSettingsMenu views={routingSettingsViews} panels={phoneGearPanels} actions={routingSettingsActions} dropUp capHeight panelsFirst />
+          {/* THE BOARD DATE, ONLY WHEN THE GRID IS OFF. With the grid on, the same control rides in the
+              grid's collapsed bar (bottomGridHeaderRight) and this row does not exist; with the grid
+              off, the sheet carries it here. One date on screen in every state, never two. The gear
+              is in the app bar (the portal above). */}
+          {!bottomGridOn && (
+            <div className="flex items-center gap-2 px-2 py-1 border-b">
+              {phoneDateEl}
             </div>
-          </div>
-          <div className="flex items-center gap-2 px-2 py-1.5 border-b">
-            <button onClick={() => setSheetOpen((o) => !o)} className="text-xs px-2 py-1 rounded border border-slate-300" aria-label={sheetOpen ? 'Collapse' : 'Expand'}>{sheetOpen ? '▾' : '▴'}</button>
-            <div className="flex-1 flex gap-1">
-              <button onClick={() => { setPanelStop(null); setMobilePanel('setup'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'setup')} style={mobilePanel === 'setup' ? { background: BRAND } : {}}>Setup{tally.count ? ` (${tally.count})` : ''}</button>
-              <button onClick={() => { setPanelStop(null); setMobilePanel('loads'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'loads')} style={mobilePanel === 'loads' ? { background: BRAND } : {}}>{isRoutesPanelMode(rightPanelMode) ? `Routes${routeGroups.length ? ` (${routeGroups.length})` : ''}` : `Saved${loads.length ? ` (${loads.length})` : ''}`}</button>
-              <button onClick={() => { setPanelStop(null); setMobilePanel('result'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'result')} style={mobilePanel === 'result' ? { background: BRAND } : {}}>Result{baseResult ? ` (${baseResult.routes.length})` : job?.status === 'running' || job?.status === 'queued' ? ' …' : ''}</button>
+          )}
+          <div className="flex items-center gap-1.5 px-2 py-1 border-b">
+            <button onClick={() => setSheetOpen((o) => !o)} className="tap-target-y text-xs px-2 rounded border border-slate-300" aria-label={sheetOpen ? 'Collapse' : 'Expand'}>{sheetOpen ? '▾' : '▴'}</button>
+            <div className="flex-1 min-w-0 flex gap-1">
+              {stripTab('setup', mobilePanel === 'setup', () => goPanel('setup'), `Setup${tally.count ? ` (${tally.count})` : ''}`)}
+              {routesMode
+                ? stripTab('routes', subOn('routes'), () => goPanel('loads', 'routes'), `Routes${routeGroups.length ? ` (${routeGroups.length})` : ''}`)
+                : stripTab('saved', mobilePanel === 'loads', () => goPanel('loads'), `Saved${loads.length ? ` (${loads.length})` : ''}`)}
+              {routesMode && secondSub === 'loads' && stripTab('loads', subOn('loads'), () => goPanel('loads', 'loads'), `Loads${dayLoadsCount ? ` (${dayLoadsCount})` : ''}`)}
+              {routesMode && secondSub === 'drivers' && stripTab('drivers', subOn('drivers'), () => goPanel('loads', 'drivers'), 'Drivers')}
+              {stripTab('result', mobilePanel === 'result', () => goPanel('result'), `Result${baseResult ? ` (${baseResult.routes.length})` : job?.status === 'running' || job?.status === 'queued' ? ' …' : ''}`)}
             </div>
           </div>
           {sheetOpen && (
@@ -21324,7 +21401,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
                 drivers={notesDrivers}
               />
             ) : (
-            <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
+            <div className={`flex-1 min-h-0 overflow-y-auto text-sm ${mobilePanel === 'loads' ? 'p-2 space-y-2' : 'p-3 space-y-3'}`} style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
               {mobilePanel === 'setup'
                 ? <>
                     {selectedStops.length > 0 && (
@@ -21339,15 +21416,9 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
                   </>
                 : mobilePanel === 'loads'
                   ? (isRoutesPanelMode(rightPanelMode)
-                      ? (
-                        <>
-                          {/* Phone: the strip is a block of its own above the panel, not a
-                              header row beside a date and a collapse chevron — there is no
-                              room for those three at 360px, and the sheet is already dated. */}
-                          <div className="mb-2">{routesModeToggleEl}</div>
-                          {routesModeBodyEl}
-                        </>
-                      )
+                      // Routes / Loads (or Drivers) are tabs of the sheet strip itself now — no
+                      // second strip in here.
+                      ? routesModeBodyEl
                       : loadsContent)
                   : resultContent}
             </div>
@@ -23423,13 +23494,16 @@ function RoutingSubTabs({ tab, onChange }) {
 function RoutingSection({ debugCaptureRef, routingTab, setRoutingTab, showSubTabs, presence }) {
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {showSubTabs && (
+      {/* PHONE: the row shows on the ENGINE screen only (v0.93.15). On Build it cost 59px above the
+          map for one control used once a week; Build reaches Engine from the app-bar gear, and
+          Engine keeps this row so the way back is always on screen. */}
+      {showSubTabs && routingTab !== 'build' && (
         <div className="flex items-center border-b bg-white px-2 py-1.5 shrink-0">
           <RoutingSubTabs tab={routingTab} onChange={setRoutingTab} />
         </div>
       )}
       {routingTab === 'build'
-        ? <RoutingScreen debugCaptureRef={debugCaptureRef} presence={presence} />
+        ? <RoutingScreen debugCaptureRef={debugCaptureRef} presence={presence} onOpenEngine={showSubTabs ? () => setRoutingTab('engine') : null} />
         : <EngineScreen />}
     </div>
   );

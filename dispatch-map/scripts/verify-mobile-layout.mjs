@@ -85,7 +85,8 @@ const PROBES = {
     { name: 'Grid open on Stops', open: async (page) => { await page.getByRole('button', { name: /^stops \d+/i }).first().click(); await page.waitForTimeout(600); return page.getByText(/^Stop #$/).first().isVisible().catch(() => false); } },
     { name: 'Grid open on Loads', open: async (page) => { await page.getByRole('button', { name: /^loads \d+/i }).first().click(); await page.waitForTimeout(800); return page.getByText(/Load roster/i).first().isVisible().catch(() => false); } },
     {
-      name: 'Board-row gear open',
+      // v0.93.15: the phone's one gear lives in the APP BAR (portal), dropping DOWN from y=48.
+      name: 'App-bar gear open',
       open: async (page) => {
         await page.locator('button[aria-label="Panel settings"]').last().click();
         await page.waitForTimeout(400);
@@ -105,7 +106,10 @@ const PROBES = {
     { name: 'Routes sheet open', open: async (page) => { await page.getByRole('button', { name: /^routes/i }).first().click(); await page.waitForTimeout(600); return page.getByRole('button', { name: /^collapse$/i }).first().isVisible().catch(() => false); } },
   ],
   'routing-loads': [
-    { name: 'Routes / Loads sheet open', open: async (page) => { await page.getByRole('button', { name: /^routes/i }).first().click(); await page.waitForTimeout(600); return page.locator('[data-day-loads-panel]').first().isVisible().catch(() => false); } },
+    // v0.93.15: Loads is a tab of the sheet strip itself (Setup · Routes · Loads · Result), so the
+    // probe taps that tab by its own name — `/^loads/` by role would land on the grid's "Loads 3"
+    // button first in DOM order and open the grid instead.
+    { name: 'Routes / Loads sheet open', open: async (page) => { await page.locator('[data-sheet-tab="loads"]').first().click(); await page.waitForTimeout(600); return page.locator('[data-day-loads-panel]').first().isVisible().catch(() => false); } },
   ],
   map: [
     {
