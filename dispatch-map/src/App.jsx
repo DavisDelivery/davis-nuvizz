@@ -114,7 +114,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.93.10';
+const APP_VERSION = '0.93.11';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -185,6 +185,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.93.11', 'THE ROSTER REFRESH BUTTON IS GONE — BOTH OF THEM. Chad: “I don’t need a roster refresh button remove it.” He is right, and the reason is that the control he already presses does the job now: v0.93.9 made a manual Scan now pull the load roster for the board date on screen AND the next business day, so a separate per-panel refresh bought nothing. WHAT IT COST TO KEEP. There were TWO of them — the Routing rail’s Loads tab and the bottom grid’s Loads view — each with its own copy of the roster state, both keyed on the same selected date and neither aware of the other. So one dispatcher intent (“refresh the loads”) was two vendor calls if he pressed both, and pressing only one left the OTHER panel still showing the older answer for the same day. Two surfaces quietly disagreeing about the same fact is the defect underneath the button, and deleting the button is what fixes it rather than another sync. WHAT GOES WITH IT: the ?live=1 fetch on both surfaces, the two busy flags, the rail’s refreshDayRoster callback and its props, and the grid’s pullRoster (which had exactly one caller — the button). Both panels are now purely cache-first: they render what the scanner captured and spend nothing on open, which is also the last client path that could reach NuVizz without a scan. WHAT STAYS, DELIBERATELY: the freshness line on both. “3 loads · cached 6h ago” is a completely different fact from “3 loads”, and it is the only thing on the screen that can tell “this day has no empty loads” from “nobody has asked today” — the absent-is-not-zero rule this repo has now been bitten by in four places. The grid’s could-not-read message no longer says “Try Refresh roster”; it points at Scan now, which is the control that actually moves it. The endpoint keeps ?live=1 — it is still the documented override and the scanner’s own guard path uses it — it simply has no caller in the client again. THE BROWSER GUARD WAS REWRITTEN, NOT RELAXED, because the rule it pinned is the rule that changed. It used to press Refresh and assert a ?live=1 went out; it now asserts the opposite on BOTH surfaces and BOTH views — no Refresh control inside either panel, and no vendor call spent on open or afterwards. The downstream coverage that mattered is kept and re-sourced: every empty trailer renders, TRAILER 9 is still labelled “Not on this board · 12 trips” rather than “No orders yet”, and the composition line is still counted off the rows — all driven now from the CAPTURE instead of from a press. One assertion in the rewrite failed honestly on the first run and was fixed rather than loosened: it looked for the grid’s “Load roster:” prefix inside the RAIL, and the two surfaces word the same fact differently — asserting one panel’s copy against the other’s is how a green run stops meaning anything. 3,360 green, loads-tab guard green on desktop and phone.'],
   ['0.93.10', 'THE BACKSTOP AGAINST A CALL BURST WAS ITSELF BURSTING, BY EXACTLY THREE TIMES. Chad: “check and see how many calls are being made when the refresh button is hit because looked like too many today.” The button turned out to be five calls and the day’s spike was the weekend schedule (fixed in v0.93.9) — but auditing the press turned up something worse sitting under both. ENRICH_MAX is the one guard on the only unbounded amplifier the scanner has: one /stop/info per genuinely-new PRO, and a registry that is cold or keyed wrong makes EVERY stop look new. Its env var is named NUVIZZ_ENRICH_MAX_PER_SCAN and its comment promised that “even a cold/empty registry can never burst more than ENRICH_MAX calls in one scan”. It was applied INSIDE `for (const date of targets)`, so it was really a per-DATE cap and the true bound was ENRICH_MAX × the horizon. Measured against the real scanner with a stubbed vendor, three dates each carrying more new PROs than the cap: 400/date → 750 /stop/info, 250/date → 750, 100/date → 300. After: 250, 250, 250. SEVEN HUNDRED AND FIFTY IS 37.5% OF THE ENFORCED 2,000/DAY CEILING IN ONE FIRE — the precise shape of burst this backstop was added to prevent, arriving through the backstop itself. And it is NOT a property of the button: `isManual` appears nowhere between the date loop and the enrichment block, so a SCHEDULED tick on a cold registry pays exactly the same. Two of those in a day trip the circuit breaker and leave the board half-written. The budget now lives outside the date loop and is decremented as the dates consume it. The first date may still take the whole allowance; what it can no longer do is hand a fresh one to the next date. A board needing more than the cap backfills over the following ticks — which is what the original comment claimed already happened. ONE BEHAVIOUR CHANGE WORTH KNOWING: a genuinely busy morning that used to enrich 300 across three dates in one pass now does 250 and defers 50 to the next tick, ~15 minutes later. NUVIZZ_ENRICH_MAX_PER_SCAN finally means what it says and can be raised if that ever bites. CHECKED BOTH WAYS, which is the only thing that makes green mean anything: against the previous commit three of the four new tests fail naming the count (750 where 250 is required), and the fourth — a light board that must still enrich every new PRO in one pass — passes on both, so the fix is bounded to the case it was for. A shape test could not have caught this: the cap was present, correct-looking, and in the wrong scope. 4 new tests, 3,360 green.'],
   ['0.93.9', 'THE SCHEDULE IS BACK TO WHAT IT WAS, AND THE BUTTON CARRIES THE WEEKEND INSTEAD. Chad, after watching the alternative land on his own call counter: “I want my schedule to be just what it was unless I hit the manual refresh as well as if I have it set for a future date when I hit the refresh button it should pull the load roster for that day and the next.” WHY HE IS RIGHT, WITH THE NUMBER THAT SETTLES IT. Two releases tried to make weekend planning refresh itself by letting scheduled scans through the weekend blackout — v0.93.4 carved out the ROSTER, v0.93.6 carved out PLANNED as well. Replayed against the shipped plan over all 288 fires of a 5-minute cron day, together they took a SATURDAY from ZERO scheduled vendor calls to SIXTY-FIVE: twelve full ~700-stop board rebuilds, plus forty-one roster pulls, before he pressed anything, with enrichment riding on top of the twelve and not even counted. Sunday went 33 to 81. That is what “looked like too many today” was. Both carve-outs are DELETED — rosterMayRunOnBlackout and plannedMayRunOnBlackout are gone from the plan, not left exported and uncalled, and NUVIZZ_ROSTER_WEEKEND and NUVIZZ_PLANNED_WEEKEND go with the branches they gated rather than lingering as dead switches nobody can find the meaning of. roster-am (Mon–Fri 04:00–13:00) and roster-eve (Sun–Thu 20:00–24:00) are back byte-for-byte from the pre-v0.93.4 file. Measured after: Saturday 0 calls, Sunday 25, Tuesday 171. A MANUAL PRESS IS NOW THE ONLY THING THAT REACHES NUVIZZ ON A SATURDAY, and that was already true — the blackout has always been bypassed by isManual and only by isManual. AND THE PRESS FOLLOWS THE BOARD ON SCREEN, which is the better engineering the widening was reaching for. A SCHEDULE cannot know which day he is looking at, so it guessed by covering every day; a PRESS knows exactly, and that is information the cadence cannot have. rosterDatesFor: a manual refresh taken on a FUTURE board pulls that date and the next BUSINESS day and nothing else — two calls aimed where he is working, against three aimed at a horizon anchored on a day he is not looking at. It reaches dates outside the scan horizon entirely, which is the point of a button. On today’s board, or a past one, it is the normal horizon unchanged, because narrowing there would quietly REMOVE a date the button used to refresh. Next BUSINESS day, not next calendar day, for the same reason scanDatesFrom steps that way: “Friday and the next” must mean Monday, or the second call buys a day that is empty by construction. THE NEW PARAMETER IS DELIBERATELY NOT ?date=, AND THAT IS THE WHOLE DESIGN. `date` and `days` set `explicit` in runRefreshStops and flip it into the number-probe engine — the ~3,000-metered-call cold scan the hard rule in CLAUDE.md exists to forbid. `viewedDate` reaches nothing but rosterDatesFor: it cannot force the scan, cannot widen the stop horizon, cannot raise the call count above what the horizon already cost, is honoured ONLY on a manual press so the cron cannot be steered with it, and is re-validated at the endpoint so anything that is not a real YYYY-MM-DD is silently dropped to “the normal horizon” rather than erroring or widening. Tests pin all of it, including that ?date= and ?days= are still structurally unreachable through the manual URL builder and that overrideParams still matches exact keys — if it ever matched by substring, `viewedDate` contains `date` and every press would be refused. THE WEEKEND TEST FILE WAS REWRITTEN RATHER THAN DELETED, because the rule it pinned is the rule that changed: it now drives all 288 Saturday fires and fails if ANY of them acts, asserts the two carve-out functions do not exist, and asserts Sunday evening still opens — “just what it was” cuts both ways. It also corrects the blackout edges several comments in this repo had wrong: they are Fri 23:00 → Sun 19:00 ET, not 22:00/20:00. 17 new tests, 3,356 green.'],
   ['0.93.8', 'THE ONE ENDPOINT BUILT TO END THE CONFUSION WAS QUIETLY ADDING TO IT. ?explain=1 shipped an hour ago as the zero-cost way to ask what the roster cache actually holds — and it read each date as readLoadRoster(...).catch(() => null), which hands a Firestore FAILURE to explainRosterRow as if the document were simply absent. Both come back as “this date has never been captured.” Those two sentences send a reader in opposite directions: one says the scan has not run yet, the other says the store is unreachable and every panel on the site is about to look empty for reasons that have nothing to do with NuVizz. An audit of the storage path is what surfaced it — the codec was cleared (106 loads round-trip byte-for-byte, no size threshold, and markLoadRosterEmpty’s field mask provably cannot clear loadsJson), and what it found instead was that EVERY Firestore error on this path, in both directions, is swallowed into “no roster” by a .catch(() => null) or a bare catch — a failure mode pixel-identical to the one being investigated all evening. Fixing the general swallow is a larger change and is not this; what could not wait a day is the DIAGNOSTIC repeating it, because an instrument that reports a fault as a normal reading is worse than no instrument. A read that throws is now reported as a read that threw: cached:null rather than false, the error message, a readErrors count on the envelope, and ok flips false. A test pins that the absent sentence and the failed sentence can never collapse into one again.'],
@@ -13133,7 +13134,6 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // ago and has not been pulled since", and those call for opposite actions. See
   // lib/roster-freshness.js for why a three-day-out roster can be wrong and stay wrong.
   const [rosterMeta, setRosterMeta] = useState(null);
-  const [rosterBusy, setRosterBusy] = useState(false);
   const [statusSel, setStatusSel] = useState(() => new Set()); // empty = all
   const [statusOpen, setStatusOpen] = useState(false);
   // WHICH SIDE THE STATUS PANEL HANGS FROM, measured against the viewport when it opens.
@@ -13390,26 +13390,17 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // Stops-view date window (nvWindow) must NOT gate it — gating it here made every empty
   // draft load vanish from Loads the moment a day range was set on the Stops grid.
   //
-  // `live` is the endpoint's documented override: skip the cache, pull the roster straight
-  // from NuVizz, and write the fresh one back. It costs exactly ONE vendor call and until now
-  // it had NO CALLER — three fetch sites in this file, not one of them passing it — so a day
-  // whose roster the scanner captures once (any future date) could not be refreshed by anyone
-  // at all. The Refresh control below is the caller it was written for.
-  const pullRoster = useCallback((live = false) => {
-    if (!boardDate) return;
-    if (live) setRosterBusy(true);
-    const url = '/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(boardDate) + (live ? '&live=1' : '');
-    return apiFetch(url, { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((j) => {
-        setRoster(j && j.ok ? (j.loads || []) : []);
-        // The envelope, not just the rows — and on a failure a FALSE envelope rather than a
-        // missing one, so "we asked and got nothing back" never renders as "there is nothing".
-        setRosterMeta(j && j.ok ? { ok: true, source: j.source, at: j.at, count: j.count } : { ok: false });
-      })
-      .catch(() => { setRoster([]); setRosterMeta({ ok: false }); })
-      .finally(() => { if (live) setRosterBusy(false); });
-  }, [boardDate]);
+  // NO LIVE PULL FROM THIS PANEL. It had a "Refresh roster" button that spent one vendor call
+  // on ?live=1; Chad: "I don't need a roster refresh button remove it." He is right, and the
+  // reason is that v0.93.9 made the control he already presses do the job — a manual Scan now
+  // pulls the roster for the board date he is looking at AND the next business day. Two
+  // controls for one intent is how the screen ended up able to disagree with itself: this panel
+  // and the Routing rail each held their own copy of the roster, so refreshing one left the
+  // other showing the older answer for the same day, and pressing both cost two calls.
+  //
+  // This view is now purely cache-first: it reads what the scanner captured, labels how old it
+  // is, and spends nothing. The freshness line stays, because "3 loads, cached 6h ago" is still
+  // a different fact from "3 loads" — what is gone is the second button.
   useEffect(() => {
     if (view !== 'loads' || !boardDate) return;
     let cancelled = false;
@@ -13520,14 +13511,6 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       <span className={(gridIsPhone ? '' : 'min-w-0 truncate ') + 'text-slate-400'}>
         · {loadRowMix.built} with stops, {loadRowMix.empty} empty{loadRowMix.offBoard ? `, ${loadRowMix.offBoard} not on this board` : ''}
       </span>
-      <button
-        onClick={() => pullRoster(true)}
-        disabled={rosterBusy || !boardDate}
-        title="Pull this day's load roster straight from NuVizz — one vendor call. The board caches a future day's roster once per day, so this is the only way to see loads created since."
-        className="ml-auto shrink-0 px-2 py-0.5 rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-100 disabled:opacity-50"
-      >
-        {rosterBusy ? 'Refreshing…' : 'Refresh roster'}
-      </button>
     </div>
   );
   const loadCols = [
@@ -13984,7 +13967,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                 <tr><td colSpan={loadCols.length} className="px-3 py-4 text-slate-400 italic text-left">
                   {rosterState.known
                     ? 'No loads on the current board.'
-                    : 'No built loads on this board, and this day’s load roster could not be read — so we can’t say whether there are empty loads. Try Refresh roster.'}
+                    : 'No built loads on this board, and this day’s load roster could not be read — so we can’t say whether there are empty loads. Press Scan now to pull it.'}
                 </td></tr>
               )}
               {sortedLoadRows.map((g) => (
@@ -18210,7 +18193,6 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // or "the roster behind it was captured hours ago and nothing has pulled it since", and the
   // screen could say neither. lib/roster-freshness.js carries the why.
   const [dayRosterMeta, setDayRosterMeta] = useState(null);
-  const [dayRosterBusy, setDayRosterBusy] = useState(false);
   // Everything the roster response feeds, in one place so the cache path and the live refresh
   // can never diverge — the status map, the identity index, the raw rows and the envelope.
   const applyDayRoster = useCallback((j) => {
@@ -18276,18 +18258,6 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     // another zero-row cache, so it never converged (fixed there too, in
     // shouldServeCachedRoster). Two bugs, one symptom Chad counted: "each refresh is causing
     // like 14 calls when it should only be 3 or 4."
-  }, [selectedDate, applyDayRoster, clearDayRoster]);
-  // ONE NuVizz call, on an explicit press. `?live=1` is the endpoint's own documented override
-  // and until now nothing in this client passed it, so a future day's roster — captured once
-  // per scan day — could not be refreshed by anybody.
-  const refreshDayRoster = useCallback(() => {
-    if (!selectedDate) return;
-    setDayRosterBusy(true);
-    apiFetch('/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(selectedDate) + '&live=1', { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((j) => applyDayRoster(j))
-      .catch(() => clearDayRoster())
-      .finally(() => setDayRosterBusy(false));
   }, [selectedDate, applyDayRoster, clearDayRoster]);
 
   // Board Flags on Routing too — Chad, staring at a driverless LVILLE with a 2:00p LUND
@@ -21081,7 +21051,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // fill. Same click-to-Compare as the bottom grid's Loads view, which Chad keeps in full.
   const dayLoadsPanelEl = (
     <RoutingDayLoadsPanel rows={dayLoadsSplit.empty} offBoard={dayLoadsSplit.offBoard} builtCount={dayLoadsSplit.routed.length}
-      roster={dayRosterState} onRefreshRoster={refreshDayRoster} rosterBusy={dayRosterBusy}
+      roster={dayRosterState}
       onPickLoad={(r) => pickLoadToCompare(r.loadNbr || r.loadId || r.key)}
       isOpen={(r) => wbRoutes.some((w) => w.key === r.key || (r.name && w.key === r.name) || (r.loadNbr && (w.key === r.loadNbr || w.loadNbr === r.loadNbr)))} />
   );
@@ -21461,7 +21431,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
                 onRename={renameLoad} onToggleDispatch={toggleDispatched} onDelete={deleteLoad} manageError={manageError} />
             ) : (
               <RoutingDayLoadsPanel rows={dayLoadsSplit.empty} offBoard={dayLoadsSplit.offBoard} builtCount={dayLoadsSplit.routed.length}
-                roster={dayRosterState} onRefreshRoster={refreshDayRoster} rosterBusy={dayRosterBusy}
+                roster={dayRosterState}
                 onPickLoad={(r) => pickLoadToCompare(r.loadNbr || r.loadId || r.key)}
                 isOpen={(r) => wbRoutes.some((w) => w.key === r.key || (r.name && w.key === r.name) || (r.loadNbr && (w.key === r.loadNbr || w.loadNbr === r.loadNbr)))} />
             )}
@@ -21732,7 +21702,7 @@ function dayLoadMatches(r, needle) {
 
 const ROSTER_ABSENT = { known: false, live: false, stale: false, count: 0, age: null, tone: 'absent', label: 'Load roster not pulled for this day' };
 
-function RoutingDayLoadsPanel({ rows, offBoard = [], builtCount = 0, onPickLoad, isOpen, roster = ROSTER_ABSENT, onRefreshRoster, rosterBusy = false }) {
+function RoutingDayLoadsPanel({ rows, offBoard = [], builtCount = 0, onPickLoad, isOpen, roster = ROSTER_ABSENT }) {
   const [q, setQ] = useState('');
   const needle = q.trim().toLowerCase();
   const shown = useMemo(() => rows.filter((r) => dayLoadMatches(r, needle)), [rows, needle]);
@@ -21764,19 +21734,16 @@ function RoutingDayLoadsPanel({ rows, offBoard = [], builtCount = 0, onPickLoad,
         {showing !== total ? ` · showing ${showing}` : ''}
       </div>
       {/* WHERE THIS LIST CAME FROM AND WHEN. A future day's roster is captured ONCE per scan
-          day, so "3 loads · cached 6h ago" is a completely different fact from "3 loads" —
-          and the refresh is the only thing in the app that can move it. One vendor call, on
-          an explicit press, said so on the control. In flow above the list, so a wrapped
-          label pushes the rows down instead of sitting on them. */}
-      <div className="px-3 py-1 text-[10px] border-b bg-white shrink-0 flex items-center gap-2">
+          day, so "3 loads · cached 6h ago" is a completely different fact from "3 loads".
+          The Refresh button that used to sit here is GONE — Chad: "I don't need a roster
+          refresh button remove it." Since v0.93.9 the Scan now control pulls the roster for
+          the board date on screen and the next business day, so this panel no longer needs a
+          second one; two controls for one intent is what let this rail and the bottom grid
+          show different answers for the same day. The LINE stays: it is the only thing that
+          can tell "no empty loads" from "nobody has asked today". In flow above the list, so a
+          wrapped label pushes the rows down instead of sitting on them. */}
+      <div className="px-3 py-1 text-[10px] border-b bg-white shrink-0">
         <span className={roster.tone === 'absent' || roster.tone === 'stale' ? 'text-amber-700' : 'text-slate-500'}>{roster.label}</span>
-        {onRefreshRoster && (
-          <button onClick={onRefreshRoster} disabled={rosterBusy}
-            title="Pull this day's load roster straight from NuVizz — one vendor call. The board caches a future day's roster once per day, so this is the only way to see loads created since."
-            className="ml-auto shrink-0 px-2 py-0.5 rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-100 disabled:opacity-50">
-            {rosterBusy ? 'Refreshing…' : 'Refresh'}
-          </button>
-        )}
       </div>
       {total === 0 ? (
         // ABSENT IS NOT ZERO. "NuVizz has no empty loads for this day" and "we could not read
