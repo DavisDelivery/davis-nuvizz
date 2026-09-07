@@ -612,6 +612,24 @@ export async function readStops(tenant: string, dateStr: string, opts?: { mask?:
   return { meta: (meta as StopIndexMeta) || null, stops };
 }
 
+// ── One stop of one day's board, read and patched in place ───────────────────
+//
+// For the frozen-day heal (lib/refile-core.mts): a finished or re-planned stop whose day the
+// scan no longer rewrites gets its LIVE status/plan fields patched onto that day's copy with
+// a field-masked write — never a blind setDoc, which would replace the row and take its pin,
+// its enrichment and its notes with it (CLAUDE.md: "never blind-write a document you do not
+// own"). readStopDoc is the guard before it: no copy → nothing to heal; a copy already
+// finished → history, not today's work.
+export async function readStopDoc(tenant: string, dateStr: string, stopNbr: string): Promise<any | null> {
+  const doc = await getDoc(`${COLLECTION}/${parentId(tenant, dateStr)}/stops/${encodeURIComponent(String(stopNbr))}`);
+  if (!doc) return null;
+  const { _id, ...rest } = doc as any;
+  return rest;
+}
+export async function patchStopFields(tenant: string, dateStr: string, stopNbr: string, fields: Record<string, any>): Promise<boolean> {
+  return updateDocFields(`${COLLECTION}/${parentId(tenant, dateStr)}/stops/${encodeURIComponent(String(stopNbr))}`, fields);
+}
+
 // ── Board write-through (issue #361) ─────────────────────────────────────────
 //
 // A CONFIRMED live Save (the import engine's order read-back, or a classic save whose steps
