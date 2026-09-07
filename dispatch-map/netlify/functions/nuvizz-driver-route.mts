@@ -44,7 +44,7 @@
 //   raw: { ... }     // preserve at every layer per standing rules
 // }
 
-import { isFirestoreEnabled, readStops } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, etDayString } from './lib/firestore.mts';
 import { requireUser } from './lib/require-user.mts';
 
 const MOTIVE_BASE = process.env.MOTIVE_BASE_URL || 'https://api.gomotive.com/v1';
@@ -299,7 +299,10 @@ export default async (req: Request): Promise<Response> => {
   const driver = url.searchParams.get('driver') || '';
   const truck = url.searchParams.get('truck') || '';
   const userNameParam = url.searchParams.get('userName') || '';
-  const date = url.searchParams.get('date') || todayUTC();
+  // The board docs are keyed by the EASTERN day (the scanner's anchor), so the default is too:
+  // after 8pm ET the UTC day is already tomorrow, and a driver asking for "today's route" got
+  // an empty, still-forming board (v0.95.0).
+  const date = url.searchParams.get('date') || etDayString();
   // The date is a Firestore path segment (nuvizz_stop_index/davis__{date}/stops). Shape-check
   // it before it reaches readStops; a bad one is a 400, never a read of `davis__../x`.
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {

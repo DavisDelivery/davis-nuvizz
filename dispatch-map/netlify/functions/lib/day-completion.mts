@@ -177,6 +177,11 @@ export interface DayCompletion {
    *  Chad: "I do want them back on the end of email." Off the numerator and the denominator,
    *  under everything a dispatcher acts on, so they inform without distorting. */
   excludedStops: OpenStop[];
+  /** Planned on this day's board, delivered (or refused / cancelled) on a LATER day. The scan
+   *  heals such a copy in place and stamps `closedOnBoard` with the day that filed the finish
+   *  (v0.95.0), so this day's report neither scores it as delivered here (it was not) nor lists
+   *  it as open (it is not). Counted nowhere here; the later day's report counts it. */
+  closedElsewhere: Array<OpenStop & { closedOn: string }>;
   /** Present only once attachFlagHistory has run. See that function for why absent ≠ zero. */
   flagJoin?: FlagJoin;
 }
@@ -235,11 +240,25 @@ export function buildDayCompletion(
   const excludedRoutes = new Map<string, number>();
   const excludedStops: OpenStop[] = [];
   const excludedSeen = new Set<string>();
+  const closedElsewhere: Array<OpenStop & { closedOn: string }> = [];
+  const closedElsewhereSeen = new Set<string>();
 
   for (const s of stops || []) {
     // Planned only — see the note above.
     const isPlanned = s?.isPlanned === false ? false : (s?.isPlanned === true || !!str(s?.loadNbr || s?.routeName));
     if (!isPlanned) continue;
+    // Closed on ANOTHER board (see closedElsewhere on the interface): the healed copy reads
+    // DELIVERED, but not on this day — scoring it here would grade a day for a delivery it
+    // did not make, and leaving it out silently would make the count unreconcilable.
+    const closedOn = str(s?.closedOnBoard);
+    if (closedOn && closedOn !== date) {
+      const row = rowOf(s, stopOutcome(s));
+      if (row.stopNbr && !closedElsewhereSeen.has(row.stopNbr)) {
+        closedElsewhereSeen.add(row.stopNbr);
+        closedElsewhere.push({ ...row, closedOn });
+      }
+      continue;
+    }
     // Appointment holding pens and the owner's own route are not this report's business.
     // Dropped BEFORE `planned` so they leave the denominator with the numerator.
     const rk = str(s?.loadNbr || s?.routeName);
@@ -315,6 +334,7 @@ export function buildDayCompletion(
     openStops: openStops.sort(bySeq),
     unableStops: unableStops.sort(bySeq),
     excludedStops,
+    closedElsewhere: closedElsewhere.sort(bySeq),
     excluded: [...excludedRoutes.entries()]
       .map(([route, n]) => ({ route, stops: n }))
       .sort((a, b) => (b.stops - a.stops) || a.route.localeCompare(b.route)),
@@ -582,6 +602,15 @@ export function dayCompletionText(d: DayCompletion): string {
       }
     }
   }
+  if ((d.closedElsewhere || []).length) {
+    L.push('', 'CLOSED ON A LATER DAY — counted on that day, not this one');
+    for (const [route, rows] of groupByRoute(d.closedElsewhere)) {
+      L.push(`  ${route}`);
+      for (const s of rows) {
+        L.push(`    ${s.stopNbr}  ${s.customer ?? ''}${s.seq != null ? ` #${s.seq}` : ''} — ${outcomeWords(s.outcome)} on ${s.closedOn}`);
+      }
+    }
+  }
   return L.join('\n');
 }
 
@@ -671,6 +700,23 @@ export function dayCompletionHtml(d: DayCompletion): string {
           + `<td style="padding:5px 10px 5px 0;white-space:nowrap">${esc(r.stopNbr)}${r.seq != null ? ` <span style="color:#94a3b8">#${r.seq}</span>` : ''}</td>`
           + `<td style="padding:5px 10px 5px 0">${esc(r.customer ?? '')}</td>`
           + `<td style="padding:5px 0;color:#64748b;white-space:nowrap">${esc(outcomeWords(r.outcome))}</td></tr>`);
+      }
+    }
+    H.push('</table>');
+  }
+  if ((d.closedElsewhere || []).length) {
+    H.push('<h3 style="margin:22px 0 2px;font-size:13px;color:#64748b;border-top:1px solid #e2e8f0;padding-top:14px">'
+      + 'Closed on a later day — counted on that day, not this one</h3>');
+    H.push('<div style="color:#94a3b8;font-size:12px;margin-bottom:8px">'
+      + 'Planned on this board and delivered, refused or cancelled on a later day. Off the numerator and the denominator above.</div>');
+    H.push('<table style="border-collapse:collapse;width:100%;font-size:13px;color:#475569">');
+    for (const [route, rows] of groupByRoute(d.closedElsewhere)) {
+      H.push(`<tr><td colspan="3" style="padding:10px 0 2px;font-weight:600;color:#334155">${esc(route)}</td></tr>`);
+      for (const r of rows as Array<OpenStop & { closedOn: string }>) {
+        H.push(`<tr style="border-top:1px solid #f1f5f9">`
+          + `<td style="padding:5px 10px 5px 0;white-space:nowrap">${esc(r.stopNbr)}${r.seq != null ? ` <span style="color:#94a3b8">#${r.seq}</span>` : ''}</td>`
+          + `<td style="padding:5px 10px 5px 0">${esc(r.customer ?? '')}</td>`
+          + `<td style="padding:5px 0;color:#64748b;white-space:nowrap">${esc(outcomeWords(r.outcome))} on ${esc(r.closedOn)}</td></tr>`);
       }
     }
     H.push('</table>');
