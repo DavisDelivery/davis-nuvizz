@@ -19,7 +19,7 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn } from 'lucide-react';
+  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
   query, orderBy, limit, updateDoc, deleteDoc,
@@ -115,7 +115,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.93.16';
+const APP_VERSION = '0.94.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -186,6 +186,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.94.0', 'THE ROUTING DATE WINDOW NOW ANSWERS FROM WHAT NUVIZZ LISTS, AND A BUTTON CHECKS IT. Chad, two screenshots side by side, Monday: the Route Workbench showed 525 unplanned stops for 09/01–09/08 and our Routing window showed 550 for the same dates — “why don’t these match they have the same filters showing.” They were not reading the same data. The Workbench asks NuVizz; the window is served from our own per-day board snapshots, and a snapshot stops being rewritten at the end of its own day (the scan writes today plus two business days and drops the rest). MEASURED, not reasoned: the window’s 550 reproduced to the pound from our cache (306,121 lb · 909 · 200) and the Workbench’s 525 from ONE live list call (290,087 lb · 886 · 201). The 25-stop gap was 30 rows still “unplanned” in frozen 09/01–09/04 snapshots that NuVizz no longer had open (the first four on his screen had all DELIVERED the next morning — H&H WORLD GROUP on BEN 1, WIEDMANN BROS on GEORGE L, JONATHON ANGLIN on COLIN/DJ 1, ERIN GRILL on MITCHELL; one, MARIA SIMS, had been re-dated to 09/09 — exactly the case Chad guessed), MINUS three orders NuVizz had UN-PLANNED on Friday afternoon after their days froze and the window still showed on old loads (PRIMARY LOGISTICS, 10,000 lb, among them), MINUS a re-delivery duplicate created after its day froze, MINUS an ATT re-attempt customer service had re-opened. The closed-order direction wastes planning time; the hidden-order direction is a missed delivery, and that is the one this fixes first. WHAT SHIPS. (1) THE OPEN-ORDER POOL: every planned-kind scan already holds the whole ±7-day active list in memory; it now writes every open row across every day to one compact document set (lib/active-pool.mts, chunked, zero extra NuVizz calls — same data, one Firestore write). (2) THE WINDOW RECONCILES AGAINST IT: a cached row the pool still lists gets its live status, load, driver and day overlaid and keeps its pin and enrichment; a row the cache never captured is ADDED without a pin (it lists under the no-location chip instead of not existing); a cached open row the pool no longer lists, from a day the pool covers, is DROPPED, and one the pool files on another day is dropped from this window; older rows are pruned only by the history warehouse’s retired list; delivered and cancelled rows are history and are never touched; a row a confirmed Save stamped AFTER the pool was written is held, so the write-through this repo already fixed once cannot be undone by an older pool. Every decision is counted and the toolbar’s Board · N stops line says what it removed. No pool yet (first deploy, a failed write) → the same evidence the Map’s carry-over fold already uses: the live unplanned snapshot plus the retired list. (3) CHECK VS NUVIZZ, the button Chad asked for: on a desktop date window it spends exactly ONE NuVizz call — NuVizz’s own list for the same dates and status buckets — and shows the four header numbers for both sides and three lists: shown here but not in NuVizz’s list, in NuVizz’s list but not shown here, on both but planned/load/day differ; each stop opens its card; “Use NuVizz’s list for this window” swaps the grid onto NuVizz’s rows with our cached pins joined by stop number. Open work only (unplanned, planned, out for delivery, arrived): delivered and cancelled rows are history, and the unfiltered all-status pull is the one NuVizz call that reliably blows the 22-second budget. Throttled server-side; a minute’s cooldown on the button. Desktop only, like the date window it belongs to — the phone has no date window to check. Two things stated rather than guessed: why these 30 escaped the refile that worked for 30 comparable orders the same night is not established, and the Workbench grid’s 549 is 10 planned rows short of the API’s 559 inside a filter the API cannot read back; the unplanned selection is identical. 22 new tests, each named for the order that exposed the rule.'],
   ['0.93.16', 'DRIVER TERRITORIES, AND THE ARGUMENT FOR NOT DRAWING CIRCLES. Chad: “design a map for a trainee so they have a general idea where drivers most frequent areas are … I was thinking circles or ovals of where their general work area is if you can think of a better way please present it as well,” and “I know there are a few drivers this probably won’t work great for like rasko or chris.” THE TRAINEE’S REAL QUESTION IS NOT “what shape is Rasko’s territory”. It is “this order is in Dacula — whose is it?” That is a question about a PLACE, and a circle answers a different one badly: a driver with TWO clusters gets an ellipse centred between them, on countryside he never visits — not imprecise, WRONG, and a trainee cannot tell it is wrong. Real routes follow corridors (I-85, GA-316) and are long and thin, so a circle wide enough to cover one covers everything either side too; and twenty translucent circles over one metro is unreadable. So this fits no shape at all. It asks each PLACE who serves it and lets the answer have whatever shape it has — a driver who scatters simply owns few places, which is the truth rather than a misleading blob. Chad named the failure before any code existed and the design is built around it: where somebody has no settled patch the sheet SAYS “No fixed area — 11 ZIP codes are needed to cover 84% of this driver’s work” instead of inventing one. WHY ZIP. `zip` and `city` arrive on EVERY stop free from the saved search, with no geocoding, so coverage is ~100%; coordinates are geocoded and therefore partial, and a coordinate grid would silently cover fewer stops with nobody able to say which. ZIP is also the unit dispatchers already speak in. Coordinates are still used, but only for the dot map, which prints the fraction it could plot. WHAT SHIPS HERE IS THE PURE CORE AND A PRINTABLE RENDERER, NOT A SCREEN — Chad: “I want something I can print out and give to someone so want to see this in pdf before we roll out views in actual dispatch map.” src/lib/driver-territory.js is pure and testable: zipOwnership (who runs each ZIP, and how dominantly — the share is REPORTED, never thresholded, because a pale contested ZIP telling a trainee to ask is the correct outcome and a cutoff would turn that into false certainty), driverCore (the smallest ZIP set covering 80% of a driver’s work, with the crossing ZIP INSIDE the core so the coverage it claims is actually met), and territoryCoverage (days, stops, how many had no ZIP or no driver, what fraction carry coordinates). scripts/territory-sheet.mjs emits one self-contained print-tuned HTML document — deliberately HTML rather than a PDF library so the identical renderer can later be served live with no second implementation to drift. THREE THINGS THE SHEET REFUSES TO DO. A carrier is not a driver: with a roster, ESTES and AVRT never appear as people a trainee could hand a stop to; WITHOUT a roster nothing is guessed away and the page says the list is unfiltered, because a carrier shown is a question asked once while a real driver silently missing is a territory nobody learns. A ZIP with no history is ABSENT, never a zero row — “nobody covers this” and “we have never been here” are opposite facts, the same rule this repo has now been bitten by in four places. And it prints what it is built from, with a warning under 20 days, because a sheet from three days looks identical to one from three months and nobody holding the paper can tell. It also defers: “when the sheet and a dispatcher disagree, the dispatcher is right.” 15 new tests, including the Rasko case by name; 3,435 green. No UI wired yet — that waits on Chad seeing the printout.'],
   ['0.93.15', 'THE PHONE ROUTING SCREEN SPENDS THREE ROWS ON ITS CHROME WHERE IT SPENT SIX. Chad, Sunday, phone on v0.93.14: “Still a ton of wasted white space. Need to format this much better.” MEASURED FIRST, in a real browser at 390×844 in his exact state (sheet open on Routes): between the bottom of the map and the first route card sat 283px of rows — the grid bar (59), the board row with the date and gear (57), the sheet strip (57), a SECOND strip inside the sheet reading Routes/Loads under a tab that already said Routes (46 plus 12 of padding), the search row (57) — and above the map a 59px row holding one 132px Build/Engine control, 70% empty. Every one of those rows was a full-width band for one or two small controls. WHAT MOVED, AND WHERE, each into space another row already had free: (1) the settings gear into the APP BAR, the one strip nothing scrolls away, which had 44px to spare beside the version chip — a portal into a slot the bar exposes, dropping DOWN from the top and capped to the viewport; (2) the board date into the GRID’S COLLAPSED BAR, which had ~120px free beside Stops/Loads, as a compact control — “Today · 9/6” or “Tue 9/8 ▾” with the phone’s own native date wheel riding invisibly on top, so nothing custom can get the date wrong — where the old native input alone was 170px and could never share a row; the sheet renders the same control in a row of its own only while the grid is switched off, so there is one date on screen in every state and never two (the v0.93.12 rule); (3) Routes and Loads (or Drivers) into the SHEET STRIP ITSELF — Setup · Routes · Loads · Result — so the second strip and its repeated word are gone; (4) the Build/Engine row OFF the Build screen — Engine is a gear action, and the Engine screen keeps the row so the way back is always on screen; (5) the Stops/Loads toggle drops its icons on the phone, and the Routes/Loads panel body loses a step of padding. The desktop is untouched. Two views, not one layout patched. The mobile guard’s Routes/Loads probe and the loads-tab guard address the sheet’s Loads tab by its own name now (data-sheet-tab), because by role “Loads” would land on the grid’s Loads button first and open the wrong thing — which is also what makes the probe fail on the previous build.'],
   ['0.93.14', 'THE REVIEW OF v0.93.13 CHANGED FOUR OF ITS RULES, AND THE BOT HAD MERGED IT BEFORE THE FIXES LANDED. v0.93.13 was reviewed adversarially — three lenses, a refuter each — while its PR was open; the repo’s auto-merge took the green PR at its first commit, so the findings ship here, one version later, unchanged in substance. (1) The first offer rule hid the list at route 51 of 100: it offered shells only while MORE THAN HALF the standard names were missing, so after Chad saved half a day and the scan captured it the tab printed “every load already carries orders” again. A generated day is now told by its SHAPE, not its size — it holds Draft shells at zero trips, and a day built by hand holds only routes with stops because NuVizz refuses an empty route — so a hand-built day keeps offering every name it lacks. (2) A half-built day was counted as a source, so sixty routes built by hand would have outvoted the forty not yet built and shrunk the next day’s list; only generated-looking days are sources now, read together in one round trip and remembered for five minutes. (3) The seventh shell tap was silent: Compare caps at six cards and the refusal went to the New-route modal, which was not open — reproduced in a real browser on both views by the refuter — so the tap now says “Compare is full” where it happened, and the guard opens six cards and taps a seventh. (4) Closed days: a Saturday, a Sunday or Labor Day landed on by a date picker one day off must not hand out a hundred routes to build onto a day nobody drives; the repo’s own calendar (davis-calendar.js) settles it before a document is read. Also from the review: no shells on a day nobody has asked NuVizz about (source none); a name over NuVizz’s 20-character cap is never offered; the grid’s row order is a numeric tier (driven, driverless, shell) because under ICU collation the old “~” sentinel sorted above letters; a past day captured empty today says “holds no loads” without “yet” and no invitation to build; and the guard’s empty-day fixture is stamped minutes ago, not six hours, so a CI run between midnight and 6am ET cannot cross the ET day and go red for nothing. Not done, said plainly: labelling Tuesday’s empty twin of a route built Sunday as such on the Loads tab — the pair already shows both numbers (v0.54.25). 60 new tests; the loads-tab guard drives the uncreated day on both surfaces and both views, taps a shell into a card, brings the panel back to prove the name left the offer, and taps a seventh into the cap.'],
@@ -13200,6 +13201,16 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const [nvSource, setNvSource] = useState('live'); // 'live' = straight from NuVizz; 'cache' = our board day-docs (±7d / wide custom ranges)
   const [nvLoading, setNvLoading] = useState(false);
   const [nvErr, setNvErr] = useState(null);
+  // The cache reconcile the explorer reports for a window (v0.94.0): how many frozen rows it
+  // dropped as closed / moved / retired, added from the open-order pool, refreshed — and the
+  // pool's own stamp. Drives the "Board · N stops" line so a removed row never just vanishes.
+  const [nvReconciled, setNvReconciled] = useState(null);
+  // "Check vs NuVizz" (v0.94.0): ONE live call for this window's dates and status buckets,
+  // diffed against the rows the grid shows. { running, result, error, at }.
+  const NV_CHECK_IDLE = { running: false, result: null, error: null, at: null };
+  const [nvCheck, setNvCheck] = useState(NV_CHECK_IDLE);
+  const [nvCheckOpen, setNvCheckOpen] = useState(false);
+  const [, setNvCheckTick] = useState(0); // re-render when the button's cooldown ends
   const [driverSel, setDriverSel] = useState('');
   const [unmappedOnly, setUnmappedOnly] = useState(false); // show only stops with no map location (unroutable until fixed)
   // Drag-resizable height (px), persisted. Drag the top handle up/down.
@@ -13307,6 +13318,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       ? { fromDate: lo, toDate: hi, statusCodes: codes, page: 1, pageSize: 1000 }
       : { arrivalPeriod: nvWindow, statusCodes: codes, page: 1, pageSize: 1000 };
     setNvLoading(true); setNvErr(null);
+    setNvCheck({ running: false, result: null, error: null, at: null }); setNvCheckOpen(false); setNvReconciled(null);
     // DEBOUNCE custom-range pulls: a native date input fires onChange per SEGMENT edit, so a
     // straight fetch would fire a pull on each keystroke. A window preset needs no debounce.
     const timer = setTimeout(() => {
@@ -13329,12 +13341,84 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
           // nvSource is tracked so the routing map knows a cache-backed pull is coord-bearing
           // (±7d / a wide custom range) and can render those orders for selection (v0.45.4).
           setNvRows(decorated); setNvTotal(j.total ?? decorated.length); setNvPartial(!!j.partial); setNvSource(j.source === 'cache' ? 'cache' : 'live');
+          setNvReconciled(j.source === 'cache' && j.reconciled ? { ...j.reconciled, poolAt: j.pool?.at || j.reconciled.poolAt || null } : null);
         })
         .catch((e) => { if (!cancelled) { setNvErr(e.message); setNvRows([]); setNvTotal(0); setNvPartial(false); } })
         .finally(() => { if (!cancelled) setNvLoading(false); });
     }, nvWindow === 'custom' ? 600 : 0);   // only hand-typed dates need the debounce
     return () => { cancelled = true; ctrl.abort(); clearTimeout(timer); };
   }, [nvWindow, nvFrom, nvTo, statusSel, boardDate]);
+  // ── CHECK VS NUVIZZ (v0.94.0) ──────────────────────────────────────────────
+  // Chad: "a way to do what we just did — check what we are showing to what nuvizz shows for
+  // the same set of filters." ONE live NuVizz call for this window's dates and status buckets;
+  // the server diffs it against the rows we send (this window after its status filter — the
+  // one filter NuVizz can mirror; search / driver / no-location are ours alone and would only
+  // manufacture differences). Open work only: delivered and cancelled rows are history.
+  const nvWindowReady = !!nvWindow && !(nvWindow === 'custom' && (!nvFrom || !nvTo));
+  const NV_CHECK_COOLDOWN_MS = 60_000;
+  const nvCheckCooling = !!nvCheck.at && !nvCheck.running && (Date.now() - nvCheck.at) < NV_CHECK_COOLDOWN_MS;
+  useEffect(() => {
+    if (!nvCheck.at) return;
+    const t = setTimeout(() => setNvCheckTick((x) => x + 1), NV_CHECK_COOLDOWN_MS + 50);
+    return () => clearTimeout(t);
+  }, [nvCheck.at]);
+  const runNvCheck = async () => {
+    if (nvCheck.running || !nvWindowReady) return;
+    const autoBack = nvWindow === '-7d' ? 7 : nvWindow === '-14d' ? 14 : 0;
+    const custom = nvWindow === 'custom' || autoBack > 0;
+    const [lo, hi] = nvWindow === 'custom'
+      ? (nvFrom <= nvTo ? [nvFrom, nvTo] : [nvTo, nvFrom])
+      : autoBack > 0 ? [ymdShift(boardDate, -autoBack), boardDate] : ['', ''];
+    const codes = TABLE_STATUS_BUCKETS.filter((b) => statusSel.has(b.k)).flatMap((b) => b.codes);
+    const shown = baseStops
+      .filter((s) => !statusSel.size || statusSel.has(tableStatusBucket(s)))
+      .map((s) => ({ stopNbr: String(s.stopNbr), status: s.status ?? null, day: rowDayOf(s) || null, routeName: s.routeName || s.loadNbr || null, weight: s.weight ?? null, cartons: s.cartons ?? null, volume: s.volume ?? null, businessName: s.businessName || null, city: s.city || null }));
+    setNvCheck({ running: true, result: null, error: null, at: null });
+    try {
+      const r = await apiFetch('/.netlify/functions/nuvizz-window-check', {
+        method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(custom ? { fromDate: lo, toDate: hi, statusCodes: codes, shown } : { arrivalPeriod: nvWindow, statusCodes: codes, shown }),
+      });
+      const j = await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+      if (!j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      setNvCheck({ running: false, result: j, error: null, at: Date.now() });
+      setNvCheckOpen(true);
+    } catch (e) {
+      setNvCheck({ running: false, result: null, error: e?.message || 'check failed', at: Date.now() });
+    }
+  };
+  // Swap the window onto NuVizz's rows. Our cached row (by stop number) lends its pin, its
+  // enrichment and its planning id; the live row supplies status, load, driver, day and freight.
+  // A row the cache never saw lists without a pin — the no-location chip says so.
+  const applyNvCheck = () => {
+    const res = nvCheck.result;
+    if (!res || !Array.isArray(res.liveRows)) return;
+    const byNbr = new Map(nvRows.map((s) => [String(s.stopNbr), s]));
+    const joined = res.liveRows.map((r) => {
+      const c = byNbr.get(String(r.stopNbr)) || null;
+      const day = r.day || r.boardDate || c?.boardDate || null;
+      return {
+        ...(c || {}), ...r,
+        lat: c?.lat ?? null, lng: c?.lng ?? null,
+        stopId: r.stopId || c?.stopId || null,
+        boardDate: day, scheduledDate: day,
+        matchKey: normalizeMatchKey(r.businessName || c?.businessName || '', r.addr1 || c?.addr1 || '', r.city || c?.city || '', r.zip || c?.zip || ''),
+        loadNbr: r.routeName || '',
+        source: 'nuvizz-live',
+      };
+    });
+    setNvRows(joined); setNvTotal(joined.length); setNvPartial(!!res.partial); setNvSource('checked'); setNvReconciled(null);
+    setNvCheckOpen(false);
+  };
+  const pickByNbr = (nbr) => { const s = baseStops.find((x) => String(x.stopNbr) === String(nbr)); if (s && onPick) onPick(s); };
+  const fmtCheckTime = (ms) => (ms ? new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '');
+  const nvRemovedCount = nvReconciled ? (nvReconciled.closed || 0) + (nvReconciled.moved || 0) + (nvReconciled.retired || 0) : 0;
+  const boardSourceTitle = nvReconciled && nvReconciled.basis === 'pool'
+    ? `Served from our board cache and reconciled against the last scan's open-order list (as of ${nvReconciled.poolAt ? new Date(nvReconciled.poolAt).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—'}): ${nvReconciled.closed || 0} closed since removed · ${nvReconciled.moved || 0} moved to another day · ${nvReconciled.retired || 0} retired · ${nvReconciled.added || 0} added · ${nvReconciled.synced || 0} refreshed${nvReconciled.held ? ` · ${nvReconciled.held} held (saved after the last scan)` : ''}. No NuVizz calls.`
+    : nvReconciled && nvReconciled.basis === 'snapshot'
+      ? `Served from our board cache; prior-day unplanned rows checked against the last scan's unplanned snapshot: ${nvReconciled.closed || 0} closed since removed · ${nvReconciled.retired || 0} retired. No NuVizz calls.`
+      : 'Served from our board cache (every scanned day in the window; confirmed Saves are patched in). Freshness = the last scan — no NuVizz calls.';
+  const nvCheckDiffCount = nvCheck.result ? (nvCheck.result.stale?.length || 0) + (nvCheck.result.missing?.length || 0) + (nvCheck.result.changed?.length || 0) : 0;
   // Report the active window's coord-bearing rows UP so the routing map can render them for
   // selection/planning. Only the CACHE path carries coordinates (the live small-window list feed
   // has none); a live window or board mode reports null → the map stays on the single board day.
@@ -13345,7 +13429,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // baseStops recomputes on planVersion, so every confirmed save re-pushes fresh rows.
   useEffect(() => {
     if (!onWindowRowsChange) return;
-    onWindowRowsChange(nvWindow && nvSource === 'cache' && nvRows.length ? baseStops : null);
+    onWindowRowsChange(nvWindow && (nvSource === 'cache' || nvSource === 'checked') && nvRows.length ? baseStops : null);
   }, [nvWindow, nvSource, nvRows, baseStops, onWindowRowsChange]);
   // On unmount, release the window rows so the map reverts to the day board.
   useEffect(() => () => { if (onWindowRowsChange) onWindowRowsChange(null); }, [onWindowRowsChange]);
@@ -13926,8 +14010,102 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                           : nvPartial
                             ? <span className="text-amber-600" title="The date window was too large for one pull — some stops in it may be missing. Narrow the range for an exact result.">NuVizz · ≥{nvTotal.toLocaleString()} stops (partial — narrow the range)</span>
                             : nvSource === 'cache'
-                              ? <span title="Served from our board cache (every scanned day in the window; confirmed Saves are patched in). Freshness = the last scan — no NuVizz calls.">Board · {nvTotal.toLocaleString()} stops</span>
-                              : <>NuVizz · {nvTotal.toLocaleString()} stops</>}
+                              ? <span title={boardSourceTitle}>Board · {nvTotal.toLocaleString()} stops{nvRemovedCount > 0 ? ` · ${nvRemovedCount} closed removed` : ''}</span>
+                              : nvSource === 'checked'
+                                ? <span title="NuVizz's own list for this window, applied from the last Check vs NuVizz. Pins and enrichment joined from our cache by stop number; a row we had never captured lists without a pin.">NuVizz · {nvTotal.toLocaleString()} stops · checked {fmtCheckTime(nvCheck.at)}</span>
+                                : <>NuVizz · {nvTotal.toLocaleString()} stops</>}
+                  </span>
+                )}
+                {/* CHECK VS NUVIZZ (v0.94.0). Desktop only, like the date window it belongs to — the
+                    phone has no date window to check. One NuVizz call per press, a minute's cooldown,
+                    and the server throttles on top. The panel is a popover off this bar, exactly the
+                    Profiles pattern: fixed backdrop to dismiss, absolute panel above the bar. */}
+                {nvWindow && nvWindowReady && (
+                  <span className="relative hidden sm:inline-flex items-center gap-1">
+                    <button
+                      onClick={() => { if (nvCheck.result && !nvCheck.running) setNvCheckOpen((v) => !v); else runNvCheck(); }}
+                      disabled={nvCheck.running || nvLoading || (nvCheckCooling && !nvCheck.result)}
+                      title={nvCheck.result
+                        ? 'Show the last check. Run it again after the cooldown from inside the panel.'
+                        : 'Spends ONE NuVizz call: pulls NuVizz’s own list for these dates and status buckets and shows what differs from this grid — rows shown here that NuVizz no longer lists, rows NuVizz lists that are not shown here, and rows whose plan or day differs. Open work only; delivered and cancelled rows are not compared.'}
+                      className={'inline-flex items-center gap-1 px-2 py-1 rounded text-xs border whitespace-nowrap disabled:opacity-50 '
+                        + (nvCheck.result ? (nvCheck.result.matches ? 'border-green-500 text-green-800 bg-green-50' : 'border-amber-500 text-amber-800 bg-amber-50') : 'border-slate-300 text-slate-600 hover:bg-slate-50')}
+                    >
+                      {nvCheck.running ? <RefreshCw size={12} className="animate-spin" /> : <ClipboardList size={12} />}
+                      {nvCheck.running ? 'Checking NuVizz…' : nvCheck.result ? (nvCheck.result.matches ? 'Matches NuVizz' : `${nvCheckDiffCount} differ from NuVizz`) : 'Check vs NuVizz'}
+                    </button>
+                    {nvCheck.error && !nvCheck.running && (
+                      <span className="text-[11px] text-red-600 max-w-[260px] truncate" title={nvCheck.error}>Check failed: {nvCheck.error}</span>
+                    )}
+                    {nvCheckOpen && nvCheck.result && (
+                      <>
+                        <div className="fixed inset-0 z-10" onClick={() => setNvCheckOpen(false)} />
+                        <div className="absolute left-0 bottom-full mb-1 w-[640px] max-w-[calc(100vw-2rem)] max-h-[60vh] overflow-auto bg-white border border-slate-200 rounded-lg shadow-lg z-20 p-3 text-xs">
+                          <div className="flex items-baseline justify-between gap-2 mb-2">
+                            <div className={'font-semibold ' + (nvCheck.result.matches ? 'text-green-800' : 'text-amber-800')}>
+                              {nvCheck.result.matches ? '✓ This window matches NuVizz' : `${nvCheckDiffCount} difference${nvCheckDiffCount === 1 ? '' : 's'} against NuVizz`}
+                            </div>
+                            <div className="text-[10px] text-slate-400 whitespace-nowrap">checked {fmtCheckTime(nvCheck.at)} · 1 NuVizz call{nvCheck.result.partial ? ' · partial pull — narrow the range' : ''}</div>
+                          </div>
+                          <table className="w-full text-[11px] mb-2 tabular-nums">
+                            <thead><tr className="text-slate-500"><th className="text-left font-medium py-0.5"></th><th className="text-right font-medium">Stops</th><th className="text-right font-medium">Unplanned</th><th className="text-right font-medium">Weight</th><th className="text-right font-medium">Skids</th><th className="text-right font-medium">Loose</th></tr></thead>
+                            <tbody>
+                              {[['NuVizz', nvCheck.result.nuvizz], ['Showing here', nvCheck.result.shown]].map(([label, t]) => (
+                                <tr key={label} className="border-t border-slate-100">
+                                  <td className="py-0.5 font-medium text-slate-700">{label}</td>
+                                  <td className="text-right">{(t?.count ?? 0).toLocaleString()}</td>
+                                  <td className="text-right">{(t?.unplanned ?? 0).toLocaleString()}</td>
+                                  <td className="text-right">{(t?.weight ?? 0).toLocaleString()} lb</td>
+                                  <td className="text-right">{(t?.skids ?? 0).toLocaleString()}</td>
+                                  <td className="text-right">{(t?.loose ?? 0).toLocaleString()}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                          {[
+                            ['stale', 'shown here but not in NuVizz’s list — delivered, cancelled or moved out of these dates since our last scan', nvCheck.result.stale],
+                            ['missing', 'in NuVizz’s list but not shown here', nvCheck.result.missing],
+                            ['changed', 'on both, but the plan or the day differs', nvCheck.result.changed],
+                          ].filter(([, , list]) => list && list.length).map(([kind, title, list]) => (
+                            <div key={kind} className="mb-2">
+                              <div className="font-semibold text-slate-800 mb-0.5">{list.length} {title}</div>
+                              <div className="max-h-40 overflow-auto border border-slate-100 rounded">
+                                <table className="w-full text-[11px]">
+                                  <tbody>
+                                    {list.map((r) => (
+                                      <tr key={r.stopNbr} className="border-b border-slate-50 last:border-0">
+                                        <td className="px-1.5 py-0.5 font-mono whitespace-nowrap">
+                                          <button onClick={() => pickByNbr(r.stopNbr)} className="text-blue-700 hover:underline" title="Open this stop">{r.stopNbr}</button>
+                                        </td>
+                                        <td className="px-1.5 py-0.5 truncate max-w-[200px]">{r.businessName || '—'}</td>
+                                        {kind === 'changed' ? (
+                                          <td className="px-1.5 py-0.5 text-slate-600 whitespace-nowrap">
+                                            here: {r.ours?.planned ? `on ${r.ours.routeName || 'a load'}` : 'unplanned'}{r.ours?.day ? ` · ${String(r.ours.day).slice(5).replace('-', '/')}` : ''}
+                                            {' → NuVizz: '}{r.nuvizz?.planned ? `on ${r.nuvizz.routeName || 'a load'}` : 'unplanned'}{r.nuvizz?.day ? ` · ${String(r.nuvizz.day).slice(5).replace('-', '/')}` : ''}
+                                          </td>
+                                        ) : (
+                                          <td className="px-1.5 py-0.5 text-slate-600 whitespace-nowrap">
+                                            {r.day ? String(r.day).slice(5).replace('-', '/') : '—'} · {r.routeName ? `on ${r.routeName}` : 'unplanned'} · {Number(r.weight || 0).toLocaleString()} lb
+                                          </td>
+                                        )}
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          ))}
+                          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
+                            {!nvCheck.result.matches && (
+                              <button onClick={applyNvCheck} className="px-2 py-1 rounded bg-blue-600 text-white font-semibold" title="Show NuVizz’s list for this window in the grid and on the map (pins joined from our cache by stop number). No further NuVizz calls.">Use NuVizz’s list for this window</button>
+                            )}
+                            <button onClick={runNvCheck} disabled={nvCheck.running || nvCheckCooling} className="px-2 py-1 rounded border border-slate-300 text-slate-600 disabled:opacity-50" title={nvCheckCooling ? 'One check per minute — each is a NuVizz call' : 'Run the check again (one NuVizz call)'}>Check again</button>
+                            <button onClick={() => setNvCheckOpen(false)} className="px-2 py-1 rounded border border-slate-300 text-slate-600">Close</button>
+                            <span className="text-[10px] text-slate-400 basis-full">Open work only — unplanned, planned, out for delivery, arrived. Delivered and cancelled rows are history and are not compared{nvCheck.result.ignoredShown ? ` (${nvCheck.result.ignoredShown} such rows on our side set aside)` : ''}. Our side is this window after its status filter; search, driver and no-location filters are not applied to it.</span>
+                          </div>
+                        </div>
+                      </>
+                    )}
                   </span>
                 )}
               </>

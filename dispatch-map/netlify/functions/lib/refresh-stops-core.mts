@@ -22,8 +22,9 @@
 
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro, lookupLoadStopNbrs } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan, recordScanRun, markLoadRosterEmpty } from './firestore.mts';
-import { listScanForDate, mergeEnrich, twoScanBuckets, completedScanRows, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow } from './nuvizz-list.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan, recordScanRun, markLoadRosterEmpty, writeActivePool } from './firestore.mts';
+import { listScanForDate, mergeEnrich, twoScanBuckets, completedScanRows, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow, activeArrivalReachDays } from './nuvizz-list.mts';
+import { buildActivePool } from './active-pool.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterPull } from './nuvizz-loads.mts';
 import { getStop } from './history-store.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
@@ -1350,6 +1351,22 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           const windowStart = addDaysUTC(today, -7);
           await writeActiveUnplannedSet(TENANT, { at: scannedAt, windowStart, stopNbrs: [...live] });
         } catch (e: any) { console.warn(`[scan] active-set snapshot skipped: ${e?.message}`); }
+      }
+      // THE OPEN-ORDER POOL (v0.94.0). The loop below writes today plus two business days of
+      // `buckets` and drops every other day — which is how a 09/01 order that delivered on
+      // 09/02 stayed "unplanned" in the Routing date window for a week: its day's snapshot
+      // froze at 11:35 PM on 09/01 and nothing ever told that snapshot the order was gone. Every
+      // open row across EVERY day goes into one compact document set here, so the window can
+      // reconcile its frozen rows against what NuVizz lists right now. Same data, one Firestore
+      // write, zero NuVizz calls. Best-effort: a failed write leaves the window on its fallback
+      // (the unplanned snapshot above plus the retired list), never on nothing.
+      if (TWO_SCAN && buckets) {
+        try {
+          const reach = activeArrivalReachDays();
+          const pool = buildActivePool(buckets, { at: scannedAt, windowStart: addDaysUTC(today, -reach), windowEnd: addDaysUTC(today, reach) });
+          const w = await writeActivePool(TENANT, pool);
+          console.log(`[scan] open-order pool written: ${w.count} open row(s) across ${buckets.size} day(s) in ${w.chunks} chunk(s), reach ±${reach}d`);
+        } catch (e: any) { console.warn(`[scan] open-order pool skipped: ${e?.message}`); }
       }
       // FINISHED rows across the WHOLE pull, keyed by stopNbr regardless of bucket day. A stop
       // delivered while running as rolled-over work buckets under its (stale) past arrival day —

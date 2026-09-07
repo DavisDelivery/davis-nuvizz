@@ -549,6 +549,13 @@ const ACTIVE_STATUS = process.env.NUVIZZ_ACTIVE_STATUS || '20,10,40,50';
 // dispatcher could still route. With 99 in the completed pull it flips to EXCEPTION.
 const COMPLETED_STATUS = process.env.NUVIZZ_COMPLETED_STATUS || '90,91,80,99';
 const ACTIVE_ARRIVAL = cleanPeriod(process.env.NUVIZZ_ACTIVE_ARRIVAL || '+/-7d');
+// How many days either side of today the ACTIVE search reaches — the open-order pool's
+// coverage (lib/active-pool.mts judges a cached row only inside this reach). Parsed from the
+// same env-overridable period so retuning the saved search moves both together.
+export function activeArrivalReachDays(): number {
+  const m = /^\+\/-(\d{1,2})d$/.exec(ACTIVE_ARRIVAL);
+  return m ? Math.max(1, Number(m[1])) : 7;
+}
 const COMPLETED_ARRIVAL = cleanPeriod(process.env.NUVIZZ_COMPLETED_ARRIVAL || '+/-7d');
 const COMPLETED_UPDATED = cleanPeriod(process.env.NUVIZZ_COMPLETED_UPDATED || '0d');
 // ATTEMPTS saved search — a re-delivery attempt is a stop whose SHIPMENT number now starts
