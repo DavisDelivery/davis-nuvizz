@@ -47,7 +47,7 @@ const VIEWER_SET = [
   'messaging-roster', 'motive-driver-positions', 'motive-drivers', 'nuvizz-customer-history',
   'nuvizz-driver-route', 'nuvizz-loads-roster', 'nuvizz-pull-today-stops',
   'nuvizz-undelivered-report', 'nuvizz-write-log', 'route-departures', 'routing-engine-data',
-  'travel-model', 'customer-comms-config', 'gmail-auth',
+  'routing-driver-resolve', 'travel-model', 'customer-comms-config', 'gmail-auth',
 ];
 const DISPATCHER_SET = [
   'ai-search', 'anthropic-routing', 'debug-capture', 'manifest-email-check', 'manifest-upload',

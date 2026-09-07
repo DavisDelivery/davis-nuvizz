@@ -83,6 +83,7 @@ import { seedStagedCard } from './lib/workbench-stage.js';
 import { dropSide, dropSideClass } from './lib/drop-side.js';
 import { rosterFreshness, ageLabel } from './lib/roster-freshness.js';
 import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
+import { planTargetProfile, driverHintForLoad, loadNamesToResolve, resolveKey } from './lib/plan-target-profile.js';
 // w-40. Named once so the measurement and the Tailwind class can never disagree about how
 // wide the panel being placed actually is.
 const STATUS_MENU_W = 160;
@@ -115,7 +116,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.93.17';
+const APP_VERSION = '0.93.18';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -186,6 +187,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.93.18', 'THE PLAN-ONTO LIST NOW ASKS WHO DRIVES THE LOAD BEFORE IT PICKS A TRUCK. Chad, on his empty VICTOR shell defaulting to “26ft Box”: “why does the system not know victor is a tractor trailer, it should know this from the engine data.” IT DID KNOW, AND THIS WAS THE ONE PATH THAT NEVER ASKED. The MarginIQ employees roster carries vehicleType per driver; the engine joins every warehouse route to that class through the NuVizz alias; the Draft box resolves a typed “victor” to VICTOR and his truck through resolveDraftDriver. But a roster row holds a load id, a name, a status and a trip count and nothing else (normalizeLoads captures no driver column), so “Plan onto → My loads” defaulted each load’s vehicle from a regex on its NAME — trailer / trl / 53 meant tractor, everything else meant box — and an empty shell went to the engine with no driver at all, so it was sized from fleet averages rather than from Victor’s own forty-odd days. NOW: a new endpoint, routing-driver-resolve, takes the day’s roster names and answers each with the driver it names and that driver’s truck class — ZERO NuVizz calls, two Firestore reads, and the SAME resolver the Draft box uses, so a load called VICTOR and a driver typed as “victor” cannot be two different people. THE RULES ARE FREIGHT RULES: an exact name only (alias, full, first or last name, minus the trailing load number, so “BEN 2” asks about BEN); NO prefix guessing, because “AL” is a route code and not Albert cut short, and a unique-prefix hit would have quietly hung Albert’s trailer and learned envelope on freight that is nobody’s; two Bens is NO answer rather than the first one found, so “BEN 2” keeps the plain default and the dispatcher picks — the cheap mistake, where a 53-footer’s capacity on a box driver’s shell is the expensive one; and the roster’s class outranks the class the warehouse last saw, which outranks nothing. THE ROW SAYS WHY: “VICTOR · Victor Mendez”, and the vehicle dropdown’s title reads “defaulted from the driver roster: Victor Mendez drives a tractor-trailer (41 observed days)”, so a 53ft default on VICTOR reads as a fact about Victor and not as a guess to second-guess. The precedence is pinned in lib/plan-target-profile.js: the dispatcher’s pick on the row, then the load’s driver, then the name rule (TRAILER 6 is still a trailer though nobody is called Trailer), then box. AND THE BUILD CARRIES THE DRIVER: an empty shell named for a driver is sent with his NuVizz key, so routing-cleanup gives it his learned envelope and zone affinity instead of the whole-fleet p85 the panel used to label “driver”. A failed or absent answer leaves every row exactly where it was — on the name rule — and the endpoint returns ok:false rather than a guess when Firestore is not configured. 35 new tests: the resolver’s rules, the endpoint end to end against the Firestore fake with the runQuery date filter applied for real (the planning day itself is not history), and the client precedence. WHAT THIS DOES NOT DO, said plainly: it cannot make Victor a tractor if his employee card in MarginIQ does not say so, or if his NuVizz alias there is not the name on the load; the row simply shows no driver, and the Engine tab’s Class column for one of his past days says which of the two it is.'],
   ['0.93.17', 'A REAL MAP UNDER THE CIRCLES, AND THE RULE THAT STOPS A CIRCLE LYING — WHICH ONLY A MEASUREMENT FOUND. Chad on the first printout: “the dots didn’t lay over an actual map of north Georgia and I think big circles will work better than dots,” and “terry hasn’t ran for me in a long time so … just guys that have ran in last 4 weeks.” THE BASEMAP. A dot cloud on white has no geography in it — you cannot tell Buford from Bogart. 65 north-Georgia county outlines (US Census, public domain, decimated to 985 points so the PDF stays small) plus twelve town labels and the terminal turn the same data into a map of somewhere. CIRCLES, AS ASKED, BUT ONE PER CLUSTER. I had argued for dots; Chad saw both and overruled it, which is his call. So circles — with the objection answered by the clustering rather than by refusing him the shape: a driver working two areas gets two circles instead of one stretched across ground he never touches. AND THEN THE PART WORTH RECORDING, BECAUSE I GOT IT WRONG TWICE AND THE RENDER LOOKED FINE BOTH TIMES. The first build gave Rasko a 23km circle and Chris a 35km one, each swallowing three other drivers’ areas whole. My safeguard was “do the circles cover most of his work” — and they did, 99%, so it passed. Once a metro is dense a scattered driver’s stops all sit in ONE connected region, so coverage cannot see the failure at all. SIZE can: past about 15km (~9 miles, a morning’s drops in one direction) a circle stops meaning “his patch” and starts meaning “somewhere in Gwinnett”, which a trainee already knows and cannot act on. A driver with no tight cluster now gets NO circle and is named under “Not drawn — their work is spread too thin to sit inside a circle”. That is Chad’s own caveat about Rasko and Chris, enforced by code instead of hoped for. I only found it by printing the radii; two rounds of looking at the rendered PDF had not caught it. STILL RUNNING, NOT MERELY PRESENT. Terry did 70 stops at the start of the window and none since, which passes any count test — so activeDrivers now also checks RECENCY, measured against the window END rather than a wall clock so that re-printing an old window gives that window’s answer. He is excluded with the reason and the date printed, never silently dropped. ALSO FIXED, FOUND BY READING THE RENDER: the map broke to page two and left page one blank below the header, because `aspect-ratio` let the SVG take whatever height the data’s shape implied (667px). A print sheet has a page; it is a fixed box with preserveAspectRatio now. 7 new tests (32 in the module), including the bridging case and both directions of the size rule. 3,452 green. Still no UI wired — the printout comes first.'],
   ['0.93.16', 'DRIVER TERRITORIES, AND THE ARGUMENT FOR NOT DRAWING CIRCLES. Chad: “design a map for a trainee so they have a general idea where drivers most frequent areas are … I was thinking circles or ovals of where their general work area is if you can think of a better way please present it as well,” and “I know there are a few drivers this probably won’t work great for like rasko or chris.” THE TRAINEE’S REAL QUESTION IS NOT “what shape is Rasko’s territory”. It is “this order is in Dacula — whose is it?” That is a question about a PLACE, and a circle answers a different one badly: a driver with TWO clusters gets an ellipse centred between them, on countryside he never visits — not imprecise, WRONG, and a trainee cannot tell it is wrong. Real routes follow corridors (I-85, GA-316) and are long and thin, so a circle wide enough to cover one covers everything either side too; and twenty translucent circles over one metro is unreadable. So this fits no shape at all. It asks each PLACE who serves it and lets the answer have whatever shape it has — a driver who scatters simply owns few places, which is the truth rather than a misleading blob. Chad named the failure before any code existed and the design is built around it: where somebody has no settled patch the sheet SAYS “No fixed area — 11 ZIP codes are needed to cover 84% of this driver’s work” instead of inventing one. WHY ZIP. `zip` and `city` arrive on EVERY stop free from the saved search, with no geocoding, so coverage is ~100%; coordinates are geocoded and therefore partial, and a coordinate grid would silently cover fewer stops with nobody able to say which. ZIP is also the unit dispatchers already speak in. Coordinates are still used, but only for the dot map, which prints the fraction it could plot. WHAT SHIPS HERE IS THE PURE CORE AND A PRINTABLE RENDERER, NOT A SCREEN — Chad: “I want something I can print out and give to someone so want to see this in pdf before we roll out views in actual dispatch map.” src/lib/driver-territory.js is pure and testable: zipOwnership (who runs each ZIP, and how dominantly — the share is REPORTED, never thresholded, because a pale contested ZIP telling a trainee to ask is the correct outcome and a cutoff would turn that into false certainty), driverCore (the smallest ZIP set covering 80% of a driver’s work, with the crossing ZIP INSIDE the core so the coverage it claims is actually met), and territoryCoverage (days, stops, how many had no ZIP or no driver, what fraction carry coordinates). scripts/territory-sheet.mjs emits one self-contained print-tuned HTML document — deliberately HTML rather than a PDF library so the identical renderer can later be served live with no second implementation to drift. THREE THINGS THE SHEET REFUSES TO DO. A carrier is not a driver: with a roster, ESTES and AVRT never appear as people a trainee could hand a stop to; WITHOUT a roster nothing is guessed away and the page says the list is unfiltered, because a carrier shown is a question asked once while a real driver silently missing is a territory nobody learns. A ZIP with no history is ABSENT, never a zero row — “nobody covers this” and “we have never been here” are opposite facts, the same rule this repo has now been bitten by in four places. And it prints what it is built from, with a warning under 20 days, because a sheet from three days looks identical to one from three months and nobody holding the paper can tell. It also defers: “when the sheet and a dispatcher disagree, the dispatcher is right.” 15 new tests, including the Rasko case by name; 3,435 green. No UI wired yet — that waits on Chad seeing the printout.'],
   ['0.93.15', 'THE PHONE ROUTING SCREEN SPENDS THREE ROWS ON ITS CHROME WHERE IT SPENT SIX. Chad, Sunday, phone on v0.93.14: “Still a ton of wasted white space. Need to format this much better.” MEASURED FIRST, in a real browser at 390×844 in his exact state (sheet open on Routes): between the bottom of the map and the first route card sat 283px of rows — the grid bar (59), the board row with the date and gear (57), the sheet strip (57), a SECOND strip inside the sheet reading Routes/Loads under a tab that already said Routes (46 plus 12 of padding), the search row (57) — and above the map a 59px row holding one 132px Build/Engine control, 70% empty. Every one of those rows was a full-width band for one or two small controls. WHAT MOVED, AND WHERE, each into space another row already had free: (1) the settings gear into the APP BAR, the one strip nothing scrolls away, which had 44px to spare beside the version chip — a portal into a slot the bar exposes, dropping DOWN from the top and capped to the viewport; (2) the board date into the GRID’S COLLAPSED BAR, which had ~120px free beside Stops/Loads, as a compact control — “Today · 9/6” or “Tue 9/8 ▾” with the phone’s own native date wheel riding invisibly on top, so nothing custom can get the date wrong — where the old native input alone was 170px and could never share a row; the sheet renders the same control in a row of its own only while the grid is switched off, so there is one date on screen in every state and never two (the v0.93.12 rule); (3) Routes and Loads (or Drivers) into the SHEET STRIP ITSELF — Setup · Routes · Loads · Result — so the second strip and its repeated word are gone; (4) the Build/Engine row OFF the Build screen — Engine is a gear action, and the Engine screen keeps the row so the way back is always on screen; (5) the Stops/Loads toggle drops its icons on the phone, and the Routes/Loads panel body loses a step of padding. The desktop is untouched. Two views, not one layout patched. The mobile guard’s Routes/Loads probe and the loads-tab guard address the sheet’s Loads tab by its own name now (data-sheet-tab), because by role “Loads” would land on the grid’s Loads button first and open the wrong thing — which is also what makes the probe fail on the previous build.'],
@@ -20348,22 +20350,56 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     rows.sort((a, b) => (Number(a.boardCount > 0) - Number(b.boardCount > 0)) || a.display.localeCompare(b.display));
     return rows;
   }, [loadRosterList, boardCountByName]);
-  // Default vehicle per load: the name says trailer → the tractor profile, else the box
-  // profile. The per-load chip in the panel overrides it.
-  const guessProfileFor = useCallback((name) => {
-    const tractor = profiles.find((p) => p.capabilities?.tractor) || profiles.find((p) => /53|trailer|tractor/i.test(p.label || p.id));
-    const box = profiles.find((p) => !p.capabilities?.tractor) || profiles[0];
-    return (/(^|\W)(trailer|trl|53)(\W|$)/i.test(String(name || '')) && tractor) ? tractor : (box || tractor || profiles[0]);
-  }, [profiles]);
+  // ── WHO DRIVES EACH ROSTER LOAD, AND WHAT TRUCK. Chad, on his empty VICTOR shell defaulting
+  // to a 26ft box: "it should know this from the engine data." It did — the MarginIQ roster
+  // carries vehicleType per driver and every engine path joins through it — but a roster row
+  // holds no driver, so this list defaulted the vehicle from the load NAME. Asked once per
+  // date + roster from routing-driver-resolve: zero NuVizz calls, two Firestore reads, and the
+  // SAME resolver the Draft box uses, so "VICTOR" here and "victor" typed there are one person.
+  // Keyed by resolveKey(name). A failed or absent answer leaves the map empty and every row on
+  // the name rule it always had; the row's hint and title say which rule decided.
+  const [planDriverByName, setPlanDriverByName] = useState(() => new Map());
+  const planResolveNames = useMemo(() => loadNamesToResolve(planPickRows.filter((r) => r.name)), [planPickRows]);
+  // The list's CONTENT is the dependency, not its identity: planPickRows rebuilds on every board
+  // poll (its "on board" counts move) and an equal list must not re-ask the same question.
+  const planResolveSig = planResolveNames.join('\u001f');
+  useEffect(() => {
+    if (!selectedDate || !planResolveNames.length) { setPlanDriverByName(new Map()); return; }
+    let cancelled = false;
+    apiFetch('/.netlify/functions/routing-driver-resolve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date: selectedDate, names: planResolveNames }),
+    })
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return;
+        const m = new Map();
+        if (j?.ok && j.resolved && typeof j.resolved === 'object') {
+          for (const [k, v] of Object.entries(j.resolved)) if (v) m.set(k, v);
+        }
+        setPlanDriverByName(m);
+      })
+      .catch(() => { if (!cancelled) setPlanDriverByName(new Map()); });
+    return () => { cancelled = true; };
+  }, [selectedDate, planResolveSig]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Default vehicle per load — the precedence lives in lib/plan-target-profile.js and is pinned
+  // there: the dispatcher's pick on the row, then the truck the load's DRIVER runs (above), then
+  // the name rule ("TRAILER 6" is a trailer though nobody is called Trailer), then box.
+  const targetProfileFor = useCallback((r) => planTargetProfile({
+    pickedId: planTargetProfileById.get(r.rowKey) ?? null,
+    name: r.display,
+    resolved: r.name ? (planDriverByName.get(resolveKey(r.name)) || null) : null,
+    profiles,
+  }), [planTargetProfileById, planDriverByName, profiles]);
   const planTargets = useMemo(() => {
     const out = [];
     for (const r of planPickRows) {
       if (!planTargetKeys.has(r.rowKey) || r.ambiguous) continue;
-      const p = profiles.find((x) => x.id === planTargetProfileById.get(r.rowKey)) || guessProfileFor(r.display);
-      if (p) out.push({ ...r, profile: p });
+      const { profile: p } = targetProfileFor(r);
+      if (p) out.push({ ...r, profile: p, driver: r.name ? (planDriverByName.get(resolveKey(r.name)) || null) : null });
     }
     return out;
-  }, [planPickRows, planTargetKeys, planTargetProfileById, profiles, guessProfileFor]);
+  }, [planPickRows, planTargetKeys, targetProfileFor, planDriverByName]);
 
   const canBuild = selectedIds.size >= 1
     && (planMode === 'loads' ? planTargets.length >= 1 : selectedTrucks.length >= 1)
@@ -20794,7 +20830,10 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
             // A liftgate-required consignee cannot be served without one. Send
             // the capability so the engine can refuse rather than load it.
             liftgate: t.profile?.capabilities?.liftgate === true,
-            driver_user_name: driverByName.get(String(t.display).toLowerCase()) || null,
+            // The board's driver (a load already holding stops) wins; an EMPTY shell named for a
+            // driver carries the roster's NuVizz key instead, so the engine sizes it from that
+            // driver's own observed days rather than from fleet averages (v0.93.18).
+            driver_user_name: driverByName.get(String(t.display).toLowerCase()) || t.driver?.driver_user_name || null,
           })),
         }),
       });
@@ -21025,7 +21064,11 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
                     .filter((r) => { const n = planLoadFilter.trim().toLowerCase(); return !n || r.display.toLowerCase().includes(n); })
                     .map((r) => {
                       const on = planTargetKeys.has(r.rowKey) && !r.ambiguous;
-                      const prof = profiles.find((x) => x.id === planTargetProfileById.get(r.rowKey)) || guessProfileFor(r.display);
+                      const { profile: prof, source: profSource } = targetProfileFor(r);
+                      // "· Victor Mendez" after the name once the load's driver is known, and a title
+                      // that says the vehicle came from the roster — so a 53ft default on VICTOR reads
+                      // as a fact about Victor, not as a guess the dispatcher has to second-guess.
+                      const hint = driverHintForLoad(r.name ? planDriverByName.get(resolveKey(r.name)) : null, profSource);
                       return (
                         <div key={r.rowKey} className={`px-1.5 py-1 text-[12px] flex items-center gap-1.5 ${r.ambiguous ? 'opacity-50' : ''}`}>
                           {/* tap-target-y (phone-only, index.css): the whole row is a label, and the
@@ -21034,7 +21077,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
                           <label className={`tap-target-y flex items-center gap-1.5 flex-1 min-w-0 ${r.ambiguous ? '' : 'cursor-pointer'}`} title={r.ambiguous ? 'Two loads share this name today — rename one in the portal to plan onto it.' : undefined}>
                             <input type="checkbox" disabled={r.ambiguous} checked={on}
                               onChange={() => setPlanTargetKeys((prev) => { const n = new Set(prev); n.has(r.rowKey) ? n.delete(r.rowKey) : n.add(r.rowKey); return n; })} />
-                            <span className="font-medium truncate">{r.display}</span>
+                            <span className="font-medium truncate">{r.display}{hint && <span className="font-normal text-slate-500" title={hint.title}> · {hint.text}</span>}</span>
                             {r.ambiguous
                               ? <span className="px-1 rounded text-[10px] bg-red-50 text-red-600 border border-red-200 shrink-0">duplicate name</span>
                               : r.boardCount > 0
@@ -21042,7 +21085,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
                                 : <span className="px-1 rounded text-[10px] bg-amber-50 text-amber-700 border border-amber-200 shrink-0">empty</span>}
                           </label>
                           {on && (
-                            <select value={prof?.id || ''} title="Vehicle for this load — sets its capacity + what's allowed on it"
+                            <select value={prof?.id || ''} title={hint ? hint.title : "Vehicle for this load — sets its capacity + what's allowed on it"}
                               onChange={(e) => setPlanTargetProfileById((prev) => { const m = new Map(prev); m.set(r.rowKey, e.target.value); return m; })}
                               className="border rounded px-1 py-0.5 text-[10px] text-slate-700 shrink-0">
                               {profiles.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}

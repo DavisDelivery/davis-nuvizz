@@ -87,6 +87,7 @@ export interface ResolvedDraftDriver {
 // it is a morning on the phone.
 export function resolveDraftDriver(
   name: string, employees: any[], driverDaysBefore: any[], asOfDate: string,
+  opts: { allowPrefix?: boolean } = {},
 ): { ok: true; driver: ResolvedDraftDriver } | { ok: false; error: string } {
   const q = fold(name);
   if (!q) return { ok: false, error: 'empty driver name' };
@@ -112,7 +113,11 @@ export function resolveDraftDriver(
   if (!matches.size && recent.has(q)) matches.set(q, { emp: null, via: name });
   // Prefix over recent keys ("vic" → VICTOR, "victor" → VICTOR_M) — but ONLY
   // when unique. Two prefix matches is a human question, not a coin flip.
-  if (!matches.size) {
+  // OFF for a LOAD name (allowPrefix: false, routing-driver-resolve-core.mts): Chad types
+  // "vic" into the Draft box meaning Victor, but a route code such as "AL" or "MET" is not
+  // a person's name cut short, and a unique prefix hit there would quietly hang a driver's
+  // truck class and learned envelope on a load that belongs to nobody in particular.
+  if (!matches.size && opts.allowPrefix !== false) {
     const pref = [...recent].filter((k) => k.startsWith(q));
     if (pref.length === 1) matches.set(pref[0], { emp: null, via: name });
     else if (pref.length > 1) return { ok: false, error: `"${name}" matches ${pref.length} recent drivers (${pref.slice(0, 4).join(', ')}) — use the full name` };
