@@ -14,7 +14,17 @@
 // The input is whatever the aggregation produced: { generatedAt, window, coverage, zips,
 // drivers, stops? }. `stops` is optional and only feeds the dot map.
 import fs from 'node:fs';
-import { zipOwnership, driverCore, territoryCoverage } from '../src/lib/driver-territory.js';
+import { zipOwnership, driverCore, territoryCoverage, activeDrivers, driverCircles } from '../src/lib/driver-territory.js';
+import COUNTIES from '../src/lib/ga-north-counties.json' with { type: 'json' };
+
+// Orientation labels. A printed map of anonymous county outlines is a puzzle; four or five
+// familiar names turn it into a map. Coordinates are the towns' own, not derived from the data.
+const TOWNS = [
+  ['Atlanta', 33.749, -84.388], ['Buford', 34.121, -84.000], ['Athens', 33.958, -83.378],
+  ['Lawrenceville', 33.956, -83.988], ['Gainesville', 34.298, -83.824], ['Marietta', 33.953, -84.550],
+  ['Duluth', 34.003, -84.145], ['Cumming', 34.207, -84.140], ['Winder', 33.993, -83.720],
+  ['Conyers', 33.668, -84.018], ['Douglasville', 33.752, -84.748], ['Canton', 34.237, -84.491],
+];
 
 const src = process.argv[2];
 if (!src) { console.error('usage: territory-sheet.mjs <data.json>'); process.exit(2); }
@@ -22,9 +32,13 @@ const input = JSON.parse(fs.readFileSync(src, 'utf8'));
 const stops = input.stops || [];
 const roster = input.roster ? new Set(input.roster.map((r) => String(r).toUpperCase())) : null;
 
-const zips = input.zips || zipOwnership(stops, { roster });
-const drivers = input.drivers || driverCore(stops, { roster });
-const cov = input.coverage || territoryCoverage(stops, { roster });
+// ONLY DRIVERS WHO HAVE ACTUALLY RUN IN THE WINDOW. Chad: "terry hasn't ran for me in a long
+// time ... just guys that have ran in last 4 weeks."
+const { active: activeSet, excluded } = activeDrivers(stops, { roster, minStops: input.minStops ?? 5 });
+const inWindow = stops.filter((s) => activeSet.has((s?.driverUserName || s?.driverName || '').toUpperCase().replace(/\s+/g, '_')));
+const zips = input.zips || zipOwnership(inWindow, { roster });
+const drivers = input.drivers || driverCore(inWindow, { roster });
+const cov = input.coverage || territoryCoverage(inWindow, { roster });
 const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pct = (n) => `${Math.round((n || 0) * 100)}%`;
 
@@ -38,33 +52,82 @@ const colourOf = new Map(drivers.map((d, i) => [d.key, PALETTE[i % PALETTE.lengt
 // circles rendered as a picture: a driver who works two clusters shows as two clusters, and a
 // driver who scatters looks scattered, instead of both being flattened into an ellipse whose
 // centre may be somewhere neither of them goes.
-function dotMap() {
-  const pts = stops.filter((s) => Number.isFinite(Number(s?.lat)) && Number.isFinite(Number(s?.lng)))
-    .map((s) => ({ lat: Number(s.lat), lng: Number(s.lng), key: (s.driverUserName || s.driverName || '').toUpperCase().replace(/\s+/g, '_') }));
-  if (pts.length < 5) {
-    return `<p class="muted">No map: only ${pts.length} of ${cov.stops} stops carry coordinates.
-      Coordinates are geocoded and fill in over time; the tables below use ZIP, which every stop carries.</p>`;
+function territoryMap() {
+  // WHAT CHANGED AND WHY, because the first draft got both halves wrong.
+  //
+  // Chad: "the dots didn't lay over an actual map of north Georgia and I think big circles will
+  // work better than dots."
+  //
+  // (1) THE BASEMAP. A dot cloud on white has no geography in it — you cannot tell Buford from
+  //     Bogart, and a trainee cannot place anything. Real county outlines (US Census, public
+  //     domain) and a dozen town labels turn the same data into a map of somewhere.
+  // (2) CIRCLES. I argued for dots and Chad has overruled it, having seen both. So: circles —
+  //     but ONE PER CLUSTER (driverCircles), because a single circle over a two-cluster driver
+  //     is centred on ground he never touches. That was the real objection to circles, and it
+  //     is answered by the clustering rather than by refusing him the shape he asked for.
+  const circleSets = input.circles || driverCircles(stops, { roster, active: activeSet });
+  const drawn = circleSets.filter((d) => d.circles.length);
+  if (!drawn.length) {
+    return `<p class="muted">No circles: none of the active drivers has enough stops carrying
+      coordinates. Coordinates are geocoded and fill in over time; the tables below use ZIP,
+      which every stop carries.</p>`;
   }
-  const lats = pts.map((p) => p.lat), lngs = pts.map((p) => p.lng);
-  const pad = 0.04;
-  const [y0, y1] = [Math.min(...lats) - pad, Math.max(...lats) + pad];
-  const [x0, x1] = [Math.min(...lngs) - pad, Math.max(...lngs) + pad];
-  const W = 660, H = 560;
-  // Equirectangular, corrected for latitude so the metro is not stretched east-west.
-  const kx = Math.cos((((y0 + y1) / 2) * Math.PI) / 180);
-  const sx = (lng) => ((lng - x0) / ((x1 - x0) || 1)) * W;
-  const sy = (lat) => H - ((lat - y0) / ((y1 - y0) || 1)) * H;
+
+  // Frame on the WORK, then pad, so the map is of where they actually run rather than of the
+  // whole state. Counties are clipped to that frame by the viewBox.
+  const all = drawn.flatMap((d) => d.circles);
+  const latPad = 0.30, lngPad = 0.34;
+  const y0 = Math.min(...all.map((c) => c.lat - c.radiusKm / 110)) - latPad;
+  const y1 = Math.max(...all.map((c) => c.lat + c.radiusKm / 110)) + latPad;
+  const x0 = Math.min(...all.map((c) => c.lng - c.radiusKm / 92)) - lngPad;
+  const x1 = Math.max(...all.map((c) => c.lng + c.radiusKm / 92)) + lngPad;
+
+  const W = 660;
+  const midLat = (y0 + y1) / 2;
+  const aspect = Math.cos((midLat * Math.PI) / 180);          // no east-west stretch
+  const H = Math.round((W * (y1 - y0)) / ((x1 - x0) * aspect));
+  const sx = (lng) => ((lng - x0) / (x1 - x0)) * W;
+  const sy = (lat) => H - ((lat - y0) / (y1 - y0)) * H;
+  const rpx = (km) => (km / 111 / (y1 - y0)) * H;             // radius in latitude degrees → px
+
+  const counties = COUNTIES.map((c) => c.rings.map((r) => {
+    const d = r.map(([lng, lat], i) => `${i ? 'L' : 'M'}${sx(lng).toFixed(1)},${sy(lat).toFixed(1)}`).join('');
+    return `<path d="${d}Z" fill="#f2f1ee" stroke="#c9c7c1" stroke-width="0.7"/>`;
+  }).join('')).join('');
+
+  const towns = TOWNS.filter(([, lat, lng]) => lat > y0 && lat < y1 && lng > x0 && lng < x1)
+    .map(([n, lat, lng]) => `<g><circle cx="${sx(lng).toFixed(1)}" cy="${sy(lat).toFixed(1)}" r="1.8" fill="#555"/>
+      <text x="${(sx(lng) + 4).toFixed(1)}" y="${(sy(lat) + 3).toFixed(1)}" font-size="9" fill="#444">${esc(n)}</text></g>`).join('');
+
+  // Big circles last so they sit over the geography, translucent so overlaps stay readable and
+  // so a county line underneath is still visible — which is what makes it a map and not a blob.
+  const blobs = drawn.flatMap((d) => d.circles.map((c) => {
+    const col = colourOf.get(d.key) || '#777';
+    return `<circle cx="${sx(c.lng).toFixed(1)}" cy="${sy(c.lat).toFixed(1)}" r="${Math.max(6, rpx(c.radiusKm)).toFixed(1)}"
+      fill="${col}" fill-opacity="0.17" stroke="${col}" stroke-width="1.8" stroke-opacity="0.85"/>`;
+  })).join('');
+  const tags = drawn.flatMap((d) => d.circles.map((c) => `<text x="${sx(c.lng).toFixed(1)}" y="${sy(c.lat).toFixed(1)}"
+      text-anchor="middle" font-size="10" font-weight="700" fill="${colourOf.get(d.key) || '#333'}"
+      stroke="#fff" stroke-width="2.6" paint-order="stroke">${esc(d.label)}</text>`)).join('');
+
   const depot = input.depot || { lat: 34.14838, lng: -83.95948, name: 'Buford Terminal' };
-  const dots = pts.map((p) =>
-    `<circle cx="${sx(p.lng).toFixed(1)}" cy="${sy(p.lat).toFixed(1)}" r="2.4" fill="${colourOf.get(p.key) || '#999'}" opacity="0.72"/>`).join('');
-  const dep = (depot.lat >= y0 && depot.lat <= y1 && depot.lng >= x0 && depot.lng <= x1)
-    ? `<g><rect x="${(sx(depot.lng) - 5).toFixed(1)}" y="${(sy(depot.lat) - 5).toFixed(1)}" width="10" height="10" fill="#111"/>
-       <text x="${(sx(depot.lng) + 9).toFixed(1)}" y="${(sy(depot.lat) + 4).toFixed(1)}" font-size="11" font-weight="700">${esc(depot.name)}</text></g>` : '';
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="aspect-ratio:${W}/${H};border:1px solid #ccc;background:#fbfbfa">
-    ${dots}${dep}</svg>
-    <p class="muted">${pts.length} of ${cov.stops} stops plotted (${pct(cov.coordShare)} have coordinates).
-    One dot per delivery. No shape is drawn around anyone — the pattern is whatever the work was.
-    Scale is relative; this is a shape-and-cluster picture, not a road map.${kx ? '' : ''}</p>`;
+  const dep = (depot.lat > y0 && depot.lat < y1 && depot.lng > x0 && depot.lng < x1)
+    ? `<g><rect x="${(sx(depot.lng) - 4).toFixed(1)}" y="${(sy(depot.lat) - 4).toFixed(1)}" width="8" height="8" fill="#111"/>
+       <text x="${(sx(depot.lng) + 7).toFixed(1)}" y="${(sy(depot.lat) + 3).toFixed(1)}" font-size="9.5" font-weight="700"
+         stroke="#fff" stroke-width="2.6" paint-order="stroke">${esc(depot.name)}</text></g>` : '';
+
+  const scattered = drawn.filter((d) => d.circles.length > 1);
+  const noArea = circleSets.filter((d) => d.noFixedArea);
+  return `<div class="mapbox"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet"
+    width="100%" height="100%" style="display:block">
+    ${counties}${towns}${blobs}${dep}${tags}</svg></div>
+    <p class="muted">Each circle covers where most of that driver's work sits — 80% of the stops in
+    that cluster. Somebody who works two areas gets two circles rather than one big one stretched
+    between them${scattered.length ? ` (${esc(scattered.map((d) => d.label).join(', '))})` : ''}.
+    ${pct(cov.coordShare)} of stops carry coordinates and could be placed; the tables use ZIP, which all of them carry.</p>
+    ${noArea.length ? `<p class="nocircle"><b>Not drawn:</b> ${esc(noArea.map((d) => d.label).join(', '))}.
+      Their work is spread too thin to sit inside a circle — any circle would cover ground they
+      never touch. Use the town list for them.</p>` : ''}`;
 }
 
 const legend = drivers.map((d) =>
@@ -129,6 +192,8 @@ process.stdout.write(`<!doctype html><html><head><meta charset="utf-8"><title>Dr
   .legend { margin: 6px 0 2px; }
   .drv { break-inside: avoid; page-break-inside: avoid; margin: 0 0 13px; padding: 9px 10px; border: 1px solid #ddd; }
   .area { margin: 3px 0 6px; font-size: 11px; }
+  .mapbox { height: 158mm; border: 1px solid #ccc; background: #fdfdfc; break-inside: avoid; page-break-inside: avoid; }
+  .nocircle { background: #fff6e5; border-left: 3px solid #b8860b; padding: 6px 9px; margin: 6px 0 0; font-size: 10.5px; }
   .area.nofix { background: #fff6e5; padding: 5px 7px; border-left: 3px solid #b8860b; }
   .tail { margin: 6px 0 0; font-size: 10px; color: #444; }
   .mini td, .mini th { padding: 1.5px 5px; }
@@ -155,8 +220,13 @@ ${cov.days < 20 ? `<div class="warnbox"><b>Read this as a starting point, not a 
   pattern, not enough to settle an unusual day. When the sheet and a dispatcher disagree, the
   dispatcher is right.</div>` : ''}
 
+${excluded.length ? `<div class="warnbox"><b>Not on this sheet:</b> ${excluded.map((e) => `${esc(e.label)} — ${e.why === 'stopped running'
+    ? `last ran ${esc(e.lastSeen || '?')}, ${e.daysSince} days before the end of this window`
+    : `only ${e.stops} delivery${e.stops === 1 ? '' : 'ies'} in the window`}`).join(' · ')}.
+  Only drivers still running are shown; somebody who has stopped has no current area to learn.</div>` : ''}
+
 <h2>The picture</h2>
-${dotMap()}
+${territoryMap()}
 <div class="legend">${legend}</div>
 
 <div class="page"></div>
