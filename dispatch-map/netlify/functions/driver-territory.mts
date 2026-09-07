@@ -22,6 +22,7 @@ import { territorySheetHtml } from '../../src/lib/territory-sheet-html.js';
 import {
   territoryCoverage, activeDrivers, possibleSameDriver, applyAliases, rosterOf,
 } from '../../src/lib/driver-territory.js';
+import { driverAliases } from './lib/marginiq.mts';
 import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
@@ -72,7 +73,13 @@ export default async (req: Request): Promise<Response> => {
     } catch (e: any) { failed.push({ date, error: String(e?.message || e).slice(0, 160) }); }
   }
 
-  const aliases = (await getDoc(ALIAS_PATH).catch(() => null))?.aliases || [];
+  // TWO SOURCES, ROSTER FIRST. The employees cards are where a rename is already recorded by a
+  // person (see buildDriverAliases); the ops doc is the manual override for anything the cards
+  // do not cover. Ops entries come second so they win on a conflict — a human editing the doc
+  // is making a deliberate correction to what the roster says.
+  const fromRoster = await driverAliases();
+  const fromOps = (await getDoc(ALIAS_PATH).catch(() => null))?.aliases || [];
+  const aliases = [...fromRoster, ...fromOps];
   const folded = applyAliases(stops, aliases);
   const rosterNames = (await getDoc(`nuvizzRoster/${TENANT}`).catch(() => null))?.drivers || null;
 
@@ -88,7 +95,7 @@ export default async (req: Request): Promise<Response> => {
       activeDrivers: [...active],
       excludedDrivers: excluded,
       possibleSameDriver: possibleSameDriver(folded).map((p) => ({ a: p.a.key, b: p.b.key, aStops: p.a.stops, bStops: p.b.stops })),
-      aliasesApplied: aliases,
+      aliasesApplied: { fromRoster, fromOps },
       nuvizzCalls: 0,
     });
   }
