@@ -164,3 +164,193 @@ test('empty and malformed input produce empty output, never a throw on a page re
   }
   assert.equal(territoryCoverage(null).stops, 0);
 });
+
+// ── ONLY DRIVERS WHO HAVE ACTUALLY RUN ──────────────────────────────────────
+//
+// Chad, on the first draft: "terry hasn't ran for me in a long time ... just guys that have ran
+// in last 4 weeks." A trainee handed a sheet listing somebody who left learns a territory that
+// does not exist, and will try to give that person freight.
+import { activeDrivers, driverCircles, haversineKm } from '../src/lib/driver-territory.js';
+
+test('a driver below the floor is EXCLUDED — and named, not silently dropped', () => {
+  // Silently missing is indistinguishable from never there, which is the same absent-is-not-zero
+  // mistake in a different coat. The sheet has to be able to say who it left out.
+  const stops = [
+    ...many(40, '30518', 'Buford', 'VINCENT'),
+    ...many(2, '30518', 'Buford', 'TERRY'),          // two stops in the whole window
+  ];
+  const { active, excluded } = activeDrivers(stops, { minStops: 5 });
+  assert.deepEqual([...active], ['VINCENT']);
+  assert.equal(excluded.length, 1);
+  assert.equal(excluded[0].label, 'TERRY');
+  assert.equal(excluded[0].stops, 2);
+});
+
+test('…and the last day they ran is carried, so the sheet can say WHEN', () => {
+  const stops = [
+    S('30518', 'Buford', 'TERRY', 'TERRY', { boardDate: '2026-08-04' }),
+    S('30518', 'Buford', 'TERRY', 'TERRY', { boardDate: '2026-08-11' }),
+  ];
+  const { excluded } = activeDrivers(stops, { minStops: 5 });
+  assert.equal(excluded[0].lastSeen, '2026-08-11', 'the LATEST date, not the first');
+});
+
+test('one stop is not a territory — the floor is what stops a circle round a single point', () => {
+  const { active, excluded } = activeDrivers([S('30518', 'Buford', 'ONEOFF')], { minStops: 5 });
+  assert.equal(active.size, 0);
+  assert.equal(excluded[0].stops, 1);
+});
+
+// ── CIRCLES THAT CANNOT LIE ─────────────────────────────────────────────────
+//
+// Chad: "I think big circles will work better than dots." Built as asked — but one circle PER
+// CLUSTER, because a single circle over a two-cluster driver is centred on ground he never
+// touches, which is the one thing the dots were guarding against.
+
+const at = (lat, lng, user) => ({ zip: '30518', city: 'X', driverUserName: user, driverName: user, lat, lng });
+const blob = (n, lat, lng, user, spread = 0.02) =>
+  Array(n).fill(0).map((_, i) => at(lat + ((i % 7) - 3) * spread, lng + ((i % 5) - 2) * spread, user));
+
+test('A COMPACT DRIVER GETS ONE BIG CIRCLE — exactly what Chad pictured', () => {
+  const [d] = driverCircles(blob(60, 34.12, -84.00, 'VINCENT'));
+  assert.equal(d.circles.length, 1);
+  assert.ok(d.circles[0].share > 0.9);
+  assert.ok(d.circles[0].radiusKm > 0, 'and it has a real radius');
+});
+
+test('THE RASKO CASE: two clusters give TWO circles, never one centred between them', () => {
+  // Buford and Athens are ~55km apart. One circle would sit on farmland in the middle covering
+  // both, implying a territory nobody works. This is the whole reason the clustering exists.
+  const stops = [...blob(40, 34.12, -84.00, 'RASKO'), ...blob(40, 33.95, -83.38, 'RASKO')];
+  const [d] = driverCircles(stops);
+  assert.equal(d.circles.length, 2, 'two clusters, two circles');
+  const mid = { lat: (34.12 + 33.95) / 2, lng: (-84.00 + -83.38) / 2 };
+  for (const c of d.circles) {
+    assert.ok(haversineKm(c, mid) > 15, `a circle centred at ${c.lat},${c.lng} is sitting in the empty middle`);
+  }
+});
+
+test('a lone outlier does not inflate a circle — the radius is a percentile, not the max', () => {
+  // One favour taken 60km away must not draw a circle covering sixty kilometres of ground.
+  const tight = blob(50, 34.12, -84.00, 'V', 0.01);
+  const withOutlier = [...tight, at(34.60, -84.60, 'V')];
+  const [a] = driverCircles(tight);
+  const [b] = driverCircles(withOutlier);
+  assert.ok(b.circles[0].radiusKm < a.circles[0].radiusKm * 2,
+    `radius went ${a.circles[0].radiusKm.toFixed(1)}km → ${b.circles[0].radiusKm.toFixed(1)}km on one outlier`);
+});
+
+test('what the circles do NOT cover is reported, not left to the eye', () => {
+  const stops = [...blob(50, 34.12, -84.00, 'V'), at(35.5, -85.5, 'V'), at(35.6, -85.6, 'V')];
+  const [d] = driverCircles(stops);
+  assert.ok(d.outsideShare > 0, 'stray work outside every circle must be stated as a number');
+  assert.equal(d.plotted, 52);
+});
+
+test('circles need coordinates, and a driver without them is absent rather than at 0,0', () => {
+  // Coordinates are geocoded and partial. Defaulting a missing one to zero would drop a circle
+  // in the Atlantic; the honest answer is that this driver cannot be drawn.
+  const out = driverCircles([S('30518', 'Buford', 'NOCOORDS')]);
+  assert.deepEqual(out, []);
+});
+
+test('the active filter feeds the circles — an inactive driver is not drawn', () => {
+  const stops = [...blob(40, 34.12, -84.00, 'VINCENT'), ...blob(2, 33.95, -83.38, 'TERRY')];
+  const { active } = activeDrivers(stops, { minStops: 5 });
+  const drawn = driverCircles(stops, { active });
+  assert.deepEqual(drawn.map((d) => d.key), ['VINCENT']);
+});
+
+test('clustering is deterministic — the same data draws the same map twice', () => {
+  const stops = [...blob(40, 34.12, -84.00, 'A'), ...blob(30, 33.95, -83.38, 'A')];
+  assert.deepEqual(driverCircles(stops), driverCircles(stops));
+});
+
+// ── THE TWO THINGS THE FIRST DRAFT GOT WRONG, PINNED ────────────────────────
+
+test('A DRIVER WHO STOPPED RUNNING IS EXCLUDED even with plenty of stops', () => {
+  // Chad's actual case: "terry hasn't ran for me in a long time". Terry did 70 stops at the
+  // START of the window and nothing since. Any count test passes him; only recency catches it.
+  const stops = [
+    ...many(70, '30071', 'Norcross', 'TERRY').map((s, i) => ({ ...s, boardDate: i < 35 ? '2026-08-10' : '2026-08-11' })),
+    ...many(40, '30518', 'Buford', 'VINCENT').map((s) => ({ ...s, boardDate: '2026-09-04' })),
+  ];
+  const { active, excluded } = activeDrivers(stops, { minStops: 5, staleDays: 14 });
+  assert.deepEqual([...active], ['VINCENT']);
+  const t = excluded.find((e) => e.key === 'TERRY');
+  assert.ok(t, 'Terry must be excluded');
+  assert.equal(t.why, 'stopped running', 'and for the RIGHT reason — not "too few"');
+  assert.equal(t.stops, 70, 'he has plenty of stops; that was never the problem');
+  assert.ok(t.daysSince >= 24);
+});
+
+test('recency is measured against the WINDOW END, not a wall clock', () => {
+  // Re-printing last month's sheet must give last month's answer, not a page where everybody
+  // looks lapsed because time has passed since.
+  const stops = [
+    ...many(20, '30518', 'Buford', 'A').map((s) => ({ ...s, boardDate: '2020-01-02' })),
+    ...many(20, '30518', 'Buford', 'B').map((s) => ({ ...s, boardDate: '2020-01-10' })),
+  ];
+  const { active } = activeDrivers(stops, { minStops: 5, staleDays: 14 });
+  assert.deepEqual([...active].sort(), ['A', 'B'], 'a 2020 window still has active drivers in it');
+});
+
+test('SCATTERED WORK GETS NO CIRCLE AT ALL — the Rasko rule, stated as a refusal', () => {
+  // Eight thin scatters across the metro. The first draft chained them through one-stop cells
+  // into ONE circle 60km across covering ground he never touches — the exact failure circles
+  // were meant to avoid, arriving through the clustering. Now: no circles, and a flag saying so.
+  const pts = [];
+  for (let i = 0; i < 8; i++) {
+    for (let j = 0; j < 5; j++) pts.push(at(33.7 + i * 0.11, -84.5 + i * 0.14 + j * 0.01, 'RASKO'));
+  }
+  const [d] = driverCircles(pts);
+  assert.equal(d.noFixedArea, true, 'a driver with no patch must be flagged, not drawn');
+  assert.deepEqual(d.circles, [], 'and no circle is drawn for him');
+  assert.ok(d.covered < 0.55);
+});
+
+test('…while a genuinely two-area driver still GETS both circles', () => {
+  // The refusal must not swallow the honest two-cluster case, which is the whole point of
+  // per-cluster circles. Two dense blobs, well apart: two circles, and neither in the middle.
+  const stops = [...blob(40, 34.12, -84.00, 'PAT', 0.012), ...blob(40, 33.95, -83.38, 'PAT', 0.012)];
+  const [d] = driverCircles(stops);
+  assert.equal(d.noFixedArea, false);
+  assert.equal(d.circles.length, 2);
+});
+
+test('a sparse trail cannot bridge two dense areas into one circle', () => {
+  // The bridging bug directly: two tight blobs plus a thin line of single stops between them.
+  const bridge = [];
+  for (let i = 1; i < 12; i++) bridge.push(at(34.12 - i * 0.015, -84.00 + i * 0.05, 'B'));
+  const stops = [...blob(40, 34.12, -84.00, 'B', 0.012), ...blob(40, 33.95, -83.38, 'B', 0.012), ...bridge];
+  const [d] = driverCircles(stops);
+  assert.ok(d.circles.length >= 2, `the bridge merged them into ${d.circles.length} circle(s)`);
+  for (const c of d.circles) assert.ok(c.radiusKm < 25, `a ${c.radiusKm.toFixed(0)}km circle is the merged blob again`);
+});
+
+test('A CIRCLE TOO BIG IS NOT A TERRITORY — the rule a measurement found, not a guess', () => {
+  // The rule I got wrong twice. Coverage cannot catch a scattered driver: once the metro is
+  // dense his stops all sit in ONE connected region, so the single cluster covered 99% of his
+  // work and passed every earlier test — as a 23km circle swallowing four other drivers' areas.
+  // What separates a patch from a smear is SIZE, and only measuring the radii showed that.
+  const wide = [];
+  for (let i = 0; i < 90; i++) {
+    // A broad, evenly dense smear ~40km across: genuinely one cluster, genuinely not a patch.
+    wide.push(at(33.80 + (i % 10) * 0.045, -84.40 + Math.floor(i / 10) * 0.055, 'SMEAR'));
+  }
+  const [d] = driverCircles(wide);
+  assert.ok(d.candidateCircles.length, 'it does form one big cluster — that was never in doubt');
+  assert.ok(d.candidateCircles[0].radiusKm > 15, `the cluster is ${d.candidateCircles[0].radiusKm.toFixed(0)}km wide`);
+  assert.equal(d.noFixedArea, true, 'so it must not be drawn');
+  assert.deepEqual(d.circles, []);
+});
+
+test('…and a tight patch of the same stop count still draws', () => {
+  // The size rule must not simply refuse busy drivers. Same 90 stops, packed into ~6km.
+  const tight = [];
+  for (let i = 0; i < 90; i++) tight.push(at(34.12 + (i % 10) * 0.006, -84.00 + Math.floor(i / 10) * 0.007, 'TIGHT'));
+  const [d] = driverCircles(tight);
+  assert.equal(d.noFixedArea, false);
+  assert.equal(d.circles.length, 1);
+  assert.ok(d.circles[0].radiusKm <= 15);
+});
