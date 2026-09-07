@@ -460,3 +460,78 @@ export function driverCircles(stops = [], opts = {}) {
   }
   return out.sort((a, b) => b.plotted - a.plotted || a.label.localeCompare(b.label));
 }
+
+// ── NAMES THAT MIGHT BE ONE PERSON ──────────────────────────────────────────
+//
+// NuVizz renamed a driver from "Brent  Boyd" to "Brent  Bryd" on 2026-08-27 (recorded in
+// tractor-flags.mts). Nothing keyed on the name can see that they are one man, so his territory
+// splits in two and a trainee learns half of it twice under two spellings.
+//
+// THIS DOES NOT MERGE THEM. Merging on a spelling guess is how you fuse two genuinely different
+// people — Davis has had two STEVENs — and a trainee cannot tell a wrong merge from a right one.
+// So it only ASKS: these two names are one edit apart and share a first name, are they the same
+// person? Chad answers once, the answer goes in the alias list, and the sheet stops guessing.
+//
+// Cheap bounded edit distance: anything past `max` is not a near-miss and is not worth counting.
+export function withinEdits(a, b, max = 2) {
+  const s = String(a || ''), t = String(b || '');
+  if (Math.abs(s.length - t.length) > max) return false;
+  let prev = Array.from({ length: t.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= s.length; i++) {
+    const cur = [i];
+    let best = i;
+    for (let j = 1; j <= t.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (s[i - 1] === t[j - 1] ? 0 : 1));
+      if (cur[j] < best) best = cur[j];
+    }
+    if (best > max) return false;                 // whole row already past the budget
+    prev = cur;
+  }
+  return prev[t.length] <= max;
+}
+
+/**
+ * Pairs of driver keys that look like one person spelled two ways. Reported, never merged.
+ * Requires a shared first token, so BRENT_BOYD/BRENT_BRYD is flagged and two unrelated short
+ * names that happen to be two edits apart are not.
+ */
+export function possibleSameDriver(stops = [], opts = {}) {
+  const max = opts.maxEdits ?? 2;
+  const seen = new Map();
+  for (const s of stops || []) {
+    const k = driverKeyOf(s);
+    if (!k) continue;
+    if (!seen.has(k)) seen.set(k, { key: k, label: driverLabelOf(s), stops: 0, last: null });
+    const e = seen.get(k);
+    e.stops += 1;
+    const d = String(s.boardDate || s.date || '');
+    if (d && (!e.last || d > e.last)) e.last = d;
+  }
+  const keys = [...seen.values()];
+  const out = [];
+  for (let i = 0; i < keys.length; i++) {
+    for (let j = i + 1; j < keys.length; j++) {
+      const a = keys[i], b = keys[j];
+      const fa = a.key.split('_')[0], fb = b.key.split('_')[0];
+      if (fa !== fb) continue;                    // a shared first name is the evidence
+      if (a.key === b.key) continue;
+      if (!withinEdits(a.key, b.key, max)) continue;
+      out.push({ a, b });
+    }
+  }
+  return out;
+}
+
+/** Fold a confirmed alias list ({ from: 'BRENT_BRYD', to: 'BRENT_BOYD' }) over the stops. */
+export function applyAliases(stops = [], aliases = []) {
+  if (!aliases || !aliases.length) return stops || [];
+  const map = new Map(aliases.map((a) => [String(a.from || '').toUpperCase(), String(a.to || '').toUpperCase()]));
+  if (!map.size) return stops || [];
+  return (stops || []).map((s) => {
+    const k = driverKeyOf(s);
+    const to = k && map.get(k);
+    if (!to) return s;
+    // Rewrite BOTH name fields, so whichever one downstream reads it lands on the same person.
+    return { ...s, driverUserName: to, driverName: to };
+  });
+}
