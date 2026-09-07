@@ -548,15 +548,44 @@ const ACTIVE_STATUS = process.env.NUVIZZ_ACTIVE_STATUS || '20,10,40,50';
 // carry-forward kept re-adding its last OPEN snapshot — the board froze it as live work a
 // dispatcher could still route. With 99 in the completed pull it flips to EXCEPTION.
 const COMPLETED_STATUS = process.env.NUVIZZ_COMPLETED_STATUS || '90,91,80,99';
-const ACTIVE_ARRIVAL = cleanPeriod(process.env.NUVIZZ_ACTIVE_ARRIVAL || '+/-7d');
+// THIRTY DAYS, NOT SEVEN (v0.95.1). Chad: "we should do 30 days if it's no extra nuvizz
+// calls so everything self heals correctly." It is no extra calls, and that is a property of
+// the request rather than a hope: a saved-search pull is ONE request whose result set is
+// asked for whole (maxResult below), so the period is a filter VALUE inside a call we already
+// make — twoScanPull is two requests at +/-7d and two requests at +/-30d.
+//
+// What the extra 23 days buy. Everything that judges a frozen row — the open-order pool, the
+// unplanned snapshot, the frozen-day pass — is only entitled to speak about days the search
+// reaches. Past that reach nothing can be closed, healed or re-opened, so an order that went
+// quiet more than a week ago was frozen wherever it stood until the history warehouse sealed
+// it. At 30 days the self-healing covers the whole window a dispatcher can still be looking at.
+//
+// What it costs, stated: a bigger single response, more open rows in the pool document, and
+// more frozen strays per scan. The row cap below is the one hard edge, and a pull that hits it
+// is now DETECTED (fetchSavedSearchPull) and stamped thin rather than read as "these orders
+// are gone" — absence in a truncated list is not evidence.
+const ACTIVE_ARRIVAL = cleanPeriod(process.env.NUVIZZ_ACTIVE_ARRIVAL || '+/-30d');
 // How many days either side of today the ACTIVE search reaches — the open-order pool's
 // coverage (lib/active-pool.mts judges a cached row only inside this reach). Parsed from the
 // same env-overridable period so retuning the saved search moves both together.
 export function activeArrivalReachDays(): number {
   const m = /^\+\/-(\d{1,2})d$/.exec(ACTIVE_ARRIVAL);
-  return m ? Math.max(1, Number(m[1])) : 7;
+  return m ? Math.max(1, Number(m[1])) : 30;
 }
-const COMPLETED_ARRIVAL = cleanPeriod(process.env.NUVIZZ_COMPLETED_ARRIVAL || '+/-7d');
+// The completed search's ARRIVAL window matches the active one (v0.95.1), and this half is
+// what actually closes the loop: a stop whose arrival day was three weeks ago and which
+// delivers TODAY was outside a +/-7d arrival net, so no pull ever reported it finished and its
+// frozen copy could never be healed — the exact "still shows as open after it delivered" case,
+// for anything older than a week. Cheap: this search is still clamped to rows NuVizz touched
+// inside COMPLETED_UPDATED below, so widening the arrival net does not widen the day's volume.
+const COMPLETED_ARRIVAL = cleanPeriod(process.env.NUVIZZ_COMPLETED_ARRIVAL || '+/-30d');
+// DELIBERATELY LEFT AT "updated today" (v0.95.1). This is the other axis, and it is the one
+// that decides the pull's SIZE: every stop NuVizz touched in the window, not just the ones
+// arriving in it. Widening it is how the Friday-evening / weekend-blackout delivery becomes
+// observable at all — but a multi-day "Stop Detail Updated" period is a portal grammar this
+// repo has not verified against the live search, and an unhonoured period returns either
+// everything (blowing the row cap) or nothing (no completions at all, silently). One live call
+// settles it; until somebody spends it, this stays where it is known to work.
 const COMPLETED_UPDATED = cleanPeriod(process.env.NUVIZZ_COMPLETED_UPDATED || '0d');
 // ATTEMPTS saved search — a re-delivery attempt is a stop whose SHIPMENT number now starts
 // with "ATT" (customer service prepends it on a failed delivery). Neither the active
@@ -608,11 +637,23 @@ function buildSavedBody(def: { customListDefId: number; filterList: any[] }, pag
   };
 }
 
-// Pull one saved search's intermediate rows (rides the shared requester → counts in the
-// dashboard + honors the breaker, same as fetchListRows).
-export async function fetchSavedSearchRows(
+/**
+ * Pull one saved search (rides the shared requester → counts in the dashboard + honors the
+ * breaker, same as fetchListRows), AND SAY WHETHER THE ANSWER WAS COMPLETE.
+ *
+ * `truncated` is the whole point of this shape (v0.95.1). The API has no paging here — one
+ * request asks for maxResult rows and returns what fits — so a result set larger than the cap
+ * comes back as a full-looking list with the tail missing and nothing anywhere saying so. That
+ * is the one way widening the arrival window to 30 days could hurt: every reader downstream
+ * treats "not in the pull" as "NuVizz no longer lists it", which is how a truncated list turns
+ * into open orders being dropped off the board as closed. A pull that came back exactly at the
+ * cap is therefore reported as truncated, and the scan stamps its pool and snapshot thin so
+ * absence stops being evidence for the day. Erring by one (a result set that is exactly the cap
+ * and complete) costs one scan of not pruning; erring the other way costs the board.
+ */
+export async function fetchSavedSearchPull(
   def: { customListDefId: number; filterList: any[] }, pageSize: number = LIST_MAX_RESULT,
-): Promise<any[]> {
+): Promise<{ rows: any[]; truncated: boolean }> {
   const { companyCode } = getCreds();
   const hdr = { Authorization: basicAuthHeader(), 'Content-Type': 'application/json', Accept: 'application/json' };
   const reqr = getNuvizzRequester();
@@ -620,7 +661,15 @@ export async function fetchSavedSearchRows(
   const body = JSON.stringify(buildSavedBody(def, pageSize));
   const resp = await reqr.request(url, { method: 'POST', headers: hdr, body }, { route: '/entity/filterdata', tenant: companyCode });
   if (!resp.ok) throw new Error(`saved-search ${def.customListDefId} filterdata ${resp.status}`);
-  return normalize(await resp.json());
+  const rows = normalize(await resp.json());
+  const truncated = rows.length >= pageSize;
+  if (truncated) console.error(`[nuvizz-list] saved search ${def.customListDefId} returned ${rows.length} rows — AT the ${pageSize} cap, so the list is probably TRUNCATED. Absence from this pull is not evidence; the scan will stamp its pool thin.`);
+  return { rows, truncated };
+}
+export async function fetchSavedSearchRows(
+  def: { customListDefId: number; filterList: any[] }, pageSize: number = LIST_MAX_RESULT,
+): Promise<any[]> {
+  return (await fetchSavedSearchPull(def, pageSize)).rows;
 }
 
 // DIAGNOSTIC (read-only): pull one saved search and return its RAW column-def keys plus a few
@@ -686,12 +735,28 @@ export function mergeTwoScan(activeRows: any[], completedRows: any[], overrides?
 // Run both saved searches (in parallel) → per-date board buckets. `overrides` are the
 // dispatcher-set board dates (setStopDate); the caller reads them once per scan and hands
 // them in, so this stays a two-call function with no Firestore knowledge of its own.
-export async function twoScanBuckets(overrides?: Record<string, string> | null): Promise<Map<string, any[]>> {
+export interface TwoScanPull {
+  buckets: Map<string, any[]>;
+  /** either saved search came back at the row cap — see fetchSavedSearchPull */
+  truncated: boolean;
+  activeCount: number;
+  completedCount: number;
+}
+/** Both saved searches — TWO requests, whatever the arrival window is set to — plus whether
+ *  either answer was cut off at the row cap. */
+export async function twoScanPull(overrides?: Record<string, string> | null): Promise<TwoScanPull> {
   const [active, completed] = await Promise.all([
-    fetchSavedSearchRows(SAVED_SEARCHES.active),
-    fetchSavedSearchRows(SAVED_SEARCHES.completed),
+    fetchSavedSearchPull(SAVED_SEARCHES.active),
+    fetchSavedSearchPull(SAVED_SEARCHES.completed),
   ]);
-  return mergeTwoScan(active, completed, overrides);
+  return {
+    buckets: mergeTwoScan(active.rows, completed.rows, overrides),
+    truncated: active.truncated || completed.truncated,
+    activeCount: active.rows.length, completedCount: completed.rows.length,
+  };
+}
+export async function twoScanBuckets(overrides?: Record<string, string> | null): Promise<Map<string, any[]>> {
+  return (await twoScanPull(overrides)).buckets;
 }
 
 /**

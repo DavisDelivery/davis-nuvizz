@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  strayFinishedRows, openPastRows, planRefile, planOpenStrays, frozenCopyDays, rotate,
+  strayFinishedRows, openPastRows, planRefile, planOpenStrays, frozenCopyDays, nextCopyDays, rotate,
   healFields, HEAL_FIELDS, copyIsTerminal,
 } from '../netlify/functions/lib/refile-core.mts';
 
@@ -206,4 +206,58 @@ test('copyIsTerminal reads the status code as well as the normalized status; rot
   assert.deepEqual(rotate(['a', 'b', 'c', 'd'], 1), ['b', 'c', 'd', 'a']);
   assert.deepEqual(rotate(['a', 'b', 'c', 'd'], 6), ['c', 'd', 'a', 'b']);
   assert.deepEqual(rotate(['a'], 3), ['a']);
+});
+
+// ── DEPTH IS SLICED AND REMEMBERED (v0.95.1) ────────────────────────────────────────────────
+// At a 30-day reach one long-carried order owns up to 30 frozen copies. Reading all of them in
+// one pass spends the budget on one stop (the measured 09/07 pass was already capping out at a
+// 7-day reach: 89 open strays, 119 reads, 51 unread), so a pass takes a slice, remembers where
+// it stopped, and the next one continues — and until the history is fully read it heals what it
+// has seen but decides nothing that depends on what it has not.
+
+test('nextCopyDays: a 28-day history is covered newest-first in slices of ten, then reports done', () => {
+  const OWN = '2026-08-10', TDY = '2026-09-07';
+  const s1 = nextCopyDays(OWN, TDY, 30, { limit: 10 });
+  assert.deepEqual([s1.length, s1[0], s1[9]], [10, '2026-09-06', '2026-08-28']);
+  const s2 = nextCopyDays(OWN, TDY, 30, { through: s1[s1.length - 1], limit: 10 });
+  assert.deepEqual([s2.length, s2[0], s2[9]], [10, '2026-08-27', '2026-08-18']);
+  const s3 = nextCopyDays(OWN, TDY, 30, { through: s2[s2.length - 1], limit: 10 });
+  assert.deepEqual([s3.length, s3[0], s3[7]], [8, '2026-08-17', '2026-08-10']);
+  assert.deepEqual(nextCopyDays(OWN, TDY, 30, { through: s3[s3.length - 1] }), [], 'nothing older left — this stop is done');
+});
+
+test('nextCopyDays: the ordinary stop (a day or two old) is covered whole on the first pass, so nothing waits', () => {
+  const days = nextCopyDays('2026-09-05', '2026-09-07', 30, { limit: 10 });
+  assert.deepEqual(days, ['2026-09-06', '2026-09-05']);
+  assert.deepEqual(nextCopyDays('2026-09-05', '2026-09-07', 30, { through: '2026-09-05' }), []);
+});
+
+test('nextCopyDays: days NEWER than the recorded progress are not revisited — those boards were written by the scans that recorded it', () => {
+  // Progress recorded on 09/04 (covered back to 09/01); two days later only older days remain.
+  const days = nextCopyDays('2026-08-28', '2026-09-06', 30, { through: '2026-09-01' });
+  assert.deepEqual(days, ['2026-08-31', '2026-08-30', '2026-08-29', '2026-08-28']);
+});
+
+test('planRefile — a PART-READ history heals what was read but does NOT file: the copy recording the delivery could be in the days still to come', () => {
+  const s = stray('OLD-1', '2026-08-20', delivered('OLD-1'));
+  const c = copies('OLD-1', ['2026-09-01', openRow('OLD-1', { boardDate: '2026-09-01' })]);
+  const partial = planRefile([s], { today: TODAY, at: AT, onBoard: NONE, copies: c, nowMs: NOW, healOnly: new Set(['OLD-1']) });
+  assert.equal(partial.heal.length, 1, 'the open copy it DID read is healed');
+  assert.equal(partial.file.length, 0, 'but nothing is filed onto today yet');
+  assert.equal(partial.pending, 1);
+  // Once the whole history has been read and none of it records the delivery, it files.
+  const whole = planRefile([s], { today: TODAY, at: AT, onBoard: NONE, copies: c, nowMs: NOW });
+  assert.equal(whole.file.length, 1);
+  assert.equal(whole.pending, 0);
+});
+
+test('planOpenStrays — a PART-READ history heals the copies it read but never files: an open copy may sit on a day not yet reached', () => {
+  const live = openRow('OLD-2', { listUpdatedDTTM: '2026-09-02T09:00:00' });
+  const refused = { ...plannedRow('OLD-2', 'TAYLOR'), status: '80', normalizedStatus: 'EXCEPTION' };
+  const c = copies('OLD-2', ['2026-09-01', refused]);
+  const partial = planOpenStrays([stray('OLD-2', '2026-08-20', live)], { today: TODAY, at: AT, onBoard: NONE, copies: c, nowMs: NOW, healOnly: new Set(['OLD-2']) });
+  assert.equal(partial.heal.length, 1, 'the frozen refusal it read is still re-opened');
+  assert.equal(partial.reopened, 1);
+  assert.equal(partial.file.length, 0);
+  assert.equal(partial.pending, 1);
 });

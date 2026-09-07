@@ -1698,7 +1698,12 @@ export async function readActivePoolMeta(tenant: string): Promise<{ at: string; 
 // (a POD attached, a plan changed, a refused stop re-opened) invalidates it by itself. Entries
 // for stops the pull no longer reports inside the reach fall away on the next write.
 const FROZEN_LEDGER_COLLECTION = 'nuvizz_frozen_ledger';
-export interface FrozenLedgerEntry { upd: string; at: string; kind: 'fin' | 'open' }
+export interface FrozenLedgerEntry {
+  upd: string; at: string; kind: 'fin' | 'open';
+  /** the OLDEST frozen day covered for this stop so far — the next scan continues older than
+   *  it (v0.95.1). Absent on an entry written before depth was sliced: read as "start again". */
+  through?: string;
+}
 export async function readFrozenLedger(tenant: string): Promise<Record<string, FrozenLedgerEntry>> {
   try {
     const doc = await getDoc(`${FROZEN_LEDGER_COLLECTION}/${tenantKey(tenant)}`);
