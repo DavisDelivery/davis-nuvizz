@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  buildActivePool, projectPoolRow, mergeWindowWithPool, pruneWithSnapshot, isTerminalRow, rowDayOf,
+  buildActivePool, projectPoolRow, mergeWindowWithPool, pruneWithSnapshot, isTerminalRow, rowDayOf, poolUsable,
 } from '../netlify/functions/lib/active-pool.mts';
 
 const POOL_AT = '2026-09-07T15:15:14.301Z';
@@ -108,13 +108,22 @@ test('EXPEDITORS 007171664-1: created after its day froze — in the pool, never
   assert.equal(stats.added, 1);
 });
 
-test('HIGHLAND FORGE 007171197: cached "unable to deliver" (80) on TAYLOR, re-opened by CS as an ATT attempt — the terminal cached row stays as history AND the live re-attempt is added', () => {
-  // A finished row is never touched: the 09/02 refusal on TAYLOR is what happened that day.
+test('HIGHLAND FORGE 007171197: cached "unable to deliver" (80) on TAYLOR, re-opened by CS as an ATT attempt — the pool\'s OPEN row is the truth, the cached copy lends its pin (v0.95.0)', () => {
+  // Before: the finished copy was served as history and the pool's open row skipped as a
+  // duplicate, so the window said "refused" about freight NuVizz was asking to have planned.
   const cached = row({ stopNbr: '007171197', status: '80', normalizedStatus: 'EXCEPTION', isPlanned: true, isUnplanned: false, loadNbr: 'TAYLOR', routeName: 'TAYLOR', boardDate: '2026-09-02', scheduledDate: '2026-09-02' });
   const live = projectPoolRow(row({ stopNbr: '007171197', shipmentNbr: 'ATT007171197', isAttempt: true, weight: 781, cartons: 2, volume: 2 }), '2026-09-02');
-  const { rows } = mergeWindowWithPool([cached], pool([live]), WIN);
+  const { rows, stats } = mergeWindowWithPool([cached], pool([live]), WIN);
   assert.equal(rows.length, 1, 'one row per stop number');
-  assert.equal(rows[0].status, '80', 'the finished outcome is history and the pool does not rewrite it');
+  assert.equal(rows[0].status, '10', 'open again');
+  assert.equal(rows[0].isUnplanned, true);
+  assert.equal(rows[0].shipmentNbr, 'ATT007171197');
+  assert.equal(rows[0].reopened, true);
+  assert.equal(rows[0].lat, 33.88, 'the cached pin survives');
+  assert.equal(stats.reopened, 1);
+  // A finished row the pool does NOT list stays history, untouched.
+  const { rows: r2 } = mergeWindowWithPool([cached], pool([]), WIN);
+  assert.equal(r2[0].status, '80');
 });
 
 test('a confirmed Save stamped AFTER the pool was written is held — the pool\'s older "unplanned" must not undo the write-through', () => {
@@ -142,6 +151,8 @@ test('older than the pool\'s reach: no verdict from the pool — the retired lis
   const old = row({ stopNbr: 'OLD-1', boardDate: '2026-08-20', scheduledDate: '2026-08-20' });
   const kept = mergeWindowWithPool([old], pool([]), { from: '2026-08-15', to: '2026-09-08' });
   assert.equal(kept.rows.length, 1, 'absence from a ±7d pool is not proof for a 2½-week-old order');
+  assert.equal(kept.rows[0].unverified, true, 'served, and SAID to be beyond any scan\'s reach (v0.95.0)');
+  assert.equal(kept.stats.unverified, 1);
   const gone = mergeWindowWithPool([old], pool([]), { from: '2026-08-15', to: '2026-09-08', retired: { 'OLD-1': '2026-08-21' } });
   assert.equal(gone.rows.length, 0);
   assert.equal(gone.stats.retired, 1);
@@ -193,4 +204,55 @@ test('pruneWithSnapshot: a snapshot older than the 7-day backstop is not trusted
   const { rows, stats } = pruneWithSnapshot([row({ stopNbr: 'STALE-1' })], snap, {}, { today: '2026-09-07', nowMs: Date.parse(POOL_AT) });
   assert.equal(rows.length, 1);
   assert.equal(stats.closed, 0);
+});
+
+test('a THIN pool never drops: a cached open row the pool lacks inside its reach is kept, and one the pool files elsewhere is kept too', () => {
+  const cached = row({ stopNbr: 'THIN-1' });
+  const { rows, stats } = mergeWindowWithPool([cached], pool([], { thin: true }), WIN);
+  assert.equal(rows.length, 1);
+  assert.equal(stats.closed, 0);
+  assert.equal(stats.thin, true);
+  const elsewhere = projectPoolRow(row({ stopNbr: 'THIN-1' }), '2026-09-20');
+  const { rows: r2, stats: s2 } = mergeWindowWithPool([cached], pool([elsewhere], { thin: true }), WIN);
+  assert.equal(r2.length, 1);
+  assert.equal(s2.moved, 0);
+});
+
+test('poolUsable: no pool, no stamp, older than the backstop, or superseded by a newer board scan → not usable; fresh and within slack → usable', () => {
+  const now = Date.parse(POOL_AT) + 30 * 60 * 1000;
+  assert.equal(poolUsable(null, { nowMs: now }).ok, false);
+  assert.equal(poolUsable(pool([]), { nowMs: now }).ok, false, 'an empty pool has nothing to judge with');
+  assert.equal(poolUsable(pool([projectPoolRow(row(), '2026-09-01')]), { nowMs: now }).ok, true);
+  assert.equal(poolUsable(pool([projectPoolRow(row(), '2026-09-01')], { at: 'junk' }), { nowMs: now }).ok, false);
+  assert.equal(poolUsable(pool([projectPoolRow(row(), '2026-09-01')]), { nowMs: now + 8 * 86400000 }).ok, false);
+  const superseded = poolUsable(pool([projectPoolRow(row(), '2026-09-01')]), { nowMs: now, newestDocScanAt: new Date(Date.parse(POOL_AT) + 20 * 60 * 1000).toISOString() });
+  assert.equal(superseded.ok, false);
+  assert.match(superseded.why, /superseded/);
+  const slack = poolUsable(pool([projectPoolRow(row(), '2026-09-01')]), { nowMs: now, newestDocScanAt: new Date(Date.parse(POOL_AT) + 5 * 60 * 1000).toISOString() });
+  assert.equal(slack.ok, true, 'the same scan writes both within seconds — slack absorbs it');
+});
+
+test('write grace: a confirmed Save inside the hour is held while the pool disagrees, and released the moment the pool agrees', () => {
+  const now = Date.parse(POOL_AT) + 10 * 60 * 1000;
+  const saved = row({ stopNbr: 'GRACE-1', status: '20', normalizedStatus: 'SCHEDULED', isPlanned: true, isUnplanned: false, loadNbr: 'CHAD', routeName: 'CHAD', board_write_at: new Date(Date.parse(POOL_AT) - 5 * 60 * 1000).toISOString(), board_write_planned: true });
+  const disagree = projectPoolRow(row({ stopNbr: 'GRACE-1' }), '2026-09-01');   // pool (written after the save) still says unplanned
+  const held = mergeWindowWithPool([saved], pool([disagree]), { ...WIN, nowMs: now });
+  assert.equal(held.rows[0].routeName, 'CHAD');
+  assert.equal(held.stats.held, 1);
+  const agree = projectPoolRow(row({ stopNbr: 'GRACE-1', status: '20', normalizedStatus: 'SCHEDULED', isPlanned: true, isUnplanned: false, loadNbr: 'CHAD', routeName: 'CHAD' }), '2026-09-01');
+  const released = mergeWindowWithPool([saved], pool([agree]), { ...WIN, nowMs: now });
+  assert.equal(released.stats.synced, 1);
+  assert.equal(released.stats.held, 0);
+  // Past the grace, an older stamp yields to the pool.
+  const late = mergeWindowWithPool([saved], pool([disagree]), { ...WIN, nowMs: now + 2 * 3600 * 1000 });
+  assert.equal(late.rows[0].isPlanned, false);
+  assert.equal(late.stats.synced, 1);
+});
+
+test('explain: every decision names its stop numbers, so "why did this row vanish" is one read', () => {
+  const stale = row({ stopNbr: 'STALE-X' });
+  const live = projectPoolRow(row({ stopNbr: 'LIVE-X' }), '2026-09-03');
+  const { stats } = mergeWindowWithPool([stale], pool([live]), { ...WIN, explain: true });
+  assert.deepEqual(stats.decisions.closed, ['STALE-X']);
+  assert.deepEqual(stats.decisions.added, ['LIVE-X']);
 });

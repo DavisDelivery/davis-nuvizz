@@ -12,7 +12,7 @@ import { getNuvizzRequester, setCallTrigger } from './lib/nuvizz-request.mts';
 import { getCreds, basicAuthHeader } from './lib/nuvizz-scan.mts';
 import { buildBody, normalize, cleanPeriod, coveringWindowForRange, rowInRange, LIST_MAX_RESULT, OPENAPI_BASE, SAVED_SEARCHES, fetchSavedSearchRaw, fetchSavedSearchRows, toBoardStop, boardDayFor } from './lib/nuvizz-list.mts';
 import { isFirestoreEnabled, readStops, etDayString, readActivePool, readActiveUnplannedSet, readCarryoverRetired } from './lib/firestore.mts';
-import { mergeWindowWithPool, pruneWithSnapshot } from './lib/active-pool.mts';
+import { mergeWindowWithPool, pruneWithSnapshot, poolUsable } from './lib/active-pool.mts';
 import { requireUser } from './lib/require-user.mts';
 
 // Re-exported so the existing test (test/stop-explorer.test.mjs) keeps importing them here.
@@ -112,13 +112,16 @@ export default async (req: Request): Promise<Response> => {
       }
       const nDays = Math.min(62, Math.round((Date.parse(to + 'T00:00:00Z') - Date.parse(from + 'T00:00:00Z')) / dayMs) + 1);
       const days = Array.from({ length: nDays }, (_, i) => dayAt(from, i));
-      const reads = await Promise.all(days.map((d) => readStops('davis', d).then((r) => ({ d, stops: r.stops || [] })).catch(() => ({ d, stops: [] as any[] }))));
+      const reads = await Promise.all(days.map((d) => readStops('davis', d).then((r) => ({ d, stops: r.stops || [], meta: r.meta || null })).catch(() => ({ d, stops: [] as any[], meta: null as any }))));
       // Dedupe by stopNbr, LATER day wins — a carry-over rescue writes the same stop onto
       // its home day AND today's doc; the later (clamped-forward) copy is the current one.
       const byNbr = new Map<string, any>();
       let coveredDays = 0;
-      for (const { stops } of reads) {
+      let newestDocScanAt: string | null = null;
+      for (const { stops, meta } of reads) {
         if (stops.length) coveredDays++;
+        const at = String(meta?.last_scanned_at || '');
+        if (at && (!newestDocScanAt || at > newestDocScanAt)) newestDocScanAt = at;
         for (const s of stops) { const k = String(s?.stopNbr ?? ''); if (k) byNbr.set(k, s); }
       }
       let rows = [...byNbr.values()];
@@ -136,8 +139,14 @@ export default async (req: Request): Promise<Response> => {
         readActiveUnplannedSet('davis').catch(() => null),
         readCarryoverRetired('davis').catch(() => ({} as Record<string, string>)),
       ]);
-      const reconciled = pool && pool.rows.length
-        ? mergeWindowWithPool(rows, pool, { from, to, retired })
+      // The pool judges only while it is usable — fresh, and not superseded by a board scan that
+      // failed to rewrite it (v0.95.0; the same rule the Map's carry-over fold applies). A pool
+      // that fails the check falls back to the snapshot, and the response says why.
+      const poolCheck = poolUsable(pool, { nowMs: Date.now(), newestDocScanAt });
+      const usePool = !!(pool && poolCheck.ok);
+      const explain = body.explain === true;
+      const reconciled = usePool
+        ? mergeWindowWithPool(rows, pool!, { from, to, retired, explain })
         : pruneWithSnapshot(rows, snapshot, retired, { today });
       rows = reconciled.rows;
       // Status filter AFTER the reconcile, on the LIVE status — an order NuVizz un-planned since
@@ -146,8 +155,8 @@ export default async (req: Request): Promise<Response> => {
       return new Response(JSON.stringify({
         ok: true, source: 'cache', period, range, partial: false, covered: { from, to },
         coveredDays, statusCodes: codes, page: 1, pageSize: rows.length, total: rows.length, rows,
-        pool: pool ? { at: pool.at, windowStart: pool.windowStart, windowEnd: pool.windowEnd, count: pool.count } : null,
-        reconciled: { ...reconciled.stats, basis: pool && pool.rows.length ? 'pool' : (snapshot ? 'snapshot' : 'none') },
+        pool: pool ? { at: pool.at, windowStart: pool.windowStart, windowEnd: pool.windowEnd, count: pool.count, thin: pool.thin === true, usable: poolCheck.ok, why: poolCheck.why } : null,
+        reconciled: { ...reconciled.stats, basis: usePool ? 'pool' : (snapshot ? 'snapshot' : 'none'), newestDocScanAt },
       }), { status: 200, headers: cors });
     } catch { /* cache read failed — fall through to the live pull below */ }
   }

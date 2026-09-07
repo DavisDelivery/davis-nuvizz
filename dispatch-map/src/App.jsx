@@ -115,7 +115,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.94.1';
+const APP_VERSION = '0.95.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -186,6 +186,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.95.0', 'ONLY WHAT THE SCANS PICK UP. Chad, after v0.94.1: “look at the code to make sure that these issues don’t happen again and that we fixed the underlying issue that had stops populating on the board that had already been delivered. We should only be showing the stops that the scans pick up.” A 53-finding audit of every path between the two saved searches and the three screens (scan write, board read, date window, completed overlay, cadence, consumers, client) found the same fault in eleven shapes: the scan writes today plus two business days and never rewrites a past day, so anything NuVizz does to an order after its arrival day landed in a bucket the loop dropped, and the frozen copy kept telling the old story. WHAT SHIPS, all from the two pulls already paid for — zero extra NuVizz calls. THE FROZEN-DAY PASS, rebuilt (lib/refile-core.mts): on today’s pass every finished row NuVizz files under a frozen past day heals EVERY open copy of it on every frozen day from its arrival day to yesterday (a routed stop is clamped forward each day it stays open, so its last open copy sits on the day before it delivered — #838 healed only the arrival day and skipped stops already on today’s board, which was most of them: 125 open ghosts across four days); every OPEN row on a frozen day heals a copy that disagrees about the plan (PRIMARY LOGISTICS, un-planned Friday after its snapshot froze), RE-OPENS a frozen refusal NuVizz now lists open (HIGHLAND FORGE, refused on TAYLOR then re-opened by CS as an ATT attempt — served as “refused” in the window and absent from the Map), and files an order with no copy anywhere onto today’s board so the Map can show it (EXPEDITORS, created after its day froze). The carry-forward now files a finish BEFORE its wrong-day guard, so a refiled or clamped row’s delivery can no longer be dropped on the floor; a filed open carry-over is re-filed from the LIVE pull every scan and leaves the moment NuVizz moves or closes it. Reads are bounded and remembered: a frozen ledger keyed by NuVizz’s own update stamp means a resolved stop is never re-read until NuVizz touches it, so the read budget reaches the tail instead of re-proving yesterday’s deliveries every fifteen minutes. THE MAP FOLDS FROM THE POOL: the carry-over fold judges prior-day rows by the open-order pool (still open on a past day → live status over the frozen pin; filed on today or later → not carry-over; not listed inside the pool’s reach → closed; a frozen refusal the pool lists open → re-opened; a frozen “planned” the pool lists unplanned → work to plan), with the unplanned snapshot as the fallback, and every decision served as `carryover` on the feed. A THIN pull (far fewer open rows than the last pool) is stamped on the pool and the snapshot, and no reader drops a row on a thin judge’s word; a pool a later board scan failed to rewrite is not the judge; a confirmed Save inside the hour is held until the pool agrees; a row older than any scan can see is served and SAID to be unverified rather than silently trusted; a pool read that catches a rewrite half-way is refused whole. The completed overlay pins a finish landing on a rolled-over copy to today (the board read stripped it and the next full scan pruned it), clears the unplanned flag on a cancellation, and refuses a finished twin under a live order’s number. CONSUMERS: the CS “scheduled for delivery” email no longer fires for a refiled delivery; the driver sidebar defaults to the Eastern day (after 8pm it read tomorrow’s empty board); the 6:30 report lists stops planned on its day but closed on a later one under their own heading instead of grading them; the snapshot’s trust window follows the saved search’s reach instead of a hard-coded week. CLIENT: the window’s confirmed-save overlay releases on the pool’s scan stamp like the board’s does; a cache-served window re-pulls every five minutes instead of once; the desktop grid drives the desktop map’s status filter as the phone’s does; a synced profile cannot drag the phone grid into a window it cannot see or leave; “Unplanned only” and the window extras stop admitting delivered and cancelled orders. INSPECTABLE for nothing: nuvizz-scan-config?explain=1 now serves the pool, the unplanned set, the retired list, the frozen ledger with the last pass’s summary, and the switches; the run ledger records what each pass filed and healed. Proven end to end: a new test drives the REAL scan, Map feed and window against an in-memory Firestore for the five 09/07 orders and a second scan, and fails if a single /stop/info call is spent. Two things are Chad’s settings, not code, stated in the report: the completed search’s “updated today” clamp means a delivery after the day’s last scan is never seen by any pull (widen NUVIZZ_COMPLETED_UPDATED), and 19 genuinely open routed stops sit outside the ±7-day reach (widen NUVIZZ_ACTIVE_ARRIVAL).'],
   ['0.94.1', 'A DELIVERY FROM A FROZEN DAY IS FILED WHERE IT RAN, AND THE FROZEN COPY STOPS CALLING IT OPEN. The follow-up to v0.94.0, which Chad asked for after it shipped: “fix this — why those 30 orders escaped the overnight refile.” ESTABLISHED FROM THE STOPS’ OWN NUVIZZ TIMELINES (six calls): 007170166-1 (H&H WORLD GROUP) and RA52300615 were planned onto BEN 1 by Zach Johnston in the same minute, 03:04 on 09/02; both dispatched at 05:05; RA52300615 delivered at 10:59 and 007170166-1 at 11:11. RA52300615 is on the 09/02 board as delivered. 007170166-1 is on no board at all and its 09/01 copy still reads unplanned. Every one of the 44 late deliveries that DID land on 09/02 got there through the carry-forward, which files a finished row only when that day’s board already held a copy of the stop — and the lost stops had none, because no scan had written them onto 09/02 as planned before they delivered. Their delivered rows carried their 09/01 arrival day, bucketed to a day the loop never writes, and were dropped on the floor; the 09/01 copy, frozen at 11:35 PM the night before, kept saying unplanned. WHAT IS NOT ESTABLISHED, said plainly: why the active pull did not surface those stops as planned between 03:04 and 11:11. No scan log from that morning survives; dispatcher-set dates are ruled out by the write ledger (no setStopDate since 08/28); there is no planned-without-route row in five days of boards; the load anchor cannot fire on a row whose registry record has no raw.load. The difference visible in the data is that every lost stop had been planned and UN-planned the day before (Freddy Perez, 09/01) while the refiled sibling had not — recorded here as the lead, not the cause. WHAT SHIPS, pinned to the path that loses them once they are missed: on today’s pass, every finished row the pull reports for a frozen past day inside the search’s reach is FILED onto today’s board, pinned to today, exactly as the carry-forward does for a stop it already held — unless the stop’s own-day copy already records it finished, which is a POD re-touch of a properly recorded delivery and not today’s work. Where that copy exists and still reads open, it is HEALED in place with a field-masked patch of the live status and plan fields (never a day, never a pin, never a blind write), so the carry-over fold, the history seal and the date window stop meeting a phantom open order. The same masked heal covers the other direction Chad hit — PRIMARY LOGISTICS, un-planned in NuVizz on Friday afternoon after the 09/02 snapshot froze and still “planned on MARCUS 2” there — for open rows on frozen days NuVizz changed in the last 72 hours. Reads are bounded (80 a scan; a stop past the cap waits for the next), a copy inside a confirmed Save’s write grace is left alone, and nothing is deleted. Zero NuVizz calls: it is the same two pulls, read all the way through. 11 new tests named for the orders. The already-frozen phantoms from 09/01–09/04 are not rewritten — v0.94.0’s pool already drops them from the window and the Map’s carry-over prunes them — this stops new ones being made.'],
   ['0.94.0', 'THE ROUTING DATE WINDOW NOW ANSWERS FROM WHAT NUVIZZ LISTS, AND A BUTTON CHECKS IT. Chad, two screenshots side by side, Monday: the Route Workbench showed 525 unplanned stops for 09/01–09/08 and our Routing window showed 550 for the same dates — “why don’t these match they have the same filters showing.” They were not reading the same data. The Workbench asks NuVizz; the window is served from our own per-day board snapshots, and a snapshot stops being rewritten at the end of its own day (the scan writes today plus two business days and drops the rest). MEASURED, not reasoned: the window’s 550 reproduced to the pound from our cache (306,121 lb · 909 · 200) and the Workbench’s 525 from ONE live list call (290,087 lb · 886 · 201). The 25-stop gap was 30 rows still “unplanned” in frozen 09/01–09/04 snapshots that NuVizz no longer had open (the first four on his screen had all DELIVERED the next morning — H&H WORLD GROUP on BEN 1, WIEDMANN BROS on GEORGE L, JONATHON ANGLIN on COLIN/DJ 1, ERIN GRILL on MITCHELL; one, MARIA SIMS, had been re-dated to 09/09 — exactly the case Chad guessed), MINUS three orders NuVizz had UN-PLANNED on Friday afternoon after their days froze and the window still showed on old loads (PRIMARY LOGISTICS, 10,000 lb, among them), MINUS a re-delivery duplicate created after its day froze, MINUS an ATT re-attempt customer service had re-opened. The closed-order direction wastes planning time; the hidden-order direction is a missed delivery, and that is the one this fixes first. WHAT SHIPS. (1) THE OPEN-ORDER POOL: every planned-kind scan already holds the whole ±7-day active list in memory; it now writes every open row across every day to one compact document set (lib/active-pool.mts, chunked, zero extra NuVizz calls — same data, one Firestore write). (2) THE WINDOW RECONCILES AGAINST IT: a cached row the pool still lists gets its live status, load, driver and day overlaid and keeps its pin and enrichment; a row the cache never captured is ADDED without a pin (it lists under the no-location chip instead of not existing); a cached open row the pool no longer lists, from a day the pool covers, is DROPPED, and one the pool files on another day is dropped from this window; older rows are pruned only by the history warehouse’s retired list; delivered and cancelled rows are history and are never touched; a row a confirmed Save stamped AFTER the pool was written is held, so the write-through this repo already fixed once cannot be undone by an older pool. Every decision is counted and the toolbar’s Board · N stops line says what it removed. No pool yet (first deploy, a failed write) → the same evidence the Map’s carry-over fold already uses: the live unplanned snapshot plus the retired list. (3) CHECK VS NUVIZZ, the button Chad asked for: on a desktop date window it spends exactly ONE NuVizz call — NuVizz’s own list for the same dates and status buckets — and shows the four header numbers for both sides and three lists: shown here but not in NuVizz’s list, in NuVizz’s list but not shown here, on both but planned/load/day differ; each stop opens its card; “Use NuVizz’s list for this window” swaps the grid onto NuVizz’s rows with our cached pins joined by stop number. Open work only (unplanned, planned, out for delivery, arrived): delivered and cancelled rows are history, and the unfiltered all-status pull is the one NuVizz call that reliably blows the 22-second budget. Throttled server-side; a minute’s cooldown on the button. Desktop only, like the date window it belongs to — the phone has no date window to check. Two things stated rather than guessed: why these 30 escaped the refile that worked for 30 comparable orders the same night is not established, and the Workbench grid’s 549 is 10 planned rows short of the API’s 559 inside a filter the API cannot read back; the unplanned selection is identical. 22 new tests, each named for the order that exposed the rule.'],
   ['0.93.17', 'A REAL MAP UNDER THE CIRCLES, AND THE RULE THAT STOPS A CIRCLE LYING — WHICH ONLY A MEASUREMENT FOUND. Chad on the first printout: “the dots didn’t lay over an actual map of north Georgia and I think big circles will work better than dots,” and “terry hasn’t ran for me in a long time so … just guys that have ran in last 4 weeks.” THE BASEMAP. A dot cloud on white has no geography in it — you cannot tell Buford from Bogart. 65 north-Georgia county outlines (US Census, public domain, decimated to 985 points so the PDF stays small) plus twelve town labels and the terminal turn the same data into a map of somewhere. CIRCLES, AS ASKED, BUT ONE PER CLUSTER. I had argued for dots; Chad saw both and overruled it, which is his call. So circles — with the objection answered by the clustering rather than by refusing him the shape: a driver working two areas gets two circles instead of one stretched across ground he never touches. AND THEN THE PART WORTH RECORDING, BECAUSE I GOT IT WRONG TWICE AND THE RENDER LOOKED FINE BOTH TIMES. The first build gave Rasko a 23km circle and Chris a 35km one, each swallowing three other drivers’ areas whole. My safeguard was “do the circles cover most of his work” — and they did, 99%, so it passed. Once a metro is dense a scattered driver’s stops all sit in ONE connected region, so coverage cannot see the failure at all. SIZE can: past about 15km (~9 miles, a morning’s drops in one direction) a circle stops meaning “his patch” and starts meaning “somewhere in Gwinnett”, which a trainee already knows and cannot act on. A driver with no tight cluster now gets NO circle and is named under “Not drawn — their work is spread too thin to sit inside a circle”. That is Chad’s own caveat about Rasko and Chris, enforced by code instead of hoped for. I only found it by printing the radii; two rounds of looking at the rendered PDF had not caught it. STILL RUNNING, NOT MERELY PRESENT. Terry did 70 stops at the start of the window and none since, which passes any count test — so activeDrivers now also checks RECENCY, measured against the window END rather than a wall clock so that re-printing an old window gives that window’s answer. He is excluded with the reason and the date printed, never silently dropped. ALSO FIXED, FOUND BY READING THE RENDER: the map broke to page two and left page one blank below the header, because `aspect-ratio` let the SVG take whatever height the data’s shape implied (667px). A print sheet has a page; it is a fixed box with preserveAspectRatio now. 7 new tests (32 in the module), including the bridging case and both directions of the size rule. 3,452 green. Still no UI wired — the printout comes first.'],
@@ -1672,6 +1673,9 @@ function recordPlanOverlay(patch) {
 // even when the row disagrees. Omit it (or pass null) and behaviour is exactly as before:
 // agreement-or-TTL only. Overnight, when the scanner is paused, no scan ever passes the save
 // so the 12-hour hold still covers a server patch that missed (the WIEDMANN carry-over case).
+// A finished order — delivered, refused/unable, cancelled — by the board's normalized status.
+// Used where a screen must not treat history as work (v0.95.0).
+const isFinishedStatus = (st) => { const x = String(st || '').toUpperCase(); return x === 'DELIVERED' || x === 'EXCEPTION' || x === 'CANCELLED'; };
 function applyPlanOverlay(stops, boardScannedAt = null) {
   try {
     const m = readPlanOverlay();
@@ -11113,6 +11117,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
       // OFF → show all. (isUnplanned means "no driver yet" — wrong signal here;
       // a routed stop with no driver assigned is still planned.)
       if (mapFilters.unplannedOnly && s.isPlanned) return false;
+      // A cancelled or delivered order with no route is not planned, and it is not work to plan
+      // either — "Unplanned only" kept them on the screen (v0.95.0).
+      if (mapFilters.unplannedOnly && isFinishedStatus(s.normalizedStatus)) return false;
       return true;
     });
   }, [mapFilters.hideTerminal, mapFilters.hideStemOut, mapFilters.unplannedOnly, stemOutKeys]);
@@ -13297,11 +13304,28 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     return m;
   }, [stops]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const baseStops = useMemo(() => (nvWindow ? reflectBoardPlan(applyPlanOverlay(nvRows), boardByNbr) : stops), [nvWindow, nvRows, stops, boardByNbr, planVersion]);
+  // The window's overlay is released by the POOL's scan stamp (a scan that ran after the save
+  // has seen the world after it), exactly as the board's is released by last_scanned_at — the
+  // window used to paint a confirmed save with no way out but the 12h TTL (v0.95.0).
+  const baseStops = useMemo(() => (nvWindow ? reflectBoardPlan(applyPlanOverlay(nvRows, nvReconciled?.poolAt || null), boardByNbr) : stops), [nvWindow, nvRows, stops, boardByNbr, planVersion, nvReconciled]);
   // Pull from NuVizz whenever a date window is selected (re-pull when the status
   // selection changes so status filters server-side, not just on the loaded page).
+  // A cache-served window is re-pulled every NV_WINDOW_REPULL_MS while it is open (v0.95.0) — the
+  // scan rewrites the open-order pool every 15–30 minutes and the window was a one-shot snapshot
+  // of it, so a delivery an hour ago still read "unplanned" here while the board had moved on.
+  // A tick re-pull keeps the last Check result on screen; a window/status change resets it.
+  const NV_WINDOW_REPULL_MS = 5 * 60 * 1000;
+  const [nvTick, setNvTick] = useState(0);
+  const nvTickSeen = useRef(0);
+  useEffect(() => {
+    if (!nvWindow || nvSource !== 'cache' || nvLoading) return;
+    const t = setInterval(() => { if (document.visibilityState === 'visible') setNvTick((x) => x + 1); }, NV_WINDOW_REPULL_MS);
+    return () => clearInterval(t);
+  }, [nvWindow, nvSource, nvLoading]);
   useEffect(() => {
     if (!nvWindow) { setNvErr(null); setNvLoading(false); return; }
+    const isTick = nvTickSeen.current !== nvTick;
+    nvTickSeen.current = nvTick;
     // '-7d' / '-14d' are AUTO ranges: board day back N days, tracking the board-date input —
     // "takes the day the board is set to and goes back". They ride the same fromDate/toDate
     // cache path as a hand-picked custom range (scanned days → cache-served, zero NuVizz).
@@ -13320,7 +13344,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       ? { fromDate: lo, toDate: hi, statusCodes: codes, page: 1, pageSize: 1000 }
       : { arrivalPeriod: nvWindow, statusCodes: codes, page: 1, pageSize: 1000 };
     setNvLoading(true); setNvErr(null);
-    setNvCheck({ running: false, result: null, error: null, at: null }); setNvCheckOpen(false); setNvReconciled(null);
+    if (!isTick) { setNvCheck({ running: false, result: null, error: null, at: null }); setNvCheckOpen(false); setNvReconciled(null); }
     // DEBOUNCE custom-range pulls: a native date input fires onChange per SEGMENT edit, so a
     // straight fetch would fire a pull on each keystroke. A window preset needs no debounce.
     const timer = setTimeout(() => {
@@ -13349,7 +13373,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
         .finally(() => { if (!cancelled) setNvLoading(false); });
     }, nvWindow === 'custom' ? 600 : 0);   // only hand-typed dates need the debounce
     return () => { cancelled = true; ctrl.abort(); clearTimeout(timer); };
-  }, [nvWindow, nvFrom, nvTo, statusSel, boardDate]);
+  }, [nvWindow, nvFrom, nvTo, statusSel, boardDate, nvTick]);
   // ── CHECK VS NUVIZZ (v0.94.0) ──────────────────────────────────────────────
   // Chad: "a way to do what we just did — check what we are showing to what nuvizz shows for
   // the same set of filters." ONE live NuVizz call for this window's dates and status buckets;
@@ -13717,9 +13741,12 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     if (!s) return;
     setView(s.view === 'loads' ? 'loads' : 'stops');
     setStatusSel(new Set(Array.isArray(s.status) ? s.status : []));
-    setNvWindow(s.nvWindow || '');
-    setNvFrom(s.nvFrom || '');
-    setNvTo(s.nvTo || '');
+    // Two views: the phone has no date-window select, no source line and no Check button, so a
+    // profile saved on a desktop with a window must not drag the phone grid (and its map) into
+    // one it cannot see or leave (v0.95.0).
+    setNvWindow(gridIsPhone ? '' : (s.nvWindow || ''));
+    setNvFrom(gridIsPhone ? '' : (s.nvFrom || ''));
+    setNvTo(gridIsPhone ? '' : (s.nvTo || ''));
     setDriverSel(s.driverSel || '');
     setUnmappedOnly(!!s.unmappedOnly);
     setStopSort(s.stopSort && 'key' in s.stopSort ? s.stopSort : { key: null, dir: 'asc' });
@@ -18773,7 +18800,9 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         // confirmed save just planned (planOverlay stamp) stays ON: excluding it made a
         // just-saved window stop vanish from map + open card until the rescue's board-day
         // copy landed (a blink when healthy, hours if the sync missed).
-        && (s.planOverlay === true || !(s.isPlanned === true || s.routeName || s.loadNbr)))
+        // A delivered / cancelled un-routed row from a frozen day is history, not work to plan —
+        // it used to pass this predicate and box/lasso would select it (v0.95.0).
+        && (s.planOverlay === true || (!isFinishedStatus(s.normalizedStatus) && !(s.isPlanned === true || s.routeName || s.loadNbr))))
       .map((s) => ({ ...s, windowExtra: true }));
     return extra.length ? [...stops, ...extra] : stops;
   }, [stops, gridWindowStops]);
@@ -21740,6 +21769,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
           headerRight={bottomGridHeaderRight}
           onWindowRowsChange={setGridWindowStops}
           onSearchMatchChange={setSearchMatchIds}
+          onStatusFilterChange={setStatusFilterIds}
           highlightIds={selectedIds}
           planVersion={planVersion}
         />}

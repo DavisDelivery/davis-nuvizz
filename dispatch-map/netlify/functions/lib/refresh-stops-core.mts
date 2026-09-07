@@ -22,10 +22,12 @@
 
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro, lookupLoadStopNbrs } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan, recordScanRun, markLoadRosterEmpty, writeActivePool, readStopDoc, patchStopFields } from './firestore.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan, recordScanRun, markLoadRosterEmpty, writeActivePool, readStopDoc, patchStopFields, readActivePoolMeta, readFrozenLedger, writeFrozenLedger } from './firestore.mts';
+import type { FrozenLedgerEntry } from './firestore.mts';
 import { listScanForDate, mergeEnrich, twoScanBuckets, completedScanRows, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow, activeArrivalReachDays } from './nuvizz-list.mts';
 import { buildActivePool } from './active-pool.mts';
-import { strayFinishedRows, openPastRows, planRefile, planChangeHeals } from './refile-core.mts';
+import { strayFinishedRows, openPastRows, planRefile, planOpenStrays, frozenCopyDays, rotate } from './refile-core.mts';
+import type { FrozenCopy, StrayRow, Heal } from './refile-core.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterPull } from './nuvizz-loads.mts';
 import { getStop } from './history-store.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
@@ -744,6 +746,9 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // Which board day the money went on. A morning spike is often TOMORROW's orders
       // arriving, and a rollup that hid that would answer the question wrongly.
       enrichedDates: ds.filter((d) => (Number(d?.enriched) || 0) > 0).map((d) => String(d?.date)),
+      // What today's pass did about frozen days (filed / healed / capped), so "why is this
+      // delivery on today's board" is answered by the run that put it there.
+      ...(ds.find((d) => d?.frozen) ? { frozen: ds.find((d) => d?.frozen).frozen } : {}),
     };
   };
   const finishRun = async (extra: Record<string, any>) => {
@@ -1167,7 +1172,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       const prev = await readStops(TENANT, today).catch(() => ({ stops: [] as any[] }));
       const boardByNbr = new Map<string, any>();
       for (const pr of (prev?.stops || [])) boardByNbr.set(String(pr.stopNbr), pr);
-      const plan = planCompletions(boardByNbr, rows);
+      const plan = planCompletions(boardByNbr, rows, { today });
       const applied = await applyCompletionPatches(TENANT, today, plan.patches, at);
       await markScanKinds(['completed'], at);
       // Stamp the DAY INDEX too, not just the ops doc. markScanKinds drives the scheduler's
@@ -1345,12 +1350,35 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // planned (they vanish from the active search → not in this set). Zero extra calls. The
       // window the active search reaches back is ~7 days (NUVIZZ_ACTIVE_ARRIVAL '+/-7d'), so
       // carry-over only trusts the filter for days >= windowStart. Best-effort.
+      // Every OPEN row the pull reports, keyed by stop number with the day it bucketed to. Read
+      // three ways below: the thin-pull verdict on the WHOLE pull, the carry-forward's re-file of
+      // open rows the frozen-day pass filed onto today, and the snapshot/pool stamps.
+      const liveOpenByNbr = new Map<string, { day: string; row: any }>();
+      if (TWO_SCAN && buckets) {
+        for (const [day, stops] of buckets) for (const s of stops) {
+          const k = String(s?.stopNbr ?? '').trim();
+          if (k && !isTerminalStatus(s?.normalizedStatus) && !liveOpenByNbr.has(k)) liveOpenByNbr.set(k, { day: String(day), row: s });
+        }
+      }
+      // THIN PULL, judged on the WHOLE pull (v0.95.0). The per-board ratio below protects one
+      // day's plans; the pool and the unplanned snapshot are read by the Routing window and the
+      // Map as "everything NuVizz lists right now", and a half-returned saved search would have
+      // both readers drop every open row it lacked as closed. So the pull is measured against
+      // the last pool's own count, and a thin verdict rides on both documents: a reader may
+      // still overlay live fields from a thin pool, but never drops a row on its word.
+      let prevPoolMeta: { at: string; count: number; thin: boolean } | null = null;
+      if (TWO_SCAN && buckets) { try { prevPoolMeta = await readActivePoolMeta(TENANT); } catch { prevPoolMeta = null; } }
+      const pullThin = !!(prevPoolMeta && prevPoolMeta.count > 0 && liveOpenByNbr.size < prevPoolMeta.count * ABSENT_DEMOTE_MIN_RATIO);
+      if (pullThin) console.warn(`[scan] pull looks THIN across the whole window (${liveOpenByNbr.size} open row(s) vs ${prevPoolMeta!.count} in the last pool at ${prevPoolMeta!.at}) — snapshot and pool are stamped thin; no reader will drop a row on their word this scan`);
       if (TWO_SCAN && buckets) {
         try {
           const live = new Set<string>();
           for (const stops of buckets.values()) for (const s of stops) if (s.isUnplanned && s.stopNbr) live.add(String(s.stopNbr));
-          const windowStart = addDaysUTC(today, -7);
-          await writeActiveUnplannedSet(TENANT, { at: scannedAt, windowStart, stopNbrs: [...live] });
+          // The window this snapshot is entitled to judge is the saved search's own reach, not a
+          // hard-coded week — widen NUVIZZ_ACTIVE_ARRIVAL and the fold's trust widens with it.
+          const reach = activeArrivalReachDays();
+          const windowStart = addDaysUTC(today, -reach);
+          await writeActiveUnplannedSet(TENANT, { at: scannedAt, windowStart, stopNbrs: [...live], thin: pullThin, reach });
         } catch (e: any) { console.warn(`[scan] active-set snapshot skipped: ${e?.message}`); }
       }
       // THE OPEN-ORDER POOL (v0.94.0). The loop below writes today plus two business days of
@@ -1365,10 +1393,14 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         try {
           const reach = activeArrivalReachDays();
           const pool = buildActivePool(buckets, { at: scannedAt, windowStart: addDaysUTC(today, -reach), windowEnd: addDaysUTC(today, reach) });
-          const w = await writeActivePool(TENANT, pool);
-          console.log(`[scan] open-order pool written: ${w.count} open row(s) across ${buckets.size} day(s) in ${w.chunks} chunk(s), reach ±${reach}d`);
+          const w = await writeActivePool(TENANT, { ...pool, thin: pullThin, prevCount: prevPoolMeta?.count ?? null });
+          console.log(`[scan] open-order pool written: ${w.count} open row(s) across ${buckets.size} day(s) in ${w.chunks} chunk(s), reach ±${reach}d${pullThin ? ' THIN' : ''}${prevPoolMeta ? ` (previous ${prevPoolMeta.count})` : ''}`);
         } catch (e: any) { console.warn(`[scan] open-order pool skipped: ${e?.message}`); }
       }
+      // The frozen-day pass's memo — read once here, rewritten once after today's board lands.
+      // Empty on any failure, which only means this scan re-reads what the last one resolved.
+      let frozenLedger: Record<string, FrozenLedgerEntry> = {};
+      if (TWO_SCAN && buckets) frozenLedger = await readFrozenLedger(TENANT);
       // FINISHED rows across the WHOLE pull, keyed by stopNbr regardless of bucket day. A stop
       // delivered while running as rolled-over work buckets under its (stale) past arrival day —
       // which is never a write target — while today's board (where the clamp had filed the OPEN
@@ -1452,16 +1484,36 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           // "everything vanished" is a scan failure, not a hundred unplannings. Below the
           // ratio, plans carry forward untouched and unquestioned exactly as they always have.
           const pullHealthy = prevByNbr.size === 0 || dateStops.length >= prevByNbr.size * ABSENT_DEMOTE_MIN_RATIO;
-          let dropped = 0, healedDelivered = 0, absentPlanned = 0;
+          let dropped = 0, healedDelivered = 0, absentPlanned = 0, refiledFinished = 0, refiledOpenKept = 0, refiledOpenGone = 0;
           for (const [nbr, p] of prevByNbr) {
             if (have.has(nbr)) continue;
-            if (boardDayFor(p, undefined, boardDateOverrides) !== boardEtDate) { dropped++; continue; } // belongs to another day
+            const priorOwnDay = boardDayFor(p, undefined, boardDateOverrides);
             // The stop lived on THIS board while open, and the pull now shows it FINISHED under a
             // stale past arrival day (rolled-over work delivered today). File the finished row HERE
             // — pinned to this board's day so it stays — instead of re-carrying the open snapshot,
-            // which froze such stops as open forever and lost the delivery entirely.
+            // which froze such stops as open forever and lost the delivery entirely. Decided BEFORE
+            // the wrong-day guard (v0.95.0): a row this board holds as a refile or a clamp has a
+            // past day of its own, and the guard used to drop the finish on the floor and leave
+            // the open copy reading open. A refile keeps `refiledFrom` so a report can tell a
+            // delivery filed here from one that arrived here.
             const fin = finishedByNbr.get(nbr);
-            if (fin) { dateStops.push({ ...fin, boardDate: boardEtDate, scheduledDate: date }); continue; }
+            if (fin && (date === today || priorOwnDay === boardEtDate)) {
+              dateStops.push({ ...fin, boardDate: boardEtDate, scheduledDate: date, ...(p.refiledFrom ? { refiledFrom: p.refiledFrom } : {}) });
+              refiledFinished++;
+              continue;
+            }
+            if (priorOwnDay !== boardEtDate) { dropped++; continue; } // belongs to another day
+            // A row the frozen-day pass filed here as an OPEN carry-over (refiledOpen) is re-filed
+            // from the LIVE pull while NuVizz still lists it open on a past day, so its plan state
+            // is this scan's and never the day's it was first filed. Once NuVizz files it on today
+            // or later (its own bucket has it) or stops listing it, it leaves this board.
+            if (p.refiledOpen === true) {
+              const lo = liveOpenByNbr.get(nbr);
+              if (!lo || lo.day >= boardEtDate) { dropped++; refiledOpenGone++; continue; }
+              dateStops.push({ ...lo.row, boardDate: boardEtDate, scheduledDate: date, refiledFrom: p.refiledFrom || lo.day, refiledOpen: true, carryover: true });
+              refiledOpenKept++;
+              continue;
+            }
             // Would re-carry the stale OPEN snapshot (absent from BOTH pulls, this-pull finished
             // map missed it). If it's still shown OPEN but our sealed history warehouse recorded it
             // DELIVERED/EXCEPTION on a recent prior day, it's a delivery that aged out of the
@@ -1493,58 +1545,99 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             }
             dateStops.push(p);
           }
-          if (dropped) console.log(`[scan] ${date}: carry-forward dropped ${dropped} wrong-day stop(s) (board=${boardEtDate})`);
+          if (dropped) console.log(`[scan] ${date}: carry-forward dropped ${dropped} wrong-day stop(s) (board=${boardEtDate})${refiledOpenGone ? ` incl. ${refiledOpenGone} open carry-over(s) NuVizz no longer lists on a past day` : ''}`);
+          if (refiledFinished || refiledOpenKept) console.log(`[scan] ${date}: carry-forward filed ${refiledFinished} finished stop(s) the pull reports under a past day; re-filed ${refiledOpenKept} open carry-over(s) from the live pull`);
           if (healedDelivered) console.log(`[scan] ${date}: dropped ${healedDelivered} stale-Scheduled stop(s) sealed DELIVERED in recent history (histReads=${histTerminal.reads()})`);
           if (absentPlanned) console.warn(`[scan] ${date}: ${absentPlanned} planned stop(s) absent from this pull — queued for demote verify (plan held unless NuVizz says the load dropped them)`);
           if (!pullHealthy) console.warn(`[scan] ${date}: pull looks thin (${dateStops.length} rows vs ${prevByNbr.size} on the prior board) — carrying plans forward UNVERIFIED; absence is being read as a scan failure, not as unplanning`);
         }
-        // ── FROZEN-DAY REFILE + HEAL (v0.94.1) ───────────────────────────────────
-        // The carry-forward above files a finished row onto this board only when the board
-        // ALREADY held the stop. 007170166-1 (H&H WORLD GROUP) was planned onto BEN 1 in the
-        // same minute as RA52300615, dispatched with it and delivered 12 minutes after it on
-        // 09/02 — and RA52300615 is on the 09/02 board while 007170166-1 is on none, because
-        // no scan had written it here before it delivered. Its delivered row, arrival day
-        // 09/01, bucketed to a day this loop never writes and was dropped. Thirty orders in
-        // one window went that way. So, on TODAY's pass only: every finished row the pull
-        // reports for a frozen past day is filed here, pinned to today, unless its own day's
-        // copy already records it finished (a POD re-touch of a properly recorded delivery),
-        // and the frozen copy — if it exists and still reads open — is healed in place with a
-        // field-masked patch (lib/refile-core.mts). Open rows on frozen days that NuVizz
-        // changed recently (PRIMARY LOGISTICS, un-planned Friday after its day froze) get the
-        // same masked heal of their plan fields. Reads are bounded (REFILE_READ_CAP); a stop
-        // past the cap waits for the next scan rather than being guessed at. Heals are applied
-        // AFTER this board's write below, and never delete or move a row.
-        let pendingHeals: Array<{ day: string; nbr: string; fields: Record<string, any> }> = [];
+        // ── FROZEN-DAY PASS (v0.95.0; the v0.94.1 refile, rebuilt) ─────────────────────
+        // The write loop never rewrites a past day, so everything NuVizz does to an order after
+        // its arrival day — deliver it, cancel it, un-plan it, re-open it as an ATT re-attempt —
+        // lands in a bucket this loop drops, and the frozen copy keeps telling the old story.
+        // On TODAY's pass, from the two pulls already paid for (zero NuVizz calls):
+        //   · every FINISHED row filed under a frozen past day inside the search's reach: each
+        //     open copy of it on any frozen day (its own day through yesterday) is healed in place
+        //     with a field-masked patch, and it is filed onto today's board, pinned, unless a copy
+        //     already records it finished where it ran (a POD re-touch) or it is here already;
+        //   · every OPEN row filed under a frozen past day: a frozen copy that disagrees about
+        //     the plan is healed ('plan' — PRIMARY LOGISTICS un-planned after its day froze), a
+        //     frozen TERMINAL copy of a stop NuVizz now lists open is healed ('reopen' — HIGHLAND
+        //     FORGE, refused then re-opened by CS), and a stop with NO open copy anywhere is filed
+        //     onto today's board as a carry-over so the Map can show it and it gets a pin.
+        // Reads are bounded (REFILE_READ_CAP, finished first, each list rotated by the minute so
+        // the tail is reached), memoised in the frozen ledger by NuVizz's own update stamp, and a
+        // stop whose copies could not be read this scan is left for the next one, never guessed
+        // at. Heals apply AFTER today's board is written and never delete or move a row.
+        let pendingHeals: Heal[] = [];
+        let frozenSummary: Record<string, any> | null = null;
+        let frozenLedgerNext: Record<string, FrozenLedgerEntry> | null = null;
         if (TWO_SCAN && buckets && date === today) {
           try {
-            const REFILE_READ_CAP = Math.max(0, Number(process.env.NUVIZZ_REFILE_READ_CAP) || 80);
-            const REFILE_CHANGE_WINDOW_MS = Math.max(1, Number(process.env.NUVIZZ_REFILE_CHANGE_HOURS) || 72) * 3600 * 1000;
+            const REFILE_READ_CAP = Math.max(0, Number(process.env.NUVIZZ_REFILE_READ_CAP) || 120);
             const targetSet = new Set(targets.map((d) => etDateForTargetUTC(d, today)));
             const reach = activeArrivalReachDays();
             const floor = addDaysUTC(boardEtDate, -reach);
             const strays = strayFinishedRows(buckets, { today: boardEtDate, targets: targetSet, floor });
-            const changed = openPastRows(buckets, { today: boardEtDate, targets: targetSet, floor, sinceMs: Date.now() - REFILE_CHANGE_WINDOW_MS });
+            const opens = openPastRows(buckets, { today: boardEtDate, targets: targetSet, floor });
             const onBoard = new Set(dateStops.map((s) => String(s.stopNbr)));
-            const toRead = new Map<string, { nbr: string; ownDay: string }>();
-            for (const x of [...strays, ...changed]) if (!onBoard.has(x.nbr) && !toRead.has(x.nbr)) toRead.set(x.nbr, x);
-            const readList = [...toRead.values()].slice(0, REFILE_READ_CAP);
-            const ownCopies = new Map<string, any | null>();
-            let ri = 0;
+            const updOf = (x: StrayRow) => String(x.row?.listUpdatedDTTM || '');
+            const memoHit = (x: StrayRow, kind: 'fin' | 'open') => { const e = frozenLedger[`${kind}:${x.nbr}`]; return !!(e && e.upd === updOf(x)); };
+            const needFin = strays.filter((x) => !memoHit(x, 'fin'));
+            const needOpen = opens.filter((x) => !memoHit(x, 'open'));
+            const seedMin = Math.floor(Date.now() / 60000);
+            const queue: StrayRow[] = [...rotate(needFin, seedMin), ...rotate(needOpen, seedMin)];
+            const copies = new Map<string, FrozenCopy[]>();
+            const jobs: Array<{ nbr: string; day: string }> = [];
+            let budget = REFILE_READ_CAP, capped = 0;
+            for (const x of queue) {
+              if (copies.has(x.nbr)) continue;
+              const days = frozenCopyDays(x.ownDay, boardEtDate, reach);
+              if (days.length > budget) { capped++; continue; }
+              budget -= days.length;
+              copies.set(x.nbr, days.map((d) => ({ day: d, copy: null })));
+              for (const d of days) jobs.push({ nbr: x.nbr, day: d });
+            }
+            const readFailed = new Set<string>();
+            let ji = 0;
             const reader = async () => {
-              while (ri < readList.length) {
-                const x = readList[ri++];
-                try { ownCopies.set(x.nbr, await readStopDoc(TENANT, x.ownDay, x.nbr)); } catch { /* unread → left for the next scan */ }
+              while (ji < jobs.length) {
+                const j = jobs[ji++];
+                try {
+                  const c = await readStopDoc(TENANT, j.day, j.nbr);
+                  const slot = (copies.get(j.nbr) || []).find((e) => e.day === j.day);
+                  if (slot) slot.copy = c;
+                } catch { readFailed.add(j.nbr); }
               }
             };
-            await Promise.all(Array.from({ length: Math.min(8, readList.length) }, reader));
-            const plan = planRefile(strays, { today: boardEtDate, at: scannedAt, onBoard, ownCopies });
-            const planHeals = planChangeHeals(changed.filter((x) => !onBoard.has(x.nbr)), ownCopies, { at: scannedAt });
-            for (const row of plan.file) dateStops.push(row);
-            pendingHeals = [...plan.heal, ...planHeals];
-            if (plan.file.length || pendingHeals.length || plan.unread || toRead.size > REFILE_READ_CAP) {
-              console.log(`[scan] ${date}: frozen-day refile — filed ${plan.file.length} finished stop(s) from past days onto today (${plan.skippedTerminal} already recorded on their day, ${plan.skippedOnBoard} already here, ${plan.unread} unread), heals queued ${pendingHeals.length} (${plan.heal.length} finished, ${planHeals.length} plan)${toRead.size > REFILE_READ_CAP ? ` — ${toRead.size - REFILE_READ_CAP} past the read cap, next scan` : ''} sample ${JSON.stringify(plan.file.slice(0, 5).map((r) => `${r.stopNbr}<${r.refiledFrom}`))}`);
+            await Promise.all(Array.from({ length: Math.min(8, jobs.length) }, reader));
+            for (const nbr of readFailed) copies.delete(nbr);   // unread → next scan, never guessed at
+            const finPlan = planRefile(needFin, { today: boardEtDate, at: scannedAt, onBoard, copies });
+            const openPlan = planOpenStrays(needOpen, { today: boardEtDate, at: scannedAt, onBoard, copies });
+            for (const row of finPlan.file) dateStops.push(row);
+            for (const row of openPlan.file) dateStops.push(row);
+            pendingHeals = [...finPlan.heal, ...openPlan.heal];
+            // The ledger for the NEXT scan: every stray resolved this scan (its copies were read)
+            // plus every earlier resolution still valid (same NuVizz stamp). Unread, capped and
+            // re-touched stops are left out, so the next scan takes them up.
+            frozenLedgerNext = {};
+            for (const x of strays) { const k = `fin:${x.nbr}`; if (copies.has(x.nbr)) frozenLedgerNext[k] = { upd: updOf(x), at: scannedAt, kind: 'fin' }; else if (memoHit(x, 'fin')) frozenLedgerNext[k] = frozenLedger[k]; }
+            for (const x of opens) { const k = `open:${x.nbr}`; if (copies.has(x.nbr)) frozenLedgerNext[k] = { upd: updOf(x), at: scannedAt, kind: 'open' }; else if (memoHit(x, 'open')) frozenLedgerNext[k] = frozenLedger[k]; }
+            frozenSummary = {
+              finishedStrays: strays.length, openStrays: opens.length,
+              memoized: (strays.length - needFin.length) + (opens.length - needOpen.length),
+              reads: jobs.length, readCap: REFILE_READ_CAP, capped, readFailed: readFailed.size,
+              filedFinished: finPlan.file.length, filedOpen: openPlan.file.length,
+              healsQueued: pendingHeals.length, healFinished: finPlan.heal.length,
+              healPlan: openPlan.heal.filter((h) => h.fields.frozen_heal_reason === 'plan').length,
+              reopened: openPlan.reopened, skippedTerminal: finPlan.skippedTerminal, skippedOnBoard: finPlan.skippedOnBoard,
+              unread: finPlan.unread + openPlan.unread,
+              sample: [...finPlan.file.slice(0, 5).map((r) => `${r.stopNbr}<${r.refiledFrom}`), ...openPlan.file.slice(0, 5).map((r) => `${r.stopNbr}<${r.refiledFrom}:open`)],
+            };
+            if (frozenSummary.filedFinished || frozenSummary.filedOpen || frozenSummary.healsQueued || capped || readFailed.size) {
+              console.log(`[scan] ${date}: frozen-day pass — ${JSON.stringify(frozenSummary)}`);
             }
-          } catch (e: any) { console.warn(`[scan] ${date}: frozen-day refile skipped: ${e?.message}`); }
+          } catch (e: any) { console.warn(`[scan] ${date}: frozen-day pass skipped: ${e?.message}`); }
         }
         const seed = new Map<string, { lat: number; lng: number }>();
         const toEnrich: any[] = [];
@@ -1802,14 +1895,22 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         // throws past this point, so a heal can never outrun the row it points at).
         if (pendingHeals.length) {
           let hi = 0, healed = 0, healFailed = 0;
+          const healFailedNbrs = new Set<string>();
           const healer = async () => {
             while (hi < pendingHeals.length) {
               const h = pendingHeals[hi++];
-              try { await patchStopFields(TENANT, h.day, h.nbr, h.fields); healed++; } catch { healFailed++; }
+              try { await patchStopFields(TENANT, h.day, h.nbr, h.fields); healed++; } catch { healFailed++; healFailedNbrs.add(h.nbr); }
             }
           };
           await Promise.all(Array.from({ length: Math.min(6, pendingHeals.length) }, healer));
+          // A stop whose heal failed is not resolved: out of the ledger, so the next scan retries.
+          if (frozenLedgerNext) for (const nbr of healFailedNbrs) { delete frozenLedgerNext[`fin:${nbr}`]; delete frozenLedgerNext[`open:${nbr}`]; }
+          if (frozenSummary) { frozenSummary.healed = healed; frozenSummary.healFailed = healFailed; }
           console.log(`[scan] ${date}: frozen-day heal — patched ${healed} copy(ies) on past days${healFailed ? `, ${healFailed} failed (retry next scan)` : ''}`);
+        }
+        if (frozenLedgerNext) {
+          try { await writeFrozenLedger(TENANT, frozenLedgerNext, { at: scannedAt, summary: frozenSummary }); }
+          catch (e: any) { console.warn(`[scan] ${date}: frozen ledger write skipped: ${e?.message}`); }
         }
         // The roster is on its OWN hourly cadence and runs at the top of this function when the
         // plan says it is due — it used to be re-pulled here on every full scan for every target
@@ -1820,10 +1921,14 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         // and no status doc on any production scan. Fire it here too: best-effort, deduped
         // per delivery date inside notifyMarkedCustomers, a mail failure never affects the scan.
         try {
-          const n = await notifyMarkedCustomers(date, dateStops);
+          // Terminal rows ride this board too — today's own deliveries, and (v0.95.0) finished
+          // orders the frozen-day pass filed here from past days — and "scheduled for delivery"
+          // is a lie about an order that has already delivered or been cancelled. Same filter
+          // the early pass applies.
+          const n = await notifyMarkedCustomers(date, dateStops.filter((s: any) => !isTerminalStatus(s?.normalizedStatus)));
           if (n.matched) console.log(`[cs-notify] date=${date} matched=${n.matched} sent=${n.sent} failed=${n.failed}${n.skipped ? ` skipped=${n.skipped}` : ''}`);
         } catch (e: any) { console.warn(`[cs-notify] ${date} failed: ${e?.message}`); }
-        results.push({ date, ok: true, source: 'list', count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount, enriched, newPros: stillNeed.length });
+        results.push({ date, ok: true, source: 'list', count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount, enriched, newPros: stillNeed.length, ...(frozenSummary ? { frozen: frozenSummary } : {}) });
         // Both saved searches answered AND a day's board actually landed. NOW a scan happened.
         await stampScanKinds();
       }
