@@ -222,3 +222,179 @@ export function territoryCoverage(stops = [], opts = {}) {
     rosterApplied: !!(roster && roster.size),
   };
 }
+
+// ── ACTIVE DRIVERS ONLY ─────────────────────────────────────────────────────
+//
+// Chad, reading the first draft: "terry hasn't ran for me in a long time ... just guys that
+// have ran in last 4 weeks."
+//
+// A trainee handed a sheet listing somebody who left, or who has not driven in months, learns a
+// territory that does not exist and will try to give them freight. So the window is the filter:
+// a driver earns a place by having WORKED in it.
+//
+// `minStops` is the second half of the same rule. One stop in four weeks is not a territory —
+// it is a favour somebody did on a Tuesday — and drawing a circle around it states a pattern
+// from a single point. Excluded drivers are RETURNED, not silently dropped, so the sheet can
+// say who it left out and why; a name quietly missing is indistinguishable from a name that was
+// never there, which is the same absent-is-not-zero mistake in a different coat.
+export function activeDrivers(stops = [], opts = {}) {
+  const minStops = typeof opts.minStops === 'number' ? opts.minStops : 5;
+  // STILL RUNNING, not merely present. A driver who did seventy stops in the first week of the
+  // window and nothing since passes any count test — and is precisely the driver Chad was
+  // pointing at. So the last day they worked has to be recent, measured against the END of the
+  // window rather than against a clock, so re-printing an old window gives the same answer.
+  const staleDays = typeof opts.staleDays === 'number' ? opts.staleDays : 14;
+  const roster = opts.roster || null;
+  const counts = new Map();
+  const labels = new Map();
+  const lastSeen = new Map();
+  for (const s of stops || []) {
+    if (!usableStop(s)) continue;
+    const key = driverKeyOf(s);
+    if (!isDriver(key, roster)) continue;
+    counts.set(key, (counts.get(key) || 0) + 1);
+    if (!labels.has(key)) labels.set(key, driverLabelOf(s));
+    const d = String(s.boardDate || s.date || '');
+    if (d && (!lastSeen.has(key) || d > lastSeen.get(key))) lastSeen.set(key, d);
+  }
+  const windowEnd = [...lastSeen.values()].sort().pop() || null;
+  const daysBetween = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000);
+  const active = new Set();
+  const excluded = [];
+  for (const [key, n] of counts) {
+    const last = lastSeen.get(key) || null;
+    const gap = (last && windowEnd) ? daysBetween(last, windowEnd) : 0;
+    const why = n < minStops ? 'too few' : (gap > staleDays ? 'stopped running' : null);
+    if (!why) active.add(key);
+    else excluded.push({ key, label: labels.get(key) || key, stops: n, lastSeen: last, daysSince: gap, why });
+  }
+  return { active, excluded: excluded.sort((a, b) => b.stops - a.stops), counts, lastSeen, windowEnd };
+}
+
+// ── CIRCLES, BUT ONE PER CLUSTER ────────────────────────────────────────────
+//
+// Chad: "I think big circles will work better than dots." His call, and this builds it — but
+// built so it cannot tell the lie the dots were guarding against.
+//
+// ONE circle per driver is what fails: a driver working Buford and Athens gets a circle centred
+// on countryside between them, covering fifty miles of ground he never touches. So a driver
+// gets one circle PER CLUSTER of their work. A compact driver has one, which is exactly the
+// "big circle" Chad pictured. A scattered driver gets several small ones, which is still
+// circles, still readable, and still true.
+//
+// The clustering is deterministic and dependency-free: bucket stops into a coarse grid, flood
+// fill adjacent occupied cells into clusters, and keep the clusters that carry a real share of
+// the driver's work. No random seeds, no k to choose, nothing that could draw a different map
+// from the same data twice.
+const KM_PER_DEG_LAT = 110.574;
+const kmPerDegLng = (lat) => 111.320 * Math.cos((lat * Math.PI) / 180);
+
+export function haversineKm(a, b) {
+  const R = 6371;
+  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const la1 = (a.lat * Math.PI) / 180, la2 = (b.lat * Math.PI) / 180;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+export function driverCircles(stops = [], opts = {}) {
+  const cellKm = opts.cellKm || 9;          // grid coarse enough that one town is one cell
+  const minShare = opts.minShare ?? 0.12;   // a cluster worth drawing at all
+  const maxCircles = opts.maxCircles || 4;
+  const pctile = opts.radiusPercentile ?? 0.7;
+  // A CELL MUST BE BUSY TO JOIN A CLUSTER. Without this, a trail of one-stop cells bridges two
+  // genuinely separate areas and the whole metro merges into a single circle — which is exactly
+  // the lie the per-cluster design exists to prevent, arriving through the clustering itself.
+  const minCellStops = opts.minCellStops ?? 3;
+  // AND A DRIVER WITH NO REAL PATCH GETS NO CIRCLE AT ALL. Chad, before any of this was built:
+  // "there are a few drivers this probably won't work great for like rasko or chris." He is
+  // right, and the honest answer is to say so rather than draw a circle round scattered work.
+  const minCovered = opts.minCovered ?? 0.55;
+  // AND A CIRCLE TOO BIG IS NOT A TERRITORY, IT IS THE WHOLE CITY.
+  //
+  // This is the rule that actually catches the drivers Chad named, and it took a MEASUREMENT to
+  // find — coverage does not catch them. Once the metro is dense, a scattered driver's stops all
+  // sit in one connected region, so the single cluster covered 99% of his work and passed every
+  // test I had written: a 23km circle over Rasko and a 35km one over Chris, each swallowing four
+  // other drivers' areas whole. They looked confident and said nothing.
+  //
+  // 15km (~9 miles) is roughly a morning's drops in one direction. Past that a circle stops
+  // meaning "his patch" and starts meaning "somewhere in Gwinnett", which a trainee already
+  // knows and cannot act on.
+  const maxRadiusKm = opts.maxRadiusKm ?? 15;
+  const roster = opts.roster || null;
+  const active = opts.active || null;
+
+  const byDriver = new Map();
+  for (const s of stops || []) {
+    const lat = Number(s?.lat), lng = Number(s?.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;   // circles need coordinates
+    const key = driverKeyOf(s);
+    if (!key || !isDriver(key, roster)) continue;
+    if (active && !active.has(key)) continue;
+    if (!byDriver.has(key)) byDriver.set(key, { key, label: driverLabelOf(s), pts: [] });
+    byDriver.get(key).pts.push({ lat, lng });
+  }
+
+  const out = [];
+  for (const d of byDriver.values()) {
+    const cells = new Map();
+    for (const p of d.pts) {
+      const cy = Math.floor((p.lat * KM_PER_DEG_LAT) / cellKm);
+      const cx = Math.floor((p.lng * kmPerDegLng(p.lat)) / cellKm);
+      const id = `${cx},${cy}`;
+      if (!cells.has(id)) cells.set(id, { cx, cy, pts: [] });
+      cells.get(id).pts.push(p);
+    }
+    // Flood fill over the 8 neighbours, so a town spilling across a cell edge stays one cluster.
+    for (const [id, c] of [...cells]) if (c.pts.length < minCellStops) cells.delete(id);
+    const seen = new Set();
+    const clusters = [];
+    for (const id of cells.keys()) {
+      if (seen.has(id)) continue;
+      const stack = [id]; seen.add(id);
+      const group = [];
+      while (stack.length) {
+        const cur = cells.get(stack.pop());
+        group.push(...cur.pts);
+        for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+          const nid = `${cur.cx + dx},${cur.cy + dy}`;
+          if (cells.has(nid) && !seen.has(nid)) { seen.add(nid); stack.push(nid); }
+        }
+      }
+      clusters.push(group);
+    }
+    const total = d.pts.length;
+    const circles = clusters
+      .filter((g) => g.length / total >= minShare)
+      .sort((a, b) => b.length - a.length)
+      .slice(0, maxCircles)
+      .map((g) => {
+        const lat = g.reduce((t, p) => t + p.lat, 0) / g.length;
+        const lng = g.reduce((t, p) => t + p.lng, 0) / g.length;
+        const dists = g.map((p) => haversineKm({ lat, lng }, p)).sort((x, y) => x - y);
+        // A PERCENTILE, not the maximum: one stop somebody took as a favour must not inflate a
+        // circle by twenty miles and imply a territory nobody works.
+        const r = dists[Math.min(dists.length - 1, Math.floor(pctile * dists.length))] || 0;
+        return { lat, lng, radiusKm: Math.max(2.5, r), stops: g.length, share: g.length / total };
+      });
+    const tight = circles.filter((c) => c.radiusKm <= maxRadiusKm);
+    const shown = tight.reduce((t, c) => t + c.stops, 0);
+    const covered = total ? shown / total : 0;
+    const noFixedArea = !tight.length || covered < minCovered;
+    out.push({
+      key: d.key, label: d.label, plotted: total,
+      // Drawn only when the circles actually describe the work. Otherwise none, and the caller
+      // prints the name under "no fixed area" instead.
+      circles: noFixedArea ? [] : tight,
+      candidateCircles: circles,
+      noFixedArea,
+      covered,
+      // What the circles do NOT cover, said out loud rather than left to the eye.
+      outsideShare: total ? (total - shown) / total : 0,
+      clusterCount: clusters.length,
+    });
+  }
+  return out.sort((a, b) => b.plotted - a.plotted || a.label.localeCompare(b.label));
+}
