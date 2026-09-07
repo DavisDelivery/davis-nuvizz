@@ -59,16 +59,61 @@ export function zipOf(s) {
  */
 export function driverKeyOf(s) {
   const u = String(s?.driverUserName ?? '').trim();
-  if (u) return u.toUpperCase().replace(/\s+/g, '_');
   const n = String(s?.driverName ?? '').trim();
-  if (!n) return null;
-  return n.toUpperCase().replace(/\s+/g, '_');
+  const raw = u || n;
+  return raw ? canonicalDriver(raw).key : null;
+}
+
+/**
+ * ONE HUMAN, ONE KEY — the slash rule, and it is Chad's fact, not an inference.
+ *
+ * The driver field sometimes carries a LOAD name rather than a person: "COLIN/DJ 1". Four
+ * comments in this repo read that as a co-driver load, "two drivers on one truck". It is not.
+ * Chad: "Colin/dj1 is Colin's second load usually but always Colin never dj."
+ *
+ * That is a fact about how Davis names loads that nothing in the data could have told me, and
+ * getting it wrong on a trainee's sheet costs twice over: COLIN and COLIN/DJ_1 become two
+ * drivers with half a territory each, AND a trainee learns that "DJ" is somebody who runs a
+ * patch. So the first segment before the slash is the driver, and a trailing load index is not
+ * part of anybody's name.
+ *
+ * ANY REWRITE IS REPORTED (see `rewritten`). A rule inferred from ONE example that silently
+ * merges two identities is exactly the kind of confident wrongness this sheet must not print —
+ * the caller surfaces every name it changed so Chad can check them rather than trust me.
+ */
+export function canonicalDriver(raw) {
+  const original = String(raw ?? '').trim();
+  if (!original) return { key: null, label: '', rewritten: false };
+  // "COLIN/DJ 1" → "COLIN". The load's second name is not a second driver.
+  let name = original.split('/')[0].trim();
+  // "COLIN 2" → "COLIN": a trailing load index would split one man across his own loads. Only a
+  // SHORT bare number, so a name that genuinely ends in a numeral is left alone.
+  name = name.replace(/\s+\d{1,2}$/, '').trim();
+  if (!name) name = original;
+  const key = name.toUpperCase().replace(/\s+/g, '_');
+  return { key, label: name, rewritten: name !== original };
+}
+
+/**
+ * Every driver name this sheet rewrote, so a human can check the merges rather than trust them.
+ * Absent from the output = nothing was changed, which is a different fact from "no drivers".
+ */
+export function driverRewrites(stops = []) {
+  const seen = new Map();
+  for (const s of stops || []) {
+    const raw = String(s?.driverUserName ?? '').trim() || String(s?.driverName ?? '').trim();
+    if (!raw) continue;
+    const c = canonicalDriver(raw);
+    if (c.rewritten && !seen.has(raw)) seen.set(raw, c.key);
+  }
+  return [...seen].map(([from, to]) => ({ from, to })).sort((a, b) => a.from.localeCompare(b.from));
 }
 
 /** The human label for a driver key — the display name when we have one, else the key. */
 export function driverLabelOf(s) {
   const n = String(s?.driverName ?? '').trim();
-  return n || driverKeyOf(s) || 'Unknown';
+  if (n) return canonicalDriver(n).label;
+  return driverKeyOf(s) || 'Unknown';
 }
 
 /**
@@ -82,6 +127,23 @@ export function driverLabelOf(s) {
  * and the caller is told the list is unfiltered, because silently dropping a real driver is the
  * worse error of the two.
  */
+/**
+ * Build the roster Set from raw NuVizz driver names.
+ *
+ * The roster arrives spelled the way the vendor spells it, so it can hold "COLIN/DJ 1" — and a
+ * raw Set would then fail to match the canonical key COLIN and drop a real driver off the sheet
+ * as if he were a carrier. Canonicalising both sides is the only way the comparison means
+ * anything; leaving it to the caller is how that gets forgotten.
+ */
+export function rosterOf(names = []) {
+  const out = new Set();
+  for (const n of names || []) {
+    const k = canonicalDriver(n).key;
+    if (k) out.add(k);
+  }
+  return out;
+}
+
 export function isDriver(key, roster) {
   if (!key) return false;
   if (!roster || !roster.size) return true;          // no roster → keep everything, say so

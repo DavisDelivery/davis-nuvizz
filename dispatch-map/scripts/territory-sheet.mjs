@@ -14,7 +14,7 @@
 // The input is whatever the aggregation produced: { generatedAt, window, coverage, zips,
 // drivers, stops? }. `stops` is optional and only feeds the dot map.
 import fs from 'node:fs';
-import { zipOwnership, driverCore, territoryCoverage, activeDrivers, driverCircles } from '../src/lib/driver-territory.js';
+import { zipOwnership, driverCore, territoryCoverage, activeDrivers, driverCircles, driverRewrites, rosterOf } from '../src/lib/driver-territory.js';
 import COUNTIES from '../src/lib/ga-north-counties.json' with { type: 'json' };
 
 // Orientation labels. A printed map of anonymous county outlines is a puzzle; four or five
@@ -30,7 +30,7 @@ const src = process.argv[2];
 if (!src) { console.error('usage: territory-sheet.mjs <data.json>'); process.exit(2); }
 const input = JSON.parse(fs.readFileSync(src, 'utf8'));
 const stops = input.stops || [];
-const roster = input.roster ? new Set(input.roster.map((r) => String(r).toUpperCase())) : null;
+const roster = input.roster ? rosterOf(input.roster) : null;
 
 // ONLY DRIVERS WHO HAVE ACTUALLY RUN IN THE WINDOW. Chad: "terry hasn't ran for me in a long
 // time ... just guys that have ran in last 4 weeks."
@@ -106,9 +106,23 @@ function territoryMap() {
     return `<circle cx="${sx(c.lng).toFixed(1)}" cy="${sy(c.lat).toFixed(1)}" r="${Math.max(6, rpx(c.radiusKm)).toFixed(1)}"
       fill="${col}" fill-opacity="0.17" stroke="${col}" stroke-width="1.8" stroke-opacity="0.85"/>`;
   })).join('');
-  const tags = drawn.flatMap((d) => d.circles.map((c) => `<text x="${sx(c.lng).toFixed(1)}" y="${sy(c.lat).toFixed(1)}"
+  // LABELS MUST NOT SIT ON TOP OF EACH OTHER. Two drivers who share an area have circles at
+  // nearly the same point, and centring both names there printed "Colin" straight through
+  // "Marcus" — unreadable, and on a printed sheet there is no hover to recover it. So each label
+  // is nudged down until it clears the ones already placed. Deterministic (biggest circle first),
+  // so the same data lays out the same way every time it is printed.
+  const placed = [];
+  const tags = drawn.flatMap((d) => d.circles.map((c) => ({ d, c })))
+    .sort((a, b) => b.c.stops - a.c.stops)
+    .map(({ d, c }) => {
+      const x = sx(c.lng);
+      let y = sy(c.lat);
+      while (placed.some((p) => Math.abs(p.x - x) < 46 && Math.abs(p.y - y) < 12)) y += 12;
+      placed.push({ x, y });
+      return `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}"
       text-anchor="middle" font-size="10" font-weight="700" fill="${colourOf.get(d.key) || '#333'}"
-      stroke="#fff" stroke-width="2.6" paint-order="stroke">${esc(d.label)}</text>`)).join('');
+      stroke="#fff" stroke-width="2.6" paint-order="stroke">${esc(d.label)}</text>`;
+    }).join('');
 
   const depot = input.depot || { lat: 34.14838, lng: -83.95948, name: 'Buford Terminal' };
   const dep = (depot.lat > y0 && depot.lat < y1 && depot.lng > x0 && depot.lng < x1)
@@ -219,6 +233,10 @@ ${cov.days < 20 ? `<div class="warnbox"><b>Read this as a starting point, not a 
   ${cov.days} day${cov.days === 1 ? '' : 's'} of history is a thin sample — enough to show the broad
   pattern, not enough to settle an unusual day. When the sheet and a dispatcher disagree, the
   dispatcher is right.</div>` : ''}
+
+${(() => { const rw = driverRewrites(stops); return rw.length ? `<div class="cov"><b>Names merged:</b>
+  ${rw.map((r) => `${esc(r.from)} → ${esc(r.to)}`).join(' · ')}. A load named with a slash is one
+  driver's second load, not two people, so both spellings count as the same person. Check these.</div>` : ''; })()}
 
 ${excluded.length ? `<div class="warnbox"><b>Not on this sheet:</b> ${excluded.map((e) => `${esc(e.label)} — ${e.why === 'stopped running'
     ? `last ran ${esc(e.lastSeen || '?')}, ${e.daysSince} days before the end of this window`

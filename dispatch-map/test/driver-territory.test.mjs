@@ -354,3 +354,67 @@ test('…and a tight patch of the same stop count still draws', () => {
   assert.equal(d.circles.length, 1);
   assert.ok(d.circles[0].radiusKm <= 15);
 });
+
+// ── ONE HUMAN, ONE KEY — and this one is Chad's fact, not an inference ───────
+//
+// The driver field sometimes carries a LOAD name rather than a person: "COLIN/DJ 1". FOUR
+// comments in this repo read that as a co-driver load, "two drivers on one truck", and a data
+// survey repeated it back to me as a hazard. It is wrong. Chad: "Colin/dj1 is Colin's second
+// load usually but always Colin never dj."
+//
+// Nothing in the data could have told me that, and getting it wrong costs twice on a trainee's
+// sheet: Colin becomes two drivers with half a territory each, AND the trainee learns that "DJ"
+// is somebody with a patch.
+import { canonicalDriver, driverRewrites, rosterOf } from '../src/lib/driver-territory.js';
+
+test('COLIN/DJ 1 IS COLIN — the load\'s second name is not a second driver', () => {
+  assert.equal(canonicalDriver('COLIN/DJ 1').key, 'COLIN');
+  assert.equal(canonicalDriver('COLIN/DJ 1').label, 'COLIN', 'and the circle is labelled COLIN, not COLIN/DJ 1');
+  assert.equal(canonicalDriver('COLIN').key, 'COLIN', 'so both spellings land on one man');
+});
+
+test('…so his two loads make ONE territory, not two half ones', () => {
+  // The failure this prevents, end to end: without the rule these are two drivers on the sheet,
+  // each showing half of Colin's area, and a trainee splits his freight between them.
+  const stops = [
+    ...many(30, '30518', 'Buford', 'COLIN'),
+    ...many(20, '30519', 'Buford', 'COLIN/DJ 1'),
+  ];
+  const cores = driverCore(stops);
+  assert.equal(cores.length, 1, `split into ${cores.length} drivers: ${cores.map((c) => c.label).join(', ')}`);
+  assert.equal(cores[0].total, 50);
+});
+
+test('a trailing load index does not split a man across his own loads', () => {
+  assert.equal(canonicalDriver('COLIN 2').key, 'COLIN');
+  assert.equal(canonicalDriver('VINCENT').key, 'VINCENT', 'and a plain name is untouched');
+});
+
+test('EVERY REWRITE IS REPORTED — a rule from one example may not merge people silently', () => {
+  // The rule generalises from a single case Chad gave. That is enough to act on and not enough
+  // to trust blindly, so the sheet prints what it changed and he can check it.
+  const rw = driverRewrites([
+    S('30518', 'Buford', 'COLIN/DJ 1'),
+    S('30518', 'Buford', 'VINCENT'),
+    S('30518', 'Buford', 'DENIS 2'),
+  ]);
+  assert.deepEqual(rw, [{ from: 'COLIN/DJ 1', to: 'COLIN' }, { from: 'DENIS 2', to: 'DENIS' }]);
+  assert.ok(!rw.some((r) => r.from === 'VINCENT'), 'an untouched name is not listed as a rewrite');
+});
+
+test('a name that is only a slash or only an index is never rewritten to nothing', () => {
+  for (const bad of ['/', ' / ', '  ', '/DJ 1']) {
+    const c = canonicalDriver(bad);
+    assert.ok(c.key === null || c.key.length > 0, `${JSON.stringify(bad)} produced ${JSON.stringify(c.key)}`);
+  }
+});
+
+test('a roster spelled the VENDOR\'s way still matches the canonical key', () => {
+  // The roster arrives as NuVizz spells it, so it can hold "COLIN/DJ 1". A raw Set would fail to
+  // match the key COLIN and drop a real driver off the sheet as though he were a carrier —
+  // silently, which is the worst way for a name to go missing.
+  const roster = rosterOf(['COLIN/DJ 1', 'VINCENT', 'ESTES']);
+  assert.equal(isDriver('COLIN', roster), true, 'Colin must survive a roster that spells him as a load');
+  assert.equal(isDriver('VINCENT', roster), true);
+  assert.equal(isDriver('NOBODY', roster), false);
+});

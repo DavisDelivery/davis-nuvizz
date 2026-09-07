@@ -157,7 +157,7 @@ function trailerSmsText(row: any, boardDate: string): string {
  * A TRAILER CONFLICT CLAIMS THE ROUTE, NOT THE STOP, because that is the grain the text is
  * sent at — one message per tractor load per board day. Keyed on the stop it would have
  * nagged: fix one of four box-only stops and the next sweep texts about the second.
- * The route name is made path-safe (a co-driver load is spelled "COLIN/DJ 1" and a slash in
+ * The route name is made path-safe (some loads are spelled "COLIN/DJ 1" and a slash in
  * a Firestore doc id is a path segment, not a character — the trap v0.50.8 was spent on).
  */
 export function smsClaimPath(tenant: string, date: string, stopNbr: string, rule = 'hours_risk'): string {
