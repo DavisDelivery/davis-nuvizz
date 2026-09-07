@@ -93,6 +93,35 @@ export function openPastRows(
   return out;
 }
 
+/**
+ * PURE: the NEXT slice of a stray's frozen days to read, newest first — at most `limit` days,
+ * and only days OLDER than `through` (the oldest day already covered for this stop on an
+ * earlier scan). Empty means every day inside the reach has been covered: that is what "this
+ * stop is done" means, and it is computed rather than stored so a moving reach floor cannot
+ * strand a stop as permanently unfinished.
+ *
+ * WHY A SLICE AT ALL (v0.95.1). At a 30-day reach a single long-carried stop can own 30 frozen
+ * copies, and reading them all is 30 Firestore reads spent on one order — the measured pass on
+ * 09/07 was already capping out at a 7-day reach (89 open strays, 119 reads, 51 left unread).
+ * Depth-first on one stop is the wrong shape: a scan that heals ten stops three days deep is
+ * worth more to a dispatcher than one that heals three stops thirty days deep, and the rest is
+ * not dropped — `through` is remembered, so the next scan continues where this one stopped and
+ * an old order is fully healed within a few passes instead of never.
+ *
+ * Days NEWER than `through` are deliberately not revisited: those boards were written by the
+ * scans that recorded this progress, and they already carry the truth this pass is spreading.
+ * A re-touch in NuVizz (a changed update stamp) makes the caller start again from the newest.
+ */
+export function nextCopyDays(
+  ownDay: string, today: string, reachDays: number,
+  opts: { through?: string | null; limit?: number } = {},
+): string[] {
+  const all = frozenCopyDays(ownDay, today, reachDays);
+  const rest = opts.through ? all.filter((d) => d < opts.through!) : all;
+  const limit = opts.limit ?? 0;
+  return limit > 0 ? rest.slice(0, limit) : rest;
+}
+
 /** PURE: the frozen days that can hold a copy of a stray — its own day through yesterday, no
  *  older than the reach — NEWEST FIRST, because a routed stop is clamped forward each day it
  *  stays open and its last open copy sits on the day before it finished. */
@@ -139,7 +168,7 @@ export const copyIsTerminal = (copy: any) => isTerminalStatus(copy?.normalizedSt
 
 export interface FrozenCopy { day: string; copy: any | null }
 export interface Heal { day: string; nbr: string; fields: Record<string, any> }
-export interface RefilePlan { file: any[]; heal: Heal[]; skippedTerminal: number; skippedOnBoard: number; unread: number; healedStops: string[] }
+export interface RefilePlan { file: any[]; heal: Heal[]; skippedTerminal: number; skippedOnBoard: number; unread: number; healedStops: string[]; pending: number }
 
 /**
  * PURE: for each finished stray decide what to file and what to heal. `copies` holds, per
@@ -148,10 +177,10 @@ export interface RefilePlan { file: any[]; heal: Heal[]; skippedTerminal: number
  */
 export function planRefile(
   strays: StrayRow[],
-  opts: { today: string; at: string; onBoard: Set<string>; copies: Map<string, FrozenCopy[]>; nowMs?: number },
+  opts: { today: string; at: string; onBoard: Set<string>; copies: Map<string, FrozenCopy[]>; nowMs?: number; healOnly?: Set<string> | null },
 ): RefilePlan {
   const now = opts.nowMs ?? Date.now();
-  const plan: RefilePlan = { file: [], heal: [], skippedTerminal: 0, skippedOnBoard: 0, unread: 0, healedStops: [] };
+  const plan: RefilePlan = { file: [], heal: [], skippedTerminal: 0, skippedOnBoard: 0, unread: 0, healedStops: [], pending: 0 };
   for (const s of strays) {
     if (!opts.copies.has(s.nbr)) { plan.unread++; continue; }
     const days = opts.copies.get(s.nbr) || [];
@@ -163,6 +192,13 @@ export function planRefile(
       healed = true;
     }
     if (healed) plan.healedStops.push(s.nbr);
+    // PART-READ (v0.95.1): only some of this stop's frozen days have been read so far, so
+    // "no copy records it finished" is not yet a fact — the copy that does could be in the
+    // days still to come, and filing on a half-read history is how a POD re-touch of a
+    // delivery recorded three weeks ago lands on today's board as new work. Heals from the
+    // days we HAVE read are safe and already queued above; the filing decision waits for the
+    // next scan, which continues from where this one stopped.
+    if (opts.healOnly?.has(s.nbr)) { plan.pending++; continue; }
     if (terminalRecorded) { plan.skippedTerminal++; continue; }       // recorded where it ran; a re-touch, not today's work
     if (opts.onBoard.has(s.nbr)) { plan.skippedOnBoard++; continue; }  // the carry-forward already filed it here
     plan.file.push({ ...s.row, boardDate: opts.today, scheduledDate: opts.today, refiledFrom: s.ownDay });
@@ -170,7 +206,7 @@ export function planRefile(
   return plan;
 }
 
-export interface OpenPlan { file: any[]; heal: Heal[]; reopened: number; unread: number; checkedStops: string[] }
+export interface OpenPlan { file: any[]; heal: Heal[]; reopened: number; unread: number; checkedStops: string[]; pending: number }
 
 /**
  * PURE: for each OPEN stray decide what to heal and whether it needs a board at all.
@@ -181,10 +217,10 @@ export interface OpenPlan { file: any[]; heal: Heal[]; reopened: number; unread:
  */
 export function planOpenStrays(
   rows: StrayRow[],
-  opts: { today: string; at: string; onBoard: Set<string>; copies: Map<string, FrozenCopy[]>; nowMs?: number },
+  opts: { today: string; at: string; onBoard: Set<string>; copies: Map<string, FrozenCopy[]>; nowMs?: number; healOnly?: Set<string> | null },
 ): OpenPlan {
   const now = opts.nowMs ?? Date.now();
-  const plan: OpenPlan = { file: [], heal: [], reopened: 0, unread: 0, checkedStops: [] };
+  const plan: OpenPlan = { file: [], heal: [], reopened: 0, unread: 0, checkedStops: [], pending: 0 };
   for (const s of rows) {
     if (!opts.copies.has(s.nbr)) { plan.unread++; continue; }
     plan.checkedStops.push(s.nbr);
@@ -206,6 +242,10 @@ export function planOpenStrays(
       if (differs) plan.heal.push({ day: c.day, nbr: s.nbr, fields: healFields(s.row, { today: opts.today, at: opts.at, reason: 'plan' }) });
     }
     if (reopened) plan.reopened++;
+    // Same part-read rule as above: "no frozen day holds an open copy of it" cannot be
+    // concluded from a slice of the frozen days, and filing on it would put a stop on today's
+    // board that is already sitting on a board further back.
+    if (opts.healOnly?.has(s.nbr)) { plan.pending++; continue; }
     if (!hasOpenCopy && !opts.onBoard.has(s.nbr)) {
       plan.file.push({ ...s.row, boardDate: opts.today, scheduledDate: opts.today, refiledFrom: s.ownDay, refiledOpen: true, carryover: true });
     }

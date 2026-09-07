@@ -24,9 +24,9 @@ import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildSca
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan, recordScanRun, markLoadRosterEmpty, writeActivePool, readStopDoc, patchStopFields, readActivePoolMeta, readFrozenLedger, writeFrozenLedger } from './firestore.mts';
 import type { FrozenLedgerEntry } from './firestore.mts';
-import { listScanForDate, mergeEnrich, twoScanBuckets, completedScanRows, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow, activeArrivalReachDays } from './nuvizz-list.mts';
+import { listScanForDate, mergeEnrich, twoScanPull, completedScanRows, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow, activeArrivalReachDays, LIST_MAX_RESULT } from './nuvizz-list.mts';
 import { buildActivePool } from './active-pool.mts';
-import { strayFinishedRows, openPastRows, planRefile, planOpenStrays, frozenCopyDays, rotate } from './refile-core.mts';
+import { strayFinishedRows, openPastRows, planRefile, planOpenStrays, nextCopyDays, rotate } from './refile-core.mts';
 import type { FrozenCopy, StrayRow, Heal } from './refile-core.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterPull } from './nuvizz-loads.mts';
 import { getStop } from './history-store.mts';
@@ -1295,7 +1295,12 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       const boardDateOverrides = await readBoardDateOverrides(TENANT);
       const overrideCount = Object.keys(boardDateOverrides).length;
       if (overrideCount) console.log(`[scan] honoring ${overrideCount} dispatcher-set board date(s)`);
-      const buckets = TWO_SCAN ? await twoScanBuckets(boardDateOverrides) : null;
+      // TWO requests, whatever the arrival window is set to (v0.95.1 widened it to ±30d) —
+      // plus whether either came back at the row cap, which is the one way a wider window could
+      // hurt: a truncated list makes every order it omits look closed.
+      const pull = TWO_SCAN ? await twoScanPull(boardDateOverrides) : null;
+      const buckets = pull ? pull.buckets : null;
+      if (pull) console.log(`[scan] two-scan pull: ${pull.activeCount} active + ${pull.completedCount} completed row(s) across ±${activeArrivalReachDays()}d${pull.truncated ? ' — TRUNCATED at the row cap' : ''}`);
 
       // ── CS NOTIFY, FIRST THING, ACROSS THE WHOLE PULL (Chad, 8/10) ───────────────
       // "DSV came in on Friday. The moment the scan picked it up on Friday, it should
@@ -1368,8 +1373,14 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // still overlay live fields from a thin pool, but never drops a row on its word.
       let prevPoolMeta: { at: string; count: number; thin: boolean } | null = null;
       if (TWO_SCAN && buckets) { try { prevPoolMeta = await readActivePoolMeta(TENANT); } catch { prevPoolMeta = null; } }
-      const pullThin = !!(prevPoolMeta && prevPoolMeta.count > 0 && liveOpenByNbr.size < prevPoolMeta.count * ABSENT_DEMOTE_MIN_RATIO);
-      if (pullThin) console.warn(`[scan] pull looks THIN across the whole window (${liveOpenByNbr.size} open row(s) vs ${prevPoolMeta!.count} in the last pool at ${prevPoolMeta!.at}) — snapshot and pool are stamped thin; no reader will drop a row on their word this scan`);
+      // Two ways a pull cannot be trusted to say what is GONE, and they need the same verdict:
+      // it came back far shorter than the last one (a vendor hiccup, a half-returned search), or
+      // it came back at the row cap with its tail missing (v0.95.1 — the wider window's one real
+      // hazard). Either way absence stops being evidence for this scan.
+      const pullShort = !!(prevPoolMeta && prevPoolMeta.count > 0 && liveOpenByNbr.size < prevPoolMeta.count * ABSENT_DEMOTE_MIN_RATIO);
+      const pullThin = pullShort || !!pull?.truncated;
+      if (pullShort) console.warn(`[scan] pull looks THIN across the whole window (${liveOpenByNbr.size} open row(s) vs ${prevPoolMeta!.count} in the last pool at ${prevPoolMeta!.at}) — snapshot and pool are stamped thin; no reader will drop a row on their word this scan`);
+      if (pull?.truncated) console.error(`[scan] a saved search came back AT the row cap — the list is truncated, so the pool and snapshot are stamped thin and nothing will be dropped as closed this scan. Raise NUVIZZ_LIST_MAX_RESULT (currently ${LIST_MAX_RESULT}) or narrow NUVIZZ_ACTIVE_ARRIVAL.`);
       if (TWO_SCAN && buckets) {
         try {
           const live = new Set<string>();
@@ -1574,7 +1585,13 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         let frozenLedgerNext: Record<string, FrozenLedgerEntry> | null = null;
         if (TWO_SCAN && buckets && date === today) {
           try {
-            const REFILE_READ_CAP = Math.max(0, Number(process.env.NUVIZZ_REFILE_READ_CAP) || 120);
+            // The read budget for the whole pass, and how deep any ONE stop may go in it. At a
+            // 30-day reach a long-carried order owns up to 30 frozen copies, and spending the
+            // pass on three of them is worth less to a dispatcher than healing thirty orders
+            // three days deep — so depth is sliced and REMEMBERED (nextCopyDays + the ledger's
+            // `through`), and the next scan continues where this one stopped.
+            const REFILE_READ_CAP = Math.max(0, Number(process.env.NUVIZZ_REFILE_READ_CAP) || 400);
+            const FROZEN_COPY_DAYS = Math.max(1, Number(process.env.NUVIZZ_FROZEN_COPY_DAYS) || 10);
             const targetSet = new Set(targets.map((d) => etDateForTargetUTC(d, today)));
             const reach = activeArrivalReachDays();
             const floor = addDaysUTC(boardEtDate, -reach);
@@ -1582,19 +1599,43 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             const opens = openPastRows(buckets, { today: boardEtDate, targets: targetSet, floor });
             const onBoard = new Set(dateStops.map((s) => String(s.stopNbr)));
             const updOf = (x: StrayRow) => String(x.row?.listUpdatedDTTM || '');
-            const memoHit = (x: StrayRow, kind: 'fin' | 'open') => { const e = frozenLedger[`${kind}:${x.nbr}`]; return !!(e && e.upd === updOf(x)); };
-            const needFin = strays.filter((x) => !memoHit(x, 'fin'));
-            const needOpen = opens.filter((x) => !memoHit(x, 'open'));
+            // Where this stop was left. A ledger entry is only a memo while NuVizz's own update
+            // stamp is unchanged; a re-touch throws the progress away and starts from the newest
+            // day, because the state it records has changed.
+            const progressOf = (x: StrayRow, kind: 'fin' | 'open') => {
+              const e = frozenLedger[`${kind}:${x.nbr}`];
+              return e && e.upd === updOf(x) ? (e.through || null) : null;
+            };
+            const fresh = (x: StrayRow, kind: 'fin' | 'open') => !!frozenLedger[`${kind}:${x.nbr}`] && frozenLedger[`${kind}:${x.nbr}`].upd === updOf(x);
+            // Done = every frozen day inside the reach has been covered for this stop.
+            const doneWith = (x: StrayRow, kind: 'fin' | 'open') =>
+              fresh(x, kind) && nextCopyDays(x.ownDay, boardEtDate, reach, { through: progressOf(x, kind) }).length === 0;
+            const needFin = strays.filter((x) => !doneWith(x, 'fin'));
+            const needOpen = opens.filter((x) => !doneWith(x, 'open'));
             const seedMin = Math.floor(Date.now() / 60000);
-            const queue: StrayRow[] = [...rotate(needFin, seedMin), ...rotate(needOpen, seedMin)];
+            const queue: Array<{ x: StrayRow; kind: 'fin' | 'open' }> = [
+              ...rotate(needFin, seedMin).map((x) => ({ x, kind: 'fin' as const })),
+              ...rotate(needOpen, seedMin).map((x) => ({ x, kind: 'open' as const })),
+            ];
             const copies = new Map<string, FrozenCopy[]>();
             const jobs: Array<{ nbr: string; day: string }> = [];
-            let budget = REFILE_READ_CAP, capped = 0;
-            for (const x of queue) {
+            // Stops this pass reads only PART of: heal what was read, decide nothing else yet.
+            const healOnly = new Set<string>();
+            // stopNbr → the oldest day this pass covered, for the ledger below.
+            const coveredThrough = new Map<string, string>();
+            let budget = REFILE_READ_CAP, capped = 0, resumed = 0;
+            for (const { x, kind } of queue) {
               if (copies.has(x.nbr)) continue;
-              const days = frozenCopyDays(x.ownDay, boardEtDate, reach);
+              const through = progressOf(x, kind);
+              const days = nextCopyDays(x.ownDay, boardEtDate, reach, { through, limit: FROZEN_COPY_DAYS });
+              if (!days.length) continue;
               if (days.length > budget) { capped++; continue; }
               budget -= days.length;
+              if (through) resumed++;
+              const oldest = days[days.length - 1];
+              coveredThrough.set(x.nbr, oldest);
+              // Anything still older than this slice means the history is only part-read.
+              if (nextCopyDays(x.ownDay, boardEtDate, reach, { through: oldest }).length) healOnly.add(x.nbr);
               copies.set(x.nbr, days.map((d) => ({ day: d, copy: null })));
               for (const d of days) jobs.push({ nbr: x.nbr, day: d });
             }
@@ -1612,8 +1653,8 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             };
             await Promise.all(Array.from({ length: Math.min(8, jobs.length) }, reader));
             for (const nbr of readFailed) copies.delete(nbr);   // unread → next scan, never guessed at
-            const finPlan = planRefile(needFin, { today: boardEtDate, at: scannedAt, onBoard, copies });
-            const openPlan = planOpenStrays(needOpen, { today: boardEtDate, at: scannedAt, onBoard, copies });
+            const finPlan = planRefile(needFin, { today: boardEtDate, at: scannedAt, onBoard, copies, healOnly });
+            const openPlan = planOpenStrays(needOpen, { today: boardEtDate, at: scannedAt, onBoard, copies, healOnly });
             for (const row of finPlan.file) dateStops.push(row);
             for (const row of openPlan.file) dateStops.push(row);
             pendingHeals = [...finPlan.heal, ...openPlan.heal];
@@ -1621,12 +1662,21 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             // plus every earlier resolution still valid (same NuVizz stamp). Unread, capped and
             // re-touched stops are left out, so the next scan takes them up.
             frozenLedgerNext = {};
-            for (const x of strays) { const k = `fin:${x.nbr}`; if (copies.has(x.nbr)) frozenLedgerNext[k] = { upd: updOf(x), at: scannedAt, kind: 'fin' }; else if (memoHit(x, 'fin')) frozenLedgerNext[k] = frozenLedger[k]; }
-            for (const x of opens) { const k = `open:${x.nbr}`; if (copies.has(x.nbr)) frozenLedgerNext[k] = { upd: updOf(x), at: scannedAt, kind: 'open' }; else if (memoHit(x, 'open')) frozenLedgerNext[k] = frozenLedger[k]; }
+            const carry = (x: StrayRow, kind: 'fin' | 'open') => {
+              const k = `${kind}:${x.nbr}`;
+              const through = coveredThrough.get(x.nbr);
+              if (through) frozenLedgerNext![k] = { upd: updOf(x), at: scannedAt, kind, through };
+              else if (fresh(x, kind)) frozenLedgerNext![k] = frozenLedger[k];   // earlier progress, still valid
+            };
+            for (const x of strays) carry(x, 'fin');
+            for (const x of opens) carry(x, 'open');
             frozenSummary = {
               finishedStrays: strays.length, openStrays: opens.length,
               memoized: (strays.length - needFin.length) + (opens.length - needOpen.length),
               reads: jobs.length, readCap: REFILE_READ_CAP, capped, readFailed: readFailed.size,
+              reach, depthCap: FROZEN_COPY_DAYS, resumed, partRead: healOnly.size,
+              pending: finPlan.pending + openPlan.pending,
+              ...(pull?.truncated ? { pullTruncated: true } : {}),
               filedFinished: finPlan.file.length, filedOpen: openPlan.file.length,
               healsQueued: pendingHeals.length, healFinished: finPlan.heal.length,
               healPlan: openPlan.heal.filter((h) => h.fields.frozen_heal_reason === 'plan').length,
@@ -1634,7 +1684,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
               unread: finPlan.unread + openPlan.unread,
               sample: [...finPlan.file.slice(0, 5).map((r) => `${r.stopNbr}<${r.refiledFrom}`), ...openPlan.file.slice(0, 5).map((r) => `${r.stopNbr}<${r.refiledFrom}:open`)],
             };
-            if (frozenSummary.filedFinished || frozenSummary.filedOpen || frozenSummary.healsQueued || capped || readFailed.size) {
+            if (frozenSummary.filedFinished || frozenSummary.filedOpen || frozenSummary.healsQueued || capped || readFailed.size || resumed) {
               console.log(`[scan] ${date}: frozen-day pass — ${JSON.stringify(frozenSummary)}`);
             }
           } catch (e: any) { console.warn(`[scan] ${date}: frozen-day pass skipped: ${e?.message}`); }
