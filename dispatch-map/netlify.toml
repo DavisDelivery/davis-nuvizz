@@ -30,6 +30,9 @@
   # at 22s and returns a clean JSON error. Still the cheap 2-call list path (no re-scan).
   [functions."nuvizz-stop-explorer"]
     timeout = 26
+  # Check vs NuVizz: the same one-call live list pull as the explorer, same budget.
+  [functions."nuvizz-window-check"]
+    timeout = 26
   # The two LIVE-BOARD engine endpoints (driver drafts and end-of-night cleanup).
   # Both are Firestore-only — ZERO NuVizz calls — but a dispatcher is waiting on a
   # real assignment solve over a whole unplanned pool. On the 10s DEFAULT a busy

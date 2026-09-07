@@ -11,7 +11,8 @@
 import { getNuvizzRequester, setCallTrigger } from './lib/nuvizz-request.mts';
 import { getCreds, basicAuthHeader } from './lib/nuvizz-scan.mts';
 import { buildBody, normalize, cleanPeriod, coveringWindowForRange, rowInRange, LIST_MAX_RESULT, OPENAPI_BASE, SAVED_SEARCHES, fetchSavedSearchRaw, fetchSavedSearchRows, toBoardStop, boardDayFor } from './lib/nuvizz-list.mts';
-import { isFirestoreEnabled, readStops, etDayString } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, etDayString, readActivePool, readActiveUnplannedSet, readCarryoverRetired } from './lib/firestore.mts';
+import { mergeWindowWithPool, pruneWithSnapshot } from './lib/active-pool.mts';
 import { requireUser } from './lib/require-user.mts';
 
 // Re-exported so the existing test (test/stop-explorer.test.mjs) keeps importing them here.
@@ -121,10 +122,32 @@ export default async (req: Request): Promise<Response> => {
         for (const s of stops) { const k = String(s?.stopNbr ?? ''); if (k) byNbr.set(k, s); }
       }
       let rows = [...byNbr.values()];
+      // RECONCILE AGAINST WHAT NUVIZZ LISTS NOW (v0.94.0). These day docs FREEZE at the end of
+      // their day, so on their own they showed 29 delivered orders and one re-dated order as
+      // "unplanned" in a 09/01–09/08 window while hiding three orders NuVizz had un-planned
+      // since. The scan writes the open-order pool every run (lib/active-pool.mts); it decides
+      // which cached rows are still open, refreshes the ones that are, adds the ones the cache
+      // never captured, and drops the ones NuVizz no longer lists — every decision counted in
+      // `reconciled` so the toolbar can say what it removed. No pool yet → the same evidence
+      // the Map's carry-over fold uses (the unplanned snapshot + the retired list). Delivered /
+      // cancelled rows are history and are never touched. Zero NuVizz calls either way.
+      const [pool, snapshot, retired] = await Promise.all([
+        readActivePool('davis').catch(() => null),
+        readActiveUnplannedSet('davis').catch(() => null),
+        readCarryoverRetired('davis').catch(() => ({} as Record<string, string>)),
+      ]);
+      const reconciled = pool && pool.rows.length
+        ? mergeWindowWithPool(rows, pool, { from, to, retired })
+        : pruneWithSnapshot(rows, snapshot, retired, { today });
+      rows = reconciled.rows;
+      // Status filter AFTER the reconcile, on the LIVE status — an order NuVizz un-planned since
+      // its day froze must pass an "Un-Planned" filter, not the frozen "planned" it used to carry.
       if (codes.length) rows = rows.filter((s: any) => codes.includes(String(s.status ?? '')));
       return new Response(JSON.stringify({
         ok: true, source: 'cache', period, range, partial: false, covered: { from, to },
         coveredDays, statusCodes: codes, page: 1, pageSize: rows.length, total: rows.length, rows,
+        pool: pool ? { at: pool.at, windowStart: pool.windowStart, windowEnd: pool.windowEnd, count: pool.count } : null,
+        reconciled: { ...reconciled.stats, basis: pool && pool.rows.length ? 'pool' : (snapshot ? 'snapshot' : 'none') },
       }), { status: 200, headers: cors });
     } catch { /* cache read failed — fall through to the live pull below */ }
   }

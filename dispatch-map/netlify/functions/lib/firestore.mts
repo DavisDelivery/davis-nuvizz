@@ -1593,6 +1593,59 @@ export async function readActiveUnplannedSet(tenant: string): Promise<{ at: stri
   return { at: doc.at || null, windowStart: doc.windowStart || null, stopNbrs: new Set(arr.map(String)) };
 }
 
+// ── Open-order pool (the Routing date window's source of truth) ──────────────
+//
+// Every planned-kind scan holds the WHOLE ±7d active list in memory and writes only today plus
+// two business days of it. This keeps the rest: every open row across every day, compact
+// (lib/active-pool.mts projects it), so a date window can be reconciled against what NuVizz
+// currently lists instead of against day snapshots that froze at the end of their day. One
+// meta document plus fixed-size chunk documents (400 rows ≈ 180 KB, far under the 1 MiB
+// document limit; a heavy day is ~1,500 open rows = 4 chunks). Chunks are written FIRST and
+// the meta last, the same order writeStops uses, so a reader never sees a fresh stamp over a
+// half-written set; leftover chunks from a larger previous pool are deleted before the meta
+// lands. Zero NuVizz cost — this is data the scan already paid for.
+const ACTIVE_POOL_COLLECTION = 'nuvizz_active_pool';
+const ACTIVE_POOL_CHUNK_ROWS = 400;
+const poolChunkId = (i: number) => String(i).padStart(3, '0');
+export async function writeActivePool(
+  tenant: string,
+  pool: { at: string; windowStart: string; windowEnd: string; rows: any[] },
+): Promise<{ chunks: number; count: number }> {
+  const base = `${ACTIVE_POOL_COLLECTION}/${String(tenant || '').toLowerCase()}`;
+  const rows = Array.isArray(pool.rows) ? pool.rows : [];
+  const chunks: any[][] = [];
+  for (let i = 0; i < rows.length; i += ACTIVE_POOL_CHUNK_ROWS) chunks.push(rows.slice(i, i + ACTIVE_POOL_CHUNK_ROWS));
+  if (!chunks.length) chunks.push([]);
+  await Promise.all(chunks.map((c, i) => setDoc(`${base}/chunks/${poolChunkId(i)}`, { i, count: c.length, rowsJson: JSON.stringify(c) })));
+  let existing: any[] = [];
+  try { existing = await listDocs(`${base}/chunks`, { mask: ['i'] }); } catch { existing = []; }
+  await Promise.all(existing
+    .filter((d) => !/^\d{3}$/.test(String(d._id)) || Number(d._id) >= chunks.length)
+    .map((d) => deleteDoc(`${base}/chunks/${d._id}`).catch(() => undefined)));
+  await setDoc(base, {
+    tenant: String(tenant || '').toLowerCase(), at: pool.at, windowStart: pool.windowStart, windowEnd: pool.windowEnd,
+    count: rows.length, chunks: chunks.length,
+  } as any);
+  return { chunks: chunks.length, count: rows.length };
+}
+/** The pool as last written, or null when no scan has written one yet. Rows are deduped by
+ *  stop number on read (first wins) so a read that straddles a rewrite cannot double a row. */
+export async function readActivePool(tenant: string): Promise<{ at: string; windowStart: string; windowEnd: string; count: number; rows: any[] } | null> {
+  const base = `${ACTIVE_POOL_COLLECTION}/${String(tenant || '').toLowerCase()}`;
+  const meta = await getDoc(base);
+  if (!meta || !meta.at) return null;
+  const n = Math.max(0, Math.min(50, Number(meta.chunks) || 0));
+  const docs = await Promise.all(Array.from({ length: n }, (_, i) => getDoc(`${base}/chunks/${poolChunkId(i)}`).catch(() => null)));
+  const rows: any[] = [];
+  const seen = new Set<string>();
+  for (const d of docs) {
+    let arr: any[] = [];
+    try { arr = JSON.parse(d?.rowsJson || '[]'); } catch { arr = []; }
+    for (const r of arr) { const k = String(r?.stopNbr ?? ''); if (!k || seen.has(k)) continue; seen.add(k); rows.push(r); }
+  }
+  return { at: String(meta.at), windowStart: String(meta.windowStart || ''), windowEnd: String(meta.windowEnd || ''), count: rows.length, rows };
+}
+
 // ── Retired carry-over (the phantom-unplanned fix) ───────────────────────────
 //
 // Carry-over folds still-unplanned rows from prior days onto today's board. Prior-day board
