@@ -116,7 +116,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.93.16';
+const APP_VERSION = '0.93.17';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -187,6 +187,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.93.17', 'THE PROFILE CALLED “CHAD” NOW WORKS ON THE IPAD AND THE PHONE, NOT JUST THE DESKTOP IT WAS PICKED ON. Chad, on v0.93.16: “Profile settings should be by user no matter if on desktop or mobile or iPad as we now have 3 defined views.” Then, when asked which identity to key it on: “No look there is profile saved called Chad it just doesn’t actually work.” He is right, and the gap is one field. The profile LIST has been shared across every device since v0.53.0 — the SELECTION was not. Which profile you have picked lived in that browser’s localStorage, so “Chad” sat in the iPad’s dropdown, unselected, forever, and the same on the phone. Nothing was going to select it there but a finger. THE SELECTION IS NOW SHARED, in the same collection as the profiles, under a document id no profile name can ever collide with. Pick “Chad” on the desktop and the iPad and the phone open on “Chad”. Press “Update ‹Chad› to current” on the desktop and every other device picks the new settings up the next time it opens — each profile now carries WHEN it was saved, so a device can tell “I already have this one” from “this changed while I was away”. AND AN UNSAVED TWEAK IS STILL YOURS: the bar this device remembers wins while it was written under the same profile and that profile has not been touched since, so ticking Planned on the way to building a route survives a reload and a Map→Routing hop, exactly as it did yesterday. ONE THING DELIBERATELY NOT SHARED LIVE. The selection is read ONCE, when the screen opens — never streamed. Following it to your OWN devices is the ask; having the other dispatcher’s pick yank your grid out from under you mid-plan is what v0.53.0 refused to ship, and it still refuses. A change made elsewhere arrives the next time you open the screen, and one click puts it back either way. THE PHONE KEEPS ITS RULE from v0.93.16, at Chad’s direction: the date-window and driver filters have no control on a phone, so a phone shows the board rather than a filter it cannot clear — and it never writes that back over your desktop setting. Not built, and said plainly: this is by PROFILE, not by signed-in user. The app has a full username login built and switched off (v0.86.0, VITE_LOGIN_ENABLED unset on both sites, confirmed against Netlify) — the day it goes on, “by user” becomes exact and two dispatchers can hold different selections at once. Until then one selection is shared by the floor, which is right for one dispatcher on three devices and is the trade named here so nobody has to rediscover it. 36 profile tests, 5 of the wiring pins red against yesterday’s build; 3,456 green in all.'],
   ['0.93.16', 'YOUR PROFILE NOW ACTUALLY COMES BACK — UN-PLANNED STAYS TICKED AND LAST 7 DAYS STAYS SET. Chad, Sunday: “My profile is not saving settings like if i have unplanned checked or if i have my fliters set to past 7 days.” He was right, and the reason is worse than “the save failed”: the save worked perfectly every time. The profile LIST saves to Firestore, the name of the profile you have selected saves to the device — so the chip read “Chad” on every load — and NOTHING ever put the settings back on the bar. The one line that applies a profile had exactly one caller: picking it off the dropdown. So every reload, and every hop between Map and Routing (three separate mounts of that grid, one per screen and layout, each with its own blank state), dropped you back to the whole board with no status filter while the chip still said your profile was on. That is the dangerous half: you are not told the filter is gone, you just quietly start reading 3,582 rows instead of the 560 you were working. THE BAR NOW REMEMBERS ITSELF, on this device — view, status filter, date window and range, driver, no-location, and both sorts. Reload and it is where you left it; go Map → Routing to build the route and the Un-Planned you just ticked is still ticked. A profile you have selected is the fallback the first time (and on a browser that has never held a bar), so Chad’s existing “Chad” profile applies itself on the next load with nothing to re-pick. UNSAVED TWEAKS ARE KEPT ON PURPOSE and now SAY SO: an amber dot on the chip means the bar has been changed since the profile was saved, and “Update ‹name› to current” in the menu goes amber to match — the chip is never again allowed to name a profile that is not what you are looking at. TWO THINGS DELIBERATELY NOT DONE: restoring never flings the grid open over the map (picking a profile still does, because that is a deliberate act), and no window restore spends a NuVizz call — “Last 7 days”, “Last 14 days”, ±7 days and custom ranges all read our own board day-docs, and “NuVizz · Today” is the single option that pulls live, exactly as it does when you pick it by hand. Twenty-two tests, including seven that fail the moment any of these connections is dropped again — this was a wiring bug, not a logic bug, and a wiring bug is what a stale-base merge silently reintroduces.'],
   ['0.93.15', 'THE PHONE ROUTING SCREEN SPENDS THREE ROWS ON ITS CHROME WHERE IT SPENT SIX. Chad, Sunday, phone on v0.93.14: “Still a ton of wasted white space. Need to format this much better.” MEASURED FIRST, in a real browser at 390×844 in his exact state (sheet open on Routes): between the bottom of the map and the first route card sat 283px of rows — the grid bar (59), the board row with the date and gear (57), the sheet strip (57), a SECOND strip inside the sheet reading Routes/Loads under a tab that already said Routes (46 plus 12 of padding), the search row (57) — and above the map a 59px row holding one 132px Build/Engine control, 70% empty. Every one of those rows was a full-width band for one or two small controls. WHAT MOVED, AND WHERE, each into space another row already had free: (1) the settings gear into the APP BAR, the one strip nothing scrolls away, which had 44px to spare beside the version chip — a portal into a slot the bar exposes, dropping DOWN from the top and capped to the viewport; (2) the board date into the GRID’S COLLAPSED BAR, which had ~120px free beside Stops/Loads, as a compact control — “Today · 9/6” or “Tue 9/8 ▾” with the phone’s own native date wheel riding invisibly on top, so nothing custom can get the date wrong — where the old native input alone was 170px and could never share a row; the sheet renders the same control in a row of its own only while the grid is switched off, so there is one date on screen in every state and never two (the v0.93.12 rule); (3) Routes and Loads (or Drivers) into the SHEET STRIP ITSELF — Setup · Routes · Loads · Result — so the second strip and its repeated word are gone; (4) the Build/Engine row OFF the Build screen — Engine is a gear action, and the Engine screen keeps the row so the way back is always on screen; (5) the Stops/Loads toggle drops its icons on the phone, and the Routes/Loads panel body loses a step of padding. The desktop is untouched. Two views, not one layout patched. The mobile guard’s Routes/Loads probe and the loads-tab guard address the sheet’s Loads tab by its own name now (data-sheet-tab), because by role “Loads” would land on the grid’s Loads button first and open the wrong thing — which is also what makes the probe fail on the previous build.'],
   ['0.93.14', 'THE REVIEW OF v0.93.13 CHANGED FOUR OF ITS RULES, AND THE BOT HAD MERGED IT BEFORE THE FIXES LANDED. v0.93.13 was reviewed adversarially — three lenses, a refuter each — while its PR was open; the repo’s auto-merge took the green PR at its first commit, so the findings ship here, one version later, unchanged in substance. (1) The first offer rule hid the list at route 51 of 100: it offered shells only while MORE THAN HALF the standard names were missing, so after Chad saved half a day and the scan captured it the tab printed “every load already carries orders” again. A generated day is now told by its SHAPE, not its size — it holds Draft shells at zero trips, and a day built by hand holds only routes with stops because NuVizz refuses an empty route — so a hand-built day keeps offering every name it lacks. (2) A half-built day was counted as a source, so sixty routes built by hand would have outvoted the forty not yet built and shrunk the next day’s list; only generated-looking days are sources now, read together in one round trip and remembered for five minutes. (3) The seventh shell tap was silent: Compare caps at six cards and the refusal went to the New-route modal, which was not open — reproduced in a real browser on both views by the refuter — so the tap now says “Compare is full” where it happened, and the guard opens six cards and taps a seventh. (4) Closed days: a Saturday, a Sunday or Labor Day landed on by a date picker one day off must not hand out a hundred routes to build onto a day nobody drives; the repo’s own calendar (davis-calendar.js) settles it before a document is read. Also from the review: no shells on a day nobody has asked NuVizz about (source none); a name over NuVizz’s 20-character cap is never offered; the grid’s row order is a numeric tier (driven, driverless, shell) because under ICU collation the old “~” sentinel sorted above letters; a past day captured empty today says “holds no loads” without “yet” and no invitation to build; and the guard’s empty-day fixture is stamped minutes ago, not six hours, so a CI run between midnight and 6am ET cannot cross the ET day and go red for nothing. Not done, said plainly: labelling Tuesday’s empty twin of a route built Sunday as such on the Loads tab — the pair already shows both numbers (v0.54.25). 60 new tests; the loads-tab guard drives the uncreated day on both surfaces and both views, taps a shell into a card, brings the panel back to prove the name left the offer, and taps a seventh into the cap.'],
@@ -13669,11 +13670,18 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     setLoadSort(n.loadSort);
     if (openAfter) setOpen(true);
   };
+  const activeProfile = profileList.find((p) => p.name === activeProfileName) || null;
   // REMEMBER THE BAR — the write that was missing. Without it the settings existed only in
   // this component's useState, and there are THREE mounts of it (Map, Routing phone, Routing
   // desktop), so every screen hop and every reload started from an empty filter while the
   // chip above still named a profile. Not gated on having a profile: most of the time nobody
   // saves one, they just set the bar and expect it to still be set.
+  //
+  // STAMPED WITH THE PROFILE IT WAS WRITTEN UNDER, and that stamp is what makes a profile
+  // cross a device boundary: on the next load, a bar written under a DIFFERENT profile (or
+  // none) loses to the selected one, and so does a bar older than the profile's last save.
+  // See profileBeats() in lib/bar-memory.js.
+  //
   // ONE HOLD ON IT, and it is the fix eating its own tail if you skip it: while a SELECTED
   // profile is still coming down from Firestore the bar is sitting on defaults, and writing
   // those defaults down as this device's memory would make the next load read the memory,
@@ -13685,22 +13693,27 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   useEffect(() => {
     if (pendingProfile.current && sameBar(barSnapshot(), BAR_DEFAULTS)) return;
     pendingProfile.current = false;
-    safeWriteJSON(LS_BOTTOM_BAR, barSnapshot());
-  }, [view, statusSel, nvWindow, nvFrom, nvTo, driverSel, unmappedOnly, stopSort, loadSort]); // eslint-disable-line react-hooks/exhaustive-deps
-  const activeProfile = profileList.find((p) => p.name === activeProfileName) || null;
-  // THE COLD START. A device with a profile selected but no remembered bar (first load after
-  // this shipped, storage cleared, a new browser) opens on defaults while the profile list is
-  // still coming down from Firestore. Apply it when it lands — but only while the bar is still
-  // untouched, so a dispatcher who started filtering in that first second keeps what they set.
-  // Once, ever: re-running it would yank the bar back to the profile mid-plan.
-  const lateProfileApplied = useRef(!barBoot.pending);
+    safeWriteJSON(LS_BOTTOM_BAR, { ...barSnapshot(), profile: activeProfileName || null, profileAt: activeProfile?.updatedAt ?? null });
+  }, [view, statusSel, nvWindow, nvFrom, nvTo, driverSel, unmappedOnly, stopSort, loadSort, activeProfileName, activeProfile]); // eslint-disable-line react-hooks/exhaustive-deps
+  // THE PROFILE ARRIVING — from Firestore on a cold start, or because it was selected or
+  // updated on another device. Same question either way, so it is asked with the same
+  // function the mount used: does the profile beat what this device remembers? If it does,
+  // apply it — but only while the bar still reads exactly as it did at mount, so a
+  // dispatcher who started filtering in that first second keeps what they set. Once, ever:
+  // re-running it would yank the bar back mid-plan.
+  const lateProfileApplied = useRef(false);
   useEffect(() => {
-    if (lateProfileApplied.current || !activeProfileName) return;
-    const p = profileList.find((x) => x.name === activeProfileName);
-    if (!p) return;
+    if (lateProfileApplied.current || !activeProfile) return;
+    const r = restoreBar({
+      memory: safeReadJSON(LS_BOTTOM_BAR, null),
+      activeName: activeProfileName,
+      profiles: profileList,
+      width: readViewportSize().w || null,
+    });
+    if (r.from !== 'profile') return;   // this device's own bar still wins — leave it alone
     lateProfileApplied.current = true;
-    if (sameBar(barSnapshot(), BAR_DEFAULTS)) applyBarSettings(p.s, { openAfter: false });
-  }, [profileList, activeProfileName]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (sameBar(barSnapshot(), boot)) applyBarSettings(activeProfile.s, { openAfter: false });
+  }, [profileList, activeProfileName, activeProfile]); // eslint-disable-line react-hooks/exhaustive-deps
   // Does the bar still match the profile named on the chip? An unsaved tweak is normal and
   // stays put — but the chip must not claim a preset that is not what you are looking at.
   // That mismatch, silent, IS the bug this release fixes; a dot is what makes it visible.
@@ -15244,6 +15257,13 @@ function stopLooksOversize(s) {
  * its profiles up the next time it connects.
  */
 const LS_BOTTOM_PROFILES_ACTIVE = 'dispatchMap.bottomPanelProfiles.active';
+// WHICH PROFILE IS SELECTED, shared like the list is. Chad: "there is profile saved called
+// Chad it just doesn't actually work" — on the iPad and the phone it was in the dropdown and
+// was never SELECTED there, because this was localStorage and localStorage is one browser on
+// one machine. It lives in the profiles collection under a doc id profileDocId() can never
+// mint (it strips the underscores), and it carries no `s`, so the list mapper's own filter
+// already skips it. localStorage stays as the offline cache and the instant first paint.
+const ACTIVE_DOC_ID = '__active';
 const LS_BOTTOM_PROFILES_MIGRATED = 'dispatchMap.bottomPanelProfiles.migrated';
 const profileDocId = (name) => String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120) || 'profile';
 
@@ -15262,15 +15282,45 @@ function useBottomPanelProfiles() {
   const setActive = useCallback((name) => {
     setActiveState(name);
     safeWriteJSON(LS_BOTTOM_PROFILES_ACTIVE, name);
+    if (!db) return;
+    // Same shape as the profile writes below: the optimistic state is already set, so a
+    // refusal has to be reported or the selection silently stays on this device only —
+    // which is the bug being fixed, wearing a different hat.
+    setDoc(doc(db, 'bottom_panel_profiles', ACTIVE_DOC_ID), { activeName: name ?? null, updated_at: serverTimestamp() })
+      .catch((e) => reportDenied('bottom_panel_profiles', e, 'write'));
   }, []);
+  // THE SHARED SELECTION IS READ ONCE, AT MOUNT — never live. Following the selection to
+  // your other devices is what Chad asked for; having the OTHER dispatcher's pick yank your
+  // grid out from under you mid-plan is the thing v0.53.0 refused to ship, and it still is.
+  // So a change made elsewhere is picked up the next time this screen opens, and one click
+  // puts it back either way.
+  const sharedActiveRead = useRef(false);
 
   useEffect(() => {
     if (!db) return;
     const unsub = onSnapshot(collection(db, 'bottom_panel_profiles'), async (snap) => {
       const remote = snap.docs
-        .map((d) => ({ name: d.data()?.name || d.id, s: d.data()?.s || null }))
+        .map((d) => ({
+          name: d.data()?.name || d.id,
+          s: d.data()?.s || null,
+          // WHEN it was last saved, so a device can tell "I already have this one" from
+          // "this was updated on the desktop since I last looked". serverTimestamp() reads
+          // back null on the writing client's own echo, so this is legitimately absent for
+          // a beat — bar-memory treats absent as "not newer" rather than guessing.
+          updatedAt: (() => { try { return d.data()?.updated_at?.toMillis?.() ?? null; } catch { return null; } })(),
+        }))
         .filter((p) => p.s)
         .sort((a, b) => a.name.localeCompare(b.name));
+      // The shared selection rides the same snapshot — one listener, no extra read.
+      if (!sharedActiveRead.current) {
+        sharedActiveRead.current = true;
+        const shared = snap.docs.find((d) => d.id === ACTIVE_DOC_ID)?.data();
+        if (shared && 'activeName' in shared) {
+          const nm = typeof shared.activeName === 'string' && shared.activeName ? shared.activeName : null;
+          setActiveState(nm);
+          safeWriteJSON(LS_BOTTOM_PROFILES_ACTIVE, nm);
+        }
+      }
       // ONE-TIME migration of whatever this device saved before profiles were shared.
       // Guarded by a local flag so a profile someone deletes on another device doesn't
       // get resurrected every time this browser reconnects.

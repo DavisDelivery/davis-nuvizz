@@ -13,6 +13,9 @@ import { BAR_STATUS_KEYS, BAR_WINDOWS } from '../src/lib/bar-memory.js';
 
 const src = await readFile(fileURLToPath(new URL('../src/App.jsx', import.meta.url)), 'utf8');
 
+/** App.jsx's own profileDocId, lifted out so the reserved-id claim above is actually checked. */
+const profileDocIdOf = (name) => String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120) || 'profile';
+
 test('the bar is restored from the device BEFORE any of its state is declared', () => {
   assert.ok(/const \[barBoot\] = useState\(\(\) => restoreBar\(\{/.test(src), 'the grid no longer restores its bar at mount');
   for (const k of ['memory: safeReadJSON\\(LS_BOTTOM_BAR', 'activeName: safeReadJSON\\(LS_BOTTOM_PROFILES_ACTIVE', 'profiles: safeReadJSON\\(LS_BOTTOM_PROFILES'])
@@ -38,7 +41,8 @@ test('every setting on the bar is seeded from the restore — one missed line is
 });
 
 test('the bar is written back on every change', () => {
-  assert.ok(/safeWriteJSON\(LS_BOTTOM_BAR, barSnapshot\(\)\)/.test(src), 'nothing persists the live bar — this is the write that was missing');
+  assert.ok(/safeWriteJSON\(LS_BOTTOM_BAR, \{ \.\.\.barSnapshot\(\), profile: activeProfileName \|\| null, profileAt: activeProfile\?\.updatedAt \?\? null \}\)/.test(src),
+    'the bar must be persisted STAMPED with the profile it was written under — without the stamp a profile can never cross a device boundary');
   // Same snapshot for the profile and for the device memory, so the two can never drift apart.
   assert.ok(/const barSnapshot = \(\) => \(\{ view, status: \[\.\.\.statusSel\], nvWindow, nvFrom, nvTo, driverSel, unmappedOnly, stopSort, loadSort \}\)/.test(src));
   // The hold: an untouched default bar must not be written down while a selected profile is
@@ -46,7 +50,7 @@ test('the bar is written back on every change', () => {
   assert.ok(/const pendingProfile = useRef\(barBoot\.pending\)/.test(src));
   assert.ok(/if \(pendingProfile\.current && sameBar\(barSnapshot\(\), BAR_DEFAULTS\)\) return;/.test(src),
     'the pending-profile hold is gone — a cold start would freeze the unfiltered board in permanently');
-  const deps = src.match(/safeWriteJSON\(LS_BOTTOM_BAR, barSnapshot\(\)\);\s*\n\s*\}, \[([^\]]+)\]/);
+  const deps = src.match(/safeWriteJSON\(LS_BOTTOM_BAR, \{[^\n]*\}\);\s*\n\s*\}, \[([^\]]+)\]/);
   assert.ok(deps, 'the persist effect has no dependency list');
   for (const d of ['view', 'statusSel', 'nvWindow', 'nvFrom', 'nvTo', 'driverSel', 'unmappedOnly', 'stopSort', 'loadSort'])
     assert.ok(deps[1].includes(d), `${d} changes would not be persisted — it is missing from the effect's deps`);
@@ -58,14 +62,35 @@ test('a stored bar is read through normalizeBar, never straight into setState', 
 });
 
 test('restoring never flings the grid open over the map; picking a profile still does', () => {
-  assert.ok(/applyBarSettings\(p\.s, \{ openAfter: false \}\)/.test(src), 'the cold-start restore must not open the panel');
+  assert.ok(/applyBarSettings\(activeProfile\.s, \{ openAfter: false \}\)/.test(src), 'the restore must not open the panel');
   assert.ok(/applyBarSettings\(p\.s\);/.test(src), 'selecting a profile is a deliberate act — it opens the grid');
 });
 
-test('a profile arriving late still gets applied — once, and only over an untouched bar', () => {
-  assert.ok(/const lateProfileApplied = useRef\(!barBoot\.pending\)/.test(src));
-  assert.ok(/if \(lateProfileApplied\.current \|\| !activeProfileName\) return;/.test(src), 'the late apply must not re-run and yank the bar back mid-plan');
-  assert.ok(/if \(sameBar\(barSnapshot\(\), BAR_DEFAULTS\)\) applyBarSettings/.test(src), 'a bar the dispatcher already touched must be left alone');
+test('a profile arriving — cold start, or selected on another device — is applied once', () => {
+  assert.ok(/const lateProfileApplied = useRef\(false\)/.test(src));
+  assert.ok(/if \(lateProfileApplied\.current \|\| !activeProfile\) return;/.test(src), 'the late apply must not re-run and yank the bar back mid-plan');
+  // Asked with the SAME function the mount used, so the two can never disagree about which wins.
+  assert.ok(/const r = restoreBar\(\{\s*\n\s*memory: safeReadJSON\(LS_BOTTOM_BAR, null\),/.test(src),
+    'the late apply must re-ask restoreBar, not re-implement the precedence rule');
+  assert.ok(/if \(r\.from !== 'profile'\) return;/.test(src), "this device's own bar has to be able to win");
+  assert.ok(/if \(sameBar\(barSnapshot\(\), boot\)\) applyBarSettings/.test(src),
+    'a bar the dispatcher already touched this session must be left alone');
+});
+
+test('the SELECTION is shared, and read once at mount so nobody is yanked mid-plan', () => {
+  assert.ok(/const ACTIVE_DOC_ID = '__active';/.test(src), 'the shared selection doc is gone — the profile is device-local again');
+  assert.ok(/setDoc\(doc\(db, 'bottom_panel_profiles', ACTIVE_DOC_ID\), \{ activeName: name \?\? null/.test(src),
+    'selecting a profile must publish the selection, or it never reaches the iPad');
+  assert.ok(/if \(!sharedActiveRead\.current\) \{/.test(src),
+    'the shared selection must be read ONCE — live, the other dispatcher\'s pick would yank this grid mid-plan');
+  // profileDocId() strips underscores, so no profile a person can name collides with it.
+  assert.equal(profileDocIdOf('__active'), 'active');
+  assert.ok(/\.filter\(\(p\) => p\.s\)/.test(src), 'the selection doc carries no `s`, and that filter is what keeps it out of the list');
+});
+
+test('each profile carries WHEN it was saved, so a device can tell stale from current', () => {
+  assert.ok(/updatedAt: \(\(\) => \{ try \{ return d\.data\(\)\?\.updated_at\?\.toMillis\?\.\(\) \?\? null; \} catch \{ return null; \} \}\)\(\)/.test(src),
+    'without the save time, "Update Chad to current" on the desktop never reaches the iPad');
 });
 
 test('the restore is told how wide the screen is, and a stale driver stays clearable', () => {

@@ -112,6 +112,14 @@ export function sameBar(a, b) {
  *   activeName — the profile name this device has selected, or null
  *   profiles   — the profile list as known right now (Firestore cache or live)
  *
+ * WHICH BEATS WHICH, and this is the part Chad's second report was about: "there is a
+ * profile saved called Chad it just doesn't actually work" — on the iPad and the phone the
+ * profile EXISTS in the list (that list has been shared across devices since v0.53.0) but
+ * was never SELECTED there, because the selection lived in this browser's localStorage. So
+ * the remembered bar wins ONLY while it was written under the same profile and that profile
+ * has not been touched since. Select "Chad" on the desktop, or update it there, and the next
+ * time the iPad or the phone opens, the profile wins and applies itself.
+ *
  * Returns { settings, from, pending }.
  *
  * `pending` is the one that matters and the one that is easy to miss: a profile is SELECTED
@@ -123,6 +131,8 @@ export function sameBar(a, b) {
  */
 export function restoreBar({ memory = null, activeName = null, profiles = [], width = null } = {}) {
   const name = typeof activeName === 'string' && activeName ? activeName : null;
+  const list = Array.isArray(profiles) ? profiles : [];
+  const active = name ? list.find((x) => x && x.name === name && x.s) : null;
   // A width we were not given is not a narrow one — never drop a filter on a guess. And
   // ZERO is not a narrow screen, it is the absence of one (no window to measure, a hidden
   // document): Number.isFinite(0) is true and 0 < 640, so the naive check silently strips
@@ -135,13 +145,36 @@ export function restoreBar({ memory = null, activeName = null, profiles = [], wi
     for (const f of BAR_DESKTOP_ONLY_FIELDS) out[f] = BAR_DEFAULTS[f];
     return out;
   };
-  if (memory && typeof memory === 'object' && !Array.isArray(memory)) {
-    return { settings: reachable(normalizeBar(memory)), from: 'memory', pending: false };
+  const mem = memory && typeof memory === 'object' && !Array.isArray(memory) ? memory : null;
+  if (mem && !profileBeats(mem, name, active)) {
+    return { settings: reachable(normalizeBar(mem)), from: 'memory', pending: false };
   }
-  const list = Array.isArray(profiles) ? profiles : [];
-  const p = name ? list.find((x) => x && x.name === name && x.s) : null;
-  if (p) return { settings: reachable(normalizeBar(p.s)), from: 'profile', pending: false };
+  if (active) return { settings: reachable(normalizeBar(active.s)), from: 'profile', pending: false };
+  // No profile to fall back to — a bar this device remembers is still better than nothing.
+  if (mem) return { settings: reachable(normalizeBar(mem)), from: 'memory', pending: false };
   return { settings: normalizeBar(null), from: 'defaults', pending: !!name };
+}
+
+/**
+ * Does the selected profile override what this device last had on its bar?
+ *
+ * Yes in exactly two cases, and both are a deliberate act by the person somewhere else:
+ *   • the SELECTION changed — this device's bar was written under a different profile (or
+ *     none), so picking "Chad" on the desktop is what selects it on the iPad and the phone;
+ *   • the PROFILE changed — "Update Chad to current" was pressed on another device since
+ *     this one last wrote its bar, so the newer save is the one he means.
+ *
+ * Otherwise the remembered bar wins, which is what keeps an unsaved tweak alive across a
+ * reload and a screen hop. A timestamp we cannot read (serverTimestamp is null on the write's
+ * own echo, an older profile saved before this shipped) is NOT treated as newer: guessing
+ * "newer" there would re-apply the profile on every load and quietly eat the tweak.
+ */
+function profileBeats(memory, activeName, active) {
+  if (!active) return false;
+  if (memory.profile !== activeName) return true;
+  const at = Number(active.updatedAt);
+  const seen = Number(memory.profileAt);
+  return Number.isFinite(at) && at > 0 && (!Number.isFinite(seen) || at > seen);
 }
 
 /**
