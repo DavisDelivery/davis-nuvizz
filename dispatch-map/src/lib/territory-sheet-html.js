@@ -68,15 +68,21 @@ const cov = input.coverage || territoryCoverage(inWindow, { roster });
 const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pct = (n) => `${Math.round((n || 0) * 100)}%`;
 
-// NO PALETTE, AND THAT IS A FIX RATHER THAN A SAVING. Eight colours across 58 drivers means
-// seven men share every swatch, so a colour on the town table cannot identify anybody — it can
-// only mislead a reader into thinking it does. One card per driver needs no key at all, and one
-// ink survives the photocopier the sheet will actually be handed out on.
+// COLOUR TELLS RINGS APART. IT DOES NOT NAME ANYBODY.
+//
+// Ten swatches across 59 drivers means six men share every colour, so a colour cannot identify a
+// person — and the first sheet printed a legend that implied it could, which cost a whole page
+// and told the reader something false. There is no legend now. On the big map the colours exist
+// so that two rings crossing each other read as two rings; the NAME in the middle is the answer.
+// Varied lightness as well as hue, because this sheet gets photocopied.
+const PALETTE = ['#1f4e79', '#a4462d', '#3f7d3f', '#6b4a8a', '#8a6d1f',
+                 '#256b6b', '#8a3060', '#4a5a6b', '#2f6f9e', '#7a3b1e'];
 const depot = input.depot || { lat: 34.14838, lng: -83.95948, name: 'Buford Terminal' };
 const circleSets = input.circles || driverCircles(stops, { roster, active: activeSet });
 const pointsBy = driverPoints(inWindow, { roster, active: activeSet });
 const allPoints = [...pointsBy.values()].flat();
 const frame = mapFrame(allPoints, { include: [depot] });
+const colourOf = new Map(drivers.map((d, i) => [d.key, PALETTE[i % PALETTE.length]]));
 
 // ── the shared projection ───────────────────────────────────────────────────
 function projector(W) {
@@ -126,19 +132,82 @@ function svgBox(P, body, widthMm, maxHeightMm) {
     preserveAspectRatio="xMidYMid meet" style="display:block;margin:0 auto">${body}</svg>`;
 }
 
-// ── page 1: the footprint, which is the only thing worth drawing all at once ─
-// Not fifty-eight labelled territories — one shape, in one ink, answering "where does Davis
-// deliver?" A trainee needs that frame before any card means anything, and it is the ONE
-// question the combined map could still answer honestly once the names came off it.
+// ── PAGE ONE: ONE BIG MAP, EVERY DRIVER'S CIRCLE, OVERLAPPING ───────────────
+//
+// Chad: "Dont put all the dots i want one big map with overlapping circles for the drivers."
+//
+// This is the wall chart. It is the shape he asked for at the start ("circles or ovals of where
+// their general work area is") and confirmed after seeing the sample ("I like the circles"), and
+// the version that failed was not wrong about the SHAPE — it was wrong about everything else on
+// the page. What makes fifty-odd overlapping circles readable this time:
+//
+//   • THE RINGS ARE HOLLOW. Filled and stacked four deep the metro went solid and no ring could
+//     be followed round. Outlines cross each other and stay separate lines.
+//   • THERE ARE FEWER OF THEM. The 30km rule (measured, see driverCircles) leaves most drivers
+//     one ring instead of the shattered handful the 15km cap produced.
+//   • NAMES SIT IN THE MIDDLE OF THEIR OWN RING, not stacked at one point. Smallest circles get
+//     their label placed first — a small ring is a precise claim and a displaced name over it is
+//     a lie about a specific patch, while a big ring can carry its name off-centre and still be
+//     read. Anything that still collides is nudged and given a leader line back to its circle.
+//   • IT GETS THE WHOLE PAGE. 186mm across, no header competing with it.
+//
+// The colours are not a key and there is no legend — with 59 drivers a legend was the thing
+// eating a page. They exist so two rings crossing each other stay two rings. The NAME identifies.
 const overview = (() => {
   if (!frame) return '<p class="muted">No coordinates in this window, so no map can be drawn. The tables below use ZIP, which every stop carries.</p>';
   const P = projector(660);
-  const dots = allPoints.filter((p) => P.inside(p.lat, p.lng))
-    .map((p) => `<circle cx="${P.sx(p.lng).toFixed(1)}" cy="${P.sy(p.lat).toFixed(1)}" r="1.5" fill="${INK}" fill-opacity="0.5"/>`).join('');
-  const off = allPoints.length - allPoints.filter((p) => P.inside(p.lat, p.lng)).length;
-  return `<div class="mapbox">${svgBox(P, basemap(P, false) + dots, 186, 128)}</div>
-    <p class="muted">Every delivery address in the window, one dot each${off ? `; ${off} further out are off this map` : ''}.
-    This is the ground the cards divide up — each driver's card that follows shows the same map at the same scale.</p>`;
+  const drawn = circleSets.filter((d) => d.circles.length);
+  const all = drawn.flatMap((d) => d.circles.map((c) => ({ d, c, r: Math.max(6, P.rpx(c.radiusKm)) })));
+
+  // Biggest first so a small ring is never buried under a big one's outline.
+  const rings = [...all].sort((a, b) => b.r - a.r).map(({ d, c, r }) => {
+    const col = colourOf.get(d.key) || '#555';
+    return `<circle cx="${P.sx(c.lng).toFixed(1)}" cy="${P.sy(c.lat).toFixed(1)}" r="${r.toFixed(1)}"
+      fill="${col}" fill-opacity="0.05" stroke="${col}" stroke-width="1.6" stroke-opacity="0.95"/>`;
+  }).join('');
+
+  // LABELS. Smallest ring first (its claim is the most specific), then out along a ring of
+  // candidate offsets, and only then straight down with a leader line. Deterministic — the same
+  // data lays out the same way every time it is printed, which a hand-tuned map cannot promise.
+  // THE PLACES ARE SEEDED FIRST, so a driver's name can never be printed through "Buford" or
+  // "Lawrenceville". The town labels are what make this a map of somewhere rather than a pile of
+  // rings; losing one to a name costs more than moving that name a few millimetres.
+  const placed = TOWNS.filter(([, lat, lng]) => P.inside(lat, lng))
+    .map(([n, lat, lng]) => ({ x: P.sx(lng) + 3.5 + n.length * 2.3, y: P.sy(lat) + 3, w: n.length * 4.6 + 6 }));
+  if (P.inside(depot.lat, depot.lng)) {
+    placed.push({ x: P.sx(depot.lng) + 6 + depot.name.length * 2.6, y: P.sy(depot.lat) + 3, w: depot.name.length * 5.2 + 8 });
+  }
+  const clear = (x, y, w) => !placed.some((p) => Math.abs(p.x - x) < (p.w + w) / 2 && Math.abs(p.y - y) < 10);
+  const labels = [...all].sort((a, b) => a.r - b.r).map(({ d, c, r }) => {
+    const cx = P.sx(c.lng), cy = P.sy(c.lat);
+    const w = d.label.length * 4.6 + 4;
+    let x = cx, y = cy + 3, leader = '';
+    if (!clear(x, y, w)) {
+      // Out along its own ring first, then further out. In the metro the small rings sit inside
+      // each other, so the near offsets are all still in the crowd — a name has to be allowed to
+      // travel, and the leader line is what keeps it attached to the right circle.
+      const tries = [];
+      for (const f of [0.6, 0.95, 1.3, 1.8, 2.5, 3.4]) {
+        for (const a of [-90, 90, 0, 180, -45, 45, -135, 135, -70, 70, -110, 110]) {
+          tries.push([cx + Math.cos((a * Math.PI) / 180) * r * f, cy + Math.sin((a * Math.PI) / 180) * r * f + 3]);
+        }
+      }
+      const hit = tries.find(([tx, ty]) => clear(tx, ty, w) && tx > w / 2 && tx < P.W - w / 2 && ty > 8 && ty < P.H - 4);
+      if (hit) { [x, y] = hit; } else { while (!clear(x, y, w)) y += 10; }
+      leader = `<line x1="${cx.toFixed(1)}" y1="${cy.toFixed(1)}" x2="${x.toFixed(1)}" y2="${(y - 3).toFixed(1)}"
+        stroke="${colourOf.get(d.key) || '#555'}" stroke-width="0.5" stroke-opacity="0.55"/>`;
+    }
+    placed.push({ x, y, w });
+    return `${leader}<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="middle" font-size="9" font-weight="700"
+      fill="${colourOf.get(d.key) || '#333'}" stroke="#fff" stroke-width="2.4" paint-order="stroke">${esc(d.label)}</text>`;
+  }).join('');
+
+  const two = drawn.filter((d) => d.circles.length > 1);
+  return `<div class="mapbox">${svgBox(P, basemap(P, false) + rings + labels, 186)}</div>
+    <p class="muted">Each ring covers where most of that driver's work sits. Somebody who works two
+    areas gets two rings rather than one stretched between them${two.length ? ` — ${esc(two.map((d) => d.label).join(', '))}` : ''}.
+    A ring is a habit, not a boundary: rings overlap because areas are shared, and the town table
+    on the next page says who usually has a place when two of them cross it.</p>`;
 })();
 
 // ── the lookup table — the page a trainee actually uses ─────────────────────
@@ -165,9 +234,13 @@ const cards = [...drivers].sort((a, b) => a.label.localeCompare(b.label)).map((d
   let map = '<div class="nomap">No coordinates for this driver — read the ZIP list.</div>';
   if (frame && pts.length) {
     const P = projector(300);
-    const shown = pts.filter((p) => P.inside(p.lat, p.lng));
-    const dots = shown.map((p) => `<circle cx="${P.sx(p.lng).toFixed(1)}" cy="${P.sy(p.lat).toFixed(1)}" r="2.1"
-      fill="${INK}" fill-opacity="0.55"/>`).join('');
+    // NO DOTS. Chad, on the version that had them: "Dont put all the dots." A driver with no ring
+    // still needs SOMETHING on his card or the square is blank and teaches nothing, so his stops
+    // show as a light scatter there and only there — which is exactly the fact about him.
+    const scatter = (cs?.circles || []).length ? '' : pts.filter((p) => P.inside(p.lat, p.lng))
+      .map((p) => `<circle cx="${P.sx(p.lng).toFixed(1)}" cy="${P.sy(p.lat).toFixed(1)}" r="2"
+      fill="${INK}" fill-opacity="0.5"/>`).join('');
+    const dots = scatter;
     // The circle goes OVER the dots so the summary is visibly a claim about them, and stays
     // hollow so it can never hide the evidence it is drawn from.
     // A TIGHT MAN'S RING MUST STILL BE VISIBLE. Anthony Bennett's patch is six miles across —
@@ -260,8 +333,12 @@ return `<!doctype html><html><head><meta charset="utf-8"><title>Driver areas</ti
 ${input.sample ? `<div class="samp"><b>SAMPLE — INVENTED DATA.</b> Made-up names and volumes, to show the
   layout only. These are NOT real routes and must not be given to anybody as a reference.</div>` : ''}
 <h1>Driver areas — who usually runs where</h1>
-<p class="sub">Davis Delivery Service${win.from ? ` · deliveries from ${esc(win.from)} to ${esc(win.to)}` : ''}${input.generatedAt ? ` · prepared ${esc(String(input.generatedAt).slice(0, 10))}` : ''}</p>
+<p class="sub">Davis Delivery Service${win.from ? ` · deliveries from ${esc(win.from)} to ${esc(win.to)}` : ''}${input.generatedAt ? ` · prepared ${esc(String(input.generatedAt).slice(0, 10))}` : ''}
+  · ${drivers.length} drivers${noArea.length ? `, ${noArea.length} of them without a settled patch (listed overleaf)` : ''}</p>
 
+${overview}
+
+<div class="page"></div>
 <div class="cov">
   <b>What this is built from.</b> ${cov.usable.toLocaleString()} deliveries across
   <b>${cov.days}</b> working day${cov.days === 1 ? '' : 's'}, ${drivers.length} drivers, ${zips.length} ZIP codes.
@@ -301,10 +378,6 @@ ${noArea.length ? `<div class="warnbox"><b>No settled patch:</b> ${esc(noArea.jo
   Their work is spread too wide for a circle, so their cards show the stops themselves and no ring.
   ${pct(cov.coordShare)} of all stops carry coordinates and could be mapped; the tables use ZIP, which all of them carry.</div>` : ''}
 
-<h2>Where Davis delivers</h2>
-${overview}
-
-<div class="page"></div>
 <h2>Look it up by town</h2>
 <p class="sub">An order comes in for a town — this says whose it usually is. A share under 60%
 is marked: that area is shared, so ask before assuming.</p>

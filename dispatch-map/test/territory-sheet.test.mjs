@@ -53,13 +53,20 @@ test('EVERY CARD IS THE SAME MAP AT THE SAME SCALE, or the cards cannot be compa
   assert.equal(cardBoxes.size, 1, `every card map shares one projection, saw ${[...cardBoxes].join(', ')}`);
 });
 
-test('A MAP IS GIVEN A HEIGHT BUDGET, because break-inside does not shrink — it MOVES', () => {
-  // Sized by width alone the overview came out 195mm tall, would not fit under the header, and
-  // page one printed as a title over 200mm of white paper with the map alone on page two.
+test('EVERY MAP DECLARES A PRINTED HEIGHT THAT FITS ITS PAGE', () => {
+  // `break-inside: avoid` does not shrink anything — it MOVES it. Sized without a height budget
+  // the big map came out taller than the space left under the read-me boxes, and page one
+  // printed as a title over 200mm of white paper with the map alone on page two.
+  //
+  // Letter, 14mm margins → 251mm of printable height.
   const html = territorySheetHtml({ stops: fleet() });
   const heights = [...html.matchAll(/height="([\d.]+)mm"/g)].map((m) => Number(m[1]));
   assert.ok(heights.length, 'maps declare their printed height');
-  assert.ok(Math.max(...heights) <= 130, `tallest map is ${Math.max(...heights)}mm, which must fit a letter page with a header`);
+  const [big, ...cards] = heights;
+  // The big map owns page one: title, map, caption.
+  assert.ok(big <= 215, `the big map is ${big}mm and must leave room for the title and the caption`);
+  // A card map must leave room for two cards on a page — the map plus a heading and a tail line.
+  assert.ok(Math.max(...cards) <= 105, `card maps are ${Math.max(...cards)}mm; two must fit one page`);
 });
 
 test('a driver with no coordinates is SAID to have none, never drawn as an empty square', () => {
@@ -111,4 +118,65 @@ test('COLIN/DJ 1 reaches the TABLES too, not just the map', () => {
   assert.match(html, /<h3>COLIN [\s\S]{0,60}?60 stops · 2 ZIP codes/,
     'and both loads count as one man with sixty stops, not two men with half a territory each');
   assert.equal(html.split('<h3>COLIN').length - 1, 1, 'exactly one Colin, not one per load');
+});
+
+// ── THE BIG MAP ─────────────────────────────────────────────────────────────
+//
+// Chad: "Dont put all the dots i want one big map with overlapping circles for the drivers."
+// The shape was never the problem — the first version of it was unreadable for other reasons,
+// and these pin the reasons so it cannot go back.
+
+const bigMap = (html) => html.slice(html.indexOf('<svg'), html.indexOf('</svg>'));
+// Every <text> on the map, with a generous width estimate. A printed label has no hover to
+// recover it, so "does anything sit on top of anything" is the whole test.
+function textBoxes(svg) {
+  return [...svg.matchAll(/<text x="([-\d.]+)" y="([-\d.]+)"[^>]*font-size="([\d.]+)"[^>]*>([^<]*)<\/text>/g)]
+    .map((m) => ({ x: +m[1], y: +m[2], size: +m[3], text: m[4], w: m[4].length * +m[3] * 0.5 }));
+}
+
+test('NOTHING ON THE BIG MAP IS PRINTED THROUGH ANYTHING ELSE', () => {
+  // Two drivers sharing an area have circles at nearly the same point, and centring both names
+  // there printed "Colin" straight through "Marcus". Town names are seeded first and must
+  // survive too — they are what make this a map of somewhere rather than a pile of rings.
+  const svg = bigMap(territorySheetHtml({ stops: fleet() }));
+  const boxes = textBoxes(svg);
+  assert.ok(boxes.length > 40, `expected a name per ring plus the towns, saw ${boxes.length}`);
+  const clashes = [];
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i], b = boxes[j];
+      if (Math.abs(a.y - b.y) < 8 && Math.abs(a.x - b.x) < (a.w + b.w) / 2 * 0.8) clashes.push(`${a.text} × ${b.text}`);
+    }
+  }
+  assert.deepEqual(clashes, [], `labels printed through each other: ${clashes.join(', ')}`);
+});
+
+test('every drawn ring carries its driver\'s name — no anonymous circles', () => {
+  // A ring nobody can put a name to is decoration. If a label cannot be placed it is moved and
+  // given a leader line; it is never dropped.
+  const html = territorySheetHtml({ stops: fleet(30) });
+  const svg = bigMap(html);
+  const rings = (svg.match(/<circle [^>]*stroke-width="1.6"/g) || []).length;
+  const names = textBoxes(svg).filter((t) => t.text.startsWith('Driver ')).length;
+  assert.ok(rings > 0, 'there are rings');
+  assert.equal(names, rings, `${rings} rings but ${names} names`);
+});
+
+test('the big map has no dots on it, and a driver with NO ring still shows his stops', () => {
+  // Chad, on the version that had them: "Dont put all the dots." But a card with neither ring
+  // nor dots is a blank square, and "no fixed area" over a blank square teaches nothing.
+  const scattered = [];
+  for (let i = 0; i < 60; i++) {                       // all over the metro, no cluster anywhere
+    scattered.push({
+      driverUserName: 'Rambler Ray', driverName: 'Rambler Ray', zip: String(30100 + i), city: `T${i}`,
+      lat: 33.6 + (i % 12) * 0.09, lng: -84.7 + Math.floor(i / 12) * 0.22, boardDate: '2026-08-20',
+    });
+  }
+  const html = territorySheetHtml({ stops: [...fleet(3), ...scattered] });
+  const svg = bigMap(html);
+  assert.ok(!svg.includes('r="1.5"') && !svg.includes('r="2.1"'), 'no stop dots on the big map');
+  assert.ok(html.includes('No fixed area'), 'the rambler is named as having none');
+  const card = html.slice(html.indexOf('<h3>Rambler Ray'));
+  assert.match(card.slice(0, card.indexOf('</section>')), /fill-opacity="0\.5"/,
+    'and his own card shows the stops, because a blank square says nothing');
 });
