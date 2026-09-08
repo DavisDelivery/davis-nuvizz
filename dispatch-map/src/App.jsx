@@ -81,6 +81,7 @@ import { flagDetail, sighting } from './lib/flag-detail.js';
 import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab } from './lib/right-panel.js';
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
+import { planSendSelection } from './lib/send-selection.js';
 import { dropSide, dropSideClass } from './lib/drop-side.js';
 import { rosterFreshness, ageLabel } from './lib/roster-freshness.js';
 import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
@@ -117,7 +118,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.97.3';
+const APP_VERSION = '0.97.4';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -188,6 +189,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.97.4', 'THE COMPARE SEND BUTTON PUTS THE STOPS ON THE ROUTE IN ONE PRESS, AND SAYS WHAT IT DID. Chad: “i put 2 routes in the panel that i wanted to add stops to then i went and selected the stops i wanted it to put on the route and then when i clicked the button to add stops it didn\'t put them on the route.” FOUND BY RUNNING IT, on UAT and against the code: stops already sitting UNPLANNED move on the first press (verified on the UAT board). A stop still PLANNED on a load that is NOT open in Compare did not — the Save is declarative over the loads it carries, so the source load has to be in it to release the stop, and the old press only OPENED that load’s card, kept the stops selected, put nothing on the target and asked for a second press in a four-second toast at the bottom of the map. On a desktop with cards open the Setup panel’s message line is not on screen at all, so the only sign was a third card appearing. The toast also said “Opened X” whether or not X had actually opened (two loads sharing a name, no NuVizz identity, Compare full), which turns a refused open into an endless “Send again”. NOW: one press opens the source card AND moves the stops onto the target, in the same action; a source that cannot open keeps its stops selected and is named with the real reason; the outcome (“Sent 6 stops → ALPHA (opened BEN 2 in Compare so the Save can release them)”) is written in the Compare header and stays until the next action, on top of the toast. Also: the header read “(N/3)” while the workbench has held six cards since v0.46.19, and the send buttons named a load by its NuVizz number when the card was opened from the Loads grid — they carry the card’s name now. The rule lives in lib/send-selection.js, pure and tested on the Sep 8 shape; the card builder is one function both the open paths and the send share, so a refusal reads the same wherever it happens. 13 new tests.'],
   ['0.97.3', 'THE UNPLANNED ESTES ORDERS WERE STILL PURPLE — NOW THEY ARE BLACK TOO. Chad, on a stop wearing the new yellow ring around the same pool purple as everything else: "any estes unplanned should have black center with yellow ring." HERE IS WHY HALF THE BOARD CHANGED AND HALF DID NOT, because it is a good lesson in reading a colour chain. Every stop\'s fill is picked by a chain of fallbacks, and the Estes black was put at the END of it — after the status colour. A SCHEDULED stop has no status colour of its own (it has always fallen through to the flag/default tint), so the black was reached and the pin turned black. An UNPLANNED stop carries its own purple, so the chain answered before it ever got to the carrier, and every order in the pool — which is most of what you look at when you are building routes, and the exact case this was asked for — kept the colour it always had. The ring was on it, so it looked like a half-finished job, and it was one. The black now sits AHEAD of the status colour for the two RESTING states, unplanned and scheduled: "nothing has happened to this order yet" is the tint the carrier identity should own. THE LIVE STATES KEEP THEIRS, deliberately: out for delivery blue, arrived amber, delivered green, exception orange. Those answer where an order IS right now, which is what the board is watched for all day, and the yellow ring already says whose order it is without spending that colour. Same for the marks a person or a detector set — a priority flag, a tractor or box-only paint, an amber address-looks-off warning, a selection, a search hit. AND THE TEST THAT SHOULD HAVE CAUGHT IT NOW EXISTS. The first cut was pinned by reading the source for the right words, and the words were all there — the bug was the ORDER they were in, which no amount of reading the text can see. The marker tests now BUILD real markers through the shipped code and read the colour back out of the SVG, one per status, so a fill that is wrong is a red test instead of a screenshot.'],
   ['0.97.2', 'ESTES ORDERS ARE BLACK WITH A YELLOW RING. Chad: "make estes icons black with a yellow ring around them." Every stop whose order number carries the ESTES prefix now draws that way on the Map and on Routing — the resting dot, the scheduled pin, a numbered pin inside an open route, the quiet already-planned ring — so an Estes residential run can be picked out of a 700-stop board at a glance. THE RING IS THE IDENTITY, and it rides every disc the stop can draw; the BLACK fills the disc only where the stop would otherwise wear a default tint. A colour that already says something keeps saying it inside the ring: a selection stays amber, a search hit orange, a numbered pin keeps its route colour on Routing, a priority flag its hue, a hand-set tractor or box-only mark its green or red, a delivered stop its green check. Two things are untouched on purpose: do-not-send stays the red ✕ (safety outranks identity), and a stop drawing restriction marks keeps them — the clock and the truck are the message there, and a ring around a clock would put back the circle you had taken away. The Legend gets a Carrier row with the real swatch and a count whenever any are on the map, and only then. The order number is the source of truth (ESTES-…, the same prefix the manifest intake writes), so nothing new has to be entered anywhere.'],
   ['0.97.1', 'PULLING A WHOLE ROUTE ONTO ANOTHER ONE NO LONGER HANGS ON THE OLD ROUTE\'S CANCEL. Chad, Sep 8: every order off TERRANCE onto ALLEN C, one to Un-Planned, Save — and nothing moved. "TERRANCE: Vehicle Type unavailable or disabled (code 903) | ALLEN C: stop 007172492 couldn\'t be added — NuVizz still holds it on TERRANCE … a route that isn\'t part of the Save." TERRANCE WAS in the Save. HERE IS WHAT HAPPENED. An emptied card is a route cancel, and NuVizz\'s own rule for that is "remove every delivery" through load/edit — a full-header edit that echoes the route back field for field, Vehicle Type included. TERRANCE\'s Vehicle Type is disabled in NuVizz\'s Vehicle Type Configuration, so NuVizz refused the whole edit (reason 903) and the route kept every order. The Save ran that cancel FIRST and only then tried to put the orders on ALLEN C — as plain adds, which NuVizz silently ignores for a stop still planned elsewhere. Five wasted calls, a message blaming the wrong thing, and a consolidation that had been made to depend on a cancel it never needed. THE FIX: the move no longer waits for the cancel. When a card in the Save is taking an emptied route\'s orders, they ride the SAME one-shot multi-route save the portal uses for any move — the emptied route\'s entry keeps only what nobody is taking, so it never drops to zero stops inside that save (not a shape the portal ever sends) — the result is verified on both routes, and only THEN is the drained route cancelled through the classic path. If NuVizz refuses that cancel it now costs exactly what it should: the orders are on their new route, the empty route lingers with whatever stayed on it (here LANDMARK), and the message says so and names the cause — a disabled Vehicle Type is called out with where to fix it. When every order is leaving, the last one anchors the source through the save and is added to its new route the moment the cancel frees it; if that cancel is refused, the card reports "3 of 4 landed" by name rather than pretending. TWO GUARDS came with it: a card whose orders come off an in-Save route that already failed is refused up front with THAT route\'s reason (no doomed adds, and never again "not part of the Save" about a route that was), and the same applies when a source fails after a card had already claimed its stops. A plain Cancel-route Save with nobody taking the orders is byte-for-byte what it was. NUVIZZ_RWB_DRAIN_SOURCE=off reverts to cancel-first. Nine tests pin the Sep 8 Save, the refused-cancel outcome, the everything-leaves anchor both ways, the executed-stop refusal, the failed-source refusal, the lever, and the regression.'],
@@ -17175,7 +17177,7 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = 
 // ungeocoded ones. Card membership, display, freight totals and the Save payload all use
 // boardStopById so what the card shows == what Save sends (a coord-less stop is still on
 // the load). Anything that needs geometry keeps using stopById.
-function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKey = null, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null, onRouteCreated = null }) {
+function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKey = null, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null, onRouteCreated = null, notice = null, onDismissNotice = null, maxCards = 6 }) {
   const lookup = boardStopById || stopById;
   // Save sends this whole board to NuVizz through nuvizz-write, which requires dispatcher.
   // Its own gate rather than a prop: this component owns the Save button and the confirm path,
@@ -17770,7 +17772,7 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
           engine/LIVE/Save/Back buttons silently overflowed past the panel edge — they
           looked MISSING. min-w-0 + wrap keeps every control visible at any panel width. */}
       <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b shrink-0 bg-white flex-wrap">
-        <span className="font-semibold text-slate-800 text-[13px] shrink-0">Compare <span className="text-slate-400 text-[11px]">({wbRoutes.length}/3)</span></span>
+        <span className="font-semibold text-slate-800 text-[13px] shrink-0">Compare <span className="text-slate-400 text-[11px]">({wbRoutes.length}/{maxCards})</span></span>
         <div className="flex items-center gap-1.5 min-w-0 flex-wrap justify-end">
           {/* One-click "send the current map selection into this load" per open route (#258).
               Only shown when something is selected — otherwise the buttons would be dead. With two
@@ -17782,7 +17784,7 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
               title={`Add the ${selectedCount} selected stop${selectedCount === 1 ? '' : 's'} to ${loadDisplayName(r.key) || 'this load'}`}
               className="flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 min-w-0"
             >
-              <ArrowRight size={13} className="shrink-0" /> <span className="truncate max-w-[130px]">{loadDisplayName(r.key) || 'Load'}</span> ({selectedCount})
+              <ArrowRight size={13} className="shrink-0" /> <span className="truncate max-w-[130px]">{r.name || loadDisplayName(r.key) || 'Load'}</span> ({selectedCount})
             </button>
           ))}
           {/* Ninja is armed from the on-map tool (left edge), not here — the dispatcher asked to drop
@@ -17818,6 +17820,17 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
           <button onClick={guardedCloseAll} className="text-[11px] text-slate-500 hover:text-slate-800 underline">Back to Setup</button>
         </div>
       </div>
+      {/* WHAT THE LAST ACTION DID, where the dispatcher is looking. Selection and send outcomes
+          ("Sent 6 stops → ALPHA", "2 stops NOT moved — …", "All 6 already on open Compare
+          cards") used to render only in the Setup panel, which this workbench REPLACES on the
+          desktop — so with cards open every one of those sentences went nowhere but a
+          four-second toast at the bottom of the map. Stays until the next action or dismiss. */}
+      {notice && (
+        <div data-wb-notice className="px-2 py-1 text-[11px] bg-slate-50 border-b text-slate-700 shrink-0 flex items-start justify-between gap-2">
+          <span className="whitespace-pre-wrap break-words min-w-0">{notice}</span>
+          {onDismissNotice && <button onClick={onDismissNotice} className="text-slate-400 hover:text-slate-700 shrink-0" aria-label="Dismiss"><X size={12} /></button>}
+        </div>
+      )}
       {LIVE_WRITE_FLAG && toast && (
         <div className="px-2 py-1 text-[11px] bg-slate-800 text-white shrink-0 flex items-start justify-between gap-2">
           {/* Wrap, never truncate: a Save refusal must be readable in full (which stop, which load holds it, what to do). */}
@@ -19122,77 +19135,87 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   const dayRosterState = useMemo(() => rosterFreshness(dayRosterMeta), [dayRosterMeta]);
 
   // Workbench handlers — open a route into the side-by-side cards, tune it, close it.
+  // ONE PLACE BUILDS A CARD, AND SAYS WHY WHEN IT CANNOT. Opening a route from the rail, the grid
+  // or a marker used to be the only caller; the Compare send button now needs a card too — for the
+  // SOURCE load of a planned stop, in the same press (see lib/send-selection.js) — so the rules
+  // (already open, the cap, two same-day loads sharing a name, no NuVizz identity) live here once
+  // and come back as a card or a sentence. Pure over `prev` plus the board/roster refs.
+  const buildWbCard = useCallback((key, prev) => {
+    if (!key) return { refusal: 'No load to open.' };
+    if (prev.some((r) => r.key === key)) return { already: true };   // already open
+    if (prev.length >= WB_MAX) return { refusal: `Workbench is full (${WB_MAX} routes) — close one first.` };
+    // BOARD-DAY ROWS ONLY. windowExtra rows come from OTHER days' cached boards (the bottom
+    // grid's date range) — seeding by bare name match across them merged every historical
+    // load that ever used this route name into one card. A card is always the selected
+    // day's load instance; other-day orders reach a card only by explicit staging.
+    // COORD-INCLUSIVE on purpose (boardStopsAllRef, not positionedAllRef): a load's
+    // ungeocoded stop is still on the load, and seeding without it produced a card whose
+    // Save was one stop short — refused by the server's stale-board guard with advice
+    // ("Refresh and retry") that could never work. It rides in the card as a "no map
+    // location" row instead: visible, counted, saved, just not drawn or auto-sequenced.
+    const routeStops = boardStopsAllRef.current.filter((s) => !s.windowExtra && (s.routeName || s.loadNbr) === key);
+    // TWO same-day loads sharing this NAME would merge onto one card and a Save would reorder
+    // across loads (and could pair one load's id with the other's number). Refuse to open.
+    const distinctLoadIds = new Set(routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).filter(Boolean).map(String));
+    if (distinctLoadIds.size > 1) {
+      return { refusal: `Two loads share the name "${loadDisplayName(key) || key}" today — their stops can't be edited as one card. Rename one in the portal, or work stop-by-stop.` };
+    }
+    // Resolve the load's real loadId + name from the day's roster (the daily load scan, by name or
+    // loadId). REQUIRED for Draft/empty loads: they have no stops to derive a loadId from, and
+    // assignDriver/commitBoard need the loadId (without it the Save falls through to a load/info
+    // lookup with a bad key → "commitBoard: load not found"). For loads WITH stops, the stop-derived
+    // loadId still wins (it's the verified same-day instance); the roster only fills the gap.
+    // An AMBIGUOUS roster entry (two roster loads share the name) is never trusted for identity.
+    const rosterEntry0 = loadRosterRef.current.get(String(key)) || loadRosterRef.current.get(String(key).toLowerCase()) || null;
+    const rosterEntry = rosterEntry0 && !rosterEntry0.ambiguous ? rosterEntry0 : null;
+    const stopLoadIdV = routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).find(Boolean) || null;
+    // Only take the roster's loadNbr/loadId when it agrees with the stop-derived identity — a
+    // roster row for a DIFFERENT same-named load must not attach its number to this card.
+    const rosterMatches = !stopLoadIdV || !rosterEntry?.loadId || String(rosterEntry.loadId) === String(stopLoadIdV);
+    // loadId: verified stop-derived id first; then the roster; then the key ITSELF when it's a load
+    // id hash — an empty load is opened from the Loads grid BY its loadId, so this resolves it even
+    // if the roster hasn't loaded yet (no race) and the roster only enriches the display name.
+    const loadId = stopLoadIdV
+      || (rosterMatches ? rosterEntry?.loadId : null)
+      || (isHashLikeId(String(key)) ? String(key) : null);
+    // The REAL NuVizz load NUMBER (e.g. "DAVIS000198197") — load/info is keyed by it, NOT the human
+    // route name. The stop rows carry only the route NAME in loadNbr (the stops grid has no number
+    // column), so it 404s load/info; prefer the loads-roster's numeric number, and fall back to a
+    // stop value ONLY if it actually looks like a load number — never the bare route name. (When
+    // neither is available the server bridges loadId→loadNbr via getStop/static-info.)
+    const loadNbr = (rosterMatches ? rosterEntry?.loadNbr : null)
+      || routeStops.map((s) => s.loadNbr).find((v) => looksLikeLoadNbr(v))
+      || null;
+    // Display name — the human route/load name; from stops, else the roster (so an empty load shows
+    // "NOR" instead of "Unnamed load").
+    const name = routeStops.map((s) => s.routeName).find(Boolean) || rosterEntry?.name || null;
+    // NO IDENTITY AT ALL → refuse to open (§S). A card with neither a load number nor a load id
+    // cannot be saved: BOTH engines reject it up front ("commitBoard(rwb): loadNbr or loadId
+    // required"), and worse, its failure strands every stop being moved ONTO it — Chad built
+    // STEVEN and NOR, and NOR refused too rather than unplan a stop bound for the dead card.
+    // Assign and Dispatch already refuse this exact state with a message; opening a Compare
+    // card was the one path that let you do the work first and find out afterwards.
+    if (!loadId && !loadNbr) {
+      const shown = loadDisplayName(name, key) || String(key);
+      return { refusal: rosterEntry0?.ambiguous
+        ? `Two loads are named "${shown}" today, so a card can't tell which one it would save to. Rename one in the portal (or cancel the one you're not using), then refresh.`
+        : `"${shown}" has no NuVizz load number or id yet, so a Save would be refused. Open it from the Loads grid, or refresh once the day's loads have loaded.` };
+    }
+    // Ids already staged onto ANOTHER open card stay there (the staged move wins) — otherwise a
+    // freshly-opened card re-seeds them from the board and the stop sits in BOTH cards' orders.
+    const stagedElsewhere = new Set(prev.flatMap((r) => r.order));
+    const order = orderRouteStops(routeStops).map((s) => String(s.stopNbr)).filter((id) => !stagedElsewhere.has(id));
+    return { card: { key, name, loadNbr, loadId, order, collapsed: false } };
+  }, []);
   const openRouteInWorkbench = useCallback((key) => {
     if (!key) return;
     setWbRoutes((prev) => {
-      if (prev.some((r) => r.key === key)) return prev;                 // already open
-      if (prev.length >= WB_MAX) { setLastAction(`Workbench is full (${WB_MAX} routes) — close one first.`); return prev; }
-      // BOARD-DAY ROWS ONLY. windowExtra rows come from OTHER days' cached boards (the bottom
-      // grid's date range) — seeding by bare name match across them merged every historical
-      // load that ever used this route name into one card. A card is always the selected
-      // day's load instance; other-day orders reach a card only by explicit staging.
-      // COORD-INCLUSIVE on purpose (boardStopsAllRef, not positionedAllRef): a load's
-      // ungeocoded stop is still on the load, and seeding without it produced a card whose
-      // Save was one stop short — refused by the server's stale-board guard with advice
-      // ("Refresh and retry") that could never work. It rides in the card as a "no map
-      // location" row instead: visible, counted, saved, just not drawn or auto-sequenced.
-      const routeStops = boardStopsAllRef.current.filter((s) => !s.windowExtra && (s.routeName || s.loadNbr) === key);
-      // TWO same-day loads sharing this NAME would merge onto one card and a Save would reorder
-      // across loads (and could pair one load's id with the other's number). Refuse to open.
-      const distinctLoadIds = new Set(routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).filter(Boolean).map(String));
-      if (distinctLoadIds.size > 1) {
-        setLastAction(`Two loads share the name "${loadDisplayName(key) || key}" today — their stops can't be edited as one card. Rename one in the portal, or work stop-by-stop.`);
-        return prev;
-      }
-      // Resolve the load's real loadId + name from the day's roster (the daily load scan, by name or
-      // loadId). REQUIRED for Draft/empty loads: they have no stops to derive a loadId from, and
-      // assignDriver/commitBoard need the loadId (without it the Save falls through to a load/info
-      // lookup with a bad key → "commitBoard: load not found"). For loads WITH stops, the stop-derived
-      // loadId still wins (it's the verified same-day instance); the roster only fills the gap.
-      // An AMBIGUOUS roster entry (two roster loads share the name) is never trusted for identity.
-      const rosterEntry0 = loadRosterRef.current.get(String(key)) || loadRosterRef.current.get(String(key).toLowerCase()) || null;
-      const rosterEntry = rosterEntry0 && !rosterEntry0.ambiguous ? rosterEntry0 : null;
-      const stopLoadIdV = routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).find(Boolean) || null;
-      // Only take the roster's loadNbr/loadId when it agrees with the stop-derived identity — a
-      // roster row for a DIFFERENT same-named load must not attach its number to this card.
-      const rosterMatches = !stopLoadIdV || !rosterEntry?.loadId || String(rosterEntry.loadId) === String(stopLoadIdV);
-      // loadId: verified stop-derived id first; then the roster; then the key ITSELF when it's a load
-      // id hash — an empty load is opened from the Loads grid BY its loadId, so this resolves it even
-      // if the roster hasn't loaded yet (no race) and the roster only enriches the display name.
-      const loadId = stopLoadIdV
-        || (rosterMatches ? rosterEntry?.loadId : null)
-        || (isHashLikeId(String(key)) ? String(key) : null);
-      // The REAL NuVizz load NUMBER (e.g. "DAVIS000198197") — load/info is keyed by it, NOT the human
-      // route name. The stop rows carry only the route NAME in loadNbr (the stops grid has no number
-      // column), so it 404s load/info; prefer the loads-roster's numeric number, and fall back to a
-      // stop value ONLY if it actually looks like a load number — never the bare route name. (When
-      // neither is available the server bridges loadId→loadNbr via getStop/static-info.)
-      const loadNbr = (rosterMatches ? rosterEntry?.loadNbr : null)
-        || routeStops.map((s) => s.loadNbr).find((v) => looksLikeLoadNbr(v))
-        || null;
-      // Display name — the human route/load name; from stops, else the roster (so an empty load shows
-      // "NOR" instead of "Unnamed load").
-      const name = routeStops.map((s) => s.routeName).find(Boolean) || rosterEntry?.name || null;
-      // NO IDENTITY AT ALL → refuse to open (§S). A card with neither a load number nor a load id
-      // cannot be saved: BOTH engines reject it up front ("commitBoard(rwb): loadNbr or loadId
-      // required"), and worse, its failure strands every stop being moved ONTO it — Chad built
-      // STEVEN and NOR, and NOR refused too rather than unplan a stop bound for the dead card.
-      // Assign and Dispatch already refuse this exact state with a message; opening a Compare
-      // card was the one path that let you do the work first and find out afterwards.
-      if (!loadId && !loadNbr) {
-        const shown = loadDisplayName(name, key) || String(key);
-        setLastAction(rosterEntry0?.ambiguous
-          ? `Two loads are named "${shown}" today, so a card can't tell which one it would save to. Rename one in the portal (or cancel the one you're not using), then refresh.`
-          : `"${shown}" has no NuVizz load number or id yet, so a Save would be refused. Open it from the Loads grid, or refresh once the day's loads have loaded.`);
-        return prev;
-      }
-      // Ids already staged onto ANOTHER open card stay there (the staged move wins) — otherwise a
-      // freshly-opened card re-seeds them from the board and the stop sits in BOTH cards' orders.
-      const stagedElsewhere = new Set(prev.flatMap((r) => r.order));
-      const order = orderRouteStops(routeStops).map((s) => String(s.stopNbr)).filter((id) => !stagedElsewhere.has(id));
-      return [...prev, { key, name, loadNbr, loadId, order, collapsed: false }];
+      const r = buildWbCard(key, prev);
+      if (r.already) return prev;
+      if (r.refusal) { setLastAction(r.refusal); return prev; }
+      return [...prev, r.card];
     });
-  }, []);
+  }, [buildWbCard]);
   const closeWbRoute = useCallback((key) => setWbRoutes((prev) => prev.filter((r) => r.key !== key)), []);
   const closeAllWb = useCallback(() => setWbRoutes([]), []);
   const toggleWbCollapse = useCallback((key) => setWbRoutes((prev) => prev.map((r) => (r.key === key ? { ...r, collapsed: !r.collapsed } : r))), []);
@@ -19390,83 +19413,44 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // selected stop onto that route (deduped, and stripped from any other card so a stop sits on one
   // route), then clears the selection. Header shows one button per open route.
   const sendSelectionToRoute = useCallback((key) => {
-    let ids = [...selectedIds].map(String);
-    if (!key || !ids.length) return;
-    // Strip stops the OTHER dispatcher's device started staging AFTER they were
-    // selected here (the selection tools already refuse to add claimed stops).
-    const claimedSel = ids.filter((id) => peerClaimsRef.current.get(id));
-    if (claimedSel.length) {
-      ids = ids.filter((id) => !peerClaimsRef.current.get(id));
-      showMapToast(`Skipped ${claimedSel.length} stop(s) being staged by ${peerClaimsRef.current.get(claimedSel[0])} on another device.`);
-      if (!ids.length) return;
-    }
-    // A stop planned on a load NOT open in Compare can't just be added to the target: the Save is
-    // DECLARATIVE over the loads in the payload, so without the SOURCE load in the Save the stop would
-    // double-plan. Instead of silently skipping it, AUTO-OPEN each such source load into Compare
-    // (respecting the 3-card cap) and keep the stops selected — once the source is open a second Send
-    // stages the real cross-load move (source releases the stop, target gains it, both loads Saved).
-    const holderOf = (id) => { const s = stopById.get(id); return s && !s.isUnplanned ? String(s.routeName || s.loadNbr || '') : ''; };
-    const blocked = ids.filter((id) => { const h = holderOf(id); return h && !openRouteKeys.has(h); });
-    let keepSelected = [];
-    if (blocked.length) {
-      const blockedHolders = [...new Set(blocked.map(holderOf).filter(Boolean))];
-      const slots = Math.max(0, WB_MAX - wbRoutes.length);   // cards, not identity-set entries
-      const toOpen = new Set(blockedHolders.slice(0, slots));
-      toOpen.forEach((h) => openRouteInWorkbench(h));   // opens the source card(s) so the move can stage
-      keepSelected = blocked;                            // keep every blocked stop selected for the next Send
-      ids = ids.filter((id) => !blocked.includes(id));   // this pass only stages the already-stageable stops
-      const openedNames = [...toOpen].map((h) => loadDisplayName(h) || h);
-      const heldNames = blockedHolders.filter((h) => !toOpen.has(h)).map((h) => loadDisplayName(h) || h);
-      const parts = [];
-      if (openedNames.length) parts.push(`Opened ${openedNames.join(', ')} in Compare — Send again to move ${blocked.filter((id) => toOpen.has(holderOf(id))).length} stop(s).`);
-      if (heldNames.length) parts.push(`${heldNames.join(', ')} need a free card (Compare full ${WB_MAX}/${WB_MAX}) — close one, then Send.`);
-      showMapToast(parts.join(' '));
-      if (!ids.length) { setSelectedIds(new Set(keepSelected)); return; }
-    }
-    // Same-address twin guard: two ORDERS at one location render as pins stacked exactly on
-    // top of each other, so a click-selection grabs only the top one and the second order
-    // silently stays behind (the "missed one of these orders" case — 007144652 routed,
-    // co-located 007144651 left unplanned). Same-address freight rides together, so every
-    // UNPLANNED order sharing a selected stop's location is auto-included — loudly, and
-    // removable from the card if the split was intentional.
-    const twinNames = [];
-    {
-      const inIds = new Set(ids);
-      const byMatchKey = new Map();
-      for (const t of stops) {
-        if (!t?.matchKey || !t.isUnplanned) continue;
-        if (!byMatchKey.has(t.matchKey)) byMatchKey.set(t.matchKey, []);
-        byMatchKey.get(t.matchKey).push(t);
-      }
-      for (const id of [...inIds]) {
-        const s = stopById.get(id);
-        for (const t of (s?.matchKey ? byMatchKey.get(s.matchKey) : null) || []) {
-          const tn = String(t.stopNbr);
-          if (wbStagedRef.current.get(tn) || peerClaimsRef.current.get(tn)) continue;   // staged on another card / another device — same guard as click/box select
-          if (!inIds.has(tn)) { inIds.add(tn); twinNames.push(`${t.stopNbr} (${t.businessName || 'same address'})`); }
+    // The rule is in lib/send-selection.js (pure, tested); this binds the board, the refs and the
+    // card builder. Computed OUTSIDE the state updater so the message can only describe what the
+    // cards actually became.
+    const holderOf = (id) => { const s = stopById.get(String(id)); return s && !s.isUnplanned ? String(s.routeName || s.loadNbr || '') : ''; };
+    // Same-address twin guard: two ORDERS at one location render as pins stacked exactly on top
+    // of each other, so a click-selection grabs only the top one (the "missed one of these
+    // orders" case — 007144652 routed, co-located 007144651 left unplanned). Same-address
+    // freight rides together, so every UNPLANNED order sharing a selected stop's location comes
+    // along — loudly, and removable from the card if the split was intentional.
+    let byMatchKey = null;
+    const twinsOf = (id) => {
+      if (!byMatchKey) {
+        byMatchKey = new Map();
+        for (const t of stops) {
+          if (!t?.matchKey || !t.isUnplanned) continue;
+          if (!byMatchKey.has(t.matchKey)) byMatchKey.set(t.matchKey, []);
+          byMatchKey.get(t.matchKey).push(t);
         }
       }
-      if (twinNames.length) ids = [...inIds];
-    }
-    const idSet = new Set(ids);
-    setWbRoutes((prev) => {
-      if (!prev.some((r) => r.key === key)) return prev;
-      return prev.map((r) => {
-        // Hand-edit ⇒ clear the applied strategy on every touched card (see wbMoveStop note).
-        if (r.key === key) {
-          const have = new Set(r.order);
-          const add = ids.filter((id) => !have.has(id));
-          return add.length ? { ...r, order: [...r.order, ...add], strategy: 'manual' } : r;
-        }
-        return r.order.some((id) => idSet.has(id)) ? { ...r, order: r.order.filter((id) => !idSet.has(id)), strategy: 'manual' } : r;
-      });
+      const s = stopById.get(String(id));
+      return ((s?.matchKey ? byMatchKey.get(s.matchKey) : null) || [])
+        .filter((t) => { const tn = String(t.stopNbr); return !wbStagedRef.current.get(tn) && !peerClaimsRef.current.get(tn); })
+        .map((t) => ({ id: String(t.stopNbr), label: `${t.stopNbr} (${t.businessName || 'same address'})` }));
+    };
+    const plan = planSendSelection({
+      ids: [...selectedIds], targetKey: key, cards: wbRoutes, max: WB_MAX,
+      holderOf,
+      claimedBy: (id) => peerClaimsRef.current.get(String(id)) || null,
+      openCard: (holder, cards) => buildWbCard(holder, cards),
+      twinsOf,
+      displayName: (k) => loadDisplayName(k) || String(k),
     });
-    if (twinNames.length) {
-      showMapToast(`⚠ Also added ${twinNames.length} co-located order${twinNames.length === 1 ? '' : 's'} the selection missed: ${twinNames.slice(0, 3).join(', ')}${twinNames.length > 3 ? '…' : ''} — remove from the card if you meant to split.`);
-    }
-    setLastAction(`Sent ${ids.length} selected stop${ids.length === 1 ? '' : 's'} → ${loadDisplayName(key) || 'load'}`);
-    setSelectedIds(new Set(keepSelected));   // cleared when nothing was blocked; keeps cap/holder-pending stops for the next Send
-  }, [selectedIds, stopById, openRouteKeys, stops, wbRoutes.length]); // showMapToast is stable and declared later — including it in deps would TDZ at render
+    if (!plan) return;
+    if (plan.changed) setWbRoutes(plan.cards);
+    setSelectedIds(new Set(plan.held));   // cleared when everything moved; keeps only what could not
+    setLastAction(plan.message);
+    showMapToast(plan.message);
+  }, [selectedIds, stopById, stops, wbRoutes, buildWbCard]); // showMapToast is stable and declared later — including it in deps would TDZ at render
   // The marker click listener is bound once; route ninja clicks through a ref so toggling ninja
   // (or closing the panel) never re-creates the markers. Null = ninja off / nothing to add to.
   useEffect(() => { ninjaActionRef.current = (ninjaMode && wbRoutes.length > 0) ? ninjaAddStop : null; }, [ninjaMode, wbRoutes.length, ninjaAddStop]);
@@ -21989,7 +21973,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
                     )}
                     {engineResultContent}
                     {wbRoutes.length > 0
-                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
+                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} maxCards={WB_MAX} />
                       : controlsContent}
                   </>
                 : mobilePanel === 'loads'
@@ -22053,7 +22037,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
               flex-1/min-h-0 resolves to what is actually left. */}
           {engineResultContent && <div className="p-2 pb-0 shrink-0 max-h-[45%] overflow-y-auto">{engineResultContent}</div>}
           <div className="flex-1 min-h-0">
-          <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} maxCards={WB_MAX} notice={lastAction} onDismissNotice={() => setLastAction(null)} />
           </div>
         </div>
       ) : leftPanelOn ? (
