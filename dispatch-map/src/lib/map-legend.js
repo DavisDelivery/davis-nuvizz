@@ -191,3 +191,28 @@ export function legendIsEmpty(inv) {
   if (!inv) return true;
   return inv.stops === 0;
 }
+
+
+// ── THE GREEN ROW IN THE SELECTION PANEL, AS A RULE ─────────────────────────
+//
+// Chad: "I want a button on top of bar to remove all stops in the list that are not tractor
+// friendly stops." That button and the green highlight have to be the SAME rule — a button
+// that drops a row the panel painted green is the worst possible version of this feature —
+// so the decision comes out of the row map and into one pure function both read.
+//
+// It takes the three facts rather than a note, because the "friendly" badge is resolved by
+// App's own alias table and the proven-lime fact lives in tractor_locations. The rule itself
+// is the one the panel has painted since the highlight shipped:
+//
+//   • an explicit box-only mark is the dispatcher saying NO — it wins outright;
+//   • otherwise ANY green signal counts: the dispatcher's own "tractor" paint, the
+//     "Tractor trailer friendly" badge, or a 53-footer that has actually delivered here.
+//
+// UNKNOWN IS NOT FRIENDLY, and that asymmetry is deliberate: a stop nobody has marked and no
+// tractor has been to is not evidence a trailer fits. It stays out of the green, so the button
+// drops it — which is the cautious direction for a button whose whole job is to leave a list
+// a tractor can actually run.
+export function tractorFriendlySelection({ eligibility = null, friendlyBadge = false, tractorSeen = false } = {}) {
+  if (eligibility === 'box_only') return false;
+  return eligibility === 'tractor' || !!friendlyBadge || !!tractorSeen;
+}
