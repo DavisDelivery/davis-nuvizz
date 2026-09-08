@@ -53,6 +53,13 @@ const TENANT = 'davis';
 // a Friday run covers Monday, not an empty Saturday. Volume stays modest because
 // the load-window self-calibrates to each day's actual span (see nuvizz-scan.mts).
 const DEFAULT_DAYS = 2; // today + next business day (was 1 = today only)
+// THE FROZEN-DAY PASS'S TWO BUDGETS, defined ONCE and exported (v0.95.2). They were read
+// straight from the environment in two places — here and in the explain endpoint's switches
+// block — and the moment the default moved (120 → 400) the diagnostic started reporting a cap
+// the scan was not using. A settings screen that quietly disagrees with the code is worse than
+// no settings screen: it is the thing somebody reasons from at 6am.
+export const refileReadCap = () => Math.max(0, Number(process.env.NUVIZZ_REFILE_READ_CAP) || 400);
+export const frozenCopyDepth = () => Math.max(1, Number(process.env.NUVIZZ_FROZEN_COPY_DAYS) || 10);
 // LIST-DISCOVERY write horizon: today + the next (N-1) BUSINESS days. The active saved-search
 // pull is ALREADY a ±7d window, so writing an extra planning day costs NO extra list call — only
 // that day's load roster + first-time enrichment of its new orders. 3 = today + next 2 business
@@ -1590,8 +1597,8 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             // pass on three of them is worth less to a dispatcher than healing thirty orders
             // three days deep — so depth is sliced and REMEMBERED (nextCopyDays + the ledger's
             // `through`), and the next scan continues where this one stopped.
-            const REFILE_READ_CAP = Math.max(0, Number(process.env.NUVIZZ_REFILE_READ_CAP) || 400);
-            const FROZEN_COPY_DAYS = Math.max(1, Number(process.env.NUVIZZ_FROZEN_COPY_DAYS) || 10);
+            const REFILE_READ_CAP = refileReadCap();
+            const FROZEN_COPY_DAYS = frozenCopyDepth();
             const targetSet = new Set(targets.map((d) => etDateForTargetUTC(d, today)));
             const reach = activeArrivalReachDays();
             const floor = addDaysUTC(boardEtDate, -reach);
