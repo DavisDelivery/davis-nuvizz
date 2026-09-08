@@ -37,11 +37,30 @@ test('the confirm lists every load and its driver, and every route it will NOT s
     'skipped routes must be visible AT THE MOMENT of deciding, not afterwards.');
 });
 
-test('Beta sends nothing, and the role gate comes first', () => {
-  assert.ok(/if \(!assignLive\) \{\s*\n\s*setDispatchAllPlan\(null\);/.test(src),
-    'a Beta confirm must preview and stop.');
+test('the role gate comes first, and the confirm tells the production truth', () => {
   assert.ok(/const openDispatchAll = useCallback\(\(visibleGroups\) => \{\s*\n\s*if \(!writeGate\.allowed\)/.test(src),
     'the dispatcher-role gate must be the first thing the bulk action checks.');
+  // v0.97.5 removed the Beta/Live pill (Chad: "no longer need this live button just wasting
+  // space"). It had defaulted to Live and stuck per device since v0.97.0, so the Beta branch
+  // was unreachable on any board that mattered. The modal's PRODUCTION warning is driven by
+  // this tenant, so it must now be the unconditional truth rather than a mode's opinion.
+  assert.ok(/tenant: 'DAVIS',/.test(src),
+    'the confirm must say PRODUCTION, because that is what a dispatch now is.');
+  assert.ok(!/assignLive \? 'DAVIS' : 'beta'/.test(src),
+    'a beta tenant behind a control nobody can reach is a safety that is not one.');
+});
+
+test('the Beta switch is GONE, not merely defaulted on', () => {
+  // A dead `if (!assignLive)` branch behind a removed control reads as a safety net and is
+  // not one. If Beta is ever wanted again it comes back as a real, reachable control.
+  assert.ok(/const assignLive = true;/.test(src),
+    'assignLive must be a constant now that the pill is gone.');
+  assert.ok(!/setAssignLive/.test(src),
+    'no setter should survive the removal of the toggle.');
+  assert.ok(!/if \(!assignLive\)/.test(src),
+    'no unreachable Beta branch may remain.');
+  assert.ok(!/routing\.assignLive/.test(src),
+    'the remembered-mode key should go with the mode.');
 });
 
 test('the bulk run fires the SAME write as the single button', () => {

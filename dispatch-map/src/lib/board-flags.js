@@ -1579,6 +1579,15 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   }
   capped.sort((a, b) => (TIER_ORDER[a.tier] ?? 9) - (TIER_ORDER[b.tier] ?? 9));
 
+  // THE DRIVER, FILLED IN FROM THE ROUTE. A stop row often carries no driver of its own even
+  // when its load is assigned, so every card would read "no driver" and the no-driver flag
+  // would stop meaning anything. One pass over the whole board builds route -> driver, and a
+  // row only takes it when its own is blank. An AMBIGUOUS route (two drivers on one route
+  // name) fills nothing rather than naming the wrong person: this panel is where somebody
+  // decides who to phone.
+  fillRouteDrivers(capped, stops);
+  fillRouteDrivers(suppressed, stops);
+
   return {
     rows: capped,
     // THE ROWS THE PANEL DOES NOT SHOW. Real hours_risk predictions that a no-driver card
@@ -1597,6 +1606,33 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     legsWanted: [...legsWanted.values()],
     etaByStop,
   };
+}
+
+/**
+ * PURE. Fill each row's driverName from its route when the row itself has none.
+ *
+ * Exported for tests. `rows` is mutated in place (they are freshly built objects owned by
+ * computeBoardFlags); `stops` is the whole board. A route carrying two different driver names
+ * is left blank on purpose — see the note at the call site.
+ */
+export function fillRouteDrivers(rows, stops) {
+  const byRoute = new Map();
+  for (const s of stops || []) {
+    const k = String(s?.routeName || s?.loadNbr || '').trim().toLowerCase();
+    if (!k) continue;
+    const d = String(s?.driverName || s?.driverUserName || '').trim();
+    if (!d) continue;
+    if (!byRoute.has(k)) byRoute.set(k, new Set());
+    byRoute.get(k).add(d);
+  }
+  for (const r of rows || []) {
+    if (!r || r.driverName) continue;
+    const k = String(r.routeName || '').trim().toLowerCase();
+    if (!k) continue;
+    const set = byRoute.get(k);
+    if (set && set.size === 1) r.driverName = [...set][0];
+  }
+  return rows;
 }
 
 // The key a row is hidden under, and the keys a dismissal must WRITE.
@@ -1629,6 +1665,13 @@ function row(tier, rule, s, extra) {
     stopNbr: s?.stopNbr ?? null,
     matchKey: s?.matchKey ?? null,
     routeName: s ? (s.routeName || s.loadNbr || null) : null,
+    // WHO IS DRIVING IT. Chad, on a receiving-hours card: "Need to show route and driver
+    // name." The route was only ever inside the detail prose ("Stop 11 on ESTES") and the
+    // driver appeared nowhere at all — so the first thing a dispatcher does with a flag,
+    // call the person on that truck, needed a second lookup on another screen. A stop's own
+    // row does not always carry the driver (an unassigned stop on an assigned load), so this
+    // is a floor: fillRouteDrivers below fills it in from the route where it is blank.
+    driverName: s ? (String(s.driverName || s.driverUserName || '').trim() || null) : null,
     ...extra,
   };
   // Dismissal key: standing conditions ignore the date (they persist until the FACTS in the
