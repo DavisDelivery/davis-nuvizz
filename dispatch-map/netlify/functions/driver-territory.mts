@@ -62,16 +62,28 @@ export default async (req: Request): Promise<Response> => {
   // A READ THAT FAILS IS SAID OUT LOUD. Swallowing it would silently shrink the window and the
   // sheet would print a confident picture built from half the history — the same absent-is-not-
   // zero mistake ?explain=1 was fixed for two releases ago.
+  // READ THE DAYS IN PARALLEL. Sequentially this was one Firestore list of ~700 documents after
+  // another: five business days took 13.6s and TEN timed out the function at 40s, which is the
+  // 502 the first deploy of this endpoint returned. Bounded so a four-week sheet does not open
+  // eighty concurrent connections either; measured, five days of history is ~4.5s per day, so
+  // six at a time keeps a twenty-day window inside the 26s ceiling.
+  const CONC = 6;
   const stops: any[] = [];
   const missing: string[] = [];
   const failed: { date: string; error: string }[] = [];
-  for (const date of dates) {
-    try {
-      const rows = await listStops(TENANT, date);
-      if (!rows.length) missing.push(date);
-      for (const r of rows) stops.push({ ...r, boardDate: r.boardDate || date });
-    } catch (e: any) { failed.push({ date, error: String(e?.message || e).slice(0, 160) }); }
-  }
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(CONC, dates.length) }, async () => {
+    while (next < dates.length) {
+      const date = dates[next++];
+      try {
+        const rows = await listStops(TENANT, date);
+        if (!rows.length) missing.push(date);
+        for (const r of rows) stops.push({ ...r, boardDate: r.boardDate || date });
+      } catch (e: any) { failed.push({ date, error: String(e?.message || e).slice(0, 160) }); }
+    }
+  }));
+  missing.sort();
+  failed.sort((a, b) => a.date.localeCompare(b.date));
 
   // TWO SOURCES, ROSTER FIRST. The employees cards are where a rename is already recorded by a
   // person (see buildDriverAliases); the ops doc is the manual override for anything the cards
