@@ -1295,6 +1295,42 @@ function loadLabel(routeName: any, loadNbr: any): string {
   return name && !isHashLikeId(name) && name !== nbr ? `${name} (${nbr})` : nbr;
 }
 
+// A stop the board is moving off an in-Save load that has ALREADY FAILED this Save: nothing will
+// free it, so the destination is refused up front — no validate+add that NuVizz would silently
+// no-op, and no message blaming a route that IS in the Save (the Sep 8 TERRANCE → ALLEN C toast).
+function failedSourceErr(nbr: string, src: any, dest: any): string {
+  const from = loadLabel(src?.load?.routeName ?? src?.L?.routeName, src?.loadNbr);
+  const to = loadLabel(dest?.L?.routeName, dest?.loadNbr);
+  return `commitBoard(rwb): stop ${nbr} is on ${from}, which FAILED this Save (${src?.result?.error || 'see its message'}) — it could not be moved to ${to}, and nothing was written for ${to}. Fix ${from}, then re-Save.`;
+}
+
+// The "still holds it" verdict must never accuse a route that IS in the Save of being outside it.
+function holderHint(holder: { nbr: string; label: string }, batch: Set<string>): string {
+  return batch.has(String(holder.nbr))
+    ? `${holder.label} is part of this Save, so its own save should have released the stop — NuVizz may still be settling. Wait a few seconds, refresh, and re-Save; if it persists, unplan the stop there in the portal.`
+    : `Open ${holder.label} in Compare to move it, or unplan it there in the portal (RWB can't pull a stop off a route that isn't part of the Save).`;
+}
+
+// A drained source whose classic cancel was refused: the moves landed; say exactly what is left
+// where, and name the cause when NuVizz named it (a disabled Vehicle Type refuses EVERY load/edit
+// of that route — Sep 8, TERRANCE).
+function drainedCancelErr(e: any, cr: any): string {
+  const self = loadLabel(e.load?.routeName ?? e.L?.routeName, e.loadNbr);
+  const dests = [...new Set((e.movedTo || []).map((d: any) => loadLabel(d.L?.routeName, d.loadNbr)))].join(', ');
+  const reason = cr?.error || (cr?.steps || []).filter((s: any) => !s?.ok).map((s: any) => s?.error).filter(Boolean).join('; ') || 'no reason given';
+  const kept = (e.orderedNbrs || []).join(', ');
+  const hint = /vehicle\s*type/i.test(reason)
+    ? 'NuVizz is refusing every edit of this route because its Vehicle Type is disabled/unavailable — enable or change it under Vehicle Type Configuration in the portal (or cancel the route there), then re-Save.'
+    : 'Cancel the route in the portal, then refresh.';
+  return `commitBoard: ${e.movedCount || 0} stop(s) moved to ${dests || 'their new load(s)'}, but NuVizz refused to cancel the now-emptied ${self}: ${reason}. It still holds ${kept || 'no deliveries'}. ${hint}`;
+}
+
+// Post-add settle beat (env-tunable, clamped to ≤5s: it shares the function's 26s budget with the
+// whole save; past ~5s NuVizz's attach has either landed or the straggler pass should take over).
+function rwbSettleMs(): number {
+  return Math.min(5000, Math.max(0, Number(process.env.NUVIZZ_RWB_SETTLE_MS ?? 1200) || 0));
+}
+
 // Which load does NuVizz's own stop record say holds this stop? One getStop, used only on
 // failure paths to turn "planned on another load" into an actionable load. `nbr` drives the
 // same-load comparison; `label` is the card-style display name. Null when the stop reads
@@ -1329,8 +1365,11 @@ async function rwbStopHolder(requester: RequesterLike, stopNbr: string, creds: W
  * No `pending` state is ever returned — a Save either lands in-band or reports its
  * error immediately.
  *
- * Loads without an order change (emptyLoad, driver/dispatch-only, pure removes) fall
- * back to the UNCHANGED legacy engine, exactly like the import engine does.
+ * Loads without an order change (driver/dispatch-only, pure removes) fall back to the
+ * UNCHANGED legacy engine, exactly like the import engine does. An EMPTIED load (emptyLoad)
+ * is cancelled by that engine too — but when a card in the same Save is TAKING its stops,
+ * the transfer rides the atomic save first and the cancel runs last ("EMPTIED SOURCES",
+ * STEPS 1–3 below; the Sep 8 2026 TERRANCE → ALLEN C Save).
  */
 export async function runCommitBoardRwb(requester: RequesterLike, payload: any, creds: WriteCreds): Promise<any> {
   if (rwbEngineBlocked()) {
@@ -1348,6 +1387,11 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
 
   const legacy: any[] = [];
   const seq: any[] = []; // { L, loadNbr, load, orderedNbrs, moveArrivals, addArrivals, curNbrs, stopIdByNbr, result, addReads, retargeted }
+  // EMPTIED sources — cards the dispatcher struck EVERY order off (emptyLoad / an empty order). See
+  // "EMPTIED SOURCES" below: when another card in this Save is TAKING their stops, the transfer rides
+  // the atomic RWB save FIRST and the classic (load/edit) cancel runs LAST, so the consolidation never
+  // depends on the cancel landing. { L, loadNbr, load, curNbrs, stopIdByNbr, claimed, result, … }
+  const emptied: any[] = [];
   const batchNbrs = new Set<string>();
   for (const l of loadsIn) { const v = String(l?.loadNbr ?? '').trim(); if (v && !isHashLikeId(v)) batchNbrs.add(v); }
   // Stops that ANOTHER load in this same Save is planning (a staged cross-load MOVE): the board IS
@@ -1364,7 +1408,13 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
   // what lets a cross-load move classify as a MOVE (atomic in the combined save) instead of an add.
   for (const L of loadsIn) {
     const orderedNbrs: string[] | null = Array.isArray(L?.orderedStopNbrs) ? L.orderedStopNbrs.map((x: any) => String(x)).filter(Boolean) : null;
-    if (L?.emptyLoad === true || !orderedNbrs || orderedNbrs.length === 0) { legacy.push(L); continue; }
+    if (L?.emptyLoad === true || !orderedNbrs || orderedNbrs.length === 0) {
+      const eNbr = String(L?.loadNbr ?? '').trim();
+      const isEmpty = L?.emptyLoad === true || (orderedNbrs !== null && orderedNbrs.length === 0);
+      if (isEmpty && eNbr && !isHashLikeId(eNbr)) emptied.push({ L, loadNbr: eNbr, load: null, curNbrs: new Set<string>(), stopIdByNbr: new Map<string, string>(), claimed: [], result: { loadNbr: eNbr, ok: true, steps: [], error: null } });
+      else legacy.push(L);   // driver/dispatch-only, removals-only, or a number-less empty: the classic path, as before
+      continue;
+    }
     const result: any = { loadNbr: L?.loadNbr ?? null, ok: true, steps: [], error: null };
 
     if (!L?.loadNbr && !L?.loadId) {
@@ -1400,6 +1450,43 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
   };
   for (const p of seq) if (p.load) indexLoad(p);
 
+  // ── EMPTIED SOURCES, STEP 1 — read them (the TERRANCE → ALLEN C Save, Sep 8 2026). ──
+  // Chad pulled every order off TERRANCE onto ALLEN C (one to Un-Planned) and saved. The empty
+  // card ran the classic cancel FIRST (load/edit remove-all — NuVizz's own "no deliveries =
+  // cancelled" rule), NuVizz refused that edit (reason 903: the route's Vehicle Type is disabled
+  // in Vehicle Type Configuration, and load/edit is a full-header echo), and ALLEN C's arrivals
+  // then fired as plain adds against stops TERRANCE still held — NuVizz no-ops those, the toast
+  // blamed a route that WAS in the Save, and nothing moved. The consolidation must not hang off
+  // the cancel: when a sequenced card is taking an emptied route's stops, read that route so the
+  // arrivals classify as in-batch MOVES (the atomic multi-route save, the source entry drained
+  // to what stays), verify both sides, and only THEN cancel the drained route through the classic
+  // path (STEP 3). A refused cancel then costs the cancel alone — never the moves.
+  //   • Read ONLY when some sequenced card has an arrival it doesn't hold yet: a plain "Cancel
+  //     route" Save with nobody taking the stops is byte-identical to before (classic, up front).
+  //   • A classic-path destination (a loadId-only card) frees its arrivals only inside its own
+  //     batch, so an emptied source whose stops such a card wants stays in that batch as before.
+  //   • NUVIZZ_RWB_DRAIN_SOURCE=off reverts to cancel-first (the escape lever).
+  const DRAIN_SOURCES = envFlag('NUVIZZ_RWB_DRAIN_SOURCE', true);
+  const anySeqArrival = seq.some((p: any) => p.result.ok && p.load && p.orderedNbrs.some((n: string) => !p.curNbrs.has(n)));
+  const legacyWants = new Set<string>();
+  for (const l of legacy) for (const n of (Array.isArray(l?.orderedStopNbrs) ? l.orderedStopNbrs : [])) legacyWants.add(String(n));
+  for (const e of emptied) {
+    if (!DRAIN_SOURCES || !anySeqArrival) { legacy.push(e.L); e.legacyEarly = true; continue; }
+    const f = await fetchLoad(requester, e.loadNbr, creds);
+    if (!f.load) { legacy.push(e.L); e.legacyEarly = true; continue; }   // the classic path diagnoses the miss itself
+    e.load = f.load;
+    indexLoad(e);
+    if (!e.stopIdByNbr.size || [...e.curNbrs].some((n: string) => legacyWants.has(n))) { legacy.push(e.L); e.legacyEarly = true; continue; }
+    // The same identity check the classic cancel applies: a NAME that resolved to another day's
+    // instance is never drained (or cancelled) here.
+    if (trustableLoadId(e.L?.loadId) && e.load.loadId && String(e.load.loadId) !== String(e.L.loadId)) {
+      e.result.ok = false; e.result.error = `commitBoard: load identity mismatch (name resolved ${e.load.loadId}, expected ${e.L.loadId})`;
+      continue;
+    }
+    e.routePlanId = String(trustableLoadId(e.L?.loadId) ? e.L.loadId : e.load.loadId);
+  }
+  const emptiedLive = emptied.filter((e: any) => !e.legacyEarly);
+
   // ── PASS B1: recurring-instance RETARGET + integrity checks (whole batch now visible). ──
   // RECURRING-INSTANCE RETARGET: a recurring load NAME (e.g. "DARYL") can have TWO NuVizz
   // instances on the same day — a fresh EMPTY one plus the prior one that still holds the stops.
@@ -1414,7 +1501,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
     let load = p.load;
     const openDOcount = (load.stops || []).filter((s: any) => String(s?.stopType ?? '').toUpperCase() === 'DO').length;
     if (openDOcount === 0 && p.orderedNbrs.length) {
-      const heldInBatch = seq.some((q: any) => q !== p && q.result.ok && q.curNbrs?.has(p.orderedNbrs[0]));
+      const heldInBatch = [...seq, ...emptiedLive].some((q: any) => q !== p && q.result.ok && q.curNbrs?.has(p.orderedNbrs[0]));
       if (!heldInBatch) {
         const probe = await fireSingle(requester, 'getStop', { stopNbr: p.orderedNbrs[0] }, creds);
         const srcNbr = probe?.ok ? String(probe.stop?.assignedLoadNbr ?? '').trim() : '';
@@ -1526,13 +1613,22 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       }
     }
     const needFetch: string[] = [];
+    let depErr: string | null = null;
     for (const nbr of missing) {
-      const holder = seq.find((q: any) => q !== p && q.result.ok && q.stopIdByNbr.has(nbr));
-      if (holder) { p.moveArrivals.push({ nbr, stopId: holder.stopIdByNbr.get(nbr), fromLoadNbr: holder.loadNbr }); continue; }
+      // The in-batch load that currently holds the stop — sequenced or EMPTIED, green or failed.
+      const holder = [...seq, ...emptiedLive].find((q: any) => q !== p && q.load && q.stopIdByNbr.has(nbr));
+      if (holder && !holder.result.ok) { depErr = failedSourceErr(nbr, holder, p); break; }
+      if (holder) {
+        const fromEmptied = emptiedLive.includes(holder);
+        p.moveArrivals.push({ nbr, stopId: holder.stopIdByNbr.get(nbr), fromLoadNbr: holder.loadNbr, ...(fromEmptied ? { fromEmptied: true } : {}) });
+        if (fromEmptied) holder.claimed.push({ nbr, dest: p });
+        continue;
+      }
       const sid = suppliedIds.get(nbr);
       if (sid) { p.addArrivals.push({ nbr, stopId: sid }); continue; }
       needFetch.push(nbr);
     }
+    if (depErr) { p.result.ok = false; p.result.error = depErr; continue; }
     const fetched = new Map<string, any>(await Promise.all(needFetch.map(async (n): Promise<[string, any]> => {
       try { return [n, await fireSingle(requester, 'getStop', { stopNbr: n }, creds)]; }
       catch (e: any) { return [n, { ok: false, error: e?.message || 'getStop failed' }]; }
@@ -1546,15 +1642,111 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
         const src = loadLabel(gs.stop?.routeName, srcNbr);
         err = `commitBoard(rwb): stop ${nbr} is ALREADY PLANNED on ${src} (our board may be showing it stale-unplanned) — open ${src} in Compare to stage the move, or refresh and re-check`; break;
       }
-      p.addArrivals.push({ nbr, stopId: String(gs.stop.stopId) });
+      // Held by an in-Save load that already FAILED (refused before its read, so it never showed up
+      // as a holder above): nothing will free it — say so instead of firing a doomed validate+add.
+      const failedSrc = srcNbr && srcNbr !== p.loadNbr ? [...seq, ...emptiedLive].find((q: any) => String(q.loadNbr) === srcNbr && !q.result.ok) : null;
+      if (failedSrc) { err = failedSourceErr(nbr, failedSrc, p); break; }
+      // An in-Save holder that the CLASSIC batch frees (cancel-first): remembered so a failed cancel
+      // refuses this taker with the cancel's reason instead of adding against a stop still held.
+      p.addArrivals.push({ nbr, stopId: String(gs.stop.stopId), ...(srcNbr && srcNbr !== p.loadNbr && batchNbrs.has(srcNbr) ? { fromBatchNbr: srcNbr } : {}) });
     }
     p.addReads = needFetch.length;
     if (err) { p.result.ok = false; p.result.error = err; continue; }
   }
 
+  // ── FAILED-SOURCE GUARD (post-classification). A holder can fail AFTER a destination classified
+  // its arrival as a move off it (the guards above run card by card). Saving the destination alone
+  // would fire the combined save + the move-fallback add against a stop the failed source still
+  // holds — NuVizz no-ops it, and the old verdict blamed a route "not part of the Save". Refuse the
+  // destination with the source's own reason instead; nothing is written for it.
+  const voidDeadMoves = (): boolean => {
+    let changed = false;
+    for (const p of seq) {
+      if (!p.result.ok) continue;
+      const dead = p.moveArrivals.find((a: any) => [...seq, ...emptiedLive].some((q: any) => q !== p && String(q.loadNbr) === String(a.fromLoadNbr) && !q.result.ok));
+      if (!dead) continue;
+      const src = [...seq, ...emptiedLive].find((q: any) => q !== p && String(q.loadNbr) === String(dead.fromLoadNbr) && !q.result.ok);
+      p.result.ok = false; p.result.error = failedSourceErr(String(dead.nbr), src, p); changed = true;
+    }
+    return changed;
+  };
+  voidDeadMoves();
+
+  // ── EMPTIED SOURCES, STEP 2 — what each drained source KEEPS through the atomic save. ──
+  // Its entry is the route minus the stops other cards are taking — the source entry of the
+  // portal's own move HAR — so it never reaches 0 stops inside the save (the route is emptied by
+  // the classic cancel afterwards). An executed stop cannot leave a load (NuVizz keeps it — the
+  // AVRT case), so a claimed stop already acted on refuses the source up front, zero calls, like
+  // every other engine guard; the classic cancel keeps its own executed guard for what stays.
+  // When EVERY delivery is leaving, the last one in its destination's order anchors the source
+  // through the save and rides validate+add once the cancel has freed it (STEP 3 — the proven
+  // move-fallback path: rwbAddStopsToRoute + a re-sequence).
+  for (const e of emptiedLive) {
+    if (!e.result.ok || !e.load) continue;
+    e.claimed = e.claimed.filter((c: any) => c.dest.result.ok);   // a claimer that died claims nothing
+    if (!e.claimed.length) { legacy.push(e.L); e.legacyEarly = true; continue; }   // nobody green is taking its stops → classic, up front
+    const executed = e.claimed
+      .map((c: any) => ({ n: String(c.nbr), status: rawStopExecStatus(e.load, String(c.nbr)) }))
+      .find((x: any) => isExecutedStopStatus(x.status));
+    if (executed) {
+      e.result.ok = false;
+      e.result.error = `commitBoard: stop ${executed.n} on ${e.loadNbr} is already ${executed.status} — NuVizz keeps an executed stop even when a Save moves it, so this load cannot be emptied. Unplan it in the portal first, then refresh and re-Save.`;
+      voidDeadMoves();
+      continue;
+    }
+    e.movedCount = e.claimed.length;
+    e.movedTo = [...new Set(e.claimed.map((c: any) => c.dest))];
+    const claimedSet = new Set<string>(e.claimed.map((c: any) => String(c.nbr)));
+    // What STAYS: every delivery and every customer pickup (a non-DO stop past the origin slot)
+    // not being taken, in visit order — the origin pickup itself is never an entry stop.
+    const stays = (e.load.stops || [])
+      .filter((s: any) => s?.stopNbr != null && s?.stopId != null && !claimedSet.has(String(s.stopNbr))
+        && (String(s?.stopType ?? 'DO').toUpperCase() === 'DO' || Number(s?.stopSeq ?? 0) > 1))
+      .slice().sort((a: any, b: any) => Number(a?.stopSeq ?? 0) - Number(b?.stopSeq ?? 0));
+    if (!stays.length) {
+      let tail: any = null;
+      for (const c of e.claimed) { const idx = c.dest.orderedNbrs.indexOf(String(c.nbr)); if (!tail || idx > tail.idx) tail = { nbr: String(c.nbr), idx, dest: c.dest }; }
+      if (tail.dest.orderedNbrs.length <= 1) {
+        // The taker would have nothing left in its own entry (a lone stop onto an empty route) — a
+        // 0-stop entry is not a portal shape either way, so this source cancels FIRST, as before,
+        // and its stops ride validate+add once the cancel has freed them.
+        for (const c of e.claimed) {
+          c.dest.moveArrivals = c.dest.moveArrivals.filter((a: any) => String(a.nbr) !== String(c.nbr));
+          c.dest.addArrivals.push({ nbr: String(c.nbr), stopId: String(e.stopIdByNbr.get(String(c.nbr))), fromBatchNbr: e.loadNbr });
+        }
+        legacy.push(e.L); e.legacyEarly = true; continue;
+      }
+      tail.dest.moveArrivals = tail.dest.moveArrivals.filter((a: any) => String(a.nbr) !== tail.nbr);
+      tail.dest.fullOrderNbrs = tail.dest.orderedNbrs.slice();
+      tail.dest.orderedNbrs = tail.dest.orderedNbrs.filter((n: string) => n !== tail.nbr);
+      tail.dest.deferredAnchor = { nbr: tail.nbr, stopId: String(e.stopIdByNbr.get(tail.nbr)), from: e };
+      e.claimed = e.claimed.filter((c: any) => String(c.nbr) !== tail.nbr);
+      stays.push((e.load.stops || []).find((s: any) => String(s?.stopNbr) === tail.nbr));
+    }
+    e.orderedNbrs = stays.map((s: any) => String(s.stopNbr));
+    e.orderedIds = stays.map((s: any) => String(s.stopId));
+    e.pickupLegIds = stays.filter((s: any) => String(s?.stopType ?? 'DO').toUpperCase() !== 'DO').map((s: any) => String(s.stopId));
+    e.moveArrivals = []; e.addArrivals = []; e.rwbAddCalls = 0; e.verifyReads = 0; e.addReads = 0;
+    e.emptiedSource = true;
+  }
+  const emptiedInSave = emptiedLive.filter((e: any) => e.emptiedSource && e.result.ok);
+
   const legacyResult = legacy.length
     ? await runCommitBoard(requester, { ...payload, loads: legacy }, creds)
     : { ok: true, loads: [], orphaned: [] };
+
+  // Arrivals that ride validate+add only because the classic batch frees them first (cancel-first:
+  // the lever off, a lone-stop taker, or a getStop that named an in-Save holder): if that cancel
+  // FAILED, nothing freed them — refuse the taker with the cancel's reason, no doomed adds.
+  for (const p of seq) {
+    if (!p.result.ok) continue;
+    const dep = p.addArrivals.find((a: any) => a.fromBatchNbr && (legacyResult.loads || []).some((l: any) => String(l?.loadNbr) === String(a.fromBatchNbr) && !l.ok));
+    if (!dep) continue;
+    const lr = (legacyResult.loads || []).find((l: any) => String(l?.loadNbr) === String(dep.fromBatchNbr));
+    const reason = lr?.error || (lr?.steps || []).filter((s: any) => !s?.ok).map((s: any) => s?.error).filter(Boolean).join('; ') || 'see its message';
+    const srcL = emptied.find((e: any) => String(e.loadNbr) === String(dep.fromBatchNbr))?.L ?? legacy.find((l: any) => String(l?.loadNbr) === String(dep.fromBatchNbr));
+    p.result.ok = false; p.result.error = failedSourceErr(String(dep.nbr), { L: srcL, loadNbr: dep.fromBatchNbr, result: { error: reason } }, p);
+  }
 
   // NOTE: the old sources-before-destinations topo-sort (and its dependency ladder, and the
   // "circular cross-load move" refusal) is GONE: an in-batch move — even an A↔B swap — commits
@@ -1597,7 +1789,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       // Clamped to ≤5s: the settle wait shares the function's 26s budget with the whole save —
       // an oversized env value would burn the timeout mid-save (audit), and past ~5s NuVizz's
       // attach has either landed or the straggler pass should take over.
-      const settleMs = Math.min(5000, Math.max(0, Number(process.env.NUVIZZ_RWB_SETTLE_MS ?? 1200) || 0));
+      const settleMs = rwbSettleMs();
       for (let settle = 0; missingAdds.length && settle < 2; settle++) {
         await realSleep(settleMs);
         const fS = await fetchLoad(requester, String(p.loadNbr), creds);
@@ -1649,7 +1841,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
         // no holder at all → the record itself reads UNPLANNED and is still processing.
         const recordState = holder && holder.nbr === String(p.loadNbr) ? 'reads ON this load already (NuVizz’s route view is still settling)' : 'reads UNPLANNED right now, so NuVizz is likely still processing';
         p.result.error = holder && holder.nbr !== String(p.loadNbr)
-          ? `commitBoard(rwb): stop ${miss.nbr} couldn't be added to ${selfLbl} — NuVizz still holds it on ${holder.label}. Open ${holder.label} in Compare to move it, or unplan it there in the portal (RWB can't pull a stop off a route that isn't part of the Save).`
+          ? `commitBoard(rwb): stop ${miss.nbr} couldn't be added to ${selfLbl} — NuVizz still holds it on ${holder.label}. ${holderHint(holder, batchNbrs)}`
           : `commitBoard(rwb): ${missingAdds.length > 1 ? `${missingAdds.length} stops (${missingAdds.slice(0, 3).map((a: any) => a.nbr).join(', ')}${missingAdds.length > 3 ? '…' : ''})` : `stop ${miss.nbr}`} did not appear on ${selfLbl} after the add — the stop record ${recordState} (nothing was double-planned). Wait a few seconds and Save again.`;
         continue;
       }
@@ -1687,7 +1879,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
   // the multi-route routeJsonData payload is exactly how the portal itself moves a stop between
   // open routes — the moved stop is simply absent from the source's entry and present in the
   // destination's. Cost: 1 fetchUpdatedJson per load + ONE save (a 2-load move = 3 calls here).
-  const group = live.filter((p: any) => p.result.ok);
+  const group = [...live.filter((p: any) => p.result.ok), ...emptiedInSave];
   // ── CROSS-CARD STRAND GUARD (pre-save). A card may RELEASE a delivery (omit it from its
   // entry, letting another card take it — that's the only way the stale-board guard admitted
   // it) ONLY while the claiming card is still part of this Save. `group` silently drops cards
@@ -1696,20 +1888,28 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
   // and no orphan surfaced (the atomic-save assumption replaced the old topo-sort's orphan
   // net). Claims from failed RWB cards are REVOKED here; legacy-path claims stand — the legacy
   // engine carries its own orphan detection.
-  {
+  // Runs to a FIXPOINT with the failed-source guard: a SOURCE refused here (its taker died) leaves
+  // its other takers' moves dead, and those are voided in turn, until nothing changes. A drained
+  // source is judged like any card — its entry is what stays, its leavers are claimed by the cards
+  // taking them, and a leaver whose taker died strands it.
+  for (let round = 0; round <= group.length; round++) {
     const claimedNbrs = new Set<string>();
-    for (const p of group) for (const n of p.orderedNbrs) claimedNbrs.add(n);
+    for (const p of group) if (p.result.ok) for (const n of p.orderedNbrs) claimedNbrs.add(n);
     for (const l of legacy) for (const n of (Array.isArray(l?.orderedStopNbrs) ? l.orderedStopNbrs : [])) claimedNbrs.add(String(n));
+    let changed = false;
     for (const p of group) {
+      if (!p.result.ok) continue;
       const orderedSet = new Set(p.orderedNbrs);
       const removeSet = new Set((Array.isArray(p.L?.removeStopNbrs) ? p.L.removeStopNbrs : []).map(String));
       // Same iteration set as the stale-board guard: the load's DELIVERY stops (origin PU exempt).
       const stranded = [...p.stopIdByNbr.keys()].filter((n: string) => !orderedSet.has(n) && !removeSet.has(n) && !claimedNbrs.has(n));
       if (stranded.length) {
-        p.result.ok = false;
+        p.result.ok = false; changed = true;
         p.result.error = `commitBoard(rwb): stop ${stranded[0]} is being moved to a card that FAILED this Save — saving ${p.loadNbr} now would UNPLAN it. Fix the failed card (see its error), then re-Save; nothing was written for ${p.loadNbr}.`;
       }
     }
+    if (voidDeadMoves()) changed = true;
+    if (!changed) break;
   }
   const saveGroup = group.filter((p: any) => p.result.ok);
   const originOf = (p: any) => {
@@ -1878,6 +2078,83 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
     }
   }
 
+  // ── EMPTIED SOURCES, STEP 3 — cancel each drained route LAST, through the classic path. ──
+  // The moves above are verified on both sides, so the drained route now holds only what stays;
+  // load/edit remove-all cancels it exactly as a plain Cancel-route Save does — same executed
+  // guard, same cancel-response classification, same board write-through for what it frees. A
+  // refused cancel is reported on the source alone, with the moves intact.
+  const lateOrphans: any[] = [];
+  const toCancel = emptiedInSave.filter((e: any) => e.result.ok);
+  if (toCancel.length) {
+    const late = await runCommitBoard(requester, { ...payload, loads: toCancel.map((e: any) => e.L) }, creds);
+    for (const e of toCancel) {
+      const cr = (late.loads || []).find((l: any) => (l?.loadNbr != null && String(l.loadNbr) === String(e.loadNbr))
+        || (l?.loadId != null && String(l.loadId) === String(e.routePlanId))) || null;
+      if (cr) { e.result.steps.push(...(cr.steps || [])); if (cr.boardSync) e.result.boardSync = cr.boardSync; }
+      if (cr?.ok) { e.cancelled = true; continue; }
+      e.result.ok = false;
+      e.result.error = drainedCancelErr(e, cr || { error: 'no result for the cancel' });
+    }
+    lateOrphans.push(...(late.orphaned || []));
+  }
+  // The anchored leaver (every delivery was leaving): now that its source is cancelled, attach it
+  // to its taker and set the taker's FULL order — or, if the cancel was refused, report the one
+  // stop left behind by name and hand the board the order that DID land.
+  for (const p of live) {
+    const d = p.deferredAnchor;
+    if (!d) continue;
+    const landedNbrs: string[] = p.orderedNbrs.slice();
+    p.orderedNbrs = Array.isArray(p.fullOrderNbrs) ? p.fullOrderNbrs : p.orderedNbrs;
+    if (!p.result.ok) continue;
+    const self = loadLabel(p.L?.routeName, p.loadNbr);
+    const from = loadLabel(d.from.load?.routeName ?? d.from.L?.routeName, d.from.loadNbr);
+    p.result.calls = p.result.calls || { rwb: 0, rwbAdd: 0, infos: 0, stopInfos: 0 };
+    const leftBehind = (why: string) => {
+      p.result.ok = false;
+      p.result.error = `commitBoard(rwb): ${landedNbrs.length} of ${p.orderedNbrs.length} stop(s) landed on ${self}; stop ${d.nbr} ${why}`;
+      p.result.observedOrder = landedNbrs;
+    };
+    if (!d.from.cancelled) { leftBehind(`is still on ${from}, whose cancel was refused (${d.from.result.error || 'see its message'}). Sort out ${from}, then move ${d.nbr} and re-Save — nothing on ${self} was lost.`); continue; }
+    try {
+      const add = await rwbAddStopsToRoute(requester, p.routePlanId, [d.stopId]);
+      p.result.calls.rwbAdd += add.calls;
+      p.result.steps.push(...add.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}(drained-anchor)` })));
+      if (!add.ok) { leftBehind(`could not be added after ${from} was cancelled: ${add.message}. It is UNPLANNED now — plan it onto ${self} and re-Save.`); continue; }
+      await realSleep(rwbSettleMs());
+      const fA = await fetchLoad(requester, String(p.loadNbr), creds);
+      p.result.calls.infos += 1;
+      if (!fA.load) { leftBehind(`could not be verified on ${self} (${loadMissDiag(p.loadNbr, fA)}) — refresh and re-Save.`); continue; }
+      p.load = fA.load; indexLoad(p);
+      const idByNbr = new Map<string, string>();
+      for (const s of (p.load?.stops || [])) if (s?.stopNbr != null && s?.stopId != null) idByNbr.set(String(s.stopNbr), String(s.stopId));
+      if (!idByNbr.has(d.nbr)) { leftBehind(`did not appear on ${self} after ${from} was cancelled — it is UNPLANNED now; wait a few seconds, then plan it onto ${self} and re-Save.`); continue; }
+      const gone = p.orderedNbrs.find((n: string) => !idByNbr.has(n));
+      if (gone) { leftBehind(`landed, but stop ${gone} no longer reads on ${self} — refresh and re-Save.`); continue; }
+      p.orderedIds = p.orderedNbrs.map((n: string) => idByNbr.get(n) as string);
+      const r2 = await rwbSequenceStops(requester, p.routePlanId, p.orderedIds, originOf(p), p.pickupLegIds || [], { ...extrasOf(p), resequence: RWB_RESEQ });
+      p.result.steps.push(...r2.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}(drained-anchor)` })));
+      p.result.calls.rwb += r2.calls;
+      if (!r2.ok) { leftBehind(`is on ${self} but the order could not be set: ${r2.message}. Re-Save to set it.`); continue; }
+      // Verify the FULL order landed — a soft seq-pending read retries once, plainly (no repair write).
+      let verdict: string | null = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const f3 = await fetchLoad(requester, String(p.loadNbr), creds);
+        p.result.calls.infos += 1;
+        if (!f3.load) { verdict = `load unreadable after the anchor save (${loadMissDiag(p.loadNbr, f3)}) — verify in the portal, then refresh`; break; }
+        const onNow = new Set((f3.load.stops || []).map((s: any) => String(s?.stopNbr)));
+        const missing = p.orderedNbrs.filter((n: string) => !onNow.has(n));
+        if (missing.length) { verdict = `stop ${missing[0]} did not stay on ${self} after the anchor save — check the load in the portal, then refresh and re-Save`; break; }
+        const orderErr = rwbOrderMismatch(f3.load, p.orderedNbrs);
+        if (!orderErr) { verdict = null; break; }
+        if (orderErr.startsWith(RWB_SEQ_PENDING) && attempt === 0) { await realSleep(rwbSettleMs()); continue; }
+        verdict = orderErr; break;
+      }
+      if (verdict) { p.result.ok = false; p.result.error = `commitBoard(rwb): ${verdict}`; }
+    } catch (err: any) {
+      leftBehind(`could not be attached after ${from} was cancelled (${err?.message || 'RWB add failed'}) — it is UNPLANNED now; plan it onto ${self} and re-Save.`);
+    }
+  }
+
   // PLAN verdict frozen here (audit C3): assign/dispatch failures below must not suppress the
   // board stamp for a plan that verified green — the stops ARE on the route in NuVizz.
   for (const p of live) p.planOk = p.result.ok === true && Array.isArray(p.orderedNbrs) && p.orderedNbrs.length > 0;
@@ -1951,6 +2228,15 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
 
   const loads = [
     ...(legacyResult.loads || []),
+    // Drained sources (STEPS 1–3): ONE entry each, joined the way the client joins — by the number
+    // it sent — carrying the atomic-save steps AND the classic cancel's steps/boardSync.
+    ...emptied.filter((e: any) => !e.legacyEarly).map((e: any) => ({
+      loadNbr: e.loadNbr, loadId: e.routePlanId ?? e.load?.loadId ?? e.L?.loadId ?? null,
+      requestedLoadNbr: e.L?.loadNbr ?? null, requestedLoadId: e.L?.loadId ?? null,
+      ok: e.result.ok, error: e.result.error, steps: e.result.steps,
+      calls: e.result.calls || undefined,
+      boardSync: e.result.boardSync || undefined,
+    })),
     ...seq.map((p) => ({
       loadNbr: p.result.loadNbr ?? p.loadNbr, loadId: p.load?.loadId ?? p.L?.loadId ?? null,
       // Echo the identity the CLIENT sent (audit C8): after a recurring-instance retarget the
@@ -1969,7 +2255,8 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       seededStopNbr: p.result.seededStopNbr || undefined, seededLoadNbr: p.result.seededLoadNbr || undefined,
     })),
   ];
-  return { ok: loads.every((l: any) => l.ok) && (legacyResult.orphaned || []).length === 0, loads, orphaned: legacyResult.orphaned || [] };
+  const orphaned = [...(legacyResult.orphaned || []), ...lateOrphans];
+  return { ok: loads.every((l: any) => l.ok) && orphaned.length === 0, loads, orphaned };
 }
 
 /**

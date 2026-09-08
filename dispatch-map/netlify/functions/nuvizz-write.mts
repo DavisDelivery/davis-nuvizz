@@ -58,7 +58,7 @@ function planFor(op: WriteOp, payload: any): string[] {
       const bits: string[] = [];
       const inline = Array.isArray(L?.newStops) ? L.newStops.length : 0;
       if (L?.emptyLoad || (ordered.length === 0 && rm > 0)) {
-        bits.push('EMPTY the load — remove ALL orders and CANCEL the route');
+        bits.push(`EMPTY the load — remove ALL orders and CANCEL the route${payload?.useRwb === true && !rwbEngineBlocked() ? ' (orders another card in this Save is taking move in the atomic RWB save FIRST; the cancel runs last)' : ''}`);
       } else {
         if (rm) bits.push(`unplan ${rm} order(s) (remove from route)`);
         // The Confirm modal tells you WHICH engine will fire — the classic anchor engine, the
