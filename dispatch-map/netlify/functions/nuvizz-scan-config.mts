@@ -17,6 +17,8 @@
 
 import { isFirestoreEnabled, readScanConfig, writeScanConfig, getDoc, readScanKindStamps, readScanRuns, readCallStats, readCircuit, readScanRefusal, etDayString, readActivePoolMeta, readActiveUnplannedSet, readCarryoverRetired, readFrozenLedgerMeta } from './lib/firestore.mts';
 import { activeArrivalReachDays } from './lib/nuvizz-list.mts';
+import { refileReadCap, frozenCopyDepth } from './lib/refresh-stops-core.mts';
+import { SATURDAY_HEAL_HOUR } from './lib/scan-schedule.mts';
 import { requireUser } from './lib/require-user.mts';
 import { readBackgroundRefusals } from './lib/background-gate.mts';
 import { clampScanConfig, effectiveScanConfig, scanConfigDefaults, SCAN_CONFIG_BOUNDS, scanDecision } from './lib/scan-schedule.mts';
@@ -160,7 +162,12 @@ async function explain(): Promise<any> {
         activeReachDays: activeArrivalReachDays(),
         activeArrival: process.env.NUVIZZ_ACTIVE_ARRIVAL || null,
         completedUpdated: process.env.NUVIZZ_COMPLETED_UPDATED || null,
-        refileReadCap: Math.max(0, Number(process.env.NUVIZZ_REFILE_READ_CAP) || 120),
+        completedArrival: process.env.NUVIZZ_COMPLETED_ARRIVAL || null,
+        // Read through the scan's own helpers, never re-derived here: this block exists to say
+        // what the scanner is doing, and a second copy of a default is a second answer.
+        refileReadCap: refileReadCap(),
+        frozenCopyDays: frozenCopyDepth(),
+        saturdayHealHourET: SATURDAY_HEAL_HOUR,
       },
     },
     rules,

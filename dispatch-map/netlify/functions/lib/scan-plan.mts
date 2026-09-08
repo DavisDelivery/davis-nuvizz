@@ -175,6 +175,20 @@ export function defaultScanRules(): ScanRule[] {
     // once, which catches a long day's last deliveries without paying 15-minute rates for
     // three hours that usually carry a handful of stops.
     { id: 'done-late', kind: 'completed', days: deliveryDays, startHour: 19, endHour: 22, intervalMin: 180, note: 'One sweep for the tail of a long day.' },
+    // ── the Saturday heal (v0.95.2) ─────────────────────────────────────────
+    // Chad: "we could also schedule one scan at 7 am saturday to heal anything." ONE scan, and
+    // one is enforced by the shape rather than by hoping: a ONE-HOUR band at a four-hour
+    // interval can fire once inside it, exactly like done-late's single sweep, and the weekend
+    // gate in scan-schedule opens only for this hour and only when nothing has scanned for four
+    // hours. Four and not twelve: the gap from Friday's last scan (~19:50) to Saturday 07:00 is
+    // eleven and a quarter hours, so a twelve-hour interval would never come due and the rule
+    // would be decorative — the exact kind of thing that reads as shipped and does nothing.
+    // Both saved searches, because the healing needs both halves — the completed pull is what
+    // reports Friday evening's late deliveries, and the planned pull is what re-files and
+    // re-judges what is still open. NO roster rule: the roster is what turned the reverted
+    // weekend carve-out into forty-one pulls, and a heal does not need it.
+    { id: 'sat-heal-planned', kind: 'planned', days: [6], startHour: 7, endHour: 8, intervalMin: 240, note: 'Saturday heal — one pull so Friday evening’s moves reach the board.' },
+    { id: 'sat-heal-done', kind: 'completed', days: [6], startHour: 7, endHour: 8, intervalMin: 240, note: 'Saturday heal — Friday evening’s late deliveries, seen while the reach still covers them.' },
     // 10pm-4am: NOT PULLED. Nothing is delivering, so the call can only come back empty.
     // ── load roster (35833) ──────────────────────────────────────────────────
     { id: 'roster-am', kind: 'roster', days: deliveryDays, startHour: 4, endHour: 13, intervalMin: 60, note: 'Enough to keep yesterday’s routes off today’s board.' },
