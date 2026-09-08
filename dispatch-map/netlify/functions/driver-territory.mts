@@ -121,6 +121,22 @@ export default async (req: Request): Promise<Response> => {
     maybeSame: possibleSameDriver(folded),
     readFailures: failed,
   };
-  if (url.searchParams.get('format') === 'json') return J({ ok: true, ...payload, stops: undefined, stopCount: folded.length });
+  // ?format=json is the SHEET'S DATA WITHOUT THE SHEET — everything the renderer was handed
+  // except the rows, which are thousands of lines nobody reads in a browser. `&stops=1` adds
+  // them back, trimmed to the seven fields the territory core actually looks at, so the exact
+  // page a dispatcher printed can be rebuilt and inspected offline. It is the same read either
+  // way: no extra Firestore work, and no NuVizz call is reachable from here at all.
+  if (url.searchParams.get('format') === 'json') {
+    const withStops = url.searchParams.get('stops') === '1';
+    return J({
+      ok: true,
+      ...payload,
+      stopCount: folded.length,
+      stops: withStops ? folded.map((s: any) => ({
+        driverUserName: s.driverUserName, driverName: s.driverName,
+        zip: s.zip, city: s.city, lat: s.lat, lng: s.lng, boardDate: s.boardDate,
+      })) : undefined,
+    });
+  }
   return new Response(territorySheetHtml(payload), { status: 200, headers: { ...cors, 'Content-Type': 'text/html; charset=utf-8' } });
 };
