@@ -25,12 +25,19 @@
 //
 // Read-only. Firestore only. ZERO NuVizz calls.
 //
-//   ?matchKey=abc__123_main_st__buford__30518
-//   ?name=MHC+KENWORTH&addr1=...&city=...&zip=...     (the key is derived, same as the map)
-//   ?rebuild=hint                                      (says what to re-run; never runs it)
+//   ?q=MHC+KENWORTH                                    (by name — the usual way in)
+//   ?matchKey=abc__123_main_st__buford__30518          (exact)
+//   ?name=MHC+KENWORTH&addr1=…&city=…&zip=…            (the key is derived, same as the map)
+//
+// AN ENDPOINT NOBODY CAN ADDRESS IS AN ENDPOINT THAT DOES NOT EXIST — the same rule as a
+// switch whose position cannot be read. A dispatcher looking at an unpainted pin knows the
+// customer's NAME and nothing else: not its match key, and not the exact address string the
+// key was built from. So ?q= runs the warehouse's own name search (the one behind the stop
+// card's customer lookup) and explains the single hit, or lists the candidates with their
+// keys when the name is ambiguous.
 import { isFirestoreEnabled, getDoc } from './lib/firestore.mts';
 import { requireUser } from './lib/require-user.mts';
-import { getCustomerByMatchKey } from './lib/history-customers.mts';
+import { getCustomerByMatchKey, queryCustomersByName } from './lib/history-customers.mts';
 import { loadTractorRoster, normalizeDriverAlias, tractorLocPath } from './lib/tractor-flags.mts';
 import { normalizeMatchKey } from '../../src/lib/matchKey.js';
 import { tractorPaintAllowed } from '../../src/lib/map-legend.js';
@@ -52,10 +59,28 @@ export default async (req: Request): Promise<Response> => {
   const q = (k: string) => (url.searchParams.get(k) || '').trim();
   // The key is derived with the SAME function the browser keys notes and pins by, so a key
   // typed by hand here and a key the map built cannot disagree about the same dock.
-  const matchKey = q('matchKey')
+  let matchKey = q('matchKey')
     || (q('name') ? normalizeMatchKey(q('name'), q('addr1'), q('city'), q('zip')) : '');
+  let searchedFor: string | null = null;
+  if (!matchKey && q('q')) {
+    searchedFor = q('q');
+    const hits = await queryCustomersByName(searchedFor.toLowerCase(), 10);
+    if (!hits.length) {
+      return J({ ok: true, query: searchedFor, matches: [], verdict: `No customer in the warehouse matches "${searchedFor}". Nothing has been delivered there since history capture began, or the name on the board differs from the name it was delivered under.` });
+    }
+    if (hits.length > 1) {
+      // Ambiguity is REPORTED, never resolved by picking the first: two docks can share a
+      // name, and answering about the wrong one is worse than answering about neither.
+      return J({
+        ok: true, query: searchedFor,
+        verdict: `${hits.length} customers match "${searchedFor}" — re-run with the matchKey of the one you mean.`,
+        matches: hits.map((h: any) => ({ matchKey: h.match_key ?? h.matchKey ?? null, name: h.name ?? null, addr1: h.addr1 ?? null, city: h.city ?? null, zip: h.zip ?? null, last_date: h.last_date ?? null })),
+      });
+    }
+    matchKey = String(hits[0]?.match_key ?? hits[0]?.matchKey ?? '');
+  }
   if (!matchKey) {
-    return J({ ok: false, error: 'pass ?matchKey=… or ?name=…&addr1=…&city=…&zip=…' }, 400);
+    return J({ ok: false, error: 'pass ?q=NAME, ?matchKey=…, or ?name=…&addr1=…&city=…&zip=…' }, 400);
   }
 
   const [flag, customer, note, roster] = await Promise.all([
@@ -112,6 +137,7 @@ export default async (req: Request): Promise<Response> => {
 
   return J({
     ok: true,
+    ...(searchedFor ? { query: searchedFor } : {}),
     matchKey,
     verdict,
     flag: flag ? {
