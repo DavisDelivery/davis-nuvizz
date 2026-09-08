@@ -88,6 +88,7 @@ import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
 const STATUS_MENU_W = 160;
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
 import { routePreflight } from './lib/route-preflight.js';
+import { planDispatchAll, dispatchPlanLines, dispatchAllSummary, DISPATCHABLE_STATUSES } from './lib/dispatch-all.js';
 import { isIosHomeScreenApp, canShareFiles, describePwaMode, viewerWayOut } from './lib/pwa-mode.js';
 // The scan plan's model, shared with the scheduler that runs it — the screen and the code
 // must not be able to disagree about what a rule means or what a scan affects.
@@ -186,7 +187,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['0.96.0', 'THE COMPARE ROW NOW WEARS THE DOCK’S CLOCK, AND THE BOTTOM GRID STOPS OFFERING FREIGHT THAT IS ALREADY ON A CARD. Chad, on a Compare card: “i think there is enough space there to fit our clock icons if one applies to a given stop” — and, on the grid below it: “Paragon should still be highlighted a different colour on bottom panel now that it’s applied to this route or say the driver’s name, looks like it’s still available.” THE CLOCK. Every stop row on a Compare card now carries the SAME mark the map pin wears — classifyTimeMark’s four keys, the same glyph, and the same silence for a dock open an ordinary working day, because one rule with two renderers is the only version of this that cannot drift. It prints the BINDING TIME beside the glyph (“closes 2:00p”, “opens 9:00a”) rather than the icon alone: this repo has already found four values reachable only through a title= tooltip, which a touch device never shows, and a clock face with no clock on it would be the fifth. It rides the city/skids line, which carries no controls on either view, so nothing lands on anything else; expanding a stop hides that line, so the window restates itself in the detail. AND IT IS NOT THE PREFLIGHT BADGE, deliberately: the badge is loud and fires when the walked clock says this stop MISSES — a reaction, after the sequence is already wrong — while the clock is quiet and states the constraint BEFORE any order is chosen, which is what stops a 2:00p dock being put eleventh in the first place. THE GRID. A stop staged onto an open card existed on the map (numbered pin, card colour) and nowhere in the bottom grid, whose Load column reads NuVizz — and a Draft load holding no saved orders has nothing there to read. So PARAGON sat at position 1 on GARY PITTS and listed exactly like an order nobody had touched, which is a double-planning waiting to happen. The row is now tinted in its card’s own colour, the name cell carries a [● n] chip with the stop’s position, and the Load column names the card and marks it “staged” — the word matters, since these orders live only in this browser until Save writes them. A stop already planned onto one load and staged onto another shows BOTH, because that disagreement is the thing worth seeing before Save. Selection tint still wins: selection is what the router is doing now, staging is what he did a minute ago. WHERE THE CLOCK ENDED UP, AND WHY IT MOVED — found by rendering it at true size rather than by reading it. The first build put the chip on the city line, which is where the free space visibly is; on a 320px Compare card that cut “CARTERSVILLE · 6 sk · 8 loose” down to “CARTERSVILLE · 6 …”, trading away the per-stop skid and loose counts Chad asked for in v0.54.4 to buy space the row did not have to sell. It sits on the marks line under the name instead — the line the preflight badge moved to in v0.89.0 for the same class of reason — so the name, the freight and the constraint all survive, and the two chips wrap rather than overflow when a stop carries both. AND THEY DO NOT SAY THE SAME THING TWICE: a hopeless verdict already prints the close it cannot make, so an identical “closes 11:00a” beside “can’t make 11:00a” is suppressed — only when the two name the same minute, since “30m late” beside “closes 2:00p” answers “late against what?” and stays. 22 new tests, 3,545 green; mobile and desktop layout guards and the route-preflight guard re-run on both views. AND FOUR THINGS FROM THE SAME SITTING. (1) A DAVIS-TYPED “NO TRACTOR TRL” NOW DRAWS AS CONFIRMED. Chad, on a half-and-half pin: “Why is this half green when if its manually marked by no tractor trailer by dispatch should override.” He was right and the cause was one line: restrictionConfidence asked only “did a scanner touch this?”, never WHICH source — and the scanner is source-locked to exactly two, which customer-notes-writer labels itself: addressLine2 → no_tractor_trailer (Davis-curated, TRUSTED) and orderInstructions → uline_straight_truck (Uline-supplied, advisory). Address 2 is a field Davis types into NuVizz, so that mark was put there by a person here; Uline was already advisory a line earlier, which means the ONLY flag that branch ever changed was the trusted one, and it drew it as “nobody has checked this” — a green that could never match the lime a proven tractor stop wears. It reads the source now: a trusted source confirms, an un-migrated orderInstructions-only doc stays advisory, no trail at all still means a person put it there. Such a stop also now vetoes the lime, which is the point — proven history must never read as permission where somebody said no. THE 9PM TEXT DELIBERATELY DID NOT MOVE WITH IT: Chad scoped that in v0.82.0 to “just the dispatcher hardcoded ones”, and an address-line mark is Davis-typed but scanner-detected, so widening who gets woken is his call and not a side effect of an icon fix. The two questions are now two functions with their names on them, and four tests pin that the icon moved and the alert did not. (2) THE SELECTED-STOPS PANEL CAN KEEP ONLY WHAT A TRACTOR CAN RUN. “I want a button on top of bar to remove all stops in the list that are not tractor friendly stops.” It drops exactly the rows the panel does not paint green — one shared rule, because a button that drops a green row is the worst version of this — names its count, says what survives, and does the whole set in ONE state update rather than one marker-layer rebuild per stop. (3) THE ✕ CLEARS. “when i click the x i want it to close and clear all.” It used to flip a PERSISTED panel toggle, so it hid the panel and left the stops selected; wired to that same toggle a clearing ✕ would have suppressed the panel on the next selection too. It clears the selection instead, and the empty panel unmounts itself — hiding while keeping the stops still lives on the gear switch. (4) WHY A STOP IS NOT PAINTED LIME IS NOW ANSWERABLE. Chad, on MHC KENWORTH: “i’m pretty sure a tractor has delivered here so it should be auto painted can you check on that.” Nothing could. The lime is a JOIN — MarginIQ employees tagged tractor, matched by NuVizz ALIAS against sealed deliveries — and all four of its failure modes produce the same blank pin. tractor-paint-explain reads Firestore only, spends ZERO NuVizz calls, and prints every delivery on file with the roster’s verdict on the driver who ran it: tractor, not-a-tractor, or unknown-to-roster — that last one being the Brent Boyd/Bryd alias failure that has cost this repo a rule before and is invisible until it is named. It also runs the map’s own paint override rather than describing it, so a flagged-but-vetoed stop explains itself. 31 new tests.'],
+  ['0.96.0', 'THE COMPARE ROW NOW WEARS THE DOCK’S CLOCK, AND THE BOTTOM GRID STOPS OFFERING FREIGHT THAT IS ALREADY ON A CARD. Chad, on a Compare card: “i think there is enough space there to fit our clock icons if one applies to a given stop” — and, on the grid below it: “Paragon should still be highlighted a different colour on bottom panel now that it’s applied to this route or say the driver’s name, looks like it’s still available.” THE CLOCK. Every stop row on a Compare card now carries the SAME mark the map pin wears — classifyTimeMark’s four keys, the same glyph, and the same silence for a dock open an ordinary working day, because one rule with two renderers is the only version of this that cannot drift. It prints the BINDING TIME beside the glyph (“closes 2:00p”, “opens 9:00a”) rather than the icon alone: this repo has already found four values reachable only through a title= tooltip, which a touch device never shows, and a clock face with no clock on it would be the fifth. It rides the city/skids line, which carries no controls on either view, so nothing lands on anything else; expanding a stop hides that line, so the window restates itself in the detail. AND IT IS NOT THE PREFLIGHT BADGE, deliberately: the badge is loud and fires when the walked clock says this stop MISSES — a reaction, after the sequence is already wrong — while the clock is quiet and states the constraint BEFORE any order is chosen, which is what stops a 2:00p dock being put eleventh in the first place. THE GRID. A stop staged onto an open card existed on the map (numbered pin, card colour) and nowhere in the bottom grid, whose Load column reads NuVizz — and a Draft load holding no saved orders has nothing there to read. So PARAGON sat at position 1 on GARY PITTS and listed exactly like an order nobody had touched, which is a double-planning waiting to happen. The row is now tinted in its card’s own colour, the name cell carries a [● n] chip with the stop’s position, and the Load column names the card and marks it “staged” — the word matters, since these orders live only in this browser until Save writes them. A stop already planned onto one load and staged onto another shows BOTH, because that disagreement is the thing worth seeing before Save. Selection tint still wins: selection is what the router is doing now, staging is what he did a minute ago. WHERE THE CLOCK ENDED UP, AND WHY IT MOVED — found by rendering it at true size rather than by reading it. The first build put the chip on the city line, which is where the free space visibly is; on a 320px Compare card that cut “CARTERSVILLE · 6 sk · 8 loose” down to “CARTERSVILLE · 6 …”, trading away the per-stop skid and loose counts Chad asked for in v0.54.4 to buy space the row did not have to sell. It sits on the marks line under the name instead — the line the preflight badge moved to in v0.89.0 for the same class of reason — so the name, the freight and the constraint all survive, and the two chips wrap rather than overflow when a stop carries both. AND THEY DO NOT SAY THE SAME THING TWICE: a hopeless verdict already prints the close it cannot make, so an identical “closes 11:00a” beside “can’t make 11:00a” is suppressed — only when the two name the same minute, since “30m late” beside “closes 2:00p” answers “late against what?” and stays. 22 new tests, 3,545 green; mobile and desktop layout guards and the route-preflight guard re-run on both views. AND FOUR THINGS FROM THE SAME SITTING. (1) A DAVIS-TYPED “NO TRACTOR TRL” NOW DRAWS AS CONFIRMED. Chad, on a half-and-half pin: “Why is this half green when if its manually marked by no tractor trailer by dispatch should override.” He was right and the cause was one line: restrictionConfidence asked only “did a scanner touch this?”, never WHICH source — and the scanner is source-locked to exactly two, which customer-notes-writer labels itself: addressLine2 → no_tractor_trailer (Davis-curated, TRUSTED) and orderInstructions → uline_straight_truck (Uline-supplied, advisory). Address 2 is a field Davis types into NuVizz, so that mark was put there by a person here; Uline was already advisory a line earlier, which means the ONLY flag that branch ever changed was the trusted one, and it drew it as “nobody has checked this” — a green that could never match the lime a proven tractor stop wears. It reads the source now: a trusted source confirms, an un-migrated orderInstructions-only doc stays advisory, no trail at all still means a person put it there. Such a stop also now vetoes the lime, which is the point — proven history must never read as permission where somebody said no. THE 9PM TEXT DELIBERATELY DID NOT MOVE WITH IT: Chad scoped that in v0.82.0 to “just the dispatcher hardcoded ones”, and an address-line mark is Davis-typed but scanner-detected, so widening who gets woken is his call and not a side effect of an icon fix. The two questions are now two functions with their names on them, and four tests pin that the icon moved and the alert did not. (2) THE SELECTED-STOPS PANEL CAN KEEP ONLY WHAT A TRACTOR CAN RUN. “I want a button on top of bar to remove all stops in the list that are not tractor friendly stops.” It drops exactly the rows the panel does not paint green — one shared rule, because a button that drops a green row is the worst version of this — names its count, says what survives, and does the whole set in ONE state update rather than one marker-layer rebuild per stop. (3) THE ✕ CLEARS. “when i click the x i want it to close and clear all.” It used to flip a PERSISTED panel toggle, so it hid the panel and left the stops selected; wired to that same toggle a clearing ✕ would have suppressed the panel on the next selection too. It clears the selection instead, and the empty panel unmounts itself — hiding while keeping the stops still lives on the gear switch. (4) WHY A STOP IS NOT PAINTED LIME IS NOW ANSWERABLE. Chad, on MHC KENWORTH: “i’m pretty sure a tractor has delivered here so it should be auto painted can you check on that.” Nothing could. The lime is a JOIN — MarginIQ employees tagged tractor, matched by NuVizz ALIAS against sealed deliveries — and all four of its failure modes produce the same blank pin. tractor-paint-explain reads Firestore only, spends ZERO NuVizz calls, and prints every delivery on file with the roster’s verdict on the driver who ran it: tractor, not-a-tractor, or unknown-to-roster — that last one being the Brent Boyd/Bryd alias failure that has cost this repo a rule before and is invisible until it is named. It also runs the map’s own paint override rather than describing it, so a flagged-but-vetoed stop explains itself. (5) DISPATCH ALL. Chad: “i want a dispatch all button that dispatches every route that hasn’t been dispatched in the routes menu.” Twenty Draft routes at 5am is twenty clicks and twenty chances to miss one, and a missed dispatch is a truck leaving with nothing on the driver’s phone. It is EXACTLY as picky as the twenty clicks it replaces — the same three gates the row button enforces, in one pure planner both read, so the count on the label and the list in the confirm cannot disagree — and it acts on the FILTERED list, so what the panel is showing is what it sends. IT ASKS FIRST, and not with a number: dispatch is the least reversible thing this app does, so the confirm names every load AND its driver, carries the production warning in Live mode, and puts the routes it will NOT send — no driver, no load id — in front of the dispatcher at the moment he is deciding rather than afterwards. The run is sequential, because twenty concurrent production writes buy seconds and risk a rate limit turning a clean run into a partial one; it fires the identical call the single button does; and it reports what happened rather than that it finished — “18 dispatched · 2 FAILED: CHE (write error), SUW 2” with the per-route detail in the console. Beta previews and sends nothing. 53 new tests.'],
   ['0.95.2', 'ONE SCAN AT 7AM SATURDAY, AND THE MEANS TO STOP GUESSING AT THE LAST SETTING. Chad, on leaving Friday alone: “fridays schedule is fine if i need fresh data before sunday’s scans start i can manually refresh and just make sure that pulls all the correct data and heals. We could also schedule one scan at 7 am saturday to heal anything.” THE MANUAL REFRESH WAS CHECKED, NOT ASSUMED, because “make sure” is an instruction to verify: the button posts to nuvizz-manual-scan-background, which forces manual=1 and DISCARDS date/days, so it rides the cheap list path and can never reach the ~3,000-call number probe; manual bypasses the weekend blackout and the anti-thrash floor; it forces all three kinds due, so a press pulls both saved searches and the roster rather than the slice the hour would have run; and because the pull is the two-scan pull, the frozen-day pass runs on today and heals. Two new tests pin the first three and the end-to-end board test already drives the real scan through that same manual URL for the fourth. THE SATURDAY HEAL, in the narrowest shape that can work: one hour (07:00–08:00 ET), two saved searches, no roster. Both halves were needed and the first alone would have been decorative — the weekend gate in scan-schedule had to open, AND a rule had to make the kinds due, or the fire would act and then return “plan not due” having pulled nothing. Caught before shipping by running the whole chain rather than the half I had changed. ONE MEANS ONE, enforced by shape: a one-hour band at a four-hour interval can fire once inside it, the gate additionally requires that nothing has scanned for four hours, and a fire that FAILED leaves the gap open so the next tick retries. Four hours and not twelve because Friday’s last scan is ~19:50 and Saturday 07:00 is eleven and a quarter hours later — a twelve-hour interval would never come due, which is the exact kind of rule that reads as shipped and does nothing. The two weekend carve-outs that were reverted in v0.93.x (roster, then planned) are why the roster is deliberately absent: replayed on the five-minute cron they took a Saturday from 0 vendor calls to 65. The guard test that caught that is not weakened — it now replays all 288 fires of a Saturday with the scan stamps ADVANCING as they would in life, and asserts EXACTLY ONE acting fire, at 7am, on the full path, with the roster still out. Estimated Saturday cost: one scan, two list calls, plus enrichment only for orders never seen before. AND THE LAST OPEN SETTING GETS A TOOL INSTEAD OF A GUESS. The completed search is clamped to “Stop Detail Updated = today”, which is why a Friday-evening delivery is invisible until Monday, and widening that axis is not safe to guess at: an unhonoured period returns either everything (blowing the row cap) or nothing (a board that silently stops recording deliveries), and this repo has already spent six calls guessing at period grammar. The stop-explorer gains a read-only probe — { savedSearch:\'completed\', probePeriods:true, updatedPeriod:\'-2d\' } — that runs the same saved search with one filter value changed and reports the rows grouped by the day NuVizz last touched them, so honoured / ignored / rejected is visible in one response. ONE call, which Chad approved, spent once the deploy lands. ALSO FIXED, found by reading v0.95.1’s own explain output rather than by a test: the switches block re-derived the frozen pass’s read cap from the environment instead of asking the scan, so the moment the default moved (120 → 400) the diagnostic began reporting a cap the scanner was not using — a settings screen that quietly disagrees with the code is worse than none, because it is what somebody reasons from at 6am. Both budgets are now defined once in the scan and read from there, and the block also reports the copy depth, the completed arrival window and the Saturday heal hour. WHAT v0.95.1 IS ACTUALLY DOING IN PRODUCTION, from that same endpoint: reach 30 days, pool window 08/08–10/07, 696 open rows against 678 at ±7d — so a month of reach costs eighteen rows, nowhere near the 5,000 cap, and the pull is not truncated. The starvation is gone: the pass now reads 274 of a 400 budget with 0 capped, 0 unread and 0 part-read, against 119 of 120 with 51 capped and 51 unread before. Every open stray on the board was resolved in a single pass.'],
   ['0.95.1', 'THIRTY DAYS OF SELF-HEALING, AND THE GUARD THAT MAKES IT SAFE. Chad, on v0.95.0’s two open settings: “we should do 30 days if it’s no extra nuvizz calls so everything self heals correctly.” IT IS NO EXTRA CALLS, and that is a property of the request rather than a hope: a saved search is ONE request that asks for its whole result set, so the arrival window is a filter value INSIDE a call the scan already makes — two calls at ±7d, two calls at ±30d. Both arrival nets go to 30 days. The active one widens what may be judged at all: the open-order pool, the unplanned snapshot and the frozen-day pass are only entitled to speak about days the search reaches, so an order that went quiet more than a week ago used to be frozen wherever it stood. The COMPLETED one matters just as much and was the quieter hole — a stop whose arrival day was three weeks ago and which delivers today fell outside a ±7d arrival net, so no pull ever reported it finished and its frozen copy could never be healed. WHAT WAS MEASURED FIRST, from v0.95.0’s own explain endpoint rather than guessed: the live frozen pass was ALREADY starving at seven days — 89 open strays, 119 reads against a cap of 120, 51 capped and unread in one pass. A straight flip to 30 would have made each long-carried order cost up to 30 Firestore reads and healed about four stops a scan: slower self-healing, not faster. So depth is now SLICED AND REMEMBERED. A pass reads at most ten frozen days per stop, newest first, records the oldest day it covered in the frozen ledger, and the next pass continues older than that until the stop is fully covered — ten orders healed three days deep beats three orders healed thirty days deep, and nothing is abandoned. Until a stop’s history is fully read the pass heals every copy it HAS read but decides nothing that depends on what it has not: a delivery recorded three weeks back could sit in the days still to come, and filing on a half-read history would put an old POD re-touch on today’s board as new work. Read cap raised 120 → 400 (Firestore reads, not vendor calls). THE ONE REAL HAZARD OF A WIDER WINDOW, closed in the same change: this API has no paging, so a result set past maxResult comes back as a full-looking list with its tail missing and nothing saying so — and every reader treats “not in the pull” as “NuVizz no longer lists it”. A pull that returns AT the cap is now reported truncated, and the scan stamps its pool and its snapshot thin, which is the existing rule for “absence is not evidence”: nothing is dropped as closed on a truncated list’s word, the log says so in one line, and the fix (raise the row cap or narrow the window) is named. A test runs the real scan and the real Map feed with the cap set to three rows and proves a prior-day order the truncated list omits stays on the board — with the control, one row short of the cap, proving the same order IS pruned when the list is complete. NOT CHANGED, and stated rather than done quietly: the completed search’s “Stop Detail Updated = today” clamp, which is the axis that decides the pull’s SIZE and the reason a Friday-evening delivery is invisible until Monday. A multi-day period there is portal grammar this repo has not verified live, and an unhonoured period returns either everything (blowing the row cap) or nothing (no completions at all, silently). One live call settles it; it has not been spent.'],
   ['0.95.0', 'ONLY WHAT THE SCANS PICK UP. Chad, after v0.94.1: “look at the code to make sure that these issues don’t happen again and that we fixed the underlying issue that had stops populating on the board that had already been delivered. We should only be showing the stops that the scans pick up.” A 53-finding audit of every path between the two saved searches and the three screens (scan write, board read, date window, completed overlay, cadence, consumers, client) found the same fault in eleven shapes: the scan writes today plus two business days and never rewrites a past day, so anything NuVizz does to an order after its arrival day landed in a bucket the loop dropped, and the frozen copy kept telling the old story. WHAT SHIPS, all from the two pulls already paid for — zero extra NuVizz calls. THE FROZEN-DAY PASS, rebuilt (lib/refile-core.mts): on today’s pass every finished row NuVizz files under a frozen past day heals EVERY open copy of it on every frozen day from its arrival day to yesterday (a routed stop is clamped forward each day it stays open, so its last open copy sits on the day before it delivered — #838 healed only the arrival day and skipped stops already on today’s board, which was most of them: 125 open ghosts across four days); every OPEN row on a frozen day heals a copy that disagrees about the plan (PRIMARY LOGISTICS, un-planned Friday after its snapshot froze), RE-OPENS a frozen refusal NuVizz now lists open (HIGHLAND FORGE, refused on TAYLOR then re-opened by CS as an ATT attempt — served as “refused” in the window and absent from the Map), and files an order with no copy anywhere onto today’s board so the Map can show it (EXPEDITORS, created after its day froze). The carry-forward now files a finish BEFORE its wrong-day guard, so a refiled or clamped row’s delivery can no longer be dropped on the floor; a filed open carry-over is re-filed from the LIVE pull every scan and leaves the moment NuVizz moves or closes it. Reads are bounded and remembered: a frozen ledger keyed by NuVizz’s own update stamp means a resolved stop is never re-read until NuVizz touches it, so the read budget reaches the tail instead of re-proving yesterday’s deliveries every fifteen minutes. THE MAP FOLDS FROM THE POOL: the carry-over fold judges prior-day rows by the open-order pool (still open on a past day → live status over the frozen pin; filed on today or later → not carry-over; not listed inside the pool’s reach → closed; a frozen refusal the pool lists open → re-opened; a frozen “planned” the pool lists unplanned → work to plan), with the unplanned snapshot as the fallback, and every decision served as `carryover` on the feed. A THIN pull (far fewer open rows than the last pool) is stamped on the pool and the snapshot, and no reader drops a row on a thin judge’s word; a pool a later board scan failed to rewrite is not the judge; a confirmed Save inside the hour is held until the pool agrees; a row older than any scan can see is served and SAID to be unverified rather than silently trusted; a pool read that catches a rewrite half-way is refused whole. The completed overlay pins a finish landing on a rolled-over copy to today (the board read stripped it and the next full scan pruned it), clears the unplanned flag on a cancellation, and refuses a finished twin under a live order’s number. CONSUMERS: the CS “scheduled for delivery” email no longer fires for a refiled delivery; the driver sidebar defaults to the Eastern day (after 8pm it read tomorrow’s empty board); the 6:30 report lists stops planned on its day but closed on a later one under their own heading instead of grading them; the snapshot’s trust window follows the saved search’s reach instead of a hard-coded week. CLIENT: the window’s confirmed-save overlay releases on the pool’s scan stamp like the board’s does; a cache-served window re-pulls every five minutes instead of once; the desktop grid drives the desktop map’s status filter as the phone’s does; a synced profile cannot drag the phone grid into a window it cannot see or leave; “Unplanned only” and the window extras stop admitting delivered and cancelled orders. INSPECTABLE for nothing: nuvizz-scan-config?explain=1 now serves the pool, the unplanned set, the retired list, the frozen ledger with the last pass’s summary, and the switches; the run ledger records what each pass filed and healed. Proven end to end: a new test drives the REAL scan, Map feed and window against an in-memory Firestore for the five 09/07 orders and a second scan, and fails if a single /stop/info call is spent. Two things are Chad’s settings, not code, stated in the report: the completed search’s “updated today” clamp means a delivery after the day’s last scan is never seen by any pull (widen NUVIZZ_COMPLETED_UPDATED), and 19 genuinely open routed stops sit outside the ±7-day reach (widen NUVIZZ_ACTIVE_ARRIVAL).'],
@@ -16145,7 +16146,7 @@ function RouteStatusBadge({ status }) {
 // nuvizz-write is gated at dispatcher on the server. This is the pair of controls where a
 // silent refusal costs the most in freight terms: a load a dispatcher believes is DISPATCHED
 // is a driver who was never told to roll, found at the end of the day rather than the start.
-function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], rosterError = null, assignLive = false, setAssignLive, onAssignDriver, assignedOverride = {}, assigningKey = null, onDispatchLoad, dispatchingKey = null, onNewRoute = null, writeDenied = null }) {
+function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], rosterError = null, assignLive = false, setAssignLive, onAssignDriver, assignedOverride = {}, assigningKey = null, onDispatchLoad, onDispatchAll = null, dispatchAllPlanner = null, dispatchingKey = null, onNewRoute = null, writeDenied = null }) {
   const [selected, setSelected] = useState(() => new Set());   // empty = All
   const [menuOpen, setMenuOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -16171,6 +16172,13 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
     });
   }, [groups, selected, q]);
 
+  // How many of the VISIBLE routes Dispatch all would actually send. Computed with the same
+  // planner the action runs, so the number on the button and the list in the confirm can never
+  // disagree — a count that promises more than the confirm delivers is worse than no count.
+  const dispatchAllCount = useMemo(
+    () => (dispatchAllPlanner ? dispatchAllPlanner(filtered).eligible.length : 0),
+    [dispatchAllPlanner, filtered],
+  );
   const toggle = (st) => setSelected((prev) => { const n = new Set(prev); n.has(st) ? n.delete(st) : n.add(st); return n; });
   const tot = filtered.reduce((a, g) => ({ stops: a.stops + g.count, skids: a.skids + g.skids, loose: a.loose + g.loose, weight: a.weight + g.weight }), { stops: 0, skids: 0, loose: 0, weight: 0 });
 
@@ -16219,6 +16227,18 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
             title={assignLive ? 'LIVE — picking a driver assigns it in NuVizz immediately. Click for Beta (preview only); the mode is remembered on this device.' : 'BETA — picking a driver only previews, nothing is sent. Click to go Live and assign for real; the mode is remembered on this device.'}
             className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded border shrink-0 ${assignLive ? 'border-red-600 bg-red-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}>
             {assignLive ? '● LIVE' : '○ Beta'}
+          </button>
+        )}
+        {/* DISPATCH ALL — the twenty clicks, as one, with the same three gates on each.
+            It acts on the FILTERED list, which is the only behaviour that cannot surprise
+            anyone: what the panel is showing is what the button will send, so narrowing by
+            status narrows the action. The count is on the label because a button that says
+            only "Dispatch all" beside a filtered list is a question, not a control. */}
+        {onDispatchAll && dispatchAllCount > 0 && (
+          <button onClick={() => onDispatchAll(filtered)}
+            title={`Dispatch the ${dispatchAllCount} route${dispatchAllCount === 1 ? '' : 's'} in this list that have a driver and have not been dispatched. You will see every load and its driver before anything is sent.`}
+            className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border shrink-0 ${assignLive ? 'border-red-600 bg-red-600 text-white hover:bg-red-700' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}>
+            <Send size={12} /> Dispatch all ({dispatchAllCount})
           </button>
         )}
         {/* Make a route (§R). Until v0.54.21 the app could CANCEL a route but never create one,
@@ -19514,34 +19534,37 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // dispatched load's status won't flip in the board until the next scheduled scan, so this only
   // toasts success/failure rather than optimistically rewriting g.status.
   const [dispatchingKey, setDispatchingKey] = useState(null);
-  const onDispatchLoad = useCallback(async (g) => {
-    if (!writeGate.allowed) { showMapToast(writeGate.reason); return; }
-    const label = loadDisplayName(g.name, g.loadNbr) || g.loadNbr;
-    if (!assignLive) { showMapToast(`Beta — would dispatch ${label} (nothing sent). Flip to ● Live to dispatch.`); return; }
-    const rosterEntry0 = loadRosterRef.current.get(String(g.name || '').trim().toLowerCase())
-      || loadRosterRef.current.get(String(g.key || '').trim().toLowerCase())
-      || (g.loadId ? loadRosterRef.current.get(String(g.loadId)) : null)
+  // The roster row behind a route, or null when the name is ambiguous. Lifted out because
+  // "Dispatch all" has to resolve the SAME load id the single button does — resolving it two
+  // ways is how one surface dispatches a load the other says it cannot find.
+  const rosterEntryFor = useCallback((g) => {
+    const e = loadRosterRef.current.get(String(g?.name || '').trim().toLowerCase())
+      || loadRosterRef.current.get(String(g?.key || '').trim().toLowerCase())
+      || (g?.loadId ? loadRosterRef.current.get(String(g.loadId)) : null)
       || null;
-    const rosterEntry = rosterEntry0 && !rosterEntry0.ambiguous ? rosterEntry0 : null;
-    const loadId = g.loadId || rosterEntry?.loadId || null;
+    return e && !e.ambiguous ? e : null;
+  }, []);
+  const loadIdFor = useCallback((g) => g?.loadId || rosterEntryFor(g)?.loadId || null, [rosterEntryFor]);
+
+  // ONE WRITE, TWO CALLERS. The row button and Dispatch all fire this identical call; it
+  // reports rather than toasts, so the bulk run can count outcomes and the single click can
+  // keep the message it always had.
+  const dispatchOneLoad = useCallback(async (g) => {
+    const label = loadDisplayName(g.name, g.loadNbr) || g.loadNbr;
+    const rosterEntry = rosterEntryFor(g);
+    const loadId = loadIdFor(g);
     const loadNbr = (g.loadNbr && looksLikeLoadNbr(g.loadNbr)) ? g.loadNbr : (rosterEntry?.loadNbr || null);
-    if (!loadId) { showMapToast(`Can't dispatch ${label} — its NuVizz load id hasn't loaded yet.`); return; }
-    setDispatchingKey(g.key);
+    if (!loadId) return { ok: false, name: label, error: 'load id not loaded yet' };
     let res;
     try {
       res = await callWrite('dispatchLoad', { routeId: loadId, loadId, loadNbr, date: selectedDate },
         { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher' });
     } catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
-    setDispatchingKey(null);
-    if (res.ok && res.result?.ok !== false) {
-      showMapToast(`✓ ${label} dispatched.`);
-      // Reflect the confirmed dispatch IMMEDIATELY: the Routes card status comes from the
-      // cached roster, which only refreshes with scans (paused overnight) — without this the
-      // card kept reading Draft after a successful production dispatch. The override also
-      // survives a stale roster refetch (see the roster effect's merge).
+    const ok = !!(res.ok && res.result?.ok !== false);
+    if (ok) {
+      // Reflect the confirmed dispatch IMMEDIATELY — see the note below; the Routes card
+      // status comes from the cached roster, which only refreshes with scans.
       const nm = String(g.name || '').trim().toLowerCase();
-      // Key the '#id:' twin by loadId — the roster map's actual key — so the retire loop can
-      // see agreement and drop it (a loadNbr-keyed twin never matched and re-applied forever).
       const idKey = g.loadId ?? g.loadNbr;
       dispatchOverrideRef.current.set(nm, 'Dispatched');
       if (idKey) dispatchOverrideRef.current.set('#id:' + String(idKey), 'Dispatched');
@@ -19551,10 +19574,95 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         if (idKey) n.set('#id:' + String(idKey), 'Dispatched');
         return n;
       });
-    } else {
-      showMapToast(`✗ Dispatch failed for ${label}: ${res.error || res.result?.error || 'write error'}`);
     }
-  }, [assignLive, showMapToast, selectedDate, writeGate.allowed, writeGate.reason]);
+    return { ok, name: label, error: ok ? null : (res.error || res.result?.error || 'write error') };
+  }, [rosterEntryFor, loadIdFor, selectedDate]);
+
+  // ── DISPATCH ALL ───────────────────────────────────────────────────────────
+  //
+  // Chad: "i want a dispatch all button that dispatches every route that hasn't been
+  // dispatched in the routes menu." Twenty Draft routes at 5am is twenty clicks and twenty
+  // chances to miss one, and a missed dispatch is a truck leaving with nothing on the
+  // driver's phone.
+  //
+  // IT IS EXACTLY AS PICKY AS THE TWENTY CLICKS IT REPLACES. planDispatchAll runs the same
+  // three gates the row button enforces (pre-dispatch status, a driver assigned, a resolved
+  // load id) and hands back everything it will NOT send, with the reason in words.
+  //
+  // AND IT ASKS FIRST. This is the least reversible thing the app does — it releases loads to
+  // drivers in production NuVizz — so the confirm lists every load and its driver by name
+  // before anything fires. Not a count: a count cannot be checked, and "18 routes" reads the
+  // same whether or not the one you were worried about is in it.
+  const [dispatchAllPlan, setDispatchAllPlan] = useState(null);   // {eligible, skipped, plan, warnings}
+  const [dispatchAllBusy, setDispatchAllBusy] = useState(false);
+  const driverForRoute = useCallback((g) => assignedOverride[g?.key] || g?.driver || null, [assignedOverride]);
+  const dispatchAllPlanner = useCallback(
+    (visibleGroups) => planDispatchAll({ groups: visibleGroups, driverFor: driverForRoute, loadIdFor }),
+    [driverForRoute, loadIdFor],
+  );
+  const openDispatchAll = useCallback((visibleGroups) => {
+    if (!writeGate.allowed) { showMapToast(writeGate.reason); return; }
+    const { eligible, skipped, alreadyDispatched } = planDispatchAll({
+      groups: visibleGroups, driverFor: driverForRoute, loadIdFor,
+    });
+    if (!eligible.length) {
+      showMapToast(skipped.length
+        ? `Nothing to dispatch — ${skipped.length} route${skipped.length === 1 ? '' : 's'} blocked: ${skipped.slice(0, 3).map((x) => `${x.name} (${x.reason})`).join(', ')}`
+        : `Nothing to dispatch — all ${alreadyDispatched} route${alreadyDispatched === 1 ? ' is' : 's are'} already past dispatch.`);
+      return;
+    }
+    setDispatchAllPlan({
+      eligible,
+      skipped,
+      // The tenant drives the modal's PRODUCTION warning, and in Live mode that is the truth.
+      tenant: assignLive ? 'DAVIS' : 'beta',
+      plan: dispatchPlanLines(eligible, driverForRoute),
+      // Never a silent skip. These ride the confirm's warning block so the dispatcher sees the
+      // four that will NOT go at the moment he is deciding, not afterwards.
+      warnings: skipped.map((x) => `${x.name} will NOT be dispatched — ${x.reason}`),
+    });
+  }, [writeGate.allowed, writeGate.reason, showMapToast, driverForRoute, loadIdFor, assignLive]);
+
+  const runDispatchAll = useCallback(async () => {
+    const plan = dispatchAllPlan;
+    if (!plan) return;
+    if (!assignLive) {
+      setDispatchAllPlan(null);
+      showMapToast(`Beta — would dispatch ${plan.eligible.length} route${plan.eligible.length === 1 ? '' : 's'} (nothing sent). Flip to ● Live to dispatch.`);
+      return;
+    }
+    setDispatchAllBusy(true);
+    // SEQUENTIAL, deliberately. These are production writes against one vendor; firing twenty
+    // at once buys seconds and risks a rate limit turning a clean run into a partial one whose
+    // failures are indistinguishable from real refusals.
+    const results = [];
+    for (const g of plan.eligible) {
+      setDispatchingKey(g.key);
+      // eslint-disable-next-line no-await-in-loop
+      results.push(await dispatchOneLoad(g));
+    }
+    setDispatchingKey(null);
+    setDispatchAllBusy(false);
+    setDispatchAllPlan(null);
+    // eslint-disable-next-line no-console
+    console.log('[dispatch-all]', results);
+    showMapToast(dispatchAllSummary(results));
+  }, [dispatchAllPlan, assignLive, dispatchOneLoad, showMapToast]);
+
+  const onDispatchLoad = useCallback(async (g) => {
+    if (!writeGate.allowed) { showMapToast(writeGate.reason); return; }
+    const label = loadDisplayName(g.name, g.loadNbr) || g.loadNbr;
+    if (!assignLive) { showMapToast(`Beta — would dispatch ${label} (nothing sent). Flip to ● Live to dispatch.`); return; }
+    if (!loadIdFor(g)) { showMapToast(`Can't dispatch ${label} — its NuVizz load id hasn't loaded yet.`); return; }
+    setDispatchingKey(g.key);
+    const res = await dispatchOneLoad(g);
+    setDispatchingKey(null);
+    if (res.ok) {
+      showMapToast(`✓ ${label} dispatched.`);
+    } else {
+      showMapToast(`✗ Dispatch failed for ${label}: ${res.error}`);
+    }
+  }, [assignLive, showMapToast, writeGate.allowed, writeGate.reason, dispatchOneLoad, loadIdFor]);
   // Ninja toolbar tap: arm/disarm when a Compare route is open; otherwise coach the dispatcher to
   // open one first (the button stays tappable so the hint is reachable on mobile too).
   const onNinjaTool = useCallback(() => {
@@ -21614,7 +21722,19 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // fourteen props; four hand-copied call sites is four chances for one of them to be dropped
   // on the phone only, which is the defect this app keeps shipping.
   const routesPanelEl = (
-    <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} dispatchingKey={dispatchingKey} onNewRoute={liveWrite ? openNewRoute : null} writeDenied={writeGate.reason} />
+    <>
+    {dispatchAllPlan && (
+      <LiveCommitConfirm
+        confirm={dispatchAllPlan}
+        liveMode={assignLive}
+        busy={dispatchAllBusy}
+        title={`Dispatch ${dispatchAllPlan.eligible.length} route${dispatchAllPlan.eligible.length === 1 ? '' : 's'}`}
+        onCancel={() => setDispatchAllPlan(null)}
+        onConfirm={runDispatchAll}
+      />
+    )}
+    <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} onDispatchAll={liveWrite ? openDispatchAll : null} dispatchAllPlanner={liveWrite ? dispatchAllPlanner : null} dispatchingKey={dispatchingKey} onNewRoute={liveWrite ? openNewRoute : null} writeDenied={writeGate.reason} />
+    </>
   );
   // The day's loads that are NOT on the board — the empty ones the dispatcher still has to
   // fill. Same click-to-Compare as the bottom grid's Loads view, which Chad keeps in full.
