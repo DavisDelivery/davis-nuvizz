@@ -12,6 +12,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   zipOf, driverKeyOf, isDriver, zipOwnership, driverCore, territoryCoverage,
+  betterLabel, mapFrame, driverPoints,
 } from '../src/lib/driver-territory.js';
 
 const S = (zip, city, user, name = user, extra = {}) =>
@@ -333,16 +334,30 @@ test('A CIRCLE TOO BIG IS NOT A TERRITORY — the rule a measurement found, not 
   // dense his stops all sit in ONE connected region, so the single cluster covered 99% of his
   // work and passed every earlier test — as a 23km circle swallowing four other drivers' areas.
   // What separates a patch from a smear is SIZE, and only measuring the radii showed that.
+  //
+  // A smear ~95km across, dense enough that the cells genuinely connect: one cluster, and one
+  // cluster that plainly is not anybody's patch — it is most of north Georgia.
   const wide = [];
-  for (let i = 0; i < 90; i++) {
-    // A broad, evenly dense smear ~40km across: genuinely one cluster, genuinely not a patch.
-    wide.push(at(33.80 + (i % 10) * 0.045, -84.40 + Math.floor(i / 10) * 0.055, 'SMEAR'));
-  }
+  for (let i = 0; i < 25; i++) for (let j = 0; j < 25; j++) wide.push(at(33.50 + i * 0.035, -84.60 + j * 0.042, 'SMEAR'));
   const [d] = driverCircles(wide);
   assert.ok(d.candidateCircles.length, 'it does form one big cluster — that was never in doubt');
-  assert.ok(d.candidateCircles[0].radiusKm > 15, `the cluster is ${d.candidateCircles[0].radiusKm.toFixed(0)}km wide`);
+  assert.ok(d.candidateCircles[0].radiusKm > 30, `the cluster is ${d.candidateCircles[0].radiusKm.toFixed(0)}km wide`);
   assert.equal(d.noFixedArea, true, 'so it must not be drawn');
   assert.deepEqual(d.circles, []);
+});
+
+test('…but a BIG patch is still a patch: 20km holding almost all his work is drawn', () => {
+  // WHY THE THRESHOLD MOVED, pinned so it cannot drift back. The cap started at 15km, reasoned
+  // from "a morning's drops in one direction" and tuned on an invented sample. Against 14,270
+  // real Davis deliveries it threw out 27 of 59 drivers — Richard Mawuenyega among them, with
+  // ONE cluster holding 98% of his work. This is his shape: wide, but unmistakably one place.
+  const big = [];
+  for (let i = 0; i < 16; i++) for (let j = 0; j < 16; j++) big.push(at(34.00 + i * 0.025, -84.20 + j * 0.030, 'WIDE'));
+  const [d] = driverCircles(big);
+  assert.equal(d.circles.length, 1, 'one place, one circle');
+  assert.ok(d.circles[0].radiusKm > 15, `${d.circles[0].radiusKm.toFixed(0)}km — past the old cap`);
+  assert.ok(d.circles[0].radiusKm < 30, 'and inside the measured one');
+  assert.equal(d.noFixedArea, false, 'a man with 98% of his work in one blob HAS an area');
 });
 
 test('…and a tight patch of the same stop count still draws', () => {
@@ -417,4 +432,66 @@ test('a roster spelled the VENDOR\'s way still matches the canonical key', () =>
   assert.equal(isDriver('COLIN', roster), true, 'Colin must survive a roster that spells him as a load');
   assert.equal(isDriver('VINCENT', roster), true);
   assert.equal(isDriver('NOBODY', roster), false);
+});
+
+// ── THE SHEET AT REAL SCALE — every rule below was written after a print failed ──────────────
+//
+// The first sheet built from Davis's own history was thirty pages of mush: fifty-eight drivers'
+// circles on one map. These pin what replaced it.
+
+test('ONE NAME PER MAN ACROSS THE WHOLE SHEET, and it is the one a person would write', () => {
+  // The alias fold rewrites a stop's driver to the canonical KEY, so the same man arrives as
+  // "BRENT_BRYD" on some stops and "Brent Bryd" on others. They share a key, so his territory is
+  // whole — but the label was whichever stop was read first, and a sheet handed to a trainee
+  // printed "BRENT_BRYD" in one row and "Brent Bryd" in the next, which reads as two people.
+  const stops = [
+    ...Array.from({ length: 9 }, () => ({ driverUserName: 'BRENT_BRYD', driverName: 'BRENT_BRYD', zip: '30518', city: 'BUFORD', lat: 34.12, lng: -84.0 })),
+    { driverUserName: 'Brent  Bryd', driverName: 'Brent  Bryd', zip: '30519', city: 'BUFORD', lat: 34.13, lng: -84.01 },
+  ];
+  assert.equal(betterLabel('BRENT_BRYD', 'Brent  Bryd'), 'Brent  Bryd');
+  assert.equal(betterLabel('Brent Bryd', 'BRENT_BRYD'), 'Brent Bryd', 'and it does not flip back');
+  const [d] = driverCore(stops);
+  assert.equal(d.label, 'Brent Bryd', 'the human spelling wins, double space tidied');
+  // …including in the town table, where the label used to be picked per ZIP: the ZIP holding
+  // only the folded spelling printed the key while the ZIP next to it printed the name.
+  const only = zipOwnership(stops).find((z) => z.zip === '30518');
+  assert.equal(only.ownerLabel, 'Brent Bryd');
+});
+
+test('a double space in a vendor name is tidied but is NOT reported as a merge', () => {
+  // "Names merged" is the line a human checks. Filling it with whitespace corrections buries
+  // the merges that actually change who owns a territory.
+  assert.equal(canonicalDriver('Anthony  Bennett').label, 'Anthony Bennett');
+  assert.equal(canonicalDriver('Anthony  Bennett').rewritten, false);
+  assert.equal(canonicalDriver('COLIN/DJ 1').rewritten, true, 'a real merge still reports');
+});
+
+test('ONE FRAME FOR EVERY CARD — an outlier must not zoom the whole booklet out', () => {
+  // Fit each driver's map to his own work and all fifty-eight look identical: one blob filling
+  // one square. Shared, a card is read by WHERE the ink sits, which is the only thing a set of
+  // small maps is for. But shared means one favour run to Chattanooga can smudge every card.
+  const core = Array.from({ length: 200 }, (_, i) => ({ lat: 34.0 + (i % 20) * 0.004, lng: -84.0 + Math.floor(i / 20) * 0.004 }));
+  const withFavour = [...core, { lat: 35.05, lng: -85.31 }];
+  const a = mapFrame(core), b = mapFrame(withFavour);
+  assert.ok(b.y1 - b.y0 < (a.y1 - a.y0) * 1.5, 'one stop 120km away must not double the frame');
+  assert.ok(b.x1 - b.x0 < (a.x1 - a.x0) * 1.5);
+  // The depot is not a delivery, so it is not in the percentile — but it must be on the map.
+  const withDepot = mapFrame(core, { include: [{ lat: 34.9, lng: -83.2 }] });
+  assert.ok(withDepot.y1 > 34.9 && withDepot.x1 > -83.2, 'an included marker widens the frame');
+  assert.equal(mapFrame([]), null, 'no points, no frame — the caller says so rather than drawing one');
+});
+
+test('the dots under a ring are the driver\'s real addresses, deduplicated', () => {
+  // Thirty deliveries to one customer is ONE dot: printed thirty times over it would tell the
+  // eye that address is a region. And a driver excluded from the sheet gets no dots on it.
+  const stops = [
+    ...Array.from({ length: 30 }, () => ({ driverUserName: 'A', zip: '30518', lat: 34.1234, lng: -84.0001 })),
+    { driverUserName: 'A', zip: '30518', lat: 34.2, lng: -84.1 },
+    { driverUserName: 'GONE', zip: '30518', lat: 33.9, lng: -84.3 },
+  ];
+  const pts = driverPoints(stops, { active: new Set(['A']) });
+  assert.equal(pts.size, 1, 'only the active driver');
+  assert.equal(pts.get('A').length, 2, 'one customer, one dot');
+  assert.equal(driverPoints(stops).size, 2, 'with no active set, everybody who has coordinates');
+  assert.equal(driverPoints([{ driverUserName: 'A', zip: '30518' }]).size, 0, 'a stop with no coordinates places nothing');
 });

@@ -1,27 +1,53 @@
 // src/lib/territory-sheet-html.js — THE PRINTED DRIVER-AREA SHEET, AS ONE FUNCTION.
 //
-// Chad: "I want something I can print out and give to someone", and then, having seen it:
-// "I like the circles."
+// Chad: "I want something I can print out and give to someone", then "I like the circles", then,
+// handed the first real print: "just produce a sheet and let me look at it."
 //
-// WRITTEN ONCE, CALLED TWICE. This is the whole sheet — markup, print CSS, the map — as a pure
-// string builder over plain data. scripts/territory-sheet.mjs renders it from a JSON file for a
-// PDF; netlify/functions/driver-territory.mts serves the identical bytes live. Building the
-// page in two places is exactly how the two drift until the printout and the screen disagree,
-// which this repo has already paid for on the roster freshness line.
+// ── WHAT THE FIRST REAL PRINT GOT WRONG, BECAUSE IT IS THE WHOLE DESIGN ─────────────────────
+//
+// The layout was built and tuned against an invented sample of a dozen drivers. Davis runs 58.
+// Every active driver's circles went onto ONE map, and at fifty-eight the page is mush: circles
+// overlap four deep, the de-collision walks the names into a column down the middle, and the
+// colour legend eats a page to distinguish 58 people with 8 colours. It was thirty pages and
+// unreadable, and no test caught it because every test was written against the sample.
+//
+// A trainee does not have a question that one map answers. He has two:
+//
+//   "An order came in for Dacula — whose is it?"   → the town table. One page, alphabetical.
+//   "Where does Vincent run?"                       → Vincent's own card.
+//
+// So the everyone-at-once map is gone. What replaces it is ONE CARD PER DRIVER, each with its
+// own small map, and — the part that makes them worth printing — EVERY CARD SHARES ONE FRAME.
+// Fit each map to its own driver and all 58 look identical: one blob filling one square. Shared,
+// the card is read by WHERE the ink sits, which is the only thing a set of small maps is for.
+//
+// Each card draws the driver's actual stops as dots UNDER his circle. The circle is a summary
+// and a summary can be wrong where the reader cannot see it; the dots are the evidence, and for
+// the drivers who get no circle at all they are the entire answer — "no fixed area" over a blank
+// square teaches nothing, over a square full of scattered dots it teaches exactly the right thing.
+//
+// WRITTEN ONCE, CALLED TWICE. scripts/territory-sheet.mjs renders it from a JSON file for a PDF;
+// netlify/functions/driver-territory.mts serves the identical bytes live.
 //
 // PURE: no Firestore, no network, no filesystem, no clock of its own. `input.generatedAt` is
 // passed in rather than read, so the same data renders the same page every time.
-import { zipOwnership, driverCore, territoryCoverage, activeDrivers, driverCircles, driverRewrites, rosterOf } from './driver-territory.js';
+import {
+  zipOwnership, driverCore, territoryCoverage, activeDrivers, driverCircles, driverRewrites,
+  driverPoints, driverKeyOf, mapFrame, rosterOf,
+} from './driver-territory.js';
 import COUNTIES from './ga-north-counties.js';
 
-// Orientation labels. A printed map of anonymous county outlines is a puzzle; a dozen familiar
-// names turn it into a map of somewhere. These are the towns' own coordinates, not derived data.
+// Orientation labels. A printed map of anonymous county outlines is a puzzle; familiar names
+// turn it into a map of somewhere. These are the towns' own coordinates, not derived data.
+// `major` is the short list a 100mm card map can carry without the labels eating the geography.
 const TOWNS = [
-  ['Atlanta', 33.749, -84.388], ['Buford', 34.121, -84.000], ['Athens', 33.958, -83.378],
-  ['Lawrenceville', 33.956, -83.988], ['Gainesville', 34.298, -83.824], ['Marietta', 33.953, -84.550],
-  ['Duluth', 34.003, -84.145], ['Cumming', 34.207, -84.140], ['Winder', 33.993, -83.720],
-  ['Conyers', 33.668, -84.018], ['Douglasville', 33.752, -84.748], ['Canton', 34.237, -84.491],
+  ['Atlanta', 33.749, -84.388, 1], ['Buford', 34.121, -84.000, 1], ['Athens', 33.958, -83.378, 1],
+  ['Lawrenceville', 33.956, -83.988, 0], ['Gainesville', 34.298, -83.824, 1], ['Marietta', 33.953, -84.550, 1],
+  ['Duluth', 34.003, -84.145, 0], ['Cumming', 34.207, -84.140, 0], ['Winder', 33.993, -83.720, 0],
+  ['Conyers', 33.668, -84.018, 1], ['Douglasville', 33.752, -84.748, 0], ['Canton', 34.237, -84.491, 0],
 ];
+
+const INK = '#1f4e79';   // ONE accent, not a palette — see the note above `depot` below.
 
 export function territorySheetHtml(input = {}) {
 const stops = input.stops || [];
@@ -30,117 +56,90 @@ const roster = input.roster ? rosterOf(input.roster) : null;
 // ONLY DRIVERS WHO HAVE ACTUALLY RUN IN THE WINDOW. Chad: "terry hasn't ran for me in a long
 // time ... just guys that have ran in last 4 weeks."
 const { active: activeSet, excluded } = activeDrivers(stops, { roster, minStops: input.minStops ?? 5 });
-const inWindow = stops.filter((s) => activeSet.has((s?.driverUserName || s?.driverName || '').toUpperCase().replace(/\s+/g, '_')));
+// THE KEY COMES FROM ONE PLACE. This filter used to re-derive it inline — uppercase, spaces to
+// underscores — which is what the key looks like for most names and is NOT what canonicalDriver
+// does. For "COLIN/DJ 1" the inline version produced COLIN/DJ_1, which is in no active set, so
+// Colin's second load vanished from the town table and the cards while driverCircles (which
+// asks properly) still drew it. Half the sheet disagreeing with the other half, silently.
+const inWindow = stops.filter((s) => activeSet.has(driverKeyOf(s)));
 const zips = input.zips || zipOwnership(inWindow, { roster });
 const drivers = input.drivers || driverCore(inWindow, { roster });
 const cov = input.coverage || territoryCoverage(inWindow, { roster });
 const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pct = (n) => `${Math.round((n || 0) * 100)}%`;
 
-// A stable colour per driver. Printed sheets get photocopied, so these are chosen to stay
-// distinguishable in greyscale as well — varied lightness, not just varied hue.
-const PALETTE = ['#1f4e79', '#a4462d', '#3f7d3f', '#6b4a8a', '#8a6d1f', '#256b6b', '#8a3060', '#4a5a6b'];
-const colourOf = new Map(drivers.map((d, i) => [d.key, PALETTE[i % PALETTE.length]]));
+// NO PALETTE, AND THAT IS A FIX RATHER THAN A SAVING. Eight colours across 58 drivers means
+// seven men share every swatch, so a colour on the town table cannot identify anybody — it can
+// only mislead a reader into thinking it does. One card per driver needs no key at all, and one
+// ink survives the photocopier the sheet will actually be handed out on.
+const depot = input.depot || { lat: 34.14838, lng: -83.95948, name: 'Buford Terminal' };
+const circleSets = input.circles || driverCircles(stops, { roster, active: activeSet });
+const pointsBy = driverPoints(inWindow, { roster, active: activeSet });
+const allPoints = [...pointsBy.values()].flat();
+const frame = mapFrame(allPoints, { include: [depot] });
 
-// ── the dot map ─────────────────────────────────────────────────────────────
-// EVERY STOP IS ONE DOT, and no shape is fitted over them. That is the whole argument against
-// circles rendered as a picture: a driver who works two clusters shows as two clusters, and a
-// driver who scatters looks scattered, instead of both being flattened into an ellipse whose
-// centre may be somewhere neither of them goes.
-function territoryMap() {
-  // WHAT CHANGED AND WHY, because the first draft got both halves wrong.
-  //
-  // Chad: "the dots didn't lay over an actual map of north Georgia and I think big circles will
-  // work better than dots."
-  //
-  // (1) THE BASEMAP. A dot cloud on white has no geography in it — you cannot tell Buford from
-  //     Bogart, and a trainee cannot place anything. Real county outlines (US Census, public
-  //     domain) and a dozen town labels turn the same data into a map of somewhere.
-  // (2) CIRCLES. I argued for dots and Chad has overruled it, having seen both. So: circles —
-  //     but ONE PER CLUSTER (driverCircles), because a single circle over a two-cluster driver
-  //     is centred on ground he never touches. That was the real objection to circles, and it
-  //     is answered by the clustering rather than by refusing him the shape he asked for.
-  const circleSets = input.circles || driverCircles(stops, { roster, active: activeSet });
-  const drawn = circleSets.filter((d) => d.circles.length);
-  if (!drawn.length) {
-    return `<p class="muted">No circles: none of the active drivers has enough stops carrying
-      coordinates. Coordinates are geocoded and fill in over time; the tables below use ZIP,
-      which every stop carries.</p>`;
-  }
-
-  // Frame on the WORK, then pad, so the map is of where they actually run rather than of the
-  // whole state. Counties are clipped to that frame by the viewBox.
-  const all = drawn.flatMap((d) => d.circles);
-  const latPad = 0.30, lngPad = 0.34;
-  const y0 = Math.min(...all.map((c) => c.lat - c.radiusKm / 110)) - latPad;
-  const y1 = Math.max(...all.map((c) => c.lat + c.radiusKm / 110)) + latPad;
-  const x0 = Math.min(...all.map((c) => c.lng - c.radiusKm / 92)) - lngPad;
-  const x1 = Math.max(...all.map((c) => c.lng + c.radiusKm / 92)) + lngPad;
-
-  const W = 660;
-  const midLat = (y0 + y1) / 2;
-  const aspect = Math.cos((midLat * Math.PI) / 180);          // no east-west stretch
+// ── the shared projection ───────────────────────────────────────────────────
+function projector(W) {
+  const { x0, x1, y0, y1 } = frame;
+  const aspect = Math.cos((((y0 + y1) / 2) * Math.PI) / 180);   // no east-west stretch
   const H = Math.round((W * (y1 - y0)) / ((x1 - x0) * aspect));
-  const sx = (lng) => ((lng - x0) / (x1 - x0)) * W;
-  const sy = (lat) => H - ((lat - y0) / (y1 - y0)) * H;
-  const rpx = (km) => (km / 111 / (y1 - y0)) * H;             // radius in latitude degrees → px
-
-  const counties = COUNTIES.map((c) => c.rings.map((r) => {
-    const d = r.map(([lng, lat], i) => `${i ? 'L' : 'M'}${sx(lng).toFixed(1)},${sy(lat).toFixed(1)}`).join('');
-    return `<path d="${d}Z" fill="#f2f1ee" stroke="#c9c7c1" stroke-width="0.7"/>`;
-  }).join('')).join('');
-
-  const towns = TOWNS.filter(([, lat, lng]) => lat > y0 && lat < y1 && lng > x0 && lng < x1)
-    .map(([n, lat, lng]) => `<g><circle cx="${sx(lng).toFixed(1)}" cy="${sy(lat).toFixed(1)}" r="1.8" fill="#555"/>
-      <text x="${(sx(lng) + 4).toFixed(1)}" y="${(sy(lat) + 3).toFixed(1)}" font-size="9" fill="#444">${esc(n)}</text></g>`).join('');
-
-  // Big circles last so they sit over the geography, translucent so overlaps stay readable and
-  // so a county line underneath is still visible — which is what makes it a map and not a blob.
-  const blobs = drawn.flatMap((d) => d.circles.map((c) => {
-    const col = colourOf.get(d.key) || '#777';
-    return `<circle cx="${sx(c.lng).toFixed(1)}" cy="${sy(c.lat).toFixed(1)}" r="${Math.max(6, rpx(c.radiusKm)).toFixed(1)}"
-      fill="${col}" fill-opacity="0.17" stroke="${col}" stroke-width="1.8" stroke-opacity="0.85"/>`;
-  })).join('');
-  // LABELS MUST NOT SIT ON TOP OF EACH OTHER. Two drivers who share an area have circles at
-  // nearly the same point, and centring both names there printed "Colin" straight through
-  // "Marcus" — unreadable, and on a printed sheet there is no hover to recover it. So each label
-  // is nudged down until it clears the ones already placed. Deterministic (biggest circle first),
-  // so the same data lays out the same way every time it is printed.
-  const placed = [];
-  const tags = drawn.flatMap((d) => d.circles.map((c) => ({ d, c })))
-    .sort((a, b) => b.c.stops - a.c.stops)
-    .map(({ d, c }) => {
-      const x = sx(c.lng);
-      let y = sy(c.lat);
-      while (placed.some((p) => Math.abs(p.x - x) < 46 && Math.abs(p.y - y) < 12)) y += 12;
-      placed.push({ x, y });
-      return `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}"
-      text-anchor="middle" font-size="10" font-weight="700" fill="${colourOf.get(d.key) || '#333'}"
-      stroke="#fff" stroke-width="2.6" paint-order="stroke">${esc(d.label)}</text>`;
-    }).join('');
-
-  const depot = input.depot || { lat: 34.14838, lng: -83.95948, name: 'Buford Terminal' };
-  const dep = (depot.lat > y0 && depot.lat < y1 && depot.lng > x0 && depot.lng < x1)
-    ? `<g><rect x="${(sx(depot.lng) - 4).toFixed(1)}" y="${(sy(depot.lat) - 4).toFixed(1)}" width="8" height="8" fill="#111"/>
-       <text x="${(sx(depot.lng) + 7).toFixed(1)}" y="${(sy(depot.lat) + 3).toFixed(1)}" font-size="9.5" font-weight="700"
-         stroke="#fff" stroke-width="2.6" paint-order="stroke">${esc(depot.name)}</text></g>` : '';
-
-  const scattered = drawn.filter((d) => d.circles.length > 1);
-  const noArea = circleSets.filter((d) => d.noFixedArea);
-  return `<div class="mapbox"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet"
-    width="100%" height="100%" style="display:block">
-    ${counties}${towns}${blobs}${dep}${tags}</svg></div>
-    <p class="muted">Each circle covers where most of that driver's work sits — 80% of the stops in
-    that cluster. Somebody who works two areas gets two circles rather than one big one stretched
-    between them${scattered.length ? ` (${esc(scattered.map((d) => d.label).join(', '))})` : ''}.
-    ${pct(cov.coordShare)} of stops carry coordinates and could be placed; the tables use ZIP, which all of them carry.</p>
-    ${noArea.length ? `<p class="nocircle"><b>Not drawn:</b> ${esc(noArea.map((d) => d.label).join(', '))}.
-      Their work is spread too thin to sit inside a circle — any circle would cover ground they
-      never touch. Use the town list for them.</p>` : ''}`;
+  return {
+    W, H,
+    sx: (lng) => ((lng - x0) / (x1 - x0)) * W,
+    sy: (lat) => H - ((lat - y0) / (y1 - y0)) * H,
+    rpx: (km) => (km / 111 / (y1 - y0)) * H,       // radius in latitude degrees → px
+    inside: (lat, lng) => lat > y0 && lat < y1 && lng > x0 && lng < x1,
+  };
 }
 
-const legend = drivers.map((d) =>
-  `<span class="lg"><i style="background:${colourOf.get(d.key)}"></i>${esc(d.label)}</span>`).join('');
+// County outlines (US Census, public domain) and town labels — the same bytes under every map,
+// so a card is compared against its neighbours rather than read on its own.
+function basemap(P, small) {
+  const counties = COUNTIES.map((c) => c.rings.map((r) => {
+    const d = r.map(([lng, lat], i) => `${i ? 'L' : 'M'}${P.sx(lng).toFixed(1)},${P.sy(lat).toFixed(1)}`).join('');
+    return `<path d="${d}Z" fill="#f4f3f0" stroke="#cbc9c3" stroke-width="${small ? 0.5 : 0.7}"/>`;
+  }).join('')).join('');
+  const fs = small ? 8 : 9;
+  // A LABEL PAST THE RIGHT EDGE IS A LABEL NOBODY READS. "Athens" sits within a few pixels of
+  // the frame and printed half off the paper; near the edge the name reads back toward the map.
+  const towns = TOWNS.filter(([, lat, lng, major]) => (!small || major) && P.inside(lat, lng))
+    .map(([n, lat, lng]) => {
+      const x = P.sx(lng), y = P.sy(lat), right = x > P.W * 0.82;
+      return `<g><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${small ? 1.4 : 1.8}" fill="#666"/>
+      <text x="${(x + (right ? -3.5 : 3.5)).toFixed(1)}" y="${(y + fs / 3).toFixed(1)}" font-size="${fs}" fill="#555"
+        text-anchor="${right ? 'end' : 'start'}" stroke="#fff" stroke-width="2" paint-order="stroke">${esc(n)}</text></g>`;
+    }).join('');
+  const d = P.inside(depot.lat, depot.lng)
+    ? `<g><rect x="${(P.sx(depot.lng) - 3.5).toFixed(1)}" y="${(P.sy(depot.lat) - 3.5).toFixed(1)}" width="7" height="7" fill="#111"/>
+       ${small ? '' : `<text x="${(P.sx(depot.lng) + 6).toFixed(1)}" y="${(P.sy(depot.lat) + 3).toFixed(1)}" font-size="9.5" font-weight="700"
+         stroke="#fff" stroke-width="2.6" paint-order="stroke">${esc(depot.name)}</text>`}</g>` : '';
+  return counties + towns + d;
+}
+
+// SIZED IN MILLIMETRES, BOTH WAYS, because `break-inside: avoid` does not shrink anything — it
+// MOVES it. The first real print sized the overview by width alone, it came out 195mm tall, it
+// would not fit under the header, and page one printed as a title and 200mm of white paper with
+// the map alone on page two. A map that is told its height budget stays where it was put.
+function svgBox(P, body, widthMm, maxHeightMm) {
+  const w = maxHeightMm ? Math.min(widthMm, maxHeightMm * P.W / P.H) : widthMm;
+  return `<svg viewBox="0 0 ${P.W} ${P.H}" width="${w.toFixed(1)}mm" height="${(w * P.H / P.W).toFixed(1)}mm"
+    preserveAspectRatio="xMidYMid meet" style="display:block;margin:0 auto">${body}</svg>`;
+}
+
+// ── page 1: the footprint, which is the only thing worth drawing all at once ─
+// Not fifty-eight labelled territories — one shape, in one ink, answering "where does Davis
+// deliver?" A trainee needs that frame before any card means anything, and it is the ONE
+// question the combined map could still answer honestly once the names came off it.
+const overview = (() => {
+  if (!frame) return '<p class="muted">No coordinates in this window, so no map can be drawn. The tables below use ZIP, which every stop carries.</p>';
+  const P = projector(660);
+  const dots = allPoints.filter((p) => P.inside(p.lat, p.lng))
+    .map((p) => `<circle cx="${P.sx(p.lng).toFixed(1)}" cy="${P.sy(p.lat).toFixed(1)}" r="1.5" fill="${INK}" fill-opacity="0.5"/>`).join('');
+  const off = allPoints.length - allPoints.filter((p) => P.inside(p.lat, p.lng)).length;
+  return `<div class="mapbox">${svgBox(P, basemap(P, false) + dots, 186, 128)}</div>
+    <p class="muted">Every delivery address in the window, one dot each${off ? `; ${off} further out are off this map` : ''}.
+    This is the ground the cards divide up — each driver's card that follows shows the same map at the same scale.</p>`;
+})();
 
 // ── the lookup table — the page a trainee actually uses ─────────────────────
 // Sorted by CITY, because the question arrives as a place name ("this one's in Dacula"), not as
@@ -151,42 +150,87 @@ const byCity = [...zips].sort((a, b) =>
 const lookupRows = byCity.map((z) => `<tr>
   <td class="city">${esc(z.city || '—')}</td>
   <td class="mono">${esc(z.zip)}</td>
-  <td><b style="color:${colourOf.get(z.owner) || '#333'}">${esc(z.ownerLabel)}</b></td>
+  <td><b>${esc(z.ownerLabel)}</b></td>
   <td class="num ${z.share < 0.6 ? 'warn' : ''}">${pct(z.share)}</td>
   <td class="also">${z.others.length ? esc(z.others.slice(0, 3).map((o) => o.label).join(', ')) : '<span class="muted">—</span>'}</td>
   <td class="num">${z.total}</td></tr>`).join('');
 
-// ── one block per driver ────────────────────────────────────────────────────
-const driverBlocks = drivers.map((d) => {
+// ── one card per driver ─────────────────────────────────────────────────────
+// ALPHABETICAL, because this is a reference somebody flips through looking for a name. Busiest-
+// first is right for a dashboard and wrong for a booklet: nobody knows a man's rank to find him.
+const circleBy = new Map(circleSets.map((c) => [c.key, c]));
+const cards = [...drivers].sort((a, b) => a.label.localeCompare(b.label)).map((d) => {
+  const cs = circleBy.get(d.key);
+  const pts = pointsBy.get(d.key) || [];
+  let map = '<div class="nomap">No coordinates for this driver — read the ZIP list.</div>';
+  if (frame && pts.length) {
+    const P = projector(300);
+    const shown = pts.filter((p) => P.inside(p.lat, p.lng));
+    const dots = shown.map((p) => `<circle cx="${P.sx(p.lng).toFixed(1)}" cy="${P.sy(p.lat).toFixed(1)}" r="2.1"
+      fill="${INK}" fill-opacity="0.55"/>`).join('');
+    // The circle goes OVER the dots so the summary is visibly a claim about them, and stays
+    // hollow so it can never hide the evidence it is drawn from.
+    // A TIGHT MAN'S RING MUST STILL BE VISIBLE. Anthony Bennett's patch is six miles across —
+    // at the fleet's scale that is three millimetres, and drawn thin it vanishes under his own
+    // dots, so his card and a no-ring card look alike. A white halo under the stroke lifts it
+    // off the dots without inflating the ring, which would be a lie about the size.
+    const rings = (cs?.circles || []).map((c) => {
+      const r = Math.max(7, P.rpx(c.radiusKm)).toFixed(1);
+      const at = `cx="${P.sx(c.lng).toFixed(1)}" cy="${P.sy(c.lat).toFixed(1)}" r="${r}"`;
+      return `<circle ${at} fill="none" stroke="#fff" stroke-width="4.2" stroke-opacity="0.85"/>
+        <circle ${at} fill="${INK}" fill-opacity="0.09" stroke="${INK}" stroke-width="2.2"/>`;
+    }).join('');
+    map = `<div class="m">${svgBox(P, basemap(P, true) + dots + rings, 82)}</div>`;
+  }
   const coreCities = [...new Set(d.core.map((c) => c.city).filter(Boolean))];
-  const banner = d.concentrated
-    ? `<p class="area">Usual area: <b>${esc(coreCities.join(', ') || d.core.map((c) => c.zip).join(', '))}</b></p>`
-    : `<p class="area nofix"><b>No fixed area.</b> ${d.core.length} ZIP codes are needed to cover
-       ${pct(d.coreShare)} of this driver's work, across ${d.zipCount} in total — read the list, not a shape.</p>`;
-  return `<section class="drv">
-    <h3><i style="background:${colourOf.get(d.key)}"></i>${esc(d.label)}
-      <span class="muted">· ${d.total} stops · ${d.zipCount} ZIP codes</span></h3>
-    ${banner}
-    <table class="mini"><thead><tr><th>City</th><th>ZIP</th><th class="num">Stops</th></tr></thead><tbody>
-      ${d.core.map((c) => `<tr><td>${esc(c.city || '—')}</td><td class="mono">${esc(c.zip)}</td><td class="num">${c.stops}</td></tr>`).join('')}
-    </tbody></table>
-    ${d.tail.length ? `<p class="tail"><b>Also runs:</b> ${esc(d.tail.slice(0, 14).map((t) => `${t.city || t.zip} (${t.stops})`).join(' · '))}${d.tail.length > 14 ? ` … and ${d.tail.length - 14} more` : ''}</p>` : ''}
+  // A RING IS ONLY HONEST IF ITS SIZE IS SAID OUT LOUD. Davis territories run from 5 to 37
+  // miles across and on a 96mm map of the whole metro they look much alike; a trainee reading
+  // "usual area: Buford" off a ring nineteen miles wide has been told something false by the
+  // picture. So the width is printed in miles, and the share falling outside it as well.
+  const across = cs && cs.circles.length
+    ? Math.round(2 * Math.max(...cs.circles.map((c) => c.radiusKm)) * 0.621371) : 0;
+  const banner = cs && cs.circles.length
+    ? `<p class="area"><b>Usual area:</b> ${esc(coreCities.slice(0, 5).join(', ') || d.core.map((c) => c.zip).join(', '))}
+       <span class="muted">· about ${across} miles across</span>
+       ${cs.circles.length > 1 ? `<span class="muted">· works ${cs.circles.length} separate areas</span>` : ''}
+       ${cs.outsideShare > 0.1 ? `<span class="muted">· ${pct(cs.outsideShare)} of his stops fall outside the ring${cs.circles.length > 1 ? 's' : ''}</span>` : ''}</p>`
+    : `<p class="area nofix"><b>No fixed area.</b> His work is too spread out for a circle to describe —
+       any ring would cover ground he never touches. The dots are where he actually goes; use the ZIP list.</p>`;
+  const core = d.core.slice(0, 9);
+  // THE TAIL READS AS TOWNS, NOT ZIPS. Atlanta alone is a dozen ZIP codes, so a per-ZIP tail
+  // printed "ATLANTA (7) · ATLANTA (4) · ATLANTA (1) · ATLANTA (1)" and buried the towns he
+  // genuinely visits once in a row of the town he is already known for. Rolled up by place.
+  const tail = [...d.tail.reduce((m, t) => {
+    const place = t.city || t.zip;
+    m.set(place, (m.get(place) || 0) + t.stops);
+    return m;
+  }, new Map())].map(([place, stops]) => ({ place, stops }))
+    .sort((a, b) => b.stops - a.stops || a.place.localeCompare(b.place));
+  return `<section class="card">
+    <h3>${esc(d.label)} <span class="muted">· ${d.total} stops · ${d.zipCount} ZIP codes</span></h3>
+    <div class="body">${map}<div class="info">
+      ${banner}
+      <table class="mini"><thead><tr><th>City</th><th>ZIP</th><th class="num">Stops</th></tr></thead><tbody>
+        ${core.map((c) => `<tr><td>${esc(c.city || '—')}</td><td class="mono">${esc(c.zip)}</td><td class="num">${c.stops}</td></tr>`).join('')}
+        ${d.core.length > core.length ? `<tr><td colspan="3" class="muted">…and ${d.core.length - core.length} more ZIP codes in his core</td></tr>` : ''}
+      </tbody></table>
+    </div></div>
+    ${tail.length ? `<p class="tail"><b>Also runs:</b> ${esc(tail.slice(0, 12).map((t) => `${t.place} (${t.stops})`).join(' · '))}${tail.length > 12 ? ` … and ${tail.length - 12} more` : ''}</p>` : ''}
   </section>`;
 }).join('');
 
+const noArea = circleSets.filter((d) => d.noFixedArea).map((d) => d.label).sort();
 const win = input.window || {};
 return `<!doctype html><html><head><meta charset="utf-8"><title>Driver areas</title><style>
   @page { size: letter; margin: 14mm 13mm; }
   * { box-sizing: border-box; }
   body { font: 11px/1.45 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color: #1a1a1a; margin: 0; }
   h1 { font-size: 23px; margin: 0 0 2px; letter-spacing: -.01em; }
-  h2 { font-size: 14px; margin: 20px 0 7px; padding-bottom: 4px; border-bottom: 2px solid #1a1a1a; }
-  h3 { font-size: 12.5px; margin: 0 0 4px; display: flex; align-items: center; gap: 6px; }
-  h3 i, .lg i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex: none; }
+  h2 { font-size: 14px; margin: 18px 0 7px; padding-bottom: 4px; border-bottom: 2px solid #1a1a1a; }
+  h3 { font-size: 12.5px; margin: 0 0 5px; }
   .muted { color: #6b6b6b; font-weight: 400; }
   .sub { color: #555; margin: 0 0 10px; }
-  .cov { background: #f4f4f2; border-left: 3px solid #1a1a1a; padding: 8px 11px; margin: 10px 0 14px; font-size: 10.5px; }
-  .cov b { font-variant-numeric: tabular-nums; }
+  .cov { background: #f4f4f2; border-left: 3px solid #1a1a1a; padding: 8px 11px; margin: 10px 0 12px; font-size: 10.5px; }
   .warnbox { background: #fff6e5; border-left: 3px solid #b8860b; padding: 8px 11px; margin: 10px 0; font-size: 10.5px; }
   table { width: 100%; border-collapse: collapse; }
   th { text-align: left; font-size: 9.5px; text-transform: uppercase; letter-spacing: .04em; color: #555;
@@ -197,18 +241,19 @@ return `<!doctype html><html><head><meta charset="utf-8"><title>Driver areas</ti
   .city { font-weight: 600; }
   .also { color: #555; font-size: 10px; }
   .warn { color: #a4462d; font-weight: 700; }
-  .lg { display: inline-flex; align-items: center; gap: 4px; margin: 0 10px 4px 0; font-size: 10px; }
-  .legend { margin: 6px 0 2px; }
-  .drv { break-inside: avoid; page-break-inside: avoid; margin: 0 0 13px; padding: 9px 10px; border: 1px solid #ddd; }
-  .area { margin: 3px 0 6px; font-size: 11px; }
-  .mapbox { height: 128mm; border: 1px solid #ccc; background: #fdfdfc; break-inside: avoid; page-break-inside: avoid; }
-  .nocircle { background: #fff6e5; border-left: 3px solid #b8860b; padding: 6px 9px; margin: 6px 0 0; font-size: 10.5px; }
-  .area.nofix { background: #fff6e5; padding: 5px 7px; border-left: 3px solid #b8860b; }
-  .tail { margin: 6px 0 0; font-size: 10px; color: #444; }
+  .mapbox { border: 1px solid #ccc; background: #fdfdfc; width: fit-content; margin: 0 auto;
+            break-inside: avoid; page-break-inside: avoid; }
+  .card { break-inside: avoid; page-break-inside: avoid; margin: 0 0 9px; padding: 8px 10px 9px; border: 1px solid #ddd; }
+  .card .body { display: flex; gap: 11px; align-items: flex-start; }
+  .card .m { width: 82mm; flex: none; border: 1px solid #ddd; background: #fdfdfc; }
+  .card .info { flex: 1; min-width: 0; }
+  .nomap { width: 82mm; flex: none; font-size: 10px; color: #6b6b6b; padding: 8px; border: 1px dashed #ccc; }
+  .area { margin: 0 0 6px; font-size: 10.5px; }
+  .area.nofix { background: #fff6e5; padding: 6px 8px; border-left: 3px solid #b8860b; }
+  .tail { margin: 7px 0 0; font-size: 10px; color: #444; }
   .mini td, .mini th { padding: 1.5px 5px; }
   .page { page-break-before: always; }
-  .samp { background: #b8860b; color: #fff; padding: 7px 11px; margin: 0 0 12px; font-size: 11px;
-          letter-spacing: .01em; }
+  .samp { background: #b8860b; color: #fff; padding: 7px 11px; margin: 0 0 12px; font-size: 11px; }
   footer { margin-top: 14px; padding-top: 6px; border-top: 1px solid #ddd; font-size: 9.5px; color: #777; }
 </style></head><body>
 
@@ -222,6 +267,8 @@ ${input.sample ? `<div class="samp"><b>SAMPLE — INVENTED DATA.</b> Made-up nam
   <b>${cov.days}</b> working day${cov.days === 1 ? '' : 's'}, ${drivers.length} drivers, ${zips.length} ZIP codes.
   ${cov.noZip ? `${cov.noZip} stop${cov.noZip === 1 ? '' : 's'} had no usable ZIP and ${cov.noDriver} had no driver — both left out.` : ''}
   ${!cov.rosterApplied ? '<br><b>Note:</b> no driver roster was applied, so line-haul carriers may appear in this list alongside people.' : ''}
+  <br><b>How to use it.</b> An order comes in for a town — <b>look it up by town</b> (page 2). You want to know
+  where somebody runs — find his card; they are in alphabetical order.
 </div>
 
 ${cov.days < 20 ? `<div class="warnbox"><b>Read this as a starting point, not a rule.</b>
@@ -250,9 +297,12 @@ ${excluded.length ? `<div class="warnbox"><b>Not on this sheet:</b> ${excluded.m
     : `only ${e.stops} delivery${e.stops === 1 ? '' : 'ies'} in the window`}`).join(' · ')}.
   Only drivers still running are shown; somebody who has stopped has no current area to learn.</div>` : ''}
 
-<h2>The picture</h2>
-${territoryMap()}
-<div class="legend">${legend}</div>
+${noArea.length ? `<div class="warnbox"><b>No settled patch:</b> ${esc(noArea.join(', '))}.
+  Their work is spread too wide for a circle, so their cards show the stops themselves and no ring.
+  ${pct(cov.coordShare)} of all stops carry coordinates and could be mapped; the tables use ZIP, which all of them carry.</div>` : ''}
+
+<h2>Where Davis delivers</h2>
+${overview}
 
 <div class="page"></div>
 <h2>Look it up by town</h2>
@@ -263,9 +313,10 @@ is marked: that area is shared, so ask before assuming.</p>
 
 <div class="page"></div>
 <h2>By driver</h2>
-<p class="sub">The ZIP codes covering most of each driver's work, busiest first. Where somebody has
-no settled patch it says so rather than drawing one.</p>
-${driverBlocks}
+<p class="sub">Alphabetical. Every map is the same map at the same scale, so the cards can be
+compared: the dots are that driver's actual delivery addresses, and the ring covers where most of
+his work sits. Somebody who works two areas gets two rings rather than one stretched between them.</p>
+${cards}
 
 <footer>Built from delivery history. It describes what HAS happened, not what must —
 a driver can be sent anywhere. Reprint it as the work changes.${input.sample ? ' <b>SAMPLE DATA — not real routes.</b>' : ''}</footer>

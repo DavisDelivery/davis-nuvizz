@@ -91,7 +91,29 @@ export function canonicalDriver(raw) {
   name = name.replace(/\s+\d{1,2}$/, '').trim();
   if (!name) name = original;
   const key = name.toUpperCase().replace(/\s+/g, '_');
-  return { key, label: name, rewritten: name !== original };
+  // The vendor spells plenty of names with a double space ("Anthony  Bennett"). The KEY already
+  // collapses whitespace, so the two spellings are one driver either way; the LABEL is what gets
+  // printed and handed to somebody, so it is tidied. `rewritten` is computed before the tidy —
+  // whitespace is not a merge, and reporting it as one would bury the merges that matter.
+  return { key, label: name.replace(/\s+/g, ' '), rewritten: name !== original };
+}
+
+/**
+ * WHICH SPELLING OF A NAME GOES ON THE PRINTED PAGE.
+ *
+ * One driver reaches us under more than one spelling — the vendor's own rename, and the alias
+ * fold, which rewrites a stop's driver to the canonical KEY ("BRENT_BRYD"). Both spellings share
+ * a key, so the territory is whole; the label was simply whichever stop happened to be read
+ * first, and "BRENT_BRYD" printed on a sheet handed to a trainee looks like a fault in the
+ * paperwork. A name a person would write beats a machine key.
+ */
+export function betterLabel(a, b) {
+  const score = (v) => {
+    const t = String(v ?? '').trim();
+    if (!t) return -1;
+    return (/[a-z]/.test(t) ? 2 : 0) + (/\s/.test(t) ? 2 : 0) + (t.includes('_') ? 0 : 1);
+  };
+  return score(b) > score(a) ? String(b) : String(a);
 }
 
 /**
@@ -161,16 +183,20 @@ export function isDriver(key, roster) {
 export function zipOwnership(stops = [], opts = {}) {
   const roster = opts.roster || null;
   const byZip = new Map();
+  const labels = new Map();
   for (const s of stops || []) {
     if (!usableStop(s)) continue;
     const key = driverKeyOf(s);
     if (!isDriver(key, roster)) continue;
     const zip = zipOf(s);
-    if (!byZip.has(zip)) byZip.set(zip, { zip, city: null, total: 0, drivers: new Map(), labels: new Map() });
+    if (!byZip.has(zip)) byZip.set(zip, { zip, city: null, total: 0, drivers: new Map() });
     const z = byZip.get(zip);
     z.total += 1;
     z.drivers.set(key, (z.drivers.get(key) || 0) + 1);
-    if (!z.labels.has(key)) z.labels.set(key, driverLabelOf(s));
+    // ONE NAME PER MAN ACROSS THE WHOLE TABLE, not the best spelling seen inside each ZIP: a
+    // driver whose only stop in Clarkston came through under the folded key printed as
+    // "BRENT_BRYD" in that row and as "Brent Bryd" in the next one, which reads as two people.
+    labels.set(key, betterLabel(labels.get(key), driverLabelOf(s)));
     // The city name a trainee actually reads. First non-empty wins; ZIPs do not straddle
     // cities often enough to be worth more than that, and a blank must never overwrite a name.
     if (!z.city) { const c = String(s.city ?? '').trim(); if (c) z.city = c; }
@@ -184,11 +210,11 @@ export function zipOwnership(stops = [], opts = {}) {
       city: z.city || null,
       total: z.total,
       owner: ownerKey,
-      ownerLabel: z.labels.get(ownerKey) || ownerKey,
+      ownerLabel: labels.get(ownerKey) || ownerKey,
       ownerStops,
       share: z.total ? ownerStops / z.total : 0,
       // Everyone else who has run it, so "also seen" is a fact rather than an omission.
-      others: ranked.slice(1).map(([k, n]) => ({ key: k, label: z.labels.get(k) || k, stops: n })),
+      others: ranked.slice(1).map(([k, n]) => ({ key: k, label: labels.get(k) || k, stops: n })),
       contested: ranked.length > 1,
     });
   }
@@ -215,6 +241,7 @@ export function driverCore(stops = [], opts = {}) {
     if (!isDriver(key, roster)) continue;
     if (!byDriver.has(key)) byDriver.set(key, { key, label: driverLabelOf(s), total: 0, zips: new Map(), cities: new Map() });
     const d = byDriver.get(key);
+    d.label = betterLabel(d.label, driverLabelOf(s));
     d.total += 1;
     const zip = zipOf(s);
     d.zips.set(zip, (d.zips.get(zip) || 0) + 1);
@@ -315,7 +342,7 @@ export function activeDrivers(stops = [], opts = {}) {
     const key = driverKeyOf(s);
     if (!isDriver(key, roster)) continue;
     counts.set(key, (counts.get(key) || 0) + 1);
-    if (!labels.has(key)) labels.set(key, driverLabelOf(s));
+    labels.set(key, betterLabel(labels.get(key), driverLabelOf(s)));
     const d = String(s.boardDate || s.date || '');
     if (d && (!lastSeen.has(key) || d > lastSeen.get(key))) lastSeen.set(key, d);
   }
@@ -381,10 +408,29 @@ export function driverCircles(stops = [], opts = {}) {
   // test I had written: a 23km circle over Rasko and a 35km one over Chris, each swallowing four
   // other drivers' areas whole. They looked confident and said nothing.
   //
-  // 15km (~9 miles) is roughly a morning's drops in one direction. Past that a circle stops
-  // meaning "his patch" and starts meaning "somewhere in Gwinnett", which a trainee already
-  // knows and cannot act on.
-  const maxRadiusKm = opts.maxRadiusKm ?? 15;
+  // WHERE THE LINE ACTUALLY IS — MEASURED ON DAVIS'S OWN WORK, NOT GUESSED.
+  //
+  // The first number here was 15km, reasoned from "roughly a morning's drops in one direction"
+  // and tuned against an invented dozen-driver sample. Run against 14,270 real deliveries over
+  // twenty working days it threw out 27 of 59 drivers, including Richard Mawuenyega — ONE
+  // cluster holding 98% of his work. A man with 98% of his stops in one blob has a territory;
+  // calling that "no fixed area" is not caution, it is a wrong answer printed confidently.
+  //
+  // The real distribution of Davis cluster radii: p25 7.4km, p50 11.8km, p75 17.0km, p90 24km,
+  // max 42km. A cap at 15km cuts the distribution in half. At 30km five drivers get no circle —
+  // and 35km excludes exactly the same five, so this sits on a plateau rather than on a knife
+  // edge, which is the difference between a threshold and a fudge factor.
+  //
+  // Those five are the answer the shape of the data gives, and they are the ones Chad predicted
+  // before any of this was written ("a few drivers this probably won't work great for like rasko
+  // or chris"): Seymour Watts (42km — that is north Georgia, not a patch), RASKO SULJIC (eight
+  // clusters, biggest holding 48%), Anthony Kostner (51%), Christopher Garrett (44%) and Brandi
+  // Bradberry (6 deliveries). Scattered work is caught by COVERAGE, which is the honest test for
+  // it; size only has to catch the circle that has stopped meaning anything at all.
+  //
+  // The sheet also now prints each driver's own stops as dots underneath his ring, so a wide
+  // circle can no longer imply a precision the data does not have — the reader sees the spread.
+  const maxRadiusKm = opts.maxRadiusKm ?? 30;
   const roster = opts.roster || null;
   const active = opts.active || null;
 
@@ -396,7 +442,9 @@ export function driverCircles(stops = [], opts = {}) {
     if (!key || !isDriver(key, roster)) continue;
     if (active && !active.has(key)) continue;
     if (!byDriver.has(key)) byDriver.set(key, { key, label: driverLabelOf(s), pts: [] });
-    byDriver.get(key).pts.push({ lat, lng });
+    const d = byDriver.get(key);
+    d.label = betterLabel(d.label, driverLabelOf(s));
+    d.pts.push({ lat, lng });
   }
 
   const out = [];
@@ -473,6 +521,69 @@ export function driverCircles(stops = [], opts = {}) {
 // person? Chad answers once, the answer goes in the alias list, and the sheet stops guessing.
 //
 // Cheap bounded edit distance: anything past `max` is not a near-miss and is not worth counting.
+/**
+ * EVERY STOP THE DRIVER ACTUALLY MADE, as plain coordinates, keyed by driver.
+ *
+ * The circles are a SUMMARY and a summary can be wrong in a way the reader cannot see. Printed
+ * under its own circle, the driver's real stops say whether the circle is honest: a tight cloud
+ * inside the ring is a territory, a ring with half its dots outside is a fiction. It is also the
+ * only thing that can be drawn for the drivers who get NO circle — Chad named two of them before
+ * a line was written — because "no fixed area" plus a blank square teaches nothing, while the
+ * same square full of scattered dots teaches exactly the right lesson.
+ *
+ * Rounded to ~11m and de-duplicated: a customer delivered to thirty times is one dot, so the
+ * page does not carry thirty identical circles and the eye is not told that address is a region.
+ */
+export function driverPoints(stops = [], opts = {}) {
+  const roster = opts.roster || null;
+  const active = opts.active || null;
+  const byDriver = new Map();
+  for (const s of stops || []) {
+    const lat = Number(s?.lat), lng = Number(s?.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    const key = driverKeyOf(s);
+    if (!key || !isDriver(key, roster)) continue;
+    if (active && !active.has(key)) continue;
+    if (!byDriver.has(key)) byDriver.set(key, new Map());
+    const seen = byDriver.get(key);
+    const id = `${lat.toFixed(4)},${lng.toFixed(4)}`;
+    if (!seen.has(id)) seen.set(id, { lat: Number(lat.toFixed(4)), lng: Number(lng.toFixed(4)) });
+  }
+  const out = new Map();
+  for (const [key, seen] of byDriver) out.set(key, [...seen.values()]);
+  return out;
+}
+
+/**
+ * THE FRAME EVERY MAP ON THE SHEET SHARES — and sharing it is the whole point.
+ *
+ * Fit each driver's map to his own work and every driver's picture looks the same: one blob
+ * filling one square. The trainee cannot see that one man runs Buford and the next runs Athens,
+ * which is the ONLY thing a set of small maps is for. So the frame is computed once over
+ * everybody and reused, and a card is read by WHERE the ink is, not by its shape.
+ *
+ * Percentile bounds, not min/max: one delivery taken to Chattanooga as a favour must not zoom
+ * the whole booklet out until every real territory is a smudge. Points outside the frame are not
+ * drawn, and the caller says so rather than letting them silently vanish.
+ */
+export function mapFrame(points = [], opts = {}) {
+  const pad = opts.pad ?? 0.12;
+  const q = opts.percentile ?? 0.02;
+  const pts = (points || []).filter((p) => Number.isFinite(p?.lat) && Number.isFinite(p?.lng));
+  if (!pts.length) return null;
+  const at = (arr, f) => arr[Math.min(arr.length - 1, Math.max(0, Math.floor(f * (arr.length - 1))))];
+  const lats = pts.map((p) => p.lat).sort((a, b) => a - b);
+  const lngs = pts.map((p) => p.lng).sort((a, b) => a - b);
+  let y0 = at(lats, q) - pad, y1 = at(lats, 1 - q) + pad;
+  let x0 = at(lngs, q) - pad, x1 = at(lngs, 1 - q) + pad;
+  for (const m of opts.include || []) {
+    if (!Number.isFinite(m?.lat) || !Number.isFinite(m?.lng)) continue;
+    y0 = Math.min(y0, m.lat - pad); y1 = Math.max(y1, m.lat + pad);
+    x0 = Math.min(x0, m.lng - pad); x1 = Math.max(x1, m.lng + pad);
+  }
+  return { x0, x1, y0, y1 };
+}
+
 export function withinEdits(a, b, max = 2) {
   const s = String(a || ''), t = String(b || '');
   if (Math.abs(s.length - t.length) > max) return false;
@@ -502,6 +613,7 @@ export function possibleSameDriver(stops = [], opts = {}) {
     const k = driverKeyOf(s);
     if (!k) continue;
     if (!seen.has(k)) seen.set(k, { key: k, label: driverLabelOf(s), stops: 0, last: null });
+    seen.get(k).label = betterLabel(seen.get(k).label, driverLabelOf(s));
     const e = seen.get(k);
     e.stops += 1;
     const d = String(s.boardDate || s.date || '');

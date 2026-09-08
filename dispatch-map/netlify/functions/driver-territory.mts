@@ -78,7 +78,11 @@ export default async (req: Request): Promise<Response> => {
       try {
         const rows = await listStops(TENANT, date);
         if (!rows.length) missing.push(date);
-        for (const r of rows) stops.push({ ...r, boardDate: r.boardDate || date });
+        // THE COLLECTION KEY IS THE BOARD DAY. listStops reads history_days/{tenant}__{date},
+        // so `date` is what filed the row; a stored boardDate field that disagrees is stale, and
+        // trusting it put 21 rows from three days OUTSIDE the window into a window that then
+        // reported itself as 22 working days beginning a week before it started.
+        for (const r of rows) stops.push({ ...r, boardDate: date });
       } catch (e: any) { failed.push({ date, error: String(e?.message || e).slice(0, 160) }); }
     }
   }));
