@@ -136,6 +136,7 @@ export function emptyLegendInventory() {
     withIcons: 0,
     tints: {},                  // flag key / 'restricted' / 'plain' → count
     tractorDelivered: 0,
+    estes: 0,                   // stops drawing the Estes ring (black disc, yellow ring)
     iconCounts: {},             // restriction key → count of stops drawing it
     shapes: { single: 0, multi: 0, overflow: 0 },
     hiddenByPin: 0,             // stops whose icons a pin took over (DNS / route pin / muted)
@@ -146,7 +147,8 @@ export function emptyLegendInventory() {
  * Fold the stops the map is drawing into what the legend may show.
  *
  * Each entry is one stop AS THE MARKER LAYER SAW IT:
- *   { icons: string[], note: object|null, tractorDelivered: bool, hidden: bool }
+ *   { icons: string[], note: object|null, tractorDelivered: bool, hidden: bool,
+ *     dns?: bool, estes?: bool }
  * `icons` must already be the output of drawnRestrictionKeys — this function does not
  * re-derive them, precisely so it cannot derive them differently.
  */
@@ -158,8 +160,12 @@ export function buildLegendInventory(entries) {
     const tint = pinTintKind(e.note || null);
     inv.tints[tint] = (inv.tints[tint] || 0) + 1;
     if (e.tractorDelivered) inv.tractorDelivered += 1;
-    if (e.hidden) { inv.hiddenByPin += 1; continue; }
     const icons = Array.isArray(e.icons) ? e.icons.filter(Boolean) : [];
+    // The Estes ring rides every DISC a stop can draw — the plain pin, a numbered route pin,
+    // the muted ring — but not the do-not-send ✕ and not a restriction cluster, so the tally
+    // is the stops whose ring is actually on the map, the only ones a legend row may claim.
+    if (e.estes && !e.dns && (e.hidden || !icons.length)) inv.estes += 1;
+    if (e.hidden) { inv.hiddenByPin += 1; continue; }
     if (!icons.length) continue;
     inv.withIcons += 1;
     const shape = iconClusterShape(icons.length);
