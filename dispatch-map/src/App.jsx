@@ -117,7 +117,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.97.2';
+const APP_VERSION = '0.97.3';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -188,6 +188,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.97.3', 'THE UNPLANNED ESTES ORDERS WERE STILL PURPLE — NOW THEY ARE BLACK TOO. Chad, on a stop wearing the new yellow ring around the same pool purple as everything else: "any estes unplanned should have black center with yellow ring." HERE IS WHY HALF THE BOARD CHANGED AND HALF DID NOT, because it is a good lesson in reading a colour chain. Every stop\'s fill is picked by a chain of fallbacks, and the Estes black was put at the END of it — after the status colour. A SCHEDULED stop has no status colour of its own (it has always fallen through to the flag/default tint), so the black was reached and the pin turned black. An UNPLANNED stop carries its own purple, so the chain answered before it ever got to the carrier, and every order in the pool — which is most of what you look at when you are building routes, and the exact case this was asked for — kept the colour it always had. The ring was on it, so it looked like a half-finished job, and it was one. The black now sits AHEAD of the status colour for the two RESTING states, unplanned and scheduled: "nothing has happened to this order yet" is the tint the carrier identity should own. THE LIVE STATES KEEP THEIRS, deliberately: out for delivery blue, arrived amber, delivered green, exception orange. Those answer where an order IS right now, which is what the board is watched for all day, and the yellow ring already says whose order it is without spending that colour. Same for the marks a person or a detector set — a priority flag, a tractor or box-only paint, an amber address-looks-off warning, a selection, a search hit. AND THE TEST THAT SHOULD HAVE CAUGHT IT NOW EXISTS. The first cut was pinned by reading the source for the right words, and the words were all there — the bug was the ORDER they were in, which no amount of reading the text can see. The marker tests now BUILD real markers through the shipped code and read the colour back out of the SVG, one per status, so a fill that is wrong is a red test instead of a screenshot.'],
   ['0.97.2', 'ESTES ORDERS ARE BLACK WITH A YELLOW RING. Chad: "make estes icons black with a yellow ring around them." Every stop whose order number carries the ESTES prefix now draws that way on the Map and on Routing — the resting dot, the scheduled pin, a numbered pin inside an open route, the quiet already-planned ring — so an Estes residential run can be picked out of a 700-stop board at a glance. THE RING IS THE IDENTITY, and it rides every disc the stop can draw; the BLACK fills the disc only where the stop would otherwise wear a default tint. A colour that already says something keeps saying it inside the ring: a selection stays amber, a search hit orange, a numbered pin keeps its route colour on Routing, a priority flag its hue, a hand-set tractor or box-only mark its green or red, a delivered stop its green check. Two things are untouched on purpose: do-not-send stays the red ✕ (safety outranks identity), and a stop drawing restriction marks keeps them — the clock and the truck are the message there, and a ring around a clock would put back the circle you had taken away. The Legend gets a Carrier row with the real swatch and a count whenever any are on the map, and only then. The order number is the source of truth (ESTES-…, the same prefix the manifest intake writes), so nothing new has to be entered anywhere.'],
   ['0.97.1', 'PULLING A WHOLE ROUTE ONTO ANOTHER ONE NO LONGER HANGS ON THE OLD ROUTE\'S CANCEL. Chad, Sep 8: every order off TERRANCE onto ALLEN C, one to Un-Planned, Save — and nothing moved. "TERRANCE: Vehicle Type unavailable or disabled (code 903) | ALLEN C: stop 007172492 couldn\'t be added — NuVizz still holds it on TERRANCE … a route that isn\'t part of the Save." TERRANCE WAS in the Save. HERE IS WHAT HAPPENED. An emptied card is a route cancel, and NuVizz\'s own rule for that is "remove every delivery" through load/edit — a full-header edit that echoes the route back field for field, Vehicle Type included. TERRANCE\'s Vehicle Type is disabled in NuVizz\'s Vehicle Type Configuration, so NuVizz refused the whole edit (reason 903) and the route kept every order. The Save ran that cancel FIRST and only then tried to put the orders on ALLEN C — as plain adds, which NuVizz silently ignores for a stop still planned elsewhere. Five wasted calls, a message blaming the wrong thing, and a consolidation that had been made to depend on a cancel it never needed. THE FIX: the move no longer waits for the cancel. When a card in the Save is taking an emptied route\'s orders, they ride the SAME one-shot multi-route save the portal uses for any move — the emptied route\'s entry keeps only what nobody is taking, so it never drops to zero stops inside that save (not a shape the portal ever sends) — the result is verified on both routes, and only THEN is the drained route cancelled through the classic path. If NuVizz refuses that cancel it now costs exactly what it should: the orders are on their new route, the empty route lingers with whatever stayed on it (here LANDMARK), and the message says so and names the cause — a disabled Vehicle Type is called out with where to fix it. When every order is leaving, the last one anchors the source through the save and is added to its new route the moment the cancel frees it; if that cancel is refused, the card reports "3 of 4 landed" by name rather than pretending. TWO GUARDS came with it: a card whose orders come off an in-Save route that already failed is refused up front with THAT route\'s reason (no doomed adds, and never again "not part of the Save" about a route that was), and the same applies when a source fails after a card had already claimed its stops. A plain Cancel-route Save with nobody taking the orders is byte-for-byte what it was. NUVIZZ_RWB_DRAIN_SOURCE=off reverts to cancel-first. Nine tests pin the Sep 8 Save, the refused-cancel outcome, the everything-leaves anchor both ways, the executed-stop refusal, the failed-source refusal, the lever, and the regression.'],
   ['0.97.0', 'DISPATCH ALL — TWENTY CLICKS AS ONE, WITH EVERY GATE THE TWENTY HAD. Chad: “i want a dispatch all button that dispatches every route that hasn’t been dispatched in the routes menu.” Twenty Draft routes at 5am is twenty clicks and twenty chances to miss one, and a missed dispatch is a truck leaving with nothing on the driver’s phone. It is EXACTLY as picky as the twenty clicks it replaces — the same three gates the row button enforces, in one pure planner both read, so the count on the label and the list in the confirm cannot disagree — and it acts on the FILTERED list, so what the panel is showing is what it sends. IT ASKS FIRST, and not with a number: dispatch is the least reversible thing this app does, so the confirm names every load AND its driver, carries the production warning in Live mode, and puts the routes it will NOT send — no driver, no load id — in front of the dispatcher at the moment he is deciding rather than afterwards. The run is sequential, because twenty concurrent production writes buy seconds and risk a rate limit turning a clean run into a partial one; it fires the identical call the single button does; and it reports what happened rather than that it finished — “18 dispatched · 2 FAILED: CHE (write error), SUW 2” with the per-route detail in the console. Beta previews and sends nothing. 22 new tests, 3,591 green; mobile layout guard and smoke green.'],
@@ -3478,6 +3479,19 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   const estes = isEstesOrder(s?.stopNbr);
   const ring = estes ? ESTES_RING : null;
   const statusKind = classifyStopStatus(s);
+  // WHICH ESTES STOPS TAKE THE BLACK. Chad, on an unplanned Estes order still drawing the pool
+  // purple inside its new ring: "any estes unplanned should have black center with yellow ring."
+  // The first cut replaced only the tints that fall through to flagColor(), and UNPLANNED is not
+  // one of them — STATUS_META.UNPLANNED carries its own #6d28d9, so `meta.color ||` answered
+  // before the Estes black was ever reached. SCHEDULED's colour is null, which is exactly why
+  // the scheduled pins went black and the unplanned pool did not: the rule looked right and
+  // covered half the board.
+  //
+  // Both of those are the RESTING tints — "nothing has happened to this order yet" — and that is
+  // the colour the carrier identity should own. The LIVE EXECUTION states keep theirs: out for
+  // delivery, arrived, delivered and exception are what the board is watched for all day, and the
+  // ring already says whose order it is without spending the one colour that says where it is.
+  const estesFill = estes && (statusKind === 'UNPLANNED' || statusKind === 'SCHEDULED') ? ESTES_FILL : null;
   const addrOff = addressLooksOff(s, note);
   // Signature of EVERY input that changes the rendered icon (restrictions already folds in
   // selectedDayKey plus the AM/PM + tractor filters applied above). This MUST track the
@@ -3516,7 +3530,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // already settled once the stop is planned). DNS, an active selection, a search hit
     // and an open route all still win, so nothing safety- or task-critical is muted.
     result = {
-      url: circleMarkerSvg(estes ? ESTES_FILL : PLANNED_MUTED_COLOR, { hollow: true, count, ring }),
+      url: circleMarkerSvg(estesFill || PLANNED_MUTED_COLOR, { hollow: true, count, ring }),
       scaledSize: new google.maps.Size(14, 14),
       anchor: new google.maps.Point(7, 7),
     };
@@ -3530,7 +3544,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // Numbered route pin (delivery sequence). Colored by route when a routeColor is
     // given (Routing), else by status (Map): green=delivered / blue=scheduled.
     const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
-    const color = routeColor || ((tractorDelivered && !noTractorOverride) ? TRACTOR_DELIVERED_COLOR : (meta.color || (estes ? ESTES_FILL : flagColor(note))));
+    const color = routeColor || ((tractorDelivered && !noTractorOverride) ? TRACTOR_DELIVERED_COLOR : (estesFill || meta.color || flagColor(note)));
     result = { url: circleMarkerSvg(color, { label: String(seq), count, ring }), scaledSize: new google.maps.Size(30, 30), anchor: new google.maps.Point(15, 15) };
   } else if (restrictions.length === 0) {
     // State A — status drives the pin; matched stops pop orange; a priority flag,
@@ -3554,7 +3568,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       : tractorDelivered ? TRACTOR_DELIVERED_COLOR
       : eligColor
       || flagHue
-      || (addressOff ? ADDRESS_OFF_TINT : (meta.color || (estes ? ESTES_FILL : flagColor(note))));
+      || (addressOff ? ADDRESS_OFF_TINT : (estesFill || meta.color || flagColor(note)));
     let glyph = meta.glyph;
     if (!hi) {
       if (note?.priority_flag === 'question' && !glyph) glyph = 'question';
