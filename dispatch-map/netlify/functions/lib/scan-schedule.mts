@@ -42,6 +42,7 @@ export interface ScanConfig {
   routingWindowEnd?: number;   // ET hour it closes, wraps midnight (default 7)
   weekendBlackoutStart?: number; // Fri ET hour scans stop (default 22)
   weekendBlackoutEnd?: number;   // Sun ET hour scans resume (default 20)
+  saturdayHealHour?: number;     // ET hour of the single Saturday heal scan (0 = off)
   // Deep sweep (the daily full-floor reconciliation) + spend cap + master switch.
   deepSweepHours?: number;     // min hours between deep sweeps (default 8)
   deepSweepHour?: number;      // earliest ET hour a deep sweep may run (default 13)
@@ -66,6 +67,7 @@ export const SCAN_CONFIG_BOUNDS: Record<string, [number, number]> = {
   routingWindowEnd: [0, 23],
   weekendBlackoutStart: [0, 23],
   weekendBlackoutEnd: [0, 23],
+  saturdayHealHour: [0, 23],
   deepSweepHours: [1, 168],
   deepSweepHour: [0, 23],
   // Upper bound is the HARD cap (nuvizz-request HARD_DAILY_CEILING). The Diagnostics editor
@@ -85,6 +87,7 @@ export function scanConfigDefaults(env: Record<string, any> = process.env): Requ
     routingWindowEnd: Number(env.NUVIZZ_ROUTING_WINDOW_END_ET) || 7,
     weekendBlackoutStart: Number(env.NUVIZZ_WEEKEND_BLACKOUT_START_ET) || 23,
     weekendBlackoutEnd: Number(env.NUVIZZ_WEEKEND_BLACKOUT_END_ET) || 19,
+    saturdayHealHour: SATURDAY_HEAL_HOUR,
     deepSweepHours: Number(env.NUVIZZ_DEEP_SWEEP_HOURS) || 8,
     deepSweepHour: Number(env.NUVIZZ_DEEP_SWEEP_HOUR) || 13,
     // Clamped to the hard cap: an env var cannot raise the ceiling, only lower it.
@@ -162,6 +165,34 @@ export interface ScanDecision {
 // dispatcher who explicitly scans on a weekend wants it).
 export const WEEKEND_BLACKOUT_START_HOUR = Number(process.env.NUVIZZ_WEEKEND_BLACKOUT_START_ET) || 23; // Fri from this ET hour
 export const WEEKEND_BLACKOUT_END_HOUR = Number(process.env.NUVIZZ_WEEKEND_BLACKOUT_END_ET) || 19;     // Sun until this ET hour
+// THE SATURDAY HEAL (v0.95.2). Chad, on leaving the Friday schedule alone: "we could also
+// schedule one scan at 7 am saturday to heal anything."
+//
+// ONE SCAN, and the word one is the whole design. Two weekend carve-outs shipped before this
+// (v0.93.4 roster, v0.93.6 planned) and both were reverted, because "let this rule run at the
+// weekend" replayed on a 5-minute cron turned a Saturday from 0 vendor calls into 65 — twelve
+// board rebuilds and forty-one roster pulls before anybody pressed anything. So this is not a
+// rule that may run on Saturday; it is a single window (07:00-07:59 ET) that opens only when
+// nothing has scanned for SAT_HEAL_MIN_GAP_MIN — which after a Friday evening is true exactly
+// once. The scan it lets through resets the stamp, every later tick in the hour sees a small
+// elapsed and skips, and a fire that FAILED leaves the gap open so the next tick retries.
+//
+// What it buys, in freight terms: Friday evening's late deliveries and any Saturday movement
+// are seen while the reach still covers them, their frozen copies are healed, and Monday's
+// board opens with them already closed instead of showing work that was done on Friday night.
+// Cost is one planned + one completed pull (plus the roster if its own hourly rule is due).
+// Set NUVIZZ_SATURDAY_HEAL_ET=0 to turn it off.
+export const SATURDAY_HEAL_HOUR = Number.isFinite(Number(process.env.NUVIZZ_SATURDAY_HEAL_ET))
+  && String(process.env.NUVIZZ_SATURDAY_HEAL_ET ?? '').trim() !== ''
+  ? Number(process.env.NUVIZZ_SATURDAY_HEAL_ET) : 7;
+export const SAT_HEAL_MIN_GAP_MIN = Math.max(60, Number(process.env.NUVIZZ_SATURDAY_HEAL_GAP_MIN) || 240);
+/** PURE: is this tick the Saturday heal window — Saturday, the heal hour, and nothing has
+ *  scanned for hours? Off entirely when the hour is 0/unset. */
+export function isSaturdayHeal(weekday: number, etHour: number, elapsedMin: number, cfg: ScanConfig = {}): boolean {
+  const hour = cfg.saturdayHealHour ?? SATURDAY_HEAL_HOUR;
+  if (!hour || hour < 1 || hour > 23) return false;
+  return weekday === 6 && etHour === hour && elapsedMin >= SAT_HEAL_MIN_GAP_MIN;
+}
 // weekday: 0=Sun … 5=Fri … 6=Sat.
 export function isWeekendBlackout(weekday: number, etHour: number, cfg: ScanConfig = {}): boolean {
   const start = cfg.weekendBlackoutStart ?? WEEKEND_BLACKOUT_START_HOUR;
@@ -251,6 +282,13 @@ export function scanDecision(
   };
   const base = { ...feeds, etHour: hour, etMin: minute, weekday, intervalMin, elapsedMin };
 
+  // The one Saturday exception, before the blackout that would otherwise swallow it.
+  if (isSaturdayHeal(weekday, hour, elapsedMin, cfg)) {
+    return {
+      act: true, ...base, skip: 'none',
+      reason: `saturday heal h=${hour} elapsed=${Math.round(elapsedMin)}>=${SAT_HEAL_MIN_GAP_MIN}`,
+    };
+  }
   // Weekend blackout — no work Fri 22:00 ET → Sun 20:00 ET, so no scheduled scans.
   if (isWeekendBlackout(weekday, hour, cfg)) {
     return { act: false, ...base, skip: 'weekend', reason: `weekend blackout wd=${weekday} h=${hour}` };
