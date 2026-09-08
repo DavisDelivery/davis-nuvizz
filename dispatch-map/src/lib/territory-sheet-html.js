@@ -12,7 +12,7 @@
 // PURE: no Firestore, no network, no filesystem, no clock of its own. `input.generatedAt` is
 // passed in rather than read, so the same data renders the same page every time.
 import { zipOwnership, driverCore, territoryCoverage, activeDrivers, driverCircles, driverRewrites, rosterOf } from './driver-territory.js';
-import COUNTIES from './ga-north-counties.json' with { type: 'json' };
+import COUNTIES from './ga-north-counties.js';
 
 // Orientation labels. A printed map of anonymous county outlines is a puzzle; a dozen familiar
 // names turn it into a map of somewhere. These are the towns' own coordinates, not derived data.
