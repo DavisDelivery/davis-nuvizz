@@ -10,7 +10,7 @@
 
 import { getNuvizzRequester, setCallTrigger } from './lib/nuvizz-request.mts';
 import { getCreds, basicAuthHeader } from './lib/nuvizz-scan.mts';
-import { buildBody, normalize, cleanPeriod, coveringWindowForRange, rowInRange, LIST_MAX_RESULT, OPENAPI_BASE, SAVED_SEARCHES, fetchSavedSearchRaw, fetchSavedSearchRows, toBoardStop, boardDayFor } from './lib/nuvizz-list.mts';
+import { buildBody, normalize, cleanPeriod, coveringWindowForRange, rowInRange, LIST_MAX_RESULT, OPENAPI_BASE, SAVED_SEARCHES, fetchSavedSearchRaw, fetchSavedSearchRows, fetchSavedSearchPull, toBoardStop, boardDayFor } from './lib/nuvizz-list.mts';
 import { isFirestoreEnabled, readStops, etDayString, readActivePool, readActiveUnplannedSet, readCarryoverRetired } from './lib/firestore.mts';
 import { mergeWindowWithPool, pruneWithSnapshot, poolUsable } from './lib/active-pool.mts';
 import { requireUser } from './lib/require-user.mts';
@@ -42,6 +42,64 @@ export default async (req: Request): Promise<Response> => {
       return new Response(JSON.stringify({ ok: true, savedSearch: body.savedSearch, customListDefId: def.customListDefId, cols, rows }), { status: 200, headers: cors });
     } catch (e: any) {
       return new Response(JSON.stringify({ ok: false, error: e?.message || 'raw saved-search failed' }), { status: 500, headers: cors });
+    }
+  }
+
+  // DIAGNOSTIC (read-only): { savedSearch:'completed', probePeriods:true, arrivalPeriod?, updatedPeriod? }
+  // asks the saved search the SAME question with a different filter period, and reports what came
+  // back grouped by the day NuVizz last touched each row.
+  //
+  // WHY THIS EXISTS (v0.95.2). The completed search is clamped to "Stop Detail Updated = today"
+  // (0d), which is why a Friday-evening delivery is invisible until Monday. Widening that axis is
+  // the obvious fix and it is NOT safe to guess at: an unhonoured period on this field returns
+  // either everything (blowing the row cap and the call budget) or nothing (no completions at
+  // all, silently, which is a board that stops recording deliveries). Earlier in this repo's
+  // history a period grammar WAS guessed at and six calls came back empty. So the grammar gets
+  // TESTED — one filterdata call, read-only, nothing written — and the answer is in the response:
+  //   · honoured  → rows spread across the requested days, `updatedDays` showing each date
+  //   · ignored   → far more rows than a day's work, `updatedDays` spanning months
+  //   · rejected  → zero rows
+  // Chad approved exactly one call for this question.
+  if (body.probePeriods && (body.savedSearch === 'active' || body.savedSearch === 'completed')) {
+    try {
+      const base = SAVED_SEARCHES[body.savedSearch as 'active' | 'completed'];
+      const ARRIVAL_SEQ = 10;
+      const UPDATED_SEQ = body.savedSearch === 'completed' ? 11 : null;   // active seq 11 is not a date field
+      const wanted: Record<number, string> = {};
+      if (body.arrivalPeriod) wanted[ARRIVAL_SEQ] = cleanPeriod(body.arrivalPeriod);
+      if (body.updatedPeriod && UPDATED_SEQ) wanted[UPDATED_SEQ] = cleanPeriod(body.updatedPeriod);
+      if (!Object.keys(wanted).length) {
+        return new Response(JSON.stringify({ ok: false, error: 'probePeriods needs arrivalPeriod and/or updatedPeriod' }), { status: 400, headers: cors });
+      }
+      const def = {
+        customListDefId: base.customListDefId,
+        filterList: base.filterList.map((f: any) => (wanted[f.sequence] != null
+          ? { ...f, value: JSON.stringify({ period: wanted[f.sequence] }) } : f)),
+      };
+      const { rows, truncated } = await fetchSavedSearchPull(def);
+      const stops = rows.map(toBoardStop);
+      const updatedDays: Record<string, number> = {};
+      const arrivalDays: Record<string, number> = {};
+      const statusCounts: Record<string, number> = {};
+      for (const s of stops) {
+        const u = String(s.listUpdatedDTTM || '').slice(0, 10) || '(none)';
+        updatedDays[u] = (updatedDays[u] || 0) + 1;
+        const a = boardDayFor(s) || '(no board day)';
+        arrivalDays[a] = (arrivalDays[a] || 0) + 1;
+        const st = String(s.status ?? '?');
+        statusCounts[st] = (statusCounts[st] || 0) + 1;
+      }
+      const sortDesc = (m: Record<string, number>) => Object.fromEntries(Object.entries(m).sort((a, b) => b[0].localeCompare(a[0])));
+      return new Response(JSON.stringify({
+        ok: true, savedSearch: body.savedSearch, customListDefId: def.customListDefId,
+        askedFor: wanted, total: stops.length, truncated,
+        updatedDays: sortDesc(updatedDays), arrivalDays: sortDesc(arrivalDays), statusCounts,
+        verdict: stops.length === 0 ? 'zero rows — the period was rejected or matched nothing'
+          : Object.keys(updatedDays).length === 1 ? 'one updated-day only — the period was probably NOT honoured (or only today matched)'
+            : 'multiple updated-days — the period was honoured',
+      }), { status: 200, headers: cors });
+    } catch (e: any) {
+      return new Response(JSON.stringify({ ok: false, error: e?.message || 'period probe failed' }), { status: 500, headers: cors });
     }
   }
 

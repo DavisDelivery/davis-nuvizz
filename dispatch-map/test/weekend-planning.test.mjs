@@ -38,12 +38,17 @@ test('THE CARVE-OUT FUNCTIONS ARE GONE, not merely unused', () => {
   assert.equal(plan.plannedMayRunOnBlackout, undefined, 'plannedMayRunOnBlackout must not exist');
 });
 
-test('NO RULE OF ANY KIND COVERS A SATURDAY HOUR — the schedule is silent all day', () => {
+test('ONE SATURDAY HOUR IS SCHEDULED AND NO OTHER — the 7am heal, planned + completed, never the roster', () => {
+  // Chad asked for this one himself (v0.95.2): "we could also schedule one scan at 7 am
+  // saturday to heal anything." It is deliberately the narrowest possible shape — a single
+  // hour, two saved searches, no roster — because the thing this file exists to prevent is a
+  // weekend rule that quietly widens. Everything below still holds.
   const rules = defaultScanRules();
   for (let hour = 0; hour < 24; hour++) {
     for (const kind of ['planned', 'completed', 'roster']) {
-      assert.equal(resolveInterval(kind, SAT, hour, rules), null,
-        `${kind} is scheduled at Sat ${hour}:00 — Saturday must be silent`);
+      const heal = hour === 7 && kind !== 'roster';
+      assert.equal(resolveInterval(kind, SAT, hour, rules), heal ? 240 : null,
+        `${kind} at Sat ${hour}:00 — only the 7am heal may be scheduled`);
     }
   }
 });
@@ -56,22 +61,33 @@ test('and the blackout would refuse them even if a rule appeared', () => {
   }
 });
 
-test('A WHOLE SATURDAY ON THE 5-MINUTE CRON SPENDS NOTHING — the number he asked for', () => {
-  // The replay that produced the 65. Driving the real scanDecision/dueKinds/scanPath over all
-  // 288 fires of the day, nothing may act. This is the test that fails if anyone reintroduces
-  // a weekend fire under a new name.
+test('A WHOLE SATURDAY ON THE 5-MINUTE CRON IS EXACTLY ONE SCAN — the number he asked for', () => {
+  // The replay that produced the 65. All 288 fires of the day, driven through the real
+  // scanDecision/dueKinds/scanPath, with the scan stamps ADVANCING when a fire acts — which is
+  // what makes this a replay rather than a fixed-clock fiction, and what proves the heal cannot
+  // fire twelve times inside its own hour. This is the test that fails if anyone reintroduces a
+  // weekend fire under a new name, or widens this one.
   const rules = defaultScanRules();
-  const stamps = { planned: '2026-09-04T12:00:00Z', completed: '2026-09-04T12:00:00Z', roster: '2026-09-04T12:00:00Z' };
-  let acted = 0;
+  let stamps = { planned: '2026-09-04T12:00:00Z', completed: '2026-09-04T12:00:00Z', roster: '2026-09-04T12:00:00Z' };
+  let lastScan = stamps.planned;
+  const fires = [];
   for (let t = Date.parse('2026-09-05T04:00:00Z'); t < Date.parse('2026-09-06T04:00:00Z'); t += 5 * 60000) {
     const at = new Date(t);
-    let d = scanDecision(at, false, stamps.planned, {});
+    let d = scanDecision(at, false, lastScan, {});
     const due = dueKinds(d.weekday, d.etHour, rules, stamps, t);
     d = overrideCadenceSkip(d, due.planned.due, due.completed.due, due.roster.due);
-    if (d.act) acted++;
-    if (scanPath(d.act, { plannedDue: due.planned.due, completedDue: due.completed.due, rosterDue: due.roster.due }) !== 'skip') acted++;
+    const path = scanPath(d.act, { plannedDue: due.planned.due, completedDue: due.completed.due, rosterDue: due.roster.due });
+    if (d.act && path !== 'skip') {
+      fires.push({ etHour: d.etHour, path, roster: due.roster.due });
+      const iso = at.toISOString();
+      stamps = { planned: iso, completed: iso, roster: stamps.roster };
+      lastScan = iso;
+    }
   }
-  assert.equal(acted, 0, `${acted} Saturday fires acted — the schedule must be silent`);
+  assert.equal(fires.length, 1, `${fires.length} Saturday fires acted — exactly one heal, and no more`);
+  assert.equal(fires[0].etHour, 7, 'and it is the 7am heal');
+  assert.equal(fires[0].path, 'full', 'which pulls both saved searches, or it heals nothing');
+  assert.equal(fires[0].roster, false, 'the roster stays out of the weekend');
 });
 
 test('a MANUAL press is the one thing that still reaches the vendor on a Saturday', () => {
