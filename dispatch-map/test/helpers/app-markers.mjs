@@ -62,6 +62,21 @@ export async function loadMarkerPipeline() {
   return cached;
 }
 
+/** The plain-disc builders — what the status pins, the numbered route pins and the unplanned
+ * dots are drawn with (no restriction glyphs). Self-contained, so they load without the icon
+ * set; the Estes ring tests build real discs through these and read the SVG back. */
+const DISC_NEEDED = ['readableTextColor', 'countBadgeSvg', 'unplannedDotSvg', 'circleMarkerSvg'];
+let cachedDisc = null;
+export async function loadDiscPipeline() {
+  if (cachedDisc) return cachedDisc;
+  const lines = readFileSync(APP_PATH, 'utf8').split('\n');
+  const body = DISC_NEEDED.map((n) => declarationSource(lines, n)).join('\n\n');
+  // eslint-disable-next-line no-new-func
+  const build = new Function(`${body}\nreturn { ${DISC_NEEDED.join(', ')} };`);
+  cachedDisc = build();
+  return cachedDisc;
+}
+
 /** The decoded SVG source of a marker, as the browser would parse it out of the data URI. */
 export function markerSvg(spec) {
   if (!spec || !spec.url) throw new Error('app-markers: no marker spec to decode');

@@ -68,6 +68,7 @@ import {
   legendIsEmpty, pinTintKind, visibleIconKeys, tractorPaintAllowed,
   restrictionConfidence, TRAILER_BLOCKER_KEYS, tractorFriendlySelection,
 } from './lib/map-legend.js';
+import { isEstesOrder, ESTES_FILL, ESTES_RING } from './lib/carrier-mark.js';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
 import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerChipLabel, latestPeerSaveAt, PRESENCE_HEARTBEAT_MS } from './lib/presence.js';
@@ -116,7 +117,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.97.1';
+const APP_VERSION = '0.97.3';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -187,7 +188,10 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.97.3', 'TWO FACTS THE BOARD KNEW AND NEVER SAID: A BARRED DRIVER SENT BACK, AND A DAVIS-TYPED NO-TRACTOR-TRAILER ON A TRACTOR. Chad: “in the flags i want it to show up if we have put a stop on a tractor that a dispatcher has marked no tractor trailer as well as if we send a driver to a stop that they are marked do not send and we have sent a driver to it.” NEITHER IS A PREDICTION, and that is what makes them worth a red. Every clock rule on this panel is an estimate the rest of the day can still make false; these are two RECORDED FACTS in contradiction, knowable the moment the load is built — which is while it is still free to fix. DO NOT SEND IS ABOUT PEOPLE, NOT FREIGHT, and the note’s own shape says so: the switch turns it on and dns_drivers is a list a dispatcher builds by tapping names under “Drivers not allowed”. A blank list bars everybody; a filled one bars exactly those names. So a barred driver on the load is RED and the row names him, the route and the stop number; a general do-not-send planned with nobody on it yet is AMBER, because it goes red the moment somebody is assigned and saying so at 8pm beats saying it at 6am; and a NAMED-driver do-not-send with no driver yet says nothing at all, because most drivers are fine there and a row on every one of them is the wallpaper this panel exists to avoid. Name matching is loose on whitespace and case — NuVizz writes “Brent  Bryd” where the roster writes “Brent Bryd”, a gap that has already cost this repo a whole rule — and strict on everything else, so barring “Brent” can never fire on “Brenda”. Pickups count, unlike the hours rules: who turns up is not about which direction the pallets go. It needs no roster, no truck class and no travel model, so unlike the trailer rule it can never be silently “not checked”. THE TRAILER CONFLICT NOW SEES THE ADDRESS-LINE MARK. v0.96.0 settled that a Davis-typed Address 2 “NO TRACTOR TRL” is dispatch saying no — that is what turned the pin solid — but the board flag was still reading the stricter “did somebody tick the list” test, so the very stops that pin had just started drawing correctly still raised nothing when they landed on a tractor. It reads the map’s confidence now. THE 9PM TEXT DELIBERATELY DID NOT WIDEN WITH IT: Chad scoped that by hand in v0.82.0 to “just the dispatcher hardcoded ones”, and who gets woken at 9pm is his call rather than a side effect of a board rule — so the row records WHICH kind it is and the SMS selector takes only the hand-ticked ones. A row written before that field existed carries undefined, which is not false, so the nights already on file still text. 30 new tests, 3,621 green.'],
+  ['0.97.2', 'ESTES ORDERS ARE BLACK WITH A YELLOW RING. Chad: "make estes icons black with a yellow ring around them." Every stop whose order number carries the ESTES prefix now draws that way on the Map and on Routing — the resting dot, the scheduled pin, a numbered pin inside an open route, the quiet already-planned ring — so an Estes residential run can be picked out of a 700-stop board at a glance. THE RING IS THE IDENTITY, and it rides every disc the stop can draw; the BLACK fills the disc only where the stop would otherwise wear a default tint. A colour that already says something keeps saying it inside the ring: a selection stays amber, a search hit orange, a numbered pin keeps its route colour on Routing, a priority flag its hue, a hand-set tractor or box-only mark its green or red, a delivered stop its green check. Two things are untouched on purpose: do-not-send stays the red ✕ (safety outranks identity), and a stop drawing restriction marks keeps them — the clock and the truck are the message there, and a ring around a clock would put back the circle you had taken away. The Legend gets a Carrier row with the real swatch and a count whenever any are on the map, and only then. The order number is the source of truth (ESTES-…, the same prefix the manifest intake writes), so nothing new has to be entered anywhere.'],
   ['0.97.1', 'THE MAP LEGEND IS NOW UNDER MORE AS WELL AS ON THE RAIL. Chad: “On the routing page under the more tab i want a legend for what all the icons on the map mean and i want it to only show the current icons on the map.” The legend and that exact filtering already existed — the ⓘ at the bottom of the Routing tool rail, built from the same drawnStops the map draws, silent about every mark that is not on screen — so this is a second way in, not a second legend. IT IS AN ACTION ITEM, NOT A TAB, and that is the whole design: More normally switches screens, and navigating to a legend would unmount the Routing screen and with it the drawn-stops list that makes the legend say only what is currently drawn. So the menu signals rather than navigates, and the panel it opens is the SAME one the ⓘ opens — the open flag moved up to the screen so two entry points cannot end up showing two inventories. The signal is a COUNTER rather than a boolean, because a boolean goes true once and a second trip through the menu after closing the panel would then do nothing, which reads exactly like a broken menu. IT IS IN BOTH MENUS. The desktop nav row and the phone chip menu are built separately, and v0.54.50 shipped Manifest check visible on a laptop and invisible on a phone for precisely that reason; the phone list even carries the comment saying so. It shows on Routing only — an item that did nothing from the Quote screen would be worse than no item — and while a saved load is being viewed the rail is hidden, so the signal says “close the saved-load view to open the map legend” rather than silently doing nothing. AND IT IS GUARDED IN A BROWSER, because its first build broke TWICE in ways no unit test could see: the open signal was handed to <RoutingScreen> from a component that never had it — RoutingSection sits between the Shell and the screen — so the page threw “legendSignal is not defined” and the whole nav row vanished; and the phone’s nav turned out to be the VERSION CHIP, not the first header button, which on Routing is the screen’s own settings gear riding the app-bar portal slot. verify-legend-menu drives the real bundle on BOTH views, opens the menu, picks the item, and checks the legend panel appeared AND that the map is still on screen — a legend that navigated away from the map it describes is not a legend. 6 new tests plus that guard, on both layouts in CI.'],
+  ['0.97.1', 'PULLING A WHOLE ROUTE ONTO ANOTHER ONE NO LONGER HANGS ON THE OLD ROUTE\'S CANCEL. Chad, Sep 8: every order off TERRANCE onto ALLEN C, one to Un-Planned, Save — and nothing moved. "TERRANCE: Vehicle Type unavailable or disabled (code 903) | ALLEN C: stop 007172492 couldn\'t be added — NuVizz still holds it on TERRANCE … a route that isn\'t part of the Save." TERRANCE WAS in the Save. HERE IS WHAT HAPPENED. An emptied card is a route cancel, and NuVizz\'s own rule for that is "remove every delivery" through load/edit — a full-header edit that echoes the route back field for field, Vehicle Type included. TERRANCE\'s Vehicle Type is disabled in NuVizz\'s Vehicle Type Configuration, so NuVizz refused the whole edit (reason 903) and the route kept every order. The Save ran that cancel FIRST and only then tried to put the orders on ALLEN C — as plain adds, which NuVizz silently ignores for a stop still planned elsewhere. Five wasted calls, a message blaming the wrong thing, and a consolidation that had been made to depend on a cancel it never needed. THE FIX: the move no longer waits for the cancel. When a card in the Save is taking an emptied route\'s orders, they ride the SAME one-shot multi-route save the portal uses for any move — the emptied route\'s entry keeps only what nobody is taking, so it never drops to zero stops inside that save (not a shape the portal ever sends) — the result is verified on both routes, and only THEN is the drained route cancelled through the classic path. If NuVizz refuses that cancel it now costs exactly what it should: the orders are on their new route, the empty route lingers with whatever stayed on it (here LANDMARK), and the message says so and names the cause — a disabled Vehicle Type is called out with where to fix it. When every order is leaving, the last one anchors the source through the save and is added to its new route the moment the cancel frees it; if that cancel is refused, the card reports "3 of 4 landed" by name rather than pretending. TWO GUARDS came with it: a card whose orders come off an in-Save route that already failed is refused up front with THAT route\'s reason (no doomed adds, and never again "not part of the Save" about a route that was), and the same applies when a source fails after a card had already claimed its stops. A plain Cancel-route Save with nobody taking the orders is byte-for-byte what it was. NUVIZZ_RWB_DRAIN_SOURCE=off reverts to cancel-first. Nine tests pin the Sep 8 Save, the refused-cancel outcome, the everything-leaves anchor both ways, the executed-stop refusal, the failed-source refusal, the lever, and the regression.'],
   ['0.97.0', 'DISPATCH ALL — TWENTY CLICKS AS ONE, WITH EVERY GATE THE TWENTY HAD. Chad: “i want a dispatch all button that dispatches every route that hasn’t been dispatched in the routes menu.” Twenty Draft routes at 5am is twenty clicks and twenty chances to miss one, and a missed dispatch is a truck leaving with nothing on the driver’s phone. It is EXACTLY as picky as the twenty clicks it replaces — the same three gates the row button enforces, in one pure planner both read, so the count on the label and the list in the confirm cannot disagree — and it acts on the FILTERED list, so what the panel is showing is what it sends. IT ASKS FIRST, and not with a number: dispatch is the least reversible thing this app does, so the confirm names every load AND its driver, carries the production warning in Live mode, and puts the routes it will NOT send — no driver, no load id — in front of the dispatcher at the moment he is deciding rather than afterwards. The run is sequential, because twenty concurrent production writes buy seconds and risk a rate limit turning a clean run into a partial one; it fires the identical call the single button does; and it reports what happened rather than that it finished — “18 dispatched · 2 FAILED: CHE (write error), SUW 2” with the per-route detail in the console. Beta previews and sends nothing. 22 new tests, 3,591 green; mobile layout guard and smoke green.'],
   ['0.96.0', 'THE COMPARE ROW NOW WEARS THE DOCK’S CLOCK, AND THE BOTTOM GRID STOPS OFFERING FREIGHT THAT IS ALREADY ON A CARD. Chad, on a Compare card: “i think there is enough space there to fit our clock icons if one applies to a given stop” — and, on the grid below it: “Paragon should still be highlighted a different colour on bottom panel now that it’s applied to this route or say the driver’s name, looks like it’s still available.” THE CLOCK. Every stop row on a Compare card now carries the SAME mark the map pin wears — classifyTimeMark’s four keys, the same glyph, and the same silence for a dock open an ordinary working day, because one rule with two renderers is the only version of this that cannot drift. It prints the BINDING TIME beside the glyph (“closes 2:00p”, “opens 9:00a”) rather than the icon alone: this repo has already found four values reachable only through a title= tooltip, which a touch device never shows, and a clock face with no clock on it would be the fifth. It rides the city/skids line, which carries no controls on either view, so nothing lands on anything else; expanding a stop hides that line, so the window restates itself in the detail. AND IT IS NOT THE PREFLIGHT BADGE, deliberately: the badge is loud and fires when the walked clock says this stop MISSES — a reaction, after the sequence is already wrong — while the clock is quiet and states the constraint BEFORE any order is chosen, which is what stops a 2:00p dock being put eleventh in the first place. THE GRID. A stop staged onto an open card existed on the map (numbered pin, card colour) and nowhere in the bottom grid, whose Load column reads NuVizz — and a Draft load holding no saved orders has nothing there to read. So PARAGON sat at position 1 on GARY PITTS and listed exactly like an order nobody had touched, which is a double-planning waiting to happen. The row is now tinted in its card’s own colour, the name cell carries a [● n] chip with the stop’s position, and the Load column names the card and marks it “staged” — the word matters, since these orders live only in this browser until Save writes them. A stop already planned onto one load and staged onto another shows BOTH, because that disagreement is the thing worth seeing before Save. Selection tint still wins: selection is what the router is doing now, staging is what he did a minute ago. WHERE THE CLOCK ENDED UP, AND WHY IT MOVED — found by rendering it at true size rather than by reading it. The first build put the chip on the city line, which is where the free space visibly is; on a 320px Compare card that cut “CARTERSVILLE · 6 sk · 8 loose” down to “CARTERSVILLE · 6 …”, trading away the per-stop skid and loose counts Chad asked for in v0.54.4 to buy space the row did not have to sell. It sits on the marks line under the name instead — the line the preflight badge moved to in v0.89.0 for the same class of reason — so the name, the freight and the constraint all survive, and the two chips wrap rather than overflow when a stop carries both. AND THEY DO NOT SAY THE SAME THING TWICE: a hopeless verdict already prints the close it cannot make, so an identical “closes 11:00a” beside “can’t make 11:00a” is suppressed — only when the two name the same minute, since “30m late” beside “closes 2:00p” answers “late against what?” and stays. 22 new tests, 3,545 green; mobile and desktop layout guards and the route-preflight guard re-run on both views. AND FOUR THINGS FROM THE SAME SITTING. (1) A DAVIS-TYPED “NO TRACTOR TRL” NOW DRAWS AS CONFIRMED. Chad, on a half-and-half pin: “Why is this half green when if its manually marked by no tractor trailer by dispatch should override.” He was right and the cause was one line: restrictionConfidence asked only “did a scanner touch this?”, never WHICH source — and the scanner is source-locked to exactly two, which customer-notes-writer labels itself: addressLine2 → no_tractor_trailer (Davis-curated, TRUSTED) and orderInstructions → uline_straight_truck (Uline-supplied, advisory). Address 2 is a field Davis types into NuVizz, so that mark was put there by a person here; Uline was already advisory a line earlier, which means the ONLY flag that branch ever changed was the trusted one, and it drew it as “nobody has checked this” — a green that could never match the lime a proven tractor stop wears. It reads the source now: a trusted source confirms, an un-migrated orderInstructions-only doc stays advisory, no trail at all still means a person put it there. Such a stop also now vetoes the lime, which is the point — proven history must never read as permission where somebody said no. THE 9PM TEXT DELIBERATELY DID NOT MOVE WITH IT: Chad scoped that in v0.82.0 to “just the dispatcher hardcoded ones”, and an address-line mark is Davis-typed but scanner-detected, so widening who gets woken is his call and not a side effect of an icon fix. The two questions are now two functions with their names on them, and four tests pin that the icon moved and the alert did not. (2) THE SELECTED-STOPS PANEL CAN KEEP ONLY WHAT A TRACTOR CAN RUN. “I want a button on top of bar to remove all stops in the list that are not tractor friendly stops.” It drops exactly the rows the panel does not paint green — one shared rule, because a button that drops a green row is the worst version of this — names its count, says what survives, and does the whole set in ONE state update rather than one marker-layer rebuild per stop. (3) THE ✕ CLEARS. “when i click the x i want it to close and clear all.” It used to flip a PERSISTED panel toggle, so it hid the panel and left the stops selected; wired to that same toggle a clearing ✕ would have suppressed the panel on the next selection too. It clears the selection instead, and the empty panel unmounts itself — hiding while keeping the stops still lives on the gear switch. (4) WHY A STOP IS NOT PAINTED LIME IS NOW ANSWERABLE. Chad, on MHC KENWORTH: “i’m pretty sure a tractor has delivered here so it should be auto painted can you check on that.” Nothing could. The lime is a JOIN — MarginIQ employees tagged tractor, matched by NuVizz ALIAS against sealed deliveries — and all four of its failure modes produce the same blank pin. tractor-paint-explain reads Firestore only, spends ZERO NuVizz calls, and prints every delivery on file with the roster’s verdict on the driver who ran it: tractor, not-a-tractor, or unknown-to-roster — that last one being the Brent Boyd/Bryd alias failure that has cost this repo a rule before and is invisible until it is named. It also runs the map’s own paint override rather than describing it, so a flagged-but-vetoed stop explains itself. 31 new tests.'],
   ['0.95.2', 'ONE SCAN AT 7AM SATURDAY, AND THE MEANS TO STOP GUESSING AT THE LAST SETTING. Chad, on leaving Friday alone: “fridays schedule is fine if i need fresh data before sunday’s scans start i can manually refresh and just make sure that pulls all the correct data and heals. We could also schedule one scan at 7 am saturday to heal anything.” THE MANUAL REFRESH WAS CHECKED, NOT ASSUMED, because “make sure” is an instruction to verify: the button posts to nuvizz-manual-scan-background, which forces manual=1 and DISCARDS date/days, so it rides the cheap list path and can never reach the ~3,000-call number probe; manual bypasses the weekend blackout and the anti-thrash floor; it forces all three kinds due, so a press pulls both saved searches and the roster rather than the slice the hour would have run; and because the pull is the two-scan pull, the frozen-day pass runs on today and heals. Two new tests pin the first three and the end-to-end board test already drives the real scan through that same manual URL for the fourth. THE SATURDAY HEAL, in the narrowest shape that can work: one hour (07:00–08:00 ET), two saved searches, no roster. Both halves were needed and the first alone would have been decorative — the weekend gate in scan-schedule had to open, AND a rule had to make the kinds due, or the fire would act and then return “plan not due” having pulled nothing. Caught before shipping by running the whole chain rather than the half I had changed. ONE MEANS ONE, enforced by shape: a one-hour band at a four-hour interval can fire once inside it, the gate additionally requires that nothing has scanned for four hours, and a fire that FAILED leaves the gap open so the next tick retries. Four hours and not twelve because Friday’s last scan is ~19:50 and Saturday 07:00 is eleven and a quarter hours later — a twelve-hour interval would never come due, which is the exact kind of rule that reads as shipped and does nothing. The two weekend carve-outs that were reverted in v0.93.x (roster, then planned) are why the roster is deliberately absent: replayed on the five-minute cron they took a Saturday from 0 vendor calls to 65. The guard test that caught that is not weakened — it now replays all 288 fires of a Saturday with the scan stamps ADVANCING as they would in life, and asserts EXACTLY ONE acting fire, at 7am, on the full path, with the roster still out. Estimated Saturday cost: one scan, two list calls, plus enrichment only for orders never seen before. AND THE LAST OPEN SETTING GETS A TOOL INSTEAD OF A GUESS. The completed search is clamped to “Stop Detail Updated = today”, which is why a Friday-evening delivery is invisible until Monday, and widening that axis is not safe to guess at: an unhonoured period returns either everything (blowing the row cap) or nothing (a board that silently stops recording deliveries), and this repo has already spent six calls guessing at period grammar. The stop-explorer gains a read-only probe — { savedSearch:\'completed\', probePeriods:true, updatedPeriod:\'-2d\' } — that runs the same saved search with one filter value changed and reports the rows grouped by the day NuVizz last touched them, so honoured / ignored / rejected is visible in one response. ONE call, which Chad approved, spent once the deploy lands. ALSO FIXED, found by reading v0.95.1’s own explain output rather than by a test: the switches block re-derived the frozen pass’s read cap from the environment instead of asking the scan, so the moment the default moved (120 → 400) the diagnostic began reporting a cap the scanner was not using — a settings screen that quietly disagrees with the code is worse than none, because it is what somebody reasons from at 6am. Both budgets are now defined once in the scan and read from there, and the block also reports the copy depth, the completed arrival window and the Saturday heal hour. WHAT v0.95.1 IS ACTUALLY DOING IN PRODUCTION, from that same endpoint: reach 30 days, pool window 08/08–10/07, 696 open rows against 678 at ±7d — so a month of reach costs eighteen rows, nowhere near the 5,000 cap, and the pull is not truncated. The starvation is gone: the pass now reads 274 of a 400 budget with 0 capped, 0 unread and 0 part-read, against 119 of 120 with 51 capped and 51 unread before. Every open stray on the board was resolved in a single pass.'],
@@ -2927,7 +2931,7 @@ function countBadgeSvg(count) {
 // dot (that's the "number on the delivery icon" for unplanned); otherwise a status glyph/AM-PM tag
 // or a plain core. Anchor is the dot CENTER (returned by the caller).
 function unplannedDotSvg(color, opts = {}) {
-  const { glyph = null, tag = null, count = 0 } = opts;
+  const { glyph = null, tag = null, count = 0, ring = null } = opts;
   const txtColor = readableTextColor(color);
   let core;
   if (Number(count) >= 2) {
@@ -2947,7 +2951,7 @@ function unplannedDotSvg(color, opts = {}) {
   // ring visible even over bright/white satellite patches (parking lots, rooftops).
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="11" fill="#ffffff" stroke="#0f172a" stroke-opacity="0.28" stroke-width="1"/>
+      <circle cx="12" cy="12" r="11" fill="${ring || '#ffffff'}" stroke="#0f172a" stroke-opacity="${ring ? 0.45 : 0.28}" stroke-width="1"/>
       <circle cx="12" cy="12" r="8" fill="${color}"/>
       ${core}
     </svg>`;
@@ -3001,10 +3005,14 @@ function pinSvgStatus(color, opts = {}) {
 // SymbolPath marker, which silently failed to paint on the vector base — see v0.29.77).
 // Callers anchor at the CENTER of the returned size.
 function circleMarkerSvg(color, opts = {}) {
-  const { hollow = false, glyph = null, tag = null, label = null, count = 0 } = opts;
+  const { hollow = false, glyph = null, tag = null, label = null, count = 0, ring = null } = opts;
   const bodyFill = hollow ? '#ffffff' : color;
-  const bodyStroke = hollow ? color : '#ffffff';
-  const strokeW = hollow ? 2.5 : 2;
+  // `ring` — an IDENTITY ring (the Estes yellow, lib/carrier-mark.js) takes the disc's edge
+  // over from the white/colour one and draws a touch heavier, so it still reads at the 16px
+  // resting size. The fill, glyph and count are untouched: the ring says WHOSE order this is,
+  // the disc keeps saying what state it is in.
+  const bodyStroke = ring || (hollow ? color : '#ffffff');
+  const strokeW = ring ? 3 : (hollow ? 2.5 : 2);
   const txtOnBody = hollow ? color : readableTextColor(color);
   let center;
   if (label != null) {
@@ -3459,6 +3467,18 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   // deliveries") — a PU tag in the same slot the AM/PM window uses. A delivery-window tag or
   // a restriction icon still wins the slot: a safety mark beats a type mark.
   const pickup = String(s?.stopType || '').toUpperCase() === 'PU';
+  // ESTES ORDERS ARE BLACK WITH A YELLOW RING (Chad: "make estes icons black with a yellow
+  // ring around them" — lib/carrier-mark.js). The RING is the identity and rides every disc
+  // this stop can draw; the BLACK fills the disc only where the stop would otherwise wear a
+  // default tint (the status/flag fallback, the muted slate). A colour that already means
+  // something keeps saying it inside the ring: a selection stays amber, a search hit orange, a
+  // numbered pin keeps its route colour, a priority flag its hue, a hand-set tractor/box-only
+  // mark its green or red, a delivered stop its green. Two things are untouched on purpose —
+  // do-not-send stays the red ✕ (safety outranks identity), and a restriction cluster keeps
+  // its marks: the clock and the truck ARE the message there, and a ring around a clock would
+  // put back the circle Chad had taken away.
+  const estes = isEstesOrder(s?.stopNbr);
+  const ring = estes ? ESTES_RING : null;
   const statusKind = classifyStopStatus(s);
   const addrOff = addressLooksOff(s, note);
   // Signature of EVERY input that changes the rendered icon (restrictions already folds in
@@ -3480,7 +3500,11 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // tractorDelivered is already in the key above, but noTractorOverride is what decides
     // whether it reaches the disc, and it is not — a dispatcher ticking the restriction has to
     // repaint the mark, not wait for a reload.
-    + '\x1f' + (noTractorOverride ? 'N' : '');
+    + '\x1f' + (noTractorOverride ? 'N' : '')
+    // The Estes paint is derived from the stop NUMBER, which never changes for a stop — but the
+    // key must still carry it, or an Estes order and a plain one sharing every other input would
+    // share one cached icon and the second to render would wear the first one's paint.
+    + '\x1f' + (estes ? 'E' : '');
   const cached = __stopIconCache.get(cacheKey);
   if (cached) return cached;
 
@@ -3494,7 +3518,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // already settled once the stop is planned). DNS, an active selection, a search hit
     // and an open route all still win, so nothing safety- or task-critical is muted.
     result = {
-      url: circleMarkerSvg(PLANNED_MUTED_COLOR, { hollow: true, count }),
+      url: circleMarkerSvg(estes ? ESTES_FILL : PLANNED_MUTED_COLOR, { hollow: true, count, ring }),
       scaledSize: new google.maps.Size(14, 14),
       anchor: new google.maps.Point(7, 7),
     };
@@ -3508,8 +3532,8 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // Numbered route pin (delivery sequence). Colored by route when a routeColor is
     // given (Routing), else by status (Map): green=delivered / blue=scheduled.
     const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
-    const color = routeColor || ((tractorDelivered && !noTractorOverride) ? TRACTOR_DELIVERED_COLOR : (meta.color || flagColor(note)));
-    result = { url: circleMarkerSvg(color, { label: String(seq), count }), scaledSize: new google.maps.Size(30, 30), anchor: new google.maps.Point(15, 15) };
+    const color = routeColor || ((tractorDelivered && !noTractorOverride) ? TRACTOR_DELIVERED_COLOR : (meta.color || (estes ? ESTES_FILL : flagColor(note))));
+    result = { url: circleMarkerSvg(color, { label: String(seq), count, ring }), scaledSize: new google.maps.Size(30, 30), anchor: new google.maps.Point(15, 15) };
   } else if (restrictions.length === 0) {
     // State A — status drives the pin; matched stops pop orange; a priority flag,
     // AM/PM window, or "address looks off" signal recolor/reglyph as appropriate.
@@ -3532,7 +3556,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       : tractorDelivered ? TRACTOR_DELIVERED_COLOR
       : eligColor
       || flagHue
-      || (addressOff ? ADDRESS_OFF_TINT : (meta.color || flagColor(note)));
+      || (addressOff ? ADDRESS_OFF_TINT : (meta.color || (estes ? ESTES_FILL : flagColor(note))));
     let glyph = meta.glyph;
     if (!hi) {
       if (note?.priority_flag === 'question' && !glyph) glyph = 'question';
@@ -3543,7 +3567,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // co-located count sits inside the dot. Highlighted/tagged unplanned keep the pop pin.
     if (statusKind === 'UNPLANNED' && !hi && !tag) {
       result = {
-        url: unplannedDotSvg(color, { glyph, count }),
+        url: unplannedDotSvg(color, { glyph, count, ring }),
         scaledSize: new google.maps.Size(16, 16),
         anchor: new google.maps.Point(8, 8),
       };
@@ -3555,7 +3579,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       const size = hi ? 22 : (tag ? 28 : 16);
       const half = size / 2;
       result = {
-        url: circleMarkerSvg(color, { hollow: hi ? false : meta.hollow, glyph, tag, count }),
+        url: circleMarkerSvg(color, { hollow: hi ? false : meta.hollow, glyph, tag, count, ring }),
         scaledSize: new google.maps.Size(size, size),
         anchor: new google.maps.Point(half, half),
       };
@@ -4736,6 +4760,8 @@ function useLegendInventory({
       entries.push({
         note,
         hidden,
+        dns,
+        estes: isEstesOrder(s.stopNbr),
         tractorDelivered: !!tractorLocs?.has?.(s.matchKey),
         icons: drawnRestrictionKeys(getRestrictionBadgeKeys(note, { day: dayKey }), {
           deliveryWindow: note?.delivery_window,
@@ -4954,6 +4980,19 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
                 <LegendCount n={!all && tints.plain} />
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* The Estes ring (lib/carrier-mark.js) — listed only while an Estes order is actually
+          drawing it, like every other mark here. The swatch is the real colours, not a name. */}
+      {has(inv && inv.estes) && (
+        <div>
+          <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Carrier</div>
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: ESTES_FILL, boxShadow: `0 0 0 2px ${ESTES_RING}` }} />
+            <span>Estes order — black, yellow ring</span>
+            <LegendCount n={!all && inv.estes} />
           </div>
         </div>
       )}

@@ -459,3 +459,69 @@ test('Uline never texts, on either rule', () => {
   assert.equal(restrictionConfidence(note, 'uline_straight_truck'), 'advisory');
   assert.equal(dispatcherTrailerBlock(note).blocked, false);
 });
+
+// ── THE BOARD WIDENED; THE 9PM TEXT DID NOT ─────────────────────────────────
+//
+// Chad, after v0.96.0 made a Davis-typed Address 2 mark draw as confirmed: "in the flags i
+// want it to show up if we have put a stop on a tractor that a dispatcher has marked no
+// tractor trailer." Address 2 is a field Davis types into NuVizz, so that mark IS dispatch
+// saying no — the same reasoning that settled the icon. But who gets woken at 9pm is a
+// different question, and he scoped that by hand in v0.82.0.
+import { confirmedTrailerBlock } from '../src/lib/trailer-block.js';
+
+const ADDR2_NOTE = {
+  equipment_restrictions: ['no_tractor_trailer'],
+  auto_sources: { no_tractor_trailer: ['addressLine2'] },
+};
+
+test('an Address 2 mark BLOCKS for the board and is NOT dispatcher-owned', () => {
+  assert.equal(confirmedTrailerBlock(ADDR2_NOTE).blocked, true, 'the board must see it');
+  assert.equal(dispatcherTrailerBlock(ADDR2_NOTE).blocked, false, 'the text must not');
+});
+
+test('a stop marked only in Address 2 now RAISES the board flag', () => {
+  const out = run([stop()], { acme: ADDR2_NOTE });
+  const rows = (out.rows || []).filter((r) => r.rule === 'trailer_conflict');
+  assert.equal(rows.length, 1, 'this is the row Chad asked for');
+  assert.equal(rows[0].tier, 'red');
+  assert.equal(rows[0].dispatcherOwned, false, 'and it is stamped as NOT hand-ticked');
+});
+
+test('a hand-ticked stop still raises it, and IS dispatcher-owned', () => {
+  const note = { ...ADDR2_NOTE, manual_overrides: { equipment_restrictions: true } };
+  const rows = (run([stop()], { acme: note }).rows || []).filter((r) => r.rule === 'trailer_conflict');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].dispatcherOwned, true);
+});
+
+test('the Uline advisory raises NEITHER — it is another company\'s text', () => {
+  const note = {
+    equipment_restrictions: ['uline_straight_truck'],
+    auto_sources: { uline_straight_truck: ['orderInstructions'] },
+  };
+  assert.equal(confirmedTrailerBlock(note).blocked, false);
+  assert.equal((run([stop()], { acme: note }).rows || []).filter((r) => r.rule === 'trailer_conflict').length, 0);
+});
+
+test('a dispatcher who painted the stop tractor-OK still silences both', () => {
+  const note = { ...ADDR2_NOTE, vehicle_eligibility: 'tractor' };
+  assert.equal(confirmedTrailerBlock(note).blocked, false,
+    'a person answering the question this rule asks must not then be told off for it');
+  assert.equal((run([stop()], { acme: note }).rows || []).filter((r) => r.rule === 'trailer_conflict').length, 0);
+});
+
+test('the SMS selector drops the widened rows and keeps the hand-ticked ones', () => {
+  const base = { rule: 'trailer_conflict', tier: 'red', scope: 'occurrence', stopNbr: '1', routeKey: 'A', customer: 'ACME', blockers: ['no_tractor_trailer'] };
+  const picked = selectTextable([
+    { ...base, stopNbr: '1', routeKey: 'A', dispatcherOwned: true },
+    { ...base, stopNbr: '2', routeKey: 'B', dispatcherOwned: false },
+  ]);
+  const keys = picked.map((r) => r.routeKey);
+  assert.ok(keys.includes('A'), 'a hand-ticked conflict still texts');
+  assert.ok(!keys.includes('B'), 'an Address 2 conflict shows on the board and does NOT text');
+});
+
+test('a row written before the field existed still texts — undefined is not false', () => {
+  const base = { rule: 'trailer_conflict', tier: 'red', scope: 'occurrence', stopNbr: '9', routeKey: 'OLD', customer: 'ACME', blockers: ['no_tractor_trailer'] };
+  assert.ok(selectTextable([base]).map((r) => r.routeKey).includes('OLD'));
+});

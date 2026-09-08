@@ -44,7 +44,7 @@ import {
 // answer, or the pin and the flag card end up disagreeing about the same customer. It lives
 // in trailer-block.js rather than map-legend.js only because map-legend → time-marks →
 // board-flags would be a cycle.
-import { dispatcherTrailerBlock, trailerBlockerLabels } from './trailer-block.js';
+import { dispatcherTrailerBlock, confirmedTrailerBlock, trailerBlockerLabels } from './trailer-block.js';
 
 // ── time + hours parsing ──────────────────────────────────────────────────────
 
@@ -416,6 +416,51 @@ export function stopPosition(s, note) {
 const seqOf = (s) => routeStopSeq(s).seq;
 const isPickupStop = (s) => routeStopSeq(s).pickup;
 const routeKeyOf = (s) => String(s?.loadNbr || s?.routeName || '').trim();
+
+// ── DO NOT SEND ──────────────────────────────────────────────────────────────
+//
+// Chad: "if we send a driver to a stop that they are marked do not send and we have sent a
+// driver to it."
+//
+// DNS IS ABOUT PEOPLE, NOT FREIGHT, and the note's own shape says so: `do_not_send` turns it
+// on and `dns_drivers` is a list a dispatcher builds by tapping names under "Drivers not
+// allowed". A blank list is a GENERAL do-not-send — nobody goes back; a filled one bars
+// exactly those drivers and nobody else.
+//
+// THIS IS NOT A PREDICTION, which is what makes it worth a red. Every clock rule on this
+// board is an estimate the rest of the day can still make false. This is two RECORDED FACTS
+// in contradiction: a person wrote "do not send Brent here", and Brent is on the load. The
+// customer asked for this, usually after something went wrong, and sending the same driver
+// back is the kind of mistake that ends an account rather than costing a redelivery.
+//
+// NAME MATCHING IS DELIBERATELY LOOSE ON WHITESPACE AND CASE AND STRICT ON EVERYTHING ELSE.
+// NuVizz writes "Brent  Bryd" with two spaces where the roster writes "Brent Bryd", and this
+// repo has already lost a whole rule to that exact gap (v0.93.x). It does NOT fuzzy-match
+// beyond that: barring "Brent" must never silence-or-fire on "Brenda".
+const normDriver = (v) => String(v ?? '').trim().replace(/\s+/g, ' ').toUpperCase();
+
+/** The driver NuVizz has on this stop, normalized — or '' when nobody is assigned yet. */
+export const stopDriver = (s) => normDriver(s?.driverName || s?.driverUserName || '');
+
+/**
+ * PURE. Is this assignment one the note forbids?
+ *
+ * @returns {{barred: boolean, general: boolean, driver: string, named: string[]}}
+ *   general → the note bars EVERYBODY (an empty dns_drivers list)
+ *   barred  → this particular driver may not go
+ */
+export function dnsConflict(note, s) {
+  const on = !!note?.do_not_send;
+  const named = (Array.isArray(note?.dns_drivers) ? note.dns_drivers : []).filter(Boolean).map(String);
+  const driver = stopDriver(s);
+  if (!on) return { barred: false, general: false, driver, named };
+  const general = named.length === 0;
+  // No driver yet is not a conflict YET — it is the window in which this is still free to
+  // fix, which the rule below reports separately rather than folding into the same row.
+  if (!driver) return { barred: false, general, driver: '', named };
+  const barred = general || named.some((n) => normDriver(n) === driver);
+  return { barred, general, driver, named };
+}
 
 // APPOINTMENT ROUTES ARE NOT LATE — Chad: "dont put uline appt's in the flag as they are
 // being held for appointments."
@@ -942,8 +987,18 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       }
       if (cls !== 'tractor') continue;
       tractorRoutes.add(k);
-      const block = dispatcherTrailerBlock(noteOf(s));
-      if (block.blocked) conflicts.push({ s, k, block });
+      // THE BOARD FLAG USES THE MAP'S CONFIDENCE, NOT THE ALERT'S OWNERSHIP TEST. Chad, after
+      // v0.96.0 made a Davis-typed Address 2 "NO TRACTOR TRL" draw as confirmed: "in the flags
+      // i want it to show up if we have put a stop on a tractor that a dispatcher has marked no
+      // tractor trailer." Address 2 is a field Davis types into NuVizz, so a mark lifted from it
+      // IS dispatch saying no — the same reasoning that settled the icon.
+      //
+      // The 9PM TEXT DOES NOT WIDEN WITH IT. Chad scoped that by hand in v0.82.0 to "just the
+      // dispatcher hardcoded ones", and widening who gets woken is his call rather than a side
+      // effect of a board rule. So the row records WHICH it is — dispatcherOwned — and the SMS
+      // selector requires it. One rule on the board, one flag on the row, no second engine.
+      const block = confirmedTrailerBlock(noteOf(s));
+      if (block.blocked) conflicts.push({ s, k, block, owned: dispatcherTrailerBlock(noteOf(s)).blocked });
     }
     skipped.routesNoTruckClass = [...noClass.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
@@ -956,7 +1011,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     // and any later consumer read the same count rather than each re-deriving it.
     const perRoute = new Map();
     for (const c of conflicts) perRoute.set(c.k, (perRoute.get(c.k) || 0) + 1);
-    for (const { s, k, block } of conflicts) {
+    for (const { s, k, block, owned } of conflicts) {
       const labels = trailerBlockerLabels(block.keys);
       // via 'eligibility' is the Routing paint (a dropdown only a dispatcher can reach), so
       // it is named as the paint even when restriction ticks ride along beside it.
@@ -973,6 +1028,10 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         customer: s.businessName || s.stopNbr || null,
         // Machine-readable, so no consumer has to parse the sentence to act on it.
         blockers: block.keys, blockedVia: block.via, routeClass: 'tractor',
+        // Did a person here TICK the restriction list (or paint the stop), as against the mark
+        // having been read out of the Address 2 field? The board shows both; the overnight text
+        // takes only the first. Recorded rather than re-derived, so the two cannot drift.
+        dispatcherOwned: !!owned,
         routeKey: k, routeConflicts: perRoute.get(k) || 1, seq: seqOf(s),
         title: `No tractor trailer — ${s.businessName || s.stopNbr}`,
         detail: `${label} is running a tractor-trailer, but this stop is ${said} by dispatch.`
@@ -980,6 +1039,60 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
           + `${alsoN > 0 ? ` ${alsoN} other stop${alsoN === 1 ? '' : 's'} on ${label} carr${alsoN === 1 ? 'ies' : 'y'} the same mark — check the truck, not just the stop.` : ''}`
           + ` Move it to a box truck, or mark the customer tractor-OK if a 53' does fit.`,
         scope: 'occurrence', servedDate, fingerprint: `trailer|${servedDate}|${k}|${s.stopNbr}`,
+      }));
+    }
+  }
+
+  // ── R4b — A DRIVER SENT WHERE A DISPATCHER SAID NOT TO ──────────────────────
+  //
+  // Chad: "if we send a driver to a stop that they are marked do not send and we have sent a
+  // driver to it."
+  //
+  // Same category as the trailer conflict above and judged the same way: two recorded facts
+  // in contradiction, no clock involved, knowable the moment the load is built — which is
+  // while it is still free to fix. No roster, no truck class and no travel model: this rule
+  // can never be silently "not checked" the way the trailer one can.
+  //
+  // TWO TIERS, AND THE SPLIT IS THE POINT. A BARRED DRIVER ON THE LOAD IS RED: the customer
+  // named that person, usually after something went wrong, and sending them back is the kind
+  // of mistake that ends an account rather than costing a redelivery. A DNS stop planned with
+  // NOBODY on it yet is AMBER: on a general do-not-send it will become red the moment a driver
+  // is assigned, and saying so at 8pm while a router is still building beats saying it at 6am.
+  // A named-driver DNS with no driver yet says nothing at all — most drivers are fine there,
+  // and a row that fires on every one of them is the wall of amber this panel exists to avoid.
+  //
+  // PICKUPS COUNT, like the trailer rule and unlike the hours rules: "do not send this person
+  // to this customer" is about who turns up, not about which direction the pallets go.
+  for (const s of scheduledJudged) {
+    const note = noteOf(s);
+    if (!note?.do_not_send) continue;
+    const c = dnsConflict(note, s);
+    const label = s.routeName || s.loadNbr || routeKeyOf(s) || null;
+    const who = s.driverName || s.driverUserName || null;
+    if (c.barred) {
+      const said = c.general
+        ? 'this customer is marked DO NOT SEND — no driver at all'
+        : `${who} is on this customer's do-not-send list`;
+      rows.push(row('red', 'dns_conflict', s, {
+        customer: s.businessName || s.stopNbr || null,
+        driverName: who, dnsGeneral: c.general, dnsDrivers: c.named,
+        routeKey: routeKeyOf(s) || null, seq: seqOf(s),
+        title: `Do not send — ${s.businessName || s.stopNbr}`,
+        detail: `${said}, and ${label ? `${label} is` : 'a load is'} taking it${seqOf(s) != null ? ` at stop ${seqOf(s)}` : ''}.`
+          + `${!c.general && c.named.length > 1 ? ` Barred here: ${c.named.join(', ')}.` : ''}`
+          + ' Move the stop to another driver, or clear the DNS on the customer if it no longer applies.',
+        scope: 'occurrence', servedDate, fingerprint: `dns|${servedDate}|${s.stopNbr}|${c.driver}`,
+      }));
+    } else if (c.general && !c.driver) {
+      rows.push(row('amber', 'dns_conflict', s, {
+        customer: s.businessName || s.stopNbr || null,
+        driverName: null, dnsGeneral: true, dnsDrivers: c.named,
+        routeKey: routeKeyOf(s) || null, seq: seqOf(s),
+        title: `Do not send — ${s.businessName || s.stopNbr}`,
+        detail: `This customer is marked DO NOT SEND and the stop is planned on ${label || 'a load'}`
+          + `${seqOf(s) != null ? ` at stop ${seqOf(s)}` : ''} with no driver assigned yet.`
+          + ' It goes red the moment somebody is put on it.',
+        scope: 'occurrence', servedDate, fingerprint: `dns|${servedDate}|${s.stopNbr}|nodriver`,
       }));
     }
   }
