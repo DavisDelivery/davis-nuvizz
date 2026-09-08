@@ -13,9 +13,15 @@
 //   SIMPLETEXTING_API_KEY  — required; absent ⇒ smsEnabled() false (no-op).
 //   SIMPLETEXTING_FROM     — optional accountPhone to send from.
 
+import { outboundAllowed, outboundRefusal } from './mirror-guard.mts';
+
 const ST_BASE = process.env.SIMPLETEXTING_BASE_URL || 'https://api-app2.simpletexting.com/v2';
 
 export function smsEnabled(): boolean {
+  // A MIRROR DEPLOY DOES NOT TEXT. Same reasoning as email, and the blast radius is a driver's
+  // personal phone at 9pm from the real Davis number. See lib/mirror-guard.mts;
+  // MIRROR_ALLOW_OUTBOUND=sms opens it deliberately.
+  if (!outboundAllowed('sms')) return false;
   return !!process.env.SIMPLETEXTING_API_KEY;
 }
 
@@ -39,6 +45,8 @@ export interface SendSmsArgs {
 
 // Sends one SMS. Best-effort: returns {ok} and never throws.
 export async function sendSms(args: SendSmsArgs): Promise<{ ok: boolean; id?: string; error?: string }> {
+  // Gated at the send too — callers that never asked smsEnabled() must not slip through.
+  if (!outboundAllowed('sms')) return { ok: false, error: outboundRefusal('sms') };
   const key = process.env.SIMPLETEXTING_API_KEY;
   if (!key) return { ok: false, error: 'SIMPLETEXTING_API_KEY not set' };
   const contactPhone = normalizePhone(args.to);

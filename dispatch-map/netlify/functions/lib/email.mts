@@ -9,9 +9,19 @@
 //   RESEND_FROM     — verified sender, e.g. "Davis Dispatch <no-reply@davisdelivery.com>".
 //                     Must be on a domain verified in the Resend account.
 
+import { outboundAllowed, outboundRefusal } from './mirror-guard.mts';
+
 const RESEND_ENDPOINT = 'https://api.resend.com/emails';
 
 export function emailEnabled(): boolean {
+  // A MIRROR DEPLOY DOES NOT MAIL. A mirror is built by copying production's env, so the key
+  // and the verified sender are both present and this used to answer true — meaning the UAT
+  // site could mail a REAL customer about a REAL delivery, from the real address. Worse than
+  // one stray message: each deploy keeps its send-dedup ledger in its own Firestore database
+  // while sharing one Resend account, so the ledgers do not compose and a customer can be
+  // mailed once by each site. See lib/mirror-guard.mts; MIRROR_ALLOW_OUTBOUND=email opens it
+  // deliberately for testing.
+  if (!outboundAllowed('email')) return false;
   return !!process.env.RESEND_API_KEY && !!process.env.RESEND_FROM;
 }
 
@@ -42,6 +52,9 @@ export interface SendEmailArgs {
 // Sends one email. Best-effort: returns {ok} and never throws, so a mail failure
 // can never break a scan. Caller decides whether to record dedup state on ok.
 export async function sendEmail(args: SendEmailArgs): Promise<{ ok: boolean; id?: string; error?: string }> {
+  // Gated HERE too, not only in emailEnabled(). Several callers send without asking first,
+  // and a guard that can be walked past by forgetting to call it is not a guard.
+  if (!outboundAllowed('email')) return { ok: false, error: outboundRefusal('email') };
   const key = process.env.RESEND_API_KEY;
   // RESEND_FROM stays REQUIRED even when a caller overrides the sender: it is the
   // known-verified address, so its absence still means "this site cannot send" and
