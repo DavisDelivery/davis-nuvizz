@@ -230,6 +230,23 @@ export function confirmedBlockerKeys(note, drawnKeys, resolve) {
  * Returns { blocked, keys, via } — `via` is 'eligibility' | 'restriction' | null, so a
  * message can say WHICH statement it is quoting rather than asserting a generic one.
  */
+/**
+ * The board's version of the question: is a REAL trailer blocker on this stop?
+ *
+ * Same shape and same eligibility escape as dispatcherTrailerBlock below; the only difference
+ * is the confidence test. This one uses restrictionConfidence, so a Davis-typed Address 2
+ * "NO TRACTOR TRL" counts — because it is Davis saying no, which is what the icon fix settled.
+ * The stricter twin below stays the alert's rule, per Chad's v0.82.0 scoping.
+ */
+export function confirmedTrailerBlock(note, resolve = null) {
+  const none = { blocked: false, keys: [], via: null };
+  if (!note) return none;
+  if (note.vehicle_eligibility === 'tractor') return none;   // the dispatcher's own "it fits"
+  const keys = confirmedBlockerKeys(note, note.equipment_restrictions || [], resolve);
+  if (note.vehicle_eligibility === 'box_only') return { blocked: true, keys, via: 'eligibility' };
+  return keys.length ? { blocked: true, keys, via: 'restriction' } : none;
+}
+
 export function dispatcherTrailerBlock(note, resolve = null) {
   const none = { blocked: false, keys: [], via: null };
   if (!note) return none;

@@ -217,7 +217,14 @@ export function selectTextable(rows: any[], cap = SMS_PER_SWEEP_CAP, trailerCap 
   const trailer: any[] = [];
   const seenRoute = new Set<string>();
   for (const r of flat) {
+    // THE BOARD WIDENED IN v0.97.x; THIS DID NOT. The flag now fires for a Davis-typed
+    // Address 2 mark as well as a hand-ticked one, because both are dispatch saying no. Who
+    // gets woken at 9pm is a different question, and Chad scoped it by hand in v0.82.0 to
+    // "just the dispatcher hardcoded ones" — so the text takes only the rows the engine
+    // stamped dispatcherOwned. A row from before that field existed carries undefined, which
+    // is not false: those predate the widening and were all hand-ticked, so they still text.
     if (r?.rule !== 'trailer_conflict' || !textable(r)) continue;
+    if (r?.dispatcherOwned === false) continue;
     const k = String(r?.routeKey || r?.routeName || '').trim();
     if (!k || seenRoute.has(k)) continue;
     seenRoute.add(k);
