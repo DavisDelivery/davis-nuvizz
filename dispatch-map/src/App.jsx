@@ -61,7 +61,7 @@ import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './li
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact } from './lib/nuvizzWrite.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
-import { timeMarkForDay, TIME_MARK_KEYS } from './lib/time-marks.js';
+import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS } from './lib/time-marks.js';
 import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS } from './lib/history-range.js';
 import {
   drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
@@ -115,7 +115,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.95.1';
+const APP_VERSION = '0.96.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -186,6 +186,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.96.0', 'THE COMPARE ROW NOW WEARS THE DOCK’S CLOCK, AND THE BOTTOM GRID STOPS OFFERING FREIGHT THAT IS ALREADY ON A CARD. Chad, on a Compare card: “i think there is enough space there to fit our clock icons if one applies to a given stop” — and, on the grid below it: “Paragon should still be highlighted a different colour on bottom panel now that it’s applied to this route or say the driver’s name, looks like it’s still available.” THE CLOCK. Every stop row on a Compare card now carries the SAME mark the map pin wears — classifyTimeMark’s four keys, the same glyph, and the same silence for a dock open an ordinary working day, because one rule with two renderers is the only version of this that cannot drift. It prints the BINDING TIME beside the glyph (“closes 2:00p”, “opens 9:00a”) rather than the icon alone: this repo has already found four values reachable only through a title= tooltip, which a touch device never shows, and a clock face with no clock on it would be the fifth. It rides the city/skids line, which carries no controls on either view, so nothing lands on anything else; expanding a stop hides that line, so the window restates itself in the detail. AND IT IS NOT THE PREFLIGHT BADGE, deliberately: the badge is loud and fires when the walked clock says this stop MISSES — a reaction, after the sequence is already wrong — while the clock is quiet and states the constraint BEFORE any order is chosen, which is what stops a 2:00p dock being put eleventh in the first place. THE GRID. A stop staged onto an open card existed on the map (numbered pin, card colour) and nowhere in the bottom grid, whose Load column reads NuVizz — and a Draft load holding no saved orders has nothing there to read. So PARAGON sat at position 1 on GARY PITTS and listed exactly like an order nobody had touched, which is a double-planning waiting to happen. The row is now tinted in its card’s own colour, the name cell carries a [● n] chip with the stop’s position, and the Load column names the card and marks it “staged” — the word matters, since these orders live only in this browser until Save writes them. A stop already planned onto one load and staged onto another shows BOTH, because that disagreement is the thing worth seeing before Save. Selection tint still wins: selection is what the router is doing now, staging is what he did a minute ago. WHERE THE CLOCK ENDED UP, AND WHY IT MOVED — found by rendering it at true size rather than by reading it. The first build put the chip on the city line, which is where the free space visibly is; on a 320px Compare card that cut “CARTERSVILLE · 6 sk · 8 loose” down to “CARTERSVILLE · 6 …”, trading away the per-stop skid and loose counts Chad asked for in v0.54.4 to buy space the row did not have to sell. It sits on the marks line under the name instead — the line the preflight badge moved to in v0.89.0 for the same class of reason — so the name, the freight and the constraint all survive, and the two chips wrap rather than overflow when a stop carries both. AND THEY DO NOT SAY THE SAME THING TWICE: a hopeless verdict already prints the close it cannot make, so an identical “closes 11:00a” beside “can’t make 11:00a” is suppressed — only when the two name the same minute, since “30m late” beside “closes 2:00p” answers “late against what?” and stays. 22 new tests, 3,545 green; mobile and desktop layout guards and the route-preflight guard re-run on both views.'],
   ['0.95.1', 'THIRTY DAYS OF SELF-HEALING, AND THE GUARD THAT MAKES IT SAFE. Chad, on v0.95.0’s two open settings: “we should do 30 days if it’s no extra nuvizz calls so everything self heals correctly.” IT IS NO EXTRA CALLS, and that is a property of the request rather than a hope: a saved search is ONE request that asks for its whole result set, so the arrival window is a filter value INSIDE a call the scan already makes — two calls at ±7d, two calls at ±30d. Both arrival nets go to 30 days. The active one widens what may be judged at all: the open-order pool, the unplanned snapshot and the frozen-day pass are only entitled to speak about days the search reaches, so an order that went quiet more than a week ago used to be frozen wherever it stood. The COMPLETED one matters just as much and was the quieter hole — a stop whose arrival day was three weeks ago and which delivers today fell outside a ±7d arrival net, so no pull ever reported it finished and its frozen copy could never be healed. WHAT WAS MEASURED FIRST, from v0.95.0’s own explain endpoint rather than guessed: the live frozen pass was ALREADY starving at seven days — 89 open strays, 119 reads against a cap of 120, 51 capped and unread in one pass. A straight flip to 30 would have made each long-carried order cost up to 30 Firestore reads and healed about four stops a scan: slower self-healing, not faster. So depth is now SLICED AND REMEMBERED. A pass reads at most ten frozen days per stop, newest first, records the oldest day it covered in the frozen ledger, and the next pass continues older than that until the stop is fully covered — ten orders healed three days deep beats three orders healed thirty days deep, and nothing is abandoned. Until a stop’s history is fully read the pass heals every copy it HAS read but decides nothing that depends on what it has not: a delivery recorded three weeks back could sit in the days still to come, and filing on a half-read history would put an old POD re-touch on today’s board as new work. Read cap raised 120 → 400 (Firestore reads, not vendor calls). THE ONE REAL HAZARD OF A WIDER WINDOW, closed in the same change: this API has no paging, so a result set past maxResult comes back as a full-looking list with its tail missing and nothing saying so — and every reader treats “not in the pull” as “NuVizz no longer lists it”. A pull that returns AT the cap is now reported truncated, and the scan stamps its pool and its snapshot thin, which is the existing rule for “absence is not evidence”: nothing is dropped as closed on a truncated list’s word, the log says so in one line, and the fix (raise the row cap or narrow the window) is named. A test runs the real scan and the real Map feed with the cap set to three rows and proves a prior-day order the truncated list omits stays on the board — with the control, one row short of the cap, proving the same order IS pruned when the list is complete. NOT CHANGED, and stated rather than done quietly: the completed search’s “Stop Detail Updated = today” clamp, which is the axis that decides the pull’s SIZE and the reason a Friday-evening delivery is invisible until Monday. A multi-day period there is portal grammar this repo has not verified live, and an unhonoured period returns either everything (blowing the row cap) or nothing (no completions at all, silently). One live call settles it; it has not been spent.'],
   ['0.95.0', 'ONLY WHAT THE SCANS PICK UP. Chad, after v0.94.1: “look at the code to make sure that these issues don’t happen again and that we fixed the underlying issue that had stops populating on the board that had already been delivered. We should only be showing the stops that the scans pick up.” A 53-finding audit of every path between the two saved searches and the three screens (scan write, board read, date window, completed overlay, cadence, consumers, client) found the same fault in eleven shapes: the scan writes today plus two business days and never rewrites a past day, so anything NuVizz does to an order after its arrival day landed in a bucket the loop dropped, and the frozen copy kept telling the old story. WHAT SHIPS, all from the two pulls already paid for — zero extra NuVizz calls. THE FROZEN-DAY PASS, rebuilt (lib/refile-core.mts): on today’s pass every finished row NuVizz files under a frozen past day heals EVERY open copy of it on every frozen day from its arrival day to yesterday (a routed stop is clamped forward each day it stays open, so its last open copy sits on the day before it delivered — #838 healed only the arrival day and skipped stops already on today’s board, which was most of them: 125 open ghosts across four days); every OPEN row on a frozen day heals a copy that disagrees about the plan (PRIMARY LOGISTICS, un-planned Friday after its snapshot froze), RE-OPENS a frozen refusal NuVizz now lists open (HIGHLAND FORGE, refused on TAYLOR then re-opened by CS as an ATT attempt — served as “refused” in the window and absent from the Map), and files an order with no copy anywhere onto today’s board so the Map can show it (EXPEDITORS, created after its day froze). The carry-forward now files a finish BEFORE its wrong-day guard, so a refiled or clamped row’s delivery can no longer be dropped on the floor; a filed open carry-over is re-filed from the LIVE pull every scan and leaves the moment NuVizz moves or closes it. Reads are bounded and remembered: a frozen ledger keyed by NuVizz’s own update stamp means a resolved stop is never re-read until NuVizz touches it, so the read budget reaches the tail instead of re-proving yesterday’s deliveries every fifteen minutes. THE MAP FOLDS FROM THE POOL: the carry-over fold judges prior-day rows by the open-order pool (still open on a past day → live status over the frozen pin; filed on today or later → not carry-over; not listed inside the pool’s reach → closed; a frozen refusal the pool lists open → re-opened; a frozen “planned” the pool lists unplanned → work to plan), with the unplanned snapshot as the fallback, and every decision served as `carryover` on the feed. A THIN pull (far fewer open rows than the last pool) is stamped on the pool and the snapshot, and no reader drops a row on a thin judge’s word; a pool a later board scan failed to rewrite is not the judge; a confirmed Save inside the hour is held until the pool agrees; a row older than any scan can see is served and SAID to be unverified rather than silently trusted; a pool read that catches a rewrite half-way is refused whole. The completed overlay pins a finish landing on a rolled-over copy to today (the board read stripped it and the next full scan pruned it), clears the unplanned flag on a cancellation, and refuses a finished twin under a live order’s number. CONSUMERS: the CS “scheduled for delivery” email no longer fires for a refiled delivery; the driver sidebar defaults to the Eastern day (after 8pm it read tomorrow’s empty board); the 6:30 report lists stops planned on its day but closed on a later one under their own heading instead of grading them; the snapshot’s trust window follows the saved search’s reach instead of a hard-coded week. CLIENT: the window’s confirmed-save overlay releases on the pool’s scan stamp like the board’s does; a cache-served window re-pulls every five minutes instead of once; the desktop grid drives the desktop map’s status filter as the phone’s does; a synced profile cannot drag the phone grid into a window it cannot see or leave; “Unplanned only” and the window extras stop admitting delivered and cancelled orders. INSPECTABLE for nothing: nuvizz-scan-config?explain=1 now serves the pool, the unplanned set, the retired list, the frozen ledger with the last pass’s summary, and the switches; the run ledger records what each pass filed and healed. Proven end to end: a new test drives the REAL scan, Map feed and window against an in-memory Firestore for the five 09/07 orders and a second scan, and fails if a single /stop/info call is spent. Two things are Chad’s settings, not code, stated in the report: the completed search’s “updated today” clamp means a delivery after the day’s last scan is never seen by any pull (widen NUVIZZ_COMPLETED_UPDATED), and 19 genuinely open routed stops sit outside the ±7-day reach (widen NUVIZZ_ACTIVE_ARRIVAL).'],
   ['0.94.1', 'A DELIVERY FROM A FROZEN DAY IS FILED WHERE IT RAN, AND THE FROZEN COPY STOPS CALLING IT OPEN. The follow-up to v0.94.0, which Chad asked for after it shipped: “fix this — why those 30 orders escaped the overnight refile.” ESTABLISHED FROM THE STOPS’ OWN NUVIZZ TIMELINES (six calls): 007170166-1 (H&H WORLD GROUP) and RA52300615 were planned onto BEN 1 by Zach Johnston in the same minute, 03:04 on 09/02; both dispatched at 05:05; RA52300615 delivered at 10:59 and 007170166-1 at 11:11. RA52300615 is on the 09/02 board as delivered. 007170166-1 is on no board at all and its 09/01 copy still reads unplanned. Every one of the 44 late deliveries that DID land on 09/02 got there through the carry-forward, which files a finished row only when that day’s board already held a copy of the stop — and the lost stops had none, because no scan had written them onto 09/02 as planned before they delivered. Their delivered rows carried their 09/01 arrival day, bucketed to a day the loop never writes, and were dropped on the floor; the 09/01 copy, frozen at 11:35 PM the night before, kept saying unplanned. WHAT IS NOT ESTABLISHED, said plainly: why the active pull did not surface those stops as planned between 03:04 and 11:11. No scan log from that morning survives; dispatcher-set dates are ruled out by the write ledger (no setStopDate since 08/28); there is no planned-without-route row in five days of boards; the load anchor cannot fire on a row whose registry record has no raw.load. The difference visible in the data is that every lost stop had been planned and UN-planned the day before (Freddy Perez, 09/01) while the refiled sibling had not — recorded here as the lead, not the cause. WHAT SHIPS, pinned to the path that loses them once they are missed: on today’s pass, every finished row the pull reports for a frozen past day inside the search’s reach is FILED onto today’s board, pinned to today, exactly as the carry-forward does for a stop it already held — unless the stop’s own-day copy already records it finished, which is a POD re-touch of a properly recorded delivery and not today’s work. Where that copy exists and still reads open, it is HEALED in place with a field-masked patch of the live status and plan fields (never a day, never a pin, never a blind write), so the carry-over fold, the history seal and the date window stop meeting a phantom open order. The same masked heal covers the other direction Chad hit — PRIMARY LOGISTICS, un-planned in NuVizz on Friday afternoon after the 09/02 snapshot froze and still “planned on MARCUS 2” there — for open rows on frozen days NuVizz changed in the last 72 hours. Reads are bounded (80 a scan; a stop past the cap waits for the next), a copy inside a confirmed Save’s write grace is left alone, and nothing is deleted. Zero NuVizz calls: it is the same two pulls, read all the way through. 11 new tests named for the orders. The already-frozen phantoms from 09/01–09/04 are not rewritten — v0.94.0’s pool already drops them from the window and the Map’s carry-over prunes them — this stops new ones being made.'],
@@ -13161,7 +13162,35 @@ const LOAD_BUCKET_STYLE = {
 // the actual culprit was the map panel's Unplanned only (Chad: "says i don't have any
 // planned orders today however i have like 600 of them"). Defaults keep Routing, which
 // passes the whole board, behaving exactly as before.
-function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange, onSearchMatchChange = null, onStatusFilterChange = null, planVersion = 0, highlightIds = null, rootRef = null, boardTotal = null, upstreamFilterLabels = [], planShells = null, onPlanShell = null }) {
+// AN ORDER ALREADY CLAIMED BY AN OPEN COMPARE CARD, as the bottom grid sees it.
+//
+// Chad: "Paragon should still be highlighted a different colour on bottom panel now that
+// it's applied to this route ... looks like it's still available."
+//
+// THE COLOUR IS THE ROUTE'S OWN, and that is the whole design: the same hue already names
+// this card in its header dot and paints its numbered pin on the map, so a router with
+// three cards open reads one identity across three surfaces instead of learning a fourth
+// convention. The SEQUENCE rides with it — "on GARY PITTS" and "first on GARY PITTS" are
+// different facts when you are deciding what to drag next.
+//
+// STAGED IS NOT SAVED, and the chip has to say so rather than imply it: these orders exist
+// only in this browser until Save writes them to NuVizz, so the wording is "staged", never
+// "planned" — the word the board uses for freight NuVizz already holds.
+function StagedChip({ staged }) {
+  if (!staged) return null;
+  return (
+    <span
+      title={`Stop ${staged.seq} on ${staged.name} — staged on an open Compare card, not saved to NuVizz yet`}
+      className="inline-flex items-center gap-1 text-[9px] font-bold rounded px-1 py-px mr-1.5 align-middle border"
+      style={{ color: staged.color, borderColor: staged.color, background: `${staged.color}1a` }}
+    >
+      <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: staged.color }} />
+      {staged.seq}
+    </span>
+  );
+}
+
+function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange, onSearchMatchChange = null, onStatusFilterChange = null, planVersion = 0, highlightIds = null, stagedByStop = null, rootRef = null, boardTotal = null, upstreamFilterLabels = [], planShells = null, onPlanShell = null }) {
   // Loads view groups the FULL board's loads (loadStops) so stop-level filters —
   // notably "Unplanned only" — don't empty it. Falls back to the visible stops.
   const loadSrc = loadStops || stops;
@@ -13273,9 +13302,14 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     // deliveries") — the chip rides the name cell so no new column is needed and it survives
     // any column re-order the gear menu applies.
     { k: 'name', label: 'Ship To Name', w: 220, get: (s) => (
-        String(s.stopType || '').toUpperCase() === 'PU'
-          ? <><span className="inline-block text-[9px] font-bold rounded bg-amber-100 text-amber-800 px-1 py-px mr-1.5 align-middle" title="Pickup — freight comes back to the terminal">PU</span>{s.businessName || '—'}</>
-          : (s.businessName || '—')
+        <>
+          {/* The staged chip rides the NAME cell for the same reason the PU chip does: it
+              survives every column re-order and every column the gear menu hides, and the
+              name column is the one a phone always shows. */}
+          <StagedChip staged={stagedByStop?.get?.(String(s.stopNbr)) || null} />
+          {String(s.stopType || '').toUpperCase() === 'PU' && <span className="inline-block text-[9px] font-bold rounded bg-amber-100 text-amber-800 px-1 py-px mr-1.5 align-middle" title="Pickup — freight comes back to the terminal">PU</span>}
+          {s.businessName || '—'}
+        </>
       ), sortVal: (s) => s.businessName },
     { k: 'addr1', label: 'Address 1', w: 200, get: (s) => s.addr1 || '—', sortVal: (s) => s.addr1 },
     { k: 'addr2', label: 'Address 2', w: 150, get: (s) => s.addr2 || '', sortVal: (s) => s.addr2 },
@@ -13288,7 +13322,25 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
         const keys = getRestrictionBadgeKeys(notes.get(s.matchKey) || null);
         return keys.length ? keys.map((k) => RESTRICTION_ICONS[k]?.short || k).join(', ') : '';
       }, sortVal: (s) => getRestrictionBadgeKeys(notes.get(s.matchKey) || null).map((k) => RESTRICTION_ICONS[k]?.short || k).join(', ') },
-    { k: 'load', label: 'Load', w: 150, get: (s) => loadDisplayName(s.routeName, s.loadNbr), sortVal: (s) => loadDisplayName(s.routeName, s.loadNbr) },
+    // THE LOAD COLUMN IS WHY THE HOLE EXISTED. It reads NuVizz, and a Draft load carrying no
+    // saved orders has nothing there to read — so a stop sitting at position 1 on an open card
+    // listed blank, exactly like an order nobody had touched. It now names the card too, in the
+    // card's colour, and NEVER at the expense of the saved load: a stop already planned onto one
+    // load and staged onto another shows both, because that disagreement is the thing a router
+    // most needs to see before he saves.
+    { k: 'load', label: 'Load', w: 150, get: (s) => {
+        const st = stagedByStop?.get?.(String(s.stopNbr)) || null;
+        const saved = loadDisplayName(s.routeName, s.loadNbr);
+        if (!st) return saved;
+        const sameLoad = saved && (saved === st.name || String(s.loadNbr || '') === String(st.key));
+        return (
+          <>
+            <span className="font-semibold" style={{ color: st.color }} title={`Staged on ${st.name} — not saved to NuVizz yet`}>{st.name}</span>
+            <span className="text-slate-400"> · staged</span>
+            {saved && !sameLoad && <span className="text-slate-500"> · on {saved}</span>}
+          </>
+        );
+      }, sortVal: (s) => (stagedByStop?.get?.(String(s.stopNbr))?.name) || loadDisplayName(s.routeName, s.loadNbr) },
     { k: 'driver', label: 'Driver', w: 150, get: (s) => s.driverName || '', sortVal: (s) => s.driverName },
   ];
   // Board mode shows today's loaded stops; NuVizz mode shows the live-pulled set.
@@ -14206,8 +14258,17 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                   onClick={() => onPick(s)}
                   // Selected-on-the-map rows highlight (Routing passes the live selection) so the
                   // grid and the selection tool read as one; selection tint wins over carry-over.
+                  // A STAGED ROW sits between the two: it is tinted in its own card's colour —
+                  // faint, because a whole route's worth of rows at full strength would drown the
+                  // grid — and selection still wins, since selection is what the router is doing
+                  // right now while staging is what he did a minute ago.
                   className={'cursor-pointer hover:bg-blue-50 ' + (highlightIds?.has(String(s.stopNbr)) ? 'bg-blue-100 hover:bg-blue-200/70' : s.carryover ? 'bg-amber-50/60' : '')}
-                  title={s.carryover ? `Carry-over from ${s.scheduledDate}` : undefined}
+                  style={(!highlightIds?.has(String(s.stopNbr)) && stagedByStop?.get?.(String(s.stopNbr)))
+                    ? { background: `${stagedByStop.get(String(s.stopNbr)).color}14` }
+                    : undefined}
+                  title={stagedByStop?.get?.(String(s.stopNbr))
+                    ? `Stop ${stagedByStop.get(String(s.stopNbr)).seq} on ${stagedByStop.get(String(s.stopNbr)).name} — staged, not saved to NuVizz yet`
+                    : s.carryover ? `Carry-over from ${s.scheduledDate}` : undefined}
                 >
                   {cols.map((c) => (
                     // A `fit` column drops the max-width clamp (and with it the ellipsis), so the
@@ -16639,6 +16700,35 @@ function PreflightStopBadge({ v, isMobile }) {
   );
 }
 
+// ── THE DOCK'S CLOCK, ON THE ROW ────────────────────────────────────────────
+//
+// Chad: "i think there is enough space there to fit our clock icons if one applies to a
+// given stop." There is, and it is the SECOND line of the row — the city/skids/loose line,
+// which carries no controls on either view, so nothing can be pushed onto anything else.
+//
+// THIS IS NOT THE PREFLIGHT BADGE, AND THE DIFFERENCE IS THE WHOLE POINT. The badge above
+// fires when the walked clock says this stop MISSES — a reaction, and only after the
+// sequence is wrong. The clock is the constraint itself, and it is on the row before any
+// order has been decided: "this dock shuts at 2:00p" is what stops a router putting it
+// eleventh in the first place. So the clock is quiet (slate text, the map's own glyph) and
+// the badge is loud (tier colour) — one is a fact about the customer, the other is a
+// warning about this build, and a router must be able to tell them apart at a glance.
+//
+// The kind comes from classifyTimeMark and the glyph from RestrictionIcon, so this mark is
+// the SAME mark as the pin on the map — same rule, same four keys, same silence for a dock
+// with ordinary hours.
+function TimeMarkChip({ mark, isMobile }) {
+  if (!mark) return null;
+  return (
+    <span
+      title={mark.title}
+      className={`inline-flex items-center gap-0.5 shrink-0 font-semibold text-slate-600 ${isMobile ? 'text-[10px]' : 'text-[9px]'}`}
+    >
+      <RestrictionIcon kind={mark.kind} size={isMobile ? 13 : 12} />{mark.text}
+    </span>
+  );
+}
+
 /** The route's own verdict, above its stop list. Two views: the desktop gets one dense line
  *  with the basis beside it; the phone stacks them, in flow, so nothing can land on top of
  *  the list below when the text wraps. */
@@ -16682,7 +16772,7 @@ function PreflightBanner({ pre, isMobile }) {
   );
 }
 
-function RoutingWorkbenchCard({ route, preflight = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
+function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
   // The live-dispatch UI gate is now the gear toggle (prop) rather than the module-level
   // ?write=1/env const. Aliased to the original name so the gate sites below are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -16698,6 +16788,18 @@ function RoutingWorkbenchCard({ route, preflight = null, stopById, otherKeys, ni
     [preflight],
   );
   const unmappedCount = rows.filter((s) => !s.__unresolved && (s.lat == null || s.lng == null)).length;
+  // The clock this dock wears on the BOARD'S day (not today's) — one per row, or nothing.
+  // Computed straight off `rows` rather than memoised: `rows` is itself rebuilt on every
+  // render, so a memo keyed on it would recompute anyway, and the parse is a regex over at
+  // most a few dozen notes. Unresolved stubs are skipped — there is no customer behind them.
+  const timeMarkByStop = new Map();
+  if (dayKey && notes) {
+    for (const s of rows) {
+      if (s.__unresolved) continue;
+      const chip = timeMarkChip(notes.get(s.matchKey), dayKey);
+      if (chip) timeMarkByStop.set(String(s.stopNbr), chip);
+    }
+  }
   // Orders staged for removal (in `removed` but no longer in the live order) — shown in the footer.
   const removedRows = (route.removed || [])
     .filter((id) => !route.order.includes(String(id)))
@@ -16852,6 +16954,13 @@ function RoutingWorkbenchCard({ route, preflight = null, stopById, otherKeys, ni
             // positional lookup would leave the warning sitting on whatever row inherited
             // the index — the most convincing possible way to be wrong.
             const pf = preflightByStop.get(id) || null;
+            // THE SAME CLOCK TWICE IS NOISE. A hopeless verdict already prints the close it
+            // cannot make ("can't make 11:00a"), so repeating "closes 11:00a" beside it says
+            // nothing new and, on a phone, wraps the marks line onto two — on exactly the rows
+            // whose message matters most. Suppressed only when the two name the SAME minute:
+            // "30m late" beside "closes 2:00p" is complementary (late against WHAT), and stays.
+            const tmRaw = timeMarkByStop.get(id) || null;
+            const tm = (tmRaw && pf?.late && pf.hopeless && pf.closeMin === tmRaw.closeMin) ? null : tmRaw;
             // STUB ROW — the id is in this card's order (so Save WILL send it) but the board
             // no longer carries the stop. Shown rather than hidden so the card can't
             // under-report what it's about to save; not draggable/expandable (there's no
@@ -16893,9 +17002,18 @@ function RoutingWorkbenchCard({ route, preflight = null, stopById, otherKeys, ni
                       "PR…". So the verdict sits on its OWN line underneath, in flow, on both
                       views; the phone gets more vertical room because a thumb needs it. */}
                   <div className="truncate font-medium text-slate-800">{s.businessName || id}</div>
-                  {pf?.late && (
-                    <div className={isMobile ? 'mt-1' : 'mt-0.5'}>
+                  {/* THE MARKS LINE — the verdict and the constraint, in flow, under the name.
+                      The badge moved here in v0.89.0 because putting it beside the name turned
+                      "PREFLIGHT CO E" into "PR…"; the clock joins it for the same reason, one
+                      measurement later. Rendered at true size on a 320px card, a "closes 2:00p"
+                      chip on the city line cut "CARTERSVILLE · 6 sk · 8 loose" down to
+                      "CARTERSVILLE · 6 …" — trading the per-stop freight counts Chad asked for in
+                      v0.54.4 for the clock, when the row can simply have both. Wraps rather than
+                      overflowing when a stop carries a verdict AND a constraint. */}
+                  {(pf?.late || tm) && (
+                    <div className={`flex items-center gap-1 flex-wrap ${isMobile ? 'mt-1' : 'mt-0.5'}`}>
                       <PreflightStopBadge v={pf} isMobile={isMobile} />
+                      <TimeMarkChip mark={tm} isMobile={isMobile} />
                     </div>
                   )}
                   {/* City · skids · loose. The card header totals loose for the whole route, so a
@@ -16941,6 +17059,15 @@ function RoutingWorkbenchCard({ route, preflight = null, stopById, otherKeys, ni
                       is TOTAL pieces, so sk + loose should equal pcs. A row where they don't is a
                       freight count worth a second look. */}
                   <div>{Math.round(Number(s.weight) || 0).toLocaleString()} lb · {Number(s.cartons) || 0} sk · {Number(s.volume) || 0} loose · {Number(s.pallets) || 0} pcs</div>
+                  {/* Expanded hides the city line, and with it the chip — so the window
+                      states itself here in full. NOT the order's NuVizz window, which #276
+                      dropped for reading 8:00–8:00 on every stop: these are the customer's
+                      receiving hours, the same field the flag engine judges against. */}
+                  {tmRaw && (
+                    <div className="flex items-center gap-1 text-slate-600">
+                      <RestrictionIcon kind={tmRaw.kind} size={12} />{tmRaw.title} today
+                    </div>
+                  )}
                   {nextMi != null && <div className="text-slate-400">Next stop: {nextMi.toFixed(1)} mi</div>}
                 </div>
               )}
@@ -16974,7 +17101,7 @@ function RoutingWorkbenchCard({ route, preflight = null, stopById, otherKeys, ni
 // ungeocoded ones. Card membership, display, freight totals and the Save payload all use
 // boardStopById so what the card shows == what Save sends (a coord-less stop is still on
 // the load). Anything that needs geometry keeps using stopById.
-function RoutingWorkbench({ wbRoutes, preflightByKey = null, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null, onRouteCreated = null }) {
+function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKey = null, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null, onRouteCreated = null }) {
   const lookup = boardStopById || stopById;
   // Save sends this whole board to NuVizz through nuvizz-write, which requires dispatcher.
   // Its own gate rather than a prop: this component owns the Save button and the confirm path,
@@ -17633,6 +17760,8 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, stopById, boardStop
             key={r.key}
             route={r}
             preflight={preflightByKey?.get?.(r.key) || null}
+            notes={notes}
+            dayKey={dayKey}
             stopById={lookup}
             otherKeys={wbRoutes.map((x) => x.key).filter((k) => k !== r.key)}
             ninjaMode={ninjaMode}
@@ -19658,6 +19787,28 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     return m;
   }, [wbRoutesColored]);
 
+  // THE SAME CLAIM, FOR THE GRID. Chad: "Paragon should still be highlighted a different
+  // colour on bottom panel now that it's applied to this route or say the driver's name —
+  // looks like it's still available."
+  //
+  // He is describing a real hole and the operational cost is double-planning. The map has
+  // marked a staged stop since Compare cards existed — wbRouteInfo above paints it in the
+  // card's own colour with its sequence number — but the bottom grid, which is where a
+  // router actually PICKS the next order, knew nothing about it. Its Load column reads
+  // NuVizz, and a Draft load with no orders saved yet has nothing there to read, so an order
+  // already sitting at position 1 on an open card listed exactly like an untouched one.
+  //
+  // Carries the route's NAME as well as its colour: the dot is the identity a router already
+  // knows from the card header and the map pin, but a phone has no hover, so the name has to
+  // be printable beside it rather than hidden in a title=.
+  const wbStagedByStop = useMemo(() => {
+    const m = new Map();
+    wbRoutesColored.forEach((rv) => rv.order.forEach((id, idx) => m.set(String(id), {
+      color: rv.color, seq: idx + 1, key: rv.key, name: rv.name || rv.loadNbr || rv.key,
+    })));
+    return m;
+  }, [wbRoutesColored]);
+
   // THE PREFLIGHT — judge the route he is BUILDING, not the one NuVizz is holding.
   //
   // Chad: "can we have flags pop in the routing page if we build a route that system
@@ -21557,6 +21708,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
             onSearchMatchChange={setSearchMatchIds}
             onStatusFilterChange={setStatusFilterIds}
             highlightIds={selectedIds}
+            stagedByStop={wbStagedByStop}
             planVersion={planVersion}
           />}
         </div>
@@ -21622,7 +21774,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
                     )}
                     {engineResultContent}
                     {wbRoutes.length > 0
-                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
+                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
                       : controlsContent}
                   </>
                 : mobilePanel === 'loads'
@@ -21686,7 +21838,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
               flex-1/min-h-0 resolves to what is actually left. */}
           {engineResultContent && <div className="p-2 pb-0 shrink-0 max-h-[45%] overflow-y-auto">{engineResultContent}</div>}
           <div className="flex-1 min-h-0">
-          <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
           </div>
         </div>
       ) : leftPanelOn ? (
@@ -21772,6 +21924,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
           onSearchMatchChange={setSearchMatchIds}
           onStatusFilterChange={setStatusFilterIds}
           highlightIds={selectedIds}
+          stagedByStop={wbStagedByStop}
           planVersion={planVersion}
         />}
       </div>
