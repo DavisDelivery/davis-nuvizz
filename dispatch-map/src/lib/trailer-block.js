@@ -96,16 +96,46 @@ export function trailerBlockerLabels(keys) {
 // physically make a delivery, the unknown case belongs on the CAUTIOUS side.
 export const ADVISORY_ONLY_KEYS = new Set(['uline_straight_truck']);
 
+// THE SOURCE DECIDES, NOT THE FACT OF A SCAN. Chad, on a half-and-half pin at LOS RODRIGUEZ
+// whose Address 2 field reads "NO TRACTOR TRL": "Why is this half green when if its manually
+// marked by no tractor trailer by dispatch should override." He is right, and the reason is a
+// distinction this repo already drew and this function then threw away.
+//
+// The scanner is SOURCE-LOCKED and has exactly two inputs (signal-scanner SOURCE_RULES), which
+// customer-notes-writer labels in its own header:
+//
+//   addressLine2      → no_tractor_trailer    (Davis-curated, TRUSTED)
+//   orderInstructions → uline_straight_truck  (Uline-supplied, ADVISORY)
+//
+// Address 2 is a field Davis types into NuVizz. A mark lifted out of it was put there by a
+// person here — it is only "automatic" in the sense that reading it was. Uline's SPL-INSTR-TEXT
+// is another company's free text about their own shipment, and it over-broadcasts.
+//
+// The old rule asked only "is there ANY auto_sources trail?" and answered advisory. Uline was
+// already advisory one line earlier (ADVISORY_ONLY_KEYS), so the ONLY flag that branch ever
+// changed was the Davis-curated one — and it drew it as "nobody has checked this", half green,
+// never matching the lime a proven tractor location wears. One rule mislabelling exactly the
+// case the source lock exists to protect.
+//
+// UNKNOWN STILL COUNTS AS CONFIRMED, unchanged: a flag with no trail was not put there by the
+// scanner, so a person put it there, and on the mark that decides whether a truck can
+// physically make a delivery the unknown case belongs on the cautious side.
+export const TRUSTED_SOURCES = new Set(['addressLine2']);
+
 export function restrictionConfidence(note, key) {
-  // The Uline flag is advisory BY DEFINITION — it is another company's free text about
-  // their own shipment, not a statement about this dock. It never hardens on its own; a
-  // dispatcher ticking the restriction list is what promotes it.
+  // A dispatcher who has taken ownership of the restriction list settles it outright.
   const manual = note?.manual_overrides?.equipment_restrictions === true;
   if (manual) return 'confirmed';
+  // The Uline flag is advisory BY DEFINITION — it never hardens on its own; a dispatcher
+  // ticking the restriction list is what promotes it.
   if (ADVISORY_ONLY_KEYS.has(key)) return 'advisory';
   const autoSources = note?.auto_sources?.[key];
-  const scannerPutItThere = Array.isArray(autoSources) ? autoSources.length > 0 : !!autoSources;
-  return scannerPutItThere ? 'advisory' : 'confirmed';
+  const sources = Array.isArray(autoSources) ? autoSources : (autoSources ? [autoSources] : []);
+  if (!sources.length) return 'confirmed';
+  // A legacy v0.2.0 doc can still carry no_tractor_trailer sourced ONLY from orderInstructions
+  // (SPL-INSTR-TEXT, before the migration re-tagged it as Uline's). That one stays advisory —
+  // it is Uline's text wearing our key, which is precisely what the migration exists to undo.
+  return sources.some((src) => TRUSTED_SOURCES.has(src)) ? 'confirmed' : 'advisory';
 }
 
 /**
@@ -126,6 +156,38 @@ export function isTrailerBlockerKey(key, resolve) {
   if (TRAILER_BLOCKER_KEYS.has(key)) return true;
   const r = typeof resolve === 'function' ? resolve(key) : null;
   return !!r && TRAILER_BLOCKER_KEYS.has(r);
+}
+
+// ── TWO QUESTIONS, NOT ONE ───────────────────────────────────────────────────
+//
+// restrictionConfidence above answers "how sure are we the restriction is REAL", and after
+// the source fix a Davis-typed Address 2 counts. That is the right question for the MAP: the
+// disc says whether to believe the mark.
+//
+// The 9pm text asks a narrower one, and Chad scoped it by hand in v0.82.0: "stops we have put
+// on a tractor that have been hardcoded as no tractor trailer by a dispatcher. Not the Uline
+// advisory ones that we pick up automatically just the dispatcher hardcoded ones." An
+// address-line mark is Davis-typed but scanner-DETECTED, so it sits exactly on the line he
+// drew — and widening who gets woken at 9pm is his call, not a side effect of an icon fix.
+//
+// So the alert keeps the ORIGINAL rule, written out here rather than left implicit: a person
+// ticked the restriction list, or the flag has no scanner trail at all (unknown → a person
+// put it there). One line switches the alert onto restrictionConfidence if he wants it.
+export function dispatcherOwnsRestriction(note, key) {
+  if (note?.manual_overrides?.equipment_restrictions === true) return true;
+  if (ADVISORY_ONLY_KEYS.has(key)) return false;
+  const autoSources = note?.auto_sources?.[key];
+  const scannerPutItThere = Array.isArray(autoSources) ? autoSources.length > 0 : !!autoSources;
+  return !scannerPutItThere;
+}
+
+/** The trailer-blockers on this note a DISPATCHER HERE has taken ownership of — the strict
+ *  set behind the overnight text. Same shape and same alias handling as confirmedBlockerKeys
+ *  below; only the confidence test differs. */
+export function dispatcherOwnedBlockerKeys(note, drawnKeys, resolve) {
+  return (drawnKeys || []).filter(
+    (k) => isTrailerBlockerKey(k, resolve) && dispatcherOwnsRestriction(note, k),
+  );
 }
 
 /** The trailer-blockers on this note that a HUMAN has confirmed. Advisory ones excluded.
@@ -172,7 +234,8 @@ export function dispatcherTrailerBlock(note, resolve = null) {
   const none = { blocked: false, keys: [], via: null };
   if (!note) return none;
   if (note.vehicle_eligibility === 'tractor') return none;   // the dispatcher's own "it fits"
-  const keys = confirmedBlockerKeys(note, note.equipment_restrictions || [], resolve);
+  // STRICT on purpose — see dispatcherOwnsRestriction. This is the alert's set, not the map's.
+  const keys = dispatcherOwnedBlockerKeys(note, note.equipment_restrictions || [], resolve);
   if (note.vehicle_eligibility === 'box_only') return { blocked: true, keys, via: 'eligibility' };
   return keys.length ? { blocked: true, keys, via: 'restriction' } : none;
 }

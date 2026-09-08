@@ -23,7 +23,7 @@
 // A dock with ordinary hours — 7am to 4pm — gets NO mark. Silence is the feature: it is
 // what makes the remaining marks worth looking at.
 
-import { parseClockMin, dayReceivingWindow } from './board-flags.js';
+import { parseClockMin, dayReceivingWindow, fmtMin } from './board-flags.js';
 
 // ── the dials ────────────────────────────────────────────────────────────────
 // Every one of these is a judgement about Davis's day, not a fact about the data, so they
@@ -115,4 +115,50 @@ export function dayWindowMinutes(note, dayKey) {
 export function timeMarkForDay(note, dayKey) {
   const { openMin, closeMin } = dayWindowMinutes(note, dayKey);
   return classifyTimeMark(openMin, closeMin);
+}
+
+// ── THE ROW-SIZED MARK ───────────────────────────────────────────────────────
+//
+// Chad, looking at a Compare card: "i think there is enough space there to fit our clock
+// icons if one applies to a given stop."
+//
+// WHY THE ICON ALONE IS NOT ENOUGH, and it is this repo's own lesson rather than a
+// preference: a value reachable only through a title= tooltip does not exist on a phone
+// (v0.54.83 found four of them). A clock face that says "this dock has an edge" without
+// saying WHICH edge or WHEN cannot be routed against — the router would have to open every
+// marked stop to find out, which is more work than the mark saves. So the chip carries the
+// BINDING TIME in words, and the icon carries which kind of edge it is.
+//
+// The mark itself is classifyTimeMark's, unchanged: the same rule, the same four keys and
+// the same silence the map draws by. A dock with ordinary hours gets nothing HERE too — two
+// surfaces disagreeing about one rule is this repo's most expensive recurring defect, and
+// the way to not have that argument is to not have a second rule.
+/**
+ * @param note    the customer_notes doc, or null
+ * @param dayKey  'mon'..'sun' — the BOARD's day, not today's
+ * @returns {{kind, text, title, openMin, closeMin}|null} — null for a dock that constrains
+ *   nothing, exactly as timeMarkForDay would return null.
+ */
+export function timeMarkChip(note, dayKey) {
+  const { openMin, closeMin } = dayWindowMinutes(note, dayKey);
+  const kind = classifyTimeMark(openMin, closeMin);
+  if (!kind) return null;
+  const o = Number.isFinite(openMin) ? openMin : null;
+  const c = Number.isFinite(closeMin) ? closeMin : null;
+  // WHICH EDGE THE MARK IS ABOUT DECIDES WHICH CLOCK THE ROW PRINTS. classifyTimeMark's
+  // precedence guarantees the edge it chose is the one that exists — a shuts-early or
+  // early-close mark cannot be reached without a close, opens-late cannot be reached
+  // without an open — so no branch here can print a clock for a time nobody stated.
+  let text;
+  if (kind === 'hours_shuts_early' || kind === 'hours_early_close') text = `closes ${fmtMin(c)}`;
+  else if (kind === 'hours_opens_late') text = `opens ${fmtMin(o)}`;
+  else if (o != null && o <= OPENS_EARLY_BY) text = `opens ${fmtMin(o)}`;
+  else text = `open to ${fmtMin(c)}`;
+  // The tooltip states the WHOLE window rather than repeating the edge, and states only the
+  // half that is on file: "6:00a–" for a dock that never said when it shuts would be a
+  // window we invented.
+  const window = o != null && c != null ? `${fmtMin(o)}–${fmtMin(c)}`
+    : o != null ? `opens ${fmtMin(o)}`
+      : `closes ${fmtMin(c)}`;
+  return { kind, text, openMin: o, closeMin: c, title: `Receiving ${window}` };
 }

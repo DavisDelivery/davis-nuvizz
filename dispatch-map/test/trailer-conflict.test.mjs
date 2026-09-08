@@ -418,3 +418,44 @@ test('a covered route is never listed as unknown, and a driverless one is listed
   ], HARD_NO, { MARCUS: 'tractor' });
   assert.deepEqual(out.skipped.routesNoTruckClass, [{ route: 'TRAILER 4', drivers: [] }]);
 });
+
+// ── THE ICON MOVED; THE 9PM TEXT DID NOT ────────────────────────────────────
+//
+// v0.96.0 made a Davis-typed Address 2 mark CONFIRMED, because the map's question is "is this
+// restriction real". The overnight text asks a narrower one, and Chad scoped it by hand in
+// v0.82.0: "stops we have put on a tractor that have been hardcoded as no tractor trailer by a
+// dispatcher. Not the Uline advisory ones that we pick up automatically just the dispatcher
+// hardcoded ones." Widening who gets woken at 9pm is his call, so these pin that the icon fix
+// did not quietly make it for him.
+import { dispatcherOwnsRestriction, dispatcherOwnedBlockerKeys } from '../src/lib/trailer-block.js';
+import { restrictionConfidence } from '../src/lib/map-legend.js';
+
+test('an Address 2 mark is CONFIRMED for the map and NOT dispatcher-owned for the text', () => {
+  const note = { equipment_restrictions: ['no_tractor_trailer'], auto_sources: { no_tractor_trailer: ['addressLine2'] } };
+  assert.equal(restrictionConfidence(note, 'no_tractor_trailer'), 'confirmed', 'the disc fills solid');
+  assert.equal(dispatcherOwnsRestriction(note, 'no_tractor_trailer'), false, 'nobody here ticked the list');
+  assert.equal(dispatcherTrailerBlock(note).blocked, false, 'so the 9pm text stays where Chad scoped it');
+});
+
+test('ticking the list turns the text on, as it always did', () => {
+  const note = {
+    equipment_restrictions: ['no_tractor_trailer'],
+    auto_sources: { no_tractor_trailer: ['addressLine2'] },
+    manual_overrides: { equipment_restrictions: true },
+  };
+  assert.equal(dispatcherOwnsRestriction(note, 'no_tractor_trailer'), true);
+  assert.equal(dispatcherTrailerBlock(note).blocked, true);
+});
+
+test('a hand-added blocker with no scanner trail still texts — unknown means a person put it there', () => {
+  const note = { equipment_restrictions: ['no_53ft'] };
+  assert.deepEqual(dispatcherOwnedBlockerKeys(note, note.equipment_restrictions), ['no_53ft']);
+  assert.equal(dispatcherTrailerBlock(note).blocked, true);
+});
+
+test('Uline never texts, on either rule', () => {
+  const note = { equipment_restrictions: ['uline_straight_truck'], auto_sources: { uline_straight_truck: ['orderInstructions'] } };
+  assert.equal(dispatcherOwnsRestriction(note, 'uline_straight_truck'), false);
+  assert.equal(restrictionConfidence(note, 'uline_straight_truck'), 'advisory');
+  assert.equal(dispatcherTrailerBlock(note).blocked, false);
+});
