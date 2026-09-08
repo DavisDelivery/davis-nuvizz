@@ -41,7 +41,7 @@ const manifest = {
   date: DATE,
   loads: [{
     loadNbr: 'STEVEN', routeName: 'STEVEN', driverName: 'Steven Adjetey',
-    expectedPieces: 5, stopCount: 3,
+    expectedPieces: 10, stopCount: 4,
     stops: [
       { stopNbr:'007162525', businessName:'DASAN USA', pros:['7162525'], primaryPro:'7162525',
         expectedPieces:3, skids:3, loose:0, loadSeq:1, loadStopSeq:7, city:'DULUTH', state:'GA', isPickup:false },
@@ -49,6 +49,12 @@ const manifest = {
         expectedPieces:1, skids:1, loose:0, loadSeq:2, loadStopSeq:6, city:'NORCROSS', state:'GA', isPickup:false },
       { stopNbr:'007161111', businessName:'LATE LABEL LLC', pros:['7161111'], primaryPro:'7161111',
         expectedPieces:1, skids:1, loose:0, loadSeq:3, loadStopSeq:5, city:'ATLANTA', state:'GA', isPickup:false },
+      // Expects FIVE deliberately, while the act presents only three skids. If
+      // the count matched the act, the stop-full refusal would cap over-booking
+      // at three and this act could not tell a correct run from a broken guard —
+      // which is exactly what it failed to do when it was written that way.
+      { stopNbr:'007163333', businessName:'THREE SKID CO', pros:['7163333'], primaryPro:'7163333',
+        expectedPieces:5, skids:5, loose:0, loadSeq:4, loadStopSeq:4, city:'MARIETTA', state:'GA', isPickup:false },
     ],
   }],
 };
@@ -72,23 +78,45 @@ await ctx.addInitScript(() => {
   frames.push(['7162525'], ['7162525'], ['7162525']);
   idle(14);                             // ~1s of hunting before the OG lands
   frames.push(['OG6028653156']);
-  idle(30);                             // aim ends
+  idle(15);                             // aim ends (~1.5s at the measured pace)
   // Act 2 — the torn label: PRO only, forever.
   frames.push(['7159999'], ['7159999'], ['7159999']);
-  idle(60);                             // OG never decodes; the window must close on the clock
+  idle(30);                             // ~2.9s: OG never decodes, the window closes on the clock
   // Act 3 — the LATE piece id. The window closes on a lone PRO (the NOOG
   // fallback books), and THEN the whole label finally decodes. The complete
   // pair is the same physical piece: it must upgrade the NOOG, not double it.
   frames.push(['7161111'], ['7161111'], ['7161111']);
-  idle(60);                             // past the window — the fallback books here
+  idle(35);                             // ~3.4s: past the 2.5s window, so the fallback books here
   frames.push(['7161111', 'OG6028777777'], ['7161111', 'OG6028777777'], ['7161111', 'OG6028777777']);
-  idle(40);                             // aim ends
+  idle(15);                             // aim ends, ~1.2s after the fallback booked — inside the grace
+  // Act 4 — THREE SKIDS, ONE PRO, no piece id on any of them. The manifest says
+  // three, so skids 2 and 3 are ordinary work and must book with no tap. What
+  // separates them from a second LOOK is that the label leaves the frame: phase
+  // A holds one label under the lens for five seconds and must book exactly ONE
+  // piece however many windows close in that time.
+  for (let i = 0; i < 55; i++) frames.push(['7163333']);   // ~5.4s of unbroken aim: TWO windows close
+  idle(15);                             // the loader turns to skid 2 (~1.5s absent)
+  for (let i = 0; i < 15; i++) frames.push(['7163333']);   // skid 2 acquired
+  idle(15);                             // and to skid 3
+  for (let i = 0; i < 15; i++) frames.push(['7163333']);   // skid 3 acquired
+  idle(30);                             // ~2.9s, so the last window closes in the run
   window.__scanScript = frames;
+  window.__scanTotal = frames.length;
+  // Frame cadence is a property of the browser's detect loop, not of this
+  // script, and every act's timing is measured in frames — so it is recorded
+  // rather than assumed. `drainedAt` is when the last scripted frame was taken.
+  window.__scanFirstAt = 0;
+  window.__scanDrainedAt = 0;
   window.BarcodeDetector = class {
     static async getSupportedFormats() { return ['code_128', 'code_39']; }
     async detect() {
-      const f = window.__scanScript.length ? window.__scanScript.shift() : [];
-      return f.map((rawValue) => ({ rawValue }));
+      if (!window.__scanFirstAt) window.__scanFirstAt = Date.now();
+      if (window.__scanScript.length) {
+        const f = window.__scanScript.shift();
+        if (!window.__scanScript.length) window.__scanDrainedAt = Date.now();
+        return f.map((rawValue) => ({ rawValue }));
+      }
+      return [];
     }
   };
 });
@@ -114,8 +142,21 @@ const camBtn = page.locator('text=Tap to scan');
 if (!(await camBtn.count())) fail('no "Tap to scan" — did the load open?');
 else await camBtn.first().click();
 
-// Acts 1 and 2 plus the 2.5s expiry window, with slack.
-await page.waitForTimeout(22000);
+// Acts 1-4 plus every window close, with slack.
+await page.waitForTimeout(38000);
+
+// How fast the scripted frames actually drained. Every act above is written in
+// frames, so this is the conversion factor — and a run where the script never
+// drained has not finished its acts, which would otherwise look like a genuine
+// scanning failure.
+const pace = await page.evaluate(() => ({
+  left: window.__scanScript.length,
+  total: window.__scanTotal,
+  ms: (window.__scanDrainedAt || Date.now()) - (window.__scanFirstAt || Date.now()),
+}));
+const perFrame = pace.total > pace.left ? pace.ms / (pace.total - pace.left) : 0;
+console.log(`   frames: ${pace.total - pace.left}/${pace.total} drained in ${pace.ms}ms (~${perFrame.toFixed(0)}ms/frame)`);
+if (pace.left) fail(`${pace.left} scripted frames never played — the run ended before its acts did`);
 
 const queue = await page.evaluate(() => new Promise((res) => {
   const r = indexedDB.open('loadscan', 1);
@@ -150,13 +191,33 @@ const lateNoog = late.find((r) => String(r.og).startsWith('NOOG-7161111'));
 if (!lateNoog) fail('the NOOG fallback row is missing entirely — it must remain as a void tombstone');
 else if (!lateNoog.voided) fail('the NOOG fallback is still LIVE next to the real id — the upgrade did not fire');
 
+// Act 4: three skids of one PRO, none with a readable piece id.
+// The two halves this proves, and they pull in opposite directions:
+//   SPEED  skids 2 and 3 book with NO confirmation tap — the manifest already
+//          says three are coming, so a repeat PRO below that count is work,
+//          not a suspicion. (Chad: "the scanner is taking too long now that we
+//          are confirming each new item to same pro".)
+//   SAFETY five seconds of unbroken aim at ONE label is still ONE piece. The
+//          label has to leave the frame to earn the next booking, so a phone
+//          left pointing at a skid cannot quietly fill the stop.
+const three = queue.filter((r) => r.pro === '7163333' && !r.voided);
+if (three.length !== 3) fail(`THREE SKID CO booked ${three.length} pieces from three aims — must be exactly 3 (the stop has room for 5, so over-booking is visible here rather than capped)`);
+const distinct = new Set(three.map((r) => r.og));
+if (distinct.size !== three.length) fail(`THREE SKID CO has duplicate ids: ${[...distinct].join(', ')}`);
+if (three.some((r) => !/^NOOG-7163333-\d+$/.test(String(r.og)))) {
+  fail(`THREE SKID CO ids should all be NOOG fallbacks: ${three.map((r) => r.og).join(', ')}`);
+}
+
 const body = await page.locator('body').innerText();
-if (!/3\s*\/\s*5/.test(body)) fail(`header count should read 3/5, body has: ${body.match(/\d+\s*\/\s*\d+/g)}`);
+// The confirmation card must never have been needed — its own words are the
+// assertion, because a tap demanded on ordinary work is the whole complaint.
+if (/already logged|tap to add it/i.test(body)) fail('a confirmation card was raised for an expected piece');
+if (!/6\s*\/\s*10/.test(body)) fail(`header count should read 6/10, body has: ${body.match(/\d+\s*\/\s*\d+/g)}`);
 if (errs.length) fail('uncaught errors: ' + errs.join(' | '));
 
 await browser.close();
 server.close();
 console.log(ok
-  ? '\n✓ PASS — one aim books ONE piece with its real id; a dead OG books via NOOG at the window; a LATE OG upgrades its NOOG instead of doubling it'
+  ? '\n✓ PASS — one aim books ONE piece with its real id; a dead OG books via NOOG at the window; a LATE OG upgrades its NOOG instead of doubling it; and three skids of one PRO book with no tap while five seconds of unbroken aim books once'
   : '\n✗ failed');
 process.exit(ok ? 0 : 1);

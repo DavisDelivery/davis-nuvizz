@@ -39,12 +39,36 @@ const QUAGGA_CDN = 'https://cdn.jsdelivr.net/npm/@ericblade/quagga2@1.8.4/dist/q
  * closes, not on the first PRO frame. The instant booking minted PHANTOMS: the
  * PRO decodes a beat before the OG, the phantom books, the green flash ends the
  * aim, and the OG that lands anyway books as a second piece. Two scans read
- * 3/3 on DASAN USA; eleven read 10/11 on GEM SHOPPING. Matches the gun's
- * window, so both entry routes pair identically.
+ * 3/3 on DASAN USA; eleven read 10/11 on GEM SHOPPING.
+ *
+ * ── SHORTENING THIS WAS TRIED IN v0.45.0 AND IS WRONG. DO NOT REPEAT IT. ────
+ *
+ * The window is dead time on a label whose piece id will not decode, so 1200ms
+ * was tried to halve the wait, on the reasoning that v0.43.0's upgrade makes
+ * early booking self-correcting: book the fallback, and when the real id turns
+ * up, findUpgradeableNoog voids the fallback and the id takes its place.
+ *
+ * THAT REASONING ONLY HOLDS IF THE LATE ID ARRIVES AS PART OF A COMPLETE PAIR.
+ * It does not. Quagga is multiple:false (see the decoder config below), so on an
+ * iPhone the two barcodes of one label ALWAYS decode on separate frames — the
+ * late piece id arrives ALONE, a lone OG cannot identify a stop, so it never
+ * reaches record() and never upgrades anything. Shortening the window would
+ * trade real piece ids for NOOG fallbacks and add an orphan buzz per label:
+ * slower to trust, not faster to scan. The camera end-to-end check caught it,
+ * with DASAN and LATE LABEL both booking fallbacks and no upgrade firing.
+ *
+ * The speed the dock actually needed came from the repeat rule instead — see
+ * PRO_REACQUIRE_MS in App.jsx — which costs nothing in piece ids.
  */
 export const CAMERA_PAIR_WINDOW_MS = 2500;
-/** How often the window is checked when no further barcode ever decodes. */
-const CAMERA_TICK_MS = 400;
+/**
+ * How often the window is checked when no further barcode ever decodes.
+ *
+ * Halved from 400ms in v0.45.0. This is pure latency on every PRO-only piece —
+ * the window has already closed and the piece is just waiting to be noticed —
+ * so it was costing up to another 400ms on top of the 2500ms wait, for nothing.
+ */
+const CAMERA_TICK_MS = 200;
 
 const NATIVE_DETECT_INTERVAL = 60; // ms, ~16 fps — lets autofocus settle
 const NATIVE_ZOOM_TARGET = 1.8;
