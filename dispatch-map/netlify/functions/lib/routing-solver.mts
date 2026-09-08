@@ -20,7 +20,7 @@ import type {
 } from './routing-types.mts';
 import { DEFAULT_SERVICE_MIN } from './routing-types.mts';
 import {
-  truckCanCarry, capacityFits, emptyLoad, addLoad, computeLoad, REASON,
+  truckCanCarry, capacityFits, loadFraction, emptyLoad, addLoad, computeLoad, REASON,
 } from './routing-constraints.mts';
 
 const DEPOT_ID = 'DEPOT';
@@ -76,6 +76,36 @@ function assign(stops: SolverStop[], trucks: SolverTruck[], depot: { lat: number
     for (const s of terr) { const d = haversineM(stop, s); if (d < best) best = d; }
     return best;
   };
+  // ── THE BALANCE TERM — why a 53' trailer used to sit nearly empty ──────────
+  //
+  // Chad: "if i give it 2 boxes and 1 tractor and 30 stops it puts what it knows is tractor
+  // friendly on the tractor and rest on the boxes." Measured on the real modules before this
+  // existed, with the shipped default profiles and a normal day's restrictions: BOX-1 took 14,
+  // BOX-2 took 14 — both at their 14-skid ceiling — and the 28-skid TRACTOR took 2 of 30, for
+  // 269 fleet miles against 143 on a clean board. Two trucks did the day and the big one
+  // followed them around.
+  //
+  // The cause was that growth was PURELY nearest-pair: whichever truck's territory happened to
+  // be closest won every stop until it physically could not take another. Nothing in the loop
+  // knew a truck was nearly full while another was nearly empty, and the objectiveWeights
+  // `balance` term the request has always carried was plumbed the whole way in and never read.
+  //
+  // So placement now costs a stop as its distance PLUS a penalty for how full that truck
+  // already is. The penalty is expressed in METRES — one full truck is worth BALANCE_M of
+  // detour — which keeps it comparable with the distance it is traded against and keeps the
+  // whole thing deterministic. At 12 km a stop goes to a nearer truck over an emptier one for
+  // any realistic in-town gap, and the term only decides between trucks that are already a
+  // long way apart or badly out of balance. It CANNOT place a stop on a truck that does not
+  // fit it: `fits` is still the gate and equipment is still absolute.
+  //
+  // This is a preference, not a rule about tractors. Chad's ask reads as "use the big truck",
+  // and the honest way to get that is to stop the small ones being filled first — a tractor
+  // with twice the capacity then attracts roughly twice the freight on its own, without the
+  // solver having to hold an opinion about what a 53' is for.
+  const BALANCE_M = Number(process.env.ROUTING_BALANCE_METRES) || 12000;
+  const cost = (stop: SolverStop, t: SolverTruck): number =>
+    distToTruck(stop, t) + BALANCE_M * loadFraction(loadByTruck.get(t.id)!, t);
+
   const spillNoTruck = (stop: SolverStop) => {
     const reasons = new Set<string>();
     for (const t of trucks) for (const r of truckCanCarry(stop, t).reasons) reasons.add(r);
@@ -142,7 +172,7 @@ function assign(stops: SolverStop[], trucks: SolverTruck[], depot: { lat: number
     for (const stop of remaining) {
       for (const t of trucks) {
         if (!fits(stop, t)) continue;
-        const d = distToTruck(stop, t);
+        const d = cost(stop, t);
         if (d < bestD || (d === bestD && bestStop && stop.id < bestStop.id)) { bestD = d; bestStop = stop; bestTruck = t; }
       }
     }
@@ -263,9 +293,28 @@ export function solveRouting(input: SolverInput): SolverOutput {
   const { byTruck, unassigned } = assign(stops, trucks, input.depot);
 
   const routes: BuiltRoute[] = [];
+  // A TRUCK THAT GOT NOTHING IS AN ANSWER, NOT AN ABSENCE. It used to be dropped here and the
+  // screen renders one card per returned route, so a picked truck that ended up with zero
+  // stops simply was not on screen — the dispatcher picked three and got two cards, with
+  // nothing anywhere saying which one went unused or why. That is the exact shape of the
+  // "only green on a trailer" trap: on a board where nothing is marked green, every stop is
+  // held to a box truck and the 53' silently leaves the plan.
+  const idleTrucks: Array<{ truckId: string; label: string; reason: string }> = [];
   for (const truck of trucks) {
     const assigned = byTruck.get(truck.id) ?? [];
-    if (!assigned.length) continue;
+    if (!assigned.length) {
+      // Say WHY, from the freight itself rather than a guess: if no selected stop could ever
+      // ride this truck, that is an equipment story and the dispatcher can act on it.
+      const anyCapable = stops.some((s) => truckCanCarry(s, truck).ok);
+      idleTrucks.push({
+        truckId: truck.id,
+        label: truck.label || truck.id,
+        reason: anyCapable
+          ? 'the other trucks covered every stop before this one was needed'
+          : 'no selected stop is allowed on this truck',
+      });
+      continue;
+    }
     const nodes = assigned.map((s) => indexById.get(s.id)!);
     const ordered = sequence(nodes, strategy, matrix);
     routes.push(assembleRoute(truck, assigned, ordered, idByIndex, matrix, departEpochSec));
@@ -274,6 +323,7 @@ export function solveRouting(input: SolverInput): SolverOutput {
   return {
     routes,
     unassigned,
+    idleTrucks,
     meta: { engine: 'deterministic', strategy, truckCount: trucks.length, stopCount: stops.length },
   };
 }
