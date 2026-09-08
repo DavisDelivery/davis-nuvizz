@@ -116,7 +116,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.97.0';
+const APP_VERSION = '0.97.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -187,6 +187,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.97.1', 'THE MAP LEGEND IS NOW UNDER MORE AS WELL AS ON THE RAIL. Chad: “On the routing page under the more tab i want a legend for what all the icons on the map mean and i want it to only show the current icons on the map.” The legend and that exact filtering already existed — the ⓘ at the bottom of the Routing tool rail, built from the same drawnStops the map draws, silent about every mark that is not on screen — so this is a second way in, not a second legend. IT IS AN ACTION ITEM, NOT A TAB, and that is the whole design: More normally switches screens, and navigating to a legend would unmount the Routing screen and with it the drawn-stops list that makes the legend say only what is currently drawn. So the menu signals rather than navigates, and the panel it opens is the SAME one the ⓘ opens — the open flag moved up to the screen so two entry points cannot end up showing two inventories. The signal is a COUNTER rather than a boolean, because a boolean goes true once and a second trip through the menu after closing the panel would then do nothing, which reads exactly like a broken menu. IT IS IN BOTH MENUS. The desktop nav row and the phone chip menu are built separately, and v0.54.50 shipped Manifest check visible on a laptop and invisible on a phone for precisely that reason; the phone list even carries the comment saying so. It shows on Routing only — an item that did nothing from the Quote screen would be worse than no item — and while a saved load is being viewed the rail is hidden, so the signal says “close the saved-load view to open the map legend” rather than silently doing nothing. AND IT IS GUARDED IN A BROWSER, because its first build broke TWICE in ways no unit test could see: the open signal was handed to <RoutingScreen> from a component that never had it — RoutingSection sits between the Shell and the screen — so the page threw “legendSignal is not defined” and the whole nav row vanished; and the phone’s nav turned out to be the VERSION CHIP, not the first header button, which on Routing is the screen’s own settings gear riding the app-bar portal slot. verify-legend-menu drives the real bundle on BOTH views, opens the menu, picks the item, and checks the legend panel appeared AND that the map is still on screen — a legend that navigated away from the map it describes is not a legend. 6 new tests plus that guard, on both layouts in CI.'],
   ['0.97.0', 'DISPATCH ALL — TWENTY CLICKS AS ONE, WITH EVERY GATE THE TWENTY HAD. Chad: “i want a dispatch all button that dispatches every route that hasn’t been dispatched in the routes menu.” Twenty Draft routes at 5am is twenty clicks and twenty chances to miss one, and a missed dispatch is a truck leaving with nothing on the driver’s phone. It is EXACTLY as picky as the twenty clicks it replaces — the same three gates the row button enforces, in one pure planner both read, so the count on the label and the list in the confirm cannot disagree — and it acts on the FILTERED list, so what the panel is showing is what it sends. IT ASKS FIRST, and not with a number: dispatch is the least reversible thing this app does, so the confirm names every load AND its driver, carries the production warning in Live mode, and puts the routes it will NOT send — no driver, no load id — in front of the dispatcher at the moment he is deciding rather than afterwards. The run is sequential, because twenty concurrent production writes buy seconds and risk a rate limit turning a clean run into a partial one; it fires the identical call the single button does; and it reports what happened rather than that it finished — “18 dispatched · 2 FAILED: CHE (write error), SUW 2” with the per-route detail in the console. Beta previews and sends nothing. 22 new tests, 3,591 green; mobile layout guard and smoke green.'],
   ['0.96.0', 'THE COMPARE ROW NOW WEARS THE DOCK’S CLOCK, AND THE BOTTOM GRID STOPS OFFERING FREIGHT THAT IS ALREADY ON A CARD. Chad, on a Compare card: “i think there is enough space there to fit our clock icons if one applies to a given stop” — and, on the grid below it: “Paragon should still be highlighted a different colour on bottom panel now that it’s applied to this route or say the driver’s name, looks like it’s still available.” THE CLOCK. Every stop row on a Compare card now carries the SAME mark the map pin wears — classifyTimeMark’s four keys, the same glyph, and the same silence for a dock open an ordinary working day, because one rule with two renderers is the only version of this that cannot drift. It prints the BINDING TIME beside the glyph (“closes 2:00p”, “opens 9:00a”) rather than the icon alone: this repo has already found four values reachable only through a title= tooltip, which a touch device never shows, and a clock face with no clock on it would be the fifth. It rides the city/skids line, which carries no controls on either view, so nothing lands on anything else; expanding a stop hides that line, so the window restates itself in the detail. AND IT IS NOT THE PREFLIGHT BADGE, deliberately: the badge is loud and fires when the walked clock says this stop MISSES — a reaction, after the sequence is already wrong — while the clock is quiet and states the constraint BEFORE any order is chosen, which is what stops a 2:00p dock being put eleventh in the first place. THE GRID. A stop staged onto an open card existed on the map (numbered pin, card colour) and nowhere in the bottom grid, whose Load column reads NuVizz — and a Draft load holding no saved orders has nothing there to read. So PARAGON sat at position 1 on GARY PITTS and listed exactly like an order nobody had touched, which is a double-planning waiting to happen. The row is now tinted in its card’s own colour, the name cell carries a [● n] chip with the stop’s position, and the Load column names the card and marks it “staged” — the word matters, since these orders live only in this browser until Save writes them. A stop already planned onto one load and staged onto another shows BOTH, because that disagreement is the thing worth seeing before Save. Selection tint still wins: selection is what the router is doing now, staging is what he did a minute ago. WHERE THE CLOCK ENDED UP, AND WHY IT MOVED — found by rendering it at true size rather than by reading it. The first build put the chip on the city line, which is where the free space visibly is; on a 320px Compare card that cut “CARTERSVILLE · 6 sk · 8 loose” down to “CARTERSVILLE · 6 …”, trading away the per-stop skid and loose counts Chad asked for in v0.54.4 to buy space the row did not have to sell. It sits on the marks line under the name instead — the line the preflight badge moved to in v0.89.0 for the same class of reason — so the name, the freight and the constraint all survive, and the two chips wrap rather than overflow when a stop carries both. AND THEY DO NOT SAY THE SAME THING TWICE: a hopeless verdict already prints the close it cannot make, so an identical “closes 11:00a” beside “can’t make 11:00a” is suppressed — only when the two name the same minute, since “30m late” beside “closes 2:00p” answers “late against what?” and stays. 22 new tests, 3,545 green; mobile and desktop layout guards and the route-preflight guard re-run on both views. AND FOUR THINGS FROM THE SAME SITTING. (1) A DAVIS-TYPED “NO TRACTOR TRL” NOW DRAWS AS CONFIRMED. Chad, on a half-and-half pin: “Why is this half green when if its manually marked by no tractor trailer by dispatch should override.” He was right and the cause was one line: restrictionConfidence asked only “did a scanner touch this?”, never WHICH source — and the scanner is source-locked to exactly two, which customer-notes-writer labels itself: addressLine2 → no_tractor_trailer (Davis-curated, TRUSTED) and orderInstructions → uline_straight_truck (Uline-supplied, advisory). Address 2 is a field Davis types into NuVizz, so that mark was put there by a person here; Uline was already advisory a line earlier, which means the ONLY flag that branch ever changed was the trusted one, and it drew it as “nobody has checked this” — a green that could never match the lime a proven tractor stop wears. It reads the source now: a trusted source confirms, an un-migrated orderInstructions-only doc stays advisory, no trail at all still means a person put it there. Such a stop also now vetoes the lime, which is the point — proven history must never read as permission where somebody said no. THE 9PM TEXT DELIBERATELY DID NOT MOVE WITH IT: Chad scoped that in v0.82.0 to “just the dispatcher hardcoded ones”, and an address-line mark is Davis-typed but scanner-detected, so widening who gets woken is his call and not a side effect of an icon fix. The two questions are now two functions with their names on them, and four tests pin that the icon moved and the alert did not. (2) THE SELECTED-STOPS PANEL CAN KEEP ONLY WHAT A TRACTOR CAN RUN. “I want a button on top of bar to remove all stops in the list that are not tractor friendly stops.” It drops exactly the rows the panel does not paint green — one shared rule, because a button that drops a green row is the worst version of this — names its count, says what survives, and does the whole set in ONE state update rather than one marker-layer rebuild per stop. (3) THE ✕ CLEARS. “when i click the x i want it to close and clear all.” It used to flip a PERSISTED panel toggle, so it hid the panel and left the stops selected; wired to that same toggle a clearing ✕ would have suppressed the panel on the next selection too. It clears the selection instead, and the empty panel unmounts itself — hiding while keeping the stops still lives on the gear switch. (4) WHY A STOP IS NOT PAINTED LIME IS NOW ANSWERABLE. Chad, on MHC KENWORTH: “i’m pretty sure a tractor has delivered here so it should be auto painted can you check on that.” Nothing could. The lime is a JOIN — MarginIQ employees tagged tractor, matched by NuVizz ALIAS against sealed deliveries — and all four of its failure modes produce the same blank pin. tractor-paint-explain reads Firestore only, spends ZERO NuVizz calls, and prints every delivery on file with the roster’s verdict on the driver who ran it: tractor, not-a-tractor, or unknown-to-roster — that last one being the Brent Boyd/Bryd alias failure that has cost this repo a rule before and is invisible until it is named. It also runs the map’s own paint override rather than describing it, so a flagged-but-vetoed stop explains itself. 31 new tests.'],
   ['0.95.2', 'ONE SCAN AT 7AM SATURDAY, AND THE MEANS TO STOP GUESSING AT THE LAST SETTING. Chad, on leaving Friday alone: “fridays schedule is fine if i need fresh data before sunday’s scans start i can manually refresh and just make sure that pulls all the correct data and heals. We could also schedule one scan at 7 am saturday to heal anything.” THE MANUAL REFRESH WAS CHECKED, NOT ASSUMED, because “make sure” is an instruction to verify: the button posts to nuvizz-manual-scan-background, which forces manual=1 and DISCARDS date/days, so it rides the cheap list path and can never reach the ~3,000-call number probe; manual bypasses the weekend blackout and the anti-thrash floor; it forces all three kinds due, so a press pulls both saved searches and the roster rather than the slice the hour would have run; and because the pull is the two-scan pull, the frozen-day pass runs on today and heals. Two new tests pin the first three and the end-to-end board test already drives the real scan through that same manual URL for the fourth. THE SATURDAY HEAL, in the narrowest shape that can work: one hour (07:00–08:00 ET), two saved searches, no roster. Both halves were needed and the first alone would have been decorative — the weekend gate in scan-schedule had to open, AND a rule had to make the kinds due, or the fire would act and then return “plan not due” having pulled nothing. Caught before shipping by running the whole chain rather than the half I had changed. ONE MEANS ONE, enforced by shape: a one-hour band at a four-hour interval can fire once inside it, the gate additionally requires that nothing has scanned for four hours, and a fire that FAILED leaves the gap open so the next tick retries. Four hours and not twelve because Friday’s last scan is ~19:50 and Saturday 07:00 is eleven and a quarter hours later — a twelve-hour interval would never come due, which is the exact kind of rule that reads as shipped and does nothing. The two weekend carve-outs that were reverted in v0.93.x (roster, then planned) are why the roster is deliberately absent: replayed on the five-minute cron they took a Saturday from 0 vendor calls to 65. The guard test that caught that is not weakened — it now replays all 288 fires of a Saturday with the scan stamps ADVANCING as they would in life, and asserts EXACTLY ONE acting fire, at 7am, on the full path, with the roster still out. Estimated Saturday cost: one scan, two list calls, plus enrichment only for orders never seen before. AND THE LAST OPEN SETTING GETS A TOOL INSTEAD OF A GUESS. The completed search is clamped to “Stop Detail Updated = today”, which is why a Friday-evening delivery is invisible until Monday, and widening that axis is not safe to guess at: an unhonoured period returns either everything (blowing the row cap) or nothing (a board that silently stops recording deliveries), and this repo has already spent six calls guessing at period grammar. The stop-explorer gains a read-only probe — { savedSearch:\'completed\', probePeriods:true, updatedPeriod:\'-2d\' } — that runs the same saved search with one filter value changed and reports the rows grouped by the day NuVizz last touched them, so honoured / ignored / rejected is visible in one response. ONE call, which Chad approved, spent once the deploy lands. ALSO FIXED, found by reading v0.95.1’s own explain output rather than by a test: the switches block re-derived the frozen pass’s read cap from the environment instead of asking the scan, so the moment the default moved (120 → 400) the diagnostic began reporting a cap the scanner was not using — a settings screen that quietly disagrees with the code is worse than none, because it is what somebody reasons from at 6am. Both budgets are now defined once in the scan and read from there, and the block also reports the copy depth, the completed arrival window and the Saturday heal hour. WHAT v0.95.1 IS ACTUALLY DOING IN PRODUCTION, from that same endpoint: reach 30 days, pool window 08/08–10/07, 696 open rows against 678 at ±7d — so a month of reach costs eighteen rows, nowhere near the 5,000 cap, and the pull is not truncated. The starvation is gone: the pass now reads 274 of a 400 budget with 0 capped, 0 unread and 0 part-read, against 119 of 120 with 51 capped and 51 unread before. Every open stray on the board was resolved in a single pass.'],
@@ -9170,7 +9171,7 @@ function makeDriverLabelOverlayClass(google) {
 // on the morning something is already wrong. The bar that is actually at the top carries it,
 // and Shell is the one that knows which that is (see headerAtTop) — this component never
 // guesses. Defaults true so any caller that does not pass it behaves exactly as before.
-function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnread = 0, presence = null, manifestBadge = 0, atTop = true }) {
+function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnread = 0, presence = null, manifestBadge = 0, atTop = true, showLegend = false }) {
   // Starts open so the tabs under it stay one tap away; remembered per device.
   const [moreOpen, setMoreOpen] = useState(() => {
     try { return window.localStorage.getItem('dd_more_open') !== '0'; } catch { return true; }
@@ -9294,6 +9295,17 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
             </button>
             {moreOpen && (
               <>
+                {/* Routing only — it opens the Routing map's own legend, and there is no map
+                    behind the Quote screen for it to describe. */}
+                {showLegend && (
+                  <button
+                    className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+                    onClick={() => onSelectMenu('legend')}
+                    role="menuitem"
+                  >
+                    <Info size={12} /> Map legend
+                  </button>
+                )}
                 <button
                   className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
                   onClick={() => onSelectMenu('manifest')}
@@ -16526,12 +16538,17 @@ function RoutingToolBtn({ active, onClick, disabled, title, children }) {
   );
 }
 
-function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja, ninjaAvailable, legendInventory = null, inFlow = false }) {
+function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja, ninjaAvailable, legendInventory = null, inFlow = false, legendOpen = false, onLegendOpen = null }) {
   // Chad: "put a map legend button here to show what all the different icons that are
   // currently on the map mean." The rail is where a dispatcher's thumb already is, and it
   // is the only furniture on this screen — the Routing map had no legend of any kind, on
   // either view, while drawing the exact same twenty marks the dispatch Map draws.
-  const [legendOpen, setLegendOpen] = useState(false);
+  //
+  // THE OPEN FLAG IS OWNED BY THE SCREEN, NOT BY THIS RAIL. Chad also wants the legend under
+  // the More menu, which lives in the app bar two components up — so the ⓘ here and the menu
+  // item there open the SAME panel rather than a second copy that could show a different
+  // inventory. RoutingScreen holds the flag; both routes set it, and either closes it.
+  const setLegendOpen = onLegendOpen || (() => {});
   const [legendAll, setLegendAll] = useState(false);
   const Btn = RoutingToolBtn;
   // z-30 keeps the tools above the Selected panel and chips so they're always tappable (issue #232).
@@ -18385,7 +18402,7 @@ function EngineResultPanel({ result, kind, onDismiss }) {
   );
 }
 
-function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }) {
+function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null, openLegendSignal = 0 }) {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
   const { stops, loading, error: stopsError, refresh: refreshStops, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, lastCompletedScanAt, ops, scanUnplannedCount } = useStops(selectedDate);
   // Stops status card (same pill as the dispatch Map, top-right of the routing map):
@@ -20649,6 +20666,19 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // the Routing map's own — a stop numbered onto a Compare card wears a numbered pin, and a
   // stop already planned with no card open is muted to a slate ring, and neither of those
   // draws its restriction icons.
+  // The legend panel's open flag — see RoutingMapTools. Opened by its own ⓘ button and by
+  // More → Map legend; closed by either.
+  const [legendOpen, setLegendOpen] = useState(false);
+  // MORE → MAP LEGEND arrives as a COUNTER rather than a boolean, so picking it again after
+  // closing the panel opens it again; the initial 0 is skipped so it is shut on arrival.
+  useEffect(() => {
+    if (!openLegendSignal) return;
+    // The rail — and with it the legend panel — is hidden while a SAVED load is being viewed
+    // read-only. A menu item that silently does nothing is the failure this repo keeps
+    // finding, so say why instead of leaving the dispatcher tapping it.
+    if (viewing) { showMapToast('Close the saved-load view to open the map legend.'); return; }
+    setLegendOpen(true);
+  }, [openLegendSignal]);   // eslint-disable-line react-hooks/exhaustive-deps
   const routingLegendInventory = useLegendInventory({
     stops: drawnStops,
     notes,
@@ -21838,7 +21868,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
                     tab). In a column the chip's height MOVES the tools. Found by the
                     overlap guard, 2026-08-19. */}
                 <button onClick={() => { setMobilePanel('setup'); setSheetOpen(true); }} className="bg-white/95 border border-slate-200 rounded shadow px-2 py-1 text-[11px]" title="Review selected stops in the Setup panel">{tally.count} selected · {tally.skids} skids · {tally.pieces} pcs</button>
-                <RoutingMapTools inFlow selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} legendInventory={routingLegendInventory} />
+                <RoutingMapTools inFlow legendOpen={legendOpen} onLegendOpen={setLegendOpen} selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} legendInventory={routingLegendInventory} />
               </div>
             )}
           {/* On mobile the selected list lives in the Setup sheet (tap the chip) — a full-width map
@@ -22020,7 +22050,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button),
             with the Board Flags chip stacked above it. */}
         <div className="absolute top-12 right-2 z-[15] max-w-[240px] flex flex-col items-end gap-1">{flagsOverlay()}{statusCard()}</div>
-        {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} legendInventory={routingLegendInventory} />}
+        {!viewing && <RoutingMapTools legendOpen={legendOpen} onLegendOpen={setLegendOpen} selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} legendInventory={routingLegendInventory} />}
         {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
         {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[80%] bg-slate-900/90 text-white text-[12px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={13} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
         {viewing && (
@@ -24019,7 +24049,7 @@ function RoutingSubTabs({ tab, onChange }) {
 // Routing section = the beta Build screen + the Engine (shadow) tab. `routingTab`/`setRoutingTab`
 // are LIFTED to the shell so the Build/Engine toggle can live in the top nav row on desktop; the
 // in-screen sub-tab bar renders only on mobile (`showSubTabs`).
-function RoutingSection({ debugCaptureRef, routingTab, setRoutingTab, showSubTabs, presence }) {
+function RoutingSection({ debugCaptureRef, routingTab, setRoutingTab, showSubTabs, presence, openLegendSignal = 0 }) {
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* PHONE: the row shows on the ENGINE screen only (v0.93.15). On Build it cost 59px above the
@@ -24031,7 +24061,7 @@ function RoutingSection({ debugCaptureRef, routingTab, setRoutingTab, showSubTab
         </div>
       )}
       {routingTab === 'build'
-        ? <RoutingScreen debugCaptureRef={debugCaptureRef} presence={presence} onOpenEngine={showSubTabs ? () => setRoutingTab('engine') : null} />
+        ? <RoutingScreen debugCaptureRef={debugCaptureRef} presence={presence} openLegendSignal={openLegendSignal} onOpenEngine={showSubTabs ? () => setRoutingTab('engine') : null} />
         : <EngineScreen />}
     </div>
   );
@@ -24316,9 +24346,20 @@ function Shell() {
   // Close chip menu on any tab change or click outside the bar.
   useEffect(() => { setChipMenuOpen(false); }, [tab]);
 
+  // THE MAP LEGEND, FROM THE MORE MENU. Chad asked for it there, and the shape it needs is
+  // the one 'debug' already uses: an ACTION item, not a tab. Navigating to a legend screen
+  // would leave the map behind, and this legend's whole value is that it lists the marks
+  // CURRENTLY DRAWN — it is computed from the Routing map's own drawnStops, which do not
+  // exist on any other screen. So More does not switch screens here; it bumps a counter the
+  // Routing screen watches and opens the panel that is already on it.
+  //
+  // A COUNTER, NOT A BOOLEAN: a boolean would go true once and never re-fire, so a second
+  // trip through the menu after closing the panel would do nothing at all.
+  const [legendSignal, setLegendSignal] = useState(0);
   const onSelectMenu = (next) => {
     setChipMenuOpen(false);
     if (next === 'debug') { setDebugOpen(true); return; }
+    if (next === 'legend') { setLegendSignal((v) => v + 1); return; }
     if (next === 'messages') { openMessages(); return; }
     // NOTE the default: anything unrecognised lands on 'map'. A new screen must be
     // named here or the phone menu silently opens the map instead — which is what
@@ -24373,6 +24414,7 @@ function Shell() {
           presence={presence}
           manifestBadge={moreBadge}
           atTop={headerAtTop}
+          showLegend={tab === 'routing'}
         />
       ) : (
         <header className="shrink-0 relative z-30 flex items-center justify-between px-4 py-2 border-b bg-white" style={headerAtTop ? { paddingTop: 'env(safe-area-inset-top)' } : undefined}>
@@ -24403,9 +24445,12 @@ function Shell() {
                 a screen you are NOT on, which is the entire point of the manifest check. */}
             <MoreMenu
               activeId={debugOpen ? 'debug' : tab}
-              onPick={(id) => (id === 'debug' ? setDebugOpen(true) : setTab(id))}
+              onPick={(id) => (id === 'debug' ? setDebugOpen(true) : id === 'legend' ? setLegendSignal((v) => v + 1) : setTab(id))}
               badge={moreBadge}
               items={[
+                // Only on Routing, because it opens THAT map's legend — an item that did
+                // nothing from the Quote screen would be worse than no item.
+                ...(tab === 'routing' ? [{ id: 'legend', label: 'Map legend', hint: 'What the marks currently on this map mean', icon: <Info size={14} /> }] : []),
                 { id: 'manifest', label: 'Manifest check', hint: 'Uline nightly vs the scan', icon: <FileCheck size={14} />, badge: moreBadge },
                 { id: 'comms', label: 'Customer emails', hint: 'Delivery-complete email program', icon: <Mail size={14} /> },
                 { id: 'flaghistory', label: 'Flag history', hint: 'Every flag, and what happened to it', icon: <Flag size={14} /> },
@@ -24423,7 +24468,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} openLegendSignal={legendSignal} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} sendDenied={smsGate.reason} />}

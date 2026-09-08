@@ -185,6 +185,20 @@ jobs:
         env:
           MOBILE: '1'
           SMOKE_PORT: '8808'
+      # THE MAP LEGEND UNDER MORE. Pure wiring, and its first build broke twice in ways no
+      # unit test can see: the open signal was passed from a component that never had it, so
+      # the page threw and the whole nav row vanished; and the phone's nav is the version
+      # chip, not the first header button. The desktop nav row and the phone chip menu are
+      # two separate lists — v0.54.50 shipped a screen into one and not the other — so this
+      # walks both, and checks the map is STILL on screen afterwards, since a legend that
+      # navigated away from the map it describes is not a legend.
+      - run: npm run verify:legend-menu
+        env:
+          SMOKE_PORT: '8817'
+      - run: npm run verify:legend-menu
+        env:
+          MOBILE: '1'
+          SMOKE_PORT: '8818'
       # WHAT THE LOADS TAB SHOWS. Chad found the rail listing his built routes twice and the
       # empty trailers nowhere; splitDayLoads is unit-tested, but the defect was WIRING — the
       # panel was handed the wrong list — and no unit test can see that. This drives the real
