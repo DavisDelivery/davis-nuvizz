@@ -1,99 +1,97 @@
 import fs from 'fs';
-import { MARK, ALT, REAL, CHEV, wrap, ITEMS, row } from './build.mjs';
-const list = (mark) => ITEMS.map((r) => row(r, mark && r[0] === 'HYDRAULIC STACKER')).join('');
+import { H, H_WHITE, YELLOW, INK, wrap, stopCard, rows } from './build.mjs';
 
-/* ══════════════ 1 · MAIN ══════════════ */
+/* ══ 1 · MAIN — the mark ══ */
 fs.writeFileSync('Main.dc.html', wrap(`
 <div class="pad">
-  <div class="kicker">Design proposal · item-level freight flag</div>
-  <h1>The mark shouldn't say “stacker”.<br>It should say <i>1,259&nbsp;lb in one piece</i>.</h1>
-  <div class="rule"></div>
-  <p class="lede">You asked for an icon for the hydraulic stacker. The row already says <b>HYDRAULIC STACKER</b> in the largest text on the line — an icon meaning “this is a stacker” is a second copy of words already on screen. What no surface puts in front of a dispatcher is the thing that changes how the freight gets handled: <b>one piece on this stop weighs 1,259&nbsp;lb.</b></p>
+  <div class="kicker">Hydraulic stacker · item flag</div>
+  <h1>Bright yellow, dark H.</h1>
+  <p class="note" style="margin-top:14px;font-size:15px;color:#44403c">Shown on the row when the item text contains <b style="color:#1c1917">“hydraulic stacker”</b>. Nothing derived, no thresholds — the text is the trigger.</p>
 
-  <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin:30px 0 8px">
-    <div class="stat"><b>1,259 lb</b><span>the single heaviest piece, on a line of quantity 1</span></div>
-    <div class="stat"><b>71%</b><span>of the whole stop's 1,765&nbsp;lb sits in that one piece</span></div>
-    <div class="stat"><b>7.2×</b><span>heavier than the next piece on the same stop (174&nbsp;lb)</span></div>
-  </div>
-
-  <div class="rule"></div>
-  <div class="grid2">
-    <div class="card">
-      <h3>What fires today</h3>
-      <p class="note" style="margin-bottom:10px">Nothing. I ran the real module on the real stop:</p>
-      <p class="mono" style="line-height:1.6">deriveGeometryDeterministic →<br>{ skids: 4, weightLbs: 1765,<br>&nbsp;&nbsp;oversize: <b>false</b>, ambiguous: false,<br>&nbsp;&nbsp;linearFeetIn: 96, notes: [], … }</p>
-      <p class="note" style="margin-top:10px">Nothing marks it. <span class="mono">board-flags.js</span> never reads <span class="mono">stopDetails</span> at all, so the flag engine cannot see a line item even in principle.</p>
-    </div>
-    <div class="card">
-      <h3>Why the average hides it</h3>
-      <p class="note">The card's summary reads <b style="color:#1c1917">“4 pallets · 4 pieces · 1765 Lbs”</b>. Divide it out and that implies 441&nbsp;lb a skid — an ordinary Uline drop.</p>
-      <p class="note" style="margin-top:10px">Six of the seven lines total 506&nbsp;lb between them. The seventh is 1,259. <b style="color:#1c1917">The average is the lie</b>, and the average is the only freight number on the collapsed card.</p>
-      <p class="note" style="margin-top:10px">The number itself is not hidden everywhere — the printed ticket, the Bill of Lading and the Routing popup all list the line. What none of them does is <i>mark</i> it, sort by it, or show it where loads get built.</p>
+  <div class="card" style="margin:26px 0 20px">
+    <h3>At the sizes it will actually be used</h3>
+    <div style="display:flex;align-items:flex-end;gap:30px;flex-wrap:wrap;margin-top:14px">
+      ${[64, 28, 22, 16, 14, 13].map((s) => `<div><div style="display:flex;align-items:flex-end;height:66px">${H(s)}</div><div class="sz">${s}px</div></div>`).join('')}
+      <div style="width:1px;height:56px;background:#e7e5e4"></div>
+      <div style="max-width:30ch"><div class="note"><b style="color:#1c1917">13px is the item row.</b> A letterform is the one thing that holds at that size — a drawn machine turns to mush.</div></div>
     </div>
   </div>
 
-  <div class="rule"></div>
-  <h2>The rule</h2>
-  <p class="note" style="margin-bottom:14px">Not a product-name list — a derived number. It needs no vocabulary and never rots when Uline renames a SKU.</p>
-  <div class="card" style="background:#1c1917;border-color:#1c1917">
-    <p class="mono" style="color:#e7e5e4;font-size:12.5px;line-height:1.75">
-      qty&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; = Math.max(1, Math.round(Number(line.quantity) || 1))<br>
-      perPiece = toLbs(line.weight, line.weightUOM) / qty<br>
-      flag&nbsp;&nbsp;&nbsp;&nbsp; = Number.isFinite(perPiece) &amp;&amp; perPiece &gt;= HEAVY_PIECE_LB
-    </p>
-  </div>
-  <div class="grid3" style="margin-top:18px">
-    <div class="card"><h3>divide by quantity</h3><p class="note">The seven line weights sum to <b style="color:#1c1917">exactly 1,765</b> — the stop total — so <span class="mono">weight</span> is the LINE total here. Consistent with this stop; the field is not documented either way, so the free read below should confirm it before anyone relies on it.</p></div>
-    <div class="card"><h3>why the guard, not a bug report</h3><p class="note"><span class="mono">Number(null)</span> is 0, and <span class="mono">1259 / 0</span> is <b style="color:#1c1917">Infinity</b>, which passes any <span class="mono">&gt;=</span>. That is what <span class="mono">Math.max(1, …)</span> and <span class="mono">Number.isFinite</span> in the rule are for — this repo has shipped that exact class once already.</p></div>
-    <div class="card"><h3>convert the units</h3><p class="note">The UI prints <span class="mono">weight</span> and <span class="mono">weightUOM</span> raw with no conversion, and the vendor's own example UOM is kilograms. A KG line read as LB is a <b style="color:#1c1917">2.2× error</b>. <span class="mono">toLbs()</span> already ships in <span class="mono">freight-class.mts</span>.</p></div>
-  </div>
-</div>`));
-
-/* ══════════════ 2 · MARK ══════════════ */
-fs.writeFileSync('Mark.dc.html', wrap(`
-<div class="pad">
-  <div class="kicker">The mark</div>
-  <h2>A weight, drawn at the size it will actually be used</h2>
-  <p class="note" style="margin-bottom:22px">Rendered, not described. The item row is 13px text, so the mark is 13px — and the delivery ticket is a black-and-white laser print, so it has to survive that too.</p>
-
-  <div class="card" style="margin-bottom:20px">
-    <h3>Recommended · “heavy piece”</h3>
-    <div style="display:flex;align-items:center;gap:26px;flex-wrap:wrap;margin:14px 0 4px">
-      ${[56, 22, 16, 14, 13].map((s) => `<div style="display:flex;flex-direction:column;align-items:center;gap:7px">${MARK(s)}<span class="mono" style="font-size:9px">${s}px</span></div>`).join('')}
-      <div style="width:1px;height:44px;background:#e7e5e4"></div>
-      <div style="display:flex;flex-direction:column;align-items:center;gap:7px">${MARK(11, true)}<span class="mono" style="font-size:9px">11px black</span></div>
-      <div class="note" style="max-width:24ch">A dumbbell — two caps and a bar. Three rectangles, no interior detail to lose.</div>
-    </div>
-  </div>
-
-  <div class="grid2">
+  <div style="display:grid;grid-template-columns:1.15fr 1fr;gap:20px">
     <div class="card">
-      <h3>Why not a picture of a stacker</h3>
-      <div style="display:flex;align-items:center;gap:18px;margin:12px 0">
-        <svg width="52" height="52" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#111827" stroke="#fff" stroke-width="1.5"/><rect x="3.1" y="2.2" width="1.5" height="8.4" fill="#fff"/><rect x="4.6" y="4.6" width="4.6" height="1.2" fill="#fff"/><rect x="4.6" y="7" width="4.6" height="1.2" fill="#fff"/><rect x="2.4" y="10.6" width="7.2" height="1.1" fill="#fff"/><circle cx="3.4" cy="12.2" r=".85" fill="#fff"/><circle cx="8.8" cy="12.2" r=".85" fill="#fff"/></svg>
-        <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#111827" stroke="#fff" stroke-width="1.5"/><rect x="3.1" y="2.2" width="1.5" height="8.4" fill="#fff"/><rect x="4.6" y="4.6" width="4.6" height="1.2" fill="#fff"/><rect x="4.6" y="7" width="4.6" height="1.2" fill="#fff"/><rect x="2.4" y="10.6" width="7.2" height="1.1" fill="#fff"/><circle cx="3.4" cy="12.2" r=".85" fill="#fff"/><circle cx="8.8" cy="12.2" r=".85" fill="#fff"/></svg>
-        <span class="tag no">unreadable at 13px</span>
-      </div>
-      <p class="note">A mast and forks needs five or six separate shapes. At row size they merge into a smudge — which is exactly what already happens to the truck glyphs in the existing set.</p>
+      <h3>The spec</h3>
+      <table style="width:100%;font-size:12.5px;border-collapse:collapse">
+        <tr><td style="padding:5px 0;color:#78716c;width:42%">fill</td><td><span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:${YELLOW};vertical-align:-1px;margin-right:6px"></span><span class="mono" style="font-size:12px">${YELLOW}</span></td></tr>
+        <tr><td style="padding:5px 0;color:#78716c">letter</td><td><span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:${INK};vertical-align:-1px;margin-right:6px"></span><span class="mono" style="font-size:12px">${INK}</span></td></tr>
+        <tr><td style="padding:5px 0;color:#78716c">ring</td><td class="mono" style="font-size:12px">#ffffff, 1.5</td></tr>
+        <tr><td style="padding:5px 0;color:#78716c">geometry</td><td class="mono" style="font-size:12px">r=7 disc, 14×14 box</td></tr>
+        <tr><td style="padding:5px 0;color:#78716c">tooltip / a11y</td><td class="mono" style="font-size:12px">“Hydraulic stacker”</td></tr>
+      </table>
+      <p class="note" style="margin-top:10px">Same disc construction every other badge on the board uses, so it sits in the set rather than beside it.</p>
     </div>
     <div class="card">
-      <h3>Collision check at 13px · real glyphs</h3>
-      <div style="display:flex;align-items:center;gap:16px;margin:12px 0 8px">
-        ${['box_truck_only', 'liftgate_required', 'uline_straight_truck', 'no_overhead_clearance'].map((k) => `<div style="display:flex;flex-direction:column;align-items:center;gap:6px">${REAL(k, 13)}<span class="mono" style="font-size:8px">${k.split('_')[0]}</span></div>`).join('')}
+      <h3>Why the H is dark, not white</h3>
+      <div style="display:flex;align-items:center;gap:20px;margin:12px 0 10px">
+        <div style="text-align:center">${H_WHITE(13)}<div class="sz">white</div></div>
+        <div style="text-align:center">${H_WHITE(28)}<div class="sz">white</div></div>
         <div style="width:1px;height:34px;background:#e7e5e4"></div>
-        <div style="display:flex;flex-direction:column;align-items:center;gap:6px">${MARK(13)}<span class="mono" style="font-size:8px;color:#111827"><b>heavy</b></span></div>
+        <div style="text-align:center">${H(13)}<div class="sz">dark</div></div>
+        <div style="text-align:center">${H(28)}<div class="sz">dark</div></div>
       </div>
-      <p class="note">Drawn from the glyphs in <span class="mono">RESTRICTION_ICONS</span> itself, not redrawn by hand. <b style="color:#1c1917">Charcoal #111827</b> is the furthest from every fill in that table by RGB distance — 105 from the nearest, slate <span class="mono">#475569</span>. It is a near-neutral: 17 of the 20 fills sit above 70% saturation, so a dark neutral reads as a <i>different kind of mark</i> rather than a 21st restriction.</p>
-      <p class="note" style="margin-top:9px"><b style="color:#1c1917">Honest caveat:</b> slate is the one existing fill that is also low-saturation (19%), and at 13px a dark disc with a horizontal white shape is the nearest thing to a collision this set has. The mark lives in the items list, not the pin row, so the two should rarely meet.</p>
-    </div>
-  </div>
-
-  <div class="card" style="margin-top:20px">
-    <h3>Alternate, if you'd rather it read as “heavy” than as “a weight”</h3>
-    <div style="display:flex;align-items:center;gap:22px;margin-top:12px">
-      ${[44, 22, 14, 13].map((s) => ALT(s)).join('')}
-      <p class="note" style="max-width:52ch;margin-left:8px">Mass pressing onto a deck. Crisper at 13px than the dumbbell, and more distinct from <span class="mono">box_truck_only</span> — but it shares the arrow form with <span class="mono">liftgate_required</span>, and lifting is precisely the domain where the two would be confused. That trade is the reason the dumbbell leads; it is close.</p>
+      <p class="note">Every existing badge uses a white glyph, but they all sit on dark fills. On bright yellow white washes out. Your app already knows this — <span class="mono">readableTextColor()</span> returns <span class="mono">#1f2937</span> for anything this light, so dark <i>is</i> the house rule here.</p>
     </div>
   </div>
 </div>`));
-console.log('Main + Mark');
+
+/* ══ 2 · MOBILE ══ */
+fs.writeFileSync('Phone.dc.html', wrap(`
+<div class="pad">
+  <div class="kicker">Mobile · the stop sheet</div>
+  <h2>On the phone</h2>
+  <p class="note" style="margin-bottom:20px">The real card at 390px and at 360px — the two widths CI checks. Row text is 13px; the mark rides at the end of the product name.</p>
+  <div style="display:flex;gap:30px;align-items:flex-start;flex-wrap:wrap">
+    <div><div class="sz" style="text-align:left;margin-bottom:7px">390px phone · 358px rows</div>${stopCard(358)}</div>
+    <div><div class="sz" style="text-align:left;margin-bottom:7px">360px phone · 328px rows — the narrowest in the fleet</div>${stopCard(328)}</div>
+    <div style="max-width:290px">
+      <div class="card"><h3>It sits inside the name</h3><p class="note">Placed after the product text, so it inherits the row's own wrapping. The stacker name is short enough that it never pushes to a second line at either width.</p></div>
+      <div class="card" style="margin-top:14px"><h3>One mark, one row</h3><p class="note">Only the matching line wears it. The other six read exactly as they do today — so the yellow is the only thing that has changed on the card, and it points at one row.</p></div>
+    </div>
+  </div>
+</div>`));
+
+/* ══ 3 · DESKTOP ══ */
+fs.writeFileSync('Desktop.dc.html', wrap(`
+<div class="pad">
+  <div class="kicker">Desktop · the right sidebar</div>
+  <h2>On the desktop board</h2>
+  <p class="note" style="margin-bottom:20px">The sidebar is <span class="mono">w-[380px]</span>, which leaves 347px of row after its border and padding — between the two phone widths, so the same treatment covers all three.</p>
+  <div style="display:flex;gap:30px;align-items:flex-start;flex-wrap:wrap">
+    <div><div class="sz" style="text-align:left;margin-bottom:7px">347px rows</div>${stopCard(347)}</div>
+    <div style="max-width:420px">
+      <div class="card"><h3>Expanded vs collapsed</h3><p class="note">The Items list starts collapsed on every card, so the mark is visible once you open the list — which is the moment you are reading the freight anyway.</p><div style="margin-top:12px;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;background:#fff;font-family:system-ui">
+        <div class="cap">Items (7)</div><div class="sum">4 pallets · 4 pieces · 1765 Lbs</div>
+        <div style="font-size:11px;color:#94a3b8;margin-top:4px">▾ collapsed — nothing shown</div>
+      </div></div>
+      <div class="card" style="margin-top:14px"><h3>Next to the amber badge</h3>
+        <div style="display:flex;align-items:center;gap:16px;margin:10px 0">
+          <div style="text-align:center"><svg width="22" height="22" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#f59e0b" stroke="white" stroke-width="1.5"/><rect x="1.4" y="4.6" width="7" height="5.4" rx="0.5" fill="white"/><path d="M8.4 6.2h2.5l2 2v1.8H8.4z" fill="white"/><circle cx="4" cy="10.2" r="1.1" fill="#f59e0b"/><circle cx="9.7" cy="10.2" r="1.1" fill="#f59e0b"/><line x1="2.5" y1="2.5" x2="11.5" y2="11.5" stroke="white" stroke-width="2" stroke-linecap="round"/></svg><div class="sz">uline amber</div></div>
+          <div style="text-align:center">${H(22)}<div class="sz">yellow H</div></div>
+        </div>
+        <p class="note">You said the amber straight-truck badge is rarely used, so this is noted and not a concern. They read apart anyway — the dark letter is the separator.</p></div>
+    </div>
+  </div>
+</div>`));
+
+fs.writeFileSync('canvas.json', JSON.stringify({
+  artboards: [
+    { file: 'Main.dc.html',    title: '1 · The mark',  x: 0,    y: 0,   w: 1040, h: 680 },
+    { file: 'Phone.dc.html',   title: '2 · Mobile',    x: 0,    y: 780, w: 1420, h: 1030 },
+    { file: 'Desktop.dc.html', title: '3 · Desktop',   x: 1540, y: 780, w: 1000, h: 1030 },
+  ],
+  annotations: [
+    { id: 'decided', x: 1140, y: 0, w: 420,
+      text: 'Decided: bright yellow #facc15 with a dark H, shown when the item text contains "hydraulic stacker".\n\nNothing derived, no thresholds, no changes to the ticket or the map.' },
+  ],
+  launch: { view: 'canvas' },
+}, null, 2));
+console.log('3 boards + canvas.json');
