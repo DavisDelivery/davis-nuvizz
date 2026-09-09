@@ -22,6 +22,7 @@ import {
   buildOpRequest, parseOpResponse, toEditHeader, normalizeLoad, planSequence, deliveryOrder,
   importEchoFromRaw, assembleImportHeader, sameOrder, buildStopPayload, normStopNbr,
   rawStopExecStatus, isExecutedStopStatus, cancelResponseConfirms,
+  isVehicleTypeRefusal, cancelHeaderVariant, editHeaderHasVehicleType, CANCEL_HEADER_FALLBACKS,
   buildStopNoteComment, rawStopFrom, stopCommentsFrom, mergeStopComments,
   stopNoteFingerprint, fingerprintDrift, buildNoteWriteStop, echoDrift, driftDetail,
   unsentLosses, documentHandlesMoved, type NoteAudience,
@@ -244,6 +245,181 @@ export async function runCommitLoad(requester: RequesterLike, payload: any, cred
   return done(true);
 
   function done(ok: boolean) { return { ok: ok && steps.every((s) => s.ok), loadNbr, loadId, steps }; }
+}
+
+// ── THE REFUSED CANCEL LADDER (Sep 9 2026) ───────────────────────────────────
+//
+// Chad, on TRAILER 5: "when i click cancel the route it doesn't do what it says it is
+// going to do." The red modal promises the route is DELETED and its 7 orders go back to
+// Un-Planned; the Save then answers "Vehicle Type unavailable or disabled … for
+// DAVIS000203261 (code 903)" and the route keeps all seven. Same refusal as TERRANCE on
+// Sep 8 — v0.97.1 made the message accurate and stopped there, so the button has still
+// never worked on a route whose Vehicle Type is disabled in the portal's configuration.
+// See §5.1 in nuvizz-write-ops.mts for what NuVizz is actually rejecting.
+//
+// THE ORDER OF THIS LADDER IS THE WHOLE SAFETY ARGUMENT:
+//   1. The UNTOUCHED echo, always, first. A cancel that works today is byte-for-byte the
+//      request it was and still costs exactly 2 calls. Nothing regresses.
+//   2. Only on THIS refusal (isVehicleTypeRefusal — not on reason 903 generally), re-read
+//      the load. One call buys two things. A versionId that cannot be stale: a refused
+//      edit should not bump it, and "should not" is not "did not" — a version conflict on
+//      the retry would read as "the header shape failed" when it had not been tried. And
+//      the OUTCOME: if the deliveries are already gone, NuVizz refused in words and
+//      emptied the route anyway, which is a cancel that LANDED. Report what the system
+//      shows, never what the response claimed.
+//   3. The header with vehicleType OMITTED, then with it CLEARED — cancel only. If the
+//      re-read shows we never sent a vehicle type in the first place, stop: NuVizz is
+//      validating its OWN stored value, no payload from here can move it, and burning two
+//      more calls to prove that is the wrong lesson from Sep 8.
+//
+// Bounded cost, paid only on a Save that has ALREADY failed: ≤3 extra calls, once.
+// Reversible: NUVIZZ_CANCEL_VT_FALLBACK=off restores the single-attempt behaviour.
+//
+// HONEST ABOUT WHAT IS UNPROVEN: whether NuVizz validates the vehicleType we SEND or the
+// one it STORES is a fact about their validator that no reading of this repo can settle.
+// Step 3 may simply be refused too — in which case this costs 3 calls on a dead Save and
+// the journal now names every shape NuVizz rejected, which is what ends the guessing.
+function cancelLadderEnabled(): boolean {
+  return !/^(0|false|off|no)$/i.test(String(process.env.NUVIZZ_CANCEL_VT_FALLBACK ?? '').trim());
+}
+
+// The LAST rung: NuVizz's own POST /load/cancel (§Y in nuvizz-write-ops.mts). OFF unless an
+// operator explicitly switches it on, because the API document says what becomes of the LOAD
+// and nothing about what becomes of the ORDERS on it — and the modal promises those orders
+// come back Un-Planned, not that they are cancelled with the route. Opt-in, never a default.
+function loadCancelApiEnabled(): boolean {
+  return /^(1|true|on|yes)$/i.test(String(process.env.NUVIZZ_LOAD_CANCEL_API ?? '').trim());
+}
+
+interface CancelLadder {
+  r: any;                 // the response the step journals (the last one actually fired)
+  ok: boolean;
+  cancelled: boolean;
+  attempts: Array<{ shape: string; sentVehicleType: string; ok: boolean; error: string | null }>;
+  landedOnReadBack: boolean;   // refused in words, empty in fact
+  storedTypeRefusal: boolean;  // refused on a type our header never sent
+  triedFallbacks: boolean;
+  viaLoadCancelApi: boolean;   // the documented POST /load/cancel did it
+  orderFate: string | null;    // what the read-back says actually became of the orders
+}
+
+/** Fire the cancel edit (remove EVERY delivery), climbing the ladder above when — and only
+ *  when — NuVizz refuses it on Vehicle Type. Never used for a partial remove: load/edit is a
+ *  full-header REPLACE, so a dropped key on a route that keeps living is a real edit to it. */
+async function fireCancelRemove(requester: RequesterLike, p: any, ids: string[], creds: WriteCreds): Promise<CancelLadder> {
+  const attempts: CancelLadder['attempts'] = [];
+  const fire = async (shape: string, sentVehicleType: string, editHeader: any, versionId: any) => {
+    const res = await fireSingle(requester, 'removeStops', { removeStopIds: ids, editHeader, versionId }, creds);
+    const cancelled = cancelResponseConfirms(res);
+    const ok = !!res.ok || cancelled;
+    attempts.push({ shape, sentVehicleType, ok, error: ok ? null : (res.error || 'failed') });
+    return { res, ok, cancelled };
+  };
+  const base = {
+    attempts, landedOnReadBack: false, storedTypeRefusal: false, triedFallbacks: false,
+    viaLoadCancelApi: false, orderFate: null as string | null,
+  };
+
+  const echoed = p.editHeader?.vehicleType;
+  const first = await fire('echo', echoed == null ? '(none)' : String(echoed), p.editHeader, p.versionId);
+  if (first.ok || !cancelLadderEnabled() || !isVehicleTypeRefusal(first.res?.error)) {
+    return { ...base, r: first.res, ok: first.ok, cancelled: first.cancelled };
+  }
+
+  // Step 2 — one re-read: a versionId that cannot be stale, and the truth about the route.
+  const f = p.loadNbr ? await fetchLoad(requester, String(p.loadNbr), creds) : { load: null };
+  attempts.push({ shape: 're-read', sentVehicleType: '—', ok: !!f.load, error: f.load ? null : 'could not re-read the load after the refusal' });
+  if (f.load && deliveryOrder(f.load).length === 0) {
+    return { ...base, r: { ...first.res, ok: true }, ok: true, cancelled: true, landedOnReadBack: true };
+  }
+  const header = f.load ? toEditHeader(f.load.loadHeader) : p.editHeader;
+  const versionId = f.load ? f.load.versionId : p.versionId;
+  if (!editHeaderHasVehicleType(header)) {
+    return { ...base, r: first.res, ok: false, cancelled: false, storedTypeRefusal: true };
+  }
+
+  // Step 3 — the two shapes that answer the refusal, cancel only.
+  base.triedFallbacks = true;
+  for (const mode of CANCEL_HEADER_FALLBACKS) {
+    const next = await fire(mode, mode === 'omit' ? '(omitted)' : '(cleared)', cancelHeaderVariant(header, mode), versionId);
+    if (next.ok) return { ...base, r: next.res, ok: true, cancelled: next.cancelled };
+    // A DIFFERENT refusal means the vehicle type is no longer what is blocking us — stop
+    // climbing and report the new reason rather than spending another call on the old one.
+    if (!isVehicleTypeRefusal(next.res?.error)) return { ...base, r: next.res, ok: false, cancelled: false };
+  }
+
+  // Step 4 — the documented endpoint, only if an operator has switched it on.
+  const viaApi = await tryLoadCancelApi(requester, p, creds, attempts);
+  if (viaApi) return { ...base, ...viaApi };
+  return { ...base, r: first.res, ok: false, cancelled: false };
+}
+
+/** POST /load/cancel — the v7 document's own "Cancel Load". Returns null when the switch is
+ *  off (the default) so the ladder simply ends where it did before. On a success it READS THE
+ *  ORDERS BACK, because the document does not say what becomes of them and a cancel that
+ *  quietly cancelled seven customer deliveries must not be reported as "route cancelled". */
+async function tryLoadCancelApi(requester: RequesterLike, p: any, creds: WriteCreds, attempts: CancelLadder['attempts']): Promise<(Partial<CancelLadder> & Pick<CancelLadder, 'r' | 'ok' | 'cancelled'>) | null> {
+  if (!loadCancelApiEnabled()) return null;
+  const res = await fireSingle(requester, 'cancelLoad', {
+    loadId: trustableLoadId(p.loadId) ? p.loadId : undefined,
+    loadNbr: p.loadNbr,
+    reasonCode: CANCEL_REASON_DEFAULT,
+    reasonComments: 'Route emptied in Dispatch Map (Cancel route)',
+  }, creds);
+  const ok = !!res.ok;
+  attempts.push({ shape: 'load/cancel', sentVehicleType: '—', ok, error: ok ? null : (res.error || 'failed') });
+  if (!ok) return { r: res, ok: false, cancelled: false, viaLoadCancelApi: true };
+
+  // What ACTUALLY became of the orders. One read per order, on a path that only runs after
+  // four refusals — the answer is worth far more than the calls, and it is the only way this
+  // endpoint's open question gets settled by observation instead of by assumption.
+  const nbrs: string[] = (p.load?.stops || []).map((st: any) => String(st?.stopNbr ?? '')).filter(Boolean);
+  const seen = await Promise.all(nbrs.map(async (n) => {
+    try {
+      const g = await fireSingle(requester, 'getStop', { stopNbr: n }, creds);
+      if (!g?.ok || !g.stop) return { n, state: 'unreadable' };
+      const holder = String(g.stop.assignedLoadNbr ?? '').trim();
+      const st = String(g.stop.status ?? '').trim().toUpperCase();
+      // A cancelled order and an unplanned one BOTH read with no assignedLoadNbr, so the
+      // holder alone cannot tell them apart. cancelledAt is the tenant's authoritative
+      // cancellation stamp (the same signal the scan normalizer trusts); the status word is
+      // a belt-and-braces second look, since no cancel-status value is proven on this tenant.
+      if (g.stop.cancelledAt || /CANCEL/.test(st)) return { n, state: 'cancelled' };
+      return { n, state: holder ? `planned on ${holder}` : 'unplanned' };
+    } catch { return { n, state: 'unreadable' }; }
+  }));
+  attempts.push({ shape: 'read-back', sentVehicleType: '—', ok: true, error: null });
+  const cancelledOrders = seen.filter((x) => x.state === 'cancelled');
+  const tally = [...new Set(seen.map((x) => x.state))].map((st) => `${seen.filter((x) => x.state === st).length} ${st}`).join(', ');
+  if (cancelledOrders.length) {
+    // The endpoint took the freight with it. Say so LOUDLY and fail the load: this is the
+    // outcome the switch exists to guard against, and it must never read as a clean cancel.
+    return {
+      r: { ...res, ok: false, error: `load/cancel CANCELLED ${cancelledOrders.length} ORDER(S) instead of unplanning them (${cancelledOrders.map((x) => x.n).join(', ')}) — turn NUVIZZ_LOAD_CANCEL_API off and restore them in the portal` },
+      ok: false, cancelled: false, viaLoadCancelApi: true, orderFate: tally,
+    };
+  }
+  return { r: res, ok: true, cancelled: true, viaLoadCancelApi: true, orderFate: tally };
+}
+
+/** The message a dispatcher gets when the route was NOT cancelled. It must say the OUTCOME
+ *  first — "nothing was unplanned, it still holds all 7" — because the red modal has just
+ *  promised the opposite, and a banner that names only a cause leaves the dispatcher unable
+ *  to tell whether some of the orders moved. Then the cause, verbatim from NuVizz, then the
+ *  one thing that fixes it. */
+function cancelRefusedErr(p: any, held: number, out: CancelLadder): string {
+  const self = loadLabel(p.load?.routeName ?? p.L?.routeName, p.loadNbr);
+  const reason = out.r?.error || 'no reason given';
+  const head = `commitBoard: NuVizz refused to cancel ${self} — nothing was unplanned and it still holds all ${held} order${held === 1 ? '' : 's'}. Reason: ${reason}.`;
+  if (!isVehicleTypeRefusal(reason)) return `${head} The route is unchanged — re-Save, or cancel it in the portal.`;
+  const where = "Re-enable (or change) this route's Vehicle Type under Vehicle Type Configuration in the portal — or cancel the route there — then re-Save.";
+  if (out.storedTypeRefusal) {
+    return `${head} Emptying a route is a load/edit, and NuVizz validates the route's STORED Vehicle Type on every one — this Save sent no vehicle type at all, so no re-Save can get past it. ${where}`;
+  }
+  if (out.triedFallbacks) {
+    return `${head} Emptying a route is a load/edit and NuVizz validates its Vehicle Type; the same edit was retried with the Vehicle Type omitted and then cleared, and both were refused too. ${where}`;
+  }
+  return `${head} ${where}`;
 }
 
 // The delivery stopIds currently on a load, in visit order (the pickup, stopType!='DO',
@@ -479,7 +655,6 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
     if (p.aborted) continue;                 // anchor pre-insert failed → never strip this load
     const ids = p.plan.removeStopIds || [];
     if (!ids.length) continue;
-    const r = await fireSingle(requester, 'removeStops', { removeStopIds: ids, editHeader: p.editHeader, versionId: p.versionId }, creds);
     // Removing ALL deliveries CANCELS the route; NuVizz may report that cancel as a non-OK body
     // (a "Cancelled route" message). For an INTENTIONAL empty-load we treat a cancellation response
     // as success. (Defensive: the exact cancel-response shape is pending a live confirm on a stable
@@ -488,10 +663,34 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
     // dispatched"), and the old /cancel/i test read that as success. Harmless when it
     // only mis-worded a message; not harmless now that a confirmed cancel stamps the
     // board unplanned under a 60-minute grace. cancelResponseConfirms is positive-only.
-    const cancelled = !!p.plan.cancelRoute && cancelResponseConfirms(r);
-    const ok = !!r.ok || cancelled;
-    p.result.steps.push({ op: 'removeStops', ok, result: r, error: ok ? null : (r.error || 'failed'), cancelledRoute: (p.plan.cancelRoute && ok) || undefined });
-    if (!ok) { p.result.ok = false; p.aborted = true; }
+    //
+    // A CANCEL climbs the Vehicle Type ladder above; a PARTIAL remove is untouched — one call,
+    // the echoed header exactly as it was, because that route keeps living (see §5.1).
+    let r: any, ok: boolean, ladder: CancelLadder | null = null;
+    if (p.plan.cancelRoute) {
+      ladder = await fireCancelRemove(requester, p, ids, creds);
+      r = ladder.r; ok = ladder.ok;
+    } else {
+      r = await fireSingle(requester, 'removeStops', { removeStopIds: ids, editHeader: p.editHeader, versionId: p.versionId }, creds);
+      ok = !!r.ok;
+    }
+    p.result.steps.push({
+      op: 'removeStops', ok, result: r, error: ok ? null : (r.error || 'failed'),
+      cancelledRoute: (p.plan.cancelRoute && ok) || undefined,
+      // The shapes actually sent, with NuVizz's verbatim answer to each. Only present when the
+      // ladder was climbed, so an ordinary cancel's step stays byte-identical to before.
+      ...(ladder && ladder.attempts.length > 1 ? { cancelAttempts: ladder.attempts } : {}),
+      ...(ladder?.landedOnReadBack ? { cancelledDespiteRefusal: true } : {}),
+      ...(ladder?.viaLoadCancelApi ? { viaLoadCancelApi: true } : {}),
+      ...(ladder?.orderFate ? { orderFate: ladder.orderFate } : {}),
+    });
+    if (!ok) {
+      p.result.ok = false; p.aborted = true;
+      // Phase 1 used to leave result.error null and let the client stitch a banner out of the
+      // step errors, so a refused cancel reached the dispatcher as a bare vendor string with no
+      // word about what happened to the orders. Say the outcome here, where it is known.
+      if (p.plan.cancelRoute) p.result.error = cancelRefusedErr(p, ids.length, ladder!);
+    }
     else for (const id of ids) actuallyFreed.add(String(id));
   }
 

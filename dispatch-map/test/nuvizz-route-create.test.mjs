@@ -141,14 +141,20 @@ test('the create body carries the header + EXACTLY the sanitized PlanStop refere
   const flat = JSON.stringify(body);
   assert.ok(!/"stops"/.test(flat), 'no stops VALUE node at any depth');
   assert.ok(!/"X"|"Y"/.test(flat), 'caller-passed stop junk never reaches the wire');
-  // The references are the card's orders IN CARD ORDER, seq 1..N, shape pinned to the schema.
+  // The references are the card's orders IN CARD ORDER, shape pinned to the schema. `seq`
+  // numbers the route's LEGS, not the stops: 3 orders = 6 legs, from-legs 1-3 then to-legs
+  // 4-6 (the RouteExistingStops example's own pattern). They used to be i+1 on BOTH sides,
+  // so every number was claimed twice and 4/5/6 never appeared — see §R.
   assert.equal(body.route.planStops.length, 3);
   body.route.planStops.forEach((ref, i) => {
     assert.deepEqual(Object.keys(ref).sort(), ['from', 'stopNbr', 'to']);
     assert.equal(ref.stopNbr, NBRS[i]);
     assert.equal(ref.from.seq, i + 1);
-    assert.equal(ref.to.seq, i + 1);
+    assert.equal(ref.to.seq, 3 + i + 1);
   });
+  const legSeqs = body.route.planStops.flatMap((r) => [r.from.seq, r.to.seq]);
+  assert.equal(new Set(legSeqs).size, 6, 'every leg gets its OWN number — no ties');
+  assert.deepEqual([...legSeqs].sort((a, b) => a - b), [1, 2, 3, 4, 5, 6], 'and they run 1..2N with no gaps');
   assert.deepEqual(body.route.planStops[0].to.schedule, { timeFrom: '2026-07-31T10:00:00', timeTo: '2026-07-31T17:00:00' });
   // And the header is the proven shape.
   const h = body.route.loadHeader;
@@ -166,13 +172,13 @@ test('schedule junk off the echoed record is stripped to the schema keys — not
     stopNbr: '007155216',
     fromSchedule: { timeFrom: '2026-07-31T08:00:00', address: { addr1: '1 Rd' }, latitude: 34.1, weight: 500 },
     toSchedule: { timeConstraint: 'PREFERRED', totalCartons: 9, exec: { status: 'X' } },
-  }, 4);
+  }, 4, 9);
   assert.deepEqual(ref.from, { seq: 4, schedule: { timeFrom: '2026-07-31T08:00:00' } });
-  assert.deepEqual(ref.to, { seq: 4, schedule: { timeConstraint: 'PREFERRED' } });
+  assert.deepEqual(ref.to, { seq: 9, schedule: { timeConstraint: 'PREFERRED' } });
   // A record with no schedule at all still builds — {} is valid per the Schedule schema.
   const bare = buildPlanStopRef({ stopNbr: '007155216' });
   assert.deepEqual(bare.from, { seq: 1, schedule: {} });
-  assert.deepEqual(bare.to, { seq: 1, schedule: {} });
+  assert.deepEqual(bare.to, { seq: 2, schedule: {} }, 'even the default pair is two DISTINCT legs');
 });
 
 test('the built REQUEST targets routePlan/update and carries the references, not a stops node', () => {

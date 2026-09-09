@@ -36,7 +36,7 @@
 export const SINGLE_OPS = [
   'createStop', 'getStop', 'getLoad', 'getLoadByRouteId', 'insertStops', 'removeStops',
   'assignDriver', 'dispatchLoad', 'roster', 'importLoad', 'partialUpdateStop', 'createRoute',
-  'cancelStop',
+  'cancelStop', 'cancelLoad',
 ] as const;
 export type SingleOp = typeof SINGLE_OPS[number];
 
@@ -54,7 +54,7 @@ export const MUTATING_OPS = new Set<WriteOp>([
   'createRoute', 'newRoute',
   // Destructive. Gated by NUVIZZ_WRITE_ENABLED like every other mutation, and by
   // the read-then-cancel-by-id ladder in runCancelOrder — see there for why.
-  'cancelStop', 'cancelOrder',
+  'cancelStop', 'cancelOrder', 'cancelLoad',
 ]);
 
 /**
@@ -302,6 +302,70 @@ export function toEditHeader(loadHeader: any): any {
   if (h.earliestStartDttm != null) out.scheduleStartDttm = h.earliestStartDttm;
   if (h.latestStartDttm != null) out.scheduleEndDttm = h.latestStartDttm;
   return out;
+}
+
+// ── §5.1  The Vehicle Type refusal — and the two header shapes that answer it ─
+//
+// A route CANCEL is a load/edit that removes EVERY delivery, and load/edit is a full
+// header echo (§5) — so it hands NuVizz back the route's own `vehicleType`. When that
+// type has since been DISABLED in the portal's Vehicle Type Configuration, NuVizz
+// refuses the WHOLE edit (reason 903, "Vehicle Type unavailable or disabled. Please
+// verify Vehicle Type in Vehicle Type Configuration for <loadNbr>") and the route keeps
+// every order. Sep 8 (TERRANCE) and Sep 9 (TRAILER 5, DAVIS000203261) are the same
+// refusal; v0.97.1 only made the MESSAGE honest about it — the cancel still never landed.
+//
+// WHY A HEADER WITHOUT vehicleType IS NOT AN EXOTIC SHAPE ON THIS API: toEditHeader is
+// the ONLY builder in this file that echoes the key at all. The async import header
+// (§I assembleImportHeader) and the route-plan create (§R buildRouteCreateBody) both
+// build load headers NuVizz accepts with no vehicleType key whatsoever. So dropping it
+// is the shape every other write here already uses — not an invention.
+//
+// WHY THIS IS SCOPED TO THE CANCEL AND NOTHING ELSE: load/edit is a full-header REPLACE,
+// so a dropped key can blank a field on a route that keeps living. A route being emptied
+// is being CANCELLED — its truck type is moot the moment the last delivery comes off. On
+// a PARTIAL remove the route survives and the echo stays byte-for-byte what it was.
+//
+// UNPROVEN AGAINST THE LIVE TENANT (Sep 9 2026): whether NuVizz validates the vehicleType
+// we SEND or the one it STORES is a fact about their validator, not about this code. The
+// executor therefore tries the untouched echo FIRST (so nothing that works today changes),
+// falls back only on this exact refusal, and journals every shape it sent with NuVizz's
+// verbatim answer — so the next failure names the cause instead of needing another guess.
+
+/** True when a NuVizz write refusal is the Vehicle Type Configuration rejection.
+ *  Deliberately NOT keyed on reason code 903 — the tenant reuses 903 for unrelated
+ *  refusals ("Either PlanStop or Stop node should be present", §R), and retrying a
+ *  header shape against those would burn calls on a guaranteed no. Both halves must
+ *  match: the field NuVizz named, and the complaint it made about it. */
+export function isVehicleTypeRefusal(err: any): boolean {
+  const t = String(err ?? '');
+  if (!/vehicle\s*type/i.test(t)) return false;
+  return /\b(?:unavailable|disabled|inactive|invalid|configuration|not\s+(?:available|enabled|active|valid))\b/i.test(t);
+}
+
+/** The cancel-only fallback header shapes, in the order the executor tries them.
+ *  'omit'  — the key is absent, exactly like the import/create headers (§I, §R).
+ *  'clear' — the key is present and null, the explicit "this route has no type".
+ *  They are NOT the same request: 'omit' may let NuVizz fall back to its stored value
+ *  (and refuse again), while 'clear' states the intent outright. */
+export const CANCEL_HEADER_FALLBACKS = ['omit', 'clear'] as const;
+export type CancelHeaderFallback = typeof CANCEL_HEADER_FALLBACKS[number];
+
+/** PURE: one fallback shape of an edit header. Never mutates the caller's header —
+ *  the untouched echo has to stay intact for the journal and for any later step. */
+export function cancelHeaderVariant(editHeader: any, mode: CancelHeaderFallback): any {
+  const h = { ...(editHeader || {}) };
+  if (mode === 'omit') delete h.vehicleType;
+  else h.vehicleType = null;
+  return h;
+}
+
+/** True when the header we echoed actually CARRIED a vehicle type. When it did not and
+ *  NuVizz still refuses on Vehicle Type, the validator is reading its OWN stored value —
+ *  no payload from here can change that, so there is nothing to retry and the dispatcher
+ *  must be sent to the portal instead of watching two more calls fail. */
+export function editHeaderHasVehicleType(editHeader: any): boolean {
+  const v = (editHeader || {}).vehicleType;
+  return v != null && String(v).trim() !== '';
 }
 
 // ── §6  Response parsing helpers ─────────────────────────────────────────────
@@ -1370,6 +1434,12 @@ export function normalizeStop(j: any): any {
     stopId: stop.stopId ?? null,
     stopNbr: stop.stopNbr ?? null,
     status: exec.stopStatus ?? null,
+    // CANCELLED, authoritatively. nuvizz-scan.mts has treated stopExecutionInfo.cancellation
+    // .cancelDTTM as the tenant's real cancellation signal since the exception rewrite — a
+    // status word is not reliable here. Surfaced so a caller can tell an order that came back
+    // UNPLANNED from one that was cancelled outright; both read with no assignedLoadNbr, and
+    // on a destructive path those are not the same answer (§Y).
+    cancelledAt: (exec?.cancellation && exec.cancellation.cancelDTTM) || null,
     itemDesc: stop.reference2 ?? null,       // commodity/description we wrote to reference2 (round-trip check)
     // Round-trip checks for the create-time contact + dispatch notes (NuVizz silently drops
     // fields it rejects — a live create should be verified once via getStop/write-log):
@@ -1991,16 +2061,53 @@ function planStopSchedule(sch: any): any {
   return out;   // {} is valid — the Schedule schema has no required fields
 }
 
+// ── seq IS A LEG NUMBER, NOT A STOP POSITION (Sep 9 2026) ────────────────────
+//
+// Chad, on "Suw 3" — a 3-order ＋ New route card: "Your load creation doesn't work
+// correctly go to nuvizz's api instructions to see what you are doing wrong." NuVizz
+// answered the create with a 500 carrying a DeliverItLoadResponse whose DocumentID is
+// UNKNOWN and whose Status is 99 — it failed before it could even bind the document.
+//
+// THE SPEC SAYS WHAT WE WERE SENDING WRONG, and all THREE of its examples agree.
+// RoutePlanStopSchedule.seq is documented as "Sequence of the shipFrom or shipTo", and
+// Route.planStops as "Unplanned Stops are added to the route in the sequence specified
+// for pickup `from` and drop-off `to` nodes." So seq orders the route's LEGS — a
+// 3-order route has SIX of them — and every example gives each leg its own number:
+//   RouteExistingStops (planStops): Stop001 from=1 to=3 · Stop002 from=2 to=4
+//   RouteNewStops / RouteCoMingledStops (stops): 3011 from=1 to=2 · 3027 from=3 to=4
+// Two different visit orders, one invariant: 2N legs, 2N distinct numbers, 1..2N.
+//
+// THIS BUILDER SENT from.seq === to.seq === the stop's 1-based card position, so a
+// 3-order route claimed leg 1 twice, leg 2 twice, leg 3 twice, and never reached 4, 5 or
+// 6. That is not a visit order at all — three ties and no way to resolve them. The body
+// is STRUCTURALLY valid against RoutePlanLoad (every key in the schema, nothing extra,
+// every length and type legal), which is why nothing here ever caught it: the JSON schema
+// cannot express "these integers must be distinct". Only the examples say so.
+//
+// WE USE THE planStops PATTERN — all from-legs 1..N, then all to-legs N+1..2N — for two
+// reasons: it is the example for the node we actually send, and it is the same leg model
+// this repo already proved against the portal (nuvizz-rwb.mts `legsFor`, whose stoplist is
+// every _PU leg followed by every _DO leg). Davis loads at Buford and then delivers, so
+// "all pickups, then all deliveries" is also what the freight does.
+//
+// HONEST ABOUT THE LIMIT OF THIS: the duplicate seq is the ONLY deviation from the vendor
+// contract in the whole payload (proved by validating the built body against the shipped
+// reference/nuvizz-openapi-v7.json — see test/nuvizz-openapi-conformance.test.mjs). That
+// makes it the thing to fix and the best candidate for the 500. It is not PROOF that the
+// 500 goes away: the errors NuVizz listed were truncated out of the banner, and only a
+// live create can settle it.
+
 /** PURE: one sanitized PlanStop reference. Shape is pinned by the schema ({stopNbr, from, to}
- *  only) and by test — nothing address- or freight-shaped can ride. `seq` is the stop's
- *  1-based position in the card's order. */
-export function buildPlanStopRef(seed: RouteCreateSeed, seq = 1): any {
+ *  only) and by test — nothing address- or freight-shaped can ride. `fromSeq`/`toSeq` are the
+ *  1-based positions of this stop's two LEGS in the route's leg order (see above); they must
+ *  be distinct from each other and from every other leg's. */
+export function buildPlanStopRef(seed: RouteCreateSeed, fromSeq = 1, toSeq = 2): any {
   const stopNbr = String(req(seed?.stopNbr, 'createRoute: seed stopNbr')).trim();
   if (stopNbr.length > ROUTE_FIELD_MAX) throw new Error(`createRoute: seed stopNbr "${stopNbr}" is ${stopNbr.length} chars — NuVizz caps it at ${ROUTE_FIELD_MAX}`);
   return {
     stopNbr,
-    from: { seq, schedule: planStopSchedule(seed?.fromSchedule) },
-    to: { seq, schedule: planStopSchedule(seed?.toSchedule) },
+    from: { seq: fromSeq, schedule: planStopSchedule(seed?.fromSchedule) },
+    to: { seq: toSeq, schedule: planStopSchedule(seed?.toSchedule) },
   };
 }
 
@@ -2049,7 +2156,9 @@ export function buildRouteCreateBody(input: RouteCreateInput, companyCode: strin
   // `route` carries loadHeader + the order REFERENCES and NOTHING else. No `stops` node, no
   // loadAssignment (a driver is assigned afterwards by the existing assignDriver op, which is
   // verified). buildPlanStopRef sanitizes, so caller-passed junk can never widen the payload.
-  return { companyCode, route: { loadHeader, planStops: seeds.map((s: RouteCreateSeed, i: number) => buildPlanStopRef(s, i + 1)) } };
+  // Leg order: every from-leg (the depot pickup) first, 1..N, then every to-leg (the
+  // delivery) N+1..2N — the RouteExistingStops pattern, and the same shape RWB sends.
+  return { companyCode, route: { loadHeader, planStops: seeds.map((s: RouteCreateSeed, i: number) => buildPlanStopRef(s, i + 1, seeds.length + i + 1)) } };
 }
 
 /** normStopNbr (§I) — canonical stopNbr for ORDER COMPARISON ONLY (display/journals keep raw):
@@ -2118,6 +2227,50 @@ export const ROSTER_BODY = {
 //     own reason rather than silently cancelling under a wrong code.
 export const CANCEL_REASON_DEFAULT = 'ADMIN';
 
+// ── CANCELLING A ROUTE, THE WAY THE API DOCUMENT SAYS TO (§Y, Sep 9 2026) ────
+//
+// This app has never used NuVizz's own load-cancel endpoint. It EMULATES a cancel by
+// removing every delivery through load/edit, on the reasoning that "no deliveries =
+// cancelled" — and load/edit is a full-header echo, which is precisely why a route whose
+// Vehicle Type has been disabled in the portal cannot be cancelled from here at all
+// (§5.1). The v7 document has had a first-class endpoint for this the whole time:
+//
+//   POST /load/cancel/{companyCode}   "Cancel Load" — CancelLoad
+//   "Delete/Reject a Load that is unassigned from a Driver and move it to cancelled status"
+//   body { loadNbr | loadId (one is mandatory), reasonCode (required), reasonComments? }
+//
+// It carries NO load header, so a disabled Vehicle Type has nothing to refuse. And its
+// stated precondition — unassigned from a driver — is exactly the state of the card a
+// dispatcher strikes empty (TRAILER 5 on Sep 9: DRAFT, no driver assigned).
+//
+// WHY IT IS SHIPPED OFF (NUVIZZ_LOAD_CANCEL_API is unset by default). The document says
+// what happens to the LOAD and says nothing about what happens to the ORDERS on it. The
+// red modal promises "7 orders go back to Un-Planned"; if this endpoint instead carries
+// them into cancelled status with the load, that is seven CANCELLED CUSTOMER DELIVERIES,
+// which is not something to discover on a live board. load/edit's unplan-by-removal is
+// proven on this tenant and stays the default; this runs only as the LAST rung of the
+// ladder, only when every load/edit shape has been refused, and only when an operator has
+// deliberately switched it on after proving the order outcome on one throwaway route (or
+// on UAT). Same bar as NUVIZZ_LOAD_IMPORT and the RWB production switch.
+//
+// The read-back that follows it (see nuvizz-write.mts) reports what each order ACTUALLY
+// became rather than what the endpoint's name implies — so the first real use answers the
+// open question in the journal instead of leaving it to be guessed at again.
+export function buildCancelLoadBody(payload: any): Record<string, any> {
+  const loadId = String(payload?.loadId ?? '').trim();
+  const loadNbr = String(payload?.loadNbr ?? '').trim();
+  if (!loadId && !loadNbr) throw new Error('cancelLoad: loadId or loadNbr is required');
+  const reasonCode = (String(payload?.reasonCode ?? '').trim() || CANCEL_REASON_DEFAULT).slice(0, 10);
+  // ONE identifier on the wire, id first — the same rule as buildCancelStopBody, and for
+  // the same reason: on a destructive call, resolving a disagreement between two
+  // identifiers is not a choice to hand to the vendor. A recurring route NAME can hit
+  // another day's instance; the internal loadId cannot.
+  const body: Record<string, any> = loadId ? { loadId, reasonCode } : { loadNbr, reasonCode };
+  const comments = String(payload?.reasonComments ?? '').trim();
+  if (comments) body.reasonComments = comments.slice(0, 500);
+  return body;
+}
+
 export function buildCancelStopBody(payload: any): Record<string, any> {
   const stopId = String(payload?.stopId ?? '').trim();
   const stopNbr = String(payload?.stopNbr ?? '').trim();
@@ -2148,6 +2301,11 @@ export function buildOpRequest(op: SingleOp, payload: any, creds: WriteCreds): B
     case 'cancelStop': {
       const body = buildCancelStopBody(payload);
       return { url: `${base}/stop/cancel/${enc(cc)}`, method: 'POST', headers: H, body: JSON.stringify(body), meta: { route: '/stop/cancel', tenant: cc, source: 'live-write' } };
+    }
+
+    case 'cancelLoad': {
+      const body = buildCancelLoadBody(payload);
+      return { url: `${base}/load/cancel/${enc(cc)}`, method: 'POST', headers: H, body: JSON.stringify(body), meta: { route: '/load/cancel', tenant: cc, source: 'live-write' } };
     }
 
     case 'getStop': {
@@ -2251,6 +2409,7 @@ export function parseOpResponse(op: SingleOp, httpOk: boolean, j: any): any {
     case 'createStop':
     case 'insertStops':
     case 'cancelStop':
+    case 'cancelLoad':
     case 'removeStops': return summarize(httpOk, j);
     case 'assignDriver':
     case 'dispatchLoad': return assignOk(j);

@@ -25,6 +25,36 @@ export function isUatHost(hostname) {
   return /(^|[.-])uat([.-]|$)/i.test(String(hostname || ''));
 }
 
+// ── WHAT THIS BOARD CALLS ITSELF ─────────────────────────────────────────────
+//
+// Chad, on the UAT site: "this needs to be labeled as UAT Dispatch Map."
+//
+// The two boards are pixel-identical, and a dispatcher who mistakes one for the other
+// either plans freight on a board nobody ships from, or — the expensive direction —
+// believes a real morning is a test. The tab, the header and the footer all read
+// "Dispatch Map" on both sites today; nothing on screen says which one you are on.
+//
+// KEYED ON THE HOSTNAME, for the same reason mirrorMisconfigured is: a build-time
+// variable is a thing somebody has to remember, and forgetting it here would label the
+// test board as production — the dangerous direction. The URL cannot be forgotten.
+
+/** The product name this deploy shows: the browser tab, the desktop wordmark, the footer. */
+export function siteTitle(hostname) {
+  return isUatHost(hostname) ? 'UAT Dispatch Map' : 'Dispatch Map';
+}
+
+/** The short form, for the phone app bar where the desktop wordmark does not fit. */
+export function siteTitleShort(hostname) {
+  return isUatHost(hostname) ? 'UAT Dispatch' : 'Dispatch';
+}
+
+/** The browser-tab title. Set at RUNTIME rather than in index.html: the tab is what a
+ *  dispatcher with both boards open actually reads, and index.html ships identically to
+ *  both sites. */
+export function documentTitle(hostname) {
+  return `${siteTitle(hostname)} · Davis Delivery`;
+}
+
 /**
  * PURE. Is this browser about to write the production database from a UAT site?
  *
