@@ -47,7 +47,7 @@ const VIEWER_SET = [
   'messaging-roster', 'motive-driver-positions', 'motive-drivers', 'nuvizz-customer-history',
   'nuvizz-driver-route', 'nuvizz-loads-roster', 'nuvizz-pull-today-stops',
   'nuvizz-undelivered-report', 'nuvizz-write-log', 'route-departures', 'routing-engine-data',
-  'travel-model', 'customer-comms-config', 'gmail-auth',
+  'travel-model', 'customer-comms-config', 'gmail-auth', 'alert-recipients-config',
 ];
 const DISPATCHER_SET = [
   'ai-search', 'anthropic-routing', 'debug-capture', 'manifest-email-check', 'manifest-upload',
@@ -74,6 +74,12 @@ test('the split endpoints gate their acting branch above their read — collapsi
     ['route-departures', 'viewer', 'dispatcher', /refit/],          // ?refit=1 republishes every ETA's basis
     ['manifest-push-log', 'viewer', 'dispatcher', /POST/],          // the POST appends to the push audit trail
     ['nuvizz-pull-today-stops', 'viewer', 'admin', /live/],         // ?live=1 is a ~3,000-call cold probe
+    // The READ names every phone number and internal address the alert channels reach, so it
+    // is viewer like driver-phone and messaging-roster; the WRITE changes who finds out that
+    // freight is about to be refused, and spends money at somebody's phone. Listed here
+    // because ADMIN_SET alone only greps for the word 'admin' — it cannot tell a gated read
+    // from an open one, and an earlier draft of this endpoint did ship with the GET open.
+    ['alert-recipients-config', 'viewer', 'admin', /POST/],
   ];
   for (const [name, readRole, actRole, branch] of SPLIT) {
     const body = src(name);

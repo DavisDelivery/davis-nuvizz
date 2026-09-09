@@ -11,18 +11,56 @@ import {
   NIGHT_CUTOFF_MIN,
 } from '../netlify/functions/lib/flag-sms.mts';
 
-const ENV = { FLAG_SMS_TO: '6789774808', FLAG_SMS_TO_NIGHT: '7703133517' };
+// FICTIONAL NUMBERS, AND THE REASON IS NOT PEDANTRY. These fixtures used to be two real
+// Davis mobiles, committed and labelled by name in the assertions — in a file whose own module
+// header says "phone numbers are personal data ... never in code". 555-01xx is the range
+// reserved for fiction, so nothing here is anybody's phone and nothing here can collide with
+// an env-var value Netlify's secrets scan greps for.
+const ALWAYS = '6785550101';        // the standing list — rides every sweep
+const ROUTER = '6785550102';        // the router on duty overnight, dropped at 6:00a
+const ENV = { FLAG_SMS_TO: ALWAYS, FLAG_SMS_TO_NIGHT: ROUTER };
 
-test('Zach rides the 9pm and 5:59a sweeps — and is dropped at 6:00a SHARP', () => {
-  assert.deepEqual(smsRecipients(ENV, 21 * 60), ['6789774808', '7703133517'], '9pm: both');
-  assert.deepEqual(smsRecipients(ENV, 5 * 60 + 59), ['6789774808', '7703133517'], '5:59a: both');
-  assert.deepEqual(smsRecipients(ENV, NIGHT_CUTOFF_MIN), ['6789774808'], '6:00a: Chad only');
-  assert.deepEqual(smsRecipients(ENV, 6 * 60 + 30), ['6789774808'], '6:30a: Chad only');
+test('the overnight router rides the 9pm and 5:59a sweeps — and is dropped at 6:00a SHARP', () => {
+  assert.deepEqual(smsRecipients(ENV, 21 * 60), [ALWAYS, ROUTER], '9pm: both');
+  assert.deepEqual(smsRecipients(ENV, 5 * 60 + 59), [ALWAYS, ROUTER], '5:59a: both');
+  assert.deepEqual(smsRecipients(ENV, NIGHT_CUTOFF_MIN), [ALWAYS], '6:00a: the standing list only');
+  assert.deepEqual(smsRecipients(ENV, 6 * 60 + 30), [ALWAYS], '6:30a: the standing list only');
 });
 
 test('recipients come from env and tolerate absence — no number is ever hard-coded', () => {
   assert.deepEqual(smsRecipients({}, 21 * 60), []);
-  assert.deepEqual(smsRecipients({ FLAG_SMS_TO: 'a, b ,,', FLAG_SMS_TO_NIGHT: 'b' }, 21 * 60), ['a', 'b'], 'deduped, trimmed');
+  assert.deepEqual(
+    smsRecipients({ FLAG_SMS_TO: `${ALWAYS}, ${ROUTER} ,,`, FLAG_SMS_TO_NIGHT: ROUTER }, 21 * 60),
+    [ALWAYS, ROUTER],
+    'deduped, trimmed',
+  );
+});
+
+test('AN ENV ENTRY THAT COULD NEVER BE DIALLED IS DROPPED BEFORE THE SEND, NOT AT IT', () => {
+  // It used to survive the split and reach SimpleTexting, which refused it — so a typo in the
+  // console became a `failed` counter in a status document nobody reads, on the one night the
+  // text mattered. The same normalizePhone/validUsPhone the transport uses now runs here, so
+  // the Diagnostics panel can NAME the bad entry while there is still time to fix it.
+  assert.deepEqual(smsRecipients({ FLAG_SMS_TO: `nope, ${ALWAYS}` }, 21 * 60), [ALWAYS]);
+  assert.deepEqual(smsRecipients({ FLAG_SMS_TO: '678-555-0101' }, 21 * 60), [ALWAYS], 'punctuation is normalised, not refused');
+  assert.deepEqual(smsRecipients({ FLAG_SMS_TO: `+1 ${ALWAYS}` }, 21 * 60), [ALWAYS], 'a country code is stripped, as the sender strips it');
+});
+
+test('A LIST SAVED IN DIAGNOSTICS BEATS THE ENVIRONMENT — that is the whole point of the screen', () => {
+  const SAVED = '6785550103';
+  // One channel saved, the other not: the saved one wins, the untouched one still reads env.
+  assert.deepEqual(
+    smsRecipients(ENV, 21 * 60, { flagSmsTo: [SAVED] }),
+    [SAVED, ROUTER],
+    'the standing list is the saved one; the night list still comes from env',
+  );
+  // AND AN EMPTY SAVED LIST MEANS EMPTY. A control that silently reverts to an env var when
+  // you clear it is a control that lies — see lib/alert-recipients.mts, decision 1.
+  assert.deepEqual(smsRecipients(ENV, 21 * 60, { flagSmsTo: [] }), [ROUTER], 'cleared means cleared');
+  assert.deepEqual(smsRecipients(ENV, 21 * 60, { flagSmsTo: [], flagSmsToNight: [] }), [], 'both cleared: nobody is texted');
+  // The 6:00a cutoff is a rule about the JOB, not about whoever is on the list, so it still
+  // applies to a saved night list.
+  assert.deepEqual(smsRecipients(ENV, NIGHT_CUTOFF_MIN, { flagSmsToNight: [SAVED] }), [ALWAYS], '6:00a still drops the router');
 });
 
 test('an 8pm sweep judges TOMORROW; a 1am sweep judges TODAY; a 7am sweep stands down', () => {

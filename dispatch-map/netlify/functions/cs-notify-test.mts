@@ -20,7 +20,7 @@
 // Reports the exact outcome (configured?, recipients, sent id, or error) so a
 // misconfigured RESEND_*/NOTIFY_CS_TO surfaces plainly instead of silently no-op'ing.
 
-import { isFirestoreEnabled, readStops, etDayString } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, etDayString, readAlertRecipients } from './lib/firestore.mts';
 import { requireUser } from './lib/require-user.mts';
 import { emailEnabled, sendEmail } from './lib/email.mts';
 import { adminTokenOk, testRecipientAllowed } from './lib/customer-comms.mts';
@@ -78,14 +78,26 @@ export default async (req: Request): Promise<Response> => {
   const dryRun = url.searchParams.get('dryRun') === '1';
 
   // Configuration check FIRST — the #1 reason a "test" would silently do nothing.
-  // NOTIFY_CS_TO wins; else csRecipients() falls back to the company CS inbox (the send path does
-  // the same, so this test reflects exactly where a real scheduled email would go).
+  // The list saved in Diagnostics wins, then NOTIFY_CS_TO, then the company CS inbox — resolved
+  // from the same document and the same function the send path uses, so this test reflects
+  // exactly where a real scheduled email would go.
   // An override may only ever address an internal mailbox. Without this, the token alone
   // would still let a real consignee's details be posted to any address on earth.
   if (toOverride && !isDryRun && !testRecipientAllowed(toOverride)) {
     return J({ ok: false, error: 'pass ?to=<an allowed address> so a test can never reach a customer (see COMMS_TEST_ALLOWED_TO)' }, 400);
   }
-  const recipients = toOverride ? [toOverride] : csRecipients();
+  // THE SAME LIST THE SENDER WOULD USE, which is the entire promise of this endpoint. Reading
+  // csRecipients() with no stored document would report the environment while the real
+  // scheduled email went to whatever is saved in Diagnostics — a test that says "here is where
+  // it would go" and is wrong is worse than no test endpoint at all.
+  let storedRecipients: any = null;
+  let recipientStoreError: string | null = null;
+  // And a failed read is SAID. This endpoint exists to answer "where would this go"; answering
+  // confidently with the environment's list while the real scan mails the saved one is the same
+  // bug as the one fixed two lines above, arriving from the other direction.
+  try { storedRecipients = await readAlertRecipients(); }
+  catch (e: any) { recipientStoreError = String(e?.message || e); }
+  const recipients = toOverride ? [toOverride] : csRecipients(storedRecipients);
   if (!emailEnabled()) {
     return J({ ok: false, configured: false, reason: 'email_disabled',
       detail: 'RESEND_API_KEY and/or RESEND_FROM are not set on this site — the CS-email feature is a no-op until they are.' });
@@ -112,6 +124,7 @@ export default async (req: Request): Promise<Response> => {
   const built = buildEmail(stop, date);
   if (dryRun) {
     return J({ ok: true, dryRun: true, configured: true, date, recipients,
+      ...(recipientStoreError ? { recipientStoreError, recipientSource: 'unknown' } : {}),
       customer: stop.businessName || null, pro: stop.pro || stop.primaryPro || null,
       wouldSendSubject: `[TEST] ${built.subject}` });
   }
@@ -127,6 +140,7 @@ export default async (req: Request): Promise<Response> => {
     configured: true,
     date,
     recipients,
+    ...(recipientStoreError ? { recipientStoreError, recipientSource: 'unknown' } : {}),
     customer: stop.businessName || null,
     pro: stop.pro || stop.primaryPro || null,
     sentId: res.id || null,

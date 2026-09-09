@@ -1143,6 +1143,27 @@ export async function writeScanConfig(cfg: Record<string, any>): Promise<void> {
   await setDoc(SCAN_CONFIG_PATH, cfg);
 }
 
+// WHO GETS TEXTED AND WHO GETS EMAILED, live-editable from Diagnostics. Absent → every
+// channel falls back to its environment variable, which is exactly how alerting behaved
+// before the screen existed. Shape and validation live in lib/alert-recipients.mts; this is
+// only the persistence.
+//
+// THE WRITE IS FIELD-MASKED, DELIBERATELY, and it is the one place this file's own advice
+// gets taken rather than repeated. writeScanConfig above uses setDoc — a full-document
+// replace — and its endpoint compensates by reading the prior document and spreading it,
+// which is the lost update updateDocFields exists to end. Here two people editing two
+// different channels in two tabs is an ordinary Tuesday, and the second save must not delete
+// the first person's phone numbers. Editing one channel touches one field.
+const ALERT_RECIPIENTS_PATH = `${OPS_COLLECTION}/alert_recipients`;
+export async function readAlertRecipients(): Promise<Record<string, any>> {
+  if (!isFirestoreEnabled()) return {};
+  const doc = await getDoc(ALERT_RECIPIENTS_PATH);
+  return (doc as Record<string, any>) || {};
+}
+export async function writeAlertRecipients(patch: Record<string, any>): Promise<boolean> {
+  return updateDocFields(ALERT_RECIPIENTS_PATH, patch);
+}
+
 export interface CircuitState { open: boolean; reason?: string; at?: string; day?: string }
 
 // Day-scoped decision (Fix 3), exported PURE for tests: a flag tripped on a prior day is
