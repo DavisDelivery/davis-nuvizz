@@ -118,7 +118,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.97.5';
+const APP_VERSION = '0.97.6';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -189,6 +189,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.97.6', 'THE MAP LEGEND HAD NO BACKGROUND, AND THE CALL CEILING IGNORED THE NUMBER YOU SET. TWO REPORTS, ONE MORNING. FIRST, THE LEGEND. Chad, on a phone shot of the Routing map: \u201cyou can\u2019t see this[,] formatting and colors are bad and i\u2019ve already made you aware but wasn\u2019t fixed.\u201d The panel was a sheet of blurred satellite imagery with grey text floating on it. THE WHOLE CAUSE WAS FOUR CHARACTERS: the popover was `bg-white/97`. Tailwind\u2019s opacity scale runs 0\u2013100 in steps of FIVE, and a modifier off the scale is not an error \u2014 it emits NOTHING. The class was right there in the markup, matched no rule, and the panel had no background at all; `backdrop-blur` was the only thing still doing anything, which is exactly the blurred map in the shot. Confirmed by grepping the shipped stylesheet: /15, /20, /25, /30, /90 and /95 are all in it and /97 is not. THAT IS THE WORST SHAPE A UI BUG COMES IN \u2014 green build, valid bundle, every test passing, a diff that reads correctly to a human, and a failure that exists only on a screen. The phone guard could not see it either: the panel occupies exactly the right pixels, it just has no paint. SO THE FIX IS TWO THINGS. The panel is `bg-white/95` (the class the other fifteen on-map panels already use). AND a guard now reads every slash-modifier class out of src and asks the BUILT stylesheet whether each one exists \u2014 Tailwind is the authority, this only compares the two lists, so it has something to say about the next silently-dropped utility too, not just opacity. It was proven BOTH ways against the real history: it names `src/App.jsx:16615 bg-white/97` on the shipped source and passes on this one. Wired into CI after the build, plus a no-build unit test so the fast job catches it too. WHILE IN THERE, THE CONTRAST. Chad said colors, not just background, and he is right on a white panel too: the count chips were slate-400 (2.6:1 on white, well under the 4.5:1 floor) at 10px \u2014 and those numbers ARE the content, the answer to \u201cis this a corner case or half my afternoon.\u201d Counts, section headings, the restriction paragraph, the marker labels, the tractor status line and the close X all move up a step or two (everything now \u22657:1), and the body text sets its own colour instead of inheriting whatever it lands in. SECOND, THE CEILING. Chad: \u201ci just changed the settings to allow 3000 calls but still shows only 2000 enforce on the dropdown menu on the actual map.\u201d He was reading it right. Since v0.54.21 there was ONE number, 2,000, serving as BOTH the default AND an absolute cap nothing could lift \u2014 so the Diagnostics field took 3,000, saved it, and the breaker kept 2,000 with nothing anywhere saying they disagreed. Those are two different questions and they are two constants now. DEFAULT (2,000) is what you get when nobody has decided, and an env var or a caller-supplied fallback may only LOWER it \u2014 so this deploy spends exactly what yesterday spent until somebody saves a setting. HARD (3,000) is reachable ONLY by a deliberate save in the Diagnostics editor, which is bounded to the imported constant so the number the field accepts cannot drift from the number the breaker enforces. Junk resolves to the DEFAULT, never the maximum: a malformed value must not buy headroom. The enforcement site and the gauge now share ONE expression rather than rebuilding it \u2014 that duplication is exactly what shipped a card reading 20,000 against a breaker tripping at 2,000 in v0.70.2 \u2014 and the property test states it on the path production uses. WORTH SAYING PLAINLY: 2,000 was chosen to sit BELOW the ~3,000-call cold number-probe scan so that scan could not finish by accident, and at 3,000 that particular backstop is gone. The primary guard is unchanged (the permission rule, and only manual=1 / ?date= / ?days= reach that path), and the backstop was never cheap: it did not prevent the spend, it stopped the scan PARTWAY and left the board half-written. Lower it in Diagnostics any time \u2014 the field goes down to 100. AND THE FIELD STOPS LYING: `max` on a number input only constrains the spinner arrows, so every field in that editor would accept a value it would not keep. They now print their range, flag an out-of-range value in amber with the number that will actually be saved, and pull it back on blur where you can see it. 16 new tests.'],
   ['0.97.5', 'LOAD-SCAN (v0.45.0): SCANNING A MULTI-PIECE ORDER STOPPED ASKING PERMISSION. Chad, off the dock: "the scanner is taking too long to scan things now that we are confirming each new item to same pro." He was right, and it was worse than one tap — piece 2 of a same-PRO order cost about six seconds. The pair window (2.5s), then a three-second cooldown that dropped the read SILENTLY so the loader re-aimed and paid the window again, then an amber card to tap. A 3-skid order is one PRO on three labels and the manifest already says three; asking a loader to vouch for skids 2 and 3 is asking them to confirm the paperwork against itself, and a tap demanded that often becomes a reflex, which is not a check. A repeat PRO on a stop still short of its count now books straight through. THE GUARD THAT REPLACED IT IS TIGHTER THAN THE ONE IT REMOVED, not looser: a fixed timer cannot tell another piece from another look, so the rule is now ABSENCE — the label has to leave the frame before it earns another booking. A phone left pointing at one skid keeps decoding it, so it never goes absent and can never book twice however long it is held; today\'s three-second cooldown allowed exactly that every three seconds. The confirmation is kept where the question is genuinely open: a stop already at its count, or one with no count to reason about. One decision per presentation, so a lingering label cannot re-fire the amber card every window either. VERIFIED IN THE REAL BUNDLE, both ways: the camera end-to-end check gained an act where three skids of one PRO book with no tap while five seconds of unbroken aim books once — and it was run with the new guard deliberately disabled, where it booked FIVE pieces from three aims and the act failed, which is the only evidence that a test is load-bearing. ALSO RECORDED, A FIX THAT WAS TRIED AND REJECTED: halving the camera pair window to 1200ms looked safe because a late piece id upgrades its fallback since v0.43.0 — but Quagga is multiple:false, so on an iPhone a late id arrives ALONE, a lone id cannot identify a stop, and it never reaches the upgrade at all. The end-to-end check caught it (DASAN and LATE LABEL both booking fallbacks, no upgrade firing) and the window stays at 2500 with the reasoning written beside it so it is not retried. The tick that notices a closed window is halved to 200ms, which is pure latency and nothing else. 319 load-scan tests green; this app is untouched.'],
   ['0.97.4', 'THE COMPARE SEND BUTTON PUTS THE STOPS ON THE ROUTE IN ONE PRESS, AND SAYS WHAT IT DID. Chad: “i put 2 routes in the panel that i wanted to add stops to then i went and selected the stops i wanted it to put on the route and then when i clicked the button to add stops it didn\'t put them on the route.” FOUND BY RUNNING IT, on UAT and against the code: stops already sitting UNPLANNED move on the first press (verified on the UAT board). A stop still PLANNED on a load that is NOT open in Compare did not — the Save is declarative over the loads it carries, so the source load has to be in it to release the stop, and the old press only OPENED that load’s card, kept the stops selected, put nothing on the target and asked for a second press in a four-second toast at the bottom of the map. On a desktop with cards open the Setup panel’s message line is not on screen at all, so the only sign was a third card appearing. The toast also said “Opened X” whether or not X had actually opened (two loads sharing a name, no NuVizz identity, Compare full), which turns a refused open into an endless “Send again”. NOW: one press opens the source card AND moves the stops onto the target, in the same action; a source that cannot open keeps its stops selected and is named with the real reason; the outcome (“Sent 6 stops → ALPHA (opened BEN 2 in Compare so the Save can release them)”) is written in the Compare header and stays until the next action, on top of the toast. Also: the header read “(N/3)” while the workbench has held six cards since v0.46.19, and the send buttons named a load by its NuVizz number when the card was opened from the Loads grid — they carry the card’s name now. The rule lives in lib/send-selection.js, pure and tested on the Sep 8 shape; the card builder is one function both the open paths and the send share, so a refusal reads the same wherever it happens. 13 new tests.'],
   ['0.97.3', 'THE UNPLANNED ESTES ORDERS WERE STILL PURPLE — NOW THEY ARE BLACK TOO. Chad, on a stop wearing the new yellow ring around the same pool purple as everything else: "any estes unplanned should have black center with yellow ring." HERE IS WHY HALF THE BOARD CHANGED AND HALF DID NOT, because it is a good lesson in reading a colour chain. Every stop\'s fill is picked by a chain of fallbacks, and the Estes black was put at the END of it — after the status colour. A SCHEDULED stop has no status colour of its own (it has always fallen through to the flag/default tint), so the black was reached and the pin turned black. An UNPLANNED stop carries its own purple, so the chain answered before it ever got to the carrier, and every order in the pool — which is most of what you look at when you are building routes, and the exact case this was asked for — kept the colour it always had. The ring was on it, so it looked like a half-finished job, and it was one. The black now sits AHEAD of the status colour for the two RESTING states, unplanned and scheduled: "nothing has happened to this order yet" is the tint the carrier identity should own. THE LIVE STATES KEEP THEIRS, deliberately: out for delivery blue, arrived amber, delivered green, exception orange. Those answer where an order IS right now, which is what the board is watched for all day, and the yellow ring already says whose order it is without spending that colour. Same for the marks a person or a detector set — a priority flag, a tractor or box-only paint, an amber address-looks-off warning, a selection, a search hit. AND THE TEST THAT SHOULD HAVE CAUGHT IT NOW EXISTS. The first cut was pinned by reading the source for the right words, and the words were all there — the bug was the ORDER they were in, which no amount of reading the text can see. The marker tests now BUILD real markers through the shipped code and read the colour back out of the SVG, one per status, so a fill that is wrong is a red test instead of a screenshot.'],
@@ -4808,7 +4809,7 @@ function LegendMarkerExample({ restrictions, label, advisoryKeys = null, blocker
         height={spec.height}
         style={{ display: 'block' }}
       />
-      <span className="text-slate-600">{label}</span>
+      <span className="text-slate-700">{label}</span>
     </div>
   );
 }
@@ -4846,11 +4847,11 @@ function TractorPaintControl({ litCount = null }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
-        <span className="text-[10px] uppercase font-semibold text-slate-500">Tractor delivered</span>
+        <span className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide">Tractor delivered</span>
         {/* tap-target-y (phone-only, same as <Toggle/>): index.css exempts checkboxes from the
             44px floor, so this on/off label was an 18px target — and in the mobile Filters
             drawer it is the only control for the lime paint. */}
-        <label className="tap-target-y inline-flex items-center gap-1.5 cursor-pointer select-none text-[10px] font-semibold text-slate-600">
+        <label className="tap-target-y inline-flex items-center gap-1.5 cursor-pointer select-none text-[11px] font-semibold text-slate-700">
           <input
             type="checkbox"
             checked={on}
@@ -4864,7 +4865,7 @@ function TractorPaintControl({ litCount = null }) {
         <span className="w-3 h-3 rounded-full border-2 border-white shadow flex-shrink-0" style={{ background: TRACTOR_DELIVERED_COLOR, boxShadow: '0 0 0 1px rgba(0,0,0,0.15)' }} />
         <span>Tractor delivered — a tractor driver has completed a delivery here (automatic, from saved history)</span>
       </div>
-      <div className={`mt-1 text-[10px] leading-snug ${diag.tone}`}>
+      <div className={`mt-1 text-[11px] leading-snug ${diag.tone}`}>
         {diag.text}
         {diag.retry && on && (
           <button
@@ -4905,7 +4906,7 @@ const plural = (n, word) => `${Number(n || 0).toLocaleString()} ${word}${Number(
 
 function LegendCount({ n }) {
   if (!n) return null;
-  return <span className="ml-auto pl-2 text-[10px] font-semibold text-slate-400 tabular-nums">{n}</span>;
+  return <span className="ml-auto pl-2 text-[11px] font-semibold text-slate-600 tabular-nums">{n}</span>;
 }
 
 // THE LEGEND BODY — shared by the Map sidebar panel and the Routing map's popover, so the two
@@ -4946,11 +4947,11 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
     + (inv && iconCounts.tractor_trailer_friendly ? 1 : 0);
 
   return (
-    <div className="space-y-3 text-[11px]">
+    <div className="space-y-3 text-[11px] text-slate-800">
       {/* What this list is scoped to, and the way back to the full catalogue. A dispatcher who
           remembers a mark from last week still needs to be able to look it up. */}
       <div className="flex items-center justify-between gap-2 -mt-0.5">
-        <span className="text-[10px] text-slate-500 leading-snug">
+        <span className="text-[11px] text-slate-600 leading-snug">
           {all
             ? 'Every mark the map can draw.'
             : empty
@@ -4963,7 +4964,7 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
           <button
             type="button"
             onClick={() => onShowAll(!showAll)}
-            className="tap-dense shrink-0 text-[10px] font-semibold text-blue-700 underline hover:no-underline"
+            className="tap-dense shrink-0 text-[11px] font-semibold text-blue-700 underline hover:no-underline"
           >
             {showAll ? 'On this map' : 'Show all'}
           </button>
@@ -4972,7 +4973,7 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
 
       {anyFlagRow && (
         <div>
-          <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Priority flag</div>
+          <div className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide mb-1">Priority flag</div>
           <div className="space-y-1">
             {flagRows.map((k) => (
               <div key={k} className="flex items-center gap-2">
@@ -5003,7 +5004,7 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
           drawing it, like every other mark here. The swatch is the real colours, not a name. */}
       {has(inv && inv.estes) && (
         <div>
-          <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Carrier</div>
+          <div className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide mb-1">Carrier</div>
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: ESTES_FILL, boxShadow: `0 0 0 2px ${ESTES_RING}` }} />
             <span>Estes order — black, yellow ring</span>
@@ -5021,8 +5022,8 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
 
       {shapeRows.length > 0 && (
         <div>
-          <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Restricted stops</div>
-          <p className="text-slate-600 mb-2 leading-snug">
+          <div className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide mb-1">Restricted stops</div>
+          <p className="text-slate-700 mb-2 leading-snug">
             When a stop has equipment restrictions, the pin is replaced by the restriction icon(s) for quick visual scanning.
           </p>
           <div className="space-y-2">
@@ -5041,8 +5042,8 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
               not out there. No count chip here on purpose: the inventory does not measure
               confidence, and printing a number this panel has not counted is exactly the
               sort of thing that gets believed. */}
-          <div className="mt-3 pt-2 border-t border-slate-100">
-            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">How sure is it?</div>
+          <div className="mt-3 pt-2 border-t border-slate-300">
+            <div className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide mb-1">How sure is it?</div>
             <div className="space-y-2">
               <div className="flex items-center gap-2">
                 <LegendMarkerExample
@@ -5060,7 +5061,7 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
                 />
               </div>
             </div>
-            <p className="text-slate-500 mt-1.5 leading-snug">
+            <p className="text-slate-600 mt-1.5 leading-snug">
               Ticking the restriction on the stop fills the other half in.
             </p>
           </div>
@@ -5069,7 +5070,7 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
 
       {iconKeys.length > 0 && (
         <div>
-          <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Restriction icons</div>
+          <div className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide mb-1">Restriction icons</div>
           <div className="space-y-1">
             {iconKeys.map((key) => (
               <div key={key} className="flex items-center gap-2">
@@ -5081,7 +5082,7 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
             {has(shapes.overflow) && (
               <div className="flex items-center gap-2 pt-1">
                 <span className="inline-flex items-center justify-center w-4 h-4 rounded-full text-white text-[8px] font-bold flex-shrink-0" style={{ background: '#0f172a' }}>+N</span>
-                <span className="text-slate-500">Four or more restrictions — the rest are in the count</span>
+                <span className="text-slate-600">Four or more restrictions — the rest are in the count</span>
                 <LegendCount n={!all && shapes.overflow} />
               </div>
             )}
@@ -5091,7 +5092,7 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
 
       {ttFriendly && (
         <div>
-          <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Allowed (green)</div>
+          <div className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide mb-1">Allowed (green)</div>
           <div className="flex items-center gap-2">
             <RestrictionIcon kind="tractor_trailer_friendly" size={LEGEND_ICON_PX} />
             <span>{RESTRICTION_ICONS.tractor_trailer_friendly.label} — stop can take a tractor trailer</span>
@@ -5102,7 +5103,7 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
 
       {/* Filtered down to nothing is a real answer, and has to look like one. */}
       {!all && !anyFlagRow && !shapeRows.length && !iconKeys.length && !ttFriendly && (
-        <div className="text-slate-500 leading-snug">
+        <div className="text-slate-600 leading-snug">
           {empty
             ? 'Nothing is on the map yet — pick a date or clear a filter.'
             : 'No marks on this board. Every stop is drawing a plain pin.'}
@@ -14964,9 +14965,25 @@ function ApiCallsPanel({ ops, lastLoadScanAt, lastUnplannedScanAt, onRefresh, re
 
 // One numeric field bound to the schedule form, with bounds + default hint and an
 // "edited" highlight when the value differs from the site default.
+// A NUMBER FIELD THAT CANNOT LIE ABOUT WHAT IT WILL KEEP.
+//
+// Chad: "I just changed the settings to allow 3000 calls but still shows only 2000 enforce on
+// the dropdown menu on the actual map." `max` on <input type="number"> constrains the spinner
+// arrows and nothing else — you can type any number you like, the field shows it, Save posts
+// it, and clampScanConfig silently rounds it back to the bound on the way into Firestore. So
+// the screen said 3,000, the breaker said 2,000, and nothing anywhere said they disagreed.
+// That is "never report an intent as an outcome" — the rule this repo already has, applied
+// to every field in this editor rather than to the one that got caught.
+//
+// Two changes, both about telling the truth: the range is always printed under the field, and
+// an out-of-range value is pulled back to the bound ON BLUR, where it is visible and
+// correctable, rather than at some later moment inside a server the dispatcher cannot see.
+// Clamping on every keystroke instead would fight anyone typing "3000" one digit at a time.
 function NumberField({ label, hint, value, def, bound, unit, onChange }) {
   const [lo, hi] = bound || [0, 9999];
   const overridden = def != null && Number(value) !== Number(def);
+  const n = Number(value);
+  const outOfRange = value !== '' && Number.isFinite(n) && (n < lo || n > hi);
   return (
     <label className="block">
       <div className="flex items-center justify-between">
@@ -14977,11 +14994,20 @@ function NumberField({ label, hint, value, def, bound, unit, onChange }) {
         <input
           type="number" min={lo} max={hi} value={value}
           onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}
-          className={`w-full rounded-md border px-2 py-1 text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-sky-300 ${overridden ? 'border-violet-300 bg-violet-50/40' : 'border-slate-300'}`}
+          onBlur={(e) => {
+            if (e.target.value === '') return;
+            const v = Number(e.target.value);
+            if (!Number.isFinite(v)) return;
+            const clamped = Math.min(hi, Math.max(lo, Math.round(v)));
+            if (clamped !== v) onChange(clamped);
+          }}
+          className={`w-full rounded-md border px-2 py-1 text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-sky-300 ${outOfRange ? 'border-amber-400 bg-amber-50' : overridden ? 'border-violet-300 bg-violet-50/40' : 'border-slate-300'}`}
         />
-        {unit && <span className="text-xs text-slate-400 shrink-0">{unit}</span>}
+        {unit && <span className="text-xs text-slate-500 shrink-0">{unit}</span>}
       </div>
-      {hint && <div className="text-[10px] text-slate-400 mt-0.5">{hint}{def != null ? ` · default ${def}` : ''}</div>}
+      {outOfRange
+        ? <div className="text-[10px] text-amber-700 font-semibold mt-0.5">Outside {lo.toLocaleString()}–{hi.toLocaleString()} — this will be saved as {Math.min(hi, Math.max(lo, Math.round(n))).toLocaleString()}.</div>
+        : hint && <div className="text-[11px] text-slate-500 mt-0.5">{hint} · {lo.toLocaleString()}–{hi.toLocaleString()}{def != null ? ` · default ${def}` : ''}</div>}
     </label>
   );
 }
@@ -16612,10 +16638,10 @@ function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja,
     </div>
   );
   const panel = legendOpen ? (
-    <div className="w-64 max-w-[calc(100vw-1.5rem)] max-h-[58vh] overflow-y-auto bg-white/97 backdrop-blur border border-slate-200 rounded-lg shadow-lg p-3">
+    <div className="w-64 max-w-[calc(100vw-1.5rem)] max-h-[58vh] overflow-y-auto bg-white/95 backdrop-blur border border-slate-300 rounded-lg shadow-xl p-3">
       <div className="flex items-center justify-between gap-2 mb-1.5">
         <span className="text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5"><Info size={13} /> Legend</span>
-        <button onClick={() => setLegendOpen(false)} className="tap-dense text-slate-400 hover:text-slate-700" aria-label="Close legend"><X size={14} /></button>
+        <button onClick={() => setLegendOpen(false)} className="tap-dense text-slate-500 hover:text-slate-900" aria-label="Close legend"><X size={14} /></button>
       </div>
       <MapLegendBody inventory={legendInventory} showAll={legendAll} onShowAll={setLegendAll} />
     </div>

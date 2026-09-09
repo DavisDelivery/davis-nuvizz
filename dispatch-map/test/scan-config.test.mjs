@@ -54,6 +54,21 @@ test('scanConfigDefaults: reads env overrides (else the documented baseline)', (
   assert.equal(scanConfigDefaults({ NUVIZZ_SCANS_ENABLED: 'false' }).scansEnabled, false);
 });
 
+test("the Diagnostics editor is the switch: a saved 3,000 survives the clamp, 3,001 does not", () => {
+  // Chad: "I just changed the settings to allow 3000 calls but still shows only 2000 enforce
+  // on the dropdown menu on the actual map." The editor was bounded to 2,000, so his save was
+  // rounded down on the way into Firestore and nothing on any screen said so. This field is
+  // now the ONLY input in the system allowed above the 2,000 default.
+  assert.equal(SCAN_CONFIG_BOUNDS.dailyCeiling[1], 3000, 'the editor bound IS the hard cap');
+  assert.equal(clampScanConfig({ dailyCeiling: 3000 }).dailyCeiling, 3000);
+  assert.equal(clampScanConfig({ dailyCeiling: 2500 }).dailyCeiling, 2500);
+  assert.equal(clampScanConfig({ dailyCeiling: 3001 }).dailyCeiling, 3000, 'and it still stops there');
+  assert.equal(clampScanConfig({ dailyCeiling: 200000 }).dailyCeiling, 3000);
+  // And a saved value below the default is honoured — the switch turns both ways.
+  assert.equal(clampScanConfig({ dailyCeiling: 800 }).dailyCeiling, 800);
+  assert.equal(effectiveScanConfig({ dailyCeiling: 3000 }, {}).dailyCeiling, 3000, 'and reaches the scanner');
+});
+
 test('effectiveScanConfig: defaults overlaid with clamped stored overrides', () => {
   const eff = effectiveScanConfig({ intervalDayMin: 60, dailyCeiling: 1 /* clamps to 100 */ }, {});
   assert.equal(eff.intervalDayMin, 60, 'override wins');

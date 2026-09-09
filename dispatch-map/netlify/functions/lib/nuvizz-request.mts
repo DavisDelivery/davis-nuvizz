@@ -70,32 +70,70 @@ export type BreakerMode = 'monitor' | 'enforce';
 export const BREAKER_MODE: BreakerMode =
   (process.env.NUVIZZ_BREAKER_MODE || '').toLowerCase() === 'monitor' ? 'monitor' : 'enforce';
 
-// ── The HARD ceiling ─────────────────────────────────────────────────────────
+// ── The ceiling: TWO numbers, because they answer two different questions ────
 //
-// 2,000 NuVizz calls a day, and nothing may raise it — not the env var, not the stored
-// Diagnostics config, not a caller passing its own fallback. Every path that produces a
-// ceiling runs through clampCeiling(), so the number on the Diagnostics pill is the number
-// actually enforced. Before this, NUVIZZ_DAILY_CEILING was free to set 20,000 (what the site
-// was running) and the editable config could reach 200,000.
+// Chad, 2026-09-09: "I just changed the settings to allow 3000 calls but still shows only
+// 2000 enforce on the dropdown menu on the actual map." He was reading it right. Since
+// v0.54.21 there was ONE number here — 2,000 — and it was BOTH the default AND an absolute
+// cap nothing could lift, so the Diagnostics field accepted 3,000, saved it, and the system
+// quietly enforced 2,000 anyway. A setting that takes a number it will not honour is the
+// "never report an intent as an outcome" failure in its purest form.
 //
-// Sized against real usage: a normal day is a few hundred calls (133 by mid-morning on Jul 29),
-// so 2,000 is ~10x headroom for scheduled scans, enrichment, live writes and manual pulls.
-// It is deliberately BELOW the ~3,000-call cold number-probe scan that CLAUDE.md exists to
-// prevent — that scan can no longer run to completion by accident; it trips the breaker
-// partway. That is the intent, not a side effect.
-export const HARD_DAILY_CEILING = 2_000;
+// The two questions were always separate and are now separate constants:
+//
+//   DEFAULT_DAILY_CEILING (2,000) — what you get when nobody has decided. An env var or a
+//   caller-supplied fallback may only LOWER this. Unchanged, so nothing moves on its own:
+//   a deploy of this change spends exactly what it spent yesterday until somebody saves a
+//   setting. Sized against real usage — a normal day is a few hundred calls — so it is
+//   already ~10x headroom for scheduled scans, enrichment, live writes and manual pulls.
+//
+//   HARD_DAILY_CEILING (3,000) — the most a DELIBERATE save in Diagnostics may reach.
+//   Nothing else can get here: not the env var, not a caller's fallback, not junk. This is
+//   the switch, and Chad is the only one who can flip it.
+//
+// WHAT RAISING IT COSTS, said plainly because it is a real change and not a formality.
+// 2,000 was chosen to sit BELOW the ~3,000-call cold number-probe scan so that scan could
+// not run to completion by accident. At 3,000 that particular backstop is gone. Two things
+// are worth weighing against it: the primary guard against a cold full scan is not this
+// number but the permission rule in CLAUDE.md and the fact that only `manual=1` / `?date=` /
+// `?days=` reach that path at all; and the backstop was never cheap anyway — it did not
+// prevent the spend, it stopped the scan PARTWAY and left the board half-written (v0.70.2),
+// which on a 700-stop morning is the worse of the two outcomes. Lower it in Diagnostics any
+// time; the field goes down to 100.
+export const DEFAULT_DAILY_CEILING = 2_000;
+export const HARD_DAILY_CEILING = 3_000;
 
-/** PURE: any proposed ceiling, clamped into [1, HARD_DAILY_CEILING]. Junk → the hard cap. */
+/**
+ * PURE: a SAVED SETTING, clamped into [1, HARD_DAILY_CEILING].
+ *
+ * Junk resolves to the DEFAULT, never to the maximum — a malformed value must not buy
+ * headroom. (Before the split this returned the cap for junk, which was the same number.)
+ */
 export function clampCeiling(n: any): number {
   const v = Math.floor(Number(n));
-  if (!Number.isFinite(v) || v < 1) return HARD_DAILY_CEILING;
+  if (!Number.isFinite(v) || v < 1) return DEFAULT_DAILY_CEILING;
   return Math.min(HARD_DAILY_CEILING, v);
+}
+
+/**
+ * PURE: an AMBIENT proposal — the env var, or a fallback a caller passed itself — clamped
+ * into [1, DEFAULT_DAILY_CEILING]. These may only ever LOWER the ceiling.
+ *
+ * This is what keeps the raise behind Chad's switch rather than behind a deploy: the site
+ * has run NUVIZZ_DAILY_CEILING=20,000 in the past, and if the env var could reach the new
+ * hard cap then shipping this file would have raised production's spend by 50% with nobody
+ * deciding anything.
+ */
+export function clampAmbientCeiling(n: any): number {
+  const v = Math.floor(Number(n));
+  if (!Number.isFinite(v) || v < 1) return DEFAULT_DAILY_CEILING;
+  return Math.min(DEFAULT_DAILY_CEILING, v);
 }
 
 export function breakerMode(): BreakerMode { return BREAKER_MODE; }
 
 export interface RequesterConfig {
-  /** Daily call ceiling across the whole fleet. Always <= HARD_DAILY_CEILING (2,000). */
+  /** Daily call ceiling across the whole fleet. Always <= HARD_DAILY_CEILING (3,000). */
   dailyCeiling: number;
   /** monitor (count+warn, never block) vs enforce (trip+block) at the ceiling. */
   breakerMode: BreakerMode;
@@ -110,9 +148,10 @@ export interface RequesterConfig {
 }
 
 export const DEFAULT_CONFIG: RequesterConfig = {
-  // The hard cap is the default. NUVIZZ_DAILY_CEILING may only LOWER it (clampCeiling).
-  // In enforce mode — now the default — hitting it trips the breaker and blocks further calls.
-  dailyCeiling: clampCeiling(Number(process.env.NUVIZZ_DAILY_CEILING) || HARD_DAILY_CEILING),
+  // The DEFAULT is the default. NUVIZZ_DAILY_CEILING may only LOWER it — only a saved
+  // Diagnostics setting reaches HARD_DAILY_CEILING, and it arrives via the override below.
+  // In enforce mode — the default — hitting the ceiling trips the breaker and blocks further calls.
+  dailyCeiling: clampAmbientCeiling(process.env.NUVIZZ_DAILY_CEILING),
   breakerMode: BREAKER_MODE,
   maxRetries: 4,
   backoffBaseMs: 500,
@@ -131,8 +170,10 @@ export function setDailyCeilingOverride(n: number | null | undefined): void {
   __dailyCeilingOverride = (typeof n === 'number' && Number.isFinite(n) && n > 0) ? clampCeiling(n) : null;
 }
 export function effectiveDailyCeiling(fallback = DEFAULT_CONFIG.dailyCeiling): number {
-  // Clamped on the way OUT too: a caller-supplied fallback is just another proposal.
-  return clampCeiling(__dailyCeilingOverride ?? fallback);
+  // The override is Chad's saved setting and was clamped to HARD on the way in. A
+  // caller-supplied fallback is just another ambient proposal and may only LOWER the default —
+  // otherwise any code path could vote itself more budget by passing a bigger number.
+  return __dailyCeilingOverride ?? clampAmbientCeiling(fallback);
 }
 
 /**
@@ -163,15 +204,17 @@ export function reportedDailyCeiling(configured?: any, env: Record<string, any> 
   // ceiling of 1 and `[1500]` as 1500 — the same family as the Number(null) is 0 bug that put
   // a midnight deadline in front of a customer. A malformed value must fall THROUGH to the
   // next proposal, not become one.
-  const asCeiling = (v: any): number | null => {
+  const asCeiling = (v: any, clamp: (x: any) => number): number | null => {
     if (typeof v !== 'number' && typeof v !== 'string') return null;
     const n = Number(v);
-    return Number.isFinite(n) && n > 0 ? clampCeiling(n) : null;
+    return Number.isFinite(n) && n > 0 ? clamp(n) : null;
   };
-  return asCeiling(configured)
-    ?? asCeiling(env?.NUVIZZ_DAILY_CEILING)
-    // No config and no env is not "unlimited" — it is the hard cap, same as DEFAULT_CONFIG.
-    ?? HARD_DAILY_CEILING;
+  return asCeiling(configured, clampCeiling)
+    // The env var is ambient, so it can only lower — same rule the breaker enforces.
+    ?? asCeiling(env?.NUVIZZ_DAILY_CEILING, clampAmbientCeiling)
+    // No config and no env is not "unlimited", and it is not the maximum either: it is the
+    // DEFAULT, the same number DEFAULT_CONFIG lands on.
+    ?? DEFAULT_DAILY_CEILING;
 }
 
 export interface RequesterDeps {
@@ -271,8 +314,11 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
       totalThisInstance++;
       log({ app: APP_NAME, trigger: meta.trigger ?? __callTrigger ?? 'unknown', source: meta.source, route: meta.route, tenant: meta.tenant, status: resp.status, ms, dayTotal: total, mode: cfg.breakerMode });
       // At the ceiling: enforce → trip + (next call) block; monitor → warn only.
-      // The effective ceiling honors a live UI override (scan_config) over cfg.
-      const ceiling = clampCeiling(__dailyCeilingOverride ?? cfg.dailyCeiling);
+      // ONE expression decides the effective ceiling, and it is the same one the gauge prints
+      // (effectiveDailyCeiling): Chad's saved override wins, otherwise the requester's own
+      // config as an ambient proposal. Rebuilding the expression here is exactly how v0.70.2
+      // ended up with a gauge reading 20,000 while the breaker tripped at 2,000.
+      const ceiling = effectiveDailyCeiling(cfg.dailyCeiling);
       if (total >= ceiling) {
         if (cfg.breakerMode === 'enforce') {
           if (!breakerOpen) {
@@ -320,7 +366,7 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
   }
 
   function getStats() {
-    return { totalThisInstance, breakerOpen, inflight: inflight.size, ceiling: clampCeiling(__dailyCeilingOverride ?? cfg.dailyCeiling), mode: cfg.breakerMode };
+    return { totalThisInstance, breakerOpen, inflight: inflight.size, ceiling: effectiveDailyCeiling(cfg.dailyCeiling), mode: cfg.breakerMode };
   }
 
   return { request, getStats, _config: cfg };
