@@ -1,0 +1,72 @@
+{
+  "artboards": [
+    {
+      "file": "Main.dc.html",
+      "title": "1 · The reframe",
+      "x": 0,
+      "y": 0,
+      "w": 1000,
+      "h": 1220
+    },
+    {
+      "file": "Mark.dc.html",
+      "title": "2 · The mark",
+      "x": 1100,
+      "y": 0,
+      "w": 1000,
+      "h": 780
+    },
+    {
+      "file": "Phone.dc.html",
+      "title": "3 · Mobile",
+      "x": 2200,
+      "y": 0,
+      "w": 900,
+      "h": 800
+    },
+    {
+      "file": "Desktop.dc.html",
+      "title": "4 · Desktop",
+      "x": 0,
+      "y": 1340,
+      "w": 1000,
+      "h": 640
+    },
+    {
+      "file": "Paper.dc.html",
+      "title": "5 · The printed ticket",
+      "x": 1100,
+      "y": 1340,
+      "w": 1000,
+      "h": 720
+    },
+    {
+      "file": "Escalate.dc.html",
+      "title": "6 · Escalation",
+      "x": 2200,
+      "y": 1340,
+      "w": 1060,
+      "h": 760
+    },
+    {
+      "file": "Ask.dc.html",
+      "title": "7 · Over to you",
+      "x": 0,
+      "y": 2220,
+      "w": 1160,
+      "h": 1460
+    }
+  ],
+  "annotations": [
+    {
+      "id": "start-here",
+      "x": 0,
+      "y": -170,
+      "w": 460,
+      "text": "Start at 1 · THE REFRAME, then 2 · THE MARK.\n\nBoard 7 is the one that needs an answer from you — the rest is only worth building if that answer isn't \"nothing\"."
+    }
+  ],
+  "launch": {
+    "view": "canvas"
+  }
+}
