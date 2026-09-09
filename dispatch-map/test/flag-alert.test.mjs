@@ -10,7 +10,7 @@ import {
 const DATE = '2026-08-17';
 const row = (o) => ({
   rule: 'hours_risk', tier: 'critical', stopNbr: '1', customer: 'PYROK INC', routeName: 'WILLIAM',
-  closeMin: 14 * 60, etaMin: 16 * 60, lateBy: 120, anchored: true, ...o,
+  closeMin: 14 * 60, etaMin: 16 * 60, lateBy: 120, anchored: true, driverName: 'WILL DRIVER', ...o,
 });
 
 test('ONLY CRITICAL IS EMAILED — red and amber stay on the screen', () => {
@@ -144,6 +144,41 @@ test('the message names the stop, the close, the ETA and what the estimate rests
   assert.match(m.text, /120 minutes late/);
   assert.match(m.text, /projected from a real arrival/);
   assert.match(m.html, /PYROK INC/);
+});
+
+test('THE MESSAGE NAMES THE DRIVER — the first thing anybody does with it is phone that truck', () => {
+  // Chad, on the live alert for EWASTE EPLANET LLC: "These emails should include the drivers
+  // name." The row has carried driverName since the receiving-hours CARD was asked for the
+  // same thing, and board-flags even fills it from the ROUTE when a stop's own record is
+  // blank — it just never reached the inbox, so acting on the alert meant a second lookup on
+  // another screen while the window closed.
+  const m = buildAlert(selectAlertable([row({ driverName: 'TONY SMITH' })], 10 * 60)[0], DATE);
+  assert.match(m.text, /Driver: *TONY SMITH/);
+  assert.match(m.html, /Driver<\/td><td[^>]*>TONY SMITH/);
+});
+
+test('A LOAD THAT NAMES NOBODY SAYS SO — and does not claim the truck is unassigned', () => {
+  // The Route line says "unassigned" when there is no route, which is a fact about the board.
+  // A blank driver is a different claim: these fire on loads that are already ROLLING —
+  // `anchored` means a real arrival was recorded on this route — so a missing name is a gap in
+  // the feed, not an empty cab. The line describes our data instead, and stays on the message,
+  // because "no name on this load" is itself worth knowing before picking up the phone.
+  for (const blank of [null, undefined, '', '   ']) {
+    const m = buildAlert(selectAlertable([row({ driverName: blank })], 10 * 60)[0], DATE);
+    assert.match(m.text, /Driver: *not named on this load/, `driverName=${JSON.stringify(blank)}`);
+    assert.doesNotMatch(m.text, /Driver: *unassigned/, 'never claims nobody is driving it');
+  }
+});
+
+test('the driver name is escaped into the HTML like every other field', () => {
+  const m = buildAlert(selectAlertable([row({ driverName: 'A & B <Ltd>' })], 10 * 60)[0], DATE);
+  assert.match(m.html, /A &amp; B &lt;Ltd&gt;/);
+  assert.doesNotMatch(m.html, /<Ltd>/);
+});
+
+test('the EARLY warning names the driver too — one builder, both tiers', () => {
+  const m = buildAlert(selectAlertable([row({ tier: 'amber', lateBy: 5, etaMin: 14 * 60 + 5 })], 13 * 60, 240)[0], DATE);
+  assert.match(m.text, /Driver: *WILL DRIVER/);
 });
 
 test('an unanchored estimate says so, so nobody treats a guess as a measurement', () => {
