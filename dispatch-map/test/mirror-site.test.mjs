@@ -11,7 +11,8 @@
 // remember, which is the same failure one level up.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isUatHost, mirrorMisconfigured, MIRROR_MISCONFIGURED_MESSAGE } from '../src/lib/mirror-site.js';
+import { readFileSync } from 'node:fs';
+import { isUatHost, mirrorMisconfigured, MIRROR_MISCONFIGURED_MESSAGE, siteTitle, siteTitleShort, documentTitle } from '../src/lib/mirror-site.js';
 
 test('the UAT hosts this app is actually served from are recognised', () => {
   for (const h of [
@@ -70,4 +71,46 @@ test('WIRING: firebase.js refuses the handle, and the app shows the banner', asy
   const app = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
   assert.match(app, /\{mirrorMisconfig && \(/, 'the operator must SEE it — every save is dead on this build');
   assert.match(app, /role="alert"/);
+});
+
+// ── WHAT THIS BOARD CALLS ITSELF (Sep 9 2026) ────────────────────────────────
+// Chad, on the UAT site: "this needs to be labeled as UAT Dispatch Map." And, in the
+// same breath, the constraint that shapes it: "The version still has to stay current
+// with production." So the NAME changes and the VERSION does not — v{APP_VERSION} is one
+// number bumped on main and shown identically on both sites, which is how he checks
+// whether UAT is running the code he just merged.
+test('the UAT host names itself, on every surface, in both views', () => {
+  for (const host of ['dd-dispatch-map-uat.netlify.app', 'uat.davisdelivery.com', 'deploy-preview-862--dd-dispatch-map-uat.netlify.app']) {
+    assert.equal(siteTitle(host), 'UAT Dispatch Map', host);
+    assert.equal(siteTitleShort(host), 'UAT Dispatch', host);
+    assert.equal(documentTitle(host), 'UAT Dispatch Map · Davis Delivery', host);
+  }
+});
+
+test('production is untouched — the same strings it has always shown', () => {
+  for (const host of ['dd-dispatch-map.netlify.app', 'davis-nuvizz.netlify.app', 'localhost', '']) {
+    assert.equal(siteTitle(host), 'Dispatch Map', host);
+    assert.equal(siteTitleShort(host), 'Dispatch', host);
+    // Byte-identical to the <title> index.html has always carried.
+    assert.equal(documentTitle(host), 'Dispatch Map · Davis Delivery', host);
+  }
+});
+
+test('a host that merely CONTAINS "uat" is not a UAT site — the label must not fire on a customer name', () => {
+  // isUatHost is word-boundaried; these pin that the title helpers inherit it rather than
+  // doing their own looser matching. "Guatemala" is the classic substring trap.
+  for (const host of ['guatemala-freight.example.com', 'evaluation.davisdelivery.com', 'situate.net']) {
+    assert.equal(siteTitle(host), 'Dispatch Map', host);
+    assert.equal(siteTitleShort(host), 'Dispatch', host);
+  }
+});
+
+test('THE VERSION IS NOT PART OF THE LABEL — the shipped source shows one APP_VERSION on both sites', () => {
+  // A UAT-specific version string would break the one check Chad uses to tell whether UAT
+  // is running what he merged. Pin it at the source: the footer interpolates APP_VERSION
+  // directly, and nothing branches it on the host.
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.match(app, /\{SITE_TITLE\} v\{APP_VERSION\}/, 'the footer shows the site name + the ONE version');
+  const uatLines = app.split('\n').filter((l) => /IS_UAT_SITE|SITE_TITLE/.test(l) && /APP_VERSION\s*=/.test(l));
+  assert.deepEqual(uatLines, [], 'APP_VERSION is never assigned from a UAT branch');
 });

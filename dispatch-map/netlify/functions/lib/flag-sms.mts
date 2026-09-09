@@ -2,6 +2,9 @@ import { flattenForConsumers } from './flag-rows.mts';
 // The words the dispatcher actually ticked, from the module the map and the flag engine
 // both read. A text that renamed the restriction would be quoting a mark nobody set.
 import { trailerBlockerLabels } from '../../../src/lib/trailer-block.js';
+// The live recipient lists (Diagnostics → Alert recipients), with the env vars as the
+// fallback for any channel nobody has saved. One resolver for the screen and the sender.
+import { recipientsFor } from './alert-recipients.mts';
 // lib/flag-sms.mts
 //
 // THE EVENING FLAG TEXT — pure rules for who gets texted, about which board, saying what.
@@ -44,8 +47,12 @@ import { trailerBlockerLabels } from '../../../src/lib/trailer-block.js';
 //   * ITS OWN CLAIM KEY. The claim was keyed on the stop alone; a stop that is both late AND
 //     on the wrong truck would have sent one message and silently swallowed the other.
 //
-// Recipients live in ENV (FLAG_SMS_TO / FLAG_SMS_TO_NIGHT, comma-separated), never in
-// code: phone numbers are personal data and rosters change without a deploy.
+// Recipients are never in code — phone numbers are personal data and rosters change without
+// a deploy. Since v1.0.0 they are EDITABLE FROM DIAGNOSTICS (nuvizz_ops/alert_recipients, see
+// lib/alert-recipients.mts), with FLAG_SMS_TO / FLAG_SMS_TO_NIGHT as the fallback for a list
+// nobody has saved. Chad: "i can add more numbers or remove numbers from who gets texted."
+// The env vars stayed because a site with nothing saved must alert exactly as it did before
+// the screen existed.
 
 export const NIGHT_CUTOFF_MIN = 6 * 60;    // 6:00a ET — the router is done routing
 export const EVENING_START_HOUR = 19;      // ET hour from which a sweep aims at TOMORROW
@@ -57,17 +64,24 @@ export const SMS_PER_SWEEP_CAP = 8;        // worst-first; the rest wait for the
 export const TRAILER_SMS_CAP = 4;
 export const CLAIM_COLLECTION = 'eta_flag_sms';
 
-const splitList = (v: any): string[] =>
-  String(v ?? '').split(',').map((s) => s.trim()).filter(Boolean);
-
 /**
  * PURE. Who gets this sweep's texts, given the ET minutes-past-midnight of the sweep.
  * The always-list rides every sweep; the night list (the router building loads) rides
  * only from the evening start THROUGH 5:59a — at 6:00a exactly it is dropped, per Chad.
+ *
+ * `stored` is the live nuvizz_ops/alert_recipients document, so Chad can add or remove a
+ * number from Diagnostics without a redeploy (lib/alert-recipients.mts). Absent — or absent
+ * for one of the two lists — and that list falls back to its environment variable, which is
+ * exactly how this behaved before the screen existed.
+ *
+ * THE 6:00A RULE IS STILL DECIDED HERE, not in the store. Chad: "Stop flag texts to Zach by
+ * 6am — after that he's no longer routing." That is a rule about the job, not about a person,
+ * so it survives whoever is on the list; the screen edits WHO is on the night list, never
+ * WHETHER the cutoff applies.
  */
-export function smsRecipients(env: any, etMin: number): string[] {
-  const always = splitList(env?.FLAG_SMS_TO);
-  const night = splitList(env?.FLAG_SMS_TO_NIGHT);
+export function smsRecipients(env: any, etMin: number, stored: any = null): string[] {
+  const always = recipientsFor('flagSmsTo', stored, env);
+  const night = recipientsFor('flagSmsToNight', stored, env);
   const routing = etMin >= EVENING_START_HOUR * 60 || etMin < NIGHT_CUTOFF_MIN;
   const out = [...always, ...(routing ? night : [])];
   return [...new Set(out)];

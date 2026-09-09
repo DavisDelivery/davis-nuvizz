@@ -19,7 +19,11 @@
 // only place the answer lives.
 //
 // Read-only. Firestore only. ZERO NuVizz calls.
-import { isFirestoreEnabled, readStops, getDoc, listDocs, etDayString } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, getDoc, listDocs, etDayString, readAlertRecipients } from './lib/firestore.mts';
+// The live CC list (Diagnostics → Alert recipients). This dry run exists to answer "would
+// I have got that email", so it has to resolve the list the SENDER resolves — reading the
+// module-load env copy would answer a question nobody asked.
+import { resolveChannel, channelSpec } from './lib/alert-recipients.mts';
 import { computeBoardFlags, isFinishedStop, dayReceivingWindow, parseClockMin } from '../../src/lib/board-flags.js';
 import { legSecondsMap, travelLegsPath, readTravelCalibration, readRouteClasses } from './lib/travel-store.mts';
 import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mts';
@@ -433,6 +437,18 @@ export default async (req: Request): Promise<Response> => {
     // not list the red row at all, and would answer with an empty list — a clean bill of
     // health for the precise question it exists to answer. The floor decides what SENDS;
     // heldBecause on each row already says so. It does not get to decide what is VISIBLE.
+    // Resolved once, from the same store and the same function the sender uses. A failed
+    // read falls back to the env-parsed default, which is what the sender falls back to.
+    let ccStored: any = null;
+    let ccStoreError: string | null = null;
+    // AND A FAILED READ IS SAID, NOT SWALLOWED. This endpoint's whole job is answering "would I
+    // have got that email?", so it is the one place an unmarked fallback does the most harm: a
+    // Firestore blip here and it reports the env list, stamped `env`, with total confidence,
+    // while the sweep fifteen minutes later mails the saved one. Every other consumer records
+    // its fallback; the one built to be believed must too.
+    try { ccStored = await readAlertRecipients(); }
+    catch (e: any) { ccStoreError = String(e?.message || e); }
+    const ccResolved = resolveChannel(channelSpec('alertCc')!, ccStored);
     const urgent = flatRows.filter((r: any) => isBoardUrgent(r, gateMin));
     // R7, listed separately and NOT folded into `urgent`, which is the email population. It
     // would text tonight, not email today, and mixing the two is how a payload comes to
@@ -494,8 +510,14 @@ export default async (req: Request): Promise<Response> => {
       // never a recipient, and there was no way to see that without reading the source.
       // ccRejected is the other half: an ALERT_CC entry that is malformed or not an internal
       // address is refused, and it says so here instead of vanishing.
-      emailConfigured: emailEnabled(), to: ALERT_TO, recipients: alertRecipients(),
-      ccRejected: ALERT_CC_REJECTED, dailyCap: DAILY_ALERT_CAP,
+      emailConfigured: emailEnabled(), to: ALERT_TO, recipients: ccResolved.recipients,
+      // Where the list came from — 'saved' means somebody edited it in Diagnostics, 'env'
+      // means it is still ALERT_CC, 'unset' means nobody but customer service. Three states
+      // that used to look identical from here.
+      ccSource: ccStoreError ? 'unknown' : ccResolved.source,
+      ...(ccStoreError ? { ccStoreError } : {}),
+      ccRejected: ccResolved.source === 'saved' ? ccResolved.savedRejected.map((r: any) => r.value) : ALERT_CC_REJECTED,
+      dailyCap: DAILY_ALERT_CAP,
       counts: { critical: flags.criticalCount ?? 0, red: flags.redCount ?? 0, amber: flags.amberCount ?? 0 },
       // Every urgent row, and for each one WHY it would or would not be emailed right now.
       urgent: urgent.map((r: any) => explainRow(r, alertableSet, nowMin, gateMin, minTier)),

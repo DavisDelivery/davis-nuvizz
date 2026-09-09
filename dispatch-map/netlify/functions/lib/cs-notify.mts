@@ -12,9 +12,12 @@
 // Env: RESEND_API_KEY + RESEND_FROM (sender) and NOTIFY_CS_TO (recipient[s],
 // comma-separated). If any are unset the feature is a no-op.
 
-import { getDoc, setDoc, runQuery } from './firestore.mts';
+import { getDoc, setDoc, runQuery, readAlertRecipients } from './firestore.mts';
 import { normalizeMatchKey } from './match-key.mts';
 import { emailEnabled, sendEmail } from './email.mts';
+// One resolver for the screen and the sender — see lib/alert-recipients.mts. The floor under
+// this channel (customerservice@) is declared there, beside the channel it applies to.
+import { recipientsFor } from './alert-recipients.mts';
 
 const OPS_COLLECTION = 'nuvizz_ops';
 
@@ -37,13 +40,18 @@ async function loadMarkedCustomers(): Promise<Map<string, string>> {
   return set;
 }
 
-// If NOTIFY_CS_TO is unset, fall back to the company CS inbox instead of silently disabling the
-// whole feature — a missing env var used to make every scheduled scan a no-op (nowhere to send).
-// The env var still WINS when set (comma-separated for multiple recipients).
+// If nothing is configured, fall back to the company CS inbox instead of silently disabling
+// the whole feature — a missing env var used to make every scheduled scan a no-op (nowhere to
+// send). That floor is not negotiable from the screen either: this notice is addressed TO the
+// desk that acts on it, so emptying the list means "back to customer service", never "stop
+// telling anybody". lib/alert-recipients.mts states the rule and the panel prints it.
+//
+// ORDER OF PRECEDENCE, since v1.0.0: the list saved in Diagnostics wins, then NOTIFY_CS_TO,
+// then this address. Passing `stored` is what makes an edit land without a redeploy; calling
+// it with nothing is the pre-existing env-only behaviour, unchanged.
 export const CS_DEFAULT_TO = 'customerservice@davisdelivery.com';
-export function csRecipients(): string[] {
-  const raw = String(process.env.NOTIFY_CS_TO || '').split(',').map((s) => s.trim()).filter(Boolean);
-  return raw.length ? raw : [CS_DEFAULT_TO];
+export function csRecipients(stored: any = null): string[] {
+  return recipientsFor('notifyCsTo', stored);
 }
 
 // ── WHICH DAYS GET A NOTIFY PASS ─────────────────────────────────────────────
@@ -177,8 +185,16 @@ export async function notifyMarkedCustomers(
   date: string,
   stops: any[],
   opts: { statusWhenIdle?: boolean } = {},
-): Promise<{ skipped?: string; matched: number; sent: number; failed: number }> {
-  const to = csRecipients();
+): Promise<{ skipped?: string; matched: number; sent: number; failed: number; recipientStoreError?: string }> {
+  // Read the saved list fresh — Chad edits it from Diagnostics and the next scan should use
+  // it. A failed read falls back to the environment and then to customer service, so the
+  // worst case is the behaviour this function had before the screen existed rather than a
+  // notice nobody receives.
+  let storedRecipients: any = null;
+  let recipientStoreError: string | null = null;
+  try { storedRecipients = await readAlertRecipients(); }
+  catch (e: any) { recipientStoreError = String(e?.message || e); }
+  const to = csRecipients(storedRecipients);
   const marked = await loadMarkedCustomers();
 
   const hits = collectHits(stops, marked);
@@ -240,13 +256,14 @@ export async function notifyMarkedCustomers(
   // would be several hundred pointless writes a day. Those days still get a status doc the
   // moment they actually match a marked customer, and the real board days (the write targets)
   // keep stamping unconditionally, so the diagnostic Chad relies on is unchanged.
-  if (opts.statusWhenIdle === false && !hits.size) return { skipped, matched: 0, sent, failed };
+  const storeNote = recipientStoreError ? { recipientStoreError } : {};
+  if (opts.statusWhenIdle === false && !hits.size) return { skipped, matched: 0, sent, failed, ...storeNote };
   try {
     await setDoc(`${OPS_COLLECTION}/cs_notify_status__${date}`, {
-      date, at: new Date().toISOString(), recipients: to,
+      date, at: new Date().toISOString(), recipients: to, ...storeNote,
       marked: marked.size, matched: hits.size, sent, failed, skipped: skipped || null,
     });
   } catch (e: any) { console.warn(`[cs-notify] status write failed: ${e?.message}`); }
 
-  return { skipped, matched: hits.size, sent, failed };
+  return { skipped, matched: hits.size, sent, failed, ...storeNote };
 }

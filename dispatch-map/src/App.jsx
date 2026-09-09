@@ -26,7 +26,7 @@ import {
 } from 'firebase/firestore';
 
 import { db, mirrorMisconfig } from './lib/firebase.js';
-import { normalizeMatchKey } from './lib/matchKey.js';
+import { normalizeMatchKey, placeKeyOfStop } from './lib/matchKey.js';
 import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { routeStopEta, routeStopFreight, routeStopSeq, routeStopTime, loadDefaultWindow } from './lib/route-stop-line.js';
 import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt, foldFreshStop } from './lib/stop-card-sections.js';
@@ -84,7 +84,7 @@ import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDrive
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
 import { planSendSelection, selectionSendTargets } from './lib/send-selection.js';
-import { MIRROR_MISCONFIGURED_MESSAGE } from './lib/mirror-site.js';
+import { MIRROR_MISCONFIGURED_MESSAGE, siteTitle, siteTitleShort, documentTitle, isUatHost } from './lib/mirror-site.js';
 import { satelliteControlSpec, paintSatelliteControl, SATELLITE_BUTTON_CSS } from './lib/map-satellite-control.js';
 import { dropSide, dropSideClass } from './lib/drop-side.js';
 import { rosterFreshness, ageLabel } from './lib/roster-freshness.js';
@@ -122,7 +122,26 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.99.4';
+const APP_VERSION = '1.0.2';
+
+// ── WHICH BOARD AM I LOOKING AT ──────────────────────────────────────────────
+//
+// Chad, on the UAT site: "this needs to be labeled as UAT Dispatch Map." The two boards
+// are pixel-identical and nothing on screen said which one you had open.
+//
+// THE VERSION IS DELIBERATELY NOT PART OF THIS. Chad, in the same breath: "The version
+// still has to stay current with production." v{APP_VERSION} is ONE number, bumped on
+// main and shown identically on both sites — that is exactly how he checks whether UAT
+// is running the code he just merged, and a UAT-specific version string would destroy
+// that. Only the NAME changes.
+//
+// Derived from the hostname (lib/mirror-site.js) — a build variable is something
+// somebody has to remember, and forgetting it here would label the test board as
+// production, which is the dangerous direction.
+const SITE_HOST = typeof window === 'undefined' ? '' : window.location.hostname;
+const SITE_TITLE = siteTitle(SITE_HOST);            // 'UAT Dispatch Map' | 'Dispatch Map'
+const SITE_TITLE_SHORT = siteTitleShort(SITE_HOST); // 'UAT Dispatch'     | 'Dispatch'
+const IS_UAT_SITE = isUatHost(SITE_HOST);
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -193,7 +212,11 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['0.99.4', 'CANCEL ROUTE FINALLY PUSHES BACK, AND NEW ROUTE WAS SENDING A LEG ORDER WITH TIES IN IT. TWO REPORTS, ONE AFTERNOON, AND THE SECOND ONE IS WHERE THE DOCUMENT EARNED ITS KEEP. FIRST, THE CANCEL. Chad, with the red “This DELETES a route” modal open on TRAILER 5: “when i click cancel the route it doesn’t do what it says it is going to do.” The modal promises the route is deleted and its 7 orders go back to Un-Planned; the Save answered “Vehicle Type unavailable or disabled … for DAVIS000203261 (code 903)” and the route kept every single order. Same refusal as TERRANCE on Sep 8 — v0.97.1 made the MESSAGE honest and stopped there, so the button has never once worked on a route whose Vehicle Type is disabled in the portal. WHY: emptying a route is a load/edit, load/edit is a FULL HEADER ECHO, and the echo hands NuVizz back the route’s own vehicleType — a value NuVizz itself stored and has since disabled. IT NOW CLIMBS A LADDER, and the ORDER of it is the whole safety argument. The untouched echo goes first, always, so a cancel that works today is byte-for-byte the request it was and still costs two calls. Only on THAT refusal (not on reason 903 generally — the tenant reuses 903 for the stopless-route error) does it re-read the load once, which buys two things: a versionId that cannot be stale, and the truth — if the deliveries are already gone, NuVizz refused in words and emptied the route anyway, which is a cancel that LANDED and is now reported as one. Then the header with vehicleType omitted, then with it cleared. If the re-read shows we never sent a vehicle type at all, it STOPS: NuVizz is validating its own stored value, no payload can move it, and burning two more calls to prove that is the wrong lesson from Sep 8. Bounded at three extra calls, only on a Save that had already failed, and NUVIZZ_CANCEL_VT_FALLBACK=off reverts it. AND THE BANNER NOW LEADS WITH THE OUTCOME — “nothing was unplanned and it still holds all 7 orders” — before the vendor’s reason and the one place it gets fixed, because a message that names only a cause leaves a dispatcher unable to tell whether some of the freight moved. WHAT IS NOT PROVEN, said plainly: whether NuVizz validates the type we SEND or the one it STORES is a fact about their validator, not about this code. Every shape sent is journalled with NuVizz’s verbatim answer, so the next failure names the cause instead of needing another guess. SECOND, THE CREATE, AND CHAD SENT US TO THE RIGHT PLACE. On a 3-order ＋ New route card: “Your load creation doesn’t work correctly go to nuvizz’s api instructions to see what you are doing wrong.” NuVizz answered with a 500 whose DeliverItLoadResponse had DocumentID UNKNOWN and Status 99 — it failed before it could even bind the document. THE ANSWER WAS IN THE DOCUMENT BUT NOT IN THE SCHEMA. RoutePlanStopSchedule.seq is “Sequence of the shipFrom or shipTo”, and Route.planStops says stops are added “in the sequence specified for pickup from and drop-off to nodes” — so seq orders the route’s LEGS, and a 3-order route has SIX. All three worked examples give every leg its own number: Stop001 from=1 to=3, Stop002 from=2 to=4. WE WERE SENDING from.seq === to.seq === the card position: leg 1 claimed twice, leg 2 twice, leg 3 twice, and 4, 5 and 6 never used. Three ties and no visit order at all. The body was STRUCTURALLY PERFECT the whole time — every key in the schema, nothing extra, every type and length legal — which is exactly why nothing caught it: JSON Schema cannot say “these integers must be distinct”. Only the examples say it. It now sends from-legs 1..N then to-legs N+1..2N, the planStops example’s own pattern and the same leg model this repo already proved against the portal (RWB’s stoplist is every _PU leg then every _DO leg). Load at Buford, then deliver — which is also what the freight does. A GUARD SO NEITHER KIND COMES BACK: test/nuvizz-openapi-conformance.test.mjs validates the bodies this app builds against the shipped reference/nuvizz-openapi-v7.json — keys, required, types, lengths — AND asserts the rules the schema cannot state, including the leg-uniqueness convention read back out of the vendor’s own three examples, so a future spec drop fails a test instead of a route. It is proven able to go red before it is trusted to be green. THIRD, AND SHIPPED SWITCHED OFF: reading the document turned up something this app has never used — POST /load/cancel, “Delete/Reject a Load that is unassigned from a Driver”, whose body is loadId + reasonCode and carries NO header for a Vehicle Type to refuse. That is the endpoint the red modal has been describing all along, and TRAILER 5 (DRAFT, no driver) is exactly its stated precondition. It is built, tested and wired as the LAST rung of the ladder, and NUVIZZ_LOAD_CANCEL_API is unset, because the document says what becomes of the LOAD and says NOTHING about what becomes of the ORDERS on it — and the modal promises Un-Planned, not cancelled. Seven cancelled customer deliveries is not something to discover on a live board. When it is switched on it READS EVERY ORDER BACK and reports what each one actually became; if any came back CANCELLED it fails the Save loudly and names them rather than reporting a clean cancel. Prove it on one throwaway route (or UAT) and it becomes the default. Zero NuVizz calls were spent working any of this out — it is the shipped API document, the code, and the two screenshots. 27 new tests, 3,869 green.'],
+  ['1.0.2', 'THE TEST BOARD SAYS SO NOW — AND THE VERSION DELIBERATELY DID NOT CHANGE WITH IT. Chad, on the UAT site: “this needs to be labeled as UAT Dispatch Map.” The two boards are pixel-identical — same logo, same wordmark, same footer, same tab — and nothing on screen told you which one you had open. That is a real hazard in both directions: plan a morning on the board nobody ships from and the work is lost; mistake a live 700-stop morning for a test and it is worse. The desktop wordmark, the phone app bar, the footer, the version-history modal and the BROWSER TAB now all read “UAT Dispatch Map” on the mirror, in amber on the desktop wordmark so it reads as a warning rather than a name. KEYED ON THE HOSTNAME, not a build variable — the same argument mirror-site.js already makes about the database guard: a variable is a thing somebody has to remember, and forgetting THIS one would label the test board as production, which is the dangerous direction. A URL cannot be forgotten. The tab title moves out of index.html and is set at runtime for the same reason: one index.html ships to both sites, and the tab is what you actually read when both boards are open. AND THE VERSION IS DELIBERATELY LEFT ALONE. Chad, in the same breath: “The version still has to stay current with production.” v{APP_VERSION} is ONE number, bumped on main, shown identically on both sites — it is exactly how he checks whether UAT is running the code he just merged, and a UAT-specific version string would destroy that check. Only the NAME changes; a test pins that APP_VERSION is never assigned from a host branch. Production resolves byte-identical strings to the ones it has always shown, including the tab title, and “Guatemala” is pinned as not a UAT host. Both views done separately, as they are two views. 4 new tests, 3,937 green.'],
+  ['1.0.1', 'CANCEL ROUTE FINALLY PUSHES BACK, AND NEW ROUTE WAS SENDING A LEG ORDER WITH TIES IN IT. TWO REPORTS, ONE AFTERNOON, AND THE SECOND ONE IS WHERE THE DOCUMENT EARNED ITS KEEP. FIRST, THE CANCEL. Chad, with the red “This DELETES a route” modal open on TRAILER 5: “when i click cancel the route it doesn’t do what it says it is going to do.” The modal promises the route is deleted and its 7 orders go back to Un-Planned; the Save answered “Vehicle Type unavailable or disabled … for DAVIS000203261 (code 903)” and the route kept every single order. Same refusal as TERRANCE on Sep 8 — v0.97.1 made the MESSAGE honest and stopped there, so the button has never once worked on a route whose Vehicle Type is disabled in the portal. WHY: emptying a route is a load/edit, load/edit is a FULL HEADER ECHO, and the echo hands NuVizz back the route’s own vehicleType — a value NuVizz itself stored and has since disabled. IT NOW CLIMBS A LADDER, and the ORDER of it is the whole safety argument. The untouched echo goes first, always, so a cancel that works today is byte-for-byte the request it was and still costs two calls. Only on THAT refusal (not on reason 903 generally — the tenant reuses 903 for the stopless-route error) does it re-read the load once, which buys two things: a versionId that cannot be stale, and the truth — if the deliveries are already gone, NuVizz refused in words and emptied the route anyway, which is a cancel that LANDED and is now reported as one. Then the header with vehicleType omitted, then with it cleared. If the re-read shows we never sent a vehicle type at all, it STOPS: NuVizz is validating its own stored value, no payload can move it, and burning two more calls to prove that is the wrong lesson from Sep 8. Bounded at three extra calls, only on a Save that had already failed, and NUVIZZ_CANCEL_VT_FALLBACK=off reverts it. AND THE BANNER NOW LEADS WITH THE OUTCOME — “nothing was unplanned and it still holds all 7 orders” — before the vendor’s reason and the one place it gets fixed, because a message that names only a cause leaves a dispatcher unable to tell whether some of the freight moved. WHAT IS NOT PROVEN, said plainly: whether NuVizz validates the type we SEND or the one it STORES is a fact about their validator, not about this code. Every shape sent is journalled with NuVizz’s verbatim answer, so the next failure names the cause instead of needing another guess. SECOND, THE CREATE, AND CHAD SENT US TO THE RIGHT PLACE. On a 3-order ＋ New route card: “Your load creation doesn’t work correctly go to nuvizz’s api instructions to see what you are doing wrong.” NuVizz answered with a 500 whose DeliverItLoadResponse had DocumentID UNKNOWN and Status 99 — it failed before it could even bind the document. THE ANSWER WAS IN THE DOCUMENT BUT NOT IN THE SCHEMA. RoutePlanStopSchedule.seq is “Sequence of the shipFrom or shipTo”, and Route.planStops says stops are added “in the sequence specified for pickup from and drop-off to nodes” — so seq orders the route’s LEGS, and a 3-order route has SIX. All three worked examples give every leg its own number: Stop001 from=1 to=3, Stop002 from=2 to=4. WE WERE SENDING from.seq === to.seq === the card position: leg 1 claimed twice, leg 2 twice, leg 3 twice, and 4, 5 and 6 never used. Three ties and no visit order at all. The body was STRUCTURALLY PERFECT the whole time — every key in the schema, nothing extra, every type and length legal — which is exactly why nothing caught it: JSON Schema cannot say “these integers must be distinct”. Only the examples say it. It now sends from-legs 1..N then to-legs N+1..2N, the planStops example’s own pattern and the same leg model this repo already proved against the portal (RWB’s stoplist is every _PU leg then every _DO leg). Load at Buford, then deliver — which is also what the freight does. A GUARD SO NEITHER KIND COMES BACK: test/nuvizz-openapi-conformance.test.mjs validates the bodies this app builds against the shipped reference/nuvizz-openapi-v7.json — keys, required, types, lengths — AND asserts the rules the schema cannot state, including the leg-uniqueness convention read back out of the vendor’s own three examples, so a future spec drop fails a test instead of a route. It is proven able to go red before it is trusted to be green. THIRD, AND SHIPPED SWITCHED OFF: reading the document turned up something this app has never used — POST /load/cancel, “Delete/Reject a Load that is unassigned from a Driver”, whose body is loadId + reasonCode and carries NO header for a Vehicle Type to refuse. That is the endpoint the red modal has been describing all along, and TRAILER 5 (DRAFT, no driver) is exactly its stated precondition. It is built, tested and wired as the LAST rung of the ladder, and NUVIZZ_LOAD_CANCEL_API is unset, because the document says what becomes of the LOAD and says NOTHING about what becomes of the ORDERS on it — and the modal promises Un-Planned, not cancelled. Seven cancelled customer deliveries is not something to discover on a live board. When it is switched on it READS EVERY ORDER BACK and reports what each one actually became; if any came back CANCELLED it fails the Save loudly and names them rather than reporting a clean cancel. Prove it on one throwaway route (or UAT) and it becomes the default. Zero NuVizz calls were spent working any of this out — it is the shipped API document, the code, and the two screenshots. 27 new tests, 3,869 green.'],
+  ['1.0.0', 'WHO GETS TEXTED AND WHO GETS EMAILED IS A SCREEN NOW, NOT A NETLIFY CONSOLE AND A REDEPLOY. Chad: “We are sending texts alerts for different things and i think we need to build a ui in the diagnostics where i can add more numbers or remove numbers from who gets texted same thing for emails need to build a ui in same place so can control that as well.” FIVE LISTS WERE INVISIBLE FROM THE APP: FLAG_SMS_TO and FLAG_SMS_TO_NIGHT (the evening and overnight flag texts), ALERT_CC (the miss-window email beside customer service), NOTIFY_CS_TO (the marked-customer notice) and DAY_REPORT_TO (the 6:30p end-of-day report). THIS IS THE SEPTEMBER 3RD FAILURE ONE LAYER DOWN. That day Chad reported the miss-window emails as broken; nothing was broken — both had been delivered and he was simply not on the list. From an inbox, “the mailer is broken” and “you are not on the list” are the same blank screen. The fix that day made the list CONFIGURABLE. It never made it READABLE, and a recipient list nobody can see is the same class of problem as a switch whose position cannot be read. SO THE PANEL ANSWERS THE QUESTION FIRST AND EDITS SECOND: every card prints GOES TO — the resolved send list, floors and all, computed by the same function the sender calls, so the screen and the code cannot give two answers the way the daily ceiling did three times. FOUR DECISIONS WORTH KNOWING. (1) CLEARED MEANS CLEARED. Delete every number from the flag texts and the flag texts stop; a control that silently reverts to an env var when you empty it is a control that lies. “Never set” (falls back to the environment) and “set to nothing” are different documents. (2) EXCEPT WHERE EMPTY WOULD SWITCH OFF SOMEBODY ELSE’S FEATURE — the marked-customer notice is addressed TO the desk that acts on it, so it keeps its customer-service floor exactly as csRecipients() always has, and the screen prints the floor beside the list rather than hiding it. (3) NOTHING IS DROPPED IN SILENCE: a refused number or address comes back BY NAME with a reason, next to the field it was typed into. (4) THE SCREEN VALIDATES WHAT THE SENDER VALIDATES — phone numbers go through the same normalizePhone/validUsPhone handed to SimpleTexting, so a number the field accepts is a number the transport can dial. THE CAREFUL PART, AND THE REASON THIS IS SAFE TO MERGE: with nothing saved, every channel alerts exactly who it alerted before, pinned by test. The internal-domain allowlist — which exists because these messages name a customer, its PRO and its route — now binds everything the SCREEN stores, on write and again on read; it deliberately does NOT reach back and re-judge a value already in the console, because quietly enforcing a rule over NOTIFY_CS_TO or DAY_REPORT_TO would stop mailing somebody who is being mailed today. Those are flagged on screen instead. Re-validating on READ is not belt-and-braces: under the live firestore.rules any nuvizz_ops document is writable by anyone holding the web config out of the public bundle, so the admin gate protects the write path and not the document — the allowlist binds between the document and the sender, where it cannot be walked past. TWO BUGS FOUND AND FIXED ON THE WAY. DAY_REPORT_TO WAS SINGLE-VALUED BY ACCIDENT: the value was trimmed and handed to Resend as one string, so setting it to two comma-separated addresses produced one malformed recipient and the whole message failed — nothing in the code, the comment or the tests said the field could not take a list, which is the sort of thing you find out on the day you add somebody. And the day-completion readback answered “recipient not configured” from the environment alone, which would have called a perfectly working report unconfigured the moment it was set here; it reports the resolved COUNT now, never an address. NAMED HONESTLY: the panel does not say “CC”, because there is no CC — lib/email.mts sends Resend a `to` array and nothing else, so ALERT_CC has always landed everyone on one visible To: line. It says so on the card. It also says what it is NOT: texting a driver or the office from Messages uses the employee roster, which is a different store and is not edited here. The write is field-masked, so two people editing two lists in two tabs both keep their edit. Also cleaned up: two real Davis mobile numbers were committed as test fixtures in a file whose own header says phone numbers are personal data and never belong in code — they are 555-01xx now. AND AN ADVERSARIAL PASS BEFORE MERGE CAUGHT THE ONE THAT MATTERED, reachable through the very thing this screen was built for. An outside address grandfathered in NOTIFY_CS_TO or DAY_REPORT_TO was drawn as an ordinary removable row while the card promised “it keeps working” — so adding YOURSELF to that list would have posted it back, had it refused by the allowlist, and made it vanish; on the end-of-day report, which has no floor, removing one of two names could have left NOBODY mailed under a green “saved” badge. A grandfathered entry is no longer a row: it is shown as something the console owns, with the consequence of saving spelled out beside it. The same pass moved the READ behind a viewer gate. It shipped ungated on the scan-config precedent — but that precedent is about scan cadences, and this body is every staff mobile in the company; driver-phone gates a GET for exactly this reason and day-completion will not print even ONE of these addresses behind its own gate. Also from that pass: a failed store read is now recorded everywhere instead of quietly reporting the environment as fact, the run logs say which list they used rather than always claiming “saved”, the audit line names the authenticated principal instead of a string the caller supplied, the response no longer echoes the raw world-writable document, customerservice@ can no longer be added twice, Enter on a duplicate no longer clears the box and its warning together, and a pasted pair of addresses is split instead of refused as “not an email address”. 42 new tests, 3,910 green.'],
+  ['0.99.5', 'ONE DOCK, ONE CARD — AND THE COUNT THAT SENT A DISPATCHER TO DOUBT THE WHOLE TRUCK. Chad, on the flags panel: “this Jewel Reign is showing up twice and should only be there one time.” REPRODUCED FROM HIS BOARD BEFORE ANYTHING WAS TOUCHED: two orders at one address, both on DENIS SALKIC, produced two byte-identical red cards — same customer, same route, same “Stop 2 on the route”, same sentence. R7 pushed a row per STOP, and a pickup and a delivery at one dock are two orders and ONE place. That is the fact v0.99.4 had to teach the grab, arriving here from the other side, one day later. THE DUPLICATE WAS THE VISIBLE HALF. The expensive half was the count: “N other stops on this load carry the same mark — check the truck, not just the stop” counted the co-located twin as another stop. That sentence exists to say “this is a TRUCK problem, not a stop problem”, which is only true when genuinely different places are blocked — so one dock wearing one mark was telling a router to go and doubt the whole load. The same number rides the SMS as “+N more stops on this route”, and the dock sent TWO texts saying it. Measured after: one card, one text, no phantom stop. WHAT MERGES IS THE WARNING, NEVER THE ORDERS. The card names every order at the dock (“2 orders at this stop (D1, P1) — one dock, so this is one move”) and carries stopNbrs for anything downstream, because a silent merge is the other-direction bug this repo keeps paying for. Two DIFFERENT docks on one route still flag separately and still say check the truck; STE 200 and STE 400 are still two stops. AND THE KEY IS NOW SHARED RATHER THAN COPIED. v0.99.4 fixed three things that each asked “same dock?” and each answered with the customer key; they failed together because they were written separately. This was the FOURTH consumer, and pasting the fallback chain a fourth time is how that happens again — so it lives in placeKeyOfStop and all four call it. The dismiss identity moves to the dock too: fingerprinted on a stop, the merged card inherited one constituent’s key, so waving it off would bring it back under the other order’s. The wiring test was TIGHTENED rather than loosened — it now pins that App.jsx asks the helper, that no second copy of the chain exists, and that the flags rule asks the same one. CHECKED BOTH WAYS: restore the per-stop keying and four of the seven new tests fail, naming the duplicate and the phantom count. 7 new tests, 3,868 green.'],
+  ['0.99.4', 'A PICKUP AND A DELIVERY AT ONE DOCK ARE ONE PLACE AGAIN — THE GRAB THAT LEFT AN ORDER BEHIND. Chad, Tuesday: “i pulled all these stops in a grab but there was a pick up and delivery going to same place, it did not grab the delivery on the initial pull, so when i assigned the orders to the route the delivery was left unplanned on the map.” THE APP ALREADY HAD A GUARD FOR EXACTLY THIS and it did not fire. v0.45.2 shipped the same-address twin guard after the identical complaint: two orders at one dock draw as pins on top of each other, a click grabs the top one, so every UNPLANNED order sharing a selected stop’s location rides along — loudly, and removable if the split was deliberate. WHY IT STAYED SILENT, read off the live board rather than guessed: both orders sit at 3190 REPS MILLER RD STE 200, zip 30071, their pins 6.5 metres apart — and the guard asked “same place?” with the CUSTOMER MATCH KEY, which begins with the business name. NuVizz had put the FedEx reference inside the delivery’s name (“FEDEX OFFICE 10043FK04301103” against the pickup’s plain “FEDEX OFFICE”), and the pickup’s city is misspelled in the vendor’s own data (“NIORCROSS”). Two independent mismatches on one building, either of which alone was enough. A key built to answer “is this the same CUSTOMER” cannot answer “is this the same DOCK”, and using it for both is what left an order on the floor with no warning — the silent half being the expensive half, because nothing on screen said anything was missing. THE FIX: a place key of street line + zip, and deliberately nothing else. No business name, because it carries order-specific text; no city, because it is free text and was misspelled here; street and zip were byte-identical on both orders. All THREE things that ask “same dock?” now use it — the twin guard on send-to-route, the “2 orders here” count on the pin, and clicking a place to select everything at it — because all three were keyed the same way and all three failed together. A different suite in the same building still keys apart, because STE 200 and STE 400 are two stops a driver walks between. AND ONE THING CAUGHT BY ITS OWN TEST BEFORE IT SHIPPED: an address line of nothing but spaces normalised to “_”, which is truthy, so every address-less order in a zip would have shared one imaginary dock and ridden onto the first route touched — the same bug pointing the other way, and the more expensive direction. A key now needs a real character to group anything. The customer match key itself is untouched: customer notes still join on it. 11 new tests, three of them wiring pins, plus the two real order records as a fixture so this cannot come back quietly.'],
   ['0.99.3', 'THE STOP CARD SHOWED “BOX TRUCK ONLY” IN RED AND THE EDIT BUTTON NEXT TO IT COULD NOT TAKE IT OFF. Chad, from a stop card on BRIDGE MEDIA reading CUSTOMER NOTES → VEHICLE → Box truck only: “take the box truck only off.” He could not, and neither could anyone else standing on that screen. `customer_notes.vehicle_eligibility` has had exactly ONE writer since it was built — the Routing map’s eligibility brush — while the stop card RENDERS it, in red, with an Edit button an inch away that opened an editor containing Priority flag, Delivery window, receiving hours, Appointment, Liftgate, Equipment restrictions, Dock type and Dock notes, and no vehicle control at all. The field was display-only from the one screen that displays it: to clear a box-only mark you had to leave the card, open Routing, arm a brush inside the ⚙ menu, and find that customer’s pin on the map. THIS IS NOT A UI COMPLAINT, IT IS CAPACITY. The mark is keyed by LOCATION, not by order, so it holds for every future stop at that customer forever, and it is a HARD block in two separate places — routing-build-background forces the stop onto a box, and dispatcherTrailerBlock raises the trailer-conflict alert. A mark set by mistake, or one the world has outgrown because the customer moved or the dock changed, bars a 53-footer from that address indefinitely and quietly pushes freight that would ride one trailer onto extra box trucks, every day, until somebody happens to find the brush. The cheap mistake and the expensive one are not symmetrical here and the control is built for that: clearing is a deliberate three-state pick — not set / Tractor-trailer OK / Box truck only — carrying the same swatch colours and the same words as the read-only card and the map paint, never a checkbox that can be brushed off by accident, and the label for the cleared state is “not set” rather than “none”, because on a VEHICLE row “none” reads as “no truck may come here”, which is the exact opposite of what it does. TWO THINGS THE REVIEW CAUGHT BEFORE THEY SHIPPED. Clearing the vehicle mark must NOT clear a separately-ticked “No tractor trailer” equipment restriction — two independent statements by two different people, and a stop with the box still ticked stays blocked, now quoted as via:restriction instead of via:eligibility; pinned by test. And the provenance stamp is written ONLY when the save actually moved the mark: `vehicle_eligibility_at` is meant to say when the vehicle decision was made, so a dispatcher saving a customer’s receiving hours must not restamp a mark somebody else painted last month — a stamp that tracks unrelated edits is worse than no stamp, because it looks authoritative. That guard is one pure function, eligibilityChanged, because the notes save is DUPLICATED across the Map screen and the Routing screen 8,000 lines apart, and half-fixing that pair is the precise bug shape the Routing save’s own comment warns about. A malformed legacy value (‘’, false, ‘BOX’) normalizes to “not set” everywhere rather than becoming an invisible fourth state the card and the router disagree about. 9 new tests, and the three source tests were PROVEN to catch the regression rather than assumed to: deleting the picker fails exactly two of them, leaving one of the two saves unguarded fails exactly one, and nothing else moves. 3,752 green.'],
   ['0.99.2', 'WHATEVER NUMBER YOU SET IS WHERE THE CALLS END — THE CAP YOU DID NOT CHOOSE IS GONE, AND THE OTHER APP HONOURS IT TOO. Chad, straight after v0.98.4 made the saved setting reach the code that spends: “I want the number I set in diagnostics to be the number ... Whatever number it’s set to is where I want the calls to end.” THE THIRD TIME IS A DESIGN DECISION, NOT A BUG. This file has now shipped a Diagnostics field that took one number and enforced another twice — 2,000 under a 20,000 gauge (v0.70.2), then 3,000 in the field against 2,000 in the breaker (v0.98.4) — and both times the fault had the same shape: a constant in the code outranking the person who owns the spend. HARD_DAILY_CEILING is removed. A saved setting is now honoured verbatim at any magnitude, and the editor bound went from [100, 3000] to [1, 1,000,000] — the upper figure is arithmetic and not policy, because a “ceiling” of a billion is indistinguishable from no ceiling and above a million a value is a typo or a corrupted document rather than an intent. Every number a person would actually type is stored, printed and enforced as typed. AND THE PARENT APP FINALLY READS IT. netlify/functions/lib/nuvizz-request.cjs had never opened nuvizz_ops/scan_config: its ceiling came from NUVIZZ_DAILY_CEILING with a 12,000 default that matched nothing else in the system. It was only PARTLY covered by the shared plumbing — both apps increment one counter and read one breaker, so once dispatch-map noticed the shared count cross the setting it tripped and the parent stopped too — but that check only happens when dispatch-map itself makes a call, so between its scans, up to half an hour, the parent alone could run past the setting toward 12,000. It now resolves the same saved number (one Firestore read a minute per warm instance, last-known-good on a blip) and releases a stale trip under the same rule dispatch-map uses, because the breaker doc is shared and a latch left in EITHER app halts the fleet until midnight. Its default dropped 12,000 → 2,000 to match. WHAT THIS GIVES UP, said plainly rather than buried, because it is a real trade made with the cost in front of him: 2,000 originally sat BELOW the ~3,000-call cold number-probe scan so that scan could not complete by accident, and there is now no automatic backstop against a runaway loop — a mistyped 30,000 is a 10x day and nothing in the code will stop it. What remains is the permission rule in CLAUDE.md, the fact that only manual=1 / ?date= / ?days= reach the probe path at all, a new editor advisory that SAYS what a number past 3,000 buys without refusing it, and v0.98.4’s release rule, which makes lowering the number take effect within a minute instead of at midnight. The backstop was never cheap anyway: it did not prevent the spend, it stopped the scan PARTWAY and left the board half-written. TWO DATE BOMBS FOUND HERE AND FIXED ON MAIN BY SOMEBODY ELSE FIRST — SAID PLAINLY BECAUSE THE CREDIT IS NOT MINE. The ET clock rolled over mid-session and three roster tests went red: they hard-coded the date they were written on, so at midnight they began asking the scanner to write a roster for YESTERDAY, a frozen past date it deliberately refuses. Then the smoke job reached the loads-tab guard and four more went red for the same reason — its fixture served date 2026-09-08, and the roster line’s wording branches on whether the board day is PAST (“NuVizz holds no loads for this day” versus “…has no loads for this day yet”), so at midnight the app started being right and the guard started being wrong. Both were red on main, for everyone, before this branch touched them — established with a clean worktree at origin/main rather than assumed. #849 landed the same two fixes while this branch was in CI, and on the merge I took THEIRS in both files: they read the day through etDayString rather than a second inline formatter, and they caught something I had not — the empty-day capture stamp was six hours old, which crosses midnight for any CI run between 00:00 and 06:00 ET and would have failed four states with nothing wrong. Recorded here because the lesson is the repo’s, not this branch’s: a guard that fails on the calendar rather than on a defect is one people learn to skip. 11 new tests across the two apps — including TWO END-TO-END cases that drive the real save endpoint through the real Firestore helpers into the real production requester and assert the breaker trips on the number that was typed (restore the old hard cap and the 5,000 case fails; make the parent ignore the saved setting and two of its cases fail) — plus six existing ones rewritten to the new rule; 3,743 green across both suites.'],
   ['0.99.1', 'THE PROFILE CALLED “CHAD” IS APPLIED AT LAST — AND THE ONE THING THAT KEPT BREAKING IT WAS THAT THE FIX NEVER SHIPPED. Chad, three times across three days, the last one on v0.98.7: “profile settings continue not to save.” He was right every time. The fix for it was written on Sep 7, verified in a browser, and then sat in a pull request that CONFLICTED and never merged while main moved nineteen commits and five versions underneath it. Nothing was wrong with his profile: read straight out of Firestore this morning it holds exactly what he set — Un-Planned, Last 7 days, sorted by skids, saved 01:57 last night. The board simply never read it back. WHAT WAS ACTUALLY BROKEN, and it is two things. (1) NOTHING EVER APPLIED A SAVED PROFILE. The list saved to Firestore, the selected name saved to the device — so the chip read “Chad” on every load — and the one function that puts settings on the bar had a single caller: picking the profile off the dropdown. Every reload, and every hop between Map and Routing, went back to the whole board with no filter while the chip still named a profile. That is the dangerous half: you are not told the filter is gone. The bar now remembers itself on the device — view, status, window and range, driver, no-location, both sorts — and a selected profile is what a device with no memory of its own falls back to. (2) WHICH PROFILE IS SELECTED WAS NEVER SHARED. The list has followed you to every device since v0.53.0; the selection did not, so “Chad” sat unselected in the iPad’s dropdown forever. It is shared now, under a document id no profile name can collide with, and each profile carries when it was saved so a device can tell “I have this one” from “this changed while I was away”. AND ONE BUG FOUND WHILE PORTING, WHICH WAS LIVE ON MAIN THE WHOLE TIME. v0.95.0 blanked the date window for phones using the app’s 768px phone breakpoint — but the window control itself appears at 640px. Between those two numbers the select sits on screen showing “Board (today)” while your profile says Last 7 days, and picking your profile could not fix it. An iPad mini in portrait is 744px. A 1440 monitor with the window at half width is 720. There is now ONE constant that decides what a screen may restore, in one place, and 640 is it — so what the control shows and what the profile applies can no longer disagree. Two more things the port fixed rather than shipped: pressing “Update ‹Chad› to current” from a narrow screen used to write the blanked window back to the SHARED profile and push it to every other device — a screen now keeps the settings it cannot see instead of erasing them for everyone; and the amber “edited” dot is measured against what was actually applied, so it no longer lights on a screen that never had the control. NuVizz cost: an automatic restore never spends a vendor call — “Last 7 days”, “Last 14 days”, ±7 days and custom ranges are served from our own board day-docs, and “NuVizz · Today”, the one live option, is applied only when you pick the profile by hand, never on a reload or a screen hop.'],
@@ -3476,7 +3499,12 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
 // The "same place" key for co-location counting — the address identity (matchKey), same key the
 // route header uses to count physical stops vs orders. Falls back to stopNbr so a keyless stop is
 // its own singleton.
-const stopLocKey = (s) => s?.matchKey || String(s?.stopNbr ?? '');
+// WHICH PIN IS THE SAME DOCK AS WHICH. Street + zip, not matchKey: matchKey leads with the
+// business name, and NuVizz puts an order's own reference inside that name — so a pickup and
+// a delivery at one building read as two different places, the "2 orders here" badge never
+// appears, and clicking the place selects one of them. See normalizePlaceKey. matchKey stays
+// as the fallback for a row with no usable street/zip, so nothing that grouped before stops.
+const stopLocKey = (s) => placeKeyOfStop(s);   // one definition, shared with board-flags (see matchKey.js)
 // Map each stop's location → how many of the given stops share it (≥1). Used to badge co-located
 // delivery markers with the count.
 function buildLocCounts(stops) {
@@ -9418,7 +9446,7 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
         <div className="bg-white rounded px-1.5 py-1 flex items-center flex-shrink-0">
           <img src="/davis-logo.jpg" alt="Davis Delivery Service" className="h-5 w-auto" />
         </div>
-        <span className="font-semibold text-[14px] leading-none truncate">Dispatch</span>
+        <span className="font-semibold text-[14px] leading-none truncate">{SITE_TITLE_SHORT}</span>
       </div>
       <div className="relative flex items-center gap-1.5">
         {/* A SLOT FOR THE SCREEN'S OWN CONTROL. On a phone the app bar is the one strip nothing
@@ -14826,12 +14854,13 @@ function DiagnosticsScreen({ stops, notes, ops, lastLoadScanAt, lastUnplannedSca
     <div className={`flex-1 min-h-0 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6 ${SCREEN_DASH}`}>
       <div>
         <h2 className="text-xl font-bold text-slate-900">Diagnostics</h2>
-        <p className="text-sm text-slate-600 mt-1">NuVizz API usage and the live scan schedule. Schedule edits apply to the running scanner.</p>
+        <p className="text-sm text-slate-600 mt-1">NuVizz API usage, the live scan schedule, and who gets alerted. Edits here apply to the running scanner and the next alert — no deploy.</p>
       </div>
 
       <ApiCallsPanel ops={ops} lastLoadScanAt={lastLoadScanAt} lastUnplannedScanAt={lastUnplannedScanAt} onRefresh={onRefresh} refreshing={refreshing} onScanNow={scanNow} scanning={scanning} scanDenied={scanGate.reason} />
       <CaptureHealthPanel />
       <SchedulePanel onScanNow={scanNow} scanning={scanning} scanDenied={scanGate.reason} onSaved={onRefresh} />
+      <AlertRecipientsPanel />
 
       <details className="group">
         <summary className="cursor-pointer text-xs font-semibold text-slate-400 hover:text-slate-600 select-none">Data-quality checks (M3, in progress)</summary>
@@ -15095,6 +15124,7 @@ function CaptureHealthPanel() {
 // /.netlify/functions/nuvizz-scan-config (persists to Firestore, scanner obeys it).
 // ============================================================================
 const SCAN_CONFIG_URL = '/.netlify/functions/nuvizz-scan-config';
+const ALERT_RECIPIENTS_URL = '/.netlify/functions/alert-recipients-config';
 const SCAN_NOW_URL = '/.netlify/functions/nuvizz-refresh-stops-background';
 
 // Small pill badge with a few semantic tones.
@@ -15621,6 +15651,417 @@ function EstimateLine({ form }) {
   const total = Math.round(dayScans + nightScans);
   if (!Number.isFinite(total) || total <= 0) return null;
   return <div className="text-[11px] text-slate-500 mt-2">≈ <span className="font-semibold">{total}</span> scans/day at this cadence (weekday, outside blackout).</div>;
+}
+
+// ── ALERT RECIPIENTS ─────────────────────────────────────────────────────────
+//
+// WHO GETS TEXTED AND WHO GETS EMAILED, ON A SCREEN, EDITABLE.
+//
+// Chad, 2026-09-09: "We are sending texts alerts for different things and i think we need to
+// build a ui in the diagnostics where i can add more numbers or remove numbers from who gets
+// texted same thing for emails need to build a ui in same place so can control that as well."
+//
+// Until this panel, five recipient lists lived in Netlify environment variables: invisible
+// from the app, and unchangeable without a redeploy. That is the same shape as the failure
+// that cost an evening on 2026-09-03 — Chad reported the miss-window emails as broken, both
+// had in fact been delivered, and he was simply not on the list. From an inbox, "the mailer
+// is broken" and "you are not on the list" look identical.
+//
+// SO THE PANEL'S JOB IS TWO THINGS, IN THIS ORDER: say who is actually on each list right
+// now, and let that be changed. The first is the half that was missing, and it is the half
+// that stays useful even when nobody is editing anything — every card prints the resolved
+// send list, floors included, exactly as the sender computes it.
+//
+// PHONE AND DESKTOP ARE THE SAME FLOW COLUMN here, deliberately and for the reason the scan
+// editor states above: nothing is absolutely positioned, rows WRAP instead of scrolling
+// sideways, and every control is in normal flow so anything that grows pushes what is below
+// it down instead of landing on top of it. The one place the two views genuinely differ is
+// the add control — a cramped inline field-and-button pair is bad on a phone — so that stacks
+// full width below `sm` and sits inline above it. Every control clears the 44px tap floor the
+// mobile guard enforces, and NOTHING is hidden behind a tap: the guard measures the screen at
+// rest, so a recipient row hidden inside a collapsed section is a row it can never check.
+// THE ROWS THIS SCREEN MAY ACTUALLY EDIT, WHICH IS NOT THE SAME AS THE LIST BEING USED.
+//
+// An outside address sitting in NOTIFY_CS_TO or DAY_REPORT_TO is grandfathered — it is being
+// mailed today and this change deliberately does not stop that (see lib/alert-recipients.mts).
+// But the allowlist means it can never be STORED, so if it were offered as an ordinary
+// removable row, the dispatcher's first save on that channel would post it back, the endpoint
+// would refuse it, and it would vanish — after the card had just promised "it keeps working".
+// On the end-of-day report, which has no floor, removing one of two names could leave NOBODY
+// mailed and a green "saved" badge on screen.
+//
+// That is the exact failure this whole feature exists to end, reachable through the one thing
+// the screen was built for: adding yourself to a list. So a grandfathered entry is not a row.
+// It is rendered separately, as something the console owns, with the consequence of saving
+// spelled out beside it.
+const editableList = (c) => {
+  const warned = new Set((c?.envWarned || []).map((w) => String(w.value)));
+  return (c?.list || []).filter((v) => !warned.has(String(v)));
+};
+
+function AlertRecipientsPanel() {
+  const [data, setData] = useState(null);
+  const [form, setForm] = useState(null);           // { [channelKey]: string[] }
+  const [drafts, setDrafts] = useState({});         // the "add" box per channel
+  const [status, setStatus] = useState('loading');  // loading | ready | saving | saved | error
+  const [err, setErr] = useState(null);
+  const gate = useRoleGate('admin');
+
+  const load = useCallback(async () => {
+    setStatus('loading'); setErr(null);
+    try {
+      const r = await apiFetch(ALERT_RECIPIENTS_URL, { cache: 'no-store' });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'load failed');
+      setData(j);
+      setForm(Object.fromEntries((j.channels || []).map((c) => [c.key, editableList(c)])));
+      setDrafts({});
+      setStatus('ready');
+    } catch (e) { setErr(String(e?.message || e)); setStatus('error'); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  // THE RULE COMES FROM THE SERVER, NOT FROM A COPY LIVING HERE. `limits.internalSuffixes` is
+  // the shipped allowlist, served with the payload — a second, hardcoded copy in the client is
+  // how a screen starts accepting what the sender refuses.
+  const suffixes = data?.limits?.internalSuffixes || [];
+  const maxPer = data?.limits?.maxPerChannel || 25;
+  const checkEntry = useCallback((raw, kind, always = null) => {
+    const v = String(raw || '').trim();
+    if (!v) return 'type a number first';
+    if (kind === 'sms') {
+      let d = v.replace(/\D/g, '');
+      if (d.length === 11 && d.startsWith('1')) d = d.slice(1);
+      return /^\d{10}$/.test(d) ? null : 'not a 10-digit US mobile number';
+    }
+    // A PASTED PAIR IS A PAIR, not a malformed address. Copying two addresses out of an email
+    // is the natural gesture, and "not an email address" would be a false reason for it — the
+    // server's own splitter exists to accept exactly this.
+    const parts = v.split(/[,;\n\r\t]/).map((x) => x.trim()).filter(Boolean);
+    if (parts.length > 1) return null;
+    const lc = v.toLowerCase();
+    if (!/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(lc)) return 'not an email address';
+    if (suffixes.length && !suffixes.some((sfx) => lc.endsWith(sfx))) {
+      return `only ${suffixes.join(' and ')} addresses — these alerts name customers and their freight`;
+    }
+    // The always-address is on every one of these messages already, and it is drawn below as
+    // its own row. Accepting it here would put it on screen twice with a Remove button that
+    // changes nobody's mail — parseAlertCc has refused the same thing for the env var since
+    // the day the CC existed.
+    if (always && lc === String(always).toLowerCase()) {
+      return 'already on every one of these — see the row below';
+    }
+    return null;
+  }, [suffixes]);
+
+  const normalize = useCallback((raw, kind) => {
+    const v = String(raw || '').trim();
+    if (kind !== 'sms') return v.toLowerCase();
+    let d = v.replace(/\D/g, '');
+    if (d.length === 11 && d.startsWith('1')) d = d.slice(1);
+    return d;
+  }, []);
+
+  const addTo = useCallback((c) => {
+    const raw = drafts[c.key];
+    if (checkEntry(raw, c.kind, c.alwaysAlso)) return;
+    // A pasted block is a list. Each entry is checked on its own, so one bad address in five
+    // does not refuse the other four — and anything refused stays in the box with its reason
+    // rather than disappearing.
+    const parts = String(raw || '').split(/[,;\n\r\t]/).map((x) => x.trim()).filter(Boolean);
+    const good = [];
+    const leftover = [];
+    for (const part of parts) {
+      if (checkEntry(part, c.kind, c.alwaysAlso)) leftover.push(part);
+      else good.push(normalize(part, c.kind));
+    }
+    let added = 0;
+    setForm((f) => {
+      const cur = f[c.key] || [];
+      const next = [...cur];
+      for (const v of good) {
+        if (next.includes(v) || next.length >= maxPer) { leftover.push(v); continue; }
+        next.push(v); added += 1;
+      }
+      return added ? { ...f, [c.key]: next } : f;
+    });
+    // ONLY CLEAR WHAT LANDED. Clearing unconditionally meant that pressing Enter on an address
+    // already in the list emptied the field and took the "already on this list" warning with
+    // it — leaving a screen that looks exactly like a successful add.
+    setDrafts((d) => ({ ...d, [c.key]: leftover.join(', ') }));
+  }, [drafts, checkEntry, normalize, maxPer]);
+
+  const removeFrom = useCallback((key, value) => {
+    setForm((f) => ({ ...f, [key]: (f[key] || []).filter((v) => v !== value) }));
+  }, []);
+
+  const baseline = useMemo(
+    () => Object.fromEntries((data?.channels || []).map((c) => [c.key, editableList(c)])),
+    [data],
+  );
+  const changedKeys = useMemo(() => {
+    if (!form) return [];
+    return Object.keys(form).filter((k) => JSON.stringify(form[k]) !== JSON.stringify(baseline[k] || []));
+  }, [form, baseline]);
+
+  const save = useCallback(async () => {
+    if (!changedKeys.length) return;
+    setStatus('saving'); setErr(null);
+    try {
+      const body = Object.fromEntries(changedKeys.map((k) => [k, form[k]]));
+      const r = await apiFetch(ALERT_RECIPIENTS_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const j = await r.json();
+      // NEVER REPORT AN INTENT AS AN OUTCOME. The panel takes its new state from what the
+      // endpoint read back off the document, not from what this request hoped to write.
+      if (!j.ok) throw new Error(j.error || 'save failed');
+      setData(j);
+      setForm(Object.fromEntries((j.channels || []).map((c) => [c.key, editableList(c)])));
+      setStatus('saved');
+      setTimeout(() => setStatus('ready'), 2500);
+    } catch (e) { setErr(String(e?.message || e)); setStatus('error'); }
+  }, [changedKeys, form]);
+
+  const reload = (
+    <button
+      type="button" onClick={load} disabled={status === 'loading' || status === 'saving'}
+      className="tap-target inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap"
+    >
+      <RefreshCw size={12} className={status === 'loading' ? 'animate-spin' : ''} /> Reload
+    </button>
+  );
+
+  if (status === 'loading' && !data) {
+    return (
+      <Panel title="Alert recipients">
+        <div className="text-sm text-slate-400 italic flex items-center gap-2">
+          <RefreshCw size={14} className="animate-spin" /> Loading the alert lists…
+        </div>
+      </Panel>
+    );
+  }
+  if (status === 'error' && !data) {
+    return (
+      <Panel title="Alert recipients" action={reload}>
+        <div className="text-sm text-red-600 flex items-center gap-2"><AlertTriangle size={14} /> Couldn’t load the alert lists: {err}</div>
+      </Panel>
+    );
+  }
+  // A payload that says ok without carrying its channels must not be destructured into a
+  // white screen — the scan editor shipped that bug once and took all of Diagnostics with it.
+  if (!Array.isArray(data?.channels) || !form) {
+    return (
+      <Panel title="Alert recipients" action={reload}>
+        <div className="text-sm text-amber-700 flex items-center gap-2">
+          <AlertTriangle size={14} /> The alert service answered without its lists — nothing to edit here until it does.
+        </div>
+      </Panel>
+    );
+  }
+
+  const texts = data.channels.filter((c) => c.kind === 'sms');
+  const emails = data.channels.filter((c) => c.kind === 'email');
+  const canEdit = data.persistent && gate.allowed;
+
+  const card = (c) => {
+    const list = form[c.key] || [];
+    const draft = drafts[c.key] || '';
+    const draftErr = draft.trim() ? checkEntry(draft, c.kind, c.alwaysAlso) : null;
+    const dupe = !draftErr && draft.trim() && list.includes(normalize(draft, c.kind));
+    const full = list.length >= maxPer;
+    const edited = JSON.stringify(list) !== JSON.stringify(baseline[c.key] || []);
+    return (
+      <div key={c.key} className="rounded-md border border-slate-200 p-3 space-y-2">
+        <div className="flex items-start justify-between gap-2 flex-wrap">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-slate-800">{c.label}</div>
+            <div className="text-[11px] text-slate-500 mt-0.5">{c.when}</div>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {edited && <MiniBadge tone="violet">unsaved</MiniBadge>}
+            <MiniBadge tone={c.source === 'saved' ? 'green' : 'slate'}>
+              {c.source === 'saved' ? 'set here' : c.source === 'env' ? c.envVar : 'not set'}
+            </MiniBadge>
+          </div>
+        </div>
+
+        {/* WHO IS ACTUALLY REACHED, floors included — the question the panel exists to answer.
+            Printed even when the list below is empty, because "customer service still gets it"
+            and "nobody gets it" are different answers and only one of them is a problem. */}
+        <div className="text-[11px] text-slate-600 bg-slate-50 border border-slate-100 rounded px-2 py-1.5 break-all">
+          <span className="font-semibold text-slate-500 uppercase tracking-wide text-[10px]">{c.goesToLabel || 'Goes to'}</span>{' '}
+          {(c.recipients || []).length
+            ? (c.recipients || []).map((v) => (c.kind === 'sms' ? formatPhone(v) : v)).join(', ')
+            : <span className="text-amber-700 font-semibold">nobody</span>}
+        </div>
+
+        {list.length === 0 && (
+          <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+            {c.emptyNote}
+          </div>
+        )}
+
+        {list.map((v) => (
+          <div key={v} className="flex items-center gap-2 rounded border border-slate-200 bg-white px-2 py-1">
+            <span className="text-[13px] text-slate-800 font-mono min-w-0 flex-1 break-all">
+              {c.kind === 'sms' ? formatPhone(v) : v}
+            </span>
+            <button
+              type="button" onClick={() => removeFrom(c.key, v)} disabled={!canEdit}
+              title={canEdit ? `Remove ${v}` : (gate.reason || 'read-only')}
+              className="tap-target shrink-0 px-2 py-1 text-[11px] font-semibold text-red-700 border border-red-200 rounded hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+
+        {c.alwaysAlso && (
+          <div className="flex items-center gap-2 rounded border border-dashed border-slate-200 bg-slate-50 px-2 py-1">
+            <span className="text-[13px] text-slate-500 font-mono min-w-0 flex-1 break-all">{c.alwaysAlso}</span>
+            <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wide shrink-0">always</span>
+          </div>
+        )}
+
+        {/* THE ADD CONTROL IS ALWAYS VISIBLE, never behind a "+ add" toggle: the mobile layout
+            guard measures this screen at rest, so a field that only exists after a tap is a
+            field it can never check. Stacked on a phone, inline from `sm`. */}
+        <div className="flex flex-col sm:flex-row gap-2">
+          <input
+            type={c.kind === 'sms' ? 'tel' : 'email'}
+            inputMode={c.kind === 'sms' ? 'tel' : 'email'}
+            value={draft}
+            disabled={!canEdit || full}
+            onChange={(e) => setDrafts((d) => ({ ...d, [c.key]: e.target.value }))}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addTo(c); } }}
+            placeholder={c.kind === 'sms' ? 'Add a mobile number' : 'Add an email address'}
+            aria-label={c.kind === 'sms' ? `Add a mobile number to ${c.label}` : `Add an email address to ${c.label}`}
+            className={`w-full sm:flex-1 min-w-0 rounded-md border px-2 py-1.5 text-sm min-h-[40px] focus:outline-none focus:ring-2 focus:ring-sky-300 disabled:bg-slate-50 disabled:text-slate-400 ${draftErr || dupe ? 'border-amber-400 bg-amber-50' : 'border-slate-300'}`}
+          />
+          <button
+            type="button" onClick={() => addTo(c)}
+            disabled={!canEdit || !draft.trim() || !!draftErr || !!dupe || full}
+            className="tap-target inline-flex items-center justify-center gap-1 rounded-md border border-blue-200 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+          >
+            <Plus size={13} /> Add
+          </button>
+        </div>
+        {/* Say WHY the button is off, next to the button — "the answer has to be where the
+            control is", which is the fix the scan editor needed too. */}
+        {draftErr && <div className="text-[11px] text-amber-700">⚠ {draftErr}</div>}
+        {dupe && <div className="text-[11px] text-amber-700">⚠ already on this list</div>}
+        {full && <div className="text-[11px] text-amber-700">⚠ this list is full at {maxPer} — remove somebody before adding another</div>}
+        {!data.persistent && <div className="text-[11px] text-slate-500">Read-only: {data.note || 'this deploy cannot save changes.'}</div>}
+        {data.persistent && !gate.allowed && <div className="text-[11px] text-slate-500">Read-only: {gate.reason}</div>}
+
+        {c.note && <div className="text-[11px] text-slate-400">{c.note}</div>}
+
+        {/* NOTHING IS DROPPED IN SILENCE. An entry the system refuses, or uses but would not
+            accept today, is named here — a recipient who vanishes quietly is the exact failure
+            this whole area exists to end. */}
+        {(c.envRejected || []).length > 0 && (
+          <div className="text-[11px] text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1 break-all">
+            ⚠ {c.envVar} contains {c.envRejected.length === 1 ? 'an entry that is' : 'entries that are'} not being used:{' '}
+            {c.envRejected.map((x) => `${x.value} (${x.reason})`).join('; ')}
+          </div>
+        )}
+        {(c.envWarned || []).length > 0 && (
+          <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1 break-all">
+            ⚠ {c.envVar} is also mailing {c.envWarned.map((x) => x.value).join(', ')} — {c.envWarned[0].reason}.
+            {' '}That keeps working and is not shown as a row above, because this screen cannot store it.
+            {' '}<strong>Saving any change to this list will stop mailing {c.envWarned.length > 1 ? 'them' : 'them'}</strong>
+            {' '}— to keep {c.envWarned.length > 1 ? 'those addresses' : 'that address'}, change {c.envVar} in the Netlify console instead.
+          </div>
+        )}
+        {(c.savedRejected || []).length > 0 && (
+          <div className="text-[11px] text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1 break-all">
+            ⚠ stored but refused, and never sent to: {c.savedRejected.map((x) => `${x.value} (${x.reason})`).join('; ')}
+          </div>
+        )}
+        {/* WHAT THE LAST SAVE REFUSED. The add box checks entries before they reach the list, so
+            this should never fire — which is exactly why it has to be here. That check is a
+            SECOND copy of a rule whose home is on the server, and the day the two drift, the
+            screen would drop somebody's address with no message at all. The endpoint always
+            reports its refusals; this is the panel keeping its half of that promise whether or
+            not the client-side check agreed. */}
+        {(data.rejected?.[c.key] || []).length > 0 && (
+          <div className="text-[11px] text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1 break-all">
+            ⚠ the last save would not take: {data.rejected[c.key].map((x) => `${x.value} (${x.reason})`).join('; ')}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const group = (title, desc, icon, list, off) => (
+    <div className="space-y-2">
+      <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide flex items-center gap-1">{icon} {title}</div>
+      <div className="text-[11px] text-slate-400 -mt-1">{desc}</div>
+      {/* A PERFECT LIST SENDS NOTHING WITH THE TRANSPORT OFF, and a panel that showed the list
+          without showing that would be another way to look healthy while being silent. */}
+      {off && (
+        <div className="text-[11px] text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">
+          ⚠ {title.toLowerCase()} are switched off on this deploy — nothing below is being sent, however it is set.
+        </div>
+      )}
+      {list.map(card)}
+    </div>
+  );
+
+  return (
+    <Panel title="Alert recipients" action={reload}>
+      <div className="space-y-5">
+        <div className="text-[11px] text-slate-500">
+          Who hears about it when a stop is going to miss its window. A change here reaches the next sweep — no deploy.
+        </div>
+
+        {group('Texts', 'Sent one at a time, per person, per problem.', <MessageSquare size={12} />, texts, data.transports && data.transports.sms === false)}
+        {group('Emails', 'One message per event, addressed to everyone on the list.', <Mail size={12} />, emails, data.transports && data.transports.email === false)}
+
+        {err && <div className="text-sm text-red-600 flex items-center gap-1"><AlertTriangle size={14} /> {err}</div>}
+
+        <div className="flex items-center justify-between gap-2 flex-wrap pt-1 border-t">
+          {/* LOCAL, not a refetch. Discarding over a dead spot used to fail the fetch, paint a
+              red error and leave the form still dirty — a button that cannot do the one thing
+              it promises, at the moment the network is worst. Everything it needs is already
+              in `data`. */}
+          <button
+            type="button"
+            onClick={() => { setForm(baseline); setDrafts({}); setErr(null); if (status === 'error') setStatus('ready'); }}
+            disabled={!changedKeys.length || status === 'saving'}
+            className="tap-target-y text-xs text-slate-500 underline hover:text-slate-700 disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed"
+          >
+            Discard changes
+          </button>
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            {status === 'saved' && <MiniBadge tone="green">saved</MiniBadge>}
+            {data.updatedAt && (
+              <span className="text-[11px] text-slate-400">
+                last changed {fmtFeedAge(data.updatedAt)}{data.updatedBy ? ` by ${String(data.updatedBy).slice(0, 60)}` : ''}
+              </span>
+            )}
+            <button
+              type="button" onClick={save}
+              disabled={!canEdit || !changedKeys.length || status === 'saving'}
+              title={canEdit ? undefined : (!data.persistent ? (data.note || 'this deploy cannot save changes') : gate.reason)}
+              className="tap-target inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-sky-700 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Save size={14} /> {status === 'saving' ? 'Saving…' : changedKeys.length ? `Save ${changedKeys.length} list${changedKeys.length > 1 ? 's' : ''}` : 'Save'}
+            </button>
+          </div>
+        </div>
+
+        {/* WHAT THIS PANEL IS NOT. The Messages screen texts drivers and the office from the
+            employee roster, which is a different store with a different purpose — somebody
+            looking here for "why is this driver getting texts" would otherwise read an
+            incomplete answer as a complete one. */}
+        <div className="text-[11px] text-slate-400">
+          These are the automatic alert lists only. Texting a driver or the office from the Messages screen uses the employee roster, which is not edited here.
+        </div>
+      </div>
+    </Panel>
+  );
 }
 
 function SchedulePanel({ onScanNow, scanning, scanDenied = null, onSaved }) {
@@ -20036,18 +20477,24 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     // orders" case — 007144652 routed, co-located 007144651 left unplanned). Same-address
     // freight rides together, so every UNPLANNED order sharing a selected stop's location comes
     // along — loudly, and removable from the card if the split was intentional.
-    let byMatchKey = null;
+    // Keyed by PLACE, not by matchKey. On 2026-09-09 this guard did not fire for a pickup and
+    // a delivery at one FedEx Office — same street, same zip, pins 6.5m apart — because their
+    // matchKeys differed on the business name (the delivery carried its FedEx reference in it)
+    // AND on a misspelled city in the vendor's data. The delivery went to the route unplanned
+    // and nobody was told. Street + zip answers the question this guard is actually asking.
+    let byPlace = null;
     const twinsOf = (id) => {
-      if (!byMatchKey) {
-        byMatchKey = new Map();
+      if (!byPlace) {
+        byPlace = new Map();
         for (const t of stops) {
-          if (!t?.matchKey || !t.isUnplanned) continue;
-          if (!byMatchKey.has(t.matchKey)) byMatchKey.set(t.matchKey, []);
-          byMatchKey.get(t.matchKey).push(t);
+          const k = stopLocKey(t);
+          if (!k || !t?.isUnplanned) continue;
+          if (!byPlace.has(k)) byPlace.set(k, []);
+          byPlace.get(k).push(t);
         }
       }
       const s = stopById.get(String(id));
-      return ((s?.matchKey ? byMatchKey.get(s.matchKey) : null) || [])
+      return ((s ? byPlace.get(stopLocKey(s)) : null) || [])
         .filter((t) => { const tn = String(t.stopNbr); return !wbStagedRef.current.get(tn) && !peerClaimsRef.current.get(tn); })
         .map((t) => ({ id: String(t.stopNbr), label: `${t.stopNbr} (${t.businessName || 'same address'})` }));
     };
@@ -25139,7 +25586,7 @@ function Shell() {
             {/* The wordmark is the first thing to go on a narrow desktop window: the logo
                 already says whose app this is, and letting this be crushed instead ran the
                 title into the tab row. */}
-            <div className="hidden xl:block font-bold leading-tight text-slate-800 border-l border-slate-200 pl-3">Dispatch Map</div>
+            <div className={`hidden xl:block font-bold leading-tight border-l border-slate-200 pl-3 ${IS_UAT_SITE ? 'text-amber-700' : 'text-slate-800'}`}>{SITE_TITLE}</div>
           </div>
           {/* The scrolling tab row and the More button are SIBLINGS, and that is load-
               bearing. A scroll container clips absolutely-positioned descendants, and CSS
@@ -25196,7 +25643,7 @@ function Shell() {
           {/* "· installed app" / "· browser tab": the one line that says which way the PDF
               viewer will behave on THIS device. The fix for the dead end turns on that
               predicate, and a switch whose position cannot be read is not a switch. */}
-          <div>Dispatch Map v{APP_VERSION} · {BUILD_COMMIT}{BUILD_TIME ? ` · built ${BUILD_TIME.slice(5, 16).replace('T', ' ')}Z` : ''} · {describePwaMode()}</div>
+          <div>{SITE_TITLE} v{APP_VERSION} · {BUILD_COMMIT}{BUILD_TIME ? ` · built ${BUILD_TIME.slice(5, 16).replace('T', ' ')}Z` : ''} · {describePwaMode()}</div>
           <div className="hidden sm:block">© Davis Delivery Service</div>
         </footer>
       )}
@@ -30681,7 +31128,7 @@ function SignInRequiredScreen({ isMobile, appVersion }) {
             Try again
           </button>
         </div>
-        <div className="px-5 pb-4 text-[12px] text-slate-500">Dispatch Map v{appVersion}</div>
+        <div className="px-5 pb-4 text-[12px] text-slate-500">{SITE_TITLE} v{appVersion}</div>
       </div>
     );
   }
@@ -30699,7 +31146,7 @@ function SignInRequiredScreen({ isMobile, appVersion }) {
         <p className="mt-3 text-sm leading-relaxed text-slate-300">{fix}</p>
         <p className="mt-3 text-sm font-semibold text-slate-100">Tell Chad — this is a deploy setting, not something to fix from here.</p>
         <div className="mt-6 flex items-center justify-between gap-3">
-          <span className="text-xs text-slate-500">Dispatch Map v{appVersion}</span>
+          <span className="text-xs text-slate-500">{SITE_TITLE} v{appVersion}</span>
           <button
             onClick={() => window.location.reload()}
             className="rounded-lg bg-white px-4 py-2 text-sm font-bold text-slate-900 hover:bg-slate-200"
