@@ -108,3 +108,14 @@ test('an empty selection is not an error — the route just starts empty, as it 
   assert.deepEqual(r.seed, []);
   assert.equal(newRouteSeedNote(r), '');
 });
+
+test('the held-back holder reads the card RECORD the screen already derives, not just a bare name', () => {
+  // wbStagedByStop maps stopNbr → { color, seq, key, name } — the same record the grid chips use.
+  const staged = new Map([['101', { color: '#e11d48', seq: 3, key: 'DAVIS000198668', name: 'ALPHA' }]]);
+  const r = newRouteSeed({ ids: ['101', '102'], stopById: board, stagedElsewhere: staged });
+  assert.deepEqual(r.seed, ['102']);
+  assert.deepEqual(r.planned, [{ id: '101', holder: 'ALPHA' }]);
+  // A record with no name falls back to its key rather than printing [object Object].
+  const noName = new Map([['102', { key: 'DAVIS000198197' }]]);
+  assert.deepEqual(newRouteSeed({ ids: ['102'], stopById: board, stagedElsewhere: noName }).planned, [{ id: '102', holder: 'DAVIS000198197' }]);
+});

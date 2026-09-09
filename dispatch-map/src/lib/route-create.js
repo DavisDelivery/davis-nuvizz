@@ -144,7 +144,15 @@ export function newRouteSeed({ ids = [], stopById = null, stagedElsewhere = null
   const claimed = [];
   const missing = [];
   const get = (id) => (stopById && typeof stopById.get === 'function' ? stopById.get(String(id)) : null);
-  const stagedOn = (id) => (stagedElsewhere && typeof stagedElsewhere.get === 'function' ? stagedElsewhere.get(String(id)) : null);
+  // `stagedElsewhere` is the screen's own staged-stop index: Map<stopNbr, card>, where a card
+  // is either the display name or the {name,key} record the grid chips already use. Read both,
+  // so the caller hands over what it has rather than shaping a third thing for this one rule.
+  const holderName = (v) => {
+    if (!v) return null;
+    if (typeof v === 'string') return v;
+    return String(v.name || v.key || '').trim() || 'an open card';
+  };
+  const stagedOn = (id) => holderName(stagedElsewhere && typeof stagedElsewhere.get === 'function' ? stagedElsewhere.get(String(id)) : null);
   const claimedByWho = (id) => (typeof claimedBy === 'function' ? claimedBy(String(id)) : null);
   for (const raw of Array.isArray(ids) ? ids : []) {
     const id = String(raw ?? '').trim();
@@ -152,7 +160,7 @@ export function newRouteSeed({ ids = [], stopById = null, stagedElsewhere = null
     const who = claimedByWho(id);
     if (who) { claimed.push({ id, who }); continue; }
     const card = stagedOn(id);
-    if (card) { planned.push({ id, holder: String(card) }); continue; }
+    if (card) { planned.push({ id, holder: card }); continue; }
     const s = get(id);
     if (!s) { missing.push(id); continue; }
     // Planned on a real load → the create would be refused for the whole card.
