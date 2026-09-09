@@ -1,55 +1,7 @@
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <script src="./support.js"></script>
-</head>
-<body>
-<x-dc>
-<helmet>
-  <style>
-@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:#faf9f7;color:#1c1917;font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:14px;-webkit-text-size-adjust:100%}
-a{color:#1e5b92}a:hover{color:#16456e}
-.pad{padding:44px 48px}
-h1{font-family:'Instrument Serif',Georgia,serif;font-size:44px;font-weight:400;line-height:1.05;letter-spacing:-.01em}
-h2{font-family:'Instrument Serif',Georgia,serif;font-size:27px;font-weight:400;line-height:1.15;margin-bottom:6px}
-.kicker{font-size:10px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:#1e5b92;margin-bottom:13px}
-.lede{font-size:16px;line-height:1.55;color:#44403c;max-width:62ch}
-.note{font-size:12.5px;line-height:1.55;color:#78716c;max-width:70ch}
-.rule{height:1px;background:#e7e5e4;margin:26px 0}
-.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px}
-.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
-.card{background:#fff;border:1px solid #e7e5e4;border-radius:9px;padding:18px 20px}
-.card h3{font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#1c1917;margin-bottom:9px}
-.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:#57534e}
-.tag{display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;padding:3px 8px;border-radius:5px}
-.tag.no{background:#fee2e2;color:#991b1b}.tag.yes{background:#dcfce7;color:#166534}.tag.chk{background:#e0e7ff;color:#3730a3}
-.stat{display:flex;flex-direction:column;gap:3px}
-.stat b{font-family:'Instrument Serif',Georgia,serif;font-size:36px;font-weight:400;line-height:1}
-.stat span{font-size:11.5px;color:#78716c;line-height:1.35}
-.tbl{width:100%;border-collapse:collapse;font-size:12px;margin-top:4px}
-.tbl th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:#78716c;font-weight:600;padding:5px 8px;border-bottom:1px solid #e7e5e4}
-.tbl td{padding:5px 8px;border-bottom:1px solid #f5f5f4;color:#44403c}
-.tbl td.ok{color:#166534;font-weight:600}.tbl td.wrap{color:#991b1b;font-weight:600}
-/* ── verbatim app vocabulary (dispatch-map/src/App.jsx) ── */
-.app{background:#fff;border:1px solid #cbd5e1;border-radius:9px;font-family:system-ui,-apple-system,sans-serif}
-.app .bar{background:#1e5b92;color:#fff;padding:7px 12px;font-size:11px;font-weight:600;border-radius:8px 8px 0 0}
-.rows{padding:10px 0}
-.cap{font-size:11px;font-weight:600;text-transform:uppercase;color:#64748b}
-.sum{font-size:15px;font-weight:500;color:#1e293b}
-.li{font-size:13px;line-height:1.375;margin-bottom:5px}
-.lr{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
-.nm{min-width:0;flex:1;overflow-wrap:break-word;color:#1e293b}
-.qt{flex-shrink:0;color:#64748b;white-space:nowrap;text-align:right;font-size:12px}
-.sku{font-size:10px;font-family:ui-monospace,Menlo,monospace;color:#94a3b8}
-.chip{margin-left:4px;padding:0 4px;border-radius:4px;background:#fee2e2;color:#991b1b;font-size:9px;font-weight:600;vertical-align:middle;white-space:nowrap}
-.mkline{display:flex;align-items:center;gap:5px;margin-top:2px}
-.mktxt{font:700 10px system-ui;color:#111827}
-</style>
-</helmet>
+import fs from 'fs';
+import { wrap } from './build.mjs';
 
+fs.writeFileSync('Ask.dc.html', wrap(`
 <div class="pad">
   <div class="kicker">Before a line of this gets built</div>
   <h2>One question for you, one read that costs nothing</h2>
@@ -75,7 +27,7 @@ h2{font-family:'Instrument Serif',Georgia,serif;font-size:27px;font-weight:400;l
     <div class="card" style="background:#fef2f2;border-color:#fecaca">
       <h3 style="color:#991b1b">This stop is badged the opposite of its own instructions</h3>
       <p class="note">The note reads <b style="color:#1c1917">“NO STRAIGHT TRUCK OR LIFT / GATE! MUST SHIP UPRIGHT.”</b> — most likely one sentence Uline wrapped across two 25-character records.</p>
-      <p class="mono" style="margin:11px 0;line-height:1.65;background:#fff;padding:9px 11px;border-radius:6px;border:1px solid #fecaca">"NO STRAIGHT TRUCK OR LIFT"<br>&nbsp;&nbsp;→ MATCH /\bSTRAIGHT\s+TRUCK\b/i<br>&nbsp;&nbsp;→ uline_straight_truck<br>&nbsp;&nbsp;→ "Uline: straight truck only (advisory)"</p>
+      <p class="mono" style="margin:11px 0;line-height:1.65;background:#fff;padding:9px 11px;border-radius:6px;border:1px solid #fecaca">"NO STRAIGHT TRUCK OR LIFT"<br>&nbsp;&nbsp;→ MATCH /\\bSTRAIGHT\\s+TRUCK\\b/i<br>&nbsp;&nbsp;→ uline_straight_truck<br>&nbsp;&nbsp;→ "Uline: straight truck only (advisory)"</p>
       <p class="note">I ran the real patterns rather than reading them; that list has no negation guard. Downstream, <span class="mono">routing-constraints</span> maps the flag to “must NOT be a tractor”, which forces the 26ft box — the one truck in the fleet with a liftgate. The customer said no straight truck and no lift gate.</p>
       <p class="note" style="margin-top:10px">The label does carry <b style="color:#1c1917">“(advisory)”</b>, and the repo treats this source as advisory by design — so it is a mislabel, not a hard block. It still reaches truck choice through the solver.</p>
       <p class="note" style="margin-top:10px"><b style="color:#1c1917">Caveat I can't close from here:</b> the badge draws from the stored <span class="mono">customer_notes</span> doc, so whether SHARPS MWS carries it <i>today</i> is a Firestore fact. The code path is proven; the stored state is not. Also a free read.</p>
@@ -95,7 +47,24 @@ h2{font-family:'Instrument Serif',Georgia,serif;font-size:27px;font-weight:400;l
     <h3>What I'd build first, if you say go</h3>
     <p class="note">Not the icon. The free read, then the threshold, then the mark — in that order. The rule itself belongs beside <span class="mono">LONG_KEYWORDS</span> in <span class="mono">freight-geometry.mts</span>, which is already the pure, unit-tested, server-side home for freight rules and already keyword-scans product names today. One definition there feeds the screen, the grid and the paper, instead of three renderers each deciding for themselves.</p>
   </div>
-</div>
-</x-dc>
-</body>
-</html>
+</div>`));
+
+fs.writeFileSync('canvas.json', JSON.stringify({
+  artboards: [
+    { file: 'Main.dc.html',     title: '1 · The reframe',        x: 0,    y: 0,    w: 1000, h: 1330 },
+    { file: 'Mark.dc.html',     title: '2 · The mark',           x: 1100, y: 0,    w: 1000, h: 930 },
+    { file: 'Phone.dc.html',    title: '3 · Mobile + the widths', x: 2200, y: 0,   w: 1180, h: 840 },
+    { file: 'Desktop.dc.html',  title: '4 · Desktop',            x: 0,    y: 1450, w: 1000, h: 670 },
+    { file: 'Paper.dc.html',    title: '5 · The printed ticket', x: 1100, y: 1450, w: 1000, h: 800 },
+    { file: 'Escalate.dc.html', title: '6 · Escalation',         x: 2200, y: 1450, w: 1060, h: 810 },
+    { file: 'Ask.dc.html',      title: '7 · Over to you',        x: 0,    y: 2380, w: 1160, h: 1520 },
+  ],
+  annotations: [
+    { id: 'start-here', x: 0, y: -170, w: 460,
+      text: 'Start at 1 · THE REFRAME, then 2 · THE MARK.\n\nBoard 7 is the one that needs an answer from you — the rest is only worth building if that answer isn\'t "nothing".' },
+    { id: 'corrected', x: 2200, y: -170, w: 460,
+      text: 'Board 3 carries a correction: my first pass measured the row widths 32px narrow and I drew the wrong conclusion from it. The re-measured numbers are on that board.' },
+  ],
+  launch: { view: 'canvas' },
+}, null, 2));
+console.log('Ask + canvas.json');
