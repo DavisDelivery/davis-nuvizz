@@ -127,16 +127,18 @@ else bad(`the row does not read as clickable (cursor=${cursor})`);
 
 // HOVER LIGHTS IT. The panel and the map share one `hoverId`; the row turning amber is proof
 // that channel reaches this panel, which is what it did not do before.
-// AMBER SPECIFICALLY, and that is the point. "The colour changed" passed against the OLD build
-// too, because the row already had a plain `hover:bg-slate-50` — a CSS hover that tells you
-// nothing about whether the map knows. Amber is painted only from `hoverId`, the same state the
-// markers read, so this assertion distinguishes the feature from the styling it sat next to.
-const AMBER = 'rgb(254, 243, 199)';                                     // tailwind amber-100
+// THE SHARED-HOVER COLOUR SPECIFICALLY, and that is the point. "The colour changed" passed
+// against the OLD build too, because the row already had a plain `hover:bg-slate-50` — a CSS
+// hover that tells you nothing about whether the map knows. This shade is painted ONLY from
+// `hoverId`, the state the markers read, so the assertion distinguishes the feature from the
+// styling it sat next to. (It was amber-100 until Chad said so: "I don't like the highlight
+// yellow when i'm over a row." The colour is not the rule — being driven by hoverId is.)
+const HOVER_BG = 'rgb(226, 232, 240)';                                  // tailwind slate-200
 await row.hover().catch(() => {});
 await page.waitForTimeout(300);
 const after = await row.evaluate((el) => getComputedStyle(el).backgroundColor);
-if (after === AMBER) ok('hovering the row lights it through the shared hoverId channel');
-else bad(`hovering the row does not reach the map's hover state (got ${after}, wanted ${AMBER})`);
+if (after === HOVER_BG) ok('hovering the row lights it through the shared hoverId channel');
+else bad(`hovering the row does not reach the map's hover state (got ${after}, wanted ${HOVER_BG})`);
 
 // CLICKING IT MUST NOT HIJACK THE STOP-CARD LINK. The row gained an action; it must not have
 // taken one away, so the PRO number still opens the order.
