@@ -459,3 +459,86 @@ test('Uline never texts, on either rule', () => {
   assert.equal(restrictionConfidence(note, 'uline_straight_truck'), 'advisory');
   assert.equal(dispatcherTrailerBlock(note).blocked, false);
 });
+
+// ── ONE DOCK, ONE CARD ──────────────────────────────────────────────────────
+//
+// Chad, looking at the flags panel: "this Jewel Reign is showing up twice and should only be
+// there one time."
+//
+// A pickup and a delivery at one dock are two orders and ONE place — the fact v0.99.4 had to
+// teach the grab, arriving here from the other side. This rule pushed a row per STOP, so two
+// orders at one address produced two byte-identical cards.
+//
+// The duplicate was the visible half. The expensive half was the count: "N other stops carry
+// the same mark — check the truck, not just the stop" counted the twin as another stop, and
+// that sentence only means anything when genuinely different places are blocked. It rides the
+// SMS too ("+N more stops on this route").
+
+const dock = (over = {}) => stop({
+  businessName: 'JEWEL REIGN', addr1: '905 MAIN ST', city: 'LAWRENCEVILLE', zip: '30046',
+  matchKey: 'jewel_reign', loadNbr: 'DENIS SALKIC', routeName: 'DENIS SALKIC', routeSeq: 2,
+  ...over,
+});
+const NO_TRAILER = { equipment_restrictions: ['no_tractor_trailer'], manual_overrides: { equipment_restrictions: true } };
+const runDock = (stops) => trailerRows(run(stops, { jewel_reign: NO_TRAILER, other_co: NO_TRAILER },
+  { 'DENIS SALKIC': 'tractor' }));
+
+test('a pickup and a delivery at ONE dock make ONE card, not two', () => {
+  const rows = runDock([dock({ stopNbr: 'D1', stopType: 'DO' }), dock({ stopNbr: 'P1', stopType: 'PU' })]);
+  assert.equal(rows.length, 1, `two orders at one dock produced ${rows.length} cards`);
+  assert.equal(rows[0].ordersHere, 2);
+  assert.deepEqual(rows[0].stopNbrs, ['D1', 'P1'], 'and it still knows both orders');
+});
+
+test('…and the card SAYS it covers both — a silent merge is the other-direction bug', () => {
+  const [r] = runDock([dock({ stopNbr: 'D1', stopType: 'DO' }), dock({ stopNbr: 'P1', stopType: 'PU' })]);
+  assert.match(r.detail, /2 orders at this stop \(D1, P1\)/);
+  assert.match(r.detail, /one dock, so this is one move/);
+});
+
+test('one dock never claims other stops carry the same mark', () => {
+  // The sentence that sent a dispatcher to doubt the whole truck over a single address.
+  const [r] = runDock([dock({ stopNbr: 'D1', stopType: 'DO' }), dock({ stopNbr: 'P1', stopType: 'PU' })]);
+  assert.equal(r.routeConflicts, 1, 'the count is DOCKS, and there is one dock');
+  assert.doesNotMatch(r.detail, /other stop/);
+  assert.doesNotMatch(r.detail, /check the truck/);
+});
+
+test('but two DIFFERENT docks on one route still both flag, and still say "check the truck"', () => {
+  // The merge must not swallow the case the count exists for: several places blocked on one
+  // load is "the wrong truck is on this route", and that is the whole value of the rule.
+  const rows = runDock([
+    dock({ stopNbr: 'D1' }),
+    dock({ stopNbr: 'X1', businessName: 'OTHER CO', addr1: '12 FAR RD', zip: '30518', matchKey: 'other_co', routeSeq: 5 }),
+  ]);
+  assert.equal(rows.length, 2);
+  for (const r of rows) {
+    assert.equal(r.routeConflicts, 2);
+    assert.match(r.detail, /1 other stop on DENIS SALKIC carries the same mark/);
+  }
+});
+
+test('a different SUITE at one street address is a different dock, and flags separately', () => {
+  // STE 200 and STE 400 are two stops a driver walks between — the same rule normalizePlaceKey
+  // was written to respect for the grab.
+  const rows = runDock([
+    dock({ stopNbr: 'S2', addr1: '905 MAIN ST STE 200' }),
+    dock({ stopNbr: 'S4', addr1: '905 MAIN ST STE 400' }),
+  ]);
+  assert.equal(rows.length, 2, 'two suites must not be merged into one dock');
+});
+
+test('the dismiss identity is the DOCK, so waving the card off keeps it off', () => {
+  // Fingerprinted on the stop, the merged card inherited one constituent's identity: dismiss
+  // it and it returns on the next rebuild under the other order's key.
+  const [r] = runDock([dock({ stopNbr: 'D1', stopType: 'DO' }), dock({ stopNbr: 'P1', stopType: 'PU' })]);
+  assert.doesNotMatch(r.fingerprint, /D1|P1/, `fingerprint still keyed on a stop: ${r.fingerprint}`);
+  assert.match(r.fingerprint, /905_main_st__30046/);
+});
+
+test('order within a dock is deterministic — the dismiss key must not move under a dispatcher', () => {
+  const a = runDock([dock({ stopNbr: 'P1', stopType: 'PU' }), dock({ stopNbr: 'D1', stopType: 'DO' })]);
+  const b = runDock([dock({ stopNbr: 'D1', stopType: 'DO' }), dock({ stopNbr: 'P1', stopType: 'PU' })]);
+  assert.deepEqual(a[0].stopNbrs, b[0].stopNbrs);
+  assert.equal(a[0].dismissKey, b[0].dismissKey);
+});
