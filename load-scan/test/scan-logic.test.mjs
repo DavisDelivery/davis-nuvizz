@@ -225,11 +225,21 @@ test('"Another piece" clears the cooldown without throwing — dead since v0.35.
   assert.equal(gate.allow('7162525', t0 + 400), true, 'cleared — the tap lets the next read through');
 });
 
-test('the camera and the gun close their pair windows at the same clock', async () => {
+test('a late piece id can always still reach its fallback — whichever route scanned it', async () => {
+  // What must hold for both routes: a piece id arriving after the fallback
+  // booked still lands inside the upgrade grace — otherwise a slow label books
+  // twice, which is the bug this whole pairing rework exists to kill. The gun's
+  // window may be longer than the camera's (its window covers a PERSON finding
+  // and shooting the second barcode, not a decoder's luck) but never shorter.
   const { CAMERA_PAIR_WINDOW_MS } = await import('../src/lib/scanner.js');
   const { WEDGE_PAIR_WINDOW_MS } = await import('../src/lib/wedge.js');
-  assert.equal(CAMERA_PAIR_WINDOW_MS, WEDGE_PAIR_WINDOW_MS, 'one rule for both entry routes');
-  assert.equal(CAMERA_PAIR_WINDOW_MS, CAMERA_WINDOW, 'and these tests exercise that exact window');
+  const { NOOG_UPGRADE_GRACE_MS } = await import('../src/lib/scan-logic.js');
+  assert.ok(CAMERA_PAIR_WINDOW_MS < NOOG_UPGRADE_GRACE_MS, 'camera fallback stays upgradeable');
+  assert.ok(WEDGE_PAIR_WINDOW_MS < NOOG_UPGRADE_GRACE_MS, 'gun fallback stays upgradeable');
+  assert.ok(
+    WEDGE_PAIR_WINDOW_MS >= CAMERA_PAIR_WINDOW_MS,
+    'a trigger pull needs at least as long as a decoder does',
+  );
 });
 
 test('a scanned-without-OG id is accepted and stays distinct from typed', async () => {

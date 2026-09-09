@@ -28,7 +28,7 @@ import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString,
 import { poolUsable, POOL_LIVE_FIELDS, WINDOW_WRITE_GRACE_MS, type ActivePool } from './lib/active-pool.mts';
 import { summarizeScanMetrics } from './lib/scan-metrics.mts';
 import { filterFinishedPriorDay } from './lib/nuvizz-list.mts';
-import { breakerMode, reportedDailyCeiling } from './lib/nuvizz-request.mts';
+import { breakerMode, reportedDailyCeiling, circuitStillBinding } from './lib/nuvizz-request.mts';
 import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
@@ -433,6 +433,8 @@ export default async (req: Request): Promise<Response> => {
       try {
         const opsDate = etDayString();
         const [stats, circuit, metrics, scanCfg] = await Promise.all([readCallStats(opsDate), readCircuit(), readScanMetrics(), readScanConfig().catch(() => ({}))]);
+        const ceiling = reportedDailyCeiling((scanCfg as any)?.dailyCeiling);
+        const breakerBinding = circuitStillBinding(circuit.open, stats.count, ceiling);
         ops = {
           dayCount: stats.count,
           byRoute: stats.byRoute,
@@ -446,14 +448,20 @@ export default async (req: Request): Promise<Response> => {
           // whichever number it found — the site's NUVIZZ_DAILY_CEILING is 20,000 — while the
           // breaker trips at 2,000, so the card and the Diagnostics gauge both overstated the
           // remaining headroom tenfold. See reportedDailyCeiling.
-          ceiling: reportedDailyCeiling((scanCfg as any)?.dailyCeiling),
-          breaker: circuit.open,
+          ceiling,
+          // BINDING, not merely flagged. Raising the ceiling releases a trip taken at the old
+          // number (see circuitStillBinding), and the enforcement path does that on its next
+          // call - but this card is what a dispatcher actually looks at, so it must not go on
+          // reading "halted" in the meantime. Same predicate the breaker uses, on the count
+          // and ceiling this endpoint already has in hand: no extra read, and no chance of
+          // the screen and the spend path disagreeing about the word halted.
+          breaker: breakerBinding,
           // WHY, AND SINCE WHEN. An open breaker refuses every scan, and "breaker: true" on
           // its own does not tell anyone whether that is today's ceiling doing its job or a
           // flag stuck from another day. It expires with the ET call counter it bounds, so
           // the stamp is the thing that says which.
-          breakerReason: circuit.open ? (circuit.reason ?? null) : null,
-          breakerAt: circuit.open ? (circuit.at ?? null) : null,
+          breakerReason: breakerBinding ? (circuit.reason ?? null) : null,
+          breakerAt: breakerBinding ? (circuit.at ?? null) : null,
           breakerDay: circuit.day ?? null,
           mode: breakerMode(),
           // Learned scan-discovery summary (avg/max new loads/day, worst gap,

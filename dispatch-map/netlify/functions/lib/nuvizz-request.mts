@@ -70,32 +70,70 @@ export type BreakerMode = 'monitor' | 'enforce';
 export const BREAKER_MODE: BreakerMode =
   (process.env.NUVIZZ_BREAKER_MODE || '').toLowerCase() === 'monitor' ? 'monitor' : 'enforce';
 
-// ── The HARD ceiling ─────────────────────────────────────────────────────────
+// ── The ceiling: TWO numbers, because they answer two different questions ────
 //
-// 2,000 NuVizz calls a day, and nothing may raise it — not the env var, not the stored
-// Diagnostics config, not a caller passing its own fallback. Every path that produces a
-// ceiling runs through clampCeiling(), so the number on the Diagnostics pill is the number
-// actually enforced. Before this, NUVIZZ_DAILY_CEILING was free to set 20,000 (what the site
-// was running) and the editable config could reach 200,000.
+// Chad, 2026-09-09: "I just changed the settings to allow 3000 calls but still shows only
+// 2000 enforce on the dropdown menu on the actual map." He was reading it right. Since
+// v0.54.21 there was ONE number here — 2,000 — and it was BOTH the default AND an absolute
+// cap nothing could lift, so the Diagnostics field accepted 3,000, saved it, and the system
+// quietly enforced 2,000 anyway. A setting that takes a number it will not honour is the
+// "never report an intent as an outcome" failure in its purest form.
 //
-// Sized against real usage: a normal day is a few hundred calls (133 by mid-morning on Jul 29),
-// so 2,000 is ~10x headroom for scheduled scans, enrichment, live writes and manual pulls.
-// It is deliberately BELOW the ~3,000-call cold number-probe scan that CLAUDE.md exists to
-// prevent — that scan can no longer run to completion by accident; it trips the breaker
-// partway. That is the intent, not a side effect.
-export const HARD_DAILY_CEILING = 2_000;
+// The two questions were always separate and are now separate constants:
+//
+//   DEFAULT_DAILY_CEILING (2,000) — what you get when nobody has decided. An env var or a
+//   caller-supplied fallback may only LOWER this. Unchanged, so nothing moves on its own:
+//   a deploy of this change spends exactly what it spent yesterday until somebody saves a
+//   setting. Sized against real usage — a normal day is a few hundred calls — so it is
+//   already ~10x headroom for scheduled scans, enrichment, live writes and manual pulls.
+//
+//   HARD_DAILY_CEILING (3,000) — the most a DELIBERATE save in Diagnostics may reach.
+//   Nothing else can get here: not the env var, not a caller's fallback, not junk. This is
+//   the switch, and Chad is the only one who can flip it.
+//
+// WHAT RAISING IT COSTS, said plainly because it is a real change and not a formality.
+// 2,000 was chosen to sit BELOW the ~3,000-call cold number-probe scan so that scan could
+// not run to completion by accident. At 3,000 that particular backstop is gone. Two things
+// are worth weighing against it: the primary guard against a cold full scan is not this
+// number but the permission rule in CLAUDE.md and the fact that only `manual=1` / `?date=` /
+// `?days=` reach that path at all; and the backstop was never cheap anyway — it did not
+// prevent the spend, it stopped the scan PARTWAY and left the board half-written (v0.70.2),
+// which on a 700-stop morning is the worse of the two outcomes. Lower it in Diagnostics any
+// time; the field goes down to 100.
+export const DEFAULT_DAILY_CEILING = 2_000;
+export const HARD_DAILY_CEILING = 3_000;
 
-/** PURE: any proposed ceiling, clamped into [1, HARD_DAILY_CEILING]. Junk → the hard cap. */
+/**
+ * PURE: a SAVED SETTING, clamped into [1, HARD_DAILY_CEILING].
+ *
+ * Junk resolves to the DEFAULT, never to the maximum — a malformed value must not buy
+ * headroom. (Before the split this returned the cap for junk, which was the same number.)
+ */
 export function clampCeiling(n: any): number {
   const v = Math.floor(Number(n));
-  if (!Number.isFinite(v) || v < 1) return HARD_DAILY_CEILING;
+  if (!Number.isFinite(v) || v < 1) return DEFAULT_DAILY_CEILING;
   return Math.min(HARD_DAILY_CEILING, v);
+}
+
+/**
+ * PURE: an AMBIENT proposal — the env var, or a fallback a caller passed itself — clamped
+ * into [1, DEFAULT_DAILY_CEILING]. These may only ever LOWER the ceiling.
+ *
+ * This is what keeps the raise behind Chad's switch rather than behind a deploy: the site
+ * has run NUVIZZ_DAILY_CEILING=20,000 in the past, and if the env var could reach the new
+ * hard cap then shipping this file would have raised production's spend by 50% with nobody
+ * deciding anything.
+ */
+export function clampAmbientCeiling(n: any): number {
+  const v = Math.floor(Number(n));
+  if (!Number.isFinite(v) || v < 1) return DEFAULT_DAILY_CEILING;
+  return Math.min(DEFAULT_DAILY_CEILING, v);
 }
 
 export function breakerMode(): BreakerMode { return BREAKER_MODE; }
 
 export interface RequesterConfig {
-  /** Daily call ceiling across the whole fleet. Always <= HARD_DAILY_CEILING (2,000). */
+  /** Daily call ceiling across the whole fleet. Always <= HARD_DAILY_CEILING (3,000). */
   dailyCeiling: number;
   /** monitor (count+warn, never block) vs enforce (trip+block) at the ceiling. */
   breakerMode: BreakerMode;
@@ -110,9 +148,10 @@ export interface RequesterConfig {
 }
 
 export const DEFAULT_CONFIG: RequesterConfig = {
-  // The hard cap is the default. NUVIZZ_DAILY_CEILING may only LOWER it (clampCeiling).
-  // In enforce mode — now the default — hitting it trips the breaker and blocks further calls.
-  dailyCeiling: clampCeiling(Number(process.env.NUVIZZ_DAILY_CEILING) || HARD_DAILY_CEILING),
+  // The DEFAULT is the default. NUVIZZ_DAILY_CEILING may only LOWER it — only a saved
+  // Diagnostics setting reaches HARD_DAILY_CEILING, and it arrives via the override below.
+  // In enforce mode — the default — hitting the ceiling trips the breaker and blocks further calls.
+  dailyCeiling: clampAmbientCeiling(process.env.NUVIZZ_DAILY_CEILING),
   breakerMode: BREAKER_MODE,
   maxRetries: 4,
   backoffBaseMs: 500,
@@ -124,15 +163,109 @@ export const DEFAULT_CONFIG: RequesterConfig = {
 // Runtime daily-ceiling override (Diagnostics UI → scan_config). The requester is a
 // warm-instance singleton built once with DEFAULT_CONFIG, so the editable ceiling is
 // applied per-invocation via this module-level override rather than rebuilding it.
-// null = use the configured/default cfg.dailyCeiling. The scanner sets this from the
-// live config at the start of each run (see refresh-stops-core).
+// null = use the configured/default cfg.dailyCeiling.
+//
+// ── WHO SETS IT, AND THE HOLE THAT WAS ──────────────────────────────────────
+//
+// Chad, 2026-09-09: "I have it set at 3000 as you can see but stopping me at 2000."
+// His Map card read "NuVizz calls: 2,000 / 3,000 (enforce, halted)" and the banner under
+// it read "daily NuVizz call ceiling reached (2000/2000) — write refused". BOTH numbers
+// were produced by this file, from the same saved setting, and they disagreed.
+//
+// Because until now exactly ONE caller ever set this override: refresh-stops-core, at the
+// top of a scan run. This is a MODULE-LEVEL variable, and Netlify functions are separate
+// processes — nuvizz-write.mts has its own copy of this module and nothing in it had ever
+// called the setter, so the override there was permanently null and effectiveDailyCeiling
+// fell through to clampAmbientCeiling(), which is bounded by DEFAULT_DAILY_CEILING. 2,000.
+// Every path that did NOT run inside a scan enforced 2,000 no matter what Chad saved.
+//
+// The display paths were right the whole time — reportedDailyCeiling() READS the stored
+// config, so the gauge printed 3,000 — which is why the two numbers on one screen came from
+// one setting and did not match. And the damage is not confined to the write endpoint: the
+// per-call trip below uses this same expression, so a write path tripped the SHARED,
+// fleet-wide Firestore breaker at 2,000 and halted the scanner too, in a process that knew
+// perfectly well the ceiling was 3,000.
+//
+// A setting is not a setting if honouring it depends on which entrypoint you came in
+// through. The override is now HYDRATED from the stored config by anything that needs it
+// (hydrateDailyCeiling below) rather than waiting to be told, so the number is resolved from
+// the same document in every process.
 let __dailyCeilingOverride: number | null = null;
+let __ceilingLoadedAtMs = 0;
+let __ceilingLoadFailed = false;
 export function setDailyCeilingOverride(n: number | null | undefined): void {
   __dailyCeilingOverride = (typeof n === 'number' && Number.isFinite(n) && n > 0) ? clampCeiling(n) : null;
+  // A caller that sets this has just resolved it from the stored config itself (the scanner
+  // reads scan_config for the schedule anyway), so treat it as a fresh load and don't make
+  // the hydrator go read the same document again this minute.
+  __ceilingLoadedAtMs = Date.now();
+  __ceilingLoadFailed = false;
+}
+
+/** Test seam: forget both the value and its freshness. */
+export function __resetDailyCeilingCache(): void {
+  __dailyCeilingOverride = null;
+  __ceilingLoadedAtMs = 0;
+  __ceilingLoadFailed = false;
+}
+
+// How long a hydrated ceiling is trusted before we re-read the config document. A Firestore
+// read is not a NuVizz call and costs nothing against the budget this file guards, but there
+// is no reason to make one per outbound request either. A minute means a save in Diagnostics
+// takes effect within a minute everywhere, which is what "I just changed the setting" needs.
+export const CEILING_TTL_MS = 60_000;
+
+// How long to wait before retrying a config read that FAILED. Without this, a throw left the
+// load time unstamped and every subsequent request re-asked Firestore — turning a Firestore
+// outage into one extra failing request per NuVizz call, on the exact path that is supposed to
+// keep working from the last known good value. Short, because the ceiling matters, but not
+// zero.
+export const CEILING_RETRY_MS = 5_000;
+
+/**
+ * Resolve the SAVED ceiling into the module override, at most once per TTL per warm instance.
+ * Returns the ceiling now in force.
+ *
+ * `readConfigured` yields the raw stored `dailyCeiling` (number | null | undefined — the
+ * document is returned unvalidated, so junk must be survivable). Injected, so this is
+ * testable with no Firestore.
+ *
+ * A READ FAILURE KEEPS WHAT WE HAVE. Falling back to the default on a transient Firestore
+ * error would silently drop Chad's ceiling to 2,000 mid-day — the exact failure this
+ * function exists to end — so a throw leaves the previous value alone and we retry after
+ * CEILING_RETRY_MS rather than pretending we learned something.
+ */
+export async function hydrateDailyCeiling(
+  readConfigured: () => Promise<any>,
+  opts: { now?: () => number; ttlMs?: number; force?: boolean } = {},
+): Promise<number> {
+  const now = opts.now ?? Date.now;
+  const baseTtl = opts.ttlMs ?? CEILING_TTL_MS;
+  // A failed load is retried sooner than a good one is refreshed, but not on every call.
+  const ttlMs = __ceilingLoadFailed ? Math.min(baseTtl, CEILING_RETRY_MS) : baseTtl;
+  if (opts.force || __ceilingLoadedAtMs === 0 || now() - __ceilingLoadedAtMs >= ttlMs) {
+    try {
+      const raw = await readConfigured();
+      // Only a number or a numeric string is a proposal; anything else means "not set", which
+      // is the DEFAULT and not the maximum. Same coercion rule as reportedDailyCeiling — a
+      // malformed value must fall through, never become a ceiling.
+      const n = (typeof raw === 'number' || typeof raw === 'string') ? Number(raw) : NaN;
+      __dailyCeilingOverride = Number.isFinite(n) && n > 0 ? clampCeiling(n) : null;
+      __ceilingLoadedAtMs = now();
+      __ceilingLoadFailed = false;
+    } catch {
+      // Keep the previous value and try again after CEILING_RETRY_MS — not on the next call.
+      __ceilingLoadedAtMs = now();
+      __ceilingLoadFailed = true;
+    }
+  }
+  return effectiveDailyCeiling();
 }
 export function effectiveDailyCeiling(fallback = DEFAULT_CONFIG.dailyCeiling): number {
-  // Clamped on the way OUT too: a caller-supplied fallback is just another proposal.
-  return clampCeiling(__dailyCeilingOverride ?? fallback);
+  // The override is Chad's saved setting and was clamped to HARD on the way in. A
+  // caller-supplied fallback is just another ambient proposal and may only LOWER the default —
+  // otherwise any code path could vote itself more budget by passing a bigger number.
+  return __dailyCeilingOverride ?? clampAmbientCeiling(fallback);
 }
 
 /**
@@ -163,15 +296,17 @@ export function reportedDailyCeiling(configured?: any, env: Record<string, any> 
   // ceiling of 1 and `[1500]` as 1500 — the same family as the Number(null) is 0 bug that put
   // a midnight deadline in front of a customer. A malformed value must fall THROUGH to the
   // next proposal, not become one.
-  const asCeiling = (v: any): number | null => {
+  const asCeiling = (v: any, clamp: (x: any) => number): number | null => {
     if (typeof v !== 'number' && typeof v !== 'string') return null;
     const n = Number(v);
-    return Number.isFinite(n) && n > 0 ? clampCeiling(n) : null;
+    return Number.isFinite(n) && n > 0 ? clamp(n) : null;
   };
-  return asCeiling(configured)
-    ?? asCeiling(env?.NUVIZZ_DAILY_CEILING)
-    // No config and no env is not "unlimited" — it is the hard cap, same as DEFAULT_CONFIG.
-    ?? HARD_DAILY_CEILING;
+  return asCeiling(configured, clampCeiling)
+    // The env var is ambient, so it can only lower — same rule the breaker enforces.
+    ?? asCeiling(env?.NUVIZZ_DAILY_CEILING, clampAmbientCeiling)
+    // No config and no env is not "unlimited", and it is not the maximum either: it is the
+    // DEFAULT, the same number DEFAULT_CONFIG lands on.
+    ?? DEFAULT_DAILY_CEILING;
 }
 
 export interface RequesterDeps {
@@ -184,6 +319,12 @@ export interface RequesterDeps {
   recordCall: (meta: NvRequestMeta, n: number) => Promise<number>;
   /** Read whether the circuit breaker is currently open (volume exceeded). */
   isCircuitOpen: () => Promise<boolean>;
+  /**
+   * Read the SAVED daily ceiling (raw stored value) so this process enforces the number
+   * Chad set rather than the ambient default. Optional: omitted (tests, and any caller that
+   * has already set the override itself) means "don't go looking".
+   */
+  readConfiguredCeiling?: () => Promise<any>;
   /** Trip the breaker — persist a flag scansEnabled() will honor. */
   tripCircuit: (reason: string) => Promise<void>;
   /** Structured log sink. Default: console.log. */
@@ -222,6 +363,28 @@ export function dedupeKey(method: string, url: string): string {
   return `${method.toUpperCase()} ${url}`;
 }
 
+/**
+ * PURE: is an OPEN breaker still binding, given today's count and the ceiling now in force?
+ *
+ * Raising the ceiling has to release a breaker that tripped at the old, lower number, or the
+ * setting does nothing until midnight. That was the second half of what Chad hit: the trip is
+ * a latch in a Firestore document, `circuitFromDoc` only expires it on the ET day rollover,
+ * and it was stamped "ceiling 2000 reached" — so even with the resolution above fixed, a
+ * board halted at 2,000 would have stayed halted all day against a 3,000 ceiling, for a
+ * reason that no longer existed. The breaker's job is to say "the day's spend is at the cap";
+ * once the cap moves above the spend, that sentence is simply false.
+ *
+ * WHEN WE CANNOT TELL, IT STAYS OPEN. An unreadable count or a nonsense ceiling releases
+ * nothing: the two mistakes are not symmetrical. Staying halted costs a late board and a
+ * dispatcher who rings Chad; releasing on a Firestore blip costs uncapped spend against the
+ * vendor, which is the entire thing this file exists to prevent.
+ */
+export function circuitStillBinding(open: boolean, dayCount: number, ceiling: number): boolean {
+  if (!open) return false;
+  if (!Number.isFinite(dayCount) || !Number.isFinite(ceiling) || ceiling <= 0) return true;
+  return dayCount >= ceiling;
+}
+
 // ── The requester ────────────────────────────────────────────────────────────
 
 export function createNuvizzRequester(deps: RequesterDeps, config: Partial<RequesterConfig> = {}) {
@@ -245,6 +408,14 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
     breakerOpen = await deps.isCircuitOpen();
     breakerCheckedAt = now();
     return breakerOpen;
+  }
+
+  // Pull Chad's saved ceiling into this process before any budget decision is made with it.
+  // TTL-guarded inside hydrateDailyCeiling, so this is at most one config read per minute per
+  // warm instance and none at all for a caller that already set the override.
+  async function ensureCeiling(): Promise<void> {
+    if (!deps.readConfiguredCeiling) return;
+    await hydrateDailyCeiling(deps.readConfiguredCeiling, { now });
   }
 
   async function doFetchWithRetry(url: string, init: any, maxRetries: number, meta: NvRequestMeta): Promise<Response> {
@@ -271,8 +442,11 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
       totalThisInstance++;
       log({ app: APP_NAME, trigger: meta.trigger ?? __callTrigger ?? 'unknown', source: meta.source, route: meta.route, tenant: meta.tenant, status: resp.status, ms, dayTotal: total, mode: cfg.breakerMode });
       // At the ceiling: enforce → trip + (next call) block; monitor → warn only.
-      // The effective ceiling honors a live UI override (scan_config) over cfg.
-      const ceiling = clampCeiling(__dailyCeilingOverride ?? cfg.dailyCeiling);
+      // ONE expression decides the effective ceiling, and it is the same one the gauge prints
+      // (effectiveDailyCeiling): Chad's saved override wins, otherwise the requester's own
+      // config as an ambient proposal. Rebuilding the expression here is exactly how v0.70.2
+      // ended up with a gauge reading 20,000 while the breaker tripped at 2,000.
+      const ceiling = effectiveDailyCeiling(cfg.dailyCeiling);
       if (total >= ceiling) {
         if (cfg.breakerMode === 'enforce') {
           if (!breakerOpen) {
@@ -299,6 +473,9 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
    * whole scan rather than hammering a vendor that's already rate-limiting us).
    */
   async function request(url: string, opts: NvRequestOptions, meta: NvRequestMeta): Promise<Response> {
+    // Resolve the saved ceiling FIRST: both the breaker read below (which releases a trip the
+    // ceiling has outgrown) and the trip check in doFetchWithRetry measure against it.
+    await ensureCeiling();
     // Only enforce mode blocks; monitor mode never refuses a scan.
     if (cfg.breakerMode === 'enforce' && await breakerIsOpen()) {
       throw new NuvizzCircuitOpenError(`NuVizz circuit breaker open — refusing ${meta.route} (${meta.tenant})`);
@@ -320,7 +497,7 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
   }
 
   function getStats() {
-    return { totalThisInstance, breakerOpen, inflight: inflight.size, ceiling: clampCeiling(__dailyCeilingOverride ?? cfg.dailyCeiling), mode: cfg.breakerMode };
+    return { totalThisInstance, breakerOpen, inflight: inflight.size, ceiling: effectiveDailyCeiling(cfg.dailyCeiling), mode: cfg.breakerMode };
   }
 
   return { request, getStats, _config: cfg };
@@ -344,7 +521,47 @@ export function scanIntervalElapsed(lastScannedAtISO: string | null | undefined,
 // ── Production wiring (Firestore-backed counter + breaker) ───────────────────
 // A singleton per warm instance so in-flight dedupe + breaker memo survive across
 // invocations. Imported lazily to keep the pure module test-friendly.
-import { incrementCallCounter, readCircuit, setCircuit, etDayString } from './firestore.mts';
+import { incrementCallCounter, readCircuit, setCircuit, etDayString, readScanConfig, readCallStats, isFirestoreEnabled } from './firestore.mts';
+
+/**
+ * The stored ceiling, straight off the Diagnostics document. Raw and unvalidated on purpose —
+ * hydrateDailyCeiling does the coercion and the clamp, in ONE place, so a value saved before
+ * a bound existed cannot slip past by arriving through a different door.
+ */
+async function readStoredCeiling(): Promise<any> {
+  // Firestore off means there IS no stored setting, which is an answer — the DEFAULT — and
+  // not a failure. Letting getDoc throw here would mark every resolve as failed and keep
+  // re-asking a store that is switched off.
+  if (!isFirestoreEnabled()) return undefined;
+  const cfg = await readScanConfig();
+  return (cfg as any)?.dailyCeiling;
+}
+
+/** Hydrate this process's ceiling from the stored config. Safe to call from any entrypoint. */
+export async function resolveDailyCeiling(): Promise<number> {
+  return hydrateDailyCeiling(readStoredCeiling);
+}
+
+/**
+ * Read the breaker, and RELEASE it if the ceiling has moved above the day's count.
+ *
+ * The write is not bookkeeping: an open flag left in Firestore is read by the parent app too
+ * (one shared nuvizz_ops/circuit), and a breaker whose real position lives only in this
+ * process's memory is a switch nobody can read. So the release is persisted with a reason
+ * saying what freed it.
+ */
+async function readCircuitSelfHealing(): Promise<boolean> {
+  const c = await readCircuit();
+  if (!c.open) return false;
+  const ceiling = await resolveDailyCeiling();
+  let dayCount = NaN;
+  try { dayCount = (await readCallStats(etDayString())).count; } catch { return true; }
+  if (circuitStillBinding(true, dayCount, ceiling)) return true;
+  const reason = `released: day count ${dayCount} is under the ceiling now in force (${ceiling})`;
+  try { await setCircuit(false, reason, new Date().toISOString()); } catch { /* the read still returns closed */ }
+  console.warn('[nuvizz-request] circuit-released', JSON.stringify({ dayCount, ceiling, priorReason: c.reason ?? null }));
+  return false;
+}
 
 let __prod: ReturnType<typeof createNuvizzRequester> | null = null;
 
@@ -362,8 +579,10 @@ export function getNuvizzRequester() {
       trigger: meta.trigger ?? __callTrigger ?? 'unknown',
       source: meta.source,
     }),
-    isCircuitOpen: async () => (await readCircuit()).open,
+    isCircuitOpen: readCircuitSelfHealing,
     tripCircuit: (reason) => setCircuit(true, reason, new Date().toISOString()),
+    // Every process resolves the SAME saved number. Before this, only the scanner did.
+    readConfiguredCeiling: readStoredCeiling,
   });
   return __prod;
 }
@@ -375,5 +594,7 @@ export function getNuvizzRequester() {
  */
 export async function breakerTripped(): Promise<boolean> {
   if (BREAKER_MODE === 'monitor') return false;
-  try { return (await readCircuit()).open; } catch { return false; }
+  // Self-healing, same as the per-call path: a scan must not keep skipping the whole run
+  // because of a trip whose ceiling has since been raised above the day's spend.
+  try { return await readCircuitSelfHealing(); } catch { return false; }
 }

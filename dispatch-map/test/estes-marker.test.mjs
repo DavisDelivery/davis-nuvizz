@@ -208,9 +208,20 @@ test('legacy entries without the new fields still count as before — nothing is
   assert.equal(inv.hiddenByPin, 1);
 });
 
-test('the marker layer hands the legend the same two facts the pin used (dns + the order number)', () => {
+test('the marker layer hands the legend the same facts the pin used (dns + the order number)', () => {
   const hook = APP.slice(APP.indexOf('function useLegendInventory('), APP.indexOf('function LegendMarkerExample('));
-  assert.match(hook, /dns,\s*\n\s*estes: isEstesOrder\(s\.stopNbr\),/);
+  // Asserted on the entry object the hook BUILDS, not on two fields being adjacent lines.
+  // The adjacency version went red when `pickup` was added between them (v0.97.7) — while the
+  // property it exists for, "the legend is handed the same facts the pin used", was untouched.
+  // A guard that fires on a neighbouring insertion is the source-regex failure mode this
+  // repo's own marker helpers were written to get away from; it is tightened here rather than
+  // loosened, since the entry now has to carry the pickup flag too or the legend's PU row and
+  // the board's PU marks can disagree.
+  const push = hook.slice(hook.indexOf('entries.push({'), hook.indexOf('});', hook.indexOf('entries.push({')));
+  assert.ok(push, 'useLegendInventory no longer builds an entries.push({...}) object');
+  assert.match(push, /\bdns,/, 'the legend must be told what the pin knew about do-not-send');
+  assert.match(push, /\bestes: isEstesOrder\(s\.stopNbr\),/, 'and the carrier, resolved the same way');
+  assert.match(push, /\bpickup,/, 'and whether this stop is a collection');
   const legend = APP.slice(APP.indexOf('function MapLegendBody('), APP.indexOf('function MapLegendBody(') + 12000);
   assert.match(legend, /has\(inv && inv\.estes\)/, 'the Carrier row is gated on the tally, like every other row');
   assert.match(legend, /Estes order — black, yellow ring/);

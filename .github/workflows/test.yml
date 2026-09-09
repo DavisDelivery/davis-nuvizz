@@ -150,6 +150,14 @@ jobs:
       # bump and then fails to find its browser.
       - run: npx --yes playwright@$(node -p "require('playwright-core/package.json').version") install chromium
       - run: npm run build
+      # EVERY CLASS WE WRITE MUST EXIST IN THE CSS WE SHIP. Chad's Routing-map legend was
+      # `bg-white/97`; Tailwind's opacity scale runs in steps of five, so it emitted no rule
+      # at all and the panel shipped with NO background — blurred satellite map behind grey
+      # text, on a build that was green everywhere. Nothing here could see it: the bundle is
+      # valid, the unit tests pass, and the phone guard measures geometry, not paint. This
+      # reads the classes out of src and asks the built stylesheet whether each one exists.
+      # Needs the build above; needs no browser, so it runs before the slow guards.
+      - run: npm run verify:classes
       - run: npm run smoke
       # THE PHONE GUARD. It walks every screen at 390 and 360, opens the sheets and
       # drawers, and fails on content wider than the screen, controls clipped out of their

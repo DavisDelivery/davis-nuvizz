@@ -96,8 +96,32 @@ const FAKE_MAPS = `
       this.styles = opts && opts.styles;
       this.center = (opts && opts.center) || { lat: 0, lng: 0 };
       this.zoom = (opts && opts.zoom) != null ? opts.zoom : 0;
+      if (this.div && this.div.querySelectorAll) for (const n of this.div.querySelectorAll('[data-fake-map-controls]')) n.remove();
       this.markers = new Set(); this.overlays = new Set(); this.lines = new Set();
-      this.controls = new Proxy({}, { get: () => ({ push() {}, clear() {}, length: 0 }) });
+      // CONTROLS ARE REAL DOM, because the app puts real controls here. This used to be a
+      // no-op Proxy that threw pushed buttons away, which was survivable while the only
+      // thing on the map was the Recenter crosshair — nothing asserted on it. v0.98.5 moved
+      // the Satellite toggle out of the Filters panel and onto the map on both screens, and
+      // a stub that drops on-map controls means NO browser guard can ever see a control
+      // that a dispatcher uses constantly. Google mounts custom controls into the map
+      // container; so does this.
+      this.controls = new Proxy({}, {
+        get: (bag, pos) => {
+          if (!bag[pos]) {
+            const host = document.createElement('div');
+            host.setAttribute('data-fake-map-controls', String(pos));
+            host.style.cssText = 'position:absolute;right:0;bottom:0;z-index:5;display:flex;';
+            (this.div || document.body).appendChild(host);
+            const arr = [];
+            bag[pos] = {
+              push(el) { if (el) host.appendChild(el); return arr.push(el); },
+              clear() { host.textContent = ''; arr.length = 0; },
+              get length() { return arr.length; },
+            };
+          }
+          return bag[pos];
+        },
+      });
       window.__maps.push(this);
     }
     setMapTypeId(t) { this.type = t; }
@@ -202,11 +226,6 @@ async function checkScreen(label) {
   // "hide labels" had a real lever (hybrid → satellite imagery, which carries no labels)
   // and appeared to work. On the roadmap base there is no label-free type, so the switch
   // moved and nothing happened. Routing defaults to satellite, so turn it off first.
-  const filtersBtn = page.getByRole('button', { name: /^filters$/i }).first();
-  if (!(await filtersBtn.isVisible().catch(() => false))) { bad(`${label}: could not find the Filters button`); return; }
-  await filtersBtn.click(); await page.waitForTimeout(400);
-  // Whichever "Satellite view" switch is actually on screen (desktop panel and mobile
-  // drawer both render one). The panel stays OPEN for the rest of this check.
   const visibleSwitch = async (name) => {
     const all = page.getByRole('switch', { name });
     for (let i = 0; i < await all.count(); i++) {
@@ -215,13 +234,40 @@ async function checkScreen(label) {
     }
     return null;
   };
-  const sat = await visibleSwitch(/satellite view/i);
+  // SATELLITE IS NO LONGER A ROW IN THIS PANEL. v0.98.5 moved it onto the map itself on both
+  // screens — Chad: "Want satellite view button taken out of menu and put on actual map near
+  // this button" — where it is a toggle BUTTON carrying aria-pressed rather than a switch
+  // carrying aria-checked. Accept either shape, anywhere on the page. It stays a hard failure
+  // when neither is there: this is the PRECONDITION for everything below, and letting it pass
+  // silently would run the Routing case on satellite and then report the confusing
+  // "expected roadmap, got hybrid" instead of the thing that actually broke.
+  const satToggle = async () => {
+    for (const [role, attr] of [['switch', 'aria-checked'], ['button', 'aria-pressed']]) {
+      const all = page.getByRole(role, { name: /satellite view/i });
+      for (let i = 0; i < await all.count(); i++) {
+        const el = all.nth(i);
+        if (!(await el.isVisible().catch(() => false))) continue;
+        if ((await el.getAttribute(attr)) == null) continue;
+        return { el, attr };
+      }
+    }
+    return null;
+  };
+  const sat = await satToggle();
   if (sat) {
-    if ((await sat.getAttribute('aria-checked')) === 'true') { await sat.click(); await page.waitForTimeout(1000); }
-    (await sat.getAttribute('aria-checked')) === 'false'
-      ? ok('satellite is off — the roadmap base from the report')
-      : bad(`could not turn satellite off (aria-checked=${await sat.getAttribute('aria-checked')})`);
-  } else { bad('no Satellite view switch on this screen'); }
+    if ((await sat.el.getAttribute(sat.attr)) === 'true') { await sat.el.click(); await page.waitForTimeout(1000); }
+    (await sat.el.getAttribute(sat.attr)) === 'false'
+      ? ok(`satellite is off — the roadmap base from the report (${sat.attr} on the on-map toggle)`)
+      : bad(`could not turn satellite off (${sat.attr}=${await sat.el.getAttribute(sat.attr)})`);
+  } else { bad('no Satellite view toggle on this screen — not in the Filters panel and not on the map'); }
+
+  // NOW open Filters, and it stays OPEN for the rest of this check. Satellite is settled
+  // first on purpose: it lives on the map, and clicking it is an outside-click that shuts
+  // this panel — which is also the real order, a dispatcher flips the base on the map and
+  // then reaches into Filters.
+  const filtersBtn = page.getByRole('button', { name: /^filters$/i }).first();
+  if (!(await filtersBtn.isVisible().catch(() => false))) { bad(`${label}: could not find the Filters button`); return; }
+  await filtersBtn.click(); await page.waitForTimeout(400);
 
   const first = await latest();
   if (!first) { bad(`${label}: the app never constructed a map — the google stub did not take`); return; }
