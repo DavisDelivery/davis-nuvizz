@@ -7,14 +7,53 @@
 // Day key order, Mon→Sun. Mirrors App.jsx's DAYS for receiving-hours grouping.
 export const DAY_ORDER = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
+// A STOP ON THE LINE YOU DREW IS A STOP YOU MEANT TO SELECT.
+//
+// EDGE_EPS is ~1e-9 degrees — about a tenth of a millimetre. No two real consignees are that
+// close, so this can only ever catch a point that IS on the drawn edge; it cannot reach across
+// a street and pull in the warehouse next door.
+const EDGE_EPS = 1e-9;
+
+// Is (y,x) on the segment a→b, within EDGE_EPS? Vertices are [lat,lng]; `y` is lat, `x` is lng.
+function onEdge(y, x, a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b)) return false;
+  const ay = Number(a[0]), ax = Number(a[1]), by = Number(b[0]), bx = Number(b[1]);
+  if (!Number.isFinite(ay) || !Number.isFinite(ax) || !Number.isFinite(by) || !Number.isFinite(bx)) return false;
+  // Bounding-box reject first — cheap, and it stops the perpendicular test below from accepting
+  // a point that sits on the infinite LINE but far beyond either end of the segment.
+  if (y < Math.min(ay, by) - EDGE_EPS || y > Math.max(ay, by) + EDGE_EPS) return false;
+  if (x < Math.min(ax, bx) - EDGE_EPS || x > Math.max(ax, bx) + EDGE_EPS) return false;
+  const dy = by - ay, dx = bx - ax;
+  // A zero-length segment is a POINT, which is what a double-tap on one spot leaves behind.
+  if (dy === 0 && dx === 0) return Math.abs(y - ay) <= EDGE_EPS && Math.abs(x - ax) <= EDGE_EPS;
+  // Perpendicular distance from the point to the segment's line, in degrees.
+  return Math.abs(dy * (x - ax) - dx * (y - ay)) / Math.hypot(dy, dx) <= EDGE_EPS;
+}
+
 // Ray-casting point-in-polygon. path = [[lat,lng], …]. Free; no geometry lib.
 // Used by the Lasso tool (tap-to-place vertices → enclosed stops).
+//
+// BOUNDARY-INCLUSIVE, and that is the whole point of the onEdge pass below. A textbook ray cast
+// is half-open: it answers "outside" for a point sitting exactly on the boundary. That is
+// harmless for a freehand mouse drag, where the odds of landing on a pin to the last floating-
+// point bit are nil — but the TOUCH lasso does not drag, it places vertices by TAP, and a tap on
+// a pin is routed straight into the vertex placer (App.jsx handleSelectPoint, fed by the marker
+// click handler with marker.getPosition()). That vertex IS the stop's own lat/lng, to the bit.
+// So the dispatcher who traced a cluster by tapping its pins — the natural way to do it, since
+// the pins are the only thing on screen worth aiming at — deselected every stop they aimed at.
+// Five stops, four tapped as corners: one selected. The same four corners under Box selected all
+// five, because latLngInBounds has always been inclusive (<=/>=). The two tools now agree.
 export function pointInPolygon(lat, lng, path) {
   if (lat == null || lng == null || !Array.isArray(path) || path.length < 3) return false;
+  const y = Number(lat), x = Number(lng);
+  // NaN coordinates reach here: the map's own gate is `s.lat != null`, and NaN passes that.
+  // Every comparison below would quietly answer false; say so once, at the top, instead.
+  if (!Number.isFinite(y) || !Number.isFinite(x)) return false;
   let inside = false;
   for (let i = 0, j = path.length - 1; i < path.length; j = i++) {
+    if (onEdge(y, x, path[j], path[i])) return true;
     const [yi, xi] = path[i], [yj, xj] = path[j];
-    const intersect = ((xi > lng) !== (xj > lng)) && (lat < ((yj - yi) * (lng - xi)) / ((xj - xi) || 1e-12) + yi);
+    const intersect = ((xi > x) !== (xj > x)) && (y < ((yj - yi) * (x - xi)) / ((xj - xi) || 1e-12) + yi);
     if (intersect) inside = !inside;
   }
   return inside;

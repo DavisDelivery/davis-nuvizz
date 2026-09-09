@@ -31,6 +31,63 @@ test('pointInPolygon: concave (lasso) polygon excludes the notch', () => {
   assert.equal(pointInPolygon(2, 5, c), true);  // in the solid part
 });
 
+// ── The tap-lasso: a stop you TAPPED is a stop you SELECTED ──
+// The touch lasso places vertices by tap, and a tap on a pin is routed straight into the vertex
+// placer with that marker's own position — so the vertex IS the stop's lat/lng, bit for bit. A
+// half-open ray cast called those stops "outside" and dropped every pin the dispatcher aimed at.
+test('tap-lasso: a stop tapped as a lasso vertex is selected, not dropped', () => {
+  // Four north-Georgia consignees tapped as the corners, one in the middle of the cluster.
+  const uline = [34.0515, -84.0712], buford = [34.1204, -83.9955];
+  const lawrenceville = [33.9562, -83.9880], duluth = [34.0029, -84.1446];
+  const poly = [uline, buford, lawrenceville, duluth];
+  for (const [lat, lng] of poly) assert.equal(pointInPolygon(lat, lng, poly), true);
+  assert.equal(pointInPolygon(34.03, -84.05, poly), true); // the untapped stop in the middle
+});
+
+test('tap-lasso and Box agree on the same four corners', () => {
+  const stops = [
+    { lat: 34.0515, lng: -84.0712 }, { lat: 34.1204, lng: -83.9955 },
+    { lat: 33.9562, lng: -83.9880 }, { lat: 34.0029, lng: -84.1446 },
+    { lat: 34.0300, lng: -84.0500 },
+  ];
+  const poly = stops.slice(0, 4).map((s) => [s.lat, s.lng]);
+  const box = boxFromCorners({ lat: 34.1204, lng: -84.1446 }, { lat: 33.9562, lng: -83.9880 });
+  const byLasso = stops.filter((s) => pointInPolygon(s.lat, s.lng, poly)).length;
+  const byBox = stops.filter((s) => latLngInBounds(s.lat, s.lng, box)).length;
+  assert.equal(byLasso, 5);
+  assert.equal(byBox, byLasso); // Box was always inclusive; the lasso no longer disagrees
+});
+
+test('pointInPolygon: a stop on an EDGE (not just a vertex) is inside', () => {
+  const square = [[34, -84], [34, -83], [33, -83], [33, -84]];
+  assert.equal(pointInPolygon(34, -83.5, square), true);   // on the north edge
+  assert.equal(pointInPolygon(33.5, -84, square), true);   // on the west edge
+  assert.equal(pointInPolygon(33.5, -83, square), true);   // on the east edge
+  assert.equal(pointInPolygon(33, -83.5, square), true);   // on the south edge
+});
+
+test('pointInPolygon: the edge rule cannot reach the warehouse next door', () => {
+  // EDGE_EPS is ~0.1mm. A stop 10m off the drawn line stays out, or the lasso would leak.
+  const square = [[34, -84], [34, -83], [33, -83], [33, -84]];
+  assert.equal(pointInPolygon(34.0001, -83.5, square), false);  // ~11 m north of the edge
+  assert.equal(pointInPolygon(34.000001, -83.5, square), false); // ~11 cm north of the edge
+});
+
+test('pointInPolygon: a double-tapped vertex does not break the shape', () => {
+  // Two identical consecutive vertices — what a double-tap on one spot leaves behind.
+  const dup = [[34, -84], [34, -84], [34, -83], [33, -83], [33, -84]];
+  assert.equal(pointInPolygon(33.5, -83.5, dup), true);
+  assert.equal(pointInPolygon(34, -84, dup), true);   // the double-tapped corner itself
+  assert.equal(pointInPolygon(35, -83.5, dup), false);
+});
+
+test('pointInPolygon: NaN coordinates never select (they pass the map’s != null gate)', () => {
+  const square = [[34, -84], [34, -83], [33, -83], [33, -84]];
+  assert.equal(pointInPolygon(NaN, -83.5, square), false);
+  assert.equal(pointInPolygon(33.5, NaN, square), false);
+  assert.equal(pointInPolygon(33.5, -83.5, [[NaN, -84], [34, -83], [33, -83]]), false);
+});
+
 // ── Add-in-view / Box: bounding-box containment ──
 test('latLngInBounds: inclusive of edges, excludes outside', () => {
   const box = { north: 10, south: 0, east: 10, west: 0 };
