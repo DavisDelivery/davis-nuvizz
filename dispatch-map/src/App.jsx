@@ -118,7 +118,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.97.6';
+const APP_VERSION = '0.97.7';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -189,7 +189,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['0.97.6', 'THE MAP LEGEND HAD NO BACKGROUND, AND THE CALL CEILING IGNORED THE NUMBER YOU SET. TWO REPORTS, ONE MORNING. FIRST, THE LEGEND. Chad, on a phone shot of the Routing map: \u201cyou can\u2019t see this[,] formatting and colors are bad and i\u2019ve already made you aware but wasn\u2019t fixed.\u201d The panel was a sheet of blurred satellite imagery with grey text floating on it. THE WHOLE CAUSE WAS FOUR CHARACTERS: the popover was `bg-white/97`. Tailwind\u2019s opacity scale runs 0\u2013100 in steps of FIVE, and a modifier off the scale is not an error \u2014 it emits NOTHING. The class was right there in the markup, matched no rule, and the panel had no background at all; `backdrop-blur` was the only thing still doing anything, which is exactly the blurred map in the shot. Confirmed by grepping the shipped stylesheet: /15, /20, /25, /30, /90 and /95 are all in it and /97 is not. THAT IS THE WORST SHAPE A UI BUG COMES IN \u2014 green build, valid bundle, every test passing, a diff that reads correctly to a human, and a failure that exists only on a screen. The phone guard could not see it either: the panel occupies exactly the right pixels, it just has no paint. SO THE FIX IS TWO THINGS. The panel is `bg-white/95` (the class the other fifteen on-map panels already use). AND a guard now reads every slash-modifier class out of src and asks the BUILT stylesheet whether each one exists \u2014 Tailwind is the authority, this only compares the two lists, so it has something to say about the next silently-dropped utility too, not just opacity. It was proven BOTH ways against the real history: it names `src/App.jsx:16615 bg-white/97` on the shipped source and passes on this one. Wired into CI after the build, plus a no-build unit test so the fast job catches it too. WHILE IN THERE, THE CONTRAST. Chad said colors, not just background, and he is right on a white panel too: the count chips were slate-400 (2.6:1 on white, well under the 4.5:1 floor) at 10px \u2014 and those numbers ARE the content, the answer to \u201cis this a corner case or half my afternoon.\u201d Counts, section headings, the restriction paragraph, the marker labels, the tractor status line and the close X all move up a step or two (everything now \u22657:1), and the body text sets its own colour instead of inheriting whatever it lands in. SECOND, THE CEILING. Chad: \u201ci just changed the settings to allow 3000 calls but still shows only 2000 enforce on the dropdown menu on the actual map.\u201d He was reading it right. Since v0.54.21 there was ONE number, 2,000, serving as BOTH the default AND an absolute cap nothing could lift \u2014 so the Diagnostics field took 3,000, saved it, and the breaker kept 2,000 with nothing anywhere saying they disagreed. Those are two different questions and they are two constants now. DEFAULT (2,000) is what you get when nobody has decided, and an env var or a caller-supplied fallback may only LOWER it \u2014 so this deploy spends exactly what yesterday spent until somebody saves a setting. HARD (3,000) is reachable ONLY by a deliberate save in the Diagnostics editor, which is bounded to the imported constant so the number the field accepts cannot drift from the number the breaker enforces. Junk resolves to the DEFAULT, never the maximum: a malformed value must not buy headroom. The enforcement site and the gauge now share ONE expression rather than rebuilding it \u2014 that duplication is exactly what shipped a card reading 20,000 against a breaker tripping at 2,000 in v0.70.2 \u2014 and the property test states it on the path production uses. WORTH SAYING PLAINLY: 2,000 was chosen to sit BELOW the ~3,000-call cold number-probe scan so that scan could not finish by accident, and at 3,000 that particular backstop is gone. The primary guard is unchanged (the permission rule, and only manual=1 / ?date= / ?days= reach that path), and the backstop was never cheap: it did not prevent the spend, it stopped the scan PARTWAY and left the board half-written. Lower it in Diagnostics any time \u2014 the field goes down to 100. AND THE FIELD STOPS LYING: `max` on a number input only constrains the spinner arrows, so every field in that editor would accept a value it would not keep. They now print their range, flag an out-of-range value in amber with the number that will actually be saved, and pull it back on blur where you can see it. 16 new tests.'],
+  ['0.97.7', 'PICKUPS NOW SAY SO, ON EVERY MARKER THEY CAN DRAW \u2014 AND THE MARK HAD NEVER ONCE RENDERED. Chad, beside a screenshot of the NuVizz map where every marker is a red \u201cP\u201d or a cyan \u201cD\u201d: \u201cwe are not id\u2019ing pickups correctly like on the nuvizz map.\u201d He was right, and the cause is the same shape as the legend bug an hour earlier \u2014 code that was written, half-wired, and shipped invisible. THERE ARE TWO DISC RENDERERS. unplannedDotSvg named \u2018PU\u2019 in its tag arm; circleMarkerSvg did not. Every pickup lands in circleMarkerSvg \u2014 the `!tag` guard on the unplanned branch sends a TAGGED stop away from the only renderer that knew the mark \u2014 so \u2018PU\u2019 arrived, matched neither \u2018AM\u2019 nor \u2018PM\u2019, and fell through to the plain centre dot. One of the two was updated and the other was missed, and nothing in the build could see the difference. IT WAS WORSE THAN UNMARKED. The size tier reads `tag ? 28 : 16`, so a pickup drew a BLANK 28px disc \u2014 the footprint this map reserves for a stop with a delivery window \u2014 carrying no information at all. An unplanned delivery rests at 16px; an unplanned pickup was a big empty pin claiming to be time-critical and then refusing to say why. FOUND BY RUNNING IT, NOT READING IT, and that distinction is the whole lesson here: the letters \u2018PU\u2019 appear in BOTH functions, so every grep over the source goes green. The bug was that the branch reaching the renderer which knew the mark was unreachable for exactly the stops that needed it. Only building the marker and reading the SVG can see that. NOW THE PU RIDES EVERY MARKER A PICKUP CAN DRAW, the way the Estes ring does: the CENTRE when that slot is free (the biggest, most readable spot on the disc), and a corner badge when something else owns the middle \u2014 a route sequence number, an AM/PM window, the do-not-send \u2717, a restriction cluster, the delivered \u2713. The old rule was \u201ca delivery-window tag wins the slot\u201d, which is right about the MIDDLE and wrong about the identity: a safety mark should outrank a type mark without costing the stop what it IS. Slate ground rather than a colour of its own, because every colour on this map already answers \u201cwhat state is this in\u201d or \u201cwhat can I send here\u201d, and spending one would make a pickup argue with its own status. AND A PICKUP IS NEVER MUTED: at 14px hollow slate there is no room for the mark, so muting a pickup does not quiet it, it DISGUISES it as an ordinary planned delivery \u2014 and which kind of job a stop is stays a live question after it is planned, as this repo has twice learned the hard way by scoring a pickup against a dock\u2019s receiving hours (v0.59.2, v0.65.2). The Legend gets a Pickup row with the real badge and a live count. THE TESTS BUILD REAL MARKERS and read the SVG back \u2014 a new helper lifts the whole stopMarkerIcon DECISION, not just the builders it dispatches to, resolving its dependencies by iterating on the ReferenceError rather than from a hand-kept list that is one more place to forget something. Proven load-bearing both ways: 14 of the 15 fail against the shipped bundle and all 15 pass on this one. One EXISTING test went red and was TIGHTENED rather than loosened \u2014 it pinned `dns,` and `estes:` as adjacent source lines, so inserting `pickup,` between them broke it while the property it guards was untouched; it now asserts the entry object the hook builds, and requires the pickup flag too. STILL OPEN, and it is a question for Chad rather than a guess: this marks stopType===\u2018PU\u2019, and v0.68.1 records that freight coming BACK to us is routinely typed as a DELIVERY \u2014 so if the red P\u2019s on his NuVizz map are RAs and returns, the SET is wider than this and the rule has to key on something else. The drawing was broken either way. 15 new tests, 3,663 green.'],\n  ['0.97.6', 'THE MAP LEGEND HAD NO BACKGROUND, AND THE CALL CEILING IGNORED THE NUMBER YOU SET. TWO REPORTS, ONE MORNING. FIRST, THE LEGEND. Chad, on a phone shot of the Routing map: \u201cyou can\u2019t see this[,] formatting and colors are bad and i\u2019ve already made you aware but wasn\u2019t fixed.\u201d The panel was a sheet of blurred satellite imagery with grey text floating on it. THE WHOLE CAUSE WAS FOUR CHARACTERS: the popover was `bg-white/97`. Tailwind\u2019s opacity scale runs 0\u2013100 in steps of FIVE, and a modifier off the scale is not an error \u2014 it emits NOTHING. The class was right there in the markup, matched no rule, and the panel had no background at all; `backdrop-blur` was the only thing still doing anything, which is exactly the blurred map in the shot. Confirmed by grepping the shipped stylesheet: /15, /20, /25, /30, /90 and /95 are all in it and /97 is not. THAT IS THE WORST SHAPE A UI BUG COMES IN \u2014 green build, valid bundle, every test passing, a diff that reads correctly to a human, and a failure that exists only on a screen. The phone guard could not see it either: the panel occupies exactly the right pixels, it just has no paint. SO THE FIX IS TWO THINGS. The panel is `bg-white/95` (the class the other fifteen on-map panels already use). AND a guard now reads every slash-modifier class out of src and asks the BUILT stylesheet whether each one exists \u2014 Tailwind is the authority, this only compares the two lists, so it has something to say about the next silently-dropped utility too, not just opacity. It was proven BOTH ways against the real history: it names `src/App.jsx:16615 bg-white/97` on the shipped source and passes on this one. Wired into CI after the build, plus a no-build unit test so the fast job catches it too. WHILE IN THERE, THE CONTRAST. Chad said colors, not just background, and he is right on a white panel too: the count chips were slate-400 (2.6:1 on white, well under the 4.5:1 floor) at 10px \u2014 and those numbers ARE the content, the answer to \u201cis this a corner case or half my afternoon.\u201d Counts, section headings, the restriction paragraph, the marker labels, the tractor status line and the close X all move up a step or two (everything now \u22657:1), and the body text sets its own colour instead of inheriting whatever it lands in. SECOND, THE CEILING. Chad: \u201ci just changed the settings to allow 3000 calls but still shows only 2000 enforce on the dropdown menu on the actual map.\u201d He was reading it right. Since v0.54.21 there was ONE number, 2,000, serving as BOTH the default AND an absolute cap nothing could lift \u2014 so the Diagnostics field took 3,000, saved it, and the breaker kept 2,000 with nothing anywhere saying they disagreed. Those are two different questions and they are two constants now. DEFAULT (2,000) is what you get when nobody has decided, and an env var or a caller-supplied fallback may only LOWER it \u2014 so this deploy spends exactly what yesterday spent until somebody saves a setting. HARD (3,000) is reachable ONLY by a deliberate save in the Diagnostics editor, which is bounded to the imported constant so the number the field accepts cannot drift from the number the breaker enforces. Junk resolves to the DEFAULT, never the maximum: a malformed value must not buy headroom. The enforcement site and the gauge now share ONE expression rather than rebuilding it \u2014 that duplication is exactly what shipped a card reading 20,000 against a breaker tripping at 2,000 in v0.70.2 \u2014 and the property test states it on the path production uses. WORTH SAYING PLAINLY: 2,000 was chosen to sit BELOW the ~3,000-call cold number-probe scan so that scan could not finish by accident, and at 3,000 that particular backstop is gone. The primary guard is unchanged (the permission rule, and only manual=1 / ?date= / ?days= reach that path), and the backstop was never cheap: it did not prevent the spend, it stopped the scan PARTWAY and left the board half-written. Lower it in Diagnostics any time \u2014 the field goes down to 100. AND THE FIELD STOPS LYING: `max` on a number input only constrains the spinner arrows, so every field in that editor would accept a value it would not keep. They now print their range, flag an out-of-range value in amber with the number that will actually be saved, and pull it back on blur where you can see it. 16 new tests.'],
   ['0.97.5', 'LOAD-SCAN (v0.45.0): SCANNING A MULTI-PIECE ORDER STOPPED ASKING PERMISSION. Chad, off the dock: "the scanner is taking too long to scan things now that we are confirming each new item to same pro." He was right, and it was worse than one tap — piece 2 of a same-PRO order cost about six seconds. The pair window (2.5s), then a three-second cooldown that dropped the read SILENTLY so the loader re-aimed and paid the window again, then an amber card to tap. A 3-skid order is one PRO on three labels and the manifest already says three; asking a loader to vouch for skids 2 and 3 is asking them to confirm the paperwork against itself, and a tap demanded that often becomes a reflex, which is not a check. A repeat PRO on a stop still short of its count now books straight through. THE GUARD THAT REPLACED IT IS TIGHTER THAN THE ONE IT REMOVED, not looser: a fixed timer cannot tell another piece from another look, so the rule is now ABSENCE — the label has to leave the frame before it earns another booking. A phone left pointing at one skid keeps decoding it, so it never goes absent and can never book twice however long it is held; today\'s three-second cooldown allowed exactly that every three seconds. The confirmation is kept where the question is genuinely open: a stop already at its count, or one with no count to reason about. One decision per presentation, so a lingering label cannot re-fire the amber card every window either. VERIFIED IN THE REAL BUNDLE, both ways: the camera end-to-end check gained an act where three skids of one PRO book with no tap while five seconds of unbroken aim books once — and it was run with the new guard deliberately disabled, where it booked FIVE pieces from three aims and the act failed, which is the only evidence that a test is load-bearing. ALSO RECORDED, A FIX THAT WAS TRIED AND REJECTED: halving the camera pair window to 1200ms looked safe because a late piece id upgrades its fallback since v0.43.0 — but Quagga is multiple:false, so on an iPhone a late id arrives ALONE, a lone id cannot identify a stop, and it never reaches the upgrade at all. The end-to-end check caught it (DASAN and LATE LABEL both booking fallbacks, no upgrade firing) and the window stays at 2500 with the reasoning written beside it so it is not retried. The tick that notices a closed window is halved to 200ms, which is pure latency and nothing else. 319 load-scan tests green; this app is untouched.'],
   ['0.97.4', 'THE COMPARE SEND BUTTON PUTS THE STOPS ON THE ROUTE IN ONE PRESS, AND SAYS WHAT IT DID. Chad: “i put 2 routes in the panel that i wanted to add stops to then i went and selected the stops i wanted it to put on the route and then when i clicked the button to add stops it didn\'t put them on the route.” FOUND BY RUNNING IT, on UAT and against the code: stops already sitting UNPLANNED move on the first press (verified on the UAT board). A stop still PLANNED on a load that is NOT open in Compare did not — the Save is declarative over the loads it carries, so the source load has to be in it to release the stop, and the old press only OPENED that load’s card, kept the stops selected, put nothing on the target and asked for a second press in a four-second toast at the bottom of the map. On a desktop with cards open the Setup panel’s message line is not on screen at all, so the only sign was a third card appearing. The toast also said “Opened X” whether or not X had actually opened (two loads sharing a name, no NuVizz identity, Compare full), which turns a refused open into an endless “Send again”. NOW: one press opens the source card AND moves the stops onto the target, in the same action; a source that cannot open keeps its stops selected and is named with the real reason; the outcome (“Sent 6 stops → ALPHA (opened BEN 2 in Compare so the Save can release them)”) is written in the Compare header and stays until the next action, on top of the toast. Also: the header read “(N/3)” while the workbench has held six cards since v0.46.19, and the send buttons named a load by its NuVizz number when the card was opened from the Loads grid — they carry the card’s name now. The rule lives in lib/send-selection.js, pure and tested on the Sep 8 shape; the card builder is one function both the open paths and the send share, so a refusal reads the same wherever it happens. 13 new tests.'],
   ['0.97.3', 'THE UNPLANNED ESTES ORDERS WERE STILL PURPLE — NOW THEY ARE BLACK TOO. Chad, on a stop wearing the new yellow ring around the same pool purple as everything else: "any estes unplanned should have black center with yellow ring." HERE IS WHY HALF THE BOARD CHANGED AND HALF DID NOT, because it is a good lesson in reading a colour chain. Every stop\'s fill is picked by a chain of fallbacks, and the Estes black was put at the END of it — after the status colour. A SCHEDULED stop has no status colour of its own (it has always fallen through to the flag/default tint), so the black was reached and the pin turned black. An UNPLANNED stop carries its own purple, so the chain answered before it ever got to the carrier, and every order in the pool — which is most of what you look at when you are building routes, and the exact case this was asked for — kept the colour it always had. The ring was on it, so it looked like a half-finished job, and it was one. The black now sits AHEAD of the status colour for the two RESTING states, unplanned and scheduled: "nothing has happened to this order yet" is the tint the carrier identity should own. THE LIVE STATES KEEP THEIRS, deliberately: out for delivery blue, arrived amber, delivered green, exception orange. Those answer where an order IS right now, which is what the board is watched for all day, and the yellow ring already says whose order it is without spending that colour. Same for the marks a person or a detector set — a priority flag, a tractor or box-only paint, an amber address-looks-off warning, a selection, a search hit. AND THE TEST THAT SHOULD HAVE CAUGHT IT NOW EXISTS. The first cut was pinned by reading the source for the right words, and the words were all there — the bug was the ORDER they were in, which no amount of reading the text can see. The marker tests now BUILD real markers through the shipped code and read the colour back out of the SVG, one per status, so a fill that is wrong is a red test instead of a screenshot.'],
@@ -2918,6 +2918,25 @@ function readableTextColor(hex) {
 // SAME place, so a dispatcher sees "3 orders here" at a glance. Dark disc + white number + white
 // ring reads on any pin color and on the satellite base. Only drawn for count >= 2. Lives inside
 // the 28×36 viewBox top-right corner, so it never enlarges the marker's scaledSize.
+// THE PICKUP BADGE — a corner tab saying "this stop is a collection, not a delivery".
+//
+// It sits in the corner, opposite the co-located count, because the CENTRE of a disc is
+// already spoken for on most of the pins a pickup can draw: a route pin carries its sequence
+// number, an AM/PM stop its window, a do-not-send its ✕. A pickup is an IDENTITY — what kind
+// of job this is — and an identity that only shows up when nothing else needed the middle is
+// not an identity, it is a coincidence. Same reasoning as the Estes ring (lib/carrier-mark.js),
+// which rides every disc for exactly this reason.
+//
+// Slate ground rather than a colour of its own: every colour on this map already answers
+// "what state is this stop in?" or "what can I send here?", and spending one on a job type
+// would make a pickup argue with its own status. The count badge uses the same ground for the
+// same reason — both are metadata ABOUT the marker rather than a claim about the freight.
+function pickupBadgeSvg(x = 1.6, y = 1.6, scale = 1) {
+  const w = 15 * scale, h = 10.5 * scale;
+  return `<g><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${3.2 * scale}" fill="#0f172a" stroke="#ffffff" stroke-width="${1.4 * scale}"/>`
+    + `<text x="${x + w / 2}" y="${y + 8 * scale}" font-family="system-ui, sans-serif" font-size="${7.4 * scale}" font-weight="800" fill="#ffffff" text-anchor="middle" letter-spacing="-0.3">PU</text></g>`;
+}
+
 function countBadgeSvg(count) {
   const n = Number(count) || 0;
   if (n < 2) return '';
@@ -3008,7 +3027,7 @@ function pinSvgStatus(color, opts = {}) {
 // SymbolPath marker, which silently failed to paint on the vector base — see v0.29.77).
 // Callers anchor at the CENTER of the returned size.
 function circleMarkerSvg(color, opts = {}) {
-  const { hollow = false, glyph = null, tag = null, label = null, count = 0, ring = null } = opts;
+  const { hollow = false, glyph = null, tag = null, label = null, count = 0, ring = null, pickup = false } = opts;
   const bodyFill = hollow ? '#ffffff' : color;
   // `ring` — an IDENTITY ring (the Estes yellow, lib/carrier-mark.js) takes the disc's edge
   // over from the white/colour one and draws a touch heavier, so it still reads at the 16px
@@ -3018,6 +3037,12 @@ function circleMarkerSvg(color, opts = {}) {
   const strokeW = ring ? 3 : (hollow ? 2.5 : 2);
   const txtOnBody = hollow ? color : readableTextColor(color);
   let center;
+  // Did the PU end up in the MIDDLE? Only then is the corner badge redundant. Inferring this
+  // from `tag === 'PU'` instead was wrong in a way worth recording: a DELIVERED pickup carries
+  // tag 'PU' AND glyph 'check', the glyph arm below wins the centre, and the badge suppressed
+  // itself for a mark that was never drawn — the same "wired but invisible" shape as the bug
+  // this whole change is fixing.
+  let centerIsPickupTag = false;
   if (label != null) {
     const fs = String(label).length >= 2 ? 10 : 12;
     center = `<text x="14" y="${String(label).length >= 2 ? 17.8 : 18.2}" font-family="system-ui, sans-serif" font-size="${fs}" font-weight="800" fill="${txtOnBody}" text-anchor="middle" letter-spacing="-0.5">${label}</text>`;
@@ -3031,7 +3056,16 @@ function circleMarkerSvg(color, opts = {}) {
     center = '<path d="M10 10l8 8M18 10l-8 8" stroke="white" stroke-width="2.6" stroke-linecap="round"/>';
   } else if (glyph === 'arrow') {
     center = '<path d="M9.5 14h6m-2.5-2.6l2.8 2.6-2.8 2.6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
-  } else if (tag === 'AM' || tag === 'PM') {
+  } else if (tag === 'AM' || tag === 'PM' || tag === 'PU') {
+    centerIsPickupTag = tag === 'PU';
+    // 'PU' BELONGS IN THIS LIST AND WAS NOT IN IT — the bug Chad reported ("we are not id'ing
+    // pickups correctly like on the nuvizz map"). stopMarkerIcon has set tag='PU' for a pickup
+    // since the mark was added; it arrived here, matched neither AM nor PM, and fell through to
+    // the plain centre dot below. So every pickup drew a BLANK disc — and, because the size tier
+    // reads `tag ? 28 : 16`, a blank disc at the 28px size this map reserves for a stop with a
+    // delivery window. Not merely unmarked: wearing the weight of a time-critical stop and
+    // saying nothing. unplannedDotSvg, the OTHER disc renderer, has always named 'PU' here —
+    // one of the two was updated and the other was missed, and nothing could see the difference.
     center = `<text x="14" y="18" font-family="system-ui, sans-serif" font-size="10.5" font-weight="800" fill="${txtOnBody}" text-anchor="middle" letter-spacing="-0.5">${tag}</text>`;
   } else {
     center = `<circle cx="14" cy="14" r="4.5" fill="${hollow ? color : 'white'}"/>`;
@@ -3040,6 +3074,7 @@ function circleMarkerSvg(color, opts = {}) {
     <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28">
       <circle cx="14" cy="14" r="12.5" fill="${bodyFill}" stroke="${bodyStroke}" stroke-width="${strokeW}"/>
       ${center}
+      ${pickup && !centerIsPickupTag ? pickupBadgeSvg() : ''}
       ${countBadgeSvg(count)}
     </svg>`;
   return 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
@@ -3290,6 +3325,8 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
   const isAdvisory = (k) => advisory.has(k) || advisory.has(resolveRestrictionKey(k));
   // Proof that a 53-footer has served this dock, as a BOOLEAN — see blockerDiscMarkup.
   const tractorProven = opts.tractorProven === true;
+  // Scaled up for these bigger viewBoxes, which restrictionMarkerScale shrinks on the way out.
+  const puBadge = opts.pickup === true ? pickupBadgeSvg(1.5, 1.5, 1.45) : '';
 
   // State B: single 36-diameter circle.
   if (restrictions.length === 1) {
@@ -3309,6 +3346,7 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
       <svg xmlns="http://www.w3.org/2000/svg" width="40" height="44" viewBox="0 0 40 44">
         <ellipse cx="20" cy="40" rx="10" ry="1.6" fill="black" opacity="0.16"/>
         ${renderMarkerGlyph(r, 1, 1, tint, 38 / 22)}
+        ${puBadge}
       </svg>`
       : `
       <svg xmlns="http://www.w3.org/2000/svg" width="40" height="44" viewBox="0 0 40 44">
@@ -3317,6 +3355,7 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
           ? blockerDiscMarkup(20, 20, 18, restrictionWarnColor(r), isAdvisory(r), tractorProven)
           : `<circle cx="20" cy="20" r="18" fill="white" fill-opacity="0.95" stroke="${accent}" stroke-width="2"/>`}
         ${isBlocker(r) ? renderBlockerGlyph(r, 9, 9) : renderMarkerGlyph(r, 9, 9, tint)}
+        ${puBadge}
       </svg>`;
     return scaleMarkerSpec({
       url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
@@ -3373,6 +3412,7 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
     <svg xmlns="http://www.w3.org/2000/svg" width="${totalW}" height="${totalH}" viewBox="0 0 ${totalW} ${totalH}">
       <ellipse cx="${totalW / 2}" cy="36" rx="${shadowRx}" ry="1.8" fill="black" opacity="0.15"/>
       ${elementsMarkup}
+      ${puBadge}
     </svg>`;
   return scaleMarkerSpec({
     url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
@@ -3467,8 +3507,12 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   const flagHue = (note?.priority_flag && FLAG_COLORS[note.priority_flag]) ? FLAG_COLORS[note.priority_flag] : null;
   const dnsStop = !!note?.do_not_send;
   // Pickups are MARKED on the pin (Chad: "Ra's should be marked as pickups and not
-  // deliveries") — a PU tag in the same slot the AM/PM window uses. A delivery-window tag or
-  // a restriction icon still wins the slot: a safety mark beats a type mark.
+  // deliveries", and later: "we are not id'ing pickups correctly like on the nuvizz map").
+  // TWO PLACES CARRY IT, and it needs both. The PU goes in the CENTRE when that slot is free —
+  // the biggest, most readable spot on the disc. When something else owns the centre (a route
+  // sequence number, an AM/PM window, the do-not-send ✕) the identity moves to the corner badge
+  // instead of losing to it, the way the Estes ring rides every disc. A safety mark still wins
+  // the middle; it no longer costs the stop its identity.
   const pickup = String(s?.stopType || '').toUpperCase() === 'PU';
   // ESTES ORDERS ARE BLACK WITH A YELLOW RING (Chad: "make estes icons black with a yellow
   // ring around them" — lib/carrier-mark.js). The RING is the identity and rides every disc
@@ -3528,7 +3572,14 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   // SCHEDULED only. "Planned" also covers OUT_FOR_DEL / ARRIVED / DELIVERED / EXCEPTION —
   // the live execution states Chad watches all day — and grey-ing those out would trade one
   // blind spot for a worse one. Muting applies to planned-but-not-yet-moving work.
-  if (plannedMuted && statusKind === 'SCHEDULED' && !dnsStop && !matched && !searchMatched && !inRoute) {
+  // A PICKUP IS NEVER MUTED. Muting exists to quiet "already planned, nothing to decide here"
+  // — but at 14px, hollow and slate, there is no room for the PU mark at all, so muting a
+  // pickup does not quiet it, it DISGUISES it as an ordinary planned delivery. Which kind of
+  // job a stop is stays a live question after it is planned: it decides what the driver does
+  // on arrival, and this repo has twice scored a pickup against a dock's receiving hours
+  // (v0.59.2, v0.65.2) precisely because the pickup/delivery difference got lost downstream.
+  // Same carve-out as DNS, selection, search and open routes on the line below.
+  if (plannedMuted && statusKind === 'SCHEDULED' && !pickup && !dnsStop && !matched && !searchMatched && !inRoute) {
     // ALREADY ON A LOAD. Deliberately the quietest pin on the map: slate, hollow, no
     // eligibility colour (that colour answers "what truck can take this?" — a question
     // already settled once the stop is planned). DNS, an active selection, a search hit
@@ -3543,13 +3594,13 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   }
   if (dnsStop) {
     // DNS — strong red circle with a white ✕, taking precedence over everything else.
-    result = { url: circleMarkerSvg(DNS_COLOR, { glyph: 'dns' }), scaledSize: new google.maps.Size(28, 28), anchor: new google.maps.Point(14, 14) };
+    result = { url: circleMarkerSvg(DNS_COLOR, { glyph: 'dns', pickup }), scaledSize: new google.maps.Size(28, 28), anchor: new google.maps.Point(14, 14) };
   } else if (inRoute) {
     // Numbered route pin (delivery sequence). Colored by route when a routeColor is
     // given (Routing), else by status (Map): green=delivered / blue=scheduled.
     const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
     const color = routeColor || ((tractorDelivered && !noTractorOverride) ? TRACTOR_DELIVERED_COLOR : (estesFill || meta.color || flagColor(note)));
-    result = { url: circleMarkerSvg(color, { label: String(seq), count, ring }), scaledSize: new google.maps.Size(30, 30), anchor: new google.maps.Point(15, 15) };
+    result = { url: circleMarkerSvg(color, { label: String(seq), count, ring, pickup }), scaledSize: new google.maps.Size(30, 30), anchor: new google.maps.Point(15, 15) };
   } else if (restrictions.length === 0) {
     // State A — status drives the pin; matched stops pop orange; a priority flag,
     // AM/PM window, or "address looks off" signal recolor/reglyph as appropriate.
@@ -3595,7 +3646,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       const size = hi ? 22 : (tag ? 28 : 16);
       const half = size / 2;
       result = {
-        url: circleMarkerSvg(color, { hollow: hi ? false : meta.hollow, glyph, tag, count, ring }),
+        url: circleMarkerSvg(color, { hollow: hi ? false : meta.hollow, glyph, tag, count, ring, pickup }),
         scaledSize: new google.maps.Size(size, size),
         anchor: new google.maps.Point(half, half),
       };
@@ -3611,7 +3662,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       // a blocker the glyph is white and can no longer carry the tractor-delivered lime, so
       // the "a trailer fits" half wears it instead. Passing the tint here would let a priority
       // flag's hue become that half.
-      { advisoryKeys, blockerKeys, tractorProven: tractorDelivered && !noTractorOverride },
+      { advisoryKeys, blockerKeys, tractorProven: tractorDelivered && !noTractorOverride, pickup },
     );
     result = { url: spec.url, scaledSize: new google.maps.Size(spec.width, spec.height), anchor: new google.maps.Point(spec.anchor[0], spec.anchor[1]) };
   }
@@ -4769,7 +4820,10 @@ function useLegendInventory({
       const dns = !!note?.do_not_send;
       const inRoute = inSet(routeStopNbrs);
       const hi = inSet(selectedIds) || inSet(searchMatchIds);
-      const muted = plannedMuted && !inRoute && !dns && !hi
+      // Mirrors stopMarkerIcon's carve-out exactly — a pickup is never muted. If the two
+      // disagreed the legend would count a PU row the board is not drawing, or miss one it is.
+      const pickup = String(s?.stopType || '').toUpperCase() === 'PU';
+      const muted = plannedMuted && !inRoute && !dns && !hi && !pickup
         && typeof isPlanned === 'function' && isPlanned(s)
         && classifyStopStatus(s) === 'SCHEDULED';
       const hidden = dns || inRoute || muted;
@@ -4777,6 +4831,7 @@ function useLegendInventory({
         note,
         hidden,
         dns,
+        pickup,
         estes: isEstesOrder(s.stopNbr),
         tractorDelivered: !!tractorLocs?.has?.(s.matchKey),
         icons: drawnRestrictionKeys(getRestrictionBadgeKeys(note, { day: dayKey }), {
@@ -4996,6 +5051,20 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
                 <LegendCount n={!all && tints.plain} />
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* PICKUPS. Chad: "we are not id'ing pickups correctly like on the nuvizz map." Listed
+          whenever any pickup is on the board — and it always can be, because unlike every other
+          mark here the PU rides EVERY marker a pickup draws. The swatch is the real badge. */}
+      {has(inv && inv.pickups) && (
+        <div>
+          <div className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide mb-1">Pickup</div>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center justify-center rounded-[3px] text-white text-[8px] font-extrabold flex-shrink-0 px-1 py-px" style={{ background: '#0f172a' }}>PU</span>
+            <span>Pickup — we are COLLECTING here, not delivering</span>
+            <LegendCount n={!all && inv.pickups} />
           </div>
         </div>
       )}
