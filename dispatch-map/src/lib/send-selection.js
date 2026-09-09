@@ -138,3 +138,25 @@ export function planSendSelection({ ids, targetKey, cards, max, holderOf, claime
 
   return { cards: next, moved: stageable, held, opened, refusals, twins, skippedClaimed, changed, message: parts.join(' · ') };
 }
+
+/**
+ * PURE. THE SEND BUTTONS A SELECTION PANEL OFFERS — one per open Compare card, in card order.
+ *
+ * Chad: "I want a button on these screen to put these stops on the route that is open in the
+ * compare panel." Each button is named the way the card's own header names it — the card's
+ * name, else the display name of its key, else the key — and carries the card's colour, so
+ * the button, the header dot, the numbered pins and the grid chips all say the same route.
+ * No cards → no buttons: a dead button is worse than none. Malformed cards (no key) are
+ * dropped rather than rendered as a button that could send nowhere.
+ */
+export function selectionSendTargets(cards, { displayName = null } = {}) {
+  const nameOf = (c) => {
+    const own = String(c.name ?? '').trim();
+    if (own) return own;
+    const shown = typeof displayName === 'function' ? String(displayName(c.key) ?? '').trim() : '';
+    return shown || String(c.key).trim() || 'Load';
+  };
+  return (Array.isArray(cards) ? cards : [])
+    .filter((c) => c && c.key != null && String(c.key).trim() !== '')
+    .map((c) => ({ key: c.key, name: nameOf(c), color: c.color || null }));
+}

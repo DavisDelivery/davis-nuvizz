@@ -81,7 +81,7 @@ import { flagDetail, sighting } from './lib/flag-detail.js';
 import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab } from './lib/right-panel.js';
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
-import { planSendSelection } from './lib/send-selection.js';
+import { planSendSelection, selectionSendTargets } from './lib/send-selection.js';
 import { dropSide, dropSideClass } from './lib/drop-side.js';
 import { rosterFreshness, ageLabel } from './lib/roster-freshness.js';
 import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
@@ -118,7 +118,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.97.6';
+const APP_VERSION = '0.98.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -189,6 +189,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.98.0', 'THE ROUTING MAP WAS LAGGING BECAUSE OF ONE MEASUREMENT, AND THE SELECTED PANEL CAN NOW SEND. Chad: “Performance of the dispatch map especially the routing page is very slow and laggy right now not the way it normally performs.” MEASURED BEFORE ANYTHING WAS TOUCHED — a new probe (scripts/perf-routing.mjs) runs the real build against a synthetic 800-stop board with real mouse input and reads the browser’s own input-to-paint timing. With the bottom grid OPEN, one marker hover blocked the screen for ~390ms and one click for ~750ms; with the grid closed, ~7ms and ~70ms. THE WHOLE DIFFERENCE WAS ONE EFFECT: the code that publishes the grid’s height as a CSS variable (so the map tools can centre in the strip above it) was declared with no dependency list, so it re-ran after EVERY render of the screen — and a hover is a render. Each run first erased the variable and then wrote the same value back, and a CSS variable is inherited, so that pair invalidated the style of every element under the map, the ~11,000 cells of an 800-row grid included, and the height read that followed forced the whole recalculation right there in the input’s own frame. Its own guard against rewriting an unchanged value could never fire, because the cleanup had just erased the value it compared against. On a quiet day, with the grid folded, there was nothing under it to recalculate, which is exactly why this felt fine for weeks and fell over on a busy board; the Map screen carried the identical effect. IT IS NOW A CALLBACK REF: it arms once when the grid mounts, a ResizeObserver tracks open/close/drag from then on, and the per-render cost is gone (hover ~0ms, click ~70ms with the grid open, re-measured on the same probe). AND THE SHAPE CANNOT COME BACK UNANNOUNCED: a new CI check (scripts/check-effect-deps.mjs) fails any effect declared without a dependency list unless it says on the line above why it must run every render. SECOND, THE BUTTON. Chad, with five Cartersville stops selected and a card open: “I want a button on these screen to put these stops on the route that is open in the compare panel.” The Selected panel now carries one button per open Compare card, in the card’s own colour, naming the count — the same action as the header’s send button (a stop still planned on another load opens that load too, so the Save can release it), just where the hand already is. No card open, no row. Desktop only, like the panel; the phone’s sheet shows the Compare header, buttons included, whenever a card is open. 11 new tests.'],
   ['0.97.6', 'THE MAP LEGEND HAD NO BACKGROUND, AND THE CALL CEILING IGNORED THE NUMBER YOU SET. TWO REPORTS, ONE MORNING. FIRST, THE LEGEND. Chad, on a phone shot of the Routing map: \u201cyou can\u2019t see this[,] formatting and colors are bad and i\u2019ve already made you aware but wasn\u2019t fixed.\u201d The panel was a sheet of blurred satellite imagery with grey text floating on it. THE WHOLE CAUSE WAS FOUR CHARACTERS: the popover was `bg-white/97`. Tailwind\u2019s opacity scale runs 0\u2013100 in steps of FIVE, and a modifier off the scale is not an error \u2014 it emits NOTHING. The class was right there in the markup, matched no rule, and the panel had no background at all; `backdrop-blur` was the only thing still doing anything, which is exactly the blurred map in the shot. Confirmed by grepping the shipped stylesheet: /15, /20, /25, /30, /90 and /95 are all in it and /97 is not. THAT IS THE WORST SHAPE A UI BUG COMES IN \u2014 green build, valid bundle, every test passing, a diff that reads correctly to a human, and a failure that exists only on a screen. The phone guard could not see it either: the panel occupies exactly the right pixels, it just has no paint. SO THE FIX IS TWO THINGS. The panel is `bg-white/95` (the class the other fifteen on-map panels already use). AND a guard now reads every slash-modifier class out of src and asks the BUILT stylesheet whether each one exists \u2014 Tailwind is the authority, this only compares the two lists, so it has something to say about the next silently-dropped utility too, not just opacity. It was proven BOTH ways against the real history: it names `src/App.jsx:16615 bg-white/97` on the shipped source and passes on this one. Wired into CI after the build, plus a no-build unit test so the fast job catches it too. WHILE IN THERE, THE CONTRAST. Chad said colors, not just background, and he is right on a white panel too: the count chips were slate-400 (2.6:1 on white, well under the 4.5:1 floor) at 10px \u2014 and those numbers ARE the content, the answer to \u201cis this a corner case or half my afternoon.\u201d Counts, section headings, the restriction paragraph, the marker labels, the tractor status line and the close X all move up a step or two (everything now \u22657:1), and the body text sets its own colour instead of inheriting whatever it lands in. SECOND, THE CEILING. Chad: \u201ci just changed the settings to allow 3000 calls but still shows only 2000 enforce on the dropdown menu on the actual map.\u201d He was reading it right. Since v0.54.21 there was ONE number, 2,000, serving as BOTH the default AND an absolute cap nothing could lift \u2014 so the Diagnostics field took 3,000, saved it, and the breaker kept 2,000 with nothing anywhere saying they disagreed. Those are two different questions and they are two constants now. DEFAULT (2,000) is what you get when nobody has decided, and an env var or a caller-supplied fallback may only LOWER it \u2014 so this deploy spends exactly what yesterday spent until somebody saves a setting. HARD (3,000) is reachable ONLY by a deliberate save in the Diagnostics editor, which is bounded to the imported constant so the number the field accepts cannot drift from the number the breaker enforces. Junk resolves to the DEFAULT, never the maximum: a malformed value must not buy headroom. The enforcement site and the gauge now share ONE expression rather than rebuilding it \u2014 that duplication is exactly what shipped a card reading 20,000 against a breaker tripping at 2,000 in v0.70.2 \u2014 and the property test states it on the path production uses. WORTH SAYING PLAINLY: 2,000 was chosen to sit BELOW the ~3,000-call cold number-probe scan so that scan could not finish by accident, and at 3,000 that particular backstop is gone. The primary guard is unchanged (the permission rule, and only manual=1 / ?date= / ?days= reach that path), and the backstop was never cheap: it did not prevent the spend, it stopped the scan PARTWAY and left the board half-written. Lower it in Diagnostics any time \u2014 the field goes down to 100. AND THE FIELD STOPS LYING: `max` on a number input only constrains the spinner arrows, so every field in that editor would accept a value it would not keep. They now print their range, flag an out-of-range value in amber with the number that will actually be saved, and pull it back on blur where you can see it. 16 new tests.'],
   ['0.97.5', 'LOAD-SCAN (v0.45.0): SCANNING A MULTI-PIECE ORDER STOPPED ASKING PERMISSION. Chad, off the dock: "the scanner is taking too long to scan things now that we are confirming each new item to same pro." He was right, and it was worse than one tap — piece 2 of a same-PRO order cost about six seconds. The pair window (2.5s), then a three-second cooldown that dropped the read SILENTLY so the loader re-aimed and paid the window again, then an amber card to tap. A 3-skid order is one PRO on three labels and the manifest already says three; asking a loader to vouch for skids 2 and 3 is asking them to confirm the paperwork against itself, and a tap demanded that often becomes a reflex, which is not a check. A repeat PRO on a stop still short of its count now books straight through. THE GUARD THAT REPLACED IT IS TIGHTER THAN THE ONE IT REMOVED, not looser: a fixed timer cannot tell another piece from another look, so the rule is now ABSENCE — the label has to leave the frame before it earns another booking. A phone left pointing at one skid keeps decoding it, so it never goes absent and can never book twice however long it is held; today\'s three-second cooldown allowed exactly that every three seconds. The confirmation is kept where the question is genuinely open: a stop already at its count, or one with no count to reason about. One decision per presentation, so a lingering label cannot re-fire the amber card every window either. VERIFIED IN THE REAL BUNDLE, both ways: the camera end-to-end check gained an act where three skids of one PRO book with no tap while five seconds of unbroken aim books once — and it was run with the new guard deliberately disabled, where it booked FIVE pieces from three aims and the act failed, which is the only evidence that a test is load-bearing. ALSO RECORDED, A FIX THAT WAS TRIED AND REJECTED: halving the camera pair window to 1200ms looked safe because a late piece id upgrades its fallback since v0.43.0 — but Quagga is multiple:false, so on an iPhone a late id arrives ALONE, a lone id cannot identify a stop, and it never reaches the upgrade at all. The end-to-end check caught it (DASAN and LATE LABEL both booking fallbacks, no upgrade firing) and the window stays at 2500 with the reasoning written beside it so it is not retried. The tick that notices a closed window is halved to 200ms, which is pure latency and nothing else. 319 load-scan tests green; this app is untouched.'],
   ['0.97.4', 'THE COMPARE SEND BUTTON PUTS THE STOPS ON THE ROUTE IN ONE PRESS, AND SAYS WHAT IT DID. Chad: “i put 2 routes in the panel that i wanted to add stops to then i went and selected the stops i wanted it to put on the route and then when i clicked the button to add stops it didn\'t put them on the route.” FOUND BY RUNNING IT, on UAT and against the code: stops already sitting UNPLANNED move on the first press (verified on the UAT board). A stop still PLANNED on a load that is NOT open in Compare did not — the Save is declarative over the loads it carries, so the source load has to be in it to release the stop, and the old press only OPENED that load’s card, kept the stops selected, put nothing on the target and asked for a second press in a four-second toast at the bottom of the map. On a desktop with cards open the Setup panel’s message line is not on screen at all, so the only sign was a third card appearing. The toast also said “Opened X” whether or not X had actually opened (two loads sharing a name, no NuVizz identity, Compare full), which turns a refused open into an endless “Send again”. NOW: one press opens the source card AND moves the stops onto the target, in the same action; a source that cannot open keeps its stops selected and is named with the real reason; the outcome (“Sent 6 stops → ALPHA (opened BEN 2 in Compare so the Save can release them)”) is written in the Compare header and stays until the next action, on top of the toast. Also: the header read “(N/3)” while the workbench has held six cards since v0.46.19, and the send buttons named a load by its NuVizz number when the card was opened from the Loads grid — they carry the card’s name now. The rule lives in lib/send-selection.js, pure and tested on the Sep 8 shape; the card builder is one function both the open paths and the send share, so a refusal reads the same wherever it happens. 13 new tests.'],
@@ -11771,27 +11772,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   // the grid (BUFORD Jul 13: deliveries 4–7 hidden; the idle re-fit can't help because the
   // canvas size never changes). Every fit pads the bottom by the grid's LIVE rendered height
   // (open/resized/collapsed alike), measured at call time through a ref on the grid's root.
-  const bottomGridRef = useRef(null);
   // Publish the bottom grid's real height onto its container as --rt-grid-h, so overlays
-  // (RoutingMapTools) can centre in the strip the grid does NOT cover. Measured with a
-  // ResizeObserver — a resize, open/close, or unmount moves the overlays automatically.
-  useEffect(() => {
-    const el = bottomGridRef.current;
-    const host = el?.parentElement;
-    if (!el || !host || typeof ResizeObserver === 'undefined') return undefined;
-    const publish = () => {
-      const v = `${el.offsetHeight || 0}px`;
-      // Only touch the style when the value moved — this effect re-arms per render on the
-      // two busiest screens, and rewriting an identical custom property would dirty style
-      // for nothing.
-      if (host.style.getPropertyValue('--rt-grid-h') !== v) host.style.setProperty('--rt-grid-h', v);
-    };
-    publish();
-    const ro = new ResizeObserver(publish);
-    ro.observe(el);
-    return () => { ro.disconnect(); host.style.removeProperty('--rt-grid-h'); };
-  });
-  const fitPad = useCallback(() => ({ top: 60, right: 60, left: 60, bottom: 60 + (bottomGridRef.current?.offsetHeight || 0) }), []);
+  // (RoutingMapTools) can centre in the strip the grid does NOT cover. Armed ONCE per grid
+  // mount by a callback ref, and kept current by a ResizeObserver from then on — see
+  // useBottomGridHeightVar for the per-render effect this replaced and what it cost.
+  const { ref: bottomGridRef, el: bottomGridEl } = useBottomGridHeightVar();
+  const fitPad = useCallback(() => ({ top: 60, right: 60, left: 60, bottom: 60 + (bottomGridEl.current?.offsetHeight || 0) }), []);
 
   // Keep the Recenter button's action pointed at the current board: fit to all
   // currently-shown stops (or fall back to the default center when none).
@@ -13221,6 +13207,54 @@ const LOAD_BUCKET_STYLE = {
 // the actual culprit was the map panel's Unplanned only (Chad: "says i don't have any
 // planned orders today however i have like 600 of them"). Defaults keep Routing, which
 // passes the whole board, behaving exactly as before.
+// ── THE BOTTOM GRID'S HEIGHT AS A CSS VARIABLE — ARMED ONCE PER MOUNT, NEVER PER RENDER ──
+//
+// Chad, 2026-09-09: "Performance of the dispatch map especially the routing page is very slow
+// and laggy right now not the way it normally performs." MEASURED before it was touched
+// (scripts/perf-routing.mjs: the real build, a synthetic 800-stop board, trusted mouse input):
+// with the bottom grid OPEN, one marker hover blocked the main thread for ~390ms and one click
+// for ~750ms; with the grid closed, ~7ms and ~70ms. The whole difference was the measurement
+// this hook replaces.
+//
+// It was a useEffect with NO dependency array, so it re-armed after EVERY render of the
+// screen — and a hover is a render. Its cleanup removed --rt-grid-h from the host and the
+// re-run put the same value straight back. A custom property is INHERITED, so that remove/set
+// pair invalidated the computed style of every element under the map container — all ~11,000
+// cells of an 800-row grid included — and the el.offsetHeight read then forced the whole
+// recalculation synchronously, inside the input's own frame. The guard it carried ("only touch
+// the style when the value moved") could never fire, because the cleanup had just erased the
+// value it compared against. With the grid closed there was almost nothing under the host to
+// recalculate, which is exactly why the screen felt fine on a quiet day and fell over on a busy
+// one — and why no guard caught it: every check this app has looks at pixels, and the pixels
+// were right.
+//
+// A callback ref runs exactly twice per grid: with the element when it mounts, with null when
+// it unmounts. Everything in between — open/close, the drag-resize, the phone fold — is the
+// ResizeObserver's job, which is what it was always for. `el` still carries the live element so
+// fitPad can read the grid's height at call time, as before. scripts/check-effect-deps.mjs now
+// fails CI on any effect declared without a dependency array, so this shape cannot come back
+// unannounced.
+function useBottomGridHeightVar() {
+  const el = useRef(null);
+  const ro = useRef(null);
+  const ref = useCallback((node) => {
+    if (ro.current) { ro.current.disconnect(); ro.current = null; }
+    const prevHost = el.current?.parentElement;
+    if (prevHost) prevHost.style.removeProperty('--rt-grid-h');
+    el.current = node;
+    const host = node?.parentElement;
+    if (!node || !host || typeof ResizeObserver === 'undefined') return;
+    const publish = () => {
+      const v = `${node.offsetHeight || 0}px`;
+      if (host.style.getPropertyValue('--rt-grid-h') !== v) host.style.setProperty('--rt-grid-h', v);
+    };
+    publish();
+    ro.current = new ResizeObserver(publish);
+    ro.current.observe(node);
+  }, []);
+  return { ref, el };
+}
+
 // AN ORDER ALREADY CLAIMED BY AN OPEN COMPARE CARD, as the bottom grid sees it.
 //
 // Chad: "Paragon should still be highlighted a different colour on bottom panel now that
@@ -18048,7 +18082,7 @@ function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = f
   );
 }
 
-function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemove, onRemoveMany, onClearAll, onOpenStop, onClose, isMobile }) {
+function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemove, onRemoveMany, onClearAll, onOpenStop, onClose, isMobile, sendTargets = [], onSendTo = null }) {
   // Compact window from the naive (zoneless) schedule ISO — parse the clock straight off the
   // string so there's no local-timezone drift. "8:00a", "8:00a–8:00p".
   const fmtWin = (iso) => {
@@ -18134,6 +18168,37 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
           <button onClick={onClose} className="text-slate-400 hover:text-slate-700 leading-none p-1" aria-label="Clear the selection and close this panel" title="Clear the selection and close"><X size={16} /></button>
         </div>
       </div>
+      {/* PUT THESE STOPS ON THE ROUTE THAT IS OPEN IN COMPARE. Chad, five Cartersville stops
+          selected and a card open: "I want a button on these screen to put these stops on the
+          route that is open in the compare panel." The Compare header has carried one send
+          button per open card since #258 — but that header lives in the right rail, and this
+          panel floats over the map where the selection was just drawn, so the button nearest
+          the hand was the one that did not exist. One button per open card, in the card's own
+          colour (the hue of its header dot, its numbered pins and its grid chips), naming the
+          count so a press is never blind. SAME ACTION as the header's button (onSendTo is
+          sendSelectionToRoute): the selection moves in one press, a stop still planned on a
+          load that is not open opens that load too so the Save can release it, and the outcome
+          is written in the Compare header. No card open → no row: a dead button is worse than
+          none. Desktop only, like this panel — the phone's sheet shows the Compare header
+          itself, buttons included, whenever a card is open. */}
+      {rows.length > 0 && onSendTo && sendTargets.length > 0 && (
+        <div className="flex items-center gap-1.5 flex-wrap px-3 py-1 border-b bg-white shrink-0">
+          <span className="text-[10px] uppercase tracking-wide text-slate-500 shrink-0">Put on</span>
+          {sendTargets.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => onSendTo(t.key)}
+              title={`Put the ${rows.length} selected stop${rows.length === 1 ? '' : 's'} on ${t.name}, the route open in Compare. A stop still planned on another load opens that load in Compare as well, so the Save can release it.`}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold rounded px-2 py-0.5 border text-white min-w-0 hover:brightness-110"
+              style={{ background: t.color || '#1e5b92', borderColor: t.color || '#1e5b92' }}
+            >
+              <ArrowRight size={12} className="shrink-0" />
+              <span className="truncate max-w-[140px]">{t.name}</span>
+              <span className="font-normal opacity-90">({rows.length})</span>
+            </button>
+          ))}
+        </div>
+      )}
       {/* KEEP ONLY WHAT A TRACTOR CAN RUN. Chad: "I want a button on top of bar to remove all
           stops in the list that are not tractor friendly stops."
           Its own row rather than the header: the title line already carries four figures at a
@@ -20014,6 +20079,11 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     return m;
   }, [wbRoutesColored]);
 
+  // THE SELECTED PANEL'S SEND BUTTONS — one per open Compare card, named as the card's own
+  // header names it, in its colour (v0.98.0). The rule is selectionSendTargets in
+  // lib/send-selection.js; the press is sendSelectionToRoute, the same function the header uses.
+  const wbSendTargets = useMemo(() => selectionSendTargets(wbRoutesColored, { displayName: (k) => loadDisplayName(k) }), [wbRoutesColored]);
+
   // THE PREFLIGHT — judge the route he is BUILDING, not the one NuVizz is holding.
   //
   // Chad: "can we have flags pop in the routing page if we build a route that system
@@ -20196,27 +20266,12 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // Same overlay-aware fit as the dispatch Map: the bottom data grid floats INSIDE the map
   // container, so Google's canvas runs underneath it and a flat 60px pad frames a route's
   // southern stops behind the grid. Pad the bottom by the grid's live height at call time.
-  const bottomGridRef = useRef(null);
   // Publish the bottom grid's real height onto its container as --rt-grid-h, so overlays
-  // (RoutingMapTools) can centre in the strip the grid does NOT cover. Measured with a
-  // ResizeObserver — a resize, open/close, or unmount moves the overlays automatically.
-  useEffect(() => {
-    const el = bottomGridRef.current;
-    const host = el?.parentElement;
-    if (!el || !host || typeof ResizeObserver === 'undefined') return undefined;
-    const publish = () => {
-      const v = `${el.offsetHeight || 0}px`;
-      // Only touch the style when the value moved — this effect re-arms per render on the
-      // two busiest screens, and rewriting an identical custom property would dirty style
-      // for nothing.
-      if (host.style.getPropertyValue('--rt-grid-h') !== v) host.style.setProperty('--rt-grid-h', v);
-    };
-    publish();
-    const ro = new ResizeObserver(publish);
-    ro.observe(el);
-    return () => { ro.disconnect(); host.style.removeProperty('--rt-grid-h'); };
-  });
-  const fitPad = useCallback(() => ({ top: 60, right: 60, left: 60, bottom: 60 + (bottomGridRef.current?.offsetHeight || 0) }), []);
+  // (RoutingMapTools) can centre in the strip the grid does NOT cover. Armed ONCE per grid
+  // mount by a callback ref, and kept current by a ResizeObserver from then on — see
+  // useBottomGridHeightVar for the per-render effect this replaced and what it cost.
+  const { ref: bottomGridRef, el: bottomGridEl } = useBottomGridHeightVar();
+  const fitPad = useCallback(() => ({ top: 60, right: 60, left: 60, bottom: 60 + (bottomGridEl.current?.offsetHeight || 0) }), []);
 
   // Right Routes-panel click → open that route into the workbench (cards) and frame it on the
   // map. Unlike pickLoadFromTable it does NOT add the stops to the selection set.
@@ -22094,7 +22149,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         )}
         {/* Floating "Selected N" panel (toggleable) — lists every selected stop over the map. */}
         {!viewing && selPanelOpen && selectedStops.length > 0 && (
-          <RoutingSelectionFloatPanel selectedStops={selectedStops} notes={notes} tractorLocs={tractorLocs} onRemove={removeStop} onRemoveMany={removeStops} onClearAll={clearSelection} onOpenStop={openStop} onClose={clearSelection} isMobile={false} />
+          <RoutingSelectionFloatPanel selectedStops={selectedStops} notes={notes} tractorLocs={tractorLocs} onRemove={removeStop} onRemoveMany={removeStops} onClearAll={clearSelection} onOpenStop={openStop} onClose={clearSelection} isMobile={false} sendTargets={wbSendTargets} onSendTo={sendSelectionToRoute} />
         )}
         {/* Reopen chip when the panel is toggled off but stops are selected. */}
         {!viewing && !selPanelOpen && selectedStops.length > 0 && (
