@@ -8,90 +8,86 @@
 <x-dc>
 <helmet>
   <style>
-@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#faf9f7;color:#1c1917;font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:14px;-webkit-text-size-adjust:100%}
 a{color:#1e5b92}a:hover{color:#16456e}
-.pad{padding:44px 48px}
-h1{font-family:'Instrument Serif',Georgia,serif;font-size:44px;font-weight:400;line-height:1.05;letter-spacing:-.01em}
-h2{font-family:'Instrument Serif',Georgia,serif;font-size:27px;font-weight:400;line-height:1.15;margin-bottom:6px}
-.kicker{font-size:10px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:#1e5b92;margin-bottom:13px}
-.lede{font-size:16px;line-height:1.55;color:#44403c;max-width:62ch}
-.note{font-size:12.5px;line-height:1.55;color:#78716c;max-width:70ch}
-.rule{height:1px;background:#e7e5e4;margin:26px 0}
-.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px}
-.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
-.card{background:#fff;border:1px solid #e7e5e4;border-radius:9px;padding:18px 20px}
-.card h3{font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#1c1917;margin-bottom:9px}
+.pad{padding:40px 44px}
+h1{font-family:'Instrument Serif',Georgia,serif;font-size:40px;font-weight:400;line-height:1.08}
+h2{font-family:'Instrument Serif',Georgia,serif;font-size:25px;font-weight:400;margin-bottom:6px}
+.kicker{font-size:10px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:#1e5b92;margin-bottom:12px}
+.note{font-size:12.5px;line-height:1.55;color:#78716c;max-width:66ch}
+.rule{height:1px;background:#e7e5e4;margin:24px 0}
+.card{background:#fff;border:1px solid #e7e5e4;border-radius:9px;padding:16px 18px}
+.card h3{font-size:11.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:#57534e}
-.tag{display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;padding:3px 8px;border-radius:5px}
-.tag.no{background:#fee2e2;color:#991b1b}.tag.yes{background:#dcfce7;color:#166534}.tag.chk{background:#e0e7ff;color:#3730a3}
-.stat{display:flex;flex-direction:column;gap:3px}
-.stat b{font-family:'Instrument Serif',Georgia,serif;font-size:36px;font-weight:400;line-height:1}
-.stat span{font-size:11.5px;color:#78716c;line-height:1.35}
-.tbl{width:100%;border-collapse:collapse;font-size:12px;margin-top:4px}
-.tbl th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:#78716c;font-weight:600;padding:5px 8px;border-bottom:1px solid #e7e5e4}
-.tbl td{padding:5px 8px;border-bottom:1px solid #f5f5f4;color:#44403c}
-.tbl td.ok{color:#166534;font-weight:600}.tbl td.wrap{color:#991b1b;font-weight:600}
-/* ── verbatim app vocabulary (dispatch-map/src/App.jsx) ── */
-.app{background:#fff;border:1px solid #cbd5e1;border-radius:9px;font-family:system-ui,-apple-system,sans-serif}
-.app .bar{background:#1e5b92;color:#fff;padding:7px 12px;font-size:11px;font-weight:600;border-radius:8px 8px 0 0}
-.rows{padding:10px 0}
-.cap{font-size:11px;font-weight:600;text-transform:uppercase;color:#64748b}
+.sz{font:400 9px ui-monospace,monospace;color:#94a3b8;margin-top:4px;text-align:center}
+/* ── the real app, lifted from dispatch-map/src/App.jsx ── */
+.card-app{background:#fff;border:1px solid #cbd5e1;border-radius:10px;overflow:hidden;font-family:system-ui,-apple-system,sans-serif}
+.hd{background:#1e5b92;color:#fff;padding:10px 16px}
+.hd .r1{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;opacity:.9}
+.hd .biz{font-weight:700;font-size:16px;margin-top:2px}
+.copy{background:rgba(255,255,255,.22);border-radius:4px;font-size:10px;padding:1px 6px}
+.stepper{padding:12px 16px;border-bottom:1px solid #e2e8f0;background:#fff}
+.track{height:2px;background:#e2e8f0;position:relative;margin:0 6px 6px}
+.track i{position:absolute;top:-3px;width:8px;height:8px;border-radius:50%;background:#cbd5e1}
+.track i.on{background:#16a34a}
+.steps{display:flex;justify-content:space-between;font-size:10px;color:#64748b}
+.banner{margin:10px 16px;padding:7px 10px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;font-size:11.5px;color:#166534}
+.sec{padding:10px 16px}
+.cap{font-size:10px;font-weight:600;text-transform:uppercase;color:#64748b;letter-spacing:.02em}
+.addr{font-size:13px;color:#1e293b;line-height:1.4}
+.btns{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;padding:0 16px 10px}
+.btn{border:1px solid #e2e8f0;border-radius:8px;padding:7px 2px;font-size:10px;color:#334155;display:flex;flex-direction:column;align-items:center;gap:3px}
 .sum{font-size:15px;font-weight:500;color:#1e293b}
 .li{font-size:13px;line-height:1.375;margin-bottom:5px}
 .lr{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
 .nm{min-width:0;flex:1;overflow-wrap:break-word;color:#1e293b}
 .qt{flex-shrink:0;color:#64748b;white-space:nowrap;text-align:right;font-size:12px}
 .sku{font-size:10px;font-family:ui-monospace,Menlo,monospace;color:#94a3b8}
-.chip{margin-left:4px;padding:0 4px;border-radius:4px;background:#fee2e2;color:#991b1b;font-size:9px;font-weight:600;vertical-align:middle;white-space:nowrap}
-.mkline{display:flex;align-items:center;gap:5px;margin-top:2px}
-.mktxt{font:700 10px system-ui;color:#111827}
+.notebox{border:1px solid #e2e8f0;border-radius:6px;padding:7px 9px;margin-bottom:6px}
+.notebox b{font-size:12px;color:#1e293b;font-weight:600}
+.notebox span{display:block;font-size:9.5px;color:#94a3b8;margin-top:3px}
 </style>
 </helmet>
 
 <div class="pad">
-  <div class="kicker">Design proposal · item-level freight flag</div>
-  <h1>The mark shouldn't say “stacker”.<br>It should say <i>1,259&nbsp;lb in one piece</i>.</h1>
-  <div class="rule"></div>
-  <p class="lede">You asked for an icon for the hydraulic stacker. The row already says <b>HYDRAULIC STACKER</b> in the largest text on the line — an icon meaning “this is a stacker” is a second copy of words already on screen. What no surface puts in front of a dispatcher is the thing that changes how the freight gets handled: <b>one piece on this stop weighs 1,259&nbsp;lb.</b></p>
+  <div class="kicker">Hydraulic stacker · item flag</div>
+  <h1>Bright yellow, dark H.</h1>
+  <p class="note" style="margin-top:14px;font-size:15px;color:#44403c">Shown on the row when the item text contains <b style="color:#1c1917">“hydraulic stacker”</b>. Nothing derived, no thresholds — the text is the trigger.</p>
 
-  <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin:30px 0 8px">
-    <div class="stat"><b>1,259 lb</b><span>the single heaviest piece, on a line of quantity 1</span></div>
-    <div class="stat"><b>71%</b><span>of the whole stop's 1,765&nbsp;lb sits in that one piece</span></div>
-    <div class="stat"><b>7.2×</b><span>heavier than the next piece on the same stop (174&nbsp;lb)</span></div>
-  </div>
-
-  <div class="rule"></div>
-  <div class="grid2">
-    <div class="card">
-      <h3>What fires today</h3>
-      <p class="note" style="margin-bottom:10px">Nothing. I ran the real module on the real stop:</p>
-      <p class="mono" style="line-height:1.6">deriveGeometryDeterministic →<br>{ skids: 4, weightLbs: 1765,<br>&nbsp;&nbsp;oversize: <b>false</b>, ambiguous: false,<br>&nbsp;&nbsp;linearFeetIn: 96, notes: [], … }</p>
-      <p class="note" style="margin-top:10px">Nothing marks it. <span class="mono">board-flags.js</span> never reads <span class="mono">stopDetails</span> at all, so the flag engine cannot see a line item even in principle.</p>
-    </div>
-    <div class="card">
-      <h3>Why the average hides it</h3>
-      <p class="note">The card's summary reads <b style="color:#1c1917">“4 pallets · 4 pieces · 1765 Lbs”</b>. Divide it out and that implies 441&nbsp;lb a skid — an ordinary Uline drop.</p>
-      <p class="note" style="margin-top:10px">Six of the seven lines total 506&nbsp;lb between them. The seventh is 1,259. <b style="color:#1c1917">The average is the lie</b>, and the average is the only freight number on the collapsed card.</p>
-      <p class="note" style="margin-top:10px">The number itself is not hidden everywhere — the printed ticket, the Bill of Lading and the Routing popup all list the line. What none of them does is <i>mark</i> it, sort by it, or show it where loads get built.</p>
+  <div class="card" style="margin:26px 0 20px">
+    <h3>At the sizes it will actually be used</h3>
+    <div style="display:flex;align-items:flex-end;gap:30px;flex-wrap:wrap;margin-top:14px">
+      <div><div style="display:flex;align-items:flex-end;height:66px"><svg width="64" height="64" viewBox="0 0 14 14" role="img" aria-label="Hydraulic stacker"><title>Hydraulic stacker</title><circle cx="7" cy="7" r="7" fill="#facc15" stroke="#fff" stroke-width="1.5"/><text x="7" y="9.85" font-family="system-ui,-apple-system,sans-serif" font-size="8.5" font-weight="700" fill="#1f2937" text-anchor="middle" textLength="6.2" lengthAdjust="spacingAndGlyphs">H</text></svg></div><div class="sz">64px</div></div><div><div style="display:flex;align-items:flex-end;height:66px"><svg width="28" height="28" viewBox="0 0 14 14" role="img" aria-label="Hydraulic stacker"><title>Hydraulic stacker</title><circle cx="7" cy="7" r="7" fill="#facc15" stroke="#fff" stroke-width="1.5"/><text x="7" y="9.85" font-family="system-ui,-apple-system,sans-serif" font-size="8.5" font-weight="700" fill="#1f2937" text-anchor="middle" textLength="6.2" lengthAdjust="spacingAndGlyphs">H</text></svg></div><div class="sz">28px</div></div><div><div style="display:flex;align-items:flex-end;height:66px"><svg width="22" height="22" viewBox="0 0 14 14" role="img" aria-label="Hydraulic stacker"><title>Hydraulic stacker</title><circle cx="7" cy="7" r="7" fill="#facc15" stroke="#fff" stroke-width="1.5"/><text x="7" y="9.85" font-family="system-ui,-apple-system,sans-serif" font-size="8.5" font-weight="700" fill="#1f2937" text-anchor="middle" textLength="6.2" lengthAdjust="spacingAndGlyphs">H</text></svg></div><div class="sz">22px</div></div><div><div style="display:flex;align-items:flex-end;height:66px"><svg width="16" height="16" viewBox="0 0 14 14" role="img" aria-label="Hydraulic stacker"><title>Hydraulic stacker</title><circle cx="7" cy="7" r="7" fill="#facc15" stroke="#fff" stroke-width="1.5"/><text x="7" y="9.85" font-family="system-ui,-apple-system,sans-serif" font-size="8.5" font-weight="700" fill="#1f2937" text-anchor="middle" textLength="6.2" lengthAdjust="spacingAndGlyphs">H</text></svg></div><div class="sz">16px</div></div><div><div style="display:flex;align-items:flex-end;height:66px"><svg width="14" height="14" viewBox="0 0 14 14" role="img" aria-label="Hydraulic stacker"><title>Hydraulic stacker</title><circle cx="7" cy="7" r="7" fill="#facc15" stroke="#fff" stroke-width="1.5"/><text x="7" y="9.85" font-family="system-ui,-apple-system,sans-serif" font-size="8.5" font-weight="700" fill="#1f2937" text-anchor="middle" textLength="6.2" lengthAdjust="spacingAndGlyphs">H</text></svg></div><div class="sz">14px</div></div><div><div style="display:flex;align-items:flex-end;height:66px"><svg width="13" height="13" viewBox="0 0 14 14" role="img" aria-label="Hydraulic stacker"><title>Hydraulic stacker</title><circle cx="7" cy="7" r="7" fill="#facc15" stroke="#fff" stroke-width="1.5"/><text x="7" y="9.85" font-family="system-ui,-apple-system,sans-serif" font-size="8.5" font-weight="700" fill="#1f2937" text-anchor="middle" textLength="6.2" lengthAdjust="spacingAndGlyphs">H</text></svg></div><div class="sz">13px</div></div>
+      <div style="width:1px;height:56px;background:#e7e5e4"></div>
+      <div style="max-width:30ch"><div class="note"><b style="color:#1c1917">13px is the item row.</b> A letterform is the one thing that holds at that size — a drawn machine turns to mush.</div></div>
     </div>
   </div>
 
-  <div class="rule"></div>
-  <h2>The rule</h2>
-  <p class="note" style="margin-bottom:14px">Not a product-name list — a derived number. It needs no vocabulary and never rots when Uline renames a SKU.</p>
-  <div class="card" style="background:#1c1917;border-color:#1c1917">
-    <p class="mono" style="color:#e7e5e4;font-size:12.5px;line-height:1.75">
-      qty&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; = Math.max(1, Math.round(Number(line.quantity) || 1))<br>
-      perPiece = toLbs(line.weight, line.weightUOM) / qty<br>
-      flag&nbsp;&nbsp;&nbsp;&nbsp; = Number.isFinite(perPiece) &amp;&amp; perPiece &gt;= HEAVY_PIECE_LB
-    </p>
-  </div>
-  <div class="grid3" style="margin-top:18px">
-    <div class="card"><h3>divide by quantity</h3><p class="note">The seven line weights sum to <b style="color:#1c1917">exactly 1,765</b> — the stop total — so <span class="mono">weight</span> is the LINE total here. Consistent with this stop; the field is not documented either way, so the free read below should confirm it before anyone relies on it.</p></div>
-    <div class="card"><h3>why the guard, not a bug report</h3><p class="note"><span class="mono">Number(null)</span> is 0, and <span class="mono">1259 / 0</span> is <b style="color:#1c1917">Infinity</b>, which passes any <span class="mono">&gt;=</span>. That is what <span class="mono">Math.max(1, …)</span> and <span class="mono">Number.isFinite</span> in the rule are for — this repo has shipped that exact class once already.</p></div>
-    <div class="card"><h3>convert the units</h3><p class="note">The UI prints <span class="mono">weight</span> and <span class="mono">weightUOM</span> raw with no conversion, and the vendor's own example UOM is kilograms. A KG line read as LB is a <b style="color:#1c1917">2.2× error</b>. <span class="mono">toLbs()</span> already ships in <span class="mono">freight-class.mts</span>.</p></div>
+  <div style="display:grid;grid-template-columns:1.15fr 1fr;gap:20px">
+    <div class="card">
+      <h3>The spec</h3>
+      <table style="width:100%;font-size:12.5px;border-collapse:collapse">
+        <tr><td style="padding:5px 0;color:#78716c;width:42%">fill</td><td><span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:#facc15;vertical-align:-1px;margin-right:6px"></span><span class="mono" style="font-size:12px">#facc15</span></td></tr>
+        <tr><td style="padding:5px 0;color:#78716c">letter</td><td><span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:#1f2937;vertical-align:-1px;margin-right:6px"></span><span class="mono" style="font-size:12px">#1f2937</span></td></tr>
+        <tr><td style="padding:5px 0;color:#78716c">ring</td><td class="mono" style="font-size:12px">#ffffff, 1.5</td></tr>
+        <tr><td style="padding:5px 0;color:#78716c">geometry</td><td class="mono" style="font-size:12px">r=7 disc, 14×14 box</td></tr>
+        <tr><td style="padding:5px 0;color:#78716c">tooltip / a11y</td><td class="mono" style="font-size:12px">“Hydraulic stacker”</td></tr>
+      </table>
+      <p class="note" style="margin-top:10px">Same disc construction every other badge on the board uses, so it sits in the set rather than beside it.</p>
+    </div>
+    <div class="card">
+      <h3>Why the H is dark, not white</h3>
+      <div style="display:flex;align-items:center;gap:20px;margin:12px 0 10px">
+        <div style="text-align:center"><svg width="13" height="13" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#facc15" stroke="#fff" stroke-width="1.5"/><text x="7" y="9.8" font-family="system-ui" font-size="8.5" font-weight="700" fill="#fff" text-anchor="middle">H</text></svg><div class="sz">white</div></div>
+        <div style="text-align:center"><svg width="28" height="28" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#facc15" stroke="#fff" stroke-width="1.5"/><text x="7" y="9.8" font-family="system-ui" font-size="8.5" font-weight="700" fill="#fff" text-anchor="middle">H</text></svg><div class="sz">white</div></div>
+        <div style="width:1px;height:34px;background:#e7e5e4"></div>
+        <div style="text-align:center"><svg width="13" height="13" viewBox="0 0 14 14" role="img" aria-label="Hydraulic stacker"><title>Hydraulic stacker</title><circle cx="7" cy="7" r="7" fill="#facc15" stroke="#fff" stroke-width="1.5"/><text x="7" y="9.85" font-family="system-ui,-apple-system,sans-serif" font-size="8.5" font-weight="700" fill="#1f2937" text-anchor="middle" textLength="6.2" lengthAdjust="spacingAndGlyphs">H</text></svg><div class="sz">dark</div></div>
+        <div style="text-align:center"><svg width="28" height="28" viewBox="0 0 14 14" role="img" aria-label="Hydraulic stacker"><title>Hydraulic stacker</title><circle cx="7" cy="7" r="7" fill="#facc15" stroke="#fff" stroke-width="1.5"/><text x="7" y="9.85" font-family="system-ui,-apple-system,sans-serif" font-size="8.5" font-weight="700" fill="#1f2937" text-anchor="middle" textLength="6.2" lengthAdjust="spacingAndGlyphs">H</text></svg><div class="sz">dark</div></div>
+      </div>
+      <p class="note">Every existing badge uses a white glyph, but they all sit on dark fills. On bright yellow white washes out. Your app already knows this — <span class="mono">readableTextColor()</span> returns <span class="mono">#1f2937</span> for anything this light, so dark <i>is</i> the house rule here.</p>
+    </div>
   </div>
 </div>
 </x-dc>
