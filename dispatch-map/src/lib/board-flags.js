@@ -45,6 +45,7 @@ import {
 // in trailer-block.js rather than map-legend.js only because map-legend → time-marks →
 // board-flags would be a cycle.
 import { dispatcherTrailerBlock, trailerBlockerLabels } from './trailer-block.js';
+import { placeKeyOfStop } from './matchKey.js';
 
 // ── time + hours parsing ──────────────────────────────────────────────────────
 
@@ -954,9 +955,41 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     // "move this stop". Six on one load is "the wrong truck is on this route", and a message
     // that lists them one at a time buries that. Stamped on every row so the panel, the text
     // and any later consumer read the same count rather than each re-deriving it.
+    // ONE DOCK, ONE CARD. Chad, looking at the panel: "this Jewel Reign is showing up twice
+    // and should only be there one time."
+    //
+    // A pickup and a delivery at one dock are two orders and ONE place — the fact v0.99.4 had
+    // to teach the grab, arriving here from the other side. This rule pushed a row per STOP,
+    // so two orders at one address produced two byte-identical cards: same customer, same
+    // route, same sequence, same sentence.
+    //
+    // WORSE THAN THE DUPLICATE, and the reason this is a correctness fix and not a tidy-up:
+    // the "N other stops carry the same mark — check the truck, not just the stop" line
+    // counted those twins as other stops. That sentence exists to say "this is a TRUCK
+    // problem, not a stop problem", which is only true when genuinely different places are
+    // blocked. One dock wearing one mark was telling a dispatcher to go and doubt the whole
+    // load. The same count rides the SMS ("+N more stops on this route"), so the text said it
+    // too. Counting DOCKS is what the sentence always meant.
+    //
+    // The orders stay separate everywhere they are acted on — the card names them, and
+    // `stopNbrs` carries them for anything downstream. What is merged is the WARNING.
+    const byDock = new Map();
+    for (const c of conflicts) {
+      const dock = `${c.k}|${placeKeyOfStop(c.s)}`;
+      if (!byDock.has(dock)) byDock.set(dock, []);
+      byDock.get(dock).push(c);
+    }
+    // Deterministic pick: the same board must produce the same card every rebuild, or the
+    // dismiss key moves under a dispatcher who already waved it off.
+    for (const list of byDock.values()) {
+      list.sort((a, b) => String(a.s.stopNbr ?? '').localeCompare(String(b.s.stopNbr ?? '')));
+    }
     const perRoute = new Map();
-    for (const c of conflicts) perRoute.set(c.k, (perRoute.get(c.k) || 0) + 1);
-    for (const { s, k, block } of conflicts) {
+    for (const list of byDock.values()) perRoute.set(list[0].k, (perRoute.get(list[0].k) || 0) + 1);
+    checked.trailerConflicts = byDock.size;
+    for (const list of byDock.values()) {
+      const { s, k, block } = list[0];
+      const atThisDock = list.map((c) => String(c.s.stopNbr ?? '')).filter(Boolean);
       const labels = trailerBlockerLabels(block.keys);
       // via 'eligibility' is the Routing paint (a dropdown only a dispatcher can reach), so
       // it is named as the paint even when restriction ticks ride along beside it.
@@ -974,12 +1007,17 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         // Machine-readable, so no consumer has to parse the sentence to act on it.
         blockers: block.keys, blockedVia: block.via, routeClass: 'tractor',
         routeKey: k, routeConflicts: perRoute.get(k) || 1, seq: seqOf(s),
+        // Every order at this dock, so nothing is hidden by the merge and a downstream
+        // consumer can still act per order. A silent merge is the other-direction bug.
+        stopNbrs: atThisDock, ordersHere: atThisDock.length,
         title: `No tractor trailer — ${s.businessName || s.stopNbr}`,
         detail: `${label} is running a tractor-trailer, but this stop is ${said} by dispatch.`
           + `${seqOf(s) != null ? ` Stop ${seqOf(s)} on the route.` : ''}`
+          + `${atThisDock.length > 1 ? ` ${atThisDock.length} orders at this stop (${atThisDock.join(', ')}) — one dock, so this is one move.` : ''}`
           + `${alsoN > 0 ? ` ${alsoN} other stop${alsoN === 1 ? '' : 's'} on ${label} carr${alsoN === 1 ? 'ies' : 'y'} the same mark — check the truck, not just the stop.` : ''}`
           + ` Move it to a box truck, or mark the customer tractor-OK if a 53' does fit.`,
-        scope: 'occurrence', servedDate, fingerprint: `trailer|${servedDate}|${k}|${s.stopNbr}`,
+        // Keyed on the DOCK, so the card a dispatcher dismisses is the card that stays gone.
+        scope: 'occurrence', servedDate, fingerprint: `trailer|${servedDate}|${k}|${placeKeyOfStop(s)}`,
       }));
     }
   }
