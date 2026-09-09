@@ -62,6 +62,12 @@ jobs:
       # smoke job). `npm test` == `node --test "test/**/*.test.mjs"`.
       - run: npm ci
       - run: npm test
+      # NO EFFECT RUNS ON EVERY RENDER BY ACCIDENT. A useEffect declared without a dependency
+      # array re-runs after every render of its screen; one of those, measuring the bottom grid,
+      # cost the Routing map ~390ms per marker hover on a busy board (v0.98.0). Parses src with
+      # @babel/parser (installed above via @vitejs/plugin-react) and fails on any such effect
+      # that does not say why on the line above it.
+      - run: node scripts/check-effect-deps.mjs
 
   # ── load-scan ─────────────────────────────────────────────────────────────
   # The dock scanner's suite covers the rules a driver depends on at 5am: PIN

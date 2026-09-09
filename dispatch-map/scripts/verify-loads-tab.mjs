@@ -72,6 +72,14 @@ const EMPTIES = ['1 SATL', '1 WATL', 'ALPHA'].map((name, i) => ({
 }));
 const OFF_BOARD = { loadId: 'ld-t9', name: 'TRAILER 9', loadNbr: 'DAVIS000200609', status: 'Planned', trips: 12 };
 // A capture stamp the page can render an age from. Fixed, so the assertions never race a clock.
+// THE DATE THE ROSTER IS FOR — TODAY IN ET, off the clock, not typed into the file. It was
+// '2026-09-08' and passed on exactly one day: rosterFreshness reads "before today" as a
+// SETTLED empty day ("NuVizz holds no loads for this day") and today-or-later as one the
+// vendor has not built YET ("has no loads for this day yet"). Chad's Sunday case is the
+// second one, so a frozen date silently flipped this check onto the wrong sentence on
+// 2026-09-09 and failed four assertions on main and on every PR against it. The app was
+// right the whole time. ET because that is the day the board and the scanner key on.
+const ROSTER_DATE = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 const ROSTER_AT = new Date(Date.now() - 6 * 3600 * 1000).toISOString();
 // v0.93.13 — A DAY NUVIZZ HAS NOT CREATED YET. The one call Chad approved on Sunday Sep 6 said
 // NuVizz held ZERO loads for Tue Sep 8 (21 column defs, 0 rows). The endpoint now sends the
@@ -86,10 +94,6 @@ const ZERO_PULL = { period: '+2d', httpStatus: 200, cols: 21, rows: 0, kept: 0 }
 // yet" wording is only true of a capture taken THIS ET day, and a six-hour-old stamp crosses
 // midnight for any CI run between 00:00 and 06:00 ET — four states red with nothing wrong.
 const EMPTY_AT = new Date(Date.now() - 8 * 60000).toISOString();
-// The board day the fixture describes, on the app's own clock (America/New_York).
-const ET_TODAY = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
-}).format(new Date());
 // The New-route pre-flight refuses a card without a ship-from address; the fixture supplies one.
 const SHIP_FROM = { name: 'Davis Delivery', addr1: '1 Fixture Way', city: 'BUFORD', state: 'GA', zip: '30518' };
 
@@ -138,19 +142,7 @@ async function openLoadsTab({ mobile, roster, liveRoster, rosterFail, shells = n
       const live = /[?&]live=1/.test(u);
       asked.push(live ? 'live' : 'cache');
       const rows = live && liveRoster ? liveRoster : roster;
-      // TODAY IN EASTERN, not the date this guard was written on.
-      //
-      // This was '2026-09-08' and passed until ET rolled into the 9th, at which point the
-      // fixture was describing YESTERDAY — and the roster line's wording branches on exactly
-      // that (`rosterState.past ? 'NuVizz holds no loads for this day.' : '…has no loads for
-      // this day yet.'`). The app was right and the guard was stale, so four assertions went
-      // red on main and would have stayed red every day after. Second one of these found in a
-      // single session; a guard that fails on the calendar rather than on a defect is one
-      // people learn to skip, which costs more than the guard is worth.
-      //
-      // Eastern specifically, matching etDayString and the app's own board clock — a UTC date
-      // would reintroduce the bug in the hours when the two disagree.
-      return json({ ok: true, date: ET_TODAY, source: live ? 'live' : 'cache', at, count: rows.length, loads: rows,
+      return json({ ok: true, date: ROSTER_DATE, source: live ? 'live' : 'cache', at, count: rows.length, loads: rows,
         ...(pull ? { pull } : {}), ...(shells ? { shells } : {}) });
     }
     if (u.includes('nuvizz-pull-today-stops')) return json({ ok: true, stops: STOPS, count: STOPS.length, source: 'fixture' });

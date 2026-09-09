@@ -69,6 +69,9 @@ export interface PipelineDeps {
 export interface RoutingPlan {
   routes: BuiltRoute[];
   unassigned: { stopId: string; reasons: string[] }[];
+  /** Trucks the dispatcher picked that ended with NO stops, and why. Computed AFTER repair,
+   *  because the repair loop can empty a truck too. */
+  idleTrucks: Array<{ truckId: string; label: string; reason: string }>;
   intent: { strategy: Strategy; objectiveWeights: ObjectiveWeights; extraConstraints: Record<string, unknown>; source: string };
   rationale: string;
   riskFlags: string[];
@@ -234,9 +237,26 @@ export async function runPipeline(req: PipelineRequest, deps: PipelineDeps): Pro
     } catch { /* keep deterministic */ }
   }
 
+  // RECOMPUTED FROM THE FINAL ROUTES, not carried from the solver: the repair loop spills
+  // stops and drops any truck it empties, so a truck can go idle AFTER the solve. Reading the
+  // trucks that have no route in the answer the dispatcher is actually shown is the only
+  // version of this that cannot be stale.
+  const routedIds = new Set(repaired.routes.map((r) => String(r.truckId)));
+  const idleTrucks = req.trucks
+    .filter((t) => !routedIds.has(String(t.id)))
+    .map((t) => {
+      const fromSolver = (solved.idleTrucks || []).find((x) => String(x.truckId) === String(t.id));
+      return fromSolver || {
+        truckId: String(t.id),
+        label: t.label || String(t.id),
+        reason: 'its stops were moved off during the repair pass',
+      };
+    });
+
   return {
     routes: repaired.routes,
     unassigned: repaired.unassigned,
+    idleTrucks,
     intent: { strategy: intent.strategy, objectiveWeights: intent.objectiveWeights, extraConstraints: intent.extraConstraints, source: intent.source },
     rationale,
     riskFlags,
