@@ -29,7 +29,7 @@ import { WRITE_OPS, MUTATING_OPS, hoistResultError, type WriteOp } from './lib/n
 import { requireUser } from './lib/require-user.mts';
 import { runOp, resolveWriteCreds, loadImportBlocked } from './lib/nuvizz-write.mts';
 import { rwbEngineBlocked } from './lib/nuvizz-rwb.mts';
-import { getNuvizzRequester, setCallTrigger, effectiveDailyCeiling, NuvizzCircuitOpenError } from './lib/nuvizz-request.mts';
+import { getNuvizzRequester, setCallTrigger, resolveDailyCeiling, NuvizzCircuitOpenError } from './lib/nuvizz-request.mts';
 import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
 import { getOpRecord, putOpRecord, priorShortCircuits, recordCreatedOrder, recordAssignment } from './lib/write-registries.mts';
 
@@ -37,8 +37,15 @@ function writeEnabled(): boolean {
   return String(process.env.NUVIZZ_WRITE_ENABLED ?? '').trim().toLowerCase() === 'true';
 }
 
+// The budget this endpoint refuses on, and the numbers it prints in the refusal.
+//
+// The ceiling is RESOLVED from the stored Diagnostics setting, not read out of a module
+// variable that only the scanner ever populated. This function is why Chad's screen said
+// "2,000 / 3,000" in the status card and "(2000/2000) - write refused" in the banner
+// underneath it on the same load: the card reads the saved config, and this read an
+// override that is always null in this process, landing on the 2,000 ambient default.
 async function opsSnapshot(): Promise<{ current: number; ceiling: number }> {
-  const ceiling = effectiveDailyCeiling();
+  const ceiling = await resolveDailyCeiling();
   let current = 0;
   if (isFirestoreEnabled()) {
     try { const d = (await getDoc(`nuvizz_ops/calls__${etDayString()}`)) as any; current = Number(d?.count) || 0; } catch { /* treat as 0 */ }
