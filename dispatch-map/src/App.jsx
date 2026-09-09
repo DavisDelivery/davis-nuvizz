@@ -73,7 +73,7 @@ import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
 import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerChipLabel, latestPeerSaveAt, PRESENCE_HEARTBEAT_MS } from './lib/presence.js';
 import { cancelsIn, cancelSummary } from './lib/cancel-guard.js';
-import { validateNewRoute } from './lib/route-create.js';
+import { validateNewRoute, resolveRouteOrigin, originLine, newRouteSeed, newRouteSeedNote } from './lib/route-create.js';
 import { mergeDayLoads, splitDayLoads } from './lib/day-loads.js';
 import { flagProvenance, provenanceLine } from './lib/flag-provenance.js';
 import { deliveredWhen } from './lib/delivered-when.js';
@@ -81,7 +81,7 @@ import { flagDetail, sighting } from './lib/flag-detail.js';
 import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab } from './lib/right-panel.js';
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
-import { planSendSelection } from './lib/send-selection.js';
+import { planSendSelection, selectionSendTargets } from './lib/send-selection.js';
 import { MIRROR_MISCONFIGURED_MESSAGE } from './lib/mirror-site.js';
 import { satelliteControlSpec, paintSatelliteControl, SATELLITE_BUTTON_CSS } from './lib/map-satellite-control.js';
 import { dropSide, dropSideClass } from './lib/drop-side.js';
@@ -120,7 +120,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.98.7';
+const APP_VERSION = '0.99.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -191,6 +191,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.99.0', 'THE NEW-ROUTE FORM HAS EVERYTHING A ROUTE NEEDS, AND ON HALF THE DEVICES IN THE BUILDING IT COULD NOT CREATE ONE AT ALL. Chad, looking at ＋ New route: “This is not functional i should have everything i need to create a new route right here in this screen.” HE WAS RIGHT TWICE. FIRST, THE DEAD END, and it is two readers of one fact disagreeing — the shape this repo keeps getting caught by. NuVizz will not create a route without a complete ship-from address: it accepts the call and then creates nothing. So all three doors into a create — the form, a standard shell tapped on the Loads list, and the Save that actually sends it — gate on having one, and all three read a SINGLE localStorage key: the last pickup address used in the New Order tab. That key is empty on any device where nobody has used New Order — a second iPad, a cleared browser, a dispatcher who only ever routes — and on those the button never enabled, the shell tap answered with a toast, and the message sent you to a different tab to fix it. MEANWHILE New Order itself has carried a built-in Davis terminal since v0.50.35, added for exactly this reason: “the pickup dropdown always exists (even on a fresh browser with nothing saved).” The address the form needed was in the app the whole time; only this screen could not see it. Every door now RESOLVES the origin the same way through one rule — last used, else your saved pickup list, else the company terminal — and the form PRINTS the address it will use with where it came from, because a route created out of the wrong warehouse is not a thing to find out at the dock. Proven in a browser on a device with nothing saved: before, the button could never enable; now it reads “Davis Delivery Service — 943 Gainesville Hwy 200-4000, Buford, GA 30518 · The company terminal — this device has no saved pickup location”. SECOND, WHAT “EVERYTHING I NEED” MEANS. A route is a name, a place it leaves from, a driver and its stops, so all four are on the form now. THE DRIVER is chosen from the same roster the card’s own dropdown uses — already fetched by the panel the button lives in, so it costs no call — and is STAGED, not sent: the one Save that creates the route assigns them. THE STOPS come from the selection already on the map, which is most of what a route is: tick the box and they are on the card before it opens. AND THE PART THAT MAKES IT SAFE — a create is stricter than an ordinary Save. The server refuses the WHOLE create if any order on the card is still planned on a live load, so seeding blindly would build a card that fails at the Save button. The form SPLITS the selection instead and says so in the sentence a dispatcher can act on: “40 of 46 selected orders will start on this route — 6 already planned on BEN 2. Those stay selected.” They stay selected because the way to move them already exists: open that load in Compare and Send them across. Driven end to end in a browser — 46 selected, 40 onto the card, a driver staged on it, the other 6 still selected, nothing sent to NuVizz until Save. NOT CHANGED, deliberately: the route is still built for the day the board is showing. A date picker here would have to move the board, and moving the board closes every open Compare card — it would destroy work in progress to save one click. 13 new tests. ALSO IN THIS RELEASE — THE ROUTING MAP WAS LAGGING BECAUSE OF ONE MEASUREMENT, AND THE SELECTED PANEL CAN NOW SEND. Chad: “Performance of the dispatch map especially the routing page is very slow and laggy right now not the way it normally performs.” MEASURED BEFORE ANYTHING WAS TOUCHED — a new probe (scripts/perf-routing.mjs) runs the real build against a synthetic 800-stop board with real mouse input and reads the browser’s own input-to-paint timing. With the bottom grid OPEN, one marker hover blocked the screen for 393ms and one click for 754ms; with the grid CLOSED the same board cost 24ms and 89ms — the grid is what the cost scaled with. THE WHOLE DIFFERENCE WAS ONE EFFECT: the code that publishes the grid’s height as a CSS variable (so the map tools can centre in the strip above it) was declared with no dependency list, so it re-ran after EVERY render of the screen — and a hover is a render. Each run first erased the variable and then wrote the same value back, and a CSS variable is inherited, so that pair invalidated the style of every element under the map, the ~11,000 cells of an 800-row grid included, and the height read that followed forced the whole recalculation right there in the input’s own frame. Its own guard against rewriting an unchanged value could never fire, because the cleanup had just erased the value it compared against. On a quiet day, with the grid folded, there was nothing under it to recalculate, which is exactly why this felt fine for weeks and fell over on a busy board; the Map screen carried the identical effect. IT IS NOW A CALLBACK REF: it arms once when the grid mounts, a ResizeObserver tracks open/close/drag from then on, and the per-render cost is gone (hover ~0ms, click ~70ms with the grid open, re-measured on the same probe). AND THE SHAPE CANNOT COME BACK UNANNOUNCED: a new CI check (scripts/check-effect-deps.mjs) fails any effect declared without a dependency list unless it says on the line above why it must run every render. SECOND, THE BUTTON. Chad, with five Cartersville stops selected and a card open: “I want a button on these screen to put these stops on the route that is open in the compare panel.” The Selected panel now carries one button per open Compare card, in the card’s own colour, naming the count — the same action as the header’s send button (a stop still planned on another load opens that load too, so the Save can release it), just where the hand already is. No card open, no row. Desktop only, like the panel; the phone’s sheet shows the Compare header, buttons included, whenever a card is open. 11 new tests.'],
   ['0.98.7', 'THE 53-FOOT TRAILER WAS FOLLOWING THE BOX TRUCKS AROUND. Chad: “if i give it 2 boxes and 1 tractor and 30 stops it puts what it knows is tractor friendly on the tractor and rest on the boxes.” It did not, and I measured it rather than guessed: running the real solver on 30 Atlanta-area stops with the shipped truck profiles, a normal day (8 stops a 53′ cannot serve) came out BOX-1=14, BOX-2=14 — both at their 14-skid ceiling — and the 28-skid TRACTOR took 2 of 30. Two trucks did the day and the big one trailed them. On a clean board it was 14/6/10. WHY: growth was purely nearest-pair. Whichever truck’s territory happened to be closest won every stop until it physically could not take another, and nothing in the loop knew one truck was full while another sat empty — the objectiveWeights `balance` term the request has always carried was plumbed the whole way in and never read. Placement now costs a stop as its distance PLUS a penalty for how full that truck already is, expressed in metres so it stays comparable with the distance it trades against (ROUTING_BALANCE_METRES, default 12 km). Same three scenarios after: 10/10/10 clean, 13/10/7 on the normal day. EQUIPMENT IS STILL ABSOLUTE — this is a preference and can never put box-only freight on a trailer; a test pins exactly that. AND TWO REAL DEFECTS FOUND ALONGSIDE IT. (1) The repair loop kept its OWN copy of the capacity rule, honouring neither CAPACITY_GATES nor the positive-cap guard — so it spilled stops for “over deck length”, a limit the code switches off on purpose because the per-stop estimate is inflated, and printed a reason routing-constraints says can never happen, after shredding the geographic assignment to satisfy it. The file’s own header promises the rule is “defined exactly once… so the solver’s assignment and the repair loop’s validation can never drift apart”; they had drifted. One shared capacityBreaches now, and the same 30-stop board that spilled two stops for a phantom deck limit now spills them for the true reason (over skid capacity — 30 stops, 28 skids of box). (2) A PICKED TRUCK THAT GOT NOTHING SIMPLY VANISHED. Empty trucks were dropped before the result was built and the screen renders one card per route, so picking three and getting two cards was the only signal, with nothing saying which went unused. That is the visible half of the “only green on a 53′ trailer” trap: on a board where nothing is marked green every stop is held to a box and the trailer leaves the plan without a word. The plan now carries idleTrucks with a reason drawn from the freight itself — “no selected stop is allowed on this truck” versus “the other trucks covered every stop before this one was needed” — recomputed AFTER the repair pass, because repair can empty a truck too, and shown in an amber panel above the spill list. 9 new tests driving the real solver, 3,683 green.'],
   ['0.98.6', 'UAT COULD EMAIL A REAL CUSTOMER, TEXT A REAL DRIVER, AND DISPATCH A REAL TRUCK. Chad asked for one thing to be true: “nothing we do in UAT writes to the production version of the site.” It was not true, and the reason is a good lesson. THE REPO ALREADY HAD THE RIGHT IDEA AND USED IT ONCE. isMirrorDeploy() keys on FIRESTORE_DATABASE — the one variable that is always true of a mirror and never true of production — and its own comment explains why that is the right key: a new mirror is “born silent instead of scanning until somebody notices the bill.” That reasoning was applied to READS and stopped there. Every door that leaves the building was left keyed on nothing but the presence of an API key, and a mirror is built by COPYING production’s env: emailEnabled() was RESEND_API_KEY && RESEND_FROM, smsEnabled() was SIMPLETEXTING_API_KEY, and the NuVizz write gate was NUVIZZ_WRITE_ENABLED — all three true on UAT. So the UAT site could mail a real customer about a real delivery from the real address, text a real driver from the real Davis number at 9pm, and assign or dispatch a real load in production NuVizz, which puts freight on a driver’s phone and sends a truck. Worse than one stray message: each deploy keeps its send-dedup ledger in its OWN Firestore database while sharing ONE Resend account, so the two ledgers do not compose and the same customer can be mailed once by each site. NOW: lib/mirror-guard.mts finishes the rule a mirror sends NOTHING — no mail, no texts, no NuVizz writes — by default, gated at the enabled() check AND at the send itself, because a guard you can walk past by forgetting to call it is not a guard. MIRROR_ALLOW_OUTBOUND opens one channel at a time by name for deliberate testing, and a typo fails CLOSED. Production is byte-identical: unset FIRESTORE_DATABASE means not a mirror, and every gate answers exactly as before. AND THE BROWSER HALF, which was the other hole: src/lib/firebase.js read VITE_FIRESTORE_DATABASE with no cross-check, so one missing build-time variable on the UAT site sent every browser write — customer notes, receiving hours, closed days, vehicle eligibility, truck profiles — straight to the live board, silently, with the app looking completely normal. It now keys on the HOSTNAME, because that is the one fact about a deploy nobody can forget to set or copy from production: a uat host with no named database gets NO Firestore handle and an undismissable red banner naming what it would have changed. It fires in one direction only — production is never touched, whatever it sets. Found by an eight-way audit of the assignment path and the UAT boundary, every finding then handed to an independent skeptic told to refute it; 24 of 46 survived. 18 new tests, 3,674 green.'],
   ['0.98.5', 'SATELLITE MOVED ONTO THE MAP, THE ● LIVE PILL IS GONE, AND A FLAG CARD NOW NAMES THE TRUCK AND THE DRIVER. Three things Chad asked for in one sitting. A fourth — the Routing legend reading as grey text on bare satellite imagery — was the same bg-white/97 bug diagnosed independently on this branch and on main while both were open; main’s fix (v0.97.6, #850) went in first and is the one that shipped, so this branch drops its duplicate legend change and its narrower opacity guard in favour of the class-vs-stylesheet check already in CI. SATELLITE IS ON THE MAP. “Want satellite view button taken out of menu and put on actual map near this button” — the Recenter crosshair. It was a row in a filter panel that has to be opened, scrolled and closed for a control a dispatcher flips constantly to read a dock, a yard or a gate; and the PHONE filter sheet never carried the row at all, so on a phone there was no way to turn satellite on from the Map screen. It is now a control ON the map on both screens — beside the crosshair on the dispatch Map, in the tool rail on Routing — which also means a phone has it for the first time. It says which way it will go, because a toggle whose position cannot be read is not a toggle. THE ● LIVE PILL IS GONE. “no longer need this live button just wasting space.” It had stopped being a decision: it defaults to Live and sticks per device, so it read ● LIVE on every board and was pressed by nobody, while taking room on a rail that has none. Removed WITH its plumbing rather than defaulted on — a dead branch behind a control nobody can reach reads as a safety net and is not one. What actually stops a write is unchanged and all server-side: the dispatcher role gate, the Dispatch-all confirm that names every load and driver, and nuvizz-write refusing everything unless NUVIZZ_WRITE_ENABLED=true. A FLAG CARD NAMES THE TRUCK AND THE PERSON ON IT. “Need to show route and driver name.” The route was buried mid-sentence in the detail (“Stop 11 on ESTES”) and the driver appeared nowhere — yet the first thing anyone does with a flag is work out which truck it is and phone whoever is driving it, which was a second lookup on another screen twenty times a morning. Both are now their own line, darker than the prose because that is the line being scanned down a list of twenty cards. The subtlety: a STOP row often carries no driver even when its LOAD is assigned, so reading the stop alone would print “No driver” on most cards and quietly destroy the meaning of the real no-driver flag — the driver is filled in from the route, and a route running two different drivers fills NOTHING rather than sending the call to the wrong truck. 20 new tests.'],
@@ -11908,27 +11909,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   // the grid (BUFORD Jul 13: deliveries 4–7 hidden; the idle re-fit can't help because the
   // canvas size never changes). Every fit pads the bottom by the grid's LIVE rendered height
   // (open/resized/collapsed alike), measured at call time through a ref on the grid's root.
-  const bottomGridRef = useRef(null);
   // Publish the bottom grid's real height onto its container as --rt-grid-h, so overlays
-  // (RoutingMapTools) can centre in the strip the grid does NOT cover. Measured with a
-  // ResizeObserver — a resize, open/close, or unmount moves the overlays automatically.
-  useEffect(() => {
-    const el = bottomGridRef.current;
-    const host = el?.parentElement;
-    if (!el || !host || typeof ResizeObserver === 'undefined') return undefined;
-    const publish = () => {
-      const v = `${el.offsetHeight || 0}px`;
-      // Only touch the style when the value moved — this effect re-arms per render on the
-      // two busiest screens, and rewriting an identical custom property would dirty style
-      // for nothing.
-      if (host.style.getPropertyValue('--rt-grid-h') !== v) host.style.setProperty('--rt-grid-h', v);
-    };
-    publish();
-    const ro = new ResizeObserver(publish);
-    ro.observe(el);
-    return () => { ro.disconnect(); host.style.removeProperty('--rt-grid-h'); };
-  });
-  const fitPad = useCallback(() => ({ top: 60, right: 60, left: 60, bottom: 60 + (bottomGridRef.current?.offsetHeight || 0) }), []);
+  // (RoutingMapTools) can centre in the strip the grid does NOT cover. Armed ONCE per grid
+  // mount by a callback ref, and kept current by a ResizeObserver from then on — see
+  // useBottomGridHeightVar for the per-render effect this replaced and what it cost.
+  const { ref: bottomGridRef, el: bottomGridEl } = useBottomGridHeightVar();
+  const fitPad = useCallback(() => ({ top: 60, right: 60, left: 60, bottom: 60 + (bottomGridEl.current?.offsetHeight || 0) }), []);
 
   // Keep the on-map satellite button pointed at live state, and paint it to match. It is
   // created once and outlives every re-render, so both halves ride refs. aria-pressed and the
@@ -13371,6 +13357,55 @@ const LOAD_BUCKET_STYLE = {
 // the actual culprit was the map panel's Unplanned only (Chad: "says i don't have any
 // planned orders today however i have like 600 of them"). Defaults keep Routing, which
 // passes the whole board, behaving exactly as before.
+// ── THE BOTTOM GRID'S HEIGHT AS A CSS VARIABLE — ARMED ONCE PER MOUNT, NEVER PER RENDER ──
+//
+// Chad, 2026-09-09: "Performance of the dispatch map especially the routing page is very slow
+// and laggy right now not the way it normally performs." MEASURED before it was touched, on the
+// commit before this one (scripts/perf-routing.mjs: the real build, a synthetic 800-stop board,
+// trusted mouse input, the browser's own Event Timing). Mean blocked main thread per marker
+// hover: 393ms with the bottom grid OPEN, 24ms with it closed. Per selection click: 754ms open,
+// 89ms closed. The grid is what the cost scales with, and the measurement this hook replaces is
+// why.
+//
+// It was a useEffect with NO dependency array, so it re-armed after EVERY render of the
+// screen — and a hover is a render. Its cleanup removed --rt-grid-h from the host and the
+// re-run put the same value straight back. A custom property is INHERITED, so that remove/set
+// pair invalidated the computed style of every element under the map container — all ~11,000
+// cells of an 800-row grid included — and the el.offsetHeight read then forced the whole
+// recalculation synchronously, inside the input's own frame. The guard it carried ("only touch
+// the style when the value moved") could never fire, because the cleanup had just erased the
+// value it compared against. With the grid closed there was almost nothing under the host to
+// recalculate, which is exactly why the screen felt fine on a quiet day and fell over on a busy
+// one — and why no guard caught it: every check this app has looks at pixels, and the pixels
+// were right.
+//
+// A callback ref runs exactly twice per grid: with the element when it mounts, with null when
+// it unmounts. Everything in between — open/close, the drag-resize, the phone fold — is the
+// ResizeObserver's job, which is what it was always for. `el` still carries the live element so
+// fitPad can read the grid's height at call time, as before. scripts/check-effect-deps.mjs now
+// fails CI on any effect declared without a dependency array, so this shape cannot come back
+// unannounced.
+function useBottomGridHeightVar() {
+  const el = useRef(null);
+  const ro = useRef(null);
+  const ref = useCallback((node) => {
+    if (ro.current) { ro.current.disconnect(); ro.current = null; }
+    const prevHost = el.current?.parentElement;
+    if (prevHost) prevHost.style.removeProperty('--rt-grid-h');
+    el.current = node;
+    const host = node?.parentElement;
+    if (!node || !host || typeof ResizeObserver === 'undefined') return;
+    const publish = () => {
+      const v = `${node.offsetHeight || 0}px`;
+      if (host.style.getPropertyValue('--rt-grid-h') !== v) host.style.setProperty('--rt-grid-h', v);
+    };
+    publish();
+    ro.current = new ResizeObserver(publish);
+    ro.current.observe(node);
+  }, []);
+  return { ref, el };
+}
+
 // AN ORDER ALREADY CLAIMED BY AN OPEN COMPARE CARD, as the bottom grid sees it.
 //
 // Chad: "Paragon should still be highlighted a different colour on bottom panel now that
@@ -17476,6 +17511,15 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
     setStaged((prev) => {
       let next = prev, changed = false;
       for (const k of Object.keys(prev)) if (!liveKeys.has(k)) { if (!changed) { next = { ...prev }; changed = true; } delete next[k]; }
+      // A card that ARRIVES with a driver on it — ＋ New route stages one on the form (v0.99.0)
+      // — seeds the staged set here, so the card's own dropdown shows that driver and the Save
+      // that creates the route assigns them. Seeded once, on the render the card first appears:
+      // keyed by `!(key in next)`, so clearing the dropdown afterwards sticks.
+      for (const r of wbRoutes) {
+        if (!r.stagedDriver?.driverId || (r.key in next)) continue;
+        if (!changed) { next = { ...next }; changed = true; }
+        next[r.key] = { driverId: r.stagedDriver.driverId, driverName: r.stagedDriver.driverName || '' };
+      }
       return changed ? next : prev;
     });
   }, [wbRoutes]);
@@ -17589,8 +17633,13 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
     for (const r of pending) {
       const name = r.name || r.key;
       if (!r.order.length) { showToast(`⚠ ${name}: drag at least one order onto the card first — NuVizz won't create an empty route.`); continue; }
-      const origin = readShipFromOrigin();
-      if (!origin) { showToast(`⚠ ${name}: set a ship-from address in the New Order tab first — NuVizz will not create a route without one.`); continue; }
+      // The card's OWN ship-from — what the ＋ New route form displayed when the dispatcher
+      // pressed the button. Only a card from an older tab (or a shell tap before v0.99.0) has
+      // none, and the resolver behind readShipFromOrigin now always answers with at least the
+      // company terminal, so this refusal is a genuine last resort rather than the daily
+      // dead-end it was on any device that had never opened the New Order tab.
+      const origin = r.origin || readShipFromOrigin();
+      if (!origin) { showToast(`⚠ ${name}: no ship-from address — add a pickup location in the New Order tab, then re-Save.`); continue; }
       const s = staged[r.key] || {};
       setBusy(true);
       let res;
@@ -18217,7 +18266,7 @@ function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = f
   );
 }
 
-function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemove, onRemoveMany, onClearAll, onOpenStop, onClose, isMobile, hoverId, setHoverId, onLocate }) {
+function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemove, onRemoveMany, onClearAll, onOpenStop, onClose, isMobile, hoverId, setHoverId, onLocate, sendTargets = [], onSendTo = null }) {
   // Compact window from the naive (zoneless) schedule ISO — parse the clock straight off the
   // string so there's no local-timezone drift. "8:00a", "8:00a–8:00p".
   const fmtWin = (iso) => {
@@ -18308,6 +18357,37 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
           <button onClick={onClose} className="text-slate-400 hover:text-slate-700 leading-none p-1" aria-label="Clear the selection and close this panel" title="Clear the selection and close"><X size={16} /></button>
         </div>
       </div>
+      {/* PUT THESE STOPS ON THE ROUTE THAT IS OPEN IN COMPARE. Chad, five Cartersville stops
+          selected and a card open: "I want a button on these screen to put these stops on the
+          route that is open in the compare panel." The Compare header has carried one send
+          button per open card since #258 — but that header lives in the right rail, and this
+          panel floats over the map where the selection was just drawn, so the button nearest
+          the hand was the one that did not exist. One button per open card, in the card's own
+          colour (the hue of its header dot, its numbered pins and its grid chips), naming the
+          count so a press is never blind. SAME ACTION as the header's button (onSendTo is
+          sendSelectionToRoute): the selection moves in one press, a stop still planned on a
+          load that is not open opens that load too so the Save can release it, and the outcome
+          is written in the Compare header. No card open → no row: a dead button is worse than
+          none. Desktop only, like this panel — the phone's sheet shows the Compare header
+          itself, buttons included, whenever a card is open. */}
+      {rows.length > 0 && onSendTo && sendTargets.length > 0 && (
+        <div className="flex items-center gap-1.5 flex-wrap px-3 py-1 border-b bg-white shrink-0">
+          <span className="text-[10px] uppercase tracking-wide text-slate-500 shrink-0">Put on</span>
+          {sendTargets.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => onSendTo(t.key)}
+              title={`Put the ${rows.length} selected stop${rows.length === 1 ? '' : 's'} on ${t.name}, the route open in Compare. A stop still planned on another load opens that load in Compare as well, so the Save can release it.`}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold rounded px-2 py-0.5 border text-white min-w-0 hover:brightness-110"
+              style={{ background: t.color || '#1e5b92', borderColor: t.color || '#1e5b92' }}
+            >
+              <ArrowRight size={12} className="shrink-0" />
+              <span className="truncate max-w-[140px]">{t.name}</span>
+              <span className="font-normal opacity-90">({rows.length})</span>
+            </button>
+          ))}
+        </div>
+      )}
       {/* KEEP ONLY WHAT A TRACTOR CAN RUN. Chad: "I want a button on top of bar to remove all
           stops in the list that are not tractor friendly stops."
           Its own row rather than the header: the title line already carries four figures at a
@@ -18442,15 +18522,37 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setSho
   );
 }
 
-// The saved ship-from (New Order tab). NuVizz will not create a route without a full origin —
-// it accepts the call and creates nothing — so the create refuses unless name/addr1/city/zip are
-// all present, which is stricter than the addr1-only check the board Save uses for its fallback.
+// THE SHIP-FROM A NEW ROUTE CARRIES — resolved, not merely read.
+//
+// NuVizz will not create a route without a full origin: it accepts the call and creates
+// nothing. So all three doors into a create gate on one — the ＋ New route form, a standard
+// shell tapped on the Loads list, and the Save that actually sends it.
+//
+// ALL THREE USED TO READ ONE localStorage KEY: the last-used New Order pickup. That key is
+// EMPTY on any device where nobody has used the New Order tab — a second iPad, a cleared
+// browser, a dispatcher who only ever routes — and on that device the form's button never
+// enabled, the shell tap answered with a toast, and the message sent you to another tab.
+// Chad, looking at exactly that: "This is not functional i should have everything i need to
+// create a new route right here in this screen."
+//
+// New Order has shipped a built-in Davis terminal since v0.50.35, for this very reason: "the
+// pickup dropdown always exists (even on a fresh browser with nothing saved)". The address was
+// in the app the whole time; only this screen could not see it. Now every door resolves the
+// same way — last-used, else the saved pickup list, else the terminal — through one rule in
+// lib/route-create.js, and the form PRINTS which one it landed on, because a route created out
+// of the wrong warehouse is not a thing to discover at the dock.
+function resolveNewRouteOrigin() {
+  let lastUsed = null;
+  try { lastUsed = JSON.parse(localStorage.getItem(NEWORDER_ORIGIN_KEY) || 'null'); } catch { lastUsed = null; }
+  // The RAW saved list, NOT loadSavedOrigins() — that one seeds the terminal into itself so New
+  // Order's dropdown is never empty, and taking it here would report the terminal back as
+  // "your saved pickup location" on a device where nobody ever saved anything.
+  let saved = [];
+  try { const a = JSON.parse(localStorage.getItem(NEWORDER_ORIGINS_KEY) || 'null'); if (Array.isArray(a)) saved = a; } catch { saved = []; }
+  return resolveRouteOrigin({ lastUsed, saved, fallback: NEWORDER_ORIGIN_DEFAULT });
+}
 function readShipFromOrigin() {
-  try {
-    const o = JSON.parse(localStorage.getItem(NEWORDER_ORIGIN_KEY) || 'null');
-    const ok = o && ['name', 'addr1', 'city', 'zip'].every((k) => String(o[k] ?? '').trim());
-    return ok ? o : null;
-  } catch { return null; }
+  return resolveNewRouteOrigin().origin;
 }
 
 /**
@@ -18471,12 +18573,39 @@ function readShipFromOrigin() {
  * day would make a card the date change immediately destroys. To build tomorrow's route,
  * move the board to tomorrow first.
  *
- * No driver field: the pending card carries the ordinary driver dropdown, and the staged
- * assignment rides the same Save that creates the route.
+ * EVERYTHING A ROUTE NEEDS IS ON THIS FORM (v0.99.0). Chad: "i should have everything i need
+ * to create a new route right here in this screen." A route is a name, a place it leaves from,
+ * a driver and its stops — so all four are here, and none of them sends anything on its own:
+ * the driver is STAGED on the card and the stops are STAGED on the card, and the one Save that
+ * creates the route in NuVizz carries them. Close the card and none of it ever existed.
+ *   · Ship-from — resolved (see resolveNewRouteOrigin), shown in full, changeable when the
+ *     device has more than one saved pickup. This is what used to dead-end the form.
+ *   · Driver — the same roster the card's own dropdown uses, already fetched by the panel this
+ *     button lives in, so offering it here costs nothing. Optional: leave it and assign later.
+ *   · The map selection — a route IS its stops. What a create is not allowed to move (an order
+ *     already planned on a live load) is held back BY NAME rather than silently seeded into a
+ *     card that would be refused whole at Save.
  */
-function NewRouteModal({ date, existingNames, origin, busy, error, onCancel, onCreate }) {
+function NewRouteModal({ date, existingNames, origin, originOptions = [], busy, error, onCancel, onCreate, roster = [], rosterError = null, seed = null }) {
   const [routeName, setRouteName] = useState('');
-  const check = validateNewRoute({ routeName, date, existingNames, hasOrigin: !!origin });
+  const [originKey, setOriginKey] = useState(() => originOptions[0]?.key || '');
+  const picked = originOptions.find((o) => o.key === originKey) || originOptions[0] || null;
+  const useOrigin = picked?.origin || origin || null;
+  const [driverId, setDriverId] = useState('');
+  const driver = roster.find((d) => String(d.driverId) === String(driverId)) || null;
+  const seedIds = seed?.seed || [];
+  const [takeSelection, setTakeSelection] = useState(true);
+  const seedNote = seed ? newRouteSeedNote(seed) : '';
+  const check = validateNewRoute({ routeName, date, existingNames, hasOrigin: !!useOrigin });
+  const submit = () => {
+    if (!check.ok || busy) return;
+    onCreate(routeName.trim(), check.loadNbr, {
+      origin: useOrigin,
+      driverId: driver ? driver.driverId : '',
+      driverName: driver ? driver.name : '',
+      seedStopNbrs: takeSelection ? seedIds : [],
+    });
+  };
   const showCheck = routeName.trim().length > 0;
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape' && !busy) onCancel(); };
@@ -18493,7 +18622,7 @@ function NewRouteModal({ date, existingNames, origin, busy, error, onCancel, onC
         </div>
         <form
           className="px-4 py-3 overflow-y-auto text-sm space-y-3"
-          onSubmit={(e) => { e.preventDefault(); if (check.ok && !busy) onCreate(routeName.trim(), check.loadNbr); }}
+          onSubmit={(e) => { e.preventDefault(); submit(); }}
         >
           <OrderField label="Route name" req value={routeName} onChange={(e) => setRouteName(e.target.value)}
             placeholder="e.g. TRAILER 6" disabled={busy} />
@@ -18501,22 +18630,80 @@ function NewRouteModal({ date, existingNames, origin, busy, error, onCancel, onC
             This is the name the board groups by. NuVizz also needs its own load number, which is made from the
             name and the day{check.loadNbr ? <> — this one would be <b className="font-mono">{check.loadNbr}</b>.</> : '.'}
           </div>
+
+          {/* SHIP-FROM. Printed in full, never just assumed: NuVizz takes a route with the wrong
+              origin as happily as the right one. A device with one pickup address shows the line;
+              more than one gets the dropdown. */}
+          <div>
+            <span className="text-[11px] font-medium text-slate-500">Ships from<span className="text-red-500"> *</span></span>
+            {originOptions.length > 1 ? (
+              <select
+                value={picked?.key || ''}
+                onChange={(e) => setOriginKey(e.target.value)}
+                disabled={busy}
+                aria-label="Ship-from address"
+                className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1.5 text-sm bg-white"
+              >
+                {originOptions.map((o) => <option key={o.key} value={o.key}>{originLine(o.origin)}</option>)}
+              </select>
+            ) : (
+              <div className="mt-0.5 text-[12px] text-slate-700 border border-slate-200 bg-slate-50 rounded px-2 py-1.5">
+                {useOrigin ? originLine(useOrigin) : 'No pickup address on this device.'}
+              </div>
+            )}
+            <div className="text-[11px] text-slate-500 mt-0.5">
+              {picked?.source === 'default'
+                ? 'The company terminal — this device has no saved pickup location, so the route leaves from here.'
+                : 'Your saved pickup location. Add others in the New Order tab.'}
+            </div>
+          </div>
+
+          {/* DRIVER — staged, not sent. Same roster, same shape as the card's own dropdown. */}
+          <div>
+            <span className="text-[11px] font-medium text-slate-500">Driver</span>
+            <select
+              value={driverId}
+              onChange={(e) => setDriverId(e.target.value)}
+              disabled={busy || !!rosterError}
+              aria-label="Assign driver to the new route"
+              className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1.5 text-sm bg-white"
+            >
+              <option value="">{rosterError ? 'Driver roster unavailable — assign on the card' : (roster.length ? 'No driver yet — assign later' : 'Loading drivers…')}</option>
+              {roster.map((d) => <option key={String(d.driverId)} value={String(d.driverId)}>{d.name}{d.userName ? ` (${d.userName})` : ''}</option>)}
+            </select>
+            <div className="text-[11px] text-slate-500 mt-0.5">Staged on the card — the Save that creates the route assigns them.</div>
+          </div>
+
+          {/* THE STOPS. A route is its stops, so the selection already on the map can start it. */}
+          {seed && (seedIds.length > 0 || seedNote) && (
+            <div className="border border-slate-200 rounded p-2 bg-slate-50/70">
+              {seedIds.length > 0 ? (
+                <label className="flex items-start gap-2 text-[12px] text-slate-700 cursor-pointer">
+                  <input type="checkbox" checked={takeSelection} disabled={busy} onChange={(e) => setTakeSelection(e.target.checked)} className="mt-0.5" />
+                  <span>Start it with the <b>{seedIds.length}</b> selected order{seedIds.length === 1 ? '' : 's'} — they go straight onto the card.</span>
+                </label>
+              ) : (
+                <div className="text-[12px] text-slate-700">None of the selected orders can start this route.</div>
+              )}
+              {seedNote && <div className="text-[11px] text-amber-800 mt-1 leading-snug">{seedNote}</div>}
+            </div>
+          )}
           {showCheck && !check.ok && (
             <div className="text-[12px] text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">{check.error}</div>
           )}
           {error && <div className="text-[12px] text-red-800 bg-red-50 border border-red-200 rounded p-2">{error}</div>}
           <div className="text-[11px] text-slate-500">
             The route opens as a Compare card for {formatDateLong(date)} — <b>nothing is sent to NuVizz yet</b>.
-            Drag orders onto it, then Save: the route and all its stops are created together (NuVizz won&apos;t
-            accept an empty route). Closing the card before saving discards it. To build another day&apos;s route,
-            change the board date first.
+            Add or drag more orders onto it, then Save: the route{driver ? ', all its stops and its driver are' : ' and all its stops are'} created
+            together (NuVizz won&apos;t accept an empty route). Closing the card before saving discards it. To build
+            another day&apos;s route, change the board date first.
           </div>
           <button type="submit" className="hidden" aria-hidden="true" tabIndex={-1} />
         </form>
         <div className="px-4 py-3 border-t flex items-center justify-end gap-2">
           <button onClick={onCancel} disabled={busy}
             className="px-3 py-1.5 text-sm rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-60">Cancel</button>
-          <button onClick={() => onCreate(routeName.trim(), check.loadNbr)} disabled={!check.ok || busy}
+          <button onClick={submit} disabled={!check.ok || busy}
             className="px-3 py-1.5 text-sm rounded font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60">
             Open route card
           </button>
@@ -20214,6 +20401,11 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     return m;
   }, [wbRoutesColored]);
 
+  // THE SELECTED PANEL'S SEND BUTTONS — one per open Compare card, named as the card's own
+  // header names it, in its colour (v0.98.0). The rule is selectionSendTargets in
+  // lib/send-selection.js; the press is sendSelectionToRoute, the same function the header uses.
+  const wbSendTargets = useMemo(() => selectionSendTargets(wbRoutesColored, { displayName: (k) => loadDisplayName(k) }), [wbRoutesColored]);
+
   // THE PREFLIGHT — judge the route he is BUILDING, not the one NuVizz is holding.
   //
   // Chad: "can we have flags pop in the routing page if we build a route that system
@@ -20421,27 +20613,12 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // Same overlay-aware fit as the dispatch Map: the bottom data grid floats INSIDE the map
   // container, so Google's canvas runs underneath it and a flat 60px pad frames a route's
   // southern stops behind the grid. Pad the bottom by the grid's live height at call time.
-  const bottomGridRef = useRef(null);
   // Publish the bottom grid's real height onto its container as --rt-grid-h, so overlays
-  // (RoutingMapTools) can centre in the strip the grid does NOT cover. Measured with a
-  // ResizeObserver — a resize, open/close, or unmount moves the overlays automatically.
-  useEffect(() => {
-    const el = bottomGridRef.current;
-    const host = el?.parentElement;
-    if (!el || !host || typeof ResizeObserver === 'undefined') return undefined;
-    const publish = () => {
-      const v = `${el.offsetHeight || 0}px`;
-      // Only touch the style when the value moved — this effect re-arms per render on the
-      // two busiest screens, and rewriting an identical custom property would dirty style
-      // for nothing.
-      if (host.style.getPropertyValue('--rt-grid-h') !== v) host.style.setProperty('--rt-grid-h', v);
-    };
-    publish();
-    const ro = new ResizeObserver(publish);
-    ro.observe(el);
-    return () => { ro.disconnect(); host.style.removeProperty('--rt-grid-h'); };
-  });
-  const fitPad = useCallback(() => ({ top: 60, right: 60, left: 60, bottom: 60 + (bottomGridRef.current?.offsetHeight || 0) }), []);
+  // (RoutingMapTools) can centre in the strip the grid does NOT cover. Armed ONCE per grid
+  // mount by a callback ref, and kept current by a ResizeObserver from then on — see
+  // useBottomGridHeightVar for the per-render effect this replaced and what it cost.
+  const { ref: bottomGridRef, el: bottomGridEl } = useBottomGridHeightVar();
+  const fitPad = useCallback(() => ({ top: 60, right: 60, left: 60, bottom: 60 + (bottomGridEl.current?.offsetHeight || 0) }), []);
 
   // Right Routes-panel click → open that route into the workbench (cards) and frame it on the
   // map. Unlike pickLoadFromTable it does NOT add the stops to the selection set.
@@ -20468,14 +20645,26 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // (pendingCreate: true, no loadId); the workbench Save creates the route in NuVizz with the
   // card's whole stop list riding the one create call. Closing the card discards it —
   // nothing ever existed in NuVizz.
-  const createNewRoute = useCallback((routeName, loadNbr) => {
+  // The card carries the form's OWN answers — the ship-from it displayed, the staged driver,
+  // and the orders it said it would start with. Carried on the card rather than re-read at
+  // Save, so what the dispatcher was shown is what gets sent (the re-read is how the form and
+  // the Save came to disagree about the origin in the first place).
+  const createNewRoute = useCallback((routeName, loadNbr, opts = {}) => {
     setNewRouteError(null);
     if (wbRoutes.length >= WB_MAX) { setNewRouteError(`Compare is full (${WB_MAX} routes) — close one first, then create.`); return; }
     setNewRouteOpen(false);
     const key = routeName;
+    const order = (opts.seedStopNbrs || []).map(String);
+    const stagedDriver = opts.driverId ? { driverId: opts.driverId, driverName: opts.driverName || '' } : null;
     setWbRoutes((prev) => (prev.some((x) => x.key === key) ? prev : [...prev,
-      { key, name: routeName, loadNbr, loadId: null, pendingCreate: true, order: [], baseline: [], collapsed: false }]));
-    showMapToast(`Route card ${routeName} opened — drag orders onto it, then Save to create it in NuVizz with all its stops.`);
+      { key, name: routeName, loadNbr, loadId: null, pendingCreate: true, order, baseline: [], collapsed: false,
+        origin: opts.origin || null, stagedDriver }]));
+    // The orders are ON the card now, so they must leave the selection — a stop selected AND
+    // staged is the double-planning state every other path in this screen refuses.
+    if (order.length) setSelectedIds((prev) => { const nx = new Set(prev); for (const id of order) nx.delete(String(id)); return nx; });
+    showMapToast(order.length
+      ? `Route card ${routeName} opened with ${order.length} order${order.length === 1 ? '' : 's'}${stagedDriver ? ` and ${stagedDriver.driverName || 'a driver'}` : ''} — Save creates it in NuVizz.`
+      : `Route card ${routeName} opened — drag orders onto it, then Save to create it in NuVizz with all its stops.`);
   }, [showMapToast, wbRoutes.length]);
   // A pending card's create CONFIRMED by the server: flip it to a real card in place (same
   // key) and index its verified identity so assign-driver / later re-opens resolve it before
@@ -20503,9 +20692,10 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     // here. Without this line the seventh shell of a Sunday build was a tap that did nothing a
     // dispatcher could see (the review reproduced it in a browser, both views).
     if (wbRoutes.length >= WB_MAX) { showMapToast(`Compare is full (${WB_MAX} routes) — close a saved card first, then tap ${name} again.`); return; }
-    const check = validateNewRoute({ routeName: name, date: selectedDate, existingNames: routeGroups.map((g) => g.name || g.key), hasOrigin: !!readShipFromOrigin() });
+    const shipFrom = readShipFromOrigin();
+    const check = validateNewRoute({ routeName: name, date: selectedDate, existingNames: routeGroups.map((g) => g.name || g.key), hasOrigin: !!shipFrom });
     if (!check.ok) { showMapToast(check.error); return; }
-    createNewRoute(name, check.loadNbr);
+    createNewRoute(name, check.loadNbr, { origin: shipFrom });
   }, [wbRoutes.length, selectedDate, routeGroups, showMapToast, createNewRoute]);
 
   // Frame ALL of a driver's stops (they may run multiple routes). Lighter than onPickRoute —
@@ -22083,11 +22273,32 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // ── Mobile: map + collapsible bottom sheet (Setup / Result) ──
   // Rendered in BOTH layout branches below — RoutingScreen returns separately for mobile and
   // desktop, and a modal defined in only one is invisible on the other.
+  // Resolved once per opening, not per render: reading localStorage on every keystroke of the
+  // route name would be pure waste, and the answer cannot change while the form is open.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const newRouteOrigin = useMemo(() => resolveNewRouteOrigin(), [newRouteOpen]);
+  // What the map selection would put on the new route, and what it may not (see newRouteSeed).
+  const newRouteSelection = useMemo(
+    () => newRouteSeed({
+      ids: [...selectedIds],
+      stopById,
+      // wbStagedByStop, not wbStagedRef: the ref is written in an effect, so on the render
+      // where a card just took a stop it still holds the previous set — and this memo would
+      // then offer that stop to a second card. The derived map is current in the same render.
+      stagedElsewhere: wbStagedByStop,
+      claimedBy: peerClaimFor,
+    }),
+    [selectedIds, stopById, wbStagedByStop, peerClaimFor],
+  );
   const newRouteModal = newRouteOpen ? (
     <NewRouteModal
       date={selectedDate}
       existingNames={routeGroups.map((g) => g.name || g.key)}
-      origin={readShipFromOrigin()}
+      origin={newRouteOrigin.origin}
+      originOptions={newRouteOrigin.options}
+      roster={assignRoster}
+      rosterError={assignRosterError}
+      seed={newRouteSelection}
       busy={newRouteBusy}
       error={newRouteError}
       onCancel={() => { if (!newRouteBusy) { setNewRouteOpen(false); setNewRouteError(null); } }}
@@ -22348,7 +22559,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         )}
         {/* Floating "Selected N" panel (toggleable) — lists every selected stop over the map. */}
         {!viewing && selPanelOpen && selectedStops.length > 0 && (
-          <RoutingSelectionFloatPanel selectedStops={selectedStops} notes={notes} tractorLocs={tractorLocs} onRemove={removeStop} onRemoveMany={removeStops} onClearAll={clearSelection} onOpenStop={openStop} onClose={clearSelection} isMobile={false} hoverId={hoverId} setHoverId={setHoverId} onLocate={locateStop} />
+          <RoutingSelectionFloatPanel selectedStops={selectedStops} notes={notes} tractorLocs={tractorLocs} onRemove={removeStop} onRemoveMany={removeStops} onClearAll={clearSelection} onOpenStop={openStop} onClose={clearSelection} isMobile={false} hoverId={hoverId} setHoverId={setHoverId} onLocate={locateStop} sendTargets={wbSendTargets} onSendTo={sendSelectionToRoute} />
         )}
         {/* Reopen chip when the panel is toggled off but stops are selected. */}
         {!viewing && !selPanelOpen && selectedStops.length > 0 && (
