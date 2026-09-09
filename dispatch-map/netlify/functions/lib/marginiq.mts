@@ -107,3 +107,44 @@ export async function listEmployees(): Promise<EmployeeContact[]> {
   __rosterCache = { at: Date.now(), rows: out };
   return out;
 }
+
+// ── EVERY NAME A DRIVER HAS BEEN KNOWN BY → ONE KEY ─────────────────────────
+//
+// Chad, asked whether two spellings were one man: "Yes same man."
+//
+// NuVizz renamed Brenton Byrd from "Brent  Boyd" to "Brent  Bryd" on 2026-08-27. Anything keyed
+// on the name then sees two people: on the driver-area sheet that is one man with half a
+// territory twice, and — worse — the retired spelling reads as somebody who stopped running, so
+// he gets dropped for inactivity as well. One typo, two wrong answers.
+//
+// THE ANSWER IS NOT A HARDCODED PAIR. His employees card already carries it: alias
+// "Brent Bryd" with "Brent Boyd" kept in aliases[], put there on purpose by a person. Three
+// joins in this repo already read that list (resolveDriverPhone, routing-plan-core,
+// routing-draft-core). Reading it here means the NEXT rename is fixed by editing the card, the
+// way the last one was, instead of by a deploy — and it means nobody has to remember to tell me.
+//
+// The canonical name is externalIds.nuvizz where present, because that is the spelling the
+// dispatch board shows: a trainee must learn the name they will actually see, not the one on
+// the payroll. PURE half, so the rule is testable without Firestore.
+export function buildDriverAliases(employees: any[]): Array<{ from: string; to: string }> {
+  const key = (n: any) => String(n ?? '').trim().toUpperCase().replace(/\s+/g, '_');
+  const out: Array<{ from: string; to: string }> = [];
+  for (const e of employees || []) {
+    const canonical = key(e?.externalIds?.nuvizz) || key(e?.fullName);
+    if (!canonical) continue;
+    const known = new Set<string>();
+    for (const n of [e?.fullName, [e?.firstName, e?.lastName].filter(Boolean).join(' '), ...(Array.isArray(e?.aliases) ? e.aliases : [])]) {
+      const k = key(n);
+      // A name that IS the canonical one is not an alias of itself, and an empty one is noise.
+      if (k && k !== canonical) known.add(k);
+    }
+    for (const from of known) out.push({ from, to: canonical });
+  }
+  return out.sort((a, b) => a.from.localeCompare(b.from));
+}
+
+/** The alias pairs from the employees roster. Best-effort: a read failure means no folding. */
+export async function driverAliases(): Promise<Array<{ from: string; to: string }>> {
+  try { return buildDriverAliases(await listDocs(COLLECTION)); }
+  catch (e: any) { console.warn(`[marginiq] driver aliases unavailable: ${e?.message}`); return []; }
+}

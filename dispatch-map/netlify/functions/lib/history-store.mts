@@ -25,8 +25,13 @@ export function dayId(tenant: string, date: string): string {
 
 // PURE: make a human string safe as a Firestore document id. Firestore ids cannot
 // contain '/' or '\', cannot be '.' or '..', cannot be empty, and cannot match the
-// reserved __…__ pattern. Route names are human strings — a co-driver load is named
-// with a slash ("COLIN/DJ 1", two drivers on one truck), which made the routes doc
+// A SLASH IN A LOAD NAME IS NOT A CO-DRIVER. Four comments in this repo used to say it was
+// ("two drivers on one truck"). Chad, asked directly: "Colin/dj1 is Colin's second load
+// usually but always Colin never dj." It is one man's second load, and the second name is
+// not a person — reading it as one splits a driver in two everywhere identity is keyed on
+// the name. See canonicalDriver in src/lib/driver-territory.js for the rule that follows.
+// reserved __…__ pattern. Route names are human strings — and some are named with a
+// slash ("COLIN/DJ 1"), which made the routes doc
 // path an INVALID reference, so upsertRoutes threw and the whole day's capture aborted
 // AFTER the stops were written but BEFORE routes/rollup/seal — silently orphaning every
 // day that load ran (the COLIN/DJ 1 missing-day family: 2026-06-24/25, 07-01/02/07/10).

@@ -118,7 +118,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.97.7';
+const APP_VERSION = '0.98.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -189,6 +189,12 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.98.0', 'THE ROUTING MAP ANSWERS TWO QUESTIONS IT HAD BEEN IGNORING — WHICH STOP IS THIS, AND WHAT ARE ITS HOURS. Both are the same failure in two places: a feature wired into ONE surface and the other left alone. (1) “HOW AM I SUPPOSED TO TELL WHICH STOP THIS IS ON THE MAP.” Chad, one order selected on a board of 620 unplanned stops. CHECKED, NOT REASONED: a selected stop IS drawn differently — stopMarkerIcon paints a matched stop amber (#f59e0b) and lifts it to zIndex 25 — but RoutingSelectionFloatPanel took { selectedStops, notes, tractorLocs, onRemove, onRemoveMany, onClearAll, onOpenStop, onClose, isMobile } and nothing else. No hoverId, no setHoverId, nothing that could reach a marker. Its two sibling panels (RoutingStopsPanel, both call sites) have had that wiring for months, so hovering a stop in the rail lit its pin while hovering the SAME stop in the floating window did nothing at all. NOW: hovering a row lights the pin through the same hoverId channel the map’s own hover uses, and clicking a row pans to it, bounces it for a second and a half, and holds the emphasis — a 30% size bump is the right cue when the eye already knows where to look and useless as a search. The pan is OFFSET by half the panel’s own width, because centring a stop underneath the window that sent you looking for it is the same bug wearing a different hat. The docked and phone panels get an explicit “Show on map” control instead, because a phone has no hover at all and that row’s tap is already spoken for by the detail card. stopPropagation on the PRO link and the remove ×, so the row gained an action without taking one away. (2) “I HOVERED OVER THAT TIME CONSTRAINT DELIVERY ON THE MAP AND IT DIDN’T SHOW ME THE HOURS LIKE IT WAS SUPPOSED TO.” It was supposed to, and it never could: HoverTip appears exactly once in this file, inside the dispatch MAP’s marker effect (v0.50.44). The Routing map’s markers carried a `title` of the business name and nothing else, so on Routing the only hover was the grey OS tooltip with a name in it. The same card is now built in the Routing marker effect from the same field: formatReceivingHours(note) reads note.receiving_hours, which is also what timeMarkForDay draws the clock mark from — so every pin wearing a clock has a card and no pin without one can invent a window. Stale tips are dropped when the markers rebuild, and a tip is only cleared by the marker that owns it, because co-located pins fire the next mouseover before the previous mouseout. THE GUARD: scripts/verify-selection-locate.mjs drives the real bundle — selects a stop off the grid, then asserts the floating row is a control, that hovering it turns AMBER specifically (the plain hover:bg-slate-50 it sat next to passed a “the colour changed” test on the OLD build, which is how a green guard means nothing), and that the PRO link still opens the order. CHECKED BOTH WAYS against a pre-fix bundle carrying only the test hook: it fails on exactly the two checks that describe the missing feature. Two of the guard’s OWN bugs were found and fixed before it was trusted — fixture stops without isUnplanned never reach the select path at all, and the bottom data grid renders a <tr> per stop too, so an unscoped locator was asserting against the wrong table. SAID PLAINLY: Google Maps is blocked in a headless guard, so the pan itself and the hover card are not observable there; what is proven is the wiring that was missing. 3,699 green.'],
+  ['0.97.12', 'ONE BIG MAP, EVERY DRIVER’S CIRCLE, OVERLAPPING — THE SHAPE CHAD ASKED FOR, BUILT SO IT CAN BE READ. Chad, on the dot version: “Dont put all the dots i want one big map with overlapping circles for the drivers.” This is what he asked for at the start (“circles or ovals of where their general work area is”) and confirmed on the sample (“I like the circles”); the version that failed was never wrong about the SHAPE, it was wrong about everything else on the page. FOUR THINGS MAKE FIFTY-FOUR OVERLAPPING CIRCLES READABLE. (1) THE RINGS ARE HOLLOW — filled and stacked four deep the metro went solid and no ring could be followed round; outlines cross and stay separate lines. (2) THERE ARE FEWER OF THEM: the measured 30km rule from v0.94.5 leaves most drivers ONE ring instead of the shattered handful the invented 15km cap produced. (3) EVERY NAME SITS IN ITS OWN RING, and the town names survive — the twelve place labels and the depot are SEEDED into the collision list before any driver, because they are what make this a map of somewhere rather than a pile of circles, and losing “Buford” to a driver’s name costs more than moving that name. Smallest ring places its label first (a small ring is a specific claim, and a displaced name over it is a lie about a specific patch); anything still colliding travels out along its own ring — six distances, twelve angles — and keeps a leader line back to its circle, so no ring is ever left anonymous. Deterministic: the same data lays out the same way every time it is printed, which a hand-tuned map cannot promise. (4) IT GETS PAGE ONE TO ITSELF, 186mm across, with the read-me boxes moved behind it. THE DOTS ARE GONE from the big map and from the cards of every driver who has a ring — but a driver with NO ring keeps his, because “no fixed area” over a blank square teaches nothing while the same square full of scattered stops teaches exactly the right thing. THERE IS STILL NO LEGEND: ten swatches across 59 drivers means six men share every colour, so colour cannot name anybody — it exists so two rings crossing each other read as two rings, and the name in the middle is the answer. The legend was what ate a page in the first print AND implied a precision it did not have. THE GUARD IS THE POINT: a new test parses every text element off the rendered map and fails if any two overlap, towns included — checked BOTH ways, it fails naming the pairs when de-collision is switched off and passes with it on, so green means something. Zero NuVizz calls. 3 new tests, 3,521 green.'],
+  ['0.97.11', 'THE TRAINEE SHEET IS ONE CARD PER DRIVER, BECAUSE THE FIRST REAL PRINT WAS THIRTY PAGES NOBODY COULD READ. Chad, after seeing it: “just produce a sheet and let me look at it.” The layout was designed and tuned against an invented sample of a dozen drivers. Davis runs 59. Every driver’s circles went onto ONE map and at that scale it is mush — circles four deep, the label de-collision walking names into a column down the middle, and a colour legend eating a page trying to tell 59 people apart with 8 swatches. No test caught it because every test was written against the sample. A trainee has no question that one map answers; he has two — “this order is in Dacula, whose is it?” (the town table) and “where does Vincent run?” (his own card). SO: the everyone-at-once map is gone, replaced by one card per driver, alphabetical, two to a page — and EVERY CARD SHARES ONE FRAME, which is the part that makes them worth printing. Fit each map to its own driver and all 59 look identical, one blob filling one square; shared, a card is read by WHERE the ink sits. Each card draws that driver’s actual delivery addresses as dots UNDER his ring, so a summary can no longer be wrong where the reader cannot see it — and for the men who get no ring the dots are the whole answer, because “no fixed area” over a blank square teaches nothing. Page one is the footprint (every address, one ink, no names), which is the one thing the combined map could still answer honestly. THE 15KM RULE WAS MINE AND IT WAS WRONG, and only real data showed it. Measured over 14,270 deliveries and 19 working days it threw out 27 of 59 drivers — including Richard Mawuenyega, ONE cluster holding 98% of his work. The real distribution of Davis cluster radii is p25 7.4km, p50 11.8km, p75 17km, p90 24km, max 42km: a 15km cap cuts it in half. At 30km five drivers get no ring, and 35km excludes exactly the same five — a plateau, not a knife edge — and those five are the ones Chad predicted before a line was written: Seymour Watts (42km, which is north Georgia and not a patch), RASKO SULJIC (8 clusters, biggest holding 48%), Anthony Kostner (51%), Christopher Garrett (44%) and Brandi Bradberry (6 deliveries). Scattered work is caught by COVERAGE, which is the honest test for it; size only has to catch a circle that has stopped meaning anything. Every ring now prints how many miles across it is, so a wide one cannot imply a precision it does not have. TWO BUGS FOUND BY BUILDING THE FIXTURE AT REAL SCALE. (1) The sheet re-derived the driver key inline — uppercase, spaces to underscores — which is what the key looks like for most names and is NOT what canonicalDriver does: “COLIN/DJ 1” became COLIN/DJ_1, matched no active driver, and Colin’s second load dropped out of the town table and his own card while the map still drew it. Half the sheet disagreeing with the other half, silently. (2) The alias fold rewrites a stop’s driver to the canonical KEY, so one man arrived as both “BRENT_BRYD” and “Brent Bryd” and the printed label was whichever stop was read first — the key in one row of the town table and the name in the next, which reads as two people. One name per man across the whole sheet now, and the one a person would write. ALSO: the window took its board day from a stored field that can disagree with the collection the row lives in, which put 21 rows from three days outside the window into it and made a 19-day window report itself as 22 days beginning a week early; ?format=json&stops=1 returns the rows the renderer was handed, so the page somebody printed can be rebuilt offline; the “also runs” line rolls up by town (it printed “ATLANTA (7) · ATLANTA (4) · ATLANTA (1)”); town labels near the frame edge read inward instead of off the paper; and a map is given a height budget because break-inside does not shrink anything, it MOVES it — sized by width alone the overview came out 195mm tall and page one printed as a title over 200mm of white paper. Zero NuVizz calls: the endpoint’s import graph cannot reach the vendor, and the sheet above was built from Firestore history alone. 12 new tests, 3,518 green.'],
+  ['0.97.10', 'ONE MAN, ONE KEY — AND THE ANSWER COMES OFF HIS CARD, NOT OUT OF A HARDCODED PAIR. Chad, asked whether two spellings were the same person: “Yes same man.” NuVizz renamed Brenton Byrd from “Brent  Boyd” to “Brent  Bryd” on 2026-08-27, and anything keyed on the name sees two people from that day. On the driver-area sheet that is one man showing half a territory twice — AND the retired spelling reads as somebody who stopped running, so he is dropped for inactivity as well. One typo, two wrong answers, and a trainee cannot see either. THE FIX READS THE ROSTER. His employees card already records it: alias “Brent Bryd” with “Brent Boyd” kept in aliases[], put there by a person on purpose, and three joins in this repo already read that list. buildDriverAliases turns every card into from→to pairs and the sheet folds them, so the NEXT rename is fixed by editing the card — the way the last one was — instead of by a deploy, and nobody has to remember to tell me. The canonical name is externalIds.nuvizz, the spelling the BOARD shows, because a trainee has to learn the name they will actually see on a load rather than the one on the payroll. The ops-doc alias list still applies on top as a manual override and wins on a conflict. AND THE SHEET STOPS ASKING ONCE THEY ARE FOLDED — possibleSameDriver flags the pair beforehand and goes quiet afterwards, rather than nagging about a question that has been answered. A TEST OF MINE WAS WRONG AND IS RECORDED AS SUCH: the end-to-end fixture first dated the old spelling 14 days before the window end, which is exactly ON the staleness boundary (the rule is `gap > staleDays`), so it did NOT drop him and the test “proved” a bug that does not exist. The dates moved; the code did not. 8 new tests, 3,494 green.'],
+  ['0.97.9', 'THE DRIVER-AREA SHEET GOES LIVE, AND IT CANNOT SPEND A NUVIZZ CALL BY CONSTRUCTION. Chad, on the sample: “I like the circles.” So it stops being a script that renders invented data and becomes a URL: driver-territory?weeks=4 returns the printable sheet from the history warehouse — open it, press print. ONE RENDERER, TWO CALLERS. The whole sheet moved into src/lib/territory-sheet-html.js as a pure string builder; the CLI and the endpoint now emit the identical bytes. Verified byte-for-byte against the pre-extraction output, because “I refactored it and it looks the same” is not a check. Building the page twice is exactly how a printout and a screen drift apart, which this repo already paid for on the roster freshness line. THE COST RULE IS ENFORCED BY THE IMPORT GRAPH, NOT BY A COMMENT. This endpoint reads months of history; if it could reach the vendor it would be the most expensive thing in the app. A test walks the actual import graph from the handler and fails if any nuvizz-* module is reachable — and is CHECKED BOTH WAYS by pointing the same walker at refresh-stops-core, where it must find them. A comment claiming “this never calls NuVizz” is worth nothing; the roster endpoint carried one of those while falling through to a live pull on every empty cache. AND THE BRENT PROBLEM ASKS RATHER THAN GUESSES. NuVizz renamed a driver from “Brent  Boyd” to “Brent  Bryd” mid-history, so one man becomes two half-territories — and worse, the OLD spelling then reads as a driver who quit, so he is dropped for inactivity as well. possibleSameDriver flags names one or two edits apart that share a first name and prints them on the sheet: “Same person? BRENT BOYD (22 stops, last 08-20) and BRENT BRYD (18, last 09-03).” It does NOT merge them — Davis has had two STEVENs, and fusing two real people is worse than showing one twice, which a trainee can at least query. One word from Chad and applyAliases folds them from a Firestore doc with no deploy. Also: the window is BUSINESS days back from the end date (a weekend is a Firestore round trip that can only come back empty), clamped so a stray ?weeks= cannot walk years; a day whose history fails to READ is printed as incomplete rather than silently shrinking the window; and the map box is sized for a worst-case header after a fourth banner pushed it onto page two and left half of page one blank. 44 new tests, 3,486 green.'],
+  ['0.97.8', 'A PRINTABLE DRIVER-AREA SHEET FOR A TRAINEE, AND THE ARGUMENT ABOUT WHAT SHAPE IT SHOULD BE. Chad: “design a map for a trainee so they have a general idea where drivers most frequent areas are ... I was thinking circles or ovals ... I know there are a few drivers this probably won’t work great for like rasko or chris.” Then, on the first draft: “the dots didn’t lay over an actual map of north Georgia and I think big circles will work better than dots”, and “just guys that have ran in last 4 weeks”. WHAT SHIPS: a pure, tested aggregation (src/lib/driver-territory.js) plus a print-tuned renderer (scripts/territory-sheet.mjs) that emits one self-contained HTML document — HTML rather than a PDF library so the identical renderer can later be served live with no second implementation to drift. Real north-Georgia county outlines (US Census, public domain, 65 counties simplified to 985 points) with town labels, one CIRCLE PER CLUSTER per driver, a look-it-up-by-town table, and a block per driver. THE CIRCLES CANNOT LIE, AND IT TOOK TWO WRONG ATTEMPTS TO GET THERE. One circle per driver puts a two-cluster driver’s centre on ground he never touches, so circles are per CLUSTER. That was not enough: the first clustering flood-filled through single-stop cells and merged the whole metro, giving Rasko a 23km circle and Chris a 35km one — each swallowing four other drivers’ areas. My guard did not catch it because I had written it as “do the circles cover his work”, and they covered 99%: once the metro is dense a scattered driver’s stops DO all sit in one connected region. Coverage cannot see this; SIZE can. A cluster wider than 15km is not a patch, it is the city. So a cell must be busy to join a cluster, and a driver with no tight cluster gets NO CIRCLE and a printed line saying why. Only printing the radii found this — two rounds of looking at rendered PDFs did not. ONLY DRIVERS STILL RUNNING. Recency, not stop count: the driver Chad named had SEVENTY stops in the window and had simply stopped three weeks earlier, which every count test passes. Measured against the window END, so reprinting an old window gives that window’s answer. Exclusions are printed with the reason and the last date. AND A FACT ONLY CHAD HAD, WHICH FOUR COMMENTS IN THIS REPO HAD WRONG. They said a slashed load name is a co-driver load, “two drivers on one truck”. Chad: “Colin/dj1 is Colin’s second load usually but always Colin never dj.” It is ONE man’s second load. Left alone it splits Colin into two drivers with half a territory each AND teaches a trainee that “DJ” has a patch. canonicalDriver folds it, rosterOf canonicalises both sides of the roster check so a vendor-spelled roster cannot drop a real driver as if he were a carrier, and every merge is PRINTED for checking — a rule generalised from one example may not silently merge people. The three stale comments are corrected in place. THE SHEET SAYS WHAT IT IS BUILT FROM (deliveries, working days, drivers) and defers to people: “when the sheet and a dispatcher disagree, the dispatcher is right.” A printout has no freshness line and nobody reviews it. 38 new tests, 3,458 green. NOT YET WIRED TO REAL DATA — the renderer runs on a JSON input and has only been exercised on clearly-marked sample data.'],
   ['0.97.7', 'PICKUPS NOW SAY SO, ON EVERY MARKER THEY CAN DRAW \u2014 AND THE MARK HAD NEVER ONCE RENDERED. Chad, beside a screenshot of the NuVizz map where every marker is a red \u201cP\u201d or a cyan \u201cD\u201d: \u201cwe are not id\u2019ing pickups correctly like on the nuvizz map.\u201d He was right, and the cause is the same shape as the legend bug an hour earlier \u2014 code that was written, half-wired, and shipped invisible. THERE ARE TWO DISC RENDERERS. unplannedDotSvg named \u2018PU\u2019 in its tag arm; circleMarkerSvg did not. Every pickup lands in circleMarkerSvg \u2014 the `!tag` guard on the unplanned branch sends a TAGGED stop away from the only renderer that knew the mark \u2014 so \u2018PU\u2019 arrived, matched neither \u2018AM\u2019 nor \u2018PM\u2019, and fell through to the plain centre dot. One of the two was updated and the other was missed, and nothing in the build could see the difference. IT WAS WORSE THAN UNMARKED. The size tier reads `tag ? 28 : 16`, so a pickup drew a BLANK 28px disc \u2014 the footprint this map reserves for a stop with a delivery window \u2014 carrying no information at all. An unplanned delivery rests at 16px; an unplanned pickup was a big empty pin claiming to be time-critical and then refusing to say why. FOUND BY RUNNING IT, NOT READING IT, and that distinction is the whole lesson here: the letters \u2018PU\u2019 appear in BOTH functions, so every grep over the source goes green. The bug was that the branch reaching the renderer which knew the mark was unreachable for exactly the stops that needed it. Only building the marker and reading the SVG can see that. NOW THE PU RIDES EVERY MARKER A PICKUP CAN DRAW, the way the Estes ring does: the CENTRE when that slot is free (the biggest, most readable spot on the disc), and a corner badge when something else owns the middle \u2014 a route sequence number, an AM/PM window, the do-not-send \u2717, a restriction cluster, the delivered \u2713. The old rule was \u201ca delivery-window tag wins the slot\u201d, which is right about the MIDDLE and wrong about the identity: a safety mark should outrank a type mark without costing the stop what it IS. Slate ground rather than a colour of its own, because every colour on this map already answers \u201cwhat state is this in\u201d or \u201cwhat can I send here\u201d, and spending one would make a pickup argue with its own status. AND A PICKUP IS NEVER MUTED: at 14px hollow slate there is no room for the mark, so muting a pickup does not quiet it, it DISGUISES it as an ordinary planned delivery \u2014 and which kind of job a stop is stays a live question after it is planned, as this repo has twice learned the hard way by scoring a pickup against a dock\u2019s receiving hours (v0.59.2, v0.65.2). The Legend gets a Pickup row with the real badge and a live count. THE TESTS BUILD REAL MARKERS and read the SVG back \u2014 a new helper lifts the whole stopMarkerIcon DECISION, not just the builders it dispatches to, resolving its dependencies by iterating on the ReferenceError rather than from a hand-kept list that is one more place to forget something. Proven load-bearing both ways: 14 of the 15 fail against the shipped bundle and all 15 pass on this one. One EXISTING test went red and was TIGHTENED rather than loosened \u2014 it pinned `dns,` and `estes:` as adjacent source lines, so inserting `pickup,` between them broke it while the property it guards was untouched; it now asserts the entry object the hook builds, and requires the pickup flag too. STILL OPEN, and it is a question for Chad rather than a guess: this marks stopType===\u2018PU\u2019, and v0.68.1 records that freight coming BACK to us is routinely typed as a DELIVERY \u2014 so if the red P\u2019s on his NuVizz map are RAs and returns, the SET is wider than this and the rule has to key on something else. The drawing was broken either way. 15 new tests, 3,663 green.'],
   ['0.97.6', 'THE MAP LEGEND HAD NO BACKGROUND, AND THE CALL CEILING IGNORED THE NUMBER YOU SET. TWO REPORTS, ONE MORNING. FIRST, THE LEGEND. Chad, on a phone shot of the Routing map: \u201cyou can\u2019t see this[,] formatting and colors are bad and i\u2019ve already made you aware but wasn\u2019t fixed.\u201d The panel was a sheet of blurred satellite imagery with grey text floating on it. THE WHOLE CAUSE WAS FOUR CHARACTERS: the popover was `bg-white/97`. Tailwind\u2019s opacity scale runs 0\u2013100 in steps of FIVE, and a modifier off the scale is not an error \u2014 it emits NOTHING. The class was right there in the markup, matched no rule, and the panel had no background at all; `backdrop-blur` was the only thing still doing anything, which is exactly the blurred map in the shot. Confirmed by grepping the shipped stylesheet: /15, /20, /25, /30, /90 and /95 are all in it and /97 is not. THAT IS THE WORST SHAPE A UI BUG COMES IN \u2014 green build, valid bundle, every test passing, a diff that reads correctly to a human, and a failure that exists only on a screen. The phone guard could not see it either: the panel occupies exactly the right pixels, it just has no paint. SO THE FIX IS TWO THINGS. The panel is `bg-white/95` (the class the other fifteen on-map panels already use). AND a guard now reads every slash-modifier class out of src and asks the BUILT stylesheet whether each one exists \u2014 Tailwind is the authority, this only compares the two lists, so it has something to say about the next silently-dropped utility too, not just opacity. It was proven BOTH ways against the real history: it names `src/App.jsx:16615 bg-white/97` on the shipped source and passes on this one. Wired into CI after the build, plus a no-build unit test so the fast job catches it too. WHILE IN THERE, THE CONTRAST. Chad said colors, not just background, and he is right on a white panel too: the count chips were slate-400 (2.6:1 on white, well under the 4.5:1 floor) at 10px \u2014 and those numbers ARE the content, the answer to \u201cis this a corner case or half my afternoon.\u201d Counts, section headings, the restriction paragraph, the marker labels, the tractor status line and the close X all move up a step or two (everything now \u22657:1), and the body text sets its own colour instead of inheriting whatever it lands in. SECOND, THE CEILING. Chad: \u201ci just changed the settings to allow 3000 calls but still shows only 2000 enforce on the dropdown menu on the actual map.\u201d He was reading it right. Since v0.54.21 there was ONE number, 2,000, serving as BOTH the default AND an absolute cap nothing could lift \u2014 so the Diagnostics field took 3,000, saved it, and the breaker kept 2,000 with nothing anywhere saying they disagreed. Those are two different questions and they are two constants now. DEFAULT (2,000) is what you get when nobody has decided, and an env var or a caller-supplied fallback may only LOWER it \u2014 so this deploy spends exactly what yesterday spent until somebody saves a setting. HARD (3,000) is reachable ONLY by a deliberate save in the Diagnostics editor, which is bounded to the imported constant so the number the field accepts cannot drift from the number the breaker enforces. Junk resolves to the DEFAULT, never the maximum: a malformed value must not buy headroom. The enforcement site and the gauge now share ONE expression rather than rebuilding it \u2014 that duplication is exactly what shipped a card reading 20,000 against a breaker tripping at 2,000 in v0.70.2 \u2014 and the property test states it on the path production uses. WORTH SAYING PLAINLY: 2,000 was chosen to sit BELOW the ~3,000-call cold number-probe scan so that scan could not finish by accident, and at 3,000 that particular backstop is gone. The primary guard is unchanged (the permission rule, and only manual=1 / ?date= / ?days= reach that path), and the backstop was never cheap: it did not prevent the spend, it stopped the scan PARTWAY and left the board half-written. Lower it in Diagnostics any time \u2014 the field goes down to 100. AND THE FIELD STOPS LYING: `max` on a number input only constrains the spinner arrows, so every field in that editor would accept a value it would not keep. They now print their range, flag an out-of-range value in amber with the number that will actually be saved, and pull it back on blur where you can see it. 16 new tests.'],
   ['0.97.5', 'LOAD-SCAN (v0.45.0): SCANNING A MULTI-PIECE ORDER STOPPED ASKING PERMISSION. Chad, off the dock: "the scanner is taking too long to scan things now that we are confirming each new item to same pro." He was right, and it was worse than one tap — piece 2 of a same-PRO order cost about six seconds. The pair window (2.5s), then a three-second cooldown that dropped the read SILENTLY so the loader re-aimed and paid the window again, then an amber card to tap. A 3-skid order is one PRO on three labels and the manifest already says three; asking a loader to vouch for skids 2 and 3 is asking them to confirm the paperwork against itself, and a tap demanded that often becomes a reflex, which is not a check. A repeat PRO on a stop still short of its count now books straight through. THE GUARD THAT REPLACED IT IS TIGHTER THAN THE ONE IT REMOVED, not looser: a fixed timer cannot tell another piece from another look, so the rule is now ABSENCE — the label has to leave the frame before it earns another booking. A phone left pointing at one skid keeps decoding it, so it never goes absent and can never book twice however long it is held; today\'s three-second cooldown allowed exactly that every three seconds. The confirmation is kept where the question is genuinely open: a stop already at its count, or one with no count to reason about. One decision per presentation, so a lingering label cannot re-fire the amber card every window either. VERIFIED IN THE REAL BUNDLE, both ways: the camera end-to-end check gained an act where three skids of one PRO book with no tap while five seconds of unbroken aim books once — and it was run with the new guard deliberately disabled, where it booked FIVE pieces from three aims and the act failed, which is the only evidence that a test is load-bearing. ALSO RECORDED, A FIX THAT WAS TRIED AND REJECTED: halving the camera pair window to 1200ms looked safe because a late piece id upgrades its fallback since v0.43.0 — but Quagga is multiple:false, so on an iPhone a late id arrives ALONE, a lone id cannot identify a stop, and it never reaches the upgrade at all. The end-to-end check caught it (DASAN and LATE LABEL both booking fallbacks, no upgrade firing) and the window stays at 2500 with the reasoning written beside it so it is not retried. The tick that notices a closed window is halved to 200ms, which is pure latency and nothing else. 319 load-scan tests green; this app is untouched.'],
@@ -16083,7 +16089,7 @@ function MobileSelectedStops({ count, skids, pieces, defaultOpen, children }) {
   );
 }
 
-function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId, onOpenStop }) {
+function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId, onOpenStop, onLocate }) {
   const [detailId, setDetailId] = useState(null);
   const rowRefs = useRef(new Map());
   const rows = useMemo(() => selectedStops.map((s) => {
@@ -16150,6 +16156,19 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
                   )}
                 </div>
                 <div className="shrink-0 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                  {/* FIND IT ON THE MAP. On a phone there is no hover, so the emphasis this panel
+                      already drives from `hoverId` is unreachable — a tap is the only pointer a
+                      touch dispatcher has, and the row's tap is spoken for by the detail card.
+                      So the action is its own control, and it exists on desktop too because
+                      hovering to find one pin among six hundred is a hunt, not an answer. */}
+                  {onLocate && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onLocate(r.stop); }}
+                      aria-label={`Show ${r.customer} on the map`}
+                      title="Show on map"
+                      className="tap-target inline-flex items-center justify-center text-slate-400 hover:text-blue-600"
+                    ><MapPin size={13} /></button>
+                  )}
                   <ProLink stop={r.stop} onOpen={onOpenStop} className="text-[11px]" />
                   {/* tap-target: a bare × glyph is ~10px wide, and the phone floor only widens
                       icon-only (svg) buttons — so this destructive control sat 4px from the PRO
@@ -18118,7 +18137,7 @@ function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = f
   );
 }
 
-function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemove, onRemoveMany, onClearAll, onOpenStop, onClose, isMobile }) {
+function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemove, onRemoveMany, onClearAll, onOpenStop, onClose, isMobile, hoverId, setHoverId, onLocate }) {
   // Compact window from the naive (zoneless) schedule ISO — parse the clock straight off the
   // string so there's no local-timezone drift. "8:00a", "8:00a–8:00p".
   const fmtWin = (iso) => {
@@ -18183,6 +18202,11 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
   );
   return (
     <div
+      // A stable hook for the browser guard. Both this panel and the bottom data grid render a
+      // <tr> per stop, so a guard that matches on the customer name alone asserts against the
+      // wrong table and passes or fails for the wrong reason — which is what happened on the
+      // first run of verify-selection-locate.
+      data-sel-panel="1"
       className={`absolute z-20 bg-white border border-slate-300 rounded-lg shadow-xl flex flex-col ${isMobile ? 'left-2 right-2 top-12 max-h-[45vh]' : 'right-2 top-12 max-w-[calc(100%-1rem)] max-h-[60vh]'}`}
       style={isMobile ? undefined : { width: panelW }}
     >
@@ -18228,6 +18252,12 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
         <div className="px-3 py-3 text-[11px] text-slate-400">No stops selected yet. Tap a stop on the map, or use Add in view / Box / Lasso.</div>
       ) : (
         <div className="overflow-auto flex-1 min-h-0">
+          {/* SAY THAT THE ROW IS A CONTROL. A cursor and a tooltip are found by people who
+              already suspect there is something to find; the dispatcher asking "which one is
+              this on the map" is not going to hover a table to see. One line, once. */}
+          <div className="px-2 py-1 text-[10px] text-slate-500 bg-amber-50 border-b border-amber-200">
+            Click a row to find that stop on the map — it pans to the pin and makes it bounce.
+          </div>
           <table className="w-full text-[11px]">
             <thead className="bg-slate-50 sticky top-0 z-10">
               <tr className="text-[9px] uppercase tracking-wide text-slate-500">
@@ -18244,8 +18274,19 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
             </thead>
             <tbody>
               {sorted.map((r) => (
-                <tr key={r.id} className={`border-t ${r.tractorOk ? 'bg-green-100 hover:bg-green-200/70' : 'hover:bg-slate-50'}`}>
-                  <td className="px-1.5 py-1 whitespace-nowrap"><button onClick={() => onOpenStop && onOpenStop(r.stop)} className="font-mono text-blue-700 hover:underline">{r.pro}</button></td>
+                // THE ROW POINTS AT THE MAP. Hover lights the pin (the same emphasis the map's own
+                // hover uses, so the two surfaces agree); click pans to it and bounces it. The stop
+                // number keeps opening the card, so the row gains an action without taking one away
+                // — hence stopPropagation on both buttons.
+                <tr
+                  key={r.id}
+                  onMouseEnter={() => setHoverId && setHoverId(r.id)}
+                  onMouseLeave={() => setHoverId && setHoverId((h) => (h === r.id ? null : h))}
+                  onClick={() => onLocate && onLocate(r.stop, isMobile ? 0 : panelW / 2)}
+                  title="Show this stop on the map"
+                  className={`border-t cursor-pointer ${hoverId === r.id ? 'bg-amber-100' : (r.tractorOk ? 'bg-green-100 hover:bg-green-200/70' : 'hover:bg-slate-50')}`}
+                >
+                  <td className="px-1.5 py-1 whitespace-nowrap"><button onClick={(e) => { e.stopPropagation(); onOpenStop && onOpenStop(r.stop); }} className="font-mono text-blue-700 hover:underline">{r.pro}</button></td>
                   <td className="px-1.5 py-1 max-w-[150px] truncate" title={r.location}>{r.location}</td>
                   <td className="px-1 py-1 text-right tabular-nums">{r.pallets}</td>
                   <td className="px-1 py-1 text-right tabular-nums">{r.loose}</td>
@@ -18253,7 +18294,7 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
                   <td className="px-1.5 py-1 max-w-[90px] truncate" title={r.city}>{r.city}</td>
                   <td className="px-1 py-1 whitespace-nowrap text-slate-600">{r.zip}</td>
                   <td className="px-1 py-1"><span className={`text-[9px] font-bold px-1 rounded ${r.type === 'PU' ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-600'}`}>{r.type}</span></td>
-                  <td className="px-1 py-1"><button onClick={() => onRemove(r.id)} aria-label={`Remove ${r.location} from selection`} className="text-slate-400 hover:text-red-600 leading-none text-base">×</button></td>
+                  <td className="px-1 py-1"><button onClick={(e) => { e.stopPropagation(); onRemove(r.id); }} aria-label={`Remove ${r.location} from selection`} className="text-slate-400 hover:text-red-600 leading-none text-base">×</button></td>
                 </tr>
               ))}
             </tbody>
@@ -18678,6 +18719,11 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   useEffect(() => { hoverIdRef.current = hoverId; }, [hoverId]);
   const markerByIdRef = useRef(new Map());  // stopId -> { marker, sel, routed }
   const lastEmphRef = useRef(null);
+  // The receiving-hours hover card, which the dispatch Map has had since v0.50.44 and this
+  // screen never got. Chad, hovering a clock pin here: "it didn't show me the hours like it was
+  // supposed to." He is right, and it is the two-views failure this repo has shipped before —
+  // the feature was wired into ONE marker effect and the other one was left alone.
+  const routingHoverTipRef = useRef(null);   // { marker, tip }
 
   // Desktop click-drag rubber-band box. The overlay (rendered over the map only
   // while Box mode is armed on desktop) captures the drag so it doesn't pan the
@@ -20251,6 +20297,31 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     mapRef.current.panTo({ lat: s.lat, lng: s.lng });
     if ((mapRef.current.getZoom() || 0) < 12) mapRef.current.setZoom(13);
   }, []);
+  // "WHICH ONE IS IT?" — the answer the selection window could not give.
+  //
+  // Chad, one stop selected on a board of 620 unplanned orders: "How am I supposed to tell which
+  // stop this is on the map." A selected stop DOES render differently — stopMarkerIcon paints it
+  // amber (#f59e0b) and lifts it to zIndex 25 — but "differently" is not "findable" when the
+  // screen holds hundreds of coloured pins and the panel itself covers part of the map. The
+  // window listed the order and pointed at nothing.
+  //
+  // So the row points now: pan to it, hold it emphasised, and BOUNCE the pin. A 30% size bump is
+  // the right cue when the eye already knows where to look — it is useless as a search. And the
+  // pan is offset by the floating panel's own width, because centring a stop underneath the
+  // window that sent you looking for it is the same bug wearing a different hat.
+  const locateStop = useCallback((s, offsetX = 0) => {
+    if (!s || s.lat == null || s.lng == null || !mapRef.current) return;
+    panToStop(s);
+    if (offsetX) mapRef.current.panBy(offsetX, 0);
+    const id = String(s.stopNbr);
+    setHoverId(id);                            // sticky emphasis — it stays lit until you look elsewhere
+    const entry = markerByIdRef.current.get(id);
+    if (entry?.marker && google?.maps?.Animation) {
+      entry.marker.setAnimation(google.maps.Animation.BOUNCE);
+      // Markers are rebuilt whenever the selection changes, so the handle may be stale by now.
+      setTimeout(() => { try { entry.marker.setAnimation(null); } catch { /* marker already gone */ } }, 1500);
+    }
+  }, [panToStop, google]);
   // Tap a table row → frame it on the map AND toggle it into the route selection,
   // so the dispatcher can build a route straight from the spreadsheet.
   const pickStopFromTable = useCallback((s) => {
@@ -20796,6 +20867,9 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   useEffect(() => {
     if (!google || !mapRef.current) return;
     markersRef.current.forEach((m) => m.setMap(null));
+    // A tip left over from the previous render points at a marker that no longer exists.
+    if (routingHoverTipRef.current) { routingHoverTipRef.current.tip.setMap(null); routingHoverTipRef.current = null; }
+    const HoverTip = makeDriverLabelOverlayClass(google);
     const byId = new Map();
     // Location → its member stopNbrs. Length feeds the count badge; the member list feeds the
     // one-click group select (clicking a multi-order marker toggles every order at the place).
@@ -20855,8 +20929,34 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
           else toggleStopGroup(s.stopNbr, locMates.get(stopLocKey(s)));         // whole place in one click
         }
       });
-      marker.addListener('mouseover', () => setHoverId(id));
-      marker.addListener('mouseout', () => setHoverId((h) => (h === id ? null : h)));
+      // HOVER DOES TWO THINGS. It emphasises the pin (the panel rows drive the same state), and
+      // for a stop that carries receiving hours it pops the same card the dispatch Map pops —
+      // business name plus the window — so hunting a time-restricted stop does not mean clicking
+      // into every clock pin. formatReceivingHours returns null when no hours are recorded, so a
+      // plain pin can never show a window it does not have.
+      //
+      // The clock mark on the pin is drawn from note.receiving_hours (timeMarkForDay) and this
+      // card is drawn from the same field, so the two cannot disagree: every pin wearing a clock
+      // has a card, and no pin without one does.
+      const hoursStr = formatReceivingHours(note);
+      marker.addListener('mouseover', () => {
+        setHoverId(id);
+        if (!hoursStr) return;
+        if (routingHoverTipRef.current) routingHoverTipRef.current.tip.setMap(null);
+        const tip = new HoverTip(new google.maps.LatLng(s.lat, s.lng), s.businessName || 'Stop', `Receiving hours: ${hoursStr}`);
+        tip.setMap(mapRef.current);
+        routingHoverTipRef.current = { marker, tip };
+      });
+      marker.addListener('mouseout', () => {
+        setHoverId((h) => (h === id ? null : h));
+        // Only clear if THIS marker's tip is the one showing — co-located pins can fire the next
+        // mouseover before the previous mouseout, and yanking the new card is worse than a stale
+        // one. (Same rule the Map's copy of this learned.)
+        if (routingHoverTipRef.current && routingHoverTipRef.current.marker === marker) {
+          routingHoverTipRef.current.tip.setMap(null);
+          routingHoverTipRef.current = null;
+        }
+      });
       marker.setMap(mapRef.current);
       byId.set(id, { marker, baseIcon, baseZ });
       return marker;
@@ -22065,7 +22165,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
                 ? <>
                     {selectedStops.length > 0 && (
                       <MobileSelectedStops count={tally.count} skids={tally.skids} pieces={tally.pieces} defaultOpen={wbRoutes.length === 0}>
-                        <RoutingStopsPanel selectedStops={selectedStops} notes={notes} onRemove={removeStop} hoverId={hoverId} setHoverId={setHoverId} onOpenStop={openStop} />
+                        <RoutingStopsPanel selectedStops={selectedStops} notes={notes} onRemove={removeStop} hoverId={hoverId} setHoverId={setHoverId} onOpenStop={openStop} onLocate={locateStop} />
                       </MobileSelectedStops>
                     )}
                     {engineResultContent}
@@ -22164,7 +22264,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         )}
         {/* Floating "Selected N" panel (toggleable) — lists every selected stop over the map. */}
         {!viewing && selPanelOpen && selectedStops.length > 0 && (
-          <RoutingSelectionFloatPanel selectedStops={selectedStops} notes={notes} tractorLocs={tractorLocs} onRemove={removeStop} onRemoveMany={removeStops} onClearAll={clearSelection} onOpenStop={openStop} onClose={clearSelection} isMobile={false} />
+          <RoutingSelectionFloatPanel selectedStops={selectedStops} notes={notes} tractorLocs={tractorLocs} onRemove={removeStop} onRemoveMany={removeStops} onClearAll={clearSelection} onOpenStop={openStop} onClose={clearSelection} isMobile={false} hoverId={hoverId} setHoverId={setHoverId} onLocate={locateStop} />
         )}
         {/* Reopen chip when the panel is toggled off but stops are selected. */}
         {!viewing && !selPanelOpen && selectedStops.length > 0 && (
@@ -22279,7 +22379,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
           <button onClick={() => setRightCollapsed(true)} className="shrink-0 px-1.5 text-slate-400 hover:text-slate-700 border-l" title="Collapse panel"><ChevronRight size={15} /></button>
         </div>
         {desktopRail === 'stops' ? (
-          <RoutingStopsPanel selectedStops={selectedStops} notes={notes} onRemove={removeStop} hoverId={hoverId} setHoverId={setHoverId} onOpenStop={openStop} />
+          <RoutingStopsPanel selectedStops={selectedStops} notes={notes} onRemove={removeStop} hoverId={hoverId} setHoverId={setHoverId} onOpenStop={openStop} onLocate={locateStop} />
         ) : desktopRail === 'loads' ? (
           <div className="flex-1 min-h-0 flex flex-col">
             {/* Two different things are called a load. The board's routes are what a dispatcher
