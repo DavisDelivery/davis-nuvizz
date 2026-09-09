@@ -30,6 +30,13 @@ const NEEDED = [
   'restrictionWarnColor', 'blockerDiscMarkup', 'iconMarkerSvg',
 ];
 
+function declarationLine(lines, name) {
+  const re = new RegExp(`^(?:export\\s+)?(?:const|let|function)\\s+${name}\\b`);
+  const i = lines.findIndex((l) => re.test(l));
+  if (i < 0) throw new Error(`app-markers: '${name}' is not a top-level declaration in App.jsx`);
+  return i;
+}
+
 function declarationSource(lines, name) {
   const re = new RegExp(`^(?:export\\s+)?(?:const|let|function)\\s+${name}\\b`);
   const i = lines.findIndex((l) => re.test(l));
@@ -60,6 +67,88 @@ export async function loadMarkerPipeline() {
   const build = new Function('TIME_MARK_KEYS', 'visibleIconKeys', `${body}\nreturn { ${NEEDED.join(', ')} };`);
   cached = build(TIME_MARK_KEYS, visibleIconKeys);
   return cached;
+}
+
+/**
+ * THE WHOLE MARKER DECISION, RUN FOR REAL — including stopMarkerIcon itself.
+ *
+ * The Estes paint shipped with its rule pinned by reading App.jsx for the right words. Every
+ * word was there and the colour was still wrong on half the board: the black had been put at
+ * the END of the fill chain, after the status colour, so an UNPLANNED stop (which carries its
+ * own purple) never reached it while a SCHEDULED stop (whose colour is null) did. Source text
+ * cannot show you the ORDER of a `||` chain's answers. Building the marker can.
+ *
+ * So this lifts stopMarkerIcon and everything it closes over. `google` is the only stub — the
+ * two value classes it constructs — and the four real modules it imports are injected, never
+ * faked, so a disagreement between the marker and the legend still shows up here.
+ *
+ * Declarations are emitted in APP.JSX'S OWN ORDER rather than the order this list names them,
+ * so a const that reads another const at definition time cannot land in its temporal dead zone
+ * because somebody added a name in the wrong place.
+ */
+const ICON_NEEDED = [
+  'stopMarkerIcon', '__stopIconCache',
+  'getRestrictionBadgeKeys', 'resolveRestrictionKey', 'classifyStopStatus',
+  'execArrivalTs', 'execDeliveredTs', 'hasReceivingHours',
+  'STATUS_META', 'FLAG_COLORS', 'PIN_TINTS', 'flagColor',
+  'RESTRICTION_TINT', 'UNFLAGGED_TINT', 'DNS_COLOR', 'PLANNED_MUTED_COLOR', 'SEARCH_MATCH_COLOR',
+  'TRACTOR_DELIVERED_COLOR', 'ELIG_TRACTOR_COLOR', 'ELIG_BOX_COLOR', 'ADDRESS_OFF_TINT',
+  'readableTextColor', 'countBadgeSvg', 'unplannedDotSvg', 'circleMarkerSvg',
+  'RESTRICTION_ICONS', 'UNKNOWN_RESTRICTION', 'RESTRICTION_ALIASES',
+  'isTimeMarkKey', 'timeMarkOutline', 'renderMarkerGlyph',
+  'BLOCKER_GLYPH_INK', 'renderBlockerGlyph', 'restrictionWarnColor', 'blockerDiscMarkup',
+  'RESTRICTION_MARKER_SCALE', 'TIME_MARK_MARKER_SCALE', 'RESTRICTION_MARKER_KIND_SCALE',
+  'restrictionMarkerScale', 'scaleMarkerSpec', 'iconMarkerSvg',
+];
+
+/** The `google.maps` surface stopMarkerIcon touches: two value classes, nothing else. */
+export const googleStub = {
+  maps: {
+    Size: class { constructor(width, height) { this.width = width; this.height = height; } },
+    Point: class { constructor(x, y) { this.x = x; this.y = y; } },
+  },
+};
+
+let cachedIcon = null;
+export async function loadStopMarkerIcon() {
+  if (cachedIcon) return cachedIcon;
+  const mods = await Promise.all([
+    import('../../src/lib/map-legend.js'),
+    import('../../src/lib/time-marks.js'),
+    import('../../src/lib/carrier-mark.js'),
+    import('../../src/lib/address-fix.js'),
+  ]);
+  const injected = {};
+  for (const m of mods) for (const [k, v] of Object.entries(m)) if (!ICON_NEEDED.includes(k)) injected[k] = v;
+  const lines = readFileSync(APP_PATH, 'utf8').split('\n');
+  const body = ICON_NEEDED
+    .map((n) => ({ n, at: declarationLine(lines, n), src: declarationSource(lines, n) }))
+    .sort((a, b) => a.at - b.at)
+    .map((d) => d.src)
+    .join('\n\n');
+  const names = Object.keys(injected);
+  // eslint-disable-next-line no-new-func
+  const build = new Function(...names, `${body}\nreturn stopMarkerIcon;`);
+  const stopMarkerIcon = build(...names.map((k) => injected[k]));
+  // The icon cache is keyed by the visual inputs; a test that changes App.jsx between runs in
+  // one process would otherwise read a stale icon. Hand callers a fresh-cache wrapper.
+  cachedIcon = (stop, note, opts = {}) => stopMarkerIcon(googleStub, stop, note, opts);
+  return cachedIcon;
+}
+
+/** The plain-disc builders — what the status pins, the numbered route pins and the unplanned
+ * dots are drawn with (no restriction glyphs). Self-contained, so they load without the icon
+ * set; the Estes ring tests build real discs through these and read the SVG back. */
+const DISC_NEEDED = ['readableTextColor', 'countBadgeSvg', 'unplannedDotSvg', 'circleMarkerSvg'];
+let cachedDisc = null;
+export async function loadDiscPipeline() {
+  if (cachedDisc) return cachedDisc;
+  const lines = readFileSync(APP_PATH, 'utf8').split('\n');
+  const body = DISC_NEEDED.map((n) => declarationSource(lines, n)).join('\n\n');
+  // eslint-disable-next-line no-new-func
+  const build = new Function(`${body}\nreturn { ${DISC_NEEDED.join(', ')} };`);
+  cachedDisc = build();
+  return cachedDisc;
 }
 
 /** The decoded SVG source of a marker, as the browser would parse it out of the data URI. */

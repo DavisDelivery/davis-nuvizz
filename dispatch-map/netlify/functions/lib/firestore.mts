@@ -612,6 +612,24 @@ export async function readStops(tenant: string, dateStr: string, opts?: { mask?:
   return { meta: (meta as StopIndexMeta) || null, stops };
 }
 
+// ── One stop of one day's board, read and patched in place ───────────────────
+//
+// For the frozen-day heal (lib/refile-core.mts): a finished or re-planned stop whose day the
+// scan no longer rewrites gets its LIVE status/plan fields patched onto that day's copy with
+// a field-masked write — never a blind setDoc, which would replace the row and take its pin,
+// its enrichment and its notes with it (CLAUDE.md: "never blind-write a document you do not
+// own"). readStopDoc is the guard before it: no copy → nothing to heal; a copy already
+// finished → history, not today's work.
+export async function readStopDoc(tenant: string, dateStr: string, stopNbr: string): Promise<any | null> {
+  const doc = await getDoc(`${COLLECTION}/${parentId(tenant, dateStr)}/stops/${encodeURIComponent(String(stopNbr))}`);
+  if (!doc) return null;
+  const { _id, ...rest } = doc as any;
+  return rest;
+}
+export async function patchStopFields(tenant: string, dateStr: string, stopNbr: string, fields: Record<string, any>): Promise<boolean> {
+  return updateDocFields(`${COLLECTION}/${parentId(tenant, dateStr)}/stops/${encodeURIComponent(String(stopNbr))}`, fields);
+}
+
 // ── Board write-through (issue #361) ─────────────────────────────────────────
 //
 // A CONFIRMED live Save (the import engine's order read-back, or a classic save whose steps
@@ -728,7 +746,11 @@ export async function patchBoardPlan(
 // a manual Refresh or an activity-timeline open. Reads are TARGETED (getDoc by stopNbr for
 // just the candidate set), never a full-collection scan, so read cost is bounded by the
 // stops we'd otherwise enrich — not by registry size — and no pruning is needed for cost.
-const enrichRegPath = (tenant: string, stopNbr: string) => `nuvizz_enriched/${tenant}/pros/${encodeURIComponent(stopNbr)}`;
+/** One casing for every tenant-keyed path (parentId, the pool, the retired list and board dates
+ *  already lowercase; the registry and the active set did not — a caller handing in
+ *  getCreds().companyCode ('DAVIS') would have missed both). */
+export const tenantKey = (t: any) => String(t || '').toLowerCase();
+const enrichRegPath = (tenant: string, stopNbr: string) => `nuvizz_enriched/${tenantKey(tenant)}/pros/${encodeURIComponent(stopNbr)}`;
 
 // Look up enrichment detail for a set of PROs (parallel getDoc, bounded concurrency).
 export async function readEnrichedPros(tenant: string, stopNbrs: string[], conc = 12): Promise<{ found: Map<string, any>; unresolved: Set<string> }> {
@@ -1579,18 +1601,132 @@ export async function writeDriverRoster(tenant: string, roster: any): Promise<vo
 // only trusts the filter for days >= windowStart (older days fall back to the index snapshot).
 // One doc per tenant; stop numbers stored as a JSON array (codec-safe). Zero NuVizz cost.
 const ACTIVE_SET_COLLECTION = 'nuvizz_active_set';
-export async function writeActiveUnplannedSet(tenant: string, data: { at: string; windowStart: string; stopNbrs: string[] }): Promise<void> {
-  await setDoc(`${ACTIVE_SET_COLLECTION}/${tenant}`, {
-    tenant, at: data.at, windowStart: data.windowStart, count: (data.stopNbrs || []).length,
+export async function writeActiveUnplannedSet(tenant: string, data: { at: string; windowStart: string; stopNbrs: string[]; thin?: boolean; reach?: number }): Promise<void> {
+  await setDoc(`${ACTIVE_SET_COLLECTION}/${tenantKey(tenant)}`, {
+    tenant: tenantKey(tenant), at: data.at, windowStart: data.windowStart, count: (data.stopNbrs || []).length,
+    // thin: the ACTIVE pull that built this set was far smaller than the previous one (the board's
+    // own ABSENT_DEMOTE_MIN_RATIO verdict) — a reader must not prune on a thin set's word.
+    thin: !!data.thin, reach: data.reach ?? null,
     stopNbrsJson: JSON.stringify(data.stopNbrs || []),
   } as any);
 }
-export async function readActiveUnplannedSet(tenant: string): Promise<{ at: string | null; windowStart: string | null; stopNbrs: Set<string> } | null> {
-  const doc = await getDoc(`${ACTIVE_SET_COLLECTION}/${tenant}`);
+export async function readActiveUnplannedSet(tenant: string): Promise<{ at: string | null; windowStart: string | null; stopNbrs: Set<string>; thin: boolean } | null> {
+  const doc = await getDoc(`${ACTIVE_SET_COLLECTION}/${tenantKey(tenant)}`);
   if (!doc) return null;
   let arr: string[] = [];
   try { arr = JSON.parse(doc.stopNbrsJson || '[]'); } catch { arr = []; }
-  return { at: doc.at || null, windowStart: doc.windowStart || null, stopNbrs: new Set(arr.map(String)) };
+  return { at: doc.at || null, windowStart: doc.windowStart || null, stopNbrs: new Set(arr.map(String)), thin: doc.thin === true };
+}
+
+// ── Open-order pool (the Routing date window's source of truth) ──────────────
+//
+// Every planned-kind scan holds the WHOLE ±7d active list in memory and writes only today plus
+// two business days of it. This keeps the rest: every open row across every day, compact
+// (lib/active-pool.mts projects it), so a date window can be reconciled against what NuVizz
+// currently lists instead of against day snapshots that froze at the end of their day. One
+// meta document plus fixed-size chunk documents (400 rows ≈ 180 KB, far under the 1 MiB
+// document limit; a heavy day is ~1,500 open rows = 4 chunks). Chunks are written FIRST and
+// the meta last, the same order writeStops uses, so a reader never sees a fresh stamp over a
+// half-written set; leftover chunks from a larger previous pool are deleted before the meta
+// lands. Zero NuVizz cost — this is data the scan already paid for.
+const ACTIVE_POOL_COLLECTION = 'nuvizz_active_pool';
+const ACTIVE_POOL_CHUNK_ROWS = 400;
+const poolChunkId = (i: number) => String(i).padStart(3, '0');
+export async function writeActivePool(
+  tenant: string,
+  pool: { at: string; windowStart: string; windowEnd: string; rows: any[]; thin?: boolean; prevCount?: number | null },
+): Promise<{ chunks: number; count: number }> {
+  const base = `${ACTIVE_POOL_COLLECTION}/${tenantKey(tenant)}`;
+  const rows = Array.isArray(pool.rows) ? pool.rows : [];
+  const chunks: any[][] = [];
+  for (let i = 0; i < rows.length; i += ACTIVE_POOL_CHUNK_ROWS) chunks.push(rows.slice(i, i + ACTIVE_POOL_CHUNK_ROWS));
+  if (!chunks.length) chunks.push([]);
+  // Every chunk carries the pool's `at`: a read that straddles a rewrite sees chunks of two
+  // generations, and the reader refuses any chunk whose stamp is not the meta's (v0.95.0).
+  await Promise.all(chunks.map((c, i) => setDoc(`${base}/chunks/${poolChunkId(i)}`, { i, at: pool.at, count: c.length, rowsJson: JSON.stringify(c) })));
+  let existing: any[] = [];
+  try { existing = await listDocs(`${base}/chunks`, { mask: ['i'] }); } catch { existing = []; }
+  await Promise.all(existing
+    .filter((d) => !/^\d{3}$/.test(String(d._id)) || Number(d._id) >= chunks.length)
+    .map((d) => deleteDoc(`${base}/chunks/${d._id}`).catch(() => undefined)));
+  await setDoc(base, {
+    tenant: tenantKey(tenant), at: pool.at, windowStart: pool.windowStart, windowEnd: pool.windowEnd,
+    count: rows.length, chunks: chunks.length, thin: !!pool.thin, prevCount: pool.prevCount ?? null,
+  } as any);
+  return { chunks: chunks.length, count: rows.length };
+}
+/** The pool as last written, or null when no scan has written one yet. Rows are deduped by
+ *  stop number on read (first wins) so a read that straddles a rewrite cannot double a row. */
+export async function readActivePool(tenant: string): Promise<{ at: string; windowStart: string; windowEnd: string; count: number; rows: any[]; thin: boolean } | null> {
+  const base = `${ACTIVE_POOL_COLLECTION}/${tenantKey(tenant)}`;
+  const meta = await getDoc(base);
+  if (!meta || !meta.at) return null;
+  const n = Math.max(0, Math.min(50, Number(meta.chunks) || 0));
+  const docs = await Promise.all(Array.from({ length: n }, (_, i) => getDoc(`${base}/chunks/${poolChunkId(i)}`).catch(() => null)));
+  const rows: any[] = [];
+  const seen = new Set<string>();
+  for (const d of docs) {
+    // INTEGRITY (v0.95.0): a missing chunk, a chunk from another generation, or a count that does
+    // not add up means this read caught a rewrite half-way (or a write that failed after some
+    // chunks landed). Serving it would drop every open row it lacks as "closed"; null sends the
+    // reader to its fallback instead.
+    if (!d || (d.at && String(d.at) !== String(meta.at))) return null;
+    let arr: any[] = [];
+    try { arr = JSON.parse(d.rowsJson || '[]'); } catch { return null; }
+    for (const r of arr) { const k = String(r?.stopNbr ?? ''); if (!k || seen.has(k)) continue; seen.add(k); rows.push(r); }
+  }
+  if (Number.isFinite(Number(meta.count)) && rows.length !== Number(meta.count)) return null;
+  return { at: String(meta.at), windowStart: String(meta.windowStart || ''), windowEnd: String(meta.windowEnd || ''), count: rows.length, rows, thin: meta.thin === true };
+}
+
+/** The pool's META document only — `at`, `count`, `thin` — for a caller that needs to know
+ *  how big the last pool was (the scan's thin-pull verdict) without paying for its rows. */
+export async function readActivePoolMeta(tenant: string): Promise<{ at: string; count: number; thin: boolean; windowStart: string; windowEnd: string } | null> {
+  const meta = await getDoc(`${ACTIVE_POOL_COLLECTION}/${tenantKey(tenant)}`);
+  if (!meta || !meta.at) return null;
+  return { at: String(meta.at), count: Math.max(0, Number(meta.count) || 0), thin: meta.thin === true, windowStart: String(meta.windowStart || ''), windowEnd: String(meta.windowEnd || '') };
+}
+
+// ── Frozen-day ledger (v0.95.0) ──────────────────────────────────────────────
+//
+// The scan's memory of which frozen-day strays it has already resolved — read once per scan,
+// written once per scan. Without it every finished order from a past day (30 a day, each with
+// one to seven frozen copies) would be re-read on every 15-minute scan for a week, and the
+// bounded read budget would be spent re-proving yesterday's deliveries while today's waited
+// (the demote-verify starvation, seen again on the refile). An entry is keyed by kind + stop
+// number and carries the NuVizz update stamp the resolution was made against, so a re-touch
+// (a POD attached, a plan changed, a refused stop re-opened) invalidates it by itself. Entries
+// for stops the pull no longer reports inside the reach fall away on the next write.
+const FROZEN_LEDGER_COLLECTION = 'nuvizz_frozen_ledger';
+export interface FrozenLedgerEntry {
+  upd: string; at: string; kind: 'fin' | 'open';
+  /** the OLDEST frozen day covered for this stop so far — the next scan continues older than
+   *  it (v0.95.1). Absent on an entry written before depth was sliced: read as "start again". */
+  through?: string;
+}
+export async function readFrozenLedger(tenant: string): Promise<Record<string, FrozenLedgerEntry>> {
+  try {
+    const doc = await getDoc(`${FROZEN_LEDGER_COLLECTION}/${tenantKey(tenant)}`);
+    if (!doc) return {};
+    const map = JSON.parse(doc.entriesJson || '{}');
+    return map && typeof map === 'object' ? map : {};
+  } catch { return {}; }
+}
+export async function writeFrozenLedger(tenant: string, entries: Record<string, FrozenLedgerEntry>, meta: { at: string; summary?: any }): Promise<number> {
+  const n = Object.keys(entries || {}).length;
+  await setDoc(`${FROZEN_LEDGER_COLLECTION}/${tenantKey(tenant)}`, {
+    tenant: tenantKey(tenant), at: meta.at, count: n, entriesJson: JSON.stringify(entries || {}),
+    summaryJson: JSON.stringify(meta.summary ?? null),
+  } as any);
+  return n;
+}
+/** The ledger's header only (`at`, `count`, the last scan's frozen summary) for the explain endpoint. */
+export async function readFrozenLedgerMeta(tenant: string): Promise<{ at: string | null; count: number; summary: any } | null> {
+  const doc = await getDoc(`${FROZEN_LEDGER_COLLECTION}/${tenantKey(tenant)}`);
+  if (!doc) return null;
+  let summary: any = null;
+  try { summary = JSON.parse(doc.summaryJson || 'null'); } catch { summary = null; }
+  return { at: doc.at || null, count: Math.max(0, Number(doc.count) || 0), summary };
 }
 
 // ── Retired carry-over (the phantom-unplanned fix) ───────────────────────────

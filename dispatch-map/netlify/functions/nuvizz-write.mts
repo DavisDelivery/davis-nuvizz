@@ -29,16 +29,32 @@ import { WRITE_OPS, MUTATING_OPS, hoistResultError, type WriteOp } from './lib/n
 import { requireUser } from './lib/require-user.mts';
 import { runOp, resolveWriteCreds, loadImportBlocked } from './lib/nuvizz-write.mts';
 import { rwbEngineBlocked } from './lib/nuvizz-rwb.mts';
-import { getNuvizzRequester, setCallTrigger, effectiveDailyCeiling, NuvizzCircuitOpenError } from './lib/nuvizz-request.mts';
+import { getNuvizzRequester, setCallTrigger, resolveDailyCeiling, NuvizzCircuitOpenError } from './lib/nuvizz-request.mts';
 import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
 import { getOpRecord, putOpRecord, priorShortCircuits, recordCreatedOrder, recordAssignment } from './lib/write-registries.mts';
+import { outboundAllowed, outboundRefusal } from './lib/mirror-guard.mts';
 
 function writeEnabled(): boolean {
+  // A MIRROR DEPLOY DOES NOT WRITE TO NuVizz. This is the one with a truck on the end of it:
+  // assignDriver and dispatchLoad put freight on a driver's phone and release it. A mirror
+  // copies production's env, so NUVIZZ_WRITE_ENABLED was true there too, and nothing else on
+  // this path asked which environment it was in — isMirrorDeploy() gated READS (scansEnabled)
+  // and nothing else, so a UAT deploy was silent about spending a vendor call and perfectly
+  // willing to move a truck. See lib/mirror-guard.mts; MIRROR_ALLOW_OUTBOUND=nuvizz-write
+  // opens it deliberately for a UAT tenant.
+  if (!outboundAllowed('nuvizz-write')) return false;
   return String(process.env.NUVIZZ_WRITE_ENABLED ?? '').trim().toLowerCase() === 'true';
 }
 
+// The budget this endpoint refuses on, and the numbers it prints in the refusal.
+//
+// The ceiling is RESOLVED from the stored Diagnostics setting, not read out of a module
+// variable that only the scanner ever populated. This function is why Chad's screen said
+// "2,000 / 3,000" in the status card and "(2000/2000) - write refused" in the banner
+// underneath it on the same load: the card reads the saved config, and this read an
+// override that is always null in this process, landing on the 2,000 ambient default.
 async function opsSnapshot(): Promise<{ current: number; ceiling: number }> {
-  const ceiling = effectiveDailyCeiling();
+  const ceiling = await resolveDailyCeiling();
   let current = 0;
   if (isFirestoreEnabled()) {
     try { const d = (await getDoc(`nuvizz_ops/calls__${etDayString()}`)) as any; current = Number(d?.count) || 0; } catch { /* treat as 0 */ }
@@ -58,7 +74,7 @@ function planFor(op: WriteOp, payload: any): string[] {
       const bits: string[] = [];
       const inline = Array.isArray(L?.newStops) ? L.newStops.length : 0;
       if (L?.emptyLoad || (ordered.length === 0 && rm > 0)) {
-        bits.push('EMPTY the load — remove ALL orders and CANCEL the route');
+        bits.push(`EMPTY the load — remove ALL orders and CANCEL the route${payload?.useRwb === true && !rwbEngineBlocked() ? ' (orders another card in this Save is taking move in the atomic RWB save FIRST; the cancel runs last)' : ''}`);
       } else {
         if (rm) bits.push(`unplan ${rm} order(s) (remove from route)`);
         // The Confirm modal tells you WHICH engine will fire — the classic anchor engine, the
@@ -192,7 +208,9 @@ export default async (req: Request): Promise<Response> => {
 
   // 2) Mutating ops require the server-side kill switch.
   if (MUTATING_OPS.has(op) && !live) {
-    return J({ ok: false, op, tenant, live: false, dryRun: false, error: 'live writes disabled — set NUVIZZ_WRITE_ENABLED=true to enable', ops }, 403);
+    return J({ ok: false, op, tenant, live: false, dryRun: false, error: outboundAllowed('nuvizz-write')
+      ? 'live writes disabled — set NUVIZZ_WRITE_ENABLED=true to enable'
+      : outboundRefusal('nuvizz-write'), ops }, 403);
   }
 
   // 3) Creds must be present (basicAuthHeader throws if not) — fail clearly, no NuVizz call.

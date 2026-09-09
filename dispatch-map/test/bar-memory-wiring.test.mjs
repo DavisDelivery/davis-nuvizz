@@ -56,14 +56,41 @@ test('the bar is written back on every change', () => {
     assert.ok(deps[1].includes(d), `${d} changes would not be persisted — it is missing from the effect's deps`);
 });
 
-test('a stored bar is read through normalizeBar, never straight into setState', () => {
-  assert.ok(/const applyBarSettings = \(s, \{ openAfter = true \} = \{\}\) => \{[\s\S]{0,200}const n = normalizeBar\(s\);/.test(src));
+test('a stored bar is read through the ONE carve-out, never straight into setState', () => {
+  assert.ok(/const applyBarSettings = \(s, \{ openAfter = true, automatic = false \} = \{\}\) => \{[\s\S]{0,120}const n = reachableBar\(s, viewportW\(\), \{ automatic \}\);/.test(src));
   assert.ok(!/setStatusSel\(new Set\(Array\.isArray\(s\.status\)/.test(src), 'the hand-rolled guards are back — unknown keys can reach the filter again');
 });
 
+test('THERE IS ONLY ONE PHONE BREAKPOINT for what a screen may restore', () => {
+  // v0.95.0 carved the date window at the app's 768px phone breakpoint while the control
+  // itself appears at 640 (`hidden sm:`), so between 640 and 767 the select sat on screen
+  // reading "Board (today)" against a profile that said Last 7 days — and picking the
+  // profile could not fix it. Two numbers for one rule; there is now one function.
+  assert.ok(!/setNvWindow\(gridIsPhone \? '' :/.test(src),
+    'the inline gridIsPhone carve-out is back — that is the SECOND breakpoint, and the 640-767 band goes wrong again');
+  assert.ok(!/setNvFrom\(gridIsPhone \? '' :/.test(src) && !/setNvTo\(gridIsPhone \? '' :/.test(src));
+  assert.ok(/const viewportW = \(\) => readViewportSize\(\)\.w \|\| null;/.test(src),
+    'one place must decide how wide the screen is, or a call site will invent its own number');
+});
+
+test('an AUTOMATIC restore never spends a vendor call; a deliberate pick may', () => {
+  // "NuVizz · Today" is the one window that pulls live. Restoring it on every reload and
+  // every Map<->Routing hop turns one deliberate click into unattended repeated spend.
+  assert.ok(/applyBarSettings\(activeProfile\.s, \{ openAfter: false, automatic: true \}\)/.test(src),
+    'the late/cold restore must be marked automatic, or a restored 0d profile pulls live NuVizz on every mount');
+  assert.ok(/applyBarSettings\(p\.s, \{ automatic: false \}\)/.test(src),
+    'picking a profile by hand is deliberate and gets the window it asked for');
+});
+
+test('saving from a screen that cannot SHOW a setting must not erase it for everyone', () => {
+  const uses = src.split('settingsForSave(barSnapshot()').length - 1;
+  assert.equal(uses, 2, 'both save paths (new profile AND update-active) must go through settingsForSave');
+  assert.ok(/settingsForSave\(barSnapshot\(\), activeProfile\.s, viewportW\(\)\)/.test(src));
+});
+
 test('restoring never flings the grid open over the map; picking a profile still does', () => {
-  assert.ok(/applyBarSettings\(activeProfile\.s, \{ openAfter: false \}\)/.test(src), 'the restore must not open the panel');
-  assert.ok(/applyBarSettings\(p\.s\);/.test(src), 'selecting a profile is a deliberate act — it opens the grid');
+  assert.ok(/applyBarSettings\(activeProfile\.s, \{ openAfter: false, automatic: true \}\)/.test(src), 'the restore must not open the panel');
+  assert.ok(/applyBarSettings\(p\.s, \{ automatic: false \}\);/.test(src), 'selecting a profile is a deliberate act — it opens the grid');
 });
 
 test('a profile arriving — cold start, or selected on another device — is applied once', () => {
@@ -100,9 +127,24 @@ test('the restore is told how wide the screen is, and a stale driver stays clear
     'a restored driver who is not on today\'s board would render a BLANK select that still filters every row out');
 });
 
-test('the chip cannot claim a profile the bar has drifted from', () => {
-  assert.ok(/const profileEdited = !!activeProfile && !sameBar\(barSnapshot\(\), activeProfile\.s\)/.test(src));
+test('the chip cannot claim a profile the bar has drifted from — nor cry drift that never happened', () => {
+  // Measured against what was APPLIED, not against the profile: on a screen too narrow for
+  // the window control the profile says "-7d" and the bar can only say "", so comparing to
+  // the profile lit the amber dot permanently and told the dispatcher he had changed
+  // something he never touched.
+  assert.ok(/const profileEdited = !!activeProfile && !sameBar\(barSnapshot\(\), appliedBar\.current\)/.test(src));
+  assert.ok(/const appliedBar = useRef\(boot\);/.test(src));
+  assert.ok(/appliedBar\.current = n;/.test(src), 'applyBarSettings must record what it applied');
   assert.ok(/\{profileEdited && <span/.test(src), 'the drift marker is gone — the chip is free to lie again');
+});
+
+test('the shared selection is read once per SESSION, not once per mount', () => {
+  // useBottomPanelProfiles lives inside BottomStopsTable, which unmounts on every
+  // Map<->Routing hop and every gear toggle. A per-mount flag re-read the shared doc on each
+  // of those, so the other dispatcher's pick would yank this grid mid-plan within one hop.
+  assert.ok(/^let sharedActiveReadOnce = false;$/m.test(src),
+    'the read-once flag must live at module scope — a useRef resets on every remount');
+  assert.ok(!/const sharedActiveRead = useRef\(false\);/.test(src));
 });
 
 test('the lib and the grid agree on what a status filter and a window can be', () => {

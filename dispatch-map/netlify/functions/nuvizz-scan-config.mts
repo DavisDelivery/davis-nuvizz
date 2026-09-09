@@ -15,13 +15,16 @@
 // Validation/clamping is the SAME pure helper the scanner uses (scan-schedule.mts),
 // so the UI can never persist a value the scanner would reject.
 
-import { isFirestoreEnabled, readScanConfig, writeScanConfig, getDoc, readScanKindStamps, readScanRuns, readCallStats, readCircuit, readScanRefusal, etDayString } from './lib/firestore.mts';
+import { isFirestoreEnabled, readScanConfig, writeScanConfig, getDoc, readScanKindStamps, readScanRuns, readCallStats, readCircuit, readScanRefusal, etDayString, readActivePoolMeta, readActiveUnplannedSet, readCarryoverRetired, readFrozenLedgerMeta } from './lib/firestore.mts';
+import { activeArrivalReachDays } from './lib/nuvizz-list.mts';
+import { refileReadCap, frozenCopyDepth } from './lib/refresh-stops-core.mts';
+import { SATURDAY_HEAL_HOUR } from './lib/scan-schedule.mts';
 import { requireUser } from './lib/require-user.mts';
 import { readBackgroundRefusals } from './lib/background-gate.mts';
 import { clampScanConfig, effectiveScanConfig, scanConfigDefaults, SCAN_CONFIG_BOUNDS, scanDecision } from './lib/scan-schedule.mts';
 import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip, scanPath } from './lib/scan-plan.mts';
 import { attributeSpend } from './lib/scan-attribution.mts';
-import { breakerMode, reportedDailyCeiling } from './lib/nuvizz-request.mts';
+import { breakerMode, reportedDailyCeiling, circuitStillBinding } from './lib/nuvizz-request.mts';
 
 const TENANT = process.env.NUVIZZ_TENANT || 'davis';
 // Matches the `runs` list below, which shows the last 40 for the same reason: enough to cover
@@ -59,7 +62,7 @@ async function explain(): Promise<any> {
   const rulesStored = clampScanRules((cfg as any)?.rules);
   const rules = rulesStored.length ? rulesStored : defaultScanRules();
 
-  const [meta, kindStamps, runs, stats, circuit, bgRefusals, scanRefusal] = await Promise.all([
+  const [meta, kindStamps, runs, stats, circuit, bgRefusals, scanRefusal, poolMeta, activeSet, retiredMap, ledgerMeta] = await Promise.all([
     getDoc(`nuvizz_stop_index/${TENANT}__${today}`).catch(() => null) as Promise<any>,
     readScanKindStamps().catch(() => ({})),
     readScanRuns().catch(() => []),
@@ -75,6 +78,14 @@ async function explain(): Promise<any> {
     // either way, so capping HERE would only make `count` below a lie about how many there are.
     readBackgroundRefusals().catch(() => [] as any[]),
     readScanRefusal().catch(() => null),
+    // THE FROZEN-DAY MACHINERY (v0.95.0), read for nothing: the open-order pool the Routing
+    // window and the Map fold judge by, the unplanned snapshot they fall back to, the retired
+    // list, and the frozen ledger's header with the last pass's summary. When a delivered
+    // order is on a board it should not be on, these four say which judge was asleep.
+    readActivePoolMeta(TENANT).catch(() => null),
+    readActiveUnplannedSet(TENANT).catch(() => null),
+    readCarryoverRetired(TENANT).catch(() => ({} as Record<string, string>)),
+    readFrozenLedgerMeta(TENANT).catch(() => null),
   ]);
 
   const lastLoadScanAt = meta?.lastLoadScanAt ?? meta?.last_scanned_at ?? null;
@@ -94,6 +105,9 @@ async function explain(): Promise<any> {
   const STUCK_AFTER_MIN = 16;
   const unfinished = (runs || []).filter((r: any) => r?.startedAt && !r?.finishedAt
     && (ageMin(r.startedAt) ?? 0) > STUCK_AFTER_MIN);
+
+  const spendCeiling = reportedDailyCeiling((cfg as any)?.dailyCeiling);
+  const circuitBinding = circuitStillBinding(!!circuit?.open, stats.count, spendCeiling);
 
   return {
     ok: true,
@@ -123,10 +137,12 @@ async function explain(): Promise<any> {
     kindStamps: Object.fromEntries(Object.entries(kindStamps as any).map(([k, v]) => [k, { at: v, ageMin: ageMin(v) }])),
     spend: {
       today: stats.count ?? 0,
-      ceiling: reportedDailyCeiling((cfg as any)?.dailyCeiling),
+      ceiling: spendCeiling,
       breakerMode: breakerMode(),
-      circuitOpen: !!circuit?.open,
-      circuitReason: circuit?.reason ?? null,
+      // Binding, not merely flagged - the same rule the breaker itself now applies, so the
+      // Diagnostics gauge cannot report a halt that raising the ceiling has already lifted.
+      circuitOpen: circuitBinding,
+      circuitReason: circuitBinding ? (circuit?.reason ?? null) : null,
       byHour: stats.byHour ?? {},
       byTrigger: stats.byTrigger ?? {},
       byApp: stats.byApp ?? {},
@@ -139,6 +155,25 @@ async function explain(): Promise<any> {
     killSwitch: {
       env: String(process.env.NUVIZZ_SCANS_ENABLED ?? '').toLowerCase() === 'false',
       config: (cfg as any)?.scansEnabled === false,
+    },
+    frozen: {
+      pool: poolMeta ? { at: poolMeta.at, ageMin: ageMin(poolMeta.at), count: poolMeta.count, thin: poolMeta.thin, windowStart: poolMeta.windowStart, windowEnd: poolMeta.windowEnd } : null,
+      activeSet: activeSet ? { at: activeSet.at, ageMin: ageMin(activeSet.at), count: activeSet.stopNbrs.size, thin: activeSet.thin, windowStart: activeSet.windowStart } : null,
+      retired: { count: Object.keys(retiredMap || {}).length },
+      ledger: ledgerMeta ? { at: ledgerMeta.at, ageMin: ageMin(ledgerMeta.at), count: ledgerMeta.count, lastPass: ledgerMeta.summary } : null,
+      switches: {
+        twoScan: String(process.env.NUVIZZ_TWO_SCAN ?? '').toLowerCase() === 'on',
+        loadAnchor: String(process.env.NUVIZZ_LOAD_ANCHOR ?? '').toLowerCase() === 'on',
+        activeReachDays: activeArrivalReachDays(),
+        activeArrival: process.env.NUVIZZ_ACTIVE_ARRIVAL || null,
+        completedUpdated: process.env.NUVIZZ_COMPLETED_UPDATED || null,
+        completedArrival: process.env.NUVIZZ_COMPLETED_ARRIVAL || null,
+        // Read through the scan's own helpers, never re-derived here: this block exists to say
+        // what the scanner is doing, and a second copy of a default is a second answer.
+        refileReadCap: refileReadCap(),
+        frozenCopyDays: frozenCopyDepth(),
+        saturdayHealHourET: SATURDAY_HEAL_HOUR,
+      },
     },
     rules,
     rulesSource: rulesStored.length ? 'stored' : 'shipped-default',

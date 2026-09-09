@@ -434,3 +434,25 @@ test('the excluded tail does not move the number above it', () => {
   assert.equal(withOwner.gradable, without.gradable);
   assert.equal(withOwner.excludedStops.length, 1, 'but it is still on the record');
 });
+
+
+// ── v0.95.0: a copy the scan healed as closed on ANOTHER board ───────────────────────────────
+
+test('a stop planned on this board but closed on a LATER day is counted on that day, not this one — and the report says so', () => {
+  const d = build([
+    stop({ stopNbr: '1', status: '90' }),
+    stop({ stopNbr: '2', status: '90', closedOnBoard: '2026-08-21' }),   // delivered the next morning, healed here
+    stop({ stopNbr: '3', status: '90', closedOnBoard: DATE }),           // closed on THIS board: counts normally
+  ]);
+  assert.equal(d.planned, 2, 'the later-day delivery leaves the denominator');
+  assert.equal(d.delivered, 2);
+  assert.equal(d.completionRate, 1);
+  assert.equal(d.closedElsewhere.length, 1);
+  assert.equal(d.closedElsewhere[0].stopNbr, '2');
+  assert.equal(d.closedElsewhere[0].closedOn, '2026-08-21');
+  const text = dayCompletionText(d);
+  assert.match(text, /CLOSED ON A LATER DAY/);
+  assert.match(text, /2026-08-21/);
+  // A clean day carries no such tail.
+  assert.deepEqual(build([stop({ stopNbr: '1', status: '90' })]).closedElsewhere, []);
+});

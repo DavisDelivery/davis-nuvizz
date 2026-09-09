@@ -11,13 +11,16 @@
     "test": "node --test \"test/**/*.test.mjs\"",
     "lint": "echo 'no lint configured'",
     "smoke": "node scripts/smoke-app.mjs dist",
+    "verify:classes": "node scripts/check-tailwind-classes.mjs dist",
     "verify:hide-labels": "node scripts/verify-hide-place-labels.mjs dist",
     "verify:mobile": "node scripts/verify-mobile-layout.mjs dist",
     "verify:desktop": "node scripts/verify-desktop-layout.mjs dist",
     "verify:flag-detail": "node scripts/verify-flag-detail.mjs dist",
     "verify:route-preflight": "node scripts/verify-route-preflight.mjs dist",
     "verify:tablet": "node scripts/verify-tablet-layout.mjs dist",
-    "verify:loads-tab": "node scripts/verify-loads-tab.mjs dist"
+    "verify:loads-tab": "node scripts/verify-loads-tab.mjs dist",
+    "perf:routing": "node scripts/perf-routing.mjs dist",
+    "verify:effect-deps": "node scripts/check-effect-deps.mjs"
   },
   "dependencies": {
     "@davisdelivery/quote-generator": "git+ssh://git@github.com/DavisDelivery/Quotes.git#main",

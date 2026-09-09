@@ -36,6 +36,57 @@ const DEFAULT_SORT = { key: null, dir: 'asc' };
 export const BAR_CONTROL_MIN_WIDTH = 640;
 
 /**
+ * WHAT THIS SCREEN MAY RESTORE — the single carve-out, and the reason it is exported.
+ *
+ * There were TWO of these in the tree and they disagreed. v0.95.0 blanked the date window
+ * for phones inside applyBarSettings using the app's 768px phone breakpoint; this module
+ * carved the same three fields at 640px, the width the control ACTUALLY appears at
+ * (`hidden sm:inline-block`). Between 640 and 767 the select is on screen showing "Board
+ * (today)" while the profile says Last 7 days, and picking the profile could not fix it —
+ * an iPad mini in portrait is 744px, a 1440 monitor with the window half width is 720.
+ * Two numbers for one rule is how a screen and its data come to disagree, so there is now
+ * one function and one constant, and every path — the mount seed, the profile pick, the
+ * late restore, the save — asks it.
+ *
+ * `automatic` marks a restore the dispatcher did not ask for (a reload, a screen hop). Those
+ * must not spend a NuVizz call: "NuVizz · Today" is a live vendor pull, and firing it on
+ * every mount turns one deliberate click into unattended repeated spend. Picking the profile
+ * by hand is not automatic and gets the window it asked for.
+ */
+export function reachableBar(settings, width, { automatic = false } = {}) {
+  const s = normalizeBar(settings);
+  // A width we were not given is not a narrow one — never drop a filter on a guess. And ZERO
+  // is not a narrow screen, it is the absence of one (no window to measure, a hidden
+  // document): Number.isFinite(0) is true and 0 < 640, so the naive check silently strips the
+  // dispatcher's window on a headless or pre-layout mount. Same shape as the Number(null) bug
+  // that mailed a customer a midnight deadline for a stop with no deadline at all.
+  const narrow = Number.isFinite(width) && width > 0 && width < BAR_CONTROL_MIN_WIDTH;
+  const out = { ...s };
+  if (narrow) for (const f of BAR_DESKTOP_ONLY_FIELDS) out[f] = BAR_DEFAULTS[f];
+  if (automatic && barRestoreCostsCall(out.nvWindow)) out.nvWindow = BAR_DEFAULTS.nvWindow;
+  return out;
+}
+
+/**
+ * WHAT TO WRITE BACK to a shared profile from this screen.
+ *
+ * A screen that cannot SHOW a setting must not ERASE it for every other device. Pressing
+ * "Update ‹Chad› to current" on a phone snapshots a bar whose window was carved off, and
+ * because the profile is shared and carries a save time, that blank would be pushed onto the
+ * desktop on its next load — a cross-device wipe out of a button that reads like a local
+ * convenience. So the fields this width cannot reach keep whatever the profile already had.
+ */
+export function settingsForSave(snapshot, previous, width) {
+  const now = normalizeBar(snapshot);
+  const narrow = Number.isFinite(width) && width > 0 && width < BAR_CONTROL_MIN_WIDTH;
+  if (!narrow) return now;
+  const before = normalizeBar(previous);
+  const out = { ...now };
+  for (const f of BAR_DESKTOP_ONLY_FIELDS) out[f] = before[f];
+  return out;
+}
+
+/**
  * The settings whose ONLY control is desktop-only. Restoring one onto a phone would leave a
  * live filter with nothing on screen to see it by and nothing to clear it with — the
  * invisible-filter trap that blanked this grid once already (v0.45.6), except sticky: a
@@ -138,20 +189,15 @@ export function restoreBar({ memory = null, activeName = null, profiles = [], wi
   // document): Number.isFinite(0) is true and 0 < 640, so the naive check silently strips
   // the dispatcher's window on a headless or pre-layout mount. Same shape as the Number(null)
   // bug that mailed a customer a midnight deadline for a stop with no deadline at all.
-  const narrow = Number.isFinite(width) && width > 0 && width < BAR_CONTROL_MIN_WIDTH;
-  const reachable = (s) => {
-    if (!narrow) return s;
-    const out = { ...s };
-    for (const f of BAR_DESKTOP_ONLY_FIELDS) out[f] = BAR_DEFAULTS[f];
-    return out;
-  };
+  // A restore at mount is by definition not something the dispatcher just asked for.
+  const reachable = (s) => reachableBar(s, width, { automatic: true });
   const mem = memory && typeof memory === 'object' && !Array.isArray(memory) ? memory : null;
   if (mem && !profileBeats(mem, name, active)) {
-    return { settings: reachable(normalizeBar(mem)), from: 'memory', pending: false };
+    return { settings: reachable(mem), from: 'memory', pending: false };
   }
-  if (active) return { settings: reachable(normalizeBar(active.s)), from: 'profile', pending: false };
+  if (active) return { settings: reachable(active.s), from: 'profile', pending: false };
   // No profile to fall back to — a bar this device remembers is still better than nothing.
-  if (mem) return { settings: reachable(normalizeBar(mem)), from: 'memory', pending: false };
+  if (mem) return { settings: reachable(mem), from: 'memory', pending: false };
   return { settings: normalizeBar(null), from: 'defaults', pending: !!name };
 }
 

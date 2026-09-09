@@ -14,6 +14,11 @@
 
 [functions]
   node_bundler = "esbuild"
+  # The driver-area sheet lists a business day of history per day in its window — twenty
+  # Firestore document lists for a four-week sheet. Parallelised at six, but still well past
+  # the 10s default; 26 is the Pro ceiling and what the other read-heavy functions take.
+  [functions."driver-territory"]
+    timeout = 26
   [functions."nuvizz-pull-today-stops"]
     timeout = 26
   [functions."nuvizz-manual-scan"]
@@ -29,6 +34,9 @@
   # '<'"). Give it the same 26s headroom as the other NuVizz functions; the handler aborts
   # at 22s and returns a clean JSON error. Still the cheap 2-call list path (no re-scan).
   [functions."nuvizz-stop-explorer"]
+    timeout = 26
+  # Check vs NuVizz: the same one-call live list pull as the explorer, same budget.
+  [functions."nuvizz-window-check"]
     timeout = 26
   # The two LIVE-BOARD engine endpoints (driver drafts and end-of-night cleanup).
   # Both are Firestore-only — ZERO NuVizz calls — but a dispatcher is waiting on a

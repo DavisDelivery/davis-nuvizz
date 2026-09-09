@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import {
   restoreBar, normalizeBar, sameBar, barRestoreCostsCall,
   BAR_DEFAULTS, BAR_STATUS_KEYS, BAR_WINDOWS, BAR_CONTROL_MIN_WIDTH,
+  reachableBar, settingsForSave,
 } from '../src/lib/bar-memory.js';
 
 const CHAD = { name: 'Chad', s: { status: ['unplanned'], nvWindow: '-7d' }, updatedAt: 1000 };
@@ -226,4 +227,74 @@ test('the key sets are canonical — order-independent in, canonical order out',
   assert.deepEqual(normalizeBar({ status: ['cancelled', 'unplanned'] }).status, ['unplanned', 'cancelled']);
   assert.ok(BAR_WINDOWS.includes(''), 'the board (no pull) must stay a valid window');
   assert.equal(new Set(BAR_STATUS_KEYS).size, BAR_STATUS_KEYS.length);
+});
+
+
+// ── THE CARVE-OUT, which used to be two carve-outs with two different numbers ──────────
+
+test('THE 640-767 BAND: the window control is on screen, so the profile applies', () => {
+  // This was live on main. v0.95.0 blanked the window for "phones" at MOBILE_BREAKPOINT
+  // (768) while the <select> appears at Tailwind's sm (640). In between, the dispatcher saw
+  // a window select reading "Board (today)" that his profile said should read Last 7 days,
+  // and picking the profile again could not fix it. An iPad mini in portrait is 744px; a
+  // 1440 monitor with the window at half width is 720; a 1280 window at 175% zoom is 731.
+  for (const w of [640, 700, 720, 731, 744, 767]) {
+    assert.equal(reachableBar({ nvWindow: '-7d' }, w).nvWindow, '-7d', `${w}px renders the control but did not get the window`);
+  }
+});
+
+test('below 640 the control does not exist, so neither does the setting', () => {
+  for (const w of [320, 390, 639]) {
+    const r = reachableBar({ nvWindow: '-7d', driverSel: 'STEVEN', status: ['unplanned'] }, w);
+    assert.equal(r.nvWindow, '', `${w}px restored a window it cannot clear`);
+    assert.equal(r.driverSel, '');
+    assert.deepEqual(r.status, ['unplanned'], 'the status filter HAS a phone control — it stays');
+  }
+});
+
+test('an AUTOMATIC restore never spends a NuVizz call; a deliberate pick does', () => {
+  // Every wide window is served from our own board day-docs. '0d' is the one live vendor
+  // pull, and a reload or a Map->Routing hop is not a request to spend on it.
+  assert.equal(reachableBar({ nvWindow: '0d' }, 1920, { automatic: true }).nvWindow, '');
+  assert.equal(reachableBar({ nvWindow: '0d' }, 1920, { automatic: false }).nvWindow, '0d');
+  for (const w of ['-7d', '-14d', '+/-7d']) {
+    assert.equal(reachableBar({ nvWindow: w }, 1920, { automatic: true }).nvWindow, w, `${w} is cache-served and must restore`);
+  }
+  assert.equal(restoreBar({ memory: null, activeName: 'X', profiles: [{ name: 'X', s: { nvWindow: '0d' } }], width: 1920 }).settings.nvWindow, '',
+    'the mount seed is automatic by definition');
+});
+
+test('SAVING from a narrow screen keeps what it cannot see, for every other device', () => {
+  // "Update Chad to current" on a phone snapshots a bar whose window was carved off. The
+  // profile is SHARED and now carries a save time, so that blank would be pushed onto the
+  // desktop on its next load — a cross-device wipe out of a button that reads local.
+  const onProfile = { status: ['unplanned'], nvWindow: '-7d', driverSel: 'STEVEN' };
+  const fromPhone = { status: ['planned'], nvWindow: '', driverSel: '' };
+  const saved = settingsForSave(fromPhone, onProfile, 390);
+  assert.deepEqual(saved.status, ['planned'], 'what the phone CAN change must still be saved');
+  assert.equal(saved.nvWindow, '-7d', "the phone erased the desktop's window");
+  assert.equal(saved.driverSel, 'STEVEN');
+});
+
+test('saving from a screen that CAN show it writes through, blank included', () => {
+  const onProfile = { status: ['unplanned'], nvWindow: '-7d' };
+  const cleared = settingsForSave({ status: ['unplanned'], nvWindow: '' }, onProfile, 1920);
+  assert.equal(cleared.nvWindow, '', 'a desktop clearing its window must be able to save that');
+});
+
+test('a save with no previous profile is just the snapshot', () => {
+  assert.equal(settingsForSave({ nvWindow: '-7d' }, undefined, 1920).nvWindow, '-7d');
+  assert.equal(settingsForSave({ nvWindow: '-7d' }, undefined, 390).nvWindow, '', 'nothing to preserve, so the default stands');
+});
+
+test("CHAD'S REAL PROFILE, read from production Firestore 2026-09-09, round-trips", () => {
+  // The saved profile document, verbatim. If this ever stops applying, he reports it again.
+  const real = { view: 'stops', status: ['unplanned'], nvWindow: '-7d', nvFrom: '', nvTo: '',
+    driverSel: '', unmappedOnly: false, stopSort: { key: 'cartons', dir: 'desc' }, loadSort: { key: null, dir: 'asc' } };
+  const { settings, from } = restoreBar({ memory: null, activeName: 'Chad', profiles: [{ name: 'Chad', s: real, updatedAt: 1 }], width: 1920 });
+  assert.equal(from, 'profile');
+  assert.equal(settings.nvWindow, '-7d', 'Last 7 days');
+  assert.deepEqual(settings.status, ['unplanned'], 'Un-Planned ticked');
+  assert.deepEqual(settings.stopSort, { key: 'cartons', dir: 'desc' }, 'sorted by skids, descending');
+  assert.deepEqual(settings, normalizeBar(real), 'nothing he saved was dropped or invented');
 });

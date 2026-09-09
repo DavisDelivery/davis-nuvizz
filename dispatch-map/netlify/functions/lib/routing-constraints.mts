@@ -95,16 +95,47 @@ function capLimited(cap: number | null | undefined): cap is number {
   return typeof cap === 'number' && Number.isFinite(cap) && cap > 0;
 }
 
-// Would adding `stop` to `current` load keep the truck within capacity? Reasons
-// for any breach. (Single-stop fit = check against an empty load.) A dimension
-// only blocks when its gate is on AND the truck's cap for it is a real positive
-// number, so a missing/zero cap can never cause a spill.
-export function capacityFits(current: RouteLoad, stop: SolverStop, truck: SolverTruck): { ok: boolean; reasons: string[] } {
+/**
+ * WHICH CAPACITIES THIS LOAD BREACHES ON THIS TRUCK. The ONE definition — the header of this
+ * file promises that "what makes a route valid is defined exactly once, so the solver's
+ * assignment and the repair loop's validation can never drift apart", and they had drifted:
+ * routing-repair's worstViolator carried its own copy that honoured NEITHER the gates NOR the
+ * positive-cap rule. It therefore spilled on DECK LENGTH, which CAPACITY_GATES switches off
+ * precisely because the per-stop linearFeetIn estimate is inflated, and printed "over deck
+ * length" as the reason — a reason the comment above says can never spill. Measured on the
+ * real modules: a 30-stop board came back with 2 stops spilled for a limit that is not
+ * enforced, after the geographic assignment had already been shredded to satisfy it.
+ *
+ * A dimension blocks only when its gate is ON and the truck's cap is a real positive number,
+ * so a missing or zero cap can never cause a spill.
+ */
+export function capacityBreaches(load: RouteLoad, truck: SolverTruck): string[] {
   const reasons: string[] = [];
-  if (CAPACITY_GATES.skids && capLimited(truck.maxSkids) && current.skids + (stop.skids || 0) > truck.maxSkids) reasons.push(REASON.overSkids);
-  if (CAPACITY_GATES.weightLbs && capLimited(truck.maxWeightLbs) && current.weightLbs + (stop.weightLbs || 0) > truck.maxWeightLbs) reasons.push(REASON.overWeight);
-  if (CAPACITY_GATES.deckLengthIn && capLimited(truck.deckLengthIn) && current.linearFeetIn + (stop.linearFeetIn || 0) > truck.deckLengthIn) reasons.push(REASON.overDeck);
+  if (CAPACITY_GATES.skids && capLimited(truck.maxSkids) && load.skids > truck.maxSkids) reasons.push(REASON.overSkids);
+  if (CAPACITY_GATES.weightLbs && capLimited(truck.maxWeightLbs) && load.weightLbs > truck.maxWeightLbs) reasons.push(REASON.overWeight);
+  if (CAPACITY_GATES.deckLengthIn && capLimited(truck.deckLengthIn) && load.linearFeetIn > truck.deckLengthIn) reasons.push(REASON.overDeck);
+  return reasons;
+}
+
+// Would adding `stop` to `current` load keep the truck within capacity? Reasons
+// for any breach. (Single-stop fit = check against an empty load.)
+export function capacityFits(current: RouteLoad, stop: SolverStop, truck: SolverTruck): { ok: boolean; reasons: string[] } {
+  const reasons = capacityBreaches(addLoad(current, stop), truck);
   return { ok: reasons.length === 0, reasons };
+}
+
+/**
+ * PURE. How full this truck is, 0..1, on the dimensions that actually GATE placement. Used to
+ * spread work across a fleet instead of filling whichever truck happens to be nearest — see
+ * the balance term in routing-solver's Phase 3. A truck with no real cap on any gated
+ * dimension returns 0: unknown is not full.
+ */
+export function loadFraction(load: RouteLoad, truck: SolverTruck): number {
+  const fracs: number[] = [];
+  if (CAPACITY_GATES.skids && capLimited(truck.maxSkids)) fracs.push(load.skids / truck.maxSkids);
+  if (CAPACITY_GATES.weightLbs && capLimited(truck.maxWeightLbs)) fracs.push(load.weightLbs / truck.maxWeightLbs);
+  if (CAPACITY_GATES.deckLengthIn && capLimited(truck.deckLengthIn)) fracs.push(load.linearFeetIn / truck.deckLengthIn);
+  return fracs.length ? Math.max(...fracs) : 0;
 }
 
 // Can this truck EVER carry this stop on its own (capability + single-stop capacity)?

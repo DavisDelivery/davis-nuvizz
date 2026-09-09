@@ -139,19 +139,27 @@ test('statusFromCode: NuVizz codes → board status + planned flag', () => {
 
 test('SAVED_SEARCHES: active + completed map to the portal saved searches (HAR-captured)', () => {
   // ACTIVE = "Dispatch Map Planned Unplanned": status 20,10 + in-flight 40,50 (so an
-  // out-for-delivery/arrived stop stays on the board) + Estimated Arrival +/-7d (seq 10).
+  // out-for-delivery/arrived stop stays on the board) + Estimated Arrival (seq 10).
+  // The SEQUENCES and the ids are the portal's, captured from the HAR and not ours to move.
+  // The PERIOD is ours: at +/-30d (v0.95.1, Chad) everything that judges a frozen row — the
+  // pool, the unplanned snapshot, the frozen-day pass — reaches a month instead of a week,
+  // and it costs no extra call because the period rides inside a request we already make.
   assert.equal(SAVED_SEARCHES.active.customListDefId, 77128);
   const a = Object.fromEntries(SAVED_SEARCHES.active.filterList.map((f) => [f.sequence, f.value]));
   assert.equal(a[2], '20,10,40,50');
-  assert.equal(a[10], JSON.stringify({ period: '+/-7d' }));
+  assert.equal(a[10], JSON.stringify({ period: '+/-30d' }));
   assert.equal(SAVED_SEARCHES.active.filterList.length, 12, 'active def has 12 sequences');
   // COMPLETED = "Dispatch Map Completed": terminal statuses (incl. 99 = cancelled, so a
-  // cancellation reaches the board instead of freezing as open work) + arrival +/-7d (seq 10)
-  // + updated today (seq 11).
+  // cancellation reaches the board instead of freezing as open work) + arrival (seq 10)
+  // + updated today (seq 11). The arrival net matches the active one at +/-30d — that is the
+  // half that lets an order which ARRIVED three weeks ago and delivers today be seen finished
+  // at all, and without it no pull could ever heal its frozen copy. The UPDATED axis stays at
+  // today: it is the one that decides the pull's SIZE, and a multi-day period there is portal
+  // grammar this repo has not verified live.
   assert.equal(SAVED_SEARCHES.completed.customListDefId, 77131);
   const c = Object.fromEntries(SAVED_SEARCHES.completed.filterList.map((f) => [f.sequence, f.value]));
   assert.equal(c[2], '90,91,80,99');
-  assert.equal(c[10], JSON.stringify({ period: '+/-7d' }));
+  assert.equal(c[10], JSON.stringify({ period: '+/-30d' }));
   assert.equal(c[11], JSON.stringify({ period: '0d' }), 'Stop Detail Updated = today');
   assert.equal(SAVED_SEARCHES.completed.filterList.length, 11, 'completed def has 11 sequences');
   // ATTEMPTS = "Dispatch Map Attempts": Shipment Number starts-with att (seq 7) + arrival today

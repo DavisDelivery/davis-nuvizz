@@ -19,6 +19,7 @@ import {
   tractorPaintAllowed,
   restrictionConfidence,
   confirmedBlockerKeys,
+  tractorFriendlySelection,
   isTrailerBlockerKey,
 } from '../src/lib/map-legend.js';
 import { readFileSync } from 'node:fs';
@@ -261,9 +262,26 @@ test('a dispatcher who ticked the restriction list has CONFIRMED every blocker o
   assert.equal(restrictionConfidence(note, 'uline_straight_truck'), 'confirmed', 'the override promotes the Uline flag too');
 });
 
-test('a scanner-found no_tractor_trailer is ADVISORY until a human confirms it', () => {
+test('an addressLine2 no_tractor_trailer is CONFIRMED — Address 2 is a field DAVIS types', () => {
+  // LOS RODRIGUEZ SERVICES, 2026-09-08: Address 2 reads "NO TRACTOR TRL" and the pin drew half
+  // green — "nobody has checked this" — on a mark somebody here typed into NuVizz. Chad: "Why
+  // is this half green when if its manually marked by no tractor trailer by dispatch should
+  // override." customer-notes-writer's own header calls this source Davis-curated, TRUSTED;
+  // the confidence rule used to throw the source away and read only "was a scanner involved".
   const note = { auto_sources: { no_tractor_trailer: ['addressLine2'] } };
+  assert.equal(restrictionConfidence(note, 'no_tractor_trailer'), 'confirmed');
+});
+
+test('a legacy orderInstructions-only no_tractor_trailer stays ADVISORY — that is Uline\'s text', () => {
+  // v0.2.0 mapped SPL-INSTR-TEXT onto no_tractor_trailer; the migration re-tags those as
+  // uline_straight_truck, and an un-migrated doc must not harden in the meantime.
+  const note = { auto_sources: { no_tractor_trailer: ['orderInstructions'] } };
   assert.equal(restrictionConfidence(note, 'no_tractor_trailer'), 'advisory');
+});
+
+test('a flag found in BOTH places is confirmed — the trusted source is enough on its own', () => {
+  const note = { auto_sources: { no_tractor_trailer: ['orderInstructions', 'addressLine2'] } };
+  assert.equal(restrictionConfidence(note, 'no_tractor_trailer'), 'confirmed');
 });
 
 test('the Uline flag is ADVISORY by definition — it is another company\'s free text', () => {
@@ -283,20 +301,30 @@ test('a hand-added flag with NO scanner trail counts as CONFIRMED — unknown go
 });
 
 test('confirmedBlockerKeys returns only the human-backed blockers', () => {
-  const note = { auto_sources: { no_tractor_trailer: ['addressLine2'] } };
-  // scanner-found no_tractor_trailer → advisory; hand-set no_53 → confirmed
-  assert.deepEqual(confirmedBlockerKeys(note, ['no_tractor_trailer', 'no_53', 'liftgate_required']), ['no_53']);
-  assert.deepEqual(confirmedBlockerKeys(note, ['no_tractor_trailer']), [], 'advisory only → nothing confirmed');
+  // Uline's text is the un-vouched source now; Address 2 and a hand-set flag both count.
+  const note = { auto_sources: { uline_straight_truck: ['orderInstructions'], no_tractor_trailer: ['addressLine2'] } };
+  assert.deepEqual(
+    confirmedBlockerKeys(note, ['uline_straight_truck', 'no_tractor_trailer', 'no_53', 'liftgate_required']),
+    ['no_tractor_trailer', 'no_53'],
+  );
+  assert.deepEqual(confirmedBlockerKeys(note, ['uline_straight_truck']), [], 'advisory only → nothing confirmed');
 });
 
 // ── WHAT THE SPLIT MEANS FOR THE LIME PAINT ─────────────────────────────────
 
 test('an ADVISORY blocker does not veto the tractor-delivered lime — it earns the split ring', () => {
   // This is the whole point: "something says no, nobody has checked" is a THIRD state, and
-  // flattening it into either yes or no throws away what the map actually knows.
-  const note = { auto_sources: { no_tractor_trailer: ['addressLine2'] } };
-  assert.equal(tractorPaintAllowed(null, ['no_tractor_trailer'], note), true);
+  // flattening it into either yes or no throws away what the map actually knows. The state
+  // now belongs to Uline's text alone, which is the only thing nobody here vouched for.
+  const note = { auto_sources: { uline_straight_truck: ['orderInstructions'] } };
   assert.equal(tractorPaintAllowed(null, ['uline_straight_truck'], note), true);
+});
+
+test('a DAVIS-TYPED no-tractor-trailer now vetoes the lime, which is the point of the fix', () => {
+  // A stop whose own Address 2 says NO TRACTOR TRL must never wear "a tractor delivered here"
+  // as permission — that is the one reading this icon may never give (v0.76.5).
+  const note = { auto_sources: { no_tractor_trailer: ['addressLine2'] } };
+  assert.equal(tractorPaintAllowed(null, ['no_tractor_trailer'], note), false);
 });
 
 test('a CONFIRMED blocker still vetoes the lime, exactly as before', () => {
@@ -571,4 +599,29 @@ test('THE LEGEND DEMONSTRATES THE MARK THE MAP DRAWS', () => {
   assert.match(APP_SRC, /blockerKeys=\{LEGEND_BLOCKER_EXAMPLE\}[\s\S]{0,400}?blockerKeys=\{LEGEND_BLOCKER_EXAMPLE\}/,
     'both the confirmed and the advisory swatch declare themselves blockers');
   assert.ok(!/Half ring/.test(APP_SRC), 'the wording must not still describe a ring');
+});
+
+// ── THE GREEN ROW AND THE BUTTON THAT DROPS THE REST ────────────────────────
+//
+// Chad: "I want a button on top of bar to remove all stops in the list that are not tractor
+// friendly stops." The button and the highlight read ONE function, because a button that
+// drops a row the panel painted green is the worst possible version of this feature.
+
+test('any green signal makes a stop tractor-friendly', () => {
+  assert.equal(tractorFriendlySelection({ eligibility: 'tractor' }), true, 'the dispatcher\'s own paint');
+  assert.equal(tractorFriendlySelection({ friendlyBadge: true }), true, 'the Tractor trailer friendly badge');
+  assert.equal(tractorFriendlySelection({ tractorSeen: true }), true, 'a 53-footer has actually delivered here');
+});
+
+test('an explicit box-only mark wins over every green signal', () => {
+  // The dispatcher saying NO outranks proven history — the same asymmetry tractorPaintAllowed
+  // keeps, and for the same reason: history must never read as permission.
+  assert.equal(tractorFriendlySelection({ eligibility: 'box_only', tractorSeen: true, friendlyBadge: true }), false);
+});
+
+test('UNKNOWN is not friendly — the button drops it, which is the cautious direction', () => {
+  // A stop nobody has marked and no tractor has been to is not evidence a trailer fits, and
+  // the button's whole job is to leave a list a tractor can actually run.
+  assert.equal(tractorFriendlySelection({}), false);
+  assert.equal(tractorFriendlySelection(), false, 'no argument at all must not crash into true');
 });

@@ -75,11 +75,15 @@ test('completed is NOT pulled 10pm-4am — six hours a day where a pull returns 
   assert.equal(resolveInterval('planned', TUE, 2, rules), 20);
 });
 
-test('Saturday is silent, and Sunday evening wakes up for Monday routing', () => {
+test('Saturday is silent but for the 7am heal, and Sunday evening wakes up for Monday routing', () => {
   const rules = defaultScanRules();
+  // ONE HOUR, TWO KINDS (v0.95.2, Chad: "we could also schedule one scan at 7 am saturday to
+  // heal anything"). Everything else about Saturday is unchanged, and the roster — the pull
+  // that turned the reverted carve-out into forty-one calls — is not scheduled at all.
   for (const kind of SCAN_KINDS) {
     for (let h = 0; h < 24; h++) {
-      assert.equal(resolveInterval(kind, SAT, h, rules), null, `Sat ${h}:00 ${kind}`);
+      const healHour = h === 7 && (kind === 'planned' || kind === 'completed');
+      assert.equal(resolveInterval(kind, SAT, h, rules), healHour ? 240 : null, `Sat ${h}:00 ${kind}`);
     }
   }
   assert.equal(resolveInterval('planned', SUN, 21, rules), 30, 'Sunday evening builds Monday');
@@ -230,7 +234,10 @@ test('the default plan stays comfortably inside the daily ceiling', () => {
   // stay a small fraction of it — a plan that spends the budget on list pulls starves the
   // /stop/info reads that give new orders their address and pin.
   assert.ok(busiest < 300, `busiest day ${busiest} must stay well under the 2,000 ceiling`);
-  assert.equal(est.perDay[SAT], 0, 'nothing on Saturday');
+  // Saturday is the 7am heal and nothing else: one scan, both saved searches, which the
+  // estimator rounds to a single fire of the hour. A Saturday that costs more than this is the
+  // weekend carve-out coming back under a new name.
+  assert.ok(est.perDay[SAT] <= 2, `Saturday ${est.perDay[SAT]} — one heal scan, no more`);
   assert.ok(est.byKind.completed > 200, 'completed is still sampled hard through the delivery day');
 });
 
