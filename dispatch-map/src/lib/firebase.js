@@ -5,6 +5,7 @@
 
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
+import { mirrorMisconfigured, MIRROR_MISCONFIGURED_MESSAGE } from './mirror-site.js';
 
 const cfg = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -22,4 +23,21 @@ export const app = firebaseConfigured ? initializeApp(cfg) : null;
 // sets uat-mirror so client-side writes — customer_notes etc. — never touch the
 // production default database). Unset = the default database, unchanged.
 const dbName = (import.meta.env.VITE_FIRESTORE_DATABASE || '').trim();
-export const db = app ? (dbName ? getFirestore(app, dbName) : getFirestore(app)) : null;
+
+// A UAT BUILD THAT RESOLVES THE PRODUCTION DATABASE IS A MISCONFIGURATION, AND IT MUST FAIL
+// LOUD. The server already refuses this (firestore.mts, uatMisconfigured); the browser did not,
+// and the browser writes real things — customer notes, receiving hours, closed days, vehicle
+// eligibility, truck profiles, board-date overrides. One missing build-time variable on the UAT
+// site sent every one of those to the live board, and the app looked completely normal while it
+// happened. Keyed on the HOSTNAME because that is the one fact about a deploy nobody can forget
+// to set. See src/lib/mirror-site.js.
+export const mirrorMisconfig = mirrorMisconfigured(
+  typeof window === 'undefined' ? '' : window.location.hostname,
+  dbName,
+);
+if (mirrorMisconfig) console.error('[firebase] ' + MIRROR_MISCONFIGURED_MESSAGE);
+
+// `null` rather than a live handle: every caller already guards on `db` (Firestore is optional
+// in this app), so refusing the handle turns a silent production write into a visible dead
+// control, which is the safe direction and the one the operator can report.
+export const db = (app && !mirrorMisconfig) ? (dbName ? getFirestore(app, dbName) : getFirestore(app)) : null;

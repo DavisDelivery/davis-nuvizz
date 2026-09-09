@@ -32,8 +32,17 @@ import { rwbEngineBlocked } from './lib/nuvizz-rwb.mts';
 import { getNuvizzRequester, setCallTrigger, resolveDailyCeiling, NuvizzCircuitOpenError } from './lib/nuvizz-request.mts';
 import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
 import { getOpRecord, putOpRecord, priorShortCircuits, recordCreatedOrder, recordAssignment } from './lib/write-registries.mts';
+import { outboundAllowed, outboundRefusal } from './lib/mirror-guard.mts';
 
 function writeEnabled(): boolean {
+  // A MIRROR DEPLOY DOES NOT WRITE TO NuVizz. This is the one with a truck on the end of it:
+  // assignDriver and dispatchLoad put freight on a driver's phone and release it. A mirror
+  // copies production's env, so NUVIZZ_WRITE_ENABLED was true there too, and nothing else on
+  // this path asked which environment it was in — isMirrorDeploy() gated READS (scansEnabled)
+  // and nothing else, so a UAT deploy was silent about spending a vendor call and perfectly
+  // willing to move a truck. See lib/mirror-guard.mts; MIRROR_ALLOW_OUTBOUND=nuvizz-write
+  // opens it deliberately for a UAT tenant.
+  if (!outboundAllowed('nuvizz-write')) return false;
   return String(process.env.NUVIZZ_WRITE_ENABLED ?? '').trim().toLowerCase() === 'true';
 }
 
@@ -199,7 +208,9 @@ export default async (req: Request): Promise<Response> => {
 
   // 2) Mutating ops require the server-side kill switch.
   if (MUTATING_OPS.has(op) && !live) {
-    return J({ ok: false, op, tenant, live: false, dryRun: false, error: 'live writes disabled — set NUVIZZ_WRITE_ENABLED=true to enable', ops }, 403);
+    return J({ ok: false, op, tenant, live: false, dryRun: false, error: outboundAllowed('nuvizz-write')
+      ? 'live writes disabled — set NUVIZZ_WRITE_ENABLED=true to enable'
+      : outboundRefusal('nuvizz-write'), ops }, 403);
   }
 
   // 3) Creds must be present (basicAuthHeader throws if not) — fail clearly, no NuVizz call.

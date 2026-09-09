@@ -19,13 +19,13 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList } from 'lucide-react';
+  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
   query, orderBy, limit, updateDoc, deleteDoc,
 } from 'firebase/firestore';
 
-import { db } from './lib/firebase.js';
+import { db, mirrorMisconfig } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
 import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { routeStopEta, routeStopFreight, routeStopSeq, routeStopTime, loadDefaultWindow } from './lib/route-stop-line.js';
@@ -82,6 +82,8 @@ import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDrive
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
 import { planSendSelection } from './lib/send-selection.js';
+import { MIRROR_MISCONFIGURED_MESSAGE } from './lib/mirror-site.js';
+import { satelliteControlSpec, paintSatelliteControl, SATELLITE_BUTTON_CSS } from './lib/map-satellite-control.js';
 import { dropSide, dropSideClass } from './lib/drop-side.js';
 import { rosterFreshness, ageLabel } from './lib/roster-freshness.js';
 import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
@@ -118,7 +120,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.98.4';
+const APP_VERSION = '0.98.7';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -189,6 +191,9 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.98.7', 'THE 53-FOOT TRAILER WAS FOLLOWING THE BOX TRUCKS AROUND. Chad: “if i give it 2 boxes and 1 tractor and 30 stops it puts what it knows is tractor friendly on the tractor and rest on the boxes.” It did not, and I measured it rather than guessed: running the real solver on 30 Atlanta-area stops with the shipped truck profiles, a normal day (8 stops a 53′ cannot serve) came out BOX-1=14, BOX-2=14 — both at their 14-skid ceiling — and the 28-skid TRACTOR took 2 of 30. Two trucks did the day and the big one trailed them. On a clean board it was 14/6/10. WHY: growth was purely nearest-pair. Whichever truck’s territory happened to be closest won every stop until it physically could not take another, and nothing in the loop knew one truck was full while another sat empty — the objectiveWeights `balance` term the request has always carried was plumbed the whole way in and never read. Placement now costs a stop as its distance PLUS a penalty for how full that truck already is, expressed in metres so it stays comparable with the distance it trades against (ROUTING_BALANCE_METRES, default 12 km). Same three scenarios after: 10/10/10 clean, 13/10/7 on the normal day. EQUIPMENT IS STILL ABSOLUTE — this is a preference and can never put box-only freight on a trailer; a test pins exactly that. AND TWO REAL DEFECTS FOUND ALONGSIDE IT. (1) The repair loop kept its OWN copy of the capacity rule, honouring neither CAPACITY_GATES nor the positive-cap guard — so it spilled stops for “over deck length”, a limit the code switches off on purpose because the per-stop estimate is inflated, and printed a reason routing-constraints says can never happen, after shredding the geographic assignment to satisfy it. The file’s own header promises the rule is “defined exactly once… so the solver’s assignment and the repair loop’s validation can never drift apart”; they had drifted. One shared capacityBreaches now, and the same 30-stop board that spilled two stops for a phantom deck limit now spills them for the true reason (over skid capacity — 30 stops, 28 skids of box). (2) A PICKED TRUCK THAT GOT NOTHING SIMPLY VANISHED. Empty trucks were dropped before the result was built and the screen renders one card per route, so picking three and getting two cards was the only signal, with nothing saying which went unused. That is the visible half of the “only green on a 53′ trailer” trap: on a board where nothing is marked green every stop is held to a box and the trailer leaves the plan without a word. The plan now carries idleTrucks with a reason drawn from the freight itself — “no selected stop is allowed on this truck” versus “the other trucks covered every stop before this one was needed” — recomputed AFTER the repair pass, because repair can empty a truck too, and shown in an amber panel above the spill list. 9 new tests driving the real solver, 3,683 green.'],
+  ['0.98.6', 'UAT COULD EMAIL A REAL CUSTOMER, TEXT A REAL DRIVER, AND DISPATCH A REAL TRUCK. Chad asked for one thing to be true: “nothing we do in UAT writes to the production version of the site.” It was not true, and the reason is a good lesson. THE REPO ALREADY HAD THE RIGHT IDEA AND USED IT ONCE. isMirrorDeploy() keys on FIRESTORE_DATABASE — the one variable that is always true of a mirror and never true of production — and its own comment explains why that is the right key: a new mirror is “born silent instead of scanning until somebody notices the bill.” That reasoning was applied to READS and stopped there. Every door that leaves the building was left keyed on nothing but the presence of an API key, and a mirror is built by COPYING production’s env: emailEnabled() was RESEND_API_KEY && RESEND_FROM, smsEnabled() was SIMPLETEXTING_API_KEY, and the NuVizz write gate was NUVIZZ_WRITE_ENABLED — all three true on UAT. So the UAT site could mail a real customer about a real delivery from the real address, text a real driver from the real Davis number at 9pm, and assign or dispatch a real load in production NuVizz, which puts freight on a driver’s phone and sends a truck. Worse than one stray message: each deploy keeps its send-dedup ledger in its OWN Firestore database while sharing ONE Resend account, so the two ledgers do not compose and the same customer can be mailed once by each site. NOW: lib/mirror-guard.mts finishes the rule a mirror sends NOTHING — no mail, no texts, no NuVizz writes — by default, gated at the enabled() check AND at the send itself, because a guard you can walk past by forgetting to call it is not a guard. MIRROR_ALLOW_OUTBOUND opens one channel at a time by name for deliberate testing, and a typo fails CLOSED. Production is byte-identical: unset FIRESTORE_DATABASE means not a mirror, and every gate answers exactly as before. AND THE BROWSER HALF, which was the other hole: src/lib/firebase.js read VITE_FIRESTORE_DATABASE with no cross-check, so one missing build-time variable on the UAT site sent every browser write — customer notes, receiving hours, closed days, vehicle eligibility, truck profiles — straight to the live board, silently, with the app looking completely normal. It now keys on the HOSTNAME, because that is the one fact about a deploy nobody can forget to set or copy from production: a uat host with no named database gets NO Firestore handle and an undismissable red banner naming what it would have changed. It fires in one direction only — production is never touched, whatever it sets. Found by an eight-way audit of the assignment path and the UAT boundary, every finding then handed to an independent skeptic told to refute it; 24 of 46 survived. 18 new tests, 3,674 green.'],
+  ['0.98.5', 'SATELLITE MOVED ONTO THE MAP, THE ● LIVE PILL IS GONE, AND A FLAG CARD NOW NAMES THE TRUCK AND THE DRIVER. Three things Chad asked for in one sitting. A fourth — the Routing legend reading as grey text on bare satellite imagery — was the same bg-white/97 bug diagnosed independently on this branch and on main while both were open; main’s fix (v0.97.6, #850) went in first and is the one that shipped, so this branch drops its duplicate legend change and its narrower opacity guard in favour of the class-vs-stylesheet check already in CI. SATELLITE IS ON THE MAP. “Want satellite view button taken out of menu and put on actual map near this button” — the Recenter crosshair. It was a row in a filter panel that has to be opened, scrolled and closed for a control a dispatcher flips constantly to read a dock, a yard or a gate; and the PHONE filter sheet never carried the row at all, so on a phone there was no way to turn satellite on from the Map screen. It is now a control ON the map on both screens — beside the crosshair on the dispatch Map, in the tool rail on Routing — which also means a phone has it for the first time. It says which way it will go, because a toggle whose position cannot be read is not a toggle. THE ● LIVE PILL IS GONE. “no longer need this live button just wasting space.” It had stopped being a decision: it defaults to Live and sticks per device, so it read ● LIVE on every board and was pressed by nobody, while taking room on a rail that has none. Removed WITH its plumbing rather than defaulted on — a dead branch behind a control nobody can reach reads as a safety net and is not one. What actually stops a write is unchanged and all server-side: the dispatcher role gate, the Dispatch-all confirm that names every load and driver, and nuvizz-write refusing everything unless NUVIZZ_WRITE_ENABLED=true. A FLAG CARD NAMES THE TRUCK AND THE PERSON ON IT. “Need to show route and driver name.” The route was buried mid-sentence in the detail (“Stop 11 on ESTES”) and the driver appeared nowhere — yet the first thing anyone does with a flag is work out which truck it is and phone whoever is driving it, which was a second lookup on another screen twenty times a morning. Both are now their own line, darker than the prose because that is the line being scanned down a list of twenty cards. The subtlety: a STOP row often carries no driver even when its LOAD is assigned, so reading the stop alone would print “No driver” on most cards and quietly destroy the meaning of the real no-driver flag — the driver is filled in from the route, and a route running two different drivers fills NOTHING rather than sending the call to the wrong truck. 20 new tests.'],
   ['0.98.4', 'THE CEILING HE SAVED WAS NOT THE CEILING BEING ENFORCED — 3,000 IN THE FIELD, 2,000 IN THE CODE THAT SPENDS. Chad: “I have it set at 3000 as you can see but stopping me at 2000.” He was reading his own screen correctly, and BOTH numbers on it came out of one file, from one setting. The status card said “NuVizz calls: 2,000 / 3,000 (enforce, halted)” and the banner under it said “daily NuVizz call ceiling reached (2000/2000) — write refused”, on the same load. WHERE IT WENT. v0.70.3 split the one number into two — DEFAULT (2,000, what the env var and any caller fallback are capped at) and HARD (3,000, reachable only by a deliberate save) — and that part was right. What it missed is that the saved value reached the enforcement path through setDailyCeilingOverride, a MODULE-LEVEL variable, and exactly one caller ever set it: refresh-stops-core, at the top of a scan run. Netlify functions are separate processes. nuvizz-write.mts has its own copy of that module and had never called the setter, so its override was permanently null and effectiveDailyCeiling() fell through to the 2,000 ambient default — while the display paths, which READ the stored config, printed 3,000. A setting is not a setting if honouring it depends on which entrypoint you came in through. AND IT WAS NOT ONLY THE WRITE ENDPOINT: the per-call trip uses that same expression, so a live dispatcher write tripped the SHARED, fleet-wide Firestore breaker at 2,000 and halted the scanner too — in a process that knew perfectly well the ceiling was 3,000. That is the “halted” on his card. THE FIX IS TO STOP WAITING TO BE TOLD. Every process now HYDRATES the ceiling from the stored document itself (one read per minute per warm instance, none at all for a caller that already read it), through the one clamp, so the number the gauge prints and the number the breaker enforces are resolved from the same place in every entrypoint. THE SECOND HALF, WITHOUT WHICH THE FIRST DOES NOTHING TODAY: raising the ceiling now RELEASES a breaker that tripped at the old number. The trip is a latch in Firestore and it only expired at ET midnight, so a board halted at 2,000 would have stayed halted all day against a 3,000 ceiling for a reason that no longer existed — from the dispatcher’s chair, indistinguishable from the setting not working at all. The release is WRITTEN, with a reason saying what freed it, because both apps read that document and a breaker whose real position lives in one process’s memory is a switch nobody can read. IT IS STILL A CAP, AND IT IS STILL DELIBERATE: the env var and any caller fallback are unchanged and may only LOWER, nothing moves without a save, an unreadable count or ceiling leaves the breaker OPEN (releasing on a Firestore blip means uncapped vendor spend; staying halted means a late board — only one of those is recoverable in the afternoon), and a config read that throws KEEPS the last known ceiling rather than quietly cutting the budget to 2,000 mid-day. The card and the Diagnostics gauge now report the breaker as BINDING rather than merely flagged, using the same predicate and the count they already had in hand — no extra read, and no way for the screen and the spend path to disagree about the word halted. CHECKED BOTH WAYS: restore the old resolution and the end-to-end test fails at exactly call 2,000, which is where he was stopped. Zero NuVizz calls spent finding or fixing this. 10 new tests, 3,717 green.'],
   ['0.98.3', 'A HOVER MAY NOT EAT A FACT ABOUT THE FREIGHT — THE TRACTOR ROW’S HIGHLIGHT IS ITS OWN GREEN. Chad, on v0.98.2: “I don’t want it to wash out a tractor friendly row so for those make the highlight a form of green.” TWO THINGS SHARE ONE ROW AND ONE WAS OVERWRITING THE OTHER. Green says a tractor trailer can be sent to this stop — a fact about the freight, and the SAME rule the “Drop N non-tractor” button beside it reads, so the two must never disagree. Hover says the pointer, or the MAP through the shared hoverId, is on this row right now, and says nothing about the stop. Painting every hovered row one fill erased the green for as long as the pointer sat there. Now a tractor row hovers WITHIN its own colour: green-100 resting to green-300 hovered, a step as strong as the ordinary row’s nothing-to-slate-200, so the highlight is just as visible and the meaning survives it. THE RULE IS NOW A FUNCTION, NOT A className. selectionRowTone({ tractorOk, hot }) lives in lib/routing-select.js beside the rest of the routing rules, because a decision buried in JSX cannot be tested and this one has now been got wrong twice in two releases. Five tests pin it, including that all four states are visually DISTINCT (if two collide the row is lying about one of them) and that a row whose flags have not loaded yet is never green — flashing green would claim a trailer fits somewhere nobody has said it does. CHECKED BOTH WAYS: restore one fill for every hovered row and three of the five fail, naming the wash-out. WHY A UNIT TEST AND NOT THE BROWSER GUARD, said plainly: tractorOk is computed from customer_notes and tractor_locations, both Firestore reads, and page.route cannot stub a Firestore subscription — the green case is unreachable in a headless run no matter how the guard is written. So the four tones were ALSO rendered through the shipped stylesheet and looked at, which caught the thing a class name cannot tell you: Tailwind only emits the classes it finds in source, and a tone that is not in the compiled CSS renders as no background at all. All four are present and correct. 5 new tests, 3,707 green.'],
   ['0.98.2', 'THE ROW HIGHLIGHT IS GREY, NOT YELLOW. Chad, pointing at the selection window: “I don’t like the highlight yellow when i’m over a row.” Amber was chosen to echo the marker’s selection colour and that was the wrong reason — on this board amber MEANS CAUTION (a contested ZIP under 60%, every warning box, a flag), so a pointer highlight wearing it was saying something it does not mean, and the hint line above it was amber too, which made the whole panel read as a warning. Grey says “this is the one you are pointing at” and nothing else. AND IT STOPS EATING A REAL SIGNAL: a tractor-friendly row is green, and the single amber fill overwrote that green while the pointer was on it — green there is a fact about what can be sent to that stop, so a hover may not consume it. A green row now hovers to a deeper green and every other row to grey. BOTH PANELS, because two surfaces driving one hoverId must not paint it two colours: the floating window and the docked/phone list now share the shade. The browser guard follows the change rather than being loosened by it — it still asserts the row is painted the SHARED-hover colour on hover, which is the thing that proves the panel reaches the map’s state; the plain hover:bg-slate-50 the row sits next to would pass a mere “the colour changed” check and prove nothing. The colour is not the rule; being driven by hoverId is. 3,702 green.'],
@@ -4304,7 +4309,25 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
               className={'min-w-0 flex-1 text-left ' + (r.stopNbr ? 'cursor-pointer' : 'cursor-default')}
             >
               <div className="text-xs font-semibold text-slate-800 leading-snug">{r.title}</div>
-              <div className="text-[11px] text-slate-500 leading-snug mt-0.5">{r.detail}</div>
+              {/* ROUTE AND DRIVER, on their own line. Chad: "Need to show route and driver
+                  name." The route was buried mid-sentence in the detail ("Stop 11 on ESTES")
+                  and the driver was nowhere — yet the first thing anyone does with a flag is
+                  work out which truck it is and phone whoever is on it. Darker than the detail
+                  prose on purpose: it is the line being scanned down a list of twenty cards.
+                  "No driver" is printed rather than left blank, because an unassigned load at
+                  10am IS the finding. */}
+              {r.routeName && (
+                <div className="text-[11px] text-slate-700 font-medium leading-snug mt-0.5">
+                  <span className="text-slate-800">{r.routeName}</span>
+                  <span className="text-slate-400"> · </span>
+                  {r.driverName
+                    ? <span>{r.driverName}</span>
+                    : r.routeDriverCount > 1
+                      ? <span className="text-slate-600">{r.routeDriverCount} drivers</span>
+                      : <span className="text-amber-700">No driver</span>}
+                </div>
+              )}
+              <div className="text-[11px] text-slate-600 leading-snug mt-0.5">{r.detail}</div>
               {/* WHEN did this first appear. Chad, on a critical card at 1:23pm: "what time did
                   Ben's flag first time show up ... it should have been there from first thing
                   this morning." It had been — 4:01am, on a DIFFERENT route — and the card could
@@ -6077,11 +6100,9 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
           {clusterWarning && (
             <div className="text-[10px] text-amber-700 italic mt-1 leading-tight">{clusterWarning}</div>
           )}
-          <MapFilterToggle
-            label="Satellite view"
-            checked={filters.satellite}
-            onChange={set('satellite')}
-          />
+          {/* Satellite view moved ONTO the map (beside the Recenter crosshair) — see the
+              satBtn control in the map-init effect. It is a look-at-the-picture control, and
+              the phone sheet never carried it at all. */}
           <MapFilterToggle
             label="Hide place labels"
             checked={filters.hideLabels}
@@ -11210,6 +11231,10 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   // map depends on this, so a rebuild repaints instead of leaving an empty board.
   const [mapReady, setMapReady] = useState(0);
   const recenterRef = useRef(null); // latest "fit to stops" fn for the custom control
+  // The on-map satellite control is a plain DOM button handed to Google once, so its click
+  // handler and its paint both have to reach current state through refs.
+  const satelliteBtnRef = useRef(null);
+  const satelliteToggleRef = useRef(null);
   const clustererRef = useRef(null);
   const markersRef = useRef([]);
   const driverMarkersRef = useRef([]);
@@ -11839,6 +11864,20 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
       gestureHandling: 'greedy',
     });
     labelOverlayClassRef.current = makeDriverLabelOverlayClass(google);
+    // SATELLITE, ON THE MAP — not three taps deep in a sheet. Chad: "Want satellite view
+    // button taken out of menu and put on actual map near this button", pointing at the
+    // Recenter crosshair. Reading a dock, a yard or a gate is a look-at-the-picture job a
+    // dispatcher flips constantly, and it was a row in a filter panel that has to be opened,
+    // scrolled and closed again — while the PHONE filter sheet never carried the row at all,
+    // so on a phone there was no way to turn satellite on from this screen. One control, on
+    // the map, on both views. Created once (imperative Google control); a ref carries the
+    // live setter and a paint effect below keeps its look honest.
+    const satBtn = document.createElement('button');
+    satBtn.type = 'button';
+    satBtn.style.cssText = SATELLITE_BUTTON_CSS;
+    satBtn.addEventListener('click', () => satelliteToggleRef.current && satelliteToggleRef.current());
+    satelliteBtnRef.current = satBtn;
+    mapRef.current.controls[google.maps.ControlPosition.RIGHT_BOTTOM].push(satBtn);
     // Custom "Recenter on stops" control (the crosshair). A ref holds the latest
     // fit function so the once-created button always recenters the current board.
     const recenterBtn = document.createElement('button');
@@ -11890,6 +11929,19 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     return () => { ro.disconnect(); host.style.removeProperty('--rt-grid-h'); };
   });
   const fitPad = useCallback(() => ({ top: 60, right: 60, left: 60, bottom: 60 + (bottomGridRef.current?.offsetHeight || 0) }), []);
+
+  // Keep the on-map satellite button pointed at live state, and paint it to match. It is
+  // created once and outlives every re-render, so both halves ride refs. aria-pressed and the
+  // title say which way it will go — a toggle whose position cannot be read is not a toggle.
+  useEffect(() => {
+    satelliteToggleRef.current = () => setMapFilters((prev) => ({ ...prev, satellite: !prev.satellite }));
+  }, []);
+  // The look and the words come from lib/map-satellite-control (pure, tested) — the Routing
+  // rail builds the same control a completely different way, and this is what stops the two
+  // from drifting apart in wording or in on/off treatment.
+  useEffect(() => {
+    paintSatelliteControl(satelliteBtnRef.current, mapFilters.satellite);
+  }, [mapFilters.satellite, mapReady]);
 
   // Keep the Recenter button's action pointed at the current board: fit to all
   // currently-shown stops (or fall back to the default center when none).
@@ -16341,7 +16393,7 @@ function RouteStatusBadge({ status }) {
 // nuvizz-write is gated at dispatcher on the server. This is the pair of controls where a
 // silent refusal costs the most in freight terms: a load a dispatcher believes is DISPATCHED
 // is a driver who was never told to roll, found at the end of the day rather than the start.
-function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], rosterError = null, assignLive = false, setAssignLive, onAssignDriver, assignedOverride = {}, assigningKey = null, onDispatchLoad, onDispatchAll = null, dispatchAllPlanner = null, dispatchingKey = null, onNewRoute = null, writeDenied = null }) {
+function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], rosterError = null, assignLive = true, onAssignDriver, assignedOverride = {}, assigningKey = null, onDispatchLoad, onDispatchAll = null, dispatchAllPlanner = null, dispatchingKey = null, onNewRoute = null, writeDenied = null }) {
   const [selected, setSelected] = useState(() => new Set());   // empty = All
   const [menuOpen, setMenuOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -16414,16 +16466,14 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
         {(q || selected.size > 0) && (
           <button onClick={() => { setQ(''); setSelected(new Set()); }} className="text-[11px] text-slate-500 hover:text-slate-800 shrink-0">Clear</button>
         )}
-        {/* Driver-assign mode (only when Live dispatch is enabled). Beta = a pick previews; Live =
-            a pick assigns the driver in NuVizz immediately. Defaults to LIVE and the choice is
-            remembered on this device — see the assignLive state in RoutingScreen. */}
-        {liveWrite && setAssignLive && (
-          <button onClick={() => setAssignLive((v) => !v)}
-            title={assignLive ? 'LIVE — picking a driver assigns it in NuVizz immediately. Click for Beta (preview only); the mode is remembered on this device.' : 'BETA — picking a driver only previews, nothing is sent. Click to go Live and assign for real; the mode is remembered on this device.'}
-            className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded border shrink-0 ${assignLive ? 'border-red-600 bg-red-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}>
-            {assignLive ? '● LIVE' : '○ Beta'}
-          </button>
-        )}
+        {/* The ● LIVE / ○ Beta pill used to sit here. Chad: "no longer need this live button
+            just wasting space." It had already stopped being a decision: it defaults to Live and
+            the choice sticks per device, so on every board that matters it read ● LIVE and was
+            pressed by nobody — a safety you never flip is one you stop reading, and it was taking
+            room from the search box and Dispatch all on a rail that has none to spare. Assigning
+            and dispatching are live, as they already were. What actually stops a write is the
+            server: nuvizz-write refuses unless NUVIZZ_WRITE_ENABLED=true, and Dispatch all still
+            names every load and driver in a confirm before it sends. */}
         {/* DISPATCH ALL — the twenty clicks, as one, with the same three gates on each.
             It acts on the FILTERED list, which is the only behaviour that cannot surprise
             anyone: what the panel is showing is what the button will send, so narrowing by
@@ -16503,7 +16553,7 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
                         className="flex-1 min-w-0 border rounded px-1 py-1 text-[11px] bg-white"
                         aria-label={`Assign driver to ${loadDisplayName(g.name, g.loadNbr) || g.loadNbr}`}
                       >
-                        <option value="">{writeDenied ? 'Assigning needs the dispatcher role' : rosterError ? 'Driver roster unavailable' : (roster.length ? (assignLive ? 'Assign driver…' : 'Assign driver… (Beta)') : 'Loading drivers…')}</option>
+                        <option value="">{writeDenied ? 'Assigning needs the dispatcher role' : rosterError ? 'Driver roster unavailable' : (roster.length ? 'Assign driver…' : 'Loading drivers…')}</option>
                         {roster.map((d) => <option key={String(d.driverId)} value={String(d.driverId)}>{d.name}{d.userName ? ` (${d.userName})` : ''}</option>)}
                       </select>
                     )}
@@ -16512,7 +16562,7 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
                       <button
                         onClick={() => onDispatchLoad(g)}
                         disabled={!shownDriver || dispatching || busy || !!writeDenied}
-                        title={writeDenied || (!shownDriver ? 'Assign a driver before dispatching' : (assignLive ? `Dispatch ${loadDisplayName(g.name, g.loadNbr) || g.loadNbr} in NuVizz now` : 'Beta — preview only, flip to ● Live to dispatch for real'))}
+                        title={writeDenied || (!shownDriver ? 'Assign a driver before dispatching' : `Dispatch ${loadDisplayName(g.name, g.loadNbr) || g.loadNbr} in NuVizz now`)}
                         className="shrink-0 text-[11px] font-semibold px-2 py-1 rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         {dispatching ? '…' : 'Dispatch'}
@@ -16720,7 +16770,7 @@ function RoutingToolBtn({ active, onClick, disabled, title, children }) {
   );
 }
 
-function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja, ninjaAvailable, legendInventory = null, inFlow = false }) {
+function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja, ninjaAvailable, legendInventory = null, inFlow = false, satellite = false, onToggleSatellite = null }) {
   // Chad: "put a map legend button here to show what all the different icons that are
   // currently on the map mean." The rail is where a dispatcher's thumb already is, and it
   // is the only furniture on this screen — the Routing map had no legend of any kind, on
@@ -16747,6 +16797,12 @@ function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja,
       <Btn active={selectMode === 'box'} onClick={onBox} title="Box select — tap two corners (or drag) to grab a group"><Square size={16} /></Btn>
       <Btn active={selectMode === 'lasso'} onClick={onLasso} title="Lasso select — tap points (or hold & draw) around stops"><Lasso size={16} /></Btn>
       <Btn active={ninjaMode} onClick={onToggleNinja} title={ninjaAvailable ? 'Ninja — click stops onto the active Compare route' : 'Ninja — open a route in the Compare panel first'}><NinjaIcon size={16} /></Btn>
+      {/* Satellite, ON the map — same move as the dispatch Map's crosshair-side button. It
+          was a row in the Filters popover, which has to be opened and closed for a control a
+          dispatcher flips to read a dock or a yard. */}
+      {onToggleSatellite && (
+        <Btn active={satellite} onClick={onToggleSatellite} title={satelliteControlSpec(satellite).label}><Globe size={16} /></Btn>
+      )}
       <Btn active={legendOpen} onClick={() => setLegendOpen((v) => !v)} title="Legend — what the marks on this map mean"><Info size={16} /></Btn>
     </div>
   );
@@ -18351,7 +18407,7 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
 // view (hybrid imagery vs the plain roadmap base), and Show routes (draws each load's stops
 // connected in delivery sequence). (The old build-version badge lived here; version history now
 // lives in the gear settings, since the dispatcher reads the version from the page footer.)
-function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, satellite, setSatellite, showRoutes, setShowRoutes, hideLabels, setHideLabels }) {
+function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setShowRoutes, hideLabels, setHideLabels }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -18362,7 +18418,9 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, satellite, setSate
     window.addEventListener('keydown', onKey);
     return () => { document.removeEventListener('mousedown', onDoc); window.removeEventListener('keydown', onKey); };
   }, [open]);
-  const anyOn = unplannedOnly || showRoutes || !satellite || hideLabels;
+  // Satellite is no longer in this popover (it lives on the map, in the tool rail), so it no
+  // longer counts toward "some filter is on".
+  const anyOn = unplannedOnly || showRoutes || hideLabels;
   return (
     <div className="absolute top-2 right-2 z-20" ref={ref}>
       <button
@@ -18376,7 +18434,6 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, satellite, setSate
       {open && (
         <div className="absolute right-0 mt-1 w-52 bg-white border border-slate-300 rounded-lg shadow-xl px-3 py-1.5 text-[12px]">
           <MapFilterToggle label="Unplanned only" checked={unplannedOnly} onChange={setUnplannedOnly} />
-          <MapFilterToggle label="Satellite view" checked={satellite} onChange={setSatellite} />
           <MapFilterToggle label="Hide place labels" checked={hideLabels} onChange={setHideLabels} />
           <MapFilterToggle label="Show routes" checked={showRoutes} onChange={setShowRoutes} />
         </div>
@@ -19683,11 +19740,13 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   const [assignRoster, setAssignRoster] = useState([]);
   const [assignRosterError, setAssignRosterError] = useState(null);
   const assignRosterLoaded = useRef(false);
-  const [assignLive, setAssignLive] = useState(() => {
-    try { if (localStorage.getItem('routing.assignLive') === 'off') return false; } catch { /* private mode */ }
-    return true;
-  });
-  useEffect(() => { try { localStorage.setItem('routing.assignLive', assignLive ? 'on' : 'off'); } catch { /* private mode */ } }, [assignLive]);
+  // ASSIGN + DISPATCH ARE LIVE. The Beta/Live pill is gone (see RoutingRoutesPanel), so this
+  // is a constant rather than a remembered switch — a dead `false` branch behind a control
+  // nobody can reach is worse than no branch. The real gates are unchanged and all outside
+  // this screen: the Live-dispatch gear must be on for the panel to render at all, the
+  // dispatcher role gate guards every write, Dispatch all confirms by name, and the server
+  // refuses everything unless NUVIZZ_WRITE_ENABLED=true.
+  const assignLive = true;
   const [assignedOverride, setAssignedOverride] = useState({});   // route key → driver name
   const [assigningKey, setAssigningKey] = useState(null);
   // EVERY NuVizz write goes through one door (lib/nuvizzWrite.js → nuvizz-write) and that door
@@ -19713,7 +19772,6 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     if (!driverId) return;
     if (!writeGate.allowed) { showMapToast(writeGate.reason); return; }
     const label = loadDisplayName(g.name, g.loadNbr) || g.loadNbr;
-    if (!assignLive) { showMapToast(`Beta — would assign ${driverName} to ${label} (nothing sent). Flip to ● Live to assign.`); return; }
     // The route group carries loadId only once its stops are enriched; a DRAFT/empty load has none.
     // Resolve the internal loadId (and the REAL load number) from the loads-roster scan, keyed by
     // route name or by the loadId itself — the same source the Compare panel already uses.
@@ -19740,7 +19798,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     } else {
       showMapToast(`✗ Assign failed for ${label}: ${res.error || res.result?.error || 'write error'}`);
     }
-  }, [assignLive, showMapToast, selectedDate, writeGate.allowed, writeGate.reason]);
+  }, [showMapToast, selectedDate, writeGate.allowed, writeGate.reason]);
   // Routes-panel "Dispatch" button — releases an already-assigned load in NuVizz (action DISPATCH,
   // the dispatchLoad op). Same Beta/Live safety + loadId resolution as onAssignDriver above; a
   // dispatched load's status won't flip in the board until the next scheduled scan, so this only
@@ -19826,23 +19884,18 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     setDispatchAllPlan({
       eligible,
       skipped,
-      // The tenant drives the modal's PRODUCTION warning, and in Live mode that is the truth.
-      tenant: assignLive ? 'DAVIS' : 'beta',
+      // The tenant drives the modal's PRODUCTION warning, and it is the truth: these send.
+      tenant: 'DAVIS',
       plan: dispatchPlanLines(eligible, driverForRoute),
       // Never a silent skip. These ride the confirm's warning block so the dispatcher sees the
       // four that will NOT go at the moment he is deciding, not afterwards.
       warnings: skipped.map((x) => `${x.name} will NOT be dispatched — ${x.reason}`),
     });
-  }, [writeGate.allowed, writeGate.reason, showMapToast, driverForRoute, loadIdFor, assignLive]);
+  }, [writeGate.allowed, writeGate.reason, showMapToast, driverForRoute, loadIdFor]);
 
   const runDispatchAll = useCallback(async () => {
     const plan = dispatchAllPlan;
     if (!plan) return;
-    if (!assignLive) {
-      setDispatchAllPlan(null);
-      showMapToast(`Beta — would dispatch ${plan.eligible.length} route${plan.eligible.length === 1 ? '' : 's'} (nothing sent). Flip to ● Live to dispatch.`);
-      return;
-    }
     setDispatchAllBusy(true);
     // SEQUENTIAL, deliberately. These are production writes against one vendor; firing twenty
     // at once buys seconds and risks a rate limit turning a clean run into a partial one whose
@@ -19859,12 +19912,11 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     // eslint-disable-next-line no-console
     console.log('[dispatch-all]', results);
     showMapToast(dispatchAllSummary(results));
-  }, [dispatchAllPlan, assignLive, dispatchOneLoad, showMapToast]);
+  }, [dispatchAllPlan, dispatchOneLoad, showMapToast]);
 
   const onDispatchLoad = useCallback(async (g) => {
     if (!writeGate.allowed) { showMapToast(writeGate.reason); return; }
     const label = loadDisplayName(g.name, g.loadNbr) || g.loadNbr;
-    if (!assignLive) { showMapToast(`Beta — would dispatch ${label} (nothing sent). Flip to ● Live to dispatch.`); return; }
     if (!loadIdFor(g)) { showMapToast(`Can't dispatch ${label} — its NuVizz load id hasn't loaded yet.`); return; }
     setDispatchingKey(g.key);
     const res = await dispatchOneLoad(g);
@@ -19874,7 +19926,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     } else {
       showMapToast(`✗ Dispatch failed for ${label}: ${res.error}`);
     }
-  }, [assignLive, showMapToast, writeGate.allowed, writeGate.reason, dispatchOneLoad, loadIdFor]);
+  }, [showMapToast, writeGate.allowed, writeGate.reason, dispatchOneLoad, loadIdFor]);
   // Ninja toolbar tap: arm/disarm when a Compare route is open; otherwise coach the dispatcher to
   // open one first (the button stays tappable so the hint is reachable on mobile too).
   const onNinjaTool = useCallback(() => {
@@ -21999,7 +22051,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         onConfirm={runDispatchAll}
       />
     )}
-    <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} onDispatchAll={liveWrite ? openDispatchAll : null} dispatchAllPlanner={liveWrite ? dispatchAllPlanner : null} dispatchingKey={dispatchingKey} onNewRoute={liveWrite ? openNewRoute : null} writeDenied={writeGate.reason} />
+    <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} onDispatchAll={liveWrite ? openDispatchAll : null} dispatchAllPlanner={liveWrite ? dispatchAllPlanner : null} dispatchingKey={dispatchingKey} onNewRoute={liveWrite ? openNewRoute : null} writeDenied={writeGate.reason} />
     </>
   );
   // The day's loads that are NOT on the board — the empty ones the dispatcher still has to
@@ -22064,7 +22116,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         {appBarSlot && createPortal(phoneGearEl, appBarSlot)}
         <div className="flex-1 relative min-w-0">
           <div ref={mapDiv} className="absolute inset-0" />
-          <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} satellite={routeSatellite} setSatellite={setRouteSatellite} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
+          <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
           {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button),
               with the Board Flags chip stacked above it. */}
           <div className="absolute top-12 right-2 z-[15] max-w-[230px] flex flex-col items-end gap-1">{flagsOverlay()}{statusCard()}</div>
@@ -22103,7 +22155,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
                     tab). In a column the chip's height MOVES the tools. Found by the
                     overlap guard, 2026-08-19. */}
                 <button onClick={() => { setMobilePanel('setup'); setSheetOpen(true); }} className="bg-white/95 border border-slate-200 rounded shadow px-2 py-1 text-[11px]" title="Review selected stops in the Setup panel">{tally.count} selected · {tally.skids} skids · {tally.pieces} pcs</button>
-                <RoutingMapTools inFlow selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} legendInventory={routingLegendInventory} />
+                <RoutingMapTools inFlow selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} legendInventory={routingLegendInventory} satellite={routeSatellite} onToggleSatellite={() => setRouteSatellite((v) => !v)} />
               </div>
             )}
           {/* On mobile the selected list lives in the Setup sheet (tap the chip) — a full-width map
@@ -22281,11 +22333,11 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       {/* Center: the map canvas */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
-        <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} satellite={routeSatellite} setSatellite={setRouteSatellite} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
+        <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
         {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button),
             with the Board Flags chip stacked above it. */}
         <div className="absolute top-12 right-2 z-[15] max-w-[240px] flex flex-col items-end gap-1">{flagsOverlay()}{statusCard()}</div>
-        {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} legendInventory={routingLegendInventory} />}
+        {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} legendInventory={routingLegendInventory} satellite={routeSatellite} onToggleSatellite={() => setRouteSatellite((v) => !v)} />}
         {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
         {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[80%] bg-slate-900/90 text-white text-[12px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={13} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
         {viewing && (
@@ -22539,6 +22591,25 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, plannedLo
         <RoutingRouteCard key={rv.truckId} rv={rv} stopById={stopById} usedGoogle={usedGoogle} readOnly={readOnly}
           onReorder={onReorder} onMove={onMove} onResequence={onResequence} hoverId={hoverId} setHoverId={setHoverId} onOpenStop={onOpenStop} />
       ))}
+
+      {/* A TRUCK THAT GOT NOTHING. Pick three, get two cards, and nothing said which one went
+          unused — the plan simply had one fewer route than trucks and the dispatcher had to
+          notice the absence himself. It is the visible half of the "only green on a trailer"
+          trap: on a board where nothing is marked green every stop is held to a box, and the
+          53' leaves the plan without a word. Amber, not red: an idle truck is a thing to know,
+          not necessarily a thing that went wrong. */}
+      {result.idleTrucks && result.idleTrucks.length > 0 && (
+        <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[12px]">
+          <div className="font-semibold text-amber-800 mb-1">
+            {result.idleTrucks.length === 1 ? 'A picked truck got no stops' : `${result.idleTrucks.length} picked trucks got no stops`}
+          </div>
+          {result.idleTrucks.map((t) => (
+            <div key={t.truckId} className="text-amber-900 leading-snug">
+              <b>{t.label}</b> — {t.reason}.
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Spill */}
       {result.unassigned && result.unassigned.length > 0 && (
@@ -24620,6 +24691,16 @@ function Shell() {
       {/* Same reasoning as UpdateBanner above: a board that is not showing you everything,
           and an action this account may not take, are WHOLE-APP conditions. They live
           outside the tab switch so they cannot be scrolled past or lost by changing screen. */}
+      {/* THE UAT SITE POINTED AT THE PRODUCTION DATABASE. Above everything, undismissable, and
+          it says what it would have broken. src/lib/firebase.js has already refused the handle
+          — every save on this build is dead — so without this the operator sees an app whose
+          controls quietly do nothing. Renders nothing anywhere else, including production. */}
+      {mirrorMisconfig && (
+        <div role="alert" className="shrink-0 flex flex-wrap items-center justify-center gap-x-3 gap-y-0.5 px-4 py-1.5 bg-rose-700 text-white text-xs font-semibold">
+          <AlertTriangle size={13} className="shrink-0" />
+          <span className="min-w-0">{MIRROR_MISCONFIGURED_MESSAGE}</span>
+        </div>
+      )}
       <PermissionBanner denials={denials} isMobile={isMobile} atTop={!updateAvailable}
         onSignIn={LOGIN_MODE === 'server' ? clearSession : null} />
       <RoleRefusalBar refusal={roleRefusal} isMobile={isMobile} atTop={!updateAvailable && !denials.length}
