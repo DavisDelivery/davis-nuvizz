@@ -56,3 +56,125 @@ export function validateNewRoute({ routeName, date, existingNames = [], hasOrigi
   if (!hasOrigin) return { ok: false, error: 'Set a ship-from address in the New Order tab first — NuVizz will not create a route without one.', loadNbr: '' };
   return { ok: true, error: null, loadNbr: routeLoadNbr(name, date) };
 }
+
+// ── WHERE THE ROUTE SHIPS FROM ──────────────────────────────────────────────
+//
+// Chad, on the ＋ New route form: "This is not functional i should have everything i need to
+// create a new route right here in this screen."
+//
+// THE DEAD END, and it is two readers of one fact disagreeing. NuVizz will not create a route
+// without a complete origin (it accepts the call and then creates nothing — see
+// buildRouteCreateBody), so the form, the shell tap and the Save all gate on one. All three
+// read the LAST-USED New Order pickup address out of localStorage, which is empty on any
+// device where nobody has used the New Order tab — a different iPad, a cleared browser, a
+// dispatcher who only ever routes. On that device the button never enables, and the message
+// sends you to another tab to fix it.
+//
+// Meanwhile New Order itself has shipped a built-in Davis terminal since v0.50.35, precisely
+// so "the pickup dropdown always exists (even on a fresh browser with nothing saved)". The
+// address the form needed was in the app the whole time; only this screen could not see it.
+//
+// So the origin is RESOLVED, never merely read: the last-used pickup, else the first saved
+// one, else the company terminal — and the form SHOWS which one it landed on, because a
+// route created from the wrong warehouse is not something to discover at the dock.
+const originStr = (o, k) => String(o?.[k] ?? '').trim();
+/** A pickup address NuVizz can actually use: name + street + city + zip all present. */
+export function originUsable(o) {
+  return !!(originStr(o, 'name') && originStr(o, 'addr1') && originStr(o, 'city') && originStr(o, 'zip'));
+}
+/** Identity for de-duping a pickup list — the same pair New Order keys its own list by. */
+export function originKeyOf(o) {
+  return `${originStr(o, 'name').toLowerCase()}|${originStr(o, 'addr1').toLowerCase()}`;
+}
+/** One line for the form: "Davis Delivery Service — 943 Gainesville Hwy, Buford, GA 30518". */
+export function originLine(o) {
+  if (!o) return '';
+  const where = [originStr(o, 'addr1'), originStr(o, 'city'), [originStr(o, 'state'), originStr(o, 'zip')].filter(Boolean).join(' ')]
+    .filter(Boolean).join(', ');
+  return [originStr(o, 'name'), where].filter(Boolean).join(' — ');
+}
+
+/**
+ * PURE. The ship-from this route will carry, and every one the dispatcher may pick instead.
+ *
+ * `lastUsed` — the New Order default (localStorage), or null.
+ * `saved`    — that device's saved pickup list (New Order's own, terminal-seeded).
+ * `fallback` — the company terminal, so a fresh device is never stuck.
+ *
+ * Returns { origin, source, options }: source is 'saved' when it came from the dispatcher's
+ * own pickup list and 'default' when the terminal filled the gap — the form prints the
+ * difference. Incomplete entries are dropped rather than offered: a half-address is exactly
+ * what NuVizz accepts and silently does nothing with.
+ */
+export function resolveRouteOrigin({ lastUsed = null, saved = [], fallback = null } = {}) {
+  const options = [];
+  const seen = new Set();
+  const add = (o, source) => {
+    if (!originUsable(o)) return;
+    const k = originKeyOf(o);
+    if (seen.has(k)) return;
+    seen.add(k);
+    options.push({ origin: o, source, key: k });
+  };
+  add(lastUsed, 'saved');
+  for (const o of Array.isArray(saved) ? saved : []) add(o, 'saved');
+  add(fallback, 'default');
+  // The fallback may already be in the saved list (New Order seeds it there) — in that case it
+  // is the dispatcher's own entry and reads as 'saved', which is the truth.
+  const first = options[0] || null;
+  return { origin: first?.origin || null, source: first ? first.source : 'none', options };
+}
+
+// ── WHICH SELECTED ORDERS MAY RIDE THE CREATE ───────────────────────────────
+//
+// The form can start the route with what is already selected on the map — that is most of
+// what "everything I need to create a new route" means, since a route IS its stops.
+//
+// But a create is stricter than an ordinary Save, and the server is the authority: runNewRoute
+// refuses the WHOLE create if any order on the card is already planned on another load
+// ("never silently steal a stop off a live load"). So seeding blindly from the selection would
+// build a card that cannot be saved, and the dispatcher would find out at the Save button.
+//
+// This splits the selection instead: what can ride, and what is held back with the reason.
+// Held orders stay selected — they are not dropped on the floor — so the ordinary cross-load
+// move (open the source load in Compare, then Send) still does them in the flow that exists.
+export function newRouteSeed({ ids = [], stopById = null, stagedElsewhere = null, claimedBy = null } = {}) {
+  const seed = [];
+  const planned = [];
+  const claimed = [];
+  const missing = [];
+  const get = (id) => (stopById && typeof stopById.get === 'function' ? stopById.get(String(id)) : null);
+  const stagedOn = (id) => (stagedElsewhere && typeof stagedElsewhere.get === 'function' ? stagedElsewhere.get(String(id)) : null);
+  const claimedByWho = (id) => (typeof claimedBy === 'function' ? claimedBy(String(id)) : null);
+  for (const raw of Array.isArray(ids) ? ids : []) {
+    const id = String(raw ?? '').trim();
+    if (!id || seed.includes(id)) continue;
+    const who = claimedByWho(id);
+    if (who) { claimed.push({ id, who }); continue; }
+    const card = stagedOn(id);
+    if (card) { planned.push({ id, holder: String(card) }); continue; }
+    const s = get(id);
+    if (!s) { missing.push(id); continue; }
+    // Planned on a real load → the create would be refused for the whole card.
+    if (s.isUnplanned === false || s.routeName || s.loadNbr) {
+      planned.push({ id, holder: String(s.routeName || s.loadNbr || 'another load') });
+      continue;
+    }
+    seed.push(id);
+  }
+  return { seed, planned, claimed, missing };
+}
+
+/** One sentence naming what the new card will and will not start with. '' when there is
+ *  nothing to say (everything selected can ride). */
+export function newRouteSeedNote({ seed = [], planned = [], claimed = [], missing = [] } = {}) {
+  const held = [];
+  if (planned.length) {
+    const names = [...new Set(planned.map((p) => p.holder))];
+    held.push(`${planned.length} already planned on ${names.slice(0, 2).join(', ')}${names.length > 2 ? ` and ${names.length - 2} more` : ''}`);
+  }
+  if (claimed.length) held.push(`${claimed.length} being staged by ${claimed[0].who} on another device`);
+  if (missing.length) held.push(`${missing.length} no longer on the board`);
+  if (!held.length) return '';
+  return `${seed.length} of ${seed.length + planned.length + claimed.length + missing.length} selected order${seed.length + planned.length + claimed.length + missing.length === 1 ? '' : 's'} will start on this route — ${held.join('; ')}. Those stay selected: NuVizz refuses a create that moves an order off a live load, so open that load in Compare and Send them across once the route exists.`;
+}

@@ -286,3 +286,44 @@ export function isPlannedStop(s) {
   if (s?.isPlanned === true) return true;
   return !!(s?.routeName || s?.loadNbr);
 }
+
+// ── THE SELECTION ROW'S BACKGROUND ──────────────────────────────────────────
+//
+// Two facts share one row and they must not overwrite each other:
+//
+//   GREEN  = a tractor trailer can be sent to this stop. It is a fact about the freight, it
+//            drives the "Drop N non-tractor" button beside it, and a dispatcher reads it to
+//            decide what equipment goes out.
+//   HOVER  = the pointer (or the MAP, through the shared hoverId) is on this row right now.
+//            It is transient and says nothing about the stop.
+//
+// The first version painted every hovered row one amber fill, which erased the green while the
+// pointer sat on it. Chad: "I don't want it to wash out a tractor friendly row so for those make
+// the highlight a form of green." So a green row hovers to a DEEPER GREEN and never to the
+// neutral tone — the highlight moves within the colour that carries the meaning, instead of
+// replacing it.
+//
+// It is a pure function because the rule is worth a test and a className buried in JSX is not
+// reachable from one. The browser guard cannot cover the green case at all: `tractorOk` is
+// computed from customer_notes, which is a Firestore subscription that page.route cannot stub.
+export const ROW_TONE = {
+  plain: 'hover:bg-slate-50',
+  plainHot: 'bg-slate-200',
+  tractor: 'bg-green-100 hover:bg-green-200/70',
+  // A step further than the resting green rather than a step towards grey, and a big enough
+  // step to be seen: the neutral row goes from no fill at all to slate-200, so matching that
+  // strength inside the greens takes 100 → 300, not 100 → 200.
+  tractorHot: 'bg-green-300',
+};
+
+/** The background classes for one row of the selection panel. */
+export function selectionRowTone({ tractorOk = false, hot = false } = {}) {
+  if (tractorOk) return hot ? ROW_TONE.tractorHot : ROW_TONE.tractor;
+  return hot ? ROW_TONE.plainHot : ROW_TONE.plain;
+}
+
+/** Does this tone carry the tractor-friendly green? Used by the tests, and by anything that
+ *  needs to ask "is this row still saying a trailer fits" without re-deriving the rule. */
+export function toneIsGreen(tone) {
+  return /(^|\s|:)bg-green-/.test(String(tone || ''));
+}
