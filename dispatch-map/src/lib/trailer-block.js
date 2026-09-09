@@ -239,3 +239,36 @@ export function dispatcherTrailerBlock(note, resolve = null) {
   if (note.vehicle_eligibility === 'box_only') return { blocked: true, keys, via: 'eligibility' };
   return keys.length ? { blocked: true, keys, via: 'restriction' } : none;
 }
+
+// ── The dispatcher's vehicle mark, as a value the stop card can EDIT ──────────
+//
+// The mark itself (`customer_notes.vehicle_eligibility`) has only ever had one writer:
+// the Routing map's eligibility brush. That made it a write-only field from the stop
+// card's point of view — the card RENDERS "Box truck only" in red with an Edit button
+// beside it, and the editor behind that button had no vehicle control at all, so the
+// one screen that shows the restriction could not take it off. The way to clear it was
+// to leave the card, go to Routing, arm a brush in the ⚙ menu and find the pin.
+//
+// That gap is not cosmetic. A box-only mark is keyed by LOCATION, so it holds for every
+// future stop at that customer, and it is a hard block in both the router
+// (routing-build-background.mts) and the trailer-conflict alert (dispatcherTrailerBlock
+// above) — a 53' trailer is barred from that address until somebody un-paints it. A mark
+// set by mistake, or one the world has outgrown (the customer moved, the dock changed),
+// quietly costs a trailer's worth of capacity for as long as nobody finds the brush.
+
+/** The three states this field is allowed to hold. Anything else — '', false, a legacy
+ *  string — normalizes to null, so a malformed doc reads as "not set" everywhere rather
+ *  than as a fourth, invisible state that the card and the router disagree about. */
+export function normalizeEligibility(value) {
+  return value === 'tractor' || value === 'box_only' ? value : null;
+}
+
+/** Did a note save actually MOVE the vehicle mark? Both stop-note save paths ask this to
+ *  decide whether to re-stamp `vehicle_eligibility_at` / `_by`. Editing a customer's
+ *  receiving hours must not restamp a mark somebody else painted last month — the stamp
+ *  is meant to say when the VEHICLE decision was made, and a stamp that tracks unrelated
+ *  edits is worse than none because it looks authoritative. Pure so both callers, which
+ *  live 8,000 lines apart in two different screens, cannot drift. */
+export function eligibilityChanged(draft, existing) {
+  return normalizeEligibility(draft?.vehicle_eligibility) !== normalizeEligibility(existing?.vehicle_eligibility);
+}
