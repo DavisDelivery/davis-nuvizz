@@ -358,7 +358,7 @@ async function fireCancelRemove(requester: RequesterLike, p: any, ids: string[],
  *  off (the default) so the ladder simply ends where it did before. On a success it READS THE
  *  ORDERS BACK, because the document does not say what becomes of them and a cancel that
  *  quietly cancelled seven customer deliveries must not be reported as "route cancelled". */
-async function tryLoadCancelApi(requester: RequesterLike, p: any, creds: WriteCreds, attempts: CancelLadder['attempts']): Promise<Partial<CancelLadder> | null> {
+async function tryLoadCancelApi(requester: RequesterLike, p: any, creds: WriteCreds, attempts: CancelLadder['attempts']): Promise<(Partial<CancelLadder> & Pick<CancelLadder, 'r' | 'ok' | 'cancelled'>) | null> {
   if (!loadCancelApiEnabled()) return null;
   const res = await fireSingle(requester, 'cancelLoad', {
     loadId: trustableLoadId(p.loadId) ? p.loadId : undefined,
