@@ -14,14 +14,14 @@ test('clampScanConfig: clamps to safe bounds and drops junk (no vendor-hammering
   const c = clampScanConfig({
     intervalDayMin: 1,        // below min 10 → clamp up
     intervalNightMin: 9999,   // above max 360 → clamp down
-    dailyCeiling: 5,          // below min 100 → clamp up
+    dailyCeiling: 0,          // below min 1 → clamp up
     deepSweepHour: 30,        // above 23 → clamp to 23
     bogusKey: 'x',            // unknown → dropped
     routingWindowStart: '20', // numeric string → coerced
   });
   assert.equal(c.intervalDayMin, SCAN_CONFIG_BOUNDS.intervalDayMin[0]); // 10
   assert.equal(c.intervalNightMin, SCAN_CONFIG_BOUNDS.intervalNightMin[1]); // 360
-  assert.equal(c.dailyCeiling, SCAN_CONFIG_BOUNDS.dailyCeiling[0]); // 100
+  assert.equal(c.dailyCeiling, SCAN_CONFIG_BOUNDS.dailyCeiling[0]); // 1
   assert.equal(c.deepSweepHour, 23);
   assert.equal(c.routingWindowStart, 20);
   assert.ok(!('bogusKey' in c));
@@ -54,26 +54,27 @@ test('scanConfigDefaults: reads env overrides (else the documented baseline)', (
   assert.equal(scanConfigDefaults({ NUVIZZ_SCANS_ENABLED: 'false' }).scansEnabled, false);
 });
 
-test("the Diagnostics editor is the switch: a saved 3,000 survives the clamp, 3,001 does not", () => {
-  // Chad: "I just changed the settings to allow 3000 calls but still shows only 2000 enforce
-  // on the dropdown menu on the actual map." The editor was bounded to 2,000, so his save was
-  // rounded down on the way into Firestore and nothing on any screen said so. This field is
-  // now the ONLY input in the system allowed above the 2,000 default.
-  assert.equal(SCAN_CONFIG_BOUNDS.dailyCeiling[1], 3000, 'the editor bound IS the hard cap');
-  assert.equal(clampScanConfig({ dailyCeiling: 3000 }).dailyCeiling, 3000);
-  assert.equal(clampScanConfig({ dailyCeiling: 2500 }).dailyCeiling, 2500);
-  assert.equal(clampScanConfig({ dailyCeiling: 3001 }).dailyCeiling, 3000, 'and it still stops there');
-  assert.equal(clampScanConfig({ dailyCeiling: 200000 }).dailyCeiling, 3000);
-  // And a saved value below the default is honoured — the switch turns both ways.
-  assert.equal(clampScanConfig({ dailyCeiling: 800 }).dailyCeiling, 800);
-  assert.equal(effectiveScanConfig({ dailyCeiling: 3000 }, {}).dailyCeiling, 3000, 'and reaches the scanner');
+test('the Diagnostics editor is the switch, and it no longer argues: whatever is saved persists', () => {
+  // Chad: "I want the number I set in diagnostics to be the number ... Whatever number it's
+  // set to is where I want the calls to end." A bound of 3,000 here meant a typed 5,000 was
+  // stored as 3,000 — the same class of lie as the field that took 3,000 and enforced 2,000.
+  assert.equal(SCAN_CONFIG_BOUNDS.dailyCeiling[1], 1_000_000, 'arithmetic sanity, not policy');
+  assert.equal(SCAN_CONFIG_BOUNDS.dailyCeiling[0], 1, '"whatever number" includes a small one');
+  for (const n of [1, 100, 800, 2500, 3000, 3001, 5000, 20_000, 200_000]) {
+    assert.equal(clampScanConfig({ dailyCeiling: n }).dailyCeiling, n, `a saved ${n} persists as ${n}`);
+    assert.equal(effectiveScanConfig({ dailyCeiling: n }, {}).dailyCeiling, n, `and reaches the scanner as ${n}`);
+  }
+  // Only genuine nonsense is bounded, and it is bounded visibly (the editor says what it will
+  // save) rather than silently.
+  assert.equal(clampScanConfig({ dailyCeiling: 1_000_001 }).dailyCeiling, 1_000_000);
+  assert.equal(clampScanConfig({ dailyCeiling: 0 }).dailyCeiling, 1);
 });
 
 test('effectiveScanConfig: defaults overlaid with clamped stored overrides', () => {
-  const eff = effectiveScanConfig({ intervalDayMin: 60, dailyCeiling: 1 /* clamps to 100 */ }, {});
+  const eff = effectiveScanConfig({ intervalDayMin: 60, dailyCeiling: 0 /* clamps to 1 */ }, {});
   assert.equal(eff.intervalDayMin, 60, 'override wins');
   assert.equal(eff.intervalNightMin, 60, 'untouched field keeps default');
-  assert.equal(eff.dailyCeiling, 100, 'stored value is clamped before overlay');
+  assert.equal(eff.dailyCeiling, 1, 'stored value is bounded before overlay');
   // Empty/missing stored doc → exactly the defaults (proven behavior preserved).
   assert.deepEqual(effectiveScanConfig(null, {}), { ...scanConfigDefaults({}) });
 });

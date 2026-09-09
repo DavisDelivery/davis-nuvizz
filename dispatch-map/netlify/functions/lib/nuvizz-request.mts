@@ -70,50 +70,65 @@ export type BreakerMode = 'monitor' | 'enforce';
 export const BREAKER_MODE: BreakerMode =
   (process.env.NUVIZZ_BREAKER_MODE || '').toLowerCase() === 'monitor' ? 'monitor' : 'enforce';
 
-// ── The ceiling: TWO numbers, because they answer two different questions ────
+// ── The ceiling: YOUR NUMBER IS THE NUMBER ──────────────────────────────────
 //
-// Chad, 2026-09-09: "I just changed the settings to allow 3000 calls but still shows only
-// 2000 enforce on the dropdown menu on the actual map." He was reading it right. Since
-// v0.54.21 there was ONE number here — 2,000 — and it was BOTH the default AND an absolute
-// cap nothing could lift, so the Diagnostics field accepted 3,000, saved it, and the system
-// quietly enforced 2,000 anyway. A setting that takes a number it will not honour is the
-// "never report an intent as an outcome" failure in its purest form.
+// Chad, 2026-09-09, after v0.98.4 finally made the saved setting reach the code that spends:
+// "I want the number I set in diagnostics to be the number ... Whatever number it's set to
+// is where I want the calls to end."
 //
-// The two questions were always separate and are now separate constants:
+// So there is no longer a cap he did not choose. This file has now twice shipped a
+// Diagnostics field that took one number and enforced another — 2,000 under a 20,000 gauge
+// (v0.70.2), then 3,000 in the field against 2,000 in the breaker (v0.98.4) — and both times
+// the fault was the same shape: a constant in here outranking the person who owns the spend.
+// A setting that silently loses an argument with a constant is not a setting.
 //
-//   DEFAULT_DAILY_CEILING (2,000) — what you get when nobody has decided. An env var or a
-//   caller-supplied fallback may only LOWER this. Unchanged, so nothing moves on its own:
-//   a deploy of this change spends exactly what it spent yesterday until somebody saves a
-//   setting. Sized against real usage — a normal day is a few hundred calls — so it is
-//   already ~10x headroom for scheduled scans, enrichment, live writes and manual pulls.
+// Two numbers remain, and neither is a cap on him:
 //
-//   HARD_DAILY_CEILING (3,000) — the most a DELIBERATE save in Diagnostics may reach.
-//   Nothing else can get here: not the env var, not a caller's fallback, not junk. This is
-//   the switch, and Chad is the only one who can flip it.
+//   DEFAULT_DAILY_CEILING (2,000) — what you get when NOBODY has decided. The env var and
+//   any caller-supplied fallback are still bounded by it, so nothing moves on its own: a
+//   deploy spends exactly what it spent yesterday until somebody saves a setting. A normal
+//   day is a few hundred calls, so this is already ~10x headroom.
 //
-// WHAT RAISING IT COSTS, said plainly because it is a real change and not a formality.
-// 2,000 was chosen to sit BELOW the ~3,000-call cold number-probe scan so that scan could
-// not run to completion by accident. At 3,000 that particular backstop is gone. Two things
-// are worth weighing against it: the primary guard against a cold full scan is not this
-// number but the permission rule in CLAUDE.md and the fact that only `manual=1` / `?date=` /
-// `?days=` reach that path at all; and the backstop was never cheap anyway — it did not
-// prevent the spend, it stopped the scan PARTWAY and left the board half-written (v0.70.2),
-// which on a 700-stop morning is the worse of the two outcomes. Lower it in Diagnostics any
-// time; the field goes down to 100.
+//   CEILING_SANITY_MAX (1,000,000) — not policy, arithmetic. Above this a value is not an
+//   intent, it is a typo or a corrupted document, and a "ceiling" of 1e9 is indistinguishable
+//   from no ceiling at all. Every number a person would actually type is honoured verbatim.
+//
+// WHAT THIS GIVES UP, said plainly rather than buried, because it is a real trade and he
+// made it with the cost in front of him. 2,000 was originally chosen to sit BELOW the
+// ~3,000-call cold number-probe scan so that scan could not complete by accident. There is
+// now no automatic backstop against a runaway loop: a mistyped 30,000 is a 10x day and
+// nothing in the code will stop it. What remains is (a) the permission rule in CLAUDE.md,
+// (b) that only `manual=1` / `?date=` / `?days=` reach the probe path at all, (c) the editor
+// warning above CEILING_ADVISORY, and (d) that lowering the number takes effect immediately —
+// since v0.98.4 a ceiling moved above the day's count releases the breaker, and one moved
+// below it binds again, so a mistake is reversible within a minute rather than at midnight.
+// The backstop was never cheap anyway: it did not prevent the spend, it stopped the scan
+// PARTWAY and left the board half-written, which on a 700-stop morning is worse.
 export const DEFAULT_DAILY_CEILING = 2_000;
-export const HARD_DAILY_CEILING = 3_000;
+export const CEILING_SANITY_MAX = 1_000_000;
+
+// Above this the editor SAYS something — it does not refuse. ~3,000 is what a cold
+// number-probe scan costs, so a ceiling past it is one that would let that scan run to
+// completion. That is the fact worth putting in front of somebody as they type, and it is
+// advice, not a gate.
+export const CEILING_ADVISORY = 3_000;
 
 /**
- * PURE: a SAVED SETTING, clamped into [1, HARD_DAILY_CEILING].
+ * PURE: a SAVED SETTING — his number, verbatim, floored to a whole call.
  *
- * Junk resolves to the DEFAULT, never to the maximum — a malformed value must not buy
- * headroom. (Before the split this returned the cap for junk, which was the same number.)
+ * Bounded only by arithmetic sanity: at least 1, at most CEILING_SANITY_MAX. Junk resolves
+ * to the DEFAULT and never to the maximum, because a malformed value must not buy headroom —
+ * `Number(null)` is 0 and `Number(true)` is 1, and this repo has shipped both as though they
+ * were decisions.
  */
-export function clampCeiling(n: any): number {
+export function savedCeiling(n: any): number {
   const v = Math.floor(Number(n));
   if (!Number.isFinite(v) || v < 1) return DEFAULT_DAILY_CEILING;
-  return Math.min(HARD_DAILY_CEILING, v);
+  return Math.min(CEILING_SANITY_MAX, v);
 }
+
+/** Prior name, kept so no existing call site silently starts meaning something new. */
+export const clampCeiling = savedCeiling;
 
 /**
  * PURE: an AMBIENT proposal — the env var, or a fallback a caller passed itself — clamped
@@ -133,7 +148,7 @@ export function clampAmbientCeiling(n: any): number {
 export function breakerMode(): BreakerMode { return BREAKER_MODE; }
 
 export interface RequesterConfig {
-  /** Daily call ceiling across the whole fleet. Always <= HARD_DAILY_CEILING (3,000). */
+  /** Daily call ceiling across the whole fleet. The saved setting when there is one. */
   dailyCeiling: number;
   /** monitor (count+warn, never block) vs enforce (trip+block) at the ceiling. */
   breakerMode: BreakerMode;
@@ -149,7 +164,7 @@ export interface RequesterConfig {
 
 export const DEFAULT_CONFIG: RequesterConfig = {
   // The DEFAULT is the default. NUVIZZ_DAILY_CEILING may only LOWER it — only a saved
-  // Diagnostics setting reaches HARD_DAILY_CEILING, and it arrives via the override below.
+  // Diagnostics setting sets the real ceiling, and it arrives via the override below.
   // In enforce mode — the default — hitting the ceiling trips the breaker and blocks further calls.
   dailyCeiling: clampAmbientCeiling(process.env.NUVIZZ_DAILY_CEILING),
   breakerMode: BREAKER_MODE,
@@ -277,7 +292,7 @@ export function effectiveDailyCeiling(fallback = DEFAULT_CONFIG.dailyCeiling): n
  * costs ~3,000 calls, so against a 20,000 gauge it looks affordable when in fact it is ABOVE
  * the true cap and trips the breaker partway through, leaving the board half-written.
  *
- * The comment above HARD_DAILY_CEILING has claimed since v0.54.21 that "every path that
+ * The comment above the ceiling constants has claimed since v0.54.21 that "every path that
  * produces a ceiling runs through clampCeiling(), so the number on the Diagnostics pill is
  * the number actually enforced". One path did not: the board endpoint built its own
  * expression straight off the stored config and NUVIZZ_DAILY_CEILING, with a third fallback

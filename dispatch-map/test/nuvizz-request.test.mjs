@@ -164,24 +164,42 @@ test('monitor mode: crosses the ceiling but never trips or blocks (logs would-tr
 // caller fallback are capped at — so a deploy changes nothing until somebody decides. HARD
 // (3,000) is reachable ONLY by a deliberate save in the Diagnostics editor.
 import {
-  clampCeiling, clampAmbientCeiling, DEFAULT_DAILY_CEILING, HARD_DAILY_CEILING,
+  clampCeiling, savedCeiling, clampAmbientCeiling, DEFAULT_DAILY_CEILING,
+  CEILING_SANITY_MAX, CEILING_ADVISORY,
   effectiveDailyCeiling, reportedDailyCeiling, setDailyCeilingOverride, BREAKER_MODE,
 } from '../netlify/functions/lib/nuvizz-request.mts';
 
-test('the two numbers are 2,000 and 3,000, and nothing may exceed the hard cap', () => {
-  assert.equal(DEFAULT_DAILY_CEILING, 2000);
-  assert.equal(HARD_DAILY_CEILING, 3000);
-  assert.equal(clampCeiling(20_000), 3000, 'the 20,000 the site was running');
-  assert.equal(clampCeiling(200_000), 3000, 'the old editable maximum');
-  assert.equal(clampCeiling(3001), 3000);
+// v0.98.5 — Chad: "I want the number I set in diagnostics to be the number ... Whatever
+// number it's set to is where I want the calls to end." The 3,000 hard cap is gone: it was
+// the third occurrence of a constant in this file outranking the person who owns the spend.
+test('THE RULE: whatever he saves is what is enforced — no cap he did not choose', () => {
+  assert.equal(DEFAULT_DAILY_CEILING, 2000, 'still what you get when nobody has decided');
+  for (const n of [1, 100, 500, 2000, 3000, 3001, 5000, 12_000, 20_000, 50_000, 200_000]) {
+    assert.equal(savedCeiling(n), n, `saved ${n} must enforce ${n}`);
+    setDailyCeilingOverride(n);
+    assert.equal(effectiveDailyCeiling(), n, `the breaker binds at ${n}`);
+    assert.equal(reportedDailyCeiling(n, {}), n, `and the gauge prints ${n}`);
+  }
+  setDailyCeilingOverride(null);
 });
 
-test("Chad's own case: a saved setting of 3,000 is honoured, not silently kept at 2,000", () => {
-  assert.equal(clampCeiling(3000), 3000);
-  setDailyCeilingOverride(3000);
-  assert.equal(effectiveDailyCeiling(), 3000, 'the breaker enforces what he saved');
-  assert.equal(reportedDailyCeiling(3000, {}), 3000, 'and the Map card prints the same number');
-  setDailyCeilingOverride(null);
+test('the only bound left on a saved setting is arithmetic sanity, not policy', () => {
+  // A "ceiling" of 1e9 is indistinguishable from no ceiling; above the sanity max a value is
+  // a typo or a corrupted document, not an intent. Everything a person would type is verbatim.
+  assert.equal(CEILING_SANITY_MAX, 1_000_000);
+  assert.equal(savedCeiling(1_000_000), 1_000_000);
+  assert.equal(savedCeiling(1_000_001), 1_000_000);
+  assert.equal(savedCeiling(1e9), 1_000_000);
+  assert.equal(savedCeiling(2500.7), 2500, 'floored to a whole call');
+  assert.equal(clampCeiling, savedCeiling, 'the old name still means the same thing');
+});
+
+test('the advisory threshold is advice, not a gate — it bounds nothing', () => {
+  // The editor SAYS something above a cold full scan's cost; it does not refuse.
+  assert.equal(CEILING_ADVISORY, 3000);
+  assert.ok(CEILING_ADVISORY < CEILING_SANITY_MAX);
+  assert.equal(savedCeiling(CEILING_ADVISORY + 1), CEILING_ADVISORY + 1, 'past the advisory is still saved');
+  assert.equal(savedCeiling(30_000), 30_000, 'ten times it, still his number');
 });
 
 test('ONLY a saved setting may exceed the default — an env var and a caller fallback may not', () => {
@@ -210,12 +228,15 @@ test('junk clamps to the DEFAULT, not to zero and not to the maximum', () => {
   }
 });
 
-test('effectiveDailyCeiling clamps the override to HARD and the caller fallback to DEFAULT', () => {
+test('effectiveDailyCeiling honours the override outright; a caller fallback still may not', () => {
   setDailyCeilingOverride(50_000);
-  assert.equal(effectiveDailyCeiling(), 3000, 'a saved setting reaches the hard cap and stops');
+  assert.equal(effectiveDailyCeiling(), 50_000, 'a saved setting is not capped');
   setDailyCeilingOverride(750);
-  assert.equal(effectiveDailyCeiling(), 750);
+  assert.equal(effectiveDailyCeiling(), 750, 'and a lower one is honoured just the same');
   setDailyCeilingOverride(null);
+  // The asymmetry that survives: only a SAVED setting is a decision. Ambient inputs — the env
+  // var, a number some code path passed itself — may still only lower, so nothing moves
+  // without somebody deciding it.
   assert.equal(effectiveDailyCeiling(99_999), 2000);
 });
 
@@ -252,12 +273,13 @@ test('the card cannot print a ceiling the breaker will not honour — the real 2
   assert.equal(reportedDailyCeiling(null, { NUVIZZ_DAILY_CEILING: 20000 }), 2000);
 });
 
-test('a stored Diagnostics ceiling is clamped too — readScanConfig returns the raw document', () => {
-  // The editor bounds dailyCeiling on WRITE, but a value saved before that bound existed
-  // comes back unclamped, and would print just as dishonestly as the env one.
-  assert.equal(reportedDailyCeiling(20000, {}), 3000);
-  assert.equal(reportedDailyCeiling(200000, {}), 3000);
-  assert.equal(reportedDailyCeiling(3001, {}), 3000);
+test('a stored Diagnostics ceiling is REPORTED as stored — the gauge prints his number', () => {
+  // readScanConfig returns the raw document, and whatever is in it is what binds, so the
+  // gauge must print exactly that. The old assertion here clamped these to 3,000, which is
+  // the display half of the bug he hit twice.
+  assert.equal(reportedDailyCeiling(20000, {}), 20000);
+  assert.equal(reportedDailyCeiling(200000, {}), 200000);
+  assert.equal(reportedDailyCeiling(3001, {}), 3001);
 });
 
 test('a genuinely lower ceiling is reported as set — the clamp only ever lowers', () => {
@@ -272,7 +294,7 @@ test('no config and no env is the DEFAULT — not the maximum, and not the old 1
   assert.equal(reportedDailyCeiling(undefined, {}), DEFAULT_DAILY_CEILING);
   assert.equal(reportedDailyCeiling(undefined, {}), 2000);
   assert.notEqual(reportedDailyCeiling(undefined, {}), 12000);
-  assert.notEqual(reportedDailyCeiling(undefined, {}), HARD_DAILY_CEILING);
+  assert.notEqual(reportedDailyCeiling(undefined, {}), CEILING_SANITY_MAX);
 });
 
 test('junk in the config or the env falls back rather than printing junk', () => {
@@ -295,7 +317,7 @@ test('THE PROPERTY: the number the gauge prints is the number the breaker enforc
   for (const stored of [1, 500, 1999, 2000, 2001, 3000, 3001, 20000, 200000, undefined, null, 'junk']) {
     setDailyCeilingOverride(typeof stored === 'number' ? stored : null);
     const printed = reportedDailyCeiling(stored, {});
-    assert.ok(printed <= HARD_DAILY_CEILING, String(stored));
+    assert.ok(printed <= CEILING_SANITY_MAX, String(stored));
     assert.equal(printed, effectiveDailyCeiling(), `stored=${String(stored)}`);
   }
   setDailyCeilingOverride(null);
@@ -330,8 +352,8 @@ test('a process that never calls the setter still enforces the SAVED 3,000 — C
   __resetDailyCeilingCache();
 });
 
-test('hydration clamps: a save may reach HARD, junk and absence resolve to DEFAULT', async () => {
-  for (const [stored, want] of [[3000, 3000], [20_000, 3000], [200_000, 3000], [500, 500], ['2500', 2500],
+test('hydration honours the save verbatim; junk and absence resolve to DEFAULT', async () => {
+  for (const [stored, want] of [[3000, 3000], [20_000, 20_000], [200_000, 200_000], [500, 500], ['2500', 2500],
     [undefined, 2000], [null, 2000], ['abc', 2000], [0, 2000], [-5, 2000], [true, 2000], [[1500], 2000], [{}, 2000]]) {
     __resetDailyCeilingCache();
     assert.equal(await hydrateDailyCeiling(async () => stored), want, JSON.stringify(stored) ?? String(stored));
