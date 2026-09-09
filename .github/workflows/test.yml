@@ -118,6 +118,11 @@ jobs:
       # REAL bundle — one aim must book ONE piece (dock incident of Aug 12),
       # and a piece id arriving late must upgrade its fallback, not double it.
       - run: npm run e2e:camera
+      # The SAME invariant on the engine the dock actually runs. Quagga is
+      # multiple:false, so it can never hand both barcodes of a label over at
+      # once and every guard behaves differently under it — which is why the
+      # check above was green while a truck photographed 4/2 on a 2-skid stop.
+      - run: npm run e2e:quagga
 
   # ── Does the app actually START? ───────────────────────────────────────────
   # v0.54.14 shipped a bundle that was blank on every device: state declared in

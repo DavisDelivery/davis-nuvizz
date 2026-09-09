@@ -97,8 +97,65 @@ export async function enqueueHandConfirm(loadNbr, date, confirm) {
   return true;
 }
 
-/** Enqueue one scan. Returns false when this piece was already queued. */
-export async function enqueueScan(loadNbr, date, scan) {
+/** What enqueueScan did, when it did not simply write the row. */
+export const ENQUEUE_DUPLICATE = 'duplicate';
+export const ENQUEUE_OVER_CAP = 'over-cap';
+
+/**
+ * Would writing this scan put its stop above the manifest count?
+ *
+ * Pure, and exported, so the rule can be tested against the REAL function rather
+ * than a copy of it re-typed in a test — the store itself needs IndexedDB, and a
+ * modelled filter proves only that the model agrees with itself.
+ *
+ * Counts the same freight the driver's badge counts: live rows (a void is not on
+ * the truck) for this load, this date, this stop. Hand-confirms are not scans and
+ * never inflate it. The row being written is excluded, so re-writing a piece that
+ * is already there can never be its own over-count.
+ */
+export function wouldExceedCap(rows, { loadNbr, date, scan, cap }) {
+  const expected = Number(cap?.expected || 0);
+  if (!cap || !expected || !cap.stopNbr) return false;
+  const og = String(scan?.og || '').toUpperCase();
+  const live = (rows || []).filter(
+    (r) => r.loadNbr === loadNbr
+      && String(r.date || '') === String(date)
+      && String(r.stopNbr || '') === String(cap.stopNbr)
+      && (r.kind || 'scan') !== 'hand'
+      && !r.voidedAt
+      && String(r.og || '').toUpperCase() !== og,
+  ).length;
+  return live >= expected;
+}
+
+/**
+ * Enqueue one scan. Returns true when the row was written or revived,
+ * ENQUEUE_DUPLICATE when this exact piece was already queued, and
+ * ENQUEUE_OVER_CAP when writing it would put the stop above its manifest count.
+ *
+ * ── WHY THE CAP LIVES HERE AND NOT ONLY IN THE UI ───────────────────────────
+ *
+ * Chad, looking at a truck reading 4/2 and 2/1: "should not be able to scan more
+ * pieces than are on the route."
+ *
+ * It was a rule, but only in one place: a line of arithmetic inside an async
+ * React callback, reading a render's snapshot of the truck. Every way that
+ * snapshot can be stale was a hole in the invariant, and there were several —
+ * `refreshLocal` retires a booked piece from the synchronous backstop the moment
+ * IndexedDB acknowledges it, which is BEFORE React has committed the state that
+ * replaces it, so for one render gap the guard reads an empty truck and waves
+ * anything through.
+ *
+ * This is the one place every piece must pass to become real, and it reads the
+ * QUEUE — the actual freight, not a snapshot of it. A cap enforced here cannot
+ * be defeated by render timing, by frame rate, or by a mis-tap.
+ *
+ * `cap` is { stopNbr, expected } and is advisory in exactly one direction: it
+ * refuses, it never books. Pass `cap.force` for a deliberate human override —
+ * the paperwork IS sometimes wrong, and a loader looking at a third skid for a
+ * two-skid order has to be able to say so. That decision stays a decision.
+ */
+export async function enqueueScan(loadNbr, date, scan, cap = null) {
   const key = queueKey(loadNbr, scan.og);
   const existingAny = await tx(STORE_QUEUE, 'readonly', (s) => s.get(key));
   // The key carries no date, so a row left from an earlier shift on the SAME
@@ -115,7 +172,13 @@ export async function enqueueScan(loadNbr, date, scan) {
     );
     return true;
   }
-  if (existing) return false;
+  if (existing) return ENQUEUE_DUPLICATE;
+
+  // THE CAP, read off the durable queue at the moment of the write.
+  if (cap && !cap.force && wouldExceedCap(await allQueued(), { loadNbr, date, scan, cap })) {
+    return ENQUEUE_OVER_CAP;
+  }
+
   await tx(STORE_QUEUE, 'readwrite', (s) =>
     s.put({ key, loadNbr, date, ...scan, queuedAt: new Date().toISOString() }),
   );
