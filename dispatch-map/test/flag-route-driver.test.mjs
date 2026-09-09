@@ -44,6 +44,24 @@ test('TWO drivers on one route name fills NOTHING — this panel is where somebo
   const rows = [{ routeName: 'BEN 2', driverName: null }];
   fillRouteDrivers(rows, stops);
   assert.equal(rows[0].driverName, null, 'naming one of two would send the call to the wrong truck');
+  assert.equal(rows[0].routeDriverCount, 2, 'but the card must be able to say TWO, not "No driver"');
+});
+
+test('a route with NO driver anywhere records no count, so the card can say "No driver" and mean it', () => {
+  const rows = [{ routeName: 'SUW 2', driverName: null }];
+  fillRouteDrivers(rows, [stop({ n: 1, route: 'SUW 2' }), stop({ n: 2, route: 'SUW 2' })]);
+  assert.equal(rows[0].driverName, null);
+  assert.equal(rows[0].routeDriverCount, undefined, 'an unassigned load at 10am IS the finding — it must stay distinguishable from a two-driver route');
+});
+
+test('a row that already names its own driver is never overwritten, and gets no count', () => {
+  const rows = [{ routeName: 'BEN 2', driverName: 'FRANK OKINE' }];
+  fillRouteDrivers(rows, [
+    stop({ n: 1, route: 'BEN 2', driver: 'FRANK OKINE' }),
+    stop({ n: 2, route: 'BEN 2', driver: 'BRENT BOYD' }),
+  ]);
+  assert.equal(rows[0].driverName, 'FRANK OKINE');
+  assert.equal(rows[0].routeDriverCount, undefined);
 });
 
 test('route matching ignores case and padding, and reads loadNbr when routeName is absent', () => {

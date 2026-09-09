@@ -4322,7 +4322,9 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
                   <span className="text-slate-400"> · </span>
                   {r.driverName
                     ? <span>{r.driverName}</span>
-                    : <span className="text-amber-700">No driver</span>}
+                    : r.routeDriverCount > 1
+                      ? <span className="text-slate-600">{r.routeDriverCount} drivers</span>
+                      : <span className="text-amber-700">No driver</span>}
                 </div>
               )}
               <div className="text-[11px] text-slate-600 leading-snug mt-0.5">{r.detail}</div>

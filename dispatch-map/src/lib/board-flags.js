@@ -1630,7 +1630,14 @@ export function fillRouteDrivers(rows, stops) {
     const k = String(r.routeName || '').trim().toLowerCase();
     if (!k) continue;
     const set = byRoute.get(k);
-    if (set && set.size === 1) r.driverName = [...set][0];
+    if (!set || !set.size) continue;
+    if (set.size === 1) { r.driverName = [...set][0]; continue; }
+    // MORE THAN ONE DRIVER ON THE ROUTE IS NOT "NO DRIVER". Filling nothing here was right —
+    // printing one of two names sends the call to the wrong truck — but leaving the row blank
+    // made the card say "No driver", which is a different claim and a false one: a dispatcher
+    // reading it goes and assigns a driver to a route that already has two. The count is
+    // recorded so the card can say the true thing instead.
+    r.routeDriverCount = set.size;
   }
   return rows;
 }
