@@ -122,7 +122,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '1.1.3';
+const APP_VERSION = '1.1.4';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -193,6 +193,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.1.4', 'THE LEGEND WAS DRAWING ITS OWN BROKEN COPY OF ICONS THE MAP ALREADY DRAWS CORRECTLY. Chad, three rounds on one complaint: \u201cits not showing the full icon in the legend some of it is cut off\u201d and then, after a fix that was not the fix, \u201cIt\u2019s still not right you can\u2019t see the whole icon.\u201d He was right both times. THE RESTRICTION LIST NEVER DREW THE MAP\u2019S MARK. It drew badgeInnerSvg, a SECOND renderer that puts the same glyph art on a 14-unit disc it does not fit. Measured RADIALLY from the disc centre \u2014 the measurement that matters for a circle \u2014 the coloured fill ends at r=6.25 and ALL TWENTY glyphs reach past it: most to 7.36, four beyond 7.75 and out of the box entirely. So the artwork ran into the white ring and through it, and a disc with its glyph bleeding out of the edge reads as an icon with a bite taken out of it. That is what was on the screen: a truck cut in half by its own circle, day letters sliced by the slash, clock faces missing a third. AN EARLIER PASS IN THIS SAME BRANCH FIXED A REAL CLIP THAT WAS NOT THIS ONE \u2014 it never reached main under its own number, and the reason it is folded in here rather than dropped is worth keeping. The disc\u2019s own 1.5-wide white stroke straddles its path, so 0.75 units of ring fell outside the viewBox \u2014 true, measured, and fixed. But 0.75 is not 2.5, so nothing anyone could see changed. The first measurement asked \u201cdoes anything leave the viewBox\u201d, answered identically for all twenty icons, and I believed it: for a ROUND disc the question is radial distance, not axis extents, and a rect corner sits at r=8.88 while all four of its edges are inside the box. Right question, wrong axis, confident answer. THE FIX IS TO STOP HAVING TWO RENDERERS. iconMarkerSvg composes these same glyphs at their intended proportions and has never had the problem \u2014 which is why the \u201cHow sure is it?\u201d swatches, already built with it, looked right two inches above the broken ones IN THE SAME PANEL. The list uses it now, so every row is the exact image the board draws. That is the rule this panel already states in its own comments: A LEGEND THAT DISAGREES WITH THE MAP IS WORSE THAN NO LEGEND \u2014 it had been disagreeing since the day it was written. VERIFIED BY DRIVING THE BUILT APP, not by rendering icons in isolation, which is how two rounds were spent on the wrong cause: the legend is opened in a real browser against a real board and photographed. Trucks have wheels again, \u201c26 FT MAX\u201d reads, the clock faces are whole and Tu/Th/Sa/Su are legible. NOT FIXED AND SAID OUT LOUD: the small inline chips (stop panel, grid, mobile rows) still use badgeInnerSvg and still carry the same overflow at 12-14px. The guard records it so the next person finds it rather than rediscovering it. 5 tests, including one that asserts the old box genuinely failed so the clip guard cannot go vacuous.'],
   ['1.1.3', 'THE MISS-WINDOW EMAIL NAMES THE DRIVER. Chad, on the live 2pm alert for EWASTE EPLANET LLC: “These emails should include the drivers name.” IT WAS THE ONE PLACE THE NAME WAS MISSING, and the data had been sitting right there. The flag row has carried driverName since the receiving-hours CARD was asked for exactly this — “Need to show route and driver name” — and board-flags goes further, filling it in from the ROUTE when a stop’s own record is blank, which is the ordinary case for an unassigned stop on an assigned load. None of it reached the inbox. So the first thing anybody does with one of these — phone the person on that truck — needed a second lookup on another screen, while the receiving window closed. AND THE BLANK CASE IS NOT “UNASSIGNED”, which is the one judgement in this change. The Route line prints “unassigned” when there is no route, and that is a fact about the board. A missing driver is a different claim: these alerts mostly fire on loads that are already ROLLING — “anchored” means a real arrival was recorded on this route — so no name there is a gap in what the feed gave us, not a truck with nobody in it. The line says “not named on this load” instead: it describes our data rather than asserting something about the world, and it stays on the message either way, because “no name on this load” is itself worth knowing before you pick up the phone. Greyed in the HTML so it reads as an absence rather than a person. Both tiers get it from the one builder, so the early heads-up and the confirmed miss cannot drift apart, and the name is HTML-escaped like every other field. The text message is deliberately unchanged — an SMS is length-bound and already carries customer, route, ETA and close, so what to drop for a driver name is Chad’s call rather than one to make quietly. 4 new tests, 3,932 green.'],
   ['1.1.2', 'LOAD-SCAN (v0.46.0): A SCAN CAN NO LONGER PUSH A STOP PAST ITS MANIFEST COUNT. Chad, photographing a truck: a 2-skid stop reading 4/2 and a 1-skid stop reading 2/1 — "should not be able to scan more pieces than are on the route." Two mechanisms, both reproduced by driving the real bundle through a QUAGGA stream (the engine on the dock; the existing camera check drives BarcodeDetector, which can hand both barcodes of a label over in ONE frame — quagga never can, and that gap is why CI was green while the truck was wrong). FIRST, THE BLIND TAP: the "NOT COUNTED" warning was a full-screen opaque panel with pointer-events:none, and the "Another piece" cap-BYPASS button sat directly underneath it. The red flash beside it is a full-screen button captioned TAP ANYWHERE TO CLEAR, so the reflex this app trained is to tap — and the tap fell straight through onto the bypass, booking freight over the manifest with no sound, no flash and no announcement. The loader was authorising extra pieces while dismissing a warning. The panel now takes the tap and does nothing else; the decision card underneath needs its own deliberate tap once it can be read, the button says ADD OVER THE COUNT when that is what it does, and an override is announced like every other booking. SECOND, THE PHANTOM, and it is the worse of the two: the acquisition clock counted PRO decodes only, but quagga locks onto ONE barcode at a time and can sit on a piece id for seconds — so the PRO of a skid that never moved goes unread, the gap crosses the re-acquire window, and the app records a NEW presentation of a label still under the lens. Since v0.45.0 a repeat like that books without asking. A 2-skid stop reached 2/2 COMPLETE off ONE skid: freight left on the dock, reported as loaded. Presence is now proven by ANY barcode, because reading a label\'s piece id is proof the label is still there. AND THE INVARIANT IS STRUCTURAL NOW, not advisory: the cap was one line of arithmetic inside an async React callback reading a render\'s snapshot of the truck, and every way that snapshot could go stale was a hole — refreshLocal retired a booked piece from the synchronous backstop the moment IndexedDB acknowledged it, which is BEFORE React committed the state replacing it, so for one render gap every guard read an EMPTY TRUCK (reproduced under CPU throttle: two rows already durable, the guard logging scanned:0, roomLeft:true). The cap now runs where the row actually becomes real, against the queue; the prune waits for the commit it prunes against. A deliberate override still passes, because the paperwork is sometimes genuinely wrong. Seven new tests pin the cap and were checked the only way that means anything — the rule was inverted and three of them failed. The quagga check is wired into CI and was run against the pre-fix bundle, where it reproduces the phantom. 326 load-scan tests green.'],
   ['1.1.1', 'THE STOP PANEL WAS SHOUTING A FACT THAT HAD ALREADY LOST. Chad, with a stop\u2019s panel open beside the Selected list: \u201cthis stop has had a tractor delivery to it but the row is not highlighted green why?\u201d THE ROW WAS RIGHT. tractor_locations is STICKY and AUTOMATIC \u2014 \u201ca tractor delivered here once, ever\u201d \u2014 so it can be years stale and says nothing about now, and a dispatcher\u2019s Box-only mark deliberately outranks it. Read off the code rather than guessed at: tractorFriendlySelection has exactly ONE branch that returns false while the history is present, and that branch is eligibility===\u2018box_only\u2019. The panel\u2019s banner and the row read the SAME matchKey (the panel prefers stop.matchKey, which every board stop carries), so the banner appearing at all proves the history lookup succeeded for that row too \u2014 which leaves the Box-only mark as the only thing it can be. THE PANEL WAS THE BUG. It printed the green \u201cTractor has delivered here \u2014 last Aug 17\u201d banner at the TOP with no hint it had been overruled, while \u201cBox truck only\u201d sat further down in a different block. One fact, two places, and the loud one was the one that had lost. The banner now goes grey and says so \u2014 the history still SHOWS, because it is true and it is the best counter-evidence a dispatcher has, but it no longer reads as permission. It is gated on tractorPaintAllowed, the same function the map paints by, rather than a fourth private copy of the rule: that \u201ceach site carries its own colour decision\u201d split is exactly what v0.76.4 was written to end. AND THE MIRROR DEFECT, FOUND BY SWEEPING FOR THE FIRST ONE, which is the dangerous direction: a hand-ticked \u201cNo tractor trailer\u201d stopped the MAP painting lime but did NOT stop the Selected row going green or the \u201cDrop N non-tractor\u201d button KEEPING the stop. So a stop a person had explicitly marked off-limits could ride a tractor build. Burning a trailer slot on a stop that would have taken one costs a slot; sending a 53-footer to a dock somebody already said no about costs a driver his morning and the customer his delivery \u2014 the two mistakes are not close. A CONFIRMED trailer blocker now refuses the row exactly as Box-only does. ADVISORY blockers still pass, unchanged and on purpose: a scanner-found \u201cno\u201d nobody has checked is a question, not an answer, and proven history is the best evidence against it \u2014 a test asserts the row and the paint give an advisory the SAME answer so the two can never drift apart again. The older three-argument call keeps its behaviour, so nothing tightens silently. HELD FOR TWO DAYS AND THIRTEEN MERGES BECAUSE I STOPPED WATCHING IT: opened as v0.97.8 with every check green, auto-merge flipped it out of draft and did not land it, and I reported it as merged without looking. Rebased onto v1.1.0 and re-verified from scratch. 5 new tests.'],
@@ -4593,7 +4594,20 @@ function RestrictionIcon({ kind, size = 16, title }) {
     <svg
       width={size}
       height={size}
-      viewBox="0 0 14 14"
+      // THE WHITE RING WAS BEING CUT OFF ON ALL FOUR SIDES. Chad, on the Legend: "its not
+      // showing the full icon in the legend some of it is cut off."
+      //
+      // badgeInnerSvg draws `<circle cx=7 cy=7 r=7 stroke-width=1.5>`, and an SVG stroke
+      // STRADDLES its path — 0.75 inside the edge and 0.75 outside. In a "0 0 14 14" box the
+      // outer half has nowhere to go, so every icon rendered -0.75..14.75 into a 0..14 window
+      // and lost 5.4% off each edge. Measured, not guessed: all 20 icons, identical extents,
+      // so the disc read as flattened top, bottom and both sides — most obvious on the day
+      // badges and the closed-day marks, where the disc edge IS the shape.
+      //
+      // The box grows by exactly the stroke rather than the artwork shrinking: every glyph is
+      // authored against these 14 units (see RESTRICTION_ICONS), and re-scaling them here
+      // would put the marker and the badge on two different coordinate systems.
+      viewBox="-0.75 -0.75 15.5 15.5"
       role="img"
       aria-label={titleText}
     >
@@ -4934,6 +4948,32 @@ function useLegendInventory({
   }, [stops, notes, dayKey, tractorLocs, routeStopNbrs, plannedMuted, isPlanned, selectedIds, searchMatchIds]);
 }
 
+// ONE MARK, ONE RENDERER. Chad, three rounds in: "its not showing the full icon in the legend
+// some of it is cut off" — and then, after a fix that was not the fix, "you can't see the whole
+// icon."
+//
+// He was right both times and I was measuring the wrong thing. The Legend's restriction list did
+// not draw the map's mark at all: it drew badgeInnerSvg, a SECOND icon renderer that puts the
+// same glyph art on a 14-unit disc it does not fit. Measured radially from the disc centre, the
+// coloured fill ends at r=6.25 and every one of the twenty glyphs reaches past it — most to
+// 7.36, four of them past 7.75 and out of the box entirely. So the artwork ran into the white
+// ring and through it, and a disc with the glyph bleeding out of its edge reads as an icon with
+// a bite taken out of it. That is what was on the screen.
+//
+// The map has never had this problem: iconMarkerSvg composes the same glyphs at their intended
+// proportions, which is why the "How sure is it?" swatches — already built with it — looked
+// right in the same panel, two inches above the broken ones.
+//
+// So the list uses iconMarkerSvg too. This is the rule the panel already states in its own
+// comments: A LEGEND THAT DISAGREES WITH THE MAP IS WORSE THAN NO LEGEND. It was disagreeing.
+function LegendRestrictionIcon({ kind, px = LEGEND_ICON_PX }) {
+  const spec = useMemo(() => iconMarkerSvg([kind], null, {}), [kind]);
+  if (!spec) return null;
+  // Height-locked so every row lines up; width follows the art's own 40x44 box.
+  const w = Math.round((px * spec.width) / spec.height);
+  return <img src={spec.url} alt="" width={w} height={px} style={{ display: 'block', flex: 'none' }} />;
+}
+
 function LegendMarkerExample({ restrictions, label, advisoryKeys = null, blockerKeys = null }) {
   const spec = useMemo(
     () => iconMarkerSvg(restrictions, null, {
@@ -5043,7 +5083,11 @@ const LEGEND_BLOCKER_EXAMPLE = new Set(['no_tractor_trailer']);
 // Chad: "make the icon image bigger it's too hard to read." 16px was the badge size used for
 // an inline chip inside a sentence; in a legend the picture IS the entry, and half these
 // glyphs are 2-character day letters or line art that simply cannot resolve at 16.
-const LEGEND_ICON_PX = 22;
+// 24, not 22: the viewBox now spans 15.5 units instead of 14 to stop clipping the ring, so the
+// same pixel box would have drawn the disc ~10% smaller. 22 x 15.5/14 keeps the legend icon
+// exactly the size it reads at today — un-clipping it must not undo "make the icon image
+// bigger it's too hard to read", which is why 22 was chosen in the first place.
+const LEGEND_ICON_PX = 26;
 
 const plural = (n, word) => `${Number(n || 0).toLocaleString()} ${word}${Number(n) === 1 ? '' : 's'}`;
 
@@ -5231,7 +5275,7 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
           <div className="space-y-1">
             {iconKeys.map((key) => (
               <div key={key} className="flex items-center gap-2">
-                <RestrictionIcon kind={key} size={LEGEND_ICON_PX} />
+                <LegendRestrictionIcon kind={key} />
                 <span>{RESTRICTION_ICONS[key]?.label || key}</span>
                 <LegendCount n={!all && iconCounts[key]} />
               </div>
@@ -5251,7 +5295,7 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
         <div>
           <div className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide mb-1">Allowed (green)</div>
           <div className="flex items-center gap-2">
-            <RestrictionIcon kind="tractor_trailer_friendly" size={LEGEND_ICON_PX} />
+            <LegendRestrictionIcon kind="tractor_trailer_friendly" />
             <span>{RESTRICTION_ICONS.tractor_trailer_friendly.label} — stop can take a tractor trailer</span>
             <LegendCount n={!all && iconCounts.tractor_trailer_friendly} />
           </div>
