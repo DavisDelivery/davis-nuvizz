@@ -28,6 +28,7 @@ import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString,
 import { poolUsable, POOL_LIVE_FIELDS, WINDOW_WRITE_GRACE_MS, type ActivePool } from './lib/active-pool.mts';
 import { summarizeScanMetrics } from './lib/scan-metrics.mts';
 import { filterFinishedPriorDay } from './lib/nuvizz-list.mts';
+import { prodPoolEnabled, readProdUnplanned } from './lib/prod-pool.mts';
 import { breakerMode, reportedDailyCeiling, circuitStillBinding } from './lib/nuvizz-request.mts';
 import { requireUser } from './lib/require-user.mts';
 
@@ -332,7 +333,11 @@ export default async (req: Request): Promise<Response> => {
 
   try {
     let stops: any[];
-    let source: 'firestore' | 'fixture' | 'live-scan' | 'index-empty' = 'firestore';
+    let source: 'firestore' | 'fixture' | 'live-scan' | 'index-empty' | 'uat-prod-pool' = 'firestore';
+    // Only set on the UAT board (lib/prod-pool.mts). Present in the payload so the screen can
+    // say where its stops came from and why the board is empty when it is — a test board that
+    // is blank for an unexplained reason is the thing this whole change exists to end.
+    let uatPool: { mode: string; dayTotal: number; unplannedTotal: number; note: string | null } | null = null;
     let lastScannedAt: string | null = null;
     let lastLoadScanAt: string | null = null;
     let lastUnplannedScanAt: string | null = null;
@@ -358,6 +363,21 @@ export default async (req: Request): Promise<Response> => {
       lastUnplannedScanAt = scan.scannedAt;
       lastCompletedScanAt = scan.scannedAt;
       source = 'live-scan';
+    } else if (prodPoolEnabled() && isFirestoreEnabled()) {
+      // ── THE UAT BOARD (lib/prod-pool.mts) ─────────────────────────────────
+      // A mirror does not scan (scansEnabled() is false for one, by Chad's own instruction
+      // on Sep 3), so its own database has no day to read and the board came up empty. It
+      // now reads the day PRODUCTION already paid for — read-only, unplanned orders only,
+      // every row stripped of production's plan before it is served. Zero NuVizz calls.
+      // Nothing this board writes goes anywhere near production: writes still resolve
+      // FIRESTORE_DATABASE, which on a mirror is uat-mirror.
+      const pool = await readProdUnplanned(TENANT, date, stopMask ? { mask: stopMask } : undefined);
+      stops = pool.stops;
+      source = 'uat-prod-pool';
+      uatPool = { mode: pool.mode, dayTotal: pool.dayTotal, unplannedTotal: pool.unplannedTotal, note: pool.note };
+      // Freshness belongs to PRODUCTION's scan, and this board has not read production's
+      // meta doc — so it claims none rather than inventing one. "—" is the honest answer.
+      lastScannedAt = null; lastLoadScanAt = null; lastUnplannedScanAt = null; lastCompletedScanAt = null;
     } else if (isFirestoreEnabled()) {
       const { meta, stops: indexed } = await readStops(TENANT, date, stopMask ? { mask: stopMask } : undefined);
       // READ-time board-day guard: never SHOW a prior-day FINISHED stop on this date's board.
@@ -475,6 +495,7 @@ export default async (req: Request): Promise<Response> => {
       ok: true,
       date,
       source,
+      ...(uatPool ? { uatPool } : {}),
       generated: new Date().toISOString(),
       lastScannedAt,
       lastLoadScanAt,

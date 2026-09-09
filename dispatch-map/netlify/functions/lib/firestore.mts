@@ -149,7 +149,10 @@ function fromFirestoreValue(v: any): any {
   return null;
 }
 
-function docToObject(doc: any): any {
+// Exported for lib/prod-pool.mts, the UAT board's read-only reader of the PRODUCTION
+// database. It shares this decoder rather than growing a second copy of the value codec —
+// but nothing else: prod-pool builds its own URLs so it can never inherit a writer.
+export function docToObject(doc: any): any {
   if (!doc || !doc.fields) return null;
   const out: any = {};
   for (const [k, v] of Object.entries(doc.fields)) out[k] = fromFirestoreValue(v);

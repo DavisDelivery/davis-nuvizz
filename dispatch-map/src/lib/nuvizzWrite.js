@@ -11,11 +11,54 @@
 // server-side NUVIZZ_WRITE_ENABLED flag is set). A clientOpId makes a Save idempotent.
 
 import { apiFetch } from './api.js';
+import { isUatHost } from './mirror-site.js';
+import { needsUatConfirm, describeWriteOp, UAT_CONFIRM_PREAMBLE } from './uat-write-confirm.js';
 
 const WRITE_FN = '/.netlify/functions/nuvizz-write';
 
+// ── THE UAT CONFIRMATION BOX ─────────────────────────────────────────────────
+//
+// Chad: "Allow writes but make it where you have to confirm via box that this is what is
+// about to occur." The test board and the live board are pixel-identical, so on UAT every
+// real write stops here and says what it is about to do before anything leaves the
+// browser. The SERVER enforces the same rule independently (mirror-guard.mts,
+// nuvizzWriteGate): this box is what makes the answer informed, not what makes it safe.
+//
+// The app registers a real modal (App.jsx). window.confirm is the fallback for any caller
+// that renders no UI — worse looking, but a box, and the alternative is a write that goes
+// through unannounced, which is the one outcome this must never have.
+let confirmHandler = null;
+/** App.jsx registers the React box here. Returns a Promise<boolean>. */
+export function setUatWriteConfirmHandler(fn) { confirmHandler = typeof fn === 'function' ? fn : null; }
+/** Test hook + honest default: is a real box wired up? */
+export function hasUatWriteConfirmHandler() { return !!confirmHandler; }
+
+async function askUatConfirm(op, payload) {
+  const detail = describeWriteOp(op, payload);
+  if (confirmHandler) {
+    try { return (await confirmHandler(detail)) === true; } catch { return false; }
+  }
+  if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+    return window.confirm(`${UAT_CONFIRM_PREAMBLE}\n\n${detail.title}\n\n${detail.lines.map((l) => `• ${l}`).join('\n')}`);
+  }
+  // No way to ask ⇒ do not write. Refusing costs a re-run; guessing costs a NuVizz write
+  // from a board nobody is watching.
+  return false;
+}
+
 export async function callWrite(op, payload = {}, opts = {}) {
   const { dryRun = false, clientOpId, createdBy } = opts;
+  // On the UAT board, a real write is confirmed one at a time, by name. Production never
+  // reaches this branch — needsUatConfirm is false off a non-UAT host — so its Save path is
+  // byte-for-byte what it was.
+  const isUat = typeof window !== 'undefined' && isUatHost(window.location.hostname);
+  let uatConfirmed = false;
+  if (needsUatConfirm({ isUat, dryRun, op })) {
+    uatConfirmed = await askUatConfirm(op, payload);
+    if (!uatConfirmed) {
+      return { ok: false, cancelled: true, error: 'Cancelled — nothing was sent to NuVizz.' };
+    }
+  }
   let res;
   try {
     // apiFetch, not fetch: nuvizz-write is one of the endpoints requireUser() gates, and
@@ -24,7 +67,7 @@ export async function callWrite(op, payload = {}, opts = {}) {
       method: 'POST',
       cache: 'no-store',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ op, payload, dryRun, clientOpId, createdBy }),
+      body: JSON.stringify({ op, payload, dryRun, clientOpId, createdBy, ...(uatConfirmed ? { uatConfirmed: true } : {}) }),
     });
   } catch (e) {
     return { ok: false, error: `network error: ${e?.message || e}` };

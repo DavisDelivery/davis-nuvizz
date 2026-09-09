@@ -85,6 +85,8 @@ import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './l
 import { seedStagedCard } from './lib/workbench-stage.js';
 import { planSendSelection, selectionSendTargets } from './lib/send-selection.js';
 import { MIRROR_MISCONFIGURED_MESSAGE, siteTitle, siteTitleShort, documentTitle, isUatHost } from './lib/mirror-site.js';
+import { setUatWriteConfirmHandler } from './lib/nuvizzWrite.js';
+import { UAT_CONFIRM_PREAMBLE } from './lib/uat-write-confirm.js';
 import { satelliteControlSpec, paintSatelliteControl, SATELLITE_BUTTON_CSS } from './lib/map-satellite-control.js';
 import { dropSide, dropSideClass } from './lib/drop-side.js';
 import { rosterFreshness, ageLabel } from './lib/roster-freshness.js';
@@ -122,7 +124,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '1.0.2';
+const APP_VERSION = '1.0.3';
 
 // ── WHICH BOARD AM I LOOKING AT ──────────────────────────────────────────────
 //
@@ -212,6 +214,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.0.3', 'THE TEST BOARD HAS A DAY ON IT AGAIN, AND EVERY WRITE OFF IT STOPS TO SAY WHAT IT IS ABOUT TO DO. Chad, on UAT: “what i want to happen in UAT is it reads the firestore for unplanned orders however it doesnt plan them i want them daily left unplanned and isolated to this enviroment for testing.” WHY IT WAS BLANK, AND IT WAS NOT A BUG: isMirrorDeploy() keys on FIRESTORE_DATABASE and scansEnabled() is false for any mirror — the cutoff he asked for on Sep 3 after UAT quietly spent 109 NuVizz calls a day. So nothing ever wrote the uat-mirror stop index, and the map said “No stops match the current filters.” The fix is NOT to let UAT scan again, which reopens that bill. It READS THE DAY PRODUCTION ALREADY PAID FOR — read-only, unplanned orders only, zero NuVizz calls, and it refreshes itself because production scans all day. “LEFT UNPLANNED” IS MADE TRUE OF THE ROW, NOT JUST OF THE QUERY. The filter decides which orders reach the board; then every row is STRIPPED of production’s plan — load, route name, sequence, driver, planned ETA, board stamps — because a row can be unplanned and still be carrying a stale route name from earlier in the morning. A row that says neither planned nor unplanned is left OUT: an unknown order arriving on a test board as free-to-route invents work, and leaving it out merely shows fewer orders. THE ISOLATION IS STRUCTURAL, NOT A PROMISE. lib/prod-pool.mts has NO WRITER — not a disabled one, not a guarded one, none — and names exactly one database, hard-coded, never a parameter. A test asserts both against the source, because a read-only reader that COULD be made to write is one refactor away from the test board editing the live one. Writes still resolve FIRESTORE_DATABASE, so they land in uat-mirror as they always did. AND THE BOARD SAYS WHY WHEN IT IS EMPTY — production has no stops for that date yet, or it has routed the entire day (UAT_POOL_MODE=all then gives you the full day, still every row unplanned). A blank test board for an unexplained reason is the thing this whole change exists to end. UAT_PROD_POOL=off puts the mirror back on its own database. SECOND: WRITES ARE OPEN ON UAT NOW, ONE CONFIRMED WRITE AT A TIME. Asked whether UAT should be able to write NuVizz so the cancel-route and New-route fixes can actually be exercised there, Chad: “Allow writes but make it where you have to confirm via box that this is what is about to occur.” Every real write on the test board now stops and lists what it is about to do — “CANCEL TRAILER 5 — 7 order(s) go back to Un-Planned”, “TRAILER 6 — set 2 stop(s), assign a driver, DISPATCH to the driver” — built from the very payload that is about to be sent, not from a generic sentence. A confirmation that says nothing trains you to click it. THE GATE IS THE CONFIRMATION, NOT AN ENV VAR, and that shape is the point: a scheduled job cannot set it, so no sweep or retry can write NuVizz from a mirror however much of production’s env it inherited; and it cannot be set once and forgotten, because it is answered again for the next write. The server enforces it independently of the browser (nuvizzWriteGate), MIRROR_ALLOW_OUTBOUND stays as the blanket hatch for a caller that can show nobody a box, and if no box can be raised at all the write is REFUSED rather than sent. It rides the single door every NuVizz write in this app already goes through, so there is no write on the test board it can be walked past — and a test reads the server’s own MUTATING_OPS list and fails if any op there would not raise the box. Production never reaches any of it: not a mirror, so the gate is open, the flag is never read, and the Save path is byte-for-byte what it was. 13 new tests, 3,950 green.'],
   ['1.0.2', 'THE TEST BOARD SAYS SO NOW — AND THE VERSION DELIBERATELY DID NOT CHANGE WITH IT. Chad, on the UAT site: “this needs to be labeled as UAT Dispatch Map.” The two boards are pixel-identical — same logo, same wordmark, same footer, same tab — and nothing on screen told you which one you had open. That is a real hazard in both directions: plan a morning on the board nobody ships from and the work is lost; mistake a live 700-stop morning for a test and it is worse. The desktop wordmark, the phone app bar, the footer, the version-history modal and the BROWSER TAB now all read “UAT Dispatch Map” on the mirror, in amber on the desktop wordmark so it reads as a warning rather than a name. KEYED ON THE HOSTNAME, not a build variable — the same argument mirror-site.js already makes about the database guard: a variable is a thing somebody has to remember, and forgetting THIS one would label the test board as production, which is the dangerous direction. A URL cannot be forgotten. The tab title moves out of index.html and is set at runtime for the same reason: one index.html ships to both sites, and the tab is what you actually read when both boards are open. AND THE VERSION IS DELIBERATELY LEFT ALONE. Chad, in the same breath: “The version still has to stay current with production.” v{APP_VERSION} is ONE number, bumped on main, shown identically on both sites — it is exactly how he checks whether UAT is running the code he just merged, and a UAT-specific version string would destroy that check. Only the NAME changes; a test pins that APP_VERSION is never assigned from a host branch. Production resolves byte-identical strings to the ones it has always shown, including the tab title, and “Guatemala” is pinned as not a UAT host. Both views done separately, as they are two views. 4 new tests, 3,937 green.'],
   ['1.0.1', 'CANCEL ROUTE FINALLY PUSHES BACK, AND NEW ROUTE WAS SENDING A LEG ORDER WITH TIES IN IT. TWO REPORTS, ONE AFTERNOON, AND THE SECOND ONE IS WHERE THE DOCUMENT EARNED ITS KEEP. FIRST, THE CANCEL. Chad, with the red “This DELETES a route” modal open on TRAILER 5: “when i click cancel the route it doesn’t do what it says it is going to do.” The modal promises the route is deleted and its 7 orders go back to Un-Planned; the Save answered “Vehicle Type unavailable or disabled … for DAVIS000203261 (code 903)” and the route kept every single order. Same refusal as TERRANCE on Sep 8 — v0.97.1 made the MESSAGE honest and stopped there, so the button has never once worked on a route whose Vehicle Type is disabled in the portal. WHY: emptying a route is a load/edit, load/edit is a FULL HEADER ECHO, and the echo hands NuVizz back the route’s own vehicleType — a value NuVizz itself stored and has since disabled. IT NOW CLIMBS A LADDER, and the ORDER of it is the whole safety argument. The untouched echo goes first, always, so a cancel that works today is byte-for-byte the request it was and still costs two calls. Only on THAT refusal (not on reason 903 generally — the tenant reuses 903 for the stopless-route error) does it re-read the load once, which buys two things: a versionId that cannot be stale, and the truth — if the deliveries are already gone, NuVizz refused in words and emptied the route anyway, which is a cancel that LANDED and is now reported as one. Then the header with vehicleType omitted, then with it cleared. If the re-read shows we never sent a vehicle type at all, it STOPS: NuVizz is validating its own stored value, no payload can move it, and burning two more calls to prove that is the wrong lesson from Sep 8. Bounded at three extra calls, only on a Save that had already failed, and NUVIZZ_CANCEL_VT_FALLBACK=off reverts it. AND THE BANNER NOW LEADS WITH THE OUTCOME — “nothing was unplanned and it still holds all 7 orders” — before the vendor’s reason and the one place it gets fixed, because a message that names only a cause leaves a dispatcher unable to tell whether some of the freight moved. WHAT IS NOT PROVEN, said plainly: whether NuVizz validates the type we SEND or the one it STORES is a fact about their validator, not about this code. Every shape sent is journalled with NuVizz’s verbatim answer, so the next failure names the cause instead of needing another guess. SECOND, THE CREATE, AND CHAD SENT US TO THE RIGHT PLACE. On a 3-order ＋ New route card: “Your load creation doesn’t work correctly go to nuvizz’s api instructions to see what you are doing wrong.” NuVizz answered with a 500 whose DeliverItLoadResponse had DocumentID UNKNOWN and Status 99 — it failed before it could even bind the document. THE ANSWER WAS IN THE DOCUMENT BUT NOT IN THE SCHEMA. RoutePlanStopSchedule.seq is “Sequence of the shipFrom or shipTo”, and Route.planStops says stops are added “in the sequence specified for pickup from and drop-off to nodes” — so seq orders the route’s LEGS, and a 3-order route has SIX. All three worked examples give every leg its own number: Stop001 from=1 to=3, Stop002 from=2 to=4. WE WERE SENDING from.seq === to.seq === the card position: leg 1 claimed twice, leg 2 twice, leg 3 twice, and 4, 5 and 6 never used. Three ties and no visit order at all. The body was STRUCTURALLY PERFECT the whole time — every key in the schema, nothing extra, every type and length legal — which is exactly why nothing caught it: JSON Schema cannot say “these integers must be distinct”. Only the examples say it. It now sends from-legs 1..N then to-legs N+1..2N, the planStops example’s own pattern and the same leg model this repo already proved against the portal (RWB’s stoplist is every _PU leg then every _DO leg). Load at Buford, then deliver — which is also what the freight does. A GUARD SO NEITHER KIND COMES BACK: test/nuvizz-openapi-conformance.test.mjs validates the bodies this app builds against the shipped reference/nuvizz-openapi-v7.json — keys, required, types, lengths — AND asserts the rules the schema cannot state, including the leg-uniqueness convention read back out of the vendor’s own three examples, so a future spec drop fails a test instead of a route. It is proven able to go red before it is trusted to be green. THIRD, AND SHIPPED SWITCHED OFF: reading the document turned up something this app has never used — POST /load/cancel, “Delete/Reject a Load that is unassigned from a Driver”, whose body is loadId + reasonCode and carries NO header for a Vehicle Type to refuse. That is the endpoint the red modal has been describing all along, and TRAILER 5 (DRAFT, no driver) is exactly its stated precondition. It is built, tested and wired as the LAST rung of the ladder, and NUVIZZ_LOAD_CANCEL_API is unset, because the document says what becomes of the LOAD and says NOTHING about what becomes of the ORDERS on it — and the modal promises Un-Planned, not cancelled. Seven cancelled customer deliveries is not something to discover on a live board. When it is switched on it READS EVERY ORDER BACK and reports what each one actually became; if any came back CANCELLED it fails the Save loudly and names them rather than reporting a clean cancel. Prove it on one throwaway route (or UAT) and it becomes the default. Zero NuVizz calls were spent working any of this out — it is the shipped API document, the code, and the two screenshots. 27 new tests, 3,869 green.'],
   ['1.0.0', 'WHO GETS TEXTED AND WHO GETS EMAILED IS A SCREEN NOW, NOT A NETLIFY CONSOLE AND A REDEPLOY. Chad: “We are sending texts alerts for different things and i think we need to build a ui in the diagnostics where i can add more numbers or remove numbers from who gets texted same thing for emails need to build a ui in same place so can control that as well.” FIVE LISTS WERE INVISIBLE FROM THE APP: FLAG_SMS_TO and FLAG_SMS_TO_NIGHT (the evening and overnight flag texts), ALERT_CC (the miss-window email beside customer service), NOTIFY_CS_TO (the marked-customer notice) and DAY_REPORT_TO (the 6:30p end-of-day report). THIS IS THE SEPTEMBER 3RD FAILURE ONE LAYER DOWN. That day Chad reported the miss-window emails as broken; nothing was broken — both had been delivered and he was simply not on the list. From an inbox, “the mailer is broken” and “you are not on the list” are the same blank screen. The fix that day made the list CONFIGURABLE. It never made it READABLE, and a recipient list nobody can see is the same class of problem as a switch whose position cannot be read. SO THE PANEL ANSWERS THE QUESTION FIRST AND EDITS SECOND: every card prints GOES TO — the resolved send list, floors and all, computed by the same function the sender calls, so the screen and the code cannot give two answers the way the daily ceiling did three times. FOUR DECISIONS WORTH KNOWING. (1) CLEARED MEANS CLEARED. Delete every number from the flag texts and the flag texts stop; a control that silently reverts to an env var when you empty it is a control that lies. “Never set” (falls back to the environment) and “set to nothing” are different documents. (2) EXCEPT WHERE EMPTY WOULD SWITCH OFF SOMEBODY ELSE’S FEATURE — the marked-customer notice is addressed TO the desk that acts on it, so it keeps its customer-service floor exactly as csRecipients() always has, and the screen prints the floor beside the list rather than hiding it. (3) NOTHING IS DROPPED IN SILENCE: a refused number or address comes back BY NAME with a reason, next to the field it was typed into. (4) THE SCREEN VALIDATES WHAT THE SENDER VALIDATES — phone numbers go through the same normalizePhone/validUsPhone handed to SimpleTexting, so a number the field accepts is a number the transport can dial. THE CAREFUL PART, AND THE REASON THIS IS SAFE TO MERGE: with nothing saved, every channel alerts exactly who it alerted before, pinned by test. The internal-domain allowlist — which exists because these messages name a customer, its PRO and its route — now binds everything the SCREEN stores, on write and again on read; it deliberately does NOT reach back and re-judge a value already in the console, because quietly enforcing a rule over NOTIFY_CS_TO or DAY_REPORT_TO would stop mailing somebody who is being mailed today. Those are flagged on screen instead. Re-validating on READ is not belt-and-braces: under the live firestore.rules any nuvizz_ops document is writable by anyone holding the web config out of the public bundle, so the admin gate protects the write path and not the document — the allowlist binds between the document and the sender, where it cannot be walked past. TWO BUGS FOUND AND FIXED ON THE WAY. DAY_REPORT_TO WAS SINGLE-VALUED BY ACCIDENT: the value was trimmed and handed to Resend as one string, so setting it to two comma-separated addresses produced one malformed recipient and the whole message failed — nothing in the code, the comment or the tests said the field could not take a list, which is the sort of thing you find out on the day you add somebody. And the day-completion readback answered “recipient not configured” from the environment alone, which would have called a perfectly working report unconfigured the moment it was set here; it reports the resolved COUNT now, never an address. NAMED HONESTLY: the panel does not say “CC”, because there is no CC — lib/email.mts sends Resend a `to` array and nothing else, so ALERT_CC has always landed everyone on one visible To: line. It says so on the card. It also says what it is NOT: texting a driver or the office from Messages uses the employee roster, which is a different store and is not edited here. The write is field-masked, so two people editing two lists in two tabs both keep their edit. Also cleaned up: two real Davis mobile numbers were committed as test fixtures in a file whose own header says phone numbers are personal data and never belong in code — they are 555-01xx now. AND AN ADVERSARIAL PASS BEFORE MERGE CAUGHT THE ONE THAT MATTERED, reachable through the very thing this screen was built for. An outside address grandfathered in NOTIFY_CS_TO or DAY_REPORT_TO was drawn as an ordinary removable row while the card promised “it keeps working” — so adding YOURSELF to that list would have posted it back, had it refused by the allowlist, and made it vanish; on the end-of-day report, which has no floor, removing one of two names could have left NOBODY mailed under a green “saved” badge. A grandfathered entry is no longer a row: it is shown as something the console owns, with the consequence of saving spelled out beside it. The same pass moved the READ behind a viewer gate. It shipped ungated on the scan-config precedent — but that precedent is about scan cadences, and this body is every staff mobile in the company; driver-phone gates a GET for exactly this reason and day-completion will not print even ONE of these addresses behind its own gate. Also from that pass: a failed store read is now recorded everywhere instead of quietly reporting the environment as fact, the run logs say which list they used rather than always claiming “saved”, the audit line names the authenticated principal instead of a string the caller supplied, the response no longer echoes the raw world-writable document, customerservice@ can no longer be added twice, Enter on a duplicate no longer clears the box and its warning together, and a pasted pair of addresses is split instead of refused as “not an email address”. 42 new tests, 3,910 green.'],
@@ -25400,6 +25403,19 @@ function Shell() {
   // account's ROLE, are two different problems and read differently — see the two bars.
   const denials = usePermissionDenials();
   const [roleRefusal, setRoleRefusal] = useState(null);
+  // ── THE UAT WRITE CONFIRMATION (Chad: "confirm via box that this is what is about to
+  // occur"). Holds { detail, resolve } while a write waits on an answer. Lives at the
+  // shell, not on a screen, because a NuVizz write can be raised from Compare, a stop
+  // card, the Routes rail or the phone sheet, and all of them go through one door
+  // (lib/nuvizzWrite.js). Null on production — the handler is only registered on UAT.
+  const [uatWriteAsk, setUatWriteAsk] = useState(null);
+  useEffect(() => {
+    // Only the test board registers a box. On production nothing is registered, so
+    // needsUatConfirm is false, callWrite never asks, and the Save path is unchanged.
+    if (!IS_UAT_SITE) return undefined;
+    setUatWriteConfirmHandler((detail) => new Promise((resolve) => setUatWriteAsk({ detail, resolve })));
+    return () => setUatWriteConfirmHandler(null);
+  }, []);
   useEffect(() => onAuthEvent((e) => { if (e.kind === 'forbidden') setRoleRefusal(e); }), []);
   // THE NOTCH INSET BELONGS TO WHATEVER IS ACTUALLY AT THE TOP, AND TO EXACTLY ONE THING.
   // On a home-screen iPhone every bar that adds env(safe-area-inset-top) adds ~47px, so two
@@ -25560,6 +25576,7 @@ function Shell() {
           <span className="min-w-0">{MIRROR_MISCONFIGURED_MESSAGE}</span>
         </div>
       )}
+      <UatWriteConfirm ask={uatWriteAsk} onAnswer={(ok) => { uatWriteAsk?.resolve(ok); setUatWriteAsk(null); }} />
       <PermissionBanner denials={denials} isMobile={isMobile} atTop={!updateAvailable}
         onSignIn={LOGIN_MODE === 'server' ? clearSession : null} />
       <RoleRefusalBar refusal={roleRefusal} isMobile={isMobile} atTop={!updateAvailable && !denials.length}
@@ -31176,6 +31193,68 @@ function SignInRequiredScreen({ isMobile, appVersion }) {
 // anything else and this renders <Shell/> exactly as it always has — same mount, same
 // hooks, same order. That is the promise: the app works tomorrow the way it worked today,
 // until a flag is flipped deliberately.
+// ── THE UAT WRITE CONFIRMATION BOX ──────────────────────────────────────────
+//
+// Chad: "Allow writes but make it where you have to confirm via box that this is what is
+// about to occur." Raised by lib/nuvizzWrite.js — the single door every NuVizz write in
+// this app goes through — so there is no write on the test board it can be walked past.
+//
+// It is DELIBERATELY NOT a generic "Are you sure?". A confirmation that says nothing
+// trains you to click it; this one lists what is about to happen line by line, off the
+// same payload that is about to be sent (lib/uat-write-confirm.js, describeWriteOp), so
+// what you read is what goes.
+//
+// Defaults to the safe side: backdrop click, Escape and Cancel all answer NO, and the
+// promise resolves false so callWrite returns { cancelled:true } without touching NuVizz.
+// One dialog for both views — max-w-md inside a padded flex centre is the same shape the
+// route-cancel confirm already uses and it reads correctly at 360px.
+function UatWriteConfirm({ ask, onAnswer }) {
+  useEffect(() => {
+    if (!ask) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') onAnswer(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [ask, onAnswer]);
+  if (!ask) return null;
+  const { title, lines } = ask.detail || { title: 'Write to NuVizz', lines: [] };
+  return (
+    <div
+      className="fixed inset-0 z-[80] bg-black/50 flex items-center justify-center p-4"
+      role="dialog" aria-modal="true" aria-label="Confirm a NuVizz write from the UAT board"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onAnswer(false); }}
+    >
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-md max-h-[85dvh] flex flex-col">
+        <div className="px-4 py-3 border-b font-semibold text-amber-800 flex items-center gap-2">
+          <AlertTriangle size={16} className="text-amber-600 shrink-0" />
+          <span className="min-w-0">UAT — {title}</span>
+        </div>
+        <div className="px-4 py-3 overflow-y-auto text-sm text-slate-700 space-y-2">
+          <div className="text-[13px] text-amber-900 bg-amber-50 border border-amber-200 rounded p-2">
+            {UAT_CONFIRM_PREAMBLE}
+          </div>
+          <ul className="list-disc pl-5 space-y-0.5">
+            {lines.map((l, i) => <li key={i}>{l}</li>)}
+          </ul>
+        </div>
+        <div className="px-4 py-3 border-t flex items-center justify-end gap-2">
+          <button
+            onClick={() => onAnswer(false)}
+            className="px-3 py-1.5 text-sm rounded border border-slate-300 text-slate-600 hover:bg-slate-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onAnswer(true)}
+            className="px-3 py-1.5 text-sm rounded font-semibold text-white bg-amber-600 hover:bg-amber-700"
+          >
+            Yes — write to NuVizz
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const viewportWidth = useViewportWidth();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;

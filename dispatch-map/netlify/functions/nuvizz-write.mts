@@ -32,9 +32,13 @@ import { rwbEngineBlocked } from './lib/nuvizz-rwb.mts';
 import { getNuvizzRequester, setCallTrigger, resolveDailyCeiling, NuvizzCircuitOpenError } from './lib/nuvizz-request.mts';
 import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
 import { getOpRecord, putOpRecord, priorShortCircuits, recordCreatedOrder, recordAssignment } from './lib/write-registries.mts';
-import { outboundAllowed, outboundRefusal } from './lib/mirror-guard.mts';
+import { nuvizzWriteGate, isMirrorDeploy } from './lib/mirror-guard.mts';
 
-function writeEnabled(): boolean {
+// `uatConfirmed` — the operator agreed to THIS write in the UAT box (lib/mirror-guard.mts,
+// nuvizzWriteGate). Chad: "Allow writes but make it where you have to confirm via box that
+// this is what is about to occur." It is read off the request, so a scheduled job — which
+// never sets it — still cannot write NuVizz from a mirror. Production ignores it entirely.
+function writeEnabled(uatConfirmed = false): boolean {
   // A MIRROR DEPLOY DOES NOT WRITE TO NuVizz. This is the one with a truck on the end of it:
   // assignDriver and dispatchLoad put freight on a driver's phone and release it. A mirror
   // copies production's env, so NUVIZZ_WRITE_ENABLED was true there too, and nothing else on
@@ -42,7 +46,7 @@ function writeEnabled(): boolean {
   // and nothing else, so a UAT deploy was silent about spending a vendor call and perfectly
   // willing to move a truck. See lib/mirror-guard.mts; MIRROR_ALLOW_OUTBOUND=nuvizz-write
   // opens it deliberately for a UAT tenant.
-  if (!outboundAllowed('nuvizz-write')) return false;
+  if (!nuvizzWriteGate(uatConfirmed).allowed) return false;
   return String(process.env.NUVIZZ_WRITE_ENABLED ?? '').trim().toLowerCase() === 'true';
 }
 
@@ -196,11 +200,14 @@ export default async (req: Request): Promise<Response> => {
   const dryRun = body?.dryRun === true;
   const clientOpId = body?.clientOpId ? String(body.clientOpId) : null;
   const createdBy = body?.createdBy ? String(body.createdBy) : null;
+  // Set ONLY by the browser's UAT confirmation box (src/lib/nuvizzWrite.js). Meaningless on
+  // production, where nuvizzWriteGate answers `allowed` without ever reading it.
+  const uatConfirmed = body?.uatConfirmed === true;
 
   // Resolve tenant for the response banner even on the early-return paths.
   let tenant = 'DAVIS';
   try { tenant = resolveWriteCreds().companyCode; } catch { /* creds resolved again below */ }
-  const live = writeEnabled();
+  const live = writeEnabled(uatConfirmed);
   const ops = await opsSnapshot();
 
   // 1) DRY RUN — never touches NuVizz. The Compare panel's default mode + Beta mode.
@@ -208,9 +215,14 @@ export default async (req: Request): Promise<Response> => {
 
   // 2) Mutating ops require the server-side kill switch.
   if (MUTATING_OPS.has(op) && !live) {
-    return J({ ok: false, op, tenant, live: false, dryRun: false, error: outboundAllowed('nuvizz-write')
-      ? 'live writes disabled — set NUVIZZ_WRITE_ENABLED=true to enable'
-      : outboundRefusal('nuvizz-write'), ops }, 403);
+    // Which of the two doors is shut decides the message. On a mirror the usual answer is
+    // now "confirm it" rather than "set an env var" — see nuvizzWriteGate.
+    const gate = nuvizzWriteGate(uatConfirmed);
+    return J({ ok: false, op, tenant, live: false, dryRun: false,
+      ...(isMirrorDeploy() ? { mirror: true, needsConfirm: !gate.allowed } : {}),
+      error: gate.allowed
+        ? 'live writes disabled — set NUVIZZ_WRITE_ENABLED=true to enable'
+        : gate.reason, ops }, 403);
   }
 
   // 3) Creds must be present (basicAuthHeader throws if not) — fail clearly, no NuVizz call.

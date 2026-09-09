@@ -95,6 +95,51 @@ export function outboundRefusal(channel: OutboundChannel, env: Record<string, an
     + `Set MIRROR_ALLOW_OUTBOUND=${channel} on this site to allow it deliberately.`;
 }
 
+// ── NUVIZZ WRITES FROM THE TEST BOARD: CONFIRMED, ONE AT A TIME ──────────────
+//
+// Chad, asked whether UAT should be allowed to write to NuVizz so the cancel-route and
+// New-route fixes can actually be exercised there: "Allow writes but make it where you
+// have to confirm via box that this is what is about to occur."
+//
+// So the door opens, but only for a write a human has just looked at and agreed to. The
+// per-request confirmation is the gate, not an env var, and that is the safe shape:
+//
+//   • A BACKGROUND JOB CANNOT SET IT. Every scheduled function, sweep and retry in this
+//     repo calls the write path without it, so none of them can write NuVizz from a
+//     mirror no matter what env it inherits. That is the failure this whole file was
+//     written about — a mirror built by copying production's env, with every outbound
+//     door keyed on nothing but the presence of a copied API key.
+//   • IT CANNOT BE SET ONCE AND FORGOTTEN. It rides the request, so it is answered again
+//     for the next write. An env var, once set, is on for every write that deploy ever
+//     makes — which is exactly how a UAT site ends up dispatching a real truck.
+//   • MIRROR_ALLOW_OUTBOUND STILL WORKS, unchanged, as the blanket hatch for a
+//     non-interactive test that cannot show anybody a box.
+//
+// PRODUCTION IS UNTOUCHED: not a mirror → allowed, exactly as before, and the flag is
+// never even read.
+
+/**
+ * PURE. May this deploy write NuVizz for THIS request?
+ * @param confirmed  the operator confirmed this specific write in the UAT box.
+ */
+export function nuvizzWriteGate(confirmed: boolean, env: Record<string, any> = process.env): { allowed: boolean; reason: string | null } {
+  if (!isMirrorDeploy(env)) return { allowed: true, reason: null };
+  if (confirmed === true) return { allowed: true, reason: null };
+  if (allowedOutbound(env).has('nuvizz-write')) return { allowed: true, reason: null };
+  return {
+    allowed: false,
+    reason: `refused: this is the ${firestoreDatabaseName(env)} test board, and a NuVizz write from here has to be confirmed. `
+      + 'Re-run the action and confirm it in the box. '
+      + `(A non-interactive caller can set MIRROR_ALLOW_OUTBOUND=nuvizz-write on this site instead.)`,
+  };
+}
+
+/** PURE. Should the browser put a confirmation box in front of this write? True on a
+ *  mirror; false on production, where the app's own confirms already apply. */
+export function needsWriteConfirm(env: Record<string, any> = process.env): boolean {
+  return isMirrorDeploy(env);
+}
+
 /** Convenience for a caller that wants both answers at once. */
 export function outboundGate(channel: OutboundChannel, env: Record<string, any> = process.env): { allowed: boolean; reason: string | null } {
   return outboundAllowed(channel, env)

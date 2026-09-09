@@ -136,12 +136,68 @@ test('WIRING: all three doors actually consult the guard, at the gate AND at the
     'sendSms itself must refuse');
 
   const write = await read('../netlify/functions/nuvizz-write.mts');
-  assert.match(bodyOf(write, 'function writeEnabled'), /if \(!outboundAllowed\('nuvizz-write'\)\) return false;/,
+  // The NuVizz door is now the CONFIRMED one (nuvizzWriteGate) rather than the blanket
+  // outboundAllowed check — same guard underneath, plus the per-request confirmation Chad
+  // asked for. The wiring assertion follows the rename; the rule it protects is unchanged
+  // and is exercised directly in the nuvizzWriteGate tests below.
+  assert.match(bodyOf(write, 'function writeEnabled'), /if \(!nuvizzWriteGate\(uatConfirmed\)\.allowed\) return false;/,
     'the NuVizz write door must be shut on a mirror — this is the one with a truck on the end of it');
+  // And the confirmation must come off the REQUEST, never off env: a scheduled job that
+  // inherits a mirror's env still cannot set it.
+  assert.match(write, /const uatConfirmed = body\?\.uatConfirmed === true;/,
+    'the confirmation is read from the request body');
+  assert.match(write, /const live = writeEnabled\(uatConfirmed\);/,
+    'and it is what decides whether this request may write');
 
   // And ONE definition of "mirror", so the read gate and the send gates cannot drift apart.
   const scan = await read('../netlify/functions/lib/nuvizz-scan.mts');
   assert.match(scan, /import \{ isMirrorDeploy \} from '\.\/mirror-guard\.mts';/,
     'nuvizz-scan must import the shared predicate, not keep a second copy');
   assert.match(scan, /export \{ isMirrorDeploy \};/, 'and re-export it so every existing caller is unchanged');
+});
+
+// ── THE CONFIRMED WRITE (Sep 9 2026) ─────────────────────────────────────────
+// Chad, asked whether UAT should be able to write NuVizz so the cancel-route and New-route
+// fixes can be exercised there: "Allow writes but make it where you have to confirm via box
+// that this is what is about to occur."
+import { nuvizzWriteGate, needsWriteConfirm } from '../netlify/functions/lib/mirror-guard.mts';
+
+test('production never asks: the gate is open and the confirmation is not even read', () => {
+  for (const confirmed of [true, false]) {
+    assert.deepEqual(nuvizzWriteGate(confirmed, {}), { allowed: true, reason: null });
+    assert.deepEqual(nuvizzWriteGate(confirmed, { FIRESTORE_DATABASE: '(default)' }), { allowed: true, reason: null });
+  }
+  assert.equal(needsWriteConfirm({}), false, 'and the browser puts no extra box in front of a production write');
+});
+
+test('a mirror writes NuVizz only for a write somebody just confirmed', () => {
+  const uat = { FIRESTORE_DATABASE: 'uat-mirror' };
+  assert.equal(nuvizzWriteGate(true, uat).allowed, true, 'confirmed → allowed');
+  assert.equal(nuvizzWriteGate(false, uat).allowed, false, 'unconfirmed → refused');
+  assert.equal(needsWriteConfirm(uat), true);
+  // The refusal has to be actionable — a silent no-op is indistinguishable from a broken
+  // feature, which is the failure this whole file is modelled on.
+  const why = nuvizzWriteGate(false, uat).reason;
+  assert.match(why, /uat-mirror test board/);
+  assert.match(why, /confirm it in the box/);
+});
+
+test('a background job cannot confirm: only a literal true opens it', () => {
+  const uat = { FIRESTORE_DATABASE: 'uat-mirror' };
+  // Every truthy near-miss a caller might pass by accident stays SHUT. The flag is set in
+  // exactly one place (the browser's confirmation box) and nothing else should satisfy it.
+  for (const v of ['true', 1, 'yes', {}, [], 'confirmed']) {
+    assert.equal(nuvizzWriteGate(v, uat).allowed, false, JSON.stringify(v));
+  }
+  for (const v of [false, null, undefined, 0, '']) {
+    assert.equal(nuvizzWriteGate(v, uat).allowed, false, JSON.stringify(v));
+  }
+});
+
+test('MIRROR_ALLOW_OUTBOUND is still the blanket hatch for a caller that cannot show a box', () => {
+  const uat = { FIRESTORE_DATABASE: 'uat-mirror', MIRROR_ALLOW_OUTBOUND: 'nuvizz-write' };
+  assert.equal(nuvizzWriteGate(false, uat).allowed, true);
+  assert.equal(nuvizzWriteGate(false, { ...uat, MIRROR_ALLOW_OUTBOUND: 'all' }).allowed, true);
+  // …and it stays per-channel: opening email does not open the door with a truck behind it.
+  assert.equal(nuvizzWriteGate(false, { ...uat, MIRROR_ALLOW_OUTBOUND: 'email' }).allowed, false);
 });
