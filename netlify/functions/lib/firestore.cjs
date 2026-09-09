@@ -384,6 +384,29 @@ async function readCallCounter(dateStr) {
   return doc && typeof doc.count === 'number' ? doc.count : 0;
 }
 
+// THE SPEND SETTING IS SHARED, LIKE THE COUNTER AND THE BREAKER ALREADY WERE.
+//
+// `nuvizz_ops/scan_config` is the document dispatch-map's Diagnostics page writes, and this
+// app had never read it: its ceiling came from NUVIZZ_DAILY_CEILING with a 12,000 default
+// that appears nowhere else in the system. Chad: "Whatever number it's set to is where I
+// want the calls to end." A fleet where one app honours that and the other runs to a number
+// nobody chose does not end the calls where he said.
+//
+// It was only ever partly covered: both apps increment ONE counter and read ONE breaker, so
+// once dispatch-map noticed the shared count cross the setting it tripped and this app
+// stopped too. But that check only happens when dispatch-map itself makes a call — between
+// its scans, up to half an hour, this app alone could run past the setting to 12,000.
+//
+// Returns the RAW stored value; the caller does the coercion and the bound, in one place.
+// Firestore off means there IS no saved setting, which is an answer (the default) and not a
+// failure — letting loadServiceAccount throw here would mark every resolve as failed and keep
+// re-asking a store that is switched off.
+async function readScanConfigCeiling() {
+  if (!isFirestoreEnabled()) return undefined;
+  const doc = await getDoc(`${OPS_COLLECTION}/scan_config`);
+  return doc ? doc.dailyCeiling : undefined;
+}
+
 // ── THE NUVIZZ CIRCUIT BREAKER — ONE DOC, TWO APPS, ONE CONTRACT ────────────
 //
 // `nuvizz_ops/circuit` is shared with dispatch-map, and until now the two apps read and
@@ -447,6 +470,7 @@ module.exports = {
   readStopIndexMeta,
   incrementCallCounter,
   readCallCounter,
+  readScanConfigCeiling,
   readCircuit,
   setCircuit,
   circuitFromDoc,

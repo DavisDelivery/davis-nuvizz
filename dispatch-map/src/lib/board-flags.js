@@ -45,6 +45,7 @@ import {
 // in trailer-block.js rather than map-legend.js only because map-legend → time-marks →
 // board-flags would be a cycle.
 import { dispatcherTrailerBlock, trailerBlockerLabels } from './trailer-block.js';
+import { placeKeyOfStop } from './matchKey.js';
 
 // ── time + hours parsing ──────────────────────────────────────────────────────
 
@@ -954,9 +955,41 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     // "move this stop". Six on one load is "the wrong truck is on this route", and a message
     // that lists them one at a time buries that. Stamped on every row so the panel, the text
     // and any later consumer read the same count rather than each re-deriving it.
+    // ONE DOCK, ONE CARD. Chad, looking at the panel: "this Jewel Reign is showing up twice
+    // and should only be there one time."
+    //
+    // A pickup and a delivery at one dock are two orders and ONE place — the fact v0.99.4 had
+    // to teach the grab, arriving here from the other side. This rule pushed a row per STOP,
+    // so two orders at one address produced two byte-identical cards: same customer, same
+    // route, same sequence, same sentence.
+    //
+    // WORSE THAN THE DUPLICATE, and the reason this is a correctness fix and not a tidy-up:
+    // the "N other stops carry the same mark — check the truck, not just the stop" line
+    // counted those twins as other stops. That sentence exists to say "this is a TRUCK
+    // problem, not a stop problem", which is only true when genuinely different places are
+    // blocked. One dock wearing one mark was telling a dispatcher to go and doubt the whole
+    // load. The same count rides the SMS ("+N more stops on this route"), so the text said it
+    // too. Counting DOCKS is what the sentence always meant.
+    //
+    // The orders stay separate everywhere they are acted on — the card names them, and
+    // `stopNbrs` carries them for anything downstream. What is merged is the WARNING.
+    const byDock = new Map();
+    for (const c of conflicts) {
+      const dock = `${c.k}|${placeKeyOfStop(c.s)}`;
+      if (!byDock.has(dock)) byDock.set(dock, []);
+      byDock.get(dock).push(c);
+    }
+    // Deterministic pick: the same board must produce the same card every rebuild, or the
+    // dismiss key moves under a dispatcher who already waved it off.
+    for (const list of byDock.values()) {
+      list.sort((a, b) => String(a.s.stopNbr ?? '').localeCompare(String(b.s.stopNbr ?? '')));
+    }
     const perRoute = new Map();
-    for (const c of conflicts) perRoute.set(c.k, (perRoute.get(c.k) || 0) + 1);
-    for (const { s, k, block } of conflicts) {
+    for (const list of byDock.values()) perRoute.set(list[0].k, (perRoute.get(list[0].k) || 0) + 1);
+    checked.trailerConflicts = byDock.size;
+    for (const list of byDock.values()) {
+      const { s, k, block } = list[0];
+      const atThisDock = list.map((c) => String(c.s.stopNbr ?? '')).filter(Boolean);
       const labels = trailerBlockerLabels(block.keys);
       // via 'eligibility' is the Routing paint (a dropdown only a dispatcher can reach), so
       // it is named as the paint even when restriction ticks ride along beside it.
@@ -974,12 +1007,17 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         // Machine-readable, so no consumer has to parse the sentence to act on it.
         blockers: block.keys, blockedVia: block.via, routeClass: 'tractor',
         routeKey: k, routeConflicts: perRoute.get(k) || 1, seq: seqOf(s),
+        // Every order at this dock, so nothing is hidden by the merge and a downstream
+        // consumer can still act per order. A silent merge is the other-direction bug.
+        stopNbrs: atThisDock, ordersHere: atThisDock.length,
         title: `No tractor trailer — ${s.businessName || s.stopNbr}`,
         detail: `${label} is running a tractor-trailer, but this stop is ${said} by dispatch.`
           + `${seqOf(s) != null ? ` Stop ${seqOf(s)} on the route.` : ''}`
+          + `${atThisDock.length > 1 ? ` ${atThisDock.length} orders at this stop (${atThisDock.join(', ')}) — one dock, so this is one move.` : ''}`
           + `${alsoN > 0 ? ` ${alsoN} other stop${alsoN === 1 ? '' : 's'} on ${label} carr${alsoN === 1 ? 'ies' : 'y'} the same mark — check the truck, not just the stop.` : ''}`
           + ` Move it to a box truck, or mark the customer tractor-OK if a 53' does fit.`,
-        scope: 'occurrence', servedDate, fingerprint: `trailer|${servedDate}|${k}|${s.stopNbr}`,
+        // Keyed on the DOCK, so the card a dispatcher dismisses is the card that stays gone.
+        scope: 'occurrence', servedDate, fingerprint: `trailer|${servedDate}|${k}|${placeKeyOfStop(s)}`,
       }));
     }
   }
@@ -1579,6 +1617,15 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   }
   capped.sort((a, b) => (TIER_ORDER[a.tier] ?? 9) - (TIER_ORDER[b.tier] ?? 9));
 
+  // THE DRIVER, FILLED IN FROM THE ROUTE. A stop row often carries no driver of its own even
+  // when its load is assigned, so every card would read "no driver" and the no-driver flag
+  // would stop meaning anything. One pass over the whole board builds route -> driver, and a
+  // row only takes it when its own is blank. An AMBIGUOUS route (two drivers on one route
+  // name) fills nothing rather than naming the wrong person: this panel is where somebody
+  // decides who to phone.
+  fillRouteDrivers(capped, stops);
+  fillRouteDrivers(suppressed, stops);
+
   return {
     rows: capped,
     // THE ROWS THE PANEL DOES NOT SHOW. Real hours_risk predictions that a no-driver card
@@ -1597,6 +1644,40 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     legsWanted: [...legsWanted.values()],
     etaByStop,
   };
+}
+
+/**
+ * PURE. Fill each row's driverName from its route when the row itself has none.
+ *
+ * Exported for tests. `rows` is mutated in place (they are freshly built objects owned by
+ * computeBoardFlags); `stops` is the whole board. A route carrying two different driver names
+ * is left blank on purpose — see the note at the call site.
+ */
+export function fillRouteDrivers(rows, stops) {
+  const byRoute = new Map();
+  for (const s of stops || []) {
+    const k = String(s?.routeName || s?.loadNbr || '').trim().toLowerCase();
+    if (!k) continue;
+    const d = String(s?.driverName || s?.driverUserName || '').trim();
+    if (!d) continue;
+    if (!byRoute.has(k)) byRoute.set(k, new Set());
+    byRoute.get(k).add(d);
+  }
+  for (const r of rows || []) {
+    if (!r || r.driverName) continue;
+    const k = String(r.routeName || '').trim().toLowerCase();
+    if (!k) continue;
+    const set = byRoute.get(k);
+    if (!set || !set.size) continue;
+    if (set.size === 1) { r.driverName = [...set][0]; continue; }
+    // MORE THAN ONE DRIVER ON THE ROUTE IS NOT "NO DRIVER". Filling nothing here was right —
+    // printing one of two names sends the call to the wrong truck — but leaving the row blank
+    // made the card say "No driver", which is a different claim and a false one: a dispatcher
+    // reading it goes and assigns a driver to a route that already has two. The count is
+    // recorded so the card can say the true thing instead.
+    r.routeDriverCount = set.size;
+  }
+  return rows;
 }
 
 // The key a row is hidden under, and the keys a dismissal must WRITE.
@@ -1629,6 +1710,13 @@ function row(tier, rule, s, extra) {
     stopNbr: s?.stopNbr ?? null,
     matchKey: s?.matchKey ?? null,
     routeName: s ? (s.routeName || s.loadNbr || null) : null,
+    // WHO IS DRIVING IT. Chad, on a receiving-hours card: "Need to show route and driver
+    // name." The route was only ever inside the detail prose ("Stop 11 on ESTES") and the
+    // driver appeared nowhere at all — so the first thing a dispatcher does with a flag,
+    // call the person on that truck, needed a second lookup on another screen. A stop's own
+    // row does not always carry the driver (an unassigned stop on an assigned load), so this
+    // is a floor: fillRouteDrivers below fills it in from the route where it is blank.
+    driverName: s ? (String(s.driverName || s.driverUserName || '').trim() || null) : null,
     ...extra,
   };
   // Dismissal key: standing conditions ignore the date (they persist until the FACTS in the

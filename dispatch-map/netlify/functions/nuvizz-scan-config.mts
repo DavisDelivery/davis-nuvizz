@@ -24,7 +24,7 @@ import { readBackgroundRefusals } from './lib/background-gate.mts';
 import { clampScanConfig, effectiveScanConfig, scanConfigDefaults, SCAN_CONFIG_BOUNDS, scanDecision } from './lib/scan-schedule.mts';
 import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip, scanPath } from './lib/scan-plan.mts';
 import { attributeSpend } from './lib/scan-attribution.mts';
-import { breakerMode, reportedDailyCeiling } from './lib/nuvizz-request.mts';
+import { breakerMode, reportedDailyCeiling, circuitStillBinding, CEILING_ADVISORY } from './lib/nuvizz-request.mts';
 
 const TENANT = process.env.NUVIZZ_TENANT || 'davis';
 // Matches the `runs` list below, which shows the last 40 for the same reason: enough to cover
@@ -106,6 +106,9 @@ async function explain(): Promise<any> {
   const unfinished = (runs || []).filter((r: any) => r?.startedAt && !r?.finishedAt
     && (ageMin(r.startedAt) ?? 0) > STUCK_AFTER_MIN);
 
+  const spendCeiling = reportedDailyCeiling((cfg as any)?.dailyCeiling);
+  const circuitBinding = circuitStillBinding(!!circuit?.open, stats.count, spendCeiling);
+
   return {
     ok: true,
     now: { iso: now.toISOString(), etDate: today, etHour: decision.etHour, etMin: decision.etMin, weekday: decision.weekday },
@@ -134,10 +137,12 @@ async function explain(): Promise<any> {
     kindStamps: Object.fromEntries(Object.entries(kindStamps as any).map(([k, v]) => [k, { at: v, ageMin: ageMin(v) }])),
     spend: {
       today: stats.count ?? 0,
-      ceiling: reportedDailyCeiling((cfg as any)?.dailyCeiling),
+      ceiling: spendCeiling,
       breakerMode: breakerMode(),
-      circuitOpen: !!circuit?.open,
-      circuitReason: circuit?.reason ?? null,
+      // Binding, not merely flagged - the same rule the breaker itself now applies, so the
+      // Diagnostics gauge cannot report a halt that raising the ceiling has already lifted.
+      circuitOpen: circuitBinding,
+      circuitReason: circuitBinding ? (circuit?.reason ?? null) : null,
       byHour: stats.byHour ?? {},
       byTrigger: stats.byTrigger ?? {},
       byApp: stats.byApp ?? {},
@@ -220,7 +225,7 @@ export default async (req: Request): Promise<Response> => {
       const stored = await readScanConfig();
       return new Response(JSON.stringify({
         ok: true, persistent: true, config: effectiveScanConfig(stored), stored,
-        defaults: scanConfigDefaults(), bounds: SCAN_CONFIG_BOUNDS,
+        defaults: scanConfigDefaults(), bounds: SCAN_CONFIG_BOUNDS, advisories: { dailyCeiling: CEILING_ADVISORY },
       }), { status: 200, headers: cors });
     }
 
@@ -240,7 +245,7 @@ export default async (req: Request): Promise<Response> => {
 
       return new Response(JSON.stringify({
         ok: true, persistent: true, config: effectiveScanConfig(toStore), stored: toStore,
-        defaults: scanConfigDefaults(), bounds: SCAN_CONFIG_BOUNDS,
+        defaults: scanConfigDefaults(), bounds: SCAN_CONFIG_BOUNDS, advisories: { dailyCeiling: CEILING_ADVISORY },
       }), { status: 200, headers: cors });
     }
 

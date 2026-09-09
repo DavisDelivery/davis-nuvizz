@@ -181,10 +181,14 @@ test('errors: the vendor body is logged, not returned as `detail`', async () => 
 
 // ── Request wrapper ───────────────────────────────────────────────────────────
 
-test('parseCeiling: unset / blank / 0 / typo / negative → 12000; a real number is trimmed and honoured', () => {
-  assert.equal(nvReq.DEFAULT_DAILY_CEILING, 12000);
+test('parseCeiling: unset / blank / 0 / typo / negative → the DEFAULT; a real number is trimmed and honoured', () => {
+  // The default moved 12,000 → 2,000 to match dispatch-map's, because the two apps spend
+  // against ONE counter and 12,000 matched nothing else in the system. It is only what you
+  // get when nobody has decided — the saved Diagnostics setting overrides it, and that is
+  // what the fleet actually binds at now (see test/shared-ceiling.test.mjs).
+  assert.equal(nvReq.DEFAULT_DAILY_CEILING, 2000);
   for (const bad of [undefined, null, '', '   ', '0', 'abc', '-5', 'NaN', 'Infinity', '0.4']) {
-    assert.equal(nvReq.parseCeiling(bad), 12000, JSON.stringify(bad));
+    assert.equal(nvReq.parseCeiling(bad), 2000, JSON.stringify(bad));
   }
   assert.equal(nvReq.parseCeiling(' 2000 '), 2000);
   assert.equal(nvReq.parseCeiling('12000.9'), 12000);

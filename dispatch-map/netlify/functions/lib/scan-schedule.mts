@@ -24,7 +24,7 @@
 // TOMORROW loads 20:00-24:00 · TOMORROW unplanned 10:00-24:00 (orders for tomorrow
 // arrive from ~10am the day before, so they must be descended through the day).
 
-import { MIN_SCAN_INTERVAL_MS, HARD_DAILY_CEILING, clampAmbientCeiling } from './nuvizz-request.mts';
+import { MIN_SCAN_INTERVAL_MS, CEILING_SANITY_MAX, clampAmbientCeiling } from './nuvizz-request.mts';
 import { clampScanRules, defaultScanRules } from './scan-plan.mts';
 
 // Live-editable scan configuration (Diagnostics UI → Firestore nuvizz_ops/scan_config).
@@ -70,12 +70,14 @@ export const SCAN_CONFIG_BOUNDS: Record<string, [number, number]> = {
   saturdayHealHour: [0, 23],
   deepSweepHours: [1, 168],
   deepSweepHour: [0, 23],
-  // Upper bound is the HARD cap (nuvizz-request HARD_DAILY_CEILING) — imported, not retyped,
-  // so the number the editor accepts and the number the breaker enforces cannot drift apart.
-  // The editor could once set 200,000: an editable box that lifts a spend cap 100x is not a
-  // cap. It reaches 3,000 now because THIS field is the switch — a deliberate save here is
-  // the only input in the system allowed above the 2,000 default.
-  dailyCeiling: [100, HARD_DAILY_CEILING],
+  // THIS FIELD IS THE SWITCH, and its bound is arithmetic rather than policy — imported, not
+  // retyped, so the number the editor accepts and the number the breaker enforces cannot
+  // drift apart. Chad: "Whatever number it's set to is where I want the calls to end." A
+  // bound of 3,000 here meant a typed 5,000 was silently stored as 3,000, which is the same
+  // class of lie as the field that took 3,000 and enforced 2,000. The floor is 1, not 100:
+  // "whatever number" includes a deliberately tiny one, and since v0.98.4 raising it again
+  // releases the breaker within a minute, so a low setting is reversible rather than a trap.
+  dailyCeiling: [1, CEILING_SANITY_MAX],
 };
 
 // The default schedule, computed from env (so the UI shows the SITE's real current

@@ -14,6 +14,11 @@
 
 [functions]
   node_bundler = "esbuild"
+  # The driver-area sheet lists a business day of history per day in its window — twenty
+  # Firestore document lists for a four-week sheet. Parallelised at six, but still well past
+  # the 10s default; 26 is the Pro ceiling and what the other read-heavy functions take.
+  [functions."driver-territory"]
+    timeout = 26
   [functions."nuvizz-pull-today-stops"]
     timeout = 26
   [functions."nuvizz-manual-scan"]

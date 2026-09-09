@@ -19,7 +19,7 @@ import type {
 } from './routing-types.mts';
 import { assembleRoute, sequence } from './routing-solver.mts';
 import {
-  computeLoad, capacityFits, equipmentOk, windowOk, emptyLoad, REASON,
+  computeLoad, capacityFits, capacityBreaches, equipmentOk, windowOk, emptyLoad, REASON,
 } from './routing-constraints.mts';
 import { DEFAULT_SERVICE_MIN } from './routing-types.mts';
 
@@ -83,10 +83,12 @@ function worstViolator(
 ): { stop: SolverStop; reasons: string[] } | null {
   // Capacity: if over, drop the largest-skid stop.
   const load = computeLoad(ordered);
-  const capReasons: string[] = [];
-  if (load.skids > truck.maxSkids) capReasons.push(REASON.overSkids);
-  if (load.weightLbs > truck.maxWeightLbs) capReasons.push(REASON.overWeight);
-  if (load.linearFeetIn > truck.deckLengthIn) capReasons.push(REASON.overDeck);
+  // THE SHARED RULE, not a second copy. This used to test all three dimensions raw — no
+  // CAPACITY_GATES, no positive-cap guard — so it spilled on DECK LENGTH, which the gates
+  // switch off because the per-stop estimate is inflated, and reported a reason the solver
+  // says can never happen. It also meant a truck with a missing or zero cap had every stop
+  // taken off it. See capacityBreaches in routing-constraints.
+  const capReasons = capacityBreaches(load, truck);
   if (capReasons.length) {
     const biggest = ordered.reduce((p, c) => (c.skids > p.skids ? c : p));
     return { stop: biggest, reasons: capReasons };

@@ -138,6 +138,10 @@ export interface SolverInput {
 export interface SolverOutput {
   routes: BuiltRoute[];
   unassigned: UnassignedStop[];
+  /** Trucks the dispatcher picked that ended the solve with NO stops, and why. A truck with no
+   *  route used to be dropped silently — three picked, two cards, nothing said. Optional so
+   *  every existing consumer and the repair loop's own output stay valid. */
+  idleTrucks?: Array<{ truckId: string; label: string; reason: string }>;
   meta: Record<string, unknown>;
 }
 

@@ -1,5 +1,9 @@
 node_modules/
 dist/
+# Any throwaway comparison build (dist-base, dist-old): build output is never
+# committed, and one that was swept in by `git add -A` tripped Netlify's secret
+# scanner and failed a deploy preview.
+dist-*/
 .netlify/
 .DS_Store
 *.log

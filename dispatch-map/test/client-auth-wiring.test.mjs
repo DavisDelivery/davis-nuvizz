@@ -132,6 +132,10 @@ test('THE WRITE HALVES OF THOSE SURFACES REPORT TOO — the reads were only half
   // exactly like a success until somebody opens the app on another device.
   //   bottom_panel_profiles save   — a SHARED grid layout saved to nobody
   //   bottom_panel_profiles delete — a profile that comes back on the next reload
+  //   bottom_panel_profiles select — v0.93.17: which profile is SELECTED is shared too, and
+  //                                  a refused write there is the original bug exactly, wearing
+  //                                  a different hat — the selection silently stays on this one
+  //                                  device and the iPad still opens on nothing
   //   truck_profiles seed          — see the test below, it was worse than silent
   //   dispatch_presence heartbeat  — this device invisible to the rest of the floor while
   //                                  the chip says the board is quiet
@@ -141,10 +145,11 @@ test('THE WRITE HALVES OF THOSE SURFACES REPORT TOO — the reads were only half
     "reportDenied('dispatch_presence:heartbeat', e, 'write')",
   ];
   for (const w of wanted) assert.ok(APP.includes(w), `App.jsx must report: ${w}`);
-  // TWO profile writes, not one — save and delete are separate call sites and fixing one is
-  // exactly how half of this class of bug survives a review (see the location-override pair).
-  assert.equal(APP.split("reportDenied('bottom_panel_profiles', e, 'write')").length - 1, 2,
-    'both the save AND the delete report');
+  // THREE profile writes now — save, delete, and the shared selection. Fixing one of a set
+  // is exactly how half of this class of bug survives a review (see the location-override
+  // pair), so the count is pinned: a new write to this collection has to report too.
+  assert.equal(APP.split("reportDenied('bottom_panel_profiles', e, 'write')").length - 1, 3,
+    'the save, the delete AND the shared selection all report');
   // And the comments that stood in for the reporting are gone, so a revert is visible.
   assert.ok(!/catch \{ \/\* optimistic row stands \*\/ \}/.test(APP), 'no silent profile save left');
   assert.ok(!/catch \{ \/\* optimistic removal stands \*\/ \}/.test(APP), 'no silent profile delete left');

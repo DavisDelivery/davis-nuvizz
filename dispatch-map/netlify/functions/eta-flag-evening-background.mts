@@ -55,7 +55,7 @@
 // Data diet: Firestore only — the stop index the scanner maintains, customer_notes,
 // the travel cache. ZERO NuVizz calls, ever, from this path.
 import { computeBoardFlags } from '../../src/lib/board-flags.js';
-import { isFirestoreEnabled, getDoc, setDoc, createDocIfAbsent, readStops, listFleetLoads, etDayString } from './lib/firestore.mts';
+import { isFirestoreEnabled, getDoc, setDoc, createDocIfAbsent, readStops, listFleetLoads, etDayString, readAlertRecipients } from './lib/firestore.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { weekdayKey } from './lib/miss-ledger.mts';
 import { readTravelCalibration, ensureLegs } from './lib/travel-store.mts';
@@ -64,6 +64,8 @@ import { mergeSweep, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-hi
 import { auditRows } from './lib/flag-rows.mts';
 import { smsEnabled, sendSms } from './lib/sms.mts';
 import { smsRecipients, eveningTargetDate, smsText, smsClaimPath, selectTextable } from './lib/flag-sms.mts';
+// Only to report WHERE the list came from — the list itself is resolved by smsRecipients.
+import { resolveChannel, channelSpec } from './lib/alert-recipients.mts';
 import { readRouteClassesFor } from './lib/route-classes.mts';
 
 const TENANT = 'davis';
@@ -157,12 +159,44 @@ export default async (req: Request): Promise<Response> => {
     const flags = computeBoardFlags({ stops, notes, servedDate: date, dayKey: weekdayKey(date), opts: engineOpts(legInfo.legs) });
 
     const candidates = selectTextable(flags.rows);
-    const recipients = smsRecipients(process.env, etMin);
+    // WHO IS ON THE LIST TONIGHT, read fresh every sweep. Chad edits this from Diagnostics
+    // (nuvizz_ops/alert_recipients); a number removed at 8:15p is off the 9:00p sweep with no
+    // redeploy. If that read fails we fall back to the environment rather than to silence —
+    // losing a "this truck is about to miss" is the failure this whole sweep exists to
+    // prevent, and texting somebody who asked to be removed is the cheaper mistake. The
+    // status doc records which of the two happened, so a fallback is never invisible.
+    let storedRecipients: any = null;
+    let recipientStore: string;
+    try {
+      storedRecipients = await readAlertRecipients();
+      // THE WORD HAS TO BE THE TRUE ONE. A literal 'saved' here would have read 'saved' on
+      // every site until somebody first opened the panel — collapsing three states into two
+      // and picking the wrong one — and it would have made "nobody is on the list because I
+      // cleared it" and "nobody is on the list because FLAG_SMS_TO is empty" the same line.
+      // Those need different answers from whoever reads this at 6am.
+      recipientStore = resolveChannel(channelSpec('flagSmsTo')!, storedRecipients).source;
+    } catch (e: any) {
+      recipientStore = `unavailable — fell back to env (${e?.message || 'read failed'})`;
+    }
+    const recipients = smsRecipients(process.env, etMin, storedRecipients);
+    // SOMEBODY TURNED THESE TEXTS OFF, ON PURPOSE, AND THAT IS WORTH SAYING OUT LOUD. It is a
+    // legitimate thing to do from the panel — but it is now one request rather than a console
+    // edit and a redeploy, and a night with nothing sent must not read like a quiet night.
+    // Named here so the evening status doc, and anyone reading it, can tell the difference.
+    // BOTH LISTS, because `recipients` is their union. Reading the source of flagSmsTo alone
+    // meant that clearing the NIGHT list on a site whose standing list is empty reported an
+    // unconfigured site rather than a deliberate silencing — the two answers a person needs
+    // kept apart everywhere else in this change.
+    const savedSilent = (k: string) => {
+      try { return resolveChannel(channelSpec(k)!, storedRecipients).source === 'saved'; }
+      catch { return false; }
+    };
+    const textsSilenced = !recipients.length && (savedSilent('flagSmsTo') || savedSilent('flagSmsToNight'));
 
     const status: any = {
       tenant: TENANT, date, offsetDays, etMin, at: new Date().toISOString(),
       boardStops: stops.length, redCount: flags.redCount, amberCount: flags.amberCount,
-      candidates: candidates.length, recipients: recipients.length,
+      candidates: candidates.length, recipients: recipients.length, recipientStore, textsSilenced,
       departuresKnown: departByRoute ? Object.keys(departByRoute).length : 0,
       // WHAT THE TRAILER RULE COULD AND COULD NOT SEE. A pre-day board with no truck classes
       // yet is the ordinary 8pm state, and a night that texted nothing because nobody had
