@@ -1,0 +1,96 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#faf9f7;color:#1c1917;font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:14px;-webkit-text-size-adjust:100%}
+a{color:#1e5b92}a:hover{color:#16456e}
+.pad{padding:40px 44px}
+h1{font-family:'Instrument Serif',Georgia,serif;font-size:40px;font-weight:400;line-height:1.08}
+h2{font-family:'Instrument Serif',Georgia,serif;font-size:25px;font-weight:400;margin-bottom:6px}
+.kicker{font-size:10px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:#1e5b92;margin-bottom:12px}
+.note{font-size:12.5px;line-height:1.55;color:#78716c;max-width:66ch}
+.rule{height:1px;background:#e7e5e4;margin:24px 0}
+.card{background:#fff;border:1px solid #e7e5e4;border-radius:9px;padding:16px 18px}
+.card h3{font-size:11.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:#57534e}
+.sz{font:400 9px ui-monospace,monospace;color:#94a3b8;margin-top:4px;text-align:center}
+/* ── the real app, lifted from dispatch-map/src/App.jsx ── */
+.card-app{background:#fff;border:1px solid #cbd5e1;border-radius:10px;overflow:hidden;font-family:system-ui,-apple-system,sans-serif}
+.hd{background:#1e5b92;color:#fff;padding:10px 16px}
+.hd .r1{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;opacity:.9}
+.hd .biz{font-weight:700;font-size:16px;margin-top:2px}
+.copy{background:rgba(255,255,255,.22);border-radius:4px;font-size:10px;padding:1px 6px}
+.stepper{padding:12px 16px;border-bottom:1px solid #e2e8f0;background:#fff}
+.track{height:2px;background:#e2e8f0;position:relative;margin:0 6px 6px}
+.track i{position:absolute;top:-3px;width:8px;height:8px;border-radius:50%;background:#cbd5e1}
+.track i.on{background:#16a34a}
+.steps{display:flex;justify-content:space-between;font-size:10px;color:#64748b}
+.banner{margin:10px 16px;padding:7px 10px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;font-size:11.5px;color:#166534}
+.sec{padding:10px 16px}
+.cap{font-size:10px;font-weight:600;text-transform:uppercase;color:#64748b;letter-spacing:.02em}
+.addr{font-size:13px;color:#1e293b;line-height:1.4}
+.btns{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;padding:0 16px 10px}
+.btn{border:1px solid #e2e8f0;border-radius:8px;padding:7px 2px;font-size:10px;color:#334155;display:flex;flex-direction:column;align-items:center;gap:3px}
+.sum{font-size:15px;font-weight:500;color:#1e293b}
+.li{font-size:13px;line-height:1.375;margin-bottom:5px}
+.lr{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.nm{min-width:0;flex:1;overflow-wrap:break-word;color:#1e293b}
+.qt{flex-shrink:0;color:#64748b;white-space:nowrap;text-align:right;font-size:12px}
+.sku{font-size:10px;font-family:ui-monospace,Menlo,monospace;color:#94a3b8}
+.notebox{border:1px solid #e2e8f0;border-radius:6px;padding:7px 9px;margin-bottom:6px}
+.notebox b{font-size:12px;color:#1e293b;font-weight:600}
+.notebox span{display:block;font-size:9.5px;color:#94a3b8;margin-top:3px}
+</style>
+</helmet>
+
+<div class="pad">
+  <div class="kicker">Desktop · the right sidebar</div>
+  <h2>On the desktop board</h2>
+  <p class="note" style="margin-bottom:20px">The sidebar is <span class="mono">w-[380px]</span>, which leaves 347px of row after its border and padding — between the two phone widths, so the same treatment covers all three.</p>
+  <div style="display:flex;gap:30px;align-items:flex-start;flex-wrap:wrap">
+    <div><div class="sz" style="text-align:left;margin-bottom:7px">347px rows</div>
+<div class="card-app" style="width:379px">
+  <div class="hd"><div class="r1"><span>PRO 007173855</span><span class="copy">copy</span><span style="margin-left:auto;font-weight:500">MANDI · stop 7</span></div><div class="biz">SHARPS MWS</div></div>
+  <div class="stepper"><div class="track"><i class="on" style="left:0"></i><i style="left:50%"></i><i style="right:0"></i></div><div class="steps"><span>Scheduled</span><span>Out for delivery</span><span>Delivered</span></div></div>
+  <div class="banner">● Tractor has delivered here — last Aug 18, 2026</div>
+  <div class="sec"><div class="cap">Address</div><div class="addr">315 BELL PARK DR<br>WOODSTOCK, GA 30188</div></div>
+  <div class="sec" style="padding-top:0"><div class="cap">Customer #</div><div class="addr" style="font-size:12px">MARIA GONZALEZ · <span style="color:#1d4ed8">(800) 772-5657</span></div></div>
+  <div class="btns">
+    <div class="btn">Text</div><div class="btn">Call</div><div class="btn">Navigate</div><div class="btn">Ticket</div>
+  </div>
+  <div class="sec" style="border-top:1px solid #f1f5f9">
+    <div class="cap">Items (7)</div>
+    <div class="sum">4 pallets · 4 pieces · 1765 Lbs</div>
+    <div style="border-top:1px solid #f1f5f9;margin-top:7px;padding-top:7px"><div class="li"><div class="lr"><span class="nm">VINYL BAGS</span><span class="qt">1 CTN · 39 Lbs</span></div><div class="sku">020475-11 , SEQ# 4</div></div><div class="li"><div class="lr"><span class="nm">PLASTIC WATER COOLERS</span><span class="qt">1 CTN · 31 Lbs</span></div><div class="sku">053125-05 , SEQ# 5</div></div><div class="li"><div class="lr"><span class="nm">KNIVES</span><span class="qt">1 CTN · 2 Lbs</span></div><div class="sku">101025-08 , SEQ# 7</div></div><div class="li"><div class="lr"><span class="nm">PALLET STRETCH WRAP 15PCF</span><span class="qt">1 CTN · 31 Lbs</span></div><div class="sku">156830-08 , SEQ# 6</div></div><div class="li"><div class="lr"><span class="nm">MISC</span><span class="qt">3 CTN · 55 Lbs</span></div><div class="sku">187645-05 , SEQ# 1</div></div><div class="li"><div class="lr"><span class="nm">HYDRAULIC STACKER <svg width="13" height="13" viewBox="0 0 14 14" role="img" aria-label="Hydraulic stacker"><title>Hydraulic stacker</title><circle cx="7" cy="7" r="7" fill="#facc15" stroke="#fff" stroke-width="1.5"/><text x="7" y="9.85" font-family="system-ui,-apple-system,sans-serif" font-size="8.5" font-weight="700" fill="#1f2937" text-anchor="middle" textLength="6.2" lengthAdjust="spacingAndGlyphs">H</text></svg></span><span class="qt">1 UNT · 1259 Lbs</span></div><div class="sku">190235-07 , SEQ# 3</div></div><div class="li"><div class="lr"><span class="nm">PLATFORM TRUCK</span><span class="qt">2 UNT · 348 Lbs</span></div><div class="sku">192400-00 , SEQ# 2</div></div></div>
+  </div>
+  <div class="sec" style="border-top:1px solid #f1f5f9">
+    <div class="cap" style="margin-bottom:5px">Notes</div>
+    <div class="notebox"><b>NO STRAIGHT TRUCK OR LIFT</b><span>Order instructions — INTG ULINE · Sep 8, 10:35 PM</span></div>
+    <div class="notebox"><b>GATE! MUST SHIP UPRIGHT.</b><span>Order instructions — INTG ULINE · Sep 8, 10:35 PM</span></div>
+  </div>
+</div></div>
+    <div style="max-width:420px">
+      <div class="card"><h3>Expanded vs collapsed</h3><p class="note">The Items list starts collapsed on every card, so the mark is visible once you open the list — which is the moment you are reading the freight anyway.</p><div style="margin-top:12px;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;background:#fff;font-family:system-ui">
+        <div class="cap">Items (7)</div><div class="sum">4 pallets · 4 pieces · 1765 Lbs</div>
+        <div style="font-size:11px;color:#94a3b8;margin-top:4px">▾ collapsed — nothing shown</div>
+      </div></div>
+      <div class="card" style="margin-top:14px"><h3>Next to the amber badge</h3>
+        <div style="display:flex;align-items:center;gap:16px;margin:10px 0">
+          <div style="text-align:center"><svg width="22" height="22" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#f59e0b" stroke="white" stroke-width="1.5"/><rect x="1.4" y="4.6" width="7" height="5.4" rx="0.5" fill="white"/><path d="M8.4 6.2h2.5l2 2v1.8H8.4z" fill="white"/><circle cx="4" cy="10.2" r="1.1" fill="#f59e0b"/><circle cx="9.7" cy="10.2" r="1.1" fill="#f59e0b"/><line x1="2.5" y1="2.5" x2="11.5" y2="11.5" stroke="white" stroke-width="2" stroke-linecap="round"/></svg><div class="sz">uline amber</div></div>
+          <div style="text-align:center"><svg width="22" height="22" viewBox="0 0 14 14" role="img" aria-label="Hydraulic stacker"><title>Hydraulic stacker</title><circle cx="7" cy="7" r="7" fill="#facc15" stroke="#fff" stroke-width="1.5"/><text x="7" y="9.85" font-family="system-ui,-apple-system,sans-serif" font-size="8.5" font-weight="700" fill="#1f2937" text-anchor="middle" textLength="6.2" lengthAdjust="spacingAndGlyphs">H</text></svg><div class="sz">yellow H</div></div>
+        </div>
+        <p class="note">You said the amber straight-truck badge is rarely used, so this is noted and not a concern. They read apart anyway — the dark letter is the separator.</p></div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

@@ -218,6 +218,8 @@ export interface AlertCandidate {
   stopNbr: string; customer: string; route: string;
   closeMin: number; etaMin: number; lateBy: number; tier: string;
   anchored?: boolean; detail?: string; rule?: string;
+  /** Who is on the truck, from the flag row. '' when the load names nobody — see buildAlert. */
+  driver?: string;
 }
 
 // A minutes value, or null — and STRICTLY, because the loose version shipped a real defect.
@@ -450,6 +452,12 @@ export function selectAlertable(rows: any[], nowMin: number | null, amberGateMin
       route: String(r.routeName || ''), closeMin, etaMin: Number(r.etaMin),
       lateBy: Number(r.lateBy), tier: r.tier, anchored: !!r.anchored, detail: String(r.detail || ''),
       rule: String(r.rule),
+      // WHO IS ON THE TRUCK. The row has carried this since the receiving-hours card was
+      // asked for it ("Need to show route and driver name") and board-flags even fills it in
+      // from the ROUTE when a stop's own record is blank — an unassigned stop on an assigned
+      // load. It simply never reached the inbox, so the first thing a rep does with one of
+      // these, phone the person driving, needed a second lookup on another screen.
+      driver: String(r.driverName || '').trim(),
     });
   }
   // Worst first, so a cap keeps the most urgent rather than an arbitrary slice. A row with
@@ -490,11 +498,24 @@ export function buildAlert(c: AlertCandidate, date: string): { subject: string; 
        'still make it. If it hardens past the alert floor you will get one more message.']
     : ['This is sent once, the first time the stop looks confidently late, and never after the',
        'window has already closed.'];
+  // WHAT TO PRINT WHEN THE LOAD NAMES NOBODY, and it is not "unassigned".
+  //
+  // The Route line says "unassigned" when there is no route, and that is a fact about the
+  // board. A blank driver is NOT the same claim: these alerts mostly fire on loads that are
+  // already rolling — `anchored` means a real arrival was recorded on this route — so a
+  // missing name there is a gap in what the feed gave us, not a truck with nobody in it.
+  // Printing "unassigned" would tell a rep something we do not know, on the line they would
+  // act on. So it describes our data instead, and stays on the message either way: "no name
+  // on this load" is itself worth knowing at 2pm, because it means the phone call needs a
+  // lookup first.
+  const driver = String(c.driver || '').trim();
+  const driverText = driver || 'not named on this load';
   const text = [
     opener,
     '',
     `PRO / stop:     ${c.stopNbr}`,
     `Route:          ${c.route || 'unassigned'}`,
+    `Driver:         ${driverText}`,
     `Receiving close ${close}`,
     `Estimated arrival ${eta}  (${c.lateBy} minutes late)`,
     `Board date:     ${date}`,
@@ -509,6 +530,7 @@ export function buildAlert(c: AlertCandidate, date: string): { subject: string; 
 <table style="border-collapse:collapse;font-size:14px">
 <tr><td style="padding:2px 12px 2px 0;color:#475569">PRO / stop</td><td><strong>${esc(c.stopNbr)}</strong></td></tr>
 <tr><td style="padding:2px 12px 2px 0;color:#475569">Route</td><td>${esc(c.route || 'unassigned')}</td></tr>
+<tr><td style="padding:2px 12px 2px 0;color:#475569">Driver</td><td${driver ? '' : ' style="color:#94a3b8"'}>${esc(driverText)}</td></tr>
 <tr><td style="padding:2px 12px 2px 0;color:#475569">Receiving close</td><td>${esc(close)}</td></tr>
 <tr><td style="padding:2px 12px 2px 0;color:#475569">Estimated arrival</td><td><strong style="color:${early ? '#b45309' : '#b91c1c'}">${esc(eta)}</strong> (${c.lateBy} min late)</td></tr>
 <tr><td style="padding:2px 12px 2px 0;color:#475569">Board date</td><td>${esc(date)}</td></tr>

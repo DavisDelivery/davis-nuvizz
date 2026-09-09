@@ -596,11 +596,25 @@ function VerdictFlash({ verdict, onClear }) {
   // NOT COUNTED. The gun flashes green on every successful decode — that is the
   // gun reporting it read a barcode, not the app reporting it booked a piece.
   // Without this the two were indistinguishable and a refused scan looked like a
-  // good one. Deliberately not sticky: the amber card underneath carries the
-  // "Same piece / Another piece" decision and must stay reachable.
+  // good one.
+  //
+  // THIS PANEL TAKES THE TAP, AND THAT IS THE WHOLE POINT.
+  //
+  // It used to be pointer-events-none so the "Same piece / Another piece" card
+  // underneath stayed reachable. That is how a 2-skid stop reached 4/2 on the
+  // dock. This panel is full-screen and opaque; the RED flash beside it is a
+  // full-screen button captioned TAP ANYWHERE TO CLEAR, so the reflex this app
+  // has trained is to tap. That tap fell straight through this panel and landed
+  // on "Another piece" — the deliberate over-count bypass — which booked an
+  // extra piece with no sound, no flash and no announcement. The loader was
+  // authorising freight they could not see while dismissing a warning.
+  //
+  // Now the tap clears the panel and does nothing else. The decision card is
+  // still underneath, and it needs its own deliberate tap once the loader can
+  // actually read it.
   if (kind === 'blocked') {
     return (
-      <div className={`${base} bg-amber-400 text-amber-950 pointer-events-none`}>
+      <button type="button" onClick={onClear} className={`${base} w-full bg-amber-400 text-amber-950`}>
         <AlertTriangle className="w-24 h-24 mb-4" aria-hidden="true" />
         <div className="text-4xl font-black leading-tight">NOT COUNTED</div>
         {evaluated?.stop?.businessName ? (
@@ -608,8 +622,9 @@ function VerdictFlash({ verdict, onClear }) {
         ) : (
           <div className="mt-2 text-xl font-semibold">PRO {evaluated?.pro} already logged</div>
         )}
-        <div className="mt-4 text-lg">If this is another piece, tap “Another piece”.</div>
-      </div>
+        <div className="mt-4 text-lg">Tap to clear, then choose on the card underneath.</div>
+        <div className="mt-8 text-sm uppercase tracking-widest opacity-80">Tap anywhere to clear</div>
+      </button>
     );
   }
 
@@ -911,19 +926,41 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   const proSeenAt = useRef(new Map());     // pro7 -> last sighting, any frame
   const proAcquiredAt = useRef(new Map()); // pro7 -> when the current sighting run began
   const proAnsweredAt = useRef(new Map()); // pro7 -> the acquisition already ruled on
+  // The last time the DECODER produced anything at all — the honest "is a label
+  // under the lens" signal. See noteRaw.
+  const lastDecodeAt = useRef(0);
 
-  /** Note every raw decode, and start a new acquisition after a real absence. */
+  /**
+   * Note every raw decode, and start a new acquisition only after a real absence.
+   *
+   * PRESENCE IS PROVEN BY ANY BARCODE, NOT BY THE PRO.
+   *
+   * This counted PRO decodes only, and on the engine the dock actually runs that
+   * is not a presence signal at all: Quagga is multiple:false, so it locks onto
+   * ONE barcode of a label and can sit on the piece id for a second or more. The
+   * PRO then goes unread while the skid has not moved a millimetre, the gap
+   * crosses PRO_REACQUIRE_MS, and the app records a NEW presentation of a label
+   * that never left. Since v0.45.0 a repeat like that books without asking, so
+   * it books a phantom: a 2-skid stop reads 2/2 COMPLETE off ONE skid, with the
+   * second still on the dock and the worklist saying the stop is done. Freight
+   * left behind, reported as loaded — worse than the over-count that started
+   * this. Reading the piece id of a label is proof the label is still there.
+   */
   const noteRaw = useCallback((values) => {
     const now = Date.now();
+    const quietBefore = now - (lastDecodeAt.current || 0) > PRO_REACQUIRE_MS;
+    let sawAny = false;
     for (const v of values || []) {
       const cls = classifyBarcode(v);
+      if (cls.kind === 'pro' || cls.kind === 'og') sawAny = true;
       if (cls.kind !== 'pro') continue;
       const pro7 = normalizePro(cls.value);
       if (!pro7) continue;
       const last = proSeenAt.current.get(pro7) || 0;
-      if (now - last > PRO_REACQUIRE_MS) proAcquiredAt.current.set(pro7, now);
+      if (now - last > PRO_REACQUIRE_MS && quietBefore) proAcquiredAt.current.set(pro7, now);
       proSeenAt.current.set(pro7, now);
     }
+    if (sawAny) lastDecodeAt.current = now;
   }, []);
 
   /** Has this PRO been re-acquired since the last time we ruled on it? */
@@ -1066,11 +1103,23 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         .map((r) => ({ stopNbr: r.stopNbr, pieces: r.pieces, confirmedAt: r.confirmedAt, reason: r.reason })),
     );
     setPending(rows.filter((r) => !r.syncedAt).length);
-    // Anything the queue now reports is no longer "pending a render" — drop it
-    // from the synchronous set so that set stays small and can never disagree
-    // with the durable copy.
-    const landed = new Set(rows.map((r) => String(r.og).toUpperCase()));
-    justBooked.current = justBooked.current.filter((b) => !landed.has(String(b.og).toUpperCase()));
+    // DO NOT PRUNE justBooked HERE.
+    //
+    // This used to drop every piece the QUEUE reported, on the reasoning that a
+    // row in IndexedDB is "no longer pending a render". It is exactly backwards:
+    // the queue acknowledging a write says nothing about whether React has
+    // rendered it, and IndexedDB is the faster of the two. setScans above has
+    // only been SCHEDULED. Pruning on this line retired each piece from the
+    // synchronous backstop BEFORE the state that replaces it existed, so for one
+    // render gap `liveScans` reported an EMPTY TRUCK — and every guard reads it:
+    // the over-count cap, roomLeft, the repeat count, the NOOG mint index and the
+    // late-piece-id de-dup. A frame landing in that gap walked past all of them.
+    // Reproduced on the real bundle under CPU throttle: two rows already durable
+    // in IndexedDB, and the guard logging scanned:0, roomLeft:true.
+    //
+    // The pruning now happens where the evidence actually is — the effect below,
+    // which runs after React has COMMITTED the scans it is pruning against.
+    // justBooked stays small because that commit always follows.
     // manifest.date is a real dependency now that the read is date-scoped: without
     // it a date change would keep showing the previous day's rows.
   }, [activeLoad, manifest?.date]);
@@ -1078,6 +1127,16 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   useEffect(() => {
     refreshLocal();
   }, [refreshLocal]);
+
+  // Retire the synchronous backstop only once React has COMMITTED the scans that
+  // replace it. This runs after the render that made `scans` visible to record(),
+  // so a piece is never absent from both at once — which is the window that let a
+  // stop book past its manifest count.
+  useEffect(() => {
+    if (!justBooked.current.length) return;
+    const committed = new Set(scans.map((s) => String(s.og).toUpperCase()));
+    justBooked.current = justBooked.current.filter((b) => !committed.has(String(b.og).toUpperCase()));
+  }, [scans]);
 
   // Record a piece: local first, ALWAYS, then try the network. Returns the
   // evaluation so a caller that owns its own feedback (the wedge path) can act
@@ -1259,7 +1318,28 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       // seconds. The acquisition rule covers the repeat properly; the gate goes
       // back to being about one pull reported twice.
       if (isScanner) answerAcquisition(normalizePro(evaluated.pro));
-      await store.enqueueScan(activeLoad, manifest.date, scan);
+      // THE CAP IS ENFORCED AT THE WRITE, not only by the arithmetic above.
+      // That check reads a render's snapshot of the truck and every way the
+      // snapshot can go stale was a hole in the invariant. This one reads the
+      // queue. An override carries `force`, because a loader holding a third
+      // skid for a two-skid order has to be able to say the paperwork is wrong.
+      const written = await store.enqueueScan(activeLoad, manifest.date, scan, {
+        stopNbr: scan.stopNbr,
+        expected: owner ? Number(owner.expectedPieces || 0) : 0,
+        force: isOverride,
+      });
+      if (written === store.ENQUEUE_OVER_CAP) {
+        // Never silently. The piece is NOT on the truck, and the loader is
+        // holding it — the whole reason this app exists is that a refusal the
+        // loader cannot hear reads exactly like a success.
+        justBooked.current = justBooked.current.filter((b) => b.og !== scan.og);
+        return refuse({
+          pro: normalizePro(scan.pro),
+          count: owner ? Number(owner.expectedPieces || 0) : 0,
+          full: owner ? owner.businessName : '',
+          expected: owner ? Number(owner.expectedPieces || 0) : 0,
+        });
+      }
       await stampSequence();
       await refreshLocal();
       flushQueue();
@@ -1807,14 +1887,23 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
               <button
                 type="button"
                 className="flex-1 text-sm rounded-lg bg-[#1e5b92] text-white px-3 py-2 font-medium"
-                onClick={() => {
+                onClick={async () => {
                   const p = dupPending;
                   setDupPending(null);
                   gate.current.clear();
-                  record({ pro: p.pro, og: null }, 'override');
+                  // ANNOUNCED, like every other booking. This was fire-and-forget:
+                  // the piece went on the truck with no flash, no sound and no
+                  // verdict, so a tap that landed here by accident — which is
+                  // exactly what was happening through the old touch-transparent
+                  // warning panel — left nothing the loader could notice. An
+                  // override is the loudest thing this app does now.
+                  announce(await record({ pro: p.pro, og: null }, 'override'));
                 }}
               >
-                Another piece
+                {/* Say what the button DOES. On a stop already at its count this
+                    puts the load over the manifest, and "Another piece" reads
+                    like ordinary work — which is how it got tapped by reflex. */}
+                {dupPending.full ? 'Add OVER the count' : 'Another piece'}
               </button>
             </div>
           </div>

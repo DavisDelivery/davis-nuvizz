@@ -1,0 +1,40 @@
+{
+  "artboards": [
+    {
+      "file": "Main.dc.html",
+      "title": "1 · The mark",
+      "x": 0,
+      "y": 0,
+      "w": 1040,
+      "h": 680
+    },
+    {
+      "file": "Phone.dc.html",
+      "title": "2 · Mobile",
+      "x": 0,
+      "y": 780,
+      "w": 1420,
+      "h": 1030
+    },
+    {
+      "file": "Desktop.dc.html",
+      "title": "3 · Desktop",
+      "x": 1540,
+      "y": 780,
+      "w": 1000,
+      "h": 1030
+    }
+  ],
+  "annotations": [
+    {
+      "id": "decided",
+      "x": 1140,
+      "y": 0,
+      "w": 420,
+      "text": "Decided: bright yellow #facc15 with a dark H, shown when the item text contains \"hydraulic stacker\".\n\nNothing derived, no thresholds, no changes to the ticket or the map."
+    }
+  ],
+  "launch": {
+    "view": "canvas"
+  }
+}
