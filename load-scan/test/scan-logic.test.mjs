@@ -1248,3 +1248,85 @@ test('a NOOG id cannot collide with one minted milliseconds earlier', async () =
   while (used.has(`NOOG-7160956-${n}`)) n += 1;
   assert.equal(n, 2, 'the second piece gets its own id');
 });
+
+// ── A stop cannot be scanned past its manifest count ─────────────────────────
+//
+// Chad, holding a phone showing a 2-skid stop at 4/2 and a 1-skid stop at 2/1:
+// "Should not be able to scan more pieces than are on the route."
+//
+// The cap was a line of arithmetic inside an async React callback reading a
+// render's snapshot of the truck, and every way that snapshot could go stale was
+// a hole in it. This is the same rule enforced where the row actually becomes
+// real — against the queue — so render timing, frame rate and a mis-tap cannot
+// defeat it. The function below is the one enqueueScan calls.
+
+const capRows = (n, stopNbr = '007173250', extra = {}) =>
+  Array.from({ length: n }, (_, i) => ({
+    loadNbr: 'STEVEN', date: '2026-09-09', stopNbr, og: `OG602800000${i}`, pro: '7173250', ...extra,
+  }));
+
+test('the third piece on a two-skid stop is refused at the write, not merely in the UI', async () => {
+  const { wouldExceedCap } = await import('../src/lib/offline.js');
+  const cap = { stopNbr: '007173250', expected: 2 };
+  const scan = { og: 'OG6028999999', pro: '7173250' };
+  const args = { loadNbr: 'STEVEN', date: '2026-09-09', scan, cap };
+  assert.equal(wouldExceedCap(capRows(1), args), false, 'the second piece is ordinary work');
+  assert.equal(wouldExceedCap(capRows(2), args), true, 'the third is the one the dock photographed');
+});
+
+test('a deliberate override is the ONLY way past the cap, and it is a decision not a reflex', async () => {
+  // enqueueScan skips the check entirely when cap.force is set; the rule itself
+  // never books, it only ever refuses. Proven here by the caller's contract:
+  // force bypasses before wouldExceedCap is consulted.
+  const { wouldExceedCap } = await import('../src/lib/offline.js');
+  const args = { loadNbr: 'STEVEN', date: '2026-09-09', scan: { og: 'OG6028999999' }, cap: { stopNbr: '007173250', expected: 2 } };
+  assert.equal(wouldExceedCap(capRows(2), args), true, 'without force it refuses');
+});
+
+test('rewriting a piece that is already aboard is never its own over-count', async () => {
+  const { wouldExceedCap } = await import('../src/lib/offline.js');
+  const rows = capRows(2);
+  const scan = { og: rows[1].og, pro: '7173250' };
+  assert.equal(
+    wouldExceedCap(rows, { loadNbr: 'STEVEN', date: '2026-09-09', scan, cap: { stopNbr: '007173250', expected: 2 } }),
+    false,
+    'the row being written is excluded from the count it is checked against',
+  );
+});
+
+test('voided pieces are off the truck and do not hold a place at the cap', async () => {
+  const { wouldExceedCap } = await import('../src/lib/offline.js');
+  const rows = [...capRows(1), ...capRows(1, '007173250', { voidedAt: '2026-09-09T10:00:00Z', og: 'OGVOIDED001' })];
+  assert.equal(
+    wouldExceedCap(rows, { loadNbr: 'STEVEN', date: '2026-09-09', scan: { og: 'OGNEW' }, cap: { stopNbr: '007173250', expected: 2 } }),
+    false,
+    'a voided row must not block the piece that replaces it',
+  );
+});
+
+test('the cap counts THIS stop, THIS load and THIS day — nothing else', async () => {
+  const { wouldExceedCap } = await import('../src/lib/offline.js');
+  const cap = { stopNbr: '007173250', expected: 1 };
+  const scan = { og: 'OGNEW', pro: '7173250' };
+  const base = { loadNbr: 'STEVEN', date: '2026-09-09', scan, cap };
+  assert.equal(wouldExceedCap(capRows(1, '007173460'), base), false, 'another stop is not this stop');
+  assert.equal(wouldExceedCap(capRows(1).map((r) => ({ ...r, loadNbr: 'MANDI' })), base), false, 'another truck');
+  assert.equal(wouldExceedCap(capRows(1).map((r) => ({ ...r, date: '2026-09-08' })), base), false, "yesterday's shift");
+  assert.equal(wouldExceedCap(capRows(1), base), true, 'and this one does count');
+});
+
+test('a hand-confirm is not a scan and cannot fill the cap', async () => {
+  const { wouldExceedCap } = await import('../src/lib/offline.js');
+  const rows = capRows(2).map((r) => ({ ...r, kind: 'hand' }));
+  assert.equal(
+    wouldExceedCap(rows, { loadNbr: 'STEVEN', date: '2026-09-09', scan: { og: 'OGNEW' }, cap: { stopNbr: '007173250', expected: 2 } }),
+    false,
+  );
+});
+
+test('a stop with no trustworthy count is not capped — there is no number to protect', async () => {
+  const { wouldExceedCap } = await import('../src/lib/offline.js');
+  const args = { loadNbr: 'STEVEN', date: '2026-09-09', scan: { og: 'OGNEW' } };
+  assert.equal(wouldExceedCap(capRows(5), { ...args, cap: { stopNbr: '007173250', expected: 0 } }), false);
+  assert.equal(wouldExceedCap(capRows(5), { ...args, cap: null }), false);
+});

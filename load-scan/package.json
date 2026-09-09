@@ -1,6 +1,6 @@
 {
   "name": "load-scan",
-  "version": "0.45.0",
+  "version": "0.46.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,8 @@
     "test": "node --test \"test/**/*.test.mjs\"",
     "lint": "echo 'no lint configured'",
     "smoke": "node scripts/smoke-app.mjs dist",
-    "e2e:camera": "node scripts/camera-pairing-check.mjs"
+    "e2e:camera": "node scripts/camera-pairing-check.mjs",
+    "e2e:quagga": "node scripts/quagga-cap-check.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.400.0",
