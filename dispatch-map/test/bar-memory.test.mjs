@@ -1,0 +1,300 @@
+// test/bar-memory.test.mjs — the bottom grid's bar has to come back the way you left it.
+//
+// Chad, Sep 7: "My profile is not saving settings like if i have unplanned checked or if i
+// have my fliters set to past 7 days." These pin the RULE, not the plumbing: what the bar
+// opens as, given what the device remembered and which profile is selected.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  restoreBar, normalizeBar, sameBar, barRestoreCostsCall,
+  BAR_DEFAULTS, BAR_STATUS_KEYS, BAR_WINDOWS, BAR_CONTROL_MIN_WIDTH,
+  reachableBar, settingsForSave,
+} from '../src/lib/bar-memory.js';
+
+const CHAD = { name: 'Chad', s: { status: ['unplanned'], nvWindow: '-7d' }, updatedAt: 1000 };
+/** A bar this device wrote while "Chad" was the selected profile, at its current save time. */
+const underChad = (extra) => ({ profile: 'Chad', profileAt: 1000, ...extra });
+
+test('a reload with a profile selected comes back with Un-Planned ticked and Last 7 days set', () => {
+  const { settings, from } = restoreBar({ memory: null, activeName: 'Chad', profiles: [CHAD] });
+  assert.equal(from, 'profile');
+  assert.deepEqual(settings.status, ['unplanned'], 'the status filter is the whole point of the profile');
+  assert.equal(settings.nvWindow, '-7d');
+});
+
+test('an UNSAVED tweak survives too — the live bar beats the profile it came from', () => {
+  // Ticking Planned on the way to building a route and hopping Map → Routing is the same
+  // complaint in a smaller box: the working set must not reset under you.
+  const memory = underChad({ status: ['unplanned', 'planned'], nvWindow: '-7d', driverSel: 'STEVEN' });
+  const { settings, from } = restoreBar({ memory, activeName: 'Chad', profiles: [CHAD] });
+  assert.equal(from, 'memory');
+  assert.deepEqual(settings.status, ['unplanned', 'planned']);
+  assert.equal(settings.driverSel, 'STEVEN');
+});
+
+test('no memory and no profile opens the plain board — nothing filtered, nothing pulled', () => {
+  const { settings, from } = restoreBar({});
+  assert.equal(from, 'defaults');
+  assert.deepEqual(settings, normalizeBar(BAR_DEFAULTS));
+  assert.equal(settings.nvWindow, '', 'a first-ever load must not fire a date-window pull');
+});
+
+test('a selected profile that has not arrived from Firestore yet reports PENDING, not silence', () => {
+  // `pending` does two jobs: apply the profile when the snapshot lands, and until then do not
+  // write this default bar down as the device's memory — a written default would make the
+  // next load read 'memory', never look at the profile again, and freeze the unfiltered board
+  // in for good under a chip naming a filter. That is the original bug rebuilt out of its fix.
+  const { from, pending } = restoreBar({ memory: null, activeName: 'Chad', profiles: [] });
+  assert.equal(from, 'defaults');
+  assert.equal(pending, true);
+});
+
+test('nothing is pending when no profile is selected, or when the one selected is applied', () => {
+  assert.equal(restoreBar({}).pending, false, 'a dispatcher with no profile must not be held');
+  assert.equal(restoreBar({ memory: null, activeName: 'Chad', profiles: [CHAD] }).pending, false);
+  assert.equal(restoreBar({ memory: { status: [] }, activeName: 'Chad', profiles: [] }).pending, false,
+    'a remembered bar answers the question — nothing to wait for');
+});
+
+test('a profile saved under another name is not applied, but is still pending', () => {
+  const { from, pending } = restoreBar({ memory: null, activeName: 'Nobody', profiles: [CHAD] });
+  assert.equal(from, 'defaults');
+  assert.equal(pending, true, 'a name we cannot resolve yet may just be a list that has not landed');
+});
+
+test('an unknown status key is DROPPED — it would filter every row off with no box to un-tick', () => {
+  const s = normalizeBar({ status: ['unplanned', 'delivered_ish', 42, null] });
+  assert.deepEqual(s.status, ['unplanned']);
+});
+
+test('an unknown date window is dropped back to the board, not left blank in the select', () => {
+  assert.equal(normalizeBar({ nvWindow: '-30d' }).nvWindow, '');
+  assert.equal(normalizeBar({ nvWindow: '-7d' }).nvWindow, '-7d');
+});
+
+test('custom-range endpoints only survive on a custom window, and only whole dates', () => {
+  assert.deepEqual(
+    [normalizeBar({ nvWindow: 'custom', nvFrom: '2026-09-01', nvTo: '2026-09-07' }).nvFrom,
+     normalizeBar({ nvWindow: 'custom', nvFrom: '2026-09-01', nvTo: '2026-09-07' }).nvTo],
+    ['2026-09-01', '2026-09-07'],
+  );
+  assert.equal(normalizeBar({ nvWindow: '-7d', nvFrom: '2026-09-01' }).nvFrom, '', 'a stale endpoint from another window is noise');
+  assert.equal(normalizeBar({ nvWindow: 'custom', nvFrom: '2026-09-' }).nvFrom, '', 'a half-typed date must not survive a reload');
+});
+
+test('the malformed and the absent never throw — every input here is off localStorage', () => {
+  for (const bad of [null, undefined, '', 0, 'nope', [], { status: 'unplanned' }, { stopSort: 'city' }]) {
+    const s = normalizeBar(bad);
+    assert.equal(s.view, 'stops');
+    assert.deepEqual(s.status, []);
+    assert.deepEqual(s.stopSort, { key: null, dir: 'asc' });
+  }
+  const r = restoreBar({ memory: 'garbage', activeName: 5, profiles: 'nope' });
+  assert.equal(r.from, 'defaults');
+  assert.equal(r.pending, false, 'a non-string profile name is not a profile to wait for');
+  assert.equal(restoreBar({ memory: ['not', 'an', 'object'] }).from, 'defaults', 'an array is not a stored bar');
+});
+
+test('sameBar compares the status filter as a SET, not as a list', () => {
+  assert.ok(sameBar({ status: ['planned', 'unplanned'] }, { status: ['unplanned', 'planned'] }));
+  assert.ok(!sameBar({ status: ['planned'] }, { status: [] }));
+});
+
+test('sameBar sees a change in every field the chip claims to be showing', () => {
+  const base = { view: 'stops', status: ['unplanned'], nvWindow: '-7d', driverSel: '', unmappedOnly: false, stopSort: { key: null, dir: 'asc' } };
+  const changed = [
+    { ...base, view: 'loads' },
+    { ...base, status: [] },
+    { ...base, nvWindow: '-14d' },
+    { ...base, driverSel: 'STEVEN' },
+    { ...base, unmappedOnly: true },
+    { ...base, stopSort: { key: 'city', dir: 'asc' } },
+    { ...base, stopSort: { key: null, dir: 'desc' } },
+    { ...base, loadSort: { key: 'name', dir: 'asc' } },
+  ];
+  for (const c of changed) assert.ok(!sameBar(base, c), `no drift seen for ${JSON.stringify(c)}`);
+  assert.ok(sameBar(base, { ...base }));
+});
+
+test('THE IPAD CASE: a device that never selected "Chad" locally still gets "Chad"', () => {
+  // Chad: "there is profile saved called Chad it just doesn't actually work". The list has
+  // been shared across devices since v0.53.0 — the SELECTION was not, so on the iPad the
+  // profile sat in the dropdown unselected. Selecting it anywhere now selects it everywhere.
+  const iPad = { status: [], nvWindow: '', profile: null };   // its own bar, no profile behind it
+  const { settings, from } = restoreBar({ memory: iPad, activeName: 'Chad', profiles: [CHAD], width: 1024 });
+  assert.equal(from, 'profile');
+  assert.deepEqual(settings.status, ['unplanned']);
+  assert.equal(settings.nvWindow, '-7d', 'an iPad renders the window control, so it gets the window');
+});
+
+test('updating the profile on the desktop reaches the other devices next time they open', () => {
+  const stale = underChad({ status: ['unplanned'] });                       // written at profileAt 1000
+  const saved = { ...CHAD, s: { status: ['planned'] }, updatedAt: 2000 };   // "Update Chad to current"
+  const { settings, from } = restoreBar({ memory: stale, activeName: 'Chad', profiles: [saved] });
+  assert.equal(from, 'profile');
+  assert.deepEqual(settings.status, ['planned']);
+});
+
+test('...but an unsaved tweak is NOT overwritten by the profile it already matches', () => {
+  const tweaked = underChad({ status: ['unplanned', 'planned'] });
+  const { settings, from } = restoreBar({ memory: tweaked, activeName: 'Chad', profiles: [CHAD] });
+  assert.equal(from, 'memory');
+  assert.deepEqual(settings.status, ['unplanned', 'planned']);
+});
+
+test('a save time we cannot read is never treated as NEWER', () => {
+  // serverTimestamp() reads back null on the writing client's own echo, and a profile saved
+  // before this shipped has none at all. Guessing "newer" there would re-apply the profile on
+  // every single load and quietly eat the tweak the dispatcher just made.
+  const tweaked = underChad({ status: ['unplanned', 'planned'] });
+  for (const updatedAt of [null, undefined, 0, NaN, 'later']) {
+    const r = restoreBar({ memory: tweaked, activeName: 'Chad', profiles: [{ ...CHAD, updatedAt }] });
+    assert.equal(r.from, 'memory', `updatedAt ${String(updatedAt)} was treated as newer and ate the tweak`);
+  }
+});
+
+test('switching the selection on one device switches it on the others', () => {
+  const other = { name: 'Overnight', s: { status: ['completed'] }, updatedAt: 1500 };
+  const memory = underChad({ status: ['unplanned'] });
+  const { settings, from } = restoreBar({ memory, activeName: 'Overnight', profiles: [CHAD, other] });
+  assert.equal(from, 'profile');
+  assert.deepEqual(settings.status, ['completed']);
+});
+
+test('with the selection cleared, this device keeps its own bar', () => {
+  const memory = underChad({ status: ['unplanned', 'planned'] });
+  const { settings, from } = restoreBar({ memory, activeName: null, profiles: [CHAD] });
+  assert.equal(from, 'memory');
+  assert.deepEqual(settings.status, ['unplanned', 'planned']);
+});
+
+test('a selected profile that is not in the list yet never discards the remembered bar', () => {
+  // The list arrives a beat after the first paint. Falling through to defaults here would
+  // blank the grid for that beat on every single load.
+  const memory = underChad({ status: ['unplanned'] });
+  const { settings, from } = restoreBar({ memory, activeName: 'Chad', profiles: [] });
+  assert.equal(from, 'memory');
+  assert.deepEqual(settings.status, ['unplanned']);
+});
+
+test('a phone gets back only the filters a phone can SHOW', () => {
+  // The window and driver controls are desktop-only (hidden sm:inline-block). Restored onto
+  // a 390px screen they would be live filters with nothing to see them by and nothing to
+  // clear them with — and unlike the old behaviour, a reload would bring them back.
+  const memory = underChad({ status: ['unplanned'], nvWindow: '-7d', driverSel: 'STEVEN', view: 'loads', unmappedOnly: true, stopSort: { key: 'city', dir: 'desc' } });
+  const phone = restoreBar({ memory, width: 390 }).settings;
+  assert.equal(phone.nvWindow, '', 'a date window the phone cannot clear must not come back');
+  assert.equal(phone.driverSel, '', 'same for the driver filter');
+  assert.deepEqual(phone.status, ['unplanned'], 'the status filter HAS a phone control — it stays');
+  assert.equal(phone.view, 'loads');
+  assert.equal(phone.unmappedOnly, true);
+  assert.deepEqual(phone.stopSort, { key: 'city', dir: 'desc' });
+});
+
+test('the cut is at the CONTROL\'s breakpoint (640), not the app\'s phone breakpoint (768)', () => {
+  // A 700px tablet renders those controls. Cutting at 768 would strip a window it can see.
+  assert.equal(restoreBar({ memory: underChad({ nvWindow: '-7d' }), width: 700 }).settings.nvWindow, '-7d');
+  assert.equal(restoreBar({ memory: underChad({ nvWindow: '-7d' }), width: 639 }).settings.nvWindow, '');
+  assert.equal(restoreBar({ memory: underChad({ nvWindow: '-7d' }), width: BAR_CONTROL_MIN_WIDTH }).settings.nvWindow, '-7d');
+});
+
+test('an unmeasurable width drops NOTHING — never strip a filter on a guess', () => {
+  for (const w of [null, undefined, 0, NaN, 'wide']) {
+    assert.equal(restoreBar({ memory: underChad({ nvWindow: '-7d' }), width: w }).settings.nvWindow, '-7d', `width ${String(w)} stripped the window`);
+  }
+});
+
+test('a phone restoring a selected PROFILE drops the same unreachable fields', () => {
+  const s = restoreBar({ memory: null, activeName: 'Chad', profiles: [CHAD], width: 390 }).settings;
+  assert.equal(s.nvWindow, '');
+  assert.deepEqual(s.status, ['unplanned']);
+});
+
+test('remembering a window is FREE except for the one live-NuVizz option', () => {
+  // The cost rule in CLAUDE.md is about scans, but a restore that fires a vendor call on
+  // every mount is still a cost nobody asked for. Only the narrow live periods reach NuVizz;
+  // '-7d' / '-14d' / '+/-7d' / a custom range are served from our own per-day board docs
+  // (LIVE_PERIODS in netlify/functions/nuvizz-stop-explorer.mts).
+  assert.equal(barRestoreCostsCall('-7d'), false);
+  assert.equal(barRestoreCostsCall('-14d'), false);
+  assert.equal(barRestoreCostsCall('+/-7d'), false);
+  assert.equal(barRestoreCostsCall('custom'), false);
+  assert.equal(barRestoreCostsCall(''), false);
+  assert.equal(barRestoreCostsCall('0d'), true, 'NuVizz · Today is a live list pull');
+});
+
+test('the key sets are canonical — order-independent in, canonical order out', () => {
+  assert.deepEqual(normalizeBar({ status: ['cancelled', 'unplanned'] }).status, ['unplanned', 'cancelled']);
+  assert.ok(BAR_WINDOWS.includes(''), 'the board (no pull) must stay a valid window');
+  assert.equal(new Set(BAR_STATUS_KEYS).size, BAR_STATUS_KEYS.length);
+});
+
+
+// ── THE CARVE-OUT, which used to be two carve-outs with two different numbers ──────────
+
+test('THE 640-767 BAND: the window control is on screen, so the profile applies', () => {
+  // This was live on main. v0.95.0 blanked the window for "phones" at MOBILE_BREAKPOINT
+  // (768) while the <select> appears at Tailwind's sm (640). In between, the dispatcher saw
+  // a window select reading "Board (today)" that his profile said should read Last 7 days,
+  // and picking the profile again could not fix it. An iPad mini in portrait is 744px; a
+  // 1440 monitor with the window at half width is 720; a 1280 window at 175% zoom is 731.
+  for (const w of [640, 700, 720, 731, 744, 767]) {
+    assert.equal(reachableBar({ nvWindow: '-7d' }, w).nvWindow, '-7d', `${w}px renders the control but did not get the window`);
+  }
+});
+
+test('below 640 the control does not exist, so neither does the setting', () => {
+  for (const w of [320, 390, 639]) {
+    const r = reachableBar({ nvWindow: '-7d', driverSel: 'STEVEN', status: ['unplanned'] }, w);
+    assert.equal(r.nvWindow, '', `${w}px restored a window it cannot clear`);
+    assert.equal(r.driverSel, '');
+    assert.deepEqual(r.status, ['unplanned'], 'the status filter HAS a phone control — it stays');
+  }
+});
+
+test('an AUTOMATIC restore never spends a NuVizz call; a deliberate pick does', () => {
+  // Every wide window is served from our own board day-docs. '0d' is the one live vendor
+  // pull, and a reload or a Map->Routing hop is not a request to spend on it.
+  assert.equal(reachableBar({ nvWindow: '0d' }, 1920, { automatic: true }).nvWindow, '');
+  assert.equal(reachableBar({ nvWindow: '0d' }, 1920, { automatic: false }).nvWindow, '0d');
+  for (const w of ['-7d', '-14d', '+/-7d']) {
+    assert.equal(reachableBar({ nvWindow: w }, 1920, { automatic: true }).nvWindow, w, `${w} is cache-served and must restore`);
+  }
+  assert.equal(restoreBar({ memory: null, activeName: 'X', profiles: [{ name: 'X', s: { nvWindow: '0d' } }], width: 1920 }).settings.nvWindow, '',
+    'the mount seed is automatic by definition');
+});
+
+test('SAVING from a narrow screen keeps what it cannot see, for every other device', () => {
+  // "Update Chad to current" on a phone snapshots a bar whose window was carved off. The
+  // profile is SHARED and now carries a save time, so that blank would be pushed onto the
+  // desktop on its next load — a cross-device wipe out of a button that reads local.
+  const onProfile = { status: ['unplanned'], nvWindow: '-7d', driverSel: 'STEVEN' };
+  const fromPhone = { status: ['planned'], nvWindow: '', driverSel: '' };
+  const saved = settingsForSave(fromPhone, onProfile, 390);
+  assert.deepEqual(saved.status, ['planned'], 'what the phone CAN change must still be saved');
+  assert.equal(saved.nvWindow, '-7d', "the phone erased the desktop's window");
+  assert.equal(saved.driverSel, 'STEVEN');
+});
+
+test('saving from a screen that CAN show it writes through, blank included', () => {
+  const onProfile = { status: ['unplanned'], nvWindow: '-7d' };
+  const cleared = settingsForSave({ status: ['unplanned'], nvWindow: '' }, onProfile, 1920);
+  assert.equal(cleared.nvWindow, '', 'a desktop clearing its window must be able to save that');
+});
+
+test('a save with no previous profile is just the snapshot', () => {
+  assert.equal(settingsForSave({ nvWindow: '-7d' }, undefined, 1920).nvWindow, '-7d');
+  assert.equal(settingsForSave({ nvWindow: '-7d' }, undefined, 390).nvWindow, '', 'nothing to preserve, so the default stands');
+});
+
+test("CHAD'S REAL PROFILE, read from production Firestore 2026-09-09, round-trips", () => {
+  // The saved profile document, verbatim. If this ever stops applying, he reports it again.
+  const real = { view: 'stops', status: ['unplanned'], nvWindow: '-7d', nvFrom: '', nvTo: '',
+    driverSel: '', unmappedOnly: false, stopSort: { key: 'cartons', dir: 'desc' }, loadSort: { key: null, dir: 'asc' } };
+  const { settings, from } = restoreBar({ memory: null, activeName: 'Chad', profiles: [{ name: 'Chad', s: real, updatedAt: 1 }], width: 1920 });
+  assert.equal(from, 'profile');
+  assert.equal(settings.nvWindow, '-7d', 'Last 7 days');
+  assert.deepEqual(settings.status, ['unplanned'], 'Un-Planned ticked');
+  assert.deepEqual(settings.stopSort, { key: 'cartons', dir: 'desc' }, 'sorted by skids, descending');
+  assert.deepEqual(settings, normalizeBar(real), 'nothing he saved was dropped or invented');
+});

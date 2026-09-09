@@ -32,6 +32,7 @@ import { routeStopEta, routeStopFreight, routeStopSeq, routeStopTime, loadDefaul
 import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt, foldFreshStop } from './lib/stop-card-sections.js';
 import { resolveStopContact, resolveStopPhone, orderContactAside, mergeSavedContact, isDialable } from './lib/stop-contact.js';
 import { readViewportSize } from './lib/viewport.js';
+import { restoreBar, reachableBar, settingsForSave, normalizeBar, sameBar, BAR_DEFAULTS } from './lib/bar-memory.js';
 import { sortStops, nextStopSort, stopSort, STOP_SORTS } from './lib/stop-sort.js';
 import { manifestIssues, manifestHeadline, manifestProvenance, loadStored, saveStored } from './lib/manifest-check-view.js';
 import { noteFreshness } from './lib/stop-notes-freshness.js';
@@ -120,7 +121,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.99.0';
+const APP_VERSION = '0.99.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -191,6 +192,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.99.1', 'THE PROFILE CALLED “CHAD” IS APPLIED AT LAST — AND THE ONE THING THAT KEPT BREAKING IT WAS THAT THE FIX NEVER SHIPPED. Chad, three times across three days, the last one on v0.98.7: “profile settings continue not to save.” He was right every time. The fix for it was written on Sep 7, verified in a browser, and then sat in a pull request that CONFLICTED and never merged while main moved nineteen commits and five versions underneath it. Nothing was wrong with his profile: read straight out of Firestore this morning it holds exactly what he set — Un-Planned, Last 7 days, sorted by skids, saved 01:57 last night. The board simply never read it back. WHAT WAS ACTUALLY BROKEN, and it is two things. (1) NOTHING EVER APPLIED A SAVED PROFILE. The list saved to Firestore, the selected name saved to the device — so the chip read “Chad” on every load — and the one function that puts settings on the bar had a single caller: picking the profile off the dropdown. Every reload, and every hop between Map and Routing, went back to the whole board with no filter while the chip still named a profile. That is the dangerous half: you are not told the filter is gone. The bar now remembers itself on the device — view, status, window and range, driver, no-location, both sorts — and a selected profile is what a device with no memory of its own falls back to. (2) WHICH PROFILE IS SELECTED WAS NEVER SHARED. The list has followed you to every device since v0.53.0; the selection did not, so “Chad” sat unselected in the iPad’s dropdown forever. It is shared now, under a document id no profile name can collide with, and each profile carries when it was saved so a device can tell “I have this one” from “this changed while I was away”. AND ONE BUG FOUND WHILE PORTING, WHICH WAS LIVE ON MAIN THE WHOLE TIME. v0.95.0 blanked the date window for phones using the app’s 768px phone breakpoint — but the window control itself appears at 640px. Between those two numbers the select sits on screen showing “Board (today)” while your profile says Last 7 days, and picking your profile could not fix it. An iPad mini in portrait is 744px. A 1440 monitor with the window at half width is 720. There is now ONE constant that decides what a screen may restore, in one place, and 640 is it — so what the control shows and what the profile applies can no longer disagree. Two more things the port fixed rather than shipped: pressing “Update ‹Chad› to current” from a narrow screen used to write the blanked window back to the SHARED profile and push it to every other device — a screen now keeps the settings it cannot see instead of erasing them for everyone; and the amber “edited” dot is measured against what was actually applied, so it no longer lights on a screen that never had the control. NuVizz cost: an automatic restore never spends a vendor call — “Last 7 days”, “Last 14 days”, ±7 days and custom ranges are served from our own board day-docs, and “NuVizz · Today”, the one live option, is applied only when you pick the profile by hand, never on a reload or a screen hop.'],
   ['0.99.0', 'THE NEW-ROUTE FORM HAS EVERYTHING A ROUTE NEEDS, AND ON HALF THE DEVICES IN THE BUILDING IT COULD NOT CREATE ONE AT ALL. Chad, looking at ＋ New route: “This is not functional i should have everything i need to create a new route right here in this screen.” HE WAS RIGHT TWICE. FIRST, THE DEAD END, and it is two readers of one fact disagreeing — the shape this repo keeps getting caught by. NuVizz will not create a route without a complete ship-from address: it accepts the call and then creates nothing. So all three doors into a create — the form, a standard shell tapped on the Loads list, and the Save that actually sends it — gate on having one, and all three read a SINGLE localStorage key: the last pickup address used in the New Order tab. That key is empty on any device where nobody has used New Order — a second iPad, a cleared browser, a dispatcher who only ever routes — and on those the button never enabled, the shell tap answered with a toast, and the message sent you to a different tab to fix it. MEANWHILE New Order itself has carried a built-in Davis terminal since v0.50.35, added for exactly this reason: “the pickup dropdown always exists (even on a fresh browser with nothing saved).” The address the form needed was in the app the whole time; only this screen could not see it. Every door now RESOLVES the origin the same way through one rule — last used, else your saved pickup list, else the company terminal — and the form PRINTS the address it will use with where it came from, because a route created out of the wrong warehouse is not a thing to find out at the dock. Proven in a browser on a device with nothing saved: before, the button could never enable; now it reads “Davis Delivery Service — 943 Gainesville Hwy 200-4000, Buford, GA 30518 · The company terminal — this device has no saved pickup location”. SECOND, WHAT “EVERYTHING I NEED” MEANS. A route is a name, a place it leaves from, a driver and its stops, so all four are on the form now. THE DRIVER is chosen from the same roster the card’s own dropdown uses — already fetched by the panel the button lives in, so it costs no call — and is STAGED, not sent: the one Save that creates the route assigns them. THE STOPS come from the selection already on the map, which is most of what a route is: tick the box and they are on the card before it opens. AND THE PART THAT MAKES IT SAFE — a create is stricter than an ordinary Save. The server refuses the WHOLE create if any order on the card is still planned on a live load, so seeding blindly would build a card that fails at the Save button. The form SPLITS the selection instead and says so in the sentence a dispatcher can act on: “40 of 46 selected orders will start on this route — 6 already planned on BEN 2. Those stay selected.” They stay selected because the way to move them already exists: open that load in Compare and Send them across. Driven end to end in a browser — 46 selected, 40 onto the card, a driver staged on it, the other 6 still selected, nothing sent to NuVizz until Save. NOT CHANGED, deliberately: the route is still built for the day the board is showing. A date picker here would have to move the board, and moving the board closes every open Compare card — it would destroy work in progress to save one click. 13 new tests. ALSO IN THIS RELEASE — THE ROUTING MAP WAS LAGGING BECAUSE OF ONE MEASUREMENT, AND THE SELECTED PANEL CAN NOW SEND. Chad: “Performance of the dispatch map especially the routing page is very slow and laggy right now not the way it normally performs.” MEASURED BEFORE ANYTHING WAS TOUCHED — a new probe (scripts/perf-routing.mjs) runs the real build against a synthetic 800-stop board with real mouse input and reads the browser’s own input-to-paint timing. With the bottom grid OPEN, one marker hover blocked the screen for 393ms and one click for 754ms; with the grid CLOSED the same board cost 24ms and 89ms — the grid is what the cost scaled with. THE WHOLE DIFFERENCE WAS ONE EFFECT: the code that publishes the grid’s height as a CSS variable (so the map tools can centre in the strip above it) was declared with no dependency list, so it re-ran after EVERY render of the screen — and a hover is a render. Each run first erased the variable and then wrote the same value back, and a CSS variable is inherited, so that pair invalidated the style of every element under the map, the ~11,000 cells of an 800-row grid included, and the height read that followed forced the whole recalculation right there in the input’s own frame. Its own guard against rewriting an unchanged value could never fire, because the cleanup had just erased the value it compared against. On a quiet day, with the grid folded, there was nothing under it to recalculate, which is exactly why this felt fine for weeks and fell over on a busy board; the Map screen carried the identical effect. IT IS NOW A CALLBACK REF: it arms once when the grid mounts, a ResizeObserver tracks open/close/drag from then on, and the per-render cost is gone (hover ~0ms, click ~70ms with the grid open, re-measured on the same probe). AND THE SHAPE CANNOT COME BACK UNANNOUNCED: a new CI check (scripts/check-effect-deps.mjs) fails any effect declared without a dependency list unless it says on the line above why it must run every render. SECOND, THE BUTTON. Chad, with five Cartersville stops selected and a card open: “I want a button on these screen to put these stops on the route that is open in the compare panel.” The Selected panel now carries one button per open Compare card, in the card’s own colour, naming the count — the same action as the header’s send button (a stop still planned on another load opens that load too, so the Save can release it), just where the hand already is. No card open, no row. Desktop only, like the panel; the phone’s sheet shows the Compare header, buttons included, whenever a card is open. 11 new tests.'],
   ['0.98.7', 'THE 53-FOOT TRAILER WAS FOLLOWING THE BOX TRUCKS AROUND. Chad: “if i give it 2 boxes and 1 tractor and 30 stops it puts what it knows is tractor friendly on the tractor and rest on the boxes.” It did not, and I measured it rather than guessed: running the real solver on 30 Atlanta-area stops with the shipped truck profiles, a normal day (8 stops a 53′ cannot serve) came out BOX-1=14, BOX-2=14 — both at their 14-skid ceiling — and the 28-skid TRACTOR took 2 of 30. Two trucks did the day and the big one trailed them. On a clean board it was 14/6/10. WHY: growth was purely nearest-pair. Whichever truck’s territory happened to be closest won every stop until it physically could not take another, and nothing in the loop knew one truck was full while another sat empty — the objectiveWeights `balance` term the request has always carried was plumbed the whole way in and never read. Placement now costs a stop as its distance PLUS a penalty for how full that truck already is, expressed in metres so it stays comparable with the distance it trades against (ROUTING_BALANCE_METRES, default 12 km). Same three scenarios after: 10/10/10 clean, 13/10/7 on the normal day. EQUIPMENT IS STILL ABSOLUTE — this is a preference and can never put box-only freight on a trailer; a test pins exactly that. AND TWO REAL DEFECTS FOUND ALONGSIDE IT. (1) The repair loop kept its OWN copy of the capacity rule, honouring neither CAPACITY_GATES nor the positive-cap guard — so it spilled stops for “over deck length”, a limit the code switches off on purpose because the per-stop estimate is inflated, and printed a reason routing-constraints says can never happen, after shredding the geographic assignment to satisfy it. The file’s own header promises the rule is “defined exactly once… so the solver’s assignment and the repair loop’s validation can never drift apart”; they had drifted. One shared capacityBreaches now, and the same 30-stop board that spilled two stops for a phantom deck limit now spills them for the true reason (over skid capacity — 30 stops, 28 skids of box). (2) A PICKED TRUCK THAT GOT NOTHING SIMPLY VANISHED. Empty trucks were dropped before the result was built and the screen renders one card per route, so picking three and getting two cards was the only signal, with nothing saying which went unused. That is the visible half of the “only green on a 53′ trailer” trap: on a board where nothing is marked green every stop is held to a box and the trailer leaves the plan without a word. The plan now carries idleTrucks with a reason drawn from the freight itself — “no selected stop is allowed on this truck” versus “the other trucks covered every stop before this one was needed” — recomputed AFTER the repair pass, because repair can empty a truck too, and shown in an amber panel above the spill list. 9 new tests driving the real solver, 3,683 green.'],
   ['0.98.6', 'UAT COULD EMAIL A REAL CUSTOMER, TEXT A REAL DRIVER, AND DISPATCH A REAL TRUCK. Chad asked for one thing to be true: “nothing we do in UAT writes to the production version of the site.” It was not true, and the reason is a good lesson. THE REPO ALREADY HAD THE RIGHT IDEA AND USED IT ONCE. isMirrorDeploy() keys on FIRESTORE_DATABASE — the one variable that is always true of a mirror and never true of production — and its own comment explains why that is the right key: a new mirror is “born silent instead of scanning until somebody notices the bill.” That reasoning was applied to READS and stopped there. Every door that leaves the building was left keyed on nothing but the presence of an API key, and a mirror is built by COPYING production’s env: emailEnabled() was RESEND_API_KEY && RESEND_FROM, smsEnabled() was SIMPLETEXTING_API_KEY, and the NuVizz write gate was NUVIZZ_WRITE_ENABLED — all three true on UAT. So the UAT site could mail a real customer about a real delivery from the real address, text a real driver from the real Davis number at 9pm, and assign or dispatch a real load in production NuVizz, which puts freight on a driver’s phone and sends a truck. Worse than one stray message: each deploy keeps its send-dedup ledger in its OWN Firestore database while sharing ONE Resend account, so the two ledgers do not compose and the same customer can be mailed once by each site. NOW: lib/mirror-guard.mts finishes the rule a mirror sends NOTHING — no mail, no texts, no NuVizz writes — by default, gated at the enabled() check AND at the send itself, because a guard you can walk past by forgetting to call it is not a guard. MIRROR_ALLOW_OUTBOUND opens one channel at a time by name for deliberate testing, and a typo fails CLOSED. Production is byte-identical: unset FIRESTORE_DATABASE means not a mirror, and every gate answers exactly as before. AND THE BROWSER HALF, which was the other hole: src/lib/firebase.js read VITE_FIRESTORE_DATABASE with no cross-check, so one missing build-time variable on the UAT site sent every browser write — customer notes, receiving hours, closed days, vehicle eligibility, truck profiles — straight to the live board, silently, with the app looking completely normal. It now keys on the HOSTNAME, because that is the one fact about a deploy nobody can forget to set or copy from production: a uat host with no named database gets NO Firestore handle and an undismissable red banner naming what it would have changed. It fires in one direction only — production is never touched, whatever it sets. Found by an eight-way audit of the assignment path and the UAT boundary, every finding then handed to an independent skeptic told to refute it; 24 of 46 survived. 18 new tests, 3,674 green.'],
@@ -1086,6 +1088,13 @@ const LS_TABLE_COLUMNS = 'dispatchMap.tableColumns';
 // this key is the offline cache + the source for the one-time migration of profiles
 // saved back when they were device-local. Shape: { list: [{name, s}] }.
 const LS_BOTTOM_PROFILES = 'dispatchMap.bottomPanelProfiles';
+// The LIVE bar, remembered on this device — what the grid was actually set to when you
+// last looked at it (view, status filter, window + range, driver, no-location, sorts).
+// Separate from the profiles above and read FIRST: a profile is a named preset you chose
+// once, this is where the bar is right now, and an unsaved tweak has to survive a reload
+// and a Map→Routing hop or the filter you just set is gone by the time you use it. See
+// lib/bar-memory.js. Shape: the barSnapshot() object.
+const LS_BOTTOM_BAR = 'dispatchMap.bottomPanelBar';
 // M4.4 — Filter toolbar persistence. mapFilters is the full toggle state object;
 // toolbarCollapsed is just the open/closed UI state of the toolbar itself.
 const LS_MAP_FILTERS = 'dispatchMap.mapFilters';
@@ -13438,6 +13447,31 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // Loads view groups the FULL board's loads (loadStops) so stop-level filters —
   // notably "Unplanned only" — don't empty it. Falls back to the visible stops.
   const loadSrc = loadStops || stops;
+  // WHAT THE BAR OPENS AS — read ONCE, synchronously, ahead of every bar state below.
+  // Seeding the initialisers (rather than setting them from an effect) means the grid never
+  // paints an unfiltered board for a frame and never fires the window pull twice. `from` is
+  // needed too: 'defaults' while a profile is still selected means the profile list has not
+  // come down from Firestore yet, and the late-arrival effect below finishes the job.
+  const [barBoot] = useState(() => restoreBar({
+    memory: safeReadJSON(LS_BOTTOM_BAR, null),
+    activeName: safeReadJSON(LS_BOTTOM_PROFILES_ACTIVE, null),
+    profiles: safeReadJSON(LS_BOTTOM_PROFILES, null)?.list || [],
+    // Narrow screens get back only what they can SHOW — the window and driver controls are
+    // desktop-only, and a filter restored onto a phone with no control to clear it is worse
+    // than no restore at all. readViewportSize() so this matches the render, not a guess.
+    width: readViewportSize().w || null,   // 0 = no window to measure: restore everything, drop nothing
+  }));
+  const boot = barBoot.settings;
+  // The width every restore/save decision is measured against. readViewportSize() so it
+  // matches what is actually rendered; 0 means "no window to measure", which reachableBar
+  // and settingsForSave both read as "not narrow" rather than guessing.
+  const viewportW = () => readViewportSize().w || null;
+  // WHAT WAS ACTUALLY APPLIED to the bar, which is what the amber "edited" dot is measured
+  // against. Comparing the live bar to the PROFILE instead lit the dot permanently on any
+  // screen too narrow for the window control: the profile says "-7d", the bar can only say
+  // "", they differ forever, and the dot tells the dispatcher he changed something he never
+  // touched. A dot that is always on is a dot nobody reads.
+  const appliedBar = useRef(boot);
   const [q, setQ] = useState('');
   // TWO VIEWS, NOT ONE WITH A BREAKPOINT PATCH — and the roster line below is where it bites.
   // On a desktop the grid pane is tall and a header row costs nothing. On a 390px phone it is
@@ -13448,7 +13482,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // layout guard did not. So the phone puts the line INSIDE the scroller, where it scrolls with
   // the rows and costs no fixed height, and the desktop keeps it pinned above them.
   const gridIsPhone = useViewportWidth() < MOBILE_BREAKPOINT;
-  const [view, setView] = useState('stops'); // 'stops' | 'loads'
+  const [view, setView] = useState(boot.view); // 'stops' | 'loads'
   // The day's full load ROSTER (incl. empty loads with no orders yet), pulled on demand
   // when the Loads view is open. Empty loads can't appear from stop-grouping (no stops to
   // group), so we merge these in. Follows the selected board date.
@@ -13459,7 +13493,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // ago and has not been pulled since", and those call for opposite actions. See
   // lib/roster-freshness.js for why a three-day-out roster can be wrong and stay wrong.
   const [rosterMeta, setRosterMeta] = useState(null);
-  const [statusSel, setStatusSel] = useState(() => new Set()); // empty = all
+  const [statusSel, setStatusSel] = useState(() => new Set(boot.status)); // empty = all
   const [statusOpen, setStatusOpen] = useState(false);
   // WHICH SIDE THE STATUS PANEL HANGS FROM, measured against the viewport when it opens.
   // useLayoutEffect, not useEffect: the panel is already painted by the time an effect runs,
@@ -13475,9 +13509,9 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // fetched straight from NuVizz's stop list (any delivery-date window / status)
   // instead of today's board — e.g. "all unplanned ±7 days". Driver is a local
   // refinement applied to whatever rows are shown.
-  const [nvWindow, setNvWindow] = useState(''); // '' = board; else '0d' | '+/-7d' | 'custom'
-  const [nvFrom, setNvFrom] = useState(''); // 'custom' range endpoints (YYYY-MM-DD)
-  const [nvTo, setNvTo] = useState('');
+  const [nvWindow, setNvWindow] = useState(boot.nvWindow); // '' = board; else '0d' | '+/-7d' | 'custom'
+  const [nvFrom, setNvFrom] = useState(boot.nvFrom); // 'custom' range endpoints (YYYY-MM-DD)
+  const [nvTo, setNvTo] = useState(boot.nvTo);
   const [nvRows, setNvRows] = useState([]);
   const [nvTotal, setNvTotal] = useState(0);
   const [nvPartial, setNvPartial] = useState(false); // covering pull was incomplete → count is "≥ N"
@@ -13494,8 +13528,8 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const [nvCheck, setNvCheck] = useState(NV_CHECK_IDLE);
   const [nvCheckOpen, setNvCheckOpen] = useState(false);
   const [, setNvCheckTick] = useState(0); // re-render when the button's cooldown ends
-  const [driverSel, setDriverSel] = useState('');
-  const [unmappedOnly, setUnmappedOnly] = useState(false); // show only stops with no map location (unroutable until fixed)
+  const [driverSel, setDriverSel] = useState(boot.driverSel);
+  const [unmappedOnly, setUnmappedOnly] = useState(boot.unmappedOnly); // show only stops with no map location (unroutable until fixed)
   // Drag-resizable height (px), persisted. Drag the top handle up/down.
   const [height, setHeight] = useState(() => {
     const v = safeReadJSON(LS_BOTTOM_TABLE_HEIGHT, 300);
@@ -14000,8 +14034,8 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   ];
   // Per-table column sort. null key = original order; click cycles asc → desc.
   // Stops and Loads keep independent sort so switching tabs preserves each.
-  const [stopSort, setStopSort] = useState({ key: null, dir: 'asc' });
-  const [loadSort, setLoadSort] = useState({ key: null, dir: 'asc' });
+  const [stopSort, setStopSort] = useState(boot.stopSort);
+  const [loadSort, setLoadSort] = useState(boot.loadSort);
   const cycleSort = (setSort) => (k) => setSort((p) => (p.key === k ? { key: k, dir: p.dir === 'asc' ? 'desc' : 'asc' } : { key: k, dir: 'asc' }));
   const toggleStopSort = cycleSort(setStopSort);
   const toggleLoadSort = cycleSort(setLoadSort);
@@ -14034,41 +14068,98 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const [savedFlash, setSavedFlash] = useState(false); // brief "✓ Saved" confirmation
   const flashSaved = () => { setSavedFlash(true); setTimeout(() => setSavedFlash(false), 1400); };
   const barSnapshot = () => ({ view, status: [...statusSel], nvWindow, nvFrom, nvTo, driverSel, unmappedOnly, stopSort, loadSort });
-  const applyBarSettings = (s) => {
+  // Every read of a stored bar goes through normalizeBar, so a profile written by an older
+  // build, a half-written localStorage row and a hand-edited doc all land as the same shape —
+  // and an unknown status key can never arrive as a filter with no checkbox to un-tick it.
+  // `openAfter` is false for the restore paths: picking a profile is a deliberate act and
+  // opens the grid, but coming back to a screen must not fling the panel open over the map.
+  const applyBarSettings = (s, { openAfter = true, automatic = false } = {}) => {
     if (!s) return;
-    setView(s.view === 'loads' ? 'loads' : 'stops');
-    setStatusSel(new Set(Array.isArray(s.status) ? s.status : []));
-    // Two views: the phone has no date-window select, no source line and no Check button, so a
-    // profile saved on a desktop with a window must not drag the phone grid (and its map) into
-    // one it cannot see or leave (v0.95.0).
-    setNvWindow(gridIsPhone ? '' : (s.nvWindow || ''));
-    setNvFrom(gridIsPhone ? '' : (s.nvFrom || ''));
-    setNvTo(gridIsPhone ? '' : (s.nvTo || ''));
-    setDriverSel(s.driverSel || '');
-    setUnmappedOnly(!!s.unmappedOnly);
-    setStopSort(s.stopSort && 'key' in s.stopSort ? s.stopSort : { key: null, dir: 'asc' });
-    setLoadSort(s.loadSort && 'key' in s.loadSort ? s.loadSort : { key: null, dir: 'asc' });
-    setOpen(true);
+    const n = reachableBar(s, viewportW(), { automatic });
+    setView(n.view);
+    setStatusSel(new Set(n.status));
+    setNvWindow(n.nvWindow);
+    setNvFrom(n.nvFrom);
+    setNvTo(n.nvTo);
+    setDriverSel(n.driverSel);
+    setUnmappedOnly(n.unmappedOnly);
+    setStopSort(n.stopSort);
+    setLoadSort(n.loadSort);
+    appliedBar.current = n;   // what the DOT is measured against — see profileEdited
+    if (openAfter) setOpen(true);
   };
   const activeProfile = profileList.find((p) => p.name === activeProfileName) || null;
+  // REMEMBER THE BAR — the write that was missing. Without it the settings existed only in
+  // this component's useState, and there are THREE mounts of it (Map, Routing phone, Routing
+  // desktop), so every screen hop and every reload started from an empty filter while the
+  // chip above still named a profile. Not gated on having a profile: most of the time nobody
+  // saves one, they just set the bar and expect it to still be set.
+  //
+  // STAMPED WITH THE PROFILE IT WAS WRITTEN UNDER, and that stamp is what makes a profile
+  // cross a device boundary: on the next load, a bar written under a DIFFERENT profile (or
+  // none) loses to the selected one, and so does a bar older than the profile's last save.
+  // See profileBeats() in lib/bar-memory.js.
+  //
+  // ONE HOLD ON IT, and it is the fix eating its own tail if you skip it: while a SELECTED
+  // profile is still coming down from Firestore the bar is sitting on defaults, and writing
+  // those defaults down as this device's memory would make the next load read the memory,
+  // never look at the profile again, and freeze the unfiltered board in for good — the very
+  // bug this release fixes, rebuilt out of its own fix. So hold while the bar is still
+  // untouched defaults and a profile is pending; the first real change of any kind, from the
+  // profile landing or from the dispatcher, clears the hold and every change persists after.
+  const pendingProfile = useRef(barBoot.pending);
+  useEffect(() => {
+    if (pendingProfile.current && sameBar(barSnapshot(), BAR_DEFAULTS)) return;
+    pendingProfile.current = false;
+    safeWriteJSON(LS_BOTTOM_BAR, { ...barSnapshot(), profile: activeProfileName || null, profileAt: activeProfile?.updatedAt ?? null });
+  }, [view, statusSel, nvWindow, nvFrom, nvTo, driverSel, unmappedOnly, stopSort, loadSort, activeProfileName, activeProfile]); // eslint-disable-line react-hooks/exhaustive-deps
+  // THE PROFILE ARRIVING — from Firestore on a cold start, or because it was selected or
+  // updated on another device. Same question either way, so it is asked with the same
+  // function the mount used: does the profile beat what this device remembers? If it does,
+  // apply it — but only while the bar still reads exactly as it did at mount, so a
+  // dispatcher who started filtering in that first second keeps what they set. Once, ever:
+  // re-running it would yank the bar back mid-plan.
+  const lateProfileApplied = useRef(false);
+  useEffect(() => {
+    if (lateProfileApplied.current || !activeProfile) return;
+    const r = restoreBar({
+      memory: safeReadJSON(LS_BOTTOM_BAR, null),
+      activeName: activeProfileName,
+      profiles: profileList,
+      width: readViewportSize().w || null,
+    });
+    if (r.from !== 'profile') return;   // this device's own bar still wins — leave it alone
+    lateProfileApplied.current = true;
+    if (sameBar(barSnapshot(), boot)) applyBarSettings(activeProfile.s, { openAfter: false, automatic: true });
+  }, [profileList, activeProfileName, activeProfile]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Does the bar still match the profile named on the chip? An unsaved tweak is normal and
+  // stays put — but the chip must not claim a preset that is not what you are looking at.
+  // That mismatch, silent, IS the bug this release fixes; a dot is what makes it visible.
+  const profileEdited = !!activeProfile && !sameBar(barSnapshot(), appliedBar.current);
   const selectProfile = (name) => {
     const p = profileList.find((x) => x.name === name);
     if (!p) return;
-    applyBarSettings(p.s);
+    applyBarSettings(p.s, { automatic: false });   // a deliberate pick gets everything, live window included
     setActiveProfileName(name);
     setProfilesOpen(false);
   };
   const saveNewProfile = () => {
     const name = newProfileName.trim();
     if (!name) return;
-    persistProfile(name, barSnapshot());     // same name overwrites (no dupes)
+    const saved = settingsForSave(barSnapshot(), profileList.find((x) => x.name === name)?.s, viewportW());
+    persistProfile(name, saved);             // same name overwrites (no dupes)
+    appliedBar.current = normalizeBar(saved);
     setActiveProfileName(name);
     setNewProfileName('');
     flashSaved();
   };
   const updateActiveProfile = () => {
     if (!activeProfile) return;
-    persistProfile(activeProfile.name, barSnapshot());
+    // A narrow screen keeps the profile's own window/driver rather than writing its blank
+    // over them for every other device — see settingsForSave.
+    const saved = settingsForSave(barSnapshot(), activeProfile.s, viewportW());
+    persistProfile(activeProfile.name, saved);
+    appliedBar.current = normalizeBar(saved);
     flashSaved();
   };
   const deleteProfile = (name) => removeProfile(name);
@@ -14149,10 +14240,15 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
         <div className={gridIsPhone ? 'relative' + (phoneBarFolded ? ' hidden' : '') : 'relative basis-full sm:basis-auto'}>
           <button
             onClick={() => setProfilesOpen((v) => !v)}
-            title="Saved views — save the current bar settings as a profile and switch between them"
+            title={activeProfile
+              ? (profileEdited
+                  ? `The bar has been changed since “${activeProfile.name}” was saved — it stays this way on this device; open this menu to save the change into the profile`
+                  : `Showing the saved profile “${activeProfile.name}”`)
+              : 'Saved views — save the current bar settings as a profile and switch between them'}
             className={'inline-flex items-center gap-1 px-2 py-1 rounded text-xs border whitespace-nowrap ' + (activeProfile ? 'border-blue-400 text-blue-700 bg-blue-50' : 'border-slate-300 text-slate-600 hover:bg-slate-50')}
           >
             <Save size={12} /> <span className="max-w-[110px] truncate">{activeProfile ? activeProfile.name : 'Profiles'}</span>
+            {profileEdited && <span className="text-amber-600 font-bold leading-none" aria-label="edited since saved">•</span>}
             <ChevronDown size={11} className="opacity-60" />
           </button>
           {profilesOpen && (
@@ -14169,8 +14265,8 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                   </div>
                 ))}
                 {activeProfile && (
-                  <button onClick={updateActiveProfile} className="w-full text-left px-2 py-1.5 mt-1 rounded text-slate-600 hover:bg-slate-50 border-t border-slate-100" title="Overwrite this profile with the current bar settings">
-                    ⤓ Update “{activeProfile.name}” to current
+                  <button onClick={updateActiveProfile} className={'w-full text-left px-2 py-1.5 mt-1 rounded hover:bg-slate-50 border-t border-slate-100 ' + (profileEdited ? 'text-amber-700 font-semibold' : 'text-slate-600')} title="Overwrite this profile with the current bar settings">
+                    ⤓ Update “{activeProfile.name}” to current{profileEdited ? ' •' : ''}
                   </button>
                 )}
                 <div className="flex items-center gap-1 mt-1 pt-1 border-t border-slate-100">
@@ -14323,6 +14419,11 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                   className="hidden sm:inline-block shrink-0 border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-700 max-w-[150px] focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
                 >
                   <option value="">All drivers</option>
+                  {/* A driver restored from yesterday's bar may not be on today's board at all.
+                      Without his own option the select renders BLANK while still filtering every
+                      row out — a live filter you cannot see and cannot clear. He gets listed,
+                      marked as not on this board, and can be switched off like any other. */}
+                  {driverSel && !driverOptions.includes(driverSel) && <option value={driverSel}>{driverSel} (not on this board)</option>}
                   {driverOptions.map((d) => <option key={d} value={d}>{d}</option>)}
                 </select>
                 {nvWindow && (
@@ -15708,6 +15809,19 @@ function stopLooksOversize(s) {
  * its profiles up the next time it connects.
  */
 const LS_BOTTOM_PROFILES_ACTIVE = 'dispatchMap.bottomPanelProfiles.active';
+// WHICH PROFILE IS SELECTED, shared like the list is. Chad: "there is profile saved called
+// Chad it just doesn't actually work" — on the iPad and the phone it was in the dropdown and
+// was never SELECTED there, because this was localStorage and localStorage is one browser on
+// one machine. It lives in the profiles collection under a doc id profileDocId() can never
+// mint (it strips the underscores), and it carries no `s`, so the list mapper's own filter
+// already skips it. localStorage stays as the offline cache and the instant first paint.
+const ACTIVE_DOC_ID = '__active';
+// MODULE scope, not a ref: this hook mounts inside BottomStopsTable, which unmounts on every
+// Map<->Routing hop and every gear toggle. A per-mount flag would re-read the shared selection
+// on each of those, so the other dispatcher's pick would yank this grid mid-plan within one
+// screen hop — the precise thing the doc comment above says was deliberately refused. One read
+// per page session; a change made elsewhere arrives on the next real page load.
+let sharedActiveReadOnce = false;
 const LS_BOTTOM_PROFILES_MIGRATED = 'dispatchMap.bottomPanelProfiles.migrated';
 const profileDocId = (name) => String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120) || 'profile';
 
@@ -15726,15 +15840,45 @@ function useBottomPanelProfiles() {
   const setActive = useCallback((name) => {
     setActiveState(name);
     safeWriteJSON(LS_BOTTOM_PROFILES_ACTIVE, name);
+    if (!db) return;
+    // Same shape as the profile writes below: the optimistic state is already set, so a
+    // refusal has to be reported or the selection silently stays on this device only —
+    // which is the bug being fixed, wearing a different hat.
+    setDoc(doc(db, 'bottom_panel_profiles', ACTIVE_DOC_ID), { activeName: name ?? null, updated_at: serverTimestamp() })
+      .catch((e) => reportDenied('bottom_panel_profiles', e, 'write'));
   }, []);
+  // THE SHARED SELECTION IS READ ONCE, AT MOUNT — never live. Following the selection to
+  // your other devices is what Chad asked for; having the OTHER dispatcher's pick yank your
+  // grid out from under you mid-plan is the thing v0.53.0 refused to ship, and it still is.
+  // So a change made elsewhere is picked up the next time this screen opens, and one click
+  // puts it back either way.
+  const sharedActiveRead = { get current() { return sharedActiveReadOnce; }, set current(v) { sharedActiveReadOnce = v; } };
 
   useEffect(() => {
     if (!db) return;
     const unsub = onSnapshot(collection(db, 'bottom_panel_profiles'), async (snap) => {
       const remote = snap.docs
-        .map((d) => ({ name: d.data()?.name || d.id, s: d.data()?.s || null }))
+        .map((d) => ({
+          name: d.data()?.name || d.id,
+          s: d.data()?.s || null,
+          // WHEN it was last saved, so a device can tell "I already have this one" from
+          // "this was updated on the desktop since I last looked". serverTimestamp() reads
+          // back null on the writing client's own echo, so this is legitimately absent for
+          // a beat — bar-memory treats absent as "not newer" rather than guessing.
+          updatedAt: (() => { try { return d.data()?.updated_at?.toMillis?.() ?? null; } catch { return null; } })(),
+        }))
         .filter((p) => p.s)
         .sort((a, b) => a.name.localeCompare(b.name));
+      // The shared selection rides the same snapshot — one listener, no extra read.
+      if (!sharedActiveRead.current) {
+        sharedActiveRead.current = true;
+        const shared = snap.docs.find((d) => d.id === ACTIVE_DOC_ID)?.data();
+        if (shared && 'activeName' in shared) {
+          const nm = typeof shared.activeName === 'string' && shared.activeName ? shared.activeName : null;
+          setActiveState(nm);
+          safeWriteJSON(LS_BOTTOM_PROFILES_ACTIVE, nm);
+        }
+      }
       // ONE-TIME migration of whatever this device saved before profiles were shared.
       // Guarded by a local flag so a profile someone deletes on another device doesn't
       // get resurrected every time this browser reconnects.
