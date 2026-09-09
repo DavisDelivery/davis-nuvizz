@@ -13,7 +13,20 @@ import { installFirestoreFake } from './_firestore-fake.mjs';
 
 const STOP_COLS = ['vizzonInfo.shipmentInfo.stopNbr', 'vizzonInfo.shipmentInfo.shipmentNbr', 'default_vizzonInfo.shipmentInfo.status', 'vizzonInfo.shipmentInfo.status', 'vizzonInfo.destination.address.name', 'vizzonInfo.destination.address.line1', 'vizzonInfo.destination.address.city', 'vizzonInfo.destination.address.zipCode', 'route.name', 'vizzonInfo.shipmentInfo.proNbr', 'vizzonInfo.destination.earliestSchTime', 'vizzonInfo.createdTime'];
 const LOAD_COLS = ['loadId', 'name', 'loadNbr', 'status', 'trips'];
-const VIEWED = '2026-09-08';
+// A FUTURE DAY, COMPUTED — NOT WRITTEN DOWN. This was the literal '2026-09-08', which was +2d
+// on the afternoon it was authored (2026-09-06) and became YESTERDAY three days later. The
+// roster capture these tests drive only happens for a day that has not arrived yet, so on
+// 2026-09-09 all three went red — on main, on every open PR, and on every PR opened after —
+// for a reason no diff had touched. A date that decides which branch runs cannot be a constant;
+// spelled the way history-core builds one, so DST cannot move it either.
+const VIEWED = (() => {
+  const etToday = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date());
+  const d = new Date(etToday + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + 2);
+  return d.toISOString().slice(0, 10);
+})();
 
 async function manualScan(rosterBody) {
   const stops = { filterData: [Object.fromEntries(STOP_COLS.map((c) => [c, {}]))], values: [] };
