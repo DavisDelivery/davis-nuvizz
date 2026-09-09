@@ -1,91 +1,73 @@
 import fs from 'fs';
-import { MARK, wrap, ITEMS, row } from './build.mjs';
+import { MARK, CHEV, wrap, ITEMS, row } from './build.mjs';
+const list = (mark) => ITEMS.map((r) => row(r, mark && r[0] === 'HYDRAULIC STACKER')).join('');
 
-/* ─────────────────────── 5 · PAPER — the delivery ticket ─────────────────────── */
-const T = `
-.tk{font-family:Arial,Helvetica,sans-serif;color:#111;font-size:11px;background:#fff;border:1px solid #e7e5e4;border-radius:9px;padding:16px}
-.tk table{border-collapse:collapse;width:100%;table-layout:fixed}
-.tk th{border-bottom:1px solid #bbb;background:#f0f1f3;padding:4px 6px;text-align:left;font-size:10px}
-.tk td{border-bottom:1px solid #e6e6e6;padding:4px 6px;word-break:break-word}
-.tk td.c,.tk th.c{text-align:center}.tk td.r,.tk th.r{text-align:right}
-.mkfill{font-weight:bold;background:#111;color:#fff;border-radius:3px;padding:0 4px;font-size:9px}
-`;
-const head = `<tr><th style="width:22%">PO</th><th style="width:22%">PO Identifier</th><th class="c" style="width:10%">Quantity</th><th class="c" style="width:24%">Exceptions/Comments</th><th class="r" style="width:12%">Weight</th><th style="width:10%">Volume</th></tr>`;
-const tkRow = (p, id, q, exc, w, bold) => `<tr><td>${p}</td><td>${id}</td><td class="c">${q}</td><td class="c">${exc}</td><td class="r">${bold ? `<b>${w}</b>` : w}</td><td></td></tr>`;
+// Measured by laying each row out in a content box of exactly N px and counting line
+// boxes. Numbers below are that measurement, not arithmetic on the class names.
+const TABLE = `
+<table class="tbl">
+  <thead><tr><th>content width</th><th>where it comes from</th><th>“HYDRAULIC STACKER” + chip</th><th>longest name + chip</th></tr></thead>
+  <tbody>
+    <tr><td><b>328px</b></td><td>360px phone − <span class="mono">px-4</span></td><td class="ok">1 line</td><td class="wrap">2 lines — wraps</td></tr>
+    <tr><td><b>347px</b></td><td><span class="mono">w-[380px]</span> − <span class="mono">border-l</span> − <span class="mono">px-4</span></td><td class="ok">1 line</td><td class="ok">1 line</td></tr>
+    <tr><td><b>358px</b></td><td>390px phone − <span class="mono">px-4</span></td><td class="ok">1 line</td><td class="ok">1 line</td></tr>
+  </tbody>
+</table>`;
 
-fs.writeFileSync('Paper.dc.html', wrap(`
-<style>${T}</style>
+const CORRECTION = `
+<div class="card" style="background:#fffbeb;border-color:#fde68a">
+  <h3 style="color:#92400e">Correction to my first pass</h3>
+  <p class="note">I first reported that the chip “wraps at every real width, desktop included”. <b style="color:#1c1917">That was wrong.</b> The mocks I measured it in applied padding inside a box already set to the content width, so every row rendered 32px narrower than labelled. Re-measured at the true widths, the chip fits everywhere except the longest product name at 328px.</p>
+  <p class="note" style="margin-top:9px">It changes the argument: the chip placement is <i>viable</i>. The reason to prefer the line below is no longer “the other one breaks”.</p>
+</div>`;
+
+/* ══════════════ 3 · PHONE ══════════════ */
+fs.writeFileSync('Phone.dc.html', wrap(`
 <div class="pad">
-  <div class="kicker">Paper · the Delivery Ticket</div>
-  <h2>The column for this already exists, and it's printing nothing</h2>
-  <p class="note" style="margin-bottom:22px">The ticket the driver physically carries has an <b>Exceptions/Comments</b> column — 24% of the page width — that renders a hardcoded <span class="mono">-/-</span> on every single line.</p>
-
-  <div class="grid2">
-    <div>
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px"><span class="tag chk">today</span></div>
-      <div class="tk"><table><thead>${head}</thead><tbody>
-        ${tkRow('MISC', '187645-05', '3', '-/-', '55 Lbs')}
-        ${tkRow('HYDRAULIC STACKER', '190235-07', '1', '-/-', '1,259 Lbs')}
-        ${tkRow('PLATFORM TRUCK', '192400-00', '2', '-/-', '348 Lbs')}
-      </tbody></table></div>
-    </div>
-    <div>
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px"><span class="tag yes">proposed</span><span class="note" style="font-size:11.5px">zero layout change</span></div>
-      <div class="tk"><table><thead>${head}</thead><tbody>
-        ${tkRow('MISC', '187645-05', '3', '-/-', '55 Lbs')}
-        ${tkRow('HYDRAULIC STACKER', '190235-07', '1', '<span class="mkfill">HEAVY</span><div style="font-size:9px;font-weight:bold;margin-top:2px">DOCK OR FORKLIFT<br>KEEP UPRIGHT</div>', '1,259 Lbs', true)}
-        ${tkRow('PLATFORM TRUCK', '192400-00', '2', '-/-', '348 Lbs')}
-      </tbody></table></div>
-    </div>
-  </div>
-
+  <div class="kicker">Mobile · the stop sheet</div>
+  <h2>The narrowest real case is a 360px phone — 328px of row</h2>
+  <p class="note" style="margin-bottom:18px">The mobile sheet is <span class="mono">absolute inset-0</span>, so the row width is the viewport less the card's <span class="mono">px-4</span>. 360px is the width CI already tests.</p>
+  ${TABLE}
   <div class="rule"></div>
-  <div class="grid3">
-    <div class="card"><h3>no colour is load-bearing</h3>
-      <div class="tk" style="filter:grayscale(1);padding:8px;margin:10px 0"><table><tbody>${tkRow('HYDRAULIC STACKER', '190235-07', '1', '<span class="mkfill">HEAVY</span>', '1,259 Lbs', true)}</tbody></table></div>
-      <p class="note">The same row at 100% greyscale. Solid black on white, so a worn toner cartridge cannot erase the warning.</p></div>
-    <div class="card"><h3>the ticket drops one field it needs</h3><p class="note"><span class="mono">ticketData</span> maps each line to <span class="mono">{po, ident, qty, wt}</span> — it throws away <span class="mono">quantityUOM</span>. The screen prints “1&nbsp;UNT”; the paper prints “1”. <b style="color:#1c1917">UNT is what says “machine, not carton”</b>, and restoring it is worth doing on its own.</p></div>
-    <div class="card"><h3>the cover page has no roster</h3><p class="note">The Driver Manifest cover is route totals only, then one full ticket per page. Nothing between them answers “what is heavy today” before he pulls out of the yard — which is the moment load order actually gets decided.</p></div>
+
+  <div style="display:flex;gap:26px;align-items:flex-start;flex-wrap:wrap">
+    <div style="width:328px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px"><span class="tag chk">chip after the name</span></div>
+      <div class="app"><div class="bar">328px rows</div><div class="rows" style="width:328px">
+        <div class="li"><div class="lr"><span class="nm">HYDRAULIC STACKER<span class="chip">HEAVY</span></span><span class="qt">1 UNT · 1259 Lbs</span></div><div class="sku">190235-07 , SEQ# 3</div></div>
+        <div class="li"><div class="lr"><span class="nm">PALLET STRETCH WRAP 15PCF<span class="chip">HEAVY</span></span><span class="qt">1 CTN · 31 Lbs</span></div><div class="sku">156830-08 , SEQ# 6</div></div>
+      </div></div>
+      <p class="note" style="margin-top:9px">The stacker fits. The second row is the stop's <b style="color:#1c1917">longest name</b>, shown to stress the layout — under the ≥500&nbsp;lb/piece rule a 31&nbsp;lb carton would never carry this chip, so the wrap is a stress result, not a real screen.</p>
+    </div>
+    <div style="width:328px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px"><span class="tag yes">recommended</span><span class="note" style="font-size:11.5px">its own line</span></div>
+      <div class="app"><div class="bar">328px rows</div><div class="rows" style="width:328px">${list(true)}</div></div>
+      <p class="note" style="margin-top:9px">Immune to long names, and it carries <b style="color:#1c1917">the number and the reason</b> rather than one word. The number is the message — a chip reading HEAVY says less than the row's own “1259 Lbs” already does.</p>
+    </div>
+    <div style="width:330px">${CORRECTION}</div>
   </div>
 </div>`));
 
-/* ─────────────────────── 6 · ESCALATE ─────────────────────── */
-fs.writeFileSync('Escalate.dc.html', wrap(`
+/* ══════════════ 4 · DESKTOP ══════════════ */
+fs.writeFileSync('Desktop.dc.html', wrap(`
 <div class="pad">
-  <div class="kicker">Escalation</div>
-  <h2>Inside a collapsed list, the mark is worth nothing</h2>
-  <p class="note" style="margin-bottom:24px"><span class="mono">OrderItemsSection</span> has one call site and no <span class="mono">defaultOpen</span> — it starts <b style="color:#1c1917">closed</b>. Nobody opens 700 cards and expands 700 item lists at load-building time. The mark has to reach a surface that is already being read.</p>
-
-  <div style="display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap">
-    <div>
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px"><span class="tag yes">1 · the collapsed header</span></div>
-      <div class="app" style="width:348px"><div class="bar"><span>what you see without expanding</span></div><div class="in">
-        <span class="cap">Items (7)</span>
-        <span class="sum" style="display:block">4 pallets · 4 pieces · 1765 Lbs</span>
-        <div class="mkline" style="margin-top:5px">${MARK(12)}<b class="mktxt">heaviest piece 1,259 lb — 71% of this stop</b></div>
+  <div class="kicker">Desktop · the right sidebar</div>
+  <h2>Desktop sits between the two phones</h2>
+  <p class="note" style="margin-bottom:20px"><span class="mono">w-[380px]</span> with <span class="mono">border-l</span> and <span class="mono">px-4</span> leaves <b>347px</b> — narrower than a 390px phone's 358px, wider than a 360px phone's 328px. So the phone is still the constraint, and the same treatment clears all three.</p>
+  <div style="display:flex;gap:26px;align-items:flex-start;flex-wrap:wrap">
+    <div style="width:347px">
+      <div class="app"><div class="bar" style="display:flex;justify-content:space-between"><span>PRO 007173855</span><span>MANDI · stop 7</span></div>
+      <div style="padding:10px 0;width:347px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding-bottom:6px;border-bottom:1px solid #f1f5f9">
+          <span><span class="cap">Items (7)</span><span class="sum" style="display:block">4 pallets · 4 pieces · 1765 Lbs</span></span>${CHEV}
+        </div>
+        <div style="padding-top:7px">${list(true)}</div>
       </div></div>
-      <p class="note" style="width:348px;margin-top:9px">One line, on the summary that is already on screen. This is the single highest-value placement.</p>
     </div>
-    <div>
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px"><span class="tag yes">2 · the grid's weight cell</span></div>
-      <div class="app" style="width:400px"><div class="bar"><span>bottom planning grid</span></div><div style="padding:0">
-        <table style="width:100%;border-collapse:collapse;font-size:12px">
-          <thead><tr style="background:#f8fafc"><th style="text-align:left;padding:6px 10px;font-size:10px;text-transform:uppercase;color:#64748b;font-weight:600">Customer</th><th style="text-align:right;padding:6px 10px;font-size:10px;text-transform:uppercase;color:#64748b;font-weight:600">Skids</th><th style="text-align:right;padding:6px 10px;font-size:10px;text-transform:uppercase;color:#64748b;font-weight:600">Weight</th></tr></thead>
-          <tbody>
-            <tr style="border-top:1px solid #e2e8f0"><td style="padding:6px 10px;color:#1e293b">PARAGON FILMS</td><td style="text-align:right;padding:6px 10px;color:#475569">6</td><td style="text-align:right;padding:6px 10px;color:#475569">2,140</td></tr>
-            <tr style="border-top:1px solid #e2e8f0;background:#fafafa"><td style="padding:6px 10px;color:#1e293b">SHARPS MWS</td><td style="text-align:right;padding:6px 10px;color:#475569">4</td><td style="text-align:right;padding:6px 10px;color:#475569"><span style="display:inline-flex;align-items:center;gap:4px;justify-content:flex-end">1,765 ${MARK(11)}</span><div style="font-size:9px;font-weight:700;color:#111827">1,259 in 1 pc</div></td></tr>
-            <tr style="border-top:1px solid #e2e8f0"><td style="padding:6px 10px;color:#1e293b">MHC KENWORTH</td><td style="text-align:right;padding:6px 10px;color:#475569">2</td><td style="text-align:right;padding:6px 10px;color:#475569">880</td></tr>
-          </tbody>
-        </table>
-      </div></div>
-      <p class="note" style="width:400px;margin-top:9px">Put it where the number it corrects already lives. Sortable and filterable in a grid that already sorts — and it costs no map-pin slot.</p>
+    <div style="max-width:420px">
+      <div class="card"><h3>What the dispatcher does with it</h3><p class="note">Picks a truck that can get 1,259&nbsp;lb off — a dock-height trailer, or a gate rated for it — and tells the loader to put it last on. Both happen before the truck leaves, which is why the mark has to be visible <b style="color:#1c1917">without expanding the list</b>.</p></div>
+      <div class="card" style="margin-top:16px"><h3>Honest limit — it does not pick the truck</h3><p class="note">I checked rather than assumed: with no site restrictions, <span class="mono">truckCanCarry</span> returns ok for both the 26ft box and the 53ft trailer, and 1,259&nbsp;lb is 12.6% of the box's 10,000&nbsp;lb rating. The solver gates on skids and total weight only — nothing per-line.</p><p class="note" style="margin-top:9px">So this informs a <b style="color:#1c1917">person's</b> choice; it does not change the router's. Truck selection is already owned by the site-level icons, and the two cards above are not in conflict — one is the dispatcher, the other is the solver.</p></div>
     </div>
-  </div>
-
-  <div class="rule"></div>
-  <div class="grid2">
-    <div class="card"><h3>Not the map pin</h3><p class="note">Pin slots are scarce — the marker collapses to “first 2 + <span class="mono">+N</span>” past three icons, and v0.65 already recorded 116 clock icons over 755 stops as “a quarter of why the map read as time-noise”. Every one of the 18 pin icons answers <i>can the truck get in the door</i>. This answers <i>can we get it off the truck</i>. Different question, different surface.</p></div>
-    <div class="card"><h3>A third state, not two</h3><p class="note">The cheap saved-search pull that builds the board carries <b style="color:#1c1917">no line items at all</b> — they arrive later, per PRO, capped at 250 an run. So the mark needs <b style="color:#1c1917">flagged / clean / not looked at yet</b>. A two-state mark would quietly tell a dispatcher “nothing heavy here” about a stop whose items nobody has fetched. The <span class="mono">enriched</span> field is already on the wire, so this is buildable — but it has to be designed in, not discovered later.</p></div>
   </div>
 </div>`));
-console.log('2 more artboards written');
+console.log('Phone + Desktop');

@@ -6,7 +6,7 @@
       "x": 0,
       "y": 0,
       "w": 1000,
-      "h": 1220
+      "h": 1330
     },
     {
       "file": "Mark.dc.html",
@@ -14,47 +14,47 @@
       "x": 1100,
       "y": 0,
       "w": 1000,
-      "h": 780
+      "h": 930
     },
     {
       "file": "Phone.dc.html",
-      "title": "3 · Mobile",
+      "title": "3 · Mobile + the widths",
       "x": 2200,
       "y": 0,
-      "w": 900,
-      "h": 800
+      "w": 1180,
+      "h": 840
     },
     {
       "file": "Desktop.dc.html",
       "title": "4 · Desktop",
       "x": 0,
-      "y": 1340,
+      "y": 1450,
       "w": 1000,
-      "h": 640
+      "h": 670
     },
     {
       "file": "Paper.dc.html",
       "title": "5 · The printed ticket",
       "x": 1100,
-      "y": 1340,
+      "y": 1450,
       "w": 1000,
-      "h": 720
+      "h": 800
     },
     {
       "file": "Escalate.dc.html",
       "title": "6 · Escalation",
       "x": 2200,
-      "y": 1340,
+      "y": 1450,
       "w": 1060,
-      "h": 760
+      "h": 810
     },
     {
       "file": "Ask.dc.html",
       "title": "7 · Over to you",
       "x": 0,
-      "y": 2220,
+      "y": 2380,
       "w": 1160,
-      "h": 1460
+      "h": 1520
     }
   ],
   "annotations": [
@@ -64,6 +64,13 @@
       "y": -170,
       "w": 460,
       "text": "Start at 1 · THE REFRAME, then 2 · THE MARK.\n\nBoard 7 is the one that needs an answer from you — the rest is only worth building if that answer isn't \"nothing\"."
+    },
+    {
+      "id": "corrected",
+      "x": 2200,
+      "y": -170,
+      "w": 460,
+      "text": "Board 3 carries a correction: my first pass measured the row widths 32px narrow and I drew the wrong conclusion from it. The re-measured numbers are on that board."
     }
   ],
   "launch": {

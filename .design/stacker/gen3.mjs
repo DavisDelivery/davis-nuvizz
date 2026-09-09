@@ -1,67 +1,96 @@
 import fs from 'fs';
-import { wrap } from './build.mjs';
+import { MARK, wrap } from './build.mjs';
 
-fs.writeFileSync('Ask.dc.html', wrap(`
+/* ══════════════ 5 · PAPER ══════════════ */
+const TSTY = `
+.tk{font-family:Arial,Helvetica,sans-serif;color:#111;font-size:11px;background:#fff;border:1px solid #e7e5e4;border-radius:9px;padding:16px}
+.tk table{border-collapse:collapse;width:100%;table-layout:fixed}
+.tk th{border-bottom:1px solid #bbb;background:#f0f1f3;padding:4px 6px;text-align:left;font-size:10px}
+.tk td{border-bottom:1px solid #e6e6e6;padding:4px 6px;word-break:break-word}
+.tk td.c,.tk th.c{text-align:center}.tk td.r,.tk th.r{text-align:right}
+.mkfill{font-weight:bold;background:#111;color:#fff;border-radius:3px;padding:0 4px;font-size:9px}
+.mkink{font-weight:bold;border:1.5px solid #111;border-radius:3px;padding:0 4px;font-size:9px;color:#111}
+`;
+const head = `<tr><th style="width:22%">PO</th><th style="width:22%">PO Identifier</th><th class="c" style="width:10%">Quantity</th><th class="c" style="width:24%">Exceptions/Comments</th><th class="r" style="width:12%">Weight</th><th style="width:10%">Volume</th></tr>`;
+const r = (p, id, q, exc, w, b) => `<tr><td>${p}</td><td>${id}</td><td class="c">${q}</td><td class="c">${exc}</td><td class="r">${b ? `<b>${w}</b>` : w}</td><td></td></tr>`;
+const FLAG_FILL = '<span class="mkfill">HEAVY</span><div style="font-size:9px;font-weight:bold;margin-top:2px">DOCK OR FORKLIFT<br>KEEP UPRIGHT</div>';
+const FLAG_INK = '<span class="mkink">HEAVY</span><div style="font-size:9px;font-weight:bold;margin-top:2px">DOCK OR FORKLIFT<br>KEEP UPRIGHT</div>';
+
+fs.writeFileSync('Paper.dc.html', wrap(`
+<helmet><style>${TSTY}</style></helmet>
 <div class="pad">
-  <div class="kicker">Before a line of this gets built</div>
-  <h2>One question for you, one read that costs nothing</h2>
-
-  <div class="card" style="border-color:#1e5b92;border-width:2px;margin:20px 0">
-    <h3 style="color:#1e5b92">The question that decides the whole feature</h3>
-    <p class="lede" style="font-size:17px;margin:8px 0 10px">When you see “this stop has a 1,259&nbsp;lb single piece”, what do you actually <i>do</i> differently?</p>
-    <p class="note">Send a second man · put it last on · require a dock rather than a gate · call ahead to ask if they have a forklift · move it earlier in the sequence · nothing.</p>
-    <p class="note" style="margin-top:10px"><b style="color:#1c1917">If the honest answer is “nothing”, say so and I'll drop it.</b> A flag nobody acts on is decoration, and this one costs a row of screen on every heavy stop.</p>
-  </div>
-
-  <div class="card" style="margin-bottom:24px">
-    <h3>The threshold should be measured, not picked by me</h3>
-    <p class="note">I've proposed 500&nbsp;lb from a single screenshot. The real number is in your own freight, and reading it is <b style="color:#1c1917">free</b> — <span class="mono">freight-class-report</span> reads the Firestore history warehouse only, and its own header says “no NuVizz (or any other) API calls”. It already emits per-shipment SKUs and product names; it needs two more columns.</p>
-    <p class="note" style="margin-top:10px">One read over 90 days would settle: how often <span class="mono">UNT</span> actually appears, what the real product vocabulary is, where the per-piece weight distribution genuinely breaks, and <b style="color:#1c1917">how many stops a day would wear this mark</b> — which is what decides whether it is useful or wallpaper. <b style="color:#1c1917">Say the word and I'll run it.</b> Zero NuVizz calls.</p>
-  </div>
-
-  <div class="rule"></div>
-  <h2 style="margin-bottom:4px">Two things I found on the way</h2>
-  <p class="note" style="margin-bottom:18px">Both are independent of the icon. Neither is fixed — we're in design mode — and both are yours to call.</p>
+  <div class="kicker">Paper · the Delivery Ticket</div>
+  <h2>The column for this already exists, and it's printing nothing</h2>
+  <p class="note" style="margin-bottom:22px">The ticket the driver carries has an <b>Exceptions/Comments</b> column — 24% of the page — rendering a hardcoded <span class="mono">-/-</span> on every line.</p>
 
   <div class="grid2">
-    <div class="card" style="background:#fef2f2;border-color:#fecaca">
-      <h3 style="color:#991b1b">This stop is badged the opposite of its own instructions</h3>
-      <p class="note">The note reads <b style="color:#1c1917">“NO STRAIGHT TRUCK OR LIFT / GATE! MUST SHIP UPRIGHT.”</b> — one sentence Uline wrapped across two 25-character records.</p>
-      <p class="mono" style="margin:11px 0;line-height:1.65;background:#fff;padding:9px 11px;border-radius:6px;border:1px solid #fecaca">"NO STRAIGHT TRUCK OR LIFT"<br>&nbsp;&nbsp;→ MATCH /\\bSTRAIGHT\\s+TRUCK\\b/i<br>&nbsp;&nbsp;→ uline_straight_truck<br>&nbsp;&nbsp;→ "Uline: straight truck only"</p>
-      <p class="note">I ran the real patterns rather than reading them. There is no negation guard on that list. Downstream, <span class="mono">routing-constraints</span> maps that flag to “must NOT be a tractor”, which forces the 26ft box — the one truck in the fleet with a liftgate. The customer said no straight truck and no lift gate.</p>
-      <p class="note" style="margin-top:10px"><b style="color:#1c1917">Caveat I can't close from here:</b> the badge draws from the stored <span class="mono">customer_notes</span> doc, so whether SHARPS MWS carries it <i>today</i> is a Firestore fact. The code path is proven; the stored state is not. That's a free read too.</p>
+    <div>
+      <div style="margin-bottom:9px"><span class="tag chk">today</span></div>
+      <div class="tk"><table><thead>${head}</thead><tbody>
+        ${r('MISC', '187645-05', '3', '-/-', '55 Lbs')}
+        ${r('HYDRAULIC STACKER', '190235-07', '1', '-/-', '1,259 Lbs')}
+        ${r('PLATFORM TRUCK', '192400-00', '2', '-/-', '348 Lbs')}
+      </tbody></table></div>
     </div>
-
-    <div class="card" style="background:#fffbeb;border-color:#fde68a">
-      <h3 style="color:#92400e">The oversize “L” chip may never have fired</h3>
-      <p class="note">The amber <b>L</b> chip on the item row keys on <span class="mono">productCategory === 'L'</span>, documented in the repo as “S standard / L long-oversize”. NuVizz's own OpenAPI spec describes that field differently:</p>
-      <p class="mono" style="margin:11px 0;line-height:1.65;background:#fff;padding:9px 11px;border-radius:6px;border:1px solid #fde68a">productCategory — “Type of carton or<br>package – Cooler, stote, ltote,<br>refrigerated etc.”  example: <b>DRY</b></p>
-      <p class="note">Every <span class="mono">'L'</span> and <span class="mono">'S'</span> value in this repo is in a <b style="color:#1c1917">hand-written test fixture</b> — none is captured NuVizz traffic. And the screenshot shows no L chip on a 1,259&nbsp;lb machine.</p>
-      <p class="note" style="margin-top:10px">Same free read answers it: has <span class="mono">'L'</span> ever appeared in 90 days of Davis history? If not, that's a signal that looks alive and is silent — and a second reason not to build the new mark on that field.</p>
+    <div>
+      <div style="margin-bottom:9px"><span class="tag yes">proposed</span><span class="note" style="font-size:11.5px;margin-left:8px">zero layout change</span></div>
+      <div class="tk"><table><thead>${head}</thead><tbody>
+        ${r('MISC', '187645-05', '3', '-/-', '55 Lbs')}
+        ${r('HYDRAULIC STACKER', '190235-07', '1', FLAG_INK, '1,259 Lbs', true)}
+        ${r('PLATFORM TRUCK', '192400-00', '2', '-/-', '348 Lbs')}
+      </tbody></table></div>
     </div>
   </div>
 
   <div class="rule"></div>
-  <div class="card">
-    <h3>What I'd build first, if you say go</h3>
-    <p class="note">Not the icon. The free read above, then the threshold, then the mark — in that order. The rule itself belongs beside <span class="mono">LONG_KEYWORDS</span> in <span class="mono">freight-geometry.mts</span>, which is already the pure, unit-tested, server-side home for freight rules and already keyword-scans product names today. One definition there feeds the screen, the grid and the paper, instead of three renderers each deciding for themselves.</p>
+  <div class="grid3">
+    <div class="card"><h3>ink, not a fill — this is the real print test</h3>
+      <div style="display:flex;gap:10px;margin:10px 0">
+        <div class="tk" style="padding:7px;flex:1"><table><tbody><tr><td class="c">${FLAG_FILL}</td></tr></tbody></table><div style="font-size:9px;color:#78716c;margin-top:5px">solid fill</div></div>
+        <div class="tk" style="padding:7px;flex:1;background:#fff"><table><tbody><tr><td class="c" style="color:#fff">${FLAG_FILL}</td></tr></tbody></table><div style="font-size:9px;color:#991b1b;margin-top:5px">same, backgrounds off</div></div>
+      </div>
+      <p class="note">Browsers drop background graphics when “print backgrounds” is off — a white-on-black chip then prints <b style="color:#1c1917">white on white</b>. The proposed mark uses a <b style="color:#1c1917">stroked outline and black text</b>, which survives either way. Greyscale is the wrong test; this is the right one.</p></div>
+    <div class="card"><h3>the ticket drops the field that matters</h3><p class="note"><span class="mono">ticketData</span> maps each line to <span class="mono">{po, ident, qty, wt}</span> — it discards <span class="mono">quantityUOM</span>. The screen prints “1&nbsp;UNT”; the paper prints “1”. <b style="color:#1c1917">UNT is the hint that this is a machine, not a carton</b>. The Bill of Lading already carries the UOM; the ticket doesn't.</p></div>
+    <div class="card"><h3>there is no manifest cover to put it on</h3><p class="note">Page 1 of the Driver Manifest is the summary header <b style="color:#1c1917">plus the first ticket</b> — not a standalone cover — and every ticket after starts a new page. So there is no per-stop roster page today; adding “heavy pieces on this route” to that header is a real change, not a slot waiting to be filled.</p></div>
   </div>
 </div>`));
 
-fs.writeFileSync('canvas.json', JSON.stringify({
-  artboards: [
-    { file: 'Main.dc.html',     title: '1 · The reframe',        x: 0,    y: 0,    w: 1000, h: 1220 },
-    { file: 'Mark.dc.html',     title: '2 · The mark',           x: 1100, y: 0,    w: 1000, h: 780 },
-    { file: 'Phone.dc.html',    title: '3 · Mobile',             x: 2200, y: 0,    w: 900,  h: 800 },
-    { file: 'Desktop.dc.html',  title: '4 · Desktop',            x: 0,    y: 1340, w: 1000, h: 640 },
-    { file: 'Paper.dc.html',    title: '5 · The printed ticket', x: 1100, y: 1340, w: 1000, h: 720 },
-    { file: 'Escalate.dc.html', title: '6 · Escalation',         x: 2200, y: 1340, w: 1060, h: 760 },
-    { file: 'Ask.dc.html',      title: '7 · Over to you',        x: 0,    y: 2220, w: 1160, h: 1460 },
-  ],
-  annotations: [
-    { id: 'start-here', x: 0, y: -170, w: 460,
-      text: 'Start at 1 · THE REFRAME, then 2 · THE MARK.\n\nBoard 7 is the one that needs an answer from you — the rest is only worth building if that answer isn\'t "nothing".' },
-  ],
-  launch: { view: 'canvas' },
-}, null, 2));
-console.log('Ask + canvas.json written');
+/* ══════════════ 6 · ESCALATE ══════════════ */
+fs.writeFileSync('Escalate.dc.html', wrap(`
+<div class="pad">
+  <div class="kicker">Escalation</div>
+  <h2>Inside a collapsed list, the mark is worth little</h2>
+  <p class="note" style="margin-bottom:24px"><span class="mono">OrderItemsSection</span> takes a <span class="mono">defaultOpen</span> prop, but its single call site omits it — so on every stop card the list starts <b style="color:#1c1917">closed</b>. Load building happens in the bottom grid, whose columns are Pallets / Loose / Weight / Restrictions / Load / Driver; it never opens a card. A mark only inside the list is a mark read after the truck is chosen.</p>
+
+  <div style="display:flex;gap:26px;align-items:flex-start;flex-wrap:wrap">
+    <div>
+      <div style="margin-bottom:9px"><span class="tag yes">1 · the collapsed header</span></div>
+      <div class="app" style="width:347px"><div class="bar">what you see without expanding</div><div style="padding:10px 16px">
+        <span class="cap">Items (7)</span>
+        <span class="sum" style="display:block">4 pallets · 4 pieces · 1765 Lbs</span>
+        <div class="mkline" style="margin-top:5px">${MARK(12)}<b class="mktxt">heaviest piece 1,259 lb — 71% of this stop</b></div>
+      </div></div>
+      <p class="note" style="width:347px;margin-top:9px">One line, on the summary already on screen. Highest value for the least new surface.</p>
+    </div>
+    <div>
+      <div style="margin-bottom:9px"><span class="tag yes">2 · the grid's weight cell</span></div>
+      <div class="app" style="width:400px"><div class="bar">bottom planning grid</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:#f8fafc"><th style="text-align:left;padding:6px 10px;font-size:10px;text-transform:uppercase;color:#64748b;font-weight:600">Customer</th><th style="text-align:right;padding:6px 10px;font-size:10px;text-transform:uppercase;color:#64748b;font-weight:600">Skids</th><th style="text-align:right;padding:6px 10px;font-size:10px;text-transform:uppercase;color:#64748b;font-weight:600">Weight</th></tr></thead>
+          <tbody>
+            <tr style="border-top:1px solid #e2e8f0"><td style="padding:6px 10px;color:#1e293b">PARAGON FILMS</td><td style="text-align:right;padding:6px 10px;color:#475569">6</td><td style="text-align:right;padding:6px 10px;color:#475569">2,140</td></tr>
+            <tr style="border-top:1px solid #e2e8f0;background:#fafafa"><td style="padding:6px 10px;color:#1e293b">SHARPS MWS</td><td style="text-align:right;padding:6px 10px;color:#475569">4</td><td style="text-align:right;padding:6px 10px;color:#475569"><span style="display:inline-flex;align-items:center;gap:4px;justify-content:flex-end">1,765 ${MARK(11)}</span><div style="font-size:9px;font-weight:700;color:#111827">1,259 in 1 pc</div></td></tr>
+            <tr style="border-top:1px solid #e2e8f0"><td style="padding:6px 10px;color:#1e293b">MHC KENWORTH</td><td style="text-align:right;padding:6px 10px;color:#475569">2</td><td style="text-align:right;padding:6px 10px;color:#475569">880</td></tr>
+          </tbody>
+        </table></div>
+      <p class="note" style="width:400px;margin-top:9px">Put it where the number it corrects already lives — sortable in a grid that already sorts, and it costs no map-pin slot.</p>
+    </div>
+  </div>
+
+  <div class="rule"></div>
+  <div class="grid2">
+    <div class="card"><h3>Not the map pin</h3><p class="note">Pin slots are scarce: the marker draws 2–3 icons and collapses 4+ to “first 2 + <span class="mono">+N</span>”. The 20 keys in <span class="mono">RESTRICTION_ICONS</span> are about the <i>place and its clock</i> — can the truck get in, and is anyone there. This answers “can we get it off the truck”, which is a freight question. Different question, different surface.</p><p class="note" style="margin-top:9px">That table has already been pruned once for noise: <span class="mono">appointment_required</span> was redrawn from a clock to a handset in v0.65 because it was “a quarter of why the map read as time-noise”. Adding a freight mark to the pin row would re-earn that.</p></div>
+    <div class="card"><h3>A third state, not two</h3><p class="note">The cheap saved-search pull that builds the board carries <b style="color:#1c1917">no line items</b> — they arrive later, per PRO, capped at 250 a run. So the mark needs <b style="color:#1c1917">flagged / clean / not looked at yet</b>. Two states would quietly tell a dispatcher “nothing heavy here” about a stop whose items nobody has fetched. The <span class="mono">enriched</span> field is already on the wire, so this is buildable — but only if it is designed in now.</p></div>
+  </div>
+</div>`));
+console.log('Paper + Escalate');
