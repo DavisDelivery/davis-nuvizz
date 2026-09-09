@@ -1,11 +1,15 @@
-// test/refile-core.test.mjs — finished stops from frozen days are filed where they ran, and the
-// frozen copy is healed. Pinned to the 09/02 orders that exposed the gap.
+// test/refile-core.test.mjs — what the scan does about stops that live on FROZEN days (v0.95.0).
+// Pinned to the 09/02–09/07 orders that exposed each rule; see the module header.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { strayFinishedRows, openPastRows, planRefile, planChangeHeals, healFields, HEAL_FIELDS } from '../netlify/functions/lib/refile-core.mts';
+import {
+  strayFinishedRows, openPastRows, planRefile, planOpenStrays, frozenCopyDays, nextCopyDays, rotate,
+  healFields, HEAL_FIELDS, copyIsTerminal,
+} from '../netlify/functions/lib/refile-core.mts';
 
 const AT = '2026-09-02T15:30:00.000Z';
+const NOW = Date.parse(AT);
 const TODAY = '2026-09-02';
 const TARGETS = new Set(['2026-09-02', '2026-09-03', '2026-09-04']);
 const delivered = (nbr, over = {}) => ({
@@ -15,6 +19,10 @@ const delivered = (nbr, over = {}) => ({
   businessName: 'H&H WORLD GROUP', weight: 573, ...over,
 });
 const openRow = (nbr, over = {}) => ({ stopNbr: nbr, status: '10', normalizedStatus: 'UNPLANNED', isPlanned: false, isUnplanned: true, loadNbr: null, routeName: null, routeSeq: null, driverName: null, driverUserName: null, driverId: null, boardDate: '2026-09-01', listUpdatedDTTM: '2026-09-01T14:12:00', ...over });
+const plannedRow = (nbr, load, over = {}) => openRow(nbr, { status: '20', normalizedStatus: 'SCHEDULED', isPlanned: true, isUnplanned: false, loadNbr: load, routeName: load, ...over });
+const stray = (nbr, ownDay, row) => ({ nbr, ownDay, row });
+const copies = (nbr, ...days) => new Map([[nbr, days.map(([day, copy]) => ({ day, copy }))]]);
+const NONE = new Set();
 
 test('strayFinishedRows: only FINISHED rows on days before today that this scan does not write, inside the reach', () => {
   const buckets = new Map([
@@ -27,108 +35,229 @@ test('strayFinishedRows: only FINISHED rows on days before today that this scan 
   assert.deepEqual(strays.map((s) => [s.nbr, s.ownDay]), [['007170166-1', '2026-09-01']]);
 });
 
+test('openPastRows: OPEN rows on frozen days; with sinceNaive only those NuVizz touched at or after it (ET-naive string against string)', () => {
+  const buckets = new Map([
+    ['2026-09-01', [openRow('OLD-TOUCH', { listUpdatedDTTM: '2026-08-29T09:00:00' }), openRow('FRI-UNPLAN', { listUpdatedDTTM: '2026-09-01T16:40:00' }), delivered('DONE-1')]],
+    ['2026-09-02', [openRow('TODAY-1', { boardDate: '2026-09-02' })]],
+  ]);
+  const all = openPastRows(buckets, { today: TODAY, targets: TARGETS });
+  assert.deepEqual(all.map((s) => s.nbr).sort(), ['FRI-UNPLAN', 'OLD-TOUCH']);
+  const recent = openPastRows(buckets, { today: TODAY, targets: TARGETS, sinceNaive: '2026-08-30T15:30' });
+  assert.deepEqual(recent.map((s) => s.nbr), ['FRI-UNPLAN']);
+});
+
+test('frozenCopyDays: own day through yesterday, NEWEST first, no older than the reach; nothing for today or the future', () => {
+  assert.deepEqual(frozenCopyDays('2026-09-01', '2026-09-04', 7), ['2026-09-03', '2026-09-02', '2026-09-01']);
+  assert.deepEqual(frozenCopyDays('2026-08-20', '2026-09-04', 7), ['2026-09-03', '2026-09-02', '2026-09-01', '2026-08-31', '2026-08-30', '2026-08-29', '2026-08-28']);
+  assert.deepEqual(frozenCopyDays('2026-09-04', '2026-09-04', 7), []);
+  assert.deepEqual(frozenCopyDays('2026-09-09', '2026-09-04', 7), []);
+});
+
 test('planRefile — 007170166-1: delivered on BEN 1 on 09/02, frozen 09/01 copy still "unplanned" → filed onto today pinned, and the copy healed', () => {
-  const strays = strayFinishedRows(new Map([['2026-09-01', [delivered('007170166-1')]]]), { today: TODAY, targets: TARGETS });
-  const plan = planRefile(strays, { today: TODAY, at: AT, onBoard: new Set(), ownCopies: new Map([['007170166-1', openRow('007170166-1')]]) });
+  const s = stray('007170166-1', '2026-09-01', delivered('007170166-1'));
+  const plan = planRefile([s], { today: TODAY, at: AT, onBoard: NONE, copies: copies('007170166-1', ['2026-09-01', openRow('007170166-1')]), nowMs: NOW });
   assert.equal(plan.file.length, 1);
-  const f = plan.file[0];
-  assert.equal(f.boardDate, TODAY, 'pinned to the board it ran on');
-  assert.equal(f.scheduledDate, TODAY);
-  assert.equal(f.refiledFrom, '2026-09-01');
-  assert.equal(f.status, '90');
+  assert.equal(plan.file[0].boardDate, TODAY);
+  assert.equal(plan.file[0].scheduledDate, TODAY);
+  assert.equal(plan.file[0].refiledFrom, '2026-09-01');
+  assert.equal(plan.file[0].status, '90');
   assert.equal(plan.heal.length, 1);
   assert.equal(plan.heal[0].day, '2026-09-01');
-  assert.equal(plan.heal[0].nbr, '007170166-1');
-  const h = plan.heal[0].fields;
-  assert.equal(h.status, '90');
-  assert.equal(h.normalizedStatus, 'DELIVERED');
-  assert.equal(h.isUnplanned, false);
-  assert.equal(h.isPlanned, true);
-  assert.equal(h.routeName, 'BEN 1');
-  assert.equal(h.deliveredDTTM, '2026-09-02T11:11:00');
-  assert.equal(h.closedOnBoard, TODAY);
-  assert.equal(h.frozen_heal_reason, 'finished');
-  assert.equal('boardDate' in h, false, 'a heal never moves the copy to another day');
-  assert.equal('scheduledDate' in h, false);
-  assert.equal('isTerminal' in h, false, 'isTerminal means "delivers to our own terminal" in this schema, not a status');
+  assert.equal(plan.heal[0].fields.status, '90');
+  assert.equal(plan.heal[0].fields.normalizedStatus, 'DELIVERED');
+  assert.equal(plan.heal[0].fields.isPlanned, true);
+  assert.equal(plan.heal[0].fields.isUnplanned, false);
+  assert.equal(plan.heal[0].fields.routeName, 'BEN 1');
+  assert.equal(plan.heal[0].fields.deliveredDTTM, '2026-09-02T11:11:00');
+  assert.equal(plan.heal[0].fields.closedOnBoard, TODAY, 'the copy says which board holds the delivery');
+  assert.equal(plan.heal[0].fields.frozen_heal_reason, 'finished');
+  assert.equal('boardDate' in plan.heal[0].fields, false, 'a heal never moves a row');
+  assert.deepEqual(plan.healedStops, ['007170166-1']);
 });
 
-test('planRefile — RA52300615 already on today\'s board via the carry-forward → left to that path, not filed twice', () => {
-  const strays = strayFinishedRows(new Map([['2026-09-01', [delivered('RA52300615')]]]), { today: TODAY, targets: TARGETS });
-  const plan = planRefile(strays, { today: TODAY, at: AT, onBoard: new Set(['RA52300615']), ownCopies: new Map() });
+test('planRefile — a routed stop clamped forward each day it stayed open: EVERY open copy is healed, not just the arrival day\'s (the 125-ghost bug)', () => {
+  const today = '2026-09-04';
+  const s = stray('CLAMP-1', '2026-09-01', delivered('CLAMP-1', { listUpdatedDTTM: '2026-09-04T09:00:00', deliveredDTTM: '2026-09-04T09:00:00' }));
+  const c = copies('CLAMP-1',
+    ['2026-09-03', plannedRow('CLAMP-1', 'BEN 1', { boardDate: '2026-09-03' })],   // the clamped copy on the day before it delivered
+    ['2026-09-02', plannedRow('CLAMP-1', 'BEN 1', { boardDate: '2026-09-02' })],
+    ['2026-09-01', openRow('CLAMP-1')]);
+  const plan = planRefile([s], { today, at: AT, onBoard: NONE, copies: c, nowMs: NOW });
+  assert.deepEqual(plan.heal.map((h) => h.day), ['2026-09-03', '2026-09-02', '2026-09-01']);
+  assert.equal(plan.file.length, 1);
+});
+
+test('planRefile — RA52300615 already on today\'s board via the carry-forward → not filed twice, but its frozen open copy is STILL healed (#838 skipped exactly these)', () => {
+  const s = stray('RA52300615', '2026-09-01', delivered('RA52300615'));
+  const plan = planRefile([s], { today: TODAY, at: AT, onBoard: new Set(['RA52300615']), copies: copies('RA52300615', ['2026-09-01', plannedRow('RA52300615', 'BEN 1')]), nowMs: NOW });
   assert.equal(plan.file.length, 0);
   assert.equal(plan.skippedOnBoard, 1);
+  assert.equal(plan.heal.length, 1, 'the ghost on the planning day is closed');
 });
 
-test('planRefile — a Friday delivery whose POD was uploaded Monday: the frozen copy is already DELIVERED → not today\'s work, nothing filed, nothing healed', () => {
-  const row = delivered('FRI-1', { boardDate: '2026-09-04', listUpdatedDTTM: '2026-09-07T09:00:00', deliveredDTTM: '2026-09-04T14:00:00' });
-  const strays = strayFinishedRows(new Map([['2026-09-04', [row]]]), { today: '2026-09-07', targets: new Set(['2026-09-07', '2026-09-08', '2026-09-09']) });
-  const plan = planRefile(strays, { today: '2026-09-07', at: AT, onBoard: new Set(), ownCopies: new Map([['FRI-1', { ...row, boardDate: '2026-09-04' }]]) });
+test('planRefile — a Friday delivery whose POD was uploaded Monday: its own copy is already DELIVERED → not today\'s work; a later open copy is still healed', () => {
+  const s = stray('FRI-1', '2026-09-01', delivered('FRI-1', { listUpdatedDTTM: '2026-09-02T09:30:00' }));
+  const done = { ...delivered('FRI-1'), listUpdatedDTTM: '2026-09-01T14:00:00' };
+  const plan = planRefile([s], { today: TODAY, at: AT, onBoard: NONE, copies: copies('FRI-1', ['2026-09-01', done]), nowMs: NOW });
   assert.equal(plan.file.length, 0);
-  assert.equal(plan.heal.length, 0);
   assert.equal(plan.skippedTerminal, 1);
+  assert.equal(plan.heal.length, 0);
+  // Same order, but a clamped OPEN twin sits on the next day: healed, still not filed.
+  const today = '2026-09-03';
+  const plan2 = planRefile([s], { today, at: AT, onBoard: NONE, copies: copies('FRI-1', ['2026-09-02', plannedRow('FRI-1', 'CHAD', { boardDate: '2026-09-02' })], ['2026-09-01', done]), nowMs: NOW });
+  assert.equal(plan2.file.length, 0);
+  assert.equal(plan2.skippedTerminal, 1);
+  assert.deepEqual(plan2.heal.map((h) => h.day), ['2026-09-02']);
 });
 
 test('planRefile — no frozen copy anywhere (created and delivered between two scans) → filed onto today, nothing to heal', () => {
-  const strays = strayFinishedRows(new Map([['2026-09-01', [delivered('NEW-1')]]]), { today: TODAY, targets: TARGETS });
-  const plan = planRefile(strays, { today: TODAY, at: AT, onBoard: new Set(), ownCopies: new Map([['NEW-1', null]]) });
+  const s = stray('NEW-1', '2026-09-01', delivered('NEW-1'));
+  const plan = planRefile([s], { today: TODAY, at: AT, onBoard: NONE, copies: copies('NEW-1', ['2026-09-01', null]), nowMs: NOW });
   assert.equal(plan.file.length, 1);
   assert.equal(plan.heal.length, 0);
 });
 
-test('planRefile — a copy the caller could not read this scan is left alone (retried next scan), never guessed', () => {
-  const strays = strayFinishedRows(new Map([['2026-09-01', [delivered('UNREAD-1')]]]), { today: TODAY, targets: TARGETS });
-  const plan = planRefile(strays, { today: TODAY, at: AT, onBoard: new Set(), ownCopies: new Map() });
+test('planRefile — a stop whose copies the caller could not read this scan is left alone (retried next scan), never guessed', () => {
+  const s = stray('UNREAD-1', '2026-09-01', delivered('UNREAD-1'));
+  const plan = planRefile([s], { today: TODAY, at: AT, onBoard: NONE, copies: new Map(), nowMs: NOW });
   assert.equal(plan.file.length, 0);
+  assert.equal(plan.heal.length, 0);
   assert.equal(plan.unread, 1);
 });
 
 test('planRefile — a frozen copy with a confirmed Save inside the write grace is filed but NOT patched over', () => {
-  const strays = strayFinishedRows(new Map([['2026-09-01', [delivered('GRACE-1')]]]), { today: TODAY, targets: TARGETS });
-  const now = Date.parse(AT);
-  const copy = openRow('GRACE-1', { board_write_at: new Date(now - 10 * 60 * 1000).toISOString(), board_write_planned: true });
-  const plan = planRefile(strays, { today: TODAY, at: AT, onBoard: new Set(), ownCopies: new Map([['GRACE-1', copy]]), nowMs: now });
+  const s = stray('SAVE-1', '2026-09-01', delivered('SAVE-1'));
+  const fresh = openRow('SAVE-1', { board_write_at: new Date(NOW - 10 * 60 * 1000).toISOString() });
+  const plan = planRefile([s], { today: TODAY, at: AT, onBoard: NONE, copies: copies('SAVE-1', ['2026-09-01', fresh]), nowMs: NOW });
   assert.equal(plan.file.length, 1);
   assert.equal(plan.heal.length, 0);
 });
 
-test('openPastRows: open rows on frozen days that NuVizz updated recently — the un-planned-on-Friday case', () => {
-  const primary = openRow('PRIMARY131434870', { boardDate: '2026-09-02', listUpdatedDTTM: '2026-09-04T16:02:00' });
-  const quiet = openRow('QUIET-1', { boardDate: '2026-09-02', listUpdatedDTTM: '2026-09-02T09:00:00' });
-  const rows = openPastRows(new Map([['2026-09-02', [primary, quiet, delivered('DONE-1', { boardDate: '2026-09-02' })]]]),
-    { today: '2026-09-04', targets: new Set(['2026-09-04', '2026-09-07', '2026-09-08']), sinceMs: Date.parse('2026-09-03T00:00:00') });
-  assert.deepEqual(rows.map((r) => r.nbr), ['PRIMARY131434870']);
-});
-
-test('planChangeHeals — PRIMARY LOGISTICS: frozen 09/02 copy says planned on MARCUS 2, NuVizz says unplanned since Friday → plan fields healed, no delivery stamp, no day', () => {
-  const live = { nbr: 'PRIMARY131434870', ownDay: '2026-09-02', row: openRow('PRIMARY131434870', { boardDate: '2026-09-02', listUpdatedDTTM: '2026-09-04T16:02:00' }) };
-  const copy = { stopNbr: 'PRIMARY131434870', status: '20', normalizedStatus: 'SCHEDULED', isPlanned: true, isUnplanned: false, loadNbr: 'MARCUS 2', routeName: 'MARCUS 2', driverName: 'Marcus Young', boardDate: '2026-09-02' };
-  const heals = planChangeHeals([live], new Map([['PRIMARY131434870', copy]]), { at: AT });
-  assert.equal(heals.length, 1);
-  const f = heals[0].fields;
-  assert.equal(f.status, '10');
-  assert.equal(f.isUnplanned, true);
+test('planOpenStrays — PRIMARY LOGISTICS: frozen 09/02 copy says planned on MARCUS 2, NuVizz says unplanned since Friday → plan fields healed, no delivery stamp, no day, NOT filed (it has an open copy)', () => {
+  const live = openRow('PRIMARY131434870', { boardDate: '2026-09-02', listUpdatedDTTM: '2026-09-04T15:02:00' });
+  const frozen = plannedRow('PRIMARY131434870', 'MARCUS 2', { boardDate: '2026-09-02', driverName: 'Marcus Young' });
+  const plan = planOpenStrays([stray('PRIMARY131434870', '2026-09-02', live)], { today: '2026-09-07', at: AT, onBoard: NONE, copies: copies('PRIMARY131434870', ['2026-09-02', frozen]), nowMs: NOW });
+  assert.equal(plan.heal.length, 1);
+  const f = plan.heal[0].fields;
   assert.equal(f.isPlanned, false);
+  assert.equal(f.isUnplanned, true);
   assert.equal(f.routeName, null);
-  assert.equal(f.driverName, null);
+  assert.equal(f.loadNbr, null);
+  assert.equal(f.status, '10');
   assert.equal(f.frozen_heal_reason, 'plan');
   assert.equal('deliveredDTTM' in f, false);
+  assert.equal('closedOnBoard' in f, false);
   assert.equal('boardDate' in f, false);
+  assert.equal(plan.file.length, 0, 'the carry-over fold and the pool already serve it');
 });
 
-test('planChangeHeals — agreeing, terminal, or fresh-Save copies are left alone', () => {
-  const live = { nbr: 'A', ownDay: '2026-09-02', row: openRow('A', { boardDate: '2026-09-02', listUpdatedDTTM: '2026-09-04T16:02:00' }) };
-  const agreeing = { stopNbr: 'A', status: '10', normalizedStatus: 'UNPLANNED', isPlanned: false, routeName: null };
-  const terminal = { stopNbr: 'A', status: '90', normalizedStatus: 'DELIVERED', isPlanned: true, routeName: 'X' };
-  const fresh = { stopNbr: 'A', status: '20', normalizedStatus: 'SCHEDULED', isPlanned: true, routeName: 'CHAD', board_write_at: AT };
-  assert.equal(planChangeHeals([live], new Map([['A', agreeing]]), { at: AT }).length, 0);
-  assert.equal(planChangeHeals([live], new Map([['A', terminal]]), { at: AT }).length, 0);
-  assert.equal(planChangeHeals([live], new Map([['A', fresh]]), { at: AT, nowMs: Date.parse(AT) + 60_000 }).length, 0);
-  assert.equal(planChangeHeals([live], new Map(), { at: AT }).length, 0, 'unread → untouched');
+test('planOpenStrays — HIGHLAND FORGE 007171197: frozen copy REFUSED (80) on TAYLOR, NuVizz lists the same number OPEN as an ATT re-attempt → copy re-opened, and the attempt filed onto today as a carry-over', () => {
+  const live = openRow('007171197', { shipmentNbr: 'ATT007171197', isAttempt: true, listUpdatedDTTM: '2026-09-03T10:06:00' });
+  const refused = { ...plannedRow('007171197', 'TAYLOR'), status: '80', normalizedStatus: 'EXCEPTION', shipmentNbr: '007171197' };
+  const plan = planOpenStrays([stray('007171197', '2026-09-01', live)], { today: '2026-09-03', at: AT, onBoard: NONE, copies: copies('007171197', ['2026-09-02', null], ['2026-09-01', refused]), nowMs: NOW });
+  assert.equal(plan.reopened, 1);
+  assert.equal(plan.heal.length, 1);
+  assert.equal(plan.heal[0].fields.frozen_heal_reason, 'reopen');
+  assert.equal(plan.heal[0].fields.status, '10');
+  assert.equal(plan.heal[0].fields.shipmentNbr, 'ATT007171197');
+  assert.equal(plan.heal[0].fields.isAttempt, true);
+  assert.equal('deliveredDTTM' in plan.heal[0].fields, false);
+  assert.equal(plan.file.length, 1);
+  assert.equal(plan.file[0].refiledOpen, true);
+  assert.equal(plan.file[0].carryover, true);
+  assert.equal(plan.file[0].boardDate, '2026-09-03');
 });
 
-test('healFields: only the live status/plan fields ever ride a heal; blanks become null', () => {
-  const f = healFields(delivered('Z', { driverName: '' }), { today: TODAY, at: AT, reason: 'finished' });
-  for (const k of Object.keys(f)) assert.ok([...HEAL_FIELDS, 'frozen_heal_at', 'frozen_heal_reason', 'closedOnBoard'].includes(k), k);
-  assert.equal(f.driverName, null);
+test('planOpenStrays — EXPEDITORS 007171664-1: created after its day froze, no copy anywhere → filed onto today so the Map can show it; an agreeing open copy → nothing at all', () => {
+  const live = openRow('007171664-1', { listUpdatedDTTM: '2026-09-03T12:01:00' });
+  const none = planOpenStrays([stray('007171664-1', '2026-09-01', live)], { today: '2026-09-03', at: AT, onBoard: NONE, copies: copies('007171664-1', ['2026-09-02', null], ['2026-09-01', null]), nowMs: NOW });
+  assert.equal(none.file.length, 1);
+  assert.equal(none.heal.length, 0);
+  const agree = planOpenStrays([stray('007171664-1', '2026-09-01', live)], { today: '2026-09-03', at: AT, onBoard: NONE, copies: copies('007171664-1', ['2026-09-01', openRow('007171664-1')]), nowMs: NOW });
+  assert.equal(agree.file.length, 0);
+  assert.equal(agree.heal.length, 0);
+  // Already on today's board (the carry-forward re-files it from the live pull) → not filed again.
+  const onBoard = planOpenStrays([stray('007171664-1', '2026-09-01', live)], { today: '2026-09-03', at: AT, onBoard: new Set(['007171664-1']), copies: copies('007171664-1', ['2026-09-01', null]), nowMs: NOW });
+  assert.equal(onBoard.file.length, 0);
+});
+
+test('planOpenStrays — a copy inside a confirmed Save\'s write grace is never patched; an unread stop is left for the next scan', () => {
+  const live = openRow('G-1', { listUpdatedDTTM: '2026-09-02T09:00:00' });
+  const fresh = plannedRow('G-1', 'CHAD', { board_write_at: new Date(NOW - 5 * 60 * 1000).toISOString() });
+  const plan = planOpenStrays([stray('G-1', '2026-09-01', live)], { today: TODAY, at: AT, onBoard: NONE, copies: copies('G-1', ['2026-09-01', fresh]), nowMs: NOW });
+  assert.equal(plan.heal.length, 0);
+  const unread = planOpenStrays([stray('G-1', '2026-09-01', live)], { today: TODAY, at: AT, onBoard: NONE, copies: new Map(), nowMs: NOW });
+  assert.equal(unread.unread, 1);
+  assert.equal(unread.file.length, 0);
+});
+
+test('healFields: only the live status/plan fields ever ride a heal; blanks become null; the reason is recorded', () => {
+  const f = healFields(delivered('X', { routeName: '' }), { today: TODAY, at: AT, reason: 'finished' });
+  for (const k of Object.keys(f)) assert.ok([...HEAL_FIELDS, 'frozen_heal_at', 'frozen_heal_reason', 'closedOnBoard'].includes(k), `${k} is not a heal field`);
+  assert.equal(f.routeName, null);
+  assert.equal(f.frozen_heal_at, AT);
+  for (const k of ['boardDate', 'scheduledDate', 'lat', 'lng', 'businessName', 'isTerminal', 'enriched']) assert.equal(k in f, false, `${k} never rides a heal`);
+});
+
+test('copyIsTerminal reads the status code as well as the normalized status; rotate walks a capped list\'s tail across scans', () => {
+  assert.equal(copyIsTerminal({ status: '99' }), true);
+  assert.equal(copyIsTerminal({ normalizedStatus: 'EXCEPTION' }), true);
+  assert.equal(copyIsTerminal({ status: '10', normalizedStatus: 'UNPLANNED' }), false);
+  assert.deepEqual(rotate(['a', 'b', 'c', 'd'], 1), ['b', 'c', 'd', 'a']);
+  assert.deepEqual(rotate(['a', 'b', 'c', 'd'], 6), ['c', 'd', 'a', 'b']);
+  assert.deepEqual(rotate(['a'], 3), ['a']);
+});
+
+// ── DEPTH IS SLICED AND REMEMBERED (v0.95.1) ────────────────────────────────────────────────
+// At a 30-day reach one long-carried order owns up to 30 frozen copies. Reading all of them in
+// one pass spends the budget on one stop (the measured 09/07 pass was already capping out at a
+// 7-day reach: 89 open strays, 119 reads, 51 unread), so a pass takes a slice, remembers where
+// it stopped, and the next one continues — and until the history is fully read it heals what it
+// has seen but decides nothing that depends on what it has not.
+
+test('nextCopyDays: a 28-day history is covered newest-first in slices of ten, then reports done', () => {
+  const OWN = '2026-08-10', TDY = '2026-09-07';
+  const s1 = nextCopyDays(OWN, TDY, 30, { limit: 10 });
+  assert.deepEqual([s1.length, s1[0], s1[9]], [10, '2026-09-06', '2026-08-28']);
+  const s2 = nextCopyDays(OWN, TDY, 30, { through: s1[s1.length - 1], limit: 10 });
+  assert.deepEqual([s2.length, s2[0], s2[9]], [10, '2026-08-27', '2026-08-18']);
+  const s3 = nextCopyDays(OWN, TDY, 30, { through: s2[s2.length - 1], limit: 10 });
+  assert.deepEqual([s3.length, s3[0], s3[7]], [8, '2026-08-17', '2026-08-10']);
+  assert.deepEqual(nextCopyDays(OWN, TDY, 30, { through: s3[s3.length - 1] }), [], 'nothing older left — this stop is done');
+});
+
+test('nextCopyDays: the ordinary stop (a day or two old) is covered whole on the first pass, so nothing waits', () => {
+  const days = nextCopyDays('2026-09-05', '2026-09-07', 30, { limit: 10 });
+  assert.deepEqual(days, ['2026-09-06', '2026-09-05']);
+  assert.deepEqual(nextCopyDays('2026-09-05', '2026-09-07', 30, { through: '2026-09-05' }), []);
+});
+
+test('nextCopyDays: days NEWER than the recorded progress are not revisited — those boards were written by the scans that recorded it', () => {
+  // Progress recorded on 09/04 (covered back to 09/01); two days later only older days remain.
+  const days = nextCopyDays('2026-08-28', '2026-09-06', 30, { through: '2026-09-01' });
+  assert.deepEqual(days, ['2026-08-31', '2026-08-30', '2026-08-29', '2026-08-28']);
+});
+
+test('planRefile — a PART-READ history heals what was read but does NOT file: the copy recording the delivery could be in the days still to come', () => {
+  const s = stray('OLD-1', '2026-08-20', delivered('OLD-1'));
+  const c = copies('OLD-1', ['2026-09-01', openRow('OLD-1', { boardDate: '2026-09-01' })]);
+  const partial = planRefile([s], { today: TODAY, at: AT, onBoard: NONE, copies: c, nowMs: NOW, healOnly: new Set(['OLD-1']) });
+  assert.equal(partial.heal.length, 1, 'the open copy it DID read is healed');
+  assert.equal(partial.file.length, 0, 'but nothing is filed onto today yet');
+  assert.equal(partial.pending, 1);
+  // Once the whole history has been read and none of it records the delivery, it files.
+  const whole = planRefile([s], { today: TODAY, at: AT, onBoard: NONE, copies: c, nowMs: NOW });
+  assert.equal(whole.file.length, 1);
+  assert.equal(whole.pending, 0);
+});
+
+test('planOpenStrays — a PART-READ history heals the copies it read but never files: an open copy may sit on a day not yet reached', () => {
+  const live = openRow('OLD-2', { listUpdatedDTTM: '2026-09-02T09:00:00' });
+  const refused = { ...plannedRow('OLD-2', 'TAYLOR'), status: '80', normalizedStatus: 'EXCEPTION' };
+  const c = copies('OLD-2', ['2026-09-01', refused]);
+  const partial = planOpenStrays([stray('OLD-2', '2026-08-20', live)], { today: TODAY, at: AT, onBoard: NONE, copies: c, nowMs: NOW, healOnly: new Set(['OLD-2']) });
+  assert.equal(partial.heal.length, 1, 'the frozen refusal it read is still re-opened');
+  assert.equal(partial.reopened, 1);
+  assert.equal(partial.file.length, 0);
+  assert.equal(partial.pending, 1);
 });

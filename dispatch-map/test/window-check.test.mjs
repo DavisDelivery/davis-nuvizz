@@ -89,3 +89,17 @@ test('stop numbers are compared as trimmed strings; duplicates on one side count
   assert.equal(d.matches, true);
   assert.equal(d.shown.count, 1);
 });
+
+
+test('a shown row NuVizz now files OUTSIDE the window (MARIA SIMS re-dated to 09/09) is a day CHANGE, not "not in NuVizz\'s list" (v0.95.0)', () => {
+  const shown = [{ stopNbr: 'MARIA', status: '10', day: '2026-09-04', weight: 200, cartons: 1, volume: 0, businessName: 'MARIA SIMS' }];
+  const inRange = [];                                                                       // the 09/01–09/08 slice has no MARIA
+  const all = [{ stopNbr: 'MARIA', status: '10', day: '2026-09-09', weight: 200, cartons: 1, volume: 0 }];   // the ±7d pull does
+  const d = diffWindow(shown, inRange, { all });
+  assert.equal(d.stale.length, 0);
+  assert.equal(d.changed.length, 1);
+  assert.equal(d.changed[0].movedOut, true);
+  assert.equal(d.changed[0].nuvizz.day, '2026-09-09');
+  // Without the covering pull the old verdict stands — the caller decides what it can vouch for.
+  assert.equal(diffWindow(shown, inRange).stale.length, 1);
+});

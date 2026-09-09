@@ -84,15 +84,28 @@ const pick = (r: any) => ({
  * PURE: shown vs live, by stop number. `changed` compares only what a dispatcher acts on —
  * whether it is planned, which load, which day — never enrichment detail.
  */
-export function diffWindow(shown: ShownRow[], live: any[]): WindowDiff {
+export function diffWindow(shown: ShownRow[], live: any[], opts: { all?: any[] | null } = {}): WindowDiff {
   const shownBy = new Map<string, any>();
   for (const s of shown || []) { const k = norm(s?.stopNbr); if (k && !shownBy.has(k)) shownBy.set(k, s); }
   const liveBy = new Map<string, any>();
   for (const l of live || []) { const k = norm(l?.stopNbr); if (k && !liveBy.has(k)) liveBy.set(k, l); }
+  // The whole covering pull, before the range filter: a shown row NuVizz now files on a day
+  // OUTSIDE this window is a day change, not an order NuVizz no longer lists (v0.95.0).
+  const allBy = new Map<string, any>();
+  for (const l of opts.all || []) { const k = norm(l?.stopNbr); if (k && !allBy.has(k)) allBy.set(k, l); }
   const stale: any[] = [], missing: any[] = [], changed: any[] = [];
   for (const [k, s] of shownBy) {
     const l = liveBy.get(k);
-    if (!l) { stale.push(pick(s)); continue; }
+    if (!l) {
+      const elsewhere = allBy.get(k);
+      if (elsewhere) {
+        const ours = { planned: plannedOf(s.status, s.routeName), routeName: norm(s.routeName), day: s.day || null };
+        const theirs = { planned: plannedOf(elsewhere.status, elsewhere.routeName), routeName: norm(elsewhere.routeName), day: elsewhere.day || elsewhere.boardDate || null };
+        changed.push({ stopNbr: k, businessName: s.businessName ?? elsewhere.businessName ?? null, ours: { ...ours, status: s.status ?? null }, nuvizz: { ...theirs, status: elsewhere.status ?? null, weight: num(elsewhere.weight) }, movedOut: true });
+        continue;
+      }
+      stale.push(pick(s)); continue;
+    }
     const ours = { planned: plannedOf(s.status, s.routeName), routeName: norm(s.routeName), day: s.day || null };
     const theirs = { planned: plannedOf(l.status, l.routeName), routeName: norm(l.routeName), day: l.day || l.boardDate || null };
     if (ours.planned !== theirs.planned || ours.routeName !== theirs.routeName || (ours.day && theirs.day && ours.day !== theirs.day)) {
@@ -112,6 +125,8 @@ export function diffWindow(shown: ShownRow[], live: any[]): WindowDiff {
 
 export interface LiveWindowPull {
   rows: any[];          // board-shaped (toBoardStop) + `day`
+  /** the whole covering pull before the range filter — same shape; === rows for a period pull */
+  allRows: any[];
   period: string;
   range: { from: string; to: string } | null;
   covered: { from: string; to: string } | null;
@@ -144,10 +159,10 @@ export async function pullLiveWindow(
   let j: any;
   try { j = JSON.parse(text); } catch { throw new Error('NuVizz returned a non-JSON response — the date window may be too large'); }
   const raw = normalize(j);
-  const kept = filter.range ? raw.filter((r: any) => rowInRange(r, filter.range!.from, filter.range!.to)) : raw;
-  const rows = kept.map((r: any) => ({ ...toBoardStop(r), day: rowDay(r) }));
+  const allRows = raw.map((r: any) => ({ ...toBoardStop(r), day: rowDay(r) }));
+  const rows = filter.range ? allRows.filter((r: any, i: number) => rowInRange(raw[i], filter.range!.from, filter.range!.to)) : allRows;
   return {
-    rows, period, range: filter.range || null,
+    rows, allRows, period, range: filter.range || null,
     covered: win ? { from: win.from, to: win.to } : null,
     partial: raw.length >= LIST_MAX_RESULT || !!(win && win.clamped),
   };

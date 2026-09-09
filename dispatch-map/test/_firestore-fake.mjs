@@ -79,8 +79,20 @@ export function installFirestoreFake(seed = {}, onOther) {
       }
       if (method === 'PATCH') {
         const doc = decDoc(JSON.parse(String(init.body)).fields);
-        log.sets.push({ path, doc });
-        store.set(path, doc);
+        // updateMask.fieldPaths → merge ONLY the masked fields into the existing document (Firestore
+        // semantics: updateDocFields). No mask → whole-document replace (setDoc). Without this the
+        // fake made a field-masked heal and a blind setDoc indistinguishable — a regression from
+        // patchStopFields to setDoc would have passed every test while wiping the row in production.
+        const mask = new URL(url).searchParams.getAll('updateMask.fieldPaths');
+        if (mask.length) {
+          const next = { ...(store.get(path) || {}) };
+          for (const k of mask) { if (k in doc) next[k] = doc[k]; else delete next[k]; }
+          (log.patches ||= []).push({ path, mask, fields: doc });
+          store.set(path, next);
+        } else {
+          log.sets.push({ path, doc });
+          store.set(path, doc);
+        }
         return new Response('{}', { status: 200 });
       }
       if (method === 'DELETE') {

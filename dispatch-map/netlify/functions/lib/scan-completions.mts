@@ -25,14 +25,21 @@
 // which is the property that matters when this runs unattended every 15 minutes.
 
 /** The only fields a completions overlay is allowed to write. */
-export const COMPLETION_FIELDS = ['status', 'normalizedStatus', 'deliveredDTTM', 'listUpdatedDTTM'] as const;
+export const COMPLETION_FIELDS = ['status', 'normalizedStatus', 'deliveredDTTM', 'listUpdatedDTTM', 'isUnplanned', 'boardDate', 'scheduledDate'] as const;
 
 export interface CompletionPatch {
   status?: string | null;
   normalizedStatus?: string | null;
   deliveredDTTM?: string | null;
   listUpdatedDTTM?: string | null;
+  /** cleared when the row finishes — a cancelled unplanned order must leave the unplanned count */
+  isUnplanned?: boolean;
+  /** pinned to the served day when the finish lands on a rolled-over copy (see completionPatch) */
+  boardDate?: string;
+  scheduledDate?: string;
 }
+
+const TERMINAL = new Set(['DELIVERED', 'EXCEPTION', 'CANCELLED']);
 
 /**
  * PURE. What (if anything) this completed row changes on the stop we already hold.
@@ -46,7 +53,7 @@ export interface CompletionPatch {
  * it here would let a 4pm paperwork edit rewrite a 9:12a delivery, and every ETA anchored on
  * that stop would move with it.
  */
-export function completionPatch(existing: any, row: any): CompletionPatch | null {
+export function completionPatch(existing: any, row: any, opts: { today?: string | null } = {}): CompletionPatch | null {
   if (!existing || !row) return null;
   const out: CompletionPatch = {};
   const status = row.status ?? null;
@@ -55,6 +62,21 @@ export function completionPatch(existing: any, row: any): CompletionPatch | null
   if (norm != null && String(norm) !== String(existing.normalizedStatus ?? '')) out.normalizedStatus = norm;
   if (row.deliveredDTTM && !existing.deliveredDTTM) out.deliveredDTTM = row.deliveredDTTM;
   if (row.listUpdatedDTTM && row.listUpdatedDTTM !== existing.listUpdatedDTTM) out.listUpdatedDTTM = row.listUpdatedDTTM;
+  if (TERMINAL.has(String(norm ?? '').toUpperCase())) {
+    // A finished stop is not "still to plan" (toBoardStop derives the same; the overlay used to
+    // leave isUnplanned=true on a cancellation, so the Map kept counting it for a scan interval).
+    if (existing.isUnplanned !== false) out.isUnplanned = false;
+    // THE DAY PIN (v0.95.0). A rolled-over stop is clamped onto today's board with its boardDate
+    // still at the old arrival day. When THIS overlay finishes it, the board read's own-day filter
+    // stripped the delivery at once and the next full scan's day guard pruned the row: the
+    // delivery was on no board until the frozen-day pass found it. Pin the finish to the day it
+    // is being recorded on, exactly as the carry-forward and the frozen-day pass do.
+    const today = opts.today || null;
+    if (today && /^\d{4}-\d{2}-\d{2}$/.test(today) && existing.boardDate && String(existing.boardDate) < today) {
+      out.boardDate = today;
+      if (String(existing.scheduledDate ?? '') !== today) out.scheduledDate = today;
+    }
+  }
   return Object.keys(out).length ? out : null;
 }
 
@@ -67,22 +89,29 @@ export function completionPatch(existing: any, row: any): CompletionPatch | null
  * be the first sign that the board and the feed have drifted, and a number nobody can see is
  * how that stays invisible for a week. The next full scan is what legitimately adds it.
  */
-export function planCompletions(boardByNbr: Map<string, any>, rows: any[]): {
+export function planCompletions(boardByNbr: Map<string, any>, rows: any[], opts: { today?: string | null } = {}): {
   patches: Array<{ stopNbr: string; fields: CompletionPatch }>;
   unchanged: number;
   unknown: string[];
+  /** rows whose stop id is a DIFFERENT record than the board's under the same number — never patched */
+  twins: string[];
 } {
   const patches: Array<{ stopNbr: string; fields: CompletionPatch }> = [];
   const unknown: string[] = [];
+  const twins: string[] = [];
   let unchanged = 0;
   for (const row of rows || []) {
     const nbr = String(row?.stopNbr ?? '');
     if (!nbr) continue;
     const existing = boardByNbr.get(nbr);
     if (!existing) { unknown.push(nbr); continue; }
-    const fields = completionPatch(existing, row);
+    // TWO RECORDS, ONE NUMBER (the Estes-0828068215 lesson, now applied here too): a finished twin
+    // re-touched today must not mark the LIVE order under the same number delivered.
+    const exId = String(existing.stopId ?? '').trim(), rowId = String(row.stopId ?? '').trim();
+    if (exId && rowId && exId !== rowId) { twins.push(nbr); continue; }
+    const fields = completionPatch(existing, row, opts);
     if (fields) patches.push({ stopNbr: nbr, fields });
     else unchanged += 1;
   }
-  return { patches, unchanged, unknown };
+  return { patches, unchanged, unknown, twins };
 }

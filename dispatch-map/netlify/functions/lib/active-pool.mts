@@ -57,6 +57,9 @@ export interface ActivePool {
   windowEnd: string;
   count: number;
   rows: any[];
+  /** the ACTIVE pull that built this pool was far smaller than the previous one — no reader may
+   *  drop a row on its word (the board's own thin-pull rule, applied to the pool) */
+  thin?: boolean;
 }
 
 const TERMINAL = new Set(['DELIVERED', 'EXCEPTION', 'CANCELLED']);
@@ -125,11 +128,42 @@ export interface ReconcileStats {
   added: number;
   /** cached rows whose live fields the pool refreshed */
   synced: number;
-  /** cached rows held as-is because a confirmed Save stamped them after the pool was written */
+  /** cached rows held as-is because a confirmed Save stamped them after the pool was written or inside the write grace */
   held: number;
+  /** cached FINISHED rows the pool now lists OPEN again (an ATT re-attempt) — served open */
+  reopened: number;
+  /** open rows served without a verdict: older than the pool's reach, or served on the fallback */
+  unverified: number;
+  /** the pool was thin — nothing was dropped on its word */
+  thin: boolean;
+  /** with explain: the stop numbers behind each count */
+  decisions?: Record<string, string[]>;
 }
 
-const emptyStats = (poolAt: string | null): ReconcileStats => ({ poolAt, closed: 0, moved: 0, retired: 0, added: 0, synced: 0, held: 0 });
+const emptyStats = (poolAt: string | null): ReconcileStats => ({ poolAt, closed: 0, moved: 0, retired: 0, added: 0, synced: 0, held: 0, reopened: 0, unverified: 0, thin: false });
+
+/** The board's write grace: a confirmed Save outranks a disagreeing list row for this long
+ *  (nuvizz-list.mts BOARD_WRITE_GRACE_MIN). The window honours the same clock, so a stop planned
+ *  from the window cannot read unplanned here while the board still shows it planned. */
+export const WINDOW_WRITE_GRACE_MS = 60 * 60 * 1000;
+export const POOL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+export const POOL_SUPERSEDE_SLACK_MS = 15 * 60 * 1000;
+
+/**
+ * PURE: may this pool judge cached rows? Not when it is older than the backstop, and not when a
+ * board doc served alongside it was scanned measurably AFTER it (the scan that wrote the board
+ * failed to write the pool — the same supersession rule the carry-over fold applies to the
+ * snapshot). A thin pool may still overlay live fields but never drops.
+ */
+export function poolUsable(pool: ActivePool | null | undefined, opts: { nowMs: number; newestDocScanAt?: string | null }): { ok: boolean; why: string | null } {
+  if (!pool || !Array.isArray(pool.rows) || !pool.rows.length) return { ok: false, why: 'no pool' };
+  const at = Date.parse(String(pool.at || ''));
+  if (!Number.isFinite(at)) return { ok: false, why: 'pool has no stamp' };
+  if (opts.nowMs - at > POOL_MAX_AGE_MS) return { ok: false, why: `pool is ${Math.round((opts.nowMs - at) / 3.6e6)}h old` };
+  const doc = opts.newestDocScanAt ? Date.parse(String(opts.newestDocScanAt)) : NaN;
+  if (Number.isFinite(doc) && doc - at > POOL_SUPERSEDE_SLACK_MS) return { ok: false, why: `pool superseded — a board scan at ${opts.newestDocScanAt} never rewrote the ${pool.at} pool` };
+  return { ok: true, why: null };
+}
 
 function stampNewerThan(row: any, at: string | null | undefined): boolean {
   if (!row?.board_write_at || !at) return false;
@@ -147,46 +181,80 @@ const inRange = (d: string | null, from: string, to: string) => !!d && d >= from
 export function mergeWindowWithPool(
   cached: any[],
   pool: ActivePool | null | undefined,
-  opts: { from: string; to: string; retired?: Record<string, string> | null },
+  opts: { from: string; to: string; retired?: Record<string, string> | null; nowMs?: number; graceMs?: number; explain?: boolean },
 ): { rows: any[]; stats: ReconcileStats } {
   const retired = opts.retired || {};
   if (!pool || !Array.isArray(pool.rows)) {
     return { rows: cached.slice(), stats: emptyStats(null) };
   }
+  const now = opts.nowMs ?? Date.now();
+  const grace = opts.graceMs ?? WINDOW_WRITE_GRACE_MS;
   const stats = emptyStats(pool.at || null);
+  stats.thin = pool.thin === true;
+  const dec: Record<string, string[]> = { closed: [], moved: [], retired: [], added: [], synced: [], held: [], reopened: [], unverified: [] };
+  const note = (k: string, nbr: string) => { if (opts.explain) dec[k].push(nbr); };
   const poolByNbr = new Map<string, any>();
   for (const p of pool.rows) { const k = String(p?.stopNbr ?? '').trim(); if (k && !poolByNbr.has(k)) poolByNbr.set(k, p); }
+  const overlay = (c: any, p: any) => {
+    const merged: any = { ...c };
+    for (const k of POOL_LIVE_FIELDS) if (p[k] !== undefined) merged[k] = p[k];
+    merged.boardDate = p.day; merged.scheduledDate = p.day;
+    if (!merged.stopId && p.stopId) merged.stopId = p.stopId;
+    if (!merged.businessName && p.businessName) merged.businessName = p.businessName;
+    merged.poolSynced = true;
+    return merged;
+  };
+  const agrees = (c: any, p: any) => (c.isPlanned === true) === (p.isPlanned === true) && String(c.routeName ?? '').trim() === String(p.routeName ?? '').trim();
   const out: any[] = [];
   const served = new Set<string>();
   for (const c of cached) {
     const nbr = String(c?.stopNbr ?? '').trim();
     if (!nbr) continue;
-    if (isTerminalRow(c)) { out.push(c); served.add(nbr); continue; }          // history: never touched
-    if (stampNewerThan(c, pool.at)) { out.push(c); served.add(nbr); stats.held++; continue; }
     const p = poolByNbr.get(nbr);
+    if (isTerminalRow(c)) {
+      // RE-OPENED (v0.95.0): the pull lists this number OPEN again — an ATT re-attempt under the
+      // same stop number. The live row is the truth; the cached copy lends its pin. Before this
+      // the finished copy was served as history and the pool's open row was skipped as a
+      // duplicate, so the window said "refused" about freight NuVizz was asking to have planned.
+      if (p && inRange(p.day, opts.from, opts.to)) {
+        out.push({ ...overlay(c, p), reopened: true }); served.add(nbr); stats.reopened++; note('reopened', nbr);
+        continue;
+      }
+      out.push(c); served.add(nbr); continue;                                  // history: never touched
+    }
+    // A confirmed Save outranks the pool while the pool is older than the stamp OR the stamp is
+    // inside the board's write grace and the pool still disagrees — the board holds the plan for
+    // that long because NuVizz's list lags an accepted save; the window must not read unplanned
+    // while the board reads planned. It releases the moment the pool agrees.
+    const stampNewer = stampNewerThan(c, pool.at);
+    const stampAt = Date.parse(String(c?.board_write_at || ''));
+    const inGrace = Number.isFinite(stampAt) && now - stampAt < grace;
+    if ((stampNewer || inGrace) && !(p && agrees(c, p))) { out.push(c); served.add(nbr); stats.held++; note('held', nbr); continue; }
     if (p) {
-      if (!inRange(p.day, opts.from, opts.to)) { stats.moved++; continue; }   // lives on another day now
-      const merged: any = { ...c };
-      for (const k of POOL_LIVE_FIELDS) if (p[k] !== undefined) merged[k] = p[k];
-      merged.boardDate = p.day; merged.scheduledDate = p.day;
-      if (!merged.stopId && p.stopId) merged.stopId = p.stopId;
-      if (!merged.businessName && p.businessName) merged.businessName = p.businessName;
-      merged.poolSynced = true;
-      out.push(merged); served.add(nbr); stats.synced++;
+      if (!inRange(p.day, opts.from, opts.to)) {
+        if (stats.thin) { out.push(c); served.add(nbr); continue; }
+        stats.moved++; note('moved', nbr); continue;                           // lives on another day now
+      }
+      out.push(overlay(c, p)); served.add(nbr); stats.synced++; note('synced', nbr);
       continue;
     }
     const day = rowDayOf(c);
-    if (day && day >= pool.windowStart && day <= pool.windowEnd) { stats.closed++; continue; }
-    if (retired[nbr]) { stats.retired++; continue; }
-    out.push(c); served.add(nbr);                                              // older than the pool's reach: no verdict
+    if (day && day >= pool.windowStart && day <= pool.windowEnd) {
+      if (stats.thin) { out.push(c); served.add(nbr); continue; }             // a thin pool cannot say "closed"
+      stats.closed++; note('closed', nbr); continue;
+    }
+    if (retired[nbr]) { stats.retired++; note('retired', nbr); continue; }
+    // Older than the pool's reach: no scan can see it either way. Served, but SAID so.
+    out.push({ ...c, unverified: true }); served.add(nbr); stats.unverified++; note('unverified', nbr);
   }
   for (const p of pool.rows) {
     const nbr = String(p?.stopNbr ?? '').trim();
     if (!nbr || served.has(nbr) || !inRange(p.day, opts.from, opts.to)) continue;
     served.add(nbr);
     out.push({ ...p, lat: null, lng: null, poolOnly: true });
-    stats.added++;
+    stats.added++; note('added', nbr);
   }
+  if (opts.explain) stats.decisions = dec;
   return { rows: out, stats };
 }
 
@@ -208,7 +276,9 @@ export function pruneWithSnapshot(
   const now = opts.nowMs ?? Date.now();
   const snapAt = snapshot?.at ? Date.parse(snapshot.at) : NaN;
   const fresh = Number.isFinite(snapAt) && now - snapAt >= 0 && now - snapAt <= 7 * 86400000;
-  const liveOk = !!(snapshot && snapshot.stopNbrs && snapshot.stopNbrs.size && snapshot.windowStart && fresh);
+  const thin = (snapshot as any)?.thin === true;
+  const liveOk = !!(snapshot && snapshot.stopNbrs && snapshot.stopNbrs.size && snapshot.windowStart && fresh && !thin);
+  stats.thin = thin;
   const ret = retired || {};
   const out: any[] = [];
   for (const c of cached) {
@@ -220,7 +290,11 @@ export function pruneWithSnapshot(
     if (unplanned && day && day < opts.today && !stampNewerThan(c, snapshot?.at)) {
       if (liveOk && day >= snapshot!.windowStart! && !snapshot!.stopNbrs.has(nbr)) { stats.closed++; continue; }
       if (ret[nbr]) { stats.retired++; continue; }
+      if (liveOk && day >= snapshot!.windowStart!) { out.push(c); continue; }   // vouched for
     }
+    // On the fallback the snapshot has no verdict on planned rows and none on anything past its
+    // reach: an OPEN row from a frozen day is served, but SAID to be unverified (v0.95.0).
+    if (open && day && day < opts.today) { out.push({ ...c, unverified: true }); stats.unverified++; continue; }
     out.push(c);
   }
   return { rows: out, stats };

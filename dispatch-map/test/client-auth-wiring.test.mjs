@@ -521,8 +521,10 @@ test('AND THE HANDLERS REFUSE TOO — a disabled button is not a lock', () => {
   assert.match(APP, /if \(!engineGate\.allowed\) \{ setDraftError\(engineGate\.reason\); return; \}/, 'engine draft');
   assert.match(APP, /if \(saveGate\.reason\) \{ showToast\(saveGate\.reason\); return; \}/, 'the workbench Save');
   assert.match(APP, /if \(notesGate\.reason\) \{ setSaveError\(notesGate\.reason\); return; \}/, 'the notes Save');
-  assert.equal((APP.match(/if \(!writeGate\.allowed\) \{ showMapToast\(writeGate\.reason\); return; \}/g) || []).length, 2,
-    'assign AND dispatch');
+  // Three now: assign a driver, dispatch one load, and Dispatch all — the bulk one matters
+  // most, since a stale render there would fire a production write per route rather than one.
+  assert.equal((APP.match(/if \(!writeGate\.allowed\) \{ showMapToast\(writeGate\.reason\); return; \}/g) || []).length, 3,
+    'assign, dispatch AND dispatch-all');
   assert.match(byName('components/MessagesPanel.jsx'), /if \(!text \|\| !active \|\| sendDenied\) return;/, 'the SMS send');
 });
 

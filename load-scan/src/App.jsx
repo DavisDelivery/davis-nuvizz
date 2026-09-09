@@ -23,14 +23,33 @@ import { Header, Banner, BigButton, Modal, ConfirmAction } from './components/ui
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
 /**
- * How long the same PRO is ignored after a good read.
+ * How long the same barcode is ignored after a good read.
  *
- * A pallet sits in frame for a second or more after the decode lands, and the
- * loader is still walking. Every one of those frames is the SAME piece. 3s is
- * long enough to cover the walk-away and short enough that a genuine second
- * piece of the same PRO is not annoying to book.
+ * NARROWED IN v0.45.0. This used to gate the camera's PRO-only bookings too,
+ * which is what made a multi-piece order crawl: piece 2 of a 3-skid order was
+ * silently dropped for three seconds, with no sound, so the loader re-aimed and
+ * paid the pair window again. Repeats are now governed by acquisition (below).
+ * What is left here is the gun's double-fire guard — one trigger pull that the
+ * gun reports twice — which is a property of the barcode arriving twice in a
+ * few milliseconds, not of the freight.
  */
 const SAME_PRO_COOLDOWN_MS = 3000;
+
+/**
+ * How long a PRO must be OUT OF FRAME before it counts as a new piece.
+ *
+ * THE QUESTION A REPEAT PRO ASKS is "another piece, or another look?" — and a
+ * PRO-only label carries no piece id to answer it with. A fixed cooldown is the
+ * wrong instrument: three seconds is an eternity when the loader has moved to
+ * the next skid, and no time at all when a phone sits pointed at one label.
+ *
+ * Absence answers it properly. A label held in view keeps decoding, so it never
+ * goes absent and can never book twice however long it is stared at. A loader
+ * who moves to the next skid necessarily loses the first label for a beat, and
+ * the next piece books the moment they re-acquire. The gun's trigger pulls are
+ * discrete sightings, so the same rule reads them as intent.
+ */
+const PRO_REACQUIRE_MS = 1200;
 
 // ── Shell ────────────────────────────────────────────────────────────────────
 
@@ -881,6 +900,40 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
    * into every check below, so a second frame sees the first one immediately.
    */
   const justBooked = useRef([]);
+
+  // ── One decision per acquisition ───────────────────────────────────────────
+  //
+  // Fed by the RAW decode stream — every value the camera reads off every frame,
+  // and every barcode the gun sends — so the app knows not just that a PRO was
+  // read, but whether it ever left the frame in between. That is the only signal
+  // that separates ANOTHER PIECE from ANOTHER LOOK on a label with no piece id,
+  // and it is what replaced a three-second timer plus a confirmation tap.
+  const proSeenAt = useRef(new Map());     // pro7 -> last sighting, any frame
+  const proAcquiredAt = useRef(new Map()); // pro7 -> when the current sighting run began
+  const proAnsweredAt = useRef(new Map()); // pro7 -> the acquisition already ruled on
+
+  /** Note every raw decode, and start a new acquisition after a real absence. */
+  const noteRaw = useCallback((values) => {
+    const now = Date.now();
+    for (const v of values || []) {
+      const cls = classifyBarcode(v);
+      if (cls.kind !== 'pro') continue;
+      const pro7 = normalizePro(cls.value);
+      if (!pro7) continue;
+      const last = proSeenAt.current.get(pro7) || 0;
+      if (now - last > PRO_REACQUIRE_MS) proAcquiredAt.current.set(pro7, now);
+      proSeenAt.current.set(pro7, now);
+    }
+  }, []);
+
+  /** Has this PRO been re-acquired since the last time we ruled on it? */
+  const freshAcquisition = (pro7) =>
+    (proAcquiredAt.current.get(pro7) || 0) > (proAnsweredAt.current.get(pro7) || 0);
+
+  /** Record that this acquisition has had its answer — booked or refused. */
+  const answerAcquisition = (pro7) =>
+    proAnsweredAt.current.set(pro7, proAcquiredAt.current.get(pro7) || Date.now());
+
   // The order whose card is open — from a stop tap or a PRO lookup.
   const [openStop, setOpenStop] = useState(null);
   const rawSeen = useRef(0);
@@ -955,7 +1008,14 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
 
   // A different truck starts with an empty synchronous set — otherwise a piece
   // booked on the last load would still be shadowing the checks on this one.
-  useEffect(() => { justBooked.current = []; }, [activeLoad, manifest?.date]);
+  useEffect(() => {
+    justBooked.current = [];
+    // A new truck is a clean slate for the repeat rule too: yesterday's sighting
+    // of a PRO must never make today's first piece of it look like a second look.
+    proSeenAt.current = new Map();
+    proAcquiredAt.current = new Map();
+    proAnsweredAt.current = new Map();
+  }, [activeLoad, manifest?.date]);
 
   useEffect(() => {
     if (!activeLoad) { setLoadedSeq(null); return; }
@@ -1097,35 +1157,63 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         }
       }
 
-      if (!isOverride) {
-        const p7 = normalizePro(pair.pro);
-        const owner = stops.find((s2) => (s2.pros || []).some((x) => normalizePro(x) === p7));
-        if (owner) {
-          const done = stopProgress(owner, liveScans, handConfirms);
-          if (done.expected > 0 && done.scanned >= done.expected) {
-            return refuse({ pro: p7, count: done.scanned, full: owner.businessName, expected: done.expected });
-          }
-        }
+      // Which stop this PRO belongs to, and how full it is. Resolved ONCE now:
+      // the over-count refusal below and the repeat-PRO rule under it are the
+      // same question asked twice, and they must not be able to disagree.
+      const p7 = normalizePro(pair.pro);
+      const owner = stops.find((s2) => (s2.pros || []).some((x) => normalizePro(x) === p7)) || null;
+      const done = owner ? stopProgress(owner, liveScans, handConfirms) : null;
+      // The manifest is only a guard when it actually carries a count. A stop
+      // whose total was estimated (no pallets figure on the index row) gets the
+      // careful treatment, because there is no number to protect.
+      const countKnown = !!done && done.expected > 0;
+      const roomLeft = countKnown && done.scanned < done.expected;
+
+      // ONE DECISION PER ACQUISITION, and it has to sit above BOTH refusals.
+      //
+      // A PRO-only label held under the lens closes a pair window every couple
+      // of seconds for as long as it is held. Whatever the right answer is for
+      // that label — book it, or refuse it because the stop is full — it is the
+      // answer to ONE presentation and must be given once. Gating only the
+      // repeat-PRO branch left the stop-full card re-firing every window, which
+      // is how a warning turns into wallpaper.
+      const proOnlyScanner = !pair.og && isScanner;
+      if (proOnlyScanner) {
+        // One piece at a time, decided synchronously: React's state is behind.
+        if (recording.current) return null;
+        if (!freshAcquisition(p7)) return null;
+      }
+
+      if (!isOverride && countKnown && done.scanned >= done.expected) {
+        if (proOnlyScanner) answerAcquisition(p7);
+        return refuse({ pro: p7, count: done.scanned, full: owner.businessName, expected: done.expected });
       }
 
       if (!pair.og) {
         const pro7 = normalizePro(pair.pro);
         const now = Date.now();
 
-        if (isScanner) {
-          // One piece at a time, and one label at a time — both decided
-          // synchronously, because React's state is exactly what is behind here.
-          if (recording.current) return null;
-          // The camera re-decodes the same label many times a second, so it needs
-          // the cooldown here. The gun is already gated on the exact barcode as
-          // it arrives; running it again would compare this PRO against the very
-          // read that produced it and refuse the piece outright.
-          if (engineName !== 'wedge' && !gate.current.allow(pro7, now)) return null;
-        }
-
         const already = activeScans(liveScans).filter((s2) => normalizePro(s2.pro) === pro7).length;
         if (already > 0 && isScanner) {
-          return refuse({ pro: pro7, count: already });
+          // This acquisition is now spent, whichever way the answer goes.
+          answerAcquisition(pro7);
+
+          // A REPEAT PRO ON A STOP THAT IS STILL SHORT IS ORDINARY WORK.
+          //
+          // A 3-skid order is one PRO on three labels; the manifest says three.
+          // Asking the loader to confirm skids 2 and 3 is asking them to vouch
+          // for something the paperwork already states, and it cost a tap plus a
+          // re-aim on every multi-piece order on the truck. Worse, a tap demanded
+          // that often becomes a reflex — and a reflex is not a check. The
+          // confirmation is kept for the case that is genuinely ambiguous: a stop
+          // already at its count, or one with no count to reason about, where the
+          // next piece is either a second look or freight the office does not
+          // know about. Over-count is still impossible; that refusal sits above.
+          if (!roomLeft) return refuse({ pro: pro7, count: already });
+        } else if (isScanner) {
+          // First piece under this PRO — the acquisition is spent on it, so the
+          // label must leave the frame before it can book another.
+          answerAcquisition(pro7);
         }
 
         // A stop can never hold more pieces than the manifest says. Refuse the
@@ -1162,10 +1250,15 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       // the truck. This is what stops one skid being booked twice: once with its
       // piece id, then again as a PRO-only piece when the id misses a frame.
       justBooked.current = [...justBooked.current, scan];
-      // Register the PRO as just-seen whichever branch we came down. The gate is
-      // only consulted in the no-OG branch, so a piece booked WITH its id never
-      // used to enter it — leaving the very next PRO-only read unguarded.
-      gate.current.allow(normalizePro(evaluated.pro));
+      // A piece that booked WITH its id spends this acquisition too, so a lone
+      // PRO read a frame later cannot book the same skid a second time.
+      //
+      // This used to ALSO stamp the shared cooldown gate with the PRO, which is
+      // the gun's double-fire guard — so booking one piece silently swallowed a
+      // deliberate trigger pull on the next skid of the same order for three
+      // seconds. The acquisition rule covers the repeat properly; the gate goes
+      // back to being about one pull reported twice.
+      if (isScanner) answerAcquisition(normalizePro(evaluated.pro));
       await store.enqueueScan(activeLoad, manifest.date, scan);
       await stampSequence();
       await refreshLocal();
@@ -1251,6 +1344,9 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         onStatus: setStatus,
         onOrphan: (half) => onCameraOrphanRef.current?.(half),
         onRaw: (values) => {
+          // EVERY frame, before anything else: this is the stream that tells the
+          // repeat rule whether a label ever left the lens.
+          noteRaw(values);
           rawSeen.current += values.length;
           setRawLog((prev) => [
             ...values.map((v) => ({ v: String(v), kind: classifyBarcode(v).kind })),
@@ -1313,6 +1409,9 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
     // recognise vanished without a sound and the only way to find out what the
     // gun actually sent was to scan into a notes app.
     const cls = classifyBarcode(raw);
+    // A trigger pull is a discrete sighting: the gun cannot hover, so every pull
+    // past the double-fire guard is the loader deliberately presenting a label.
+    noteRaw([raw]);
     rawSeen.current += 1;
     setRawLog((prev) => [{ v: String(raw), kind: cls.kind }, ...prev].slice(0, 6));
 

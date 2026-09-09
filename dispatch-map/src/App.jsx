@@ -61,13 +61,14 @@ import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './li
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact } from './lib/nuvizzWrite.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
-import { timeMarkForDay, TIME_MARK_KEYS } from './lib/time-marks.js';
+import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS } from './lib/time-marks.js';
 import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS } from './lib/history-range.js';
 import {
   drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
   legendIsEmpty, pinTintKind, visibleIconKeys, tractorPaintAllowed,
-  restrictionConfidence, TRAILER_BLOCKER_KEYS,
+  restrictionConfidence, TRAILER_BLOCKER_KEYS, tractorFriendlySelection,
 } from './lib/map-legend.js';
+import { isEstesOrder, ESTES_FILL, ESTES_RING } from './lib/carrier-mark.js';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
 import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerChipLabel, latestPeerSaveAt, PRESENCE_HEARTBEAT_MS } from './lib/presence.js';
@@ -80,6 +81,7 @@ import { flagDetail, sighting } from './lib/flag-detail.js';
 import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab } from './lib/right-panel.js';
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
+import { planSendSelection } from './lib/send-selection.js';
 import { dropSide, dropSideClass } from './lib/drop-side.js';
 import { rosterFreshness, ageLabel } from './lib/roster-freshness.js';
 import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
@@ -88,6 +90,7 @@ import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
 const STATUS_MENU_W = 160;
 import { computeBoardFlags, fmtMin, flagChipParts } from './lib/board-flags.js';
 import { routePreflight } from './lib/route-preflight.js';
+import { planDispatchAll, dispatchPlanLines, dispatchAllSummary, DISPATCHABLE_STATUSES } from './lib/dispatch-all.js';
 import { isIosHomeScreenApp, canShareFiles, describePwaMode, viewerWayOut } from './lib/pwa-mode.js';
 // The scan plan's model, shared with the scheduler that runs it — the screen and the code
 // must not be able to disagree about what a rule means or what a scan affects.
@@ -115,7 +118,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.94.6';
+const APP_VERSION = '0.98.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -186,11 +189,23 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['0.94.6', 'ONE BIG MAP, EVERY DRIVER’S CIRCLE, OVERLAPPING — THE SHAPE CHAD ASKED FOR, BUILT SO IT CAN BE READ. Chad, on the dot version: “Dont put all the dots i want one big map with overlapping circles for the drivers.” This is what he asked for at the start (“circles or ovals of where their general work area is”) and confirmed on the sample (“I like the circles”); the version that failed was never wrong about the SHAPE, it was wrong about everything else on the page. FOUR THINGS MAKE FIFTY-FOUR OVERLAPPING CIRCLES READABLE. (1) THE RINGS ARE HOLLOW — filled and stacked four deep the metro went solid and no ring could be followed round; outlines cross and stay separate lines. (2) THERE ARE FEWER OF THEM: the measured 30km rule from v0.94.5 leaves most drivers ONE ring instead of the shattered handful the invented 15km cap produced. (3) EVERY NAME SITS IN ITS OWN RING, and the town names survive — the twelve place labels and the depot are SEEDED into the collision list before any driver, because they are what make this a map of somewhere rather than a pile of circles, and losing “Buford” to a driver’s name costs more than moving that name. Smallest ring places its label first (a small ring is a specific claim, and a displaced name over it is a lie about a specific patch); anything still colliding travels out along its own ring — six distances, twelve angles — and keeps a leader line back to its circle, so no ring is ever left anonymous. Deterministic: the same data lays out the same way every time it is printed, which a hand-tuned map cannot promise. (4) IT GETS PAGE ONE TO ITSELF, 186mm across, with the read-me boxes moved behind it. THE DOTS ARE GONE from the big map and from the cards of every driver who has a ring — but a driver with NO ring keeps his, because “no fixed area” over a blank square teaches nothing while the same square full of scattered stops teaches exactly the right thing. THERE IS STILL NO LEGEND: ten swatches across 59 drivers means six men share every colour, so colour cannot name anybody — it exists so two rings crossing each other read as two rings, and the name in the middle is the answer. The legend was what ate a page in the first print AND implied a precision it did not have. THE GUARD IS THE POINT: a new test parses every text element off the rendered map and fails if any two overlap, towns included — checked BOTH ways, it fails naming the pairs when de-collision is switched off and passes with it on, so green means something. Zero NuVizz calls. 3 new tests, 3,521 green.'],
-  ['0.94.5', 'THE TRAINEE SHEET IS ONE CARD PER DRIVER, BECAUSE THE FIRST REAL PRINT WAS THIRTY PAGES NOBODY COULD READ. Chad, after seeing it: “just produce a sheet and let me look at it.” The layout was designed and tuned against an invented sample of a dozen drivers. Davis runs 59. Every driver’s circles went onto ONE map and at that scale it is mush — circles four deep, the label de-collision walking names into a column down the middle, and a colour legend eating a page trying to tell 59 people apart with 8 swatches. No test caught it because every test was written against the sample. A trainee has no question that one map answers; he has two — “this order is in Dacula, whose is it?” (the town table) and “where does Vincent run?” (his own card). SO: the everyone-at-once map is gone, replaced by one card per driver, alphabetical, two to a page — and EVERY CARD SHARES ONE FRAME, which is the part that makes them worth printing. Fit each map to its own driver and all 59 look identical, one blob filling one square; shared, a card is read by WHERE the ink sits. Each card draws that driver’s actual delivery addresses as dots UNDER his ring, so a summary can no longer be wrong where the reader cannot see it — and for the men who get no ring the dots are the whole answer, because “no fixed area” over a blank square teaches nothing. Page one is the footprint (every address, one ink, no names), which is the one thing the combined map could still answer honestly. THE 15KM RULE WAS MINE AND IT WAS WRONG, and only real data showed it. Measured over 14,270 deliveries and 19 working days it threw out 27 of 59 drivers — including Richard Mawuenyega, ONE cluster holding 98% of his work. The real distribution of Davis cluster radii is p25 7.4km, p50 11.8km, p75 17km, p90 24km, max 42km: a 15km cap cuts it in half. At 30km five drivers get no ring, and 35km excludes exactly the same five — a plateau, not a knife edge — and those five are the ones Chad predicted before a line was written: Seymour Watts (42km, which is north Georgia and not a patch), RASKO SULJIC (8 clusters, biggest holding 48%), Anthony Kostner (51%), Christopher Garrett (44%) and Brandi Bradberry (6 deliveries). Scattered work is caught by COVERAGE, which is the honest test for it; size only has to catch a circle that has stopped meaning anything. Every ring now prints how many miles across it is, so a wide one cannot imply a precision it does not have. TWO BUGS FOUND BY BUILDING THE FIXTURE AT REAL SCALE. (1) The sheet re-derived the driver key inline — uppercase, spaces to underscores — which is what the key looks like for most names and is NOT what canonicalDriver does: “COLIN/DJ 1” became COLIN/DJ_1, matched no active driver, and Colin’s second load dropped out of the town table and his own card while the map still drew it. Half the sheet disagreeing with the other half, silently. (2) The alias fold rewrites a stop’s driver to the canonical KEY, so one man arrived as both “BRENT_BRYD” and “Brent Bryd” and the printed label was whichever stop was read first — the key in one row of the town table and the name in the next, which reads as two people. One name per man across the whole sheet now, and the one a person would write. ALSO: the window took its board day from a stored field that can disagree with the collection the row lives in, which put 21 rows from three days outside the window into it and made a 19-day window report itself as 22 days beginning a week early; ?format=json&stops=1 returns the rows the renderer was handed, so the page somebody printed can be rebuilt offline; the “also runs” line rolls up by town (it printed “ATLANTA (7) · ATLANTA (4) · ATLANTA (1)”); town labels near the frame edge read inward instead of off the paper; and a map is given a height budget because break-inside does not shrink anything, it MOVES it — sized by width alone the overview came out 195mm tall and page one printed as a title over 200mm of white paper. Zero NuVizz calls: the endpoint’s import graph cannot reach the vendor, and the sheet above was built from Firestore history alone. 12 new tests, 3,518 green.'],
-  ['0.94.4', 'ONE MAN, ONE KEY — AND THE ANSWER COMES OFF HIS CARD, NOT OUT OF A HARDCODED PAIR. Chad, asked whether two spellings were the same person: “Yes same man.” NuVizz renamed Brenton Byrd from “Brent  Boyd” to “Brent  Bryd” on 2026-08-27, and anything keyed on the name sees two people from that day. On the driver-area sheet that is one man showing half a territory twice — AND the retired spelling reads as somebody who stopped running, so he is dropped for inactivity as well. One typo, two wrong answers, and a trainee cannot see either. THE FIX READS THE ROSTER. His employees card already records it: alias “Brent Bryd” with “Brent Boyd” kept in aliases[], put there by a person on purpose, and three joins in this repo already read that list. buildDriverAliases turns every card into from→to pairs and the sheet folds them, so the NEXT rename is fixed by editing the card — the way the last one was — instead of by a deploy, and nobody has to remember to tell me. The canonical name is externalIds.nuvizz, the spelling the BOARD shows, because a trainee has to learn the name they will actually see on a load rather than the one on the payroll. The ops-doc alias list still applies on top as a manual override and wins on a conflict. AND THE SHEET STOPS ASKING ONCE THEY ARE FOLDED — possibleSameDriver flags the pair beforehand and goes quiet afterwards, rather than nagging about a question that has been answered. A TEST OF MINE WAS WRONG AND IS RECORDED AS SUCH: the end-to-end fixture first dated the old spelling 14 days before the window end, which is exactly ON the staleness boundary (the rule is `gap > staleDays`), so it did NOT drop him and the test “proved” a bug that does not exist. The dates moved; the code did not. 8 new tests, 3,494 green.'],
-  ['0.94.3', 'THE DRIVER-AREA SHEET GOES LIVE, AND IT CANNOT SPEND A NUVIZZ CALL BY CONSTRUCTION. Chad, on the sample: “I like the circles.” So it stops being a script that renders invented data and becomes a URL: driver-territory?weeks=4 returns the printable sheet from the history warehouse — open it, press print. ONE RENDERER, TWO CALLERS. The whole sheet moved into src/lib/territory-sheet-html.js as a pure string builder; the CLI and the endpoint now emit the identical bytes. Verified byte-for-byte against the pre-extraction output, because “I refactored it and it looks the same” is not a check. Building the page twice is exactly how a printout and a screen drift apart, which this repo already paid for on the roster freshness line. THE COST RULE IS ENFORCED BY THE IMPORT GRAPH, NOT BY A COMMENT. This endpoint reads months of history; if it could reach the vendor it would be the most expensive thing in the app. A test walks the actual import graph from the handler and fails if any nuvizz-* module is reachable — and is CHECKED BOTH WAYS by pointing the same walker at refresh-stops-core, where it must find them. A comment claiming “this never calls NuVizz” is worth nothing; the roster endpoint carried one of those while falling through to a live pull on every empty cache. AND THE BRENT PROBLEM ASKS RATHER THAN GUESSES. NuVizz renamed a driver from “Brent  Boyd” to “Brent  Bryd” mid-history, so one man becomes two half-territories — and worse, the OLD spelling then reads as a driver who quit, so he is dropped for inactivity as well. possibleSameDriver flags names one or two edits apart that share a first name and prints them on the sheet: “Same person? BRENT BOYD (22 stops, last 08-20) and BRENT BRYD (18, last 09-03).” It does NOT merge them — Davis has had two STEVENs, and fusing two real people is worse than showing one twice, which a trainee can at least query. One word from Chad and applyAliases folds them from a Firestore doc with no deploy. Also: the window is BUSINESS days back from the end date (a weekend is a Firestore round trip that can only come back empty), clamped so a stray ?weeks= cannot walk years; a day whose history fails to READ is printed as incomplete rather than silently shrinking the window; and the map box is sized for a worst-case header after a fourth banner pushed it onto page two and left half of page one blank. 44 new tests, 3,486 green.'],
-  ['0.94.2', 'A PRINTABLE DRIVER-AREA SHEET FOR A TRAINEE, AND THE ARGUMENT ABOUT WHAT SHAPE IT SHOULD BE. Chad: “design a map for a trainee so they have a general idea where drivers most frequent areas are ... I was thinking circles or ovals ... I know there are a few drivers this probably won’t work great for like rasko or chris.” Then, on the first draft: “the dots didn’t lay over an actual map of north Georgia and I think big circles will work better than dots”, and “just guys that have ran in last 4 weeks”. WHAT SHIPS: a pure, tested aggregation (src/lib/driver-territory.js) plus a print-tuned renderer (scripts/territory-sheet.mjs) that emits one self-contained HTML document — HTML rather than a PDF library so the identical renderer can later be served live with no second implementation to drift. Real north-Georgia county outlines (US Census, public domain, 65 counties simplified to 985 points) with town labels, one CIRCLE PER CLUSTER per driver, a look-it-up-by-town table, and a block per driver. THE CIRCLES CANNOT LIE, AND IT TOOK TWO WRONG ATTEMPTS TO GET THERE. One circle per driver puts a two-cluster driver’s centre on ground he never touches, so circles are per CLUSTER. That was not enough: the first clustering flood-filled through single-stop cells and merged the whole metro, giving Rasko a 23km circle and Chris a 35km one — each swallowing four other drivers’ areas. My guard did not catch it because I had written it as “do the circles cover his work”, and they covered 99%: once the metro is dense a scattered driver’s stops DO all sit in one connected region. Coverage cannot see this; SIZE can. A cluster wider than 15km is not a patch, it is the city. So a cell must be busy to join a cluster, and a driver with no tight cluster gets NO CIRCLE and a printed line saying why. Only printing the radii found this — two rounds of looking at rendered PDFs did not. ONLY DRIVERS STILL RUNNING. Recency, not stop count: the driver Chad named had SEVENTY stops in the window and had simply stopped three weeks earlier, which every count test passes. Measured against the window END, so reprinting an old window gives that window’s answer. Exclusions are printed with the reason and the last date. AND A FACT ONLY CHAD HAD, WHICH FOUR COMMENTS IN THIS REPO HAD WRONG. They said a slashed load name is a co-driver load, “two drivers on one truck”. Chad: “Colin/dj1 is Colin’s second load usually but always Colin never dj.” It is ONE man’s second load. Left alone it splits Colin into two drivers with half a territory each AND teaches a trainee that “DJ” has a patch. canonicalDriver folds it, rosterOf canonicalises both sides of the roster check so a vendor-spelled roster cannot drop a real driver as if he were a carrier, and every merge is PRINTED for checking — a rule generalised from one example may not silently merge people. The three stale comments are corrected in place. THE SHEET SAYS WHAT IT IS BUILT FROM (deliveries, working days, drivers) and defers to people: “when the sheet and a dispatcher disagree, the dispatcher is right.” A printout has no freshness line and nobody reviews it. 38 new tests, 3,458 green. NOT YET WIRED TO REAL DATA — the renderer runs on a JSON input and has only been exercised on clearly-marked sample data.'],
+  ['0.97.12', 'ONE BIG MAP, EVERY DRIVER’S CIRCLE, OVERLAPPING — THE SHAPE CHAD ASKED FOR, BUILT SO IT CAN BE READ. Chad, on the dot version: “Dont put all the dots i want one big map with overlapping circles for the drivers.” This is what he asked for at the start (“circles or ovals of where their general work area is”) and confirmed on the sample (“I like the circles”); the version that failed was never wrong about the SHAPE, it was wrong about everything else on the page. FOUR THINGS MAKE FIFTY-FOUR OVERLAPPING CIRCLES READABLE. (1) THE RINGS ARE HOLLOW — filled and stacked four deep the metro went solid and no ring could be followed round; outlines cross and stay separate lines. (2) THERE ARE FEWER OF THEM: the measured 30km rule from v0.94.5 leaves most drivers ONE ring instead of the shattered handful the invented 15km cap produced. (3) EVERY NAME SITS IN ITS OWN RING, and the town names survive — the twelve place labels and the depot are SEEDED into the collision list before any driver, because they are what make this a map of somewhere rather than a pile of circles, and losing “Buford” to a driver’s name costs more than moving that name. Smallest ring places its label first (a small ring is a specific claim, and a displaced name over it is a lie about a specific patch); anything still colliding travels out along its own ring — six distances, twelve angles — and keeps a leader line back to its circle, so no ring is ever left anonymous. Deterministic: the same data lays out the same way every time it is printed, which a hand-tuned map cannot promise. (4) IT GETS PAGE ONE TO ITSELF, 186mm across, with the read-me boxes moved behind it. THE DOTS ARE GONE from the big map and from the cards of every driver who has a ring — but a driver with NO ring keeps his, because “no fixed area” over a blank square teaches nothing while the same square full of scattered stops teaches exactly the right thing. THERE IS STILL NO LEGEND: ten swatches across 59 drivers means six men share every colour, so colour cannot name anybody — it exists so two rings crossing each other read as two rings, and the name in the middle is the answer. The legend was what ate a page in the first print AND implied a precision it did not have. THE GUARD IS THE POINT: a new test parses every text element off the rendered map and fails if any two overlap, towns included — checked BOTH ways, it fails naming the pairs when de-collision is switched off and passes with it on, so green means something. Zero NuVizz calls. 3 new tests, 3,521 green.'],
+  ['0.97.11', 'THE TRAINEE SHEET IS ONE CARD PER DRIVER, BECAUSE THE FIRST REAL PRINT WAS THIRTY PAGES NOBODY COULD READ. Chad, after seeing it: “just produce a sheet and let me look at it.” The layout was designed and tuned against an invented sample of a dozen drivers. Davis runs 59. Every driver’s circles went onto ONE map and at that scale it is mush — circles four deep, the label de-collision walking names into a column down the middle, and a colour legend eating a page trying to tell 59 people apart with 8 swatches. No test caught it because every test was written against the sample. A trainee has no question that one map answers; he has two — “this order is in Dacula, whose is it?” (the town table) and “where does Vincent run?” (his own card). SO: the everyone-at-once map is gone, replaced by one card per driver, alphabetical, two to a page — and EVERY CARD SHARES ONE FRAME, which is the part that makes them worth printing. Fit each map to its own driver and all 59 look identical, one blob filling one square; shared, a card is read by WHERE the ink sits. Each card draws that driver’s actual delivery addresses as dots UNDER his ring, so a summary can no longer be wrong where the reader cannot see it — and for the men who get no ring the dots are the whole answer, because “no fixed area” over a blank square teaches nothing. Page one is the footprint (every address, one ink, no names), which is the one thing the combined map could still answer honestly. THE 15KM RULE WAS MINE AND IT WAS WRONG, and only real data showed it. Measured over 14,270 deliveries and 19 working days it threw out 27 of 59 drivers — including Richard Mawuenyega, ONE cluster holding 98% of his work. The real distribution of Davis cluster radii is p25 7.4km, p50 11.8km, p75 17km, p90 24km, max 42km: a 15km cap cuts it in half. At 30km five drivers get no ring, and 35km excludes exactly the same five — a plateau, not a knife edge — and those five are the ones Chad predicted before a line was written: Seymour Watts (42km, which is north Georgia and not a patch), RASKO SULJIC (8 clusters, biggest holding 48%), Anthony Kostner (51%), Christopher Garrett (44%) and Brandi Bradberry (6 deliveries). Scattered work is caught by COVERAGE, which is the honest test for it; size only has to catch a circle that has stopped meaning anything. Every ring now prints how many miles across it is, so a wide one cannot imply a precision it does not have. TWO BUGS FOUND BY BUILDING THE FIXTURE AT REAL SCALE. (1) The sheet re-derived the driver key inline — uppercase, spaces to underscores — which is what the key looks like for most names and is NOT what canonicalDriver does: “COLIN/DJ 1” became COLIN/DJ_1, matched no active driver, and Colin’s second load dropped out of the town table and his own card while the map still drew it. Half the sheet disagreeing with the other half, silently. (2) The alias fold rewrites a stop’s driver to the canonical KEY, so one man arrived as both “BRENT_BRYD” and “Brent Bryd” and the printed label was whichever stop was read first — the key in one row of the town table and the name in the next, which reads as two people. One name per man across the whole sheet now, and the one a person would write. ALSO: the window took its board day from a stored field that can disagree with the collection the row lives in, which put 21 rows from three days outside the window into it and made a 19-day window report itself as 22 days beginning a week early; ?format=json&stops=1 returns the rows the renderer was handed, so the page somebody printed can be rebuilt offline; the “also runs” line rolls up by town (it printed “ATLANTA (7) · ATLANTA (4) · ATLANTA (1)”); town labels near the frame edge read inward instead of off the paper; and a map is given a height budget because break-inside does not shrink anything, it MOVES it — sized by width alone the overview came out 195mm tall and page one printed as a title over 200mm of white paper. Zero NuVizz calls: the endpoint’s import graph cannot reach the vendor, and the sheet above was built from Firestore history alone. 12 new tests, 3,518 green.'],
+  ['0.97.10', 'ONE MAN, ONE KEY — AND THE ANSWER COMES OFF HIS CARD, NOT OUT OF A HARDCODED PAIR. Chad, asked whether two spellings were the same person: “Yes same man.” NuVizz renamed Brenton Byrd from “Brent  Boyd” to “Brent  Bryd” on 2026-08-27, and anything keyed on the name sees two people from that day. On the driver-area sheet that is one man showing half a territory twice — AND the retired spelling reads as somebody who stopped running, so he is dropped for inactivity as well. One typo, two wrong answers, and a trainee cannot see either. THE FIX READS THE ROSTER. His employees card already records it: alias “Brent Bryd” with “Brent Boyd” kept in aliases[], put there by a person on purpose, and three joins in this repo already read that list. buildDriverAliases turns every card into from→to pairs and the sheet folds them, so the NEXT rename is fixed by editing the card — the way the last one was — instead of by a deploy, and nobody has to remember to tell me. The canonical name is externalIds.nuvizz, the spelling the BOARD shows, because a trainee has to learn the name they will actually see on a load rather than the one on the payroll. The ops-doc alias list still applies on top as a manual override and wins on a conflict. AND THE SHEET STOPS ASKING ONCE THEY ARE FOLDED — possibleSameDriver flags the pair beforehand and goes quiet afterwards, rather than nagging about a question that has been answered. A TEST OF MINE WAS WRONG AND IS RECORDED AS SUCH: the end-to-end fixture first dated the old spelling 14 days before the window end, which is exactly ON the staleness boundary (the rule is `gap > staleDays`), so it did NOT drop him and the test “proved” a bug that does not exist. The dates moved; the code did not. 8 new tests, 3,494 green.'],
+  ['0.97.9', 'THE DRIVER-AREA SHEET GOES LIVE, AND IT CANNOT SPEND A NUVIZZ CALL BY CONSTRUCTION. Chad, on the sample: “I like the circles.” So it stops being a script that renders invented data and becomes a URL: driver-territory?weeks=4 returns the printable sheet from the history warehouse — open it, press print. ONE RENDERER, TWO CALLERS. The whole sheet moved into src/lib/territory-sheet-html.js as a pure string builder; the CLI and the endpoint now emit the identical bytes. Verified byte-for-byte against the pre-extraction output, because “I refactored it and it looks the same” is not a check. Building the page twice is exactly how a printout and a screen drift apart, which this repo already paid for on the roster freshness line. THE COST RULE IS ENFORCED BY THE IMPORT GRAPH, NOT BY A COMMENT. This endpoint reads months of history; if it could reach the vendor it would be the most expensive thing in the app. A test walks the actual import graph from the handler and fails if any nuvizz-* module is reachable — and is CHECKED BOTH WAYS by pointing the same walker at refresh-stops-core, where it must find them. A comment claiming “this never calls NuVizz” is worth nothing; the roster endpoint carried one of those while falling through to a live pull on every empty cache. AND THE BRENT PROBLEM ASKS RATHER THAN GUESSES. NuVizz renamed a driver from “Brent  Boyd” to “Brent  Bryd” mid-history, so one man becomes two half-territories — and worse, the OLD spelling then reads as a driver who quit, so he is dropped for inactivity as well. possibleSameDriver flags names one or two edits apart that share a first name and prints them on the sheet: “Same person? BRENT BOYD (22 stops, last 08-20) and BRENT BRYD (18, last 09-03).” It does NOT merge them — Davis has had two STEVENs, and fusing two real people is worse than showing one twice, which a trainee can at least query. One word from Chad and applyAliases folds them from a Firestore doc with no deploy. Also: the window is BUSINESS days back from the end date (a weekend is a Firestore round trip that can only come back empty), clamped so a stray ?weeks= cannot walk years; a day whose history fails to READ is printed as incomplete rather than silently shrinking the window; and the map box is sized for a worst-case header after a fourth banner pushed it onto page two and left half of page one blank. 44 new tests, 3,486 green.'],
+  ['0.97.8', 'A PRINTABLE DRIVER-AREA SHEET FOR A TRAINEE, AND THE ARGUMENT ABOUT WHAT SHAPE IT SHOULD BE. Chad: “design a map for a trainee so they have a general idea where drivers most frequent areas are ... I was thinking circles or ovals ... I know there are a few drivers this probably won’t work great for like rasko or chris.” Then, on the first draft: “the dots didn’t lay over an actual map of north Georgia and I think big circles will work better than dots”, and “just guys that have ran in last 4 weeks”. WHAT SHIPS: a pure, tested aggregation (src/lib/driver-territory.js) plus a print-tuned renderer (scripts/territory-sheet.mjs) that emits one self-contained HTML document — HTML rather than a PDF library so the identical renderer can later be served live with no second implementation to drift. Real north-Georgia county outlines (US Census, public domain, 65 counties simplified to 985 points) with town labels, one CIRCLE PER CLUSTER per driver, a look-it-up-by-town table, and a block per driver. THE CIRCLES CANNOT LIE, AND IT TOOK TWO WRONG ATTEMPTS TO GET THERE. One circle per driver puts a two-cluster driver’s centre on ground he never touches, so circles are per CLUSTER. That was not enough: the first clustering flood-filled through single-stop cells and merged the whole metro, giving Rasko a 23km circle and Chris a 35km one — each swallowing four other drivers’ areas. My guard did not catch it because I had written it as “do the circles cover his work”, and they covered 99%: once the metro is dense a scattered driver’s stops DO all sit in one connected region. Coverage cannot see this; SIZE can. A cluster wider than 15km is not a patch, it is the city. So a cell must be busy to join a cluster, and a driver with no tight cluster gets NO CIRCLE and a printed line saying why. Only printing the radii found this — two rounds of looking at rendered PDFs did not. ONLY DRIVERS STILL RUNNING. Recency, not stop count: the driver Chad named had SEVENTY stops in the window and had simply stopped three weeks earlier, which every count test passes. Measured against the window END, so reprinting an old window gives that window’s answer. Exclusions are printed with the reason and the last date. AND A FACT ONLY CHAD HAD, WHICH FOUR COMMENTS IN THIS REPO HAD WRONG. They said a slashed load name is a co-driver load, “two drivers on one truck”. Chad: “Colin/dj1 is Colin’s second load usually but always Colin never dj.” It is ONE man’s second load. Left alone it splits Colin into two drivers with half a territory each AND teaches a trainee that “DJ” has a patch. canonicalDriver folds it, rosterOf canonicalises both sides of the roster check so a vendor-spelled roster cannot drop a real driver as if he were a carrier, and every merge is PRINTED for checking — a rule generalised from one example may not silently merge people. The three stale comments are corrected in place. THE SHEET SAYS WHAT IT IS BUILT FROM (deliveries, working days, drivers) and defers to people: “when the sheet and a dispatcher disagree, the dispatcher is right.” A printout has no freshness line and nobody reviews it. 38 new tests, 3,458 green. NOT YET WIRED TO REAL DATA — the renderer runs on a JSON input and has only been exercised on clearly-marked sample data.'],
+  ['0.97.7', 'PICKUPS NOW SAY SO, ON EVERY MARKER THEY CAN DRAW \u2014 AND THE MARK HAD NEVER ONCE RENDERED. Chad, beside a screenshot of the NuVizz map where every marker is a red \u201cP\u201d or a cyan \u201cD\u201d: \u201cwe are not id\u2019ing pickups correctly like on the nuvizz map.\u201d He was right, and the cause is the same shape as the legend bug an hour earlier \u2014 code that was written, half-wired, and shipped invisible. THERE ARE TWO DISC RENDERERS. unplannedDotSvg named \u2018PU\u2019 in its tag arm; circleMarkerSvg did not. Every pickup lands in circleMarkerSvg \u2014 the `!tag` guard on the unplanned branch sends a TAGGED stop away from the only renderer that knew the mark \u2014 so \u2018PU\u2019 arrived, matched neither \u2018AM\u2019 nor \u2018PM\u2019, and fell through to the plain centre dot. One of the two was updated and the other was missed, and nothing in the build could see the difference. IT WAS WORSE THAN UNMARKED. The size tier reads `tag ? 28 : 16`, so a pickup drew a BLANK 28px disc \u2014 the footprint this map reserves for a stop with a delivery window \u2014 carrying no information at all. An unplanned delivery rests at 16px; an unplanned pickup was a big empty pin claiming to be time-critical and then refusing to say why. FOUND BY RUNNING IT, NOT READING IT, and that distinction is the whole lesson here: the letters \u2018PU\u2019 appear in BOTH functions, so every grep over the source goes green. The bug was that the branch reaching the renderer which knew the mark was unreachable for exactly the stops that needed it. Only building the marker and reading the SVG can see that. NOW THE PU RIDES EVERY MARKER A PICKUP CAN DRAW, the way the Estes ring does: the CENTRE when that slot is free (the biggest, most readable spot on the disc), and a corner badge when something else owns the middle \u2014 a route sequence number, an AM/PM window, the do-not-send \u2717, a restriction cluster, the delivered \u2713. The old rule was \u201ca delivery-window tag wins the slot\u201d, which is right about the MIDDLE and wrong about the identity: a safety mark should outrank a type mark without costing the stop what it IS. Slate ground rather than a colour of its own, because every colour on this map already answers \u201cwhat state is this in\u201d or \u201cwhat can I send here\u201d, and spending one would make a pickup argue with its own status. AND A PICKUP IS NEVER MUTED: at 14px hollow slate there is no room for the mark, so muting a pickup does not quiet it, it DISGUISES it as an ordinary planned delivery \u2014 and which kind of job a stop is stays a live question after it is planned, as this repo has twice learned the hard way by scoring a pickup against a dock\u2019s receiving hours (v0.59.2, v0.65.2). The Legend gets a Pickup row with the real badge and a live count. THE TESTS BUILD REAL MARKERS and read the SVG back \u2014 a new helper lifts the whole stopMarkerIcon DECISION, not just the builders it dispatches to, resolving its dependencies by iterating on the ReferenceError rather than from a hand-kept list that is one more place to forget something. Proven load-bearing both ways: 14 of the 15 fail against the shipped bundle and all 15 pass on this one. One EXISTING test went red and was TIGHTENED rather than loosened \u2014 it pinned `dns,` and `estes:` as adjacent source lines, so inserting `pickup,` between them broke it while the property it guards was untouched; it now asserts the entry object the hook builds, and requires the pickup flag too. STILL OPEN, and it is a question for Chad rather than a guess: this marks stopType===\u2018PU\u2019, and v0.68.1 records that freight coming BACK to us is routinely typed as a DELIVERY \u2014 so if the red P\u2019s on his NuVizz map are RAs and returns, the SET is wider than this and the rule has to key on something else. The drawing was broken either way. 15 new tests, 3,663 green.'],
+  ['0.97.6', 'THE MAP LEGEND HAD NO BACKGROUND, AND THE CALL CEILING IGNORED THE NUMBER YOU SET. TWO REPORTS, ONE MORNING. FIRST, THE LEGEND. Chad, on a phone shot of the Routing map: \u201cyou can\u2019t see this[,] formatting and colors are bad and i\u2019ve already made you aware but wasn\u2019t fixed.\u201d The panel was a sheet of blurred satellite imagery with grey text floating on it. THE WHOLE CAUSE WAS FOUR CHARACTERS: the popover was `bg-white/97`. Tailwind\u2019s opacity scale runs 0\u2013100 in steps of FIVE, and a modifier off the scale is not an error \u2014 it emits NOTHING. The class was right there in the markup, matched no rule, and the panel had no background at all; `backdrop-blur` was the only thing still doing anything, which is exactly the blurred map in the shot. Confirmed by grepping the shipped stylesheet: /15, /20, /25, /30, /90 and /95 are all in it and /97 is not. THAT IS THE WORST SHAPE A UI BUG COMES IN \u2014 green build, valid bundle, every test passing, a diff that reads correctly to a human, and a failure that exists only on a screen. The phone guard could not see it either: the panel occupies exactly the right pixels, it just has no paint. SO THE FIX IS TWO THINGS. The panel is `bg-white/95` (the class the other fifteen on-map panels already use). AND a guard now reads every slash-modifier class out of src and asks the BUILT stylesheet whether each one exists \u2014 Tailwind is the authority, this only compares the two lists, so it has something to say about the next silently-dropped utility too, not just opacity. It was proven BOTH ways against the real history: it names `src/App.jsx:16615 bg-white/97` on the shipped source and passes on this one. Wired into CI after the build, plus a no-build unit test so the fast job catches it too. WHILE IN THERE, THE CONTRAST. Chad said colors, not just background, and he is right on a white panel too: the count chips were slate-400 (2.6:1 on white, well under the 4.5:1 floor) at 10px \u2014 and those numbers ARE the content, the answer to \u201cis this a corner case or half my afternoon.\u201d Counts, section headings, the restriction paragraph, the marker labels, the tractor status line and the close X all move up a step or two (everything now \u22657:1), and the body text sets its own colour instead of inheriting whatever it lands in. SECOND, THE CEILING. Chad: \u201ci just changed the settings to allow 3000 calls but still shows only 2000 enforce on the dropdown menu on the actual map.\u201d He was reading it right. Since v0.54.21 there was ONE number, 2,000, serving as BOTH the default AND an absolute cap nothing could lift \u2014 so the Diagnostics field took 3,000, saved it, and the breaker kept 2,000 with nothing anywhere saying they disagreed. Those are two different questions and they are two constants now. DEFAULT (2,000) is what you get when nobody has decided, and an env var or a caller-supplied fallback may only LOWER it \u2014 so this deploy spends exactly what yesterday spent until somebody saves a setting. HARD (3,000) is reachable ONLY by a deliberate save in the Diagnostics editor, which is bounded to the imported constant so the number the field accepts cannot drift from the number the breaker enforces. Junk resolves to the DEFAULT, never the maximum: a malformed value must not buy headroom. The enforcement site and the gauge now share ONE expression rather than rebuilding it \u2014 that duplication is exactly what shipped a card reading 20,000 against a breaker tripping at 2,000 in v0.70.2 \u2014 and the property test states it on the path production uses. WORTH SAYING PLAINLY: 2,000 was chosen to sit BELOW the ~3,000-call cold number-probe scan so that scan could not finish by accident, and at 3,000 that particular backstop is gone. The primary guard is unchanged (the permission rule, and only manual=1 / ?date= / ?days= reach that path), and the backstop was never cheap: it did not prevent the spend, it stopped the scan PARTWAY and left the board half-written. Lower it in Diagnostics any time \u2014 the field goes down to 100. AND THE FIELD STOPS LYING: `max` on a number input only constrains the spinner arrows, so every field in that editor would accept a value it would not keep. They now print their range, flag an out-of-range value in amber with the number that will actually be saved, and pull it back on blur where you can see it. 16 new tests.'],
+  ['0.97.5', 'LOAD-SCAN (v0.45.0): SCANNING A MULTI-PIECE ORDER STOPPED ASKING PERMISSION. Chad, off the dock: "the scanner is taking too long to scan things now that we are confirming each new item to same pro." He was right, and it was worse than one tap — piece 2 of a same-PRO order cost about six seconds. The pair window (2.5s), then a three-second cooldown that dropped the read SILENTLY so the loader re-aimed and paid the window again, then an amber card to tap. A 3-skid order is one PRO on three labels and the manifest already says three; asking a loader to vouch for skids 2 and 3 is asking them to confirm the paperwork against itself, and a tap demanded that often becomes a reflex, which is not a check. A repeat PRO on a stop still short of its count now books straight through. THE GUARD THAT REPLACED IT IS TIGHTER THAN THE ONE IT REMOVED, not looser: a fixed timer cannot tell another piece from another look, so the rule is now ABSENCE — the label has to leave the frame before it earns another booking. A phone left pointing at one skid keeps decoding it, so it never goes absent and can never book twice however long it is held; today\'s three-second cooldown allowed exactly that every three seconds. The confirmation is kept where the question is genuinely open: a stop already at its count, or one with no count to reason about. One decision per presentation, so a lingering label cannot re-fire the amber card every window either. VERIFIED IN THE REAL BUNDLE, both ways: the camera end-to-end check gained an act where three skids of one PRO book with no tap while five seconds of unbroken aim books once — and it was run with the new guard deliberately disabled, where it booked FIVE pieces from three aims and the act failed, which is the only evidence that a test is load-bearing. ALSO RECORDED, A FIX THAT WAS TRIED AND REJECTED: halving the camera pair window to 1200ms looked safe because a late piece id upgrades its fallback since v0.43.0 — but Quagga is multiple:false, so on an iPhone a late id arrives ALONE, a lone id cannot identify a stop, and it never reaches the upgrade at all. The end-to-end check caught it (DASAN and LATE LABEL both booking fallbacks, no upgrade firing) and the window stays at 2500 with the reasoning written beside it so it is not retried. The tick that notices a closed window is halved to 200ms, which is pure latency and nothing else. 319 load-scan tests green; this app is untouched.'],
+  ['0.97.4', 'THE COMPARE SEND BUTTON PUTS THE STOPS ON THE ROUTE IN ONE PRESS, AND SAYS WHAT IT DID. Chad: “i put 2 routes in the panel that i wanted to add stops to then i went and selected the stops i wanted it to put on the route and then when i clicked the button to add stops it didn\'t put them on the route.” FOUND BY RUNNING IT, on UAT and against the code: stops already sitting UNPLANNED move on the first press (verified on the UAT board). A stop still PLANNED on a load that is NOT open in Compare did not — the Save is declarative over the loads it carries, so the source load has to be in it to release the stop, and the old press only OPENED that load’s card, kept the stops selected, put nothing on the target and asked for a second press in a four-second toast at the bottom of the map. On a desktop with cards open the Setup panel’s message line is not on screen at all, so the only sign was a third card appearing. The toast also said “Opened X” whether or not X had actually opened (two loads sharing a name, no NuVizz identity, Compare full), which turns a refused open into an endless “Send again”. NOW: one press opens the source card AND moves the stops onto the target, in the same action; a source that cannot open keeps its stops selected and is named with the real reason; the outcome (“Sent 6 stops → ALPHA (opened BEN 2 in Compare so the Save can release them)”) is written in the Compare header and stays until the next action, on top of the toast. Also: the header read “(N/3)” while the workbench has held six cards since v0.46.19, and the send buttons named a load by its NuVizz number when the card was opened from the Loads grid — they carry the card’s name now. The rule lives in lib/send-selection.js, pure and tested on the Sep 8 shape; the card builder is one function both the open paths and the send share, so a refusal reads the same wherever it happens. 13 new tests.'],
+  ['0.97.3', 'THE UNPLANNED ESTES ORDERS WERE STILL PURPLE — NOW THEY ARE BLACK TOO. Chad, on a stop wearing the new yellow ring around the same pool purple as everything else: "any estes unplanned should have black center with yellow ring." HERE IS WHY HALF THE BOARD CHANGED AND HALF DID NOT, because it is a good lesson in reading a colour chain. Every stop\'s fill is picked by a chain of fallbacks, and the Estes black was put at the END of it — after the status colour. A SCHEDULED stop has no status colour of its own (it has always fallen through to the flag/default tint), so the black was reached and the pin turned black. An UNPLANNED stop carries its own purple, so the chain answered before it ever got to the carrier, and every order in the pool — which is most of what you look at when you are building routes, and the exact case this was asked for — kept the colour it always had. The ring was on it, so it looked like a half-finished job, and it was one. The black now sits AHEAD of the status colour for the two RESTING states, unplanned and scheduled: "nothing has happened to this order yet" is the tint the carrier identity should own. THE LIVE STATES KEEP THEIRS, deliberately: out for delivery blue, arrived amber, delivered green, exception orange. Those answer where an order IS right now, which is what the board is watched for all day, and the yellow ring already says whose order it is without spending that colour. Same for the marks a person or a detector set — a priority flag, a tractor or box-only paint, an amber address-looks-off warning, a selection, a search hit. AND THE TEST THAT SHOULD HAVE CAUGHT IT NOW EXISTS. The first cut was pinned by reading the source for the right words, and the words were all there — the bug was the ORDER they were in, which no amount of reading the text can see. The marker tests now BUILD real markers through the shipped code and read the colour back out of the SVG, one per status, so a fill that is wrong is a red test instead of a screenshot.'],
+  ['0.97.2', 'ESTES ORDERS ARE BLACK WITH A YELLOW RING. Chad: "make estes icons black with a yellow ring around them." Every stop whose order number carries the ESTES prefix now draws that way on the Map and on Routing — the resting dot, the scheduled pin, a numbered pin inside an open route, the quiet already-planned ring — so an Estes residential run can be picked out of a 700-stop board at a glance. THE RING IS THE IDENTITY, and it rides every disc the stop can draw; the BLACK fills the disc only where the stop would otherwise wear a default tint. A colour that already says something keeps saying it inside the ring: a selection stays amber, a search hit orange, a numbered pin keeps its route colour on Routing, a priority flag its hue, a hand-set tractor or box-only mark its green or red, a delivered stop its green check. Two things are untouched on purpose: do-not-send stays the red ✕ (safety outranks identity), and a stop drawing restriction marks keeps them — the clock and the truck are the message there, and a ring around a clock would put back the circle you had taken away. The Legend gets a Carrier row with the real swatch and a count whenever any are on the map, and only then. The order number is the source of truth (ESTES-…, the same prefix the manifest intake writes), so nothing new has to be entered anywhere.'],
+  ['0.97.1', 'PULLING A WHOLE ROUTE ONTO ANOTHER ONE NO LONGER HANGS ON THE OLD ROUTE\'S CANCEL. Chad, Sep 8: every order off TERRANCE onto ALLEN C, one to Un-Planned, Save — and nothing moved. "TERRANCE: Vehicle Type unavailable or disabled (code 903) | ALLEN C: stop 007172492 couldn\'t be added — NuVizz still holds it on TERRANCE … a route that isn\'t part of the Save." TERRANCE WAS in the Save. HERE IS WHAT HAPPENED. An emptied card is a route cancel, and NuVizz\'s own rule for that is "remove every delivery" through load/edit — a full-header edit that echoes the route back field for field, Vehicle Type included. TERRANCE\'s Vehicle Type is disabled in NuVizz\'s Vehicle Type Configuration, so NuVizz refused the whole edit (reason 903) and the route kept every order. The Save ran that cancel FIRST and only then tried to put the orders on ALLEN C — as plain adds, which NuVizz silently ignores for a stop still planned elsewhere. Five wasted calls, a message blaming the wrong thing, and a consolidation that had been made to depend on a cancel it never needed. THE FIX: the move no longer waits for the cancel. When a card in the Save is taking an emptied route\'s orders, they ride the SAME one-shot multi-route save the portal uses for any move — the emptied route\'s entry keeps only what nobody is taking, so it never drops to zero stops inside that save (not a shape the portal ever sends) — the result is verified on both routes, and only THEN is the drained route cancelled through the classic path. If NuVizz refuses that cancel it now costs exactly what it should: the orders are on their new route, the empty route lingers with whatever stayed on it (here LANDMARK), and the message says so and names the cause — a disabled Vehicle Type is called out with where to fix it. When every order is leaving, the last one anchors the source through the save and is added to its new route the moment the cancel frees it; if that cancel is refused, the card reports "3 of 4 landed" by name rather than pretending. TWO GUARDS came with it: a card whose orders come off an in-Save route that already failed is refused up front with THAT route\'s reason (no doomed adds, and never again "not part of the Save" about a route that was), and the same applies when a source fails after a card had already claimed its stops. A plain Cancel-route Save with nobody taking the orders is byte-for-byte what it was. NUVIZZ_RWB_DRAIN_SOURCE=off reverts to cancel-first. Nine tests pin the Sep 8 Save, the refused-cancel outcome, the everything-leaves anchor both ways, the executed-stop refusal, the failed-source refusal, the lever, and the regression.'],
+  ['0.97.0', 'DISPATCH ALL — TWENTY CLICKS AS ONE, WITH EVERY GATE THE TWENTY HAD. Chad: “i want a dispatch all button that dispatches every route that hasn’t been dispatched in the routes menu.” Twenty Draft routes at 5am is twenty clicks and twenty chances to miss one, and a missed dispatch is a truck leaving with nothing on the driver’s phone. It is EXACTLY as picky as the twenty clicks it replaces — the same three gates the row button enforces, in one pure planner both read, so the count on the label and the list in the confirm cannot disagree — and it acts on the FILTERED list, so what the panel is showing is what it sends. IT ASKS FIRST, and not with a number: dispatch is the least reversible thing this app does, so the confirm names every load AND its driver, carries the production warning in Live mode, and puts the routes it will NOT send — no driver, no load id — in front of the dispatcher at the moment he is deciding rather than afterwards. The run is sequential, because twenty concurrent production writes buy seconds and risk a rate limit turning a clean run into a partial one; it fires the identical call the single button does; and it reports what happened rather than that it finished — “18 dispatched · 2 FAILED: CHE (write error), SUW 2” with the per-route detail in the console. Beta previews and sends nothing. 22 new tests, 3,591 green; mobile layout guard and smoke green.'],
+  ['0.96.0', 'THE COMPARE ROW NOW WEARS THE DOCK’S CLOCK, AND THE BOTTOM GRID STOPS OFFERING FREIGHT THAT IS ALREADY ON A CARD. Chad, on a Compare card: “i think there is enough space there to fit our clock icons if one applies to a given stop” — and, on the grid below it: “Paragon should still be highlighted a different colour on bottom panel now that it’s applied to this route or say the driver’s name, looks like it’s still available.” THE CLOCK. Every stop row on a Compare card now carries the SAME mark the map pin wears — classifyTimeMark’s four keys, the same glyph, and the same silence for a dock open an ordinary working day, because one rule with two renderers is the only version of this that cannot drift. It prints the BINDING TIME beside the glyph (“closes 2:00p”, “opens 9:00a”) rather than the icon alone: this repo has already found four values reachable only through a title= tooltip, which a touch device never shows, and a clock face with no clock on it would be the fifth. It rides the city/skids line, which carries no controls on either view, so nothing lands on anything else; expanding a stop hides that line, so the window restates itself in the detail. AND IT IS NOT THE PREFLIGHT BADGE, deliberately: the badge is loud and fires when the walked clock says this stop MISSES — a reaction, after the sequence is already wrong — while the clock is quiet and states the constraint BEFORE any order is chosen, which is what stops a 2:00p dock being put eleventh in the first place. THE GRID. A stop staged onto an open card existed on the map (numbered pin, card colour) and nowhere in the bottom grid, whose Load column reads NuVizz — and a Draft load holding no saved orders has nothing there to read. So PARAGON sat at position 1 on GARY PITTS and listed exactly like an order nobody had touched, which is a double-planning waiting to happen. The row is now tinted in its card’s own colour, the name cell carries a [● n] chip with the stop’s position, and the Load column names the card and marks it “staged” — the word matters, since these orders live only in this browser until Save writes them. A stop already planned onto one load and staged onto another shows BOTH, because that disagreement is the thing worth seeing before Save. Selection tint still wins: selection is what the router is doing now, staging is what he did a minute ago. WHERE THE CLOCK ENDED UP, AND WHY IT MOVED — found by rendering it at true size rather than by reading it. The first build put the chip on the city line, which is where the free space visibly is; on a 320px Compare card that cut “CARTERSVILLE · 6 sk · 8 loose” down to “CARTERSVILLE · 6 …”, trading away the per-stop skid and loose counts Chad asked for in v0.54.4 to buy space the row did not have to sell. It sits on the marks line under the name instead — the line the preflight badge moved to in v0.89.0 for the same class of reason — so the name, the freight and the constraint all survive, and the two chips wrap rather than overflow when a stop carries both. AND THEY DO NOT SAY THE SAME THING TWICE: a hopeless verdict already prints the close it cannot make, so an identical “closes 11:00a” beside “can’t make 11:00a” is suppressed — only when the two name the same minute, since “30m late” beside “closes 2:00p” answers “late against what?” and stays. 22 new tests, 3,545 green; mobile and desktop layout guards and the route-preflight guard re-run on both views. AND FOUR THINGS FROM THE SAME SITTING. (1) A DAVIS-TYPED “NO TRACTOR TRL” NOW DRAWS AS CONFIRMED. Chad, on a half-and-half pin: “Why is this half green when if its manually marked by no tractor trailer by dispatch should override.” He was right and the cause was one line: restrictionConfidence asked only “did a scanner touch this?”, never WHICH source — and the scanner is source-locked to exactly two, which customer-notes-writer labels itself: addressLine2 → no_tractor_trailer (Davis-curated, TRUSTED) and orderInstructions → uline_straight_truck (Uline-supplied, advisory). Address 2 is a field Davis types into NuVizz, so that mark was put there by a person here; Uline was already advisory a line earlier, which means the ONLY flag that branch ever changed was the trusted one, and it drew it as “nobody has checked this” — a green that could never match the lime a proven tractor stop wears. It reads the source now: a trusted source confirms, an un-migrated orderInstructions-only doc stays advisory, no trail at all still means a person put it there. Such a stop also now vetoes the lime, which is the point — proven history must never read as permission where somebody said no. THE 9PM TEXT DELIBERATELY DID NOT MOVE WITH IT: Chad scoped that in v0.82.0 to “just the dispatcher hardcoded ones”, and an address-line mark is Davis-typed but scanner-detected, so widening who gets woken is his call and not a side effect of an icon fix. The two questions are now two functions with their names on them, and four tests pin that the icon moved and the alert did not. (2) THE SELECTED-STOPS PANEL CAN KEEP ONLY WHAT A TRACTOR CAN RUN. “I want a button on top of bar to remove all stops in the list that are not tractor friendly stops.” It drops exactly the rows the panel does not paint green — one shared rule, because a button that drops a green row is the worst version of this — names its count, says what survives, and does the whole set in ONE state update rather than one marker-layer rebuild per stop. (3) THE ✕ CLEARS. “when i click the x i want it to close and clear all.” It used to flip a PERSISTED panel toggle, so it hid the panel and left the stops selected; wired to that same toggle a clearing ✕ would have suppressed the panel on the next selection too. It clears the selection instead, and the empty panel unmounts itself — hiding while keeping the stops still lives on the gear switch. (4) WHY A STOP IS NOT PAINTED LIME IS NOW ANSWERABLE. Chad, on MHC KENWORTH: “i’m pretty sure a tractor has delivered here so it should be auto painted can you check on that.” Nothing could. The lime is a JOIN — MarginIQ employees tagged tractor, matched by NuVizz ALIAS against sealed deliveries — and all four of its failure modes produce the same blank pin. tractor-paint-explain reads Firestore only, spends ZERO NuVizz calls, and prints every delivery on file with the roster’s verdict on the driver who ran it: tractor, not-a-tractor, or unknown-to-roster — that last one being the Brent Boyd/Bryd alias failure that has cost this repo a rule before and is invisible until it is named. It also runs the map’s own paint override rather than describing it, so a flagged-but-vetoed stop explains itself. 31 new tests.'],
+  ['0.95.2', 'ONE SCAN AT 7AM SATURDAY, AND THE MEANS TO STOP GUESSING AT THE LAST SETTING. Chad, on leaving Friday alone: “fridays schedule is fine if i need fresh data before sunday’s scans start i can manually refresh and just make sure that pulls all the correct data and heals. We could also schedule one scan at 7 am saturday to heal anything.” THE MANUAL REFRESH WAS CHECKED, NOT ASSUMED, because “make sure” is an instruction to verify: the button posts to nuvizz-manual-scan-background, which forces manual=1 and DISCARDS date/days, so it rides the cheap list path and can never reach the ~3,000-call number probe; manual bypasses the weekend blackout and the anti-thrash floor; it forces all three kinds due, so a press pulls both saved searches and the roster rather than the slice the hour would have run; and because the pull is the two-scan pull, the frozen-day pass runs on today and heals. Two new tests pin the first three and the end-to-end board test already drives the real scan through that same manual URL for the fourth. THE SATURDAY HEAL, in the narrowest shape that can work: one hour (07:00–08:00 ET), two saved searches, no roster. Both halves were needed and the first alone would have been decorative — the weekend gate in scan-schedule had to open, AND a rule had to make the kinds due, or the fire would act and then return “plan not due” having pulled nothing. Caught before shipping by running the whole chain rather than the half I had changed. ONE MEANS ONE, enforced by shape: a one-hour band at a four-hour interval can fire once inside it, the gate additionally requires that nothing has scanned for four hours, and a fire that FAILED leaves the gap open so the next tick retries. Four hours and not twelve because Friday’s last scan is ~19:50 and Saturday 07:00 is eleven and a quarter hours later — a twelve-hour interval would never come due, which is the exact kind of rule that reads as shipped and does nothing. The two weekend carve-outs that were reverted in v0.93.x (roster, then planned) are why the roster is deliberately absent: replayed on the five-minute cron they took a Saturday from 0 vendor calls to 65. The guard test that caught that is not weakened — it now replays all 288 fires of a Saturday with the scan stamps ADVANCING as they would in life, and asserts EXACTLY ONE acting fire, at 7am, on the full path, with the roster still out. Estimated Saturday cost: one scan, two list calls, plus enrichment only for orders never seen before. AND THE LAST OPEN SETTING GETS A TOOL INSTEAD OF A GUESS. The completed search is clamped to “Stop Detail Updated = today”, which is why a Friday-evening delivery is invisible until Monday, and widening that axis is not safe to guess at: an unhonoured period returns either everything (blowing the row cap) or nothing (a board that silently stops recording deliveries), and this repo has already spent six calls guessing at period grammar. The stop-explorer gains a read-only probe — { savedSearch:\'completed\', probePeriods:true, updatedPeriod:\'-2d\' } — that runs the same saved search with one filter value changed and reports the rows grouped by the day NuVizz last touched them, so honoured / ignored / rejected is visible in one response. ONE call, which Chad approved, spent once the deploy lands. ALSO FIXED, found by reading v0.95.1’s own explain output rather than by a test: the switches block re-derived the frozen pass’s read cap from the environment instead of asking the scan, so the moment the default moved (120 → 400) the diagnostic began reporting a cap the scanner was not using — a settings screen that quietly disagrees with the code is worse than none, because it is what somebody reasons from at 6am. Both budgets are now defined once in the scan and read from there, and the block also reports the copy depth, the completed arrival window and the Saturday heal hour. WHAT v0.95.1 IS ACTUALLY DOING IN PRODUCTION, from that same endpoint: reach 30 days, pool window 08/08–10/07, 696 open rows against 678 at ±7d — so a month of reach costs eighteen rows, nowhere near the 5,000 cap, and the pull is not truncated. The starvation is gone: the pass now reads 274 of a 400 budget with 0 capped, 0 unread and 0 part-read, against 119 of 120 with 51 capped and 51 unread before. Every open stray on the board was resolved in a single pass.'],
+  ['0.95.1', 'THIRTY DAYS OF SELF-HEALING, AND THE GUARD THAT MAKES IT SAFE. Chad, on v0.95.0’s two open settings: “we should do 30 days if it’s no extra nuvizz calls so everything self heals correctly.” IT IS NO EXTRA CALLS, and that is a property of the request rather than a hope: a saved search is ONE request that asks for its whole result set, so the arrival window is a filter value INSIDE a call the scan already makes — two calls at ±7d, two calls at ±30d. Both arrival nets go to 30 days. The active one widens what may be judged at all: the open-order pool, the unplanned snapshot and the frozen-day pass are only entitled to speak about days the search reaches, so an order that went quiet more than a week ago used to be frozen wherever it stood. The COMPLETED one matters just as much and was the quieter hole — a stop whose arrival day was three weeks ago and which delivers today fell outside a ±7d arrival net, so no pull ever reported it finished and its frozen copy could never be healed. WHAT WAS MEASURED FIRST, from v0.95.0’s own explain endpoint rather than guessed: the live frozen pass was ALREADY starving at seven days — 89 open strays, 119 reads against a cap of 120, 51 capped and unread in one pass. A straight flip to 30 would have made each long-carried order cost up to 30 Firestore reads and healed about four stops a scan: slower self-healing, not faster. So depth is now SLICED AND REMEMBERED. A pass reads at most ten frozen days per stop, newest first, records the oldest day it covered in the frozen ledger, and the next pass continues older than that until the stop is fully covered — ten orders healed three days deep beats three orders healed thirty days deep, and nothing is abandoned. Until a stop’s history is fully read the pass heals every copy it HAS read but decides nothing that depends on what it has not: a delivery recorded three weeks back could sit in the days still to come, and filing on a half-read history would put an old POD re-touch on today’s board as new work. Read cap raised 120 → 400 (Firestore reads, not vendor calls). THE ONE REAL HAZARD OF A WIDER WINDOW, closed in the same change: this API has no paging, so a result set past maxResult comes back as a full-looking list with its tail missing and nothing saying so — and every reader treats “not in the pull” as “NuVizz no longer lists it”. A pull that returns AT the cap is now reported truncated, and the scan stamps its pool and its snapshot thin, which is the existing rule for “absence is not evidence”: nothing is dropped as closed on a truncated list’s word, the log says so in one line, and the fix (raise the row cap or narrow the window) is named. A test runs the real scan and the real Map feed with the cap set to three rows and proves a prior-day order the truncated list omits stays on the board — with the control, one row short of the cap, proving the same order IS pruned when the list is complete. NOT CHANGED, and stated rather than done quietly: the completed search’s “Stop Detail Updated = today” clamp, which is the axis that decides the pull’s SIZE and the reason a Friday-evening delivery is invisible until Monday. A multi-day period there is portal grammar this repo has not verified live, and an unhonoured period returns either everything (blowing the row cap) or nothing (no completions at all, silently). One live call settles it; it has not been spent.'],
+  ['0.95.0', 'ONLY WHAT THE SCANS PICK UP. Chad, after v0.94.1: “look at the code to make sure that these issues don’t happen again and that we fixed the underlying issue that had stops populating on the board that had already been delivered. We should only be showing the stops that the scans pick up.” A 53-finding audit of every path between the two saved searches and the three screens (scan write, board read, date window, completed overlay, cadence, consumers, client) found the same fault in eleven shapes: the scan writes today plus two business days and never rewrites a past day, so anything NuVizz does to an order after its arrival day landed in a bucket the loop dropped, and the frozen copy kept telling the old story. WHAT SHIPS, all from the two pulls already paid for — zero extra NuVizz calls. THE FROZEN-DAY PASS, rebuilt (lib/refile-core.mts): on today’s pass every finished row NuVizz files under a frozen past day heals EVERY open copy of it on every frozen day from its arrival day to yesterday (a routed stop is clamped forward each day it stays open, so its last open copy sits on the day before it delivered — #838 healed only the arrival day and skipped stops already on today’s board, which was most of them: 125 open ghosts across four days); every OPEN row on a frozen day heals a copy that disagrees about the plan (PRIMARY LOGISTICS, un-planned Friday after its snapshot froze), RE-OPENS a frozen refusal NuVizz now lists open (HIGHLAND FORGE, refused on TAYLOR then re-opened by CS as an ATT attempt — served as “refused” in the window and absent from the Map), and files an order with no copy anywhere onto today’s board so the Map can show it (EXPEDITORS, created after its day froze). The carry-forward now files a finish BEFORE its wrong-day guard, so a refiled or clamped row’s delivery can no longer be dropped on the floor; a filed open carry-over is re-filed from the LIVE pull every scan and leaves the moment NuVizz moves or closes it. Reads are bounded and remembered: a frozen ledger keyed by NuVizz’s own update stamp means a resolved stop is never re-read until NuVizz touches it, so the read budget reaches the tail instead of re-proving yesterday’s deliveries every fifteen minutes. THE MAP FOLDS FROM THE POOL: the carry-over fold judges prior-day rows by the open-order pool (still open on a past day → live status over the frozen pin; filed on today or later → not carry-over; not listed inside the pool’s reach → closed; a frozen refusal the pool lists open → re-opened; a frozen “planned” the pool lists unplanned → work to plan), with the unplanned snapshot as the fallback, and every decision served as `carryover` on the feed. A THIN pull (far fewer open rows than the last pool) is stamped on the pool and the snapshot, and no reader drops a row on a thin judge’s word; a pool a later board scan failed to rewrite is not the judge; a confirmed Save inside the hour is held until the pool agrees; a row older than any scan can see is served and SAID to be unverified rather than silently trusted; a pool read that catches a rewrite half-way is refused whole. The completed overlay pins a finish landing on a rolled-over copy to today (the board read stripped it and the next full scan pruned it), clears the unplanned flag on a cancellation, and refuses a finished twin under a live order’s number. CONSUMERS: the CS “scheduled for delivery” email no longer fires for a refiled delivery; the driver sidebar defaults to the Eastern day (after 8pm it read tomorrow’s empty board); the 6:30 report lists stops planned on its day but closed on a later one under their own heading instead of grading them; the snapshot’s trust window follows the saved search’s reach instead of a hard-coded week. CLIENT: the window’s confirmed-save overlay releases on the pool’s scan stamp like the board’s does; a cache-served window re-pulls every five minutes instead of once; the desktop grid drives the desktop map’s status filter as the phone’s does; a synced profile cannot drag the phone grid into a window it cannot see or leave; “Unplanned only” and the window extras stop admitting delivered and cancelled orders. INSPECTABLE for nothing: nuvizz-scan-config?explain=1 now serves the pool, the unplanned set, the retired list, the frozen ledger with the last pass’s summary, and the switches; the run ledger records what each pass filed and healed. Proven end to end: a new test drives the REAL scan, Map feed and window against an in-memory Firestore for the five 09/07 orders and a second scan, and fails if a single /stop/info call is spent. Two things are Chad’s settings, not code, stated in the report: the completed search’s “updated today” clamp means a delivery after the day’s last scan is never seen by any pull (widen NUVIZZ_COMPLETED_UPDATED), and 19 genuinely open routed stops sit outside the ±7-day reach (widen NUVIZZ_ACTIVE_ARRIVAL).'],
   ['0.94.1', 'A DELIVERY FROM A FROZEN DAY IS FILED WHERE IT RAN, AND THE FROZEN COPY STOPS CALLING IT OPEN. The follow-up to v0.94.0, which Chad asked for after it shipped: “fix this — why those 30 orders escaped the overnight refile.” ESTABLISHED FROM THE STOPS’ OWN NUVIZZ TIMELINES (six calls): 007170166-1 (H&H WORLD GROUP) and RA52300615 were planned onto BEN 1 by Zach Johnston in the same minute, 03:04 on 09/02; both dispatched at 05:05; RA52300615 delivered at 10:59 and 007170166-1 at 11:11. RA52300615 is on the 09/02 board as delivered. 007170166-1 is on no board at all and its 09/01 copy still reads unplanned. Every one of the 44 late deliveries that DID land on 09/02 got there through the carry-forward, which files a finished row only when that day’s board already held a copy of the stop — and the lost stops had none, because no scan had written them onto 09/02 as planned before they delivered. Their delivered rows carried their 09/01 arrival day, bucketed to a day the loop never writes, and were dropped on the floor; the 09/01 copy, frozen at 11:35 PM the night before, kept saying unplanned. WHAT IS NOT ESTABLISHED, said plainly: why the active pull did not surface those stops as planned between 03:04 and 11:11. No scan log from that morning survives; dispatcher-set dates are ruled out by the write ledger (no setStopDate since 08/28); there is no planned-without-route row in five days of boards; the load anchor cannot fire on a row whose registry record has no raw.load. The difference visible in the data is that every lost stop had been planned and UN-planned the day before (Freddy Perez, 09/01) while the refiled sibling had not — recorded here as the lead, not the cause. WHAT SHIPS, pinned to the path that loses them once they are missed: on today’s pass, every finished row the pull reports for a frozen past day inside the search’s reach is FILED onto today’s board, pinned to today, exactly as the carry-forward does for a stop it already held — unless the stop’s own-day copy already records it finished, which is a POD re-touch of a properly recorded delivery and not today’s work. Where that copy exists and still reads open, it is HEALED in place with a field-masked patch of the live status and plan fields (never a day, never a pin, never a blind write), so the carry-over fold, the history seal and the date window stop meeting a phantom open order. The same masked heal covers the other direction Chad hit — PRIMARY LOGISTICS, un-planned in NuVizz on Friday afternoon after the 09/02 snapshot froze and still “planned on MARCUS 2” there — for open rows on frozen days NuVizz changed in the last 72 hours. Reads are bounded (80 a scan; a stop past the cap waits for the next), a copy inside a confirmed Save’s write grace is left alone, and nothing is deleted. Zero NuVizz calls: it is the same two pulls, read all the way through. 11 new tests named for the orders. The already-frozen phantoms from 09/01–09/04 are not rewritten — v0.94.0’s pool already drops them from the window and the Map’s carry-over prunes them — this stops new ones being made.'],
   ['0.94.0', 'THE ROUTING DATE WINDOW NOW ANSWERS FROM WHAT NUVIZZ LISTS, AND A BUTTON CHECKS IT. Chad, two screenshots side by side, Monday: the Route Workbench showed 525 unplanned stops for 09/01–09/08 and our Routing window showed 550 for the same dates — “why don’t these match they have the same filters showing.” They were not reading the same data. The Workbench asks NuVizz; the window is served from our own per-day board snapshots, and a snapshot stops being rewritten at the end of its own day (the scan writes today plus two business days and drops the rest). MEASURED, not reasoned: the window’s 550 reproduced to the pound from our cache (306,121 lb · 909 · 200) and the Workbench’s 525 from ONE live list call (290,087 lb · 886 · 201). The 25-stop gap was 30 rows still “unplanned” in frozen 09/01–09/04 snapshots that NuVizz no longer had open (the first four on his screen had all DELIVERED the next morning — H&H WORLD GROUP on BEN 1, WIEDMANN BROS on GEORGE L, JONATHON ANGLIN on COLIN/DJ 1, ERIN GRILL on MITCHELL; one, MARIA SIMS, had been re-dated to 09/09 — exactly the case Chad guessed), MINUS three orders NuVizz had UN-PLANNED on Friday afternoon after their days froze and the window still showed on old loads (PRIMARY LOGISTICS, 10,000 lb, among them), MINUS a re-delivery duplicate created after its day froze, MINUS an ATT re-attempt customer service had re-opened. The closed-order direction wastes planning time; the hidden-order direction is a missed delivery, and that is the one this fixes first. WHAT SHIPS. (1) THE OPEN-ORDER POOL: every planned-kind scan already holds the whole ±7-day active list in memory; it now writes every open row across every day to one compact document set (lib/active-pool.mts, chunked, zero extra NuVizz calls — same data, one Firestore write). (2) THE WINDOW RECONCILES AGAINST IT: a cached row the pool still lists gets its live status, load, driver and day overlaid and keeps its pin and enrichment; a row the cache never captured is ADDED without a pin (it lists under the no-location chip instead of not existing); a cached open row the pool no longer lists, from a day the pool covers, is DROPPED, and one the pool files on another day is dropped from this window; older rows are pruned only by the history warehouse’s retired list; delivered and cancelled rows are history and are never touched; a row a confirmed Save stamped AFTER the pool was written is held, so the write-through this repo already fixed once cannot be undone by an older pool. Every decision is counted and the toolbar’s Board · N stops line says what it removed. No pool yet (first deploy, a failed write) → the same evidence the Map’s carry-over fold already uses: the live unplanned snapshot plus the retired list. (3) CHECK VS NUVIZZ, the button Chad asked for: on a desktop date window it spends exactly ONE NuVizz call — NuVizz’s own list for the same dates and status buckets — and shows the four header numbers for both sides and three lists: shown here but not in NuVizz’s list, in NuVizz’s list but not shown here, on both but planned/load/day differ; each stop opens its card; “Use NuVizz’s list for this window” swaps the grid onto NuVizz’s rows with our cached pins joined by stop number. Open work only (unplanned, planned, out for delivery, arrived): delivered and cancelled rows are history, and the unfiltered all-status pull is the one NuVizz call that reliably blows the 22-second budget. Throttled server-side; a minute’s cooldown on the button. Desktop only, like the date window it belongs to — the phone has no date window to check. Two things stated rather than guessed: why these 30 escaped the refile that worked for 30 comparable orders the same night is not established, and the Workbench grid’s 549 is 10 planned rows short of the API’s 559 inside a filter the API cannot read back; the unplanned selection is identical. 22 new tests, each named for the order that exposed the rule.'],
   ['0.93.17', 'A REAL MAP UNDER THE CIRCLES, AND THE RULE THAT STOPS A CIRCLE LYING — WHICH ONLY A MEASUREMENT FOUND. Chad on the first printout: “the dots didn’t lay over an actual map of north Georgia and I think big circles will work better than dots,” and “terry hasn’t ran for me in a long time so … just guys that have ran in last 4 weeks.” THE BASEMAP. A dot cloud on white has no geography in it — you cannot tell Buford from Bogart. 65 north-Georgia county outlines (US Census, public domain, decimated to 985 points so the PDF stays small) plus twelve town labels and the terminal turn the same data into a map of somewhere. CIRCLES, AS ASKED, BUT ONE PER CLUSTER. I had argued for dots; Chad saw both and overruled it, which is his call. So circles — with the objection answered by the clustering rather than by refusing him the shape: a driver working two areas gets two circles instead of one stretched across ground he never touches. AND THEN THE PART WORTH RECORDING, BECAUSE I GOT IT WRONG TWICE AND THE RENDER LOOKED FINE BOTH TIMES. The first build gave Rasko a 23km circle and Chris a 35km one, each swallowing three other drivers’ areas whole. My safeguard was “do the circles cover most of his work” — and they did, 99%, so it passed. Once a metro is dense a scattered driver’s stops all sit in ONE connected region, so coverage cannot see the failure at all. SIZE can: past about 15km (~9 miles, a morning’s drops in one direction) a circle stops meaning “his patch” and starts meaning “somewhere in Gwinnett”, which a trainee already knows and cannot act on. A driver with no tight cluster now gets NO circle and is named under “Not drawn — their work is spread too thin to sit inside a circle”. That is Chad’s own caveat about Rasko and Chris, enforced by code instead of hoped for. I only found it by printing the radii; two rounds of looking at the rendered PDF had not caught it. STILL RUNNING, NOT MERELY PRESENT. Terry did 70 stops at the start of the window and none since, which passes any count test — so activeDrivers now also checks RECENCY, measured against the window END rather than a wall clock so that re-printing an old window gives that window’s answer. He is excluded with the reason and the date printed, never silently dropped. ALSO FIXED, FOUND BY READING THE RENDER: the map broke to page two and left page one blank below the header, because `aspect-ratio` let the SVG take whatever height the data’s shape implied (667px). A print sheet has a page; it is a fixed box with preserveAspectRatio now. 7 new tests (32 in the module), including the bridging case and both directions of the size rule. 3,452 green. Still no UI wired — the printout comes first.'],
@@ -1677,6 +1692,9 @@ function recordPlanOverlay(patch) {
 // even when the row disagrees. Omit it (or pass null) and behaviour is exactly as before:
 // agreement-or-TTL only. Overnight, when the scanner is paused, no scan ever passes the save
 // so the 12-hour hold still covers a server patch that missed (the WIEDMANN carry-over case).
+// A finished order — delivered, refused/unable, cancelled — by the board's normalized status.
+// Used where a screen must not treat history as work (v0.95.0).
+const isFinishedStatus = (st) => { const x = String(st || '').toUpperCase(); return x === 'DELIVERED' || x === 'EXCEPTION' || x === 'CANCELLED'; };
 function applyPlanOverlay(stops, boardScannedAt = null) {
   try {
     const m = readPlanOverlay();
@@ -2906,6 +2924,25 @@ function readableTextColor(hex) {
 // SAME place, so a dispatcher sees "3 orders here" at a glance. Dark disc + white number + white
 // ring reads on any pin color and on the satellite base. Only drawn for count >= 2. Lives inside
 // the 28×36 viewBox top-right corner, so it never enlarges the marker's scaledSize.
+// THE PICKUP BADGE — a corner tab saying "this stop is a collection, not a delivery".
+//
+// It sits in the corner, opposite the co-located count, because the CENTRE of a disc is
+// already spoken for on most of the pins a pickup can draw: a route pin carries its sequence
+// number, an AM/PM stop its window, a do-not-send its ✕. A pickup is an IDENTITY — what kind
+// of job this is — and an identity that only shows up when nothing else needed the middle is
+// not an identity, it is a coincidence. Same reasoning as the Estes ring (lib/carrier-mark.js),
+// which rides every disc for exactly this reason.
+//
+// Slate ground rather than a colour of its own: every colour on this map already answers
+// "what state is this stop in?" or "what can I send here?", and spending one on a job type
+// would make a pickup argue with its own status. The count badge uses the same ground for the
+// same reason — both are metadata ABOUT the marker rather than a claim about the freight.
+function pickupBadgeSvg(x = 1.6, y = 1.6, scale = 1) {
+  const w = 15 * scale, h = 10.5 * scale;
+  return `<g><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${3.2 * scale}" fill="#0f172a" stroke="#ffffff" stroke-width="${1.4 * scale}"/>`
+    + `<text x="${x + w / 2}" y="${y + 8 * scale}" font-family="system-ui, sans-serif" font-size="${7.4 * scale}" font-weight="800" fill="#ffffff" text-anchor="middle" letter-spacing="-0.3">PU</text></g>`;
+}
+
 function countBadgeSvg(count) {
   const n = Number(count) || 0;
   if (n < 2) return '';
@@ -2922,7 +2959,7 @@ function countBadgeSvg(count) {
 // dot (that's the "number on the delivery icon" for unplanned); otherwise a status glyph/AM-PM tag
 // or a plain core. Anchor is the dot CENTER (returned by the caller).
 function unplannedDotSvg(color, opts = {}) {
-  const { glyph = null, tag = null, count = 0 } = opts;
+  const { glyph = null, tag = null, count = 0, ring = null } = opts;
   const txtColor = readableTextColor(color);
   let core;
   if (Number(count) >= 2) {
@@ -2942,7 +2979,7 @@ function unplannedDotSvg(color, opts = {}) {
   // ring visible even over bright/white satellite patches (parking lots, rooftops).
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="11" fill="#ffffff" stroke="#0f172a" stroke-opacity="0.28" stroke-width="1"/>
+      <circle cx="12" cy="12" r="11" fill="${ring || '#ffffff'}" stroke="#0f172a" stroke-opacity="${ring ? 0.45 : 0.28}" stroke-width="1"/>
       <circle cx="12" cy="12" r="8" fill="${color}"/>
       ${core}
     </svg>`;
@@ -2996,12 +3033,22 @@ function pinSvgStatus(color, opts = {}) {
 // SymbolPath marker, which silently failed to paint on the vector base — see v0.29.77).
 // Callers anchor at the CENTER of the returned size.
 function circleMarkerSvg(color, opts = {}) {
-  const { hollow = false, glyph = null, tag = null, label = null, count = 0 } = opts;
+  const { hollow = false, glyph = null, tag = null, label = null, count = 0, ring = null, pickup = false } = opts;
   const bodyFill = hollow ? '#ffffff' : color;
-  const bodyStroke = hollow ? color : '#ffffff';
-  const strokeW = hollow ? 2.5 : 2;
+  // `ring` — an IDENTITY ring (the Estes yellow, lib/carrier-mark.js) takes the disc's edge
+  // over from the white/colour one and draws a touch heavier, so it still reads at the 16px
+  // resting size. The fill, glyph and count are untouched: the ring says WHOSE order this is,
+  // the disc keeps saying what state it is in.
+  const bodyStroke = ring || (hollow ? color : '#ffffff');
+  const strokeW = ring ? 3 : (hollow ? 2.5 : 2);
   const txtOnBody = hollow ? color : readableTextColor(color);
   let center;
+  // Did the PU end up in the MIDDLE? Only then is the corner badge redundant. Inferring this
+  // from `tag === 'PU'` instead was wrong in a way worth recording: a DELIVERED pickup carries
+  // tag 'PU' AND glyph 'check', the glyph arm below wins the centre, and the badge suppressed
+  // itself for a mark that was never drawn — the same "wired but invisible" shape as the bug
+  // this whole change is fixing.
+  let centerIsPickupTag = false;
   if (label != null) {
     const fs = String(label).length >= 2 ? 10 : 12;
     center = `<text x="14" y="${String(label).length >= 2 ? 17.8 : 18.2}" font-family="system-ui, sans-serif" font-size="${fs}" font-weight="800" fill="${txtOnBody}" text-anchor="middle" letter-spacing="-0.5">${label}</text>`;
@@ -3015,7 +3062,16 @@ function circleMarkerSvg(color, opts = {}) {
     center = '<path d="M10 10l8 8M18 10l-8 8" stroke="white" stroke-width="2.6" stroke-linecap="round"/>';
   } else if (glyph === 'arrow') {
     center = '<path d="M9.5 14h6m-2.5-2.6l2.8 2.6-2.8 2.6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
-  } else if (tag === 'AM' || tag === 'PM') {
+  } else if (tag === 'AM' || tag === 'PM' || tag === 'PU') {
+    centerIsPickupTag = tag === 'PU';
+    // 'PU' BELONGS IN THIS LIST AND WAS NOT IN IT — the bug Chad reported ("we are not id'ing
+    // pickups correctly like on the nuvizz map"). stopMarkerIcon has set tag='PU' for a pickup
+    // since the mark was added; it arrived here, matched neither AM nor PM, and fell through to
+    // the plain centre dot below. So every pickup drew a BLANK disc — and, because the size tier
+    // reads `tag ? 28 : 16`, a blank disc at the 28px size this map reserves for a stop with a
+    // delivery window. Not merely unmarked: wearing the weight of a time-critical stop and
+    // saying nothing. unplannedDotSvg, the OTHER disc renderer, has always named 'PU' here —
+    // one of the two was updated and the other was missed, and nothing could see the difference.
     center = `<text x="14" y="18" font-family="system-ui, sans-serif" font-size="10.5" font-weight="800" fill="${txtOnBody}" text-anchor="middle" letter-spacing="-0.5">${tag}</text>`;
   } else {
     center = `<circle cx="14" cy="14" r="4.5" fill="${hollow ? color : 'white'}"/>`;
@@ -3024,6 +3080,7 @@ function circleMarkerSvg(color, opts = {}) {
     <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28">
       <circle cx="14" cy="14" r="12.5" fill="${bodyFill}" stroke="${bodyStroke}" stroke-width="${strokeW}"/>
       ${center}
+      ${pickup && !centerIsPickupTag ? pickupBadgeSvg() : ''}
       ${countBadgeSvg(count)}
     </svg>`;
   return 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
@@ -3274,6 +3331,8 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
   const isAdvisory = (k) => advisory.has(k) || advisory.has(resolveRestrictionKey(k));
   // Proof that a 53-footer has served this dock, as a BOOLEAN — see blockerDiscMarkup.
   const tractorProven = opts.tractorProven === true;
+  // Scaled up for these bigger viewBoxes, which restrictionMarkerScale shrinks on the way out.
+  const puBadge = opts.pickup === true ? pickupBadgeSvg(1.5, 1.5, 1.45) : '';
 
   // State B: single 36-diameter circle.
   if (restrictions.length === 1) {
@@ -3293,6 +3352,7 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
       <svg xmlns="http://www.w3.org/2000/svg" width="40" height="44" viewBox="0 0 40 44">
         <ellipse cx="20" cy="40" rx="10" ry="1.6" fill="black" opacity="0.16"/>
         ${renderMarkerGlyph(r, 1, 1, tint, 38 / 22)}
+        ${puBadge}
       </svg>`
       : `
       <svg xmlns="http://www.w3.org/2000/svg" width="40" height="44" viewBox="0 0 40 44">
@@ -3301,6 +3361,7 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
           ? blockerDiscMarkup(20, 20, 18, restrictionWarnColor(r), isAdvisory(r), tractorProven)
           : `<circle cx="20" cy="20" r="18" fill="white" fill-opacity="0.95" stroke="${accent}" stroke-width="2"/>`}
         ${isBlocker(r) ? renderBlockerGlyph(r, 9, 9) : renderMarkerGlyph(r, 9, 9, tint)}
+        ${puBadge}
       </svg>`;
     return scaleMarkerSpec({
       url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
@@ -3357,6 +3418,7 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
     <svg xmlns="http://www.w3.org/2000/svg" width="${totalW}" height="${totalH}" viewBox="0 0 ${totalW} ${totalH}">
       <ellipse cx="${totalW / 2}" cy="36" rx="${shadowRx}" ry="1.8" fill="black" opacity="0.15"/>
       ${elementsMarkup}
+      ${puBadge}
     </svg>`;
   return scaleMarkerSpec({
     url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
@@ -3451,10 +3513,39 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   const flagHue = (note?.priority_flag && FLAG_COLORS[note.priority_flag]) ? FLAG_COLORS[note.priority_flag] : null;
   const dnsStop = !!note?.do_not_send;
   // Pickups are MARKED on the pin (Chad: "Ra's should be marked as pickups and not
-  // deliveries") — a PU tag in the same slot the AM/PM window uses. A delivery-window tag or
-  // a restriction icon still wins the slot: a safety mark beats a type mark.
+  // deliveries", and later: "we are not id'ing pickups correctly like on the nuvizz map").
+  // TWO PLACES CARRY IT, and it needs both. The PU goes in the CENTRE when that slot is free —
+  // the biggest, most readable spot on the disc. When something else owns the centre (a route
+  // sequence number, an AM/PM window, the do-not-send ✕) the identity moves to the corner badge
+  // instead of losing to it, the way the Estes ring rides every disc. A safety mark still wins
+  // the middle; it no longer costs the stop its identity.
   const pickup = String(s?.stopType || '').toUpperCase() === 'PU';
+  // ESTES ORDERS ARE BLACK WITH A YELLOW RING (Chad: "make estes icons black with a yellow
+  // ring around them" — lib/carrier-mark.js). The RING is the identity and rides every disc
+  // this stop can draw; the BLACK fills the disc only where the stop would otherwise wear a
+  // default tint (the status/flag fallback, the muted slate). A colour that already means
+  // something keeps saying it inside the ring: a selection stays amber, a search hit orange, a
+  // numbered pin keeps its route colour, a priority flag its hue, a hand-set tractor/box-only
+  // mark its green or red, a delivered stop its green. Two things are untouched on purpose —
+  // do-not-send stays the red ✕ (safety outranks identity), and a restriction cluster keeps
+  // its marks: the clock and the truck ARE the message there, and a ring around a clock would
+  // put back the circle Chad had taken away.
+  const estes = isEstesOrder(s?.stopNbr);
+  const ring = estes ? ESTES_RING : null;
   const statusKind = classifyStopStatus(s);
+  // WHICH ESTES STOPS TAKE THE BLACK. Chad, on an unplanned Estes order still drawing the pool
+  // purple inside its new ring: "any estes unplanned should have black center with yellow ring."
+  // The first cut replaced only the tints that fall through to flagColor(), and UNPLANNED is not
+  // one of them — STATUS_META.UNPLANNED carries its own #6d28d9, so `meta.color ||` answered
+  // before the Estes black was ever reached. SCHEDULED's colour is null, which is exactly why
+  // the scheduled pins went black and the unplanned pool did not: the rule looked right and
+  // covered half the board.
+  //
+  // Both of those are the RESTING tints — "nothing has happened to this order yet" — and that is
+  // the colour the carrier identity should own. The LIVE EXECUTION states keep theirs: out for
+  // delivery, arrived, delivered and exception are what the board is watched for all day, and the
+  // ring already says whose order it is without spending the one colour that says where it is.
+  const estesFill = estes && (statusKind === 'UNPLANNED' || statusKind === 'SCHEDULED') ? ESTES_FILL : null;
   const addrOff = addressLooksOff(s, note);
   // Signature of EVERY input that changes the rendered icon (restrictions already folds in
   // selectedDayKey plus the AM/PM + tractor filters applied above). This MUST track the
@@ -3475,7 +3566,11 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // tractorDelivered is already in the key above, but noTractorOverride is what decides
     // whether it reaches the disc, and it is not — a dispatcher ticking the restriction has to
     // repaint the mark, not wait for a reload.
-    + '\x1f' + (noTractorOverride ? 'N' : '');
+    + '\x1f' + (noTractorOverride ? 'N' : '')
+    // The Estes paint is derived from the stop NUMBER, which never changes for a stop — but the
+    // key must still carry it, or an Estes order and a plain one sharing every other input would
+    // share one cached icon and the second to render would wear the first one's paint.
+    + '\x1f' + (estes ? 'E' : '');
   const cached = __stopIconCache.get(cacheKey);
   if (cached) return cached;
 
@@ -3483,13 +3578,20 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   // SCHEDULED only. "Planned" also covers OUT_FOR_DEL / ARRIVED / DELIVERED / EXCEPTION —
   // the live execution states Chad watches all day — and grey-ing those out would trade one
   // blind spot for a worse one. Muting applies to planned-but-not-yet-moving work.
-  if (plannedMuted && statusKind === 'SCHEDULED' && !dnsStop && !matched && !searchMatched && !inRoute) {
+  // A PICKUP IS NEVER MUTED. Muting exists to quiet "already planned, nothing to decide here"
+  // — but at 14px, hollow and slate, there is no room for the PU mark at all, so muting a
+  // pickup does not quiet it, it DISGUISES it as an ordinary planned delivery. Which kind of
+  // job a stop is stays a live question after it is planned: it decides what the driver does
+  // on arrival, and this repo has twice scored a pickup against a dock's receiving hours
+  // (v0.59.2, v0.65.2) precisely because the pickup/delivery difference got lost downstream.
+  // Same carve-out as DNS, selection, search and open routes on the line below.
+  if (plannedMuted && statusKind === 'SCHEDULED' && !pickup && !dnsStop && !matched && !searchMatched && !inRoute) {
     // ALREADY ON A LOAD. Deliberately the quietest pin on the map: slate, hollow, no
     // eligibility colour (that colour answers "what truck can take this?" — a question
     // already settled once the stop is planned). DNS, an active selection, a search hit
     // and an open route all still win, so nothing safety- or task-critical is muted.
     result = {
-      url: circleMarkerSvg(PLANNED_MUTED_COLOR, { hollow: true, count }),
+      url: circleMarkerSvg(estesFill || PLANNED_MUTED_COLOR, { hollow: true, count, ring }),
       scaledSize: new google.maps.Size(14, 14),
       anchor: new google.maps.Point(7, 7),
     };
@@ -3498,13 +3600,13 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   }
   if (dnsStop) {
     // DNS — strong red circle with a white ✕, taking precedence over everything else.
-    result = { url: circleMarkerSvg(DNS_COLOR, { glyph: 'dns' }), scaledSize: new google.maps.Size(28, 28), anchor: new google.maps.Point(14, 14) };
+    result = { url: circleMarkerSvg(DNS_COLOR, { glyph: 'dns', pickup }), scaledSize: new google.maps.Size(28, 28), anchor: new google.maps.Point(14, 14) };
   } else if (inRoute) {
     // Numbered route pin (delivery sequence). Colored by route when a routeColor is
     // given (Routing), else by status (Map): green=delivered / blue=scheduled.
     const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
-    const color = routeColor || ((tractorDelivered && !noTractorOverride) ? TRACTOR_DELIVERED_COLOR : (meta.color || flagColor(note)));
-    result = { url: circleMarkerSvg(color, { label: String(seq), count }), scaledSize: new google.maps.Size(30, 30), anchor: new google.maps.Point(15, 15) };
+    const color = routeColor || ((tractorDelivered && !noTractorOverride) ? TRACTOR_DELIVERED_COLOR : (estesFill || meta.color || flagColor(note)));
+    result = { url: circleMarkerSvg(color, { label: String(seq), count, ring, pickup }), scaledSize: new google.maps.Size(30, 30), anchor: new google.maps.Point(15, 15) };
   } else if (restrictions.length === 0) {
     // State A — status drives the pin; matched stops pop orange; a priority flag,
     // AM/PM window, or "address looks off" signal recolor/reglyph as appropriate.
@@ -3527,7 +3629,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       : tractorDelivered ? TRACTOR_DELIVERED_COLOR
       : eligColor
       || flagHue
-      || (addressOff ? ADDRESS_OFF_TINT : (meta.color || flagColor(note)));
+      || (addressOff ? ADDRESS_OFF_TINT : (estesFill || meta.color || flagColor(note)));
     let glyph = meta.glyph;
     if (!hi) {
       if (note?.priority_flag === 'question' && !glyph) glyph = 'question';
@@ -3538,7 +3640,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // co-located count sits inside the dot. Highlighted/tagged unplanned keep the pop pin.
     if (statusKind === 'UNPLANNED' && !hi && !tag) {
       result = {
-        url: unplannedDotSvg(color, { glyph, count }),
+        url: unplannedDotSvg(color, { glyph, count, ring }),
         scaledSize: new google.maps.Size(16, 16),
         anchor: new google.maps.Point(8, 8),
       };
@@ -3550,7 +3652,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       const size = hi ? 22 : (tag ? 28 : 16);
       const half = size / 2;
       result = {
-        url: circleMarkerSvg(color, { hollow: hi ? false : meta.hollow, glyph, tag, count }),
+        url: circleMarkerSvg(color, { hollow: hi ? false : meta.hollow, glyph, tag, count, ring, pickup }),
         scaledSize: new google.maps.Size(size, size),
         anchor: new google.maps.Point(half, half),
       };
@@ -3566,7 +3668,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       // a blocker the glyph is white and can no longer carry the tractor-delivered lime, so
       // the "a trailer fits" half wears it instead. Passing the tint here would let a priority
       // flag's hue become that half.
-      { advisoryKeys, blockerKeys, tractorProven: tractorDelivered && !noTractorOverride },
+      { advisoryKeys, blockerKeys, tractorProven: tractorDelivered && !noTractorOverride, pickup },
     );
     result = { url: spec.url, scaledSize: new google.maps.Size(spec.width, spec.height), anchor: new google.maps.Point(spec.anchor[0], spec.anchor[1]) };
   }
@@ -4724,13 +4826,19 @@ function useLegendInventory({
       const dns = !!note?.do_not_send;
       const inRoute = inSet(routeStopNbrs);
       const hi = inSet(selectedIds) || inSet(searchMatchIds);
-      const muted = plannedMuted && !inRoute && !dns && !hi
+      // Mirrors stopMarkerIcon's carve-out exactly — a pickup is never muted. If the two
+      // disagreed the legend would count a PU row the board is not drawing, or miss one it is.
+      const pickup = String(s?.stopType || '').toUpperCase() === 'PU';
+      const muted = plannedMuted && !inRoute && !dns && !hi && !pickup
         && typeof isPlanned === 'function' && isPlanned(s)
         && classifyStopStatus(s) === 'SCHEDULED';
       const hidden = dns || inRoute || muted;
       entries.push({
         note,
         hidden,
+        dns,
+        pickup,
+        estes: isEstesOrder(s.stopNbr),
         tractorDelivered: !!tractorLocs?.has?.(s.matchKey),
         icons: drawnRestrictionKeys(getRestrictionBadgeKeys(note, { day: dayKey }), {
           deliveryWindow: note?.delivery_window,
@@ -4762,7 +4870,7 @@ function LegendMarkerExample({ restrictions, label, advisoryKeys = null, blocker
         height={spec.height}
         style={{ display: 'block' }}
       />
-      <span className="text-slate-600">{label}</span>
+      <span className="text-slate-700">{label}</span>
     </div>
   );
 }
@@ -4800,11 +4908,11 @@ function TractorPaintControl({ litCount = null }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
-        <span className="text-[10px] uppercase font-semibold text-slate-500">Tractor delivered</span>
+        <span className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide">Tractor delivered</span>
         {/* tap-target-y (phone-only, same as <Toggle/>): index.css exempts checkboxes from the
             44px floor, so this on/off label was an 18px target — and in the mobile Filters
             drawer it is the only control for the lime paint. */}
-        <label className="tap-target-y inline-flex items-center gap-1.5 cursor-pointer select-none text-[10px] font-semibold text-slate-600">
+        <label className="tap-target-y inline-flex items-center gap-1.5 cursor-pointer select-none text-[11px] font-semibold text-slate-700">
           <input
             type="checkbox"
             checked={on}
@@ -4818,7 +4926,7 @@ function TractorPaintControl({ litCount = null }) {
         <span className="w-3 h-3 rounded-full border-2 border-white shadow flex-shrink-0" style={{ background: TRACTOR_DELIVERED_COLOR, boxShadow: '0 0 0 1px rgba(0,0,0,0.15)' }} />
         <span>Tractor delivered — a tractor driver has completed a delivery here (automatic, from saved history)</span>
       </div>
-      <div className={`mt-1 text-[10px] leading-snug ${diag.tone}`}>
+      <div className={`mt-1 text-[11px] leading-snug ${diag.tone}`}>
         {diag.text}
         {diag.retry && on && (
           <button
@@ -4859,7 +4967,7 @@ const plural = (n, word) => `${Number(n || 0).toLocaleString()} ${word}${Number(
 
 function LegendCount({ n }) {
   if (!n) return null;
-  return <span className="ml-auto pl-2 text-[10px] font-semibold text-slate-400 tabular-nums">{n}</span>;
+  return <span className="ml-auto pl-2 text-[11px] font-semibold text-slate-600 tabular-nums">{n}</span>;
 }
 
 // THE LEGEND BODY — shared by the Map sidebar panel and the Routing map's popover, so the two
@@ -4900,11 +5008,11 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
     + (inv && iconCounts.tractor_trailer_friendly ? 1 : 0);
 
   return (
-    <div className="space-y-3 text-[11px]">
+    <div className="space-y-3 text-[11px] text-slate-800">
       {/* What this list is scoped to, and the way back to the full catalogue. A dispatcher who
           remembers a mark from last week still needs to be able to look it up. */}
       <div className="flex items-center justify-between gap-2 -mt-0.5">
-        <span className="text-[10px] text-slate-500 leading-snug">
+        <span className="text-[11px] text-slate-600 leading-snug">
           {all
             ? 'Every mark the map can draw.'
             : empty
@@ -4917,7 +5025,7 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
           <button
             type="button"
             onClick={() => onShowAll(!showAll)}
-            className="tap-dense shrink-0 text-[10px] font-semibold text-blue-700 underline hover:no-underline"
+            className="tap-dense shrink-0 text-[11px] font-semibold text-blue-700 underline hover:no-underline"
           >
             {showAll ? 'On this map' : 'Show all'}
           </button>
@@ -4926,7 +5034,7 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
 
       {anyFlagRow && (
         <div>
-          <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Priority flag</div>
+          <div className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide mb-1">Priority flag</div>
           <div className="space-y-1">
             {flagRows.map((k) => (
               <div key={k} className="flex items-center gap-2">
@@ -4953,6 +5061,33 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
         </div>
       )}
 
+      {/* PICKUPS. Chad: "we are not id'ing pickups correctly like on the nuvizz map." Listed
+          whenever any pickup is on the board — and it always can be, because unlike every other
+          mark here the PU rides EVERY marker a pickup draws. The swatch is the real badge. */}
+      {has(inv && inv.pickups) && (
+        <div>
+          <div className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide mb-1">Pickup</div>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center justify-center rounded-[3px] text-white text-[8px] font-extrabold flex-shrink-0 px-1 py-px" style={{ background: '#0f172a' }}>PU</span>
+            <span>Pickup — we are COLLECTING here, not delivering</span>
+            <LegendCount n={!all && inv.pickups} />
+          </div>
+        </div>
+      )}
+
+      {/* The Estes ring (lib/carrier-mark.js) — listed only while an Estes order is actually
+          drawing it, like every other mark here. The swatch is the real colours, not a name. */}
+      {has(inv && inv.estes) && (
+        <div>
+          <div className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide mb-1">Carrier</div>
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: ESTES_FILL, boxShadow: `0 0 0 2px ${ESTES_RING}` }} />
+            <span>Estes order — black, yellow ring</span>
+            <LegendCount n={!all && inv.estes} />
+          </div>
+        </div>
+      )}
+
       {/* The lime paint stays whatever the board looks like: this block is the only kill
           switch for it on a phone, and its status line is the ONLY way to tell a paint bug
           apart from an empty collection. A control is not a key entry — filtering it out
@@ -4962,8 +5097,8 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
 
       {shapeRows.length > 0 && (
         <div>
-          <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Restricted stops</div>
-          <p className="text-slate-600 mb-2 leading-snug">
+          <div className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide mb-1">Restricted stops</div>
+          <p className="text-slate-700 mb-2 leading-snug">
             When a stop has equipment restrictions, the pin is replaced by the restriction icon(s) for quick visual scanning.
           </p>
           <div className="space-y-2">
@@ -4982,8 +5117,8 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
               not out there. No count chip here on purpose: the inventory does not measure
               confidence, and printing a number this panel has not counted is exactly the
               sort of thing that gets believed. */}
-          <div className="mt-3 pt-2 border-t border-slate-100">
-            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">How sure is it?</div>
+          <div className="mt-3 pt-2 border-t border-slate-300">
+            <div className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide mb-1">How sure is it?</div>
             <div className="space-y-2">
               <div className="flex items-center gap-2">
                 <LegendMarkerExample
@@ -5001,7 +5136,7 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
                 />
               </div>
             </div>
-            <p className="text-slate-500 mt-1.5 leading-snug">
+            <p className="text-slate-600 mt-1.5 leading-snug">
               Ticking the restriction on the stop fills the other half in.
             </p>
           </div>
@@ -5010,7 +5145,7 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
 
       {iconKeys.length > 0 && (
         <div>
-          <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Restriction icons</div>
+          <div className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide mb-1">Restriction icons</div>
           <div className="space-y-1">
             {iconKeys.map((key) => (
               <div key={key} className="flex items-center gap-2">
@@ -5022,7 +5157,7 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
             {has(shapes.overflow) && (
               <div className="flex items-center gap-2 pt-1">
                 <span className="inline-flex items-center justify-center w-4 h-4 rounded-full text-white text-[8px] font-bold flex-shrink-0" style={{ background: '#0f172a' }}>+N</span>
-                <span className="text-slate-500">Four or more restrictions — the rest are in the count</span>
+                <span className="text-slate-600">Four or more restrictions — the rest are in the count</span>
                 <LegendCount n={!all && shapes.overflow} />
               </div>
             )}
@@ -5032,7 +5167,7 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
 
       {ttFriendly && (
         <div>
-          <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Allowed (green)</div>
+          <div className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide mb-1">Allowed (green)</div>
           <div className="flex items-center gap-2">
             <RestrictionIcon kind="tractor_trailer_friendly" size={LEGEND_ICON_PX} />
             <span>{RESTRICTION_ICONS.tractor_trailer_friendly.label} — stop can take a tractor trailer</span>
@@ -5043,7 +5178,7 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
 
       {/* Filtered down to nothing is a real answer, and has to look like one. */}
       {!all && !anyFlagRow && !shapeRows.length && !iconKeys.length && !ttFriendly && (
-        <div className="text-slate-500 leading-snug">
+        <div className="text-slate-600 leading-snug">
           {empty
             ? 'Nothing is on the map yet — pick a date or clear a filter.'
             : 'No marks on this board. Every stop is drawing a plain pin.'}
@@ -11118,6 +11253,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
       // OFF → show all. (isUnplanned means "no driver yet" — wrong signal here;
       // a routed stop with no driver assigned is still planned.)
       if (mapFilters.unplannedOnly && s.isPlanned) return false;
+      // A cancelled or delivered order with no route is not planned, and it is not work to plan
+      // either — "Unplanned only" kept them on the screen (v0.95.0).
+      if (mapFilters.unplannedOnly && isFinishedStatus(s.normalizedStatus)) return false;
       return true;
     });
   }, [mapFilters.hideTerminal, mapFilters.hideStemOut, mapFilters.unplannedOnly, stemOutKeys]);
@@ -13158,7 +13296,35 @@ const LOAD_BUCKET_STYLE = {
 // the actual culprit was the map panel's Unplanned only (Chad: "says i don't have any
 // planned orders today however i have like 600 of them"). Defaults keep Routing, which
 // passes the whole board, behaving exactly as before.
-function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange, onSearchMatchChange = null, onStatusFilterChange = null, planVersion = 0, highlightIds = null, rootRef = null, boardTotal = null, upstreamFilterLabels = [], planShells = null, onPlanShell = null }) {
+// AN ORDER ALREADY CLAIMED BY AN OPEN COMPARE CARD, as the bottom grid sees it.
+//
+// Chad: "Paragon should still be highlighted a different colour on bottom panel now that
+// it's applied to this route ... looks like it's still available."
+//
+// THE COLOUR IS THE ROUTE'S OWN, and that is the whole design: the same hue already names
+// this card in its header dot and paints its numbered pin on the map, so a router with
+// three cards open reads one identity across three surfaces instead of learning a fourth
+// convention. The SEQUENCE rides with it — "on GARY PITTS" and "first on GARY PITTS" are
+// different facts when you are deciding what to drag next.
+//
+// STAGED IS NOT SAVED, and the chip has to say so rather than imply it: these orders exist
+// only in this browser until Save writes them to NuVizz, so the wording is "staged", never
+// "planned" — the word the board uses for freight NuVizz already holds.
+function StagedChip({ staged }) {
+  if (!staged) return null;
+  return (
+    <span
+      title={`Stop ${staged.seq} on ${staged.name} — staged on an open Compare card, not saved to NuVizz yet`}
+      className="inline-flex items-center gap-1 text-[9px] font-bold rounded px-1 py-px mr-1.5 align-middle border"
+      style={{ color: staged.color, borderColor: staged.color, background: `${staged.color}1a` }}
+    >
+      <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: staged.color }} />
+      {staged.seq}
+    </span>
+  );
+}
+
+function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange, onSearchMatchChange = null, onStatusFilterChange = null, planVersion = 0, highlightIds = null, stagedByStop = null, rootRef = null, boardTotal = null, upstreamFilterLabels = [], planShells = null, onPlanShell = null }) {
   // Loads view groups the FULL board's loads (loadStops) so stop-level filters —
   // notably "Unplanned only" — don't empty it. Falls back to the visible stops.
   const loadSrc = loadStops || stops;
@@ -13270,9 +13436,14 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     // deliveries") — the chip rides the name cell so no new column is needed and it survives
     // any column re-order the gear menu applies.
     { k: 'name', label: 'Ship To Name', w: 220, get: (s) => (
-        String(s.stopType || '').toUpperCase() === 'PU'
-          ? <><span className="inline-block text-[9px] font-bold rounded bg-amber-100 text-amber-800 px-1 py-px mr-1.5 align-middle" title="Pickup — freight comes back to the terminal">PU</span>{s.businessName || '—'}</>
-          : (s.businessName || '—')
+        <>
+          {/* The staged chip rides the NAME cell for the same reason the PU chip does: it
+              survives every column re-order and every column the gear menu hides, and the
+              name column is the one a phone always shows. */}
+          <StagedChip staged={stagedByStop?.get?.(String(s.stopNbr)) || null} />
+          {String(s.stopType || '').toUpperCase() === 'PU' && <span className="inline-block text-[9px] font-bold rounded bg-amber-100 text-amber-800 px-1 py-px mr-1.5 align-middle" title="Pickup — freight comes back to the terminal">PU</span>}
+          {s.businessName || '—'}
+        </>
       ), sortVal: (s) => s.businessName },
     { k: 'addr1', label: 'Address 1', w: 200, get: (s) => s.addr1 || '—', sortVal: (s) => s.addr1 },
     { k: 'addr2', label: 'Address 2', w: 150, get: (s) => s.addr2 || '', sortVal: (s) => s.addr2 },
@@ -13285,7 +13456,25 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
         const keys = getRestrictionBadgeKeys(notes.get(s.matchKey) || null);
         return keys.length ? keys.map((k) => RESTRICTION_ICONS[k]?.short || k).join(', ') : '';
       }, sortVal: (s) => getRestrictionBadgeKeys(notes.get(s.matchKey) || null).map((k) => RESTRICTION_ICONS[k]?.short || k).join(', ') },
-    { k: 'load', label: 'Load', w: 150, get: (s) => loadDisplayName(s.routeName, s.loadNbr), sortVal: (s) => loadDisplayName(s.routeName, s.loadNbr) },
+    // THE LOAD COLUMN IS WHY THE HOLE EXISTED. It reads NuVizz, and a Draft load carrying no
+    // saved orders has nothing there to read — so a stop sitting at position 1 on an open card
+    // listed blank, exactly like an order nobody had touched. It now names the card too, in the
+    // card's colour, and NEVER at the expense of the saved load: a stop already planned onto one
+    // load and staged onto another shows both, because that disagreement is the thing a router
+    // most needs to see before he saves.
+    { k: 'load', label: 'Load', w: 150, get: (s) => {
+        const st = stagedByStop?.get?.(String(s.stopNbr)) || null;
+        const saved = loadDisplayName(s.routeName, s.loadNbr);
+        if (!st) return saved;
+        const sameLoad = saved && (saved === st.name || String(s.loadNbr || '') === String(st.key));
+        return (
+          <>
+            <span className="font-semibold" style={{ color: st.color }} title={`Staged on ${st.name} — not saved to NuVizz yet`}>{st.name}</span>
+            <span className="text-slate-400"> · staged</span>
+            {saved && !sameLoad && <span className="text-slate-500"> · on {saved}</span>}
+          </>
+        );
+      }, sortVal: (s) => (stagedByStop?.get?.(String(s.stopNbr))?.name) || loadDisplayName(s.routeName, s.loadNbr) },
     { k: 'driver', label: 'Driver', w: 150, get: (s) => s.driverName || '', sortVal: (s) => s.driverName },
   ];
   // Board mode shows today's loaded stops; NuVizz mode shows the live-pulled set.
@@ -13302,11 +13491,28 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     return m;
   }, [stops]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const baseStops = useMemo(() => (nvWindow ? reflectBoardPlan(applyPlanOverlay(nvRows), boardByNbr) : stops), [nvWindow, nvRows, stops, boardByNbr, planVersion]);
+  // The window's overlay is released by the POOL's scan stamp (a scan that ran after the save
+  // has seen the world after it), exactly as the board's is released by last_scanned_at — the
+  // window used to paint a confirmed save with no way out but the 12h TTL (v0.95.0).
+  const baseStops = useMemo(() => (nvWindow ? reflectBoardPlan(applyPlanOverlay(nvRows, nvReconciled?.poolAt || null), boardByNbr) : stops), [nvWindow, nvRows, stops, boardByNbr, planVersion, nvReconciled]);
   // Pull from NuVizz whenever a date window is selected (re-pull when the status
   // selection changes so status filters server-side, not just on the loaded page).
+  // A cache-served window is re-pulled every NV_WINDOW_REPULL_MS while it is open (v0.95.0) — the
+  // scan rewrites the open-order pool every 15–30 minutes and the window was a one-shot snapshot
+  // of it, so a delivery an hour ago still read "unplanned" here while the board had moved on.
+  // A tick re-pull keeps the last Check result on screen; a window/status change resets it.
+  const NV_WINDOW_REPULL_MS = 5 * 60 * 1000;
+  const [nvTick, setNvTick] = useState(0);
+  const nvTickSeen = useRef(0);
+  useEffect(() => {
+    if (!nvWindow || nvSource !== 'cache' || nvLoading) return;
+    const t = setInterval(() => { if (document.visibilityState === 'visible') setNvTick((x) => x + 1); }, NV_WINDOW_REPULL_MS);
+    return () => clearInterval(t);
+  }, [nvWindow, nvSource, nvLoading]);
   useEffect(() => {
     if (!nvWindow) { setNvErr(null); setNvLoading(false); return; }
+    const isTick = nvTickSeen.current !== nvTick;
+    nvTickSeen.current = nvTick;
     // '-7d' / '-14d' are AUTO ranges: board day back N days, tracking the board-date input —
     // "takes the day the board is set to and goes back". They ride the same fromDate/toDate
     // cache path as a hand-picked custom range (scanned days → cache-served, zero NuVizz).
@@ -13325,7 +13531,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       ? { fromDate: lo, toDate: hi, statusCodes: codes, page: 1, pageSize: 1000 }
       : { arrivalPeriod: nvWindow, statusCodes: codes, page: 1, pageSize: 1000 };
     setNvLoading(true); setNvErr(null);
-    setNvCheck({ running: false, result: null, error: null, at: null }); setNvCheckOpen(false); setNvReconciled(null);
+    if (!isTick) { setNvCheck({ running: false, result: null, error: null, at: null }); setNvCheckOpen(false); setNvReconciled(null); }
     // DEBOUNCE custom-range pulls: a native date input fires onChange per SEGMENT edit, so a
     // straight fetch would fire a pull on each keystroke. A window preset needs no debounce.
     const timer = setTimeout(() => {
@@ -13354,7 +13560,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
         .finally(() => { if (!cancelled) setNvLoading(false); });
     }, nvWindow === 'custom' ? 600 : 0);   // only hand-typed dates need the debounce
     return () => { cancelled = true; ctrl.abort(); clearTimeout(timer); };
-  }, [nvWindow, nvFrom, nvTo, statusSel, boardDate]);
+  }, [nvWindow, nvFrom, nvTo, statusSel, boardDate, nvTick]);
   // ── CHECK VS NUVIZZ (v0.94.0) ──────────────────────────────────────────────
   // Chad: "a way to do what we just did — check what we are showing to what nuvizz shows for
   // the same set of filters." ONE live NuVizz call for this window's dates and status buckets;
@@ -13722,9 +13928,12 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     if (!s) return;
     setView(s.view === 'loads' ? 'loads' : 'stops');
     setStatusSel(new Set(Array.isArray(s.status) ? s.status : []));
-    setNvWindow(s.nvWindow || '');
-    setNvFrom(s.nvFrom || '');
-    setNvTo(s.nvTo || '');
+    // Two views: the phone has no date-window select, no source line and no Check button, so a
+    // profile saved on a desktop with a window must not drag the phone grid (and its map) into
+    // one it cannot see or leave (v0.95.0).
+    setNvWindow(gridIsPhone ? '' : (s.nvWindow || ''));
+    setNvFrom(gridIsPhone ? '' : (s.nvFrom || ''));
+    setNvTo(gridIsPhone ? '' : (s.nvTo || ''));
     setDriverSel(s.driverSel || '');
     setUnmappedOnly(!!s.unmappedOnly);
     setStopSort(s.stopSort && 'key' in s.stopSort ? s.stopSort : { key: null, dir: 'asc' });
@@ -14183,8 +14392,17 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                   onClick={() => onPick(s)}
                   // Selected-on-the-map rows highlight (Routing passes the live selection) so the
                   // grid and the selection tool read as one; selection tint wins over carry-over.
+                  // A STAGED ROW sits between the two: it is tinted in its own card's colour —
+                  // faint, because a whole route's worth of rows at full strength would drown the
+                  // grid — and selection still wins, since selection is what the router is doing
+                  // right now while staging is what he did a minute ago.
                   className={'cursor-pointer hover:bg-blue-50 ' + (highlightIds?.has(String(s.stopNbr)) ? 'bg-blue-100 hover:bg-blue-200/70' : s.carryover ? 'bg-amber-50/60' : '')}
-                  title={s.carryover ? `Carry-over from ${s.scheduledDate}` : undefined}
+                  style={(!highlightIds?.has(String(s.stopNbr)) && stagedByStop?.get?.(String(s.stopNbr)))
+                    ? { background: `${stagedByStop.get(String(s.stopNbr)).color}14` }
+                    : undefined}
+                  title={stagedByStop?.get?.(String(s.stopNbr))
+                    ? `Stop ${stagedByStop.get(String(s.stopNbr)).seq} on ${stagedByStop.get(String(s.stopNbr)).name} — staged, not saved to NuVizz yet`
+                    : s.carryover ? `Carry-over from ${s.scheduledDate}` : undefined}
                 >
                   {cols.map((c) => (
                     // A `fit` column drops the max-width clamp (and with it the ellipsis), so the
@@ -14822,9 +15040,25 @@ function ApiCallsPanel({ ops, lastLoadScanAt, lastUnplannedScanAt, onRefresh, re
 
 // One numeric field bound to the schedule form, with bounds + default hint and an
 // "edited" highlight when the value differs from the site default.
+// A NUMBER FIELD THAT CANNOT LIE ABOUT WHAT IT WILL KEEP.
+//
+// Chad: "I just changed the settings to allow 3000 calls but still shows only 2000 enforce on
+// the dropdown menu on the actual map." `max` on <input type="number"> constrains the spinner
+// arrows and nothing else — you can type any number you like, the field shows it, Save posts
+// it, and clampScanConfig silently rounds it back to the bound on the way into Firestore. So
+// the screen said 3,000, the breaker said 2,000, and nothing anywhere said they disagreed.
+// That is "never report an intent as an outcome" — the rule this repo already has, applied
+// to every field in this editor rather than to the one that got caught.
+//
+// Two changes, both about telling the truth: the range is always printed under the field, and
+// an out-of-range value is pulled back to the bound ON BLUR, where it is visible and
+// correctable, rather than at some later moment inside a server the dispatcher cannot see.
+// Clamping on every keystroke instead would fight anyone typing "3000" one digit at a time.
 function NumberField({ label, hint, value, def, bound, unit, onChange }) {
   const [lo, hi] = bound || [0, 9999];
   const overridden = def != null && Number(value) !== Number(def);
+  const n = Number(value);
+  const outOfRange = value !== '' && Number.isFinite(n) && (n < lo || n > hi);
   return (
     <label className="block">
       <div className="flex items-center justify-between">
@@ -14835,11 +15069,20 @@ function NumberField({ label, hint, value, def, bound, unit, onChange }) {
         <input
           type="number" min={lo} max={hi} value={value}
           onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}
-          className={`w-full rounded-md border px-2 py-1 text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-sky-300 ${overridden ? 'border-violet-300 bg-violet-50/40' : 'border-slate-300'}`}
+          onBlur={(e) => {
+            if (e.target.value === '') return;
+            const v = Number(e.target.value);
+            if (!Number.isFinite(v)) return;
+            const clamped = Math.min(hi, Math.max(lo, Math.round(v)));
+            if (clamped !== v) onChange(clamped);
+          }}
+          className={`w-full rounded-md border px-2 py-1 text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-sky-300 ${outOfRange ? 'border-amber-400 bg-amber-50' : overridden ? 'border-violet-300 bg-violet-50/40' : 'border-slate-300'}`}
         />
-        {unit && <span className="text-xs text-slate-400 shrink-0">{unit}</span>}
+        {unit && <span className="text-xs text-slate-500 shrink-0">{unit}</span>}
       </div>
-      {hint && <div className="text-[10px] text-slate-400 mt-0.5">{hint}{def != null ? ` · default ${def}` : ''}</div>}
+      {outOfRange
+        ? <div className="text-[10px] text-amber-700 font-semibold mt-0.5">Outside {lo.toLocaleString()}–{hi.toLocaleString()} — this will be saved as {Math.min(hi, Math.max(lo, Math.round(n))).toLocaleString()}.</div>
+        : hint && <div className="text-[11px] text-slate-500 mt-0.5">{hint} · {lo.toLocaleString()}–{hi.toLocaleString()}{def != null ? ` · default ${def}` : ''}</div>}
     </label>
   );
 }
@@ -16060,7 +16303,7 @@ function RouteStatusBadge({ status }) {
 // nuvizz-write is gated at dispatcher on the server. This is the pair of controls where a
 // silent refusal costs the most in freight terms: a load a dispatcher believes is DISPATCHED
 // is a driver who was never told to roll, found at the end of the day rather than the start.
-function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], rosterError = null, assignLive = false, setAssignLive, onAssignDriver, assignedOverride = {}, assigningKey = null, onDispatchLoad, dispatchingKey = null, onNewRoute = null, writeDenied = null }) {
+function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], rosterError = null, assignLive = false, setAssignLive, onAssignDriver, assignedOverride = {}, assigningKey = null, onDispatchLoad, onDispatchAll = null, dispatchAllPlanner = null, dispatchingKey = null, onNewRoute = null, writeDenied = null }) {
   const [selected, setSelected] = useState(() => new Set());   // empty = All
   const [menuOpen, setMenuOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -16086,6 +16329,13 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
     });
   }, [groups, selected, q]);
 
+  // How many of the VISIBLE routes Dispatch all would actually send. Computed with the same
+  // planner the action runs, so the number on the button and the list in the confirm can never
+  // disagree — a count that promises more than the confirm delivers is worse than no count.
+  const dispatchAllCount = useMemo(
+    () => (dispatchAllPlanner ? dispatchAllPlanner(filtered).eligible.length : 0),
+    [dispatchAllPlanner, filtered],
+  );
   const toggle = (st) => setSelected((prev) => { const n = new Set(prev); n.has(st) ? n.delete(st) : n.add(st); return n; });
   const tot = filtered.reduce((a, g) => ({ stops: a.stops + g.count, skids: a.skids + g.skids, loose: a.loose + g.loose, weight: a.weight + g.weight }), { stops: 0, skids: 0, loose: 0, weight: 0 });
 
@@ -16134,6 +16384,18 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
             title={assignLive ? 'LIVE — picking a driver assigns it in NuVizz immediately. Click for Beta (preview only); the mode is remembered on this device.' : 'BETA — picking a driver only previews, nothing is sent. Click to go Live and assign for real; the mode is remembered on this device.'}
             className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded border shrink-0 ${assignLive ? 'border-red-600 bg-red-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}>
             {assignLive ? '● LIVE' : '○ Beta'}
+          </button>
+        )}
+        {/* DISPATCH ALL — the twenty clicks, as one, with the same three gates on each.
+            It acts on the FILTERED list, which is the only behaviour that cannot surprise
+            anyone: what the panel is showing is what the button will send, so narrowing by
+            status narrows the action. The count is on the label because a button that says
+            only "Dispatch all" beside a filtered list is a question, not a control. */}
+        {onDispatchAll && dispatchAllCount > 0 && (
+          <button onClick={() => onDispatchAll(filtered)}
+            title={`Dispatch the ${dispatchAllCount} route${dispatchAllCount === 1 ? '' : 's'} in this list that have a driver and have not been dispatched. You will see every load and its driver before anything is sent.`}
+            className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border shrink-0 ${assignLive ? 'border-red-600 bg-red-600 text-white hover:bg-red-700' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}>
+            <Send size={12} /> Dispatch all ({dispatchAllCount})
           </button>
         )}
         {/* Make a route (§R). Until v0.54.21 the app could CANCEL a route but never create one,
@@ -16451,10 +16713,10 @@ function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja,
     </div>
   );
   const panel = legendOpen ? (
-    <div className="w-64 max-w-[calc(100vw-1.5rem)] max-h-[58vh] overflow-y-auto bg-white/97 backdrop-blur border border-slate-200 rounded-lg shadow-lg p-3">
+    <div className="w-64 max-w-[calc(100vw-1.5rem)] max-h-[58vh] overflow-y-auto bg-white/95 backdrop-blur border border-slate-300 rounded-lg shadow-xl p-3">
       <div className="flex items-center justify-between gap-2 mb-1.5">
         <span className="text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5"><Info size={13} /> Legend</span>
-        <button onClick={() => setLegendOpen(false)} className="tap-dense text-slate-400 hover:text-slate-700" aria-label="Close legend"><X size={14} /></button>
+        <button onClick={() => setLegendOpen(false)} className="tap-dense text-slate-500 hover:text-slate-900" aria-label="Close legend"><X size={14} /></button>
       </div>
       <MapLegendBody inventory={legendInventory} showAll={legendAll} onShowAll={setLegendAll} />
     </div>
@@ -16616,6 +16878,35 @@ function PreflightStopBadge({ v, isMobile }) {
   );
 }
 
+// ── THE DOCK'S CLOCK, ON THE ROW ────────────────────────────────────────────
+//
+// Chad: "i think there is enough space there to fit our clock icons if one applies to a
+// given stop." There is, and it is the SECOND line of the row — the city/skids/loose line,
+// which carries no controls on either view, so nothing can be pushed onto anything else.
+//
+// THIS IS NOT THE PREFLIGHT BADGE, AND THE DIFFERENCE IS THE WHOLE POINT. The badge above
+// fires when the walked clock says this stop MISSES — a reaction, and only after the
+// sequence is wrong. The clock is the constraint itself, and it is on the row before any
+// order has been decided: "this dock shuts at 2:00p" is what stops a router putting it
+// eleventh in the first place. So the clock is quiet (slate text, the map's own glyph) and
+// the badge is loud (tier colour) — one is a fact about the customer, the other is a
+// warning about this build, and a router must be able to tell them apart at a glance.
+//
+// The kind comes from classifyTimeMark and the glyph from RestrictionIcon, so this mark is
+// the SAME mark as the pin on the map — same rule, same four keys, same silence for a dock
+// with ordinary hours.
+function TimeMarkChip({ mark, isMobile }) {
+  if (!mark) return null;
+  return (
+    <span
+      title={mark.title}
+      className={`inline-flex items-center gap-0.5 shrink-0 font-semibold text-slate-600 ${isMobile ? 'text-[10px]' : 'text-[9px]'}`}
+    >
+      <RestrictionIcon kind={mark.kind} size={isMobile ? 13 : 12} />{mark.text}
+    </span>
+  );
+}
+
 /** The route's own verdict, above its stop list. Two views: the desktop gets one dense line
  *  with the basis beside it; the phone stacks them, in flow, so nothing can land on top of
  *  the list below when the text wraps. */
@@ -16659,7 +16950,7 @@ function PreflightBanner({ pre, isMobile }) {
   );
 }
 
-function RoutingWorkbenchCard({ route, preflight = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
+function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
   // The live-dispatch UI gate is now the gear toggle (prop) rather than the module-level
   // ?write=1/env const. Aliased to the original name so the gate sites below are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -16675,6 +16966,18 @@ function RoutingWorkbenchCard({ route, preflight = null, stopById, otherKeys, ni
     [preflight],
   );
   const unmappedCount = rows.filter((s) => !s.__unresolved && (s.lat == null || s.lng == null)).length;
+  // The clock this dock wears on the BOARD'S day (not today's) — one per row, or nothing.
+  // Computed straight off `rows` rather than memoised: `rows` is itself rebuilt on every
+  // render, so a memo keyed on it would recompute anyway, and the parse is a regex over at
+  // most a few dozen notes. Unresolved stubs are skipped — there is no customer behind them.
+  const timeMarkByStop = new Map();
+  if (dayKey && notes) {
+    for (const s of rows) {
+      if (s.__unresolved) continue;
+      const chip = timeMarkChip(notes.get(s.matchKey), dayKey);
+      if (chip) timeMarkByStop.set(String(s.stopNbr), chip);
+    }
+  }
   // Orders staged for removal (in `removed` but no longer in the live order) — shown in the footer.
   const removedRows = (route.removed || [])
     .filter((id) => !route.order.includes(String(id)))
@@ -16829,6 +17132,13 @@ function RoutingWorkbenchCard({ route, preflight = null, stopById, otherKeys, ni
             // positional lookup would leave the warning sitting on whatever row inherited
             // the index — the most convincing possible way to be wrong.
             const pf = preflightByStop.get(id) || null;
+            // THE SAME CLOCK TWICE IS NOISE. A hopeless verdict already prints the close it
+            // cannot make ("can't make 11:00a"), so repeating "closes 11:00a" beside it says
+            // nothing new and, on a phone, wraps the marks line onto two — on exactly the rows
+            // whose message matters most. Suppressed only when the two name the SAME minute:
+            // "30m late" beside "closes 2:00p" is complementary (late against WHAT), and stays.
+            const tmRaw = timeMarkByStop.get(id) || null;
+            const tm = (tmRaw && pf?.late && pf.hopeless && pf.closeMin === tmRaw.closeMin) ? null : tmRaw;
             // STUB ROW — the id is in this card's order (so Save WILL send it) but the board
             // no longer carries the stop. Shown rather than hidden so the card can't
             // under-report what it's about to save; not draggable/expandable (there's no
@@ -16870,9 +17180,18 @@ function RoutingWorkbenchCard({ route, preflight = null, stopById, otherKeys, ni
                       "PR…". So the verdict sits on its OWN line underneath, in flow, on both
                       views; the phone gets more vertical room because a thumb needs it. */}
                   <div className="truncate font-medium text-slate-800">{s.businessName || id}</div>
-                  {pf?.late && (
-                    <div className={isMobile ? 'mt-1' : 'mt-0.5'}>
+                  {/* THE MARKS LINE — the verdict and the constraint, in flow, under the name.
+                      The badge moved here in v0.89.0 because putting it beside the name turned
+                      "PREFLIGHT CO E" into "PR…"; the clock joins it for the same reason, one
+                      measurement later. Rendered at true size on a 320px card, a "closes 2:00p"
+                      chip on the city line cut "CARTERSVILLE · 6 sk · 8 loose" down to
+                      "CARTERSVILLE · 6 …" — trading the per-stop freight counts Chad asked for in
+                      v0.54.4 for the clock, when the row can simply have both. Wraps rather than
+                      overflowing when a stop carries a verdict AND a constraint. */}
+                  {(pf?.late || tm) && (
+                    <div className={`flex items-center gap-1 flex-wrap ${isMobile ? 'mt-1' : 'mt-0.5'}`}>
                       <PreflightStopBadge v={pf} isMobile={isMobile} />
+                      <TimeMarkChip mark={tm} isMobile={isMobile} />
                     </div>
                   )}
                   {/* City · skids · loose. The card header totals loose for the whole route, so a
@@ -16918,6 +17237,15 @@ function RoutingWorkbenchCard({ route, preflight = null, stopById, otherKeys, ni
                       is TOTAL pieces, so sk + loose should equal pcs. A row where they don't is a
                       freight count worth a second look. */}
                   <div>{Math.round(Number(s.weight) || 0).toLocaleString()} lb · {Number(s.cartons) || 0} sk · {Number(s.volume) || 0} loose · {Number(s.pallets) || 0} pcs</div>
+                  {/* Expanded hides the city line, and with it the chip — so the window
+                      states itself here in full. NOT the order's NuVizz window, which #276
+                      dropped for reading 8:00–8:00 on every stop: these are the customer's
+                      receiving hours, the same field the flag engine judges against. */}
+                  {tmRaw && (
+                    <div className="flex items-center gap-1 text-slate-600">
+                      <RestrictionIcon kind={tmRaw.kind} size={12} />{tmRaw.title} today
+                    </div>
+                  )}
                   {nextMi != null && <div className="text-slate-400">Next stop: {nextMi.toFixed(1)} mi</div>}
                 </div>
               )}
@@ -16951,7 +17279,7 @@ function RoutingWorkbenchCard({ route, preflight = null, stopById, otherKeys, ni
 // ungeocoded ones. Card membership, display, freight totals and the Save payload all use
 // boardStopById so what the card shows == what Save sends (a coord-less stop is still on
 // the load). Anything that needs geometry keeps using stopById.
-function RoutingWorkbench({ wbRoutes, preflightByKey = null, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null, onRouteCreated = null }) {
+function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKey = null, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null, onRouteCreated = null, notice = null, onDismissNotice = null, maxCards = 6 }) {
   const lookup = boardStopById || stopById;
   // Save sends this whole board to NuVizz through nuvizz-write, which requires dispatcher.
   // Its own gate rather than a prop: this component owns the Save button and the confirm path,
@@ -17546,7 +17874,7 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, stopById, boardStop
           engine/LIVE/Save/Back buttons silently overflowed past the panel edge — they
           looked MISSING. min-w-0 + wrap keeps every control visible at any panel width. */}
       <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b shrink-0 bg-white flex-wrap">
-        <span className="font-semibold text-slate-800 text-[13px] shrink-0">Compare <span className="text-slate-400 text-[11px]">({wbRoutes.length}/3)</span></span>
+        <span className="font-semibold text-slate-800 text-[13px] shrink-0">Compare <span className="text-slate-400 text-[11px]">({wbRoutes.length}/{maxCards})</span></span>
         <div className="flex items-center gap-1.5 min-w-0 flex-wrap justify-end">
           {/* One-click "send the current map selection into this load" per open route (#258).
               Only shown when something is selected — otherwise the buttons would be dead. With two
@@ -17558,7 +17886,7 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, stopById, boardStop
               title={`Add the ${selectedCount} selected stop${selectedCount === 1 ? '' : 's'} to ${loadDisplayName(r.key) || 'this load'}`}
               className="flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 min-w-0"
             >
-              <ArrowRight size={13} className="shrink-0" /> <span className="truncate max-w-[130px]">{loadDisplayName(r.key) || 'Load'}</span> ({selectedCount})
+              <ArrowRight size={13} className="shrink-0" /> <span className="truncate max-w-[130px]">{r.name || loadDisplayName(r.key) || 'Load'}</span> ({selectedCount})
             </button>
           ))}
           {/* Ninja is armed from the on-map tool (left edge), not here — the dispatcher asked to drop
@@ -17594,6 +17922,17 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, stopById, boardStop
           <button onClick={guardedCloseAll} className="text-[11px] text-slate-500 hover:text-slate-800 underline">Back to Setup</button>
         </div>
       </div>
+      {/* WHAT THE LAST ACTION DID, where the dispatcher is looking. Selection and send outcomes
+          ("Sent 6 stops → ALPHA", "2 stops NOT moved — …", "All 6 already on open Compare
+          cards") used to render only in the Setup panel, which this workbench REPLACES on the
+          desktop — so with cards open every one of those sentences went nowhere but a
+          four-second toast at the bottom of the map. Stays until the next action or dismiss. */}
+      {notice && (
+        <div data-wb-notice className="px-2 py-1 text-[11px] bg-slate-50 border-b text-slate-700 shrink-0 flex items-start justify-between gap-2">
+          <span className="whitespace-pre-wrap break-words min-w-0">{notice}</span>
+          {onDismissNotice && <button onClick={onDismissNotice} className="text-slate-400 hover:text-slate-700 shrink-0" aria-label="Dismiss"><X size={12} /></button>}
+        </div>
+      )}
       {LIVE_WRITE_FLAG && toast && (
         <div className="px-2 py-1 text-[11px] bg-slate-800 text-white shrink-0 flex items-start justify-between gap-2">
           {/* Wrap, never truncate: a Save refusal must be readable in full (which stop, which load holds it, what to do). */}
@@ -17610,6 +17949,8 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, stopById, boardStop
             key={r.key}
             route={r}
             preflight={preflightByKey?.get?.(r.key) || null}
+            notes={notes}
+            dayKey={dayKey}
             stopById={lookup}
             otherKeys={wbRoutes.map((x) => x.key).filter((k) => k !== r.key)}
             ninjaMode={ninjaMode}
@@ -17782,7 +18123,7 @@ function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = f
   );
 }
 
-function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemove, onClearAll, onOpenStop, onClose, isMobile }) {
+function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemove, onRemoveMany, onClearAll, onOpenStop, onClose, isMobile }) {
   // Compact window from the naive (zoneless) schedule ISO — parse the clock straight off the
   // string so there's no local-timezone drift. "8:00a", "8:00a–8:00p".
   const fmtWin = (iso) => {
@@ -17810,16 +18151,22 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
       // manual paint left badge/proven-green stops un-highlighted (Chad: "4 of these are
       // painted... rows are not highlighted"). An explicit box-only mark still wins as red
       // — never green a stop the dispatcher marked off-limits.
+      // ONE RULE, TWO READERS. The green highlight and the "Drop N non-tractor" button below
+      // must agree exactly — a button that drops a row the panel painted green is the worst
+      // possible version of this feature — so both read tractorFriendlySelection.
       tractorOk: (() => {
         const note = notes?.get?.(s.matchKey) || null;
-        if (note?.vehicle_eligibility === 'box_only') return false;
-        return note?.vehicle_eligibility === 'tractor'
-          || getRestrictionBadgeKeys(note).includes('tractor_trailer_friendly')
-          || !!(tractorLocs && tractorLocs.has(s.matchKey));
+        return tractorFriendlySelection({
+          eligibility: note?.vehicle_eligibility ?? null,
+          friendlyBadge: getRestrictionBadgeKeys(note).includes('tractor_trailer_friendly'),
+          tractorSeen: !!(tractorLocs && tractorLocs.has(s.matchKey)),
+        });
       })(),
     };
   }), [selectedStops, notes, tractorLocs]);
   const tot = rows.reduce((a, r) => ({ wt: a.wt + r.weight, plt: a.plt + r.pallets, ls: a.ls + r.loose }), { wt: 0, plt: 0, ls: 0 });
+  // The rows the button would drop — the exact complement of the green ones.
+  const nonTractorIds = useMemo(() => rows.filter((r) => !r.tractorOk).map((r) => r.id), [rows]);
   const { sorted, sortKey, sortDir, toggle } = useSortable(rows, null, 'asc');
   // WIDTH-resizable window (drag the left edge); width persisted; desktop only. Height is always
   // content-driven (capped at 60vh) so the window grows as stops are added and never shows empty
@@ -17853,9 +18200,35 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
           {rows.length > 0 && onClearAll && (
             <button onClick={onClearAll} className="text-[11px] font-medium text-slate-500 hover:text-red-600 px-1.5 py-0.5 rounded hover:bg-red-50" title="Clear all selected stops">Clear all</button>
           )}
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 leading-none p-1" aria-label="Hide selected panel"><X size={16} /></button>
+          {/* THE ✕ CLEARS, IT DOES NOT JUST HIDE. Chad: "when i click the x i want it to close
+              and clear all." It calls onClose, and the render site makes that clearSelection —
+              deliberately NOT the selPanelOpen toggle it used to flip, because that setting is
+              persisted, so an ✕ that turned it off would silently suppress the panel on the
+              NEXT selection too. With the selection empty the panel unmounts on its own, which
+              is the close; hiding it while keeping the stops still lives on the gear toggle. */}
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 leading-none p-1" aria-label="Clear the selection and close this panel" title="Clear the selection and close"><X size={16} /></button>
         </div>
       </div>
+      {/* KEEP ONLY WHAT A TRACTOR CAN RUN. Chad: "I want a button on top of bar to remove all
+          stops in the list that are not tractor friendly stops."
+          Its own row rather than the header: the title line already carries four figures at a
+          420px default width, and a button crammed beside them is the wrap that lands on the
+          table. It appears ONLY when there is something to drop, and it NAMES the count, so it
+          can never be pressed blind — dropping nine of eleven stops is a different action from
+          dropping one, and the label is the only warning a one-click destructive control gets.
+          The rows it drops are exactly the rows that are not green (tractorFriendlySelection). */}
+      {nonTractorIds.length > 0 && onRemoveMany && (
+        <div className="flex items-center gap-2 px-3 py-1 border-b bg-white shrink-0">
+          <button
+            onClick={() => onRemoveMany(nonTractorIds)}
+            className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-800 bg-emerald-50 border border-emerald-300 rounded px-1.5 py-0.5 hover:bg-emerald-100"
+            title={`Remove the ${nonTractorIds.length} stop${nonTractorIds.length === 1 ? '' : 's'} that are not marked tractor-friendly and have no record of a tractor delivering there. A stop nobody has marked either way counts as NOT friendly.`}
+          >
+            Drop {nonTractorIds.length} non-tractor
+          </button>
+          <span className="text-[10px] text-slate-500 truncate">leaves {rows.length - nonTractorIds.length} a tractor can run</span>
+        </div>
+      )}
       {rows.length === 0 ? (
         <div className="px-3 py-3 text-[11px] text-slate-400">No stops selected yet. Tap a stop on the map, or use Add in view / Box / Lasso.</div>
       ) : (
@@ -18778,7 +19151,9 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         // confirmed save just planned (planOverlay stamp) stays ON: excluding it made a
         // just-saved window stop vanish from map + open card until the rescue's board-day
         // copy landed (a blink when healthy, hours if the sync missed).
-        && (s.planOverlay === true || !(s.isPlanned === true || s.routeName || s.loadNbr)))
+        // A delivered / cancelled un-routed row from a frozen day is history, not work to plan —
+        // it used to pass this predicate and box/lasso would select it (v0.95.0).
+        && (s.planOverlay === true || (!isFinishedStatus(s.normalizedStatus) && !(s.isPlanned === true || s.routeName || s.loadNbr))))
       .map((s) => ({ ...s, windowExtra: true }));
     return extra.length ? [...stops, ...extra] : stops;
   }, [stops, gridWindowStops]);
@@ -18862,77 +19237,87 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   const dayRosterState = useMemo(() => rosterFreshness(dayRosterMeta), [dayRosterMeta]);
 
   // Workbench handlers — open a route into the side-by-side cards, tune it, close it.
+  // ONE PLACE BUILDS A CARD, AND SAYS WHY WHEN IT CANNOT. Opening a route from the rail, the grid
+  // or a marker used to be the only caller; the Compare send button now needs a card too — for the
+  // SOURCE load of a planned stop, in the same press (see lib/send-selection.js) — so the rules
+  // (already open, the cap, two same-day loads sharing a name, no NuVizz identity) live here once
+  // and come back as a card or a sentence. Pure over `prev` plus the board/roster refs.
+  const buildWbCard = useCallback((key, prev) => {
+    if (!key) return { refusal: 'No load to open.' };
+    if (prev.some((r) => r.key === key)) return { already: true };   // already open
+    if (prev.length >= WB_MAX) return { refusal: `Workbench is full (${WB_MAX} routes) — close one first.` };
+    // BOARD-DAY ROWS ONLY. windowExtra rows come from OTHER days' cached boards (the bottom
+    // grid's date range) — seeding by bare name match across them merged every historical
+    // load that ever used this route name into one card. A card is always the selected
+    // day's load instance; other-day orders reach a card only by explicit staging.
+    // COORD-INCLUSIVE on purpose (boardStopsAllRef, not positionedAllRef): a load's
+    // ungeocoded stop is still on the load, and seeding without it produced a card whose
+    // Save was one stop short — refused by the server's stale-board guard with advice
+    // ("Refresh and retry") that could never work. It rides in the card as a "no map
+    // location" row instead: visible, counted, saved, just not drawn or auto-sequenced.
+    const routeStops = boardStopsAllRef.current.filter((s) => !s.windowExtra && (s.routeName || s.loadNbr) === key);
+    // TWO same-day loads sharing this NAME would merge onto one card and a Save would reorder
+    // across loads (and could pair one load's id with the other's number). Refuse to open.
+    const distinctLoadIds = new Set(routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).filter(Boolean).map(String));
+    if (distinctLoadIds.size > 1) {
+      return { refusal: `Two loads share the name "${loadDisplayName(key) || key}" today — their stops can't be edited as one card. Rename one in the portal, or work stop-by-stop.` };
+    }
+    // Resolve the load's real loadId + name from the day's roster (the daily load scan, by name or
+    // loadId). REQUIRED for Draft/empty loads: they have no stops to derive a loadId from, and
+    // assignDriver/commitBoard need the loadId (without it the Save falls through to a load/info
+    // lookup with a bad key → "commitBoard: load not found"). For loads WITH stops, the stop-derived
+    // loadId still wins (it's the verified same-day instance); the roster only fills the gap.
+    // An AMBIGUOUS roster entry (two roster loads share the name) is never trusted for identity.
+    const rosterEntry0 = loadRosterRef.current.get(String(key)) || loadRosterRef.current.get(String(key).toLowerCase()) || null;
+    const rosterEntry = rosterEntry0 && !rosterEntry0.ambiguous ? rosterEntry0 : null;
+    const stopLoadIdV = routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).find(Boolean) || null;
+    // Only take the roster's loadNbr/loadId when it agrees with the stop-derived identity — a
+    // roster row for a DIFFERENT same-named load must not attach its number to this card.
+    const rosterMatches = !stopLoadIdV || !rosterEntry?.loadId || String(rosterEntry.loadId) === String(stopLoadIdV);
+    // loadId: verified stop-derived id first; then the roster; then the key ITSELF when it's a load
+    // id hash — an empty load is opened from the Loads grid BY its loadId, so this resolves it even
+    // if the roster hasn't loaded yet (no race) and the roster only enriches the display name.
+    const loadId = stopLoadIdV
+      || (rosterMatches ? rosterEntry?.loadId : null)
+      || (isHashLikeId(String(key)) ? String(key) : null);
+    // The REAL NuVizz load NUMBER (e.g. "DAVIS000198197") — load/info is keyed by it, NOT the human
+    // route name. The stop rows carry only the route NAME in loadNbr (the stops grid has no number
+    // column), so it 404s load/info; prefer the loads-roster's numeric number, and fall back to a
+    // stop value ONLY if it actually looks like a load number — never the bare route name. (When
+    // neither is available the server bridges loadId→loadNbr via getStop/static-info.)
+    const loadNbr = (rosterMatches ? rosterEntry?.loadNbr : null)
+      || routeStops.map((s) => s.loadNbr).find((v) => looksLikeLoadNbr(v))
+      || null;
+    // Display name — the human route/load name; from stops, else the roster (so an empty load shows
+    // "NOR" instead of "Unnamed load").
+    const name = routeStops.map((s) => s.routeName).find(Boolean) || rosterEntry?.name || null;
+    // NO IDENTITY AT ALL → refuse to open (§S). A card with neither a load number nor a load id
+    // cannot be saved: BOTH engines reject it up front ("commitBoard(rwb): loadNbr or loadId
+    // required"), and worse, its failure strands every stop being moved ONTO it — Chad built
+    // STEVEN and NOR, and NOR refused too rather than unplan a stop bound for the dead card.
+    // Assign and Dispatch already refuse this exact state with a message; opening a Compare
+    // card was the one path that let you do the work first and find out afterwards.
+    if (!loadId && !loadNbr) {
+      const shown = loadDisplayName(name, key) || String(key);
+      return { refusal: rosterEntry0?.ambiguous
+        ? `Two loads are named "${shown}" today, so a card can't tell which one it would save to. Rename one in the portal (or cancel the one you're not using), then refresh.`
+        : `"${shown}" has no NuVizz load number or id yet, so a Save would be refused. Open it from the Loads grid, or refresh once the day's loads have loaded.` };
+    }
+    // Ids already staged onto ANOTHER open card stay there (the staged move wins) — otherwise a
+    // freshly-opened card re-seeds them from the board and the stop sits in BOTH cards' orders.
+    const stagedElsewhere = new Set(prev.flatMap((r) => r.order));
+    const order = orderRouteStops(routeStops).map((s) => String(s.stopNbr)).filter((id) => !stagedElsewhere.has(id));
+    return { card: { key, name, loadNbr, loadId, order, collapsed: false } };
+  }, []);
   const openRouteInWorkbench = useCallback((key) => {
     if (!key) return;
     setWbRoutes((prev) => {
-      if (prev.some((r) => r.key === key)) return prev;                 // already open
-      if (prev.length >= WB_MAX) { setLastAction(`Workbench is full (${WB_MAX} routes) — close one first.`); return prev; }
-      // BOARD-DAY ROWS ONLY. windowExtra rows come from OTHER days' cached boards (the bottom
-      // grid's date range) — seeding by bare name match across them merged every historical
-      // load that ever used this route name into one card. A card is always the selected
-      // day's load instance; other-day orders reach a card only by explicit staging.
-      // COORD-INCLUSIVE on purpose (boardStopsAllRef, not positionedAllRef): a load's
-      // ungeocoded stop is still on the load, and seeding without it produced a card whose
-      // Save was one stop short — refused by the server's stale-board guard with advice
-      // ("Refresh and retry") that could never work. It rides in the card as a "no map
-      // location" row instead: visible, counted, saved, just not drawn or auto-sequenced.
-      const routeStops = boardStopsAllRef.current.filter((s) => !s.windowExtra && (s.routeName || s.loadNbr) === key);
-      // TWO same-day loads sharing this NAME would merge onto one card and a Save would reorder
-      // across loads (and could pair one load's id with the other's number). Refuse to open.
-      const distinctLoadIds = new Set(routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).filter(Boolean).map(String));
-      if (distinctLoadIds.size > 1) {
-        setLastAction(`Two loads share the name "${loadDisplayName(key) || key}" today — their stops can't be edited as one card. Rename one in the portal, or work stop-by-stop.`);
-        return prev;
-      }
-      // Resolve the load's real loadId + name from the day's roster (the daily load scan, by name or
-      // loadId). REQUIRED for Draft/empty loads: they have no stops to derive a loadId from, and
-      // assignDriver/commitBoard need the loadId (without it the Save falls through to a load/info
-      // lookup with a bad key → "commitBoard: load not found"). For loads WITH stops, the stop-derived
-      // loadId still wins (it's the verified same-day instance); the roster only fills the gap.
-      // An AMBIGUOUS roster entry (two roster loads share the name) is never trusted for identity.
-      const rosterEntry0 = loadRosterRef.current.get(String(key)) || loadRosterRef.current.get(String(key).toLowerCase()) || null;
-      const rosterEntry = rosterEntry0 && !rosterEntry0.ambiguous ? rosterEntry0 : null;
-      const stopLoadIdV = routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).find(Boolean) || null;
-      // Only take the roster's loadNbr/loadId when it agrees with the stop-derived identity — a
-      // roster row for a DIFFERENT same-named load must not attach its number to this card.
-      const rosterMatches = !stopLoadIdV || !rosterEntry?.loadId || String(rosterEntry.loadId) === String(stopLoadIdV);
-      // loadId: verified stop-derived id first; then the roster; then the key ITSELF when it's a load
-      // id hash — an empty load is opened from the Loads grid BY its loadId, so this resolves it even
-      // if the roster hasn't loaded yet (no race) and the roster only enriches the display name.
-      const loadId = stopLoadIdV
-        || (rosterMatches ? rosterEntry?.loadId : null)
-        || (isHashLikeId(String(key)) ? String(key) : null);
-      // The REAL NuVizz load NUMBER (e.g. "DAVIS000198197") — load/info is keyed by it, NOT the human
-      // route name. The stop rows carry only the route NAME in loadNbr (the stops grid has no number
-      // column), so it 404s load/info; prefer the loads-roster's numeric number, and fall back to a
-      // stop value ONLY if it actually looks like a load number — never the bare route name. (When
-      // neither is available the server bridges loadId→loadNbr via getStop/static-info.)
-      const loadNbr = (rosterMatches ? rosterEntry?.loadNbr : null)
-        || routeStops.map((s) => s.loadNbr).find((v) => looksLikeLoadNbr(v))
-        || null;
-      // Display name — the human route/load name; from stops, else the roster (so an empty load shows
-      // "NOR" instead of "Unnamed load").
-      const name = routeStops.map((s) => s.routeName).find(Boolean) || rosterEntry?.name || null;
-      // NO IDENTITY AT ALL → refuse to open (§S). A card with neither a load number nor a load id
-      // cannot be saved: BOTH engines reject it up front ("commitBoard(rwb): loadNbr or loadId
-      // required"), and worse, its failure strands every stop being moved ONTO it — Chad built
-      // STEVEN and NOR, and NOR refused too rather than unplan a stop bound for the dead card.
-      // Assign and Dispatch already refuse this exact state with a message; opening a Compare
-      // card was the one path that let you do the work first and find out afterwards.
-      if (!loadId && !loadNbr) {
-        const shown = loadDisplayName(name, key) || String(key);
-        setLastAction(rosterEntry0?.ambiguous
-          ? `Two loads are named "${shown}" today, so a card can't tell which one it would save to. Rename one in the portal (or cancel the one you're not using), then refresh.`
-          : `"${shown}" has no NuVizz load number or id yet, so a Save would be refused. Open it from the Loads grid, or refresh once the day's loads have loaded.`);
-        return prev;
-      }
-      // Ids already staged onto ANOTHER open card stay there (the staged move wins) — otherwise a
-      // freshly-opened card re-seeds them from the board and the stop sits in BOTH cards' orders.
-      const stagedElsewhere = new Set(prev.flatMap((r) => r.order));
-      const order = orderRouteStops(routeStops).map((s) => String(s.stopNbr)).filter((id) => !stagedElsewhere.has(id));
-      return [...prev, { key, name, loadNbr, loadId, order, collapsed: false }];
+      const r = buildWbCard(key, prev);
+      if (r.already) return prev;
+      if (r.refusal) { setLastAction(r.refusal); return prev; }
+      return [...prev, r.card];
     });
-  }, []);
+  }, [buildWbCard]);
   const closeWbRoute = useCallback((key) => setWbRoutes((prev) => prev.filter((r) => r.key !== key)), []);
   const closeAllWb = useCallback(() => setWbRoutes([]), []);
   const toggleWbCollapse = useCallback((key) => setWbRoutes((prev) => prev.map((r) => (r.key === key ? { ...r, collapsed: !r.collapsed } : r))), []);
@@ -19130,83 +19515,44 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // selected stop onto that route (deduped, and stripped from any other card so a stop sits on one
   // route), then clears the selection. Header shows one button per open route.
   const sendSelectionToRoute = useCallback((key) => {
-    let ids = [...selectedIds].map(String);
-    if (!key || !ids.length) return;
-    // Strip stops the OTHER dispatcher's device started staging AFTER they were
-    // selected here (the selection tools already refuse to add claimed stops).
-    const claimedSel = ids.filter((id) => peerClaimsRef.current.get(id));
-    if (claimedSel.length) {
-      ids = ids.filter((id) => !peerClaimsRef.current.get(id));
-      showMapToast(`Skipped ${claimedSel.length} stop(s) being staged by ${peerClaimsRef.current.get(claimedSel[0])} on another device.`);
-      if (!ids.length) return;
-    }
-    // A stop planned on a load NOT open in Compare can't just be added to the target: the Save is
-    // DECLARATIVE over the loads in the payload, so without the SOURCE load in the Save the stop would
-    // double-plan. Instead of silently skipping it, AUTO-OPEN each such source load into Compare
-    // (respecting the 3-card cap) and keep the stops selected — once the source is open a second Send
-    // stages the real cross-load move (source releases the stop, target gains it, both loads Saved).
-    const holderOf = (id) => { const s = stopById.get(id); return s && !s.isUnplanned ? String(s.routeName || s.loadNbr || '') : ''; };
-    const blocked = ids.filter((id) => { const h = holderOf(id); return h && !openRouteKeys.has(h); });
-    let keepSelected = [];
-    if (blocked.length) {
-      const blockedHolders = [...new Set(blocked.map(holderOf).filter(Boolean))];
-      const slots = Math.max(0, WB_MAX - wbRoutes.length);   // cards, not identity-set entries
-      const toOpen = new Set(blockedHolders.slice(0, slots));
-      toOpen.forEach((h) => openRouteInWorkbench(h));   // opens the source card(s) so the move can stage
-      keepSelected = blocked;                            // keep every blocked stop selected for the next Send
-      ids = ids.filter((id) => !blocked.includes(id));   // this pass only stages the already-stageable stops
-      const openedNames = [...toOpen].map((h) => loadDisplayName(h) || h);
-      const heldNames = blockedHolders.filter((h) => !toOpen.has(h)).map((h) => loadDisplayName(h) || h);
-      const parts = [];
-      if (openedNames.length) parts.push(`Opened ${openedNames.join(', ')} in Compare — Send again to move ${blocked.filter((id) => toOpen.has(holderOf(id))).length} stop(s).`);
-      if (heldNames.length) parts.push(`${heldNames.join(', ')} need a free card (Compare full ${WB_MAX}/${WB_MAX}) — close one, then Send.`);
-      showMapToast(parts.join(' '));
-      if (!ids.length) { setSelectedIds(new Set(keepSelected)); return; }
-    }
-    // Same-address twin guard: two ORDERS at one location render as pins stacked exactly on
-    // top of each other, so a click-selection grabs only the top one and the second order
-    // silently stays behind (the "missed one of these orders" case — 007144652 routed,
-    // co-located 007144651 left unplanned). Same-address freight rides together, so every
-    // UNPLANNED order sharing a selected stop's location is auto-included — loudly, and
-    // removable from the card if the split was intentional.
-    const twinNames = [];
-    {
-      const inIds = new Set(ids);
-      const byMatchKey = new Map();
-      for (const t of stops) {
-        if (!t?.matchKey || !t.isUnplanned) continue;
-        if (!byMatchKey.has(t.matchKey)) byMatchKey.set(t.matchKey, []);
-        byMatchKey.get(t.matchKey).push(t);
-      }
-      for (const id of [...inIds]) {
-        const s = stopById.get(id);
-        for (const t of (s?.matchKey ? byMatchKey.get(s.matchKey) : null) || []) {
-          const tn = String(t.stopNbr);
-          if (wbStagedRef.current.get(tn) || peerClaimsRef.current.get(tn)) continue;   // staged on another card / another device — same guard as click/box select
-          if (!inIds.has(tn)) { inIds.add(tn); twinNames.push(`${t.stopNbr} (${t.businessName || 'same address'})`); }
+    // The rule is in lib/send-selection.js (pure, tested); this binds the board, the refs and the
+    // card builder. Computed OUTSIDE the state updater so the message can only describe what the
+    // cards actually became.
+    const holderOf = (id) => { const s = stopById.get(String(id)); return s && !s.isUnplanned ? String(s.routeName || s.loadNbr || '') : ''; };
+    // Same-address twin guard: two ORDERS at one location render as pins stacked exactly on top
+    // of each other, so a click-selection grabs only the top one (the "missed one of these
+    // orders" case — 007144652 routed, co-located 007144651 left unplanned). Same-address
+    // freight rides together, so every UNPLANNED order sharing a selected stop's location comes
+    // along — loudly, and removable from the card if the split was intentional.
+    let byMatchKey = null;
+    const twinsOf = (id) => {
+      if (!byMatchKey) {
+        byMatchKey = new Map();
+        for (const t of stops) {
+          if (!t?.matchKey || !t.isUnplanned) continue;
+          if (!byMatchKey.has(t.matchKey)) byMatchKey.set(t.matchKey, []);
+          byMatchKey.get(t.matchKey).push(t);
         }
       }
-      if (twinNames.length) ids = [...inIds];
-    }
-    const idSet = new Set(ids);
-    setWbRoutes((prev) => {
-      if (!prev.some((r) => r.key === key)) return prev;
-      return prev.map((r) => {
-        // Hand-edit ⇒ clear the applied strategy on every touched card (see wbMoveStop note).
-        if (r.key === key) {
-          const have = new Set(r.order);
-          const add = ids.filter((id) => !have.has(id));
-          return add.length ? { ...r, order: [...r.order, ...add], strategy: 'manual' } : r;
-        }
-        return r.order.some((id) => idSet.has(id)) ? { ...r, order: r.order.filter((id) => !idSet.has(id)), strategy: 'manual' } : r;
-      });
+      const s = stopById.get(String(id));
+      return ((s?.matchKey ? byMatchKey.get(s.matchKey) : null) || [])
+        .filter((t) => { const tn = String(t.stopNbr); return !wbStagedRef.current.get(tn) && !peerClaimsRef.current.get(tn); })
+        .map((t) => ({ id: String(t.stopNbr), label: `${t.stopNbr} (${t.businessName || 'same address'})` }));
+    };
+    const plan = planSendSelection({
+      ids: [...selectedIds], targetKey: key, cards: wbRoutes, max: WB_MAX,
+      holderOf,
+      claimedBy: (id) => peerClaimsRef.current.get(String(id)) || null,
+      openCard: (holder, cards) => buildWbCard(holder, cards),
+      twinsOf,
+      displayName: (k) => loadDisplayName(k) || String(k),
     });
-    if (twinNames.length) {
-      showMapToast(`⚠ Also added ${twinNames.length} co-located order${twinNames.length === 1 ? '' : 's'} the selection missed: ${twinNames.slice(0, 3).join(', ')}${twinNames.length > 3 ? '…' : ''} — remove from the card if you meant to split.`);
-    }
-    setLastAction(`Sent ${ids.length} selected stop${ids.length === 1 ? '' : 's'} → ${loadDisplayName(key) || 'load'}`);
-    setSelectedIds(new Set(keepSelected));   // cleared when nothing was blocked; keeps cap/holder-pending stops for the next Send
-  }, [selectedIds, stopById, openRouteKeys, stops, wbRoutes.length]); // showMapToast is stable and declared later — including it in deps would TDZ at render
+    if (!plan) return;
+    if (plan.changed) setWbRoutes(plan.cards);
+    setSelectedIds(new Set(plan.held));   // cleared when everything moved; keeps only what could not
+    setLastAction(plan.message);
+    showMapToast(plan.message);
+  }, [selectedIds, stopById, stops, wbRoutes, buildWbCard]); // showMapToast is stable and declared later — including it in deps would TDZ at render
   // The marker click listener is bound once; route ninja clicks through a ref so toggling ninja
   // (or closing the panel) never re-creates the markers. Null = ninja off / nothing to add to.
   useEffect(() => { ninjaActionRef.current = (ninjaMode && wbRoutes.length > 0) ? ninjaAddStop : null; }, [ninjaMode, wbRoutes.length, ninjaAddStop]);
@@ -19327,34 +19673,37 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // dispatched load's status won't flip in the board until the next scheduled scan, so this only
   // toasts success/failure rather than optimistically rewriting g.status.
   const [dispatchingKey, setDispatchingKey] = useState(null);
-  const onDispatchLoad = useCallback(async (g) => {
-    if (!writeGate.allowed) { showMapToast(writeGate.reason); return; }
-    const label = loadDisplayName(g.name, g.loadNbr) || g.loadNbr;
-    if (!assignLive) { showMapToast(`Beta — would dispatch ${label} (nothing sent). Flip to ● Live to dispatch.`); return; }
-    const rosterEntry0 = loadRosterRef.current.get(String(g.name || '').trim().toLowerCase())
-      || loadRosterRef.current.get(String(g.key || '').trim().toLowerCase())
-      || (g.loadId ? loadRosterRef.current.get(String(g.loadId)) : null)
+  // The roster row behind a route, or null when the name is ambiguous. Lifted out because
+  // "Dispatch all" has to resolve the SAME load id the single button does — resolving it two
+  // ways is how one surface dispatches a load the other says it cannot find.
+  const rosterEntryFor = useCallback((g) => {
+    const e = loadRosterRef.current.get(String(g?.name || '').trim().toLowerCase())
+      || loadRosterRef.current.get(String(g?.key || '').trim().toLowerCase())
+      || (g?.loadId ? loadRosterRef.current.get(String(g.loadId)) : null)
       || null;
-    const rosterEntry = rosterEntry0 && !rosterEntry0.ambiguous ? rosterEntry0 : null;
-    const loadId = g.loadId || rosterEntry?.loadId || null;
+    return e && !e.ambiguous ? e : null;
+  }, []);
+  const loadIdFor = useCallback((g) => g?.loadId || rosterEntryFor(g)?.loadId || null, [rosterEntryFor]);
+
+  // ONE WRITE, TWO CALLERS. The row button and Dispatch all fire this identical call; it
+  // reports rather than toasts, so the bulk run can count outcomes and the single click can
+  // keep the message it always had.
+  const dispatchOneLoad = useCallback(async (g) => {
+    const label = loadDisplayName(g.name, g.loadNbr) || g.loadNbr;
+    const rosterEntry = rosterEntryFor(g);
+    const loadId = loadIdFor(g);
     const loadNbr = (g.loadNbr && looksLikeLoadNbr(g.loadNbr)) ? g.loadNbr : (rosterEntry?.loadNbr || null);
-    if (!loadId) { showMapToast(`Can't dispatch ${label} — its NuVizz load id hasn't loaded yet.`); return; }
-    setDispatchingKey(g.key);
+    if (!loadId) return { ok: false, name: label, error: 'load id not loaded yet' };
     let res;
     try {
       res = await callWrite('dispatchLoad', { routeId: loadId, loadId, loadNbr, date: selectedDate },
         { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher' });
     } catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
-    setDispatchingKey(null);
-    if (res.ok && res.result?.ok !== false) {
-      showMapToast(`✓ ${label} dispatched.`);
-      // Reflect the confirmed dispatch IMMEDIATELY: the Routes card status comes from the
-      // cached roster, which only refreshes with scans (paused overnight) — without this the
-      // card kept reading Draft after a successful production dispatch. The override also
-      // survives a stale roster refetch (see the roster effect's merge).
+    const ok = !!(res.ok && res.result?.ok !== false);
+    if (ok) {
+      // Reflect the confirmed dispatch IMMEDIATELY — see the note below; the Routes card
+      // status comes from the cached roster, which only refreshes with scans.
       const nm = String(g.name || '').trim().toLowerCase();
-      // Key the '#id:' twin by loadId — the roster map's actual key — so the retire loop can
-      // see agreement and drop it (a loadNbr-keyed twin never matched and re-applied forever).
       const idKey = g.loadId ?? g.loadNbr;
       dispatchOverrideRef.current.set(nm, 'Dispatched');
       if (idKey) dispatchOverrideRef.current.set('#id:' + String(idKey), 'Dispatched');
@@ -19364,10 +19713,95 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         if (idKey) n.set('#id:' + String(idKey), 'Dispatched');
         return n;
       });
-    } else {
-      showMapToast(`✗ Dispatch failed for ${label}: ${res.error || res.result?.error || 'write error'}`);
     }
-  }, [assignLive, showMapToast, selectedDate, writeGate.allowed, writeGate.reason]);
+    return { ok, name: label, error: ok ? null : (res.error || res.result?.error || 'write error') };
+  }, [rosterEntryFor, loadIdFor, selectedDate]);
+
+  // ── DISPATCH ALL ───────────────────────────────────────────────────────────
+  //
+  // Chad: "i want a dispatch all button that dispatches every route that hasn't been
+  // dispatched in the routes menu." Twenty Draft routes at 5am is twenty clicks and twenty
+  // chances to miss one, and a missed dispatch is a truck leaving with nothing on the
+  // driver's phone.
+  //
+  // IT IS EXACTLY AS PICKY AS THE TWENTY CLICKS IT REPLACES. planDispatchAll runs the same
+  // three gates the row button enforces (pre-dispatch status, a driver assigned, a resolved
+  // load id) and hands back everything it will NOT send, with the reason in words.
+  //
+  // AND IT ASKS FIRST. This is the least reversible thing the app does — it releases loads to
+  // drivers in production NuVizz — so the confirm lists every load and its driver by name
+  // before anything fires. Not a count: a count cannot be checked, and "18 routes" reads the
+  // same whether or not the one you were worried about is in it.
+  const [dispatchAllPlan, setDispatchAllPlan] = useState(null);   // {eligible, skipped, plan, warnings}
+  const [dispatchAllBusy, setDispatchAllBusy] = useState(false);
+  const driverForRoute = useCallback((g) => assignedOverride[g?.key] || g?.driver || null, [assignedOverride]);
+  const dispatchAllPlanner = useCallback(
+    (visibleGroups) => planDispatchAll({ groups: visibleGroups, driverFor: driverForRoute, loadIdFor }),
+    [driverForRoute, loadIdFor],
+  );
+  const openDispatchAll = useCallback((visibleGroups) => {
+    if (!writeGate.allowed) { showMapToast(writeGate.reason); return; }
+    const { eligible, skipped, alreadyDispatched } = planDispatchAll({
+      groups: visibleGroups, driverFor: driverForRoute, loadIdFor,
+    });
+    if (!eligible.length) {
+      showMapToast(skipped.length
+        ? `Nothing to dispatch — ${skipped.length} route${skipped.length === 1 ? '' : 's'} blocked: ${skipped.slice(0, 3).map((x) => `${x.name} (${x.reason})`).join(', ')}`
+        : `Nothing to dispatch — all ${alreadyDispatched} route${alreadyDispatched === 1 ? ' is' : 's are'} already past dispatch.`);
+      return;
+    }
+    setDispatchAllPlan({
+      eligible,
+      skipped,
+      // The tenant drives the modal's PRODUCTION warning, and in Live mode that is the truth.
+      tenant: assignLive ? 'DAVIS' : 'beta',
+      plan: dispatchPlanLines(eligible, driverForRoute),
+      // Never a silent skip. These ride the confirm's warning block so the dispatcher sees the
+      // four that will NOT go at the moment he is deciding, not afterwards.
+      warnings: skipped.map((x) => `${x.name} will NOT be dispatched — ${x.reason}`),
+    });
+  }, [writeGate.allowed, writeGate.reason, showMapToast, driverForRoute, loadIdFor, assignLive]);
+
+  const runDispatchAll = useCallback(async () => {
+    const plan = dispatchAllPlan;
+    if (!plan) return;
+    if (!assignLive) {
+      setDispatchAllPlan(null);
+      showMapToast(`Beta — would dispatch ${plan.eligible.length} route${plan.eligible.length === 1 ? '' : 's'} (nothing sent). Flip to ● Live to dispatch.`);
+      return;
+    }
+    setDispatchAllBusy(true);
+    // SEQUENTIAL, deliberately. These are production writes against one vendor; firing twenty
+    // at once buys seconds and risks a rate limit turning a clean run into a partial one whose
+    // failures are indistinguishable from real refusals.
+    const results = [];
+    for (const g of plan.eligible) {
+      setDispatchingKey(g.key);
+      // eslint-disable-next-line no-await-in-loop
+      results.push(await dispatchOneLoad(g));
+    }
+    setDispatchingKey(null);
+    setDispatchAllBusy(false);
+    setDispatchAllPlan(null);
+    // eslint-disable-next-line no-console
+    console.log('[dispatch-all]', results);
+    showMapToast(dispatchAllSummary(results));
+  }, [dispatchAllPlan, assignLive, dispatchOneLoad, showMapToast]);
+
+  const onDispatchLoad = useCallback(async (g) => {
+    if (!writeGate.allowed) { showMapToast(writeGate.reason); return; }
+    const label = loadDisplayName(g.name, g.loadNbr) || g.loadNbr;
+    if (!assignLive) { showMapToast(`Beta — would dispatch ${label} (nothing sent). Flip to ● Live to dispatch.`); return; }
+    if (!loadIdFor(g)) { showMapToast(`Can't dispatch ${label} — its NuVizz load id hasn't loaded yet.`); return; }
+    setDispatchingKey(g.key);
+    const res = await dispatchOneLoad(g);
+    setDispatchingKey(null);
+    if (res.ok) {
+      showMapToast(`✓ ${label} dispatched.`);
+    } else {
+      showMapToast(`✗ Dispatch failed for ${label}: ${res.error}`);
+    }
+  }, [assignLive, showMapToast, writeGate.allowed, writeGate.reason, dispatchOneLoad, loadIdFor]);
   // Ninja toolbar tap: arm/disarm when a Compare route is open; otherwise coach the dispatcher to
   // open one first (the button stays tappable so the hint is reachable on mobile too).
   const onNinjaTool = useCallback(() => {
@@ -19633,6 +20067,28 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     return m;
   }, [wbRoutesColored]);
 
+  // THE SAME CLAIM, FOR THE GRID. Chad: "Paragon should still be highlighted a different
+  // colour on bottom panel now that it's applied to this route or say the driver's name —
+  // looks like it's still available."
+  //
+  // He is describing a real hole and the operational cost is double-planning. The map has
+  // marked a staged stop since Compare cards existed — wbRouteInfo above paints it in the
+  // card's own colour with its sequence number — but the bottom grid, which is where a
+  // router actually PICKS the next order, knew nothing about it. Its Load column reads
+  // NuVizz, and a Draft load with no orders saved yet has nothing there to read, so an order
+  // already sitting at position 1 on an open card listed exactly like an untouched one.
+  //
+  // Carries the route's NAME as well as its colour: the dot is the identity a router already
+  // knows from the card header and the map pin, but a phone has no hover, so the name has to
+  // be printable beside it rather than hidden in a title=.
+  const wbStagedByStop = useMemo(() => {
+    const m = new Map();
+    wbRoutesColored.forEach((rv) => rv.order.forEach((id, idx) => m.set(String(id), {
+      color: rv.color, seq: idx + 1, key: rv.key, name: rv.name || rv.loadNbr || rv.key,
+    })));
+    return m;
+  }, [wbRoutesColored]);
+
   // THE PREFLIGHT — judge the route he is BUILDING, not the one NuVizz is holding.
   //
   // Chad: "can we have flags pop in the routing page if we build a route that system
@@ -19781,6 +20237,15 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       for (const x of free) { if (on) n.add(x); else n.delete(x); }
       return n;
     });
+  }, []);
+  // Drop a whole set in ONE update. Looping removeStop would queue N state updates and N
+  // marker rebuilds for a single click; on an eleven-stop selection that is eleven full
+  // re-renders of the map layer to express one decision.
+  const removeStops = useCallback((ids) => {
+    const drop = new Set((ids || []).map(String));
+    if (!drop.size) return;
+    setSelectedIds((prev) => { const n = new Set(prev); for (const id of drop) n.delete(id); return n; });
+    setLastAction(`Removed ${drop.size} stop${drop.size === 1 ? '' : 's'}`);
   }, []);
   const clearSelection = useCallback(() => { setSelectedIds(new Set()); setLastAction('Cleared selection'); }, []);
 
@@ -21396,7 +21861,19 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // fourteen props; four hand-copied call sites is four chances for one of them to be dropped
   // on the phone only, which is the defect this app keeps shipping.
   const routesPanelEl = (
-    <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} dispatchingKey={dispatchingKey} onNewRoute={liveWrite ? openNewRoute : null} writeDenied={writeGate.reason} />
+    <>
+    {dispatchAllPlan && (
+      <LiveCommitConfirm
+        confirm={dispatchAllPlan}
+        liveMode={assignLive}
+        busy={dispatchAllBusy}
+        title={`Dispatch ${dispatchAllPlan.eligible.length} route${dispatchAllPlan.eligible.length === 1 ? '' : 's'}`}
+        onCancel={() => setDispatchAllPlan(null)}
+        onConfirm={runDispatchAll}
+      />
+    )}
+    <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} onDispatchAll={liveWrite ? openDispatchAll : null} dispatchAllPlanner={liveWrite ? dispatchAllPlanner : null} dispatchingKey={dispatchingKey} onNewRoute={liveWrite ? openNewRoute : null} writeDenied={writeGate.reason} />
+    </>
   );
   // The day's loads that are NOT on the board — the empty ones the dispatcher still has to
   // fill. Same click-to-Compare as the bottom grid's Loads view, which Chad keeps in full.
@@ -21532,6 +22009,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
             onSearchMatchChange={setSearchMatchIds}
             onStatusFilterChange={setStatusFilterIds}
             highlightIds={selectedIds}
+            stagedByStop={wbStagedByStop}
             planVersion={planVersion}
           />}
         </div>
@@ -21597,7 +22075,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
                     )}
                     {engineResultContent}
                     {wbRoutes.length > 0
-                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
+                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} maxCards={WB_MAX} />
                       : controlsContent}
                   </>
                 : mobilePanel === 'loads'
@@ -21661,7 +22139,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
               flex-1/min-h-0 resolves to what is actually left. */}
           {engineResultContent && <div className="p-2 pb-0 shrink-0 max-h-[45%] overflow-y-auto">{engineResultContent}</div>}
           <div className="flex-1 min-h-0">
-          <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} maxCards={WB_MAX} notice={lastAction} onDismissNotice={() => setLastAction(null)} />
           </div>
         </div>
       ) : leftPanelOn ? (
@@ -21691,7 +22169,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         )}
         {/* Floating "Selected N" panel (toggleable) — lists every selected stop over the map. */}
         {!viewing && selPanelOpen && selectedStops.length > 0 && (
-          <RoutingSelectionFloatPanel selectedStops={selectedStops} notes={notes} tractorLocs={tractorLocs} onRemove={removeStop} onClearAll={clearSelection} onOpenStop={openStop} onClose={() => setSelPanelOpen(false)} isMobile={false} />
+          <RoutingSelectionFloatPanel selectedStops={selectedStops} notes={notes} tractorLocs={tractorLocs} onRemove={removeStop} onRemoveMany={removeStops} onClearAll={clearSelection} onOpenStop={openStop} onClose={clearSelection} isMobile={false} />
         )}
         {/* Reopen chip when the panel is toggled off but stops are selected. */}
         {!viewing && !selPanelOpen && selectedStops.length > 0 && (
@@ -21745,7 +22223,9 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
           headerRight={bottomGridHeaderRight}
           onWindowRowsChange={setGridWindowStops}
           onSearchMatchChange={setSearchMatchIds}
+          onStatusFilterChange={setStatusFilterIds}
           highlightIds={selectedIds}
+          stagedByStop={wbStagedByStop}
           planVersion={planVersion}
         />}
       </div>
