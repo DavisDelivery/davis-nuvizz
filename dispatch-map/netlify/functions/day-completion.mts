@@ -56,9 +56,11 @@ export default async (req: Request): Promise<Response> => {
     // Best-effort: an unreadable store falls back to the environment, which is what the
     // sender itself does, so the readback cannot claim a list the send would not use.
     let dayReportRecipientCount = 0;
+    let recipientStoreError: string | null = null;
     try {
       let storedRecipients: any = null;
-      try { storedRecipients = await readAlertRecipients(); } catch { /* env carries it */ }
+      try { storedRecipients = await readAlertRecipients(); }
+      catch (e: any) { recipientStoreError = String(e?.message || e); }
       dayReportRecipientCount = recipientsFor('dayReportTo', storedRecipients).length;
     } catch { dayReportRecipientCount = 0; }
     const stored = await readDayCompletion(TENANT, date);
@@ -97,6 +99,10 @@ export default async (req: Request): Promise<Response> => {
         emailConfigured: emailEnabled(),
         recipientConfigured: dayReportRecipientCount > 0,
         recipientCount: dayReportRecipientCount,
+        // A count read off the environment because the store was unreachable is not the same
+        // fact as a count read off the store, and this block exists because an unreadable
+        // switch is not a switch.
+        ...(recipientStoreError ? { recipientStoreError } : {}),
         disabled: process.env.DAY_REPORT_ENABLED === '0',
       },
       ...(url.searchParams.get('email') === '1'

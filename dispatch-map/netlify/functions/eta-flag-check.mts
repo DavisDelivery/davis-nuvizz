@@ -440,7 +440,14 @@ export default async (req: Request): Promise<Response> => {
     // Resolved once, from the same store and the same function the sender uses. A failed
     // read falls back to the env-parsed default, which is what the sender falls back to.
     let ccStored: any = null;
-    try { ccStored = await readAlertRecipients(); } catch { /* env carries it */ }
+    let ccStoreError: string | null = null;
+    // AND A FAILED READ IS SAID, NOT SWALLOWED. This endpoint's whole job is answering "would I
+    // have got that email?", so it is the one place an unmarked fallback does the most harm: a
+    // Firestore blip here and it reports the env list, stamped `env`, with total confidence,
+    // while the sweep fifteen minutes later mails the saved one. Every other consumer records
+    // its fallback; the one built to be believed must too.
+    try { ccStored = await readAlertRecipients(); }
+    catch (e: any) { ccStoreError = String(e?.message || e); }
     const ccResolved = resolveChannel(channelSpec('alertCc')!, ccStored);
     const urgent = flatRows.filter((r: any) => isBoardUrgent(r, gateMin));
     // R7, listed separately and NOT folded into `urgent`, which is the email population. It
@@ -507,7 +514,8 @@ export default async (req: Request): Promise<Response> => {
       // Where the list came from — 'saved' means somebody edited it in Diagnostics, 'env'
       // means it is still ALERT_CC, 'unset' means nobody but customer service. Three states
       // that used to look identical from here.
-      ccSource: ccResolved.source,
+      ccSource: ccStoreError ? 'unknown' : ccResolved.source,
+      ...(ccStoreError ? { ccStoreError } : {}),
       ccRejected: ccResolved.source === 'saved' ? ccResolved.savedRejected.map((r: any) => r.value) : ALERT_CC_REJECTED,
       dailyCap: DAILY_ALERT_CAP,
       counts: { critical: flags.criticalCount ?? 0, red: flags.redCount ?? 0, amber: flags.amberCount ?? 0 },

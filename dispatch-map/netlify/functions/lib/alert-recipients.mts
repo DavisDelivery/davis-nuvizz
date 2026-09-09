@@ -100,6 +100,26 @@ export const MAX_PER_CHANNEL = 25;
 const EMAILISH = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
 
 /**
+ * PURE. Strip an RFC 5322 display name: `Davis Dispatch <ops@…>` → `ops@…`.
+ *
+ * WHY THIS EXISTS, AND IT IS NOT TIDINESS. NOTIFY_CS_TO and DAY_REPORT_TO have never validated
+ * anything — whatever the console holds went to Resend verbatim — and Resend accepts the
+ * `Name <address>` form. This repo uses that exact shape itself for RESEND_FROM. So if either
+ * variable is set that way today, refusing it here would stop mailing somebody who is being
+ * mailed right now: the marked-customer notice would fall to the customer-service floor and
+ * the 6:30p report would reach NOBODY, reported only as "nobody is on the list".
+ *
+ * That is precisely the silent break this change promises not to cause, and it is not worth
+ * leaving to a question about what is in the console — unwrapping costs one regex and makes
+ * the answer the same either way. The mailbox is what identifies a recipient; the display name
+ * is decoration, and dropping it changes nothing about who receives the message.
+ */
+export function stripDisplayName(raw: string): string {
+  const m = /^[^<>]*<\s*([^<>\s]+)\s*>$/.exec(String(raw ?? '').trim());
+  return m ? m[1] : String(raw ?? '').trim();
+}
+
+/**
  * THE ONE SEPARATOR RULE, because there were four.
  *
  * parseAlertCc split on comma/semicolon/newline; flag-sms, cs-notify and the comms test
@@ -130,6 +150,15 @@ export interface ChannelSpec {
   emptyNote: string;
   /** A truth about this channel a person editing it would otherwise get wrong. Optional. */
   note?: string;
+  /**
+   * What to call the resolved send list on screen, when "Goes to" would state a falsehood.
+   *
+   * The overnight list is ADDED to the standing list and only between 7:00p and 5:59a, so a
+   * card headed "Goes to" is wrong twice over at 10am: it names people who will not be texted,
+   * and it omits the union that actually fires at 9pm. "Goes to" is the line a dispatcher
+   * reads; the prose above it is not.
+   */
+  goesToLabel?: string;
   /**
    * Does the ENVIRONMENT fallback for this channel enforce the internal-domain allowlist?
    *
@@ -176,6 +205,7 @@ export const RECIPIENT_CHANNELS: ChannelSpec[] = [
     alwaysAlso: null,
     floorWhenEmpty: null,
     emptyNote: 'Nobody extra overnight. The list above is still texted.',
+    goesToLabel: 'Also texted, 7:00p–5:59a only',
     envEnforcesAllowlist: true,
   },
   {
@@ -272,7 +302,7 @@ export function normalizeEntry(
     if (!validUsPhone(digits)) return { value: null, reason: 'not a 10-digit US mobile number', warn: null };
     return { value: digits, reason: null, warn: null };
   }
-  const lc = trimmed.toLowerCase();
+  const lc = stripDisplayName(trimmed).toLowerCase();
   // Not an address at all is refused everywhere. Resend rejects the WHOLE message when one
   // recipient is malformed, so keeping a garbage entry would not "preserve" anything — it
   // would take the valid recipients down with it.
@@ -368,6 +398,8 @@ export interface ResolvedChannel {
   floorWhenEmpty: string | null;
   floorApplied: boolean;
   emptyNote: string;
+  note: string | null;
+  goesToLabel: string | null;
   /** Entries in the environment that could not be used at all, by name and with a reason. */
   envRejected: Refusal[];
   /**
@@ -431,6 +463,8 @@ export function resolveChannel(spec: ChannelSpec, stored: any, env: any = proces
     floorWhenEmpty: spec.floorWhenEmpty,
     floorApplied,
     emptyNote: spec.emptyNote,
+    note: spec.note ?? null,
+    goesToLabel: spec.goesToLabel ?? null,
     // Only worth reporting for a channel still running on its env var. Once a list is saved,
     // the env var is not what anybody is being mailed and naming its typos is noise.
     envRejected: hasSaved ? [] : fromEnv.rejected,

@@ -185,13 +185,15 @@ export async function notifyMarkedCustomers(
   date: string,
   stops: any[],
   opts: { statusWhenIdle?: boolean } = {},
-): Promise<{ skipped?: string; matched: number; sent: number; failed: number }> {
+): Promise<{ skipped?: string; matched: number; sent: number; failed: number; recipientStoreError?: string }> {
   // Read the saved list fresh — Chad edits it from Diagnostics and the next scan should use
   // it. A failed read falls back to the environment and then to customer service, so the
   // worst case is the behaviour this function had before the screen existed rather than a
   // notice nobody receives.
   let storedRecipients: any = null;
-  try { storedRecipients = await readAlertRecipients(); } catch { /* env + floor carry it */ }
+  let recipientStoreError: string | null = null;
+  try { storedRecipients = await readAlertRecipients(); }
+  catch (e: any) { recipientStoreError = String(e?.message || e); }
   const to = csRecipients(storedRecipients);
   const marked = await loadMarkedCustomers();
 
@@ -254,13 +256,14 @@ export async function notifyMarkedCustomers(
   // would be several hundred pointless writes a day. Those days still get a status doc the
   // moment they actually match a marked customer, and the real board days (the write targets)
   // keep stamping unconditionally, so the diagnostic Chad relies on is unchanged.
-  if (opts.statusWhenIdle === false && !hits.size) return { skipped, matched: 0, sent, failed };
+  const storeNote = recipientStoreError ? { recipientStoreError } : {};
+  if (opts.statusWhenIdle === false && !hits.size) return { skipped, matched: 0, sent, failed, ...storeNote };
   try {
     await setDoc(`${OPS_COLLECTION}/cs_notify_status__${date}`, {
-      date, at: new Date().toISOString(), recipients: to,
+      date, at: new Date().toISOString(), recipients: to, ...storeNote,
       marked: marked.size, matched: hits.size, sent, failed, skipped: skipped || null,
     });
   } catch (e: any) { console.warn(`[cs-notify] status write failed: ${e?.message}`); }
 
-  return { skipped, matched: hits.size, sent, failed };
+  return { skipped, matched: hits.size, sent, failed, ...storeNote };
 }

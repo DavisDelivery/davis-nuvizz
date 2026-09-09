@@ -31,8 +31,7 @@ import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { selectAlertable, sendAlerts, ALERT_TO, alertRecipients, ALERT_CC, ALERT_CC_REJECTED, AMBER_LEAD_GATE_MIN, ALERT_MIN_TIER, ALERT_TIERS, ALERT_COLLECTION } from './lib/flag-alert.mts';
 // The saved CC list (Diagnostics → Alert recipients), falling back to ALERT_CC when nobody
 // has saved one. Same resolver the screen prints from, so the two cannot disagree.
-import { recipientsFor } from './lib/alert-recipients.mts';
-const resolveCc = (stored: any) => recipientsFor('alertCc', stored).filter((a) => a !== ALERT_TO);
+import { resolveChannel, channelSpec } from './lib/alert-recipients.mts';
 import { mergeSweep, scoreRowsLive, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
 import { arrivalAnchor, isFinishedStop } from '../../src/lib/board-flags.js';
 import { auditRows } from './lib/flag-rows.mts';
@@ -326,10 +325,25 @@ export default async (req: Request): Promise<Response> => {
     // exactly how Chad came to be off a list he believed he was on. He now edits it from
     // Diagnostics and the next sweep uses it. A failed read falls back to the env-parsed
     // default rather than to customer service alone, and says so in the run log.
-    let ccStore = 'saved';
+    let ccStore: string;
     let cc = ALERT_CC;
-    try { cc = resolveCc(await readAlertRecipients()); }
-    catch (e: any) { ccStore = `unavailable — fell back to ALERT_CC (${e?.message || 'read failed'})`; }
+    let ccRefused: string[] = ALERT_CC_REJECTED;
+    try {
+      const resolved = resolveChannel(channelSpec('alertCc')!, await readAlertRecipients());
+      cc = resolved.recipients.filter((a) => a !== ALERT_TO);
+      // The true word, not a literal — see the note in the evening sweep for why.
+      ccStore = resolved.source;
+      // AND THE REFUSALS FROM WHICHEVER LIST IS ACTUALLY IN USE. Reporting ALERT_CC_REJECTED
+      // unconditionally would print the env's typos while a saved address was being refused in
+      // silence — which is the failure this log line was added to prevent, pointed at the wrong
+      // list. Once a list is saved the env's rejections are not what anybody is missing mail
+      // from.
+      ccRefused = resolved.source === 'saved'
+        ? resolved.savedRejected.map((r) => r.value)
+        : resolved.envRejected.map((r) => r.value);
+    } catch (e: any) {
+      ccStore = `unavailable — fell back to ALERT_CC (${e?.message || 'read failed'})`;
+    }
     // customerservice@ leads, always: they are the desk that phones the consignee. Everyone
     // on the CC is watching the miss, not working it.
     const recipients = alertRecipients(cc);
@@ -343,7 +357,7 @@ export default async (req: Request): Promise<Response> => {
     // run log that collapses the two cannot answer "was Chad on this one" after the fact —
     // which is the question that started this. ccRejected names the ALERT_CC entries that
     // were refused, so a typo shows up here rather than as a person who never gets mail.
-    return J({ ...base, recorded: await writeHistory(emailedStops), ...counts, to: ALERT_TO, recipients, ccStore, ccRejected: ALERT_CC_REJECTED });
+    return J({ ...base, recorded: await writeHistory(emailedStops), ...counts, to: ALERT_TO, recipients, ccStore, ccRejected: ccRefused });
   } catch (e: any) {
     return J({ ok: false, error: String(e?.message || e) }, 500);
   }

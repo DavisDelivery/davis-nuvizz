@@ -2,7 +2,7 @@
 //
 // The pure rules are pinned in test/alert-recipients-config.test.mjs. These are the ones that
 // only fail for real: the write is a field-masked merge and not a whole-document replace, the
-// POST is gated and the GET is not, a refusal is reported rather than swallowed, and the
+// read is gated at viewer and the write at admin, a refusal is reported rather than swallowed, and the
 // response the panel replaces its state with is read back from the document rather than
 // echoed from the request — because "never report an intent as an outcome" is exactly the
 // rule a settings screen breaks when it is written in a hurry.
@@ -151,6 +151,17 @@ test('A REFUSED ENTRY IS NAMED IN THE SAVE RESPONSE, beside the channel it was t
   });
 });
 
+test('THE SAVE REPORTS WHAT IT WROTE, not what the body mentioned', () => {
+  // `null` on a channel means "leave it alone", and it is dropped before the write. Naming it
+  // in `saved` would tell the caller a list had been stored when nothing was — an intent
+  // reported as an outcome, in the endpoint that re-reads the document precisely to avoid it.
+  return withStore({ [DOC]: { flagSmsTo: [P1] } }, async (fake) => {
+    const j = await (await (await load())(POST({ flagSmsTo: null, alertCc: [DISPATCH] }))).json();
+    assert.deepEqual(j.saved, ['alertCc']);
+    assert.deepEqual(fake.store.get(DOC).flagSmsTo, [P1], 'and the null channel really was left alone');
+  });
+});
+
 test('A BODY THAT NAMES NO CHANNEL IS REFUSED — an empty save must not stamp the document', () => {
   // Otherwise "Save" on an untouched form rewrites updatedAt and the panel reports an edit
   // nobody made, which is the sort of thing that makes an audit line worthless.
@@ -178,12 +189,42 @@ test('ANY OTHER METHOD IS 405', () => {
   });
 });
 
+test('THE AUDIT LINE NAMES THE PRINCIPAL, never a string the caller supplied', () => {
+  // The panel renders this as "last changed … by X" — the one line somebody reads to find out
+  // who took them off a list. A body field outranking the authenticated user turns that from
+  // an audit fact into an assertion by whoever made the request.
+  return withStore({}, async (fake) => {
+    await (await load())(POST({ flagSmsTo: [P1], updatedBy: 'somebody-else' }));
+    assert.notEqual(fake.store.get(DOC).updatedBy, 'somebody-else');
+    // With AUTH_REQUIRED off the principal really is the pre-login one, and the audit line
+    // says 'legacy' rather than inventing a name. That is the honest answer to "who did this"
+    // on a site where nobody signs in yet, and it changes to the real username the day the
+    // switch flips — see the gate test below, which asserts exactly that.
+    assert.equal(fake.store.get(DOC).updatedBy, 'legacy');
+  });
+});
+
+test('THE RESPONSE DOES NOT REPUBLISH THE RAW DOCUMENT', () => {
+  // nuvizz_ops is writable by anyone holding the web config out of the public bundle, so
+  // echoing the document whole would hand back whatever an outside writer put on it, beside
+  // the validated channels and looking every bit as official.
+  return withStore({ [DOC]: { flagSmsTo: [P1], evilPayload: 'anything at all' } }, async () => {
+    const j = await (await (await load())(GET())).json();
+    assert.deepEqual(Object.keys(j.stored), ['flagSmsTo']);
+    assert.equal(JSON.stringify(j).includes('evilPayload'), false);
+  });
+});
+
 // ── THE GATE ────────────────────────────────────────────────────────────────
 
-test('THE READ STAYS OPEN AND THE WRITE SHUTS — the panel must render to show anyone what would change', async () => {
-  // Same split as nuvizz-scan-config. A gated GET turns a panel that explains who is alerted
-  // into a blank box; an ungated POST lets anyone change who hears that freight is about to be
-  // refused, and spend money at somebody's phone.
+test('A SIGNED-OUT CALLER GETS NOTHING — this response is a list of personal mobile numbers', async () => {
+  // The first draft of this endpoint left the GET open on the scan-config precedent. That
+  // precedent is about a cadence and a call ceiling; this body carries staff phone numbers,
+  // which until this feature existed lived only in the Netlify console. The repo has the rule
+  // written down twice — driver-phone.mts gates a plain GET at viewer BECAUSE it turns a name
+  // into a personal number, and day-completion.mts reports only WHETHER a recipient is set,
+  // with a test that greps its source to keep the address out of the body. A viewer is anyone
+  // signed in, so the panel still renders for everyone who can open it.
   process.env.AUTH_REQUIRED = 'true';
   _resetUserCacheForTests();
   _resetThrottleForTests();
@@ -192,7 +233,11 @@ test('THE READ STAYS OPEN AND THE WRITE SHUTS — the panel must render to show 
   const fake = installFirestoreFake({ 'app_users/ro': viewer, 'app_users/boss': admin });
   try {
     const handler = await load();
-    assert.equal((await handler(GET())).status, 200, 'the read is open');
+    const anon = await handler(GET());
+    assert.equal(anon.status, 401, 'a stranger cannot read the phone list');
+    const asViewerRead = await handler(new Request(url(), { headers: { authorization: `Bearer ${issueSessionToken(viewer).token}` } }));
+    assert.equal(asViewerRead.status, 200, 'but anyone signed in can see who is alerted');
+    assert.equal(asViewerRead.headers.get('vary'), 'Authorization', 'the body varies by caller — no shared cache may hold it');
 
     assert.equal((await handler(POST({ flagSmsTo: [P1] }))).status, 401, 'signed out cannot write');
     const asViewer = await handler(POST({ flagSmsTo: [P1] }, { authorization: `Bearer ${issueSessionToken(viewer).token}` }));

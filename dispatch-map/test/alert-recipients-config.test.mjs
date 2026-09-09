@@ -105,6 +105,23 @@ test('AN OUTSIDE ADDRESS IS REFUSED — this message names a customer and says w
   assert.equal(normalizeEntry(`  ${DISPATCH.toUpperCase()}  `, 'email').value, DISPATCH);
 });
 
+test('A DISPLAY-NAME ADDRESS IN THE CONSOLE KEEPS WORKING — this one would have gone silent', () => {
+  // `Davis Dispatch <ops@…>` is a shape Resend accepts, and this repo already uses it for
+  // RESEND_FROM. NOTIFY_CS_TO and DAY_REPORT_TO have never validated anything, so if either
+  // holds that shape today, refusing it would drop the marked-customer notice to the
+  // customer-service floor and send the 6:30p report to NOBODY — reported only as "nobody is
+  // on the list". Unwrapping costs one regex and makes the console's contents irrelevant,
+  // which is better than a change that is safe only if somebody checks first.
+  assert.equal(normalizeEntry(`Davis Dispatch <${DISPATCH}>`, 'email').value, DISPATCH);
+  assert.equal(normalizeEntry(`  Ops Desk  < ${OPS} > `, 'email').value, OPS);
+  assert.deepEqual(recipientsFor('dayReportTo', null, { DAY_REPORT_TO: `Ops <${OPS}>` }), [OPS]);
+  assert.deepEqual(recipientsFor('notifyCsTo', null, { NOTIFY_CS_TO: `Ops <${OPS}>` }), [OPS]);
+  // The wrapper is stripped, not trusted: an outside address inside one is still outside.
+  assert.equal(normalizeEntry(`Someone <${OUTSIDE}>`, 'email').value, null);
+  // And it cannot be used to smuggle two addresses past the splitter.
+  assert.equal(normalizeEntry(`A <${DISPATCH}> <${OUTSIDE}>`, 'email').value, null);
+});
+
 test('A LOOKALIKE DOMAIN IS NOT AN INTERNAL DOMAIN', () => {
   // endsWith() against a bare domain would have accepted every one of these. The shipped
   // suffixes carry the '@' for exactly this reason.
@@ -281,6 +298,24 @@ test('A PASTED BLOCK IS ACCEPTED AS A LIST — people paste, they do not type on
 });
 
 // ── THE PAYLOAD THE SCREEN RENDERS ──────────────────────────────────────────
+
+test('A GRANDFATHERED ENV ADDRESS IS NOT OFFERED AS AN EDITABLE ROW — saving would have deleted it', () => {
+  // THE REACHABLE DATA LOSS, and it arrived through the one thing this screen was built for.
+  // An outside address in NOTIFY_CS_TO is mailed today and cannot be stored (the allowlist), so
+  // if the panel drew it as an ordinary removable row, adding yourself to the list would post
+  // it back, the endpoint would refuse it, and it would disappear — right after the card said
+  // "it keeps working". On the end-of-day report, which has no floor, removing one of two names
+  // could leave NOBODY mailed under a green "saved" badge.
+  //
+  // The panel keeps `envWarned` values out of its editable rows (editableList in App.jsx). This
+  // pins the data it needs to do that: the entry is in `recipients` (it IS being mailed), it is
+  // named in `envWarned` (so the card can say so), and it is separable from the rest of `list`.
+  const OUT = 'partner@example.com';
+  const r = resolveChannel(spec('notifyCsTo'), null, { NOTIFY_CS_TO: `${OPS}, ${OUT}` });
+  assert.deepEqual(r.recipients, [OPS, OUT], 'it is genuinely still being mailed');
+  assert.deepEqual(r.envWarned.map((w) => w.value), [OUT], 'and it is identifiable as the ungovernable one');
+  assert.deepEqual(r.list.filter((v) => !r.envWarned.some((w) => w.value === v)), [OPS], 'leaving one editable row');
+});
 
 test('EVERY CHANNEL RESOLVES TO SOMETHING THE SCREEN CAN PRINT, on an empty document and an empty env', () => {
   // A blank panel would read as "nobody is alerted", which is a different claim from "nothing

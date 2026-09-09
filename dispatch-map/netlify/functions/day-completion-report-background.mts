@@ -64,10 +64,14 @@ const TO_ENV = 'DAY_REPORT_TO';
  * is on tonight's report. A failed store read falls back to the environment: a report that
  * goes to the old list is recoverable, one that goes nowhere is a silent evening.
  */
-async function reportRecipients(): Promise<string[]> {
+async function reportRecipients(): Promise<{ list: string[]; storeError: string | null }> {
   let stored: any = null;
-  try { stored = await readAlertRecipients(); } catch { /* env carries it */ }
-  return recipientsFor('dayReportTo', stored);
+  let storeError: string | null = null;
+  // NAMED, NOT SWALLOWED. On a blip this mails DAY_REPORT_TO instead of the saved list and
+  // reports emailed:true against the old names — a report that went to the wrong desk and
+  // looks identical to one that went to the right one.
+  try { stored = await readAlertRecipients(); } catch (e: any) { storeError = String(e?.message || e); }
+  return { list: recipientsFor('dayReportTo', stored), storeError };
 }
 
 function etParts(d = new Date()) {
@@ -215,6 +219,7 @@ export default async (): Promise<Response> => {
     // the same answer — two reads could disagree and the report would name a list it did not
     // actually mail.
     let recipients: string[] = [];
+    let recipientStoreError: string | null = null;
     if (blocked) {
       out.emailed = false;
       out.emailNote = blocked;
@@ -227,7 +232,7 @@ export default async (): Promise<Response> => {
     } else if (process.env.DAY_REPORT_ENABLED === '0') {
       out.emailed = false;
       out.emailNote = 'DAY_REPORT_ENABLED=0';
-    } else if (!(recipients = await reportRecipients()).length) {
+    } else if (!(({ list: recipients, storeError: recipientStoreError } = await reportRecipients()), recipients).length) {
       out.emailed = false;
       out.emailNote = `nobody is on the end-of-day report list (Diagnostics → Alert recipients, or ${TO_ENV}) — the report was built and stored, nobody was mailed`;
     } else {
@@ -247,6 +252,7 @@ export default async (): Promise<Response> => {
       // was asked to do — a hardcoded success ran in this repo for weeks once.
       out.emailed = res.ok;
       out.to = to.join(', ');
+      if (recipientStoreError) out.recipientStoreError = recipientStoreError;
       if (!res.ok) out.emailError = res.error;
       // ONLY ON A CONFIRMED SEND. This stamp is what stands the next firing down, so writing
       // it on a failure would recreate the exact hole it replaced.
