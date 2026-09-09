@@ -88,6 +88,17 @@ const SCRIPT = [
   ['OG6028250001', 300], ['OG6028250001', 300], ['OG6028250001', 300],
   ['7173250', 700], ['7173250', 700], ['7173250', 700],
   [null, 4000],
+
+  // ACT 3 — TOP BARCODE ONLY. The order above is open (one of its two skids is
+  // aboard), so the SECOND skid is presented with its piece id alone — no PRO,
+  // which is how the dock wants to scan: "they load all of one order at a time,
+  // so 4 skids go on the truck at the same time." It must book on the spot, and
+  // reaching the manifest count must CLOSE the order, so the stray piece id that
+  // follows cannot land in freight that is already complete.
+  ['OG6028250002', 900],
+  [null, 2500],
+  ['OG6028250099', 900],
+  [null, 3000],
 ];
 
 const browser = await chromium.launch({
@@ -186,15 +197,30 @@ const atl = live.filter((r) => String(r.pro) === '7173460');
 if (atl.length !== 1) fail(`ATLANTA AUTO booked ${atl.length} pieces from one skid — must be exactly 1`);
 if (atl[0] && atl[0].og !== 'OG6028460001') fail(`ATLANTA AUTO id is ${atl[0]?.og} — expected the real piece id`);
 
-// Act 2: one skid presented, one piece booked. A phantom here is freight left on
-// the dock while the worklist reports the stop complete.
+// Act 2 + 3. Act 2 presents ONE skid (no phantom may join it); act 3 presents the
+// second skid by its PIECE ID ALONE, which must book. Two pieces, both real ids,
+// no NOOG fallback anywhere — a fallback here would mean the top-only scan fell
+// back to guessing, which is the thing it exists to replace.
 const div = live.filter((r) => String(r.pro) === '7173250');
-if (div.length !== 1) {
-  fail(`DIVINELY GUIDED booked ${div.length} pieces from ONE skid — a phantom marks the stop done with freight still on the dock`);
+if (div.length !== 2) {
+  fail(`DIVINELY GUIDED holds ${div.length} pieces — expected 2: one skid scanned in full, one by its top barcode alone`);
+}
+if (div.some((r) => String(r.og).startsWith('NOOG-'))) {
+  fail(`DIVINELY GUIDED fell back to a minted id (${div.map((r) => r.og).join(', ')}) — the piece ids were there to be used`);
+}
+if (!div.some((r) => r.og === 'OG6028250002')) {
+  fail('the second skid never booked from its top barcode alone — that is the scan the dock asked for');
+}
+// The order closed at its count, so the piece id that follows must NOT book.
+if (live.some((r) => r.og === 'OG6028250099')) {
+  fail('a piece id landed in an order that was already complete — the open order did not close at its count');
 }
 
 const body = await page.locator('body').innerText();
-if (/\b(\d+)\s*\/\s*\1\b/.test(body) && div.length !== 1) fail('a stop reads complete off a phantom');
+// DIVINELY GUIDED is legitimately complete now — one skid scanned in full, one
+// by its top barcode — so its badge SHOULD read 2/2. What must never appear is
+// a completed stop built on a minted id, which the piece-level checks above pin.
+if (!/2\s*\/\s*2/.test(body)) fail(`DIVINELY GUIDED should read 2/2, body has: ${body.match(/\d+\s*\/\s*\d+/g)}`);
 if (errs.length) fail('uncaught errors: ' + errs.join(' | '));
 
 await browser.close();

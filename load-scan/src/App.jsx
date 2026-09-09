@@ -51,6 +51,22 @@ const SAME_PRO_COOLDOWN_MS = 3000;
  */
 const PRO_REACQUIRE_MS = 1200;
 
+/**
+ * How long an ORDER stays open with nothing scanned against it.
+ *
+ * Chad, on how the dock actually works: "they load all of one order at a time,
+ * so 4 skids go on the truck at the same time — now there will be time it takes
+ * to load them on the trailer, but they go together."
+ *
+ * That is what makes top-barcode-only scanning possible, and it is also why this
+ * number is minutes and not seconds: the gap between skids of one order is a
+ * forklift run into the trailer, not a pause. Five minutes covers that with room
+ * to spare. It exists at all because an order left open from twenty minutes ago
+ * would quietly collect the next piece id the camera happened to read, and a
+ * mis-attributed piece is the failure this app has spent weeks removing.
+ */
+const ACTIVE_ORDER_IDLE_MS = 5 * 60_000;
+
 // ── Shell ────────────────────────────────────────────────────────────────────
 
 // ── Login ────────────────────────────────────────────────────────────────────
@@ -449,6 +465,22 @@ function OutcomeCard({ result, partial, orphan, onClear }) {
           Clear
         </button>
       ) : null;
+      // A piece id read with no order open. The board carries no piece ids —
+      // NuVizz sends the order and a count, nothing finer — so this number
+      // cannot be placed on the truck by itself. Say the thing that fixes it.
+      if (orphan.kind === 'no-order') {
+        return (
+          <Banner kind="warn">
+            <span className="font-semibold">Scan the PRO first — no order is open.</span>
+            <span className="block text-xs mt-0.5 font-mono break-all">{orphan.value}</span>
+            <span className="block text-xs mt-0.5">
+              Read the piece ID, but nothing says which order it belongs to. Scan the bottom barcode on
+              this label once, then the top barcode alone counts every other piece of that order.
+            </span>
+            {dismiss}
+          </Banner>
+        );
+      }
       if (orphan.kind === 'unknown') {
         return (
           <Banner kind="warn">
@@ -882,6 +914,28 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   const [rawLog, setRawLog] = useState([]);
   // A repeat PRO waiting for a deliberate tap before it books another piece.
   const [dupPending, setDupPending] = useState(null);
+
+  // ── THE OPEN ORDER: one barcode per piece ──────────────────────────────────
+  //
+  // The board has no piece ids — NuVizz sends the order (proNbr) and a piece
+  // COUNT, nothing finer — so the bottom barcode is the only thing that ties a
+  // label to a stop, and the app has always needed it on every piece. But the
+  // dock loads ONE ORDER AT A TIME: four skids go on together, minutes apart as
+  // each rides into the trailer. So the order only has to be established ONCE.
+  //
+  // With an order open, the TOP barcode is enough. It is the piece id, it is
+  // unique to that physical piece, and it books the moment it decodes — no
+  // pairing window, no waiting, and no repeat-PRO guessing, because two distinct
+  // piece ids are two distinct pieces and the same one twice is the same piece.
+  // That is the whole class of bug that produced 4/2 and phantom skids.
+  //
+  // The order closes itself when the manifest count is reached, so the next
+  // piece id cannot leak into a finished order — which is the moment the loader
+  // is walking to the next one anyway.
+  const [activeOrder, setActiveOrder] = useState(null); // { pro7, stopNbr, businessName, expected, at }
+  const activeOrderRef = useRef(null);
+  activeOrderRef.current = activeOrder;
+  const onLoneOgRef = useRef(() => {});
   /**
    * The scan gate, and it MUST be a ref.
    *
@@ -946,13 +1000,19 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
    * left behind, reported as loaded — worse than the over-count that started
    * this. Reading the piece id of a label is proof the label is still there.
    */
-  const noteRaw = useCallback((values) => {
+  const noteRaw = useCallback((values, engine = 'quagga') => {
     const now = Date.now();
     const quietBefore = now - (lastDecodeAt.current || 0) > PRO_REACQUIRE_MS;
     let sawAny = false;
     for (const v of values || []) {
       const cls = classifyBarcode(v);
       if (cls.kind === 'pro' || cls.kind === 'og') sawAny = true;
+      // TOP BARCODE, ORDER OPEN — book it here and now. Handing it to the pair
+      // buffer instead would make it wait out the window for a PRO it does not
+      // need, which is the wait the dock was feeling. If the PRO decodes anyway
+      // the pair still comes through and is refused as a duplicate on its piece
+      // id, so the two routes cannot double-book each other.
+      if (cls.kind === 'og') onLoneOgRef.current?.(cls.value, engine);
       if (cls.kind !== 'pro') continue;
       const pro7 = normalizePro(cls.value);
       if (!pro7) continue;
@@ -1340,6 +1400,19 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
           expected: owner ? Number(owner.expectedPieces || 0) : 0,
         });
       }
+      // THE ORDER IS NOW OPEN — or finished. Counted including the piece just
+      // booked, because `done` above was measured before it. An order that has
+      // reached its manifest count closes itself, so the next piece id cannot
+      // land in freight that is already complete.
+      if (owner && evaluated.stop?.stopNbr === owner.stopNbr) {
+        const expected = Number(owner.expectedPieces || 0);
+        const aboard = (done ? done.scanned : 0) + 1;
+        setActiveOrder(
+          expected > 0 && aboard >= expected
+            ? null
+            : { pro7: p7, stopNbr: owner.stopNbr, businessName: owner.businessName, expected, at: Date.now() },
+        );
+      }
       await stampSequence();
       await refreshLocal();
       flushQueue();
@@ -1469,11 +1542,45 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   // running camera session always calls the freshest closures.
   onCameraPairRef.current = async (p) => announce(await record(p, p.engine));
   onCameraOrphanRef.current = (half) => {
+    // A LONE PIECE ID IS A PIECE when an order is open — that is the top-only
+    // scan. It has usually already booked from the raw stream the instant it
+    // decoded (see onLoneOgRef), so by the time the pair window closes on it
+    // there is nothing left to report and crying orphan would be a lie.
+    if (half.kind === 'og') {
+      const og = String(half.value || '').toUpperCase();
+      const aboard = activeScans(scans).some((s) => String(s.og).toUpperCase() === og)
+        || justBooked.current.some((b) => String(b.og).toUpperCase() === og);
+      if (aboard) return;
+      // A piece id with no order open cannot be placed: the board carries no
+      // piece ids, so nothing in the manifest knows this number. Say the one
+      // thing that fixes it rather than dropping it as panning noise.
+      if (!activeOrderRef.current) {
+        playVerdict('orphan');
+        if (navigator.vibrate) navigator.vibrate([40, 50, 40]);
+        setOrphan({ kind: 'no-order', value: half.value, at: Date.now() });
+      }
+      return;
+    }
     // A half-read label superseded by a different one mid-pair — same
     // announcement the gun makes, so neither entry route drops it silently.
     playVerdict('orphan');
     if (navigator.vibrate) navigator.vibrate([40, 50, 40]);
     setOrphan({ kind: half.kind, value: half.value, at: Date.now() });
+  };
+
+  // THE TOP-BARCODE SCAN. Called straight off the raw decode stream, so a piece
+  // books the moment its id is read — no pair window, nothing to wait for. Only
+  // with an order open, and never for freight already aboard: a re-read of a
+  // skid that is already counted is the same skid, and the piece id says so
+  // exactly, which is the whole reason this is safe to do without asking.
+  onLoneOgRef.current = async (og, engine) => {
+    const order = activeOrderRef.current;
+    if (!order) return;
+    if (Date.now() - Number(order.at || 0) > ACTIVE_ORDER_IDLE_MS) { setActiveOrder(null); return; }
+    const up = String(og).toUpperCase();
+    if (activeScans(scans).some((s) => String(s.og).toUpperCase() === up)) return;
+    if (justBooked.current.some((b) => String(b.og).toUpperCase() === up)) return;
+    announce(await record({ pro: order.pro7, og: up }, engine));
   };
 
   onWedgeScanRef.current = async (raw) => {
@@ -1491,7 +1598,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
     const cls = classifyBarcode(raw);
     // A trigger pull is a discrete sighting: the gun cannot hover, so every pull
     // past the double-fire guard is the loader deliberately presenting a label.
-    noteRaw([raw]);
+    noteRaw([raw], 'wedge');
     rawSeen.current += 1;
     setRawLog((prev) => [{ v: String(raw), kind: cls.kind }, ...prev].slice(0, 6));
 
@@ -1853,6 +1960,22 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
           onClear={() => { setResult(null); setOrphan(null); }}
         />
         {flash ? <Banner kind="info">{flash}</Banner> : null}
+
+        {/* THE OPEN ORDER. Shown large because it is what the next top-barcode
+            scan will be credited to, and a loader has to be able to see that
+            without thinking about it. It closes itself at the manifest count. */}
+        {activeOrder && camOn ? (
+          <div className="rounded-xl bg-sky-50 ring-1 ring-sky-300 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-wide text-sky-800">
+              Order open — top barcode alone counts a piece
+            </div>
+            <div className="text-base font-bold text-sky-950 truncate">{activeOrder.businessName}</div>
+            <div className="text-xs text-sky-900 font-mono">
+              PRO {activeOrder.pro7}
+              {activeOrder.expected > 0 ? ` · ${activeOrder.expected} piece(s)` : ''}
+            </div>
+          </div>
+        ) : null}
 
         {/* Repeat PRO. Never auto-logged: walking a tall pallet drifts the same
             label back into view minutes later, far past any cooldown, so a

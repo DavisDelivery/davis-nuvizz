@@ -129,16 +129,21 @@ export async function startScanner({ videoEl, containerEl, onPair, onPartial, on
         onPair?.({ pro: half.value, og: null, engine: engineLabel });
         return;
       }
-      // A half superseded by a DIFFERENT label mid-pair is worth a word — the
-      // gun says the same. A lone piece-id glimpse that quietly expires is
-      // camera panning noise, and stays silent.
-      if (half.reason === 'superseded') onOrphan?.(half);
+      // Everything else — a superseded half, or a piece id that outlived the
+      // window with no PRO — goes up for the app to judge. The app is the only
+      // layer that knows whether an ORDER is open (see the active order in
+      // App.jsx): with one open, a lone piece id is a piece and books on the
+      // spot; with none, it is a label the loader presented that nothing can be
+      // done with, and saying "scan the PRO" beats silence. This used to be
+      // dropped as camera panning noise, which is also true — the app filters
+      // on whether the id is already aboard rather than guessing here.
+      onOrphan?.(half);
     },
   });
 
   const emit = (values, engine) => {
     engineLabel = engine;
-    onRaw?.(values);
+    onRaw?.(values, engine);
     const hit = buffer.push(values);
     if (hit) onPair?.({ ...hit, engine });
     else onPartial?.(buffer.state());
