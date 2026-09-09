@@ -26,6 +26,7 @@ import {
   RECIPIENT_CHANNELS, CHANNEL_KEYS, MAX_PER_CHANNEL, ALERT_INTERNAL_SUFFIXES, COMPANY_CS_ADDRESS,
   splitEntries, normalizeEntry, parseRecipientList, clampAlertRecipients,
   resolveChannel, resolveAllChannels, recipientsFor, channelSpec, internalEmail,
+  cleanLabel, pruneLabels, labelFor, MAX_LABEL_LEN,
 } from '../netlify/functions/lib/alert-recipients.mts';
 import { ALERT_TO } from '../netlify/functions/lib/flag-alert.mts';
 import { CS_DEFAULT_TO } from '../netlify/functions/lib/cs-notify.mts';
@@ -295,6 +296,47 @@ test('WHAT THE SAVE REFUSED COMES BACK PER CHANNEL, so the screen can point at t
 test('A PASTED BLOCK IS ACCEPTED AS A LIST — people paste, they do not type one per box', () => {
   const { config } = clampAlertRecipients({ alertCc: [`${DISPATCH}, ${OPS}\n${WAREHOUSE}`] });
   assert.deepEqual(config.alertCc, [DISPATCH, OPS, WAREHOUSE]);
+});
+
+// ── THE NAME AGAINST THE NUMBER ─────────────────────────────────────────────
+
+test('A NAME IS A LABEL: one line, trimmed, capped — and never anything the send reads', () => {
+  assert.equal(cleanLabel('  Chad  '), 'Chad');
+  assert.equal(cleanLabel('Chad\n\tBlyth'), 'Chad Blyth', 'a name pasted out of a spreadsheet brings whitespace with it');
+  assert.equal(cleanLabel('x'.repeat(200)).length, MAX_LABEL_LEN);
+  for (const nothing of [null, undefined, '', '   ', '\n', 42]) {
+    assert.equal(cleanLabel(nothing) === '' || typeof cleanLabel(nothing) === 'string', true);
+  }
+  assert.equal(cleanLabel(null), '');
+});
+
+test('NAMES ARE PRUNED TO PEOPLE WHO ARE ACTUALLY ON A LIST — a number is personal data', () => {
+  // lib/flag-sms.mts says it in as many words: phone numbers are personal data and do not
+  // belong in code. They do not belong in a document forever either, for somebody who was
+  // taken off every list months ago.
+  const kept = pruneLabels({ [P1]: 'Chad', [P2]: 'Zach', [P3]: 'Nobody' }, [[P1], [P2]]);
+  assert.deepEqual(kept, { [P1]: 'Chad', [P2]: 'Zach' });
+  assert.deepEqual(pruneLabels({ [P1]: '   ' }, [[P1]]), {}, 'a blank name is not a name');
+  for (const junk of [null, undefined, 'a string', 42, []]) {
+    assert.deepEqual(pruneLabels(junk, [[P1]]), {}, `${JSON.stringify(junk)} is not a label map`);
+  }
+});
+
+test('ONE NAME PER NUMBER, ACROSS EVERY CHANNEL — he is on more than one list', () => {
+  const stored = { flagSmsTo: [P1], dayReportTo: [], labels: { [P1]: 'Chad' } };
+  assert.equal(labelFor(P1, stored.labels), 'Chad');
+  assert.equal(resolveChannel(spec('flagSmsTo'), stored, {}).names[P1], 'Chad');
+  // And a channel only ever carries the names it can use — handing the screen the whole map
+  // would publish the roster of every other list on a card that has nothing to do with them.
+  assert.deepEqual(resolveChannel(spec('dayReportTo'), stored, {}).names, {});
+});
+
+test('A NAME CANNOT CHANGE WHO IS ALERTED', () => {
+  // The whole reason it is a separate map rather than a change to the lists.
+  const withNames = { flagSmsTo: [P1, P2], labels: { [P1]: 'Chad', [P2]: 'Zach' } };
+  const without = { flagSmsTo: [P1, P2] };
+  assert.deepEqual(recipientsFor('flagSmsTo', withNames, {}), recipientsFor('flagSmsTo', without, {}));
+  assert.deepEqual(recipientsFor('flagSmsTo', { ...withNames, labels: { [P1]: 'nonsense' } }, {}), [P1, P2]);
 });
 
 // ── THE PAYLOAD THE SCREEN RENDERS ──────────────────────────────────────────

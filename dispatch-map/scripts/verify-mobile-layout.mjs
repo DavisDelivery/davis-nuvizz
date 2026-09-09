@@ -74,6 +74,29 @@ const SCREENS = [
 // stayed green while the operator mis-tapped a 30px "Send to NuVizz" at a dock. Each probe
 // opens one of those surfaces and the screen is measured again inside it.
 const PROBES = {
+  // DIAGNOSTICS BECAME TABBED (v1.1.0), and that moved four of its five sections behind a tap.
+  // The rest-state sweep sees whichever chip the device last chose, so without these probes the
+  // guard's coverage of this screen would have SHRUNK from five panels to one on the day the
+  // menu shipped — the exact blind spot this block exists to close. Each chip is opened and the
+  // whole section measured at 390 and 360.
+  //
+  // The rail is desktop-only; the phone gets a horizontal chip row, so the probes tap chips.
+  diagnostics: [
+    ['Capture health', /capture health/i, /21-day|sealed|Capture health/i],
+    ['Scan schedule', /scan schedule/i, /Scan Schedule/i],
+    ['Alert recipients', /alert recipients/i, /Alert recipients/i],
+    ['Data quality', /data quality/i, /Unmatched Stops Today/i],
+    ['API calls', /api calls/i, /NuVizz API Calls/i],
+  ].map(([name, chip, proof]) => ({
+    name: `${name} tab`,
+    open: async (page) => {
+      const b = page.getByRole('tab', { name: chip }).first();
+      if (!(await b.isVisible().catch(() => false))) return false;
+      await b.click();
+      await page.waitForTimeout(700);
+      return page.getByText(proof).first().isVisible().catch(() => false);
+    },
+  })),
   // ROUTING NOW OPENS ON THE MAP (v0.93.12): sheet collapsed, grid folded to one bar. The rest-state
   // sweep therefore sees neither the Setup body nor the rail nor the grid's table — each is one tap
   // away and is measured here, so coverage MOVED, it did not shrink. The gear probe also carries the

@@ -97,6 +97,31 @@ export { ALERT_INTERNAL_SUFFIXES };
  */
 export const MAX_PER_CHANNEL = 25;
 
+/**
+ * A NAME AGAINST A NUMBER, because a list of digits does not answer the question.
+ *
+ * Chad, 2026-09-09, on the panel as first shipped: "Also let me put a name in to id the
+ * number." He is right, and it was the gap named in that PR: at 6am the question is not "how
+ * many numbers are on this list", it is "is that Zach or Marcus, and did Marcus leave in
+ * March". A list you cannot read is a list nobody edits with confidence — which is the same
+ * failure this whole screen exists to end, one level further in.
+ *
+ * THE LABELS ARE A SEPARATE MAP, NOT A CHANGE TO THE LISTS, and that is deliberate:
+ *
+ *   * The lists stay `string[]`. Every sender, every env fallback and every test that reads
+ *     them is untouched, so adding a nicety cannot alter who gets alerted.
+ *   * A label is keyed on the NORMALIZED value, so it is one name per number across every
+ *     channel. Chad is Chad on the flag texts and on the end-of-day report; adding him to a
+ *     second list does not ask anybody to type his name again.
+ *   * It is display-only. Nothing downstream reads it, and a wrong or missing label can
+ *     never change a recipient.
+ *
+ * PRUNED ON EVERY WRITE to the values actually on a list. A phone number is personal data
+ * (lib/flag-sms.mts says so in as many words), so removing somebody from every list must not
+ * leave their name and number sitting in a document forever.
+ */
+export const MAX_LABEL_LEN = 40;
+
 const EMAILISH = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
 
 /**
@@ -259,6 +284,45 @@ export const channelSpec = (key: string): ChannelSpec | null =>
 export interface Refusal { value: string; reason: string }
 
 /**
+ * PURE. Clean one label. Free text, so the only rules are the ones that keep it a LABEL:
+ * one line, trimmed, and short enough to sit beside the number rather than replace it.
+ *
+ * Control characters are stripped rather than refused — somebody pasting a name out of a
+ * spreadsheet brings a tab with it, and refusing the whole entry over an invisible byte is
+ * the sort of unexplainable rejection that makes a field feel broken.
+ */
+export function cleanLabel(raw: unknown): string {
+  return String(raw ?? '')
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_LABEL_LEN);
+}
+
+/**
+ * PURE. The label map as it should be stored: cleaned, keyed by normalized value, and holding
+ * ONLY names for values that are actually on one of the lists after this write.
+ *
+ * `lists` is every channel's resolved list — pass the post-write state, not the request, or a
+ * name typed in the same save as its number would be pruned before it was ever stored.
+ */
+export function pruneLabels(labels: any, lists: string[][]): Record<string, string> {
+  const live = new Set(lists.flat().map((v) => String(v)));
+  const out: Record<string, string> = {};
+  if (!labels || typeof labels !== 'object' || Array.isArray(labels)) return out;
+  for (const [key, value] of Object.entries(labels)) {
+    if (!live.has(String(key))) continue;
+    const name = cleanLabel(value);
+    if (name) out[String(key)] = name;
+  }
+  return out;
+}
+
+/** PURE. The stored label for one recipient, or ''. */
+export const labelFor = (value: string, labels: any): string =>
+  cleanLabel(labels && typeof labels === 'object' ? (labels as any)[String(value)] : '');
+
+/**
  * PURE. Is this an address this system may send an internal alert to?
  *
  * The suffixes carry their own '@' on purpose. Against a BARE domain, endsWith() also accepts
@@ -400,6 +464,8 @@ export interface ResolvedChannel {
   emptyNote: string;
   note: string | null;
   goesToLabel: string | null;
+  /** Display names for this channel's recipients, keyed by value. Never affects the send. */
+  names: Record<string, string>;
   /** Entries in the environment that could not be used at all, by name and with a reason. */
   envRejected: Refusal[];
   /**
@@ -465,6 +531,11 @@ export function resolveChannel(spec: ChannelSpec, stored: any, env: any = proces
     emptyNote: spec.emptyNote,
     note: spec.note ?? null,
     goesToLabel: spec.goesToLabel ?? null,
+    // Only the names this channel can actually use. Handing the screen the whole map would
+    // publish the roster of every other list on a card that has nothing to do with them.
+    names: Object.fromEntries(
+      recipients.map((v) => [v, labelFor(v, (stored as any)?.labels)]).filter(([, n]) => n),
+    ),
     // Only worth reporting for a channel still running on its env var. Once a list is saved,
     // the env var is not what anybody is being mailed and naming its typos is noise.
     envRejected: hasSaved ? [] : fromEnv.rejected,
