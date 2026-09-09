@@ -73,6 +73,23 @@ export function normalizePlaceKey(addressLine1, zip) {
   return `${street}__${z}`;
 }
 
+/**
+ * WHICH DOCK IS THIS STOP AT — the place key plus the fallbacks, in ONE place.
+ *
+ * v0.99.4 fixed three things that each asked "same dock?" and each answered it with the
+ * customer match key; they failed together because they were written separately. This exists
+ * so a FOURTH consumer cannot re-introduce the drift by copying the fallback chain slightly
+ * wrong: the board-flags trailer rule needs the same answer the grab and the twin guard give.
+ *
+ * The fallbacks are ordered by how much they can be trusted to mean "the same building":
+ * street+zip first; then the customer match key (right for a stop with no address line, wrong
+ * across a renamed customer); and finally the stop number, which groups a stop only with
+ * itself — the correct answer when nothing else can be known.
+ */
+export function placeKeyOfStop(s) {
+  return normalizePlaceKey(s?.addr1, s?.zip) || s?.matchKey || String(s?.stopNbr ?? '');
+}
+
 export function normalizeMatchKey(businessName, addressLine1, city, zip) {
   const normName = safe(businessName)
     .toLowerCase()
