@@ -10,14 +10,16 @@ import assert from 'node:assert/strict';
 process.env.NUVIZZ_DAVIS_USER = 'u'; process.env.NUVIZZ_DAVIS_PASS = 'p';
 process.env.NUVIZZ_SCANS_ENABLED = '1'; process.env.NUVIZZ_TWO_SCAN = 'on'; process.env.NUVIZZ_ENRICH = 'off';
 import { installFirestoreFake } from './_firestore-fake.mjs';
+import { etDayString } from '../netlify/functions/lib/firestore.mts';
 
 const STOP_COLS = ['vizzonInfo.shipmentInfo.stopNbr', 'vizzonInfo.shipmentInfo.shipmentNbr', 'default_vizzonInfo.shipmentInfo.status', 'vizzonInfo.shipmentInfo.status', 'vizzonInfo.destination.address.name', 'vizzonInfo.destination.address.line1', 'vizzonInfo.destination.address.city', 'vizzonInfo.destination.address.zipCode', 'route.name', 'vizzonInfo.shipmentInfo.proNbr', 'vizzonInfo.destination.earliestSchTime', 'vizzonInfo.createdTime'];
 const LOAD_COLS = ['loadId', 'name', 'loadNbr', 'status', 'trips'];
-// TODAY IN ET, COMPUTED WHEN THE TEST RUNS — never a calendar literal. This drives the real
-// runRefreshStops, whose roster behaviour depends on whether the viewed day is today, ahead of
-// today or behind it, so a hardcoded date stops testing the rule the day after it is written:
-// '2026-09-08' passed on Sep 8 and failed on Sep 9, in CI and on main, blocking every merge.
-const VIEWED = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+// TODAY, off the same ET clock the scanner keys its documents by — NOT a date typed into the
+// file. This was '2026-09-08' and passed exactly once: from 2026-09-09 the scan had no roster
+// to write for a date already in the past, `store.get` came back empty, and all three cases
+// here failed on main and on every PR opened against it. A test that only passes on the day it
+// was written is a scheduled outage with a green tick on it.
+const VIEWED = etDayString();
 
 async function manualScan(rosterBody) {
   const stops = { filterData: [Object.fromEntries(STOP_COLS.map((c) => [c, {}]))], values: [] };
@@ -73,8 +75,7 @@ test('…and ?explain=1 reads it back in words, at zero call cost', async () => 
   const { store, restore } = installFirestoreFake({}, async () => { throw new Error('no vendor call allowed here'); });
   try {
     const { writeLoadRoster } = await import('../netlify/functions/lib/firestore.mts');
-    const PRIOR_AT = new Date(Date.now() - 90 * 60000).toISOString();   // 90 minutes ago, whenever "now" is
-    await writeLoadRoster('davis', VIEWED, [], PRIOR_AT, { emptyStreak: 1, emptyAt: PRIOR_AT, pull: { period: '+2d', httpStatus: 200, cols: 21, rows: 0, kept: 0 } });
+    await writeLoadRoster('davis', VIEWED, [], '2026-09-06T15:37:00Z', { emptyStreak: 1, emptyAt: '2026-09-06T15:37:00Z', pull: { period: '+2d', httpStatus: 200, cols: 21, rows: 0, kept: 0 } });
     const cached = await readLoadRoster('davis', VIEWED);
     assert.deepEqual(cached.pull, { period: '+2d', httpStatus: 200, cols: 21, rows: 0, kept: 0 });
     const row = explainRosterRow(VIEWED, cached);

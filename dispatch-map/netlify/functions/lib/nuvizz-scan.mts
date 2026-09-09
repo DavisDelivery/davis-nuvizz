@@ -21,7 +21,8 @@
 
 import { getNuvizzRequester } from './nuvizz-request.mts';
 import type { ScanState, KnownLoad } from './firestore.mts';
-import { readTerminalStops, mergeTerminalStops, firestoreDatabase } from './firestore.mts';
+import { readTerminalStops, mergeTerminalStops } from './firestore.mts';
+import { isMirrorDeploy } from './mirror-guard.mts';
 
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
 
@@ -341,9 +342,13 @@ export function todayUTC(): string {
  *
  * Production is untouched: unset → firestoreDatabase() returns '(default)' → not a mirror.
  */
-export function isMirrorDeploy(): boolean {
-  return firestoreDatabase() !== '(default)';
-}
+// THE DEFINITION MOVED, THE MEANING DID NOT. It now lives in lib/mirror-guard.mts, which is
+// also what gates email, SMS and NuVizz writes — the reasoning in the comment above applied to
+// reads and stopped there, and every outbound door was left keyed on nothing but the presence
+// of a copied API key. Re-exported here so every existing caller and every test is unchanged.
+// Imported AND re-exported: `export ... from` alone re-exports the name without binding it
+// in this module's scope, so scansEnabled() below could not see it (caught by enrich-budget).
+export { isMirrorDeploy };
 export function scansEnabled(): boolean {
   if (isMirrorDeploy()) return false;
   return String(process.env.NUVIZZ_SCANS_ENABLED ?? '').trim().toLowerCase() !== 'false';

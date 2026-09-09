@@ -72,6 +72,14 @@ const EMPTIES = ['1 SATL', '1 WATL', 'ALPHA'].map((name, i) => ({
 }));
 const OFF_BOARD = { loadId: 'ld-t9', name: 'TRAILER 9', loadNbr: 'DAVIS000200609', status: 'Planned', trips: 12 };
 // A capture stamp the page can render an age from. Fixed, so the assertions never race a clock.
+// THE DATE THE ROSTER IS FOR — TODAY IN ET, off the clock, not typed into the file. It was
+// '2026-09-08' and passed on exactly one day: rosterFreshness reads "before today" as a
+// SETTLED empty day ("NuVizz holds no loads for this day") and today-or-later as one the
+// vendor has not built YET ("has no loads for this day yet"). Chad's Sunday case is the
+// second one, so a frozen date silently flipped this check onto the wrong sentence on
+// 2026-09-09 and failed four assertions on main and on every PR against it. The app was
+// right the whole time. ET because that is the day the board and the scanner key on.
+const ROSTER_DATE = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 const ROSTER_AT = new Date(Date.now() - 6 * 3600 * 1000).toISOString();
 // v0.93.13 — A DAY NUVIZZ HAS NOT CREATED YET. The one call Chad approved on Sunday Sep 6 said
 // NuVizz held ZERO loads for Tue Sep 8 (21 column defs, 0 rows). The endpoint now sends the
@@ -134,14 +142,7 @@ async function openLoadsTab({ mobile, roster, liveRoster, rosterFail, shells = n
       const live = /[?&]live=1/.test(u);
       asked.push(live ? 'live' : 'cache');
       const rows = live && liveRoster ? liveRoster : roster;
-      // ECHO THE DAY THE APP ASKED ABOUT — never a calendar literal. rosterFreshness decides
-      // between "NuVizz has no loads for this day YET" and "NuVizz HOLDS no loads for this day"
-      // by comparing this date against today in ET, so a hardcoded date silently flips the
-      // wording the moment that day becomes yesterday, and four states go red with nothing
-      // wrong. That is exactly what happened to 2026-09-08 overnight. v0.93.14 made the
-      // capture's TIMESTAMP relative for this same reason and left the DATE behind.
-      const askedDate = (u.match(/[?&]date=([0-9]{4}-[0-9]{2}-[0-9]{2})/) || [])[1] || null;
-      return json({ ok: true, ...(askedDate ? { date: askedDate } : {}), source: live ? 'live' : 'cache', at, count: rows.length, loads: rows,
+      return json({ ok: true, date: ROSTER_DATE, source: live ? 'live' : 'cache', at, count: rows.length, loads: rows,
         ...(pull ? { pull } : {}), ...(shells ? { shells } : {}) });
     }
     if (u.includes('nuvizz-pull-today-stops')) return json({ ok: true, stops: STOPS, count: STOPS.length, source: 'fixture' });
