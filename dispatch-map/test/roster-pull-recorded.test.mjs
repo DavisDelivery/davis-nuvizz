@@ -13,7 +13,19 @@ import { installFirestoreFake } from './_firestore-fake.mjs';
 
 const STOP_COLS = ['vizzonInfo.shipmentInfo.stopNbr', 'vizzonInfo.shipmentInfo.shipmentNbr', 'default_vizzonInfo.shipmentInfo.status', 'vizzonInfo.shipmentInfo.status', 'vizzonInfo.destination.address.name', 'vizzonInfo.destination.address.line1', 'vizzonInfo.destination.address.city', 'vizzonInfo.destination.address.zipCode', 'route.name', 'vizzonInfo.shipmentInfo.proNbr', 'vizzonInfo.destination.earliestSchTime', 'vizzonInfo.createdTime'];
 const LOAD_COLS = ['loadId', 'name', 'loadNbr', 'status', 'trips'];
-const VIEWED = '2026-09-08';
+// TODAY IN EASTERN, not a date typed on the day this was written.
+//
+// This was hard-coded to '2026-09-08' and passed until ET crossed midnight into the 9th, at
+// which point it was asking the scanner to write a roster for YESTERDAY — a frozen past date
+// the roster path deliberately refuses — so all three cases went red and would have stayed
+// red every day after. A guard that fails on a calendar rather than on a defect is one people
+// learn to skip, which costs more than the test was ever worth.
+//
+// It must be the SAME clock the scanner uses (America/New_York, matching etDayString), or
+// this reintroduces the bug in the small hours when UTC and ET disagree about the date.
+const VIEWED = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+}).format(new Date());
 
 async function manualScan(rosterBody) {
   const stops = { filterData: [Object.fromEntries(STOP_COLS.map((c) => [c, {}]))], values: [] };

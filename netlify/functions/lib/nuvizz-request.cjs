@@ -16,7 +16,13 @@ const fs_db = require('./firestore.cjs');
 // typo as ONE HUNDRED THOUSAND — a number nobody chose, ~8x what dispatch-map's
 // mirror defaults to and ~30x a cold full probe. Trimmed, finite, at least 1, or the
 // default; nothing else. PURE so the test can pin it.
-const DEFAULT_DAILY_CEILING = 12000;
+//
+// The default is 2,000 — the SAME number dispatch-map falls back to — because this app's
+// own 12,000 matched nothing else in the system and the two apps spend against one counter.
+// It is only what you get when nobody has decided; the saved Diagnostics setting overrides
+// it below, and that is the number Chad expects to end the calls.
+const DEFAULT_DAILY_CEILING = 2000;
+const CEILING_SANITY_MAX = 1000000;
 function parseCeiling(raw, fallback = DEFAULT_DAILY_CEILING) {
   if (raw === undefined || raw === null) return fallback;
   const str = String(raw).trim();
@@ -24,6 +30,63 @@ function parseCeiling(raw, fallback = DEFAULT_DAILY_CEILING) {
   const n = Math.floor(Number(str));
   if (!Number.isFinite(n) || n < 1) return fallback;
   return n;
+}
+
+// HIS NUMBER, VERBATIM — mirrors dispatch-map's savedCeiling(). Junk resolves to the
+// DEFAULT and never to the maximum: a malformed document must not buy headroom.
+// PURE so the test can pin it against the .mts twin.
+function savedCeiling(n) {
+  const v = Math.floor(Number(n));
+  if (!Number.isFinite(v) || v < 1) return DEFAULT_DAILY_CEILING;
+  return Math.min(CEILING_SANITY_MAX, v);
+}
+
+// Cached resolution of the shared setting, so this is one Firestore read per minute per
+// warm instance rather than one per outbound call. A failed read KEEPS the last known
+// value and retries sooner — dropping to the default on a blip would silently cut the
+// budget mid-day, which is the failure dispatch-map's mirror was built to end.
+const CEILING_TTL_MS = 60000;
+const CEILING_RETRY_MS = 5000;
+let __savedCeiling = null;
+let __ceilingLoadedAtMs = 0;
+let __ceilingLoadFailed = false;
+
+async function resolveDailyCeiling(fallback) {
+  const ttl = __ceilingLoadFailed ? CEILING_RETRY_MS : CEILING_TTL_MS;
+  if (__ceilingLoadedAtMs === 0 || Date.now() - __ceilingLoadedAtMs >= ttl) {
+    try {
+      const raw = await fs_db.readScanConfigCeiling();
+      // Only a number or numeric string is a proposal; anything else means "not set".
+      __savedCeiling = (typeof raw === 'number' || typeof raw === 'string') && Number.isFinite(Number(raw)) && Number(raw) > 0
+        ? savedCeiling(raw)
+        : null;
+      __ceilingLoadedAtMs = Date.now();
+      __ceilingLoadFailed = false;
+    } catch {
+      __ceilingLoadedAtMs = Date.now();
+      __ceilingLoadFailed = true;
+    }
+  }
+  return __savedCeiling ?? fallback;
+}
+
+/** Test seam: forget the resolved setting and its freshness. */
+function __resetCeilingCache() {
+  __savedCeiling = null;
+  __ceilingLoadedAtMs = 0;
+  __ceilingLoadFailed = false;
+}
+
+/**
+ * PURE: is an OPEN breaker still binding, given today's count and the ceiling now in force?
+ * Mirrors dispatch-map's circuitStillBinding — raising the setting must release a trip taken
+ * at the old number in BOTH apps, or the fleet stays halted on one app's stale latch.
+ * When we cannot tell, it stays OPEN: releasing on a bad read means uncapped vendor spend.
+ */
+function circuitStillBinding(open, dayCount, ceiling) {
+  if (!open) return false;
+  if (!Number.isFinite(dayCount) || !Number.isFinite(ceiling) || ceiling <= 0) return true;
+  return dayCount >= ceiling;
 }
 
 const DEFAULT_CONFIG = {
@@ -66,9 +129,34 @@ function createRequester(config = {}) {
   let breakerCheckedAt = 0;
   const breakerTtlMs = 5000;
 
+  // The ceiling in force for THIS invocation: the saved Diagnostics setting when there is
+  // one, otherwise this app's configured fallback. Resolved before every budget decision so
+  // the two apps bind at the same number.
+  async function ceilingNow() {
+    return resolveDailyCeiling(cfg.dailyCeiling);
+  }
+
   async function breakerIsOpen() {
     if (Date.now() - breakerCheckedAt < breakerTtlMs) return breakerOpen;
-    try { breakerOpen = (await fs_db.readCircuit()).open; } catch { breakerOpen = false; }
+    try {
+      const c = await fs_db.readCircuit();
+      if (!c.open) { breakerOpen = false; }
+      else {
+        // Self-healing, mirroring dispatch-map: a trip taken at a ceiling that has since been
+        // raised above the day's count is stale, and leaving it latched would keep the fleet
+        // halted until ET midnight for a reason that no longer exists. An unreadable count
+        // leaves it OPEN — the two mistakes are not symmetrical.
+        const ceiling = await ceilingNow();
+        let dayCount = NaN;
+        try { dayCount = await fs_db.readCallCounter(today()); } catch { dayCount = NaN; }
+        breakerOpen = circuitStillBinding(true, dayCount, ceiling);
+        if (!breakerOpen) {
+          const reason = `released: day count ${dayCount} is under the ceiling now in force (${ceiling})`;
+          try { await fs_db.setCircuit(false, reason, new Date().toISOString()); } catch { /* the read still returns closed */ }
+          console.warn('[nuvizz-request] circuit-released', JSON.stringify({ dayCount, ceiling, priorReason: c.reason ?? null }));
+        }
+      }
+    } catch { breakerOpen = false; }
     breakerCheckedAt = Date.now();
     return breakerOpen;
   }
@@ -91,10 +179,14 @@ function createRequester(config = {}) {
       let total = NaN;
       try { total = await fs_db.incrementCallCounter(today(), 1); } catch { /* counting must never break a scan */ }
       console.log('[nuvizz-request]', JSON.stringify({ route: meta.route, tenant: meta.tenant, status: resp.status, ms, dayTotal: total }));
-      if (Number.isFinite(total) && total >= cfg.dailyCeiling && !breakerOpen) {
+      // ONE expression decides the effective ceiling, and it is the saved setting when there
+      // is one. Reading cfg.dailyCeiling straight is how this app tripped at its own 12,000
+      // while dispatch-map bound the same shared counter at Chad's number.
+      const ceiling = await ceilingNow();
+      if (Number.isFinite(total) && total >= ceiling && !breakerOpen) {
         breakerOpen = true; breakerCheckedAt = Date.now();
-        try { await fs_db.setCircuit(true, `daily ceiling ${cfg.dailyCeiling} reached (count=${total})`, new Date().toISOString()); } catch {}
-        console.warn('[nuvizz-request] circuit-tripped', JSON.stringify({ dayTotal: total, ceiling: cfg.dailyCeiling }));
+        try { await fs_db.setCircuit(true, `daily ceiling ${ceiling} reached (count=${total})`, new Date().toISOString()); } catch {}
+        console.warn('[nuvizz-request] circuit-tripped', JSON.stringify({ dayTotal: total, ceiling }));
       }
       if (!isRetryableStatus(resp.status) || attempt >= maxRetries) return resp;
       const wait = computeBackoffMs(attempt, cfg);
@@ -136,7 +228,18 @@ function getNuvizzRequester() {
 }
 
 async function breakerTripped() {
-  try { return (await fs_db.readCircuit()).open; } catch { return false; }
+  // Self-healing, same rule as the per-call path: a caller must not stand down on a trip
+  // whose ceiling has since been raised above the day's spend.
+  try {
+    const c = await fs_db.readCircuit();
+    if (!c.open) return false;
+    const ceiling = await resolveDailyCeiling(DEFAULT_CONFIG.dailyCeiling);
+    let dayCount = NaN;
+    try { dayCount = await fs_db.readCallCounter(today()); } catch { return true; }
+    if (circuitStillBinding(true, dayCount, ceiling)) return true;
+    try { await fs_db.setCircuit(false, `released: day count ${dayCount} is under the ceiling now in force (${ceiling})`, new Date().toISOString()); } catch { /* read still returns closed */ }
+    return false;
+  } catch { return false; }
 }
 
 module.exports = {
@@ -146,6 +249,11 @@ module.exports = {
   isRetryableStatus,
   computeBackoffMs,
   parseCeiling,
+  savedCeiling,
+  resolveDailyCeiling,
+  circuitStillBinding,
+  __resetCeilingCache,
+  CEILING_SANITY_MAX,
   DEFAULT_DAILY_CEILING,
   NuvizzCircuitOpenError,
 };
