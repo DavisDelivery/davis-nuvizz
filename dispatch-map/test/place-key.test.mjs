@@ -68,3 +68,53 @@ test('normalizeMatchKey itself is unchanged — customer notes join on it', () =
   assert.equal(normalizeMatchKey('Acme, Inc.', '100 PEACHTREE STREET', 'ATLANTA', '30301-9999'),
     normalizeMatchKey('ACME LLC', '100 Peachtree St', 'Atlanta', '30301'));
 });
+
+// ── END TO END: the guard, the two real orders, and the grab that lost one ─────────────
+//
+// The tests above pin the KEY. This one pins the PAYOFF: feed the actual guard the actual
+// records and check that grabbing the pickup now brings the delivery, loudly. Keyed the old
+// way it silently sends one stop, which is exactly what happened on the truck.
+import { planSendSelection } from '../src/lib/send-selection.js';
+
+const STOPS = [
+  { ...DELIVERY, stopNbr: '007173389', businessName: DELIVERY.name, isUnplanned: true },
+  { ...PICKUP, stopNbr: 'RA59223377', businessName: PICKUP.name, isUnplanned: true },
+];
+const twinsBy = (keyOf) => {
+  const by = new Map();
+  for (const t of STOPS) {
+    const k = keyOf(t);
+    if (!k || !t.isUnplanned) continue;
+    if (!by.has(k)) by.set(k, []);
+    by.get(k).push(t);
+  }
+  return (id) => {
+    const s = STOPS.find((x) => x.stopNbr === String(id));
+    return ((s ? by.get(keyOf(s)) : null) || []).map((t) => ({ id: t.stopNbr, label: `${t.stopNbr} (${t.businessName})` }));
+  };
+};
+const sendPickupToRoute = (keyOf) => planSendSelection({
+  ids: ['RA59223377'],                        // the pin that was on top — what he grabbed
+  targetKey: 'NOR', cards: [{ key: 'NOR', order: [], strategy: 'manual' }], max: 6,
+  holderOf: () => null, twinsOf: twinsBy(keyOf), displayName: (k) => k,
+});
+
+test('E2E: grabbing the pickup now brings the delivery onto the route', () => {
+  const plan = sendPickupToRoute((s) => normalizePlaceKey(s.addr1, s.zip));
+  const onRoute = plan.cards.find((c) => c.key === 'NOR').order.map(String);
+  assert.deepEqual(onRoute, ['RA59223377', '007173389']);
+});
+
+test('E2E: and it SAYS so — a silent add would be the same bug pointing the other way', () => {
+  const plan = sendPickupToRoute((s) => normalizePlaceKey(s.addr1, s.zip));
+  assert.match(plan.message, /also added 1 co-located order/);
+  assert.match(plan.message, /007173389/, 'the added order must name itself');
+  assert.match(plan.message, /remove from the card if you meant to split/);
+});
+
+test('E2E: keyed the OLD way the delivery is left behind, silently', () => {
+  // The regression this whole change exists to prevent, reproduced from the real records.
+  const plan = sendPickupToRoute((s) => normalizeMatchKey(s.businessName, s.addr1, s.city, s.zip));
+  assert.deepEqual(plan.cards.find((c) => c.key === 'NOR').order.map(String), ['RA59223377']);
+  assert.doesNotMatch(plan.message, /co-located/, 'nothing warned him — that is why it reached the truck');
+});
