@@ -53,7 +53,7 @@ const DISPATCHER_SET = [
   'ai-search', 'anthropic-routing', 'debug-capture', 'manifest-email-check', 'manifest-upload',
   'nuvizz-board-reconcile', 'nuvizz-pro-lookup', 'nuvizz-stop-events', 'nuvizz-stop-explorer',
 ];
-const ADMIN_SET = ['routing-engine-tuning'];
+const ADMIN_SET = ['routing-engine-tuning', 'alert-recipients-config'];
 
 test('every endpoint in the gated set calls the gate — an ungated one here is a door somebody thinks is shut', () => {
   for (const [role, set] of [['viewer', VIEWER_SET], ['dispatcher', DISPATCHER_SET], ['admin', ADMIN_SET]]) {

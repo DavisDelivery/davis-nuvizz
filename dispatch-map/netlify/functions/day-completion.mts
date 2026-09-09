@@ -15,7 +15,10 @@
 //                      it reaches anyone
 //
 // Read-only. Firestore only. ZERO NuVizz calls.
-import { isFirestoreEnabled, readStops, etDayString } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, etDayString, readAlertRecipients } from './lib/firestore.mts';
+// The resolved end-of-day report list (Diagnostics → Alert recipients, then DAY_REPORT_TO).
+// Only its LENGTH is ever reported here — see the delivery block below.
+import { recipientsFor } from './lib/alert-recipients.mts';
 import { emailEnabled } from './lib/email.mts';
 import { buildDayCompletion, dayCompletionSubject, dayCompletionText } from './lib/day-completion.mts';
 import { listDayCompletions, readDayCompletion, HISTORY_DAYS } from './lib/day-completion-store.mts';
@@ -50,6 +53,14 @@ export default async (req: Request): Promise<Response> => {
     if (!stops?.length) return J({ ok: true, date, note: 'no board for this date' });
 
     const live = buildDayCompletion(stops, { date, asOf: null });
+    // Best-effort: an unreadable store falls back to the environment, which is what the
+    // sender itself does, so the readback cannot claim a list the send would not use.
+    let dayReportRecipientCount = 0;
+    try {
+      let storedRecipients: any = null;
+      try { storedRecipients = await readAlertRecipients(); } catch { /* env carries it */ }
+      dayReportRecipientCount = recipientsFor('dayReportTo', storedRecipients).length;
+    } catch { dayReportRecipientCount = 0; }
     const stored = await readDayCompletion(TENANT, date);
     const full = url.searchParams.get('full') === '1';
 
@@ -76,9 +87,16 @@ export default async (req: Request): Promise<Response> => {
       // Booleans only. The value is a person's address on the company domain and must never
       // appear in a response body, a log, or a transcript — and knowing it is SET is the
       // whole question anyway.
+      //
+      // SINCE v1.0.0 THE LIST CAN ALSO COME FROM DIAGNOSTICS, so asking the environment alone
+      // would answer "not configured" for a report that is being mailed perfectly well —
+      // which is the same unreadable-switch failure in a new place. It resolves the real list
+      // and reports its SIZE. A count is not an address: it answers "is anybody getting this,
+      // and how many" without putting a name in a response body.
       delivery: {
         emailConfigured: emailEnabled(),
-        recipientConfigured: !!String(process.env.DAY_REPORT_TO || '').trim(),
+        recipientConfigured: dayReportRecipientCount > 0,
+        recipientCount: dayReportRecipientCount,
         disabled: process.env.DAY_REPORT_ENABLED === '0',
       },
       ...(url.searchParams.get('email') === '1'

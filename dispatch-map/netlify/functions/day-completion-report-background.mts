@@ -30,7 +30,10 @@
 // index and sends nothing.
 //
 // Data diet: the stop index the scanner already maintains. ZERO NuVizz calls.
-import { isFirestoreEnabled, readStops, etDayString, getDoc } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, etDayString, getDoc, readAlertRecipients } from './lib/firestore.mts';
+// Who this report goes to, editable from Diagnostics (nuvizz_ops/alert_recipients), with
+// DAY_REPORT_TO as the fallback. See lib/alert-recipients.mts.
+import { recipientsFor } from './lib/alert-recipients.mts';
 import { buildDayCompletion, reconcileDay, dayCompletionSubject, dayCompletionText, dayCompletionHtml, attachFlagHistory } from './lib/day-completion.mts';
 import { flagHistoryPath } from './lib/flag-history.mts';
 import { readDayCompletion, writeDaySnapshot, writeDayReconciliation, markDayReportSent, needsSending, recordRun } from './lib/day-completion-store.mts';
@@ -53,6 +56,19 @@ export const REPORT_MINUTE_ET = 30;
 //
 // Unset means no send, said out loud in the run status rather than failing quietly.
 const TO_ENV = 'DAY_REPORT_TO';
+
+/**
+ * Who gets the 6:30p report — the saved list first, DAY_REPORT_TO second, nobody third.
+ *
+ * Read once per firing rather than at module load, so a name added in Diagnostics at 6pm
+ * is on tonight's report. A failed store read falls back to the environment: a report that
+ * goes to the old list is recoverable, one that goes nowhere is a silent evening.
+ */
+async function reportRecipients(): Promise<string[]> {
+  let stored: any = null;
+  try { stored = await readAlertRecipients(); } catch { /* env carries it */ }
+  return recipientsFor('dayReportTo', stored);
+}
 
 function etParts(d = new Date()) {
   const p = new Intl.DateTimeFormat('en-US', {
@@ -195,6 +211,10 @@ export default async (): Promise<Response> => {
       : (priorDoc ?? await readDayCompletion(TENANT, date).catch(() => null));
     out.alreadySent = !needsSending(onFile);
 
+    // Resolved once, inside the chain, so the "is anybody listening?" test and the send use
+    // the same answer — two reads could disagree and the report would name a list it did not
+    // actually mail.
+    let recipients: string[] = [];
     if (blocked) {
       out.emailed = false;
       out.emailNote = blocked;
@@ -207,11 +227,16 @@ export default async (): Promise<Response> => {
     } else if (process.env.DAY_REPORT_ENABLED === '0') {
       out.emailed = false;
       out.emailNote = 'DAY_REPORT_ENABLED=0';
-    } else if (!String(process.env[TO_ENV] || '').trim()) {
+    } else if (!(recipients = await reportRecipients()).length) {
       out.emailed = false;
-      out.emailNote = `${TO_ENV} not set — the report was built and stored, nobody was mailed`;
+      out.emailNote = `nobody is on the end-of-day report list (Diagnostics → Alert recipients, or ${TO_ENV}) — the report was built and stored, nobody was mailed`;
     } else {
-      const to = String(process.env[TO_ENV]).trim();
+      // A LIST, NOT A STRING — and that is a bug fix, not a refactor. This read used to be
+      // `String(process.env.DAY_REPORT_TO).trim()` handed straight to Resend, so setting the
+      // variable to two comma-separated addresses produced ONE malformed recipient and the
+      // whole message failed. Nothing in the code, the comment or the tests said the field was
+      // single-valued, which is the sort of thing you discover on the day you add somebody.
+      const to = recipients;
       const res = await sendEmail({
         to,
         subject: dayCompletionSubject(report),
@@ -221,11 +246,11 @@ export default async (): Promise<Response> => {
       // NEVER REPORT AN INTENT AS AN OUTCOME. What the send actually returned, not what it
       // was asked to do — a hardcoded success ran in this repo for weeks once.
       out.emailed = res.ok;
-      out.to = to;
+      out.to = to.join(', ');
       if (!res.ok) out.emailError = res.error;
       // ONLY ON A CONFIRMED SEND. This stamp is what stands the next firing down, so writing
       // it on a failure would recreate the exact hole it replaced.
-      if (res.ok) out.sentStamped = await markDayReportSent(TENANT, date, to, new Date().toISOString());
+      if (res.ok) out.sentStamped = await markDayReportSent(TENANT, date, to.join(', '), new Date().toISOString());
     }
 
     // ── 3. yesterday, graded ─────────────────────────────────────────────────

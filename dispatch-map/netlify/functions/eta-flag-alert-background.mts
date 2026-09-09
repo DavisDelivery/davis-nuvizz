@@ -22,13 +22,17 @@
 // The scan itself refreshes every 15 minutes, so anything tighter re-reads the same board.
 // Cron is UTC: 11:00-23:59 UTC covers roughly 07:00-19:59 ET, which brackets the delivery
 // day either side of a DST flip without needing to be re-timed twice a year.
-import { isFirestoreEnabled, readStops, getDoc, setDoc, listFleetLoads, createDocIfAbsent, etDayString, listDocs } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, getDoc, setDoc, listFleetLoads, createDocIfAbsent, etDayString, listDocs, readAlertRecipients } from './lib/firestore.mts';
 import { computeBoardFlags } from '../../src/lib/board-flags.js';
 import { ensureLegs, readTravelCalibration, routeClassesPath } from './lib/travel-store.mts';
 import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mts';
 import { readRouteClassesFor } from './lib/route-classes.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
-import { selectAlertable, sendAlerts, ALERT_TO, alertRecipients, ALERT_CC_REJECTED, AMBER_LEAD_GATE_MIN, ALERT_MIN_TIER, ALERT_TIERS, ALERT_COLLECTION } from './lib/flag-alert.mts';
+import { selectAlertable, sendAlerts, ALERT_TO, alertRecipients, ALERT_CC, ALERT_CC_REJECTED, AMBER_LEAD_GATE_MIN, ALERT_MIN_TIER, ALERT_TIERS, ALERT_COLLECTION } from './lib/flag-alert.mts';
+// The saved CC list (Diagnostics → Alert recipients), falling back to ALERT_CC when nobody
+// has saved one. Same resolver the screen prints from, so the two cannot disagree.
+import { recipientsFor } from './lib/alert-recipients.mts';
+const resolveCc = (stored: any) => recipientsFor('alertCc', stored).filter((a) => a !== ALERT_TO);
 import { mergeSweep, scoreRowsLive, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
 import { arrivalAnchor, isFinishedStop } from '../../src/lib/board-flags.js';
 import { auditRows } from './lib/flag-rows.mts';
@@ -317,7 +321,18 @@ export default async (req: Request): Promise<Response> => {
       const docs = await listDocs(ALERT_COLLECTION);
       claimedToday = (docs || []).filter((d: any) => d?.tenant === TENANT && d?.date === date).length;
     } catch { /* first claim of the day creates the collection */ }
-    const recipients = alertRecipients();
+    // THE CC LIST, READ FRESH. It used to be parsed once at module load from ALERT_CC, so a
+    // console change did not reach anybody until the next deploy — and on 2026-09-03 that is
+    // exactly how Chad came to be off a list he believed he was on. He now edits it from
+    // Diagnostics and the next sweep uses it. A failed read falls back to the env-parsed
+    // default rather than to customer service alone, and says so in the run log.
+    let ccStore = 'saved';
+    let cc = ALERT_CC;
+    try { cc = resolveCc(await readAlertRecipients()); }
+    catch (e: any) { ccStore = `unavailable — fell back to ALERT_CC (${e?.message || 'read failed'})`; }
+    // customerservice@ leads, always: they are the desk that phones the consignee. Everyone
+    // on the CC is watching the miss, not working it.
+    const recipients = alertRecipients(cc);
     const result = await sendAlerts(candidates, date, TENANT, {
       createDocIfAbsent, claimedToday,
       // Lets the early band refuse to follow an urgent claim (bands must arrive in order).
@@ -328,7 +343,7 @@ export default async (req: Request): Promise<Response> => {
     // run log that collapses the two cannot answer "was Chad on this one" after the fact —
     // which is the question that started this. ccRejected names the ALERT_CC entries that
     // were refused, so a typo shows up here rather than as a person who never gets mail.
-    return J({ ...base, recorded: await writeHistory(emailedStops), ...counts, to: ALERT_TO, recipients, ccRejected: ALERT_CC_REJECTED });
+    return J({ ...base, recorded: await writeHistory(emailedStops), ...counts, to: ALERT_TO, recipients, ccStore, ccRejected: ALERT_CC_REJECTED });
   } catch (e: any) {
     return J({ ok: false, error: String(e?.message || e) }, 500);
   }

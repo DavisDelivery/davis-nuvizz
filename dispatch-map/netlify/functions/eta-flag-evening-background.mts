@@ -55,7 +55,7 @@
 // Data diet: Firestore only — the stop index the scanner maintains, customer_notes,
 // the travel cache. ZERO NuVizz calls, ever, from this path.
 import { computeBoardFlags } from '../../src/lib/board-flags.js';
-import { isFirestoreEnabled, getDoc, setDoc, createDocIfAbsent, readStops, listFleetLoads, etDayString } from './lib/firestore.mts';
+import { isFirestoreEnabled, getDoc, setDoc, createDocIfAbsent, readStops, listFleetLoads, etDayString, readAlertRecipients } from './lib/firestore.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { weekdayKey } from './lib/miss-ledger.mts';
 import { readTravelCalibration, ensureLegs } from './lib/travel-store.mts';
@@ -157,12 +157,22 @@ export default async (req: Request): Promise<Response> => {
     const flags = computeBoardFlags({ stops, notes, servedDate: date, dayKey: weekdayKey(date), opts: engineOpts(legInfo.legs) });
 
     const candidates = selectTextable(flags.rows);
-    const recipients = smsRecipients(process.env, etMin);
+    // WHO IS ON THE LIST TONIGHT, read fresh every sweep. Chad edits this from Diagnostics
+    // (nuvizz_ops/alert_recipients); a number removed at 8:15p is off the 9:00p sweep with no
+    // redeploy. If that read fails we fall back to the environment rather than to silence —
+    // losing a "this truck is about to miss" is the failure this whole sweep exists to
+    // prevent, and texting somebody who asked to be removed is the cheaper mistake. The
+    // status doc records which of the two happened, so a fallback is never invisible.
+    let storedRecipients: any = null;
+    let recipientStore = 'saved';
+    try { storedRecipients = await readAlertRecipients(); }
+    catch (e: any) { recipientStore = `unavailable — fell back to env (${e?.message || 'read failed'})`; }
+    const recipients = smsRecipients(process.env, etMin, storedRecipients);
 
     const status: any = {
       tenant: TENANT, date, offsetDays, etMin, at: new Date().toISOString(),
       boardStops: stops.length, redCount: flags.redCount, amberCount: flags.amberCount,
-      candidates: candidates.length, recipients: recipients.length,
+      candidates: candidates.length, recipients: recipients.length, recipientStore,
       departuresKnown: departByRoute ? Object.keys(departByRoute).length : 0,
       // WHAT THE TRAILER RULE COULD AND COULD NOT SEE. A pre-day board with no truck classes
       // yet is the ordinary 8pm state, and a night that texted nothing because nobody had
