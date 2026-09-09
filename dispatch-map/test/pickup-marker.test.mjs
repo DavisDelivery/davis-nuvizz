@@ -105,3 +105,41 @@ test('the badge does not double up: PU in the middle means no corner badge', () 
   const svg = decode(stopMarkerIcon(google, PU(), null, {}).url);
   assert.equal((svg.match(/>PU</g) || []).length, 1, svg);
 });
+
+// ── SIZE: A TIME TAG EARNS THE BIG FOOTPRINT, A TYPE TAG DOES NOT ───────────
+//
+// Chad, once the mark finally rendered: "PU icons are too big."
+//
+// The size was never DECIDED for pickups. It fell out of `tag ? 28 : 16` — a rule written when
+// `tag` could only mean AM or PM — and v0.97.7 put 'PU' into that same variable, so every pickup
+// silently took the footprint this map reserves for a stop with a delivery window, 2px shy of a
+// numbered route pin. On a 700-stop board that is a lot of discs shouting.
+//
+// 28 means TIME-CRITICAL. A pickup is a kind of job, not a deadline.
+
+const widthOf = (stop, note = null, opts = {}) => stopMarkerIcon(google, stop, note, opts).scaledSize.width;
+
+test('a pickup does not wear the footprint reserved for a delivery window', () => {
+  const pickup = widthOf(PU());
+  const timed = widthOf(DO_(), { delivery_window: 'AM' });
+  assert.ok(pickup < timed, `a plain pickup is ${pickup}px and a timed delivery ${timed}px`);
+  assert.equal(timed, 28, 'the time-critical tier is unchanged');
+});
+
+test('…but it is still bigger than a resting delivery, or the mark disappears again', () => {
+  // The disc is drawn in a 28-unit viewBox, so the PU text scales with the marker: at 16px it
+  // renders about 6px tall and the mark is invisible — which is the bug v0.97.7 existed to fix.
+  // Shrinking a pickup to the resting tier would have traded "too big" for "not there".
+  const pickup = widthOf(PU());
+  const resting = widthOf(DO_());
+  assert.ok(pickup > resting, `pickup ${pickup}px vs resting delivery ${resting}px`);
+  assert.ok(marksPickup(stopMarkerIcon(google, PU(), null, {})), 'and it still says PU at that size');
+});
+
+test('a pickup that DOES carry a delivery window keeps the big footprint', () => {
+  // Then the time tag is what it is wearing, and the deadline outranks the type — the same
+  // ordering as "a safety mark outranks a type mark" in the centre slot.
+  const timedPickup = stopMarkerIcon(google, PU(), { delivery_window: 'AM' }, {});
+  assert.equal(timedPickup.scaledSize.width, 28);
+  assert.ok(marksPickup(timedPickup), 'and it is still identifiable as a pickup');
+});
