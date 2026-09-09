@@ -24,7 +24,7 @@
 // TOMORROW loads 20:00-24:00 · TOMORROW unplanned 10:00-24:00 (orders for tomorrow
 // arrive from ~10am the day before, so they must be descended through the day).
 
-import { MIN_SCAN_INTERVAL_MS } from './nuvizz-request.mts';
+import { MIN_SCAN_INTERVAL_MS, HARD_DAILY_CEILING, clampAmbientCeiling } from './nuvizz-request.mts';
 import { clampScanRules, defaultScanRules } from './scan-plan.mts';
 
 // Live-editable scan configuration (Diagnostics UI → Firestore nuvizz_ops/scan_config).
@@ -70,9 +70,12 @@ export const SCAN_CONFIG_BOUNDS: Record<string, [number, number]> = {
   saturdayHealHour: [0, 23],
   deepSweepHours: [1, 168],
   deepSweepHour: [0, 23],
-  // Upper bound is the HARD cap (nuvizz-request HARD_DAILY_CEILING). The Diagnostics editor
-  // could previously set 200,000 — an editable box that can lift a spend cap 100x is not a cap.
-  dailyCeiling: [100, 2_000],
+  // Upper bound is the HARD cap (nuvizz-request HARD_DAILY_CEILING) — imported, not retyped,
+  // so the number the editor accepts and the number the breaker enforces cannot drift apart.
+  // The editor could once set 200,000: an editable box that lifts a spend cap 100x is not a
+  // cap. It reaches 3,000 now because THIS field is the switch — a deliberate save here is
+  // the only input in the system allowed above the 2,000 default.
+  dailyCeiling: [100, HARD_DAILY_CEILING],
 };
 
 // The default schedule, computed from env (so the UI shows the SITE's real current
@@ -90,8 +93,10 @@ export function scanConfigDefaults(env: Record<string, any> = process.env): Requ
     saturdayHealHour: SATURDAY_HEAL_HOUR,
     deepSweepHours: Number(env.NUVIZZ_DEEP_SWEEP_HOURS) || 8,
     deepSweepHour: Number(env.NUVIZZ_DEEP_SWEEP_HOUR) || 13,
-    // Clamped to the hard cap: an env var cannot raise the ceiling, only lower it.
-    dailyCeiling: Math.min(2_000, Number(env.NUVIZZ_DAILY_CEILING) || 2_000),
+    // An env var may only LOWER the default — it cannot reach the hard cap. The site has run
+    // NUVIZZ_DAILY_CEILING=20,000 before now, so if this clamped to HARD instead of DEFAULT,
+    // raising the cap in code would have raised production's spend with nobody deciding it.
+    dailyCeiling: clampAmbientCeiling(env.NUVIZZ_DAILY_CEILING),
     scansEnabled: String(env.NUVIZZ_SCANS_ENABLED ?? '').toLowerCase() !== 'false',
     rules: defaultScanRules(),
   };
