@@ -41,8 +41,8 @@
 import { requireUser } from './lib/require-user.mts';
 import { isFirestoreEnabled, readAlertRecipients, writeAlertRecipients } from './lib/firestore.mts';
 import {
-  RECIPIENT_CHANNELS, CHANNEL_KEYS, MAX_PER_CHANNEL, clampAlertRecipients, resolveAllChannels,
-  ALERT_INTERNAL_SUFFIXES,
+  RECIPIENT_CHANNELS, CHANNEL_KEYS, MAX_PER_CHANNEL, MAX_LABEL_LEN, clampAlertRecipients,
+  resolveAllChannels, resolveChannel, channelSpec, pruneLabels, ALERT_INTERNAL_SUFFIXES,
 } from './lib/alert-recipients.mts';
 import { emailEnabled } from './lib/email.mts';
 import { smsEnabled } from './lib/sms.mts';
@@ -75,8 +75,10 @@ const payload = (stored: Record<string, any>, persistent: boolean, extra: any = 
   // firestore.rules that document is writable by anyone holding the web config out of the
   // public bundle — so echoing it whole would republish whatever an outside writer put on it,
   // beside the validated channels and looking just as official. The screen reads `channels`.
-  stored: Object.fromEntries(CHANNEL_KEYS.filter((k) => k in (stored || {})).map((k) => [k, stored[k]])),
-  limits: { maxPerChannel: MAX_PER_CHANNEL, internalSuffixes: ALERT_INTERNAL_SUFFIXES },
+  stored: Object.fromEntries(
+    [...CHANNEL_KEYS, 'labels'].filter((k) => k in (stored || {})).map((k) => [k, stored[k]]),
+  ),
+  limits: { maxPerChannel: MAX_PER_CHANNEL, maxLabelLen: MAX_LABEL_LEN, internalSuffixes: ALERT_INTERNAL_SUFFIXES },
   transports: { email: emailEnabled(), sms: smsEnabled() },
   updatedAt: stored?.updatedAt ?? null,
   updatedBy: stored?.updatedBy ?? null,
@@ -114,7 +116,8 @@ export default async (req: Request): Promise<Response> => {
       try { body = await req.json(); } catch { return J({ ok: false, error: 'invalid JSON' }, 400); }
 
       const named = CHANNEL_KEYS.filter((k) => Object.prototype.hasOwnProperty.call(body ?? {}, k));
-      if (!named.length) {
+      const namesEdited = Object.prototype.hasOwnProperty.call(body ?? {}, 'labels');
+      if (!named.length && !namesEdited) {
         return J({ ok: false, error: `name at least one channel to edit: ${CHANNEL_KEYS.join(', ')}` }, 400);
       }
 
@@ -122,8 +125,22 @@ export default async (req: Request): Promise<Response> => {
 
       // Stamped every write so the panel can say "edited 3 days ago" and, when somebody asks
       // why they stopped getting texts, there is a name against the change.
+      // THE NAMES ARE PRUNED AGAINST THE LISTS THIS WRITE LEAVES BEHIND, not against the ones
+      // it arrived with — a name typed in the same save as its number would otherwise be
+      // dropped before it was ever stored. So the post-write state is computed here first.
+      const prior = namesEdited || named.length ? await readAlertRecipients().catch(() => ({})) : {};
+      const after: Record<string, any> = { ...prior, ...config };
+      const labelSource = namesEdited ? body.labels : (prior as any)?.labels;
+      const labels = pruneLabels(
+        labelSource,
+        CHANNEL_KEYS.map((k) => resolveChannel(channelSpec(k)!, after).recipients),
+      );
+
       const patch: Record<string, any> = {
         ...config,
+        ...(namesEdited || Object.keys(labels).length !== Object.keys((prior as any)?.labels || {}).length
+          ? { labels }
+          : {}),
         updatedAt: new Date().toISOString(),
         // THE PRINCIPAL, NOT THE BODY. The panel renders this as "last changed … by X" — the
         // one line a dispatcher reads to find out who took them off a list — so a caller-
@@ -142,7 +159,7 @@ export default async (req: Request): Promise<Response> => {
       // so reporting `named` would tell the caller a channel had been saved when nothing was.
       // That is reporting an intent as an outcome, in the endpoint that re-reads the document
       // three lines up specifically to avoid doing that.
-      return J(payload(stored, true, { saved: Object.keys(config), rejected }));
+      return J(payload(stored, true, { saved: Object.keys(config), rejected, namesSaved: namesEdited }));
     }
 
     return J({ ok: false, error: 'GET or POST only' }, 405);

@@ -215,6 +215,87 @@ test('THE RESPONSE DOES NOT REPUBLISH THE RAW DOCUMENT', () => {
   });
 });
 
+// ── THE NAME AGAINST THE NUMBER ─────────────────────────────────────────────
+
+test('A NAME IS SAVED BESIDE ITS NUMBER, and comes back on the channel that uses it', () => {
+  // Chad: "Also let me put a name in to id the number." At 6am, "is that Zach or Marcus" is
+  // the question, and a column of digits cannot answer it.
+  return withStore({}, async (fake) => {
+    const j = await (await (await load())(POST({ flagSmsTo: [P1, P2], labels: { [P1]: 'Chad', [P2]: 'Zach' } }))).json();
+    assert.deepEqual(fake.store.get(DOC).labels, { [P1]: 'Chad', [P2]: 'Zach' });
+    assert.deepEqual(chan(j, 'flagSmsTo').names, { [P1]: 'Chad', [P2]: 'Zach' });
+    assert.deepEqual(chan(j, 'flagSmsTo').recipients, [P1, P2], 'and the send list is untouched by any of it');
+  });
+});
+
+test('A NAME TYPED IN THE SAME SAVE AS ITS NUMBER SURVIVES', () => {
+  // The prune runs against the lists this write LEAVES BEHIND. Pruning against the lists it
+  // arrived with would drop every name added alongside its number — which is the ordinary way
+  // anybody would use this — and it would look exactly like the field not working.
+  return withStore({}, async (fake) => {
+    await (await load())(POST({ flagSmsTo: [P1], labels: { [P1]: 'Chad' } }));
+    assert.deepEqual(fake.store.get(DOC).labels, { [P1]: 'Chad' });
+  });
+});
+
+test('REMOVING SOMEBODY FROM EVERY LIST TAKES THEIR NAME WITH IT', () => {
+  // A phone number is personal data — lib/flag-sms.mts says so in as many words — so a name
+  // and number for somebody who is on no list must not sit in the document forever.
+  return withStore({ [DOC]: { flagSmsTo: [P1, P2], labels: { [P1]: 'Chad', [P2]: 'Zach' } } }, async (fake) => {
+    await (await load())(POST({ flagSmsTo: [P1] }));
+    assert.deepEqual(fake.store.get(DOC).labels, { [P1]: 'Chad' }, 'the one still on a list keeps their name');
+  });
+});
+
+test('A NAME IS ONE NAME PER NUMBER, ACROSS CHANNELS — nobody types it twice', () => {
+  return withStore({ [DOC]: { flagSmsTo: [P1], labels: { [P1]: 'Chad' } } }, async () => {
+    const j = await (await (await load())(POST({ flagSmsToNight: [P1] }))).json();
+    assert.equal(chan(j, 'flagSmsToNight').names[P1], 'Chad');
+    assert.equal(chan(j, 'flagSmsTo').names[P1], 'Chad');
+  });
+});
+
+test('A NAME IS A LABEL, NOT A PAYLOAD — one line, trimmed, and capped', () => {
+  return withStore({}, async (fake) => {
+    await (await load())(POST({ flagSmsTo: [P1], labels: { [P1]: `  Chad\n\tBlyth  ${'x'.repeat(80)}` } }));
+    const saved = fake.store.get(DOC).labels[P1];
+    assert.equal(saved.length <= 40, true, `capped, got ${saved.length}`);
+    assert.equal(/[\n\t]/.test(saved), false, 'one line');
+    assert.match(saved, /^Chad Blyth/);
+  });
+});
+
+test('EDITING ONLY THE NAMES IS A VALID SAVE — it must not be refused as "name a channel"', () => {
+  return withStore({ [DOC]: { flagSmsTo: [P1] } }, async (fake) => {
+    const r = await (await load())(POST({ labels: { [P1]: 'Chad' } }));
+    assert.equal(r.status, 200);
+    assert.deepEqual(fake.store.get(DOC).labels, { [P1]: 'Chad' });
+    assert.deepEqual(fake.store.get(DOC).flagSmsTo, [P1], 'and the list it did not name is untouched');
+  });
+});
+
+test('THE WHOLE GESTURE: add two numbers with names, rename one, remove the other', () => {
+  // Each step is pinned above; this is the sequence a person actually performs, in order,
+  // because the steps interact — the prune reads the lists, and the lists are edited in the
+  // same requests that carry the names.
+  return withStore({}, async (fake) => {
+    const h = await load();
+    const doc = () => fake.store.get(DOC);
+    await h(POST({ flagSmsTo: [P1, P2], labels: { [P1]: 'Chad', [P2]: 'Zach' } }));
+    assert.deepEqual(doc().labels, { [P1]: 'Chad', [P2]: 'Zach' });
+
+    const renamed = await (await h(POST({ labels: { [P1]: 'Chad B', [P2]: 'Zach' } }))).json();
+    assert.equal(chan(renamed, 'flagSmsTo').names[P1], 'Chad B');
+    assert.deepEqual(chan(renamed, 'flagSmsTo').recipients, [P1, P2], 'renaming never moves a recipient');
+
+    await h(POST({ flagSmsTo: [P2], labels: { [P1]: 'Chad B', [P2]: 'Zach' } }));
+    assert.deepEqual(doc().labels, { [P2]: 'Zach' }, 'the removed one takes their name with them');
+
+    await h(POST({ labels: { [P2]: 'Zach', '6785559999': 'Ghost' } }));
+    assert.deepEqual(Object.keys(doc().labels), [P2], 'a name for somebody on no list is never stored');
+  });
+});
+
 // ── THE GATE ────────────────────────────────────────────────────────────────
 
 test('A SIGNED-OUT CALLER GETS NOTHING — this response is a list of personal mobile numbers', async () => {

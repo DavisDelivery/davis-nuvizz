@@ -122,7 +122,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -193,6 +193,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.1.0', 'DIAGNOSTICS HAS A MENU DOWN THE LEFT, AND EVERY NUMBER CAN CARRY A NAME. Two asks in one sitting. Chad: “Can you put a menu of tabs down left side of the page for all the different things on the page.” And: “Also let me put a name in to id the number.” THE SCREEN HAD GROWN PAST ITS LAYOUT. Four full panels and a disclosure, and the API-calls card alone carries a 24-bar hour chart and an endpoint table that runs off the bottom of a laptop — so reaching the scan schedule, let alone the alert lists under it, meant scrolling past everything else every time, on the screen you open to change ONE setting. It is five sections now — API calls, Capture health, Scan schedule, Alert recipients, Data quality — chosen from a rail, and the choice is remembered on the device. TWO VIEWS, AND THIS IS THE SCREEN WHERE THAT RULE EARNS ITS KEEP. A rail down the left is what a dispatch monitor has room for; at 390px it would eat a third of the width and leave the panels in a gutter. The phone gets the same five choices as a chip row that scrolls sideways INSIDE ITS OWN CONTAINER, so the page body never does — and the selected chip is scrolled to, because a remembered choice that sits off the right edge reads as nothing being selected on the one control that says where you are. THE GUARD FOLLOWED THE CONTENT, which is the part that would have gone wrong quietly. Tabs move four of five sections behind a tap, and verify-mobile-layout measures a screen AT REST — so coverage of this screen would have shrunk from five panels to one on the day the menu shipped. Five probes now open each tab and measure the whole section at 390 and 360. Coverage MOVED; it did not shrink. AND THE NAME AGAINST THE NUMBER, which was the gap named out loud when the alert panel shipped: at 6am the question is not “how many numbers are on this list”, it is “is that Zach or Marcus, and did Marcus leave in March”. Every row now takes a name, and the GOES TO line reads “Chad — (678) 555-0101” instead of a column of digits. THREE THINGS ABOUT HOW IT IS STORED, each deliberate. It is a SEPARATE MAP, not a change to the lists — every list stays a plain array of strings, so every sender, every env fallback and every existing test is untouched and a nicety cannot alter who gets alerted. It is keyed on the NUMBER, so it is one name per number across every channel: he is on more than one list and should not type it twice. And it is PRUNED on every write to the values actually on a list, because a phone number is personal data and taking somebody off every list must not leave their name and number in a document forever. A name typed in the same save as its number survives, which needed the prune to run against the lists the write LEAVES BEHIND rather than the ones it arrived with — pruning the other way would have dropped every name added the ordinary way and looked exactly like the field not working. 11 new tests, 3,921 green.'],
   ['1.0.0', 'WHO GETS TEXTED AND WHO GETS EMAILED IS A SCREEN NOW, NOT A NETLIFY CONSOLE AND A REDEPLOY. Chad: “We are sending texts alerts for different things and i think we need to build a ui in the diagnostics where i can add more numbers or remove numbers from who gets texted same thing for emails need to build a ui in same place so can control that as well.” FIVE LISTS WERE INVISIBLE FROM THE APP: FLAG_SMS_TO and FLAG_SMS_TO_NIGHT (the evening and overnight flag texts), ALERT_CC (the miss-window email beside customer service), NOTIFY_CS_TO (the marked-customer notice) and DAY_REPORT_TO (the 6:30p end-of-day report). THIS IS THE SEPTEMBER 3RD FAILURE ONE LAYER DOWN. That day Chad reported the miss-window emails as broken; nothing was broken — both had been delivered and he was simply not on the list. From an inbox, “the mailer is broken” and “you are not on the list” are the same blank screen. The fix that day made the list CONFIGURABLE. It never made it READABLE, and a recipient list nobody can see is the same class of problem as a switch whose position cannot be read. SO THE PANEL ANSWERS THE QUESTION FIRST AND EDITS SECOND: every card prints GOES TO — the resolved send list, floors and all, computed by the same function the sender calls, so the screen and the code cannot give two answers the way the daily ceiling did three times. FOUR DECISIONS WORTH KNOWING. (1) CLEARED MEANS CLEARED. Delete every number from the flag texts and the flag texts stop; a control that silently reverts to an env var when you empty it is a control that lies. “Never set” (falls back to the environment) and “set to nothing” are different documents. (2) EXCEPT WHERE EMPTY WOULD SWITCH OFF SOMEBODY ELSE’S FEATURE — the marked-customer notice is addressed TO the desk that acts on it, so it keeps its customer-service floor exactly as csRecipients() always has, and the screen prints the floor beside the list rather than hiding it. (3) NOTHING IS DROPPED IN SILENCE: a refused number or address comes back BY NAME with a reason, next to the field it was typed into. (4) THE SCREEN VALIDATES WHAT THE SENDER VALIDATES — phone numbers go through the same normalizePhone/validUsPhone handed to SimpleTexting, so a number the field accepts is a number the transport can dial. THE CAREFUL PART, AND THE REASON THIS IS SAFE TO MERGE: with nothing saved, every channel alerts exactly who it alerted before, pinned by test. The internal-domain allowlist — which exists because these messages name a customer, its PRO and its route — now binds everything the SCREEN stores, on write and again on read; it deliberately does NOT reach back and re-judge a value already in the console, because quietly enforcing a rule over NOTIFY_CS_TO or DAY_REPORT_TO would stop mailing somebody who is being mailed today. Those are flagged on screen instead. Re-validating on READ is not belt-and-braces: under the live firestore.rules any nuvizz_ops document is writable by anyone holding the web config out of the public bundle, so the admin gate protects the write path and not the document — the allowlist binds between the document and the sender, where it cannot be walked past. TWO BUGS FOUND AND FIXED ON THE WAY. DAY_REPORT_TO WAS SINGLE-VALUED BY ACCIDENT: the value was trimmed and handed to Resend as one string, so setting it to two comma-separated addresses produced one malformed recipient and the whole message failed — nothing in the code, the comment or the tests said the field could not take a list, which is the sort of thing you find out on the day you add somebody. And the day-completion readback answered “recipient not configured” from the environment alone, which would have called a perfectly working report unconfigured the moment it was set here; it reports the resolved COUNT now, never an address. NAMED HONESTLY: the panel does not say “CC”, because there is no CC — lib/email.mts sends Resend a `to` array and nothing else, so ALERT_CC has always landed everyone on one visible To: line. It says so on the card. It also says what it is NOT: texting a driver or the office from Messages uses the employee roster, which is a different store and is not edited here. The write is field-masked, so two people editing two lists in two tabs both keep their edit. Also cleaned up: two real Davis mobile numbers were committed as test fixtures in a file whose own header says phone numbers are personal data and never belong in code — they are 555-01xx now. AND AN ADVERSARIAL PASS BEFORE MERGE CAUGHT THE ONE THAT MATTERED, reachable through the very thing this screen was built for. An outside address grandfathered in NOTIFY_CS_TO or DAY_REPORT_TO was drawn as an ordinary removable row while the card promised “it keeps working” — so adding YOURSELF to that list would have posted it back, had it refused by the allowlist, and made it vanish; on the end-of-day report, which has no floor, removing one of two names could have left NOBODY mailed under a green “saved” badge. A grandfathered entry is no longer a row: it is shown as something the console owns, with the consequence of saving spelled out beside it. The same pass moved the READ behind a viewer gate. It shipped ungated on the scan-config precedent — but that precedent is about scan cadences, and this body is every staff mobile in the company; driver-phone gates a GET for exactly this reason and day-completion will not print even ONE of these addresses behind its own gate. Also from that pass: a failed store read is now recorded everywhere instead of quietly reporting the environment as fact, the run logs say which list they used rather than always claiming “saved”, the audit line names the authenticated principal instead of a string the caller supplied, the response no longer echoes the raw world-writable document, customerservice@ can no longer be added twice, Enter on a duplicate no longer clears the box and its warning together, and a pasted pair of addresses is split instead of refused as “not an email address”. 42 new tests, 3,910 green.'],
   ['0.99.5', 'ONE DOCK, ONE CARD — AND THE COUNT THAT SENT A DISPATCHER TO DOUBT THE WHOLE TRUCK. Chad, on the flags panel: “this Jewel Reign is showing up twice and should only be there one time.” REPRODUCED FROM HIS BOARD BEFORE ANYTHING WAS TOUCHED: two orders at one address, both on DENIS SALKIC, produced two byte-identical red cards — same customer, same route, same “Stop 2 on the route”, same sentence. R7 pushed a row per STOP, and a pickup and a delivery at one dock are two orders and ONE place. That is the fact v0.99.4 had to teach the grab, arriving here from the other side, one day later. THE DUPLICATE WAS THE VISIBLE HALF. The expensive half was the count: “N other stops on this load carry the same mark — check the truck, not just the stop” counted the co-located twin as another stop. That sentence exists to say “this is a TRUCK problem, not a stop problem”, which is only true when genuinely different places are blocked — so one dock wearing one mark was telling a router to go and doubt the whole load. The same number rides the SMS as “+N more stops on this route”, and the dock sent TWO texts saying it. Measured after: one card, one text, no phantom stop. WHAT MERGES IS THE WARNING, NEVER THE ORDERS. The card names every order at the dock (“2 orders at this stop (D1, P1) — one dock, so this is one move”) and carries stopNbrs for anything downstream, because a silent merge is the other-direction bug this repo keeps paying for. Two DIFFERENT docks on one route still flag separately and still say check the truck; STE 200 and STE 400 are still two stops. AND THE KEY IS NOW SHARED RATHER THAN COPIED. v0.99.4 fixed three things that each asked “same dock?” and each answered with the customer key; they failed together because they were written separately. This was the FOURTH consumer, and pasting the fallback chain a fourth time is how that happens again — so it lives in placeKeyOfStop and all four call it. The dismiss identity moves to the dock too: fingerprinted on a stop, the merged card inherited one constituent’s key, so waving it off would bring it back under the other order’s. The wiring test was TIGHTENED rather than loosened — it now pins that App.jsx asks the helper, that no second copy of the chain exists, and that the flags rule asks the same one. CHECKED BOTH WAYS: restore the per-stop keying and four of the seven new tests fail, naming the duplicate and the phantom count. 7 new tests, 3,868 green.'],
   ['0.99.4', 'A PICKUP AND A DELIVERY AT ONE DOCK ARE ONE PLACE AGAIN — THE GRAB THAT LEFT AN ORDER BEHIND. Chad, Tuesday: “i pulled all these stops in a grab but there was a pick up and delivery going to same place, it did not grab the delivery on the initial pull, so when i assigned the orders to the route the delivery was left unplanned on the map.” THE APP ALREADY HAD A GUARD FOR EXACTLY THIS and it did not fire. v0.45.2 shipped the same-address twin guard after the identical complaint: two orders at one dock draw as pins on top of each other, a click grabs the top one, so every UNPLANNED order sharing a selected stop’s location rides along — loudly, and removable if the split was deliberate. WHY IT STAYED SILENT, read off the live board rather than guessed: both orders sit at 3190 REPS MILLER RD STE 200, zip 30071, their pins 6.5 metres apart — and the guard asked “same place?” with the CUSTOMER MATCH KEY, which begins with the business name. NuVizz had put the FedEx reference inside the delivery’s name (“FEDEX OFFICE 10043FK04301103” against the pickup’s plain “FEDEX OFFICE”), and the pickup’s city is misspelled in the vendor’s own data (“NIORCROSS”). Two independent mismatches on one building, either of which alone was enough. A key built to answer “is this the same CUSTOMER” cannot answer “is this the same DOCK”, and using it for both is what left an order on the floor with no warning — the silent half being the expensive half, because nothing on screen said anything was missing. THE FIX: a place key of street line + zip, and deliberately nothing else. No business name, because it carries order-specific text; no city, because it is free text and was misspelled here; street and zip were byte-identical on both orders. All THREE things that ask “same dock?” now use it — the twin guard on send-to-route, the “2 orders here” count on the pin, and clicking a place to select everything at it — because all three were keyed the same way and all three failed together. A different suite in the same building still keys apart, because STE 200 and STE 400 are two stops a driver walks between. AND ONE THING CAUGHT BY ITS OWN TEST BEFORE IT SHIPPED: an address line of nothing but spaces normalised to “_”, which is truthy, so every address-less order in a zip would have shared one imaginary dock and ridden onto the first route touched — the same bug pointing the other way, and the more expensive direction. A key now needs a real character to group anything. The customer match key itself is untouched: customer notes still join on it. 11 new tests, three of them wiring pins, plus the two real order records as a fixture so this cannot come back quietly.'],
@@ -14809,8 +14810,31 @@ function StopMiniTable({ stops, notes, onPick, columns, onColumnsChange, searchQ
 
 // ---------- M3 stub ----------
 
+// THE SECTIONS OF THIS SCREEN, AS A LIST RATHER THAN A SCROLL.
+//
+// Chad, 2026-09-09: "Can you put a menu of tabs down left side of the page for all the
+// different things on the page."
+//
+// It had grown four full panels deep and a disclosure: the API-calls card alone carries a
+// 24-bar hour chart and an endpoint table that runs off the bottom of a laptop screen, so
+// reaching the scan schedule — let alone the alert lists under it — meant scrolling past
+// everything else, every time, on the screen a dispatcher opens to change one setting.
+//
+// ONE REGISTRY, read by the rail, the phone chips and the body, so a section cannot exist in
+// the menu and not on the page (or the reverse). `hint` is what the rail prints under itself:
+// the section titles are short by necessity and "Capture health" does not say what it is.
+const DIAG_TAB_KEY = 'dd_diag_tab';
+const DIAG_SECTIONS = [
+  { id: 'api', label: 'API calls', icon: <Activity size={14} />, hint: "Today's NuVizz usage against the ceiling, by hour and by endpoint." },
+  { id: 'capture', label: 'Capture health', icon: <FileCheck size={14} />, hint: 'Which of the last 21 days actually sealed a board, and the holes.' },
+  { id: 'schedule', label: 'Scan schedule', icon: <Clock size={14} />, hint: 'When the scanner runs and what it may spend. Live — no deploy.' },
+  { id: 'alerts', label: 'Alert recipients', icon: <Mail size={14} />, hint: 'Who gets texted and who gets emailed when a stop is going to miss.' },
+  { id: 'quality', label: 'Data quality', icon: <ClipboardList size={14} />, hint: 'M3 stubs — unmatched stops, stale customers, addr2 migration.' },
+];
+
 function DiagnosticsScreen({ stops, notes, ops, lastLoadScanAt, lastUnplannedScanAt, onRefresh, refreshing }) {
   const [scanning, setScanning] = useState(false);
+  const isPhone = useViewportWidth() < MOBILE_BREAKPOINT;
   // Same gate as the Map's Scan now — the scanner spends NuVizz calls and moves everyone's
   // board, so nuvizz-refresh-stops-background requires dispatcher. Resolved once here and
   // handed to both panels, so the two Scan-now buttons on this screen can never disagree
@@ -14829,21 +14853,45 @@ function DiagnosticsScreen({ stops, notes, ops, lastLoadScanAt, lastUnplannedSca
     finally { setTimeout(() => setScanning(false), 16000); }
   }, [onRefresh, scanGate.allowed]);
 
-  return (
-    <div className={`flex-1 min-h-0 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6 ${SCREEN_DASH}`}>
-      <div>
-        <h2 className="text-xl font-bold text-slate-900">Diagnostics</h2>
-        <p className="text-sm text-slate-600 mt-1">NuVizz API usage, the live scan schedule, and who gets alerted. Edits here apply to the running scanner and the next alert — no deploy.</p>
-      </div>
+  // WHICH SECTION IS ON SCREEN, remembered on the device. Chad: "Can you put a menu of tabs
+  // down left side of the page for all the different things on the page." The screen had grown
+  // four full panels deep — the API-calls endpoint table alone runs past a laptop screen — so
+  // reaching the alert lists meant scrolling past everything else every time.
+  //
+  // A STORED VALUE IS SOMEBODY ELSE'S WORD: an older build's, a hand-edited one, or nothing.
+  // Anything this build cannot render falls back to the first section rather than to a blank
+  // page, which is the same rule the Routing rail learned.
+  const [section, setSection] = useState(() => {
+    try {
+      const saved = localStorage.getItem(DIAG_TAB_KEY);
+      return DIAG_SECTIONS.some((x) => x.id === saved) ? saved : DIAG_SECTIONS[0].id;
+    } catch { return DIAG_SECTIONS[0].id; }
+  });
+  const pick = useCallback((id) => {
+    setSection(id);
+    try { localStorage.setItem(DIAG_TAB_KEY, id); } catch { /* private window, cleared storage */ }
+  }, []);
+  const active = DIAG_SECTIONS.find((x) => x.id === section) || DIAG_SECTIONS[0];
 
-      <ApiCallsPanel ops={ops} lastLoadScanAt={lastLoadScanAt} lastUnplannedScanAt={lastUnplannedScanAt} onRefresh={onRefresh} refreshing={refreshing} onScanNow={scanNow} scanning={scanning} scanDenied={scanGate.reason} />
-      <CaptureHealthPanel />
-      <SchedulePanel onScanNow={scanNow} scanning={scanning} scanDenied={scanGate.reason} onSaved={onRefresh} />
-      <AlertRecipientsPanel />
+  // KEEP THE CHOSEN CHIP ON SCREEN. The phone row scrolls sideways, and the choice is
+  // remembered across visits — so landing on "Data quality" put the highlighted chip off the
+  // right edge with three unselected ones showing, which reads as "nothing is selected" on the
+  // one control that says where you are. `inline: 'center'` moves the strip; `block: 'nearest'`
+  // keeps it from dragging the page vertically on the way.
+  const chipRef = useRef(null);
+  useEffect(() => {
+    if (!isPhone) return;
+    try { chipRef.current?.scrollIntoView({ block: 'nearest', inline: 'center' }); } catch { /* older webview */ }
+  }, [section, isPhone]);
 
-      <details className="group">
-        <summary className="cursor-pointer text-xs font-semibold text-slate-400 hover:text-slate-600 select-none">Data-quality checks (M3, in progress)</summary>
-        <div className="space-y-4 sm:space-y-6 mt-3">
+  const body = {
+    api: <ApiCallsPanel ops={ops} lastLoadScanAt={lastLoadScanAt} lastUnplannedScanAt={lastUnplannedScanAt} onRefresh={onRefresh} refreshing={refreshing} onScanNow={scanNow} scanning={scanning} scanDenied={scanGate.reason} />,
+    capture: <CaptureHealthPanel />,
+    schedule: <SchedulePanel onScanNow={scanNow} scanning={scanning} scanDenied={scanGate.reason} onSaved={onRefresh} />,
+    alerts: <AlertRecipientsPanel />,
+    quality: (
+      <div className="space-y-4 sm:space-y-6">
+        <div className="text-[11px] text-slate-400">M3, in progress — these three are stubs.</div>
       <Panel title="Unmatched Stops Today">
         {/*
           TODO (M3-A):
@@ -14880,8 +14928,65 @@ function DiagnosticsScreen({ stops, notes, ops, lastLoadScanAt, lastUnplannedSca
         */}
         <Placeholder count={stops.filter((s) => (s.addr2 || '').trim()).length} hint="addr2 fields populated today" />
       </Panel>
+      </div>
+    ),
+  };
+
+  return (
+    <div className={`flex-1 min-h-0 overflow-y-auto p-3 sm:p-6 ${SCREEN_DASH}`}>
+      <div className="mb-4 sm:mb-6">
+        <h2 className="text-xl font-bold text-slate-900">Diagnostics</h2>
+        <p className="text-sm text-slate-600 mt-1">NuVizz API usage, the live scan schedule, and who gets alerted. Edits here apply to the running scanner and the next alert — no deploy.</p>
+      </div>
+
+      {/* TWO VIEWS, and this is the screen where the difference is the whole point. A rail down
+          the left is what Chad asked for and what a dispatch monitor has room for; at 390px it
+          would eat a third of the width and leave the panels in a gutter. The phone gets the
+          same five choices as a chip row that scrolls sideways INSIDE ITS OWN CONTAINER, so the
+          page body never does. Same state, same memory, two layouts — not one layout patched. */}
+      {isPhone ? (
+        <div className="mb-4 -mx-3 px-3 overflow-x-auto">
+          <div className="flex gap-2 w-max" role="tablist" aria-label="Diagnostics sections">
+            {DIAG_SECTIONS.map((x) => (
+              <button
+                key={x.id} type="button" role="tab" aria-selected={x.id === active.id}
+                ref={x.id === active.id ? chipRef : undefined}
+                onClick={() => pick(x.id)}
+                className={`tap-target inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[13px] font-semibold whitespace-nowrap ${
+                  x.id === active.id
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+              >
+                {x.icon} {x.label}
+              </button>
+            ))}
+          </div>
         </div>
-      </details>
+      ) : null}
+
+      <div className={isPhone ? '' : 'flex gap-6 items-start'}>
+        {!isPhone && (
+          <nav className="w-56 shrink-0 sticky top-0" aria-label="Diagnostics sections">
+            <div className="bg-white border border-slate-200 rounded-lg overflow-hidden" role="tablist">
+              {DIAG_SECTIONS.map((x) => (
+                <button
+                  key={x.id} type="button" role="tab" aria-selected={x.id === active.id}
+                  onClick={() => pick(x.id)}
+                  className={`w-full text-left px-3 py-2.5 min-h-[44px] text-sm border-l-2 inline-flex items-center gap-2 ${
+                    x.id === active.id
+                      ? 'bg-sky-50 text-sky-800 border-l-sky-600 font-semibold'
+                      : 'text-slate-600 border-l-transparent hover:bg-slate-50'}`}
+                >
+                  {x.icon}
+                  <span className="min-w-0 truncate">{x.label}</span>
+                </button>
+              ))}
+            </div>
+            <div className="text-[11px] text-slate-400 mt-2 px-1">{active.hint}</div>
+          </nav>
+        )}
+        <div className="flex-1 min-w-0">{body[active.id]}</div>
+      </div>
     </div>
   );
 }
@@ -15682,6 +15787,7 @@ function AlertRecipientsPanel() {
   const [data, setData] = useState(null);
   const [form, setForm] = useState(null);           // { [channelKey]: string[] }
   const [drafts, setDrafts] = useState({});         // the "add" box per channel
+  const [names, setNames] = useState({});           // { [value]: 'Chad' } — display only
   const [status, setStatus] = useState('loading');  // loading | ready | saving | saved | error
   const [err, setErr] = useState(null);
   const gate = useRoleGate('admin');
@@ -15694,6 +15800,7 @@ function AlertRecipientsPanel() {
       if (!j.ok) throw new Error(j.error || 'load failed');
       setData(j);
       setForm(Object.fromEntries((j.channels || []).map((c) => [c.key, editableList(c)])));
+      setNames({ ...(j.stored?.labels || {}) });
       setDrafts({});
       setStatus('ready');
     } catch (e) { setErr(String(e?.message || e)); setStatus('error'); }
@@ -15782,12 +15889,24 @@ function AlertRecipientsPanel() {
     if (!form) return [];
     return Object.keys(form).filter((k) => JSON.stringify(form[k]) !== JSON.stringify(baseline[k] || []));
   }, [form, baseline]);
+  // A RENAME IS AN EDIT TOO. Tracked separately from the lists because it is a different
+  // field on the document — and because a Save button that stays grey after you have typed
+  // somebody's name is a field that looks broken.
+  const nameBaseline = useMemo(() => ({ ...(data?.stored?.labels || {}) }), [data]);
+  const namesDirty = useMemo(() => {
+    const clean = (o) => Object.fromEntries(Object.entries(o || {}).map(([k, v]) => [k, String(v || '').trim()]).filter(([, v]) => v));
+    return JSON.stringify(clean(names)) !== JSON.stringify(clean(nameBaseline));
+  }, [names, nameBaseline]);
+  const dirty = changedKeys.length > 0 || namesDirty;
 
   const save = useCallback(async () => {
-    if (!changedKeys.length) return;
+    if (!changedKeys.length && !namesDirty) return;
     setStatus('saving'); setErr(null);
     try {
       const body = Object.fromEntries(changedKeys.map((k) => [k, form[k]]));
+      // Send the whole name map, not just what changed: the server prunes it against the
+      // lists this write leaves behind, so a partial map would delete the names it omitted.
+      if (namesDirty || changedKeys.length) body.labels = names;
       const r = await apiFetch(ALERT_RECIPIENTS_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
@@ -15797,10 +15916,11 @@ function AlertRecipientsPanel() {
       if (!j.ok) throw new Error(j.error || 'save failed');
       setData(j);
       setForm(Object.fromEntries((j.channels || []).map((c) => [c.key, editableList(c)])));
+      setNames({ ...(j.stored?.labels || {}) });
       setStatus('saved');
       setTimeout(() => setStatus('ready'), 2500);
     } catch (e) { setErr(String(e?.message || e)); setStatus('error'); }
-  }, [changedKeys, form]);
+  }, [changedKeys, form, names, namesDirty]);
 
   const reload = (
     <button
@@ -15871,7 +15991,11 @@ function AlertRecipientsPanel() {
         <div className="text-[11px] text-slate-600 bg-slate-50 border border-slate-100 rounded px-2 py-1.5 break-all">
           <span className="font-semibold text-slate-500 uppercase tracking-wide text-[10px]">{c.goesToLabel || 'Goes to'}</span>{' '}
           {(c.recipients || []).length
-            ? (c.recipients || []).map((v) => (c.kind === 'sms' ? formatPhone(v) : v)).join(', ')
+            ? (c.recipients || []).map((v) => {
+              const shown = c.kind === 'sms' ? formatPhone(v) : v;
+              const who = String(names[v] || c.names?.[v] || '').trim();
+              return who ? `${who} — ${shown}` : shown;
+            }).join(', ')
             : <span className="text-amber-700 font-semibold">nobody</span>}
         </div>
 
@@ -15881,11 +16005,26 @@ function AlertRecipientsPanel() {
           </div>
         )}
 
+        {/* THE NAME SITS ON THE ROW, not in a separate editor. Chad: "Also let me put a name in
+            to id the number." One name per number, shared across every channel — he is on more
+            than one list and should not have to type it twice. It is display only: nothing
+            downstream reads it, so a blank or wrong name can never change who is alerted.
+            Wraps to its own line on a phone rather than squeezing the number. */}
         {list.map((v) => (
-          <div key={v} className="flex items-center gap-2 rounded border border-slate-200 bg-white px-2 py-1">
-            <span className="text-[13px] text-slate-800 font-mono min-w-0 flex-1 break-all">
+          <div key={v} className="flex flex-wrap items-center gap-2 rounded border border-slate-200 bg-white px-2 py-1">
+            <span className="text-[13px] text-slate-800 font-mono shrink-0 break-all">
               {c.kind === 'sms' ? formatPhone(v) : v}
             </span>
+            <input
+              type="text"
+              value={names[v] ?? ''}
+              disabled={!canEdit}
+              maxLength={data.limits?.maxLabelLen || 40}
+              onChange={(e) => setNames((n) => ({ ...n, [v]: e.target.value }))}
+              placeholder="Whose is this?"
+              aria-label={`Name for ${c.kind === 'sms' ? formatPhone(v) : v}`}
+              className="flex-1 min-w-[120px] rounded border border-slate-200 px-2 py-1 text-[12px] min-h-[40px] focus:outline-none focus:ring-2 focus:ring-sky-300 disabled:bg-slate-50 disabled:text-slate-400"
+            />
             <button
               type="button" onClick={() => removeFrom(c.key, v)} disabled={!canEdit}
               title={canEdit ? `Remove ${v}` : (gate.reason || 'read-only')}
@@ -16007,8 +16146,8 @@ function AlertRecipientsPanel() {
               in `data`. */}
           <button
             type="button"
-            onClick={() => { setForm(baseline); setDrafts({}); setErr(null); if (status === 'error') setStatus('ready'); }}
-            disabled={!changedKeys.length || status === 'saving'}
+            onClick={() => { setForm(baseline); setNames({ ...nameBaseline }); setDrafts({}); setErr(null); if (status === 'error') setStatus('ready'); }}
+            disabled={!dirty || status === 'saving'}
             className="tap-target-y text-xs text-slate-500 underline hover:text-slate-700 disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed"
           >
             Discard changes
@@ -16022,11 +16161,11 @@ function AlertRecipientsPanel() {
             )}
             <button
               type="button" onClick={save}
-              disabled={!canEdit || !changedKeys.length || status === 'saving'}
+              disabled={!canEdit || !dirty || status === 'saving'}
               title={canEdit ? undefined : (!data.persistent ? (data.note || 'this deploy cannot save changes') : gate.reason)}
               className="tap-target inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-sky-700 disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <Save size={14} /> {status === 'saving' ? 'Saving…' : changedKeys.length ? `Save ${changedKeys.length} list${changedKeys.length > 1 ? 's' : ''}` : 'Save'}
+              <Save size={14} /> {status === 'saving' ? 'Saving…' : changedKeys.length ? `Save ${changedKeys.length} list${changedKeys.length > 1 ? 's' : ''}` : (namesDirty ? 'Save names' : 'Save')}
             </button>
           </div>
         </div>
