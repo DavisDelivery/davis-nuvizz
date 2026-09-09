@@ -134,7 +134,14 @@ async function openLoadsTab({ mobile, roster, liveRoster, rosterFail, shells = n
       const live = /[?&]live=1/.test(u);
       asked.push(live ? 'live' : 'cache');
       const rows = live && liveRoster ? liveRoster : roster;
-      return json({ ok: true, date: '2026-09-08', source: live ? 'live' : 'cache', at, count: rows.length, loads: rows,
+      // ECHO THE DAY THE APP ASKED ABOUT — never a calendar literal. rosterFreshness decides
+      // between "NuVizz has no loads for this day YET" and "NuVizz HOLDS no loads for this day"
+      // by comparing this date against today in ET, so a hardcoded date silently flips the
+      // wording the moment that day becomes yesterday, and four states go red with nothing
+      // wrong. That is exactly what happened to 2026-09-08 overnight. v0.93.14 made the
+      // capture's TIMESTAMP relative for this same reason and left the DATE behind.
+      const askedDate = (u.match(/[?&]date=([0-9]{4}-[0-9]{2}-[0-9]{2})/) || [])[1] || null;
+      return json({ ok: true, ...(askedDate ? { date: askedDate } : {}), source: live ? 'live' : 'cache', at, count: rows.length, loads: rows,
         ...(pull ? { pull } : {}), ...(shells ? { shells } : {}) });
     }
     if (u.includes('nuvizz-pull-today-stops')) return json({ ok: true, stops: STOPS, count: STOPS.length, source: 'fixture' });
