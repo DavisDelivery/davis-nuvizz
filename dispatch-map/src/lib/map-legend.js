@@ -225,7 +225,26 @@ export function legendIsEmpty(inv) {
 // tractor has been to is not evidence a trailer fits. It stays out of the green, so the button
 // drops it — which is the cautious direction for a button whose whole job is to leave a list
 // a tractor can actually run.
-export function tractorFriendlySelection({ eligibility = null, friendlyBadge = false, tractorSeen = false } = {}) {
+export function tractorFriendlySelection({
+  eligibility = null, friendlyBadge = false, tractorSeen = false,
+  drawnKeys = null, note = null, resolve = null,
+} = {}) {
   if (eligibility === 'box_only') return false;
+  // A CONFIRMED trailer blocker is the same "a person said no" as Box-only, and it was not
+  // being read here — so a stop with a hand-ticked "No tractor trailer" and an old lime
+  // record came back tractor-friendly, stayed green in the Selected list, and survived the
+  // "Drop N non-tractor" button, while the map drew it as a blocked stop. That split is the
+  // wrong way round: the cost of keeping a stop a 53-footer cannot serve is a driver's
+  // morning and the customer's delivery, and the cost of dropping one is a slot.
+  //
+  // ADVISORY blockers still pass, exactly as they do for the paint (tractorPaintAllowed): a
+  // scanner-found "no" that nobody has checked is a question, not an answer, and proven
+  // history is the best evidence against it. `drawnKeys` is optional so the older
+  // three-argument call keeps its behaviour rather than silently tightening.
+  if (drawnKeys && drawnKeys.length) {
+    const blockers = drawnKeys.filter((k) => isTrailerBlockerKey(k, resolve));
+    if (blockers.length && (note ? confirmedBlockerKeys(note, blockers, resolve).length > 0
+      : blockers.includes('no_tractor_trailer'))) return false;
+  }
   return eligibility === 'tractor' || !!friendlyBadge || !!tractorSeen;
 }
