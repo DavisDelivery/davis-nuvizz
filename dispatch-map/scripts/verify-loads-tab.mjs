@@ -86,6 +86,10 @@ const ZERO_PULL = { period: '+2d', httpStatus: 200, cols: 21, rows: 0, kept: 0 }
 // yet" wording is only true of a capture taken THIS ET day, and a six-hour-old stamp crosses
 // midnight for any CI run between 00:00 and 06:00 ET — four states red with nothing wrong.
 const EMPTY_AT = new Date(Date.now() - 8 * 60000).toISOString();
+// The board day the fixture describes, on the app's own clock (America/New_York).
+const ET_TODAY = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+}).format(new Date());
 // The New-route pre-flight refuses a card without a ship-from address; the fixture supplies one.
 const SHIP_FROM = { name: 'Davis Delivery', addr1: '1 Fixture Way', city: 'BUFORD', state: 'GA', zip: '30518' };
 
@@ -134,7 +138,19 @@ async function openLoadsTab({ mobile, roster, liveRoster, rosterFail, shells = n
       const live = /[?&]live=1/.test(u);
       asked.push(live ? 'live' : 'cache');
       const rows = live && liveRoster ? liveRoster : roster;
-      return json({ ok: true, date: '2026-09-08', source: live ? 'live' : 'cache', at, count: rows.length, loads: rows,
+      // TODAY IN EASTERN, not the date this guard was written on.
+      //
+      // This was '2026-09-08' and passed until ET rolled into the 9th, at which point the
+      // fixture was describing YESTERDAY — and the roster line's wording branches on exactly
+      // that (`rosterState.past ? 'NuVizz holds no loads for this day.' : '…has no loads for
+      // this day yet.'`). The app was right and the guard was stale, so four assertions went
+      // red on main and would have stayed red every day after. Second one of these found in a
+      // single session; a guard that fails on the calendar rather than on a defect is one
+      // people learn to skip, which costs more than the guard is worth.
+      //
+      // Eastern specifically, matching etDayString and the app's own board clock — a UTC date
+      // would reintroduce the bug in the hours when the two disagree.
+      return json({ ok: true, date: ET_TODAY, source: live ? 'live' : 'cache', at, count: rows.length, loads: rows,
         ...(pull ? { pull } : {}), ...(shells ? { shells } : {}) });
     }
     if (u.includes('nuvizz-pull-today-stops')) return json({ ok: true, stops: STOPS, count: STOPS.length, source: 'fixture' });
