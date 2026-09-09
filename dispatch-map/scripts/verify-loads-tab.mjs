@@ -73,6 +73,16 @@ const EMPTIES = ['1 SATL', '1 WATL', 'ALPHA'].map((name, i) => ({
 const OFF_BOARD = { loadId: 'ld-t9', name: 'TRAILER 9', loadNbr: 'DAVIS000200609', status: 'Planned', trips: 12 };
 // A capture stamp the page can render an age from. Fixed, so the assertions never race a clock.
 const ROSTER_AT = new Date(Date.now() - 6 * 3600 * 1000).toISOString();
+// THE DAY THE FIXTURE ROSTER IS FOR — computed, because the wording under test depends on it.
+// roster-freshness derives `past` as (roster date < ET today) and says "NuVizz holds no loads
+// for this day" for a past day versus "…has no loads for this day YET" for one still to come.
+// This was the literal '2026-09-08', which was ahead of the calendar when it was written and
+// yesterday by 2026-09-09 — so the fixture silently changed which sentence the app renders and
+// the assertion below started failing on main, on this branch, and on every PR. The scenario
+// these blocks describe is a day NuVizz has NOT CREATED YET, so the date has to be one.
+const ROSTER_DATE = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+}).format(new Date());
 // v0.93.13 — A DAY NUVIZZ HAS NOT CREATED YET. The one call Chad approved on Sunday Sep 6 said
 // NuVizz held ZERO loads for Tue Sep 8 (21 column defs, 0 rows). The endpoint now sends the
 // standard route names the last captured days agree on, and both Loads surfaces offer them as
@@ -134,7 +144,7 @@ async function openLoadsTab({ mobile, roster, liveRoster, rosterFail, shells = n
       const live = /[?&]live=1/.test(u);
       asked.push(live ? 'live' : 'cache');
       const rows = live && liveRoster ? liveRoster : roster;
-      return json({ ok: true, date: '2026-09-08', source: live ? 'live' : 'cache', at, count: rows.length, loads: rows,
+      return json({ ok: true, date: ROSTER_DATE, source: live ? 'live' : 'cache', at, count: rows.length, loads: rows,
         ...(pull ? { pull } : {}), ...(shells ? { shells } : {}) });
     }
     if (u.includes('nuvizz-pull-today-stops')) return json({ ok: true, stops: STOPS, count: STOPS.length, source: 'fixture' });
