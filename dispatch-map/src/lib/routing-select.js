@@ -266,8 +266,8 @@ export function twoOptLoop(stops, depot, maxPasses = 8) {
 // nothing else — and a radius says nothing about direction. Three towns that sit at about the
 // same distance in three different directions (Canton to the south-west, Tate to the
 // north-east, Ball Ground between them) interleave in a radial sort, so the driver was sent
-// Jasper → Canton → Tate → Ball Ground → … → back out east on 53. The line on the map crossed
-// itself four times and every crossing was a stop driven past and come back for.
+// Jasper → Canton → Tate → Ball Ground → … → back out toward Tate, and every one of those
+// jumps was a stretch of road driven twice.
 //
 // WHAT "FARTHEST FIRST" MEANS ON A DOCK: run out to the far end with the load, then deliver on
 // the way home, so every stop after the first brings the truck closer to the yard. That is a
@@ -325,7 +325,9 @@ function nearestNeighborFrom(from, pool, cost) {
 // indices; `start` / `end` are node indices that never move. Each pass tries every 2-opt
 // reversal and every or-opt relocation (runs of 1–3, either way round), keeping any that
 // shortens the path; it stops when a whole pass finds nothing. Every kept move strictly
-// shortens the path, so it terminates on its own — maxPasses is a belt for the braces.
+// shortens the path, so the search always ends; maxPasses stops a badly seeded pass early
+// (a lattice of 150 stops seeded in radius order was still improving at 40), and the
+// multi-start below keeps whichever seed finished shortest.
 //
 // Each candidate is scored by the DELTA of the edges it changes, not by re-adding the whole
 // path: a reversal swaps two edges, a relocation swaps three. The first cut of this re-summed
@@ -410,7 +412,12 @@ function extremeIndex(stops, depot, which) {
 // cannot be placed on a line and ride at the END in their input order — never dropped, never
 // allowed to poison the arithmetic for the ones that can be.
 function sweep(stops, depot, dir) {
-  const placed = stops.filter(mappable);
+  // CANONICAL ORDER FIRST. Nearest-neighbour tie-breaks and the fourth seed below read the
+  // input order, and a card's input order is whatever the dispatcher last dragged it into —
+  // so the same stops in a different order could land in a different local optimum, and
+  // re-picking the strategy after a drag "changed its mind". Sorting the placed stops by
+  // position (then id) makes the answer a function of the stop SET alone.
+  const placed = stops.filter(mappable).sort((a, b) => (a.lat - b.lat) || (a.lng - b.lng) || String(a.id).localeCompare(String(b.id)));
   const unplaced = stops.filter((s) => !mappable(s));
   if (placed.length < 2) return [...placed, ...unplaced];
   const cost = distanceMatrix([depot, ...placed]);
@@ -427,8 +434,9 @@ function sweep(stops, depot, dir) {
   // MULTI-START. 2-opt/or-opt only ever walk downhill, so where they finish depends on where
   // they begin, and one nearest-neighbour seed can leave a straggler that no single move
   // repairs. Four cheap starting orders — greedy from the pinned start, greedy from the
-  // pinned end walked backwards, the old radial sort, and the card's current order — are each
-  // improved and the shortest path wins. Deterministic: same stops, same answer.
+  // pinned end walked backwards, the old radial sort, and the canonical south-to-north order
+  // — are each improved and the shortest path wins. Same stop set, same answer, whatever
+  // order the card was in.
   const byRadius = [...pool].sort((a, b) => cost[0][a] - cost[0][b]);
   const seeds = [
     nearestNeighborFrom(start, pool, cost),
@@ -436,7 +444,7 @@ function sweep(stops, depot, dir) {
     dir === 'homeward' ? byRadius.slice().reverse() : byRadius,
     pool,
   ];
-  let interior = null, best = Infinity;
+  let interior = pool, best = Infinity;              // pool is a valid order even if every score is NaN
   for (const seed of seeds) {
     const cand = improvePinnedPath(seed, start, end, cost);
     const len = pinnedPathCost(cand, start, end, cost);

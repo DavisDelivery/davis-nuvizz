@@ -216,5 +216,12 @@ test('the sweep on one stop, on a tie for farthest, and on a ring, returns every
   for (const dir of ['homeward', 'outward']) {
     const o = pinnedSweep([1, 2, 3, 4, 5, 6], m, dir);
     assert.deepEqual([...o].sort(), [1, 2, 3, 4, 5, 6]);
+    // Every node ties for nearest AND farthest, so node 1 is both; and a sweep walks the ring
+    // one way round (each step to a neighbour), which a sort on tied costs would not do.
+    assert.equal(o[0], 1);
+    for (let i = 1; i < o.length; i++) assert.ok(Math.abs(o[i] - o[i - 1]) === 1 || Math.abs(o[i] - o[i - 1]) === 5, `not a walk round the ring: ${o.join(',')}`);
   }
+  // And the node order handed in does not change the answer.
+  assert.deepEqual(pinnedSweep([6, 2, 4, 1, 5, 3], m, 'homeward'), pinnedSweep([1, 2, 3, 4, 5, 6], m, 'homeward'));
+  assert.deepEqual(pinnedSweep(ARM_STOPS.map((_, i) => 8 - i), ARM_MATRIX.distanceMeters, 'homeward'), pinnedSweep(ARM_STOPS.map((_, i) => i + 1), ARM_MATRIX.distanceMeters, 'homeward'));
 });

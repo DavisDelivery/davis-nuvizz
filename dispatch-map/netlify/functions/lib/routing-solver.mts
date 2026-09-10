@@ -262,7 +262,8 @@ function nearestNeighborFrom(from: number, pool: number[], cost: number[][]): nu
 // scored by the delta of the edges it changes (two for a reversal, three for a relocation),
 // never by re-summing the path; on an asymmetric (Google) matrix the edges inside a reversed
 // run change direction too, and those are re-read only then. Every kept move strictly
-// shortens the path, so it terminates on its own — maxPasses is a belt for the braces.
+// shortens the path, so the search always ends; maxPasses cuts a badly seeded pass short
+// and the multi-start keeps whichever seed finished shortest.
 export function improvePinnedPath(order: number[], start: number, end: number, cost: number[][], maxPasses = 40): number[] {
   const path = order.slice();
   const n = path.length;
@@ -326,6 +327,9 @@ function isAsymmetric(cost: number[][], nodes: number[]): boolean {
 // CLOSEST_FIRST. Multi-start: four cheap seeds, each improved, the shortest path wins.
 export function pinnedSweep(nodes: number[], cost: number[][], dir: 'homeward' | 'outward'): number[] {
   if (nodes.length <= 1) return nodes.slice();
+  // Canonical order first: ties for farthest/nearest and the seeds below read the order they
+  // are handed, and the answer must be a function of the node SET, not of assignment order.
+  nodes = nodes.slice().sort((a, b) => a - b);
   let far = nodes[0], near = nodes[0];
   for (const n of nodes) {
     if (cost[0][n] > cost[0][far]) far = n;

@@ -288,9 +288,9 @@ test('isPlannedStop: junk input never throws', () => {
 import { farthestFirst, closestFirst, improvePinnedPath, pinnedPathCost } from '../src/lib/routing-select.js';
 
 const BUFORD = { lat: 34.147791, lng: -83.960911 };
-// The 14-stop JEFF route from the report, placed by the towns on the card (public geography —
-// the card's real pins are NuVizz data and are not in the repo). Two BOWSTONE orders share one
-// address, as they did on the card.
+// The JEFF route from the report — the card read "14 stops · 15 orders" — placed by the towns
+// on the card (public geography; the card's real pins are NuVizz data and are not in the repo).
+// 15 rows: the two BOWSTONE orders share one address, as they did on the card.
 const JEFF = [
   { id: 'TAG CITY (Ellijay)',           lat: 34.6948, lng: -84.4822 },
   { id: 'UPS STORE (Jasper)',           lat: 34.4679, lng: -84.4291 },
@@ -364,11 +364,21 @@ test('farthest first — JEFF, 2026-09-10: out to Ellijay, then the shortest way
     assert.ok(hand.every(Boolean));
     assert.ok(homewardMeters(out, BUFORD) <= homewardMeters(hand, BUFORD) + 1, `a hand-drawn order beat it: ${ids(out).join(' → ')}`);
   }
-  // A town is worked in one visit: the three Jasper stops together, the two Bowstone orders together.
+  // The three Jasper stops are worked together, and so are the two Bowstone orders.
   const jasper = out.map((s, i) => (townOf(s) === 'Jasper' ? i : -1)).filter((i) => i >= 0);
   assert.equal(jasper[jasper.length - 1] - jasper[0], 2, `Jasper split up: ${ids(out).join(' → ')}`);
   const bow = out.map((s, i) => (/^BOWSTONE/.test(s.id) ? i : -1)).filter((i) => i >= 0);
   assert.equal(bow[1] - bow[0], 1);
+  // WHAT THE RULE DOES WITH AN OUTLIER, PINNED SO IT IS A DOCUMENTED OUTCOME AND NOT A SURPRISE:
+  // Canton sits 9 miles west of the Ball Ground stops, and the shortest pinned path pays for it
+  // as a spur from the middle of Ball Ground (Chart → Canton → Raydeo) rather than at the end
+  // (… → Raydeo → Canton → yard), because on paper that is 3.3 miles shorter. Verified exact
+  // with a Held-Karp solve during review. Whether a town should be worked in one visit at +4%
+  // crow-flies miles is a dispatch call; if it goes that way this assertion flips.
+  const canton = out.findIndex((s) => townOf(s) === 'Canton');
+  assert.ok(canton > 0 && canton < out.length - 1, 'fixture no longer has the mid-town spur this pins');
+  assert.equal(townOf(out[canton - 1]), 'Ball Ground');
+  assert.equal(townOf(out[canton + 1]), 'Ball Ground');
 });
 
 // Two arms of stops leaving the depot in different directions, at nearly the same radii — the
@@ -426,11 +436,18 @@ test('sweep: two stops, one address twice, every stop at one radius, and non-arr
   const d = ids(farthestFirst(dup, depot0));
   assert.deepEqual([...d].sort(), ['x1', 'x2', 'y']);
   assert.equal(Math.abs(d.indexOf('x1') - d.indexOf('x2')), 1);
-  // A ring: every stop the same distance out. Nothing to pin at the far end of "closest first"
-  // that is not also the near end — it must still return every stop exactly once.
+  // Every stop EXACTLY the same distance out — one degree of arc along the equator or up the
+  // meridian, which haversine scores identically (a hexagon of sin/cos points does not: the
+  // sphere is not a plane). Nothing to pin at the far end of "closest first" that is not also
+  // the near end — it must still return every stop exactly once, nearest-tied stop first.
+  const tied = [{ id: 'E', lat: 0, lng: 1 }, { id: 'W', lat: 0, lng: -1 }, { id: 'N', lat: 1, lng: 0 }];
+  assert.equal(new Set(tied.map((s) => haversineMeters(depot0, s).toFixed(3))).size, 1, 'fixture must tie exactly');
+  assert.deepEqual([...ids(closestFirst(tied, depot0))].sort(), ['E', 'N', 'W']);
+  assert.deepEqual([...ids(farthestFirst(tied, depot0))].sort(), ['E', 'N', 'W']);
+  assert.equal(closestFirst(tied, depot0).length, 3);
+  // And a near-tie hexagon still comes back whole and uncrossed.
   const ring = Array.from({ length: 6 }, (_, i) => ({ id: `r${i}`, lat: Math.sin((i * Math.PI) / 3), lng: Math.cos((i * Math.PI) / 3) }));
   assert.deepEqual([...ids(closestFirst(ring, depot0))].sort(), ids(ring).sort());
-  assert.deepEqual([...ids(farthestFirst(ring, depot0))].sort(), ids(ring).sort());
   assert.equal(selfCrossings(farthestFirst(ring, depot0), depot0), 0);
   // Single stop / nothing / not an array.
   assert.deepEqual(ids(farthestFirst([two[0]], depot0)), ['near']);
@@ -438,7 +455,21 @@ test('sweep: two stops, one address twice, every stop at one radius, and non-arr
   assert.deepEqual(resequence(null, depot0, 'farthest'), []);
 });
 
-test('sweep: deterministic, never worse than the old radial sort, and fast at the 150-stop selection cap', () => {
+test('sweep: the same stops in any order give the same answer — a drag then a re-pick does not "change its mind"', () => {
+  let seed = 4242;
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
+  for (const n of [12, 30, 60]) {
+    const set = Array.from({ length: n }, (_, i) => ({ id: `s${i}`, lat: 34.0 + rnd() * 0.8, lng: -84.6 + rnd() * 0.8 }));
+    const base = ids(farthestFirst(set, BUFORD)), baseC = ids(closestFirst(set, BUFORD));
+    for (let k = 0; k < 5; k++) {
+      const shuffled = [...set].sort(() => rnd() - 0.5);
+      assert.deepEqual(ids(farthestFirst(shuffled, BUFORD)), base, `farthest differs on a reordered ${n}-stop set`);
+      assert.deepEqual(ids(closestFirst(shuffled, BUFORD)), baseC, `closest differs on a reordered ${n}-stop set`);
+    }
+  }
+});
+
+test('sweep: deterministic, strictly shorter than the old radial sort, and fast at the 150-stop selection cap', () => {
   // Seeded LCG so the fixture is the same on every run (no Math.random in a test that pins a bound).
   let seed = 20260910;
   const rnd = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
@@ -454,8 +485,18 @@ test('sweep: deterministic, never worse than the old radial sort, and fast at th
   assert.deepEqual([...ids(a)].sort(), [...ids(many)].sort());
   assert.deepEqual(ids(farthestFirst(many, BUFORD)), ids(a));                 // same stops, same answer
   const radial = depotSort(many, BUFORD, 'desc');
-  assert.ok(homewardMeters(a, BUFORD) <= homewardMeters(radial, BUFORD));
+  // Strict, and by a wide margin: the old logic IS the radial sort, so `<=` would pass a revert.
+  assert.ok(homewardMeters(a, BUFORD) < 0.5 * homewardMeters(radial, BUFORD));
   assert.equal(a[0].id, radial[0].id);                                        // still the farthest first
+  // A regular three-lane lattice is the worst seed geometry the review found (the radius-order
+  // seed had not converged at the pass cap); it must still come back quickly and shorter.
+  const lattice = Array.from({ length: 150 }, (_, i) => ({ id: `l${i}`, lat: 34.2 + i * 0.01, lng: -84 + (i % 3) * 0.05 }));
+  const t1 = performance.now();
+  const b = farthestFirst(lattice, BUFORD);
+  const ms2 = performance.now() - t1;
+  assert.ok(ms2 < 1500, `150-stop lattice took ${ms2.toFixed(0)} ms`);
+  assert.deepEqual([...ids(b)].sort(), [...ids(lattice)].sort());
+  assert.ok(homewardMeters(b, BUFORD) < homewardMeters(depotSort(lattice, BUFORD, 'desc'), BUFORD));
   const c = closestFirst(many, BUFORD);
   assert.equal(c[0].id, depotSort(many, BUFORD, 'asc')[0].id);
   assert.equal(c[c.length - 1].id, radial[0].id);
