@@ -81,7 +81,7 @@ import { mergeDayLoads, splitDayLoads } from './lib/day-loads.js';
 import { flagProvenance, provenanceLine } from './lib/flag-provenance.js';
 import { deliveredWhen } from './lib/delivered-when.js';
 import { flagDetail, sighting } from './lib/flag-detail.js';
-import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab } from './lib/right-panel.js';
+import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab, resolveRailQuery } from './lib/right-panel.js';
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
 import { planSendSelection, selectionSendTargets } from './lib/send-selection.js';
@@ -124,7 +124,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.6.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -195,7 +195,8 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.5.0', 'DO NOT DOUBLE STACK NOW READS DNDS ON THE BOARD \u2014 AND IT IS THE ORDER\u2019S FACT, NOT THE CUSTOMER\u2019S. Chad, on the 2026-09-10 unplanned board with 192 orders and five of the seven rows on screen carrying it: \u201cDO ORDERS THAT HAVE DO NOT DOUBLE STACK IN THE NOTES SHOW UP HERE WITH A DNDS RESTRICTION\u201d. THEY DID NOT, ANYWHERE. Checked rather than guessed: the Restrictions column renders getRestrictionBadgeKeys and nothing else, which reads five fields off customer_notes; the scanner that fills equipment_restrictions carries 22 patterns across its two sources and every one of them is about TRUCK SIZE (NO TT, STRAIGHT TRUCK ONLY, 26 FT MAX, NO 53); there is no stacking key in RESTRICTION_ICONS and none in the dispatcher\u2019s own tick-list, so nobody could set it by hand either. A repo-wide search for the phrase returned one test fixture and no code. The text was never lost \u2014 extractOrderInstructions keeps every SPL-INSTR-TEXT comment and the stop card shows them \u2014 it was simply never promoted to a fact anything could act on. WHY IT IS NOT AN EQUIPMENT RESTRICTION, WHICH IS THE WHOLE DESIGN. Everything in equipment_restrictions is keyed by LOCATION and holds for that address forever, which is right for a dock that cannot take a tractor trailer and wrong for this. Double-stacking is a property of THIS SHIPMENT: this week\u2019s order is fragile, next week\u2019s is bagged goods that stack fine. Writing it to the customer note would mark a customer permanently un-stackable off one order \u2014 the exact mistake v0.99.3 paid for, where a location-keyed vehicle mark quietly pushed freight onto extra box trucks until somebody found the brush. So it is DERIVED per order, never stored, never written back, and a test pins that it cannot reach getRestrictionBadgeKeys, because the moment it did the map pin would start claiming the address cannot take stacked freight. It is modelled on stopLooksOversize, which is the same shape and already sits beside the customer restrictions on five surfaces. THE NEGATION IS THE ENTIRE RULE. \u201cDOUBLE STACK\u201d on its own is not a restriction \u2014 \u201cDOUBLE STACK OK\u201d and \u201cCAN BE DOUBLE STACKED\u201d say the opposite, and a rule that fired on the bare phrase would invert both and spend a floor position on every truck carrying one. Every pattern anchors on the negation instead. The phrasings come off the board, not out of the air: Uline writes \u201cDo NOT Deliver Double Stacked\u201d in mixed case, so a rule written for the shouty form would have missed all five. The two sibling instructions riding the same orders \u2014 DO NOT BREAKDOWN SKID, DO NOT LAY PALLETS OF / BOXES ON THEIR SIDE \u2014 are deliberately NOT folded in: different job, different person, and a DNDS chip on freight that stacks fine is the failure this rule exists to avoid. IT READS BOTH COMMENT CHANNELS. orderInstructions is a FILTERED subset (ORD_IN / SPL-INSTR-TEXT), where every sample so far has landed; allComments is the unfiltered list. Reading only the first would go silent the day NuVizz re-files one of these under another type, and that failure is invisible \u2014 a missing chip looks exactly like freight that stacks. AND THE NUMBER A LOAD BUILDER ACTUALLY ACTS ON. One chip on one row is an input; \u201c6 skids DNDS\u201d across a selection is a decision. The selection tally counts SKIDS where every other entry counts orders, and says the word, because the binding dimension of a load is skid POSITIONS (Phase 2.8) and \u201c6 DNDS\u201d beside \u201c3 ST only\u201d would read as the same unit and understate a truck about to not fit. STILL OPEN, AND IT IS CHAD\u2019S FACT TO GIVE: the solver\u2019s skid caps were mined from ~900 real trips, so if those trips were loaded with skids stacked, an all-DNDS load at 31 will not physically fit and the router cannot currently tell. Nothing here touches the solver \u2014 this change only shows the fact. 17 new tests, mutation-checked three ways (drop the negation, read one channel, count orders instead of skids \u2014 each fails exactly the tests that claim to guard it), and the column guard lifts the shipped renderer and runs Chad\u2019s seven real rows through it. Zero NuVizz calls. 4,019 green.'],
+  ['1.6.0', 'DO NOT DOUBLE STACK NOW READS DNDS ON THE BOARD \u2014 AND IT IS THE ORDER\u2019S FACT, NOT THE CUSTOMER\u2019S. Chad, on the 2026-09-10 unplanned board with 192 orders and five of the seven rows on screen carrying it: \u201cDO ORDERS THAT HAVE DO NOT DOUBLE STACK IN THE NOTES SHOW UP HERE WITH A DNDS RESTRICTION\u201d. THEY DID NOT, ANYWHERE. Checked rather than guessed: the Restrictions column renders getRestrictionBadgeKeys and nothing else, which reads five fields off customer_notes; the scanner that fills equipment_restrictions carries 22 patterns across its two sources and every one of them is about TRUCK SIZE (NO TT, STRAIGHT TRUCK ONLY, 26 FT MAX, NO 53); there is no stacking key in RESTRICTION_ICONS and none in the dispatcher\u2019s own tick-list, so nobody could set it by hand either. A repo-wide search for the phrase returned one test fixture and no code. The text was never lost \u2014 extractOrderInstructions keeps every SPL-INSTR-TEXT comment and the stop card shows them \u2014 it was simply never promoted to a fact anything could act on. WHY IT IS NOT AN EQUIPMENT RESTRICTION, WHICH IS THE WHOLE DESIGN. Everything in equipment_restrictions is keyed by LOCATION and holds for that address forever, which is right for a dock that cannot take a tractor trailer and wrong for this. Double-stacking is a property of THIS SHIPMENT: this week\u2019s order is fragile, next week\u2019s is bagged goods that stack fine. Writing it to the customer note would mark a customer permanently un-stackable off one order \u2014 the exact mistake v0.99.3 paid for, where a location-keyed vehicle mark quietly pushed freight onto extra box trucks until somebody found the brush. So it is DERIVED per order, never stored, never written back, and a test pins that it cannot reach getRestrictionBadgeKeys, because the moment it did the map pin would start claiming the address cannot take stacked freight. It is modelled on stopLooksOversize, which is the same shape and already sits beside the customer restrictions on five surfaces. THE NEGATION IS THE ENTIRE RULE. \u201cDOUBLE STACK\u201d on its own is not a restriction \u2014 \u201cDOUBLE STACK OK\u201d and \u201cCAN BE DOUBLE STACKED\u201d say the opposite, and a rule that fired on the bare phrase would invert both and spend a floor position on every truck carrying one. Every pattern anchors on the negation instead. The phrasings come off the board, not out of the air: Uline writes \u201cDo NOT Deliver Double Stacked\u201d in mixed case, so a rule written for the shouty form would have missed all five. The two sibling instructions riding the same orders \u2014 DO NOT BREAKDOWN SKID, DO NOT LAY PALLETS OF / BOXES ON THEIR SIDE \u2014 are deliberately NOT folded in: different job, different person, and a DNDS chip on freight that stacks fine is the failure this rule exists to avoid. IT READS BOTH COMMENT CHANNELS. orderInstructions is a FILTERED subset (ORD_IN / SPL-INSTR-TEXT), where every sample so far has landed; allComments is the unfiltered list. Reading only the first would go silent the day NuVizz re-files one of these under another type, and that failure is invisible \u2014 a missing chip looks exactly like freight that stacks. AND THE NUMBER A LOAD BUILDER ACTUALLY ACTS ON. One chip on one row is an input; \u201c6 skids DNDS\u201d across a selection is a decision. The selection tally counts SKIDS where every other entry counts orders, and says the word, because the binding dimension of a load is skid POSITIONS (Phase 2.8) and \u201c6 DNDS\u201d beside \u201c3 ST only\u201d would read as the same unit and understate a truck about to not fit. STILL OPEN, AND IT IS CHAD\u2019S FACT TO GIVE: the solver\u2019s skid caps were mined from ~900 real trips, so if those trips were loaded with skids stacked, an all-DNDS load at 31 will not physically fit and the router cannot currently tell. Nothing here touches the solver \u2014 this change only shows the fact. 17 new tests, mutation-checked three ways (drop the negation, read one channel, count orders instead of skids \u2014 each fails exactly the tests that claim to guard it), and the column guard lifts the shipped renderer and runs Chad\u2019s seven real rows through it. Zero NuVizz calls. 4,019 green.'],
+  ['1.5.0', 'THE RAIL\u2019S SEARCH IS ONE BOX, \u2795 NEW ROUTE SITS BESIDE THE TABS, AND A STATUS TICK STOPS RE-READING THE WHOLE WINDOW. Three things Chad asked for in one sitting, and the third was the expensive one. (1) \u201cI WANT THESE TWO SEARCH BARS TO WORK TOGETHER \u2014 if i type something in the search bar for routes and swap to loads i want it to remain.\u201d Routes and Loads each owned a LOCAL search box, and switching tabs unmounts one panel and mounts the other, so the text went with it: you retyped \u201cfrye\u201d to ask the same question of the other list, and the two counts on the strip \u2014 the whole reason it shows both \u2014 could never be read against one needle. The rail owns the value now and the tabs are two views of it. The dispatch Map\u2019s read-only Routes panel has no second tab to share with, so the panels still keep their own box when nobody passes one; that controlled-or-not rule lives in ONE tested function rather than being written out twice, because two copies of it is two chances for the panels to disagree about who owns the text. Deliberately NOT remembered across sessions: a search restored from last night is an invisible filter, which is the trap that blanked the bottom grid in v0.45.6. (2) \u201cMOVE NEW ROUTE TO BESIDE LOADS, I DON\u2019T NEED TO SEE THE DATE THERE.\u201d Done, and the date is what paid for the room \u2014 it was a truncated \u201cTHU, S\u2026\u201d, a third copy of a board date already on the grid\u2019s own bar and in the Setup panel, fitting in none of its space. ON THE PHONE THE BUTTON STAYS IN THE PANEL, and that is a decision rather than an oversight: the phone\u2019s tab strip IS its whole navigation at 360px (Setup \u00b7 Routes \u00b7 Loads \u00b7 Result) and a fifth control there is the collision this repo has patched four times. Two views, drawn from one button definition so the pair cannot drift. (3) \u201cONCE THESE STOPS LOAD, EVERY TIME I CHANGE A FILTER IT SHOULDN\u2019T HAVE TO RELOAD THEM FROM FIRESTORE \u2014 it should load them all one time in the beginning and then the filter just filters what is shown.\u201d CHECKED, NOT REASONED: `statusSel` sat in the window pull\u2019s dependency list and the ticked statuses rode the request, so every tick of a status box tore the window down and pulled it again \u2014 up to 62 day documents re-read and the open-order pool re-reconciled, the grid blanking each time \u2014 to compute a subset THE CLIENT WAS ALREADY COMPUTING ANYWAY. filteredRows has re-applied the status check itself since the \u201cRASKO\u201d fix, because the server\u2019s copy runs before the plan overlay and was wrong about a just-saved row. So the pull paid for a filter whose answer it then discarded. It is pulled once per window and date now; the box is instant. AND THE PULL GOT CHEAPER WHILE LOSING ITS FILTER, which is what makes that safe: this path read those day documents WHOLE \u2014 raw NuVizz object and all, ~9\u202fKB a stop, ~9,800 stops on a fourteen-day window \u2014 and it was survivable only because the status filter trimmed the response at the very end. It now reads through the same LEAN projection the Map feed has used since the 6.9\u202fMB cold-load fix, which drops ~55% of the bytes and the raw object with them, so ONE all-status pull costs less than the filtered pulls it replaces. The no-filter case already pulled exactly this much, so this is not a new shape. `statusCodes` is still honoured by the endpoint \u2014 Check vs NuVizz sends it, deliberately, because that diff is a question about one filter at one moment. SAID PLAINLY: zero NuVizz calls either way on every cache-served window (Last 7/14 days, \u00b17d, custom ranges); only \u201cNuVizz today\u201d reaches the vendor, and its one call now asks for all statuses in a single day, well inside the row cap. THE GUARD THAT MAKES IT STICK: the Firestore test fake now records WHICH FIELDS a read asked for, the same way it already records write masks and for the same reason \u2014 a masked read and a whole-document read return the identical object from a fake, so a caller that quietly stopped masking would have passed every test. 11 new tests.'],
   ['1.4.0', 'WHY DOES THE BOARD SHOW THIS STOP THE WAY IT DOES \u2014 ANSWERABLE NOW, FOR FREE, AND THE SCAN KEEPS THE RECEIPT. Chad, with AVRT-0170416694 (RODERICL CONEY, McDonough) and RA5732712 (GEORGIA POWER, Forest Park) sitting in the Routing selection: \u201cthose 2 orders are planned on william and joe however our system does not show this \u2014 figure out why and make sure it doesn\u2019t happen again.\u201d CHECKED, NOT REASONED, AND THE HONEST ANSWER FIRST: the code alone cannot say which of SEVEN paths put those two rows there. NuVizz\u2019s planned/un-planned list is the ONLY thing that can put a stop on a route on our board, and it lags the portal by minutes and has stayed wrong for hours (DAWSONVILLE); a stop the list stops returning is carried as a candidate and can be dropped by the verify on a lagging stop record when the day\u2019s roster has no load by that name (a load created after the last roster pull is invisible to it until the next one \u2014 hourly 04:00\u201313:00 and 20:00\u201324:00, nothing in between); a Save\u2019s write-through can miss a stop that lives on another day\u2019s document; a plan can be stamped on one day\u2019s copy while the Map serves another\u2019s; two NuVizz records can share the number; a struck-off stop is defended un-planned by the write grace. Every one of those is the same grey pin, and the facts that tell them apart live in a dozen Firestore documents nothing on a dispatch screen can open. Guessing which one it was is the worst output this repo produces, so this release does not. THREE THINGS INSTEAD. (1) nuvizz-stop-explain?stop=AVRT-0170416694 \u2014 GET, Firestore only, ZERO NuVizz calls. It reads every copy of the stop across the board days around the date (14 back, 3 ahead) with each copy\u2019s plan and stamps, the open-order pool\u2019s row, the un-planned snapshot, the day\u2019s roster and whether the route resolves on it, the write journal for the stop or its route that day, sealed history, the retired list and any dispatcher-set date \u2014 and says what they mean in sentences, most important first. (2) THE SCAN NOW KEEPS THE RECEIPT. Every time the list disputes a routed stop the verify decides its fate and, until now, kept three counters in a console line; it now records per stop WHICH route it was on, the verdict, and ON WHOSE WORD \u2014 the load\u2019s own membership read, a lagging stop record, a roster with no such load, a spent budget, a confirmed save\u2019s grace \u2014 with every step of the fall-through, in a per-day ledger the explain reads back. Written only by a scan that actually disputed something; the run ledger carries the counts. RUN, NOT DESCRIBED: the real scan against a stubbed vendor, AVRT planned on WILLIAM by a save two hours old, absent from the pull, no WILLIAM on the roster, record un-planned \u2192 dropped, and the ledger reads \u201croster (1 load): no load named WILLIAM \u2192 stop record: UNPLANNED, on no load\u201d; with WILLIAM on the roster and the load listing the stop \u2192 kept on the load\u2019s word, verified. (3) TWO PATHS CLOSED ON THE WAY, each a real defect regardless of which one bit today. The board reconcile (the repair built for \u201cthe scan reverted my rows\u201d) read a load\u2019s DELIVERIES only \u2014 the DO filter meant to skip the route\u2019s own origin pickup also skipped every CUSTOMER pickup, so an RA planned on JOE could never be re-stamped planned by the tool for exactly that; it now takes every pickup past the origin slot in running order, the same rule the save engine applies. And when NuVizz holds two LIVE records under one number, the merge kept whichever the list returned later; a carrier order keyed twice \u2014 one on a load, one not \u2014 could put the un-planned twin on the board with the route card one stop short, the exact state in which the same freight gets planned onto a second truck. The planned twin wins now, still badged as a duplicate. WHAT WOULD SETTLE THE TWO ORDERS THEMSELVES: open the explain URL for each (free); if NuVizz\u2019s side is still in question, nuvizz-stop-explorer {savedSearch:active, full:true, find:\u2026} is ONE call per stop and says what the list reports right now. SAID PLAINLY: no UI was added for this \u2014 it is a URL, like the other diagnostics \u2014 and the ledger begins with the first scan after this deploys; it cannot explain what happened before it. 29 new tests.'],
   ['1.3.0', 'THE BOTTOM PANEL\u2019S BAR IS ONE ROW AGAIN, AND ITS ROWS SAY WHICH STOPS A TRACTOR CAN RUN. Chad, with a screenshot of the bar wrapped onto two lines: \u201cI want this bottom panel to highlight the tractor friendly rows. Remove the all drivers drivers. put the check vs nuvizz in the settings gear on this panel. remove the unplanned 100%. i\u2019m trying to condense these 2 rows down to one to save space.\u201d WHY IT WRAPPED, MEASURED OFF HIS SCREENSHOT RATHER THAN ASSUMED: the pane is about 1,000px wide and the first row was already full before the \u201cBoard \u00b7 643 stops \u00b7 21 closed removed\u201d sentence, the Check button, the date and the gear had anywhere to go, so the four of them took a second 44px line under a grid whose whole point is the map above it. The bar had grown a control at a time \u2014 the status-percent strip in v0.50.76, the driver dropdown, the profiles chip, the source sentence, the check \u2014 and nothing ever left. FOUR THINGS LEAVE. (1) The \u201cUnplanned 100%\u201d strip: with Un-Planned ticked, which is how this bar is used, it read 100% all day, a number that could not change and so could not inform. (2) The driver dropdown, control AND setting: removing the select alone would have left driverSel in the bar\u2019s memory, restored from every older profile \u2014 Chad\u2019s own production profile carries it \u2014 and still filtering the rows with nothing on screen to clear it, which is the invisible-filter trap that blanked this grid once already (v0.45.6). The field is dropped on read now, and a test pins that an older profile still applies with it ignored. The job survives where it always also lived: the search box matches a driver\u2019s name. (3) The source sentence became a chip \u2014 \u201cBoard \u00b7 21 removed\u201d \u2014 because the 643 was already on the Stops toggle beside it; the full accounting is still the hover text, and a partial pull, an error and the in-flight spinner still say so in full, since a short list must never read as a complete one. (4) Check vs NuVizz is a GEAR ACTION: it spends a metered call a few times a day at most and was costing the bar 110px on every row it drew \u2014 the profile of a menu item. It is always listed and greyed WITH ITS REASON when it cannot run (Board (today) selected, Loads view, mid-pull, cooling down), because an item that is simply absent is a feature you have to already know about to go looking for. Its verdict did not move into the menu with it: a green \u201c\u2713 matches NuVizz\u201d or amber \u201c12 differ\u201d chip sits beside the window and reopens the panel, which now hangs off the bar\u2019s right end. On Routing the item leads the panel gear\u2019s list; the dispatch Map, whose grid had no gear, gets one for it \u2014 desktop only, so the phone bar gains no control and no collision. MEASURED, NOT ASSUMED, ON THE BUILT BUNDLE: with those four gone the one-row bar still needed 1,104px in Chad\u2019s exact state (window set, date on the bar), so three more trims paid the rest \u2014 the Stops/Loads toggle lost the two icons the phone never drew (38px; the words are the control), the window labels got shorter (a select is as wide as its widest option, and \u201cNuVizz \u00b7 \u00b17 days\u201d was setting the width of a control reading \u201cLast 7 days\u201d), and from 1280px up the chevron is a 32px desktop button rather than a 44px thumb target (the tablet guard holds 44 below that). 984px now, under the pane. AND ONE THING ARRIVES: THE GREEN. The Selected window has painted a tractor-friendly row green since v0.46.5, but a router picks stops FROM the grid, and the only way to learn which of 700 rows a 53-footer could serve was to select them first and look. The grid now reads the SAME rule through ONE helper \u2014 the dispatcher\u2019s green paint, the \u201cTractor trailer friendly\u201d badge, the proven lime \u201ca tractor has delivered here\u201d, with Box-only and a confirmed \u201cNo tractor trailer\u201d still winning as not friendly \u2014 and paints the same green-100, so a stop cannot be green in the panel and plain in the grid or the other way round (that drift has been shipped twice: v0.46.8, v1.1.1). Ranked as a pure function beside the Selected window\u2019s: selection blue first (what the lasso is doing now), then a card\u2019s staged tint, then the green, then carry-over amber \u2014 a fact about the freight over a fact about the date, because the router acts on the first and the Day column already says the second. Switching the lime paint off in the Legend takes the proven-history green off these rows too, exactly as it takes it off the pins, because both read the same toggle-aware map. flex-wrap stays as the safety net: a non-wrapping bar pushes its tail off the right edge, invisible and unreachable. SAID PLAINLY: this is a desktop-bar change; the phone bar (chevron + Stops/Loads, folding open to Profiles / search / Status) is untouched, and every guard ran green. 12 new tests.'],
   ['1.2.2', 'THE MANIFEST TAB WAS STILL PROMISING A POLL EVERY 30 MINUTES AFTER THE JOB DROPPED TO THREE A NIGHT. v1.2.1 narrowed the parse to 8:10p, 9:10p and 10:10p ET and left the screen describing the system it replaced — “Checked automatically every 30 minutes” on the mailbox card and “read out of the mailbox on its own, every 30 minutes” in the tab’s own blurb, plus the endpoint comment and two code comments. Same shape as the alert wired to `critical` while the operator had been told “we want every red”: the code did exactly what it was told and the screen described a DIFFERENT system, and no test could catch it because nothing tied the two together. The cure is not a more careful edit next time — THE HOURS NOW HAVE ONE HOME. lib/manifest-schedule.js holds the three ET hours and the sentence the card prints; the background function imports its hours from there and re-exports them, and a test asserts the job’s list and the card’s label are the same three passes. AND THE HEALTH SIGNAL THE OLD CADENCE GAVE AWAY FOR FREE, which the narrowing quietly took: polling every thirty minutes, a lapsed Gmail token was obvious by mid-afternoon — “Last poll 4h ago” on a card that should read minutes. Polling three times a night, a DEAD mailbox reads “26h ago” and a perfectly healthy one reads “22h ago” all working day, and the age alone can no longer tell them apart. So the card compares the last poll against THE SCHEDULE instead of against a clock: a pass has fired and the mailbox was not read since. That is a fact with a meaning, not an invented staleness bar — the same rule roster-freshness.js is built on. A mailbox connected this afternoon that has never polled is NOT overdue, because “no poll has run yet” is the honest sentence and a red warning there would be a lie about a working setup. Every comparison is a string compare of two ET wall-clock stamps rendered through one formatter, so DST needs no arithmetic and cannot land the slot on the wrong calendar day — pinned on both changeovers. A 20-minute grace keeps the card quiet at 8:11p while the function is still fetching the mailbox. 9 new tests.'],
@@ -13763,13 +13764,18 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // has seen the world after it), exactly as the board's is released by last_scanned_at — the
   // window used to paint a confirmed save with no way out but the 12h TTL (v0.95.0).
   const baseStops = useMemo(() => (nvWindow ? reflectBoardPlan(applyPlanOverlay(nvRows, nvReconciled?.poolAt || null), boardByNbr) : stops), [nvWindow, nvRows, stops, boardByNbr, planVersion, nvReconciled]);
-  // Pull from NuVizz whenever a date window is selected (re-pull when the status
-  // selection changes so status filters server-side, not just on the loaded page).
+  // Pull from NuVizz whenever a date window is selected. The pull is keyed to the WINDOW and the
+  // board date only — a status tick filters what is already here (see `req` below).
   // A cache-served window is re-pulled every NV_WINDOW_REPULL_MS while it is open (v0.95.0) — the
   // scan rewrites the open-order pool every 15–30 minutes and the window was a one-shot snapshot
   // of it, so a delivery an hour ago still read "unplanned" here while the board had moved on.
   // A tick re-pull keeps the last Check result on screen; a window/status change resets it.
   const NV_WINDOW_REPULL_MS = 5 * 60 * 1000;
+  // Room for a WHOLE day of every status, because the pull no longer narrows itself by status
+  // (see the window effect below). Only the LIVE window ("NuVizz today") is capped by this at
+  // all — a cache-served window returns its full range regardless — and 2,000 is the server's
+  // own ceiling, comfortably past a ~900-stop day.
+  const NV_WINDOW_PAGE_SIZE = 2000;
   const [nvTick, setNvTick] = useState(0);
   const nvTickSeen = useRef(0);
   useEffect(() => {
@@ -13791,13 +13797,30 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     if ((nvWindow === 'custom' && (!nvFrom || !nvTo)) || (autoBack > 0 && !ymdShift(boardDate, 0))) { setNvErr(null); setNvLoading(false); setNvRows([]); setNvTotal(0); setNvPartial(false); return; }
     let cancelled = false;
     const ctrl = new AbortController();
-    const codes = TABLE_STATUS_BUCKETS.filter((b) => statusSel.has(b.k)).flatMap((b) => b.codes);
     const [lo, hi] = nvWindow === 'custom'
       ? (nvFrom <= nvTo ? [nvFrom, nvTo] : [nvTo, nvFrom])
       : autoBack > 0 ? [ymdShift(boardDate, -autoBack), boardDate] : ['', ''];
+    // THE STATUS FILTER DOES NOT REACH THIS PULL (v1.5.0). Chad: "once these stops load, every
+    // time I change a filter it shouldn't have to reload them from Firestore — it should load
+    // them all one time in the beginning and then the filter just filters what is shown."
+    //
+    // He was describing real waste. `statusSel` sat in this effect's dependency list, so every
+    // tick of a status box tore the window down and pulled it again — up to 62 day documents
+    // re-read, the open-order pool re-reconciled, the grid blanked — to compute a subset the
+    // CLIENT was already computing anyway: filteredRows has always re-applied the status check
+    // itself, because the server's copy of it runs BEFORE the plan overlay and was wrong about a
+    // just-saved row (the "RASKO" case). So the pull paid for a filter whose answer it discarded.
+    // The window is pulled once per window/date now, and the box is instant.
+    //
+    // WHAT IT COSTS, SAID PLAINLY: the response carries every status in the range rather than the
+    // ticked ones. The lean projection added to the endpoint in this same release more than pays
+    // for that (~55% fewer bytes, and the raw NuVizz object gone) — and the no-status-filter case
+    // already pulled exactly this much, so this is not a new shape. `statusCodes` is still
+    // honoured by the endpoint: Check vs NuVizz sends it, deliberately, because that diff is a
+    // question about one filter at one moment.
     const req = custom
-      ? { fromDate: lo, toDate: hi, statusCodes: codes, page: 1, pageSize: 1000 }
-      : { arrivalPeriod: nvWindow, statusCodes: codes, page: 1, pageSize: 1000 };
+      ? { fromDate: lo, toDate: hi, page: 1, pageSize: NV_WINDOW_PAGE_SIZE }
+      : { arrivalPeriod: nvWindow, page: 1, pageSize: NV_WINDOW_PAGE_SIZE };
     setNvLoading(true); setNvErr(null);
     if (!isTick) { setNvCheck({ running: false, result: null, error: null, at: null }); setNvCheckOpen(false); setNvReconciled(null); }
     // DEBOUNCE custom-range pulls: a native date input fires onChange per SEGMENT edit, so a
@@ -13828,7 +13851,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
         .finally(() => { if (!cancelled) setNvLoading(false); });
     }, nvWindow === 'custom' ? 600 : 0);   // only hand-typed dates need the debounce
     return () => { cancelled = true; ctrl.abort(); clearTimeout(timer); };
-  }, [nvWindow, nvFrom, nvTo, statusSel, boardDate, nvTick]);
+  }, [nvWindow, nvFrom, nvTo, boardDate, nvTick]);
   // ── CHECK VS NUVIZZ (v0.94.0) ──────────────────────────────────────────────
   // Chad: "a way to do what we just did — check what we are showing to what nuvizz shows for
   // the same set of filters." ONE live NuVizz call for this window's dates and status buckets;
@@ -13917,10 +13940,11 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const filteredRows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return baseStops.filter((s) => {
-      // Status: client-side in board mode; in a NuVizz window the server pre-filters, but the
-      // check re-runs here anyway because the plan OVERLAY runs after that server filter — a
-      // cached-unplanned row a recent Save flipped to planned (Load "RASKO") was showing under
-      // the Un-Planned filter. Re-checking post-overlay keeps the filter honest either way.
+      // Status: THE filter, in both modes, and the only one (v1.5.0 — the window pull stopped
+      // sending statusCodes so a tick no longer re-reads Firestore). It has always had to run
+      // here regardless: the plan OVERLAY runs after any server-side filter, so a cached-
+      // unplanned row a recent Save flipped to planned (Load "RASKO") showed under Un-Planned
+      // until this check re-ran post-overlay. What changed is that nothing else claims to do it.
       if (statusSel.size && !statusSel.has(tableStatusBucket(s))) return false;
       if (needle) {
         const hay = [s.stopNbr, s.businessName, s.addr1, s.addr2, s.city, s.zip, s.routeName, s.loadNbr, s.driverName]
@@ -14737,15 +14761,17 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                   ) : activeFilterLabels.length ? (
                     // ZERO CAME BACK **AND** A FILTER IS ON. The branch above counts what was
                     // fetched, so it can only fire for client-side filtering — but in window mode
-                    // the STATUS filter rides the pull itself (statusCodes on the request), so a
-                    // status with nothing in the window returns zero rows, baseStops is 0, and the
-                    // count branch is skipped. That dropped the dispatcher onto a bare "No stops
-                    // match." with the responsible filter unnamed and no way to clear it from here
-                    // — exactly the silent-blank trap v0.45.6 closed, reopened via the server path.
+                    // the STATUS filter used to ride the pull itself, so a status with nothing in
+                    // the window returned zero rows, baseStops was 0, and the count branch was
+                    // skipped — dropping the dispatcher onto a bare "No stops match." with the
+                    // responsible filter unnamed and no way to clear it from here, the silent-blank
+                    // trap v0.45.6 closed and the server path reopened. Since v1.5.0 the pull is
+                    // all-status, so baseStops holds the window and that branch reports the count;
+                    // this one is the genuinely-empty window. The Clear button stays either way.
                     <div className="text-xs text-slate-500 space-y-2">
                       <div>
                         Nothing came back for this {nvWindow ? 'window' : 'board'} — filtered by {activeFilterLabels.join(', ')}.
-                        {statusSel.size ? <span className="block text-slate-400">The status filter is applied to the pull itself, so a status with no stops here returns an empty grid.</span> : null}
+                        {statusSel.size ? <span className="block text-slate-400">Nothing in this window carries that status.</span> : null}
                       </div>
                       <button onClick={clearAllFilters} className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-blue-400 text-blue-700 bg-blue-50 hover:bg-blue-100 text-xs font-semibold">
                         <X size={12} /> Clear filters
@@ -17334,10 +17360,25 @@ function RouteStatusBadge({ status }) {
 // nuvizz-write is gated at dispatcher on the server. This is the pair of controls where a
 // silent refusal costs the most in freight terms: a load a dispatcher believes is DISPATCHED
 // is a driver who was never told to roll, found at the end of the day rather than the start.
-function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], rosterError = null, assignLive = true, onAssignDriver, assignedOverride = {}, assigningKey = null, onDispatchLoad, onDispatchAll = null, dispatchAllPlanner = null, dispatchingKey = null, onNewRoute = null, writeDenied = null }) {
+// ＋ New route, as ONE definition. It is drawn in two places — the desktop rail's tab strip and
+// the phone's Routes panel — and a button whose markup is copied is a button whose two copies
+// drift (this repo has shipped that twice: v0.46.8, v1.1.1).
+function NewRouteButton({ onNewRoute, className = '' }) {
+  return (
+    <button onClick={onNewRoute} title="Create a new, empty route on this day's board, then drag orders onto it"
+      className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 shrink-0 ${className}`}>
+      <Plus size={12} /> New route
+    </button>
+  );
+}
+
+function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], rosterError = null, assignLive = true, onAssignDriver, assignedOverride = {}, assigningKey = null, onDispatchLoad, onDispatchAll = null, dispatchAllPlanner = null, dispatchingKey = null, onNewRoute = null, writeDenied = null, query, onQueryChange, showNewRoute = true }) {
   const [selected, setSelected] = useState(() => new Set());   // empty = All
   const [menuOpen, setMenuOpen] = useState(false);
-  const [q, setQ] = useState('');
+  // The needle is the RAIL's when the rail passes one, so it survives a swap to Loads; ours when
+  // nobody owns it (the dispatch Map's read-only Routes panel). See resolveRailQuery.
+  const [ownQ, setOwnQ] = useState('');
+  const { q, setQ } = resolveRailQuery({ query, onChange: onQueryChange, own: ownQ, setOwn: setOwnQ });
 
   const counts = useMemo(() => {
     const c = {};
@@ -17428,13 +17469,13 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
           </button>
         )}
         {/* Make a route (§R). Until v0.54.21 the app could CANCEL a route but never create one,
-            so emptying a load was one-way — the rebuild had to happen in the portal. */}
-        {onNewRoute && (
-          <button onClick={onNewRoute} title="Create a new, empty route on this day's board, then drag orders onto it"
-            className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 shrink-0">
-            <Plus size={12} /> New route
-          </button>
-        )}
+            so emptying a load was one-way — the rebuild had to happen in the portal.
+            ON THE DESKTOP RAIL THIS IS NOT DRAWN HERE: v1.5.0 moved it up beside the Routes/Loads
+            tabs, where Chad asked for it, and the rail passes showNewRoute={false} so the two
+            cannot both appear. The PHONE keeps it here — its tab strip is the whole navigation at
+            360px (Setup · Routes · Loads · Result) and has no room for a fifth control. Two views,
+            deliberately, rather than one that fits neither. */}
+        {onNewRoute && showNewRoute && <NewRouteButton onNewRoute={onNewRoute} />}
       </div>
 
       <div className="px-3 py-1.5 text-[11px] text-slate-500 border-b bg-slate-50">
@@ -20013,6 +20054,13 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     try { return normalizeRoutesLoadsTab(localStorage.getItem('routing.routesLoadsTab')); } catch { return 'routes'; }
   });
   useEffect(() => { try { localStorage.setItem('routing.routesLoadsTab', routesLoadsTab); } catch { /* ignore */ } }, [routesLoadsTab]);
+  // ONE SEARCH FOR THE WHOLE RAIL (Chad, Sep 10): "if I type something in the search bar for
+  // routes and swap to loads I want it to remain." Owned here rather than in either panel, so
+  // the tab switch — which unmounts one panel and mounts the other — cannot take the text with
+  // it. Deliberately NOT persisted: a filter you cannot see the reason for is the invisible-
+  // filter trap that blanked the bottom grid once already (v0.45.6), and a search restored from
+  // a previous session is exactly that. It lives as long as the screen does.
+  const [railQ, setRailQ] = useState('');
   const [driverRoster, setDriverRoster] = useState({ drivers: null, updatedAt: null, neverScanned: false, loading: false, refreshing: false, error: null });
 
   const loadDriverRoster = useCallback(async () => {
@@ -23185,7 +23233,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         onConfirm={runDispatchAll}
       />
     )}
-    <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} onDispatchAll={liveWrite ? openDispatchAll : null} dispatchAllPlanner={liveWrite ? dispatchAllPlanner : null} dispatchingKey={dispatchingKey} onNewRoute={liveWrite ? openNewRoute : null} writeDenied={writeGate.reason} />
+    <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} onDispatchAll={liveWrite ? openDispatchAll : null} dispatchAllPlanner={liveWrite ? dispatchAllPlanner : null} dispatchingKey={dispatchingKey} onNewRoute={liveWrite ? openNewRoute : null} writeDenied={writeGate.reason} query={railQ} onQueryChange={setRailQ} showNewRoute={isMobile} />
     </>
   );
   // The day's loads that are NOT on the board — the empty ones the dispatcher still has to
@@ -23199,6 +23247,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   const dayLoadsPanelEl = (
     <RoutingDayLoadsPanel rows={dayLoadsSplit.empty} offBoard={dayLoadsSplit.offBoard} builtCount={dayLoadsSplit.routed.length}
       roster={dayRosterState} shells={shellNames} onPlanShell={onPlanShell}
+      query={railQ} onQueryChange={setRailQ}
       onPickLoad={(r) => pickLoadToCompare(r.loadNbr || r.loadId || r.key)}
       isOpen={(r) => wbRoutes.some((w) => w.key === r.key || (r.name && w.key === r.name) || (r.loadNbr && (w.key === r.loadNbr || w.loadNbr === r.loadNbr)))} />
   );
@@ -23602,10 +23651,15 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
           />
         ) : isRoutesPanelMode(rightPanelMode) ? (
           <>
-            <div className="flex items-center justify-between px-3 py-2 border-b shrink-0 gap-2">
+            {/* THE STRIP, AND THE ONE BUTTON THAT BELONGS BESIDE IT. Chad: "move new route to
+                beside loads, I don't need to see the date there." The date was a truncated
+                "THU, S…" — the board date is already on the grid's own bar below and in the
+                Setup panel, so this was a third copy that fit in none of its space, and giving
+                its room to ＋ New route is what lets the button sit where the tabs are. */}
+            <div className="flex items-center px-3 py-2 border-b shrink-0 gap-2">
               {routesModeToggleEl}
-              <span className="text-[10px] uppercase tracking-wide text-slate-400 truncate">{formatDateLong(selectedDate)}</span>
-              <button onClick={() => setRightCollapsed(true)} className="shrink-0 text-slate-400 hover:text-slate-700" title="Collapse panel"><ChevronRight size={15} /></button>
+              {liveWrite && <NewRouteButton onNewRoute={openNewRoute} />}
+              <button onClick={() => setRightCollapsed(true)} className="ml-auto shrink-0 text-slate-400 hover:text-slate-700" title="Collapse panel"><ChevronRight size={15} /></button>
             </div>
             {routesModeBodyEl}
           </>
@@ -23928,8 +23982,11 @@ function dayLoadMatches(r, needle) {
 
 const ROSTER_ABSENT = { known: false, live: false, stale: false, count: 0, age: null, tone: 'absent', label: 'Load roster not pulled for this day' };
 
-function RoutingDayLoadsPanel({ rows, offBoard = [], builtCount = 0, onPickLoad, isOpen, roster = ROSTER_ABSENT, shells = [], onPlanShell = null }) {
-  const [q, setQ] = useState('');
+function RoutingDayLoadsPanel({ rows, offBoard = [], builtCount = 0, onPickLoad, isOpen, roster = ROSTER_ABSENT, shells = [], onPlanShell = null, query, onQueryChange }) {
+  // Shared with the Routes tab when the rail owns it — the same needle, so the two counts on the
+  // strip can be read against one another. See resolveRailQuery.
+  const [ownQ, setOwnQ] = useState('');
+  const { q, setQ } = resolveRailQuery({ query, onChange: onQueryChange, own: ownQ, setOwn: setOwnQ });
   const needle = q.trim().toLowerCase();
   const shown = useMemo(() => rows.filter((r) => dayLoadMatches(r, needle)), [rows, needle]);
   const shownOff = useMemo(() => offBoard.filter((r) => dayLoadMatches(r, needle)), [offBoard, needle]);
