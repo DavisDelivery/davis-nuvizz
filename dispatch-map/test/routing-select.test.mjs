@@ -443,10 +443,14 @@ test('sweep: deterministic, never worse than the old radial sort, and fast at th
   let seed = 20260910;
   const rnd = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
   const many = Array.from({ length: 150 }, (_, i) => ({ id: `s${i}`, lat: 34.0 + rnd() * 0.8, lng: -84.6 + rnd() * 0.8 }));
+  // About 10 ms here (60 ms cold). The bound is loose on purpose: a shared CI runner under a
+  // parallel suite is many times slower than a laptop, and a wall-clock bound that fails only
+  // there is a red build with nothing to fix. It exists to catch the algorithm going back to
+  // re-summing the whole path per candidate, which took 1.5 s and would blow through it anywhere.
   const t0 = performance.now();
   const a = farthestFirst(many, BUFORD);
   const ms = performance.now() - t0;
-  assert.ok(ms < 2500, `150 stops took ${ms.toFixed(0)} ms`);
+  assert.ok(ms < 1500, `150 stops took ${ms.toFixed(0)} ms`);
   assert.deepEqual([...ids(a)].sort(), [...ids(many)].sort());
   assert.deepEqual(ids(farthestFirst(many, BUFORD)), ids(a));                 // same stops, same answer
   const radial = depotSort(many, BUFORD, 'desc');

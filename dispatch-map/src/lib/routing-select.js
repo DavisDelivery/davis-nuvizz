@@ -326,43 +326,74 @@ function nearestNeighborFrom(from, pool, cost) {
 // reversal and every or-opt relocation (runs of 1–3, either way round), keeping any that
 // shortens the path; it stops when a whole pass finds nothing. Every kept move strictly
 // shortens the path, so it terminates on its own — maxPasses is a belt for the braces.
-// Full re-evaluation per candidate (no delta tricks) so the same code is right on an
-// asymmetric matrix too, and at the 150-stop selection cap it is still well under a second.
+//
+// Each candidate is scored by the DELTA of the edges it changes, not by re-adding the whole
+// path: a reversal swaps two edges, a relocation swaps three. The first cut of this re-summed
+// every candidate and took 1.5 s on 150 stops — a visible freeze on the dropdown, and a
+// wall-clock test that failed on a shared CI runner. On an asymmetric (road) matrix the edges
+// INSIDE a reversed run change direction too, so those are re-read only when the matrix is
+// actually asymmetric; the straight-line matrix never is.
 export function improvePinnedPath(order, start, end, cost, maxPasses = 40) {
-  let best = [...order];
-  if (best.length < 2) return best;
-  let bestLen = pinnedPathCost(best, start, end, cost);
+  const path = [...order];
+  const n = path.length;
+  if (n < 2) return path;
   const EPS = 1e-6;
+  const at = (i) => (i < 0 ? start : i >= n ? end : path[i]);
+  const asym = isAsymmetric(cost, [start, end, ...path]);
   for (let pass = 0; pass < maxPasses; pass++) {
     let improved = false;
-    // 2-opt: reverse best[i..k].
-    for (let i = 0; i < best.length - 1; i++) {
-      for (let k = i + 1; k < best.length; k++) {
-        const cand = best.slice(0, i).concat(best.slice(i, k + 1).reverse(), best.slice(k + 1));
-        const len = pinnedPathCost(cand, start, end, cost);
-        if (len + EPS < bestLen) { best = cand; bestLen = len; improved = true; }
+    // 2-opt: reverse path[i..k]. Edges (p→a) and (b→q) become (p→b) and (a→q).
+    for (let i = 0; i < n - 1; i++) {
+      for (let k = i + 1; k < n; k++) {
+        const p = at(i - 1), a = path[i], b = path[k], q = at(k + 1);
+        let delta = cost[p][b] + cost[a][q] - cost[p][a] - cost[b][q];
+        if (asym) for (let t = i; t < k; t++) delta += cost[path[t + 1]][path[t]] - cost[path[t]][path[t + 1]];
+        if (delta < -EPS) {
+          for (let lo = i, hi = k; lo < hi; lo++, hi--) { const tmp = path[lo]; path[lo] = path[hi]; path[hi] = tmp; }
+          improved = true;
+        }
       }
     }
-    // or-opt: lift best[i..i+segLen) and drop it at every other slot, forwards or reversed.
-    for (let segLen = 1; segLen <= 3 && segLen < best.length; segLen++) {
-      for (let i = 0; i + segLen <= best.length; i++) {
-        const seg = best.slice(i, i + segLen);
-        const rest = best.slice(0, i).concat(best.slice(i + segLen));
-        const segRev = [...seg].reverse();
-        let moved = false;
-        for (let j = 0; j <= rest.length && !moved; j++) {
-          for (const piece of (segLen > 1 ? [seg, segRev] : [seg])) {
-            if (j === i && piece === seg) continue;               // same slot, same way: no move
-            const cand = rest.slice(0, j).concat(piece, rest.slice(j));
-            const len = pinnedPathCost(cand, start, end, cost);
-            if (len + EPS < bestLen) { best = cand; bestLen = len; improved = true; moved = true; break; }
+    // or-opt: lift path[i..i+len) and drop it into another slot, forwards or reversed.
+    for (let len = 1; len <= 3 && len < n; len++) {
+      for (let i = 0; i + len <= n; i++) {
+        const a = path[i], b = path[i + len - 1], p = at(i - 1), q = at(i + len);
+        let inner = 0, innerRev = 0;
+        for (let t = i; t < i + len - 1; t++) { inner += cost[path[t]][path[t + 1]]; innerRev += cost[path[t + 1]][path[t]]; }
+        const lifted = cost[p][a] + cost[b][q] - cost[p][q];          // what leaving this slot saves
+        let bestDelta = -EPS, bestJ = -1, bestRev = false;
+        for (let j = 0; j <= n; j++) {
+          if (j >= i && j <= i + len) continue;                      // its own slot
+          const u = at(j - 1), v = at(j);
+          const dF = cost[u][a] + cost[b][v] - cost[u][v] - lifted;
+          if (dF < bestDelta) { bestDelta = dF; bestJ = j; bestRev = false; }
+          if (len > 1) {
+            const dR = cost[u][b] + cost[a][v] - cost[u][v] - lifted + (innerRev - inner);
+            if (dR < bestDelta) { bestDelta = dR; bestJ = j; bestRev = true; }
           }
+        }
+        if (bestJ >= 0) {
+          const seg = path.splice(i, len);
+          if (bestRev) seg.reverse();
+          path.splice(bestJ > i ? bestJ - len : bestJ, 0, ...seg);
+          improved = true;
         }
       }
     }
     if (!improved) break;
   }
-  return best;
+  return path;
+}
+
+// Does any pair among `nodes` cost a different amount each way? (A Google road matrix can;
+// straight-line never does.)
+function isAsymmetric(cost, nodes) {
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      if (cost[nodes[i]][nodes[j]] !== cost[nodes[j]][nodes[i]]) return true;
+    }
+  }
+  return false;
 }
 
 // Index of the stop farthest from / closest to the depot; ties go to the earlier input row.
