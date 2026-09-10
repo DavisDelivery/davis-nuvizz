@@ -198,6 +198,21 @@ export const DAILY_ALERT_CAP = 500;
 // no more than that — an escalation from red to critical shares the 'urgent' band and stays
 // a single message, which is the behaviour that shipped and the one the caps were sized for.
 export type AlertBand = 'early' | 'urgent';
+/**
+ * The band for a CANDIDATE. Read the reason, not the tier.
+ *
+ * alertBandOf(tier) below says "the next person to widen that gate should not also have to
+ * remember to widen this" — and widening it is exactly what ALERT_LATE_FLOOR_MIN does. A
+ * floor-selected row is frequently RED, and red maps to 'urgent' by tier: it would have taken
+ * the urgent claim key and SILENTLY BLOCKED the genuine critical email for that stop later in
+ * the day. The soft heads-up would arrive, the confident miss never would, and the ledger
+ * would show one send exactly as designed. So the band follows why the row was picked.
+ */
+export function bandOfCandidate(c: { reason?: AlertReason; tier?: string }): AlertBand {
+  if (c?.reason) return c.reason === 'tier' ? 'urgent' : 'early';
+  return alertBandOf(String(c?.tier ?? ''));
+}
+
 export function alertBandOf(tier: string): AlertBand {
   // Fail toward LOUD. Only amber earns the soft early wording; anything unrecognised gets
   // the urgent message and the original claim key. The reverse polarity was unreachable
@@ -220,7 +235,16 @@ export interface AlertCandidate {
   anchored?: boolean; detail?: string; rule?: string;
   /** Who is on the truck, from the flag row. '' when the load names nobody — see buildAlert. */
   driver?: string;
+  /**
+   * WHY this row was selected, which is what decides the band — never the tier.
+   *   'tier'  it cleared ALERT_MIN_TIER            -> urgent
+   *   'floor' it cleared ALERT_LATE_FLOOR_MIN      -> early
+   *   'gate'  amber, and the close is nearly here  -> early
+   */
+  reason?: AlertReason;
 }
+
+export type AlertReason = 'tier' | 'floor' | 'gate';
 
 // A minutes value, or null — and STRICTLY, because the loose version shipped a real defect.
 //
@@ -374,7 +398,62 @@ if (process.env.AMBER_LEAD_GATE_MIN != null
 }
 const AMBER_GATED_RULES = new Set(['hours_risk']);
 
-export function selectAlertable(rows: any[], nowMin: number | null, amberGateMin = AMBER_LEAD_GATE_MIN, minTier: string = ALERT_MIN_TIER): AlertCandidate[] {
+/**
+ * EMAIL WHEN A STOP IS THIS MANY MINUTES LATE, whatever its tier says.
+ *
+ * Chad, after a 2:00pm alert on a 3:00pm close: "Why did the mail go out at 2pm hardly enough
+ * time to do anything about it." Then: "fire it at 20-30".
+ *
+ * WHAT THE TIER RULE COULD NOT DO. severityTier asks whether the overrun clears the model's
+ * OWN error band twice over — 30 minutes when a route is anchored and close to its anchor, 50
+ * further out, 80 further still, 180 unanchored. That is a good question about CONFIDENCE and
+ * a poor one about CONSEQUENCE: a stop 40 minutes past a dock's close is a refused delivery
+ * whether the model is sure or not. So the tier governs how loudly we say it, and this governs
+ * whether we say it at all.
+ *
+ * TWENTY-FIVE, AND THE NUMBER IS MEASURED, NOT PICKED. Replayed over 15 days of stored flag
+ * history (369 rows, 135 of them judgeable — the rest are assumed-5pm closes that can never
+ * alert), through flag-replay on the real engine and the real selector at the real 20-minute
+ * cadence, zero NuVizz calls:
+ *
+ *     policy                  fires  bad  made  precision  /day  worst day  NEW catches
+ *     today (critical only)      23   15     6       71%    1.5      4          —
+ *     20 late, anchored          44   29    13       69%    2.9      9         14
+ *     25 late, anchored          42   29    11       72%    2.8      8         14
+ *     30 late, anchored          41   28    11       72%    2.7      7         13
+ *     25 late, ANY row           67   33    32       51%    4.5     10         18
+ *
+ * 20 buys two more false alarms and not one more catch; 30 loses a catch. 25 is the knee.
+ *
+ * ANCHORED IS REQUIRED AND IT IS THE CLAUSE THAT PAYS FOR EVERYTHING. Without it precision
+ * collapses 72% -> 51% and the volume nearly doubles. Unanchored means projected from an
+ * ASSUMED departure against a ±90-minute band — the same reason the message itself says
+ * "projected from a real arrival already recorded on this route".
+ *
+ * WHAT IT ACTUALLY BUYS, stated honestly because it is not what the request assumed. It does
+ * NOT make the email earlier for the stops we already email about — on 45% of those it fires
+ * at the identical sweep, and today's email already carries a median ~3 hours of warning. What
+ * it buys is COVERAGE. Replay found 53 stops that genuinely missed their window in this
+ * period; 26 of them sat on the board and never produced an email at all, with a median 145
+ * minutes still on the clock when the flag first appeared. This reaches 18 of those, at a
+ * median 81 minutes of lead.
+ *
+ * THE COST, NAMED: 1.5 -> 3.6 emails a day, and a genuinely bad day goes from 4 to 12.
+ *
+ * It takes the EARLY band, so it carries the heads-up wording and its own claim key: a stop
+ * can still send once here and once more if it hardens to critical. Set to 0 to switch off.
+ */
+export const ALERT_LATE_FLOOR_MIN = Number(process.env.ALERT_LATE_FLOOR_MIN ?? 25);
+// A SWITCH WHOSE POSITION CANNOT BE READ IS NOT A SWITCH — same rule as the amber gate above.
+if (process.env.ALERT_LATE_FLOOR_MIN != null
+    && !(Number.isFinite(ALERT_LATE_FLOOR_MIN) && ALERT_LATE_FLOOR_MIN >= 0)) {
+  console.error(`[flag-alert] ALERT_LATE_FLOOR_MIN="${process.env.ALERT_LATE_FLOOR_MIN}" is not a number of minutes — the late floor is OFF.`);
+}
+
+export function selectAlertable(
+  rows: any[], nowMin: number | null, amberGateMin = AMBER_LEAD_GATE_MIN,
+  minTier: string = ALERT_MIN_TIER, lateFloorMin: number = ALERT_LATE_FLOOR_MIN,
+): AlertCandidate[] {
   const out: AlertCandidate[] = [];
   // The floor is a PARAMETER with the env as its default, exactly like the amber gate above,
   // so the policy can be replayed both ways in a test and rehearsed on a live board through
@@ -383,6 +462,9 @@ export function selectAlertable(rows: any[], nowMin: number | null, amberGateMin
   const tiers = alertTiersFor(floor);
   // A malformed env var must not silently open the gate to every amber on the board.
   const gate = Number.isFinite(amberGateMin) && amberGateMin > 0 ? amberGateMin : 0;
+  // Same clamp, same reason: a malformed value is OFF, never accidentally zero-and-therefore-
+  // every-row (0 would make `lateBy >= 0` true for a stop predicted exactly on time).
+  const lateFloor = Number.isFinite(lateFloorMin) && lateFloorMin > 0 ? lateFloorMin : 0;
   // A BROKEN CLOCK IS NOT A CLOCK, AND IT MUST NOT READ AS "NO CLOCK".
   //
   // The two clock rules below were written against `nowMin != null`, and NaN passes that
@@ -417,6 +499,7 @@ export function selectAlertable(rows: any[], nowMin: number | null, amberGateMin
     // it was not a decision about guesses. This guard sits ABOVE the gate deliberately, so
     // widening the gate later cannot quietly widen this too.
     if (String(r?.hoursTier) === 'assumed') continue;
+    let reason: AlertReason = 'tier';
     if (!tiers.has(String(r?.tier))) {
       // BELOW THE FLOOR. TWO DIFFERENT QUESTIONS, TWO DIFFERENT SWITCHES.
       //
@@ -439,11 +522,24 @@ export function selectAlertable(rows: any[], nowMin: number | null, amberGateMin
       //
       // So the floor governs the URGENT band, and the gate governs the EARLY one. Red still
       // cannot email while the floor is critical; that promise is unchanged and tested.
-      if (String(r?.tier) !== 'amber') continue;
-      if (!gate) continue;                             // shipped default: amber stays on screen
-      if (!AMBER_GATED_RULES.has(String(r?.rule))) continue;
-      if (clock == null) continue;                     // no clock, no measurable lead
-      if (closeMin - clock > gate) continue;           // the door is not close enough yet
+      // THE LATE FLOOR, first, because it is the wider of the two doors and it does not care
+      // about the tier at all — only about how late the stop is and whether we measured it.
+      // See ALERT_LATE_FLOOR_MIN for the numbers behind 25 and behind requiring an anchor.
+      const lateNow = finiteMinutes(r?.lateBy);
+      const overFloor = lateFloor > 0
+        && !!r?.anchored
+        && AMBER_GATED_RULES.has(String(r?.rule))
+        && lateNow != null && lateNow >= lateFloor;
+      if (overFloor) {
+        reason = 'floor';
+      } else {
+        if (String(r?.tier) !== 'amber') continue;
+        if (!gate) continue;                           // shipped default: amber stays on screen
+        if (!AMBER_GATED_RULES.has(String(r?.rule))) continue;
+        if (clock == null) continue;                   // no clock, no measurable lead
+        if (closeMin - clock > gate) continue;         // the door is not close enough yet
+        reason = 'gate';
+      }
     }
     // Rule 2 — the window has already shut. Nothing actionable is left in this message.
     if (clock != null && clock >= closeMin) continue;
@@ -451,7 +547,7 @@ export function selectAlertable(rows: any[], nowMin: number | null, amberGateMin
       stopNbr: String(r.stopNbr), customer: String(r.customer || r.businessName || ''),
       route: String(r.routeName || ''), closeMin, etaMin: Number(r.etaMin),
       lateBy: Number(r.lateBy), tier: r.tier, anchored: !!r.anchored, detail: String(r.detail || ''),
-      rule: String(r.rule),
+      rule: String(r.rule), reason,
       // WHO IS ON THE TRUCK. The row has carried this since the receiving-hours card was
       // asked for it ("Need to show route and driver name") and board-flags even fills it in
       // from the ROUTE when a stop's own record is blank — an unassigned stop on an assigned
@@ -485,7 +581,7 @@ export function buildAlert(c: AlertCandidate, date: string): { subject: string; 
   // it is "confidently late". A rep who chases two of those, finds the truck on time and is
   // told nothing distinguished them learns to discount the whole channel — which costs the
   // catches the red path already gets right. So the tier is on the face of the message.
-  const early = alertBandOf(c.tier) === 'early';
+  const early = bandOfCandidate(c) === 'early';
   const subject = early
     ? `Heads-up — ${c.customer || c.stopNbr} closes ${close}, we may run it close (ETA ${eta})`
     : `Receiving window at risk — ${c.customer || c.stopNbr} closes ${close}, ETA ${eta}`;
@@ -508,7 +604,10 @@ export function buildAlert(c: AlertCandidate, date: string): { subject: string; 
   // act on. So it describes our data instead, and stays on the message either way: "no name
   // on this load" is itself worth knowing at 2pm, because it means the phone call needs a
   // lookup first.
-  const driver = String(c.driver || '').trim();
+  // Whitespace collapsed: NuVizz spells names with double spaces ("Ben  Paintsil",
+  // "ANTHONY  KOSTNER" — both in this repo's own fixtures), and "TONY  SMITH" on the line a
+  // rep reads looks like a rendering fault in our email rather than a quirk of the feed.
+  const driver = String(c.driver || '').replace(/\s+/g, ' ').trim();
   const driverText = driver || 'not named on this load';
   const text = [
     opener,
@@ -582,7 +681,7 @@ export async function sendAlerts(
   const emailedStops = new Set<string>();
   for (const c of candidates) {
     if (claimed >= DAILY_ALERT_CAP) { capped += 1; continue; }
-    const band = alertBandOf(c.tier);
+    const band = bandOfCandidate(c);
     let won = false;
     try {
       // THE BANDS MUST ARRIVE IN ORDER. The early message exists to be followed by the

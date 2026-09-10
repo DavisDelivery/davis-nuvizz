@@ -1557,6 +1557,16 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   //
   // Bucketing by tier means a critical can only ever be summarized by criticals, and the
   // count that collapses is the count the dispatcher would have had to read anyway.
+  // THE DRIVER IS FILLED IN BEFORE THE COLLAPSE, NOT AFTER, and the order is the whole point.
+  //
+  // fillRouteDrivers used to run on `capped` — after the bucket loop below has already
+  // projected the over-cap rows into collapsedRows. It mutates top-level rows only, so a
+  // constituent inside a collapsed batch could never receive the route's driver: on a busy
+  // board the alert path reads those constituents, and every one of them had a null driver.
+  // Filling `rows` first means the name is on the row BEFORE it is projected, so both the
+  // panel's line and the batch's constituents carry it.
+  fillRouteDrivers(rows, stops);
+
   const capped = [];
   const byRule = new Map();
   for (const r of rows) {
@@ -1601,6 +1611,14 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       collapsedRows: rs.map((r) => ({
         rule: r.rule, tier: r.tier, stopNbr: r.stopNbr, matchKey: r.matchKey,
         routeName: r.routeName, customer: r.customer, closeMin: r.closeMin,
+        // THE DRIVER, AND THIS IS THE THIRD FIELD THIS PROJECTION HAS EATEN. The receipt
+        // above is `scope` (thirteen reds that texted nobody) and then routeKey/blockers.
+        // driverName went the same way, and it was worse than a silent drop: the alert email
+        // prints "not named on this load" when it is absent, so a capped board — the busy
+        // day, the one that produces a cap in the first place — mailed customer service a
+        // false statement about our own data on the line the rep acts on. Measured on the
+        // real engine: 12 red hours rows carry drivers, 13 carry eight nulls.
+        driverName: r.driverName,
         etaMin: r.etaMin, lateBy: r.lateBy, anchored: r.anchored, detail: r.detail,
         scope: r.scope, servedDate: r.servedDate,
         // R7's own facts. The text selector groups trailer conflicts BY ROUTE and quotes the
@@ -1623,7 +1641,9 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // row only takes it when its own is blank. An AMBIGUOUS route (two drivers on one route
   // name) fills nothing rather than naming the wrong person: this panel is where somebody
   // decides who to phone.
-  fillRouteDrivers(capped, stops);
+  // `rows` was filled above (before the collapse); `capped` holds those same objects plus the
+  // summary rows, so nothing is left to fill there. `suppressed` is a separate list built
+  // elsewhere and still needs its own pass.
   fillRouteDrivers(suppressed, stops);
 
   return {
