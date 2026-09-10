@@ -1125,3 +1125,49 @@ test('an empty roster resolves nothing and does not throw', async () => {
   }
   assert.equal(resolveLoadIdentity(roster0812, '').loadId, null);
 });
+
+// ── A piece a PERSON added is not a piece a barcode proved ───────────────────
+//
+// Chad, looking at a truck's stop list: "does this show the ones they manually
+// added?" It did not — the rows counted distinct pieces and said nothing about
+// how any of them got there, so a stop reading "all here" off an override tap
+// looked exactly like one read off a barcode. That distinction stopped being
+// academic on 2026-09-09, when a touch-transparent warning panel sat over the
+// override button and loaders were adding freight over the manifest by reflex.
+
+test('a stop reports how many of its pieces a person added rather than scanned', async () => {
+  const rows = ACT.reconcileStops(dstops, [
+    sc('OG0000000001', '1', { engine: 'quagga' }),
+    sc('NOOG-7000000-1', '1', { engine: 'manual' }),   // the "Another piece" override
+    sc('TYPED-7000000-1', '1', { engine: 'manual' }),  // typed into the PRO lookup
+  ], []);
+  const one = rows.find((r) => r.stopNbr === '1');
+  assert.equal(one.scanned, 3, 'all three are on the truck either way');
+  assert.equal(one.handAddedCount, 2, 'two of them are a person’s word, not a barcode');
+});
+
+test('a scanned piece whose piece id never decoded is still a SCAN, not a hand add', async () => {
+  // The fallback id looks synthetic and is not: a barcode was read, the top one
+  // just did not decode. Counting it as hand-added would cry wolf on ordinary
+  // freight and make the real signal worthless.
+  const rows = ACT.reconcileStops(dstops, [
+    sc('NOOG-7000000-1', '1', { engine: 'quagga' }),
+    sc('NOOG-7000000-2', '1', { engine: 'wedge' }),
+    sc('NOOG-7000000-3', '1', { engine: 'native' }),
+  ], []);
+  assert.equal(rows.find((r) => r.stopNbr === '1').handAddedCount, 0);
+});
+
+test('a voided hand-added piece stops being counted — it is off the truck', async () => {
+  const rows = ACT.reconcileStops(dstops, [
+    sc('OG0000000001', '1', { engine: 'quagga' }),
+    sc('NOOG-7000000-9', '1', { engine: 'manual', voidedAt: '2026-09-09T12:00:00Z' }),
+  ], []);
+  assert.equal(rows.find((r) => r.stopNbr === '1').handAddedCount, 0, 'a removed override is not a claim any more');
+});
+
+test('an ordinary all-scanned stop reports none, so the marker means something', async () => {
+  const rows = ACT.reconcileStops(dstops, [sc('OG0000000001', '1', { engine: 'quagga' })], []);
+  assert.equal(rows.find((r) => r.stopNbr === '1').handAddedCount, 0);
+  assert.equal(rows.find((r) => r.stopNbr === '2').handAddedCount, 0, 'and an untouched stop reports zero, not undefined');
+});
