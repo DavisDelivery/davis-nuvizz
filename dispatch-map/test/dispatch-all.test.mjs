@@ -112,3 +112,38 @@ test('a bad run names the first few and counts the rest rather than running to a
 test('an empty run says nothing happened rather than claiming success', () => {
   assert.equal(dispatchAllSummary([]), 'Nothing to dispatch.');
 });
+
+// ── the roster names a driver, and it still does not open the gate ─────────────────────────
+//
+// Since v1.7.0 the load roster carries the driver NuVizz already has on each load, and the
+// route cards show it. It must not become a dispatch permission: `dispatchLoad` sends
+// { action:'DISPATCH', routeId } to production NuVizz and there is no undo, while the roster is
+// a cache that can be hours old. Chad asked to SEE the driver, not to widen what fires without
+// him. What DID change is the sentence — a route he can read a name on may not be reported as
+// having no driver assigned.
+test('a roster-only driver does NOT make a route eligible — a capture cannot authorize a dispatch', () => {
+  const out = plan([route({ driver: null, rosterDriver: 'Sirdedrick Sheats', name: 'SHEATS' })]);
+  assert.equal(out.eligible.length, 0, 'the gate is exactly as picky as it was');
+});
+
+test('…and the skip says WHY, naming the driver the dispatcher can see on the card', () => {
+  const out = plan([route({ driver: null, rosterDriver: 'Sirdedrick Sheats', name: 'SHEATS' })]);
+  assert.equal(out.skipped.length, 1);
+  assert.equal(out.skipped[0].name, 'SHEATS');
+  assert.match(out.skipped[0].reason, /NuVizz has Sirdedrick Sheats on this load/);
+  assert.match(out.skipped[0].reason, /assign to dispatch/);
+});
+
+test('a route with nobody on it anywhere still reads "no driver assigned" — the plain case is unchanged', () => {
+  const out = plan([route({ driver: null, rosterDriver: '', name: 'ESTES' })]);
+  assert.deepEqual(out.skipped, [{ name: 'ESTES', reason: 'no driver assigned' }]);
+  assert.deepEqual(plan([route({ driver: null, name: 'ALPHA 2' })]).skipped,
+    [{ name: 'ALPHA 2', reason: 'no driver assigned' }], 'no rosterDriver field at all is the same case');
+});
+
+test('a CONFIRMED driver still goes, and the roster changes nothing about it', () => {
+  const out = plan([route({ driver: 'Michael Tharp', rosterDriver: 'Somebody Stale' })]);
+  assert.equal(out.eligible.length, 1);
+  assert.deepEqual(dispatchPlanLines(out.eligible, driverFor), ['Dispatch SUW 2 → Michael Tharp'],
+    'the confirm line names the confirmed driver, never the capture');
+});

@@ -573,7 +573,7 @@ export function flagChipParts(flags) {
  *
  * @param stops       board stops for the served day (client rows)
  * @param notes       Map<matchKey, customer_note>
- * @param rosterRows  raw day-loads roster rows [{loadId,name,loadNbr,status}] — or null when
+ * @param rosterRows  raw day-loads roster rows [{loadId,name,loadNbr,status,driver}] — or null when
  *                    the Routes panel has not fetched it (route checks then report skipped)
  * @param servedDate  'YYYY-MM-DD' — the board day being LOOKED AT (never stop.boardDate,
  *                    which carry-over folding can leave stale)

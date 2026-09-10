@@ -1620,7 +1620,7 @@ export async function writeFleetIndex(
 const LOAD_ROSTER_COLLECTION = 'nuvizz_load_roster';
 export async function writeLoadRoster(
   tenant: string, dateStr: string, loads: any[], scannedAt: string,
-  meta: { emptyStreak?: number; emptyAt?: string | null; pull?: { period: string; httpStatus: number; cols: number; rows: number; kept: number } | null } = {},
+  meta: { emptyStreak?: number; emptyAt?: string | null; pull?: { period: string; httpStatus: number; cols: number; rows: number; kept: number; drivers?: number } | null } = {},
 ): Promise<void> {
   await setDoc(`${LOAD_ROSTER_COLLECTION}/${parentId(tenant, dateStr)}`, {
     tenant, date: dateStr, at: scannedAt, count: (loads || []).length, loadsJson: JSON.stringify(loads || []),
@@ -1649,7 +1649,7 @@ export async function markLoadRosterEmpty(
 }
 export async function readLoadRoster(
   tenant: string, dateStr: string,
-): Promise<{ at: string | null; loads: any[]; emptyStreak: number; emptyAt: string | null; pull: { period: string; httpStatus: number; cols: number; rows: number; kept: number } | null } | null> {
+): Promise<{ at: string | null; loads: any[]; emptyStreak: number; emptyAt: string | null; pull: { period: string; httpStatus: number; cols: number; rows: number; kept: number; drivers?: number } | null } | null> {
   const doc = await getDoc(`${LOAD_ROSTER_COLLECTION}/${parentId(tenant, dateStr)}`);
   if (!doc) return null;
   let loads: any[] = [];
