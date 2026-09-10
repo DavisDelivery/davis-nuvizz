@@ -82,3 +82,30 @@ export function normalizeRoutesLoadsTab(raw) {
   const v = String(raw ?? '');
   return ROUTES_LOADS_TABS.includes(v) ? v : DEFAULT_SUB_TAB;
 }
+
+/**
+ * THE RAIL'S SEARCH BOX IS ONE VALUE ACROSS ITS SUB-TABS.
+ *
+ * Chad, Sep 10, with "frye" typed on Routes: "I want these two search bars to work together —
+ * if I type something in the search bar for routes and swap to loads I want it to remain."
+ * Both panels owned a local `q`, so switching tabs UNMOUNTED the box and took the text with it:
+ * you retyped the same word to ask the same question of the other list, and the two counts on
+ * the tabs — the whole reason the strip shows both — could never be read against one needle.
+ *
+ * The rail owns the value now. But the Routes panel is ALSO rendered on the dispatch Map, where
+ * there is no second tab and no parent state to lift into, so the panels stay usable on their
+ * own: a caller that passes a string CONTROLS the box, one that passes nothing keeps its own.
+ * That rule is resolved here rather than written out twice, because two copies of a
+ * controlled/uncontrolled fallback is two chances for the panels to disagree about who owns it.
+ *
+ * `onChange` is optional even when controlled — a read-only listing is a legitimate caller, and
+ * a missing handler must make the box inert, never throw on the first keystroke.
+ */
+export function resolveRailQuery({ query, onChange, own, setOwn }) {
+  const controlled = typeof query === 'string';
+  return {
+    controlled,
+    q: controlled ? query : (own ?? ''),
+    setQ: controlled ? (typeof onChange === 'function' ? onChange : () => {}) : setOwn,
+  };
+}

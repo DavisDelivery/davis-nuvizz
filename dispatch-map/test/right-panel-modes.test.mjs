@@ -17,6 +17,7 @@ import {
   ROUTES_LOADS_TABS,
   normalizeRoutesDriversTab,
   normalizeRoutesLoadsTab,
+  resolveRailQuery,
 } from '../src/lib/right-panel.js';
 
 // ── THE COUNT, AND THE TWO THAT WERE ALREADY THERE ───────────────────────────
@@ -100,4 +101,50 @@ test('only the Routes / Drivers mode pulls the driver roster', () => {
   assert.equal(hasDriversTab('routes'), true);
   assert.equal(hasDriversTab('routesLoads'), false);
   assert.equal(hasDriversTab('tabs'), false);
+});
+
+// ── ONE SEARCH BOX FOR THE WHOLE RAIL (Chad, Sep 10 2026) ────────────────────
+// "I want these two search bars to work together — if I type something in the search bar for
+// routes and swap to loads I want it to remain." Both panels owned a local `q`, so the tab
+// switch unmounted the box and took the text with it.
+
+test('the rail owns the needle when it passes one — that is what survives a swap to Loads', () => {
+  const r = resolveRailQuery({ query: 'frye', onChange: () => {}, own: 'stale-local', setOwn: () => {} });
+  assert.equal(r.controlled, true);
+  assert.equal(r.q, 'frye', 'the panel shows the RAIL\'s value, never its own leftover');
+});
+
+test('a panel with no owner keeps its own box — the dispatch Map has no second tab to share with', () => {
+  const r = resolveRailQuery({ own: 'local', setOwn: () => {} });
+  assert.equal(r.controlled, false);
+  assert.equal(r.q, 'local');
+});
+
+test('typing goes to whoever owns the value, and to nobody else', () => {
+  const rail = [];
+  const own = [];
+  resolveRailQuery({ query: 'a', onChange: (v) => rail.push(v), own: '', setOwn: (v) => own.push(v) }).setQ('joe');
+  assert.deepEqual(rail, ['joe']);
+  assert.deepEqual(own, [], 'a controlled box must not also write the panel\'s dead local state');
+
+  resolveRailQuery({ own: '', setOwn: (v) => own.push(v) }).setQ('joe');
+  assert.deepEqual(own, ['joe']);
+});
+
+test('an EMPTY string still means the rail owns it — clearing the box is not "nobody is holding this"', () => {
+  // The trap: `query || ownValue` would fall back to the panel's stale local text the moment the
+  // rail cleared the search, so Clear on one tab would resurrect the old needle on the other.
+  const r = resolveRailQuery({ query: '', onChange: () => {}, own: 'frye', setOwn: () => {} });
+  assert.equal(r.controlled, true);
+  assert.equal(r.q, '', 'cleared is cleared');
+});
+
+test('a controlled box with no handler is inert, never a throw on the first keystroke', () => {
+  const r = resolveRailQuery({ query: 'frye', own: '', setOwn: () => {} });
+  assert.equal(r.q, 'frye');
+  assert.doesNotThrow(() => r.setQ('anything'));
+});
+
+test('a panel with nothing at all shows an empty box rather than undefined', () => {
+  assert.equal(resolveRailQuery({}).q, '');
 });
