@@ -146,3 +146,93 @@ test('the flag carries its own label table, separate from the location-keyed res
   assert.equal(HANDLING_FLAGS[NO_DOUBLE_STACK].short, 'DNDS');
   assert.equal(HANDLING_FLAGS[NO_DOUBLE_STACK].label, 'Do not double stack');
 });
+
+// ── THE STACKER, PRO 007173855 (SHARPS MWS, redelivered 2026-09-10) ──────────
+//
+// The order that produced this rule. A 1,259 lb walk-behind stacker went out on 09-09,
+// came back undelivered, and its Pre-Visit note for the redelivery read "REDELIVER
+// STRADDLE STACKER ON TRACTOR TRAILER 9/10". Chad: "I want to look for the text hydraulic
+// stacker in the items on my deliveries" and "throw a flag if i try to put this on a box
+// truck."
+
+import { itemHandlingFlags, stopNeedsTractor, STACKER } from '../src/lib/handling-flags.js';
+
+const SHARPS = {
+  signalSources: {
+    orderInstructions: [
+      '**REDELIVER STRADDLE STACKER ON TRACTOR TRAILER 9/10**',
+      'NO STRAIGHT TRUCK OR LIFT',
+      'GATE! MUST SHIP UPRIGHT.',
+      'TOTAL-AMOUNT : 203.62',
+    ].join('\n'),
+  },
+  stopDetails: [
+    { product: 'VINYL BAGS' }, { product: 'PLASTIC WATER COOLERS' }, { product: 'KNIVES' },
+    { product: 'PALLET STRETCH WRAP 15PCF' }, { product: 'MISC' },
+    { product: 'HYDRAULIC STACKER' }, { product: 'PLATFORM TRUCK' },
+  ],
+};
+
+test('the real order flags — the ITEM says HYDRAULIC, the NOTE says STRADDLE, one machine', () => {
+  assert.deepEqual(stopHandlingFlags(SHARPS), [STACKER]);
+  assert.equal(stopNeedsTractor(SHARPS), true);
+});
+
+test('matching the noun, not the phrase — a rule anchored on "hydraulic stacker" is deaf to the note that names the truck', () => {
+  // The note carries the operational instruction and never says "hydraulic".
+  assert.deepEqual(
+    detectHandlingFlags('REDELIVER STRADDLE STACKER ON TRACTOR TRAILER 9/10'),
+    [STACKER],
+  );
+  assert.deepEqual(detectHandlingFlags('WALKIE STACKER'), [STACKER]);
+});
+
+test('the mark lands on the ONE line that named it, not on all seven', () => {
+  const marked = SHARPS.stopDetails.filter((d) => itemHandlingFlags(d).includes(STACKER));
+  assert.deepEqual(marked.map((d) => d.product), ['HYDRAULIC STACKER']);
+  // PLATFORM TRUCK is Uline material handling too, and it is a 174 lb one-man tilt-and-roll.
+  assert.deepEqual(itemHandlingFlags({ product: 'PLATFORM TRUCK' }), []);
+});
+
+test('a box of placards cannot cost a floor position — item text is NOT read for no-double-stack', () => {
+  // Uline sells "DO NOT STACK" signs. Reading product names for that rule would flag the
+  // carton of signs as un-stackable freight on every truck that ever carries one.
+  const signs = { stopDetails: [{ product: 'DO NOT STACK SIGN' }] };
+  assert.deepEqual(stopHandlingFlags(signs), []);
+  // …while the same words in the ORDER'S NOTES still mean what they say.
+  assert.deepEqual(
+    stopHandlingFlags({ signalSources: { orderInstructions: 'DO NOT STACK' } }),
+    [NO_DOUBLE_STACK],
+  );
+});
+
+test('the two rules share a root and must not bleed — "NO STACKERS" is a stacker, not a stacking refusal', () => {
+  // Every no-double-stack pattern ends on a word boundary after STACK/STACKING; "STACKER"
+  // has none there. This is the guard for that overlap.
+  assert.deepEqual(detectHandlingFlags('NO STACKERS'), [STACKER]);
+  assert.deepEqual(detectHandlingFlags('NOT STACKABLE'), [NO_DOUBLE_STACK]);
+});
+
+test('an un-enriched stop has no item list, and says nothing rather than saying clean', () => {
+  // The cheap saved-search pull that builds the board carries no stopDetails at all. The
+  // note is still read, which is why the same flag has two sources.
+  assert.deepEqual(stopHandlingFlags({ stopDetails: [] }), []);
+  assert.deepEqual(
+    stopHandlingFlags({ stopDetails: [], signalSources: { orderInstructions: 'STRADDLE STACKER' } }),
+    [STACKER],
+  );
+});
+
+test('only a flag that declares needsTractor moves the truck — DNDS does not', () => {
+  assert.equal(HANDLING_FLAGS[STACKER].needsTractor, true);
+  assert.equal(stopNeedsTractor({ signalSources: { orderInstructions: 'Do NOT Deliver Double Stacked' } }), false);
+});
+
+test('the item badge is specified once, so the row and any other surface cannot drift', () => {
+  const b = HANDLING_FLAGS[STACKER].badge;
+  assert.equal(b.letter, 'H');
+  assert.equal(b.fill, '#facc15');
+  // Dark, not white: readableTextColor() returns #1f2937 for any fill this light, and a
+  // white H on bright yellow is unreadable at the 13px item-row size.
+  assert.equal(b.ink, '#1f2937');
+});

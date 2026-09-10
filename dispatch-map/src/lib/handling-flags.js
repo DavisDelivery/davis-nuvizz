@@ -23,6 +23,7 @@
 
 /** The flag keys this module can produce. One entry per real handling constraint. */
 export const NO_DOUBLE_STACK = 'no_double_stack';
+export const STACKER = 'stacker';
 
 // The phrasings Uline and Davis actually send, taken from the board rather than
 // imagined. Both known corpus samples are the same sentence in different casing —
@@ -57,8 +58,37 @@ const NO_DOUBLE_STACK_PATTERNS = [
   /\bDNDS\b/i,
 ];
 
+// A WALK-BEHIND STACKER ON THE ORDER. Chad: "I want to look for the text hydraulic
+// stacker in the items on my deliveries."
+//
+// MATCHED ON THE NOUN, NOT THE FULL PHRASE, and the 2026-09-10 board is why. The item line
+// reads "HYDRAULIC STACKER" while the Pre-Visit note on the same order reads "REDELIVER
+// STRADDLE STACKER ON TRACTOR TRAILER 9/10" — same machine, two names, one of them written
+// by a person in a hurry. A rule anchored on "hydraulic stacker" would read the item and be
+// deaf to the note that actually says which truck it needs. \bSTACKERS?\b catches
+// hydraulic, straddle, walkie and counterbalance without a vocabulary to maintain.
+//
+// WHY THIS CANNOT COLLIDE WITH THE RULE ABOVE: every no-double-stack pattern ends on a word
+// boundary after STACK or STACKING, and "STACKER" has no boundary there — so "NO STACKERS"
+// raises this flag and not that one. Pinned by a test, because the two rules sharing the
+// root is exactly the kind of overlap that rots quietly.
+const STACKER_PATTERNS = [
+  /\bSTACKERS?\b/i,
+];
+
+// WHICH TEXT EACH RULE IS ALLOWED TO READ, and it is not the same text.
+//
+// The stacker is named in the ITEM LIST — that is where Chad reads it — so it scans the
+// product names as well as the comments. NO_DOUBLE_STACK deliberately does NOT: Uline sells
+// placards and labels, and a carton whose product name is "DO NOT STACK SIGN" is a box of
+// signs, not freight that has to sit alone on the floor. Reading item text for that rule
+// would flag the sign and cost a floor position on every truck carrying one.
+const COMMENTS = 'comments';
+const ITEMS = 'items';
+
 const RULES = [
-  { key: NO_DOUBLE_STACK, patterns: NO_DOUBLE_STACK_PATTERNS },
+  { key: NO_DOUBLE_STACK, patterns: NO_DOUBLE_STACK_PATTERNS, sources: [COMMENTS] },
+  { key: STACKER, patterns: STACKER_PATTERNS, sources: [COMMENTS, ITEMS] },
 ];
 
 /**
@@ -74,6 +104,20 @@ export const HANDLING_FLAGS = {
     // What it costs the load builder, in the words the tally uses.
     tally: 'no-stack',
     title: 'Do not double stack — this freight needs its own floor position',
+  },
+  [STACKER]: {
+    short: 'STACKER',
+    label: 'Hydraulic stacker',
+    tally: 'stacker',
+    title: 'Hydraulic stacker on this order — needs a tractor trailer, not a box truck',
+    // The item-row mark Chad chose: a bright yellow disc with a dark H. Dark rather than
+    // white because readableTextColor() (App.jsx) returns #1f2937 for any fill this light,
+    // and white washes out on yellow at the 13px row size.
+    badge: { fill: '#facc15', ink: '#1f2937', letter: 'H' },
+    // A stacker rolls on its own castors off a dock or a tractor's deck. It does not come
+    // down on a liftgate, which is what every box truck in this fleet has instead of a
+    // dock. That makes this the one handling flag that constrains the TRUCK.
+    needsTractor: true,
   },
 };
 
@@ -113,13 +157,71 @@ function handlingTextForStop(stop) {
 }
 
 /**
+ * The PRODUCT NAMES on a stop's line items, as one blob.
+ *
+ * stopDetails rides on the normalized stop already (nuvizz-scan.mts StopLineItem) — but
+ * only on stops that have been ENRICHED. The cheap saved-search pull that builds the board
+ * carries no line items at all, so an un-enriched stop yields '' here and its item-sourced
+ * flags are silently absent. That is a real limit and it is why `stopHandlingFlags` still
+ * reads the comments for the same rule: the note is on the cheap pull, the item list is not.
+ */
+function itemTextForStop(stop) {
+  const lines = Array.isArray(stop?.stopDetails) ? stop.stopDetails : [];
+  const parts = [];
+  for (const d of lines) {
+    if (d && typeof d.product === 'string') parts.push(d.product);
+  }
+  return parts.join('\n');
+}
+
+/** Flags from one rule set against one blob of text. */
+function flagsFrom(text, source) {
+  if (!text || typeof text !== 'string') return [];
+  const out = [];
+  for (const rule of RULES) {
+    if (!rule.sources.includes(source)) continue;
+    if (rule.patterns.some((p) => p.test(text))) out.push(rule.key);
+  }
+  return out;
+}
+
+/**
  * Handling flags for one normalized stop. Reads what is already on the row — no fetch,
  * no NuVizz call, no Firestore read.
  *
- * @returns {string[]} flag keys
+ * Each rule is tested only against the text it is allowed to read (see RULES.sources), so
+ * a product called "DO NOT STACK SIGN" cannot raise the no-double-stack flag.
+ *
+ * @returns {string[]} flag keys, stable order, no duplicates
  */
 export function stopHandlingFlags(stop) {
-  return detectHandlingFlags(handlingTextForStop(stop));
+  const seen = new Set();
+  const out = [];
+  for (const k of [
+    ...flagsFrom(handlingTextForStop(stop), COMMENTS),
+    ...flagsFrom(itemTextForStop(stop), ITEMS),
+  ]) {
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(k);
+  }
+  // RULES order, so two surfaces listing the same stop never disagree about chip order.
+  return RULES.map((r) => r.key).filter((k) => out.includes(k));
+}
+
+/** Does THIS one line item carry a handling flag? Used to mark the row it is on. */
+export function itemHandlingFlags(item) {
+  return flagsFrom(typeof item?.product === 'string' ? item.product : '', ITEMS);
+}
+
+/**
+ * Does this stop's freight require a tractor trailer rather than a box truck?
+ *
+ * Derived from the handling flags rather than stored, so it can never outlive the order
+ * that produced it — the whole reason this module exists.
+ */
+export function stopNeedsTractor(stop) {
+  return stopHandlingFlags(stop).some((k) => HANDLING_FLAGS[k]?.needsTractor === true);
 }
 
 /** Convenience for the common single question. */
