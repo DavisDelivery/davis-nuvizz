@@ -15,8 +15,13 @@ import { fileURLToPath } from 'node:url';
 const src = await readFile(fileURLToPath(new URL('../src/App.jsx', import.meta.url)), 'utf8');
 
 test('the green highlight and the drop button read the SAME rule', () => {
-  assert.ok(/tractorOk: \(\(\) => \{[\s\S]{0,400}?tractorFriendlySelection\(\{/.test(src),
-    'the row\'s green flag must come from tractorFriendlySelection, not a second inline copy.');
+  // Since v1.3.0 the row asks stopTractorFriendly — the ONE helper the bottom grid also reads —
+  // and that helper is what feeds tractorFriendlySelection. A private copy in either place is
+  // the drift this test exists to stop.
+  assert.ok(/tractorOk: stopTractorFriendly\(s, notes, tractorLocs\),/.test(src),
+    'the row\'s green flag must come from the shared helper, not a second inline copy.');
+  assert.ok(/^function stopTractorFriendly\(stop, notes, tractorLocs\) \{[\s\S]{0,400}?return tractorFriendlySelection\(\{/m.test(src),
+    'the shared helper must feed tractorFriendlySelection — the rule the tests execute.');
   assert.ok(/const nonTractorIds = useMemo\(\(\) => rows\.filter\(\(r\) => !r\.tractorOk\)\.map\(\(r\) => r\.id\), \[rows\]\);/.test(src),
     'the button must drop exactly the complement of the green rows.');
 });

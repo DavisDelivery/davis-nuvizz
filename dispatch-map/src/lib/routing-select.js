@@ -327,3 +327,37 @@ export function selectionRowTone({ tractorOk = false, hot = false } = {}) {
 export function toneIsGreen(tone) {
   return /(^|\s|:)bg-green-/.test(String(tone || ''));
 }
+
+// THE BOTTOM DATA GRID'S ROW, RANKED. Chad (v1.3.0): "I want this bottom panel to highlight
+// the tractor friendly rows." The Selected window has painted a tractor row green since
+// v0.46.5; the board's own spreadsheet — the 700 rows a router picks FROM — never did, so the
+// only way to learn which stops a 53-footer could run was to select them first and look. Now
+// the grid reads the same rule (tractorFriendlySelection, through one helper in App.jsx) and
+// paints the same green, so the two surfaces cannot disagree about a stop.
+//
+// FOUR THINGS CAN CLAIM A ROW, ranked by how recent the act behind them is, most recent first:
+//   selected  — the map selection tool is on this stop RIGHT NOW (blue; the grid and the
+//               lasso must read as one thing)
+//   [staged]  — it sits on an open route card, saved to nothing yet. Painted as an INLINE
+//               style in the card's own colour by the caller (grid-staged-rows pins that
+//               markup), and an inline background beats every class here, so staging sits
+//               between selection and the two facts below without this function naming it.
+//   tractorOk — a tractor trailer can be sent here: a fact about the freight (green)
+//   carryover — folded in from a prior day: a fact about the date (amber)
+// A fact about the freight outranks a fact about the date because the router acts on the
+// first (which truck) and only NOTES the second — and the Day column already says the day
+// in window mode, while nothing else on the row says "a trailer fits".
+export const GRID_ROW_TONE = {
+  selected: 'bg-blue-100 hover:bg-blue-200/70',
+  tractor: ROW_TONE.tractor,
+  carryover: 'bg-amber-50/60 hover:bg-blue-50',
+  plain: 'hover:bg-blue-50',
+};
+
+/** The background classes for one row of the bottom data grid. */
+export function gridRowTone({ selected = false, tractorOk = false, carryover = false } = {}) {
+  if (selected) return GRID_ROW_TONE.selected;
+  if (tractorOk) return GRID_ROW_TONE.tractor;
+  if (carryover) return GRID_ROW_TONE.carryover;
+  return GRID_ROW_TONE.plain;
+}

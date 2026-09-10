@@ -12,6 +12,9 @@ import { fileURLToPath } from 'node:url';
 import { BAR_STATUS_KEYS, BAR_WINDOWS } from '../src/lib/bar-memory.js';
 
 const src = await readFile(fileURLToPath(new URL('../src/App.jsx', import.meta.url)), 'utf8');
+// The changelog rows are prose about the code, and a pin that says a word must NOT appear has
+// to look past them — the v1.3.0 row explains, in words, why driverSel was removed.
+const code = src.split('\n').filter((l) => !/^  \['\d+\.\d+\.\d+', /.test(l)).join('\n');
 
 /** App.jsx's own profileDocId, lifted out so the reserved-id claim above is actually checked. */
 const profileDocIdOf = (name) => String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120) || 'profile';
@@ -32,7 +35,6 @@ test('every setting on the bar is seeded from the restore — one missed line is
     ['window', /const \[nvWindow, setNvWindow\] = useState\(boot\.nvWindow\)/],
     ['range from', /const \[nvFrom, setNvFrom\] = useState\(boot\.nvFrom\)/],
     ['range to', /const \[nvTo, setNvTo\] = useState\(boot\.nvTo\)/],
-    ['driver', /const \[driverSel, setDriverSel\] = useState\(boot\.driverSel\)/],
     ['no-location', /const \[unmappedOnly, setUnmappedOnly\] = useState\(boot\.unmappedOnly\)/],
     ['stop sort', /const \[stopSort, setStopSort\] = useState\(boot\.stopSort\)/],
     ['load sort', /const \[loadSort, setLoadSort\] = useState\(boot\.loadSort\)/],
@@ -44,7 +46,7 @@ test('the bar is written back on every change', () => {
   assert.ok(/safeWriteJSON\(LS_BOTTOM_BAR, \{ \.\.\.barSnapshot\(\), profile: activeProfileName \|\| null, profileAt: activeProfile\?\.updatedAt \?\? null \}\)/.test(src),
     'the bar must be persisted STAMPED with the profile it was written under — without the stamp a profile can never cross a device boundary');
   // Same snapshot for the profile and for the device memory, so the two can never drift apart.
-  assert.ok(/const barSnapshot = \(\) => \(\{ view, status: \[\.\.\.statusSel\], nvWindow, nvFrom, nvTo, driverSel, unmappedOnly, stopSort, loadSort \}\)/.test(src));
+  assert.ok(/const barSnapshot = \(\) => \(\{ view, status: \[\.\.\.statusSel\], nvWindow, nvFrom, nvTo, unmappedOnly, stopSort, loadSort \}\)/.test(src));
   // The hold: an untouched default bar must not be written down while a selected profile is
   // still in flight, or the next load reads that memory and never restores the profile again.
   assert.ok(/const pendingProfile = useRef\(barBoot\.pending\)/.test(src));
@@ -52,7 +54,7 @@ test('the bar is written back on every change', () => {
     'the pending-profile hold is gone — a cold start would freeze the unfiltered board in permanently');
   const deps = src.match(/safeWriteJSON\(LS_BOTTOM_BAR, \{[^\n]*\}\);\s*\n\s*\}, \[([^\]]+)\]/);
   assert.ok(deps, 'the persist effect has no dependency list');
-  for (const d of ['view', 'statusSel', 'nvWindow', 'nvFrom', 'nvTo', 'driverSel', 'unmappedOnly', 'stopSort', 'loadSort'])
+  for (const d of ['view', 'statusSel', 'nvWindow', 'nvFrom', 'nvTo', 'unmappedOnly', 'stopSort', 'loadSort'])
     assert.ok(deps[1].includes(d), `${d} changes would not be persisted — it is missing from the effect's deps`);
 });
 
@@ -120,11 +122,23 @@ test('each profile carries WHEN it was saved, so a device can tell stale from cu
     'without the save time, "Update Chad to current" on the desktop never reaches the iPad');
 });
 
-test('the restore is told how wide the screen is, and a stale driver stays clearable', () => {
+test('the restore is told how wide the screen is', () => {
   assert.ok(/width: readViewportSize\(\)\.w \|\| null/.test(src),
     'the restore no longer knows the viewport — a phone would get back a window it cannot clear');
-  assert.ok(/\{driverSel && !driverOptions\.includes\(driverSel\) && <option value=\{driverSel\}>/.test(src),
-    'a restored driver who is not on today\'s board would render a BLANK select that still filters every row out');
+});
+
+test('the driver filter is GONE from the grid — control, state and setting alike (v1.3.0)', () => {
+  // Chad: "Remove the all drivers drivers." Removing the <select> alone would have left
+  // driverSel in the bar's state, restored from every older profile and device memory, still
+  // filtering the rows — a live filter with no control to see it by. That is the v0.45.6
+  // trap; the fix is that the word does not appear in the grid at all.
+  assert.ok(!/All drivers/.test(code), 'the driver <select> is back on the bar');
+  assert.ok(!/driverSel/.test(code), 'driverSel is back in App.jsx — a stored value would filter rows with nothing on screen to clear it');
+  assert.ok(!/title="Filter by driver"/.test(code));
+  // The job it did survives in the one control that is always on screen: search matches the
+  // driver's name.
+  assert.ok(/const hay = \[s\.stopNbr, s\.businessName, s\.addr1, s\.addr2, s\.city, s\.zip, s\.routeName, s\.loadNbr, s\.driverName\]/.test(src),
+    'search no longer matches a driver name — with the dropdown gone there is no way to find one driver\'s stops');
 });
 
 test('the chip cannot claim a profile the bar has drifted from — nor cry drift that never happened', () => {
