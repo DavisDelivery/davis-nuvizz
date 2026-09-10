@@ -713,9 +713,19 @@ export function mergeTwoScan(activeRows: any[], completedRows: any[], overrides?
     if (prev && prev.stopId && s.stopId && String(prev.stopId) !== String(s.stopId)) {
       const prevLive = !isTerminalStatus(prev.normalizedStatus);
       const curLive = !isTerminalStatus(s.normalizedStatus);
-      // Live work outranks a finished twin; two live (or two finished) twins keep the
-      // later row — the old last-wins order, but now FLAGGED instead of silent.
-      const winner = prevLive === curLive ? s : (curLive ? s : prev);
+      // Live work outranks a finished twin. Between TWO LIVE twins, the one ON A LOAD outranks
+      // the one that is not (v1.4.0): the planned record is the freight a truck is actually
+      // going to move, and showing its unplanned duplicate instead put the order back in the
+      // selection pool with the route card one stop short — the exact state in which a
+      // dispatcher plans the same freight onto a second truck. Two live twins that agree on
+      // planned-ness (or two finished twins) keep the later row — the old last-wins order,
+      // FLAGGED rather than silent. The duplicate itself is still called out on the card
+      // (dupNbr), which is where "cancel the extra record in the portal" starts.
+      const prevPlanned = prev.isPlanned === true;
+      const curPlanned = s.isPlanned === true;
+      const winner = prevLive !== curLive ? (curLive ? s : prev)
+        : (prevLive && prevPlanned !== curPlanned) ? (curPlanned ? s : prev)
+          : s;
       const loser = winner === s ? prev : s;
       winner.dupNbr = true;
       winner.dupNbrOtherId = String(loser.stopId);
@@ -1023,28 +1033,59 @@ export function absentPlanDemoteCandidate(p: any): any {
   };
 }
 
+/**
+ * One line of the verify's ledger — WHAT the scan decided about one routed stop the list tried
+ * to un-plan, so the decision survives the run (v1.4.0). The counts alone could say "dropped 1"
+ * and nothing else; a dispatcher asking "why did my stop come off WILLIAM" needs the stop, the
+ * route and the verdict — the caller adds the basis (makeDemotionLookup's reasons) beside it.
+ */
+export interface DemotionOutcome {
+  stopNbr: string;
+  /** the route the prior board row held it on (board rows carry the route NAME in loadNbr) */
+  route: string | null;
+  verdict: 'kept' | 'held' | 'dropped';
+  /** the stop was ABSENT from the pull (absentPlanDemoteCandidate), not listed un-planned */
+  absent: boolean;
+  /** what the list row itself said this scan (raw status code), for the record */
+  listStatus: string | null;
+}
+
 export async function applyDemotionVerify(
   checks: Array<{ s: any; p: any }>,
   opts: { max: number; scannedAt: string; lookup: (stopNbr: string) => Promise<boolean | null> },
-): Promise<{ kept: number; held: number; dropped: number }> {
+): Promise<{ kept: number; held: number; dropped: number; outcomes: DemotionOutcome[] }> {
   let kept = 0, held = 0, dropped = 0;
-  if (!checks.length) return { kept, held, dropped };
-  if (!(opts.max > 0)) return { kept, held, dropped: checks.length };   // disabled → list wins
+  const outcomes: DemotionOutcome[] = [];
+  // What the LIST said is read off the fresh row BEFORE keepPlan copies the prior plan (and its
+  // status) back onto it — afterwards a kept row reads '20' whatever the list reported.
+  const asSeen = (s: any, p: any): Omit<DemotionOutcome, 'verdict'> => ({
+    stopNbr: String(s?.stopNbr ?? ''),
+    route: (p?.loadNbr ?? p?.routeName) != null ? String(p.loadNbr ?? p.routeName) : null,
+    absent: s?.absentFromPull === true,
+    listStatus: s?.absentFromPull === true ? null : (s?.status != null ? String(s.status) : null),
+  });
+  const note = (seen: Omit<DemotionOutcome, 'verdict'>, verdict: DemotionOutcome['verdict']) => outcomes.push({ ...seen, verdict });
+  if (!checks.length) return { kept, held, dropped, outcomes };
+  if (!(opts.max > 0)) {   // disabled → list wins
+    for (const { s, p } of checks) note(asSeen(s, p), 'dropped');
+    return { kept, held, dropped: checks.length, outcomes };
+  }
   const keepPlan = (s: any, p: any) => {
     for (const k of PLAN_FIELDS) s[k] = p[k] ?? null;
     if (p.board_write_at) { s.board_write_at = p.board_write_at; s.board_write_planned = p.board_write_planned; }
   };
   const cap = Math.min(checks.length, opts.max);
   for (const { s, p } of checks.slice(0, cap)) {
+    const seen = asSeen(s, p);
     let stillPlanned: boolean | null = null;
     try { stillPlanned = await opts.lookup(String(s.stopNbr)); } catch { /* read failed → hold */ }
-    if (stillPlanned === false) { dropped++; continue; }               // real unplan — list wins
+    if (stillPlanned === false) { dropped++; note(seen, 'dropped'); continue; }   // real unplan — list wins
     keepPlan(s, p);
-    if (stillPlanned === true) { s.plan_verified_at = opts.scannedAt; kept++; }
-    else held++;
+    if (stillPlanned === true) { s.plan_verified_at = opts.scannedAt; kept++; note(seen, 'kept'); }
+    else { held++; note(seen, 'held'); }
   }
-  for (const { s, p } of checks.slice(cap)) { keepPlan(s, p); held++; }
-  return { kept, held, dropped };
+  for (const { s, p } of checks.slice(cap)) { const seen = asSeen(s, p); keepPlan(s, p); held++; note(seen, 'held'); }
+  return { kept, held, dropped, outcomes };
 }
 
 // Exposed for tests: intermediate rows → board stops (dedup by stopNbr, last wins).

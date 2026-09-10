@@ -64,7 +64,7 @@ test('carryover load still excludes older-dated stops (no regression)', () => {
 // NuVizz's own running order — to.seq when stamped, array position in the settling window.
 import { orderedStopNbrsFromLoad } from '../netlify/functions/lib/nuvizz-scan.mts';
 
-test('orderedStopNbrsFromLoad: DO stops by to.seq, array-order fallback, pickups excluded', () => {
+test('orderedStopNbrsFromLoad: DO stops by to.seq, array-order fallback, the ORIGIN pickup excluded', () => {
   const load = { Load: { stops: [
     { stop: { stopNbr: 'C', stopType: 'DO', to: { seq: 4 } } },
     { stop: { stopNbr: 'ORIGIN', stopType: 'PU', to: { seq: 1 } } },   // origin pickup — not a board row
@@ -83,4 +83,24 @@ test('orderedStopNbrsFromLoad: DO stops by to.seq, array-order fallback, pickups
 
   assert.deepEqual(orderedStopNbrsFromLoad(null), []);
   assert.deepEqual(orderedStopNbrsFromLoad({ Load: { stops: [] } }), []);
+});
+
+// RA5732712 (Chad, 2026-09-10): a customer PICKUP planned on JOE is a board row — the DO-only
+// filter made the reconcile heal every delivery on a load and silently skip every pickup, so
+// an RA NuVizz held on a load could never be re-stamped planned by the repair built for it.
+test('orderedStopNbrsFromLoad: a CUSTOMER pickup past the origin slot rides in running order; the origin never does', () => {
+  const load = { Load: { stops: [
+    { stop: { stopNbr: 'ORIGIN', stopType: 'PU', to: { seq: 1 }, from: { seq: 1 } } },   // the route's own origin
+    { stop: { stopNbr: '007174183', stopType: 'DO', to: { seq: 2 } } },
+    { stop: { stopNbr: 'RA5732712', stopType: 'PU', from: { seq: 3 }, to: { seq: 12 } } },   // GEORGIA POWER, picked up third; its `to` is our terminal
+    { stop: { stopNbr: '007174297', stopType: 'DO', to: { seq: 4 } } },
+  ] } };
+  assert.deepEqual(orderedStopNbrsFromLoad(load), ['007174183', 'RA5732712', '007174297']);
+  // A pickup NuVizz has not positioned at all reads as the origin (the save engine's own rule)
+  // and is left out rather than guessed onto the board.
+  const unpositioned = { Load: { stops: [
+    { stop: { stopNbr: 'PU-NOSEQ', stopType: 'PU', from: {}, to: {} } },
+    { stop: { stopNbr: 'D1', stopType: 'DO', to: { seq: 2 } } },
+  ] } };
+  assert.deepEqual(orderedStopNbrsFromLoad(unpositioned), ['D1']);
 });
