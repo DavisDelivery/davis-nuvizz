@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  solveRouting, twoOpt, nearestNeighbor, pathCost, pinnedSweep, pinnedPathCost,
+  solveRouting, twoOpt, nearestNeighbor, pathCost, pinnedSweep, pinnedPathCost, townsOf, SWEEP_MODE, TOWN_RADIUS_METERS,
 } from '../netlify/functions/lib/routing-solver.mts';
 
 // Build a symmetric matrix from 1-D positions (depot first). cost = |Δpos|.
@@ -224,4 +224,46 @@ test('the sweep on one stop, on a tie for farthest, and on a ring, returns every
   // And the node order handed in does not change the answer.
   assert.deepEqual(pinnedSweep([6, 2, 4, 1, 5, 3], m, 'homeward'), pinnedSweep([1, 2, 3, 4, 5, 6], m, 'homeward'));
   assert.deepEqual(pinnedSweep(ARM_STOPS.map((_, i) => 8 - i), ARM_MATRIX.distanceMeters, 'homeward'), pinnedSweep(ARM_STOPS.map((_, i) => i + 1), ARM_MATRIX.distanceMeters, 'homeward'));
+});
+
+
+// ── One town at a time (Chad, 2026-09-10) — the engine keeps the same rule as the card ──────
+// The JEFF geography from the client suite, flattened to metres so the plane matrix stands in
+// for a haversine one. Stop ids carry the town; Nelson is one stop two miles north of Ball
+// Ground and chains into it under the 2.5-mile rule.
+const JEFF_M = [
+  ['ELLIJAY', 34.6948, -84.4822], ['JASPER-1', 34.4679, -84.4291], ['JASPER-2', 34.45, -84.42], ['JASPER-3', 34.47, -84.40],
+  ['CANTON', 34.25, -84.49], ['TATE', 34.42, -84.38], ['BG-1', 34.34, -84.38], ['BG-2', 34.335, -84.375], ['BG-3', 34.33, -84.37],
+  ['BG-4', 34.32, -84.36], ['BG-5', 34.32, -84.36], ['BG-6', 34.31, -84.35], ['NELSON', 34.37, -84.37], ['HWY53', 34.43, -84.25], ['BG-7', 34.35, -84.34],
+];
+const flat = ([id, lat, lng]) => ({ id, x: lng * Math.cos((34.4 * Math.PI) / 180) * 111320, y: lat * 111320 });
+const JEFF_PTS = [flat(['DEPOT', 34.147791, -83.960911]), ...JEFF_M.map(flat)];
+const JEFF_COST = JEFF_PTS.map((p) => JEFF_PTS.map((q) => Math.hypot(p.x - q.x, p.y - q.y)));
+const areaOfId = (id) => (id.startsWith('BG') || id === 'NELSON' ? 'BG' : id.replace(/-\d$/, ''));
+const areaRunsOf = (order) => order.map((n) => areaOfId(JEFF_PTS[n].id)).filter((a, i, arr) => i === 0 || a !== arr[i - 1]);
+
+test('FARTHEST_FIRST keeps a town whole: Ellijay first, Ball Ground in one visit, Canton not a spur through it', () => {
+  assert.equal(SWEEP_MODE, 'towns');
+  assert.equal(TOWN_RADIUS_METERS, 4000);
+  const nodes = JEFF_M.map((_, i) => i + 1);
+  const out = pinnedSweep(nodes, JEFF_COST, 'homeward');
+  assert.deepEqual([...out].sort((a, b) => a - b), nodes);
+  assert.equal(JEFF_PTS[out[0]].id, 'ELLIJAY');
+  const runs = areaRunsOf(out);
+  assert.equal(new Set(runs).size, runs.length, `a town is visited twice: ${runs.join(' → ')}`);
+  // The pure sweep on the same matrix splits Ball Ground around Canton — the switch's other setting.
+  const pure = pinnedSweep(nodes, JEFF_COST, 'homeward', 'pure');
+  const canton = pure.findIndex((n) => JEFF_PTS[n].id === 'CANTON');
+  assert.equal(areaOfId(JEFF_PTS[pure[canton - 1]].id), 'BG');
+  assert.equal(areaOfId(JEFF_PTS[pure[canton + 1]].id), 'BG');
+  // Towns cost a little: within 5% of the pure path.
+  assert.ok(pinnedPathCost(out.slice(1), out[0], 0, JEFF_COST) <= 1.05 * pinnedPathCost(pure.slice(1), pure[0], 0, JEFF_COST));
+});
+
+test('townsOf on the JEFF matrix: Ball Ground and Nelson chain, the three Jasper stops chain, the rest stand alone', () => {
+  const towns = townsOf(JEFF_M.map((_, i) => i + 1), JEFF_COST, TOWN_RADIUS_METERS);
+  const named = towns.map((t) => t.map((n) => JEFF_PTS[n].id).join('+'));
+  assert.ok(named.includes('JASPER-1+JASPER-2+JASPER-3'), named.join(' | '));
+  assert.ok(named.includes('BG-1+BG-2+BG-3+BG-4+BG-5+BG-6+NELSON+BG-7'), named.join(' | '));
+  for (const lone of ['ELLIJAY', 'CANTON', 'TATE', 'HWY53']) assert.ok(named.includes(lone), `${lone} should be its own town`);
 });

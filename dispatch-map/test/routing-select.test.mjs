@@ -285,7 +285,7 @@ test('isPlannedStop: junk input never throws', () => {
 // "it should be pretty linear from furthest point out to the last but this is jumping all
 // around." The picker sorted by radius from the depot; a radius says nothing about direction,
 // so towns at one radius in three directions interleaved and the route crossed itself.
-import { farthestFirst, closestFirst, improvePinnedPath, pinnedPathCost } from '../src/lib/routing-select.js';
+import { farthestFirst, closestFirst, improvePinnedPath, pinnedPathCost, townsOf, SWEEP_MODE, TOWN_RADIUS_METERS } from '../src/lib/routing-select.js';
 
 const BUFORD = { lat: 34.147791, lng: -83.960911 };
 // The JEFF route from the report — the card read "14 stops · 15 orders" — placed by the towns
@@ -305,7 +305,7 @@ const JEFF = [
   { id: 'BOWSTONE B (Ball Ground)',     lat: 34.3200, lng: -84.3600 },
   { id: 'RAYDEO (Ball Ground)',         lat: 34.3100, lng: -84.3500 },
   { id: 'STOP 13 (Nelson)',             lat: 34.3700, lng: -84.3700 },
-  { id: 'STOP 14 (Tate)',               lat: 34.4300, lng: -84.2500 },
+  { id: 'STOP 14 (Hwy 53)',             lat: 34.4300, lng: -84.2500 },
   { id: 'STOP 15 (Ball Ground)',        lat: 34.3500, lng: -84.3400 },
 ];
 const townOf = (s) => s.id.replace(/^.*\((.*)\)$/, '$1');
@@ -345,16 +345,29 @@ const homewardMeters = (order, depot) => {
 };
 const byId = (list, ...names) => names.map((n) => list.find((s) => s.id.startsWith(n)));
 
-test('farthest first — JEFF, 2026-09-10: out to Ellijay, then the shortest way home, never crossing itself', () => {
+// Nelson is one stop two miles north of the Ball Ground cluster; by the 2.5-mile rule it is the
+// same town, so the card's labels are read as areas.
+const areaOf = (s) => (townOf(s) === 'Nelson' ? 'Ball Ground' : townOf(s));
+const areaRuns = (order) => order.filter((s, i) => i === 0 || areaOf(s) !== areaOf(order[i - 1])).map(areaOf);
+
+test('farthest first — JEFF, 2026-09-10: out to Ellijay, then home one town at a time, never crossing itself', () => {
   const out = farthestFirst(JEFF, BUFORD);
   assert.deepEqual([...ids(out)].sort(), [...ids(JEFF)].sort());          // every stop, once
   assert.equal(out[0].id, 'TAG CITY (Ellijay)');                            // the far end comes first
   assert.equal(selfCrossings(out, BUFORD), 0, `route crosses itself: ${ids(out).join(' → ')}`);
+  // THE RULE CHAD CHOSE: a town is worked in one visit. Every area on the card is one run —
+  // no town appears twice in the sequence of areas.
+  const runs = areaRuns(out);
+  assert.equal(new Set(runs).size, runs.length, `a town is visited twice: ${runs.join(' → ')}`);
   // The old logic, on the same stops, is the card in the report: Jasper, then Canton, then Tate,
   // then Ball Ground, then back out toward Tate — and it drives materially farther.
   const radial = depotSort(JEFF, BUFORD, 'desc');
   assert.deepEqual(radial.slice(0, 6).map(townOf), ['Ellijay', 'Jasper', 'Jasper', 'Jasper', 'Canton', 'Tate']);
   assert.ok(homewardMeters(out, BUFORD) < 0.85 * homewardMeters(radial, BUFORD));
+  // Keeping towns whole costs paper miles against the pure shortest path; Chad accepted "a few
+  // percent". On this geography it is under two.
+  const pure = farthestFirst(JEFF, BUFORD, 'pure');
+  assert.ok(homewardMeters(out, BUFORD) <= 1.05 * homewardMeters(pure, BUFORD), 'towns cost more than 5% over the pure sweep');
   // And it is no longer than either order a dispatcher would draw by hand for this route:
   // down the east side and finish with Canton, or down the west side and finish out on 53.
   const eastThenCanton = byId(JEFF, 'TAG', 'ROYSTON', 'UPS', 'PREFERRED', 'ELEVATE', 'STOP 14', 'STOP 13', 'COMPASS', 'GO PLASTICS', 'CHART', 'STOP 15', 'BOWSTONE A', 'BOWSTONE B', 'RAYDEO', 'BLACK');
@@ -364,21 +377,50 @@ test('farthest first — JEFF, 2026-09-10: out to Ellijay, then the shortest way
     assert.ok(hand.every(Boolean));
     assert.ok(homewardMeters(out, BUFORD) <= homewardMeters(hand, BUFORD) + 1, `a hand-drawn order beat it: ${ids(out).join(' → ')}`);
   }
-  // The three Jasper stops are worked together, and so are the two Bowstone orders.
-  const jasper = out.map((s, i) => (townOf(s) === 'Jasper' ? i : -1)).filter((i) => i >= 0);
-  assert.equal(jasper[jasper.length - 1] - jasper[0], 2, `Jasper split up: ${ids(out).join(' → ')}`);
+  // The two Bowstone orders at one address stay back to back.
   const bow = out.map((s, i) => (/^BOWSTONE/.test(s.id) ? i : -1)).filter((i) => i >= 0);
   assert.equal(bow[1] - bow[0], 1);
-  // WHAT THE RULE DOES WITH AN OUTLIER, PINNED SO IT IS A DOCUMENTED OUTCOME AND NOT A SURPRISE:
-  // Canton sits 9 miles west of the Ball Ground stops, and the shortest pinned path pays for it
-  // as a spur from the middle of Ball Ground (Chart → Canton → Raydeo) rather than at the end
-  // (… → Raydeo → Canton → yard), because on paper that is 3.3 miles shorter. Verified exact
-  // with a Held-Karp solve during review. Whether a town should be worked in one visit at +4%
-  // crow-flies miles is a dispatch call; if it goes that way this assertion flips.
-  const canton = out.findIndex((s) => townOf(s) === 'Canton');
-  assert.ok(canton > 0 && canton < out.length - 1, 'fixture no longer has the mid-town spur this pins');
-  assert.equal(townOf(out[canton - 1]), 'Ball Ground');
-  assert.equal(townOf(out[canton + 1]), 'Ball Ground');
+});
+
+test('the switch: SWEEP_MODE is "towns"; "pure" is one word away and brings the mid-town spur back', () => {
+  assert.equal(SWEEP_MODE, 'towns');
+  assert.equal(TOWN_RADIUS_METERS, 4000);
+  // The pure shortest pinned path pays for Canton as a spur from the middle of Ball Ground
+  // (Chart → Canton → Raydeo): verified exact with a Held-Karp solve during review. That is
+  // what Chad was shown and chose against, and what "put it back the way it was" returns to.
+  const pure = farthestFirst(JEFF, BUFORD, 'pure');
+  const canton = pure.findIndex((s) => townOf(s) === 'Canton');
+  assert.equal(townOf(pure[canton - 1]), 'Ball Ground');
+  assert.equal(townOf(pure[canton + 1]), 'Ball Ground');
+  assert.ok(new Set(areaRuns(pure)).size < areaRuns(pure).length, 'pure mode should visit Ball Ground twice');
+  // The picker follows the switch.
+  assert.deepEqual(ids(resequence(JEFF, BUFORD, 'farthest')), ids(farthestFirst(JEFF, BUFORD, 'towns')));
+  assert.deepEqual(ids(resequence(JEFF, BUFORD, 'closest')), ids(closestFirst(JEFF, BUFORD, 'towns')));
+  assert.notDeepEqual(ids(pure), ids(farthestFirst(JEFF, BUFORD)));
+});
+
+test('closest first — JEFF: the nearest stop first, Ellijay last, towns whole on the way out', () => {
+  const out = closestFirst(JEFF, BUFORD);
+  assert.deepEqual([...ids(out)].sort(), [...ids(JEFF)].sort());
+  assert.equal(out[0].id, 'RAYDEO (Ball Ground)');                     // nearest to Buford
+  assert.equal(out[out.length - 1].id, 'TAG CITY (Ellijay)');            // farthest is last
+  const runs = areaRuns(out);
+  assert.equal(new Set(runs).size, runs.length, `a town is visited twice: ${runs.join(' → ')}`);
+});
+
+test('towns: stops chain into one town within 2.5 miles of a neighbour; a lone stop is its own', () => {
+  // Node 0 is the depot. A–B–C sit 3 km apart in a line (each within 4 km of the next, A and C
+  // 6 km apart); D is 10 km from everything. Single linkage: {A,B,C} and {D}.
+  const km = (a, b) => Math.abs(a - b) * 1000;
+  const pos = [0, 20, 23, 26, 40];                       // depot, A, B, C, D on one axis, km
+  const cost = pos.map((p) => pos.map((q) => km(p, q)));
+  assert.deepEqual(townsOf([1, 2, 3, 4], cost, 4000), [[1, 2, 3], [4]]);
+  assert.deepEqual(townsOf([4, 3, 2, 1], cost, 4000), [[1, 2, 3], [4]]);   // input order does not matter
+  assert.deepEqual(townsOf([1, 2, 3, 4], cost, 2000), [[1], [2], [3], [4]]);
+  // Asymmetric: within radius EITHER way shares a town.
+  const asym = pos.map((p) => pos.map((q) => km(p, q)));
+  asym[1][2] = 9000;                                      // A→B is a long way round; B→A is 3 km
+  assert.deepEqual(townsOf([1, 2, 3, 4], asym, 4000), [[1, 2, 3], [4]]);
 });
 
 // Two arms of stops leaving the depot in different directions, at nearly the same radii — the

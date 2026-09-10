@@ -277,7 +277,8 @@ export function twoOptLoop(stops, depot, maxPasses = 8) {
 // the rest is found: a nearest-neighbour seed, then 2-opt (reverse a run of stops) and or-opt
 // (lift a run of one to three stops and set it down elsewhere) until neither move shortens it.
 // Or-opt is there for the straggler 2-opt cannot reach: one stop off to the side of the
-// corridor that a reversal alone leaves stranded between two towns.
+// corridor that a reversal alone leaves stranded between two towns. And since Chad's call the
+// same evening, the sweep runs ONE TOWN AT A TIME — the block further down.
 //
 // "Closest first" is the same sweep run the other way: nearest stop pinned first, farthest
 // pinned last, and the path walks outward. Without a pinned far end it would collapse into
@@ -398,68 +399,178 @@ function isAsymmetric(cost, nodes) {
   return false;
 }
 
-// Index of the stop farthest from / closest to the depot; ties go to the earlier input row.
-function extremeIndex(stops, depot, which) {
-  let bi = -1, bd = which === 'farthest' ? -Infinity : Infinity;
-  for (let i = 0; i < stops.length; i++) {
-    const d = haversineMeters(depot, stops[i]);
-    if (which === 'farthest' ? d > bd : d < bd) { bd = d; bi = i; }
-  }
-  return bi;
-}
+// ── ONE TOWN AT A TIME (Chad, 2026-09-10) ────────────────────────────────────
+//
+// Shown the pure sweep's answer on JEFF — Ball Ground, Ball Ground, Ball Ground, Canton, then
+// four more Ball Ground — and the 4% of paper miles it saves: "2 let's try that and have a way
+// to flip it back if I don't like the orders it's putting things in."
+//
+// A town is worked in one visit. Two stops within TOWN_RADIUS_METERS of each other are one
+// town, and towns chain (A near B and B near C is one town of all three), so a contiguous
+// industrial belt is one town and a lone customer nine miles off the corridor is its own. The
+// sweep then runs at two levels. The towns are ordered as the pinned path — the town holding
+// the far stop first, the yard last, the distance between two towns being the shortest hop
+// between any of their stops — and inside each town the stops are ordered as a short pinned
+// path from wherever the truck arrives to the nearest stop of the town it leaves for next. A
+// spur out to a lone stop can still happen, because it has to be visited somewhere, but it can
+// no longer land in the MIDDLE of another town's stops.
+//
+// THE SWITCH. SWEEP_MODE 'towns' is the rule above; 'pure' is the plain shortest pinned path
+// (the spur-in-the-middle answer). Flip the word, bump the version, and the old order is back.
+// The server twin in routing-solver.mts carries the same two constants and must say the same.
+export const SWEEP_MODE = 'towns';
+export const TOWN_RADIUS_METERS = 4000;   // ~2.5 miles: the same neighbourhood, not the same county
 
-// The sweep itself. Node 0 is the depot, node k is stops[k-1]. Stops with no usable position
-// cannot be placed on a line and ride at the END in their input order — never dropped, never
-// allowed to poison the arithmetic for the ones that can be.
-function sweep(stops, depot, dir) {
-  // CANONICAL ORDER FIRST. Nearest-neighbour tie-breaks and the fourth seed below read the
-  // input order, and a card's input order is whatever the dispatcher last dragged it into —
-  // so the same stops in a different order could land in a different local optimum, and
-  // re-picking the strategy after a drag "changed its mind". Sorting the placed stops by
-  // position (then id) makes the answer a function of the stop SET alone.
-  const placed = stops.filter(mappable).sort((a, b) => (a.lat - b.lat) || (a.lng - b.lng) || String(a.id).localeCompare(String(b.id)));
-  const unplaced = stops.filter((s) => !mappable(s));
-  if (placed.length < 2) return [...placed, ...unplaced];
-  const cost = distanceMatrix([depot, ...placed]);
-  const far = extremeIndex(placed, depot, 'farthest') + 1;
-  const near = extremeIndex(placed, depot, 'closest') + 1;
-  let start, end, pool;
-  if (dir === 'homeward') {                       // Farthest first: far stop → … → terminal
-    start = far; end = 0;
-    pool = placed.map((_, i) => i + 1).filter((k) => k !== far);
-  } else {                                        // Closest first: near stop → … → far stop
-    start = near; end = far === near ? 0 : far;   // every stop at one radius: nothing to pin at the end
-    pool = placed.map((_, i) => i + 1).filter((k) => k !== start && k !== end);
-  }
-  // MULTI-START. 2-opt/or-opt only ever walk downhill, so where they finish depends on where
-  // they begin, and one nearest-neighbour seed can leave a straggler that no single move
-  // repairs. Four cheap starting orders — greedy from the pinned start, greedy from the
-  // pinned end walked backwards, the old radial sort, and the canonical south-to-north order
-  // — are each improved and the shortest path wins. Same stop set, same answer, whatever
-  // order the card was in.
+// Multi-start over one pinned path. 2-opt/or-opt only walk downhill, so where they finish
+// depends on where they begin, and one greedy seed can leave a straggler no single move
+// repairs. Four cheap starting orders — greedy from the pinned start, greedy from the pinned
+// end walked backwards, radius order, and the canonical ascending order — are each improved
+// and the shortest wins. `dir` only decides which way the radius seed runs. Every seed is a
+// function of the node SET, so the same stops give the same answer whatever order they came in.
+function bestPinnedPath(pool, start, end, cost, dir) {
+  if (pool.length < 2) return [...pool];
   const byRadius = [...pool].sort((a, b) => cost[0][a] - cost[0][b]);
   const seeds = [
     nearestNeighborFrom(start, pool, cost),
     nearestNeighborFrom(end, pool, cost).reverse(),
-    dir === 'homeward' ? byRadius.slice().reverse() : byRadius,
-    pool,
+    dir === 'homeward' ? byRadius.reverse() : byRadius,
+    [...pool].sort((a, b) => a - b),
   ];
-  let interior = pool, best = Infinity;              // pool is a valid order even if every score is NaN
+  let bestOrder = [...pool], best = Infinity;          // a valid order even if every score is NaN
   for (const seed of seeds) {
     const cand = improvePinnedPath(seed, start, end, cost);
     const len = pinnedPathCost(cand, start, end, cost);
-    if (len + 1e-6 < best) { best = len; interior = cand; }
+    if (len + 1e-6 < best) { best = len; bestOrder = cand; }
   }
-  const order = [start, ...interior, ...(end === 0 ? [] : [end])];
+  return bestOrder;
+}
+
+// Farthest and nearest node by cost from the depot (node 0); ties go to the lowest index.
+function extremes(nodes, cost) {
+  let far = nodes[0], near = nodes[0];
+  for (const n of nodes) {
+    if (cost[0][n] > cost[0][far]) far = n;
+    if (cost[0][n] < cost[0][near]) near = n;
+  }
+  return { far, near };
+}
+
+// The plain sweep: one pinned path through every node. 'homeward' = far stop first, depot
+// last; 'outward' = near stop first, far stop last.
+export function pureSweepNodes(nodes, cost, dir) {
+  nodes = [...nodes].sort((a, b) => a - b);
+  if (nodes.length < 2) return nodes;
+  const { far, near } = extremes(nodes, cost);
+  let start, end;
+  if (dir === 'homeward') { start = far; end = 0; }
+  else { start = near; end = far === near ? 0 : far; }   // every stop at one radius: nothing to pin at the end
+  const pool = nodes.filter((n) => n !== start && n !== end);
+  const interior = bestPinnedPath(pool, start, end, cost, dir);
+  return [start, ...interior, ...(end === 0 ? [] : [end])];
+}
+
+// Group nodes into towns: single-linkage, two nodes within `radius` of each other (either
+// direction on an asymmetric matrix) share a town. Towns come back as ascending arrays of node
+// indices, ordered by their lowest member — a function of the set, not of the input order.
+export function townsOf(nodes, cost, radius) {
+  const parent = new Map(nodes.map((n) => [n, n]));
+  const find = (n) => { while (parent.get(n) !== n) { parent.set(n, parent.get(parent.get(n))); n = parent.get(n); } return n; };
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      const a = nodes[i], b = nodes[j];
+      if (Math.min(cost[a][b], cost[b][a]) <= radius) { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); }
+    }
+  }
+  const groups = new Map();
+  for (const n of [...nodes].sort((a, b) => a - b)) { const r = find(n); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(n); }
+  return [...groups.values()].sort((a, b) => a[0] - b[0]);
+}
+
+// The shortest hop from any node of A to any node of B, read in the driving direction.
+function hop(A, B, cost) {
+  let best = Infinity;
+  for (const a of A) for (const b of B) if (cost[a][b] < best) best = cost[a][b];
+  return best;
+}
+// The stop of `next` the truck aims for when it leaves `town`: the one closest to any of its stops.
+function nearestEntry(town, next, cost) {
+  let bestB = next[0], best = Infinity;
+  for (const a of town) for (const b of next) if (cost[a][b] < best) { best = cost[a][b]; bestB = b; }
+  return bestB;
+}
+
+// The two-level sweep: towns first, then the stops inside each.
+export function townSweepNodes(nodes, cost, dir, radius = TOWN_RADIUS_METERS) {
+  nodes = [...nodes].sort((a, b) => a - b);
+  if (nodes.length < 2) return nodes;
+  const towns = townsOf(nodes, cost, radius);
+  if (towns.length < 2) return pureSweepNodes(nodes, cost, dir);   // one town: nothing to keep whole
+  const { far, near } = extremes(nodes, cost);
+  const townOf = new Map();
+  towns.forEach((t, i) => t.forEach((n) => townOf.set(n, i)));
+  const farTown = townOf.get(far), nearTown = townOf.get(near);
+  // Outward with the near and the far stop in one town would have to start and finish in the
+  // same town — a ring, not a corridor — and the plain sweep is the right tool for a ring.
+  if (dir === 'outward' && farTown === nearTown) return pureSweepNodes(nodes, cost, dir);
+  // Town-level matrix: index 0 is the depot, t+1 is towns[t].
+  const T = towns.length;
+  const tc = Array.from({ length: T + 1 }, () => new Array(T + 1).fill(0));
+  for (let i = 0; i < T; i++) {
+    tc[0][i + 1] = hop([0], towns[i], cost);
+    tc[i + 1][0] = hop(towns[i], [0], cost);
+    for (let j = 0; j < T; j++) if (i !== j) tc[i + 1][j + 1] = hop(towns[i], towns[j], cost);
+  }
+  let tStart, tEnd;
+  if (dir === 'homeward') { tStart = farTown + 1; tEnd = 0; }
+  else { tStart = nearTown + 1; tEnd = farTown + 1; }
+  const tPool = towns.map((_, i) => i + 1).filter((t) => t !== tStart && t !== tEnd);
+  const townOrder = [tStart, ...bestPinnedPath(tPool, tStart, tEnd, tc, dir), ...(tEnd === 0 ? [] : [tEnd])].map((t) => towns[t - 1]);
+  // Inside each town, in that order: from where the truck arrives to where it leaves for next.
+  const out = [];
+  let prev = -1;
+  for (let i = 0; i < townOrder.length; i++) {
+    const town = townOrder[i];
+    const lastTown = i === townOrder.length - 1;
+    const exit = lastTown ? (dir === 'homeward' ? 0 : far) : nearestEntry(town, townOrder[i + 1], cost);
+    let seq;
+    if (i === 0) {
+      const first = dir === 'homeward' ? far : near;           // the pinned first stop
+      seq = [first, ...bestPinnedPath(town.filter((n) => n !== first), first, exit, cost, dir)];
+    } else if (lastTown && dir === 'outward') {
+      seq = [...bestPinnedPath(town.filter((n) => n !== far), prev, far, cost, dir), far];   // the pinned last stop
+    } else {
+      seq = bestPinnedPath(town, prev, exit, cost, dir);
+    }
+    out.push(...seq);
+    prev = seq[seq.length - 1];
+  }
+  return out;
+}
+
+// The sweep over a card's stops. Node 0 is the depot, node k is stops[k-1]. Stops with no
+// usable position cannot be placed on a line and ride at the END in their input order — never
+// dropped, never allowed to poison the arithmetic for the ones that can be.
+function sweep(stops, depot, dir, mode = SWEEP_MODE) {
+  // CANONICAL ORDER FIRST. Tie-breaks and seeds read the order they are handed, and a card's
+  // order is whatever the dispatcher last dragged it into — so the same stops in a different
+  // order could land in a different local optimum, and re-picking the strategy after a drag
+  // "changed its mind". Sorting the placed stops by position (then id) makes the answer a
+  // function of the stop SET alone.
+  const placed = stops.filter(mappable).sort((a, b) => (a.lat - b.lat) || (a.lng - b.lng) || String(a.id).localeCompare(String(b.id)));
+  const unplaced = stops.filter((s) => !mappable(s));
+  if (placed.length < 2) return [...placed, ...unplaced];
+  const cost = distanceMatrix([depot, ...placed]);
+  const nodes = placed.map((_, i) => i + 1);
+  const order = mode === 'pure' ? pureSweepNodes(nodes, cost, dir) : townSweepNodes(nodes, cost, dir);
   return [...order.map((k) => placed[k - 1]), ...unplaced];
 }
 
-// Farthest first: drive out to the far end, then deliver on the way home. First stop is the
-// farthest from the depot; the path from there ends at the terminal.
-export function farthestFirst(stops, depot) { return sweep(stops, depot, 'homeward'); }
+// Farthest first: drive out to the far end, then deliver on the way home, one town at a time.
+// First stop is the farthest from the depot; the path from there ends at the terminal.
+export function farthestFirst(stops, depot, mode = SWEEP_MODE) { return sweep(stops, depot, 'homeward', mode); }
 
-// Closest first: the nearest stop first, walking outward; the farthest stop is the last one.
-export function closestFirst(stops, depot) { return sweep(stops, depot, 'outward'); }
+// Closest first: the nearest stop first, walking outward town by town; the farthest stop is last.
+export function closestFirst(stops, depot, mode = SWEEP_MODE) { return sweep(stops, depot, 'outward', mode); }
 
 // Re-sequence one route's stops by strategy. 'reverse' flips the current order;
 // the others are computed fresh from depot + positions.
