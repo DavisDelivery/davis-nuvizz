@@ -361,3 +361,46 @@ export function gridRowTone({ selected = false, tractorOk = false, carryover = f
   if (carryover) return GRID_ROW_TONE.carryover;
   return GRID_ROW_TONE.plain;
 }
+
+// ── WHAT A CLICK ON A ROUTING MAP PIN DOES ───────────────────────────────────
+//
+// Chad, on GEORGE L's route: "If i click on one of these dots on the map i want it to bring
+// that orders details on in the right panel." It did not, and the reason is the shape this
+// repo keeps re-learning: the dispatch Map has opened a stop on its own marker click since it
+// was built, and Routing — the screen a router spends the morning in — was never wired for it.
+// A numbered pin opened its ROUTE in Compare, a pool pin toggled the whole place into the
+// selection, and the one question a dot could not answer was "what is this order?".
+//
+// THE RULE IS HERE, NOT IN THE HANDLER, because the handler lives inside a marker-building
+// effect in a 25,000-line module that node:test cannot import, and Google Maps is blocked in
+// the headless guard — so a marker click is not observable there either (v0.98.0 said so when
+// it shipped the row→pin half of this). That leaves the decision untestable at both ends
+// unless it is a function. It is a function.
+//
+// WHICH MODES OPEN THE PANEL, and why it is not simply "all of them":
+//   • normal      — the ask. The pin also keeps what it already did (open the route, or
+//                   toggle the place into the selection); nothing is taken away.
+//   • viewing     — a saved load is read-only and the click previously did NOTHING. Reading an
+//                   order is the one thing that was always safe there.
+//   • paint       — already did both ("first click does both"); unchanged.
+//   • selectMode  — NO. The click is asking for a POINT on the map (the handler reads the
+//                   marker's position, not the stop). A card about a stop is the wrong answer.
+//   • ninja       — NO. It adds stop after stop to the open route; a card popping up on each
+//                   one fights the job being done.
+//
+// Returns every action the click should take, so the caller is a dispatcher and holds no
+// policy of its own.
+export function mapPinClickActions({
+  viewing = false, paint = false, selectMode = false, ninja = false,
+  isUnplanned = false, hasRouteKey = false,
+} = {}) {
+  // The two rapid-fire tools are about a point or a queue, not about this order.
+  const openPanel = !selectMode && !ninja;
+  if (viewing) return { openPanel, paint: false, selectPoint: false, ninjaAdd: false, openRoute: false, toggleGroup: false };
+  if (paint) return { openPanel, paint: true, selectPoint: false, ninjaAdd: false, openRoute: false, toggleGroup: false };
+  if (selectMode) return { openPanel, paint: false, selectPoint: true, ninjaAdd: false, openRoute: false, toggleGroup: false };
+  if (ninja) return { openPanel, paint: false, selectPoint: false, ninjaAdd: true, openRoute: false, toggleGroup: false };
+  // Normal mode: a planned stop opens its route; a pool stop toggles its whole place.
+  const openRoute = !isUnplanned && hasRouteKey;
+  return { openPanel, paint: false, selectPoint: false, ninjaAdd: false, openRoute, toggleGroup: !openRoute };
+}
