@@ -2579,6 +2579,13 @@ function StopDetailRow({ s }) {
           {s.scannedAt ? <span>scanned {fmtTime(s.scannedAt)}</span> : null}
           {s.handConfirmed ? <span className="text-sky-700">confirmed by hand</span> : null}
           {s.damagedCount > 0 ? <span className="text-amber-800 font-medium">{s.damagedCount} damaged</span> : null}
+          {/* A piece a PERSON put on the truck, not a barcode. Surfaced on the row
+              because the override that adds one was being pulled by accident —
+              and a stop reading "all here" off a hand-added piece is the one a
+              dispatcher most needs to look at twice. */}
+          {s.handAddedCount > 0 ? (
+            <span className="text-violet-800 font-medium">{s.handAddedCount} added by hand</span>
+          ) : null}
         </div>
       </div>
       {!s.isPickup ? <span className="font-mono text-xs tabular-nums text-slate-600">{s.scanned}/{s.expected}</span> : null}
