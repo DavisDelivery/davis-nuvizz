@@ -4,9 +4,10 @@
 //
 //   POST /.netlify/functions/manifest-email-check
 //
-// The scheduled poll runs every 30 minutes, which is right for a report that
-// lands once a night and wrong for the moment you have just connected a mailbox
-// and want to know it works. This runs ONE cycle over exactly the same mailboxes
+// The scheduled poll runs at 8:10p, 9:10p and 10:10p ET (src/lib/manifest-schedule.js),
+// which is right for a report that lands once a night and wrong for the moment you
+// have just connected a mailbox and want to know it works — at 3pm the next pass is
+// five hours away. This runs ONE cycle over exactly the same mailboxes
 // (lib/mail-sources.mts is shared with the schedule, so this can never test a
 // different set of inboxes than runs at night) and answers with what it found.
 //

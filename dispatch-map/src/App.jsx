@@ -88,6 +88,7 @@ import { MIRROR_MISCONFIGURED_MESSAGE } from './lib/mirror-site.js';
 import { satelliteControlSpec, paintSatelliteControl, SATELLITE_BUTTON_CSS } from './lib/map-satellite-control.js';
 import { dropSide, dropSideClass } from './lib/drop-side.js';
 import { rosterFreshness, ageLabel } from './lib/roster-freshness.js';
+import { PARSE_SCHEDULE_LABEL, parsePollOverdue } from './lib/manifest-schedule.js';
 import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
 // w-40. Named once so the measurement and the Tailwind class can never disagree about how
 // wide the panel being placed actually is.
@@ -122,7 +123,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '1.2.1';
+const APP_VERSION = '1.2.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -193,6 +194,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.2.2', 'THE MANIFEST TAB WAS STILL PROMISING A POLL EVERY 30 MINUTES AFTER THE JOB DROPPED TO THREE A NIGHT. v1.2.1 narrowed the parse to 8:10p, 9:10p and 10:10p ET and left the screen describing the system it replaced — “Checked automatically every 30 minutes” on the mailbox card and “read out of the mailbox on its own, every 30 minutes” in the tab’s own blurb, plus the endpoint comment and two code comments. Same shape as the alert wired to `critical` while the operator had been told “we want every red”: the code did exactly what it was told and the screen described a DIFFERENT system, and no test could catch it because nothing tied the two together. The cure is not a more careful edit next time — THE HOURS NOW HAVE ONE HOME. lib/manifest-schedule.js holds the three ET hours and the sentence the card prints; the background function imports its hours from there and re-exports them, and a test asserts the job’s list and the card’s label are the same three passes. AND THE HEALTH SIGNAL THE OLD CADENCE GAVE AWAY FOR FREE, which the narrowing quietly took: polling every thirty minutes, a lapsed Gmail token was obvious by mid-afternoon — “Last poll 4h ago” on a card that should read minutes. Polling three times a night, a DEAD mailbox reads “26h ago” and a perfectly healthy one reads “22h ago” all working day, and the age alone can no longer tell them apart. So the card compares the last poll against THE SCHEDULE instead of against a clock: a pass has fired and the mailbox was not read since. That is a fact with a meaning, not an invented staleness bar — the same rule roster-freshness.js is built on. A mailbox connected this afternoon that has never polled is NOT overdue, because “no poll has run yet” is the honest sentence and a red warning there would be a lie about a working setup. Every comparison is a string compare of two ET wall-clock stamps rendered through one formatter, so DST needs no arithmetic and cannot land the slot on the wrong calendar day — pinned on both changeovers. A 20-minute grace keeps the card quiet at 8:11p while the function is still fetching the mailbox. 9 new tests.'],
   ['1.2.1', 'THE MANIFEST PARSE RUNS AT 8:10P, 9:10P AND 10:10P — AND THE FORECAST CARD STOPS PRINTING AN ERROR WHERE THE NUMBERS GO. Chad: “We need to do our first parse at 8:10 pm 9:10 10:10.” IT WAS POLLING EVERY 30 MINUTES AROUND THE CLOCK — 48 passes a day, most of them at hours when Uline has not sent anything, which is how a 3:00pm check on a report that had not arrived yet ends up on screen saying it could not reconcile against its own printed totals. Three passes in the window the report actually lands in is the whole ask. THE CRON IS UTC AND ET IS NOT, so a fixed UTC time is the wrong ET time for 133 days a year. This is the trap day-completion-report-background already carries the scar for — two UTC slots gave summer a primary and a spare and left WINTER with no cover at all, “found by sweeping both firings across 730 calendar days, not by reading the cron.” Same answer here: fire at the UNION of the UTC slots that could be one of these ET hours in either season (00:10, 01:10, 02:10, 03:10 UTC) and let the ET clock decide which are real. Four firings, exactly three passes in either season — in EDT the 03:10 slot is 11:10p ET and stands down, in EST the 00:10 slot is 7:10p ET and stands down. A stood-down firing SAYS so rather than returning a silent empty result, because “nothing to do” and “wrong hour” are different answers and only one is worth investigating. Swept across 730 days in a test rather than trusted from the comment. AND THE LIVE ReferenceError ON THE SAME SCREEN: the Uline forecast card was rendering “parseClosedList is not defined” where the forecast belongs. uline-forecast-store.mts called that parser and never imported it — and the comment directly above the call says it “is shared with the nightly manifest check so the two can never disagree”, which was the intent and not the code. Nothing catches this statically: these are .mts functions run by stripping types, not built by vite, so an undefined identifier is a runtime error on the one path that reaches it and the only symptom is the panel printing the message where the numbers should be. Reproduced first, then fixed, and a test now CALLS the function — an import that goes missing again fails in CI instead of on a dispatcher’s screen at 8pm. 5 new tests, 3,950 green.'],
   ['1.2.0', 'THE ALERT FIRES AT 25 MINUTES LATE NOW — AND THE DRIVER RIDES THE TEXT. Chad, on a live alert that reached him at 2:00pm for a 3:00pm close: “Why did the mail go out at 2pm hardly enough time to do anything about it.” Then: “fire it at 20-30”, and “If we have driver name include it for route and text yes.” WHAT THE ANSWER TURNED OUT TO BE, MEASURED RATHER THAN ARGUED. Replaying the real engine and the real selector over 12 sealed days through flag-replay — zero NuVizz calls — the flag is on the board a MEDIAN OF THREE HOURS before the email goes. That stop was not unusual; it was slightly better than median. But 53 stops genuinely missed their window in that period and only 12 produced an email: 26 of them sat on the board and never emailed at all, with a median 145 minutes still on the clock when the flag first appeared. Twelve of THOSE reached critical and still never emailed, because they crossed the bar too late to send. SO THE TIER RULE GOVERNS HOW LOUDLY WE SPEAK, AND A NEW FLOOR GOVERNS WHETHER WE SPEAK AT ALL. severityTier asks whether an overrun clears the model’s own error band TWICE — 30 minutes anchored and close in, 50 further out, 80 further still, 180 unanchored. That is a good question about confidence and a poor one about consequence: a stop 40 minutes past a dock’s close is a refused delivery whether the model is sure or not. ALERT_LATE_FLOOR_MIN=25 emails on lateness alone. TWENTY-FIVE IS MEASURED, NOT PICKED: 20 buys two more false alarms and not one more catch; 30 loses a catch. ANCHORED IS REQUIRED and it is the clause that pays for everything — without it precision collapses 72% → 51% and volume nearly doubles, because unanchored means projected from an ASSUMED departure against a ±90-minute band. Bad outcomes caught goes 15 → 29 per 15 days at the SAME precision (71% → 72%). THE COST, NAMED: 1.5 → 3.6 emails a day, and a genuinely bad day goes from 4 to 12. One env var turns it off. AND IT TAKES THE EARLY BAND, WHICH KEPT A PROMISE AND EXPOSED A TRAP. Chad’s “we are only emailing on critical” was about the LOUD message, and the loud message is still critical-only: the floor sends the heads-up wording on its own claim key, so a stop can warn at noon and still send the confident miss at 2pm. The trap: alertBandOf maps anything not-amber to ‘urgent’, and a floor-selected row is frequently RED — it would have taken the urgent claim and SILENTLY BLOCKED the genuine critical email later. The heads-up arrives, the real one never does, and the ledger shows one send exactly as designed. That function’s own comment predicted this (“the next person to widen that gate should not also have to remember to widen this”); the band now follows WHY a row was selected, never its tier. TREND DETECTION WAS MEASURED AND NOT BUILT, which is the honest half of this. It was my recommendation and the data killed it: every stop a degradation rule finds is already ≥21 minutes late at the moment it fires, so a 25-minute floor catches all of them at the same sweep or earlier — zero unique catches. The instrument to revisit it exists and costs nothing (an ETA trail in flag-replay-core); the rule does not go in on a hunch. THE DRIVER NOW RIDES BOTH TEXTS, in parentheses after the route, because route-and-driver is one fact. Absence prints NOTHING there, unlike the email: the email reaches a rep at a desk where “no name” means the call needs a lookup first; the text reaches the router AT the board that would tell him. TWO BUGS FOUND ON THE WAY. A CAPPED BOARD WAS LOSING THE DRIVER — collapsedRows is an explicit field list and driverName was not on it, and fillRouteDrivers ran after the collapse on top-level rows only. buildAlert prints “not named on this load” when it is absent, so a busy board would have mailed customer service a false statement about our own data on the line the rep acts on. Third field this projection has eaten. AND ONE EM DASH WAS COSTING 60% OF THE SMS BILL: it is outside GSM-7 and lib/sms.mts sends mode AUTO, so that single character encoded every message as UCS-2 at 70 characters a segment instead of 160. Every one of the 74 real texts across 15 nights was UCS-2 at a mean of 2.55 segments; with a hyphen they are 1.00, and 1.06 WITH the driver added — the name is free and the channel got cheaper. A test now asserts every character of both templates is GSM-7. 16 new tests, 3,946 green.'],
   ['1.1.5', 'LOAD-SCAN (v0.47.0): THE TOP BARCODE ALONE COUNTS A PIECE, ONCE THE ORDER IS OPEN. Chad: "it should be scanning both bar codes so should know exactly which piece count it is — would it be possible to only scan the top bar code?" Half of that is a data fact and the answer is no: NuVizz carries NO piece ids at all (the stop rows hold proNbr, shipmentNbr, cartons, volume — order level and nothing finer), so a top barcode on its own is a number the board has never heard of and cannot place. The bottom PRO is the only thing tying a label to a stop. But the other half is right, and it is the better half. Chad, on how the dock actually works: "they load all of one order at a time, so 4 skids go on the truck at the same time — now there will be time it takes to load them on the trailer, but they go together." So the order only has to be established ONCE. Scan one label in full and that order is OPEN; every remaining piece of it books off its TOP barcode alone, the instant the id decodes — no pairing window, no waiting, no confirmation. Fewer barcodes per piece than before, not more. AND IT DELETES THE BUG CLASS RATHER THAN GUARDING IT: every over-count and phantom this app has fought came from the same ambiguity — a repeated PRO with no piece id, where nothing can tell another piece from another look. A piece id answers it exactly. Two distinct ids are two pieces; the same id twice is the same piece; so a re-read counts nothing and the count is exact by construction. The order CLOSES ITSELF at the manifest count, so the next id cannot leak into freight already complete, and it lapses after five minutes idle — long enough for a forklift run into the trailer, short enough that an order left open twenty minutes ago cannot quietly collect a stray read. A piece id with no order open is no longer dropped as panning noise: it says SCAN THE PRO FIRST and names the id, because the board genuinely cannot place it. The open order is on screen the whole time, large, with the stop it will credit. HONEST ABOUT THE TRADE: scanning both barcodes let the PRO confirm a piece belongs to the order in hand, and a top-only scan gives that up — a skid grabbed from the wrong order books against the open one. The cap refuses anything past the count and the wrong stop then reads short, both visible, and Averitt freight (no OG barcode at all, three indistinguishable 10-digit codes) keeps the old path entirely. Proven on the quagga stream in the real bundle: a second skid books from its piece id alone, the order closes at its count, and a stray id after that books nothing — and the act was run with the feature disabled, where the skid never books and it fails. 326 load-scan tests green.'],
@@ -28624,9 +28626,9 @@ function MoreMenu({ items, activeId, onPick, badge = 0 }) {
 // sure nothing is missing."
 //
 // The freight report arrives in a MAILBOX, not on this screen. Connect the
-// mailbox once and the server runs the same free board diff on every report,
-// every half hour, on its own — the nav badge lights and nobody has to remember
-// to come here with a PDF.
+// mailbox once and the server runs the same free board diff on every report, on
+// the three evening passes (lib/manifest-schedule.js), on its own — the nav badge
+// lights and nobody has to remember to come here with a PDF.
 //
 // What this card is careful about, because none of it is visible when it works:
 //   • READ-ONLY. The grant is gmail.readonly. Nothing in this app can send,
@@ -28846,12 +28848,32 @@ function GmailCard({ onStoredRun }) {
 
         {active && (
           <>
+            {/* THE SCHEDULE, IN THE SENTENCE, because the age alone stopped meaning anything
+                when the parse narrowed to three passes a night. "Last poll 16h ago" at 2pm is
+                a HEALTHY system now, and read on its own it looks like a dead one. The label
+                comes from lib/manifest-schedule.js — the same module the background function
+                takes its hours from, so this line cannot go stale behind the job again. */}
             <div>
-              Checked automatically every 30 minutes.{' '}
+              Checked automatically at {PARSE_SCHEDULE_LABEL}.{' '}
               {status.lastRunAt
                 ? <>Last poll <span className="font-semibold text-slate-600">{agoText(status.lastRunAt)}</span>{status.lastRunSummary ? ` — ${status.lastRunSummary}` : ''}.</>
                 : 'No poll has run yet.'}
             </div>
+            {/* AND THE ONE HEALTH SIGNAL THE OLD CADENCE GAVE AWAY FOR FREE. Every thirty
+                minutes, a lapsed token was obvious by mid-afternoon; three times a night, a
+                dead mailbox reads 26h where a working one reads 22h. So this compares the
+                last poll against THE SCHEDULE — a pass has fired and the mailbox was not
+                read — which is a fact rather than an invented staleness bar.
+                NOT FOR AN ENV-PINNED MAILBOX: recordGmailRun deliberately no-ops when Gmail
+                comes from GMAIL_REFRESH_TOKEN, so lastRunAt there is either absent or a
+                fossil from before the variable was set. Reading a verdict off a document
+                nothing maintains is reporting an intent as an outcome. */}
+            {!envPinned && parsePollOverdue(status.lastRunAt) && !status.needsReconnect && (
+              <div className="text-red-700 font-semibold">
+                A parse has run since this mailbox was last read — tonight's report may not have
+                been checked. Reconnect the mailbox if this does not clear.
+              </div>
+            )}
             {status.needsReconnect && (
               <div className="text-red-700 font-semibold">
                 Google is refusing this permission — reconnect the mailbox. Until then no email is being checked.
@@ -31128,7 +31150,7 @@ function ManifestCheckScreen() {
 
   // THE DROP BOX IS GONE. Chad: "there is no need for the manual manifest drop in box any
   // longer as we are pulling it out of the emails." Every report now arrives through the
-  // Gmail ingest (every 30 minutes, self-validating, archived with its PDF), so the only thing
+  // Gmail ingest (three passes a night, self-validating, archived with its PDF), so the only thing
   // a manual drop could add was a way to overwrite tonight's filed result with a stale copy —
   // and a target that swallowed a stray drag. What stays: the mailbox card, the last run's
   // verdict as the ingest wrote it, and the archive underneath.
@@ -31145,7 +31167,7 @@ function ManifestCheckScreen() {
           <p className="text-xs text-slate-500 mt-0.5">
             Every order on the nightly Uline freight report is checked against what the scan put in
             Firestore — so an order the shipper handed us that never reached NuVizz shows up here.
-            The report is read out of the mailbox on its own, every 30 minutes; connect it below if it is not.
+            The report is read out of the mailbox on its own, at {PARSE_SCHEDULE_LABEL}; connect it below if it is not.
             <span className="font-semibold text-slate-600"> Zero NuVizz calls.</span>
           </p>
         </div>

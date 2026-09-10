@@ -100,8 +100,10 @@ export function gmailNeedsReconnect(errorText: any): boolean {
  * can show "last poll …" and flag a grant that has lapsed.
  *
  * No-op when Gmail is pinned by environment variable or absent: the tab does not
- * own those, and writing a status doc every 30 minutes for a mailbox nobody
- * connected from the UI is pure churn.
+ * own those, and writing a status doc on every pass for a mailbox nobody connected
+ * from the UI is pure churn. THE CARD KNOWS THIS — its overdue warning is skipped
+ * for an env-pinned mailbox, because a lastRunAt nothing maintains is a fossil, not
+ * a verdict.
  */
 export async function recordGmailRun(out: any): Promise<void> {
   if (gmailConfigFromEnv()) return;
