@@ -55,7 +55,7 @@ export interface RosterCache {
   /** When the most recent empty answer was observed. */
   emptyAt?: string | null;
   /** What the pull that wrote this document saw (period sent, rows back, rows kept). Absent before v0.93.12. */
-  pull?: { period: string; httpStatus: number; cols: number; rows: number; kept: number } | null;
+  pull?: { period: string; httpStatus: number; cols: number; rows: number; kept: number; drivers?: number } | null;
 }
 
 export interface RosterWriteVerdict {
@@ -136,6 +136,10 @@ export function explainRosterRow(date: string, cached: RosterCache | null | unde
   const loads = Array.isArray(cached.loads) ? cached.loads : [];
   const empties = loads.filter((l: any) => !(Number(l?.trips) > 0)).length;
   const numbered = loads.filter((l: any) => l?.loadNbr).length;
+  // COUNTED OFF THE LOADS THEMSELVES, not off pull.drivers, so this answers for a document of
+  // any age — including the ones written before the driver was captured, which is exactly the
+  // window where "why is nobody assigned?" gets asked.
+  const driven = loads.filter((l: any) => String(l?.driver ?? '').trim()).length;
   const pull = cached.pull && typeof cached.pull === 'object' ? cached.pull : null;
   // THE PULL BESIDE THE WRITE. "captured but EMPTY" is a sentence about the document; it cannot
   // say whether the vendor answered zero rows for the period or answered rows the parser kept
@@ -145,8 +149,15 @@ export function explainRosterRow(date: string, cached: RosterCache | null | unde
     : pull.rows === 0 ? `the vendor answered ZERO rows for period ${pull.period} (${pull.cols} column defs)`
       : pull.kept === 0 ? `the vendor answered ${pull.rows} row(s) for period ${pull.period} and the parser KEPT NONE`
         : `${pull.kept} of ${pull.rows} row(s) kept for period ${pull.period}`;
+  // A ROSTER WHERE NOBODY IS DRIVING IS EITHER A QUIET DAY OR A LOST COLUMN, AND THOSE ARE
+  // OPPOSITE ACTIONS. Chad's grid puts a driver on nearly every shell, so `driven: 0` across a
+  // hundred loads means the saved search stopped returning Driver Name — not that a hundred
+  // trailers are unstaffed. Said out loud here so nobody has to infer it from a blank column.
+  const driverNote = loads.length === 0 ? null
+    : driven === 0 ? 'NOT ONE load carries a driver — on a normal Davis day nearly every load does, so suspect the saved search has lost its Driver Name column before believing the board'
+      : `${driven} of ${loads.length} load(s) carry the driver NuVizz already has on them; ${loads.length - driven} are genuinely unassigned`;
   return {
-    date, cached: true, count: loads.length, empties, built: loads.length - empties, numbered,
+    date, cached: true, count: loads.length, empties, built: loads.length - empties, numbered, driven, driverNote,
     at: cached.at ?? null, emptyStreak: streakOf(cached), emptyAt: cached.emptyAt ?? null,
     pull, pullNote: pullNote ?? 'written before the pull was recorded (pre-v0.93.12) — the log line [roster] <date> has it',
     note: loads.length === 0 ? 'captured but EMPTY — the scan wrote a roster with no loads in it'

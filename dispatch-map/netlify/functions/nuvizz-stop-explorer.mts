@@ -13,6 +13,7 @@ import { getCreds, basicAuthHeader } from './lib/nuvizz-scan.mts';
 import { buildBody, normalize, cleanPeriod, coveringWindowForRange, rowInRange, LIST_MAX_RESULT, OPENAPI_BASE, SAVED_SEARCHES, fetchSavedSearchRaw, fetchSavedSearchRows, fetchSavedSearchPull, toBoardStop, boardDayFor } from './lib/nuvizz-list.mts';
 import { isFirestoreEnabled, readStops, etDayString, readActivePool, readActiveUnplannedSet, readCarryoverRetired } from './lib/firestore.mts';
 import { mergeWindowWithPool, pruneWithSnapshot, poolUsable } from './lib/active-pool.mts';
+import { LEAN_STOP_FIELDS } from './lib/board-fields.mts';
 import { requireUser } from './lib/require-user.mts';
 
 // Re-exported so the existing test (test/stop-explorer.test.mjs) keeps importing them here.
@@ -170,7 +171,14 @@ export default async (req: Request): Promise<Response> => {
       }
       const nDays = Math.min(62, Math.round((Date.parse(to + 'T00:00:00Z') - Date.parse(from + 'T00:00:00Z')) / dayMs) + 1);
       const days = Array.from({ length: nDays }, (_, i) => dayAt(from, i));
-      const reads = await Promise.all(days.map((d) => readStops('davis', d).then((r) => ({ d, stops: r.stops || [], meta: r.meta || null })).catch(() => ({ d, stops: [] as any[], meta: null as any }))));
+      // LEAN, LIKE THE MAP FEED (v1.5.0). These are the same per-day documents the Map serves,
+      // and this path read them WHOLE — `raw` and all — for every day in the range: a fourteen-day
+      // window is ~9,800 stops at ~9 KB each. It was survivable only because the status filter
+      // trimmed the RESPONSE at the very end, which is precisely the filter that now stays on the
+      // client (see the note in App.jsx's window effect). Serving the same projection the Map does
+      // drops ~55% of the bytes and the whole raw object, so ONE all-status pull costs less than
+      // the filtered pulls it replaces. The stored documents are untouched.
+      const reads = await Promise.all(days.map((d) => readStops('davis', d, { mask: LEAN_STOP_FIELDS }).then((r) => ({ d, stops: r.stops || [], meta: r.meta || null })).catch(() => ({ d, stops: [] as any[], meta: null as any }))));
       // Dedupe by stopNbr, LATER day wins — a carry-over rescue writes the same stop onto
       // its home day AND today's doc; the later (clamped-forward) copy is the current one.
       const byNbr = new Map<string, any>();

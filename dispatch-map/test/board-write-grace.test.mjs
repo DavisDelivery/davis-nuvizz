@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { applyBoardWriteGrace, BOARD_WRITE_GRACE_MIN } from '../netlify/functions/lib/nuvizz-list.mts';
+import { applyBoardWriteGrace, unplanStampOvertaken, BOARD_WRITE_GRACE_MIN } from '../netlify/functions/lib/nuvizz-list.mts';
 import { boardWritePlannedFields, boardWriteUnplannedFields } from '../netlify/functions/lib/firestore.mts';
 
 const NOW = Date.parse('2026-07-02T12:00:00Z');
@@ -30,8 +30,10 @@ test('planned write HOLDS over a lagging unplanned list row within the grace win
 });
 
 test('unplanned write (omission-unplan) HOLDS over a list row still showing the OLD load', () => {
+  // THE LAG CASE, and it must stay held: we took the order off SUW 2 and NuVizz's index still
+  // says SUW 2. The from-route on the stamp is what makes that readable (v1.8.0).
   const fresh = freshPlannedOn('SUW 2', 4);
-  const prior = priorWrite(boardWriteUnplannedFields(mins(3)), 3);
+  const prior = priorWrite(boardWriteUnplannedFields(mins(3), 'SUW 2'), 3);
   assert.equal(applyBoardWriteGrace(fresh, prior, NOW), true);
   assert.equal(fresh.isPlanned, false);
   assert.equal(fresh.loadNbr, null);
@@ -80,4 +82,104 @@ test('field builders mirror the board shapes exactly (loadNbr = route NAME; 20/S
   assert.equal(u.isUnplanned, true);
   assert.equal(u.loadNbr, null);
   assert.equal(u.board_write_planned, false);
+});
+
+// ── "WHATEVER THE SCAN SAYS IS THE TRUTH" (Chad, Sep 10 2026) ────────────────
+//
+// Order 007174547: a Save took it off TREVARR at 6:18am, somebody re-planned it onto RONALD in
+// the NuVizz portal, and the 6:58 AND 7:15 scans both read RONALD off NuVizz's own list and both
+// threw that answer away — a confirmed un-plan outranked the list for sixty minutes and nothing
+// was allowed to argue. Chad, looking at it in the selection pool while RONALD held it: "Why is
+// this order still showing unplanned when it's on Ronald Gates in nuvizz." Then: "whatever the
+// scan says is the truth."
+//
+// The discriminator is the route NAME, and it costs nothing. Lag names the OLD route; a re-plan
+// names a different one, and can only do so having seen an event AFTER our Save.
+
+test('THE RONALD CASE: the list names a route we did NOT take it off → the scan wins, at once', () => {
+  const fresh = freshPlannedOn('RONALD', 6);
+  const prior = priorWrite(boardWriteUnplannedFields(mins(40), 'TREVARR'), 40);   // 40 min in — deep inside the old grace
+  assert.equal(applyBoardWriteGrace(fresh, prior, NOW), false, 'the stamp is not carried forward');
+  assert.equal(fresh.isPlanned, true, 'the board takes NuVizz\'s word');
+  assert.equal(fresh.loadNbr, 'RONALD');
+  assert.equal(fresh.routeSeq, 6);
+  assert.equal(fresh.board_write_at, undefined, 'and the stale stamp is dropped, so it cannot hold the NEXT scan either');
+});
+
+test('…and it does not wait out the hour: the same rows one minute after the Save release too', () => {
+  const fresh = freshPlannedOn('RONALD', 6);
+  assert.equal(applyBoardWriteGrace(fresh, priorWrite(boardWriteUnplannedFields(mins(1), 'TREVARR'), 1), NOW), false);
+  assert.equal(fresh.loadNbr, 'RONALD');
+});
+
+test('THE LAG CASE IS UNTOUCHED: the list still naming the route we removed it from stays held', () => {
+  // This is the cancelled-route un-plan (nuvizz-write-cancel-through) and ordinary index lag.
+  // Releasing here would put the order back on a route we just emptied.
+  const fresh = freshPlannedOn('TREVARR', 4);
+  const prior = priorWrite(boardWriteUnplannedFields(mins(3), 'TREVARR'), 3);
+  assert.equal(applyBoardWriteGrace(fresh, prior, NOW), true);
+  assert.equal(fresh.isPlanned, false);
+  assert.equal(fresh.loadNbr, null);
+});
+
+test('a stamp with NO from-route holds, exactly as before — absence of the baseline is not evidence', () => {
+  // Rows stamped before v1.8.0, and any caller that had no route in hand. Never guess an order
+  // off a route on a missing field.
+  const fresh = freshPlannedOn('RONALD', 2);
+  const prior = priorWrite(boardWriteUnplannedFields(mins(10)), 10);
+  assert.equal(prior.board_write_from, undefined);
+  assert.equal(applyBoardWriteGrace(fresh, prior, NOW), true, 'held by the clock, the old behaviour');
+  assert.equal(fresh.isPlanned, false);
+});
+
+test('the PLANNED direction is untouched — SEAAGRI/OWUSU keep their protection', () => {
+  // A confirmed PLAN against a list that says un-planned still holds; that direction has its own
+  // verify (the load-membership ladder) and nothing here may weaken it.
+  const fresh = freshUnplanned();
+  const prior = priorWrite(boardWritePlannedFields('OWUSU 1', 3, null, mins(30)), 30);
+  assert.equal(applyBoardWriteGrace(fresh, prior, NOW), true);
+  assert.equal(fresh.loadNbr, 'OWUSU 1');
+  // …and a confirmed plan is never "overtaken" by this rule, whatever the list says.
+  assert.equal(unplanStampOvertaken(prior, freshPlannedOn('SOMEWHERE ELSE')), false);
+});
+
+test('unplanStampOvertaken: the rule on its own, including what it refuses to answer', () => {
+  const stamp = (from) => ({ board_write_planned: false, ...(from ? { board_write_from: from } : {}) });
+  assert.equal(unplanStampOvertaken(stamp('TREVARR'), freshPlannedOn('RONALD')), true, 'different route → moved on');
+  assert.equal(unplanStampOvertaken(stamp('TREVARR'), freshPlannedOn('trevarr')), false, 'case is not a difference');
+  assert.equal(unplanStampOvertaken(stamp('TREVARR'), freshPlannedOn(' TREVARR ')), false, 'nor is whitespace');
+  assert.equal(unplanStampOvertaken(stamp('TREVARR'), freshUnplanned()), false, 'the list agrees it is un-planned — nothing to argue');
+  assert.equal(unplanStampOvertaken(stamp(), freshPlannedOn('RONALD')), false, 'no baseline → cannot tell');
+  assert.equal(unplanStampOvertaken({ board_write_planned: true, board_write_from: 'X' }, freshPlannedOn('RONALD')), false, 'not an un-plan stamp');
+  assert.equal(unplanStampOvertaken(null, freshPlannedOn('RONALD')), false);
+  assert.equal(unplanStampOvertaken(stamp('TREVARR'), null), false);
+});
+
+test('the un-plan stamp records the route the order came OFF', () => {
+  const f = boardWriteUnplannedFields('2026-09-10T10:18:15Z', 'TREVARR');
+  assert.equal(f.board_write_from, 'TREVARR');
+  assert.equal(f.isUnplanned, true);
+  assert.equal(f.routeName, null, 'the ROW is still cleared — only the stamp remembers');
+  assert.equal(boardWriteUnplannedFields('t', '   ').board_write_from, undefined, 'a blank route is no baseline');
+  assert.equal(boardWriteUnplannedFields('t', null).board_write_from, undefined);
+});
+
+test('A LOAD NUMBER IS NOT A ROUTE NAME: a baseline in the wrong namespace decides nothing', () => {
+  // The way this rule could LOSE freight rather than merely be slow. Both write-through callers
+  // fall back to something that is not a route name when a card has no resolvable one — the
+  // server takes the load NUMBER, the client can take a hex card key — while the list always
+  // reports the human NAME. Comparing the two reads "different route" for EVERY such stop and
+  // would release exactly the holds that must stand. Caught by an adversarial pass over the
+  // first cut of this fix, which shipped without it.
+  for (const bogus of ['DAVIS000203388', '007141059', '6a3560cb52ef82bd1ed4516b']) {
+    const fresh = freshPlannedOn('RONALD', 2);
+    const prior = priorWrite(boardWriteUnplannedFields(mins(5), bogus), 5);
+    assert.equal(unplanStampOvertaken(prior, fresh), false, `${bogus} is not comparable to a route name`);
+    assert.equal(applyBoardWriteGrace(fresh, prior, NOW), true, `${bogus} must still be HELD by the clock`);
+    assert.equal(fresh.isPlanned, false);
+  }
+  // …and a real route name still decides, including ones that merely look busy.
+  for (const real of ['TREVARR', 'BEN 2', 'COLIN/DJ 1', 'SUW 5']) {
+    assert.equal(unplanStampOvertaken(priorWrite(boardWriteUnplannedFields(mins(5), real), 5), freshPlannedOn('RONALD')), true, real);
+  }
 });

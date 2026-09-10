@@ -27,41 +27,17 @@ import { scanDate, normalizeStop } from './lib/nuvizz-scan.mts';
 import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString, readScanMetrics, readScanConfig, readActiveUnplannedSet, readCarryoverRetired, readScanRefusal, readActivePool } from './lib/firestore.mts';
 import { poolUsable, POOL_LIVE_FIELDS, WINDOW_WRITE_GRACE_MS, type ActivePool } from './lib/active-pool.mts';
 import { summarizeScanMetrics } from './lib/scan-metrics.mts';
-import { filterFinishedPriorDay } from './lib/nuvizz-list.mts';
+import { filterFinishedPriorDay, unplanStampOvertaken } from './lib/nuvizz-list.mts';
+import { LEAN_STOP_FIELDS } from './lib/board-fields.mts';
 import { breakerMode, reportedDailyCeiling, circuitStillBinding } from './lib/nuvizz-request.mts';
 import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
 
-// LEAN MAP FEED (issue: cold load blocked ~5-6s on a 6.9 MB payload; 747 stops × 67 fields).
-// The map + bottom grid only read ~15-20 fields; ~55% of the payload is the raw NuVizz object
-// (`raw`, 3.8 MB) plus a few fields nothing in the client reads (markfor/origin/billTo/the
-// top-level orderInstructions dup). We serve ONLY the field paths below (a Firestore field
-// mask on the read — so the bytes never leave Firestore), which halves the payload and the
-// server time with ZERO client change: everything the markers, status, grid, selection,
-// detail panel, print, texting, and auto-scanner touch is kept. The three `raw.*` slices
-// preserve the only load-bearing bits of `raw` (status fallback, route/load id, print origin).
-// The stored docs are untouched — history/engine/freight still read every field directly.
+// The Map feed's lean projection — the field set every screen reads, now shared with the
+// Routing date window (see lib/board-fields.mts for why it moved out of this file).
 // KILL SWITCH: `?full=1` on the request OR env MAP_FEED_FULL=1 returns the ORIGINAL full
 // payload (no mask), so this is instantly reversible without a code change.
-// Derived from normalizeStop's schema (nuvizz-scan.mts) ∪ the enrichment/list-path fields, so
-// a field that's null/absent on a given day is still served on days it appears. Keep in sync
-// if the stored stop shape gains a NEW field the client needs (or just flip the kill switch).
-const LEAN_STOP_FIELDS = [
-  'addr1', 'addr2', 'allComments', 'boardDate', 'board_write_at', 'board_write_planned',
-  'bol', 'businessName', 'carryover', 'cartons', 'city', 'contact',
-  'custRef', 'customerAccount', 'deliveredDTTM', 'driverId', 'driverName', 'driverUserName',
-  'enriched', 'enriched_at', 'estimatedDurationMin', 'isAttempt', 'isPlanned', 'isTerminal',
-  'isUnplanned', 'itemsSummary', 'lat', 'listUpdatedDTTM', 'lng', 'loadId',
-  'loadNbr', 'loadStopSeq', 'normalizedStatus', 'orderNbr', 'pallets', 'plannedDistanceToNextStop',
-  'plannedDurationToNextStop', 'plannedEtaDTTM', 'poRef', 'podDocs', 'primaryPro', 'pro',
-  'proCount', 'proNbr', 'pros', 'requestedDate', 'routeName', 'routeSeq',
-  'orderInstructions', 'notes_refreshed_at',
-  'scheduledDate', 'scheduledFrom', 'scheduledTo', 'shipmentNbr', 'signalSources', 'source',
-  'state', 'status', 'stopDetails', 'stopDistance', 'stopId', 'stopNbr',
-  'stopType', 'terms', 'timeConstraint', 'volume', 'warehouse', 'weight',
-  'zip', 'raw.stopExecutionInfo', 'raw.load', 'raw.stop.from',
-];
 
 // How old a refused "Scan now" may be and still be worth putting in front of the dispatcher.
 // Longer than the gap between pressing the button and looking back at the board; shorter than
@@ -247,7 +223,9 @@ export async function mergeCarryover(stops: any[], date: string, carryDays: numb
         const stampNewer = Number.isFinite(stampAt) && stampAt > Date.parse(pool!.at);
         const inGrace = Number.isFinite(stampAt) && now() - stampAt < WINDOW_WRITE_GRACE_MS;
         const agrees = !!p && (s.isPlanned === true) === (p.isPlanned === true);
-        if ((stampNewer || inGrace) && !agrees) { fold(s, d); stats.held++; continue; }
+        // Same discriminator as the scan and the window (v1.8.0): a pool row naming a route this
+        // order was not taken off has seen the world after our Save, so the stamp is stale.
+        if ((stampNewer || inGrace) && !agrees && !(p && unplanStampOvertaken(s, p))) { fold(s, d); stats.held++; continue; }
         if (p) {
           if (p.day >= date) {
             // NuVizz files it on today or later now: today's own row (already served) or a

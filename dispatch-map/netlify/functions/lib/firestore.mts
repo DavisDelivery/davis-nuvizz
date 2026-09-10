@@ -651,11 +651,20 @@ export function boardWritePlannedFields(routeName: string, seq: number, driverNa
     board_write_at: at, board_write_planned: true,
   };
 }
-export function boardWriteUnplannedFields(at: string): any {
+// `fromRoute` — THE ROUTE THE ORDER WAS TAKEN OFF, kept on the stamp (v1.8.0).
+//
+// The row itself is cleared to un-planned, which erases where it came from — and that was the
+// one fact needed to tell a LAGGING list from a re-planned order. NuVizz's index catching up
+// slowly looks like the OLD route ("you took it off TREVARR, I still say TREVARR"); an order
+// somebody re-planned after the Save looks like a DIFFERENT one ("I say RONALD"). Recording it
+// costs a field and makes that question answerable for nothing. See unplanStampOvertaken.
+export function boardWriteUnplannedFields(at: string, fromRoute?: string | null): any {
+  const from = String(fromRoute ?? '').trim();
   return {
     status: '10', normalizedStatus: 'UNPLANNED', isPlanned: false, isUnplanned: true,
     loadNbr: null, routeName: null, routeSeq: null, driverName: null, driverUserName: null,
     board_write_at: at, board_write_planned: false,
+    ...(from ? { board_write_from: from } : {}),
   };
 }
 
@@ -675,7 +684,8 @@ export async function patchBoardPlan(
   const base = `${COLLECTION}/${parentId(tenant, dateStr)}`;
   const jobs: Array<{ nbr: string; fields: any }> = [];
   patch.orderedStopNbrs.forEach((nbr, i) => jobs.push({ nbr: String(nbr), fields: boardWritePlannedFields(patch.routeName, i + 1, patch.driverName ?? null, patch.at) }));
-  for (const nbr of (patch.unplannedStopNbrs || [])) jobs.push({ nbr: String(nbr), fields: boardWriteUnplannedFields(patch.at) });
+  // patch.routeName IS the route these stops are being taken off — the from-route the stamp keeps.
+  for (const nbr of (patch.unplannedStopNbrs || [])) jobs.push({ nbr: String(nbr), fields: boardWriteUnplannedFields(patch.at, patch.routeName) });
   let patched = 0, i = 0;
   const missed: Array<{ nbr: string; fields: any }> = [];
   const worker = async () => {
@@ -1620,7 +1630,7 @@ export async function writeFleetIndex(
 const LOAD_ROSTER_COLLECTION = 'nuvizz_load_roster';
 export async function writeLoadRoster(
   tenant: string, dateStr: string, loads: any[], scannedAt: string,
-  meta: { emptyStreak?: number; emptyAt?: string | null; pull?: { period: string; httpStatus: number; cols: number; rows: number; kept: number } | null } = {},
+  meta: { emptyStreak?: number; emptyAt?: string | null; pull?: { period: string; httpStatus: number; cols: number; rows: number; kept: number; drivers?: number } | null } = {},
 ): Promise<void> {
   await setDoc(`${LOAD_ROSTER_COLLECTION}/${parentId(tenant, dateStr)}`, {
     tenant, date: dateStr, at: scannedAt, count: (loads || []).length, loadsJson: JSON.stringify(loads || []),
@@ -1649,7 +1659,7 @@ export async function markLoadRosterEmpty(
 }
 export async function readLoadRoster(
   tenant: string, dateStr: string,
-): Promise<{ at: string | null; loads: any[]; emptyStreak: number; emptyAt: string | null; pull: { period: string; httpStatus: number; cols: number; rows: number; kept: number } | null } | null> {
+): Promise<{ at: string | null; loads: any[]; emptyStreak: number; emptyAt: string | null; pull: { period: string; httpStatus: number; cols: number; rows: number; kept: number; drivers?: number } | null } | null> {
   const doc = await getDoc(`${LOAD_ROSTER_COLLECTION}/${parentId(tenant, dateStr)}`);
   if (!doc) return null;
   let loads: any[] = [];

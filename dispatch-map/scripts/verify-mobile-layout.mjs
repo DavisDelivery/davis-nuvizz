@@ -325,7 +325,20 @@ function stubRoutes(page, emailHtml) {
       disagreements: [], counts: { scored: 3 }, note: null,
       status: { lastRunAt: '2026-09-02T03:00:00Z', lastSuccessAt: '2026-09-02T03:00:00Z', lastSummary: 'nothing new (1 already judged)' }, query: 'subject:"Uline Forecast" has:attachment newer_than:45d',
     });
-    if (u.includes('roster') || u.includes('drivers')) return R({ ok: true, drivers: [{ name: 'FRANK OKINE', id: '1' }], roster: [] });
+    // The load roster answers with LOADS, and since v1.7.0 each carries the driver NuVizz
+    // already has on it. This stub returned no `loads` key at all, so every roster-fed grid on
+    // the phone rendered zero rows and the guard could not see them — and a sixth populated
+    // column in a 390px row is the classic scrollWidth > innerWidth trigger. One shell is left
+    // unstaffed, because that row renders differently and is the one worth measuring.
+    if (u.includes('roster') || u.includes('drivers')) return R({
+      ok: true, drivers: [{ name: 'FRANK OKINE', id: '1' }], roster: [],
+      at: '2026-09-10T12:00:00Z', count: 3,
+      loads: [
+        { loadId: 'ld-m1', name: 'SHEATS', loadNbr: 'DAVIS000203725', status: 'Draft', driver: 'Sirdedrick Sheats', trips: 0 },
+        { loadId: 'ld-m2', name: 'TYRESE GRIFFIN', loadNbr: 'DAVIS000203723', status: 'Draft', driver: 'Tyrese Griffin', trips: 0 },
+        { loadId: 'ld-m3', name: 'ALPHA 2', loadNbr: 'DAVIS000203707', status: 'Draft', driver: '', trips: 0 },
+      ],
+    });
     return R({ ok: true, stops: [], entries: [], items: [], count: 0 });
   });
 }

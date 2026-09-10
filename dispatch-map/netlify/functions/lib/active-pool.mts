@@ -62,6 +62,8 @@ export interface ActivePool {
   thin?: boolean;
 }
 
+import { unplanStampOvertaken } from './nuvizz-list.mts';
+
 const TERMINAL = new Set(['DELIVERED', 'EXCEPTION', 'CANCELLED']);
 const TERMINAL_CODES = new Set(['90', '91', '80', '99']);
 
@@ -229,7 +231,13 @@ export function mergeWindowWithPool(
     const stampNewer = stampNewerThan(c, pool.at);
     const stampAt = Date.parse(String(c?.board_write_at || ''));
     const inGrace = Number.isFinite(stampAt) && now - stampAt < grace;
-    if ((stampNewer || inGrace) && !(p && agrees(c, p))) { out.push(c); served.add(nbr); stats.held++; note('held', nbr); continue; }
+    // …unless the pool names a route this order was NOT taken off, which is the world moving on
+    // rather than the pool lagging our Save (v1.8.0 — see unplanStampOvertaken). Same rule the
+    // scan's own merge applies, imported rather than restated, so the window and the board cannot
+    // disagree about a plan for the fifty-seven minutes it took Chad to notice on 007174547.
+    if ((stampNewer || inGrace) && !(p && agrees(c, p)) && !(p && unplanStampOvertaken(c, p))) {
+      out.push(c); served.add(nbr); stats.held++; note('held', nbr); continue;
+    }
     if (p) {
       if (!inRange(p.day, opts.from, opts.to)) {
         if (stats.thin) { out.push(c); served.add(nbr); continue; }
