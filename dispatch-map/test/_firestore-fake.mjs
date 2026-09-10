@@ -48,7 +48,7 @@ const decDoc = (fields) => Object.fromEntries(Object.entries(fields || {}).map((
 export function installFirestoreFake(seed = {}, onOther) {
   installServiceAccountEnv();
   const store = new Map(Object.entries(seed));
-  const log = { gets: [], lists: [], sets: [], deletes: [], commits: [], other: [] };
+  const log = { gets: [], lists: [], listMasks: [], sets: [], deletes: [], commits: [], other: [] };
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (input, init = {}) => {
     const url = String(input?.url ?? input);
@@ -68,6 +68,12 @@ export function installFirestoreFake(seed = {}, onOther) {
       if (method === 'GET') {
         if (segs.length % 2 === 1) { // collection → list
           log.lists.push(path);
+          // WHICH FIELDS THE READER ASKED FOR. Recorded for the same reason the write mask is
+          // (see the PATCH branch): a masked read and a whole-document read return the identical
+          // object from this fake, so a caller that quietly stops masking — and starts pulling
+          // the raw NuVizz blob for every stop in a fourteen-day window — would pass every test.
+          // `lists` keeps its plain-path shape; existing assertions on it are untouched.
+          log.listMasks.push({ path, mask: new URL(url).searchParams.getAll('mask.fieldPaths') });
           const docs = [...store.entries()]
             .filter(([k]) => k.startsWith(path + '/') && k.slice(path.length + 1).split('/').length === 1)
             .map(([k, v]) => encDoc(k, v));
