@@ -27,7 +27,7 @@ import { scanDate, normalizeStop } from './lib/nuvizz-scan.mts';
 import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString, readScanMetrics, readScanConfig, readActiveUnplannedSet, readCarryoverRetired, readScanRefusal, readActivePool } from './lib/firestore.mts';
 import { poolUsable, POOL_LIVE_FIELDS, WINDOW_WRITE_GRACE_MS, type ActivePool } from './lib/active-pool.mts';
 import { summarizeScanMetrics } from './lib/scan-metrics.mts';
-import { filterFinishedPriorDay } from './lib/nuvizz-list.mts';
+import { filterFinishedPriorDay, unplanStampOvertaken } from './lib/nuvizz-list.mts';
 import { LEAN_STOP_FIELDS } from './lib/board-fields.mts';
 import { breakerMode, reportedDailyCeiling, circuitStillBinding } from './lib/nuvizz-request.mts';
 import { requireUser } from './lib/require-user.mts';
@@ -223,7 +223,9 @@ export async function mergeCarryover(stops: any[], date: string, carryDays: numb
         const stampNewer = Number.isFinite(stampAt) && stampAt > Date.parse(pool!.at);
         const inGrace = Number.isFinite(stampAt) && now() - stampAt < WINDOW_WRITE_GRACE_MS;
         const agrees = !!p && (s.isPlanned === true) === (p.isPlanned === true);
-        if ((stampNewer || inGrace) && !agrees) { fold(s, d); stats.held++; continue; }
+        // Same discriminator as the scan and the window (v1.8.0): a pool row naming a route this
+        // order was not taken off has seen the world after our Save, so the stamp is stale.
+        if ((stampNewer || inGrace) && !agrees && !(p && unplanStampOvertaken(s, p))) { fold(s, d); stats.held++; continue; }
         if (p) {
           if (p.day >= date) {
             // NuVizz files it on today or later now: today's own row (already served) or a

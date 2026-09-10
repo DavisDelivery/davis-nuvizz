@@ -23,7 +23,7 @@
 // a field that's null/absent on a given day is still served on days it appears. Keep in sync
 // if the stored stop shape gains a NEW field the client needs (or just flip the kill switch).
 export const LEAN_STOP_FIELDS = [
-  'addr1', 'addr2', 'allComments', 'boardDate', 'board_write_at', 'board_write_planned',
+  'addr1', 'addr2', 'allComments', 'boardDate', 'board_write_at', 'board_write_planned', 'board_write_from',
   'bol', 'businessName', 'carryover', 'cartons', 'city', 'contact',
   'custRef', 'customerAccount', 'deliveredDTTM', 'driverId', 'driverName', 'driverUserName',
   'enriched', 'enriched_at', 'estimatedDurationMin', 'isAttempt', 'isPlanned', 'isTerminal',
