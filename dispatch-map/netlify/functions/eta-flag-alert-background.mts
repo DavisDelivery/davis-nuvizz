@@ -24,7 +24,7 @@
 // day either side of a DST flip without needing to be re-timed twice a year.
 import { isFirestoreEnabled, readStops, getDoc, setDoc, listFleetLoads, createDocIfAbsent, etDayString, listDocs, readAlertRecipients } from './lib/firestore.mts';
 import { computeBoardFlags } from '../../src/lib/board-flags.js';
-import { ensureLegs, readTravelCalibration, routeClassesPath } from './lib/travel-store.mts';
+import { ensureLegs, readTravelCalibration, routeClassesPath, legacyRouteClassesPath, perDayRouteClassesEnabled } from './lib/travel-store.mts';
 import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mts';
 import { readRouteClassesFor } from './lib/route-classes.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
@@ -133,13 +133,20 @@ export default async (req: Request): Promise<Response> => {
       unclassedRoutes = (rc.unclassed || []).filter((u) => u.reason !== 'appointment_route');
       nearMatches = rc.nearMatches || [];
 
-      // The doc is TODAY's operational state and only a real sweep of today may write it.
-      // A dry run must claim nothing, and a ?date= replay writing last Friday's trucks
-      // over today's map would put every route on the fleet clock until the next sweep —
-      // across a whole weekend, if the replay ran on a Friday night.
-      if (!dry && date === etDayString()) {
+      // A dry run must claim nothing. The old guard also refused any date but today, because
+      // one shared document meant a ?date= replay would write last Friday's trucks over
+      // today's map. Keyed per day that cannot happen — a replay writes Friday's own doc.
+      //
+      // WHAT REPLACES IT: never write a day that has already passed. The roster is CURRENT,
+      // not historical, so recomputing a past day from it would overwrite what was actually
+      // resolved that morning with an inference from today's fleet — quietly, and in the
+      // record a later replay reads back. Today and forward only.
+      // ROUTE_CLASSES_PER_DAY=off restores the old single-document, today-only write.
+      const perDay = perDayRouteClassesEnabled();
+      if (!dry && (perDay ? date >= etDayString() : date === etDayString())) {
         try {
-          await setDoc(routeClassesPath(TENANT), { tenant: TENANT, date, classes: routeClasses, at: new Date().toISOString() });
+          const path = perDay ? routeClassesPath(TENANT, date) : legacyRouteClassesPath(TENANT);
+          await setDoc(path, { tenant: TENANT, date, classes: routeClasses, at: new Date().toISOString() });
         } catch (e: any) {
           // The sweep would now judge on a map the browser cannot read — say so where
           // the run record shows it rather than letting screen and inbox drift apart.

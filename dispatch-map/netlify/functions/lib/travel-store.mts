@@ -32,7 +32,46 @@ export function travelCalCurrentPath(tenant: string): string {
 }
 /** Today's route → truck-class map, resolved by the sweep from the MarginIQ roster.
  *  Its own doc (not the leg cache) so the two writers never clobber each other. */
-export function routeClassesPath(tenant: string): string {
+// ONE DOCUMENT PER DAY, and the day is in the KEY rather than in a field.
+//
+// It was a single document carrying a `date`, which meant the map could only ever describe
+// one day — so the evening sweep, which resolves TOMORROW's trucks from the roster at 8pm
+// while routing is being built, deliberately threw its map away rather than overwrite
+// today's and put the browser's whole board on the wrong clock overnight. That was the right
+// call for the shape it had; the shape was the problem.
+//
+// The consequence was that between 8pm and 7am — exactly the hours loads get built — the
+// board had NO class map at all, so every truck-class rule reported "not checked": the
+// no-tractor-trailer conflict, and the box-truck conflict, on the one board where a wrong
+// truck can still be changed for free.
+//
+// Keyed per day, both sweeps publish the day they actually judged and neither can tread on
+// the other.
+export function routeClassesPath(tenant: string, date: string): string {
+  return `${TRAVEL_CAL_COLLECTION}/${tenant}__route_classes__${date}`;
+}
+
+/**
+ * THE WAY BACK. Chad: "if it changes something I do like I can just tell you to flip it back
+ * the way it was and it's an easy fix."
+ *
+ * ROUTE_CLASSES_PER_DAY=off restores the previous behaviour EXACTLY and without a code
+ * change: one shared document, today only, the evening sweep publishing nothing. It is one
+ * env var on all three sides of this feature — the read, both writes, and the endpoint — so
+ * there is no half-reverted state where the browser asks for a day nothing writes.
+ *
+ * Default ON, and anything that is not an explicit off-word leaves it on: a typo in an env
+ * var must not silently return the board to going blind overnight, which is the exact
+ * failure this feature exists to end.
+ */
+export function perDayRouteClassesEnabled(env: any = process.env): boolean {
+  const v = String(env?.ROUTE_CLASSES_PER_DAY ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+/** The pre-split single document. Read-only when the per-day switch is on; the only
+ *  document at all when it is off. */
+export function legacyRouteClassesPath(tenant: string): string {
   return `${TRAVEL_CAL_COLLECTION}/${tenant}__route_classes`;
 }
 
@@ -200,13 +239,25 @@ export async function readTravelCalibration(tenant: string): Promise<any | null>
   }
 }
 
-/** Today's route → class map, or {} when absent/stale (a map from another DAY is a lie —
- *  drivers rotate, so a stale doc must read as unknown, not as yesterday's trucks). */
+/** One DAY's route → class map, or {} when absent (a map from another day is a lie —
+ *  drivers rotate, so a missing day must read as unknown, not as yesterday's trucks).
+ *
+ *  Falls back to the pre-split single document when the per-day one is not there yet, and
+ *  only when that document is for the day asked for. Without it the board would report every
+ *  route unclassed from deploy until the next sweep writes a per-day doc — a real regression,
+ *  and a silent one, since "not checked" looks the same as it always does. The date check is
+ *  what the legacy document existed for and it is kept exactly. */
 export async function readRouteClasses(tenant: string, date: string): Promise<Record<string, string>> {
+  if (perDayRouteClassesEnabled()) {
+    try {
+      const doc = await getDoc(routeClassesPath(tenant, date));
+      if (doc?.classes && Object.keys(doc.classes).length) return doc.classes;
+    } catch { /* fall through to the legacy doc */ }
+  }
   try {
-    const doc = await getDoc(routeClassesPath(tenant));
-    if (!doc || doc.date !== date || !doc.classes) return {};
-    return doc.classes;
+    const legacy = await getDoc(legacyRouteClassesPath(tenant));
+    if (!legacy || legacy.date !== date || !legacy.classes) return {};
+    return legacy.classes;
   } catch {
     return {};
   }

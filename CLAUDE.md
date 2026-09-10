@@ -199,6 +199,40 @@ Project-level guidance for Claude Code in this repository.
   narrow: **a NuVizz scan** (see the cost rule above) and anything
   genuinely destructive or hard to reverse.
 
+## Ship it so it can be put back (Chad, Sep 2026)
+
+- Chad: **"build this in such a way if it changes something I do like I can
+  just tell you to flip it back the way it was and it's an easy fix."**
+- The test for every change: **when he says "put it back", how much work is
+  that?** If the answer is "unpick it from four files", it was built wrong,
+  however good the change is. He is not asking for a settings screen — he is
+  asking that reversing me is cheap, because he only finds out he dislikes
+  something after it is live on his board.
+- **Which changes need a switch, and which do not.** A change that ADDS
+  something (a new mark, a new card, a new column) is already reversible: it
+  is one commit and `git revert` is the whole job — so keep it to one commit
+  and say so. A change that ALTERS behaviour that already worked — a rule
+  that fires differently, a document that is read or written differently, a
+  default that moves — is the one that needs a **named env switch**, because
+  by the time he objects it is entangled with a week of other merges and the
+  revert is no longer clean.
+- **The switch reverts EVERY side at once.** One env var covering the read,
+  the writes and the endpoint. A half-reverted state — a browser asking for a
+  day nothing writes any more — is worse than no switch, because it is a new
+  bug wearing the old feature's name and nobody is looking for it.
+- **House shape** (`nearMatchEnabled`, `attEnabled`, `perDayRouteClassesEnabled`):
+  default ON, an explicit off-word (`off/0/false/no`) turns it off, and
+  **anything malformed leaves it ON**. A typo in an env var must never
+  silently disable a rule — that failure is invisible, and a quiet feature
+  looks exactly like a working one.
+- **Name the switch in the handover.** "ROUTE_CLASSES_PER_DAY=off puts it
+  back" is the sentence that makes the promise real. A switch he does not
+  know about is not a way back; and per the merge rule above, a switch whose
+  position cannot be read is not a switch.
+- Client-side visual changes are the exception worth stating: a `VITE_` flag
+  is build-time, so it costs a redeploy either way. Keep those to one small
+  isolated commit instead and let the revert be the mechanism.
+
 ## NEVER enable PR auto-fix or PR watching (Chad, Aug 2026)
 
 - Chad: **"Never enable PR auto-fix. Do not run /autofix-pr, do not
