@@ -22,7 +22,10 @@
 
 import { getNuvizzRequester } from './nuvizz-request.mts';
 import { getCreds, basicAuthHeader } from './nuvizz-scan.mts';
-import { OPENAPI_BASE, linkVal, periodForDate, isHashLikeId } from './nuvizz-list.mts';
+// looksLikeLoadNbr moved to nuvizz-list.mts (v1.8.0): the board write-grace needs the same
+// question answered, and a third copy of it is how two readers of one fact drift apart.
+import { OPENAPI_BASE, linkVal, periodForDate, isHashLikeId, looksLikeLoadNbr } from './nuvizz-list.mts';
+export { looksLikeLoadNbr };
 
 // The saved load-list def the portal uses for the Loads grid (HAR-captured). Override
 // via env if Davis retunes it in the portal.
@@ -50,15 +53,6 @@ export function buildLoadBody(period: string, pageSize: number = LOAD_MAX_RESULT
   };
 }
 
-// A NuVizz load NUMBER looks like the company code + zero-padded digits ("DAVIS000198197")
-// or (some tenants) a long bare number — NEVER the internal hex loadId (interspersed hex) and
-// NEVER a short human route name ("SUW"). Distinctive enough to VALIDATE a labelled column and,
-// if the column is mislabelled/absent, to FIND the number anywhere in the row — so "the loads
-// scan produces the number, just grab it" holds regardless of the saved-search column naming.
-export function looksLikeLoadNbr(v: any): boolean {
-  const s = String(v ?? '').trim();
-  return /^[A-Za-z]{2,}\d{5,}$/.test(s) || /^\d{6,}$/.test(s);
-}
 
 // PURE: map the load-list response (filterData column-defs + values rows) → load rows
 // { loadId, name, loadNbr, status, trips }. Columns are found BY PATTERN against BOTH the dotted
