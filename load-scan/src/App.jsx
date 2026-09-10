@@ -1317,6 +1317,27 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
           // This acquisition is now spent, whichever way the answer goes.
           answerAcquisition(pro7);
 
+          // ON AN ORDER THAT HAS SHOWN REAL PIECE IDS, A PRO ALONE ASKS.
+          //
+          // The top-only scan (v0.47.0) books a skid off its piece id the instant
+          // it decodes. Quagga reads one barcode at a time, so the PRO on that
+          // same label then decodes on its own a beat later — and the rule below
+          // read it as the next skid and minted a NOOG for freight already aboard
+          // under its real id. Two skids presented, three pieces booked; found
+          // and reproduced on 2026-09-10, one day after it shipped.
+          //
+          // The app genuinely cannot tell that PRO from a torn second skid whose
+          // id will not read. So it does not guess in either direction: it asks,
+          // once per presentation. On the dock that is a card saying the PRO is
+          // already logged — one tap if it really is another piece, nothing if it
+          // is aim drifting onto a label already counted. An order whose pieces
+          // have never shown an id (loose cartons) is untouched by this and keeps
+          // booking PRO-only, because there the PRO is all there is.
+          const order = activeOrderRef.current;
+          const orderHasIds = !!order && order.pro7 === pro7
+            && activeScans(liveScans).some((s2) => normalizePro(s2.pro) === pro7 && /^OG\d{10}$/i.test(String(s2.og)));
+          if (orderHasIds) return refuse({ pro: pro7, count: already });
+
           // A REPEAT PRO ON A STOP THAT IS STILL SHORT IS ORDINARY WORK.
           //
           // A 3-skid order is one PRO on three labels; the manifest says three.
@@ -1435,6 +1456,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       // synced as it lands, so a failure part-way keeps what already arrived.
       for (let i = 0; i < rows.length; i += api.PUSH_ROWS_MAX) {
         const slice = rows.slice(i, i + api.PUSH_ROWS_MAX);
+        try {
         await api.pushScans(session.token, {
           loadNbr: activeLoad,
           date: manifest.date,
@@ -1456,7 +1478,19 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
           handConfirms: slice.filter((r) => r.kind === 'hand')
             .map(({ stopNbr, pieces, confirmedAt, reason }) => ({ stopNbr, pieces, confirmedAt, reason })),
         });
-        await store.markSynced(slice.map((r) => r.key));
+        // The ROWS, not their keys: a row voided or flagged while this push was
+        // in flight must stay unsynced so the change travels — see markSynced.
+        await store.markSynced(slice);
+        } catch (e) {
+          // A 413 is the server saying this slice can NEVER land as sent (a row
+          // over a size cap). Retrying it every 30 seconds for the rest of the
+          // shift is pointless, and because slices go in order it also blocked
+          // every slice behind it — a whole night's scans stuck behind one bad
+          // row. Set it aside and let the rest through; the rows stay unsynced
+          // and visible in the pending count.
+          if (e?.status === 413) { console.warn('[flush] slice refused as too large — skipped', e?.body); continue; }
+          throw e;
+        }
       }
       await refreshLocal();
     } catch {
