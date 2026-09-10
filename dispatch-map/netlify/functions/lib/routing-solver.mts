@@ -8,9 +8,10 @@
 //   1. Assignment — best-fit-decreasing bin-packing across the N trucks, honoring
 //      equipment + capacity HARD constraints. Hard-to-place stops (oversize / most
 //      restricted / largest) are placed first; anything that fits no truck spills.
-//   2. Sequencing per strategy — CLOSEST/FARTHEST order by depot distance;
-//      MIN_DISTANCE / MIN_TIME use nearest-neighbor seeding + 2-opt improvement on
-//      the injected Google matrix.
+//   2. Sequencing per strategy — FARTHEST_FIRST pins the far stop first and the depot
+//      last and finds the shortest path between them (a homeward sweep); CLOSEST_FIRST
+//      is the same sweep outward (near stop first, far stop last). MIN_DISTANCE /
+//      MIN_TIME use nearest-neighbor seeding + 2-opt improvement on the injected matrix.
 //   3. Legs + ETAs + load/capacity.
 // STRICT appointment windows are validated/enforced by the repair loop, not here.
 
@@ -226,14 +227,112 @@ export function twoOpt(order: number[], cost: number[][]): number[] {
   return best;
 }
 
+// ── the pinned-ends sweep (FARTHEST_FIRST / CLOSEST_FIRST) ───────────────────
+// Until 2026-09-10 both were a SORT by distance from the depot. A radius says nothing about
+// direction, so towns at one radius in three directions interleaved and the route crossed
+// itself — Chad, on a 14-stop route: "it should be pretty linear from furthest point out to
+// the last but this is jumping all around." What "farthest first" means on a dock is: run out
+// to the far end, then deliver on the way home. Both ends of that path are known (the far
+// stop, then the depot); only the order in between is open, and it is found the same way
+// MIN_DISTANCE finds its order — nearest-neighbour seeds, 2-opt reversals, or-opt relocations
+// — with the ends held fixed. CLOSEST_FIRST is the sweep run outward: near stop first, far
+// stop last. The client's re-sequence picker (lib/routing-select.js) runs the identical sweep
+// on straight-line distance, so a card and an engine build agree on what the words mean.
+
+// Length of start → order… → end on a cost matrix (asymmetric-safe: every edge read forward).
+export function pinnedPathCost(order: number[], start: number, end: number, cost: number[][]): number {
+  let prev = start, total = 0;
+  for (const k of order) { total += cost[prev][k]; prev = k; }
+  return total + cost[prev][end];
+}
+
+function nearestNeighborFrom(from: number, pool: number[], cost: number[][]): number[] {
+  const remaining = new Set(pool);
+  const out: number[] = [];
+  let cur = from;
+  while (remaining.size) {
+    let next = -1, bestC = Infinity;
+    for (const n of remaining) { const c = cost[cur][n]; if (c < bestC) { bestC = c; next = n; } }
+    out.push(next); remaining.delete(next); cur = next;
+  }
+  return out;
+}
+
+// 2-opt + or-opt on the interior of a path whose two ends never move. Full re-evaluation per
+// candidate so it is right on an asymmetric (Google) matrix; every kept move strictly
+// shortens the path, so it terminates on its own — maxPasses is a belt for the braces.
+export function improvePinnedPath(order: number[], start: number, end: number, cost: number[][], maxPasses = 40): number[] {
+  let best = order.slice();
+  if (best.length < 2) return best;
+  let bestLen = pinnedPathCost(best, start, end, cost);
+  const EPS = 1e-9;
+  for (let pass = 0; pass < maxPasses; pass++) {
+    let improved = false;
+    for (let i = 0; i < best.length - 1; i++) {
+      for (let k = i + 1; k < best.length; k++) {
+        const cand = best.slice(0, i).concat(best.slice(i, k + 1).reverse(), best.slice(k + 1));
+        const len = pinnedPathCost(cand, start, end, cost);
+        if (len + EPS < bestLen) { best = cand; bestLen = len; improved = true; }
+      }
+    }
+    for (let segLen = 1; segLen <= 3 && segLen < best.length; segLen++) {
+      for (let i = 0; i + segLen <= best.length; i++) {
+        const seg = best.slice(i, i + segLen);
+        const rest = best.slice(0, i).concat(best.slice(i + segLen));
+        const segRev = seg.slice().reverse();
+        let moved = false;
+        for (let j = 0; j <= rest.length && !moved; j++) {
+          for (const piece of (segLen > 1 ? [seg, segRev] : [seg])) {
+            if (j === i && piece === seg) continue;
+            const cand = rest.slice(0, j).concat(piece, rest.slice(j));
+            const len = pinnedPathCost(cand, start, end, cost);
+            if (len + EPS < bestLen) { best = cand; bestLen = len; improved = true; moved = true; break; }
+          }
+        }
+      }
+    }
+    if (!improved) break;
+  }
+  return best;
+}
+
+// The sweep over matrix node indices (0 = depot). 'homeward' = FARTHEST_FIRST, 'outward' =
+// CLOSEST_FIRST. Multi-start: four cheap seeds, each improved, the shortest path wins.
+export function pinnedSweep(nodes: number[], cost: number[][], dir: 'homeward' | 'outward'): number[] {
+  if (nodes.length <= 1) return nodes.slice();
+  let far = nodes[0], near = nodes[0];
+  for (const n of nodes) {
+    if (cost[0][n] > cost[0][far]) far = n;
+    if (cost[0][n] < cost[0][near]) near = n;
+  }
+  let start: number, end: number;
+  if (dir === 'homeward') { start = far; end = 0; }
+  else { start = near; end = far === near ? 0 : far; }
+  const pool = nodes.filter((n) => n !== start && n !== end);
+  const byRadius = pool.slice().sort((a, b) => cost[0][a] - cost[0][b]);
+  const seeds = [
+    nearestNeighborFrom(start, pool, cost),
+    nearestNeighborFrom(end, pool, cost).reverse(),
+    dir === 'homeward' ? byRadius.slice().reverse() : byRadius,
+    pool,
+  ];
+  let interior: number[] = pool, best = Infinity;
+  for (const seed of seeds) {
+    const cand = improvePinnedPath(seed, start, end, cost);
+    const len = pinnedPathCost(cand, start, end, cost);
+    if (len + 1e-9 < best) { best = len; interior = cand; }
+  }
+  return [start, ...interior, ...(end === 0 ? [] : [end])];
+}
+
 export function sequence(nodes: number[], strategy: Strategy, matrix: SolverInput['matrix']): number[] {
   if (nodes.length <= 1) return nodes.slice();
   const { distanceMeters, durationSec } = matrix;
   switch (strategy) {
     case 'CLOSEST_FIRST':
-      return nodes.slice().sort((a, b) => distanceMeters[0][a] - distanceMeters[0][b]);
+      return pinnedSweep(nodes, distanceMeters, 'outward');
     case 'FARTHEST_FIRST':
-      return nodes.slice().sort((a, b) => distanceMeters[0][b] - distanceMeters[0][a]);
+      return pinnedSweep(nodes, distanceMeters, 'homeward');
     case 'MIN_TIME':
       return twoOpt(nearestNeighbor(nodes, durationSec), durationSec);
     case 'MIN_DISTANCE':

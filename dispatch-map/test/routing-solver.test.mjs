@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  solveRouting, twoOpt, nearestNeighbor, pathCost,
+  solveRouting, twoOpt, nearestNeighbor, pathCost, pinnedSweep, pinnedPathCost,
 } from '../netlify/functions/lib/routing-solver.mts';
 
 // Build a symmetric matrix from 1-D positions (depot first). cost = |Δpos|.
@@ -154,4 +154,67 @@ test('Chunk B: a dense 12+ co-located cluster routes with ZERO raw spill (Phase 
   assert.equal(out.unassigned.length, 0, `expected 0 raw spill, got ${JSON.stringify(out.unassigned)}`);
   const served = out.routes.reduce((a, r) => a + r.orderedStopIds.length, 0);
   assert.equal(served, N, 'every co-located stop must be assigned');
+});
+
+
+// ── FARTHEST_FIRST / CLOSEST_FIRST are a sweep, not a sort (Chad, 2026-09-10) ──────────────
+// "it should be pretty linear from furthest point out to the last but this is jumping all
+// around." Both were a sort by distance from the depot; towns at one radius in different
+// directions interleaved. Now the far stop is pinned first, the depot last, and the path
+// between them is optimized — the same sweep the client's re-sequence picker runs.
+
+// Symmetric plane matrix from [x, y] points (depot first). cost = straight-line distance.
+function planeMatrix(points) {
+  const d = points.map((p) => points.map((q) => Math.hypot(p[0] - q[0], p[1] - q[1])));
+  return { durationSec: d, distanceMeters: d };
+}
+// Two arms leaving the depot at right angles, at nearly the same radii: A north, B east.
+const ARM_STOPS = [
+  stop('A1', 1, 0), stop('B1', 0, 1.05), stop('A2', 2, 0), stop('B2', 0, 2.05),
+  stop('A3', 3, 0), stop('B3', 0, 3.05), stop('A4', 4, 0), stop('B4', 0, 4.05),
+];
+const ARM_MATRIX = planeMatrix([[0, 0], ...ARM_STOPS.map((s) => [s.lat, s.lng])]);
+const armSwitches = (ids) => ids.filter((id, i) => i > 0 && id[0] !== ids[i - 1][0]).length;
+
+test('FARTHEST_FIRST: the far stop first, then one arm, then the other — not alternating arms', () => {
+  const out = solveRouting({ stops: ARM_STOPS, trucks: [truck()], depot: { lat: 0, lng: 0 }, matrix: ARM_MATRIX, strategy: 'FARTHEST_FIRST', objectiveWeights: { distance: 1, time: 1, balance: 0 } });
+  const ids = out.routes[0].orderedStopIds;
+  assert.deepEqual([...ids].sort(), ['A1', 'A2', 'A3', 'A4', 'B1', 'B2', 'B3', 'B4']);
+  assert.equal(ids[0], 'B4');
+  assert.equal(armSwitches(ids), 1, `arms interleaved: ${ids.join(' → ')}`);
+});
+
+test('CLOSEST_FIRST: the near stop first, the far stop last, arms kept together', () => {
+  const out = solveRouting({ stops: ARM_STOPS, trucks: [truck()], depot: { lat: 0, lng: 0 }, matrix: ARM_MATRIX, strategy: 'CLOSEST_FIRST', objectiveWeights: { distance: 1, time: 1, balance: 0 } });
+  const ids = out.routes[0].orderedStopIds;
+  assert.deepEqual([...ids].sort(), ['A1', 'A2', 'A3', 'A4', 'B1', 'B2', 'B3', 'B4']);
+  assert.equal(ids[0], 'A1');
+  assert.equal(ids[ids.length - 1], 'B4');
+  assert.equal(armSwitches(ids), 1, `arms interleaved: ${ids.join(' → ')}`);
+});
+
+test('the sweep reads a Google (asymmetric) matrix in the driving direction', () => {
+  // Line depot(0) A(1) B(2) C(3), but B→A is a 100-unit detour (one-way road). Farthest first
+  // pins C first and the depot last; the cheap path is C→A→B→depot (2+1+2=5), and a reader
+  // that assumed symmetry would hand back C→B→A (1+100+1=102).
+  const cost = [
+    [0, 1, 2, 3],
+    [1, 0, 1, 2],
+    [2, 100, 0, 1],
+    [3, 2, 1, 0],
+  ];
+  const order = pinnedSweep([1, 2, 3], cost, 'homeward');
+  assert.deepEqual(order, [3, 1, 2]);
+  assert.equal(pinnedPathCost(order.slice(1), 3, 0, cost), 5);
+});
+
+test('the sweep on one stop, on a tie for farthest, and on a ring, returns every node exactly once', () => {
+  assert.deepEqual(pinnedSweep([2], ARM_MATRIX.distanceMeters, 'homeward'), [2]);
+  assert.deepEqual(pinnedSweep([], ARM_MATRIX.distanceMeters, 'outward'), []);
+  const ring = Array.from({ length: 6 }, (_, i) => [Math.sin((i * Math.PI) / 3), Math.cos((i * Math.PI) / 3)]);
+  const m = planeMatrix([[0, 0], ...ring]).distanceMeters;
+  for (const dir of ['homeward', 'outward']) {
+    const o = pinnedSweep([1, 2, 3, 4, 5, 6], m, dir);
+    assert.deepEqual([...o].sort(), [1, 2, 3, 4, 5, 6]);
+  }
 });

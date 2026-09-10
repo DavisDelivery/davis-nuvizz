@@ -178,7 +178,9 @@ function routeTotalMeters(orderedStops, depot) {
   return total;
 }
 
-// Sort by crow-flies distance from the depot (Closest first / Farthest first).
+// Sort by crow-flies distance from the depot. This WAS "Closest first" / "Farthest first" until
+// 2026-09-10 — a radial sort that ignores direction and zigzags between towns at one radius.
+// Kept as a plain utility; the picker's strategies are the sweeps below.
 export function depotSort(stops, depot, dir = 'asc') {
   const withD = stops.map((s) => ({ s, d: haversineMeters(depot, s) }));
   withD.sort((a, b) => (dir === 'asc' ? a.d - b.d : b.d - a.d));
@@ -255,18 +257,185 @@ export function twoOptLoop(stops, depot, maxPasses = 8) {
   return best;
 }
 
+// ── "Farthest first" / "Closest first" are a SWEEP, not a sort ──────────────
+//
+// Chad, 2026-09-10, on a 14-stop JEFF route re-sequenced Farthest first: "it should be pretty
+// linear from furthest point out to the last but this is jumping all around."
+//
+// IT WAS A SORT. depotSort ranked every stop by its crow-flies RADIUS from Buford and by
+// nothing else — and a radius says nothing about direction. Three towns that sit at about the
+// same distance in three different directions (Canton to the south-west, Tate to the
+// north-east, Ball Ground between them) interleave in a radial sort, so the driver was sent
+// Jasper → Canton → Tate → Ball Ground → … → back out east on 53. The line on the map crossed
+// itself four times and every crossing was a stop driven past and come back for.
+//
+// WHAT "FARTHEST FIRST" MEANS ON A DOCK: run out to the far end with the load, then deliver on
+// the way home, so every stop after the first brings the truck closer to the yard. That is a
+// path whose BOTH ends are already known — it starts at the farthest stop and it finishes at
+// the terminal — and the only open question is the order of everything in between. So the far
+// stop is pinned first, the depot is pinned last, and the shortest path between them through
+// the rest is found: a nearest-neighbour seed, then 2-opt (reverse a run of stops) and or-opt
+// (lift a run of one to three stops and set it down elsewhere) until neither move shortens it.
+// Or-opt is there for the straggler 2-opt cannot reach: one stop off to the side of the
+// corridor that a reversal alone leaves stranded between two towns.
+//
+// "Closest first" is the same sweep run the other way: nearest stop pinned first, farthest
+// pinned last, and the path walks outward. Without a pinned far end it would collapse into
+// "Shortest distance" — the picker would offer two names for one order.
+//
+// Straight-line distance throughout, the same convention as every other client-side
+// re-sequence here (recomputeRoute, twoOpt, twoOptLoop). The engine's FARTHEST_FIRST /
+// CLOSEST_FIRST (routing-solver.mts) run the same sweep on the build's matrix, so a card
+// re-sequenced here and a route built there agree about what the words mean.
+
+const mappable = (s) => Number.isFinite(s?.lat) && Number.isFinite(s?.lng);
+
+// Symmetric haversine matrix over `nodes` ([{lat,lng}, …]); index i ↔ nodes[i].
+function distanceMatrix(nodes) {
+  const n = nodes.length;
+  const m = Array.from({ length: n }, () => new Array(n).fill(0));
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) { const d = haversineMeters(nodes[i], nodes[j]); m[i][j] = d; m[j][i] = d; }
+  }
+  return m;
+}
+
+// Length of start → order[0] → … → order[last] → end on a cost matrix of node indices.
+export function pinnedPathCost(order, start, end, cost) {
+  let prev = start, total = 0;
+  for (const k of order) { total += cost[prev][k]; prev = k; }
+  return total + cost[prev][end];
+}
+
+// Greedy nearest-neighbour walk over `pool` (node indices) starting from node `from`.
+function nearestNeighborFrom(from, pool, cost) {
+  const remaining = [...pool];
+  const out = [];
+  let cur = from;
+  while (remaining.length) {
+    let bi = 0, bd = Infinity;
+    for (let i = 0; i < remaining.length; i++) { const d = cost[cur][remaining[i]]; if (d < bd) { bd = d; bi = i; } }
+    cur = remaining.splice(bi, 1)[0];
+    out.push(cur);
+  }
+  return out;
+}
+
+// Improve the interior of a path whose two ends are pinned. `order` is the interior as node
+// indices; `start` / `end` are node indices that never move. Each pass tries every 2-opt
+// reversal and every or-opt relocation (runs of 1–3, either way round), keeping any that
+// shortens the path; it stops when a whole pass finds nothing. Every kept move strictly
+// shortens the path, so it terminates on its own — maxPasses is a belt for the braces.
+// Full re-evaluation per candidate (no delta tricks) so the same code is right on an
+// asymmetric matrix too, and at the 150-stop selection cap it is still well under a second.
+export function improvePinnedPath(order, start, end, cost, maxPasses = 40) {
+  let best = [...order];
+  if (best.length < 2) return best;
+  let bestLen = pinnedPathCost(best, start, end, cost);
+  const EPS = 1e-6;
+  for (let pass = 0; pass < maxPasses; pass++) {
+    let improved = false;
+    // 2-opt: reverse best[i..k].
+    for (let i = 0; i < best.length - 1; i++) {
+      for (let k = i + 1; k < best.length; k++) {
+        const cand = best.slice(0, i).concat(best.slice(i, k + 1).reverse(), best.slice(k + 1));
+        const len = pinnedPathCost(cand, start, end, cost);
+        if (len + EPS < bestLen) { best = cand; bestLen = len; improved = true; }
+      }
+    }
+    // or-opt: lift best[i..i+segLen) and drop it at every other slot, forwards or reversed.
+    for (let segLen = 1; segLen <= 3 && segLen < best.length; segLen++) {
+      for (let i = 0; i + segLen <= best.length; i++) {
+        const seg = best.slice(i, i + segLen);
+        const rest = best.slice(0, i).concat(best.slice(i + segLen));
+        const segRev = [...seg].reverse();
+        let moved = false;
+        for (let j = 0; j <= rest.length && !moved; j++) {
+          for (const piece of (segLen > 1 ? [seg, segRev] : [seg])) {
+            if (j === i && piece === seg) continue;               // same slot, same way: no move
+            const cand = rest.slice(0, j).concat(piece, rest.slice(j));
+            const len = pinnedPathCost(cand, start, end, cost);
+            if (len + EPS < bestLen) { best = cand; bestLen = len; improved = true; moved = true; break; }
+          }
+        }
+      }
+    }
+    if (!improved) break;
+  }
+  return best;
+}
+
+// Index of the stop farthest from / closest to the depot; ties go to the earlier input row.
+function extremeIndex(stops, depot, which) {
+  let bi = -1, bd = which === 'farthest' ? -Infinity : Infinity;
+  for (let i = 0; i < stops.length; i++) {
+    const d = haversineMeters(depot, stops[i]);
+    if (which === 'farthest' ? d > bd : d < bd) { bd = d; bi = i; }
+  }
+  return bi;
+}
+
+// The sweep itself. Node 0 is the depot, node k is stops[k-1]. Stops with no usable position
+// cannot be placed on a line and ride at the END in their input order — never dropped, never
+// allowed to poison the arithmetic for the ones that can be.
+function sweep(stops, depot, dir) {
+  const placed = stops.filter(mappable);
+  const unplaced = stops.filter((s) => !mappable(s));
+  if (placed.length < 2) return [...placed, ...unplaced];
+  const cost = distanceMatrix([depot, ...placed]);
+  const far = extremeIndex(placed, depot, 'farthest') + 1;
+  const near = extremeIndex(placed, depot, 'closest') + 1;
+  let start, end, pool;
+  if (dir === 'homeward') {                       // Farthest first: far stop → … → terminal
+    start = far; end = 0;
+    pool = placed.map((_, i) => i + 1).filter((k) => k !== far);
+  } else {                                        // Closest first: near stop → … → far stop
+    start = near; end = far === near ? 0 : far;   // every stop at one radius: nothing to pin at the end
+    pool = placed.map((_, i) => i + 1).filter((k) => k !== start && k !== end);
+  }
+  // MULTI-START. 2-opt/or-opt only ever walk downhill, so where they finish depends on where
+  // they begin, and one nearest-neighbour seed can leave a straggler that no single move
+  // repairs. Four cheap starting orders — greedy from the pinned start, greedy from the
+  // pinned end walked backwards, the old radial sort, and the card's current order — are each
+  // improved and the shortest path wins. Deterministic: same stops, same answer.
+  const byRadius = [...pool].sort((a, b) => cost[0][a] - cost[0][b]);
+  const seeds = [
+    nearestNeighborFrom(start, pool, cost),
+    nearestNeighborFrom(end, pool, cost).reverse(),
+    dir === 'homeward' ? byRadius.slice().reverse() : byRadius,
+    pool,
+  ];
+  let interior = null, best = Infinity;
+  for (const seed of seeds) {
+    const cand = improvePinnedPath(seed, start, end, cost);
+    const len = pinnedPathCost(cand, start, end, cost);
+    if (len + 1e-6 < best) { best = len; interior = cand; }
+  }
+  const order = [start, ...interior, ...(end === 0 ? [] : [end])];
+  return [...order.map((k) => placed[k - 1]), ...unplaced];
+}
+
+// Farthest first: drive out to the far end, then deliver on the way home. First stop is the
+// farthest from the depot; the path from there ends at the terminal.
+export function farthestFirst(stops, depot) { return sweep(stops, depot, 'homeward'); }
+
+// Closest first: the nearest stop first, walking outward; the farthest stop is the last one.
+export function closestFirst(stops, depot) { return sweep(stops, depot, 'outward'); }
+
 // Re-sequence one route's stops by strategy. 'reverse' flips the current order;
 // the others are computed fresh from depot + positions.
 //   loop     — nearest-neighbour seed + closed-loop 2-opt → U-shape (down one side,
 //              back the other), the no-crisscross order for a highway corridor.
 //   min      — nearest-neighbour seed + open-path 2-opt → shortest one-way distance.
+//   farthest — far stop first, then the shortest sweep home (see above).
+//   closest  — near stop first, then the shortest sweep out to the far stop.
 export function resequence(stops, depot, strategy) {
   const arr = Array.isArray(stops) ? stops : [];
   if (arr.length < 2) return [...arr];
   switch (strategy) {
     case 'reverse': return [...arr].reverse();
-    case 'closest': return depotSort(arr, depot, 'asc');
-    case 'farthest': return depotSort(arr, depot, 'desc');
+    case 'closest': return closestFirst(arr, depot);
+    case 'farthest': return farthestFirst(arr, depot);
     case 'loop': return twoOptLoop(nearestNeighbor(arr, depot), depot);
     case 'min': return twoOpt(nearestNeighbor(arr, depot), depot);
     default: return [...arr];
