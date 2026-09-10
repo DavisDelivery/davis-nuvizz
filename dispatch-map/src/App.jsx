@@ -105,6 +105,7 @@ import {
 } from '../netlify/functions/lib/scan-plan.mts';
 import ChatPanel, { ChatLauncher, MessagesLauncher } from './components/ChatPanel.jsx';
 import MessagesPanel from './components/MessagesPanel.jsx';
+import DriverPicker from './components/DriverPicker.jsx';
 
 // Quote console — lazy so its ~345 KB (the @davisdelivery/quote-generator code plus its
 // geo/model JSON) loads only when the Quote tab is first opened, instead of riding in the
@@ -124,7 +125,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.8.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -195,6 +196,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.8.0', 'THE DRIVER BOX IS A SEARCH BAR NOW \u2014 AND STILL A DROPDOWN. Chad, on the route card\u2019s driver control: \u201ci want this to be a search bar as well as a drop down.\u201d Davis runs about 59 drivers, so the native <select> it replaces was a 59-item scroll to reach FRYE, and on a phone an OS wheel with no way to type at all. AND a dropdown, not instead of one: the full list is still one tap away on an empty box, because a dispatcher who cannot remember a name still has to browse for it. Typing only ever narrows what is already on screen. ALL THREE PICKERS, NOT THE ONE IN THE SCREENSHOT. The same <select> was pasted in three places \u2014 the Compare panel\u2019s per-route assign, the route-card footer, and the New route dialog \u2014 and fixing only the one he photographed is how this app ends up with two controls that behave differently for the same job. One component, three call sites. WHAT IT MATCHES, AND WHY EACH RULE IS THERE. Any order (\u201cfrye michael\u201d and \u201cmichael frye\u201d both find him \u2014 a manifest is read surname first as often as not); any field (the name OR the NuVizz user code, because the code is what is printed on the paperwork); prefixes, so a driver is found before his name is finished. EVERY typed word must hit, not any \u2014 an OR turns the box into a no-op the moment a second word is typed, widening back out to the whole roster while the dispatcher believes it is filtering. AND IT IS DELIBERATELY NOT FUZZY. No edit distance, no subsequence, no mid-word substring: \u201cmrye\u201d finds nobody and \u201crye\u201d does not quietly offer Frye. This control assigns a truck to a human being, and a near-miss politely suggesting a different driver is the failure that costs a delivery \u2014 the Brent Boyd/Bryd alias trouble this repo has already paid for once. A typo MISSES, visibly, and says the query back (\u201cNo driver matches \u2018fyre\u2019\u201d) so it reads as a typo rather than a roster that failed to load. THE LIST OPENS IN FLOW, NOT AS AN ABSOLUTE OVERLAY. This control sits in the route-card footer \u2014 a scrolling flex column with a shrink-0 footer \u2014 so a pinned menu would be clipped by the card, and CLAUDE.md is explicit that overlay furniture at measured offsets is how the draw buttons landed on the status card. In flow the card grows, what is below it moves, the list caps itself at 40vh and scrolls. One behaviour on both views and nothing for the overlap guard to find; the phone gets its 44px rows from tap-target-y while the desktop stays compact. CLOSED, THE BOX SHOWS WHO IS ASSIGNED rather than a leftover search term \u2014 the question it is looked at for all day is \u201cwho is on this truck?\u201d \u2014 and the un-assign row stays reachable, because a route assigned by mistake has to be clearable. Keyboard throughout: arrows wrap at both ends (the bottom of 59 names is one key from the top), Enter takes a single match so typing \u201cfrye\u201d and pressing Enter assigns him, and it never guesses while the search is still ambiguous. Highlight arithmetic is pure and tested, because an off-by-one here assigns the driver ABOVE the one being looked at. 22 new tests, mutation-checked four ways \u2014 any-word instead of every-word, substring instead of prefix, an id compared with === across the number/string boundary (which would show an assigned route as empty), and an empty list highlighting row 0. The substring mutation initially passed every test, which meant the prefix rule was a comment and not a rule; a test now pins it. Zero NuVizz calls.'],
   ['1.7.0', 'CLICKING A DOT ON THE ROUTING MAP TELLS YOU WHAT THE ORDER IS. Chad, on GEORGE L\u2019s route: \u201cIf i click on one of these dots on the map i want it to bring that orders details on in the right panel.\u201d It did not, and the shape of the miss is one this repo keeps re-learning: THE DISPATCH MAP HAS DONE EXACTLY THIS SINCE IT WAS BUILT \u2014 its marker click calls setSelectedStop and pans \u2014 and Routing, the screen a router spends the morning in, was the surface it was never wired into. CHECKED, NOT REASONED: the Routing marker\u2019s click handler had five branches and the panel appeared in exactly ONE of them, the equipment-paint brush, whose comment says \u201cfirst click does both\u201d. Everywhere else a numbered pin opened its ROUTE in the Compare panel and a pool pin toggled the whole place into the selection \u2014 both useful, and neither of them an answer to \u201cwhat is this order?\u201d. On a SAVED load the click did nothing whatsoever: the read-only guard existed to stop writes and swallowed the click entirely, so the one screen where you most want to ask what a stop is answered nothing at all. NOTHING WAS TAKEN AWAY TO PAY FOR IT. A planned pin still opens its route card, a pool pin still toggles its place, paint still paints \u2014 the order card is added alongside, through the SAME panelStop state the list rows drive, so a pin and a row now open the identical card and the two cannot describe a stop differently. Desktop un-collapses the right rail and the phone raises its sheet off that one state, so this is one change and not two views\u2019 worth. TWO TOOLS ARE DELIBERATELY DENIED THE CARD, and that is the whole of the design judgement: select-mode is asking for a POINT (the handler hands it the marker\u2019s POSITION, not the stop), so a card about a stop is the wrong answer to \u201cwhere on the map?\u201d and would cover the map mid-draw; and ninja-add is a rapid queue that puts stop after stop on the open route, where a card on every one fights the job being done. THE RULE IS A FUNCTION, NOT A HANDLER. mapPinClickActions lives in lib/routing-select.js beside the other routing rules, and the handler is now a dispatcher holding no policy: the click sits inside a marker-building effect in a 25,000-line module node:test cannot import, AND Google Maps is blocked in the headless guard \u2014 which is why v0.98.0 could only guard the row\u2192pin half of this. A decision written in that handler is testable at neither end. One test pins that exactly ONE tool action fires per click in every mode, including two brushes armed at once. 11 new tests, mutation-checked three ways \u2014 panel never opens (the bug as shipped), panel opens in every mode (the careless fix), and the card replacing the route instead of joining it \u2014 each failing precisely the tests that claim to guard it. Zero NuVizz calls.'],
   ['1.6.0', 'DO NOT DOUBLE STACK NOW READS DNDS ON THE BOARD \u2014 AND IT IS THE ORDER\u2019S FACT, NOT THE CUSTOMER\u2019S. Chad, on the 2026-09-10 unplanned board with 192 orders and five of the seven rows on screen carrying it: \u201cDO ORDERS THAT HAVE DO NOT DOUBLE STACK IN THE NOTES SHOW UP HERE WITH A DNDS RESTRICTION\u201d. THEY DID NOT, ANYWHERE. Checked rather than guessed: the Restrictions column renders getRestrictionBadgeKeys and nothing else, which reads five fields off customer_notes; the scanner that fills equipment_restrictions carries 22 patterns across its two sources and every one of them is about TRUCK SIZE (NO TT, STRAIGHT TRUCK ONLY, 26 FT MAX, NO 53); there is no stacking key in RESTRICTION_ICONS and none in the dispatcher\u2019s own tick-list, so nobody could set it by hand either. A repo-wide search for the phrase returned one test fixture and no code. The text was never lost \u2014 extractOrderInstructions keeps every SPL-INSTR-TEXT comment and the stop card shows them \u2014 it was simply never promoted to a fact anything could act on. WHY IT IS NOT AN EQUIPMENT RESTRICTION, WHICH IS THE WHOLE DESIGN. Everything in equipment_restrictions is keyed by LOCATION and holds for that address forever, which is right for a dock that cannot take a tractor trailer and wrong for this. Double-stacking is a property of THIS SHIPMENT: this week\u2019s order is fragile, next week\u2019s is bagged goods that stack fine. Writing it to the customer note would mark a customer permanently un-stackable off one order \u2014 the exact mistake v0.99.3 paid for, where a location-keyed vehicle mark quietly pushed freight onto extra box trucks until somebody found the brush. So it is DERIVED per order, never stored, never written back, and a test pins that it cannot reach getRestrictionBadgeKeys, because the moment it did the map pin would start claiming the address cannot take stacked freight. It is modelled on stopLooksOversize, which is the same shape and already sits beside the customer restrictions on five surfaces. THE NEGATION IS THE ENTIRE RULE. \u201cDOUBLE STACK\u201d on its own is not a restriction \u2014 \u201cDOUBLE STACK OK\u201d and \u201cCAN BE DOUBLE STACKED\u201d say the opposite, and a rule that fired on the bare phrase would invert both and spend a floor position on every truck carrying one. Every pattern anchors on the negation instead. The phrasings come off the board, not out of the air: Uline writes \u201cDo NOT Deliver Double Stacked\u201d in mixed case, so a rule written for the shouty form would have missed all five. The two sibling instructions riding the same orders \u2014 DO NOT BREAKDOWN SKID, DO NOT LAY PALLETS OF / BOXES ON THEIR SIDE \u2014 are deliberately NOT folded in: different job, different person, and a DNDS chip on freight that stacks fine is the failure this rule exists to avoid. IT READS BOTH COMMENT CHANNELS. orderInstructions is a FILTERED subset (ORD_IN / SPL-INSTR-TEXT), where every sample so far has landed; allComments is the unfiltered list. Reading only the first would go silent the day NuVizz re-files one of these under another type, and that failure is invisible \u2014 a missing chip looks exactly like freight that stacks. AND THE NUMBER A LOAD BUILDER ACTUALLY ACTS ON. One chip on one row is an input; \u201c6 skids DNDS\u201d across a selection is a decision. The selection tally counts SKIDS where every other entry counts orders, and says the word, because the binding dimension of a load is skid POSITIONS (Phase 2.8) and \u201c6 DNDS\u201d beside \u201c3 ST only\u201d would read as the same unit and understate a truck about to not fit. STILL OPEN, AND IT IS CHAD\u2019S FACT TO GIVE: the solver\u2019s skid caps were mined from ~900 real trips, so if those trips were loaded with skids stacked, an all-DNDS load at 31 will not physically fit and the router cannot currently tell. Nothing here touches the solver \u2014 this change only shows the fact. 17 new tests, mutation-checked three ways (drop the negation, read one channel, count orders instead of skids \u2014 each fails exactly the tests that claim to guard it), and the column guard lifts the shipped renderer and runs Chad\u2019s seven real rows through it. Zero NuVizz calls. 4,019 green.'],
   ['1.5.0', 'THE RAIL\u2019S SEARCH IS ONE BOX, \u2795 NEW ROUTE SITS BESIDE THE TABS, AND A STATUS TICK STOPS RE-READING THE WHOLE WINDOW. Three things Chad asked for in one sitting, and the third was the expensive one. (1) \u201cI WANT THESE TWO SEARCH BARS TO WORK TOGETHER \u2014 if i type something in the search bar for routes and swap to loads i want it to remain.\u201d Routes and Loads each owned a LOCAL search box, and switching tabs unmounts one panel and mounts the other, so the text went with it: you retyped \u201cfrye\u201d to ask the same question of the other list, and the two counts on the strip \u2014 the whole reason it shows both \u2014 could never be read against one needle. The rail owns the value now and the tabs are two views of it. The dispatch Map\u2019s read-only Routes panel has no second tab to share with, so the panels still keep their own box when nobody passes one; that controlled-or-not rule lives in ONE tested function rather than being written out twice, because two copies of it is two chances for the panels to disagree about who owns the text. Deliberately NOT remembered across sessions: a search restored from last night is an invisible filter, which is the trap that blanked the bottom grid in v0.45.6. (2) \u201cMOVE NEW ROUTE TO BESIDE LOADS, I DON\u2019T NEED TO SEE THE DATE THERE.\u201d Done, and the date is what paid for the room \u2014 it was a truncated \u201cTHU, S\u2026\u201d, a third copy of a board date already on the grid\u2019s own bar and in the Setup panel, fitting in none of its space. ON THE PHONE THE BUTTON STAYS IN THE PANEL, and that is a decision rather than an oversight: the phone\u2019s tab strip IS its whole navigation at 360px (Setup \u00b7 Routes \u00b7 Loads \u00b7 Result) and a fifth control there is the collision this repo has patched four times. Two views, drawn from one button definition so the pair cannot drift. (3) \u201cONCE THESE STOPS LOAD, EVERY TIME I CHANGE A FILTER IT SHOULDN\u2019T HAVE TO RELOAD THEM FROM FIRESTORE \u2014 it should load them all one time in the beginning and then the filter just filters what is shown.\u201d CHECKED, NOT REASONED: `statusSel` sat in the window pull\u2019s dependency list and the ticked statuses rode the request, so every tick of a status box tore the window down and pulled it again \u2014 up to 62 day documents re-read and the open-order pool re-reconciled, the grid blanking each time \u2014 to compute a subset THE CLIENT WAS ALREADY COMPUTING ANYWAY. filteredRows has re-applied the status check itself since the \u201cRASKO\u201d fix, because the server\u2019s copy runs before the plan overlay and was wrong about a just-saved row. So the pull paid for a filter whose answer it then discarded. It is pulled once per window and date now; the box is instant. AND THE PULL GOT CHEAPER WHILE LOSING ITS FILTER, which is what makes that safe: this path read those day documents WHOLE \u2014 raw NuVizz object and all, ~9\u202fKB a stop, ~9,800 stops on a fourteen-day window \u2014 and it was survivable only because the status filter trimmed the response at the very end. It now reads through the same LEAN projection the Map feed has used since the 6.9\u202fMB cold-load fix, which drops ~55% of the bytes and the raw object with them, so ONE all-status pull costs less than the filtered pulls it replaces. The no-filter case already pulled exactly this much, so this is not a new shape. `statusCodes` is still honoured by the endpoint \u2014 Check vs NuVizz sends it, deliberately, because that diff is a question about one filter at one moment. SAID PLAINLY: zero NuVizz calls either way on every cache-served window (Last 7/14 days, \u00b17d, custom ranges); only \u201cNuVizz today\u201d reaches the vendor, and its one call now asks for all statuses in a single day, well inside the row cap. THE GUARD THAT MAKES IT STICK: the Firestore test fake now records WHICH FIELDS a read asked for, the same way it already records write masks and for the same reason \u2014 a masked read and a whole-document read return the identical object from a fake, so a caller that quietly stopped masking would have passed every test. 11 new tests.'],
@@ -17528,17 +17530,15 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
                   <div className="mt-1.5 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                     <Truck size={12} className="text-slate-400 shrink-0" />
                     {onAssignDriver && (
-                      <select
+                      <DriverPicker
+                        roster={roster}
                         value={curDriverId != null ? String(curDriverId) : ''}
                         disabled={!!rosterError || busy || !!writeDenied}
-                        title={writeDenied || undefined}
-                        onChange={(e) => { const d = roster.find((x) => String(x.driverId) === e.target.value); if (d) onAssignDriver(g, d.driverId, d.name); }}
-                        className="flex-1 min-w-0 border rounded px-1 py-1 text-[11px] bg-white"
-                        aria-label={`Assign driver to ${loadDisplayName(g.name, g.loadNbr) || g.loadNbr}`}
-                      >
-                        <option value="">{writeDenied ? 'Assigning needs the dispatcher role' : rosterError ? 'Driver roster unavailable' : (roster.length ? 'Assign driver…' : 'Loading drivers…')}</option>
-                        {roster.map((d) => <option key={String(d.driverId)} value={String(d.driverId)}>{d.name}{d.userName ? ` (${d.userName})` : ''}</option>)}
-                      </select>
+                        compact
+                        placeholder={writeDenied ? 'Assigning needs the dispatcher role' : rosterError ? 'Driver roster unavailable' : (roster.length ? 'Assign driver…' : 'Loading drivers…')}
+                        ariaLabel={`Assign driver to ${loadDisplayName(g.name, g.loadNbr) || g.loadNbr}`}
+                        onChange={(id) => { const d = roster.find((x) => String(x.driverId) === String(id)); if (d) onAssignDriver(g, d.driverId, d.name); }}
+                      />
                     )}
                     {busy && <span className="text-[10px] text-slate-400 shrink-0">…</span>}
                     {canDispatch && (
@@ -17843,24 +17843,26 @@ function LiveDispatchBar({ route, staged, onStage, roster, rosterError, dirty })
   const loadNbr = route.key;
   const driverId = staged?.driverId != null && staged?.driverId !== '' ? String(staged.driverId) : '';
   const dispatch = !!staged?.dispatch;
-  const onDriver = (e) => {
-    const d = roster.find((x) => String(x.driverId) === String(e.target.value)) || null;
+  // Takes the driver ID itself, not a change event — DriverPicker is a combobox, not a
+  // <select>, and synthesising {target:{value}} just to keep an old signature is the kind of
+  // fake that outlives the reason for it. '' is the deliberate un-assign.
+  const onDriver = (id) => {
+    const d = roster.find((x) => String(x.driverId) === String(id)) || null;
     onStage({ driverId: d ? d.driverId : '', driverName: d ? d.name : '' });
   };
   return (
     <div className="px-2 py-1.5 border-t bg-slate-50/70 shrink-0 space-y-1">
       <div className="flex items-center gap-1.5">
         <Truck size={12} className="text-slate-400 shrink-0" />
-        <select
+        <DriverPicker
+          roster={roster}
           value={driverId}
-          onChange={onDriver}
           disabled={!!rosterError}
-          className="flex-1 min-w-0 border rounded px-1 py-1 text-[11px] bg-white"
-          aria-label={`Assign driver to ${loadNbr}`}
-        >
-          <option value="">{rosterError ? 'Driver roster unavailable' : (roster.length ? 'Assign driver…' : 'Loading drivers…')}</option>
-          {roster.map((d) => <option key={String(d.driverId)} value={String(d.driverId)}>{d.name}{d.userName ? ` (${d.userName})` : ''}</option>)}
-        </select>
+          compact
+          placeholder={rosterError ? 'Driver roster unavailable' : (roster.length ? 'Assign driver…' : 'Loading drivers…')}
+          ariaLabel={`Assign driver to ${loadNbr}`}
+          onChange={onDriver}
+        />
       </div>
       <div className="flex items-center justify-between gap-2">
         {/* tap-target-y (phone-only, index.css): the 44px floor covers buttons and inputs, but this
@@ -19623,16 +19625,17 @@ function NewRouteModal({ date, existingNames, origin, originOptions = [], busy, 
           {/* DRIVER — staged, not sent. Same roster, same shape as the card's own dropdown. */}
           <div>
             <span className="text-[11px] font-medium text-slate-500">Driver</span>
-            <select
-              value={driverId}
-              onChange={(e) => setDriverId(e.target.value)}
-              disabled={busy || !!rosterError}
-              aria-label="Assign driver to the new route"
-              className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1.5 text-sm bg-white"
-            >
-              <option value="">{rosterError ? 'Driver roster unavailable — assign on the card' : (roster.length ? 'No driver yet — assign later' : 'Loading drivers…')}</option>
-              {roster.map((d) => <option key={String(d.driverId)} value={String(d.driverId)}>{d.name}{d.userName ? ` (${d.userName})` : ''}</option>)}
-            </select>
+            <div className="mt-0.5">
+              <DriverPicker
+                roster={roster}
+                value={driverId}
+                disabled={busy || !!rosterError}
+                placeholder={rosterError ? 'Driver roster unavailable — assign on the card' : (roster.length ? 'No driver yet — assign later' : 'Loading drivers…')}
+                emptyLabel="No driver yet — assign later"
+                ariaLabel="Assign driver to the new route"
+                onChange={(id) => setDriverId(id)}
+              />
+            </div>
             <div className="text-[11px] text-slate-500 mt-0.5">Staged on the card — the Save that creates the route assigns them.</div>
           </div>
 
