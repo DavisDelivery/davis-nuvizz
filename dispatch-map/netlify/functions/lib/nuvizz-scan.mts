@@ -22,7 +22,7 @@
 import { getNuvizzRequester } from './nuvizz-request.mts';
 import type { ScanState, KnownLoad } from './firestore.mts';
 import { readTerminalStops, mergeTerminalStops } from './firestore.mts';
-import { isMirrorDeploy } from './mirror-guard.mts';
+import { isMirrorDeploy, mirrorScansAllowed } from './mirror-guard.mts';
 
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
 
@@ -348,9 +348,13 @@ export function todayUTC(): string {
 // of a copied API key. Re-exported here so every existing caller and every test is unchanged.
 // Imported AND re-exported: `export ... from` alone re-exports the name without binding it
 // in this module's scope, so scansEnabled() below could not see it (caught by enrich-budget).
-export { isMirrorDeploy };
+export { isMirrorDeploy, mirrorScansAllowed };
 export function scansEnabled(): boolean {
-  if (isMirrorDeploy()) return false;
+  // A mirror stays silent unless it was explicitly told to scan its own tenant
+  // (NUVIZZ_MIRROR_SCANS=on — see mirrorScansAllowed). The P0 kill switch below is checked
+  // AFTER, so NUVIZZ_SCANS_ENABLED=false still shuts a mirror that was given permission:
+  // the runaway brake outranks the convenience, in that order, deliberately.
+  if (isMirrorDeploy() && !mirrorScansAllowed()) return false;
   return String(process.env.NUVIZZ_SCANS_ENABLED ?? '').trim().toLowerCase() !== 'false';
 }
 

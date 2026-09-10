@@ -141,7 +141,14 @@ test('WIRING: all three doors actually consult the guard, at the gate AND at the
 
   // And ONE definition of "mirror", so the read gate and the send gates cannot drift apart.
   const scan = await read('../netlify/functions/lib/nuvizz-scan.mts');
-  assert.match(scan, /import \{ isMirrorDeploy \} from '\.\/mirror-guard\.mts';/,
+  // The RULE is "one definition of mirror", not "one import specifier": nuvizz-scan now also
+  // pulls mirrorScansAllowed from the same module (the UAT read switch), which is the same
+  // rule being obeyed, not broken. So match the NAME in the import/export lists rather than
+  // the exact line — and assert the thing that was actually being defended, which the old
+  // literal never checked: that this file does not DEFINE its own copy.
+  assert.match(scan, /import \{[^}]*\bisMirrorDeploy\b[^}]*\} from '\.\/mirror-guard\.mts';/,
     'nuvizz-scan must import the shared predicate, not keep a second copy');
-  assert.match(scan, /export \{ isMirrorDeploy \};/, 'and re-export it so every existing caller is unchanged');
+  assert.match(scan, /export \{[^}]*\bisMirrorDeploy\b[^}]*\};/, 'and re-export it so every existing caller is unchanged');
+  assert.doesNotMatch(scan, /(export\s+)?function isMirrorDeploy\b/,
+    'and must never grow its own definition — two answers to "is this a mirror" is the drift this guards');
 });
