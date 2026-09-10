@@ -8,8 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   smsRecipients, eveningTargetDate, smsText, smsClaimPath, selectTextable,
-  NIGHT_CUTOFF_MIN,
-} from '../netlify/functions/lib/flag-sms.mts';
+  NIGHT_CUTOFF_MIN, smsRecipientBreakdown, nightListRides} from '../netlify/functions/lib/flag-sms.mts';
 
 // FICTIONAL NUMBERS, AND THE REASON IS NOT PEDANTRY. These fixtures used to be two real
 // Davis mobiles, committed and labelled by name in the assertions — in a file whose own module
@@ -154,4 +153,43 @@ test('EVERY CHARACTER IS GSM-7 — one em dash was costing 2.55 segments on ever
     const bad = [...m].filter((ch) => !GSM7.includes(ch));
     assert.deepEqual(bad, [], `non-GSM-7 characters force UCS-2 and halve the segment size: ${JSON.stringify(bad)}`);
   }
+});
+
+// ── THE BREAKDOWN: WHY THAT MANY, NOT JUST HOW MANY ──────────────────────────────────
+//
+// 2026-09-10. Chad added a number to the flag texts, got two texts himself, and the person he
+// added got none. The sweep's record said `recipients: 1` — a bare count that cannot tell
+// "one number is signed up" from "three are and two were cut off at 6:00a". The claims put
+// that sweep at etMin 360: 6:00:50a, fifty seconds past the cutoff. The job knew and did not
+// write it down.
+test('the 6:00a sweep drops the overnight list, and now SAYS it did', () => {
+  const env = { FLAG_SMS_TO: '4045550148', FLAG_SMS_TO_NIGHT: '4045550177,7705550163' };
+  const b = smsRecipientBreakdown(env, 6 * 60);          // 6:00a exactly — the real fire
+  assert.equal(b.nightRode, false);
+  assert.equal(b.standingCount, 1);
+  assert.equal(b.nightCount, 2);                          // KNOWN, and excluded — not invisible
+  assert.deepEqual(b.recipients, ['4045550148']);
+});
+
+test('one minute earlier the overnight list is still on the sweep', () => {
+  const env = { FLAG_SMS_TO: '4045550148', FLAG_SMS_TO_NIGHT: '4045550177,7705550163' };
+  const b = smsRecipientBreakdown(env, 6 * 60 - 1);       // 5:59a
+  assert.equal(b.nightRode, true);
+  assert.equal(b.recipients.length, 3);
+});
+
+test('the breakdown and smsRecipients can never disagree — one is built from the other', () => {
+  const env = { FLAG_SMS_TO: '4045550148', FLAG_SMS_TO_NIGHT: '4045550177' };
+  for (const etMin of [0, 359, 360, 361, 1139, 1140, 1439]) {
+    assert.deepEqual(smsRecipients(env, etMin), smsRecipientBreakdown(env, etMin).recipients, `etMin ${etMin}`);
+    assert.equal(nightListRides(etMin), smsRecipientBreakdown(env, etMin).nightRode, `etMin ${etMin}`);
+  }
+});
+
+test('a number on BOTH lists is texted once, and both counts still report the truth', () => {
+  const env = { FLAG_SMS_TO: '4045550148', FLAG_SMS_TO_NIGHT: '4045550148,4045550177' };
+  const b = smsRecipientBreakdown(env, 22 * 60);
+  assert.deepEqual(b.recipients, ['4045550148', '4045550177']);   // deduped union
+  assert.equal(b.standingCount, 1);
+  assert.equal(b.nightCount, 2);                                   // the list's own length
 });

@@ -63,7 +63,7 @@ import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mt
 import { mergeSweep, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
 import { auditRows } from './lib/flag-rows.mts';
 import { smsEnabled, sendSms } from './lib/sms.mts';
-import { smsRecipients, eveningTargetDate, smsText, smsClaimPath, selectTextable } from './lib/flag-sms.mts';
+import { smsRecipientBreakdown, eveningTargetDate, smsText, smsClaimPath, selectTextable } from './lib/flag-sms.mts';
 // Only to report WHERE the list came from — the list itself is resolved by smsRecipients.
 import { resolveChannel, channelSpec } from './lib/alert-recipients.mts';
 import { readRouteClassesFor } from './lib/route-classes.mts';
@@ -201,7 +201,11 @@ export default async (req: Request): Promise<Response> => {
     } catch (e: any) {
       recipientStore = `unavailable — fell back to env (${e?.message || 'read failed'})`;
     }
-    const recipients = smsRecipients(process.env, etMin, storedRecipients);
+    // THE UNION, AND THE DECISION THAT PRODUCED IT. `recipients.length` alone could not tell
+    // "one number is on the list" from "three are and two were cut off at 6:00a" — which is
+    // exactly the pair somebody had to read three sources to separate on 2026-09-10.
+    const breakdown = smsRecipientBreakdown(process.env, etMin, storedRecipients);
+    const recipients = breakdown.recipients;
     // SOMEBODY TURNED THESE TEXTS OFF, ON PURPOSE, AND THAT IS WORTH SAYING OUT LOUD. It is a
     // legitimate thing to do from the panel — but it is now one request rather than a console
     // edit and a redeploy, and a night with nothing sent must not read like a quiet night.
@@ -220,6 +224,11 @@ export default async (req: Request): Promise<Response> => {
       tenant: TENANT, date, offsetDays, etMin, at: new Date().toISOString(),
       boardStops: stops.length, redCount: flags.redCount, amberCount: flags.amberCount,
       candidates: candidates.length, recipients: recipients.length, recipientStore, textsSilenced,
+      // WHY THAT MANY. nightRode is false from 6:00a — Chad's rule, "after that he's no longer
+      // routing" — so a night-list number missing a 6:00a text is the system working, and the
+      // record now says so instead of leaving a bare count to be argued about at breakfast.
+      standingCount: breakdown.standingCount, nightCount: breakdown.nightCount,
+      nightRode: breakdown.nightRode,
       departuresKnown: departByRoute ? Object.keys(departByRoute).length : 0,
       // WHAT THE TRAILER RULE COULD AND COULD NOT SEE. A pre-day board with no truck classes
       // yet is the ordinary 8pm state, and a night that texted nothing because nobody had

@@ -20,6 +20,7 @@
 // hasTouch: true. index.css gates the whole fingertip floor on `pointer: coarse`, so a run
 // without it exercises the MOUSE layout at iPad width and passes while the actual device
 // fails. That is not a hypothetical — it is what the desktop guard has always done.
+import { alertRecipientsStub } from './lib/alert-recipients-fixture.mjs';
 import { chromium } from 'playwright-core';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -128,6 +129,8 @@ for (const dev of TABLETS) {
   await page.route('**/.netlify/functions/**', (route) => {
     const u = route.request().url();
     const J = (b) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(b) });
+    const alerts = alertRecipientsStub(u);
+    if (alerts) return J(alerts);
     if (u.includes('customer-comms-log')) return J({
       ok: true, today: '2026-09-05',
       range: { mode: 'days', from: '2026-09-04', to: '2026-09-05', days: 2, requestedDays: 2, clipped: false, maxDays: 92 },

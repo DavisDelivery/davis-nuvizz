@@ -80,11 +80,51 @@ export const CLAIM_COLLECTION = 'eta_flag_sms';
  * WHETHER the cutoff applies.
  */
 export function smsRecipients(env: any, etMin: number, stored: any = null): string[] {
+  return smsRecipientBreakdown(env, etMin, stored).recipients;
+}
+
+/**
+ * PURE. Is the overnight list on THIS sweep? 7:00p through 5:59a — at 6:00a exactly it is not.
+ *
+ * Exported because the answer has to be RECORDED, not just used. See the breakdown below.
+ */
+export function nightListRides(etMin: number): boolean {
+  return etMin >= EVENING_START_HOUR * 60 || etMin < NIGHT_CUTOFF_MIN;
+}
+
+export interface RecipientBreakdown {
+  recipients: string[];
+  standingCount: number;
+  nightCount: number;
+  nightRode: boolean;
+}
+
+/**
+ * PURE. WHO GETS TEXTED, AND WHY THAT MANY — the same union smsRecipients returns, with the
+ * decision that produced it.
+ *
+ * THIS EXISTS BECAUSE A COUNT ON ITS OWN COULD NOT ANSWER THE QUESTION IT WAS WRITTEN FOR.
+ * On 2026-09-10 Chad added a number, got two texts himself, and the person he added got none.
+ * The sweep's record said `recipients: 1` and nothing else — so "the list only has one number
+ * on it" and "the list has three and two of them were cut off at 6:00a" were the same line.
+ * Answering it took the config endpoint, the claim record and a read of this file, when the
+ * job already knew and simply did not write it down. The claims put the sweep at etMin 360 —
+ * 6:00:50a, fifty seconds past the cutoff, the one minute of the night where the overnight
+ * list is dropped.
+ *
+ * Every job that acts on its own needs a way to say what it decided. This is that, for the
+ * one decision this module makes that a person cannot see from the outside.
+ */
+export function smsRecipientBreakdown(env: any, etMin: number, stored: any = null): RecipientBreakdown {
   const always = recipientsFor('flagSmsTo', stored, env);
   const night = recipientsFor('flagSmsToNight', stored, env);
-  const routing = etMin >= EVENING_START_HOUR * 60 || etMin < NIGHT_CUTOFF_MIN;
-  const out = [...always, ...(routing ? night : [])];
-  return [...new Set(out)];
+  const nightRode = nightListRides(etMin);
+  return {
+    recipients: [...new Set([...always, ...(nightRode ? night : [])])],
+    standingCount: always.length,
+    nightCount: night.length,
+    nightRode,
+  };
 }
 
 /**

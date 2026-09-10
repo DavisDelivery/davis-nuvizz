@@ -20,6 +20,10 @@
 //
 // A screen may opt out with data-desktop-narrow="<reason>" on its container. That is the
 // deliberate exception (a confirm dialog, a single-field form) and it must say WHY.
+// The Alert recipients panel, populated. This sweep routed NOTHING, so every function
+// fetch fell through to index.html and the panel measured its error state — ten nodes on a
+// screen whose occupancy this file exists to judge.
+import { alertRecipientsStub } from './lib/alert-recipients-fixture.mjs';
 import { chromium } from 'playwright-core';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -75,6 +79,11 @@ for (const device of DESKTOPS) {
   console.log(`\x1b[1m${device.name} (${device.width}x${device.height})\x1b[0m`);
   const ctx = await browser.newContext({ viewport: { width: device.width, height: device.height } });
   const page = await ctx.newPage();
+  await page.route('**/.netlify/functions/**', (route) => {
+    const alerts = alertRecipientsStub(route.request().url());
+    if (!alerts) return route.continue();
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(alerts) });
+  });
   await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(1200);
 

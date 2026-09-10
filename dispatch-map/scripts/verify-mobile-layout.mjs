@@ -33,6 +33,9 @@ import { join, extname, resolve } from 'node:path';
 import { chromium } from 'playwright-core';
 
 import { MEASURE } from './lib/layout-measure.mjs';
+// The Alert recipients panel, populated. Without it this sweep measured the panel's error
+// state — see the fixture's header for what that cost.
+import { alertRecipientsStub } from './lib/alert-recipients-fixture.mjs';
 
 const DIST = resolve(process.argv[2] || 'dist');
 const PORT = 8891;
@@ -239,6 +242,8 @@ function stubRoutes(page, emailHtml) {
   return page.route('**/.netlify/functions/**', (route) => {
     const u = route.request().url();
     const R = (b, s) => route.fulfill(json(b, s));
+    const alerts = alertRecipientsStub(u);
+    if (alerts) return R(alerts);
     if (u.includes('customer-comms-config')) {
       return R({
         ok: true,

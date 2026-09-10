@@ -91,6 +91,7 @@ import { satelliteControlSpec, paintSatelliteControl, SATELLITE_BUTTON_CSS } fro
 import { dropSide, dropSideClass } from './lib/drop-side.js';
 import { rosterFreshness, ageLabel } from './lib/roster-freshness.js';
 import { PARSE_SCHEDULE_LABEL, parsePollOverdue } from './lib/manifest-schedule.js';
+import { sweepReadout } from './lib/sweep-readout.js';
 import { planAheadNames, shellRowKey } from './lib/plan-ahead.js';
 // w-40. Named once so the measurement and the Tailwind class can never disagree about how
 // wide the panel being placed actually is.
@@ -126,7 +127,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '1.14.0';
+const APP_VERSION = '1.15.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -197,6 +198,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.15.0', 'THE ALERT PANEL NOW SAYS WHAT THE TEXTS ACTUALLY DID, AND THE NAME BOX STOPPED HIDING IN PLAIN SIGHT. Chad, 2026-09-10: “+1 (770) 561-2513 I put this number in to receive texts about issues with routing I got 2 texts last night he didn’t. Seems like the ui in diagnostics is not wired correctly.” IT WAS WIRED CORRECTLY, AND THE NUMBER SAVED FINE — on the OVERNIGHT list. The sweep that sent those two texts fired at 6:00:50a (claims: etMin 360), fifty seconds past the 6:00a cutoff where that list is dropped, which is Chad’s own rule: “after that he’s no longer routing.” So the standing list got both texts and the overnight list got neither. NOTHING ON THE SCREEN COULD HAVE TOLD HIM THAT. The panel showed both lists correctly — a list of numbers answers “am I signed up”, and the question people actually arrive holding is “so why did he not get one”. Answering it took the config endpoint, the durable claim record and a read of flag-sms.mts, when the job already knew and simply did not write it down: its record said `recipients: 1`, a bare count that cannot tell “one number is on the list” from “three are and two were cut off at 6:00a”. The sweep now records the DECISION beside the count — standingCount, nightCount, nightRode — and the card turns it into one line: “Last sweep 6:00a — 2 texts to 1 number. The overnight list (2) was NOT — it is dropped at 6:00a.” Pure and unit-tested, and it says NOTHING about the overnight list when reading a status document written before nightRode existed, because a guess would be right most nights and wrong on exactly the night somebody is looking. The cutoff is drawn plain, never red: it is the rule working, and colouring it teaches people to ignore the colour. AND THE NAME BOX, which Chad asked for again in the same message. It has been there since v1.0.0 — verified in a browser at 390, 360 and 1440, forty pixels tall, enabled, on both views — and it still read as decoration, because a faint grey placeholder sitting where a value goes is not an affordance. It is a labelled field now, tinted while empty. THE REASON NOBODY CAUGHT ANY OF THIS: no layout guard had a stub for alert-recipients-config. Mobile and tablet fell through to a generic empty payload and desktop routed nothing at all, so all three had been measuring the panel’s ERROR STATE — “the alert service answered without its lists”, ten nodes, no controls. Every recipient row, every name box, every add field and the Save button sat outside the reach of the guard written to catch exactly this, on the one screen that edits who gets phoned at 6am. A guard measuring an empty state is worse than no guard: it reports green and teaches everyone the screen is covered. One shared fixture now populates it for all three, with fictional 555-01xx numbers because a fixture is a file in a public repository. 12 new tests.'],
   ['1.14.0', 'THE ROSTER HAS BEEN TELLING US WHICH ROUTES ARE TRACTORS ALL ALONG, AND THE BOARD COULD NOT HEAR IT DURING THE HOURS LOADS GET BUILT. Chad: “most routes have a driver assigned to them and we have an employee roster that tells what type of driver it is and we need to start using it.” IT WAS ALREADY BEING USED — route-classes.mts resolves every route through the load header first, then the MarginIQ roster, then the one-edit near-match that exists because “Brent Bryd” against “Brent Boyd” cost us Evans Contracting. What it could not do was REACH THE SCREEN AT NIGHT, and the reason was the shape of one document. route_classes was a SINGLE doc carrying a `date`, so it could only ever describe one day. The evening sweep resolves TOMORROW’s trucks from the roster at 8pm, while routing is being built — and rather than overwrite today’s map and put the browser’s whole board on the wrong clock until 7am, it deliberately computed the map, used it for its own verdicts, and threw it away. That was the right call for the shape it had; the shape was the problem. THE COST WAS INVISIBLE AND EXACTLY BACKWARDS: between 8pm and 7am, the hours loads actually get built, the board had NO class map at all, so every truck-class rule reported “not checked” — the no-tractor-trailer conflict and the new box-truck conflict both silent on the one board where a wrong truck is still free to change for nothing. THE DAY IS IN THE KEY NOW, not in a field: `…__route_classes__{date}`. Both sweeps publish the day they actually judged and neither can tread on the other, so tomorrow’s map exists from 8pm while today’s stands untouched. The endpoint answers for the day ASKED for rather than always for today, and the browser asks for the day it is SHOWING — which is the half that was missing: the client fetched with no date at all, received today’s trucks while displaying tomorrow, correctly discarded them for the date mismatch, and judged everything on the fleet clock. THE OLD REPLAY GUARD IS REPLACED, NOT DROPPED. It refused any date but today because one shared document meant a ?date= replay would write last Friday’s trucks over today’s map; keyed per day that cannot happen. What replaces it is the hazard that IS still real: the roster is CURRENT, not historical, so recomputing a past day from it would overwrite what was actually resolved that morning with an inference — quietly, in the record a later replay reads back. Today and forward only, on both sweeps. AND THE PRE-SPLIT DOCUMENT STILL ANSWERS FOR ITS OWN DAY, so the board is not blind between deploy and the next sweep — without that fallback every route would read unclassed for hours, and “not checked” looks exactly like what it always looks like. The date check that document existed for is kept exactly: a map from another day is a lie, whichever document it is in. FOUND WHILE BUILDING IT: the first draft of the evening publish referenced a `dry` flag copied from the day sweep. That sweep has one; this one does not — inspection goes through eta-flag-check, which never writes — so it would have thrown a ReferenceError inside a background function, where nobody would have seen it. AND THERE IS ONE WAY BACK, not four. Chad: \u201cbuild this in such a way if it changes something I do like I can just tell you to flip it back the way it was and it\u2019s an easy fix.\u201d ROUTE_CLASSES_PER_DAY=off restores the previous behaviour exactly \u2014 one shared document, today only, the evening sweep publishing nothing, the endpoint ignoring ?date= \u2014 across the read, both writes and the endpoint at once, because a half-reverted state where the browser asks for a day nothing writes is a new bug wearing the old feature\u2019s name. Default ON and anything malformed leaves it ON: a typo must not silently return the board to going blind overnight, which is the exact failure this ends. 10 new tests \u2014 the fallback, its date check and the revert all proven by mutation.'],
   ['1.13.2', 'LOAD-SCAN (v0.49.0): A REGRESSION OF MY OWN, CAUGHT BY REVIEW A DAY AFTER IT SHIPPED — AND TWO SILENT SYNC HOLES. Chad asked for a pass over the whole scanner for bugs and poor design; the write-up is a separate PDF. Three things from it ship here because they are live on the dock. FIRST, THE PHANTOM I INTRODUCED IN v0.47.0: the top-only scan books a skid off its piece id the instant it decodes; quagga reads one barcode at a time, so the PRO on that same label decodes by itself a beat later — and the repeat rule read it as the next skid and minted a NOOG for freight already aboard under its real id. Two skids presented, three pieces booked, reproduced on the real bundle. The app genuinely cannot tell that PRO from a torn second skid whose id will not read, so it no longer guesses in either direction: on an order that has shown real piece ids, a PRO alone ASKS (the same-piece / another-piece card), once per presentation. An order whose pieces have never shown an id — loose cartons — is untouched and keeps booking PRO-only. SECOND, A VOID THAT LANDED MID-PUSH WAS SILENTLY LOST: flushQueue reads the unsynced rows, awaits the network, then stamped syncedAt on their KEYS — so a piece the loader took back during that round trip had its cleared syncedAt stamped straight back over, and the office kept counting freight the dock had let go of, for ever. markSynced now compares the flags it is stamping against the flags that were actually sent and leaves a changed row unsynced to travel next flush. THIRD, ONE OVERSIZED ROW BLOCKED A WHOLE NIGHT: the server answers 413 for a push it can never accept, the client threw on it and retried every thirty seconds, and because slices go in order every slice behind it waited too. A 413 slice is now set aside and the rest flush; its rows stay visible in the pending count. The quagga end-to-end check gains the phantom sequence as a permanent act, verified failing on the pre-fix build. 332 load-scan tests green.'],
   ['1.13.1', 'LOAD-SCAN (v0.48.0): THE TRUCK DETAIL NOW SAYS WHICH PIECES A PERSON ADDED. Chad, on a stop list showing thirteen stops all reading "all here": "does this show the ones they manually added?" It did not. The rows counted distinct pieces and said nothing about how any of them arrived, so a stop completed by an override tap looked identical to one completed by a barcode. That stopped being academic on 2026-09-09: a full-screen NOT COUNTED warning was transparent to touch with the "Another piece" cap-bypass directly underneath it, so loaders were adding freight over the manifest while trying to dismiss a warning — and the only place that showed was three taps deep in the collapsed scan log, as the word "manual" beside a piece id. record() stamps engine "manual" on both routes a person can put a piece on a truck (typing a PRO into the lookup, which mints a TYPED- id, and the override, which mints a NOOG- one); every other piece carries the decoder that actually read it. reconcileStops counts them per stop and the row now reads "N added by hand" beside the damaged marker. THE DISTINCTION IS DRAWN CAREFULLY, because a marker that cries wolf is worth nothing: a piece whose TOP barcode never decoded is still a SCAN — a barcode was read, just not the piece id — so the NOOG fallback on a scanner engine is not counted, and a voided override is not counted either, since a piece taken back off the truck is no longer a claim anyone is making. Four tests pin it, checked by inverting the rule until one failed. An added piece is a person\'s word and a scanned one is a barcode; a dispatcher reconciling a short truck needs to see which is which without going looking. 330 load-scan tests green; this app is untouched.'],
@@ -15489,6 +15491,7 @@ function CaptureHealthPanel() {
 // ============================================================================
 const SCAN_CONFIG_URL = '/.netlify/functions/nuvizz-scan-config';
 const ALERT_RECIPIENTS_URL = '/.netlify/functions/alert-recipients-config';
+const FLAG_EVENING_STATUS_URL = '/.netlify/functions/flag-evening-status';
 const SCAN_NOW_URL = '/.netlify/functions/nuvizz-refresh-stops-background';
 
 // Small pill badge with a few semantic tones.
@@ -16070,6 +16073,12 @@ function AlertRecipientsPanel() {
   const [names, setNames] = useState({});           // { [value]: 'Chad' } — display only
   const [status, setStatus] = useState('loading');  // loading | ready | saving | saved | error
   const [err, setErr] = useState(null);
+  // WHAT THE TEXTS ACTUALLY DID LAST NIGHT. A list of numbers answers "who is signed up";
+  // it cannot answer "so why did he not get one", which is the question people actually
+  // arrive at this screen holding. Free — flag-evening-status reads two Firestore documents
+  // and spends ZERO NuVizz calls. Optional by construction: if it fails, the line is absent
+  // and the editor is untouched.
+  const [sweep, setSweep] = useState(null);
   const gate = useRoleGate('admin');
 
   const load = useCallback(async () => {
@@ -16086,6 +16095,29 @@ function AlertRecipientsPanel() {
     } catch (e) { setErr(String(e?.message || e)); setStatus('error'); }
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  // TODAY'S BOARD FIRST, THEN YESTERDAY'S. The evening sweep runs 8:00p-7:00a and writes its
+  // status against the board it is judging, so at 10am the record worth reading is TODAY's —
+  // and before 8:00p tonight nothing has written today's yet, which is when yesterday's is
+  // the honest answer. Both are one Firestore read.
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      const day = (offset) => {
+        const d = new Date(Date.now() + offset * 86400000);
+        return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+      };
+      for (const date of [day(0), day(-1)]) {
+        try {
+          const r = await apiFetch(`${FLAG_EVENING_STATUS_URL}?date=${date}`, { cache: 'no-store' });
+          const j = await r.json();
+          if (dead) return;
+          if (j?.ok && j.lastSweep) { setSweep({ ...j.lastSweep, _date: date, _claims: j.texted ?? 0 }); return; }
+        } catch { /* the line is a nicety; its absence is not an error worth showing */ }
+      }
+    })();
+    return () => { dead = true; };
+  }, []);
 
   // THE RULE COMES FROM THE SERVER, NOT FROM A COPY LIVING HERE. `limits.internalSuffixes` is
   // the shipped allowlist, served with the payload — a second, hardcoded copy in the client is
@@ -16242,6 +16274,7 @@ function AlertRecipientsPanel() {
   const texts = data.channels.filter((c) => c.kind === 'sms');
   const emails = data.channels.filter((c) => c.kind === 'email');
   const canEdit = data.persistent && gate.allowed;
+  const readout = sweepReadout(sweep);
 
   const card = (c) => {
     const list = form[c.key] || [];
@@ -16279,6 +16312,21 @@ function AlertRecipientsPanel() {
             : <span className="text-amber-700 font-semibold">nobody</span>}
         </div>
 
+        {/* WHAT ACTUALLY HAPPENED, under who is signed up. The list above answers "am I on it";
+            this answers "so why did he not get one" — the question people actually arrive
+            holding, and the one the panel could not answer on 2026-09-10. SMS only: the
+            evening sweep is the only job whose per-fire record exists to read. */}
+        {c.kind === 'sms' && readout && (
+          <div className={`text-[11px] rounded px-2 py-1.5 border ${readout.tone === 'warn'
+            ? 'text-amber-800 bg-amber-50 border-amber-200'
+            : 'text-slate-600 bg-white border-slate-200'}`}>
+            {readout.line}
+            {readout.cutOff && c.key === 'flagSmsToNight' && (
+              <>{' '}<span className="text-slate-500">A number that must hear about every sweep belongs on “{data.channels?.find((x) => x.key === 'flagSmsTo')?.label || 'Flag texts'}” above.</span></>
+            )}
+          </div>
+        )}
+
         {list.length === 0 && (
           <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
             {c.emptyNote}
@@ -16295,16 +16343,31 @@ function AlertRecipientsPanel() {
             <span className="text-[13px] text-slate-800 font-mono shrink-0 break-all">
               {c.kind === 'sms' ? formatPhone(v) : v}
             </span>
-            <input
-              type="text"
-              value={names[v] ?? ''}
-              disabled={!canEdit}
-              maxLength={data.limits?.maxLabelLen || 40}
-              onChange={(e) => setNames((n) => ({ ...n, [v]: e.target.value }))}
-              placeholder="Whose is this?"
-              aria-label={`Name for ${c.kind === 'sms' ? formatPhone(v) : v}`}
-              className="flex-1 min-w-[120px] rounded border border-slate-200 px-2 py-1 text-[12px] min-h-[40px] focus:outline-none focus:ring-2 focus:ring-sky-300 disabled:bg-slate-50 disabled:text-slate-400"
-            />
+            {/* A GREY PLACEHOLDER IS NOT AN AFFORDANCE. This box has been here since v1.0.0
+                and on 2026-09-10 Chad asked for "a place in the ui to put the name of who
+                that number belongs to" — it was rendering, 40px, enabled, on both views, and
+                it still read as decoration: a faint hint sitting where a value goes, with no
+                word saying it is a field. The label is now drawn, and an empty one is drawn
+                in a tone that asks to be filled rather than one that says "nothing here". */}
+            {/* ITEMS-STRETCH, NOT ITEMS-CENTER, AND THE FLOOR STAYS ON THE INPUT. Centring the
+                children left the box 40px and the INPUT 26 — measured at 390 and 360 — which
+                is a touch target under the app's own floor wearing a compliant wrapper. The
+                thing a thumb has to hit is the field, so the field carries the minimum. */}
+            <label className={`flex-1 min-w-[140px] flex items-stretch gap-1.5 rounded border px-2 focus-within:ring-2 focus-within:ring-sky-300 ${
+              String(names[v] || '').trim() ? 'border-slate-200 bg-white' : 'border-sky-200 bg-sky-50/60'}`}
+            >
+              <span className="flex items-center text-[10px] font-semibold uppercase tracking-wide text-slate-400 shrink-0">Name</span>
+              <input
+                type="text"
+                value={names[v] ?? ''}
+                disabled={!canEdit}
+                maxLength={data.limits?.maxLabelLen || 40}
+                onChange={(e) => setNames((n) => ({ ...n, [v]: e.target.value }))}
+                placeholder="whose number is this?"
+                aria-label={`Name for ${c.kind === 'sms' ? formatPhone(v) : v}`}
+                className="flex-1 min-w-0 bg-transparent text-[12px] min-h-[40px] focus:outline-none disabled:text-slate-400"
+              />
+            </label>
             <button
               type="button" onClick={() => removeFrom(c.key, v)} disabled={!canEdit}
               title={canEdit ? `Remove ${v}` : (gate.reason || 'read-only')}
