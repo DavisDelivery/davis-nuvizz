@@ -10,7 +10,7 @@
 // filling the cache is the sweep's job; this only reports what is already known.
 // ZERO NuVizz calls.
 import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
-import { travelLegsPath, legSecondsMap, isGoogleRoutesEnabled, readTravelCalibration, readRouteClasses } from './lib/travel-store.mts';
+import { travelLegsPath, legSecondsMap, isGoogleRoutesEnabled, readTravelCalibration, readRouteClasses, perDayRouteClassesEnabled } from './lib/travel-store.mts';
 import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
@@ -51,8 +51,13 @@ export default async (req: Request): Promise<Response> => {
     //
     // Anything that is not a plain YYYY-MM-DD falls back to today rather than reaching
     // Firestore with caller-shaped text.
+    // With the switch off the ?date= is ignored and today is served, which is what the
+    // client used to get — its own date-mismatch guard then drops it for any other board,
+    // reproducing the old behaviour without needing a client change.
     const dateParam = new URL(req.url).searchParams.get('date');
-    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(dateParam ?? '')) ? String(dateParam) : etDayString();
+    const date = perDayRouteClassesEnabled() && /^\d{4}-\d{2}-\d{2}$/.test(String(dateParam ?? ''))
+      ? String(dateParam)
+      : etDayString();
     const [cal, legDoc, routeClasses] = await Promise.all([
       readTravelCalibration(TENANT),
       getDoc(travelLegsPath(TENANT)).catch(() => null),

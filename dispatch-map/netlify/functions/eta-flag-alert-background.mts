@@ -24,7 +24,7 @@
 // day either side of a DST flip without needing to be re-timed twice a year.
 import { isFirestoreEnabled, readStops, getDoc, setDoc, listFleetLoads, createDocIfAbsent, etDayString, listDocs, readAlertRecipients } from './lib/firestore.mts';
 import { computeBoardFlags } from '../../src/lib/board-flags.js';
-import { ensureLegs, readTravelCalibration, routeClassesPath } from './lib/travel-store.mts';
+import { ensureLegs, readTravelCalibration, routeClassesPath, legacyRouteClassesPath, perDayRouteClassesEnabled } from './lib/travel-store.mts';
 import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mts';
 import { readRouteClassesFor } from './lib/route-classes.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
@@ -141,9 +141,12 @@ export default async (req: Request): Promise<Response> => {
       // not historical, so recomputing a past day from it would overwrite what was actually
       // resolved that morning with an inference from today's fleet — quietly, and in the
       // record a later replay reads back. Today and forward only.
-      if (!dry && date >= etDayString()) {
+      // ROUTE_CLASSES_PER_DAY=off restores the old single-document, today-only write.
+      const perDay = perDayRouteClassesEnabled();
+      if (!dry && (perDay ? date >= etDayString() : date === etDayString())) {
         try {
-          await setDoc(routeClassesPath(TENANT, date), { tenant: TENANT, date, classes: routeClasses, at: new Date().toISOString() });
+          const path = perDay ? routeClassesPath(TENANT, date) : legacyRouteClassesPath(TENANT);
+          await setDoc(path, { tenant: TENANT, date, classes: routeClasses, at: new Date().toISOString() });
         } catch (e: any) {
           // The sweep would now judge on a map the browser cannot read — say so where
           // the run record shows it rather than letting screen and inbox drift apart.

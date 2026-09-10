@@ -51,7 +51,26 @@ export function routeClassesPath(tenant: string, date: string): string {
   return `${TRAVEL_CAL_COLLECTION}/${tenant}__route_classes__${date}`;
 }
 
-/** The pre-split single document. Read-only, and only as a fallback — see readRouteClasses. */
+/**
+ * THE WAY BACK. Chad: "if it changes something I do like I can just tell you to flip it back
+ * the way it was and it's an easy fix."
+ *
+ * ROUTE_CLASSES_PER_DAY=off restores the previous behaviour EXACTLY and without a code
+ * change: one shared document, today only, the evening sweep publishing nothing. It is one
+ * env var on all three sides of this feature — the read, both writes, and the endpoint — so
+ * there is no half-reverted state where the browser asks for a day nothing writes.
+ *
+ * Default ON, and anything that is not an explicit off-word leaves it on: a typo in an env
+ * var must not silently return the board to going blind overnight, which is the exact
+ * failure this feature exists to end.
+ */
+export function perDayRouteClassesEnabled(env: any = process.env): boolean {
+  const v = String(env?.ROUTE_CLASSES_PER_DAY ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+/** The pre-split single document. Read-only when the per-day switch is on; the only
+ *  document at all when it is off. */
 export function legacyRouteClassesPath(tenant: string): string {
   return `${TRAVEL_CAL_COLLECTION}/${tenant}__route_classes`;
 }
@@ -229,10 +248,12 @@ export async function readTravelCalibration(tenant: string): Promise<any | null>
  *  and a silent one, since "not checked" looks the same as it always does. The date check is
  *  what the legacy document existed for and it is kept exactly. */
 export async function readRouteClasses(tenant: string, date: string): Promise<Record<string, string>> {
-  try {
-    const doc = await getDoc(routeClassesPath(tenant, date));
-    if (doc?.classes && Object.keys(doc.classes).length) return doc.classes;
-  } catch { /* fall through to the legacy doc */ }
+  if (perDayRouteClassesEnabled()) {
+    try {
+      const doc = await getDoc(routeClassesPath(tenant, date));
+      if (doc?.classes && Object.keys(doc.classes).length) return doc.classes;
+    } catch { /* fall through to the legacy doc */ }
+  }
   try {
     const legacy = await getDoc(legacyRouteClassesPath(tenant));
     if (!legacy || legacy.date !== date || !legacy.classes) return {};

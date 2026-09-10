@@ -58,7 +58,7 @@ import { computeBoardFlags } from '../../src/lib/board-flags.js';
 import { isFirestoreEnabled, getDoc, setDoc, createDocIfAbsent, readStops, listFleetLoads, etDayString, readAlertRecipients } from './lib/firestore.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { weekdayKey } from './lib/miss-ledger.mts';
-import { readTravelCalibration, ensureLegs, routeClassesPath } from './lib/travel-store.mts';
+import { readTravelCalibration, ensureLegs, routeClassesPath, perDayRouteClassesEnabled } from './lib/travel-store.mts';
 import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mts';
 import { mergeSweep, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
 import { auditRows } from './lib/flag-rows.mts';
@@ -154,7 +154,9 @@ export default async (req: Request): Promise<Response> => {
     // old day from it would overwrite what was actually resolved that morning with an
     // inference. (This sweep has no dry-run mode of its own — eta-flag-check is where the
     // engine is run for inspection, and it never writes.)
-    if (routeClasses && date >= etDayString()) {
+    // ROUTE_CLASSES_PER_DAY=off puts this sweep back to publishing NOTHING, which is what it
+    // did before per-day keys made tomorrow's map safe to write.
+    if (routeClasses && perDayRouteClassesEnabled() && date >= etDayString()) {
       try {
         await setDoc(routeClassesPath(TENANT, date), { tenant: TENANT, date, classes: routeClasses, at: new Date().toISOString() });
       } catch (e: any) {
