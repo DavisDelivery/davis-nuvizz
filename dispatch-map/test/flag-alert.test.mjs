@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   selectAlertable, buildAlert, sendAlerts, alertClaimPath, DAILY_ALERT_CAP, ALERT_TO, ALERT_TIERS,
+  bandOfCandidate, alertBandOf,
   ALERT_MIN_TIER, alertTiersFor, normalizeMinTier,
 } from '../netlify/functions/lib/flag-alert.mts';
 
@@ -23,23 +24,88 @@ test('ONLY CRITICAL IS EMAILED — red and amber stay on the screen', () => {
   // sent to customer service") and v0.56.3 fixed by widening to both. This is the OWNER
   // narrowing it out loud, with the stored history behind him: over 2026-08-25 → 09-02, of
   // the eight red-but-never-critical stops that emailed, SEVEN made their window.
-  const got = selectAlertable([
+  //
+  // AND NOW A FOURTH TIME, WHICH IS WHY THIS TEST GOT SHARPER RATHER THAN WEAKER. Chad, after
+  // a 2pm email on a 3pm close: "fire it at 20-30". ALERT_LATE_FLOOR_MIN opens a second door
+  // at 25 minutes late — but it opens it onto the EARLY band, with the heads-up wording and
+  // its own claim key. His promise was about the loud message, and the loud message is still
+  // critical-only. That is what these assertions now say, precisely.
+  const rows = [
     row({ stopNbr: '1' }),
     row({ stopNbr: '2', tier: 'red', lateBy: 60 }),
     row({ stopNbr: '3', tier: 'amber' }),
-  ], 10 * 60);
-  assert.deepEqual(got.map((c) => c.stopNbr), ['1']);
+  ];
+  // With the late floor OFF, the shipped behaviour before it existed, byte for byte.
+  assert.deepEqual(selectAlertable(rows, 10 * 60, 0, 'critical', 0).map((c) => c.stopNbr), ['1']);
+  // With it on: the red one is reached, and ONLY as a heads-up.
+  // With it on: the red and the amber are reached too — this fixture hand-sets their tiers and
+  // leaves them 60 and 120 minutes late, and the floor does not ask about the tier. What
+  // matters is that exactly ONE of the three earns the loud message.
+  const got = selectAlertable(rows, 10 * 60, 0, 'critical', 25);
+  assert.deepEqual(got.map((c) => c.stopNbr).sort(), ['1', '2', '3']);
+  assert.deepEqual(got.filter((c) => bandOfCandidate(c) === 'urgent').map((c) => c.stopNbr), ['1'],
+    'exactly one stop earns the loud message, and it is the critical one — Chad’s promise, kept');
+  for (const n of ['2', '3']) {
+    const c = got.find((x) => x.stopNbr === n);
+    assert.equal(c.reason, 'floor', `stop ${n} came through the floor`);
+    assert.equal(bandOfCandidate(c), 'early', `stop ${n} is a heads-up, not a confirmed miss`);
+  }
+  assert.equal(got.find((c) => c.stopNbr === '1').reason, 'tier');
+});
+
+test('A FLOOR-SELECTED RED TAKES THE EARLY CLAIM, never the urgent one', () => {
+  // THE DEFECT THIS EXISTS TO PREVENT, and alertBandOf's own comment predicted it: "the next
+  // person to widen that gate should not also have to remember to widen this." Widening it is
+  // exactly what the late floor does. alertBandOf maps anything not-amber to 'urgent', so a
+  // floor-selected RED row would have taken the urgent claim key — and then the genuine
+  // critical email for that same stop, hours later, would have found the claim already
+  // standing and sent NOTHING. The soft heads-up arrives, the confident miss never does, and
+  // the ledger shows one send exactly as designed. Invisible from every direction.
+  const [c] = selectAlertable([row({ stopNbr: '9', tier: 'red', lateBy: 40 })], 10 * 60, 0, 'critical', 25);
+  assert.equal(c.tier, 'red', 'the tier really is the one that maps to urgent');
+  assert.equal(alertBandOf(c.tier), 'urgent', 'by tier alone it would have been urgent');
+  assert.equal(bandOfCandidate(c), 'early', 'but the band follows WHY it was selected');
+  assert.notEqual(alertClaimPath('t', DATE, '9', bandOfCandidate(c)), alertClaimPath('t', DATE, '9', 'urgent'));
+});
+
+test('THE FLOOR NEEDS A REAL ARRIVAL — an unanchored guess never opens it', () => {
+  // Measured over 15 days: dropping the anchor requirement takes precision from 72% to 51%
+  // and nearly doubles the volume. Unanchored means projected from an ASSUMED departure
+  // against a ±90-minute band — the same thing the message's own "Basis" line rests on.
+  const un = selectAlertable([row({ stopNbr: '5', tier: 'red', lateBy: 90, anchored: false })], 10 * 60, 0, 'critical', 25);
+  assert.deepEqual(un, [], '90 minutes late on a guess is still a guess');
+  const an = selectAlertable([row({ stopNbr: '5', tier: 'red', lateBy: 26, anchored: true })], 10 * 60, 0, 'critical', 25);
+  assert.equal(an.length, 1, '26 minutes late on a measurement is news');
+});
+
+test('THE FLOOR IS A FLOOR — 24 minutes is under it, and a broken value is OFF not zero', () => {
+  const at = (lateBy, floor = 25) => selectAlertable([row({ stopNbr: '7', tier: 'red', lateBy })], 10 * 60, 0, 'critical', floor).length;
+  assert.equal(at(24), 0);
+  assert.equal(at(25), 1, 'inclusive at the boundary');
+  assert.equal(at(26), 1);
+  // A malformed env var must not read as 0-and-therefore-every-row: `lateBy >= 0` is true for
+  // a stop predicted exactly on time. Same failure the amber gate's clamp exists to stop.
+  for (const broken of [NaN, -5]) {
+    assert.equal(at(60, broken), 0, `floor=${broken} must be OFF, not wide open`);
+  }
+  // `undefined` is not a broken value — it is "no argument", and JS default parameters give it
+  // the shipped ALERT_LATE_FLOOR_MIN. Pinned so nobody later reads the clamp above as covering
+  // the omitted-argument case too.
+  assert.equal(at(60, undefined), 1, 'omitting the argument uses the shipped floor');
 });
 
 test('and ALERT_MIN_TIER=red puts every red back, without a deploy', () => {
+  // Late floor OFF here: this test is about the TIER floor, and letting a second door open
+  // rows would stop it measuring the thing it is named after.
   // The switch is the whole reason the narrowing is safe to ship: if 2.0 emails a day turns
   // out to be too quiet, this is one env var, not a code change and a release.
   const got = selectAlertable([
     row({ stopNbr: '1' }),
     row({ stopNbr: '2', tier: 'red', lateBy: 60 }),
     row({ stopNbr: '3', tier: 'amber' }),
-  ], 10 * 60, 0, 'red');
+  ], 10 * 60, 0, 'red', 0);
   assert.deepEqual(got.map((c) => c.stopNbr), ['1', '2']);
+  assert.ok(got.every((c) => c.reason === 'tier'), 'both cleared the TIER, not the late floor');
 });
 
 test('the alert tiers are exactly the floor and above', () => {
@@ -155,6 +221,13 @@ test('THE MESSAGE NAMES THE DRIVER — the first thing anybody does with it is p
   const m = buildAlert(selectAlertable([row({ driverName: 'TONY SMITH' })], 10 * 60)[0], DATE);
   assert.match(m.text, /Driver: *TONY SMITH/);
   assert.match(m.html, /Driver<\/td><td[^>]*>TONY SMITH/);
+});
+
+test('a NuVizz double space does not reach the email either', () => {
+  // The feed really does this — "Ben  Paintsil", "ANTHONY  KOSTNER". On the line a rep reads
+  // it looks like a fault in our email rather than a quirk of theirs.
+  const m = buildAlert(selectAlertable([row({ driverName: 'TONY  SMITH' })], 10 * 60)[0], DATE);
+  assert.match(m.text, /Driver: *TONY SMITH$/m);
 });
 
 test('A LOAD THAT NAMES NOBODY SAYS SO — and does not claim the truck is unassigned', () => {

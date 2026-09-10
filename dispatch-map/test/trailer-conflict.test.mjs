@@ -394,7 +394,11 @@ test('END TO END: the real engine feeds the real selector feeds the real text', 
   const text = smsText(picked[0], DATE);
   assert.equal(
     text,
-    `DDS no-trailer ${DATE}: BEN runs a tractor-trailer — ACME is marked No tractor trailer by dispatch. +1 more stop on this route. Move it or swap the truck. Auto-alert, reply to Davis dispatch.`,
+    // The separator is a HYPHEN, not an em dash: an em dash is outside GSM-7 and forced the
+    // whole message to UCS-2 (70 chars a segment instead of 160). Measured across 15 nights of
+    // real rows, that one character was costing 2.55 segments on every hours text and 3.59 on
+    // every trailer text. See the note in flag-sms.mts.
+    `DDS no-trailer ${DATE}: BEN runs a tractor-trailer - ACME is marked No tractor trailer by dispatch. +1 more stop on this route. Move it or swap the truck. Auto-alert, reply to Davis dispatch.`,
   );
   assert.ok(text.length < 320, `two SMS segments at most: ${text.length} chars`);
 });

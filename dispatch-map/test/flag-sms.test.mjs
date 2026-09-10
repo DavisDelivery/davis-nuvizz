@@ -103,3 +103,55 @@ test('the per-sweep cap holds worst-first', () => {
   const picked = selectTextable(rows, 3);
   assert.deepEqual(picked.map((r) => r.lateBy), [11, 10, 9]);
 });
+
+// ── THE DRIVER, AND THE CHARACTER THAT WAS TRIPLING THE BILL ─────────────────
+
+test('THE TEXT NAMES THE DRIVER, right after the route it comes from', () => {
+  // Chad: "If we have driver name include it for route and text yes." Route-and-driver is one
+  // fact — which truck, who is on it — so the name rides in parentheses on the route.
+  const t = smsText({ customer: 'EWASTE EPLANET LLC', routeName: 'TRAILER 2', driverName: 'TONY SMITH',
+    etaMin: 15 * 60 + 54, closeMin: 15 * 60, lateBy: 54 }, '2026-09-09');
+  assert.match(t, /on TRAILER 2 \(TONY SMITH\)/);
+});
+
+test('NO NAME PRINTS NOTHING — the text is not the email, and the reader is not the same person', () => {
+  // The email says "not named on this load" because it reaches a rep at a desk, where that is
+  // actionable: the call needs a lookup first. This reaches the router AT the board that would
+  // tell him, at 9pm, and 22 characters per recipient per row is the difference between one
+  // segment and two.
+  for (const blank of [null, undefined, '', '   ']) {
+    const t = smsText({ customer: 'A', routeName: 'R1', driverName: blank, etaMin: 900, closeMin: 880, lateBy: 20 }, '2026-09-09');
+    assert.match(t, /on R1 - est/, `driverName=${JSON.stringify(blank)}`);
+    assert.doesNotMatch(t, /not named/);
+    assert.doesNotMatch(t, /\(\s*\)/, 'and never an empty pair of brackets');
+  }
+});
+
+test('NuVizz double spaces are collapsed, and a runaway value cannot eat the message', () => {
+  // Real fixtures in this repo carry "Ben  Paintsil" and "ANTHONY  KOSTNER".
+  const t = smsText({ customer: 'A', routeName: 'R1', driverName: '  Ben   Paintsil  ', etaMin: 900, closeMin: 880, lateBy: 20 }, '2026-09-09');
+  assert.match(t, /\(Ben Paintsil\)/);
+  const long = smsText({ customer: 'A', routeName: 'R1', driverName: 'X'.repeat(200), etaMin: 900, closeMin: 880, lateBy: 20 }, '2026-09-09');
+  assert.match(long, /\(X{24}\)/, 'capped at 24');
+});
+
+test('EVERY CHARACTER IS GSM-7 — one em dash was costing 2.55 segments on every text', () => {
+  // An em dash is not in the GSM-7 alphabet, and lib/sms.mts sends mode 'AUTO', so ONE
+  // character forced SimpleTexting to encode the whole message as UCS-2: 70 chars a segment
+  // instead of 160. Measured over the 74 rows this sweep would really have texted across 15
+  // nights, not one was ever a single segment. This is the guard that keeps it that way — a
+  // curly quote or a dash slipped into either template silently triples the bill again.
+  const GSM7 = '@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !"#¤%&\'()*+,-./0123456789:;<=>?'
+    + '¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà'
+    + '\f^{}\\[~]|€';
+  const messages = [
+    smsText({ customer: 'EWASTE EPLANET LLC', routeName: 'TRAILER 2', driverName: 'TONY SMITH',
+      etaMin: 954, closeMin: 900, lateBy: 54 }, '2026-09-09'),
+    smsText({ rule: 'trailer_conflict', routeName: 'BEN 2', customer: 'ACME', driverName: 'Ben Paintsil',
+      routeConflicts: 2, blockedVia: 'eligibility' }, '2026-09-01'),
+  ];
+  for (const m of messages) {
+    const bad = [...m].filter((ch) => !GSM7.includes(ch));
+    assert.deepEqual(bad, [], `non-GSM-7 characters force UCS-2 and halve the segment size: ${JSON.stringify(bad)}`);
+  }
+});

@@ -20,6 +20,14 @@ import { gmailSource, type GmailConfig } from './gmail-source.mts';
 import { resolveGmailConfig } from './mail-sources.mts';
 import type { MailSource } from './mail-source.mts';
 import { MANIFEST_DAYS_COLLECTION } from './manifest-archive.mts';
+// THE SHARED CLOSURE PARSER, WHICH THIS FILE HAS BEEN USING WITHOUT IMPORTING.
+// davisClosedFromEnv below says the parser 'is shared with the nightly manifest check so
+// the two can never disagree' — and it was not imported, so the function threw
+// ReferenceError the moment anything called it. The Uline forecast panel rendered
+// 'parseClosedList is not defined' where the forecast should be. Nothing catches this
+// statically: these are .mts functions run by stripping types, not built by vite, so an
+// undefined identifier is a RUNTIME error on the one path that reaches it.
+import { parseClosedList } from '../../../src/lib/davis-calendar.js';
 
 export const TENANT = 'davis';
 export const VERSIONS_COLLECTION = 'uline_forecast_versions';

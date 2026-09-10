@@ -168,3 +168,22 @@ test('a summary row that carried NO constituents is still not a stop, everywhere
   assert.deepEqual(Object.keys(mergeSweep(null, orphan, 12 * 60, { emailedStops: new Set() }).rows), []);
   assert.deepEqual(selectTextable(orphan), []);
 });
+
+// THE DRIVER MUST SURVIVE THE COLLAPSE TOO — the third field this projection has eaten.
+//
+// collapsedRows is an explicit field list, and driverName was not on it. That is worse than a
+// silent drop: buildAlert prints "not named on this load" when the field is absent, so a
+// CAPPED board — the busy day, the one that produces a cap in the first place — mailed
+// customer service a false statement about our own data, on the line the rep acts on. And
+// fillRouteDrivers ran AFTER the collapse on the top-level rows only, so a constituent could
+// never be backfilled from its route either. It is filled before the bucket loop now.
+test('a capped batch still names the driver on every stop behind it', () => {
+  const under = selectAlertable(board(RED_CAP, { typed: true }).rows, NOW, 0, RED_FLOOR);
+  const over = selectAlertable(board(RED_CAP + 1, { typed: true }).rows, NOW, 0, RED_FLOOR);
+
+  assert.equal(over.length, RED_CAP + 1, 'the batch still reaches the inbox one stop at a time');
+  assert.ok(under.length > 0 && under.every((c) => c.driver === 'DRV'), 'under the cap, as before');
+  // The one that was broken: every constituent of a collapsed batch.
+  const missing = over.filter((c) => !c.driver);
+  assert.deepEqual(missing.map((c) => c.stopNbr), [], 'no stop behind a collapsed row loses its driver');
+});

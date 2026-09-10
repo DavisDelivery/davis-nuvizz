@@ -29,7 +29,7 @@ import { legSecondsMap, travelLegsPath, readTravelCalibration, readRouteClasses 
 import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mts';
 import { flagHistoryPath } from './lib/flag-history.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
-import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, alertRecipients, ALERT_CC_REJECTED, DAILY_ALERT_CAP, ALERT_MIN_TIER, alertTiersFor, normalizeMinTier, AMBER_LEAD_GATE_MIN, alertBandOf, finiteMinutes } from './lib/flag-alert.mts';
+import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, alertRecipients, ALERT_CC_REJECTED, DAILY_ALERT_CAP, ALERT_MIN_TIER, alertTiersFor, normalizeMinTier, AMBER_LEAD_GATE_MIN, ALERT_LATE_FLOOR_MIN, bandOfCandidate, finiteMinutes } from './lib/flag-alert.mts';
 import { flattenForConsumers } from './lib/flag-rows.mts';
 import { emailEnabled } from './lib/email.mts';
 import { requireUser } from './lib/require-user.mts';
@@ -530,11 +530,24 @@ export default async (req: Request): Promise<Response> => {
       // reading three modules; it should cost one request.
       explain: askedStop ? explainStop(askedStop, stops, flatRows, alertableSet, nowMin, claimed, { notes, dayKey: weekdayKey(date), amberGateMin: gateMin, minTier }) : undefined,
       alreadyClaimedToday: claimed,
-      wouldSendNow: alertable.filter((c) => !claimed.some((x) => x.stopNbr === c.stopNbr && x.band === alertBandOf(c.tier))).length,
+      wouldSendNow: alertable.filter((c) => !claimed.some((x) => x.stopNbr === c.stopNbr && x.band === bandOfCandidate(c))).length,
       // The switch's position, reported rather than inferred. `effective` is what this run
       // actually judged on (a ?gate= rehearsal overrides the env var); `configured` is what
       // production is set to right now.
       amberGate: { effective: gateMin, configured: AMBER_LEAD_GATE_MIN, rehearsed: gateParam != null },
+      // THE THIRD SWITCH, reported like the other two. It opens a second door at N minutes
+      // late regardless of tier (anchored rows only) and sends on the EARLY band — so "why
+      // did I get a heads-up on a red" and "why did I not" both have an answer here rather
+      // than in the source. `sends` counts which band each candidate would actually take,
+      // because a floor row and a critical row landing on one stop are two different claims.
+      lateFloor: {
+        effective: ALERT_LATE_FLOOR_MIN, configured: ALERT_LATE_FLOOR_MIN,
+        selected: alertable.filter((c: any) => c.reason === 'floor').length,
+      },
+      sends: {
+        urgent: alertable.filter((c: any) => bandOfCandidate(c) === 'urgent').length,
+        early: alertable.filter((c: any) => bandOfCandidate(c) === 'early').length,
+      },
       // The other switch, reported the same way. `tiers` is the sentence the held-reasons use,
       // so a reader never has to work out what the floor means for a given tier.
       alertFloor: {

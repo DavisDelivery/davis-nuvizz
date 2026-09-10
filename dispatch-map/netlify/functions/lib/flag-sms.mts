@@ -103,6 +103,29 @@ export function eveningTargetDate(etDate: string, etMin: number): { date: string
   return null;
 }
 
+/**
+ * PURE. The driver clause for a text, or nothing at all.
+ *
+ * Chad: "If we have driver name include it for route and text yes." It goes in parentheses
+ * straight after the route because route-and-driver is ONE fact — which truck, and who is on
+ * it — and the name is derived from the route in the first place (board-flags fillRouteDrivers).
+ *
+ * ABSENCE PRINTS NOTHING, and that is the opposite of what the email does. The email says
+ * "not named on this load" because it reaches a rep at a desk, where "we have no name" means
+ * the phone call needs a lookup first. This text reaches the router AT THE BOARD THAT WOULD
+ * TELL HIM, at 9pm, and 22 characters per recipient per row to say something he is already
+ * looking at is exactly the difference between one segment and two. Silence in this slot means
+ * one thing — the feed gave us no single name for this route — which at 8pm is real news.
+ *
+ * NuVizz spells names with double spaces ("Ben  Paintsil", "ANTHONY  KOSTNER"), so whitespace
+ * is collapsed; the length guard never fires on a real name (longest measured: 17) and exists
+ * only so a garbage feed value cannot run away with the message.
+ */
+export const driverClause = (row: any): string => {
+  const name = String(row?.driverName || '').replace(/\s+/g, ' ').trim().slice(0, 24);
+  return name ? ` (${name})` : '';
+};
+
 const fmtMin = (m: any): string => {
   if (!Number.isFinite(m)) return '?';
   const mm = ((Math.round(m) % 1440) + 1440) % 1440;
@@ -130,7 +153,16 @@ export function smsText(row: any, boardDate: string): string {
   const route = String(row?.routeName || '').trim();
   const late = Number.isFinite(row?.lateBy) ? ` (~${row.lateBy}m past close)` : '';
   const eta = `est ${fmtMin(row?.etaMin)} vs close ${fmtMin(row?.closeMin)}`;
-  return `DDS flag ${boardDate}: ${cust}${route ? ` on ${route}` : ''} — ${eta}${late}. Auto-alert, reply to Davis dispatch.`;
+  // THE SEPARATOR IS A HYPHEN, AND IT IS NOT A STYLE CHOICE — IT IS 60% OF THE SMS BILL.
+  //
+  // An em dash is not in GSM-7, and lib/sms.mts sends mode 'AUTO', so ONE character forced
+  // SimpleTexting to encode the entire message as UCS-2: 70 characters per segment instead of
+  // 160. Measured over the 74 rows this sweep would actually have texted across 15 nights,
+  // every single one was UCS-2 at a mean of 2.55 segments — none was ever one segment. With a
+  // hyphen they are 1.00, and 1.06 WITH the driver name added. The name is effectively free
+  // and the channel got cheaper. Nothing else in the corpus needs UCS-2: zero customer names
+  // and zero route names across 21 days carry a non-GSM-7 character.
+  return `DDS flag ${boardDate}: ${cust}${route ? ` on ${route}` : ''}${driverClause(row)} - ${eta}${late}. Auto-alert, reply to Davis dispatch.`;
 }
 
 /**
@@ -156,7 +188,9 @@ function trailerSmsText(row: any, boardDate: string): string {
   // says nothing is the kind of thing that trains people to stop reading the message.
   const others = Math.max(0, (Number(row?.routeConflicts) || 1) - 1);
   const more = others > 0 ? ` +${others} more stop${others === 1 ? '' : 's'} on this route.` : '';
-  return `DDS no-trailer ${boardDate}: ${route || 'a load'} runs a tractor-trailer — ${cust} is ${said}.${more} Move it or swap the truck. Auto-alert, reply to Davis dispatch.`;
+  // Same hyphen, same reason as smsText — this one measured 3.59 segments and lands at 2.00,
+  // with the driver clause costing nothing at all.
+  return `DDS no-trailer ${boardDate}: ${route || 'a load'}${driverClause(row)} runs a tractor-trailer - ${cust} is ${said}.${more} Move it or swap the truck. Auto-alert, reply to Davis dispatch.`;
 }
 
 /**

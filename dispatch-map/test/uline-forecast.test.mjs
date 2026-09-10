@@ -191,3 +191,29 @@ test('a General-format date cell arrives as the STRING "46220" through raw:false
   assert.equal(forecastDateToIso('18-Xyz-26'), null);
   assert.equal(forecastDateToIso('99999'), null, 'outside the plausible serial range');
 });
+
+// THE FORECAST PANEL WAS RENDERING A ReferenceError WHERE THE FORECAST GOES.
+//
+// Chad's screen, live: "parseClosedList is not defined", in the Uline forecast card.
+//
+// uline-forecast-store.mts called parseClosedList and never imported it. Its own comment on
+// the function says the parser "is shared with the nightly manifest check so the two can never
+// disagree" — which was the intent and not the code. Nothing catches this statically: these
+// are .mts functions run by type-stripping, not built by vite, so an undefined identifier is a
+// RUNTIME error on the one path that reaches it, and the only symptom is the panel printing
+// the error message where the numbers belong.
+//
+// This calls it. An import that goes missing again fails here instead of on a dispatcher's
+// screen at 8pm.
+test('davisClosedFromEnv actually runs — the shared closure parser is imported, not just named', async () => {
+  const store = await import('../netlify/functions/lib/uline-forecast-store.mts');
+  assert.deepEqual(store.davisClosedFromEnv({ ULINE_DAVIS_CLOSED: '2026-12-25, 2026-11-26' }),
+    ['2026-12-25', '2026-11-26']);
+  // The shapes an env var actually arrives in, none of which may throw.
+  for (const raw of [undefined, null, '', '   ', ',', '2026-12-25']) {
+    assert.ok(Array.isArray(store.davisClosedFromEnv({ ULINE_DAVIS_CLOSED: raw })), JSON.stringify(raw));
+  }
+  // And it is the SAME parser the manifest check uses, which is the promise in the comment.
+  const cal = await import('../src/lib/davis-calendar.js');
+  assert.deepEqual(store.davisClosedFromEnv({ ULINE_DAVIS_CLOSED: '2026-07-04' }), cal.parseClosedList('2026-07-04'));
+});
