@@ -37,6 +37,16 @@ export default async (): Promise<Response> => {
   // Which mailboxes are on is decided in ONE place, shared with the tab's
   // "Check email now" button, so the button can never test a different set of
   // inboxes than the schedule reads.
+  // THE ET GATE. Four UTC firings, three real passes — see the note beside `config` below.
+  // A stood-down firing says so rather than returning a silent empty result, because "nothing
+  // to do" and "wrong hour" are different answers and only one of them is worth investigating.
+  const etHour = Number(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', hour: '2-digit', hour12: false,
+  }).formatToParts(new Date()).find((x) => x.type === 'hour')?.value ?? -1) % 24;
+  if (!isParseHour(etHour)) {
+    return Response.json({ ok: true, skipped: 'not a parse hour', etHour, parseHoursEt: PARSE_HOURS_ET });
+  }
+
   const { sources } = await buildMailSources(fetch);
 
   const out = await ingestManifestEmails({
@@ -58,6 +68,36 @@ export default async (): Promise<Response> => {
   return Response.json(out);
 };
 
+// ── WHEN THE PARSE RUNS: 8:10p, 9:10p and 10:10p ET ─────────────────────────
+//
+// Chad: "We need to do our first parse at 8:10 pm 9:10 10:10".
+//
+// It used to poll every 30 minutes around the clock — 48 passes a day at hours when Uline has
+// not sent anything, which is how a 3:00pm check on a report that had not arrived yet ends up
+// on screen saying it could not reconcile against its own printed totals. Three passes in the
+// window the report actually lands in is the whole ask.
+//
+// THE CRON IS UTC AND ET IS NOT, so a fixed UTC time is the wrong ET time for 133 days a year.
+// This is the same trap day-completion-report-background documents at length, and the same
+// answer: fire at the UNION of the UTC slots that could be one of these ET hours in either
+// season, and let the ET clock decide which firings are real.
+//
+//   EDT (UTC-4)   8:10p 9:10p 10:10p ET  ->  00:10 01:10 02:10 UTC
+//   EST (UTC-5)   8:10p 9:10p 10:10p ET  ->  01:10 02:10 03:10 UTC
+//   union                                ->  00:10 01:10 02:10 03:10 UTC
+//
+// Four firings, of which exactly three pass in either season: in EDT the 03:10 slot is 11:10p
+// ET and stands down; in EST the 00:10 slot is 7:10p ET and stands down. A test sweeps the
+// calendar rather than trusting this comment.
+export const PARSE_HOURS_ET = [20, 21, 22];
+
+/** PURE. Is this ET hour one of the three passes? The minute is not tested: the cron fires
+ *  once an hour at :10, so the hour alone identifies the firing, and testing the minute would
+ *  make the job miss its slot on a platform that runs it a minute late. */
+export function isParseHour(hour: number): boolean {
+  return PARSE_HOURS_ET.includes(hour);
+}
+
 export const config = {
-  schedule: '*/30 * * * *',
+  schedule: '10 0,1,2,3 * * *',
 };
