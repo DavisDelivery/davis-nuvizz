@@ -390,13 +390,24 @@ function firstError(body: any): string | null {
   }
   // Spring-style error bodies carry the USEFUL detail in `message` ("JSON parse error: …")
   // while `error` is just the bare reason phrase ("Bad Request") — never bury the detail.
+  //
+  // NOT TRUNCATED, AND THAT IS THE POINT (Sep 10 2026). This returned `.slice(0, 300)`, and
+  // on the "Steven Adjenty" route create that cut landed — to the character — immediately
+  // after `<Errors class="java.util.ArrayList">`. NuVizz had answered the 500 by listing
+  // exactly what it objected to, in an XML DeliverItLoadResponse nested inside `message`;
+  // the list was the next thing in the string and OUR OWN handler threw it away. The
+  // dispatcher got an XML preamble, the write ledger stored the same 300 characters, and a
+  // whole day went into inferring what the vendor had already said. A diagnostic that
+  // truncates before the diagnosis is worse than none, because it looks like an answer.
+  // Length now belongs to the DISPLAY (see clipForToast in App.jsx), which marks its cut.
   if (body.error && body.message && /^(bad request|internal server error|not found|forbidden|unauthorized|conflict)$/i.test(String(body.error).trim())) {
-    return `${String(body.error)}: ${String(body.message)}`.slice(0, 300);
+    return `${String(body.error)}: ${String(body.message)}`;
   }
   if (body.error) return String(body.error);
   if (body.message) return String(body.message);
   // Non-JSON NuVizz error body (safeJson wraps it as {_text}); surface it rather than dropping it.
-  if (body._text) { const t = String(body._text).trim(); if (t) return t.slice(0, 300); }
+  // Same rule as the Spring branch above: a non-JSON body is the vendor talking, verbatim.
+  if (body._text) { const t = String(body._text).trim(); if (t) return t; }
   return null;
 }
 
@@ -1982,25 +1993,92 @@ export const ROUTE_CREATE_MAX_STOPS = 500;
 
 // Schedule keys the v7 Schedule schema accepts (additionalProperties:false) — anything else
 // off the echoed record (lat/exec/address junk) is dropped so the wire body stays reference-only.
-const PLAN_STOP_SCHEDULE_KEYS = ['timeFrom', 'timeTo', 'timeZone', 'srvcTimeCode', 'estimatedDuration', 'timeConstraint'] as const;
+//
+// EXACTLY THE PROVEN FOUR, and that is a narrowing (Sep 10 2026). This list used to add
+// srvcTimeCode + estimatedDuration, which the import path's own audit had already ruled out
+// one screen up (§I, IMPORT_SCHED_FIELDS: "estimatedDuration/estDuration are NOT part of the
+// proven reference and are never echoed — audit: unproven fields with no upside"). Two write
+// paths in one file disagreeing about which fields are proven is how a rule gets lost; they
+// now share the one list.
+const PLAN_STOP_SCHEDULE_KEYS = IMPORT_SCHED_FIELDS;
+
+/** The contract's datetime shape — "yyyy-MM-ddTHH:mm:ss", full seconds form, never millis,
+ *  never an offset suffix, never an epoch NUMBER. Null when the value is not one.
+ *
+ *  Hoisted (Sep 10 2026) because three write paths had each grown their own copy and the
+ *  fourth — the route create's planStops — had none at all: planStopSchedule copied whatever
+ *  live stop/info handed back straight onto the wire. That is the exact trap §I documents
+ *  from the Jul 2 import work ("an epoch number from a raw read must never be echoed"), and
+ *  a Java worker that binds `1757520000000` into a String field and then parses it as a date
+ *  dies INSIDE the worker — an unhandled exception, not a validation refusal. One rule, one
+ *  place, so a fifth path cannot skip it again. */
+export const isoOrNull = (v: any): string | null =>
+  (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(v) ? v.slice(0, 19) : null);
+
 function planStopSchedule(sch: any): any {
-  const out: any = {};
-  if (sch && typeof sch === 'object') {
-    for (const k of PLAN_STOP_SCHEDULE_KEYS) if (sch[k] !== undefined && sch[k] !== null) out[k] = sch[k];
+  // pickFields carries the object guard the import header learned the hard way (an ADDRESS
+  // OBJECT under a scalar key is a hard NuVizz 400) and drops '' as well as null.
+  const out: any = pickFields(sch, PLAN_STOP_SCHEDULE_KEYS);
+  // A window that is not the contract's shape is DELETED, never echoed — and never invented.
+  // "Echo, never invent" is the whole safety argument for a PlanStop reference: synthesizing
+  // a delivery window here would put a time on a customer's freight that nobody chose.
+  for (const k of ['timeFrom', 'timeTo']) {
+    const v = isoOrNull(out[k]);
+    if (v === null) delete out[k]; else out[k] = v;
   }
   return out;   // {} is valid — the Schedule schema has no required fields
 }
 
+// ── seq IS A LEG NUMBER, NOT A STOP POSITION (Sep 9-10 2026) ─────────────────
+//
+// Chad, twice — on a 3-order "Suw 3" card and again on a 14-order "Steven Adjenty" card:
+// "Route Creation still not working from our system go to devloper api from nuvizz and
+// figure out what you are doing wrong." Both creates answered HTTP 500 carrying a
+// DeliverItLoadResponse whose DocumentID is UNKNOWN and whose Status is 99 — it failed
+// before it could even bind the document to a load.
+//
+// THE DOCUMENT SAYS WHAT WE WERE SENDING WRONG, and all THREE of its examples agree.
+// RoutePlanStopSchedule.seq is documented as "Sequence of the shipFrom or shipTo", and
+// Route.planStops as "Unplanned Stops are added to the route in the sequence specified for
+// pickup `from` and drop-off `to` nodes." So seq orders the route's LEGS — an N-order route
+// has 2N of them — and every example gives each leg its own number:
+//   RouteExistingStops (planStops): Stop001 from=1 to=3 · Stop002 from=2 to=4
+//   RouteNewStops / RouteCoMingledStops (stops): 3011 from=1 to=2 · 3027 from=3 to=4
+// Two different visit orders, one invariant: 2N legs, 2N distinct numbers, 1..2N.
+//
+// THIS BUILDER SENT from.seq === to.seq === the stop's 1-based card position. "Steven
+// Adjenty" therefore claimed leg 1 twice, leg 2 twice … leg 14 twice, and never reached 15
+// through 28 at all. That is not a visit order — fourteen ties and no way to resolve one of
+// them. The body is STRUCTURALLY valid against RoutePlanLoad (every key in the schema,
+// nothing extra, every length and type legal), which is why nothing here ever caught it:
+// JSON Schema cannot express "these integers must be distinct". Only the examples say so.
+//
+// WE USE THE planStops PATTERN — all from-legs 1..N, then all to-legs N+1..2N — for two
+// reasons. It is the example for the node we actually send; and it is the same leg model
+// this repo already proved against the portal (nuvizz-rwb.mts `legsFor`, reverse-engineered
+// from the Route Workbench's own HAR, whose stoplist is every _PU leg followed by every _DO
+// leg). Davis loads at Buford and then delivers, so "all pickups, then all deliveries" is
+// also what the freight does.
+//
+// HONEST ABOUT THE LIMIT OF THIS. The duplicate seq is the ONLY deviation from the vendor
+// contract in the whole payload — proved mechanically by validating the built body against
+// the shipped reference/nuvizz-openapi-v7.json (test/nuvizz-openapi-conformance.test.mjs).
+// That makes it the thing to fix and the best candidate for the 500. It is NOT proof that
+// the 500 goes away: NuVizz listed its own reasons in an <Errors> array that our error
+// handler truncated away (see firstError below, and the write-ledger capture in
+// fireSingle). Only a live create can settle it — and the next one will say why if it fails.
+
 /** PURE: one sanitized PlanStop reference. Shape is pinned by the schema ({stopNbr, from, to}
- *  only) and by test — nothing address- or freight-shaped can ride. `seq` is the stop's
- *  1-based position in the card's order. */
-export function buildPlanStopRef(seed: RouteCreateSeed, seq = 1): any {
+ *  only) and by test — nothing address- or freight-shaped can ride. `fromSeq`/`toSeq` are the
+ *  1-based positions of this stop's two LEGS in the route's leg order (see above); they must
+ *  be distinct from each other and from every other leg's on the route. */
+export function buildPlanStopRef(seed: RouteCreateSeed, fromSeq = 1, toSeq = 2): any {
   const stopNbr = String(req(seed?.stopNbr, 'createRoute: seed stopNbr')).trim();
   if (stopNbr.length > ROUTE_FIELD_MAX) throw new Error(`createRoute: seed stopNbr "${stopNbr}" is ${stopNbr.length} chars — NuVizz caps it at ${ROUTE_FIELD_MAX}`);
   return {
     stopNbr,
-    from: { seq, schedule: planStopSchedule(seed?.fromSchedule) },
-    to: { seq, schedule: planStopSchedule(seed?.toSchedule) },
+    from: { seq: fromSeq, schedule: planStopSchedule(seed?.fromSchedule) },
+    to: { seq: toSeq, schedule: planStopSchedule(seed?.toSchedule) },
   };
 }
 
@@ -2015,7 +2093,7 @@ export function buildRouteCreateBody(input: RouteCreateInput, companyCode: strin
   const routeName = strField(input?.routeName);
   if (routeName.length > ROUTE_FIELD_MAX) throw new Error(`createRoute: route name "${routeName}" is ${routeName.length} chars — NuVizz caps it at ${ROUTE_FIELD_MAX}`);
   // Same proven window shape as the import header: full seconds form, never millis/offset.
-  const iso = (v: any) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(v) ? v.slice(0, 19) : null);
+  const iso = isoOrNull;
   const day = isDayString(input?.date) ? String(input.date) : null;
   const earliest = iso(input?.earliestStartDttm) || (day ? `${day}T06:00:00` : null);
   const latest = iso(input?.latestStartDttm) || (day ? `${day}T18:00:00` : null);
@@ -2049,7 +2127,9 @@ export function buildRouteCreateBody(input: RouteCreateInput, companyCode: strin
   // `route` carries loadHeader + the order REFERENCES and NOTHING else. No `stops` node, no
   // loadAssignment (a driver is assigned afterwards by the existing assignDriver op, which is
   // verified). buildPlanStopRef sanitizes, so caller-passed junk can never widen the payload.
-  return { companyCode, route: { loadHeader, planStops: seeds.map((s: RouteCreateSeed, i: number) => buildPlanStopRef(s, i + 1)) } };
+  // Leg order: every from-leg (the depot pickup) first, 1..N, then every to-leg (the
+  // delivery) N+1..2N — the RouteExistingStops pattern, and the same shape RWB sends.
+  return { companyCode, route: { loadHeader, planStops: seeds.map((s: RouteCreateSeed, i: number) => buildPlanStopRef(s, i + 1, seeds.length + i + 1)) } };
 }
 
 /** normStopNbr (§I) — canonical stopNbr for ORDER COMPARISON ONLY (display/journals keep raw):
