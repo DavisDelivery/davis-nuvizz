@@ -83,3 +83,51 @@ test('…and ?explain=1 reads it back in words, at zero call cost', async () => 
     assert.ok(store.size >= 1);
   } finally { restore?.(); }
 });
+
+// ── THE DRIVER SURVIVES THE WHOLE PATH, NOT JUST THE PARSER ────────────────────────────────
+//
+// Chad: "Our roster scan shows who the driver is for the load, why are we not using that?" A
+// unit test on normalizeLoads proves the parser reads the column; it cannot prove the field
+// reaches the document the board actually reads. Between the two sit a write that REPLACES, a
+// JSON-stringified loads array, and a read that parses it back — three places a new field can
+// be quietly dropped. So this drives the real runRefreshStops and reads the stored roster back.
+test('the driver NuVizz already has on a load reaches the stored roster — parser to Firestore, end to end', async () => {
+  const { doc, pull } = await manualScan({
+    filterData: [{
+      loadId: { columnName: 'Key' },
+      name: { columnName: 'Load Name' },
+      loadNbr: { columnName: 'Load Number' },
+      status: { columnName: 'Load Status' },
+      'route.driver.name': { columnName: 'Driver Name' },
+      trips: { columnName: 'No Of Trips' },
+    }],
+    values: [
+      ['hex_SHEATS', 'SHEATS', 'DAVIS000203725', 'Draft', 'Sirdedrick Sheats', 8],
+      ['hex_ESTES', 'ESTES', 'DAVIS000203722', 'Draft', '', 8],
+      ['hex_ALPHA2', 'ALPHA 2', 'DAVIS000203707', 'Draft', 'Enter driver name', 0],
+    ],
+  });
+  const loads = JSON.parse(doc.loadsJson);
+  assert.deepEqual(loads.map((l) => [l.name, l.driver]), [
+    ['SHEATS', 'Sirdedrick Sheats'],
+    ['ESTES', ''],        // genuinely nobody on it — the row a dispatcher needs to find
+    ['ALPHA 2', ''],      // the grid's placeholder is not a person
+  ]);
+  // And the pull records how many carried one, so a saved search that loses the Driver Name
+  // column is a number that changes rather than a board that quietly empties.
+  assert.equal(pull.drivers, 1);
+  assert.equal(pull.kept, 3);
+});
+
+test('a load list with NO driver column still scans clean, and the pull says nobody was driving', async () => {
+  const { doc, pull, lines } = await manualScan({
+    filterData: [{ loadId: {}, name: {}, loadNbr: {}, status: {}, trips: {} }],
+    values: [['hex_A', 'BEN 2', 'DAVIS000198197', 'Draft', 0]],
+  });
+  assert.equal(JSON.parse(doc.loadsJson)[0].driver, '', 'absent column is unknown, never a guess');
+  assert.equal(pull.drivers, 0);
+  // The log line names it rather than leaving a reader to notice a blank column on the board.
+  const line = lines.find((l) => l.startsWith(`[roster] ${VIEWED} `));
+  assert.match(line, /drivers=0/);
+  assert.match(line, /lost its Driver Name column/);
+});

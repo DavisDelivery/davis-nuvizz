@@ -64,13 +64,19 @@ const STOPS = [
   ...stopsFor('ESTES', 'ld-two', 'DAVIS000200602', 2, '9020'),
 ];
 const BUILT = [
-  { loadId: 'ld-one', name: 'CHAD', loadNbr: 'DAVIS000200601', status: 'Dispatched', trips: 3 },
-  { loadId: 'ld-two', name: 'ESTES', loadNbr: 'DAVIS000200602', status: 'Planned', trips: 2 },
+  { loadId: 'ld-one', name: 'CHAD', loadNbr: 'DAVIS000200601', status: 'Dispatched', driver: 'Chad Davis', trips: 3 },
+  { loadId: 'ld-two', name: 'ESTES', loadNbr: 'DAVIS000200602', status: 'Planned', driver: 'Terrance Taylor', trips: 2 },
 ];
+// The roster carries the driver NuVizz already has on each load (v1.7.0). ALPHA carries NOBODY
+// on purpose: on a Draft morning that is the one row on this panel a dispatcher has to act on,
+// and before the driver was captured it looked exactly like the two that are fully staffed.
+// A sixth populated column in a 390px grid row is also the classic horizontal-scroll trigger,
+// so the phone pass below is measuring real text rather than three blank cells.
+const EMPTY_DRIVERS = ['Sirdedrick Sheats', 'Marcus Crumpton', ''];
 const EMPTIES = ['1 SATL', '1 WATL', 'ALPHA'].map((name, i) => ({
-  loadId: `ld-empty-${i}`, name, loadNbr: `DAVIS00020070${i}`, status: 'Draft', trips: 0,
+  loadId: `ld-empty-${i}`, name, loadNbr: `DAVIS00020070${i}`, status: 'Draft', driver: EMPTY_DRIVERS[i], trips: 0,
 }));
-const OFF_BOARD = { loadId: 'ld-t9', name: 'TRAILER 9', loadNbr: 'DAVIS000200609', status: 'Planned', trips: 12 };
+const OFF_BOARD = { loadId: 'ld-t9', name: 'TRAILER 9', loadNbr: 'DAVIS000200609', status: 'Planned', driver: 'Michael Tharp', trips: 12 };
 // A capture stamp the page can render an age from. Fixed, so the assertions never race a clock.
 // THE DATE THE ROSTER IS FOR — TODAY IN ET, off the clock, not typed into the file. It was
 // '2026-09-08' and passed on exactly one day: rosterFreshness reads "before today" as a
@@ -229,6 +235,17 @@ for (const mobile of [false, true]) {
     else bad(`TRAILER 9 vanished from both tabs (${view})`);
     if (/3 empty/.test(text) && /2 built in Routes/.test(text) && /1 not on the board/.test(text)) ok('the header counts this panel’s own rows: 3 empty · 2 built in Routes · 1 not on the board');
     else bad(`header line wrong (${view}): ${JSON.stringify((text.split('\n').find((l) => /empty/.test(l)) || '').slice(0, 120))}`);
+    // THE DRIVER NUVIZZ ALREADY HAS ON AN EMPTY SHELL (v1.7.0). Chad: "Our roster scan shows
+    // who the driver is for the load, why are we not using that?" These rows have no stops, so
+    // nothing but the roster can answer it — a unit test cannot prove it reaches the pixels.
+    if (text.includes('Sirdedrick Sheats')) ok('1 SATL names the driver NuVizz already has on it');
+    else bad(`the empty shell's roster driver never reaches the panel (${view})`);
+    if (text.includes('Marcus Crumpton')) ok('…and so does 1 WATL');
+    else bad(`only one of the two staffed shells shows its driver (${view})`);
+    // And the one with NOBODY on it must still read as a Draft, not borrow a neighbour's name.
+    const alphaLine = (text.split('\n').find((l) => /ALPHA/.test(l)) || '');
+    if (!/Sheats|Crumpton|Tharp/.test(alphaLine)) ok('…and ALPHA, which nobody is on, borrows no one else’s driver');
+    else bad(`ALPHA picked up another load's driver (${view}): ${JSON.stringify(alphaLine.slice(0, 120))}`);
   });
 
   await run(`A day whose roster could not be read — ${view}`, { mobile, rosterFail: true }, (text) => {

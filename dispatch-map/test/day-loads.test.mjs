@@ -213,3 +213,51 @@ test('splitDayLoads survives the absent and the malformed', () => {
   assert.deepEqual(empty.map((r) => r.key), ['b'], 'a row with no count at all is empty, not off-board');
   assert.deepEqual(offBoard.map((r) => r.key), ['c'], 'and a numeric string count still counts');
 });
+
+// ── THE DRIVER ON A LOAD NOBODY HAS DISPATCHED YET ─────────────────────────────────────────
+//
+// Chad, on the portal's Loads grid beside the board: "Our roster scan shows who the driver is
+// for the load, why are we not using that? The loads are not dispatched but they do already
+// have the driver assignment." The roster row always knew; this merge hardcoded '' and threw it
+// away, so on a Draft morning every empty trailer read blank — and the two that genuinely had
+// nobody on them looked exactly like the forty-eight that did.
+test('an empty Draft shell shows the driver NuVizz already has on it, before any stop exists', () => {
+  const rows = mergeDayLoads([], [
+    roster({ name: 'SHEATS', loadId: 'hexS', loadNbr: 'DAVIS000203725', driver: 'Sirdedrick Sheats', trips: 0 }),
+    roster({ name: 'ESTES', loadId: 'hexE', loadNbr: 'DAVIS000203722', driver: '', trips: 0 }),
+  ]);
+  const sheats = rows.find((r) => r.name === 'SHEATS');
+  const estes = rows.find((r) => r.name === 'ESTES');
+  assert.equal(sheats.driver, 'Sirdedrick Sheats');
+  assert.equal(sheats.onBoard, false, 'no stops — this driver came from the roster, not the board');
+  assert.equal(estes.driver, '', 'genuinely unassigned, and now distinguishable from the ones that are not');
+});
+
+test('the board’s live driver still WINS over the roster’s capture — the roster only fills a gap', () => {
+  // The precedence is the whole safety story. A dispatcher who reassigns in NuVizz mid-morning
+  // sees it on the stops immediately; the roster is as old as the last pull. If the capture
+  // could overwrite live board data, this feature would hand the board a name the vendor had
+  // already moved on from.
+  const rows = mergeDayLoads(
+    [group({ key: 'TRAILER 6', name: 'TRAILER 6', loadId: 'hex6', driver: 'Marcus Crumpton', count: 12 })],
+    [roster({ name: 'TRAILER 6', loadId: 'hex6', loadNbr: 'DAVIS000200600', driver: 'Somebody Stale', trips: 12 })],
+  );
+  assert.equal(rows.find((r) => r.name === 'TRAILER 6').driver, 'Marcus Crumpton');
+});
+
+test('a board group with no driver falls back to the roster’s, rather than showing nobody', () => {
+  const rows = mergeDayLoads(
+    [group({ key: 'THARP', name: 'THARP', loadId: 'hexT', driver: '', count: 4 })],
+    [roster({ name: 'THARP', loadId: 'hexT', loadNbr: 'DAVIS000203716', driver: 'Michael Tharp', trips: 4 })],
+  );
+  const tharp = rows.find((r) => r.name === 'THARP');
+  assert.equal(tharp.driver, 'Michael Tharp');
+  assert.equal(tharp.onBoard, true, 'the board still owns the freight numbers; only the blank driver was filled');
+});
+
+test('a roster written before the driver was captured merges exactly as it always did', () => {
+  // Every cached document from before this change has no driver field at all. Reading one must
+  // produce '' — the old behaviour — and never the string "undefined".
+  const rows = mergeDayLoads([], [roster({ name: '1 SATL', loadId: 'hex168' })]);
+  assert.equal(rows[0].driver, '');
+});

@@ -3,7 +3,8 @@
 // The NuVizz LOAD list (PkgRoute filterdata) — the portal's "Loads" grid. Each row
 // carries the load's UNIQUE per-day loadId (the recurring routes share a NAME, e.g.
 // "BEN 2", every day, but each day's instance gets its OWN loadId), plus the route
-// name, status, driver and trip (stop) count.
+// name, status, driver and trip (stop) count — and since v1.7.0 we actually KEEP the
+// driver, which this comment had claimed for months while normalizeLoads dropped it.
 //
 // We use it as an authoritative anchor for "which loads are TODAY's": a board stop
 // that carries a loadId NOT in today's load list is a prior-day instance of a
@@ -22,7 +23,7 @@
 
 import { getNuvizzRequester } from './nuvizz-request.mts';
 import { getCreds, basicAuthHeader } from './nuvizz-scan.mts';
-// looksLikeLoadNbr moved to nuvizz-list.mts (v1.8.0): the board write-grace needs the same
+// looksLikeLoadNbr moved to nuvizz-list.mts (v1.12.0): the board write-grace needs the same
 // question answered, and a third copy of it is how two readers of one fact drift apart.
 import { OPENAPI_BASE, linkVal, periodForDate, isHashLikeId, looksLikeLoadNbr } from './nuvizz-list.mts';
 export { looksLikeLoadNbr };
@@ -53,12 +54,69 @@ export function buildLoadBody(period: string, pageSize: number = LOAD_MAX_RESULT
   };
 }
 
+/**
+ * ONE load on the day's roster — the shape every hop of the roster path passes along.
+ *
+ * Named rather than repeated inline (it was spelled out identically in four signatures) so a
+ * field added here cannot reach three of them and miss the fourth.
+ */
+export interface RosterLoad {
+  loadId: string;
+  name: string;
+  loadNbr: string | null;
+  status: string;
+  /**
+   * WHO NUVIZZ ALREADY SAYS IS DRIVING THIS LOAD. '' when the load is genuinely unassigned.
+   *
+   * Chad, looking at the portal's own Loads grid beside our board: "Our roster scan shows who
+   * the driver is for the load, why are we not using that? The loads are not dispatched but
+   * they do already have the driver assignment."
+   *
+   * He is right and the waste was total. This roster pull IS that grid — the same saved search
+   * (PkgRoute, customListDefId 35833), the same rows, already paid for — and its Driver Name
+   * column arrived in every response we have ever made. normalizeLoads read five columns and
+   * dropped it on the floor, so the board rebuilt "who is driving this" out of STOP data only.
+   * A load with no stops yet (the empty trailers that are most of a Draft morning) therefore
+   * showed a blank driver, and an empty shell that genuinely has NOBODY on it looked exactly
+   * like the fifty that do. The one row a dispatcher needs to find was indistinguishable from
+   * the noise. Keeping this field costs ZERO additional NuVizz calls — it is a parse change on
+   * bytes already on the wire.
+   */
+  driver: string;
+  trips: number | null;
+}
+
+// The Loads grid renders its driver cell as an EDITABLE control, and an unassigned load's cell
+// shows the widget's own prompt. That prompt is presentation, never data: a row whose driver
+// reads "Enter driver name" is a load with NO driver, and letting the string through would put
+// it on the board as a person's name and — worse — make an unassigned load look assigned, which
+// is the exact row a dispatcher is scanning for.
+const DRIVER_PLACEHOLDER = /^(enter\s+driver\s+name|select\s+driver|unassigned|none|n\/a|-{1,2})$/i;
+
+// Columns that carry the word "driver" but are not a driver's NAME. `driverid` is spelled out
+// because \bid\b cannot see the "id" inside it, and it is the exact column #254 put on the board.
+const DRIVER_AVOID = /(driverid|\bid\b|phone|email|dttm|date|time|count|nbr|number|status)/;
+
+// PURE: what a driver column's raw value is worth as a NAME. '' means "no driver", and every
+// rejection here is a bug this repo has already paid for once:
+//   • the widget placeholder above — an unassigned load must never read as assigned;
+//   • a bare driverId (#254 put an ObjectId on the board's Driver cell as "jibberish");
+//   • a load number, if the column we picked turns out to be mislabelled.
+// Exported so the rules are pinned by tests rather than by the caller that happens to use them.
+export function cleanDriverName(v: any): string {
+  const s = String(v ?? '').trim();
+  if (!s) return '';
+  if (DRIVER_PLACEHOLDER.test(s)) return '';
+  if (isHashLikeId(s)) return '';
+  if (looksLikeLoadNbr(s)) return '';
+  return s;
+}
 
 // PURE: map the load-list response (filterData column-defs + values rows) → load rows
-// { loadId, name, loadNbr, status, trips }. Columns are found BY PATTERN against BOTH the dotted
+// { loadId, name, loadNbr, status, driver, trips }. Columns are found BY PATTERN against BOTH the dotted
 // key AND the human column label (robust to layout/key differences between the portal grid and
 // the openapi entity response). Exported for tests.
-export function normalizeLoads(j: any): Array<{ loadId: string; name: string; loadNbr: string | null; status: string; trips: number | null }> {
+export function normalizeLoads(j: any): RosterLoad[] {
   const colDefs: Record<string, any> = (j && j.filterData && j.filterData[0]) || {};
   const cols: string[] = Object.keys(colDefs);
   if (!cols.length) return [];
@@ -74,10 +132,29 @@ export function normalizeLoads(j: any): Array<{ loadId: string; name: string; lo
   // knew only by name (#329 follow-up). Route NAME excludes any "number"/"no" token so the two
   // never cross-match.
   const nbrIx = cols.indexOf(find(/load.?(nbr|number|num\b)|(^|\s)load.?no(\.|\s|$)/) ?? '');
-  const nameIx = cols.indexOf(find(/route.?name|load.?name/, /(nbr|number|num\b)/) ?? find(/(^|\s|\.)name/, /(nbr|number|num\b)/) ?? '');
-  const statusIx = cols.indexOf(find(/status/, /dttm|date|time/) ?? '');
+  // ROUTE NAME. The avoid-list gained `driver` the day the driver column started being read, and
+  // it is not defensive padding: tier 2 matches a bare ".name", and `route.driver.name` ends in
+  // exactly that. On a saved search that labels no column "Load Name", the route name would have
+  // quietly become the DRIVER's name — every load on the board relabelled with the person on it.
+  const nameIx = cols.indexOf(find(/route.?name|load.?name/, /(nbr|number|num\b|driver)/) ?? find(/(^|\s|\.)name/, /(nbr|number|num\b|driver)/) ?? '');
+  // `driver` joins this avoid-list for the same reason it joined the route name's: a column
+  // labelled "Driver Status" matches /status/, and if it sorts earlier in Object.keys it wins
+  // statusIx — putting the DRIVER's status where the LOAD's belongs, which then decides whether
+  // the load reads Draft or Dispatched on the board.
+  const statusIx = cols.indexOf(find(/status/, /dttm|date|time|driver/) ?? '');
   const tripsIx = cols.indexOf(find(/trip|stop.?count|nooftrip/) ?? '');
-  const out: Array<{ loadId: string; name: string; loadNbr: string | null; status: string; trips: number | null }> = [];
+  // DRIVER: the grid's "Driver Name" column, matched in two tiers so the NAME column wins over
+  // an id/contact column that also carries the word driver (route.driver.driverId is a real
+  // column on some saved searches, and #254 is what showing it costs). Tier 1 wants a
+  // driver+name-ish column; tier 2 takes any driver column that is not plainly an id, a
+  // contact detail or a timestamp. Whichever tier answers, the VALUE still has to survive
+  // cleanDriverName — the column choice is a preference, the value guard is the rule.
+  const driverIx = cols.indexOf(
+    find(/driver.*name|name.*driver/, DRIVER_AVOID)   // "Driver Name" / route.driver.name — the one we want
+    ?? find(/driver/, DRIVER_AVOID)                   // any other driver column that is not an id/contact/time
+    ?? '',
+  );
+  const out: RosterLoad[] = [];
   for (const row of ((j && j.values) || [])) {
     const loadId = String(linkVal(row[idIx]) ?? '').trim();
     if (!loadId) continue;
@@ -102,11 +179,18 @@ export function normalizeLoads(j: any): Array<{ loadId: string; name: string; lo
       const v = String(linkVal(row[ix]) ?? '').trim();
       if (v && !isHashLikeId(v) && !looksLikeLoadNbr(v)) { name = v; break; }
     }
+    // DRIVER: read ONLY from the resolved driver column, never scanned for by value shape the
+    // way the load number is. A load number is unmistakable ("DAVIS000198197"); a human name is
+    // not, and a row-wide hunt would happily return the route name ("SHEATS") or a status word
+    // and call it the driver. When the column is absent the honest answer is "we do not know",
+    // which is '' — the same thing the board showed before this field existed.
+    const driver = driverIx >= 0 && driverIx !== idIx ? cleanDriverName(linkVal(row[driverIx])) : '';
     out.push({
       loadId,
       name,
       loadNbr: loadNbr || null,
       status: String(linkVal(row[statusIx]) ?? '').trim(),
+      driver,
       trips: Number.isFinite(t) ? t : null,
     });
   }
@@ -211,7 +295,7 @@ export async function loadIdsForDate(targetDateUTC: string): Promise<{ ids: Set<
 // Fetch the FULL load roster for a date (every load incl. empty ones, with status + trip
 // count) — used to surface loads that have NO orders assigned yet (a Monday load created
 // but unfilled never appears on the stop-grouped board). One deliberate call; best-effort.
-export async function loadRosterForDate(targetDateUTC: string): Promise<Array<{ loadId: string; name: string; loadNbr: string | null; status: string; trips: number | null }>> {
+export async function loadRosterForDate(targetDateUTC: string): Promise<RosterLoad[]> {
   return (await loadRosterPull(targetDateUTC)).loads;
 }
 
@@ -233,9 +317,20 @@ export async function loadRosterForDate(targetDateUTC: string): Promise<Array<{ 
  * cost) and stored beside the roster so ?explain=1 can show it without a call. CLAUDE.md: build
  * the free diagnostic first.
  */
-export interface RosterPullMeta { period: string; httpStatus: number; cols: number; rows: number; kept: number }
+export interface RosterPullMeta {
+  period: string; httpStatus: number; cols: number; rows: number; kept: number;
+  /**
+   * How many kept rows carry a driver. The point is the ZERO case: `kept: 106, drivers: 0` is
+   * the saved search having lost its Driver Name column, and without this number that failure
+   * is invisible — the board would simply show a hundred staffed trailers as unassigned and
+   * look no different from a genuinely quiet morning. Same reasoning as `kept` itself, which
+   * exists because "the vendor said none" and "the parser kept none" were the same blank
+   * screen for three rounds. Absent on documents written before v1.7.0.
+   */
+  drivers: number;
+}
 export async function loadRosterPull(targetDateUTC: string): Promise<{
-  loads: Array<{ loadId: string; name: string; loadNbr: string | null; status: string; trips: number | null }>;
+  loads: RosterLoad[];
   pull: RosterPullMeta;
 }> {
   const { companyCode } = getCreds();
@@ -249,11 +344,13 @@ export async function loadRosterPull(targetDateUTC: string): Promise<{
   const cols = Object.keys((j && j.filterData && j.filterData[0]) || {}).length;
   const rows = Array.isArray(j?.values) ? j.values.length : 0;
   const loads = normalizeLoads(j);
-  const pull: RosterPullMeta = { period, httpStatus: resp.status, cols, rows, kept: loads.length };
+  const drivers = loads.filter((l) => l.driver).length;
+  const pull: RosterPullMeta = { period, httpStatus: resp.status, cols, rows, kept: loads.length, drivers };
   // One line per pull, and it names the date AND the period so a reader can see with their own
   // eyes whether "+2d" is the day the dispatcher had on screen.
-  console.log(`[roster] ${targetDateUTC} period=${period} http=${resp.status} cols=${cols} rows=${rows} kept=${loads.length}`
+  console.log(`[roster] ${targetDateUTC} period=${period} http=${resp.status} cols=${cols} rows=${rows} kept=${loads.length} drivers=${drivers}`
     + (rows > 0 && loads.length === 0 ? ' ← ROWS CAME BACK AND THE PARSER KEPT NONE' : '')
-    + (cols === 0 ? ' ← NO COLUMN DEFS: not the grid shape the code expects' : ''));
+    + (cols === 0 ? ' ← NO COLUMN DEFS: not the grid shape the code expects' : '')
+    + (loads.length > 0 && drivers === 0 ? ' ← NOT ONE LOAD CARRIES A DRIVER: the saved search has probably lost its Driver Name column' : ''));
   return { loads, pull };
 }

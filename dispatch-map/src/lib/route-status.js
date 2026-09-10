@@ -78,19 +78,42 @@ export const rosterAmbiguousKey = (name) => ROSTER_AMBIGUOUS_PREFIX + String(nam
  * same load (the roster listing it twice) is not a collision.
  */
 export function buildRosterStatusMap(rosterLoads = []) {
+  return buildRosterFieldMap(rosterLoads, (l) => l?.status ?? '');
+}
+
+/**
+ * The same map, over the DRIVER NuVizz already has on each load.
+ *
+ * Chad: "Our roster scan shows who the driver is for the load, why are we not using that?" The
+ * Loads panels read the driver straight off the roster row; the Routes cards are built from
+ * STOPS, so a load whose stops do not carry a driver yet showed "Unassigned" — on the same
+ * screen, for the same load, beside a Loads row naming the man on it. Two surfaces disagreeing
+ * about who is driving is worse than neither knowing, because the dispatcher cannot tell which
+ * one to believe.
+ *
+ * It shares buildRosterStatusMap's keying to the letter, and that matters more here than it
+ * does for status: the '#amb:' guard is what stops a name carried by two loads from handing one
+ * load's driver to the other's card. Putting the wrong man on a route is a phone call to
+ * somebody who is forty miles away.
+ */
+export function buildRosterDriverMap(rosterLoads = []) {
+  return buildRosterFieldMap(rosterLoads, (l) => String(l?.driver ?? '').trim());
+}
+
+function buildRosterFieldMap(rosterLoads, read) {
   const status = new Map();
   const owners = new Map();   // name lc → { load, ambiguous }; a cancelled twin never wins
   for (const l of rosterLoads || []) {
     const nm = String(l?.name ?? '').trim().toLowerCase();
     const id = l?.loadId != null ? String(l.loadId) : null;
-    const raw = l?.status ?? '';
+    const raw = read(l);
     if (nm) {
       if (!owners.has(nm)) owners.set(nm, resolveNameOwner(nm, rosterLoads));
       const own = owners.get(nm);
       // The NAME key carries the OWNER's status — never last-write-wins, and never a cancelled
       // twin's while a live load holds the name.
       if (own.ambiguous) status.set(rosterAmbiguousKey(nm), true);
-      else if (own.load) status.set(nm, own.load.status ?? '');
+      else if (own.load) status.set(nm, read(own.load));
       if (!status.has(nm)) status.set(nm, raw);
     }
     if (id) status.set(rosterIdKey(id), raw);
@@ -121,4 +144,21 @@ export function resolveRosterStatus(group, statusByKey) {
   if (statusByKey.get(rosterAmbiguousKey(nm)) === true) return null;
   const byName = statusByKey.get(nm);
   return byName === undefined ? null : byName;
+}
+
+/**
+ * The roster's DRIVER for one route group, or '' when no row may speak for it.
+ *
+ * Identity first, and a contested name stays silent — resolveRosterStatus already encodes that
+ * rule exactly and the driver map is keyed the same way, so this is deliberately the same
+ * lookup rather than a second copy of it that could drift.
+ *
+ * THIS IS A FALLBACK, NEVER AN OVERRIDE. The caller applies it only when the route's own stops
+ * carry no driver. A stop-derived driver comes from work NuVizz is executing right now; this
+ * one is a capture, as old as the last roster pull. If it could win, a dispatcher who
+ * reassigned mid-morning would watch the board put the old name back.
+ */
+export function resolveRosterDriver(group, driverByKey) {
+  const v = resolveRosterStatus(group, driverByKey);
+  return v == null ? '' : String(v).trim();
 }

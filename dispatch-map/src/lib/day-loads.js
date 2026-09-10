@@ -20,8 +20,11 @@
 // behind the other loses a real load the dispatcher may need to act on.
 //
 // So the day's ROSTER is the list, one row per load, each with its own number, status and stop
-// count straight from NuVizz. Board data (driver, freight, delivered) is then merged ONTO the
-// row it belongs to, matched by load id — never by name when a name is contested.
+// count straight from NuVizz — INCLUDING the driver NuVizz already has on it, which the roster
+// scan has always been handed and until v1.7.0 always threw away. Board data (live driver,
+// freight, delivered) is then merged ONTO the row it belongs to, matched by load id — never by
+// name when a name is contested. The board's driver still wins where there is one; the roster's
+// is what a load with no stops yet has instead of a blank.
 //
 // Board groups come from stops and carry a load id only when their stops were enriched; the
 // stops feed itself has no load-number column (it puts the route NAME in loadNbr). So when two
@@ -48,7 +51,13 @@ function rowFromRoster(l, ambiguous) {
     key: String(loadId || loadNbr || name),
     display: name || String(loadNbr || loadId || 'Unnamed load'),
     name, loadNbr, loadId,
-    driver: '',
+    // WHO NUVIZZ ALREADY SAYS IS ON THIS LOAD. This was a hardcoded '' — the driver only ever
+    // arrived from board STOPS, so a load with no stops yet showed nobody, and the roster row
+    // that knew the answer sat right here unread. The precedence below (applyBoard) is
+    // unchanged and is the correct one: live board data still wins, this is what fills the gap
+    // when there is none. Chad: "the loads are not dispatched but they do already have the
+    // driver assignment."
+    driver: String(l?.driver ?? '').trim(),
     // The roster's own trip count — so a load with orders reads correctly even before any of
     // its stops reach the board (and, for two same-named loads, each shows ITS own count).
     count: num(l?.trips), locCount: 0, delivered: 0, exceptions: 0,
@@ -78,7 +87,14 @@ function rowFromGroup(g, ambiguous, unattributed) {
   };
 }
 
-/** Merge a board group's live numbers onto the roster row it belongs to. */
+/** Merge a board group's live numbers onto the roster row it belongs to.
+ *
+ * The driver line reads `board || roster` and that ORDER is the whole rule: the board's driver
+ * comes from stops NuVizz is executing right now, so it is the fresher fact and it wins. The
+ * roster's driver is a capture — as old as the last pull — and it fills the gap rather than
+ * overwriting anything. A dispatcher who reassigns in NuVizz mid-morning sees it on the stops
+ * immediately and in the roster at the next pull; neither path can show them a name the vendor
+ * has moved on from while a live one exists. */
 function applyBoard(row, g) {
   row.onBoard = true;
   row.driver = String(g?.driver ?? '') || row.driver;

@@ -18,7 +18,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  buildRosterStatusMap, resolveRosterStatus, resolveNameOwner, isCancelledStatus,
+  buildRosterStatusMap, buildRosterDriverMap, resolveRosterStatus, resolveRosterDriver, resolveNameOwner, isCancelledStatus,
   rosterIdKey, rosterAmbiguousKey,
 } from '../src/lib/route-status.js';
 
@@ -118,4 +118,55 @@ test('junk in, no crash out', () => {
   const map = buildRosterStatusMap([null, undefined, {}, { name: '  ' }]);
   assert.equal(resolveRosterStatus({ name: '' }, map), null);
   assert.equal(rosterIdKey('abc'), '#id:abc');
+});
+
+// ── THE ROSTER'S DRIVER, WHEN THE STOPS NAME NOBODY ────────────────────────────────────────
+//
+// Chad: "Our roster scan shows who the driver is for the load, why are we not using that?" The
+// Routes cards are built from STOPS, so a load whose stops carry no driver yet derived
+// "Unassigned" — beside a Loads row, on the same screen, naming the man on it. The roster map
+// answers it, and it is keyed exactly like the status map so the ambiguity guard is the same
+// one: putting the wrong driver on a route is a call to somebody forty miles away.
+test('the roster names the driver for a load whose stops have not caught up', () => {
+  const m = buildRosterDriverMap([
+    { loadId: 'hexS', name: 'SHEATS', loadNbr: 'DAVIS000203725', driver: 'Sirdedrick Sheats', status: 'Draft' },
+    { loadId: 'hexE', name: 'ESTES', loadNbr: 'DAVIS000203722', driver: '', status: 'Draft' },
+  ]);
+  assert.equal(resolveRosterDriver({ name: 'SHEATS', loadId: 'hexS' }, m), 'Sirdedrick Sheats');
+  assert.equal(resolveRosterDriver({ name: 'SHEATS' }, m), 'Sirdedrick Sheats', 'by name when the name is unique');
+  assert.equal(resolveRosterDriver({ loadNbr: 'DAVIS000203725' }, m), 'Sirdedrick Sheats', 'by real load number');
+  assert.equal(resolveRosterDriver({ name: 'ESTES', loadId: 'hexE' }, m), '', 'genuinely unassigned stays unassigned');
+});
+
+test('two live loads sharing a name: NEITHER driver is handed to a card', () => {
+  // Chad's two STEVENs. Guessing here puts a driver on a route he is not running.
+  const m = buildRosterDriverMap([
+    { loadId: 'hexA', name: 'STEVEN', loadNbr: 'DAVIS000200100', driver: 'Steven Adjetey', status: 'Dispatched' },
+    { loadId: 'hexB', name: 'STEVEN', loadNbr: 'DAVIS000200400', driver: 'Somebody Else', status: 'Dispatched' },
+  ]);
+  assert.equal(resolveRosterDriver({ name: 'STEVEN' }, m), '', 'a contested name may not speak');
+  // Identity still settles it — that is the whole reason the id keys exist.
+  assert.equal(resolveRosterDriver({ name: 'STEVEN', loadId: 'hexB' }, m), 'Somebody Else');
+});
+
+test('a CANCELLED twin never lends its driver to the live load holding the name', () => {
+  const m = buildRosterDriverMap([
+    { loadId: 'hexOLD', name: 'STEVEN', loadNbr: 'DAVIS000200100', driver: 'Old Hand', status: 'Cancelled' },
+    { loadId: 'hexNEW', name: 'STEVEN', loadNbr: 'DAVIS000200400', driver: 'Steven Adjetey', status: 'Dispatched' },
+  ]);
+  assert.equal(resolveRosterDriver({ name: 'STEVEN' }, m), 'Steven Adjetey');
+});
+
+test('a roster with no drivers at all resolves to empty, never undefined or "undefined"', () => {
+  // Every cached document from before the driver was captured looks like this.
+  const m = buildRosterDriverMap([{ loadId: 'hexA', name: 'BEN 2', loadNbr: 'DAVIS000198197', status: 'Draft' }]);
+  assert.equal(resolveRosterDriver({ name: 'BEN 2', loadId: 'hexA' }, m), '');
+  assert.equal(resolveRosterDriver({ name: 'NOT ON THE DAY' }, m), '');
+  assert.equal(resolveRosterDriver({ name: 'BEN 2' }, null), '', 'no map at all is not a crash');
+});
+
+test('the driver map does not disturb the status map — the two are built over the same rows', () => {
+  const loads = [{ loadId: 'hexS', name: 'SHEATS', loadNbr: 'DAVIS000203725', driver: 'Sirdedrick Sheats', status: 'Draft' }];
+  assert.equal(resolveRosterStatus({ name: 'SHEATS', loadId: 'hexS' }, buildRosterStatusMap(loads)), 'Draft');
+  assert.equal(resolveRosterDriver({ name: 'SHEATS', loadId: 'hexS' }, buildRosterDriverMap(loads)), 'Sirdedrick Sheats');
 });

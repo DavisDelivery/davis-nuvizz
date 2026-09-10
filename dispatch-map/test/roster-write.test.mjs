@@ -186,3 +186,52 @@ test('an ABSENT roster and a FAILED read must not produce the same sentence', ()
   assert.doesNotMatch(failed.note, /never been captured/i);
   assert.match(failed.note, /READ FAILED/);
 });
+
+// ── "NOBODY IS DRIVING" IS TWO DIFFERENT FACTS, AND ?explain=1 SAYS WHICH ──────────────────
+//
+// The roster now carries NuVizz's own driver assignment. The failure that buys back the cost of
+// counting it: the saved search loses its Driver Name column, the parser finds nothing, and a
+// hundred staffed trailers render as unassigned — pixel-identical to a genuinely quiet day, and
+// calling for the opposite action. This is the same shape as `kept` (v0.93.12), which exists
+// because "the vendor said none" and "the parser kept none" were one blank screen for three
+// rounds. Zero vendor calls: counted off the cached document.
+test('explain: a roster where every load has a driver reports how many, and how many are genuinely unassigned', () => {
+  const r = explainRosterRow('2026-09-10', {
+    at: '2026-09-10T11:00:00Z',
+    loads: [
+      { loadId: 'a', name: 'SHEATS', driver: 'Sirdedrick Sheats', trips: 8 },
+      { loadId: 'b', name: 'STEVEN', driver: 'Steven Adjetey', trips: 0 },
+      { loadId: 'c', name: 'ESTES', driver: '', trips: 8 },
+    ],
+  });
+  assert.equal(r.driven, 2);
+  assert.match(r.driverNote, /2 of 3/);
+  assert.match(r.driverNote, /1 are genuinely unassigned/);
+});
+
+test('explain: not one driver across a full roster is called out as a LOST COLUMN, not a quiet day', () => {
+  const r = explainRosterRow('2026-09-10', {
+    at: '2026-09-10T11:00:00Z',
+    loads: Array.from({ length: 106 }, (_, i) => ({ loadId: `h${i}`, name: `R${i}`, driver: '', trips: 0 })),
+  });
+  assert.equal(r.driven, 0);
+  assert.match(r.driverNote, /NOT ONE load carries a driver/);
+  assert.match(r.driverNote, /Driver Name column/);
+});
+
+test('explain: a document written before the driver was captured reports driven 0 without pretending to know', () => {
+  // Pre-v1.7.0 documents have no driver field at all. `driven: 0` is arithmetic on what is
+  // there; the note is the thing that stops it being read as "106 unstaffed trailers".
+  const r = explainRosterRow('2026-09-04', {
+    at: '2026-09-04T11:00:00Z',
+    loads: [{ loadId: 'a', name: 'SHEATS', trips: 8 }, { loadId: 'b', name: 'ESTES', trips: 0 }],
+  });
+  assert.equal(r.driven, 0);
+  assert.match(r.driverNote, /NOT ONE load carries a driver/);
+});
+
+test('explain: an EMPTY roster gets no driver note — there is nothing to say about nobody', () => {
+  const r = explainRosterRow('2026-09-08', { at: '2026-09-08T11:00:00Z', loads: [] });
+  assert.equal(r.driven, 0);
+  assert.equal(r.driverNote, null);
+});
