@@ -133,13 +133,17 @@ export default async (req: Request): Promise<Response> => {
       unclassedRoutes = (rc.unclassed || []).filter((u) => u.reason !== 'appointment_route');
       nearMatches = rc.nearMatches || [];
 
-      // The doc is TODAY's operational state and only a real sweep of today may write it.
-      // A dry run must claim nothing, and a ?date= replay writing last Friday's trucks
-      // over today's map would put every route on the fleet clock until the next sweep —
-      // across a whole weekend, if the replay ran on a Friday night.
-      if (!dry && date === etDayString()) {
+      // A dry run must claim nothing. The old guard also refused any date but today, because
+      // one shared document meant a ?date= replay would write last Friday's trucks over
+      // today's map. Keyed per day that cannot happen — a replay writes Friday's own doc.
+      //
+      // WHAT REPLACES IT: never write a day that has already passed. The roster is CURRENT,
+      // not historical, so recomputing a past day from it would overwrite what was actually
+      // resolved that morning with an inference from today's fleet — quietly, and in the
+      // record a later replay reads back. Today and forward only.
+      if (!dry && date >= etDayString()) {
         try {
-          await setDoc(routeClassesPath(TENANT), { tenant: TENANT, date, classes: routeClasses, at: new Date().toISOString() });
+          await setDoc(routeClassesPath(TENANT, date), { tenant: TENANT, date, classes: routeClasses, at: new Date().toISOString() });
         } catch (e: any) {
           // The sweep would now judge on a map the browser cannot read — say so where
           // the run record shows it rather than letting screen and inbox drift apart.

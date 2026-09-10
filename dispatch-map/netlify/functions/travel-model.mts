@@ -41,10 +41,22 @@ export default async (req: Request): Promise<Response> => {
   try {
     // readTravelCalibration decodes the doc's array-of-maps curve back into the [at,mph]
     // pairs every consumer speaks — the browser gets pairs, same as the server engine.
+    // THE DAY THE CALLER IS LOOKING AT, not the day it is here.
+    //
+    // This served today's map unconditionally, which was correct while only one day could
+    // exist — but it meant a browser showing TOMORROW's board (which is what routing is
+    // doing from 8pm) received today's trucks, correctly discarded them for the date
+    // mismatch, and judged every route with no class at all. Now that the sweeps publish
+    // per day, the endpoint answers for the day asked for.
+    //
+    // Anything that is not a plain YYYY-MM-DD falls back to today rather than reaching
+    // Firestore with caller-shaped text.
+    const dateParam = new URL(req.url).searchParams.get('date');
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(dateParam ?? '')) ? String(dateParam) : etDayString();
     const [cal, legDoc, routeClasses] = await Promise.all([
       readTravelCalibration(TENANT),
       getDoc(travelLegsPath(TENANT)).catch(() => null),
-      readRouteClasses(TENANT, etDayString()),
+      readRouteClasses(TENANT, date),
     ]);
     const legs = legSecondsMap(legDoc);
     return J({
@@ -61,10 +73,11 @@ export default async (req: Request): Promise<Response> => {
       classCurves: cal?.classCurves ?? null,
       classService: cal?.classService ?? null,
       routeClasses,
-      // The DATE the map is valid for. Route names repeat every day (SUW runs daily) and
-      // drivers rotate, so a client looking at tomorrow's or Friday's board must not walk
-      // it on today's trucks — it needs this to know when to drop the map.
-      routeClassesDate: etDayString(),
+      // The DATE the map is valid for — the day ASKED for, which the client compares
+      // against the board it is showing. Route names repeat every day (SUW runs daily) and
+      // drivers rotate, so a client must still be able to drop a map that is not its day;
+      // this now agrees with the request instead of always saying today.
+      routeClassesDate: date,
       fittedAt: cal?.fitted_at ?? null,
       calDays: cal?.days ?? 0,
       legs,
