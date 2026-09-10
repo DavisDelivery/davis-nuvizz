@@ -82,7 +82,7 @@ import { flagProvenance, provenanceLine } from './lib/flag-provenance.js';
 import { deliveredWhen } from './lib/delivered-when.js';
 import { flagDetail, sighting } from './lib/flag-detail.js';
 import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab, resolveRailQuery } from './lib/right-panel.js';
-import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
+import { buildRosterStatusMap, buildRosterDriverMap, resolveRosterStatus, resolveRosterDriver, resolveNameOwner } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
 import { planSendSelection, selectionSendTargets } from './lib/send-selection.js';
 import { MIRROR_MISCONFIGURED_MESSAGE } from './lib/mirror-site.js';
@@ -125,7 +125,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '1.10.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -196,6 +196,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.10.0', 'THE ROSTER SCAN HAS ALWAYS BEEN TOLD WHO IS DRIVING EACH LOAD, AND IT THREW THE ANSWER AWAY EVERY TIME. Chad, with the portal\u2019s Loads grid open beside the board: \u201cOur roster scan shows who the driver is for the load, why are we not using that? The loads are not dispatched but they do already have the driver assignment.\u201d He is right, and the waste was total \u2014 not a missing feature, a discarded one. Our roster pull IS that grid: the same saved search (PkgRoute, customListDefId 35833), the same rows, already paid for, its Driver Name column sitting in every response we have ever made. normalizeLoads read five columns \u2014 loadId, name, loadNbr, status, trips \u2014 and dropped the sixth on the floor, while the file\u2019s own header comment had claimed for months that the row carries \u201cname, status, driver and trip count\u201d. So the board rebuilt \u201cwho is driving this\u201d out of STOP data alone, which means a load with no stops yet had no driver by construction. THE OPERATIONAL COST WAS NOT THE BLANK CELL, IT WAS WHAT THE BLANK CELL HID. On a Draft morning most of the day\u2019s hundred-odd trailers are empty shells, and NuVizz already has a driver on nearly all of them \u2014 at Davis the route name usually IS his surname (SHEATS, THARP, CRUMPTON). The two or three shells with genuinely NOBODY on them are the only rows on that screen a dispatcher has to act on, and they rendered identically to the forty-eight that were fully staffed. The exception was invisible inside the noise, and the bottom grid\u2019s driver sort \u2014 which puts driverless loads below driven ones so the unstaffed float up \u2014 was sorting every roster row into the same tier and doing nothing at all. ZERO ADDITIONAL VENDOR CALLS: this is a parse change on bytes already on the wire, which is why it could ship without spending a single one of the day\u2019s 2,000. THE PRECEDENCE IS THE SAFETY STORY AND IT WAS ALREADY WRITTEN CORRECTLY. day-loads merges board over roster (board || roster), so a live driver read off stops NuVizz is executing right now still wins; the roster capture \u2014 as old as the last pull \u2014 only fills a gap. A dispatcher who reassigns mid-morning cannot be shown a name the vendor has moved on from while a live one exists. The rail\u2019s load row needed no change at all: it has read `r.driver || \u2026` since it was written and was simply starved of data. FOUR THINGS THE PARSER REFUSES, EACH ONE A BUG THIS REPO HAS ALREADY PAID FOR. The grid renders its driver cell as an editable widget, so an unassigned load\u2019s cell reads \u201cEnter driver name\u201d \u2014 presentation, not data, and letting it through would make the one row that needs a driver look staffed. A bare driverId is refused (#254 put a Mongo ObjectId on the board\u2019s Driver cell as \u201cjibberish\u201d). A load number is refused, in case the column we picked is mislabelled. And the driver is read ONLY from its own column, never hunted for by value shape the way the load number is \u2014 because Davis route names ARE mostly driver surnames, so a row-wide hunt would confidently return \u201cSHEATS\u201d as the driver of SHEATS and be wrong in a way nobody would ever question. ONE BUG FOUND ON THE WAY IN: the route-name matcher\u2019s second tier accepts a bare \u201c.name\u201d, and route.driver.name ends in exactly that \u2014 so on a saved search that labels no column \u201cLoad Name\u201d, every load on the board would have been relabelled with the person driving it. Fixed and pinned. AND IT SAYS WHEN IT STOPS WORKING. If the saved search ever loses its Driver Name column, a hundred staffed trailers would render as unassigned and look exactly like a quiet day \u2014 opposite actions, one blank screen, which is the failure mode that cost three rounds of guessing in v0.93.12. So each pull now records how many loads carried a driver, the log line shouts \u201cNOT ONE LOAD CARRIES A DRIVER\u201d when kept rows produce none, and ?explain=1 reports driven-of-total from the cached document at zero call cost, for documents of any age. AND THE ROUTES CARDS AGREE WITH THE LOADS PANEL NOW, which they did not the moment the roster learned this: those cards are built from STOPS, so a load whose stops had not caught up derived \u2018Unassigned\u2019 beside a Loads row naming the man on it \u2014 a false Unassigned on the one panel a dispatcher filters to find the routes that still need somebody. buildRosterDriverMap shares buildRosterStatusMap\u2019s keying to the letter so the \u2018#amb:\u2019 guard is the same one: a name two live loads carry hands its driver to neither card, because putting the wrong man on a route is a call to somebody forty miles away. AND IT DOES NOT QUIETLY WIDEN WHAT FIRES. The roster driver is kept in its OWN field, never folded into the one the write gates read. Folding them would have let a name that was in a grid column hours ago authorize the per-card Dispatch button and Dispatch all \u2014 the least reversible thing this app does, a production release of a load to a driver with no undo \u2014 on the strength of a cache. Chad asked to SEE the driver, not to widen what fires without him, so every surface that DISPLAYS reads driver-or-roster and every surface that WRITES still reads the confirmed driver alone, exactly as before. What did change is the sentence: a route he can read a name on may no longer be reported as \u2018no driver assigned\u2019, and now says \u2018NuVizz has Sirdedrick Sheats on this load, but the board has not confirmed it \u2014 assign to dispatch\u2019. If he wants a roster name to be enough to dispatch, that is one line and his call to make. ONE MORE CROSS-MATCH FOUND THE SAME WAY: \u2018Driver Status\u2019 matches the status matcher too, so a driver\u2019s duty state could have become the LOAD\u2019s status and decided whether every row read Draft or Dispatched. 26 new tests including the full parser-to-Firestore path, the board-wins-over-roster precedence, Chad\u2019s two STEVENs and the dispatch gate refusing a roster-only driver; the Loads-tab browser guard now carries drivers on its fixtures and fails on origin/main with \u2018the empty shell\u2019s roster driver never reaches the panel\u2019 on desktop AND phone, and the phone layout guard finally renders roster rows at all so a sixth populated column is measured at 390px. 4,101 green after merging main (v1.9.0) forward.'],
   ['1.9.0', 'THE DRIVER BOX IS A SEARCH BAR NOW \u2014 AND STILL A DROPDOWN. Chad, on the route card\u2019s driver control: \u201ci want this to be a search bar as well as a drop down.\u201d Davis runs about 59 drivers, so the native <select> it replaces was a 59-item scroll to reach FRYE, and on a phone an OS wheel with no way to type at all. AND a dropdown, not instead of one: the full list is still one tap away on an empty box, because a dispatcher who cannot remember a name still has to browse for it. Typing only ever narrows what is already on screen. ALL THREE PICKERS, NOT THE ONE IN THE SCREENSHOT. The same <select> was pasted in three places \u2014 the Compare panel\u2019s per-route assign, the route-card footer, and the New route dialog \u2014 and fixing only the one he photographed is how this app ends up with two controls that behave differently for the same job. One component, three call sites. WHAT IT MATCHES, AND WHY EACH RULE IS THERE. Any order (\u201cfrye michael\u201d and \u201cmichael frye\u201d both find him \u2014 a manifest is read surname first as often as not); any field (the name OR the NuVizz user code, because the code is what is printed on the paperwork); prefixes, so a driver is found before his name is finished. EVERY typed word must hit, not any \u2014 an OR turns the box into a no-op the moment a second word is typed, widening back out to the whole roster while the dispatcher believes it is filtering. AND IT IS DELIBERATELY NOT FUZZY. No edit distance, no subsequence, no mid-word substring: \u201cmrye\u201d finds nobody and \u201crye\u201d does not quietly offer Frye. This control assigns a truck to a human being, and a near-miss politely suggesting a different driver is the failure that costs a delivery \u2014 the Brent Boyd/Bryd alias trouble this repo has already paid for once. A typo MISSES, visibly, and says the query back (\u201cNo driver matches \u2018fyre\u2019\u201d) so it reads as a typo rather than a roster that failed to load. THE LIST OPENS IN FLOW, NOT AS AN ABSOLUTE OVERLAY. This control sits in the route-card footer \u2014 a scrolling flex column with a shrink-0 footer \u2014 so a pinned menu would be clipped by the card, and CLAUDE.md is explicit that overlay furniture at measured offsets is how the draw buttons landed on the status card. In flow the card grows, what is below it moves, the list caps itself at 40vh and scrolls. One behaviour on both views and nothing for the overlap guard to find; the phone gets its 44px rows from tap-target-y while the desktop stays compact. CLOSED, THE BOX SHOWS WHO IS ASSIGNED rather than a leftover search term \u2014 the question it is looked at for all day is \u201cwho is on this truck?\u201d \u2014 and the un-assign row stays reachable, because a route assigned by mistake has to be clearable. Keyboard throughout: arrows wrap at both ends (the bottom of 59 names is one key from the top), Enter takes a single match so typing \u201cfrye\u201d and pressing Enter assigns him, and it never guesses while the search is still ambiguous. Highlight arithmetic is pure and tested, because an off-by-one here assigns the driver ABOVE the one being looked at. 22 new tests, mutation-checked four ways \u2014 any-word instead of every-word, substring instead of prefix, an id compared with === across the number/string boundary (which would show an assigned route as empty), and an empty list highlighting row 0. The substring mutation initially passed every test, which meant the prefix rule was a comment and not a rule; a test now pins it. Zero NuVizz calls.'],
   ['1.8.0', 'WHATEVER THE SCAN SAYS IS THE TRUTH \u2014 AND THE BOARD SPENT AN HOUR ARGUING WITH IT. Chad, on order 007174547 sitting in the selection pool: \u201cWhy is this order still showing unplanned when it\u2019s on Ronald Gates in nuvizz.\u201d It was on RONALD, and the board KNEW. CHECKED, NOT REASONED \u2014 the entire answer came out of the zero-cost explain endpoint v1.4.0 shipped for exactly this, plus the write journal, for ZERO NuVizz calls: a Save took the order off TREVARR at 6:18am (journal: boardSync TREVARR, ordered 8, unplanned 1, at 10:18:15.710Z), somebody re-planned it onto RONALD in the portal, and the 6:58 AND 7:15 scans BOTH read \u201cplanned on RONALD\u201d off NuVizz\u2019s own list and BOTH threw that answer away. WHY: a confirmed Save outranks the list for sixty minutes, and the un-plan direction had NOTHING allowed to argue with it. The PLANNED direction has had a verify since SEAAGRI \u2014 when the list says un-planned and the board holds a plan, the scan asks the LOAD itself before dropping the stop. The un-plan direction had a clock and nothing else, so for fifty-seven minutes the board asserted \u201cun-planned, no route\u201d over NuVizz saying RONALD, re-applying it on every scan and recording it nowhere. It would have healed itself at 7:18am, which is rather the point: nobody should wait out a timer for the board to agree with the vendor. THE FIX IS A DISCRIMINATOR, NOT A DELETION, because the grace is not simply wrong \u2014 NuVizz\u2019s index lagged an ACCEPTED save by 30+ minutes once (OWUSU 1) and a stale list must never revert a Save you watched confirm. What was missing was any way to tell those two apart, and the route NAME does it for nothing. LAG NAMES THE OLD ROUTE: we took it off TREVARR, so a stale index still says TREVARR. A RE-PLAN NAMES A DIFFERENT ONE: it says RONALD, and it can only say RONALD having already seen an event that happened AFTER our Save \u2014 a list caught up that far is a verdict, not lag. So the un-plan stamp now records the route the order came OFF (the row itself is still cleared; only the stamp remembers), and a fresh row naming any OTHER route releases it AT ONCE. Deliberately STILL held when the list names the same route we removed it from: that reading is exactly what a lagging index produces, and taking it would put an order back on a route a Cancel just emptied. Closing that last case takes one metered /load/info \u2014 the demote verify\u2019s own ladder \u2014 and is NOT done here; say the word. A stamp with no from-route (anything written before this release) holds exactly as it did: absence of the baseline is not evidence, and this must never guess an order off a route. THREE SURFACES, ONE RULE, IMPORTED AND NOT RESTATED. The Map serves the day document, the Routing date window serves cached rows reconciled against the open-order pool, and the Map\u2019s carry-over fold judges prior-day rows by that same pool \u2014 all three held the same stale stamp by their own blind sixty-minute clock, and a fix on one only moves the symptom. A test fails the build if either of the other two stops importing the rule, because two copies of a discriminator is two chances for the board and the window to disagree about a plan. The from-route also had to be added to the window\u2019s LEAN read mask, or the rule would have silently never fired on that surface. SAID PLAINLY, AND IT CORRECTS MY OWN FIRST READING: this is NOT freight going onto two trucks. An adversarial pass caught me overstating it \u2014 the Save path reads NuVizz\u2019s own record and REFUSES, with a message that already reads \u201cour board may be showing it stale-unplanned\u201d (nuvizz-write.mts:1643). What the stale hour actually costs is a dispatcher building against a board they cannot trust and being refused at the Save. Worth fixing on its own; not the emergency I first called it. 14 new tests.'],
   ['1.7.0', 'CLICKING A DOT ON THE ROUTING MAP TELLS YOU WHAT THE ORDER IS. Chad, on GEORGE L\u2019s route: \u201cIf i click on one of these dots on the map i want it to bring that orders details on in the right panel.\u201d It did not, and the shape of the miss is one this repo keeps re-learning: THE DISPATCH MAP HAS DONE EXACTLY THIS SINCE IT WAS BUILT \u2014 its marker click calls setSelectedStop and pans \u2014 and Routing, the screen a router spends the morning in, was the surface it was never wired into. CHECKED, NOT REASONED: the Routing marker\u2019s click handler had five branches and the panel appeared in exactly ONE of them, the equipment-paint brush, whose comment says \u201cfirst click does both\u201d. Everywhere else a numbered pin opened its ROUTE in the Compare panel and a pool pin toggled the whole place into the selection \u2014 both useful, and neither of them an answer to \u201cwhat is this order?\u201d. On a SAVED load the click did nothing whatsoever: the read-only guard existed to stop writes and swallowed the click entirely, so the one screen where you most want to ask what a stop is answered nothing at all. NOTHING WAS TAKEN AWAY TO PAY FOR IT. A planned pin still opens its route card, a pool pin still toggles its place, paint still paints \u2014 the order card is added alongside, through the SAME panelStop state the list rows drive, so a pin and a row now open the identical card and the two cannot describe a stop differently. Desktop un-collapses the right rail and the phone raises its sheet off that one state, so this is one change and not two views\u2019 worth. TWO TOOLS ARE DELIBERATELY DENIED THE CARD, and that is the whole of the design judgement: select-mode is asking for a POINT (the handler hands it the marker\u2019s POSITION, not the stop), so a card about a stop is the wrong answer to \u201cwhere on the map?\u201d and would cover the map mid-draw; and ninja-add is a rapid queue that puts stop after stop on the open route, where a card on every one fights the job being done. THE RULE IS A FUNCTION, NOT A HANDLER. mapPinClickActions lives in lib/routing-select.js beside the other routing rules, and the handler is now a dispatcher holding no policy: the click sits inside a marker-building effect in a 25,000-line module node:test cannot import, AND Google Maps is blocked in the headless guard \u2014 which is why v0.98.0 could only guard the row\u2192pin half of this. A decision written in that handler is testable at neither end. One test pins that exactly ONE tool action fires per click in every mode, including two brushes armed at once. 11 new tests, mutation-checked three ways \u2014 panel never opens (the bug as shipped), panel opens in every mode (the careless fix), and the card replacing the route instead of joining it \u2014 each failing precisely the tests that claim to guard it. Zero NuVizz calls.'],
@@ -11238,7 +11239,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     const s = stops.find((x) => String(x.stopNbr) === String(stopNbr));
     if (s) { setSelectedStop(s); handlePanToStop(s); }
   }, [stops]); // eslint-disable-line react-hooks/exhaustive-deps
-  const routeGroups = useMemo(() => (routesPanelOn ? computeRouteGroups(stops, routesLoadStatus) : []), [routesPanelOn, stops, routesLoadStatus]);
+  // The Map's Routes panel resolves the roster driver too. It fetches the same roster and
+  // already holds the raw rows; passing two args here left the two screens answering "who is
+  // driving this load" differently for the same load, which is the disagreement this change
+  // exists to end rather than to relocate.
+  const routesDriverByName = useMemo(() => buildRosterDriverMap(rosterRawRows || []), [rosterRawRows]);
+  const routeGroups = useMemo(() => (routesPanelOn ? computeRouteGroups(stops, routesLoadStatus, routesDriverByName) : []), [routesPanelOn, stops, routesLoadStatus, routesDriverByName]);
   // M5 — Show Routes toggle (persisted). Polylines render only when ON.
   const [showRoutes, setShowRoutes] = useState(() => safeReadJSON(LS_SHOW_ROUTES, false));
   const [filters, setFilters] = useState({});
@@ -14109,7 +14115,10 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
         // the rail has shown it under its own heading since v0.93.2; the grid was still
         // calling it empty.
         const trips = Number(r.trips) || 0;
-        arr.push({ loadNbr: r.loadNbr || r.loadId, routeName: nm, driverName: '', count: trips, buckets: {}, pallets: 0, loose: 0, weight: 0, empty: trips === 0, offBoard: trips > 0, rosterStatus: r.status, realId: r.loadNbr || r.loadId || null });
+        // driverName was '' here, which is why this grid sorted fifty staffed shells into the
+        // same "no driver" tier as the two that genuinely have nobody on them. The roster row
+        // carries NuVizz's own assignment now; a stop-built row above still uses its live one.
+        arr.push({ loadNbr: r.loadNbr || r.loadId, routeName: nm, driverName: String(r.driver ?? '').trim(), count: trips, buckets: {}, pallets: 0, loose: 0, weight: 0, empty: trips === 0, offBoard: trips > 0, rosterStatus: r.status, realId: r.loadNbr || r.loadId || null });
       }
     }
     // THE STANDARD SHELLS FOR A DAY NUVIZZ HAS NOT CREATED YET (v0.93.13). Chad, Sunday, the
@@ -17257,8 +17266,12 @@ function deriveRouteStatus(g) {
   if (g.exceptions > 0) return 'Exception';
   if (g.count > 0 && g.delivered === g.count) return 'Completed';
   if (g.inProgress > 0 || g.delivered > 0) return 'In Progress';
-  if (g.driver) return 'Planned';        // has a driver, nothing started yet
-  return 'Unassigned';                    // no driver assigned
+  // The roster counts here even though it may not authorize a write. 'Unassigned' is the state
+  // a dispatcher FILTERS TO in order to find the routes that still need somebody, so a load
+  // NuVizz already has a driver on was a false positive in the one list where a false positive
+  // wastes the search — and it read Unassigned purely because its stops had not caught up.
+  if (g.driver || g.rosterDriver) return 'Planned';   // somebody is on it, nothing started yet
+  return 'Unassigned';                                 // genuinely nobody — this one needs a driver
 }
 
 // NuVizz's REAL load-lifecycle status, normalized from the load roster's free-text status column.
@@ -17312,7 +17325,7 @@ function routeStatusOptions(groups) {
 // screen and the dispatch Map. Each group carries driver, loadId/loadNbr, counts, freight totals,
 // and a status that prefers NuVizz's REAL load status (from the loads roster, joined by name then
 // loadId) and falls back to the execution-derived status. Sorted alphabetically by display name.
-function computeRouteGroups(stops, loadStatusByName) {
+function computeRouteGroups(stops, loadStatusByName, loadDriverByName) {
   const m = new Map();
   for (const s of stops) {
     const key = s.routeName || s.loadNbr;
@@ -17343,6 +17356,19 @@ function computeRouteGroups(stops, loadStatusByName) {
     // is built from THIS route's own stops and can never be another load's.
     const raw = resolveRosterStatus(g, byName);
     g.rosterStatus = raw || '';
+    // THE DRIVER NUVIZZ ALREADY HAS ON THIS LOAD — kept in its OWN field, never folded into
+    // g.driver, and that separation is the whole safety design rather than tidiness.
+    //
+    // g.driver is the CONFIRMED driver: read off stops NuVizz is executing, or one this
+    // dispatcher just assigned. Two write gates gate on it — the per-card Dispatch button and
+    // Dispatch all, which is the least reversible thing this app does. g.rosterDriver is a
+    // CAPTURE, as old as the last roster pull. Folding the two together would have let a name
+    // that was in a grid column hours ago authorize a bulk production dispatch, which is a
+    // permission nobody granted and not what Chad asked for. He asked to SEE the driver.
+    //
+    // So: every surface that DISPLAYS a driver reads `driver || rosterDriver`; every surface
+    // that WRITES still reads driver alone, exactly as it did before this existed.
+    g.rosterDriver = resolveRosterDriver(g, loadDriverByName);
     g.status = nuvizzLoadStatus(raw) || deriveRouteStatus(g);
     g.locCount = g.locs.size; delete g.locs;   // physical stops (orders sharing an address = one stop)
   }
@@ -17495,7 +17521,12 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
             const done = pct === 100;
             // Optimistic: show a just-assigned driver right away (the board's own driverName lags
             // until the next scan). Preselect the dropdown to the current driver when it matches the roster.
+            // CONFIRMED — this is what the Dispatch button is allowed to act on.
             const shownDriver = assignedOverride[g.key] || g.driver;
+            // What the dispatcher READS. A load NuVizz has a driver on stopped saying
+            // "No driver assigned" beside a Loads row naming the man on it.
+            const displayDriver = shownDriver || g.rosterDriver || '';
+            const rosterOnlyDriver = !shownDriver && !!g.rosterDriver;
             const curDriverId = roster.find((d) => String(d.name || '').trim().toLowerCase() === String(shownDriver || '').trim().toLowerCase())?.driverId;
             const busy = assigningKey === g.key;
             const dispatching = dispatchingKey === g.key;
@@ -17511,7 +17542,9 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
                   </div>
                   <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
                     <RouteStatusBadge status={g.status} />
-                    <span className={`text-[11px] truncate ${shownDriver ? 'text-slate-600' : 'text-slate-400 italic'}`}>{shownDriver || 'No driver assigned'}</span>
+                    <span className={`text-[11px] truncate ${displayDriver ? 'text-slate-600' : 'text-slate-400 italic'}`}
+                      title={rosterOnlyDriver ? `${g.rosterDriver} is the driver NuVizz has on this load. The board's own stops have not confirmed it yet, so dispatching from here still needs an assign.` : undefined}>
+                    {displayDriver || 'No driver assigned'}{rosterOnlyDriver ? ' · per NuVizz' : ''}</span>
                   </div>
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-[11px] text-slate-600">
                     <span title={g.locCount != null && g.locCount !== g.count ? `${g.count} orders across ${g.locCount} physical stops (same-address orders ride together)` : undefined}>
@@ -17546,7 +17579,9 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
                       <button
                         onClick={() => onDispatchLoad(g)}
                         disabled={!shownDriver || dispatching || busy || !!writeDenied}
-                        title={writeDenied || (!shownDriver ? 'Assign a driver before dispatching' : `Dispatch ${loadDisplayName(g.name, g.loadNbr) || g.loadNbr} in NuVizz now`)}
+                        title={writeDenied || (shownDriver ? `Dispatch ${loadDisplayName(g.name, g.loadNbr) || g.loadNbr} in NuVizz now`
+                          : rosterOnlyDriver ? `NuVizz has ${g.rosterDriver} on this load, but that is a roster capture — the board's stops have not confirmed it. Assign to dispatch from here.`
+                            : 'Assign a driver before dispatching')}
                         className="shrink-0 text-[11px] font-semibold px-2 py-1 rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         {dispatching ? '…' : 'Dispatch'}
@@ -20116,6 +20151,10 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // open — because opening ANY load in Compare needs its loadId to assign/dispatch, and Draft/empty
   // loads have no stops to get it from. Failure just leaves the derived status + stop-only loadId.
   const [loadStatusByName, setLoadStatusByName] = useState(() => new Map());
+  // The same roster, keyed to the same scheme, over WHO IS DRIVING each load — so the Routes
+  // cards can answer that for a load whose stops have not reached the board yet, instead of
+  // calling it Unassigned beside a Loads row that names the man. See buildRosterDriverMap.
+  const [loadDriverByName, setLoadDriverByName] = useState(() => new Map());
   // The day's FULL load roster (every load created for the date, empty Drafts included) — the
   // pick list for "Plan onto my loads" in the left panel. Same fetch as the identity index
   // below; kept as plain rows {name, loadNbr, loadId, status, trips}.
@@ -20145,6 +20184,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     // that stop a name shared by two loads from deciding either one's status (§S).
     const rosterLoads = (j && j.ok) ? (j.loads || []) : [];
     const status = buildRosterStatusMap(rosterLoads);
+    const drivers = buildRosterDriverMap(rosterLoads);
     const index = new Map();
     const owners = new Map();   // name lc → { load, ambiguous }
     const asEntry = (l) => ({ loadId: l?.loadId ? String(l.loadId) : null, name: l?.name || '', loadNbr: l?.loadNbr ? String(l.loadNbr) : null });
@@ -20176,6 +20216,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     }
     loadRosterRef.current = index;
     setLoadStatusByName(status);
+    setLoadDriverByName(drivers);
     setLoadRosterList(j && j.ok ? (j.loads || []) : []);
     setDayRosterMeta(j && j.ok ? { ok: true, source: j.source, at: j.at, count: j.count, pull: j.pull || null, date: j.date || null } : { ok: false });
     setDayShells(j && j.ok && j.shells && Array.isArray(j.shells.names) ? j.shells : null);
@@ -20183,6 +20224,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   const clearDayRoster = useCallback(() => {
     loadRosterRef.current = new Map();
     setLoadStatusByName(new Map());
+    setLoadDriverByName(new Map());
     setLoadRosterList([]);
     setDayShells(null);
     // A FALSE envelope, not a missing one: "we asked and got nothing back" must never render
@@ -20500,7 +20542,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
 
   // The day's routes/drivers roster — group the board by load (route name) for the right-panel
   // "Routes" view: stop count, driver, skids (cartons), weight, and delivery progress per route.
-  const routeGroups = useMemo(() => computeRouteGroups(stops, loadStatusByName), [stops, loadStatusByName]);
+  const routeGroups = useMemo(() => computeRouteGroups(stops, loadStatusByName, loadDriverByName), [stops, loadStatusByName, loadDriverByName]);
   // The day's NuVizz LOADS for the right rail — routes built on the board PLUS the roster's
   // empty Drafts, which have no stops to group and so exist nowhere else (§L). This is the
   // same set the bottom grid's Loads view shows; the rail used to show saved optimizer plans

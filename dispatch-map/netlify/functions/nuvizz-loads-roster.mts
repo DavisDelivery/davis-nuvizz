@@ -1,7 +1,9 @@
 // nuvizz-loads-roster.mts
 //
 // Load roster for a given board date — the FULL list of that day's loads (route name,
-// status, trip/stop count), INCLUDING empty loads created but not yet filled with orders.
+// status, DRIVER, trip/stop count), INCLUDING empty loads created but not yet filled with
+// orders. The driver is the one NuVizz already has on the load before anything is dispatched;
+// it rides along in the same response we already pay for (see RosterLoad.driver).
 // The stop-grouped Loads view can't show an empty load (it has no stops to group), so the
 // dispatcher couldn't see e.g. Monday's empty loads waiting for orders. This surfaces them.
 //
@@ -15,7 +17,7 @@
 // Best-effort: an error returns ok:false and the UI just shows the stop-grouped loads it
 // already has. Creds stay server-side.
 //
-//   GET ?date=YYYY-MM-DD [&live=1]  → { ok, date, source, at, count, loads:[{loadId,name,status,trips}],
+//   GET ?date=YYYY-MM-DD [&live=1]  → { ok, date, source, at, count, loads:[{loadId,name,status,driver,trips}],
 //                                       pull?, shells?: { names, from } — see planAheadShells below }
 //   GET ?explain=1[&days=5][&from=]  → what the CACHE holds for each date, ZERO vendor calls
 import { loadRosterPull, shouldServeCachedRoster } from './lib/nuvizz-loads.mts';

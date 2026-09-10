@@ -34,8 +34,10 @@ const nameOf = (g) => String(g?.name || g?.loadNbr || g?.key || '').trim() || 'U
  * @param groups      the route rows the panel is showing (the FILTERED list — the button
  *                    acts on what is on screen, so a status filter narrows it, which is the
  *                    only behaviour that cannot surprise anyone).
- * @param driverFor   (g) => driver name or null — includes the optimistic just-assigned
- *                    override, exactly as the row does.
+ * @param driverFor   (g) => the CONFIRMED driver name or null — a driver read off the stops
+ *                    NuVizz is executing, or the optimistic just-assigned override, exactly as
+ *                    the row does. NOT `g.rosterDriver`: that one is a capture and is read here
+ *                    only to explain a skip, never to permit a dispatch.
  * @param loadIdFor   (g) => NuVizz load id or null — the roster lookup the write needs.
  * @returns {{eligible: object[], skipped: {name: string, reason: string}[], alreadyDispatched: number}}
  */
@@ -52,7 +54,22 @@ export function planDispatchAll({ groups = [], driverFor = () => null, loadIdFor
       alreadyDispatched += 1;
       continue;
     }
-    if (!driverFor(g)) { skipped.push({ name, reason: 'no driver assigned' }); continue; }
+    if (!driverFor(g)) {
+      // WHY IT IS SKIPPED HAS TO BE TRUE, and since the roster started naming drivers there are
+      // two different whys. A load NuVizz has a driver on shows that name on the card; telling
+      // the dispatcher "no driver assigned" about a route he can read a name on sends him
+      // looking for a problem that is not there. The rule itself does not move an inch — a
+      // roster capture may not authorize the least reversible write this app makes — but it
+      // now says which of the two situations he is in, and therefore what to do about it.
+      const rosterOnly = String(g.rosterDriver ?? '').trim();
+      skipped.push({
+        name,
+        reason: rosterOnly
+          ? `NuVizz has ${rosterOnly} on this load, but the board has not confirmed it — assign to dispatch`
+          : 'no driver assigned',
+      });
+      continue;
+    }
     if (!loadIdFor(g)) { skipped.push({ name, reason: 'NuVizz load id not loaded yet' }); continue; }
     eligible.push(g);
   }
