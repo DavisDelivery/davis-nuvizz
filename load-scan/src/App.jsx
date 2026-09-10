@@ -2617,8 +2617,12 @@ function StopDetailRow({ s }) {
               because the override that adds one was being pulled by accident —
               and a stop reading "all here" off a hand-added piece is the one a
               dispatcher most needs to look at twice. */}
-          {s.handAddedCount > 0 ? (
-            <span className="text-violet-800 font-medium">{s.handAddedCount} added by hand</span>
+          {/* Typed is ROUTINE — non-Uline freight has no barcode and is always
+              added this way — so it reads quietly. An override is a person
+              overruling the manifest, and that is the one a dispatcher reads. */}
+          {s.typedCount > 0 ? <span className="text-slate-600">{s.typedCount} typed in</span> : null}
+          {s.overrideCount > 0 ? (
+            <span className="text-violet-800 font-medium">{s.overrideCount} added by override</span>
           ) : null}
         </div>
       </div>

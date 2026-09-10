@@ -171,10 +171,56 @@ export function isAppointmentRequired(raw: any): boolean {
  * distinctly from a scan, so a wrong offer is visible in the session record
  * rather than silent. Set `scannable` on the index row to end the guesswork.
  */
-export function stopIsScannable(raw: any, countIsEstimated: boolean): boolean {
+export function stopIsScannable(
+  raw: any,
+  countIsEstimated: boolean,
+  carrierRule: boolean = carrierHandConfirmEnabled(),
+): boolean {
   if (raw?.scannable === false) return false;
   if (raw?.scannable === true) return true;
+  // THE LAW, from the owner (2026-09-10): "Anything non-Uline will not have a
+  // barcode and will be manual adds." A Uline stop number is the PRO, bare
+  // digits, zero-padded ("007174272"); everything else on the board — ESTES-…,
+  // AVRT-…, a bare 10-digit Averitt PRO — is a carrier whose label the scanner
+  // cannot read. Until now an Estes stop that happened to carry a piece count
+  // was offered as scannable, so the crew typed its made-up 7-digit key per
+  // piece instead of confirming the stop in one tap. The count correlation
+  // below stays as the fallback for anything this shape test does not settle.
+  // A row with no stop number at all is malformed, not a carrier: it keeps the
+  // count rule below rather than being declared unscannable on no evidence.
+  if (carrierRule) {
+    const nbr = String(raw?.stopNbr ?? '').trim();
+    if (nbr && !looksLikeUlineStop(nbr)) return false;
+  }
   return !countIsEstimated;
+}
+
+/**
+ * THE WAY BACK. Chad: "build this in such a way if it changes something I do
+ * like I can just tell you to flip it back the way it was and it's an easy fix."
+ *
+ * LOADSCAN_CARRIER_HAND_CONFIRM=off restores the pre-v0.50 rule EXACTLY and
+ * without a code change: scannability from the piece count alone, carrier stops
+ * that carry a count offered as scannable again. An explicit `scannable` on the
+ * index row wins either way. Netlify reads env vars at invocation, so the flip
+ * needs no deploy, and every reader of toManifestStop (the manifest and the
+ * activity report) moves together — there is no half-reverted state.
+ *
+ * Default ON; only an explicit off-word turns it off; anything malformed leaves
+ * it ON, because a typo must not silently send the crew back to typing made-up
+ * PROs, which is the exact thing this rule ends.
+ *
+ * The position is readable: every /load-manifest response carries
+ * `rules.carrierHandConfirm`, and /health echoes the raw variable.
+ */
+export function carrierHandConfirmEnabled(env: any = process.env): boolean {
+  const v = String(env?.LOADSCAN_CARRIER_HAND_CONFIRM ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
+/** A Uline stop number: the 7-digit PRO, possibly zero-padded to 9. Nothing else. */
+export function looksLikeUlineStop(stopNbr: any): boolean {
+  return /^\d{7,9}$/.test(String(stopNbr ?? '').trim());
 }
 
 /** PRO list, normalized and de-duplicated, tolerant of the several shapes the index uses. */
