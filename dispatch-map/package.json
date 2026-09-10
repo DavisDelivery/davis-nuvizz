@@ -19,6 +19,7 @@
     "verify:route-preflight": "node scripts/verify-route-preflight.mjs dist",
     "verify:tablet": "node scripts/verify-tablet-layout.mjs dist",
     "verify:loads-tab": "node scripts/verify-loads-tab.mjs dist",
+    "verify:routing-topbar": "node scripts/verify-routing-topbar.mjs dist",
     "perf:routing": "node scripts/perf-routing.mjs dist",
     "verify:effect-deps": "node scripts/check-effect-deps.mjs"
   },

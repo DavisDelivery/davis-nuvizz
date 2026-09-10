@@ -82,6 +82,7 @@ import { flagProvenance, provenanceLine } from './lib/flag-provenance.js';
 import { deliveredWhen } from './lib/delivered-when.js';
 import { flagDetail, sighting } from './lib/flag-detail.js';
 import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab, resolveRailQuery } from './lib/right-panel.js';
+import { boardStatusPanel } from './lib/board-status-card.js';
 import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
 import { planSendSelection, selectionSendTargets } from './lib/send-selection.js';
@@ -124,7 +125,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '1.10.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -195,6 +196,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.10.0', 'THE BOARD-STATUS CARD IS OFF THE MAP AND ONTO THE BAR. Chad, on the \u201c0 of 805 stops\u201d pill floating over the routing map: \u201cI want to move this to just above filters on the bar with more, but just far enough left on that bar to where when it drops down it doesn\u2019t cover up filters or flags \u2014 slide the flags down just enough to where it doesn\u2019t get covered by the drop down either.\u201d IT NOW LIVES ON THE APP BAR, immediately LEFT OF More, and its detail (total pallets, the unplanned count, the three feed timestamps, the NuVizz call meter and the hourly sparkline) DROPS DOWN from the bar instead of pushing a taller and taller card down over the freight. That is the operational point rather than the cosmetic one: the top-right of a routing map is metro Atlanta, and a card that grows when you open it grows over the pins a router is reading. Board health belongs on the chrome, beside the presence chip and the version, where it is always on screen and never in the way. \u201cFAR ENOUGH LEFT\u201d IS MEASURED, NOT ESTIMATED, and the first cut of this got it wrong. More sits all but directly above the map\u2019s Filters button \u2014 at 1440px More spans x 983..1085 and Filters 971..1046 \u2014 so a panel right-ALIGNED to the card ends at x 979 and CLIPS THE LEFT 8px OF FILTERS. Eight pixels is invisible in a screenshot and is exactly the thing that was asked to be avoided. The panel now hangs from the card\u2019s LEFT edge (right-full), so it drops down and to the left with the card\u2019s own width as the clearance \u2014 ~147px at 1440 \u2014 a gap that scales with the control instead of a number somebody has to re-guess. THE FLAGS SLID DOWN TOO, to top-32, which is the \u201cjust enough\u201d measured on a board carrying real numbers rather than an empty one: the panel bottoms out at page y 165, top-28 would leave the chip at y 157 and still under it. It is the second margin, not the first \u2014 a dispatcher dragging the right rail wider now has to pass BOTH the horizontal gap and the vertical one before anything is hidden, and a flag count that goes quiet is pixel-identical to a clean board. A NEW GUARD MEASURES ALL OF IT IN THE REAL BUNDLE, because this file has collision-patched absolutely-pinned overlays FOUR separate times (v0.54.80, v0.54.82, the wrap fix, the flags-chip clip) and still shipped the draw buttons on top of the status card. verify-routing-topbar drives the built app at 1440 and 1920 against a board with 60 stops, real feed stamps and a call meter \u2014 an EMPTY board draws a short dropdown that clears everything by accident \u2014 and fails the build if the panel ever touches Filters or the flags chip. Written against the broken draft first and it fails it, because a layout guard that has never seen the bug it describes is not evidence of anything. AND ONE DEFECT IN MY OWN DRAFT, caught before it shipped: in the pill the detail and the scan error stack IN FLOW, so both can show at once for free; on the bar both are absolutely placed under the same control, and as siblings they would land ON THE SAME PIXELS \u2014 discoverable only on a morning a scan had already failed, which is the worst possible time to lose the message saying so. One panel now, and what goes in it is a pure rule both placements import (boardStatusPanel), so the bar and the pill cannot drift on the standing promise that a scan error stays visible WHILE COLLAPSED \u2014 the refresh button is always on screen, and an error hidden inside a closed body means the icon spins, stops, and the button reads as broken. A blank or whitespace-only error paints nothing and forces no empty dropdown open. TWO VIEWS, AS ALWAYS: the phone keeps the card in its own flow column exactly as it was \u2014 nothing about a 390px screen is improved by moving a card onto a bar that has no room for it \u2014 and the 44px touch box is dropped only in bar mode, which is desktop-only, because a 44px target inside a 45px bar either blows the bar\u2019s height or grows every control on it. Zero NuVizz calls. 8 new tests, 4,063 green.'],
   ['1.9.0', 'A LOAD NUMBER IS NOT A ROUTE NAME \u2014 AND v1.8.0 SHIPPED WITHOUT NOTICING. That release taught the un-plan stamp to yield the moment NuVizz\u2019s list names a DIFFERENT route than the one a Save took the order off: lag names the OLD route, a re-plan names a NEW one, so a different name is a verdict rather than a stale index. It compared the stamp\u2019s from-route against the list\u2019s route NAME \u2014 and BOTH write-through callers can stamp something that is not a name at all. The server falls back to the load NUMBER (nuvizz-write.mts, `|| String(p.loadNbr || \u2018\u2019)`) and the client can fall back to a hex card key, while the list always reports the human name. So \u201cDAVIS000203388\u201d against \u201cRONALD\u201d reads as a different route for EVERY such stop, and the rule would have released exactly the holds that must stand \u2014 a genuine un-plan whose list is merely lagging, which NuVizz\u2019s index has done for 30+ minutes after an ACCEPTED save (OWUSU 1, and the whole reason the grace exists). That is the ONE way this rule could lose freight rather than merely be slow, and it is the precise opposite of what v1.8.0 set out to do. TWO NAMESPACES ARE NOT A DISAGREEMENT. A number-shaped or hash-shaped baseline now decides nothing: the rule refuses to compare, and the sixty-minute clock holds the stamp exactly as it did before v1.8.0. That is the safe direction and it is the same answer the rule already gave for a stamp carrying no from-route at all \u2014 absence of a comparable baseline is not evidence, and this must never guess an order off a route. FOUND BY AN ADVERSARIAL PASS OVER MY OWN FIX, not by a test going red, which is the point of running one: every v1.8.0 test fed the rule a route name, because a route name is what I had in mind when I wrote the rule and the tests both. The new test pins the REAL fallback values read off the two call sites \u2014 \u2018DAVIS000203388\u2019, \u2018007141059\u2019, \u20186a3560cb52ef82bd1ed4516b\u2019 \u2014 so the shapes the code actually produces are the shapes the guard is proved against. AND looksLikeLoadNbr MOVES RATHER THAN MULTIPLIES: it now lives in nuvizz-list.mts and nuvizz-loads.mts imports it, so the write-grace and the load roster ask ONE definition instead of a third copy drifting from the two that already existed. Zero NuVizz calls. 4,055 green.'],
   ['1.8.0', 'WHATEVER THE SCAN SAYS IS THE TRUTH \u2014 AND THE BOARD SPENT AN HOUR ARGUING WITH IT. Chad, on order 007174547 sitting in the selection pool: \u201cWhy is this order still showing unplanned when it\u2019s on Ronald Gates in nuvizz.\u201d It was on RONALD, and the board KNEW. CHECKED, NOT REASONED \u2014 the entire answer came out of the zero-cost explain endpoint v1.4.0 shipped for exactly this, plus the write journal, for ZERO NuVizz calls: a Save took the order off TREVARR at 6:18am (journal: boardSync TREVARR, ordered 8, unplanned 1, at 10:18:15.710Z), somebody re-planned it onto RONALD in the portal, and the 6:58 AND 7:15 scans BOTH read \u201cplanned on RONALD\u201d off NuVizz\u2019s own list and BOTH threw that answer away. WHY: a confirmed Save outranks the list for sixty minutes, and the un-plan direction had NOTHING allowed to argue with it. The PLANNED direction has had a verify since SEAAGRI \u2014 when the list says un-planned and the board holds a plan, the scan asks the LOAD itself before dropping the stop. The un-plan direction had a clock and nothing else, so for fifty-seven minutes the board asserted \u201cun-planned, no route\u201d over NuVizz saying RONALD, re-applying it on every scan and recording it nowhere. It would have healed itself at 7:18am, which is rather the point: nobody should wait out a timer for the board to agree with the vendor. THE FIX IS A DISCRIMINATOR, NOT A DELETION, because the grace is not simply wrong \u2014 NuVizz\u2019s index lagged an ACCEPTED save by 30+ minutes once (OWUSU 1) and a stale list must never revert a Save you watched confirm. What was missing was any way to tell those two apart, and the route NAME does it for nothing. LAG NAMES THE OLD ROUTE: we took it off TREVARR, so a stale index still says TREVARR. A RE-PLAN NAMES A DIFFERENT ONE: it says RONALD, and it can only say RONALD having already seen an event that happened AFTER our Save \u2014 a list caught up that far is a verdict, not lag. So the un-plan stamp now records the route the order came OFF (the row itself is still cleared; only the stamp remembers), and a fresh row naming any OTHER route releases it AT ONCE. Deliberately STILL held when the list names the same route we removed it from: that reading is exactly what a lagging index produces, and taking it would put an order back on a route a Cancel just emptied. Closing that last case takes one metered /load/info \u2014 the demote verify\u2019s own ladder \u2014 and is NOT done here; say the word. A stamp with no from-route (anything written before this release) holds exactly as it did: absence of the baseline is not evidence, and this must never guess an order off a route. THREE SURFACES, ONE RULE, IMPORTED AND NOT RESTATED. The Map serves the day document, the Routing date window serves cached rows reconciled against the open-order pool, and the Map\u2019s carry-over fold judges prior-day rows by that same pool \u2014 all three held the same stale stamp by their own blind sixty-minute clock, and a fix on one only moves the symptom. A test fails the build if either of the other two stops importing the rule, because two copies of a discriminator is two chances for the board and the window to disagree about a plan. The from-route also had to be added to the window\u2019s LEAN read mask, or the rule would have silently never fired on that surface. SAID PLAINLY, AND IT CORRECTS MY OWN FIRST READING: this is NOT freight going onto two trucks. An adversarial pass caught me overstating it \u2014 the Save path reads NuVizz\u2019s own record and REFUSES, with a message that already reads \u201cour board may be showing it stale-unplanned\u201d (nuvizz-write.mts:1643). What the stale hour actually costs is a dispatcher building against a board they cannot trust and being refused at the Save. Worth fixing on its own; not the emergency I first called it. 14 new tests.'],
   ['1.7.0', 'CLICKING A DOT ON THE ROUTING MAP TELLS YOU WHAT THE ORDER IS. Chad, on GEORGE L\u2019s route: \u201cIf i click on one of these dots on the map i want it to bring that orders details on in the right panel.\u201d It did not, and the shape of the miss is one this repo keeps re-learning: THE DISPATCH MAP HAS DONE EXACTLY THIS SINCE IT WAS BUILT \u2014 its marker click calls setSelectedStop and pans \u2014 and Routing, the screen a router spends the morning in, was the surface it was never wired into. CHECKED, NOT REASONED: the Routing marker\u2019s click handler had five branches and the panel appeared in exactly ONE of them, the equipment-paint brush, whose comment says \u201cfirst click does both\u201d. Everywhere else a numbered pin opened its ROUTE in the Compare panel and a pool pin toggled the whole place into the selection \u2014 both useful, and neither of them an answer to \u201cwhat is this order?\u201d. On a SAVED load the click did nothing whatsoever: the read-only guard existed to stop writes and swallowed the click entirely, so the one screen where you most want to ask what a stop is answered nothing at all. NOTHING WAS TAKEN AWAY TO PAY FOR IT. A planned pin still opens its route card, a pool pin still toggles its place, paint still paints \u2014 the order card is added alongside, through the SAME panelStop state the list rows drive, so a pin and a row now open the identical card and the two cannot describe a stop differently. Desktop un-collapses the right rail and the phone raises its sheet off that one state, so this is one change and not two views\u2019 worth. TWO TOOLS ARE DELIBERATELY DENIED THE CARD, and that is the whole of the design judgement: select-mode is asking for a POINT (the handler hands it the marker\u2019s POSITION, not the stop), so a card about a stop is the wrong answer to \u201cwhere on the map?\u201d and would cover the map mid-draw; and ninja-add is a rapid queue that puts stop after stop on the open route, where a card on every one fights the job being done. THE RULE IS A FUNCTION, NOT A HANDLER. mapPinClickActions lives in lib/routing-select.js beside the other routing rules, and the handler is now a dispatcher holding no policy: the click sits inside a marker-building effect in a 25,000-line module node:test cannot import, AND Google Maps is blocked in the headless guard \u2014 which is why v0.98.0 could only guard the row\u2192pin half of this. A decision written in that handler is testable at neither end. One test pins that exactly ONE tool action fires per click in every mode, including two brushes armed at once. 11 new tests, mutation-checked three ways \u2014 panel never opens (the bug as shipped), panel opens in every mode (the careless fix), and the card replacing the route instead of joining it \u2014 each failing precisely the tests that claim to guard it. Zero NuVizz calls.'],
@@ -4458,65 +4460,134 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
 // other screens (Routing renders it too). Collapsible to just the stops count; the
 // refresh icon fires the cheap manual scan (useManualScan). Pure presentation — all
 // state comes in as props so each screen wires its own useStops/useManualScan.
-function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, unplannedAt, completedAt, isToday, ops, scanErr, scanning, scanCooldown, scanDenied = null, onRefresh, collapsed, onToggleCollapsed, scanUnplannedCount, visibleUnplannedCount, drawnCount = null }) {
+function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, unplannedAt, completedAt, isToday, ops, scanErr, scanning, scanCooldown, scanDenied = null, onRefresh, collapsed, onToggleCollapsed, scanUnplannedCount, visibleUnplannedCount, drawnCount = null, barMode = false }) {
   // `drawnCount` (Routing) = pins actually on the map right now. The card used to publish the
   // whole day board while the map drew a filtered subset, so the number on the chip matched
   // neither the pins beneath it nor the bottom grid — Chad, counting dots: "there are more dots
   // on the map than on the bottom panel, they should match." When a filter is hiding stops the
   // header now reads "15 of 833 stops" so the chip describes the map you are looking at.
   const filtering = typeof drawnCount === 'number' && drawnCount !== stopCount;
+  // What is visible, decided once for both placements — see lib/board-status-card.js.
+  const panel = boardStatusPanel({ collapsed, scanErr });
+  // ONE SET OF PARTS, TWO PLACEMENTS. The map pill stacks the detail under the header row
+  // inside the same floating card; the app-bar card (desktop Routing) keeps the header row
+  // ON the bar and DROPS the detail below it. Building the pieces once is the point — two
+  // copies of this markup is two chances for the bar and the pill to disagree about the
+  // board, and the count is the number a router trusts before building anything.
+  const countBtn = (
+    <button
+      onClick={onToggleCollapsed}
+      className="flex items-center gap-1 font-semibold hover:text-slate-600"
+      title={collapsed ? 'Show details' : 'Collapse'}
+      aria-expanded={!collapsed}
+    >
+      {collapsed ? <ChevronDown size={13} className="text-slate-400" /> : <ChevronUp size={13} className="text-slate-400" />}
+      <span
+        title={filtering
+          ? `${drawnCount.toLocaleString()} of ${Number(stopCount || 0).toLocaleString()} stops are on the map — the rest are hidden by the bottom grid's status/driver filter. Stops on an open route card and anything you have selected always stay visible.`
+          : undefined}
+      >
+        {filtering ? <><span className="text-amber-700">{drawnCount.toLocaleString()}</span> of {Number(stopCount || 0).toLocaleString()} stops</> : <>{stopCount} stops</>}
+        {carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}
+      </span>
+    </button>
+  );
+  // DISABLED, NOT HIDDEN, for a role that cannot scan: a greyed button with a title
+  // naming the role costs a hover; a button that runs nothing while looking like it
+  // worked costs a morning on a stale board.
+  //
+  // The 44px touch box is a PHONE rule and it is dropped in bar mode on purpose: the app
+  // bar is 45px tall, so a 44px target inside it either blows the bar's height or forces
+  // every other control on it to grow. Bar mode is desktop-only (see the portal in
+  // RoutingScreen), where the pointer is a mouse.
+  const refreshBtn = (
+    <button
+      onClick={onRefresh}
+      disabled={scanning || scanCooldown || !!scanDenied}
+      className={`rounded hover:bg-slate-100 disabled:opacity-50 inline-flex items-center justify-center ${barMode ? 'p-1' : 'ml-auto p-1 min-w-[44px] min-h-[44px]'}`}
+      title={scanDenied || (scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)')}
+    >
+      <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
+    </button>
+  );
+  const details = (
+    <>
+      <div className="text-slate-600">{Number(totalPallets || 0).toLocaleString()} total pallets</div>
+      <UnplannedScanCount count={scanUnplannedCount} visible={visibleUnplannedCount} className="text-slate-600" />
+      <FeedTimestamps loadAt={loadAt} unplannedAt={unplannedAt} completedAt={completedAt} isToday={isToday} className="text-slate-500" stacked />
+      {ops && typeof ops.dayCount === 'number' && (
+        <>
+          <div className="text-slate-500" title={`Today's NuVizz API calls (${ops.mode})${ops.byRoute && Object.keys(ops.byRoute).length ? ' · ' + Object.entries(ops.byRoute).map(([k, v]) => `${k}:${v}`).join(' ') : ''}`}>
+            NuVizz calls: {ops.dayCount.toLocaleString()}{ops.ceiling ? ` / ${ops.ceiling.toLocaleString()}` : ''} <span className="text-slate-400">({ops.mode}{ops.breaker ? ', halted' : ''})</span>
+          </div>
+          <HourlyCalls byHour={ops.byHour} className="text-slate-400 text-[10px] mt-0.5" />
+        </>
+      )}
+    </>
+  );
+
+  // ── APP-BAR MODE — desktop Routing, the card sits ON the nav bar ────────────────────
+  //
+  // Chad, on the pill floating over the routing map: "I want to move this to just above
+  // filters on the bar with more, but just far enough left on that bar to where when it
+  // drops down it doesn't cover up filters or flags."
+  //
+  // So the header row is a flat control on the bar (no floating pill, no backdrop-blur —
+  // a blurred wrapper CLIPS an absolutely-positioned child, which is the mobile Map bug
+  // BoardFlagsChip's own comment warns about) and the detail becomes a real dropdown.
+  //
+  // right-full IS THE "FAR ENOUGH LEFT", AND IT IS MEASURED RATHER THAN HOPED. The card is
+  // mounted immediately left of More, which at 1440px sits all but directly above the map's
+  // Filters button — More spans x 983..1085 and Filters 971..1046. A panel right-ALIGNED to
+  // the card (right-0) therefore ends at x 979 and clips the left 8px of Filters, which is
+  // the very thing this change is for. right-full anchors the panel's right edge to the
+  // card's LEFT edge instead, so it drops down and to the left with the card's own width as
+  // the clearance (~110px at 1440) — a gap that scales with the control instead of a pixel
+  // somebody has to re-guess. scripts/verify-routing-topbar.mjs walks the real bundle at
+  // 1440 and 1920 and fails the build if this panel ever touches Filters or the flags chip;
+  // it was written against the right-0 draft first and fails it, because a layout guard that
+  // has never seen the bug it describes is not evidence of anything.
+  //
+  // THE SCAN ERROR STAYS ON THE BAR. Same rule as the pill: the refresh button is always
+  // visible, so an error that only exists inside a closed dropdown is feedback nobody
+  // sees — the icon spins, stops, and the button reads as broken.
+  if (barMode) {
+    return (
+      <div className="relative text-xs" data-testid="routing-bar-status">
+        <div className="flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-slate-700">
+          {countBtn}
+          {refreshBtn}
+        </div>
+        {/* ONE panel, not two. The detail and the scan error are both absolutely placed at
+            top-full here, so rendering them as siblings would stack an open dropdown and an
+            error on the same pixels — in the flow-stacked pill they simply sit one under the
+            other, and that difference is exactly the kind of thing that only shows up on the
+            morning a scan fails. The panel therefore opens when EITHER has something to say,
+            which also preserves the pill's rule that a scan error is visible while collapsed. */}
+        {panel.open && (
+          <div className="absolute right-full mr-1 top-full mt-1 w-60 rounded-lg border border-slate-200 bg-white shadow-xl px-2.5 py-2 leading-tight z-40" data-testid="routing-bar-status-drop">
+            {panel.showDetails && details}
+            {panel.showError && <div className={`text-[11px] text-red-600${panel.showDetails ? ' mt-1' : ''}`}>{scanErr}</div>}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── MAP-PILL MODE — the floating card on the dispatch Map (and phone Routing) ───────
   return (
     <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 text-xs">
       {/* Header row: stops count + collapse/refresh — always visible. */}
       <div className="flex items-center gap-2">
-        <button
-          onClick={onToggleCollapsed}
-          className="flex items-center gap-1 font-semibold hover:text-slate-600"
-          title={collapsed ? 'Show details' : 'Collapse'}
-          aria-expanded={!collapsed}
-        >
-          {collapsed ? <ChevronDown size={13} className="text-slate-400" /> : <ChevronUp size={13} className="text-slate-400" />}
-          <span
-            title={filtering
-              ? `${drawnCount.toLocaleString()} of ${Number(stopCount || 0).toLocaleString()} stops are on the map — the rest are hidden by the bottom grid's status/driver filter. Stops on an open route card and anything you have selected always stay visible.`
-              : undefined}
-          >
-            {filtering ? <><span className="text-amber-700">{drawnCount.toLocaleString()}</span> of {Number(stopCount || 0).toLocaleString()} stops</> : <>{stopCount} stops</>}
-            {carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}
-          </span>
-        </button>
-        {/* DISABLED, NOT HIDDEN, for a role that cannot scan: a greyed button with a title
-            naming the role costs a hover; a button that runs nothing while looking like it
-            worked costs a morning on a stale board. */}
-        <button
-          onClick={onRefresh}
-          disabled={scanning || scanCooldown || !!scanDenied}
-          className="ml-auto p-1 rounded hover:bg-slate-100 disabled:opacity-50 min-w-[44px] min-h-[44px] inline-flex items-center justify-center"
-          title={scanDenied || (scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)')}
-        >
-          <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
-        </button>
+        {countBtn}
+        {refreshBtn}
       </div>
       {/* Stacked details — hidden when collapsed. */}
-      {!collapsed && (
-        <div className="mt-0.5 leading-tight">
-          <div className="text-slate-600">{Number(totalPallets || 0).toLocaleString()} total pallets</div>
-          <UnplannedScanCount count={scanUnplannedCount} visible={visibleUnplannedCount} className="text-slate-600" />
-          <FeedTimestamps loadAt={loadAt} unplannedAt={unplannedAt} completedAt={completedAt} isToday={isToday} className="text-slate-500" stacked />
-          {ops && typeof ops.dayCount === 'number' && (
-            <>
-              <div className="text-slate-500" title={`Today's NuVizz API calls (${ops.mode})${ops.byRoute && Object.keys(ops.byRoute).length ? ' · ' + Object.entries(ops.byRoute).map(([k, v]) => `${k}:${v}`).join(' ') : ''}`}>
-                NuVizz calls: {ops.dayCount.toLocaleString()}{ops.ceiling ? ` / ${ops.ceiling.toLocaleString()}` : ''} <span className="text-slate-400">({ops.mode}{ops.breaker ? ', halted' : ''})</span>
-              </div>
-              <HourlyCalls byHour={ops.byHour} className="text-slate-400 text-[10px] mt-0.5" />
-            </>
-          )}
-        </div>
-      )}
+      {panel.showDetails && <div className="mt-0.5 leading-tight">{details}</div>}
       {/* OUTSIDE the collapse. The refresh button lives in the always-visible header, so a scan
           error rendered inside the collapsed body is feedback nobody sees — on a phone the icon
           spins for a minute, goes quiet, and the button reads as broken. */}
-      {scanErr && <div className="mt-0.5 text-[11px] text-red-600">{scanErr}</div>}
+      {panel.showError && <div className="mt-0.5 text-[11px] text-red-600">{scanErr}</div>}
     </div>
   );
 }
@@ -19844,8 +19915,9 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // reference during this line and throw "Cannot access 'drawnStops' before initialization" —
   // the same temporal-dead-zone crash that blanked Routing in v0.32.11. A function body is not
   // evaluated until it's called, and both call sites are below the declaration.
-  const statusCard = () => (
+  const statusCard = (barMode = false) => (
     <StopsStatusCard
+      barMode={barMode}
       // THE POOL THE MAP DRAWS FROM, not the selected day's board.
       //
       // Chad, on an iPad, reading "564 of 2 stops": a ratio where the numerator is 282x the
@@ -22931,6 +23003,12 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // so it is looked up in an effect rather than during render.
   const [appBarSlot, setAppBarSlot] = useState(null);
   useEffect(() => { setAppBarSlot(isMobile ? document.getElementById('phone-appbar-slot') : null); }, [isMobile]);
+  // The desktop twin of the phone slot: the app bar's own mount point for the board-status
+  // card, left of More. Two lookups rather than one shared one because they are two views —
+  // the phone bar holds the gear, the desktop bar holds this card, and neither screen should
+  // be able to render the other's furniture by getting a boolean wrong.
+  const [deskBarSlot, setDeskBarSlot] = useState(null);
+  useEffect(() => { setDeskBarSlot(isMobile ? null : document.getElementById('desktop-appbar-slot')); }, [isMobile]);
   const phoneGearEl = isMobile ? <RoutingSettingsMenu views={routingSettingsViews} panels={phoneGearPanels} actions={routingSettingsActions} capHeight panelsFirst tone="appbar" /> : null;
   // A FUNCTION on desktop (v1.3.0): the grid hands its own gear items in (Check vs NuVizz, which
   // lives in the grid's state) and they lead the list — they are about the panel the gear sits on.
@@ -23555,9 +23633,21 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
         <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
-        {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button),
-            with the Board Flags chip stacked above it. */}
-        <div className="absolute top-12 right-2 z-[15] max-w-[240px] flex flex-col items-end gap-1">{flagsOverlay()}{statusCard()}</div>
+        {/* THE BOARD-STATUS CARD IS NOT ON THE MAP ANY MORE (desktop). It is portalled onto
+            the app bar, left of More — see #desktop-appbar-slot for the geometry and why
+            that position is the one that keeps its dropdown off Filters and the flags.
+            The map keeps the flags chip alone in this column. */}
+        {deskBarSlot && createPortal(statusCard(true), deskBarSlot)}
+        {/* THE FLAGS SLIDE DOWN — Chad: "slide the flags down just enough to where it doesn't
+            get covered by the drop down either." top-32 is the "just enough", measured on a
+            board carrying real numbers rather than the empty one: the panel bottoms out at
+            page y 165, top-28 would put the chip at y 157 and still under it, top-32 puts it
+            at y 173. It is the SECOND margin and not the first — the panel already clears
+            this column horizontally by ~147px (see right-full above) — but the two together
+            mean a dispatcher dragging the right rail wider has to pass BOTH before anything
+            is hidden, and a flag count that goes quiet is pixel-identical to a clean board,
+            which is the one failure on this map nobody can see happening. */}
+        <div className="absolute top-32 right-2 z-[15] max-w-[240px] flex flex-col items-end gap-1">{flagsOverlay()}</div>
         {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} legendInventory={routingLegendInventory} satellite={routeSatellite} onToggleSatellite={() => setRouteSatellite((v) => !v)} />}
         {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
         {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[80%] bg-slate-900/90 text-white text-[12px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={13} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
@@ -25973,6 +26063,25 @@ function Shell() {
               <TabBtn label="Quote" icon={<Calculator size={14} />} active={tab === 'quote'} onClick={() => setTab('quote')} />
               <TabBtn label="Messages" icon={<MessageSquare size={14} />} active={messagesOpen} onClick={openMessages} badge={smsUnread} />
             </nav>
+            {/* THE ROUTING BOARD-STATUS CARD LANDS HERE — "0 of 805 stops", the pill that
+                used to float over the routing map. Chad: "move this to just above filters
+                on the bar with more, but just far enough left on that bar to where when it
+                drops down it doesn't cover up filters or flags."
+
+                LEFT OF More, and that is the geometry rather than a decoration: More sits
+                almost exactly above the map's Filters button, and the card's detail panel
+                hangs from its own RIGHT edge growing leftward — so mounting the card left
+                of More puts the whole panel left of Filters and of the flags chip beneath
+                it. Proven in the real bundle by scripts/verify-routing-topbar.mjs.
+
+                OUTSIDE the <nav> for the same reason MoreMenu is (see the note above it):
+                overflow-x:auto computes overflow-y to auto as well, so a dropdown rendered
+                inside that row opens into a ~40px clipping box and is invisible.
+
+                Routing-only, so no other screen pays a stray flex gap for an empty slot;
+                RoutingScreen portals into it (desktop only — the phone keeps the card in
+                its own flow column, because these are two views and not one). */}
+            {tab === 'routing' && ROUTING_FLAG && <div id="desktop-appbar-slot" className="flex items-center shrink-0" />}
             {/* Overflow tabs. Screens you visit deliberately rather than live in go here
                 instead of shrinking the whole nav row; the badge surfaces a problem from
                 a screen you are NOT on, which is the entire point of the manifest check. */}
