@@ -26,10 +26,19 @@ const safe = (v) => (v == null ? '' : String(v));
 function normStreetOf(addressLine1) {
   let normStreet = safe(addressLine1).toLowerCase();
   for (const [re, sub] of STREET_REPLACEMENTS) normStreet = normStreet.replace(re, sub);
+  // TRIM BEFORE THE COLLAPSE, NOT AFTER. This ran .replace(/\s+/g,'_') first and .trim()
+  // second — and trim() removes whitespace, not underscores, so a padded address line came
+  // out as "_1_main_st_" while the same address unpadded came out "1_main_st". Every caller
+  // of placeKeyOfStop then read one dock as two: the co-location grouping that decides
+  // whether two orders share a pin, the same-address twin guard that exists so a delivery is
+  // not left on the floor beside its pickup, and the board-flags trailer rule. NuVizz pads
+  // address lines, so this was reachable with live data, and the file's own comment warns
+  // about this exact hazard one function down ("a whitespace-only address line normalises
+  // to '_'"). Same rule, applied one line earlier.
   return normStreet
     .replace(/[^\w\s]/g, '')
-    .replace(/\s+/g, '_')
-    .trim();
+    .trim()
+    .replace(/\s+/g, '_');
 }
 
 // See the zip comment in normalizeMatchKey — same rule, shared so the two keys agree.

@@ -118,3 +118,39 @@ test('E2E: keyed the OLD way the delivery is left behind, silently', () => {
   assert.deepEqual(plan.cards.find((c) => c.key === 'NOR').order.map(String), ['RA59223377']);
   assert.doesNotMatch(plan.message, /co-located/, 'nothing warned him — that is why it reached the truck');
 });
+
+// ── PADDING IS NOT A DIFFERENT DOCK ──────────────────────────────────────────
+//
+// Found while tracing Chad's 2026-09-10 report — two Alpharetta orders at one address that
+// NuVizz drew together and this board drew apart. normStreetOf collapsed whitespace to
+// underscores BEFORE trimming, and trim() removes whitespace, not underscores. So a padded
+// address line keyed as "_1_main_st_" and the same address unpadded as "1_main_st": one dock
+// read as two by every caller of placeKeyOfStop — the co-location grouping that decides
+// whether two orders share a pin, the same-address twin guard above, and the board-flags
+// trailer rule. NuVizz pads address lines, so this was reachable with live data.
+
+test('a padded address line is the SAME dock as the unpadded one', () => {
+  assert.equal(
+    normalizePlaceKey('  3190 REPS MILLER RD STE 200 ', '30071'),
+    normalizePlaceKey('3190 REPS MILLER RD STE 200', '30071'),
+  );
+});
+
+test('padding never leaks into the key as a leading or trailing underscore', () => {
+  for (const raw of ['  1 MAIN ST ', '\t1 Main St\n', '1 Main St   ']) {
+    const k = normalizePlaceKey(raw, '30518');
+    assert.equal(k, '1_main_st__30518', `padded "${raw}" must key like the bare address`);
+    assert.ok(!k.startsWith('_'), 'no leading underscore');
+  }
+});
+
+test('interior spacing still collapses — the fix trims the ends, it does not stop normalising', () => {
+  assert.equal(normalizePlaceKey('1    Main    St', '30518'), '1_main_st__30518');
+});
+
+test('a whitespace-only address line is still refused, not keyed as "_"', () => {
+  // The hazard the file already warned about one function down: "___30071" would be a key
+  // every address-less order in that zip would share, and they would all ride one route.
+  assert.equal(normalizePlaceKey('   ', '30071'), '');
+  assert.equal(normalizePlaceKey('\t\n', '30071'), '');
+});
