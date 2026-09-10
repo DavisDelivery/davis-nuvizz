@@ -266,16 +266,49 @@ export async function pendingCount(loadNbr, date) {
   return rows.filter((r) => !r.syncedAt).length;
 }
 
-export async function markSynced(keys) {
+/** The fields a loader can change after a row was first pushed — what a re-push carries. */
+export const flagsOf = (r) => JSON.stringify({
+  voidedAt: r?.voidedAt || null,
+  voidReason: r?.voidReason || '',
+  damaged: !!r?.damaged,
+  damageNote: r?.damageNote || '',
+});
+
+/**
+ * Mark pushed rows as synced — but ONLY the version that was actually pushed.
+ *
+ * ── THE RACE THIS CLOSES ────────────────────────────────────────────────────
+ *
+ * A flush reads the unsynced rows, awaits the network, then stamps syncedAt on
+ * their KEYS. The network round trip is the gap: if the loader voids a piece (or
+ * marks it damaged) while the push is in flight, voidScan clears syncedAt on the
+ * row so the void will travel on the next flush — and then markSynced lands and
+ * stamps syncedAt right back over it. The row now reads as synced with a void
+ * the office has never been told about. The truck let the freight go; the
+ * server still counts it; nothing will ever re-push it. Exactly the silent
+ * dock/office disagreement the tombstone design exists to prevent.
+ *
+ * So this takes the ROWS that were pushed, not their keys, and stamps a row only
+ * if its flags are still what was sent. A row changed mid-flight stays unsynced
+ * and goes up on the next flush with its new flags — which is what the loader
+ * meant. Plain keys are still accepted for callers that have nothing to compare.
+ */
+export async function markSynced(rows) {
   const db = await open();
   await new Promise((resolve, reject) => {
     const t = db.transaction(STORE_QUEUE, 'readwrite');
     const s = t.objectStore(STORE_QUEUE);
     const at = new Date().toISOString();
-    for (const key of keys) {
+    for (const item of rows) {
+      const key = typeof item === 'string' ? item : item?.key;
+      const sent = typeof item === 'string' ? null : flagsOf(item);
+      if (!key) continue;
       const g = s.get(key);
       g.onsuccess = () => {
-        if (g.result) s.put({ ...g.result, syncedAt: at });
+        const cur = g.result;
+        if (!cur) return;
+        if (sent !== null && flagsOf(cur) !== sent) return; // changed since the push — leave it unsynced
+        s.put({ ...cur, syncedAt: at });
       };
     }
     t.oncomplete = resolve;

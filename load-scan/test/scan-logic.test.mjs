@@ -1330,3 +1330,28 @@ test('a stop with no trustworthy count is not capped — there is no number to p
   assert.equal(wouldExceedCap(capRows(5), { ...args, cap: { stopNbr: '007173250', expected: 0 } }), false);
   assert.equal(wouldExceedCap(capRows(5), { ...args, cap: null }), false);
 });
+
+// ── A void that lands while a push is in flight must still travel ────────────
+//
+// flushQueue reads the unsynced rows, awaits the network, then marks them synced.
+// If the loader voids a piece during that round trip, voidScan clears syncedAt so
+// the void goes up next flush — and markSynced used to stamp syncedAt straight
+// back over it, by key. The server then counts freight the dock let go of, for
+// ever. markSynced now compares the flags it is stamping against the flags that
+// were actually sent; flagsOf is that comparison, so it is pinned here.
+
+test('the flags a re-push exists to carry are exactly the ones markSynced compares', async () => {
+  const { flagsOf } = await import('../src/lib/offline.js');
+  const sent = { key: 'L::OG1', og: 'OG1', scannedAt: 't', voidedAt: null, damaged: false };
+  const voidedMidFlight = { ...sent, voidedAt: '2026-09-10T12:00:00Z', voidReason: 'wrong truck', syncedAt: null };
+  const damagedMidFlight = { ...sent, damaged: true, damageNote: 'crushed corner' };
+  const untouched = { ...sent, queuedAt: 'irrelevant', syncedAt: 'irrelevant too' };
+  assert.notEqual(flagsOf(sent), flagsOf(voidedMidFlight), 'a void arriving mid-push must NOT be stamped synced');
+  assert.notEqual(flagsOf(sent), flagsOf(damagedMidFlight), 'nor a damage flag');
+  assert.equal(flagsOf(sent), flagsOf(untouched), 'fields the server does not carry never block the stamp');
+});
+
+test('flagsOf treats an absent flag and an explicitly empty one as the same thing', async () => {
+  const { flagsOf } = await import('../src/lib/offline.js');
+  assert.equal(flagsOf({}), flagsOf({ voidedAt: null, voidReason: '', damaged: false, damageNote: '' }));
+});
