@@ -23,6 +23,7 @@
 // an hour, and the per-email markers make every cycle after the first a single
 // list call per mailbox.
 
+import { PARSE_HOURS_ET, isParseHour } from '../../src/lib/manifest-schedule.js';
 import { isFirestoreEnabled, getDoc, setDoc } from './lib/firestore.mts';
 import { runManifestBoardDiff } from './lib/manifest-run.mts';
 import { ingestManifestEmails } from './lib/manifest-email-ingest.mts';
@@ -89,14 +90,13 @@ export default async (): Promise<Response> => {
 // Four firings, of which exactly three pass in either season: in EDT the 03:10 slot is 11:10p
 // ET and stands down; in EST the 00:10 slot is 7:10p ET and stands down. A test sweeps the
 // calendar rather than trusting this comment.
-export const PARSE_HOURS_ET = [20, 21, 22];
-
-/** PURE. Is this ET hour one of the three passes? The minute is not tested: the cron fires
- *  once an hour at :10, so the hour alone identifies the firing, and testing the minute would
- *  make the job miss its slot on a platform that runs it a minute late. */
-export function isParseHour(hour: number): boolean {
-  return PARSE_HOURS_ET.includes(hour);
-}
+//
+// THE HOURS THEMSELVES LIVE IN src/lib/manifest-schedule.js, WITH THE SENTENCE THE SCREEN
+// PRINTS. They were declared here first, and the Manifest check tab went on telling Chad the
+// mailbox was read "every 30 minutes" in two places while this job read it three times a
+// night — the screen describing a system that no longer existed. One module now, imported by
+// the job and by the card, so the next change to this schedule cannot leave the tab behind.
+export { PARSE_HOURS_ET, isParseHour };
 
 export const config = {
   schedule: '10 0,1,2,3 * * *',
