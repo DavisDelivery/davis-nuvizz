@@ -56,12 +56,14 @@ const manifest = {
   date: DATE,
   loads: [{
     loadNbr: 'CAPTEST', routeName: 'CAPTEST', driverName: 'Driver',
-    expectedPieces: 3, stopCount: 2,
+    expectedPieces: 6, stopCount: 3,
     stops: [
       { stopNbr:'007173460', businessName:'ATLANTA AUTO & AC', pros:['7173460'], primaryPro:'7173460',
         expectedPieces:1, skids:1, loose:0, loadSeq:1, loadStopSeq:2, city:'ATLANTA', state:'GA', isPickup:false },
       { stopNbr:'007173250', businessName:'DIVINELY GUIDED EPRESS C', pros:['7173250'], primaryPro:'7173250',
         expectedPieces:2, skids:2, loose:0, loadSeq:2, loadStopSeq:1, city:'ATLANTA', state:'GA', isPickup:false },
+      { stopNbr:'007173333', businessName:'THREE SKID CO', pros:['7173333'], primaryPro:'7173333',
+        expectedPieces:3, skids:3, loose:0, loadSeq:3, loadStopSeq:0, city:'ATLANTA', state:'GA', isPickup:false },
     ],
   }],
 };
@@ -99,6 +101,17 @@ const SCRIPT = [
   [null, 2500],
   ['OG6028250099', 900],
   [null, 3000],
+
+  // ACT 4 — THE PRO OF A SKID ALREADY BOOKED BY ITS PIECE ID. Skid 1 opens the
+  // order in full; skid 2 books off its piece id alone; then, with quagga
+  // decoding sparsely, the PRO on skid 2 reads by itself three seconds later.
+  // v0.47.0 minted a third piece from that — two skids presented, three booked,
+  // reproduced the day after it shipped. It must ask (the card), never book.
+  ['7173333', 120], ['OG6028333001', 120],
+  [null, 1500],
+  ['OG6028333002', 3000],
+  ['7173333', 700], ['7173333', 700],
+  [null, 4000],
 ];
 
 const browser = await chromium.launch({
@@ -166,7 +179,7 @@ const tapper = setInterval(async () => {
   try { await page.mouse.click(195, 300); taps += 1; } catch {}
 }, 900);
 
-await page.waitForTimeout(26000);
+await page.waitForTimeout(38000);
 clearInterval(tapper);
 
 const queue = await page.evaluate(() => new Promise((res) => {
@@ -215,6 +228,12 @@ if (!div.some((r) => r.og === 'OG6028250002')) {
 if (live.some((r) => r.og === 'OG6028250099')) {
   fail('a piece id landed in an order that was already complete — the open order did not close at its count');
 }
+
+// Act 4: two skids presented, exactly two pieces, and no minted id anywhere —
+// the lone PRO after the lone piece id must have ASKED, not booked.
+const three = live.filter((r) => String(r.pro) === '7173333');
+if (three.length !== 2) fail(`THREE SKID CO holds ${three.length} pieces from two skids — a lone PRO after a lone piece id minted a phantom`);
+if (three.some((r) => String(r.og).startsWith('NOOG-'))) fail(`THREE SKID CO minted ${three.map((r) => r.og).join(', ')} on an order whose pieces have real ids`);
 
 const body = await page.locator('body').innerText();
 // DIVINELY GUIDED is legitimately complete now — one skid scanned in full, one
