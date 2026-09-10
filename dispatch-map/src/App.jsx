@@ -36,6 +36,7 @@ import { restoreBar, reachableBar, settingsForSave, normalizeBar, sameBar, BAR_D
 import { sortStops, nextStopSort, stopSort, STOP_SORTS } from './lib/stop-sort.js';
 import { manifestIssues, manifestHeadline, manifestProvenance, loadStored, saveStored } from './lib/manifest-check-view.js';
 import { noteFreshness } from './lib/stop-notes-freshness.js';
+import { stopHandlingFlags, tallyHandlingFlags, HANDLING_FLAGS } from './lib/handling-flags.js';
 import { mapBaseOptions, mapLiveOptions, mapIdKey, keepView } from './lib/map-base-options.js';
 import { stopTimelineModel } from './lib/stop-timeline.js';
 import { diffRouteStyle, DIFF_ORIGINAL_COLOR, groupDispatchTrips } from './lib/diff-route-style.js';
@@ -123,7 +124,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.6.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -194,6 +195,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.6.0', 'DO NOT DOUBLE STACK NOW READS DNDS ON THE BOARD \u2014 AND IT IS THE ORDER\u2019S FACT, NOT THE CUSTOMER\u2019S. Chad, on the 2026-09-10 unplanned board with 192 orders and five of the seven rows on screen carrying it: \u201cDO ORDERS THAT HAVE DO NOT DOUBLE STACK IN THE NOTES SHOW UP HERE WITH A DNDS RESTRICTION\u201d. THEY DID NOT, ANYWHERE. Checked rather than guessed: the Restrictions column renders getRestrictionBadgeKeys and nothing else, which reads five fields off customer_notes; the scanner that fills equipment_restrictions carries 22 patterns across its two sources and every one of them is about TRUCK SIZE (NO TT, STRAIGHT TRUCK ONLY, 26 FT MAX, NO 53); there is no stacking key in RESTRICTION_ICONS and none in the dispatcher\u2019s own tick-list, so nobody could set it by hand either. A repo-wide search for the phrase returned one test fixture and no code. The text was never lost \u2014 extractOrderInstructions keeps every SPL-INSTR-TEXT comment and the stop card shows them \u2014 it was simply never promoted to a fact anything could act on. WHY IT IS NOT AN EQUIPMENT RESTRICTION, WHICH IS THE WHOLE DESIGN. Everything in equipment_restrictions is keyed by LOCATION and holds for that address forever, which is right for a dock that cannot take a tractor trailer and wrong for this. Double-stacking is a property of THIS SHIPMENT: this week\u2019s order is fragile, next week\u2019s is bagged goods that stack fine. Writing it to the customer note would mark a customer permanently un-stackable off one order \u2014 the exact mistake v0.99.3 paid for, where a location-keyed vehicle mark quietly pushed freight onto extra box trucks until somebody found the brush. So it is DERIVED per order, never stored, never written back, and a test pins that it cannot reach getRestrictionBadgeKeys, because the moment it did the map pin would start claiming the address cannot take stacked freight. It is modelled on stopLooksOversize, which is the same shape and already sits beside the customer restrictions on five surfaces. THE NEGATION IS THE ENTIRE RULE. \u201cDOUBLE STACK\u201d on its own is not a restriction \u2014 \u201cDOUBLE STACK OK\u201d and \u201cCAN BE DOUBLE STACKED\u201d say the opposite, and a rule that fired on the bare phrase would invert both and spend a floor position on every truck carrying one. Every pattern anchors on the negation instead. The phrasings come off the board, not out of the air: Uline writes \u201cDo NOT Deliver Double Stacked\u201d in mixed case, so a rule written for the shouty form would have missed all five. The two sibling instructions riding the same orders \u2014 DO NOT BREAKDOWN SKID, DO NOT LAY PALLETS OF / BOXES ON THEIR SIDE \u2014 are deliberately NOT folded in: different job, different person, and a DNDS chip on freight that stacks fine is the failure this rule exists to avoid. IT READS BOTH COMMENT CHANNELS. orderInstructions is a FILTERED subset (ORD_IN / SPL-INSTR-TEXT), where every sample so far has landed; allComments is the unfiltered list. Reading only the first would go silent the day NuVizz re-files one of these under another type, and that failure is invisible \u2014 a missing chip looks exactly like freight that stacks. AND THE NUMBER A LOAD BUILDER ACTUALLY ACTS ON. One chip on one row is an input; \u201c6 skids DNDS\u201d across a selection is a decision. The selection tally counts SKIDS where every other entry counts orders, and says the word, because the binding dimension of a load is skid POSITIONS (Phase 2.8) and \u201c6 DNDS\u201d beside \u201c3 ST only\u201d would read as the same unit and understate a truck about to not fit. STILL OPEN, AND IT IS CHAD\u2019S FACT TO GIVE: the solver\u2019s skid caps were mined from ~900 real trips, so if those trips were loaded with skids stacked, an all-DNDS load at 31 will not physically fit and the router cannot currently tell. Nothing here touches the solver \u2014 this change only shows the fact. 17 new tests, mutation-checked three ways (drop the negation, read one channel, count orders instead of skids \u2014 each fails exactly the tests that claim to guard it), and the column guard lifts the shipped renderer and runs Chad\u2019s seven real rows through it. Zero NuVizz calls. 4,019 green.'],
   ['1.5.0', 'THE RAIL\u2019S SEARCH IS ONE BOX, \u2795 NEW ROUTE SITS BESIDE THE TABS, AND A STATUS TICK STOPS RE-READING THE WHOLE WINDOW. Three things Chad asked for in one sitting, and the third was the expensive one. (1) \u201cI WANT THESE TWO SEARCH BARS TO WORK TOGETHER \u2014 if i type something in the search bar for routes and swap to loads i want it to remain.\u201d Routes and Loads each owned a LOCAL search box, and switching tabs unmounts one panel and mounts the other, so the text went with it: you retyped \u201cfrye\u201d to ask the same question of the other list, and the two counts on the strip \u2014 the whole reason it shows both \u2014 could never be read against one needle. The rail owns the value now and the tabs are two views of it. The dispatch Map\u2019s read-only Routes panel has no second tab to share with, so the panels still keep their own box when nobody passes one; that controlled-or-not rule lives in ONE tested function rather than being written out twice, because two copies of it is two chances for the panels to disagree about who owns the text. Deliberately NOT remembered across sessions: a search restored from last night is an invisible filter, which is the trap that blanked the bottom grid in v0.45.6. (2) \u201cMOVE NEW ROUTE TO BESIDE LOADS, I DON\u2019T NEED TO SEE THE DATE THERE.\u201d Done, and the date is what paid for the room \u2014 it was a truncated \u201cTHU, S\u2026\u201d, a third copy of a board date already on the grid\u2019s own bar and in the Setup panel, fitting in none of its space. ON THE PHONE THE BUTTON STAYS IN THE PANEL, and that is a decision rather than an oversight: the phone\u2019s tab strip IS its whole navigation at 360px (Setup \u00b7 Routes \u00b7 Loads \u00b7 Result) and a fifth control there is the collision this repo has patched four times. Two views, drawn from one button definition so the pair cannot drift. (3) \u201cONCE THESE STOPS LOAD, EVERY TIME I CHANGE A FILTER IT SHOULDN\u2019T HAVE TO RELOAD THEM FROM FIRESTORE \u2014 it should load them all one time in the beginning and then the filter just filters what is shown.\u201d CHECKED, NOT REASONED: `statusSel` sat in the window pull\u2019s dependency list and the ticked statuses rode the request, so every tick of a status box tore the window down and pulled it again \u2014 up to 62 day documents re-read and the open-order pool re-reconciled, the grid blanking each time \u2014 to compute a subset THE CLIENT WAS ALREADY COMPUTING ANYWAY. filteredRows has re-applied the status check itself since the \u201cRASKO\u201d fix, because the server\u2019s copy runs before the plan overlay and was wrong about a just-saved row. So the pull paid for a filter whose answer it then discarded. It is pulled once per window and date now; the box is instant. AND THE PULL GOT CHEAPER WHILE LOSING ITS FILTER, which is what makes that safe: this path read those day documents WHOLE \u2014 raw NuVizz object and all, ~9\u202fKB a stop, ~9,800 stops on a fourteen-day window \u2014 and it was survivable only because the status filter trimmed the response at the very end. It now reads through the same LEAN projection the Map feed has used since the 6.9\u202fMB cold-load fix, which drops ~55% of the bytes and the raw object with them, so ONE all-status pull costs less than the filtered pulls it replaces. The no-filter case already pulled exactly this much, so this is not a new shape. `statusCodes` is still honoured by the endpoint \u2014 Check vs NuVizz sends it, deliberately, because that diff is a question about one filter at one moment. SAID PLAINLY: zero NuVizz calls either way on every cache-served window (Last 7/14 days, \u00b17d, custom ranges); only \u201cNuVizz today\u201d reaches the vendor, and its one call now asks for all statuses in a single day, well inside the row cap. THE GUARD THAT MAKES IT STICK: the Firestore test fake now records WHICH FIELDS a read asked for, the same way it already records write masks and for the same reason \u2014 a masked read and a whole-document read return the identical object from a fake, so a caller that quietly stopped masking would have passed every test. 11 new tests.'],
   ['1.4.0', 'WHY DOES THE BOARD SHOW THIS STOP THE WAY IT DOES \u2014 ANSWERABLE NOW, FOR FREE, AND THE SCAN KEEPS THE RECEIPT. Chad, with AVRT-0170416694 (RODERICL CONEY, McDonough) and RA5732712 (GEORGIA POWER, Forest Park) sitting in the Routing selection: \u201cthose 2 orders are planned on william and joe however our system does not show this \u2014 figure out why and make sure it doesn\u2019t happen again.\u201d CHECKED, NOT REASONED, AND THE HONEST ANSWER FIRST: the code alone cannot say which of SEVEN paths put those two rows there. NuVizz\u2019s planned/un-planned list is the ONLY thing that can put a stop on a route on our board, and it lags the portal by minutes and has stayed wrong for hours (DAWSONVILLE); a stop the list stops returning is carried as a candidate and can be dropped by the verify on a lagging stop record when the day\u2019s roster has no load by that name (a load created after the last roster pull is invisible to it until the next one \u2014 hourly 04:00\u201313:00 and 20:00\u201324:00, nothing in between); a Save\u2019s write-through can miss a stop that lives on another day\u2019s document; a plan can be stamped on one day\u2019s copy while the Map serves another\u2019s; two NuVizz records can share the number; a struck-off stop is defended un-planned by the write grace. Every one of those is the same grey pin, and the facts that tell them apart live in a dozen Firestore documents nothing on a dispatch screen can open. Guessing which one it was is the worst output this repo produces, so this release does not. THREE THINGS INSTEAD. (1) nuvizz-stop-explain?stop=AVRT-0170416694 \u2014 GET, Firestore only, ZERO NuVizz calls. It reads every copy of the stop across the board days around the date (14 back, 3 ahead) with each copy\u2019s plan and stamps, the open-order pool\u2019s row, the un-planned snapshot, the day\u2019s roster and whether the route resolves on it, the write journal for the stop or its route that day, sealed history, the retired list and any dispatcher-set date \u2014 and says what they mean in sentences, most important first. (2) THE SCAN NOW KEEPS THE RECEIPT. Every time the list disputes a routed stop the verify decides its fate and, until now, kept three counters in a console line; it now records per stop WHICH route it was on, the verdict, and ON WHOSE WORD \u2014 the load\u2019s own membership read, a lagging stop record, a roster with no such load, a spent budget, a confirmed save\u2019s grace \u2014 with every step of the fall-through, in a per-day ledger the explain reads back. Written only by a scan that actually disputed something; the run ledger carries the counts. RUN, NOT DESCRIBED: the real scan against a stubbed vendor, AVRT planned on WILLIAM by a save two hours old, absent from the pull, no WILLIAM on the roster, record un-planned \u2192 dropped, and the ledger reads \u201croster (1 load): no load named WILLIAM \u2192 stop record: UNPLANNED, on no load\u201d; with WILLIAM on the roster and the load listing the stop \u2192 kept on the load\u2019s word, verified. (3) TWO PATHS CLOSED ON THE WAY, each a real defect regardless of which one bit today. The board reconcile (the repair built for \u201cthe scan reverted my rows\u201d) read a load\u2019s DELIVERIES only \u2014 the DO filter meant to skip the route\u2019s own origin pickup also skipped every CUSTOMER pickup, so an RA planned on JOE could never be re-stamped planned by the tool for exactly that; it now takes every pickup past the origin slot in running order, the same rule the save engine applies. And when NuVizz holds two LIVE records under one number, the merge kept whichever the list returned later; a carrier order keyed twice \u2014 one on a load, one not \u2014 could put the un-planned twin on the board with the route card one stop short, the exact state in which the same freight gets planned onto a second truck. The planned twin wins now, still badged as a duplicate. WHAT WOULD SETTLE THE TWO ORDERS THEMSELVES: open the explain URL for each (free); if NuVizz\u2019s side is still in question, nuvizz-stop-explorer {savedSearch:active, full:true, find:\u2026} is ONE call per stop and says what the list reports right now. SAID PLAINLY: no UI was added for this \u2014 it is a URL, like the other diagnostics \u2014 and the ledger begins with the first scan after this deploys; it cannot explain what happened before it. 29 new tests.'],
   ['1.3.0', 'THE BOTTOM PANEL\u2019S BAR IS ONE ROW AGAIN, AND ITS ROWS SAY WHICH STOPS A TRACTOR CAN RUN. Chad, with a screenshot of the bar wrapped onto two lines: \u201cI want this bottom panel to highlight the tractor friendly rows. Remove the all drivers drivers. put the check vs nuvizz in the settings gear on this panel. remove the unplanned 100%. i\u2019m trying to condense these 2 rows down to one to save space.\u201d WHY IT WRAPPED, MEASURED OFF HIS SCREENSHOT RATHER THAN ASSUMED: the pane is about 1,000px wide and the first row was already full before the \u201cBoard \u00b7 643 stops \u00b7 21 closed removed\u201d sentence, the Check button, the date and the gear had anywhere to go, so the four of them took a second 44px line under a grid whose whole point is the map above it. The bar had grown a control at a time \u2014 the status-percent strip in v0.50.76, the driver dropdown, the profiles chip, the source sentence, the check \u2014 and nothing ever left. FOUR THINGS LEAVE. (1) The \u201cUnplanned 100%\u201d strip: with Un-Planned ticked, which is how this bar is used, it read 100% all day, a number that could not change and so could not inform. (2) The driver dropdown, control AND setting: removing the select alone would have left driverSel in the bar\u2019s memory, restored from every older profile \u2014 Chad\u2019s own production profile carries it \u2014 and still filtering the rows with nothing on screen to clear it, which is the invisible-filter trap that blanked this grid once already (v0.45.6). The field is dropped on read now, and a test pins that an older profile still applies with it ignored. The job survives where it always also lived: the search box matches a driver\u2019s name. (3) The source sentence became a chip \u2014 \u201cBoard \u00b7 21 removed\u201d \u2014 because the 643 was already on the Stops toggle beside it; the full accounting is still the hover text, and a partial pull, an error and the in-flight spinner still say so in full, since a short list must never read as a complete one. (4) Check vs NuVizz is a GEAR ACTION: it spends a metered call a few times a day at most and was costing the bar 110px on every row it drew \u2014 the profile of a menu item. It is always listed and greyed WITH ITS REASON when it cannot run (Board (today) selected, Loads view, mid-pull, cooling down), because an item that is simply absent is a feature you have to already know about to go looking for. Its verdict did not move into the menu with it: a green \u201c\u2713 matches NuVizz\u201d or amber \u201c12 differ\u201d chip sits beside the window and reopens the panel, which now hangs off the bar\u2019s right end. On Routing the item leads the panel gear\u2019s list; the dispatch Map, whose grid had no gear, gets one for it \u2014 desktop only, so the phone bar gains no control and no collision. MEASURED, NOT ASSUMED, ON THE BUILT BUNDLE: with those four gone the one-row bar still needed 1,104px in Chad\u2019s exact state (window set, date on the bar), so three more trims paid the rest \u2014 the Stops/Loads toggle lost the two icons the phone never drew (38px; the words are the control), the window labels got shorter (a select is as wide as its widest option, and \u201cNuVizz \u00b7 \u00b17 days\u201d was setting the width of a control reading \u201cLast 7 days\u201d), and from 1280px up the chevron is a 32px desktop button rather than a 44px thumb target (the tablet guard holds 44 below that). 984px now, under the pane. AND ONE THING ARRIVES: THE GREEN. The Selected window has painted a tractor-friendly row green since v0.46.5, but a router picks stops FROM the grid, and the only way to learn which of 700 rows a 53-footer could serve was to select them first and look. The grid now reads the SAME rule through ONE helper \u2014 the dispatcher\u2019s green paint, the \u201cTractor trailer friendly\u201d badge, the proven lime \u201ca tractor has delivered here\u201d, with Box-only and a confirmed \u201cNo tractor trailer\u201d still winning as not friendly \u2014 and paints the same green-100, so a stop cannot be green in the panel and plain in the grid or the other way round (that drift has been shipped twice: v0.46.8, v1.1.1). Ranked as a pure function beside the Selected window\u2019s: selection blue first (what the lasso is doing now), then a card\u2019s staged tint, then the green, then carry-over amber \u2014 a fact about the freight over a fact about the date, because the router acts on the first and the Day column already says the second. Switching the lime paint off in the Legend takes the proven-history green off these rows too, exactly as it takes it off the pins, because both read the same toggle-aware map. flex-wrap stays as the safety net: a non-wrapping bar pushes its tail off the right edge, invisible and unreachable. SAID PLAINLY: this is a desktop-bar change; the phone bar (chevron + Stops/Loads, folding open to Profiles / search / Status) is untouched, and every guard ran green. 12 new tests.'],
@@ -13713,10 +13715,16 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     { k: 'cartons', label: 'Pallets', w: 70, get: (s) => (s.cartons ?? '—'), align: 'right', sortVal: (s) => (typeof s.cartons === 'number' ? s.cartons : null) },
     { k: 'volume', label: 'Loose', w: 64, get: (s) => (s.volume ?? '—'), align: 'right', sortVal: (s) => (typeof s.volume === 'number' ? s.volume : null) },
     { k: 'weight', label: 'Weight', w: 80, get: (s) => (s.weight != null ? Number(s.weight).toLocaleString() : '—'), align: 'right', sortVal: (s) => (s.weight != null ? Number(s.weight) : null) },
-    { k: 'restr', label: 'Restrictions', w: 160, get: (s) => {
-        const keys = getRestrictionBadgeKeys(notes.get(s.matchKey) || null);
-        return keys.length ? keys.map((k) => RESTRICTION_ICONS[k]?.short || k).join(', ') : '';
-      }, sortVal: (s) => getRestrictionBadgeKeys(notes.get(s.matchKey) || null).map((k) => RESTRICTION_ICONS[k]?.short || k).join(', ') },
+    // TWO KINDS OF FACT SHARE THIS CELL AND THEY ARE NOT THE SAME KIND.
+    // The restriction keys come from customer_notes and describe the ADDRESS — they hold
+    // every day, for every order. The handling flags are read live off THIS ORDER's own
+    // comments and describe the freight on it. Both belong here (Chad, on 192 unplanned
+    // orders: "DO ORDERS THAT HAVE DO NOT DOUBLE STACK IN THE NOTES SHOW UP HERE WITH A
+    // DNDS RESTRICTION"), and the order-level ones come LAST so a customer's standing
+    // restrictions keep the position a dispatcher already reads them in. Plain text
+    // rather than a chip, because that is what every other value in this column is.
+    { k: 'restr', label: 'Restrictions', w: 160, get: (s) => restrCellText(s, notes),
+      sortVal: (s) => restrCellText(s, notes) },
     // THE LOAD COLUMN IS WHY THE HOLE EXISTED. It reads NuVizz, and a Draft load carrying no
     // saved orders has nothing there to read — so a stop sitting at position 1 on an open card
     // listed blank, exactly like an order nobody had touched. It now names the card too, in the
@@ -16534,6 +16542,33 @@ function stopLooksOversize(s) {
   return Array.isArray(s?.stopDetails) && s.stopDetails.some((d) => String(d?.productCategory || '').toUpperCase() === 'L');
 }
 
+// ORDER-LEVEL FREIGHT CHIPS — the same family as the OS badge above, and deliberately
+// NOT RestrictionIcon: those icons are the customer's, keyed by location and drawn on
+// the map pin. These are this shipment's, derived per order and never written anywhere.
+// One component for every surface, so the places that show them cannot drift apart.
+function HandlingChips({ stop }) {
+  const flags = stopHandlingFlags(stop);
+  if (!flags.length) return null;
+  return flags.map((k) => (
+    <span
+      key={k}
+      className="text-[9px] font-bold text-indigo-700 border border-indigo-400 rounded px-1"
+      title={HANDLING_FLAGS[k]?.title || HANDLING_FLAGS[k]?.label || k}
+    >
+      {HANDLING_FLAGS[k]?.short || k}
+    </span>
+  ));
+}
+
+// The Restrictions cell as text — shared by the column's renderer and its sort key so
+// the two can never disagree about what the cell says.
+function restrCellText(s, notes) {
+  const parts = getRestrictionBadgeKeys(notes.get(s.matchKey) || null)
+    .map((k) => RESTRICTION_ICONS[k]?.short || k);
+  for (const k of stopHandlingFlags(s)) parts.push(HANDLING_FLAGS[k]?.short || k);
+  return parts.join(', ');
+}
+
 /**
  * Bottom-panel PROFILES, shared across every device (Chad, 7/27: "they shouldn't be
  * local to the device, should be across all devices").
@@ -16779,6 +16814,7 @@ function apptWindowLabel(stop) {
 function RoutingStopDetail({ stop, note, onOpen, windowViolated, onMoveLocation, onEditAddress, onAutoFixAddress }) {
   const keys = getRestrictionBadgeKeys(note);
   const oversize = stopLooksOversize(stop);
+  const handling = stopHandlingFlags(stop);
   const hoursStr = formatReceivingHours(note);
   const lines = Array.isArray(stop.stopDetails) ? stop.stopDetails : [];
   // Prefer a saved address_override (same as the Map card), so a corrected address
@@ -16831,7 +16867,7 @@ function RoutingStopDetail({ stop, note, onOpen, windowViolated, onMoveLocation,
         <div><Cap>Total pcs</Cap><div className="text-slate-800">{Number(stop.pallets) || 0}</div></div>
         <div><Cap>Weight</Cap><div className="text-slate-800">{(Number(stop.weight) || 0).toLocaleString()} lb</div></div>
       </div>
-      {(keys.length > 0 || oversize) && (
+      {(keys.length > 0 || oversize || handling.length > 0) && (
         <div>
           <Cap>Restrictions</Cap>
           <ul className="mt-0.5">
@@ -16845,6 +16881,12 @@ function RoutingStopDetail({ stop, note, onOpen, windowViolated, onMoveLocation,
                 <span className="text-[9px] font-bold text-amber-700 border border-amber-400 rounded px-1">OS</span><span>Oversize freight</span>
               </li>
             )}
+            {handling.map((k) => (
+              <li key={k} className="inline-flex items-center gap-1.5 mr-2 mb-0.5 align-middle">
+                <span className="text-[9px] font-bold text-indigo-700 border border-indigo-400 rounded px-1">{HANDLING_FLAGS[k]?.short || k}</span>
+                <span>{HANDLING_FLAGS[k]?.label || k}</span>
+              </li>
+            ))}
           </ul>
         </div>
       )}
@@ -16989,6 +17031,7 @@ function RoutingSelectedList({ selectedStops, notes, onRemove, open, setOpen, on
       id: String(s.stopNbr), stop: s, note,
       keys: getRestrictionBadgeKeys(note),
       oversize: stopLooksOversize(s),
+      handling: stopHandlingFlags(s),
       customer: s.businessName || String(s.stopNbr),
       city: s.city || '',
       skids: Number(s.cartons) || 0,         // NuVizz totalCartons = real skids
@@ -17031,10 +17074,11 @@ function RoutingSelectedList({ selectedStops, notes, onRemove, open, setOpen, on
                       {detailId === r.id ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                     </div>
                     <div className="text-[11px] text-slate-500 truncate">{[r.city, `${r.skids} skid${r.skids === 1 ? '' : 's'}`, `${r.loose} loose`, `${r.pieces} pc${r.pieces === 1 ? '' : 's'}`, `${r.weight.toLocaleString()} lb`].filter(Boolean).join(' · ')}</div>
-                    {(r.keys.length > 0 || r.oversize) && (
+                    {(r.keys.length > 0 || r.oversize || r.handling.length > 0) && (
                       <div className="flex flex-wrap items-center gap-1 mt-0.5">
                         {r.keys.map((k) => <RestrictionIcon key={k} kind={k} size={14} />)}
                         {r.oversize && <span className="text-[9px] font-bold text-amber-700 border border-amber-400 rounded px-1" title="Oversize freight">OS</span>}
+                        <HandlingChips stop={r.stop} />
                       </div>
                     )}
                   </button>
@@ -17092,7 +17136,7 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
     const note = notes.get(s.matchKey) || null;
     return {
       id: String(s.stopNbr), stop: s, note,
-      keys: getRestrictionBadgeKeys(note), oversize: stopLooksOversize(s),
+      keys: getRestrictionBadgeKeys(note), oversize: stopLooksOversize(s), handling: stopHandlingFlags(s),
       customer: s.businessName || String(s.stopNbr), city: s.city || '',
       skids: Number(s.cartons) || 0, loose: Number(s.volume) || 0, pieces: Number(s.pallets) || 0, weight: Number(s.weight) || 0,
     };
@@ -17146,10 +17190,11 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
                 <div className="min-w-0 flex-1">
                   <div className="truncate font-medium text-[12px]" title={r.customer}>{r.customer}</div>
                   <div className="text-[11px] text-slate-500 truncate">{[r.city, `${r.skids} sk`, `${r.loose} loose`, `${r.pieces} pcs`, `${r.weight.toLocaleString()} lb`].filter(Boolean).join(' · ')}</div>
-                  {(r.keys.length > 0 || r.oversize) && (
+                  {(r.keys.length > 0 || r.oversize || r.handling.length > 0) && (
                     <div className="flex flex-wrap items-center gap-1 mt-0.5">
                       {r.keys.map((k) => <RestrictionIcon key={k} kind={k} size={13} />)}
                       {r.oversize && <span className="text-[9px] font-bold text-amber-700 border border-amber-400 rounded px-1" title="Oversize freight">OS</span>}
+                      <HandlingChips stop={r.stop} />
                     </div>
                   )}
                 </div>
@@ -21402,6 +21447,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     let skids = 0, pieces = 0, weight = 0;
     const counts = {};
     let oversize = 0;
+    const picked = [];
     for (const id of selectedIds) {
       const s = stopById.get(String(id));
       if (!s) continue;
@@ -21409,11 +21455,20 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       pieces += Number(s.pallets) || 0;      // NuVizz totalPallets = total pieces
       weight += Number(s.weight) || 0;
       if (stopLooksOversize(s)) oversize += 1;
+      picked.push(s);
       const note = notes.get(s.matchKey);
       for (const k of getRestrictionBadgeKeys(note || null)) counts[k] = (counts[k] || 0) + 1;
     }
     const summary = Object.entries(counts).map(([k, n]) => `${n} ${RESTRICTION_ICONS[k]?.short || k}`);
     if (oversize) summary.push(`${oversize} oversize`);
+    // THE CUBE LINE, AND IT COUNTS A DIFFERENT THING ON PURPOSE. Every entry above
+    // counts ORDERS, because a restriction is a property of the stop. A no-stack flag
+    // is a property of the FREIGHT, and what it spends is floor positions — so this one
+    // counts SKIDS and says the word, because "6 DNDS" beside "3 ST only" would look
+    // like the same unit and quietly understate a truck that is about to not fit.
+    for (const [k, t] of Object.entries(tallyHandlingFlags(picked))) {
+      summary.push(`${t.skids} skid${t.skids === 1 ? '' : 's'} ${HANDLING_FLAGS[k]?.short || k}`);
+    }
     return { count: selectedIds.size, skids, pieces, weight, summary };
   }, [selectedIds, stopById, notes]);
 
