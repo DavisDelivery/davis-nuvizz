@@ -45,6 +45,9 @@ import {
 // in trailer-block.js rather than map-legend.js only because map-legend → time-marks →
 // board-flags would be a cycle.
 import { dispatcherTrailerBlock, trailerBlockerLabels } from './trailer-block.js';
+// The ORDER's own freight facts (derived per order, never stored) — the other half of the
+// truck question from the customer-keyed marks above.
+import { stopNeedsTractor, stopHandlingFlags, HANDLING_FLAGS } from './handling-flags.js';
 import { placeKeyOfStop } from './matchKey.js';
 
 // ── time + hours parsing ──────────────────────────────────────────────────────
@@ -1018,6 +1021,72 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
           + ` Move it to a box truck, or mark the customer tractor-OK if a 53' does fit.`,
         // Keyed on the DOCK, so the card a dispatcher dismisses is the card that stays gone.
         scope: 'occurrence', servedDate, fingerprint: `trailer|${servedDate}|${k}|${placeKeyOfStop(s)}`,
+      }));
+    }
+
+    // R4b — THE SAME QUESTION FROM THE OTHER SIDE: freight that needs a tractor, sitting on
+    // a box truck. Chad: "I also want it to throw a flag if i try to put this on a box truck."
+    //
+    // R4 above catches a stop the CUSTOMER cannot take a trailer at, riding a tractor. This
+    // catches an ORDER whose freight cannot come off a box truck, riding one. Same route
+    // class map, same dock merge, same tier — what differs is which fact is consulted and
+    // which way the mismatch runs.
+    //
+    // WHY IT IS THE ORDER'S FACT AND NOT THE CUSTOMER'S. A walk-behind stacker rolls off a
+    // dock or a trailer deck on its own castors; a box truck offers a liftgate instead, and
+    // a top-heavy machine on a gate platform is how one gets tipped. But that is true of
+    // THIS WEEK'S order — the same customer's next delivery may be six cartons any box truck
+    // handles. Writing it to customer_notes would mark the dock permanently tractor-only off
+    // one shipment, the exact mistake handling-flags.js exists to avoid.
+    //
+    // A ROUTE WITH NO CLASS IS NOT JUDGED, inheriting the discipline above: not knowing which
+    // truck is on a load is not the same claim as knowing it is a box, and those stops are
+    // already counted in `skipped.routesNoTruckClass`.
+    const tractorNeeded = [];
+    for (const s of scheduledJudged) {
+      const k = routeKeyOf(s);
+      if (!k) continue;
+      if (routeClassOf(k) !== 'box') continue;   // null (unknown) and 'tractor' both fall through
+      if (!stopNeedsTractor(s)) continue;
+      tractorNeeded.push({ s, k });
+    }
+    // ONE DOCK, ONE CARD — the merge R4 had to learn, for the same reason: two orders at one
+    // address are one move, and counting them twice tells a dispatcher to doubt a whole load
+    // over a single stop.
+    const needByDock = new Map();
+    for (const c of tractorNeeded) {
+      const dock = `${c.k}|${placeKeyOfStop(c.s)}`;
+      if (!needByDock.has(dock)) needByDock.set(dock, []);
+      needByDock.get(dock).push(c);
+    }
+    for (const list of needByDock.values()) {
+      list.sort((a, b) => String(a.s.stopNbr ?? '').localeCompare(String(b.s.stopNbr ?? '')));
+    }
+    const needPerRoute = new Map();
+    for (const list of needByDock.values()) needPerRoute.set(list[0].k, (needPerRoute.get(list[0].k) || 0) + 1);
+    checked.boxTruckConflicts = needByDock.size;
+    for (const list of needByDock.values()) {
+      const { s, k } = list[0];
+      const atThisDock = list.map((c) => String(c.s.stopNbr ?? '')).filter(Boolean);
+      // Name the freight that raised it. "A stacker" is what a router goes and looks at;
+      // "handling flag" is what he scrolls past.
+      const why = stopHandlingFlags(s)
+        .filter((f) => HANDLING_FLAGS[f]?.needsTractor)
+        .map((f) => (HANDLING_FLAGS[f]?.label || f).toLowerCase());
+      const alsoN = (needPerRoute.get(k) || 1) - 1;
+      const label = s.routeName || s.loadNbr || k;
+      rows.push(row('red', 'box_truck_conflict', s, {
+        customer: s.businessName || s.stopNbr || null,
+        handling: why, routeClass: 'box',
+        routeKey: k, routeConflicts: needPerRoute.get(k) || 1, seq: seqOf(s),
+        stopNbrs: atThisDock, ordersHere: atThisDock.length,
+        title: `Needs a tractor trailer — ${s.businessName || s.stopNbr}`,
+        detail: `${label} is running a box truck, but this order carries ${why.join(', ') || 'freight that needs a tractor trailer'}.`
+          + `${seqOf(s) != null ? ` Stop ${seqOf(s)} on the route.` : ''}`
+          + `${atThisDock.length > 1 ? ` ${atThisDock.length} orders at this stop (${atThisDock.join(', ')}) — one dock, so this is one move.` : ''}`
+          + `${alsoN > 0 ? ` ${alsoN} other stop${alsoN === 1 ? '' : 's'} on ${label} need${alsoN === 1 ? 's' : ''} a tractor too — check the truck, not just the stop.` : ''}`
+          + ` Move it to a tractor trailer, or confirm the machine can come off a liftgate.`,
+        scope: 'occurrence', servedDate, fingerprint: `boxtruck|${servedDate}|${k}|${placeKeyOfStop(s)}`,
       }));
     }
   }
