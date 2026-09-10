@@ -1295,6 +1295,70 @@ export async function recordScanRun(row: ScanRunRow): Promise<void> {
   } catch { /* best-effort: the ledger must never affect a scan */ }
 }
 
+// ── The plan-verdict ledger: which stop came off which route, on whose word ──
+//
+// THE QUESTION THIS ANSWERS (Chad, Sep 10 2026, two orders in the Routing selection that
+// NuVizz held on WILLIAM and JOE): "figure out why." The scan had every fact that decides a
+// routed stop's fate — the list's word, the confirmed-save grace, the load's own membership
+// read, the stop record's verdict, a spent budget — and kept none of it: three counters went
+// to a console line and the row was rewritten. From the board alone, "the list un-planned it"
+// and "the verify dropped it on a lagging record" were the same unplanned row.
+//
+// One document per board day, rows newest-first, capped. Written ONLY by a scan that actually
+// disputed something (a quiet scan costs nothing here), read by nuvizz-stop-explain. It is a
+// ledger, not a judge: nothing reads it to decide a plan, so a bad row can mislead a reader but
+// never move freight. Rows carry the raw list status and whether the stop was ABSENT from the
+// pull, because those two shapes (listed un-planned vs not listed at all) fail differently.
+const PLAN_VERDICT_MAX = 600;
+export type PlanVerdictBasis =
+  | 'fresh-terminal' | 'roster-unreadable' | 'load-read-budget' | 'load-member'
+  | 'record-budget' | 'twin-mismatch' | 'record' | 'record-read-failed'
+  | 'write-grace' | 'unverified-over-cap' | 'verify-disabled';
+export interface PlanVerdictRow {
+  /** the scan's stamp (scannedAt) — every row of one scan shares it */
+  at: string;
+  stopNbr: string;
+  /** the route the board held the stop on when the list disputed it */
+  route: string | null;
+  verdict: 'kept' | 'held' | 'dropped';
+  basis: PlanVerdictBasis;
+  /** the deciding evidence, in words */
+  detail: string;
+  /** every step the lookup took, oldest first (a fall-through is visible as one) */
+  path: string[];
+  /** the stop was ABSENT from the pull (carried forward as a candidate), not listed un-planned */
+  absent: boolean;
+  /** the list row's raw status code this scan, null when absent */
+  listStatus: string | null;
+}
+const planVerdictPath = (tenant: string, dateStr: string) => `${OPS_COLLECTION}/plan_verdicts__${tenantKey(tenant)}__${dateStr}`;
+
+/** Append this scan's rows (newest first) to the day's ledger. Best-effort: a failure here
+ *  must never touch the scan that produced the rows, so it swallows and reports false. */
+export async function recordPlanVerdicts(tenant: string, dateStr: string, rows: PlanVerdictRow[]): Promise<boolean> {
+  if (!isFirestoreEnabled() || !Array.isArray(rows) || !rows.length) return false;
+  try {
+    const prior = await readPlanVerdicts(tenant, dateStr);
+    const next = [...rows, ...prior].slice(0, PLAN_VERDICT_MAX);
+    await setDoc(planVerdictPath(tenant, dateStr), {
+      tenant: tenantKey(tenant), date: dateStr, updated_at: new Date().toISOString(),
+      count: next.length, rowsJson: JSON.stringify(next),
+    } as any);
+    return true;
+  } catch { return false; }
+}
+
+/** The day's ledger, newest first; [] when none was ever written or the read fails. */
+export async function readPlanVerdicts(tenant: string, dateStr: string): Promise<PlanVerdictRow[]> {
+  if (!isFirestoreEnabled()) return [];
+  try {
+    const doc = await getDoc(planVerdictPath(tenant, dateStr));
+    if (!doc) return [];
+    const arr = JSON.parse(doc.rowsJson || '[]');
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+
 // ── The last refused scan, where the BOARD's own poll can see it ─────────────
 //
 // THE FAILURE THIS EXISTS TO PREVENT. A dispatcher presses "Scan now" at 5am on a signed-out

@@ -22,9 +22,9 @@
 
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro, lookupLoadStopNbrs } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan, recordScanRun, markLoadRosterEmpty, writeActivePool, readStopDoc, patchStopFields, readActivePoolMeta, readFrozenLedger, writeFrozenLedger } from './firestore.mts';
-import type { FrozenLedgerEntry } from './firestore.mts';
-import { listScanForDate, mergeEnrich, twoScanPull, completedScanRows, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow, activeArrivalReachDays, LIST_MAX_RESULT } from './nuvizz-list.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired, readScanKindStamps, markScanKinds, applyCompletionPatches, markCompletedScan, recordScanRun, markLoadRosterEmpty, writeActivePool, readStopDoc, patchStopFields, readActivePoolMeta, readFrozenLedger, writeFrozenLedger, recordPlanVerdicts } from './firestore.mts';
+import type { FrozenLedgerEntry, PlanVerdictRow } from './firestore.mts';
+import { listScanForDate, mergeEnrich, twoScanPull, completedScanRows, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus, isPickupRow, activeArrivalReachDays, LIST_MAX_RESULT, BOARD_WRITE_GRACE_MIN } from './nuvizz-list.mts';
 import { buildActivePool } from './active-pool.mts';
 import { strayFinishedRows, openPastRows, planRefile, planOpenStrays, nextCopyDays, rotate } from './refile-core.mts';
 import type { FrozenCopy, StrayRow, Heal } from './refile-core.mts';
@@ -256,6 +256,24 @@ export function makeHistoryTerminalLookup(deps: {
 //  • budgets: at most `loadReadBudget` load reads and `stopReadBudget` stop-record reads per
 //    scan; anything past budget verdicts null → held one tick, never demoted on a missing read.
 // Verdict semantics match applyDemotionVerify: true = keep plan, false = demote, null = hold.
+/**
+ * WHY the verify answered the way it did about one stop — kept beside the verdict (v1.4.0).
+ *
+ * The verdict alone (true/false/null) throws away the one thing a dispatcher asking "why did
+ * this come off WILLIAM" needs: WHICH evidence decided. A drop on the load's own membership
+ * read and a drop on a lagging stop record read in a roster that had no load by that name are
+ * the same `false` and very different facts. `basis` names the deciding evidence; `path` is
+ * every step the lookup took to get there, in order, so a fall-through (roster had no such
+ * load → record) is visible as a fall-through.
+ */
+export interface DemotionReason {
+  basis: 'fresh-terminal' | 'roster-unreadable' | 'load-read-budget' | 'load-member' | 'record-budget' | 'twin-mismatch' | 'record' | 'record-read-failed';
+  /** the human-readable specifics: the load number, the record's status and load, the read failure */
+  detail: string;
+  /** every step taken, oldest first — e.g. ['roster: no load named WILLIAM', 'record: status UNPLANNED, no load'] */
+  path: string[];
+}
+
 export function makeDemotionLookup(deps: {
   demoteByNbr: Map<string, { s: any; p: any }>;
   readRoster: () => Promise<{ loads: any[] } | null>;
@@ -264,14 +282,17 @@ export function makeDemotionLookup(deps: {
   verdictFromRecord: (rec: any) => boolean | null;
   loadReadBudget: number;
   stopReadBudget: number;
-}): { lookup: (nbr: string) => Promise<boolean | null>; reads: () => { loadReads: number; stopReads: number } } {
+}): { lookup: (nbr: string) => Promise<boolean | null>; reads: () => { loadReads: number; stopReads: number }; reasonFor: (nbr: string) => DemotionReason | null } {
   const normNbr = (v: any) => String(v ?? '').trim().toUpperCase().replace(/^0+(?=\d)/, '');
   let rosterNameToNbr: Map<string, string> | null = null;
+  const rosterAmbiguous = new Set<string>();
   let rosterFailed = false;
+  let rosterSize = 0;
   const rosterNbrFor = async (routeName: string): Promise<string | null> => {
     if (!rosterNameToNbr) {
       rosterNameToNbr = new Map();
       const ros = await deps.readRoster().catch(() => { rosterFailed = true; return null; });
+      rosterSize = (ros?.loads || []).length;
       // AMBIGUOUS names never resolve (audit F3): two roster loads sharing a name meant
       // first-wins picked one arbitrarily and the OTHER load's freshly-saved stops read
       // "not a member" → actively demoted. Ambiguity falls through to the stop record.
@@ -284,27 +305,37 @@ export function makeDemotionLookup(deps: {
         const nm = String(l?.name ?? l?.routeName ?? '').trim().toLowerCase();
         const nbr = String(l?.loadNbr ?? '').trim();
         if (nm && nbr && counts.get(nm) === 1) rosterNameToNbr.set(nm, nbr);
+        if (nm && (counts.get(nm) || 0) > 1) rosterAmbiguous.add(nm);
       }
     }
     return rosterNameToNbr.get(routeName.trim().toLowerCase()) ?? null;
   };
   const loadMembers = new Map<string, Set<string> | null>();
+  const reasons = new Map<string, DemotionReason>();
   let demoteLoadReads = 0, demoteStopReads = 0;
   const lookup = async (nbr: string): Promise<boolean | null> => {
+    const path: string[] = [];
+    const settle = (basis: DemotionReason['basis'], detail: string, verdict: boolean | null): boolean | null => {
+      path.push(detail);
+      reasons.set(String(nbr), { basis, detail, path: path.slice() });
+      return verdict;
+    };
     const chk = deps.demoteByNbr.get(String(nbr));
     const p = chk?.p;
     // Fresh TERMINAL rows never resurrect (audit F5): a CANCELLED/DELIVERED/EXCEPTION
     // list row stands even if the load still lists the stop — the membership path must
     // not lose the record verdict's finished-work rule.
     const stFresh = String(chk?.s?.normalizedStatus ?? '').toUpperCase();
-    if (stFresh === 'DELIVERED' || stFresh === 'EXCEPTION' || stFresh === 'CANCELLED') return false;
+    if (stFresh === 'DELIVERED' || stFresh === 'EXCEPTION' || stFresh === 'CANCELLED') {
+      return settle('fresh-terminal', `list reports it ${stFresh} — finished work is never re-planned`, false);
+    }
     const routeName = String(p?.loadNbr ?? p?.routeName ?? '').trim();
     if (routeName) {
       const realNbr = await rosterNbrFor(routeName);
-      if (rosterFailed) return null;   // roster unreadable this scan → hold, never guess (F9)
+      if (rosterFailed) return settle('roster-unreadable', `the day's load roster could not be read — held, never guessed`, null);   // (F9)
       if (realNbr) {
         if (!loadMembers.has(realNbr)) {
-          if (demoteLoadReads >= deps.loadReadBudget) return null;   // over budget → hold
+          if (demoteLoadReads >= deps.loadReadBudget) return settle('load-read-budget', `load ${realNbr} (${routeName}) not read — this scan's load-read budget (${deps.loadReadBudget}) was spent`, null);
           demoteLoadReads++;
           loadMembers.set(realNbr, await deps.readLoadStopNbrs(realNbr));
         }
@@ -314,10 +345,19 @@ export function makeDemotionLookup(deps: {
         // (tomorrow's recurring build — audit F3b) and demoting on its word alone
         // un-plans a saved route. The record's verdict (404 holds, terminal drops)
         // decides within its own budget; over budget → held one tick.
-        if (members && (members.has(String(nbr)) || members.has(normNbr(nbr)))) return true;
+        if (members && (members.has(String(nbr)) || members.has(normNbr(nbr)))) {
+          return settle('load-member', `load ${realNbr} (${routeName}) still holds it`, true);
+        }
+        path.push(members ? `load ${realNbr} (${routeName}) read — ${members.size} stop(s) on it, this one not among them` : `load ${realNbr} (${routeName}) could not be read`);
+      } else {
+        path.push(rosterAmbiguous.has(routeName.toLowerCase())
+          ? `roster: two loads named ${routeName} — neither may speak for the other`
+          : `roster (${rosterSize} load${rosterSize === 1 ? '' : 's'}): no load named ${routeName}`);
       }
+    } else {
+      path.push('prior row carried no route name');
     }
-    if (demoteStopReads >= deps.stopReadBudget) return null;              // hold
+    if (demoteStopReads >= deps.stopReadBudget) return settle('record-budget', `stop record not read — this scan's record-read budget (${deps.stopReadBudget}) was spent`, null);   // hold
     demoteStopReads++;
     // Verdict policy (404 holds, terminal statuses drop) lives in demotionLookupVerdict —
     // pure + unit-tested; this closure only supplies the metered read.
@@ -328,10 +368,18 @@ export function makeDemotionLookup(deps: {
     // dropping a live routed one). Identity disagreement → hold, re-check next scan.
     const recId = String(rec?.stop?.stopId ?? rec?.stopId ?? '').trim();
     const priorId = String(p?.stopId ?? '').trim();
-    if (recId && priorId && recId !== priorId) return null;
-    return deps.verdictFromRecord(rec);
+    if (recId && priorId && recId !== priorId) return settle('twin-mismatch', `stop record is a different record (${recId}) than the board's (${priorId}) — held`, null);
+    const verdict = deps.verdictFromRecord(rec);
+    if (!rec?.ok) return settle('record-read-failed', `stop record read failed (${String(rec?.reason ?? 'unknown')}) — held`, verdict);
+    const st = String(rec?.stop?.normalizedStatus ?? '').toUpperCase() || 'unknown status';
+    const recLoad = rec?.stop?.loadNbr ? String(rec.stop.loadNbr) : null;
+    return settle('record', `stop record: ${st}, ${recLoad ? `on load ${recLoad}${rec?.stop?.routeName ? ` (${rec.stop.routeName})` : ''}` : 'on no load'}`, verdict);
   };
-  return { lookup, reads: () => ({ loadReads: demoteLoadReads, stopReads: demoteStopReads }) };
+  return {
+    lookup,
+    reads: () => ({ loadReads: demoteLoadReads, stopReads: demoteStopReads }),
+    reasonFor: (nbr: string) => reasons.get(String(nbr)) ?? null,
+  };
 }
 
 // The next Mon–Fri date strictly after dateStr (skips Sat/Sun).
@@ -1699,6 +1747,10 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         const seed = new Map<string, { lat: number; lng: number }>();
         const toEnrich: any[] = [];
         const demoteChecks: Array<{ s: any; p: any }> = [];
+        // Routed stops the list disagreed with this scan whose CONFIRMED SAVE outranked it (the
+        // write grace) — recorded beside the verify's verdicts (v1.4.0), because "the list said
+        // unplanned at 10:31 and your 10:05 save held it" is the answer to the same question.
+        const graceHolds: PlanVerdictRow[] = [];
         let reconsigned = 0;
         const reconsignedNbrs = new Set<string>();
         // Stops whose CACHED enriched record must not be merged, for a reason other than a
@@ -1770,7 +1822,15 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             }
             // A recent CONFIRMED live Save (write-through, #361) outranks a lagging list row:
             // hold the confirmed plan fields until the list agrees or the grace expires.
+            const listStatusBeforeGrace = s.absentFromPull === true ? null : (s.status != null ? String(s.status) : null);
             const held = applyBoardWriteGrace(s, p, Date.now());
+            if (held && p.isPlanned === true && s.isPlanned === true) {
+              graceHolds.push({
+                at: scannedAt, stopNbr: String(s.stopNbr), route: (p.loadNbr ?? p.routeName) != null ? String(p.loadNbr ?? p.routeName) : null,
+                verdict: 'held', basis: 'write-grace', absent: s.absentFromPull === true, listStatus: listStatusBeforeGrace,
+                detail: `a confirmed save at ${p.board_write_at} outranks the list for ${BOARD_WRITE_GRACE_MIN} minutes`, path: [],
+              });
+            }
             // Demotion verify (Jul 9 SEAAGRI, #408 follow-up): past the grace window the list
             // used to win UNCONDITIONALLY — but NuVizz's saved-search index can stay wrong for
             // HOURS about a stop the portal itself shows planned (the half-applied DAWSONVILLE
@@ -1843,6 +1903,32 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           lookup: demotion.lookup,
         });
         if (dv.kept || dv.held) console.warn(`[scan] ${date}: list tried to unplan ${demoteChecks.length} routed stop(s) — kept ${dv.kept} (NuVizz stop record says assigned), held ${dv.held} (unverified this scan), dropped ${dv.dropped} (confirmed unplanned) — sample ${JSON.stringify(demoteChecks.slice(0, 5).map((c) => String(c.s.stopNbr)))}`);
+        // THE VERDICT LEDGER (v1.4.0). Everything above was decided and then thrown away: the
+        // counts went to a console line in Netlify's log viewer and nothing anywhere recorded
+        // WHICH stop came off WHICH route on WHOSE word. Chad, with two orders sitting in the
+        // selection that NuVizz held on WILLIAM and JOE: "figure out why" — and the honest answer
+        // from the code alone was that the scan does not keep the one fact that answers it. So
+        // every verdict lands in a per-day document with its basis (the load's own membership,
+        // a lagging stop record, a roster that had no load by that name, a spent budget) and
+        // the grace holds beside them. Zero NuVizz calls, one Firestore write, and only on a
+        // scan that actually had something to decide. nuvizz-stop-explain reads it back.
+        if (dv.outcomes.length || graceHolds.length) {
+          const rows: PlanVerdictRow[] = [
+            ...dv.outcomes.map((o) => {
+              const why = demotion.reasonFor(o.stopNbr);
+              const basis: PlanVerdictRow['basis'] = why?.basis
+                ?? (DEMOTE_VERIFY_MAX > 0 ? 'unverified-over-cap' : 'verify-disabled');
+              return {
+                at: scannedAt, stopNbr: o.stopNbr, route: o.route, verdict: o.verdict, basis,
+                absent: o.absent, listStatus: o.listStatus,
+                detail: why?.detail ?? (DEMOTE_VERIFY_MAX > 0 ? 'not verified this scan — beyond the per-scan check cap; the plan was held' : 'demotion verify is disabled (NUVIZZ_DEMOTE_VERIFY_MAX=0) — the list wins unverified'),
+                path: why?.path ?? [],
+              };
+            }),
+            ...graceHolds,
+          ];
+          await recordPlanVerdicts(TENANT, date, rows).catch(() => { /* the ledger must never break a scan */ });
+        }
 
         // Per-PRO enrichment registry (day-independent): before spending a /stop/info, check
         // the registry for any PRO not already enriched via a recent day-board. A PRO ever
@@ -1985,7 +2071,13 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           const n = await notifyMarkedCustomers(date, dateStops.filter((s: any) => !isTerminalStatus(s?.normalizedStatus)));
           if (n.matched) console.log(`[cs-notify] date=${date} matched=${n.matched} sent=${n.sent} failed=${n.failed}${n.skipped ? ` skipped=${n.skipped}` : ''}`);
         } catch (e: any) { console.warn(`[cs-notify] ${date} failed: ${e?.message}`); }
-        results.push({ date, ok: true, source: 'list', count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount, enriched, newPros: stillNeed.length, ...(frozenSummary ? { frozen: frozenSummary } : {}) });
+        results.push({
+          date, ok: true, source: 'list', count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount, enriched, newPros: stillNeed.length,
+          ...(frozenSummary ? { frozen: frozenSummary } : {}),
+          // How many routed stops the list disputed this scan and what became of them — so a run
+          // that un-planned something is legible from the run ledger without opening the day.
+          ...((demoteChecks.length || graceHolds.length) ? { planVerdicts: { disputed: demoteChecks.length, kept: dv.kept, held: dv.held, dropped: dv.dropped, graceHeld: graceHolds.length } } : {}),
+        });
         // Both saved searches answered AND a day's board actually landed. NOW a scan happened.
         await stampScanKinds();
       }
