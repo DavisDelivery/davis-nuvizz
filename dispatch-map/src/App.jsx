@@ -42,7 +42,7 @@ import { diffRouteStyle, DIFF_ORIGINAL_COLOR, groupDispatchTrips } from './lib/d
 import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, isPlannedStop, selectionRowTone, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -123,7 +123,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '1.2.2';
+const APP_VERSION = '1.3.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -194,6 +194,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.3.0', 'THE BOTTOM PANEL\u2019S BAR IS ONE ROW AGAIN, AND ITS ROWS SAY WHICH STOPS A TRACTOR CAN RUN. Chad, with a screenshot of the bar wrapped onto two lines: \u201cI want this bottom panel to highlight the tractor friendly rows. Remove the all drivers drivers. put the check vs nuvizz in the settings gear on this panel. remove the unplanned 100%. i\u2019m trying to condense these 2 rows down to one to save space.\u201d WHY IT WRAPPED, MEASURED OFF HIS SCREENSHOT RATHER THAN ASSUMED: the pane is about 1,000px wide and the first row was already full before the \u201cBoard \u00b7 643 stops \u00b7 21 closed removed\u201d sentence, the Check button, the date and the gear had anywhere to go, so the four of them took a second 44px line under a grid whose whole point is the map above it. The bar had grown a control at a time \u2014 the status-percent strip in v0.50.76, the driver dropdown, the profiles chip, the source sentence, the check \u2014 and nothing ever left. FOUR THINGS LEAVE. (1) The \u201cUnplanned 100%\u201d strip: with Un-Planned ticked, which is how this bar is used, it read 100% all day, a number that could not change and so could not inform. (2) The driver dropdown, control AND setting: removing the select alone would have left driverSel in the bar\u2019s memory, restored from every older profile \u2014 Chad\u2019s own production profile carries it \u2014 and still filtering the rows with nothing on screen to clear it, which is the invisible-filter trap that blanked this grid once already (v0.45.6). The field is dropped on read now, and a test pins that an older profile still applies with it ignored. The job survives where it always also lived: the search box matches a driver\u2019s name. (3) The source sentence became a chip \u2014 \u201cBoard \u00b7 21 removed\u201d \u2014 because the 643 was already on the Stops toggle beside it; the full accounting is still the hover text, and a partial pull, an error and the in-flight spinner still say so in full, since a short list must never read as a complete one. (4) Check vs NuVizz is a GEAR ACTION: it spends a metered call a few times a day at most and was costing the bar 110px on every row it drew \u2014 the profile of a menu item. It is always listed and greyed WITH ITS REASON when it cannot run (Board (today) selected, Loads view, mid-pull, cooling down), because an item that is simply absent is a feature you have to already know about to go looking for. Its verdict did not move into the menu with it: a green \u201c\u2713 matches NuVizz\u201d or amber \u201c12 differ\u201d chip sits beside the window and reopens the panel, which now hangs off the bar\u2019s right end. On Routing the item leads the panel gear\u2019s list; the dispatch Map, whose grid had no gear, gets one for it \u2014 desktop only, so the phone bar gains no control and no collision. MEASURED, NOT ASSUMED, ON THE BUILT BUNDLE: with those four gone the one-row bar still needed 1,104px in Chad\u2019s exact state (window set, date on the bar), so three more trims paid the rest \u2014 the Stops/Loads toggle lost the two icons the phone never drew (38px; the words are the control), the window labels got shorter (a select is as wide as its widest option, and \u201cNuVizz \u00b7 \u00b17 days\u201d was setting the width of a control reading \u201cLast 7 days\u201d), and from 1280px up the chevron is a 32px desktop button rather than a 44px thumb target (the tablet guard holds 44 below that). 984px now, under the pane. AND ONE THING ARRIVES: THE GREEN. The Selected window has painted a tractor-friendly row green since v0.46.5, but a router picks stops FROM the grid, and the only way to learn which of 700 rows a 53-footer could serve was to select them first and look. The grid now reads the SAME rule through ONE helper \u2014 the dispatcher\u2019s green paint, the \u201cTractor trailer friendly\u201d badge, the proven lime \u201ca tractor has delivered here\u201d, with Box-only and a confirmed \u201cNo tractor trailer\u201d still winning as not friendly \u2014 and paints the same green-100, so a stop cannot be green in the panel and plain in the grid or the other way round (that drift has been shipped twice: v0.46.8, v1.1.1). Ranked as a pure function beside the Selected window\u2019s: selection blue first (what the lasso is doing now), then a card\u2019s staged tint, then the green, then carry-over amber \u2014 a fact about the freight over a fact about the date, because the router acts on the first and the Day column already says the second. Switching the lime paint off in the Legend takes the proven-history green off these rows too, exactly as it takes it off the pins, because both read the same toggle-aware map. flex-wrap stays as the safety net: a non-wrapping bar pushes its tail off the right edge, invisible and unreachable. SAID PLAINLY: this is a desktop-bar change; the phone bar (chevron + Stops/Loads, folding open to Profiles / search / Status) is untouched, and every guard ran green. 12 new tests.'],
   ['1.2.2', 'THE MANIFEST TAB WAS STILL PROMISING A POLL EVERY 30 MINUTES AFTER THE JOB DROPPED TO THREE A NIGHT. v1.2.1 narrowed the parse to 8:10p, 9:10p and 10:10p ET and left the screen describing the system it replaced — “Checked automatically every 30 minutes” on the mailbox card and “read out of the mailbox on its own, every 30 minutes” in the tab’s own blurb, plus the endpoint comment and two code comments. Same shape as the alert wired to `critical` while the operator had been told “we want every red”: the code did exactly what it was told and the screen described a DIFFERENT system, and no test could catch it because nothing tied the two together. The cure is not a more careful edit next time — THE HOURS NOW HAVE ONE HOME. lib/manifest-schedule.js holds the three ET hours and the sentence the card prints; the background function imports its hours from there and re-exports them, and a test asserts the job’s list and the card’s label are the same three passes. AND THE HEALTH SIGNAL THE OLD CADENCE GAVE AWAY FOR FREE, which the narrowing quietly took: polling every thirty minutes, a lapsed Gmail token was obvious by mid-afternoon — “Last poll 4h ago” on a card that should read minutes. Polling three times a night, a DEAD mailbox reads “26h ago” and a perfectly healthy one reads “22h ago” all working day, and the age alone can no longer tell them apart. So the card compares the last poll against THE SCHEDULE instead of against a clock: a pass has fired and the mailbox was not read since. That is a fact with a meaning, not an invented staleness bar — the same rule roster-freshness.js is built on. A mailbox connected this afternoon that has never polled is NOT overdue, because “no poll has run yet” is the honest sentence and a red warning there would be a lie about a working setup. Every comparison is a string compare of two ET wall-clock stamps rendered through one formatter, so DST needs no arithmetic and cannot land the slot on the wrong calendar day — pinned on both changeovers. A 20-minute grace keeps the card quiet at 8:11p while the function is still fetching the mailbox. 9 new tests.'],
   ['1.2.1', 'THE MANIFEST PARSE RUNS AT 8:10P, 9:10P AND 10:10P — AND THE FORECAST CARD STOPS PRINTING AN ERROR WHERE THE NUMBERS GO. Chad: “We need to do our first parse at 8:10 pm 9:10 10:10.” IT WAS POLLING EVERY 30 MINUTES AROUND THE CLOCK — 48 passes a day, most of them at hours when Uline has not sent anything, which is how a 3:00pm check on a report that had not arrived yet ends up on screen saying it could not reconcile against its own printed totals. Three passes in the window the report actually lands in is the whole ask. THE CRON IS UTC AND ET IS NOT, so a fixed UTC time is the wrong ET time for 133 days a year. This is the trap day-completion-report-background already carries the scar for — two UTC slots gave summer a primary and a spare and left WINTER with no cover at all, “found by sweeping both firings across 730 calendar days, not by reading the cron.” Same answer here: fire at the UNION of the UTC slots that could be one of these ET hours in either season (00:10, 01:10, 02:10, 03:10 UTC) and let the ET clock decide which are real. Four firings, exactly three passes in either season — in EDT the 03:10 slot is 11:10p ET and stands down, in EST the 00:10 slot is 7:10p ET and stands down. A stood-down firing SAYS so rather than returning a silent empty result, because “nothing to do” and “wrong hour” are different answers and only one is worth investigating. Swept across 730 days in a test rather than trusted from the comment. AND THE LIVE ReferenceError ON THE SAME SCREEN: the Uline forecast card was rendering “parseClosedList is not defined” where the forecast belongs. uline-forecast-store.mts called that parser and never imported it — and the comment directly above the call says it “is shared with the nightly manifest check so the two can never disagree”, which was the intent and not the code. Nothing catches this statically: these are .mts functions run by stripping types, not built by vite, so an undefined identifier is a runtime error on the one path that reaches it and the only symptom is the panel printing the message where the numbers should be. Reproduced first, then fixed, and a test now CALLS the function — an import that goes missing again fails in CI instead of on a dispatcher’s screen at 8pm. 5 new tests, 3,950 green.'],
   ['1.2.0', 'THE ALERT FIRES AT 25 MINUTES LATE NOW — AND THE DRIVER RIDES THE TEXT. Chad, on a live alert that reached him at 2:00pm for a 3:00pm close: “Why did the mail go out at 2pm hardly enough time to do anything about it.” Then: “fire it at 20-30”, and “If we have driver name include it for route and text yes.” WHAT THE ANSWER TURNED OUT TO BE, MEASURED RATHER THAN ARGUED. Replaying the real engine and the real selector over 12 sealed days through flag-replay — zero NuVizz calls — the flag is on the board a MEDIAN OF THREE HOURS before the email goes. That stop was not unusual; it was slightly better than median. But 53 stops genuinely missed their window in that period and only 12 produced an email: 26 of them sat on the board and never emailed at all, with a median 145 minutes still on the clock when the flag first appeared. Twelve of THOSE reached critical and still never emailed, because they crossed the bar too late to send. SO THE TIER RULE GOVERNS HOW LOUDLY WE SPEAK, AND A NEW FLOOR GOVERNS WHETHER WE SPEAK AT ALL. severityTier asks whether an overrun clears the model’s own error band TWICE — 30 minutes anchored and close in, 50 further out, 80 further still, 180 unanchored. That is a good question about confidence and a poor one about consequence: a stop 40 minutes past a dock’s close is a refused delivery whether the model is sure or not. ALERT_LATE_FLOOR_MIN=25 emails on lateness alone. TWENTY-FIVE IS MEASURED, NOT PICKED: 20 buys two more false alarms and not one more catch; 30 loses a catch. ANCHORED IS REQUIRED and it is the clause that pays for everything — without it precision collapses 72% → 51% and volume nearly doubles, because unanchored means projected from an ASSUMED departure against a ±90-minute band. Bad outcomes caught goes 15 → 29 per 15 days at the SAME precision (71% → 72%). THE COST, NAMED: 1.5 → 3.6 emails a day, and a genuinely bad day goes from 4 to 12. One env var turns it off. AND IT TAKES THE EARLY BAND, WHICH KEPT A PROMISE AND EXPOSED A TRAP. Chad’s “we are only emailing on critical” was about the LOUD message, and the loud message is still critical-only: the floor sends the heads-up wording on its own claim key, so a stop can warn at noon and still send the confident miss at 2pm. The trap: alertBandOf maps anything not-amber to ‘urgent’, and a floor-selected row is frequently RED — it would have taken the urgent claim and SILENTLY BLOCKED the genuine critical email later. The heads-up arrives, the real one never does, and the ledger shows one send exactly as designed. That function’s own comment predicted this (“the next person to widen that gate should not also have to remember to widen this”); the band now follows WHY a row was selected, never its tier. TREND DETECTION WAS MEASURED AND NOT BUILT, which is the honest half of this. It was my recommendation and the data killed it: every stop a degradation rule finds is already ≥21 minutes late at the moment it fires, so a 25-minute floor catches all of them at the same sweep or earlier — zero unique catches. The instrument to revisit it exists and costs nothing (an ETA trail in flag-replay-core); the rule does not go in on a hunch. THE DRIVER NOW RIDES BOTH TEXTS, in parentheses after the route, because route-and-driver is one fact. Absence prints NOTHING there, unlike the email: the email reaches a rep at a desk where “no name” means the call needs a lookup first; the text reaches the router AT the board that would tell him. TWO BUGS FOUND ON THE WAY. A CAPPED BOARD WAS LOSING THE DRIVER — collapsedRows is an explicit field list and driverName was not on it, and fillRouteDrivers ran after the collapse on top-level rows only. buildAlert prints “not named on this load” when it is absent, so a busy board would have mailed customer service a false statement about our own data on the line the rep acts on. Third field this projection has eaten. AND ONE EM DASH WAS COSTING 60% OF THE SMS BILL: it is outside GSM-7 and lib/sms.mts sends mode AUTO, so that single character encoded every message as UCS-2 at 70 characters a segment instead of 160. Every one of the 74 real texts across 15 nights was UCS-2 at a mean of 2.55 segments; with a hyphen they are 1.00, and 1.06 WITH the driver added — the name is free and the channel got cheaper. A test now asserts every character of both templates is GSM-7. 16 new tests, 3,946 green.'],
@@ -13465,18 +13466,6 @@ function tableStatusBucket(stop) {
   const b = TABLE_STATUS_BUCKETS.find((x) => x.match.includes(st));
   return b ? b.k : 'planned';
 }
-// Header-row day breakdown: the % of the WHOLE day's board in each status (Chad —
-// "a percentage breakdown of the planned stops for the day"). Same buckets as the
-// Status filter, so the header pill and the filter agree. Rendered in bucket order,
-// zero buckets hidden. Percentage over the whole day (not the filtered rows), the
-// same steady-denominator philosophy as the "% delivered" count.
-const DAY_STATUS_PILLS = [
-  { k: 'planned', label: 'Planned', cls: 'text-blue-700' },
-  { k: 'unplanned', label: 'Unplanned', cls: 'text-slate-500' },
-  { k: 'in_transit', label: 'Out', cls: 'text-amber-600' },
-  { k: 'completed', label: 'Delivered', cls: 'text-green-700' },
-  { k: 'cancelled', label: 'Cancelled', cls: 'text-red-600' },
-];
 // Per-status chips for the Loads view status breakdown.
 const LOAD_BUCKET_STYLE = {
   unplanned: 'bg-slate-100 text-slate-600',
@@ -13635,8 +13624,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   }, [statusOpen]);
   // NuVizz live pull (desktop toolbar): when nvWindow is set, the grid shows stops
   // fetched straight from NuVizz's stop list (any delivery-date window / status)
-  // instead of today's board — e.g. "all unplanned ±7 days". Driver is a local
-  // refinement applied to whatever rows are shown.
+  // instead of today's board — e.g. "all unplanned ±7 days".
   const [nvWindow, setNvWindow] = useState(boot.nvWindow); // '' = board; else '0d' | '+/-7d' | 'custom'
   const [nvFrom, setNvFrom] = useState(boot.nvFrom); // 'custom' range endpoints (YYYY-MM-DD)
   const [nvTo, setNvTo] = useState(boot.nvTo);
@@ -13656,7 +13644,6 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const [nvCheck, setNvCheck] = useState(NV_CHECK_IDLE);
   const [nvCheckOpen, setNvCheckOpen] = useState(false);
   const [, setNvCheckTick] = useState(0); // re-render when the button's cooldown ends
-  const [driverSel, setDriverSel] = useState(boot.driverSel);
   const [unmappedOnly, setUnmappedOnly] = useState(boot.unmappedOnly); // show only stops with no map location (unroutable until fixed)
   // Drag-resizable height (px), persisted. Drag the top handle up/down.
   const [height, setHeight] = useState(() => {
@@ -13918,11 +13905,6 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   }, [nvWindow, nvSource, nvRows, baseStops, onWindowRowsChange]);
   // On unmount, release the window rows so the map reverts to the day board.
   useEffect(() => () => { if (onWindowRowsChange) onWindowRowsChange(null); }, [onWindowRowsChange]);
-  const driverOptions = useMemo(() => {
-    const set = new Set();
-    for (const s of baseStops) if (s.driverName) set.add(s.driverName);
-    return [...set].sort();
-  }, [baseStops]);
   const filteredRows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return baseStops.filter((s) => {
@@ -13931,7 +13913,6 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       // cached-unplanned row a recent Save flipped to planned (Load "RASKO") was showing under
       // the Un-Planned filter. Re-checking post-overlay keeps the filter honest either way.
       if (statusSel.size && !statusSel.has(tableStatusBucket(s))) return false;
-      if (driverSel && (s.driverName || '') !== driverSel) return false;
       if (needle) {
         const hay = [s.stopNbr, s.businessName, s.addr1, s.addr2, s.city, s.zip, s.routeName, s.loadNbr, s.driverName]
           .filter(Boolean).join(' ').toLowerCase();
@@ -13939,24 +13920,15 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       }
       return true;
     });
-  }, [baseStops, q, statusSel, driverSel, nvWindow]);
-  // Day-level status breakdown over the WHOLE board (baseStops), independent of the
-  // active search/status filter — a steady progress read of the selected day, shown
-  // as a percentage pill on the header row.
-  const dayStatus = useMemo(() => {
-    const c = { unplanned: 0, planned: 0, in_transit: 0, completed: 0, cancelled: 0 };
-    for (const s of baseStops) { const b = tableStatusBucket(s); c[b] = (c[b] || 0) + 1; }
-    const total = baseStops.length;
-    const pct = {};
-    for (const k of Object.keys(c)) pct[k] = total ? Math.round((c[k] / total) * 100) : 0;
-    return { c, pct, total };
-  }, [baseStops]);
+  }, [baseStops, q, statusSel, nvWindow]);
   // Report the CURRENT SEARCH matches UP (stopNbr set) so the Routing map can highlight them
   // (burnt orange, top layer) — parity with the Map screen's search highlight, which the Routing
-  // screen never had. Exactly the rows the grid is showing (WYSIWYG: search + status + driver),
+  // screen never had. Exactly the rows the grid is showing (WYSIWYG: search + status),
   // but ONLY when a search needle is active (no needle → null → no highlight). Debounced so a
   // per-keystroke rebuild of every map marker doesn't jank. No-op when the parent doesn't pass a
   // handler (the dispatch Map, which has its own search). Keyed String() to match the map's ids.
+  // A driver's name is part of the search hay, so "steven" finds his stops — that is what the
+  // old driver dropdown did, and the reason the bar could lose it (v1.3.0).
   const searchActive = q.trim().length > 0;
   const searchMatchIds = useMemo(
     () => (searchActive ? new Set(filteredRows.map((s) => String(s.stopNbr))) : null),
@@ -13965,21 +13937,20 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const debouncedMatchIds = useDebouncedValue(searchMatchIds, 180);
   useEffect(() => { onSearchMatchChange?.(debouncedMatchIds); }, [debouncedMatchIds, onSearchMatchChange]);
   useEffect(() => () => onSearchMatchChange?.(null), [onSearchMatchChange]);
-  // Status/driver filters reach the MAP too (WYSIWYG — Chad: "Planned checked
+  // The status filter reaches the MAP too (WYSIWYG — Chad: "Planned checked
   // should only be showing planned"). Reported as the id set of rows PASSING the
-  // status+driver filters (search is deliberately NOT folded in: search is a
+  // status filter (search is deliberately NOT folded in: search is a
   // burnt-orange highlight, never a hide). null when no filter is active → the
   // map shows everything, exactly as before.
   const statusFilterIds = useMemo(() => {
-    if (!statusSel.size && !driverSel) return null;
+    if (!statusSel.size) return null;
     const out = new Set();
     for (const s of baseStops) {
       if (statusSel.size && !statusSel.has(tableStatusBucket(s))) continue;
-      if (driverSel && (s.driverName || '') !== driverSel) continue;
       out.add(String(s.stopNbr));
     }
     return out;
-  }, [baseStops, statusSel, driverSel]);
+  }, [baseStops, statusSel]);
   const debouncedStatusIds = useDebouncedValue(statusFilterIds, 180);
   useEffect(() => { onStatusFilterChange?.(debouncedStatusIds); }, [debouncedStatusIds, onStatusFilterChange]);
   useEffect(() => () => onStatusFilterChange?.(null), [onStatusFilterChange]);
@@ -13991,6 +13962,21 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     () => (unmappedOnly ? filteredRows.filter((s) => s.lat == null || s.lng == null) : filteredRows),
     [filteredRows, unmappedOnly],
   );
+  // WHICH ROWS A TRACTOR CAN RUN (v1.3.0). Chad: "I want this bottom panel to highlight the
+  // tractor friendly rows." The Selected window has painted these green since v0.46.5, but a
+  // router picks stops FROM this grid, and until now the only way to learn which of 700 rows a
+  // 53-footer could serve was to select them first and look. Same helper the Selected window
+  // reads (stopTractorFriendly), same tone (ROW_TONE.tractor via gridRowTone), so a stop cannot
+  // be green in one place and plain in the other. Read off the board rows, not the filtered
+  // ones twice: `rows` is what is drawn. tractorLocs is the shared, paint-toggle-aware map the
+  // markers use — switch the lime paint off in the Legend and the proven-history green leaves
+  // these rows too, exactly as it leaves the pins.
+  const tractorLocs = useTractorLocations();
+  const tractorOkIds = useMemo(() => {
+    const out = new Set();
+    for (const s of rows) if (stopTractorFriendly(s, notes, tractorLocs)) out.add(String(s.stopNbr));
+    return out;
+  }, [rows, notes, tractorLocs]);
   // Never strand the "no location" filter on when there's nothing to show (its chip hides at 0,
   // so the user couldn't turn it back off) — e.g. after switching windows or fixing every address.
   useEffect(() => { if (unmappedOnly && unmappedCount === 0) setUnmappedOnly(false); }, [unmappedOnly, unmappedCount]);
@@ -14170,8 +14156,8 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const sortedRows = useMemo(() => sortRows(rows, cols, stopSort), [rows, stopSort]); // eslint-disable-line react-hooks/exhaustive-deps
   const sortedLoadRows = useMemo(() => sortRows(loadRows, loadCols, loadSort), [loadRows, loadSort]); // eslint-disable-line react-hooks/exhaustive-deps
   const toggleStatus = (k) => setStatusSel((prev) => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
-  const anyFilterActive = !!(q.trim() || statusSel.size || driverSel || unmappedOnly);
-  const clearAllFilters = () => { setQ(''); setStatusSel(new Set()); setDriverSel(''); setUnmappedOnly(false); };
+  const anyFilterActive = !!(q.trim() || statusSel.size || unmappedOnly);
+  const clearAllFilters = () => { setQ(''); setStatusSel(new Set()); setUnmappedOnly(false); };
   // Human list of what's currently hiding rows — powers the "0 shown but N exist" empty state so a
   // stray (and, with the panel narrow, invisible) search term can never silently blank the grid.
   const activeFilterLabels = [
@@ -14180,14 +14166,13 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     ...(upstreamFilterLabels || []),
     q.trim() && `search “${q.trim()}”`,
     statusSel.size && `status (${statusSel.size})`,
-    driverSel && `driver “${driverSel}”`,
     unmappedOnly && 'no-location filter',
   ].filter(Boolean);
 
   // ── Bottom-panel PROFILES ─────────────────────────────────────────────────
   // Save the current bar settings under a name and switch between saved profiles.
-  // A profile snapshots view / status / date-window + range / driver / no-location /
-  // sort — everything on the bar EXCEPT the transient search text. The LIST lives in
+  // A profile snapshots view / status / date-window + range / no-location / sort —
+  // everything on the bar EXCEPT the transient search text. The LIST lives in
   // Firestore so it follows you to every device; which one is ACTIVE stays on this
   // device (see useBottomPanelProfiles).
   const { list: profileList, active: activeProfileName, setActive: setActiveProfileName, saveProfile: persistProfile, removeProfile } = useBottomPanelProfiles();
@@ -14195,7 +14180,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const [newProfileName, setNewProfileName] = useState('');
   const [savedFlash, setSavedFlash] = useState(false); // brief "✓ Saved" confirmation
   const flashSaved = () => { setSavedFlash(true); setTimeout(() => setSavedFlash(false), 1400); };
-  const barSnapshot = () => ({ view, status: [...statusSel], nvWindow, nvFrom, nvTo, driverSel, unmappedOnly, stopSort, loadSort });
+  const barSnapshot = () => ({ view, status: [...statusSel], nvWindow, nvFrom, nvTo, unmappedOnly, stopSort, loadSort });
   // Every read of a stored bar goes through normalizeBar, so a profile written by an older
   // build, a half-written localStorage row and a hand-edited doc all land as the same shape —
   // and an unknown status key can never arrive as a filter with no checkbox to un-tick it.
@@ -14209,7 +14194,6 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     setNvWindow(n.nvWindow);
     setNvFrom(n.nvFrom);
     setNvTo(n.nvTo);
-    setDriverSel(n.driverSel);
     setUnmappedOnly(n.unmappedOnly);
     setStopSort(n.stopSort);
     setLoadSort(n.loadSort);
@@ -14240,7 +14224,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     if (pendingProfile.current && sameBar(barSnapshot(), BAR_DEFAULTS)) return;
     pendingProfile.current = false;
     safeWriteJSON(LS_BOTTOM_BAR, { ...barSnapshot(), profile: activeProfileName || null, profileAt: activeProfile?.updatedAt ?? null });
-  }, [view, statusSel, nvWindow, nvFrom, nvTo, driverSel, unmappedOnly, stopSort, loadSort, activeProfileName, activeProfile]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [view, statusSel, nvWindow, nvFrom, nvTo, unmappedOnly, stopSort, loadSort, activeProfileName, activeProfile]); // eslint-disable-line react-hooks/exhaustive-deps
   // THE PROFILE ARRIVING — from Firestore on a cold start, or because it was selected or
   // updated on another device. Same question either way, so it is asked with the same
   // function the mount used: does the profile beat what this device remembers? If it does,
@@ -14301,6 +14285,44 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const phoneFilterActive = !!q || statusSel.size > 0;
   const phoneBarFolded = gridIsPhone && !open && !phoneFilterActive;
 
+  // ── THE GEAR'S GRID ITEMS (v1.3.0) ──────────────────────────────────────────
+  // "Check vs NuVizz" was a button on the bar. Chad: "put the check vs nuvizz in the settings
+  // gear on this panel." It spends a metered call, it is pressed a few times a day at most, and
+  // it was costing the bar 110px on every row it drew — the profile of a menu item, not a
+  // toolbar button. The item is ALWAYS listed and greyed with its reason when it cannot run
+  // (no window picked, Loads view, mid-pull, cooling down): an item that is simply absent is
+  // a feature you have to already know about to go looking for. Once a check has run the item
+  // reopens the panel; "Check again" lives inside the panel, behind the same one-a-minute
+  // cooldown as before. The verdict itself stays visible on the bar (the chip beside the
+  // window), so moving the button did not hide the answer.
+  const nvCheckLabel = nvCheck.running ? 'Checking NuVizz…'
+    : nvCheck.result ? (nvCheck.result.matches ? '✓ Matches NuVizz — show the check' : `⚠ ${nvCheckDiffCount} differ from NuVizz — show`)
+      : '⇄ Check vs NuVizz (1 call)';
+  const nvCheckBlocked = view !== 'stops' ? 'Switch to Stops — the check compares the Stops window against NuVizz’s list.'
+    : !nvWindow ? 'Pick a date window first (Last 7 days, NuVizz ±7d…) — the check compares that window against NuVizz’s own list. The plain Board has nothing to check.'
+      : !nvWindowReady ? 'Pick both From and To dates first.'
+        : nvLoading ? 'Wait for the pull to finish.'
+          : (nvCheckCooling && !nvCheck.result) ? 'One check per minute — each is a NuVizz call.'
+            : null;
+  const gridGear = {
+    actions: [{
+      key: 'nvCheck',
+      label: nvCheckLabel,
+      disabled: !!nvCheckBlocked || nvCheck.running,
+      title: nvCheckBlocked || (nvCheck.result
+        ? 'Show the last check. Run it again after the cooldown from inside the panel.'
+        : 'Spends ONE NuVizz call: pulls NuVizz’s own list for these dates and status buckets and shows what differs from this grid — rows shown here that NuVizz no longer lists, rows NuVizz lists that are not shown here, and rows whose plan or day differs. Open work only; delivered and cancelled rows are not compared.'),
+      onClick: () => { if (nvCheck.result && !nvCheck.running) setNvCheckOpen(true); else runNvCheck(); },
+    }],
+  };
+  const headerRightEl = typeof headerRight === 'function'
+    ? headerRight(gridGear)
+    : (headerRight ?? (
+      <span className="hidden sm:inline-flex">
+        <RoutingSettingsMenu actions={gridGear.actions} dropUp title="Grid settings" />
+      </span>
+    ));
+
   return (
     <div ref={rootRef} data-overlay-layer className="absolute left-0 right-0 bottom-0 z-[12] bg-white border-t border-slate-200 shadow-[0_-2px_10px_rgba(0,0,0,0.10)] flex flex-col" style={{ height: open ? height : undefined, maxHeight: open ? 'calc(100% - 4rem)' : undefined }}>
       {open && (
@@ -14313,46 +14335,42 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
           <div className="w-10 h-1 rounded-full bg-slate-300 group-hover:bg-slate-400" />
         </div>
       )}
-      {/* flex-wrap: this bar has grown a control at a time (status %, profiles, no-location,
-          window, driver, gear) and a non-wrapping row simply pushes the tail off the right
-          edge — invisible AND unreachable, which is how the Stops/Loads toggle and the driver
-          filter disappeared. Wrapping costs one extra line at narrow widths and can never hide
-          a control. */}
-      <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 border-b border-slate-100">
-        <button onClick={() => setOpen(!open)} className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded text-slate-600 hover:text-slate-900 hover:bg-slate-100" aria-expanded={open} title={open ? 'Collapse' : 'Expand'}>
+      {/* ONE ROW (v1.3.0). Chad: "i'm trying to condense these 2 rows down to one to save
+          space." The bar had grown a control at a time until it wrapped on a 1000px pane:
+          the status-percent strip, the driver dropdown, a "Board · 643 stops · 21 closed
+          removed" sentence and the Check vs NuVizz button all sat between the search and the
+          date. The strip and the dropdown are gone (search matches a driver's name), the
+          sentence is a chip whose full text is on hover, and the check is a gear action. What
+          stays is what a dispatcher touches: view, profile, search, status, window, date, gear.
+          flex-wrap STAYS as the safety net — a non-wrapping row pushes the tail off the right
+          edge, invisible AND unreachable, which is how the Stops/Loads toggle once disappeared.
+          Wrapping at a narrow width can never hide a control; it just costs the line back.
+          `relative`: the check's result panel hangs off this bar's right end (below). */}
+      <div className="relative flex flex-wrap items-center gap-2 px-3 py-1.5 border-b border-slate-100">
+        {/* 44px is the touch floor, and the tablet guard holds it up to 1180px; from xl (1280px)
+            up this is a pointer target and 32px is the ordinary desktop button. 12px back. */}
+        <button onClick={() => setOpen(!open)} className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] xl:min-w-[32px] xl:min-h-[32px] rounded text-slate-600 hover:text-slate-900 hover:bg-slate-100" aria-expanded={open} title={open ? 'Collapse' : 'Expand'}>
           {open ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
         </button>
-        {/* shrink-0: Stops/Loads is the bar's primary control — it never gives up width. */}
+        {/* shrink-0: Stops/Loads is the bar's primary control — it never gives up width.
+            No icons (v1.3.0): the phone never drew them and the words are the control; on a
+            desktop they were 38px of the ~110px that stood between this bar and one row. */}
         <div className="inline-flex shrink-0 rounded-md border border-slate-200 overflow-hidden text-xs font-semibold whitespace-nowrap">
           <button
             onClick={() => { setView('stops'); setOpen(true); }}
-            className={'inline-flex items-center gap-1.5 px-2.5 py-1 ' + (view === 'stops' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50')}
+            className={'inline-flex items-center gap-1.5 px-2 py-1 ' + (view === 'stops' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50')}
           >
-            {!gridIsPhone && <LayoutList size={13} />} Stops
+            Stops
             <span className="font-normal opacity-60">{rows.length}{nvWindow ? (nvTotal && nvTotal !== rows.length ? `/${nvTotal.toLocaleString()}` : '') : (totalCount != null && totalCount !== rows.length ? `/${totalCount}` : '')}</span>
           </button>
           <button
             onClick={() => { setView('loads'); setOpen(true); }}
-            className={'inline-flex items-center gap-1.5 px-2.5 py-1 border-l border-slate-200 ' + (view === 'loads' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50')}
+            className={'inline-flex items-center gap-1.5 px-2 py-1 border-l border-slate-200 ' + (view === 'loads' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50')}
           >
-            {!gridIsPhone && <Truck size={13} />} Loads
+            Loads
             <span className="font-normal opacity-60">{loadRows.length}</span>
           </button>
         </div>
-        {/* Day status breakdown — % of the selected day's board in each status (Chad:
-            "a percentage breakdown of the planned stops for the day"). Whole-day
-            denominator, so it's a steady progress read while you search/filter.
-            hidden on narrow widths so the packed bar never overflows. */}
-        {dayStatus.total > 0 && (
-          <div
-            className="hidden lg:flex items-center gap-x-2 text-[11px] whitespace-nowrap pl-1"
-            title={`${nvWindow ? 'Selected window' : "Today's board"}: ` + DAY_STATUS_PILLS.map((p) => `${p.label} ${dayStatus.c[p.k]}`).join(' · ') + ` · ${dayStatus.total} stop${dayStatus.total === 1 ? '' : 's'} total`}
-          >
-            {DAY_STATUS_PILLS.filter((p) => dayStatus.c[p.k] > 0).map((p) => (
-              <span key={p.k} className={p.cls}>{p.label} <span className="font-semibold">{dayStatus.pct[p.k]}%</span></span>
-            ))}
-          </div>
-        )}
         {/* PROFILES — save/switch the bar settings (view · status · window · driver · sort). */}
         {/* PHONE: Profiles STARTS row 2 (the zero-height basis-full spacer breaks the line) and
             search / Status follow it on the same row: Profiles ~95 + 8 + search 130 (+ 8 + Status 72)
@@ -14503,9 +14521,9 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                 )}
               </div>
             )}
-            {/* NuVizz live pull (desktop): delivery-date window + driver, on the same
-                top row as search. Window = Board uses today's loaded data (no calls);
-                a NuVizz window pulls the stop list straight from NuVizz. */}
+            {/* NuVizz live pull (desktop): the delivery-date window, on the same row as
+                search. Window = Board uses today's loaded data (no calls); a NuVizz window
+                pulls the stop list straight from NuVizz. */}
             {view === 'stops' && (
               <>
                 <select
@@ -14514,16 +14532,17 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                   title="Data source / delivery-date window"
                   className="hidden sm:inline-block border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
                 >
-                  <option value="">Board (today)</option>
-                  <option value="0d">NuVizz · Today</option>
-                  <option value="+/-7d">NuVizz · ±7 days</option>
-                  {/* Label kept SHORT on purpose: a <select> is as wide as its longest option,
-                      and "· board day" was the widest string in this toolbar — it pushed the
-                      Stops/Loads toggle and the driver filter off the end of the bar. The
-                      behaviour is unchanged (both still track the board date backwards). */}
+                  {/* EVERY label kept SHORT on purpose: a <select> is as wide as its longest
+                      option. "· board day" once pushed the Stops/Loads toggle off the end of
+                      the bar; v1.3.0 trimmed "Board (today)", "NuVizz · ±7 days" and "Custom
+                      range…" for the same reason — the control is sized by its widest word,
+                      not the one showing. The values, and the behaviour, are unchanged. */}
+                  <option value="">Board</option>
+                  <option value="0d">NuVizz today</option>
+                  <option value="+/-7d">NuVizz ±7d</option>
                   <option value="-7d">Last 7 days</option>
                   <option value="-14d">Last 14 days</option>
-                  <option value="custom">Custom range…</option>
+                  <option value="custom">Custom…</option>
                 </select>
                 {nvWindow === 'custom' && (
                   <span className="hidden sm:inline-flex items-center gap-1">
@@ -14540,134 +14559,137 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                     />
                   </span>
                 )}
-                <select
-                  value={driverSel}
-                  onChange={(e) => { setDriverSel(e.target.value); setOpen(true); }}
-                  title="Filter by driver"
-                  className="hidden sm:inline-block shrink-0 border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-700 max-w-[150px] focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
-                >
-                  <option value="">All drivers</option>
-                  {/* A driver restored from yesterday's bar may not be on today's board at all.
-                      Without his own option the select renders BLANK while still filtering every
-                      row out — a live filter you cannot see and cannot clear. He gets listed,
-                      marked as not on this board, and can be switched off like any other. */}
-                  {driverSel && !driverOptions.includes(driverSel) && <option value={driverSel}>{driverSel} (not on this board)</option>}
-                  {driverOptions.map((d) => <option key={d} value={d}>{d}</option>)}
-                </select>
+                {/* WHERE THE ROWS CAME FROM, as a chip (v1.3.0). This used to be a sentence —
+                    "Board · 643 stops · 21 closed removed" — and the sentence is what wrapped
+                    the bar onto a second line. The stop count already sits on the Stops toggle
+                    (643, or 560/643 under a filter), so it is not repeated here; the source word
+                    and the one number that explains a count DROPPING (rows removed: closed since
+                    the scan, moved to another day, retired — "removed" is the word that is true
+                    of all three) stay on the bar, and the full accounting is the hover text. A
+                    partial pull, an error and the in-flight spinner stay visible in full — a
+                    dispatcher must never read a short list as a complete one. */}
                 {nvWindow && (
-                  <span className="hidden sm:inline text-[11px] text-slate-500 whitespace-nowrap">
+                  <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] text-slate-500 whitespace-nowrap">
                     {nvWindow === 'custom' && (!nvFrom || !nvTo)
                       ? <span className="text-slate-400">pick From + To dates</span>
                       : nvLoading
                         ? <span className="inline-flex items-center gap-1"><RefreshCw size={11} className="animate-spin" /> pulling…</span>
                         : nvErr
-                          ? <span className="text-red-600">NuVizz: {nvErr}</span>
+                          ? <span className="text-red-600 max-w-[220px] truncate" title={`NuVizz: ${nvErr}`}>NuVizz: {nvErr}</span>
                           : nvPartial
-                            ? <span className="text-amber-600" title="The date window was too large for one pull — some stops in it may be missing. Narrow the range for an exact result.">NuVizz · ≥{nvTotal.toLocaleString()} stops (partial — narrow the range)</span>
+                            ? <span className="text-amber-600" title="The date window was too large for one pull — some stops in it may be missing. Narrow the range for an exact result.">≥{nvTotal.toLocaleString()} · partial — narrow the range</span>
                             : nvSource === 'cache'
-                              ? <span title={boardSourceTitle}>Board · {nvTotal.toLocaleString()} stops{nvRemovedCount > 0 ? ` · ${nvRemovedCount} closed removed` : ''}</span>
+                              ? <span title={boardSourceTitle}>Board{nvRemovedCount > 0 ? ` · ${nvRemovedCount} removed` : ''}</span>
                               : nvSource === 'checked'
-                                ? <span title="NuVizz's own list for this window, applied from the last Check vs NuVizz. Pins and enrichment joined from our cache by stop number; a row we had never captured lists without a pin.">NuVizz · {nvTotal.toLocaleString()} stops · checked {fmtCheckTime(nvCheck.at)}</span>
-                                : <>NuVizz · {nvTotal.toLocaleString()} stops</>}
-                  </span>
-                )}
-                {/* CHECK VS NUVIZZ (v0.94.0). Desktop only, like the date window it belongs to — the
-                    phone has no date window to check. One NuVizz call per press, a minute's cooldown,
-                    and the server throttles on top. The panel is a popover off this bar, exactly the
-                    Profiles pattern: fixed backdrop to dismiss, absolute panel above the bar. */}
-                {nvWindow && nvWindowReady && (
-                  <span className="relative hidden sm:inline-flex items-center gap-1">
-                    <button
-                      onClick={() => { if (nvCheck.result && !nvCheck.running) setNvCheckOpen((v) => !v); else runNvCheck(); }}
-                      disabled={nvCheck.running || nvLoading || (nvCheckCooling && !nvCheck.result)}
-                      title={nvCheck.result
-                        ? 'Show the last check. Run it again after the cooldown from inside the panel.'
-                        : 'Spends ONE NuVizz call: pulls NuVizz’s own list for these dates and status buckets and shows what differs from this grid — rows shown here that NuVizz no longer lists, rows NuVizz lists that are not shown here, and rows whose plan or day differs. Open work only; delivered and cancelled rows are not compared.'}
-                      className={'inline-flex items-center gap-1 px-2 py-1 rounded text-xs border whitespace-nowrap disabled:opacity-50 '
-                        + (nvCheck.result ? (nvCheck.result.matches ? 'border-green-500 text-green-800 bg-green-50' : 'border-amber-500 text-amber-800 bg-amber-50') : 'border-slate-300 text-slate-600 hover:bg-slate-50')}
-                    >
-                      {nvCheck.running ? <RefreshCw size={12} className="animate-spin" /> : <ClipboardList size={12} />}
-                      {nvCheck.running ? 'Checking NuVizz…' : nvCheck.result ? (nvCheck.result.matches ? 'Matches NuVizz' : `${nvCheckDiffCount} differ from NuVizz`) : 'Check vs NuVizz'}
-                    </button>
-                    {nvCheck.error && !nvCheck.running && (
-                      <span className="text-[11px] text-red-600 max-w-[260px] truncate" title={nvCheck.error}>Check failed: {nvCheck.error}</span>
-                    )}
-                    {nvCheckOpen && nvCheck.result && (
-                      <>
-                        <div className="fixed inset-0 z-10" onClick={() => setNvCheckOpen(false)} />
-                        <div className="absolute left-0 bottom-full mb-1 w-[640px] max-w-[calc(100vw-2rem)] max-h-[60vh] overflow-auto bg-white border border-slate-200 rounded-lg shadow-lg z-20 p-3 text-xs">
-                          <div className="flex items-baseline justify-between gap-2 mb-2">
-                            <div className={'font-semibold ' + (nvCheck.result.matches ? 'text-green-800' : 'text-amber-800')}>
-                              {nvCheck.result.matches ? '✓ This window matches NuVizz' : `${nvCheckDiffCount} difference${nvCheckDiffCount === 1 ? '' : 's'} against NuVizz`}
-                            </div>
-                            <div className="text-[10px] text-slate-400 whitespace-nowrap">checked {fmtCheckTime(nvCheck.at)} · 1 NuVizz call{nvCheck.result.partial ? ' · partial pull — narrow the range' : ''}</div>
-                          </div>
-                          <table className="w-full text-[11px] mb-2 tabular-nums">
-                            <thead><tr className="text-slate-500"><th className="text-left font-medium py-0.5"></th><th className="text-right font-medium">Stops</th><th className="text-right font-medium">Unplanned</th><th className="text-right font-medium">Weight</th><th className="text-right font-medium">Skids</th><th className="text-right font-medium">Loose</th></tr></thead>
-                            <tbody>
-                              {[['NuVizz', nvCheck.result.nuvizz], ['Showing here', nvCheck.result.shown]].map(([label, t]) => (
-                                <tr key={label} className="border-t border-slate-100">
-                                  <td className="py-0.5 font-medium text-slate-700">{label}</td>
-                                  <td className="text-right">{(t?.count ?? 0).toLocaleString()}</td>
-                                  <td className="text-right">{(t?.unplanned ?? 0).toLocaleString()}</td>
-                                  <td className="text-right">{(t?.weight ?? 0).toLocaleString()} lb</td>
-                                  <td className="text-right">{(t?.skids ?? 0).toLocaleString()}</td>
-                                  <td className="text-right">{(t?.loose ?? 0).toLocaleString()}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                          {[
-                            ['stale', 'shown here but not in NuVizz’s list — delivered, cancelled or moved out of these dates since our last scan', nvCheck.result.stale],
-                            ['missing', 'in NuVizz’s list but not shown here', nvCheck.result.missing],
-                            ['changed', 'on both, but the plan or the day differs', nvCheck.result.changed],
-                          ].filter(([, , list]) => list && list.length).map(([kind, title, list]) => (
-                            <div key={kind} className="mb-2">
-                              <div className="font-semibold text-slate-800 mb-0.5">{list.length} {title}</div>
-                              <div className="max-h-40 overflow-auto border border-slate-100 rounded">
-                                <table className="w-full text-[11px]">
-                                  <tbody>
-                                    {list.map((r) => (
-                                      <tr key={r.stopNbr} className="border-b border-slate-50 last:border-0">
-                                        <td className="px-1.5 py-0.5 font-mono whitespace-nowrap">
-                                          <button onClick={() => pickByNbr(r.stopNbr)} className="text-blue-700 hover:underline" title="Open this stop">{r.stopNbr}</button>
-                                        </td>
-                                        <td className="px-1.5 py-0.5 truncate max-w-[200px]">{r.businessName || '—'}</td>
-                                        {kind === 'changed' ? (
-                                          <td className="px-1.5 py-0.5 text-slate-600 whitespace-nowrap">
-                                            here: {r.ours?.planned ? `on ${r.ours.routeName || 'a load'}` : 'unplanned'}{r.ours?.day ? ` · ${String(r.ours.day).slice(5).replace('-', '/')}` : ''}
-                                            {' → NuVizz: '}{r.nuvizz?.planned ? `on ${r.nuvizz.routeName || 'a load'}` : 'unplanned'}{r.nuvizz?.day ? ` · ${String(r.nuvizz.day).slice(5).replace('-', '/')}` : ''}
-                                          </td>
-                                        ) : (
-                                          <td className="px-1.5 py-0.5 text-slate-600 whitespace-nowrap">
-                                            {r.day ? String(r.day).slice(5).replace('-', '/') : '—'} · {r.routeName ? `on ${r.routeName}` : 'unplanned'} · {Number(r.weight || 0).toLocaleString()} lb
-                                          </td>
-                                        )}
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            </div>
-                          ))}
-                          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
-                            {!nvCheck.result.matches && (
-                              <button onClick={applyNvCheck} className="px-2 py-1 rounded bg-blue-600 text-white font-semibold" title="Show NuVizz’s list for this window in the grid and on the map (pins joined from our cache by stop number). No further NuVizz calls.">Use NuVizz’s list for this window</button>
-                            )}
-                            <button onClick={runNvCheck} disabled={nvCheck.running || nvCheckCooling} className="px-2 py-1 rounded border border-slate-300 text-slate-600 disabled:opacity-50" title={nvCheckCooling ? 'One check per minute — each is a NuVizz call' : 'Run the check again (one NuVizz call)'}>Check again</button>
-                            <button onClick={() => setNvCheckOpen(false)} className="px-2 py-1 rounded border border-slate-300 text-slate-600">Close</button>
-                            <span className="text-[10px] text-slate-400 basis-full">Open work only — unplanned, planned, out for delivery, arrived. Delivered and cancelled rows are history and are not compared{nvCheck.result.ignoredShown ? ` (${nvCheck.result.ignoredShown} such rows on our side set aside)` : ''}. Our side is this window after its status filter; search, driver and no-location filters are not applied to it.</span>
-                          </div>
-                        </div>
-                      </>
-                    )}
+                                ? <span title="NuVizz's own list for this window, applied from the last Check vs NuVizz. Pins and enrichment joined from our cache by stop number; a row we had never captured lists without a pin.">NuVizz · checked {fmtCheckTime(nvCheck.at)}</span>
+                                : <span title="Pulled straight from NuVizz for this window.">NuVizz</span>}
+                    {/* THE CHECK'S VERDICT rides beside the source, because the button that used to
+                        wear it is in the gear now: green when the window matches NuVizz, amber with
+                        the count when it does not, and a click reopens the panel. Not shown once
+                        NuVizz's own list has been applied (nvSource 'checked') — the chip beside it
+                        already says so, and "12 differ" next to "NuVizz · checked" reads as a
+                        contradiction. A failed check says so in red rather than vanishing. */}
+                    {nvCheck.running
+                      ? <span className="inline-flex items-center gap-1"><RefreshCw size={11} className="animate-spin" /> checking NuVizz…</span>
+                      : nvCheck.error
+                        ? <span className="text-red-600 max-w-[200px] truncate" title={`Check vs NuVizz failed: ${nvCheck.error}. Open the gear to run it again.`}>check failed</span>
+                        : nvCheck.result && nvSource !== 'checked'
+                          ? (
+                            <button
+                              onClick={() => setNvCheckOpen((v) => !v)}
+                              title={nvCheck.result.matches ? `This window matches NuVizz (checked ${fmtCheckTime(nvCheck.at)}). Click to see the totals.` : `${nvCheckDiffCount} row${nvCheckDiffCount === 1 ? '' : 's'} differ from NuVizz’s list (checked ${fmtCheckTime(nvCheck.at)}). Click to see which.`}
+                              className={'inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-semibold ' + (nvCheck.result.matches ? 'border-green-500 text-green-800 bg-green-50' : 'border-amber-500 text-amber-800 bg-amber-50')}
+                            >
+                              {nvCheck.result.matches ? '✓ matches NuVizz' : `${nvCheckDiffCount} differ`}
+                            </button>
+                          )
+                          : null}
                   </span>
                 )}
               </>
             )}
           </>
         )}
-        {headerRight && <div className="ml-auto">{headerRight}</div>}
+        {/* THE RIGHT END OF THE BAR. A screen that supplies its own controls (Routing: the compact
+            date and the panel gear) hands them in as headerRight — as a FUNCTION when it wants the
+            grid's own gear items folded into its gear (see gridGear above). A screen that supplies
+            nothing (the dispatch Map) gets the grid's own gear, desktop only: the items in it are
+            desktop items (the date window does not exist on a phone), and a phone bar that gains a
+            control gains a collision the mobile guard has to be told about. */}
+        {headerRightEl && <div className="ml-auto">{headerRightEl}</div>}
+        {/* THE CHECK'S RESULT PANEL (v0.94.0; anchored here since v1.3.0). Its trigger is in the
+            gear and its verdict chip is beside the window; the panel itself hangs off this bar's
+            right end, above the grid, with a fixed backdrop to dismiss — the Profiles pattern. */}
+        {nvCheckOpen && nvCheck.result && (
+          <>
+            <div className="fixed inset-0 z-10" onClick={() => setNvCheckOpen(false)} />
+            <div className="absolute right-0 bottom-full mb-1 w-[640px] max-w-[calc(100vw-2rem)] max-h-[60vh] overflow-auto bg-white border border-slate-200 rounded-lg shadow-lg z-20 p-3 text-xs">
+              <div className="flex items-baseline justify-between gap-2 mb-2">
+                <div className={'font-semibold ' + (nvCheck.result.matches ? 'text-green-800' : 'text-amber-800')}>
+                  {nvCheck.result.matches ? '✓ This window matches NuVizz' : `${nvCheckDiffCount} difference${nvCheckDiffCount === 1 ? '' : 's'} against NuVizz`}
+                </div>
+                <div className="text-[10px] text-slate-400 whitespace-nowrap">checked {fmtCheckTime(nvCheck.at)} · 1 NuVizz call{nvCheck.result.partial ? ' · partial pull — narrow the range' : ''}</div>
+              </div>
+              <table className="w-full text-[11px] mb-2 tabular-nums">
+                <thead><tr className="text-slate-500"><th className="text-left font-medium py-0.5"></th><th className="text-right font-medium">Stops</th><th className="text-right font-medium">Unplanned</th><th className="text-right font-medium">Weight</th><th className="text-right font-medium">Skids</th><th className="text-right font-medium">Loose</th></tr></thead>
+                <tbody>
+                  {[['NuVizz', nvCheck.result.nuvizz], ['Showing here', nvCheck.result.shown]].map(([label, t]) => (
+                    <tr key={label} className="border-t border-slate-100">
+                      <td className="py-0.5 font-medium text-slate-700">{label}</td>
+                      <td className="text-right">{(t?.count ?? 0).toLocaleString()}</td>
+                      <td className="text-right">{(t?.unplanned ?? 0).toLocaleString()}</td>
+                      <td className="text-right">{(t?.weight ?? 0).toLocaleString()} lb</td>
+                      <td className="text-right">{(t?.skids ?? 0).toLocaleString()}</td>
+                      <td className="text-right">{(t?.loose ?? 0).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {[
+                ['stale', 'shown here but not in NuVizz’s list — delivered, cancelled or moved out of these dates since our last scan', nvCheck.result.stale],
+                ['missing', 'in NuVizz’s list but not shown here', nvCheck.result.missing],
+                ['changed', 'on both, but the plan or the day differs', nvCheck.result.changed],
+              ].filter(([, , list]) => list && list.length).map(([kind, title, list]) => (
+                <div key={kind} className="mb-2">
+                  <div className="font-semibold text-slate-800 mb-0.5">{list.length} {title}</div>
+                  <div className="max-h-40 overflow-auto border border-slate-100 rounded">
+                    <table className="w-full text-[11px]">
+                      <tbody>
+                        {list.map((r) => (
+                          <tr key={r.stopNbr} className="border-b border-slate-50 last:border-0">
+                            <td className="px-1.5 py-0.5 font-mono whitespace-nowrap">
+                              <button onClick={() => pickByNbr(r.stopNbr)} className="text-blue-700 hover:underline" title="Open this stop">{r.stopNbr}</button>
+                            </td>
+                            <td className="px-1.5 py-0.5 truncate max-w-[200px]">{r.businessName || '—'}</td>
+                            {kind === 'changed' ? (
+                              <td className="px-1.5 py-0.5 text-slate-600 whitespace-nowrap">
+                                here: {r.ours?.planned ? `on ${r.ours.routeName || 'a load'}` : 'unplanned'}{r.ours?.day ? ` · ${String(r.ours.day).slice(5).replace('-', '/')}` : ''}
+                                {' → NuVizz: '}{r.nuvizz?.planned ? `on ${r.nuvizz.routeName || 'a load'}` : 'unplanned'}{r.nuvizz?.day ? ` · ${String(r.nuvizz.day).slice(5).replace('-', '/')}` : ''}
+                              </td>
+                            ) : (
+                              <td className="px-1.5 py-0.5 text-slate-600 whitespace-nowrap">
+                                {r.day ? String(r.day).slice(5).replace('-', '/') : '—'} · {r.routeName ? `on ${r.routeName}` : 'unplanned'} · {Number(r.weight || 0).toLocaleString()} lb
+                              </td>
+                            )}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
+              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
+                {!nvCheck.result.matches && (
+                  <button onClick={applyNvCheck} className="px-2 py-1 rounded bg-blue-600 text-white font-semibold" title="Show NuVizz’s list for this window in the grid and on the map (pins joined from our cache by stop number). No further NuVizz calls.">Use NuVizz’s list for this window</button>
+                )}
+                <button onClick={runNvCheck} disabled={nvCheck.running || nvCheckCooling} className="px-2 py-1 rounded border border-slate-300 text-slate-600 disabled:opacity-50" title={nvCheckCooling ? 'One check per minute — each is a NuVizz call' : 'Run the check again (one NuVizz call)'}>Check again</button>
+                <button onClick={() => setNvCheckOpen(false)} className="px-2 py-1 rounded border border-slate-300 text-slate-600">Close</button>
+                <span className="text-[10px] text-slate-400 basis-full">Open work only — unplanned, planned, out for delivery, arrived. Delivered and cancelled rows are history and are not compared{nvCheck.result.ignoredShown ? ` (${nvCheck.result.ignoredShown} such rows on our side set aside)` : ''}. Our side is this window after its status filter; search, driver and no-location filters are not applied to it.</span>
+              </div>
+            </div>
+          </>
+        )}
+
       </div>
       {open && view === 'stops' && (
         <div className="overflow-auto flex-1 min-h-0">
@@ -14730,18 +14752,21 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                   key={s.stopNbr}
                   onClick={() => onPick(s)}
                   // Selected-on-the-map rows highlight (Routing passes the live selection) so the
-                  // grid and the selection tool read as one; selection tint wins over carry-over.
-                  // A STAGED ROW sits between the two: it is tinted in its own card's colour —
-                  // faint, because a whole route's worth of rows at full strength would drown the
-                  // grid — and selection still wins, since selection is what the router is doing
-                  // right now while staging is what he did a minute ago.
-                  className={'cursor-pointer hover:bg-blue-50 ' + (highlightIds?.has(String(s.stopNbr)) ? 'bg-blue-100 hover:bg-blue-200/70' : s.carryover ? 'bg-amber-50/60' : '')}
+                  // grid and the selection tool read as one; selection tint wins over everything.
+                  // A STAGED ROW sits just under it: tinted in its own card's colour — faint,
+                  // because a whole route's worth of rows at full strength would drown the grid —
+                  // as an INLINE style, which beats every class below it. Then the tractor green,
+                  // then carry-over amber: the ranking is gridRowTone (lib/routing-select.js).
+                  className={'cursor-pointer ' + gridRowTone({ selected: !!highlightIds?.has(String(s.stopNbr)), tractorOk: tractorOkIds.has(String(s.stopNbr)), carryover: !!s.carryover })}
                   style={(!highlightIds?.has(String(s.stopNbr)) && stagedByStop?.get?.(String(s.stopNbr)))
                     ? { background: `${stagedByStop.get(String(s.stopNbr)).color}14` }
                     : undefined}
-                  title={stagedByStop?.get?.(String(s.stopNbr))
-                    ? `Stop ${stagedByStop.get(String(s.stopNbr)).seq} on ${stagedByStop.get(String(s.stopNbr)).name} — staged, not saved to NuVizz yet`
-                    : s.carryover ? `Carry-over from ${s.scheduledDate}` : undefined}
+                  title={[
+                    stagedByStop?.get?.(String(s.stopNbr))
+                      ? `Stop ${stagedByStop.get(String(s.stopNbr)).seq} on ${stagedByStop.get(String(s.stopNbr)).name} — staged, not saved to NuVizz yet`
+                      : s.carryover ? `Carry-over from ${s.scheduledDate}` : null,
+                    tractorOkIds.has(String(s.stopNbr)) ? 'Tractor-trailer friendly — a 53′ trailer can be sent here (green)' : null,
+                  ].filter(Boolean).join(' · ') || undefined}
                 >
                   {cols.map((c) => (
                     // A `fit` column drops the max-width clamp (and with it the ellipsis), so the
@@ -19033,7 +19058,7 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
 // whole list stays reachable. panelsFirst (same caller): the panel switches render ABOVE the
 // view pickers so "Live dispatch" — the switch that decides whether Save writes to NuVizz — is
 // above that fold, not a scroll away. Desktop callers pass neither and render exactly as before.
-function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = false, capHeight = false, panelsFirst = false, tone = 'panel' }) {
+function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = false, capHeight = false, panelsFirst = false, tone = 'panel', title = 'Panel settings' }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -19077,7 +19102,7 @@ function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = f
       <button onClick={() => setOpen((o) => !o)} className={tone === 'appbar'
         // On the blue app bar: white on translucent white, a full 44px square, no grey border.
         ? `inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded text-white ${open ? 'bg-white/30' : 'bg-white/15 active:bg-white/25'}`
-        : `p-1.5 rounded border ${open ? 'border-slate-400 bg-slate-100' : 'border-slate-300 hover:bg-slate-50'} text-slate-600`} title="Panel settings" aria-label="Panel settings" aria-expanded={open}>
+        : `p-1.5 rounded border ${open ? 'border-slate-400 bg-slate-100' : 'border-slate-300 hover:bg-slate-50'} text-slate-600`} title={title} aria-label={title} aria-expanded={open}>
         <Settings size={16} />
       </button>
       {open && (
@@ -19090,8 +19115,12 @@ function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = f
           {!panelsFirst && panelsEl}
           {actions.length > 0 && (
             <div className="mt-1 pt-1 border-t flex flex-col gap-1">
+              {/* An action may be DISABLED WITH A REASON (a.disabled + a.title): "Check vs NuVizz"
+                  needs a date window, and a menu item that simply is not there when it cannot
+                  run is a feature the dispatcher has to know exists to go looking for. Greyed
+                  with the reason on hover, it teaches what it needs. */}
               {actions.map((a) => (
-                <button key={a.key} onClick={() => { a.onClick(); setOpen(false); }} className="text-left px-1 py-1.5 rounded text-slate-600 hover:bg-slate-50">{a.label}</button>
+                <button key={a.key} onClick={() => { a.onClick(); setOpen(false); }} disabled={!!a.disabled} title={a.title} className="text-left px-1 py-1.5 rounded text-slate-600 hover:bg-slate-50 disabled:opacity-50">{a.label}</button>
               ))}
             </div>
           )}
@@ -19099,6 +19128,28 @@ function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = f
       )}
     </div>
   );
+}
+
+// CAN A TRACTOR TRAILER BE SENT TO THIS STOP — asked once, answered the same way everywhere.
+// Green = EVERY signal the map paints green for, not just the dispatcher-set eligibility: the
+// manual green paint, the "Tractor trailer friendly" badge, and the proven lime "a tractor has
+// delivered here" (tractor_locations). An explicit box-only mark, or a CONFIRMED trailer
+// blocker somebody hand-ticked, still wins as NOT friendly — never green a stop a person marked
+// off-limits. The rule itself is tractorFriendlySelection (lib/map-legend.js, tested); this is
+// the one place that feeds it a board stop, so the Selected window's green rows, its "Drop N
+// non-tractor" button and the bottom grid's green rows (v1.3.0) cannot drift apart — a button
+// that drops a row a panel painted green is the worst version of this feature, and it has been
+// got wrong before (v0.46.8: 4 of 6 green stops un-highlighted; v1.1.1: a hand-ticked "No
+// tractor trailer" kept a row green).
+function stopTractorFriendly(stop, notes, tractorLocs) {
+  const note = notes?.get?.(stop.matchKey) || null;
+  const keys = getRestrictionBadgeKeys(note);
+  return tractorFriendlySelection({
+    eligibility: note?.vehicle_eligibility ?? null,
+    friendlyBadge: keys.includes('tractor_trailer_friendly'),
+    tractorSeen: !!(tractorLocs && tractorLocs.has(stop.matchKey)),
+    drawnKeys: keys, note, resolve: resolveRestrictionKey,
+  });
 }
 
 function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemove, onRemoveMany, onClearAll, onOpenStop, onClose, isMobile, hoverId, setHoverId, onLocate, sendTargets = [], onSendTo = null }) {
@@ -19123,28 +19174,11 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
       weight: Number(s.weight) || 0,
       pallets: Number(s.cartons) || 0,   // NuVizz totalCartons = real skids/pallets
       loose: Number(s.volume) || 0,      // NuVizz volume = loose-piece count
-      // Green = EVERY signal the map paints green for, not just the dispatcher-set
-      // eligibility: the manual green paint, the "Tractor trailer friendly" badge, and the
-      // proven lime "a tractor has delivered here" (tractor_locations). Only checking the
-      // manual paint left badge/proven-green stops un-highlighted (Chad: "4 of these are
-      // painted... rows are not highlighted"). An explicit box-only mark still wins as red
-      // — never green a stop the dispatcher marked off-limits.
-      // ONE RULE, TWO READERS. The green highlight and the "Drop N non-tractor" button below
-      // must agree exactly — a button that drops a row the panel painted green is the worst
-      // possible version of this feature — so both read tractorFriendlySelection.
-      tractorOk: (() => {
-        const note = notes?.get?.(s.matchKey) || null;
-        const keys = getRestrictionBadgeKeys(note);
-        return tractorFriendlySelection({
-          eligibility: note?.vehicle_eligibility ?? null,
-          friendlyBadge: keys.includes('tractor_trailer_friendly'),
-          tractorSeen: !!(tractorLocs && tractorLocs.has(s.matchKey)),
-          // THREE READERS, ONE RULE. A hand-ticked "No tractor trailer" already stops the map
-          // painting the stop lime; without these it did NOT stop this row going green or the
-          // Drop button keeping it, so the panel and the board disagreed about the same stop.
-          drawnKeys: keys, note, resolve: resolveRestrictionKey,
-        });
-      })(),
+      // ONE RULE, THREE READERS (stopTractorFriendly, above). The green highlight here, the
+      // "Drop N non-tractor" button below and the bottom grid's green rows must agree exactly —
+      // a button that drops a row a panel painted green is the worst possible version of this
+      // feature (Chad, v0.46.8: "4 of these are painted... rows are not highlighted").
+      tractorOk: stopTractorFriendly(s, notes, tractorLocs),
     };
   }), [selectedStops, notes, tractorLocs]);
   const tot = rows.reduce((a, r) => ({ wt: a.wt + r.weight, plt: a.plt + r.pallets, ls: a.ls + r.loose }), { wt: 0, plt: 0, ls: 0 });
@@ -22777,10 +22811,12 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   const [appBarSlot, setAppBarSlot] = useState(null);
   useEffect(() => { setAppBarSlot(isMobile ? document.getElementById('phone-appbar-slot') : null); }, [isMobile]);
   const phoneGearEl = isMobile ? <RoutingSettingsMenu views={routingSettingsViews} panels={phoneGearPanels} actions={routingSettingsActions} capHeight panelsFirst tone="appbar" /> : null;
-  const bottomGridHeaderRight = isMobile ? phoneDateEl : (
+  // A FUNCTION on desktop (v1.3.0): the grid hands its own gear items in (Check vs NuVizz, which
+  // lives in the grid's state) and they lead the list — they are about the panel the gear sits on.
+  const bottomGridHeaderRight = isMobile ? phoneDateEl : (grid) => (
     <div className="flex items-center gap-1.5 shrink-0">
       {!leftPanelOn && <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={() => setSelectedDate(todayInET())} compact />}
-      <RoutingSettingsMenu views={routingSettingsViews} panels={bottomGearPanels} actions={routingSettingsActions} dropUp />
+      <RoutingSettingsMenu views={routingSettingsViews} panels={bottomGearPanels} actions={[...(grid?.actions || []), ...routingSettingsActions]} dropUp />
     </div>
   );
 

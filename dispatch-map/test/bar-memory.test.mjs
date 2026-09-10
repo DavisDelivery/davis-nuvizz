@@ -25,11 +25,30 @@ test('a reload with a profile selected comes back with Un-Planned ticked and Las
 test('an UNSAVED tweak survives too — the live bar beats the profile it came from', () => {
   // Ticking Planned on the way to building a route and hopping Map → Routing is the same
   // complaint in a smaller box: the working set must not reset under you.
-  const memory = underChad({ status: ['unplanned', 'planned'], nvWindow: '-7d', driverSel: 'STEVEN' });
+  const memory = underChad({ status: ['unplanned', 'planned'], nvWindow: '-7d' });
   const { settings, from } = restoreBar({ memory, activeName: 'Chad', profiles: [CHAD] });
   assert.equal(from, 'memory');
   assert.deepEqual(settings.status, ['unplanned', 'planned']);
-  assert.equal(settings.driverSel, 'STEVEN');
+});
+
+test('a DRIVER filter written by an older build is dropped, never restored (v1.3.0)', () => {
+  // The driver dropdown left the bar (Chad: "Remove the all drivers drivers"). Profiles and
+  // device memory from before still carry driverSel — Chad's own production profile does —
+  // and a filter with no control on screen is the invisible-filter trap this module exists
+  // to keep shut: restore "STEVEN" and every other driver's rows vanish with nothing to
+  // un-tick. So the field is not a setting any more, on any width, from any source.
+  const memory = underChad({ status: ['unplanned'], nvWindow: '-7d', driverSel: 'STEVEN' });
+  const fromMemory = restoreBar({ memory, activeName: 'Chad', profiles: [CHAD], width: 1920 }).settings;
+  assert.equal(fromMemory.driverSel, undefined, 'device memory restored a driver filter the bar cannot show');
+  assert.deepEqual(fromMemory.status, ['unplanned'], 'the rest of the remembered bar still comes back');
+  const profile = { name: 'Old', s: { status: ['planned'], driverSel: 'STEVEN' }, updatedAt: 5 };
+  const fromProfile = restoreBar({ memory: null, activeName: 'Old', profiles: [profile], width: 1920 }).settings;
+  assert.equal(fromProfile.driverSel, undefined, 'a shared profile restored a driver filter the bar cannot show');
+  assert.ok(!('driverSel' in normalizeBar({ driverSel: 'STEVEN' })), 'normalizeBar must not carry the field at all');
+  assert.ok(!('driverSel' in BAR_DEFAULTS), 'BAR_DEFAULTS must not name it, or a save would write it back');
+  // And two bars that differ only by a stale driver value are the SAME bar — the chip must
+  // not show an amber "edited" dot for a field nobody can see or change.
+  assert.ok(sameBar({ status: ['unplanned'], driverSel: 'STEVEN' }, { status: ['unplanned'], driverSel: '' }));
 });
 
 test('no memory and no profile opens the plain board — nothing filtered, nothing pulled', () => {
@@ -101,12 +120,11 @@ test('sameBar compares the status filter as a SET, not as a list', () => {
 });
 
 test('sameBar sees a change in every field the chip claims to be showing', () => {
-  const base = { view: 'stops', status: ['unplanned'], nvWindow: '-7d', driverSel: '', unmappedOnly: false, stopSort: { key: null, dir: 'asc' } };
+  const base = { view: 'stops', status: ['unplanned'], nvWindow: '-7d', unmappedOnly: false, stopSort: { key: null, dir: 'asc' } };
   const changed = [
     { ...base, view: 'loads' },
     { ...base, status: [] },
     { ...base, nvWindow: '-14d' },
-    { ...base, driverSel: 'STEVEN' },
     { ...base, unmappedOnly: true },
     { ...base, stopSort: { key: 'city', dir: 'asc' } },
     { ...base, stopSort: { key: null, dir: 'desc' } },
@@ -178,13 +196,12 @@ test('a selected profile that is not in the list yet never discards the remember
 });
 
 test('a phone gets back only the filters a phone can SHOW', () => {
-  // The window and driver controls are desktop-only (hidden sm:inline-block). Restored onto
-  // a 390px screen they would be live filters with nothing to see them by and nothing to
-  // clear them with — and unlike the old behaviour, a reload would bring them back.
-  const memory = underChad({ status: ['unplanned'], nvWindow: '-7d', driverSel: 'STEVEN', view: 'loads', unmappedOnly: true, stopSort: { key: 'city', dir: 'desc' } });
+  // The window control is desktop-only (hidden sm:inline-block). Restored onto a 390px
+  // screen it would be a live filter with nothing to see it by and nothing to clear it
+  // with — and unlike the old behaviour, a reload would bring it back.
+  const memory = underChad({ status: ['unplanned'], nvWindow: '-7d', view: 'loads', unmappedOnly: true, stopSort: { key: 'city', dir: 'desc' } });
   const phone = restoreBar({ memory, width: 390 }).settings;
   assert.equal(phone.nvWindow, '', 'a date window the phone cannot clear must not come back');
-  assert.equal(phone.driverSel, '', 'same for the driver filter');
   assert.deepEqual(phone.status, ['unplanned'], 'the status filter HAS a phone control — it stays');
   assert.equal(phone.view, 'loads');
   assert.equal(phone.unmappedOnly, true);
@@ -245,9 +262,8 @@ test('THE 640-767 BAND: the window control is on screen, so the profile applies'
 
 test('below 640 the control does not exist, so neither does the setting', () => {
   for (const w of [320, 390, 639]) {
-    const r = reachableBar({ nvWindow: '-7d', driverSel: 'STEVEN', status: ['unplanned'] }, w);
+    const r = reachableBar({ nvWindow: '-7d', status: ['unplanned'] }, w);
     assert.equal(r.nvWindow, '', `${w}px restored a window it cannot clear`);
-    assert.equal(r.driverSel, '');
     assert.deepEqual(r.status, ['unplanned'], 'the status filter HAS a phone control — it stays');
   }
 });
@@ -268,12 +284,11 @@ test('SAVING from a narrow screen keeps what it cannot see, for every other devi
   // "Update Chad to current" on a phone snapshots a bar whose window was carved off. The
   // profile is SHARED and now carries a save time, so that blank would be pushed onto the
   // desktop on its next load — a cross-device wipe out of a button that reads local.
-  const onProfile = { status: ['unplanned'], nvWindow: '-7d', driverSel: 'STEVEN' };
-  const fromPhone = { status: ['planned'], nvWindow: '', driverSel: '' };
+  const onProfile = { status: ['unplanned'], nvWindow: '-7d' };
+  const fromPhone = { status: ['planned'], nvWindow: '' };
   const saved = settingsForSave(fromPhone, onProfile, 390);
   assert.deepEqual(saved.status, ['planned'], 'what the phone CAN change must still be saved');
   assert.equal(saved.nvWindow, '-7d', "the phone erased the desktop's window");
-  assert.equal(saved.driverSel, 'STEVEN');
 });
 
 test('saving from a screen that CAN show it writes through, blank included', () => {
@@ -289,6 +304,8 @@ test('a save with no previous profile is just the snapshot', () => {
 
 test("CHAD'S REAL PROFILE, read from production Firestore 2026-09-09, round-trips", () => {
   // The saved profile document, verbatim. If this ever stops applying, he reports it again.
+  // It still carries driverSel from the build that wrote it; since v1.3.0 that field is not a
+  // setting, and the doc must keep applying with it ignored — an older profile is not invalid.
   const real = { view: 'stops', status: ['unplanned'], nvWindow: '-7d', nvFrom: '', nvTo: '',
     driverSel: '', unmappedOnly: false, stopSort: { key: 'cartons', dir: 'desc' }, loadSort: { key: null, dir: 'asc' } };
   const { settings, from } = restoreBar({ memory: null, activeName: 'Chad', profiles: [{ name: 'Chad', s: real, updatedAt: 1 }], width: 1920 });
