@@ -982,12 +982,31 @@ export const BOARD_WRITE_GRACE_MIN = 60;
  * No from-route on the stamp (written before v1.8.0, or a caller that had no route) → never
  * released: absence of the baseline is not evidence, and this must not guess a stop off a route.
  */
+// A NuVizz load NUMBER looks like the company code + zero-padded digits ("DAVIS000198197")
+// or (some tenants) a long bare number — NEVER the internal hex loadId (interspersed hex) and
+// NEVER a short human route name ("SUW"). Distinctive enough to VALIDATE a labelled column and,
+// if the column is mislabelled/absent, to FIND the number anywhere in the row — so "the loads
+// scan produces the number, just grab it" holds regardless of the saved-search column naming.
+export function looksLikeLoadNbr(v: any): boolean {
+  const s = String(v ?? '').trim();
+  return /^[A-Za-z]{2,}\d{5,}$/.test(s) || /^\d{6,}$/.test(s);
+}
+
 export function unplanStampOvertaken(prior: any, fresh: any): boolean {
   if (prior?.board_write_planned !== false) return false;   // not an un-plan stamp — the planned side has its own verify
   if (fresh?.isPlanned !== true) return false;              // the list agrees it is un-planned; nothing to argue about
   const from = String(prior?.board_write_from ?? '').trim();
   const now = String(fresh?.routeName ?? fresh?.loadNbr ?? '').trim();
   if (!from || !now) return false;                          // cannot tell → hold, exactly as before
+  // A BASELINE THAT CANNOT BE COMPARED LIKE FOR LIKE IS NO BASELINE, and this one is the way
+  // this rule could LOSE freight rather than merely be slow. Both write-through callers fall
+  // back to something that is not a route name when a card has no resolvable one: the server
+  // takes the load NUMBER (nuvizz-write.mts — `|| String(p.loadNbr || '')`), the client can take
+  // a hex card key. The list always reports the human NAME, so "DAVIS000203388" vs "RONALD"
+  // reads as a different route for EVERY such stop — and would release exactly the holds that
+  // must stand, on a genuine un-plan the list is merely lagging. Two namespaces are not a
+  // disagreement. Refuse to decide, and let the clock hold it as it did before.
+  if (looksLikeLoadNbr(from) || isHashLikeId(from)) return false;
   return now.toLowerCase() !== from.toLowerCase();
 }
 

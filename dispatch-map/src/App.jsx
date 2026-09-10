@@ -82,6 +82,7 @@ import { flagProvenance, provenanceLine } from './lib/flag-provenance.js';
 import { deliveredWhen } from './lib/delivered-when.js';
 import { flagDetail, sighting } from './lib/flag-detail.js';
 import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab, resolveRailQuery } from './lib/right-panel.js';
+import { boardStatusPanel } from './lib/board-status-card.js';
 import { buildRosterStatusMap, buildRosterDriverMap, resolveRosterStatus, resolveRosterDriver, resolveNameOwner } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
 import { planSendSelection, selectionSendTargets } from './lib/send-selection.js';
@@ -125,7 +126,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '1.11.0';
+const APP_VERSION = '1.13.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -196,6 +197,8 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.13.0', 'THE BOARD-STATUS CARD IS OFF THE MAP AND ONTO THE BAR. Chad, on the \u201c0 of 805 stops\u201d pill floating over the routing map: \u201cI want to move this to just above filters on the bar with more, but just far enough left on that bar to where when it drops down it doesn\u2019t cover up filters or flags \u2014 slide the flags down just enough to where it doesn\u2019t get covered by the drop down either.\u201d IT NOW LIVES ON THE APP BAR, immediately LEFT OF More, and its detail (total pallets, the unplanned count, the three feed timestamps, the NuVizz call meter and the hourly sparkline) DROPS DOWN from the bar instead of pushing a taller and taller card down over the freight. That is the operational point rather than the cosmetic one: the top-right of a routing map is metro Atlanta, and a card that grows when you open it grows over the pins a router is reading. Board health belongs on the chrome, beside the presence chip and the version, where it is always on screen and never in the way. \u201cFAR ENOUGH LEFT\u201d IS MEASURED, NOT ESTIMATED, and the first cut of this got it wrong. More sits all but directly above the map\u2019s Filters button \u2014 at 1440px More spans x 983..1085 and Filters 971..1046 \u2014 so a panel right-ALIGNED to the card ends at x 979 and CLIPS THE LEFT 8px OF FILTERS. Eight pixels is invisible in a screenshot and is exactly the thing that was asked to be avoided. The panel now hangs from the card\u2019s LEFT edge (right-full), so it drops down and to the left with the card\u2019s own width as the clearance \u2014 ~147px at 1440 \u2014 a gap that scales with the control instead of a number somebody has to re-guess. THE FLAGS SLID DOWN TOO, to top-32, which is the \u201cjust enough\u201d measured on a board carrying real numbers rather than an empty one: the panel bottoms out at page y 165, top-28 would leave the chip at y 157 and still under it. It is the second margin, not the first \u2014 a dispatcher dragging the right rail wider now has to pass BOTH the horizontal gap and the vertical one before anything is hidden, and a flag count that goes quiet is pixel-identical to a clean board. A NEW GUARD MEASURES ALL OF IT IN THE REAL BUNDLE, because this file has collision-patched absolutely-pinned overlays FOUR separate times (v0.54.80, v0.54.82, the wrap fix, the flags-chip clip) and still shipped the draw buttons on top of the status card. verify-routing-topbar drives the built app at 1440 and 1920 against a board with 60 stops, real feed stamps and a call meter \u2014 an EMPTY board draws a short dropdown that clears everything by accident \u2014 and fails the build if the panel ever touches Filters or the flags chip. Written against the broken draft first and it fails it, because a layout guard that has never seen the bug it describes is not evidence of anything. AND ONE DEFECT IN MY OWN DRAFT, caught before it shipped: in the pill the detail and the scan error stack IN FLOW, so both can show at once for free; on the bar both are absolutely placed under the same control, and as siblings they would land ON THE SAME PIXELS \u2014 discoverable only on a morning a scan had already failed, which is the worst possible time to lose the message saying so. One panel now, and what goes in it is a pure rule both placements import (boardStatusPanel), so the bar and the pill cannot drift on the standing promise that a scan error stays visible WHILE COLLAPSED \u2014 the refresh button is always on screen, and an error hidden inside a closed body means the icon spins, stops, and the button reads as broken. A blank or whitespace-only error paints nothing and forces no empty dropdown open. TWO VIEWS, AS ALWAYS: the phone keeps the card in its own flow column exactly as it was \u2014 nothing about a 390px screen is improved by moving a card onto a bar that has no room for it \u2014 and the 44px touch box is dropped only in bar mode, which is desktop-only, because a 44px target inside a 45px bar either blows the bar\u2019s height or grows every control on it. Zero NuVizz calls. 8 new tests, 4,063 green.'],
+  ['1.12.0', 'A LOAD NUMBER IS NOT A ROUTE NAME \u2014 AND v1.8.0 SHIPPED WITHOUT NOTICING. That release taught the un-plan stamp to yield the moment NuVizz\u2019s list names a DIFFERENT route than the one a Save took the order off: lag names the OLD route, a re-plan names a NEW one, so a different name is a verdict rather than a stale index. It compared the stamp\u2019s from-route against the list\u2019s route NAME \u2014 and BOTH write-through callers can stamp something that is not a name at all. The server falls back to the load NUMBER (nuvizz-write.mts, `|| String(p.loadNbr || \u2018\u2019)`) and the client can fall back to a hex card key, while the list always reports the human name. So \u201cDAVIS000203388\u201d against \u201cRONALD\u201d reads as a different route for EVERY such stop, and the rule would have released exactly the holds that must stand \u2014 a genuine un-plan whose list is merely lagging, which NuVizz\u2019s index has done for 30+ minutes after an ACCEPTED save (OWUSU 1, and the whole reason the grace exists). That is the ONE way this rule could lose freight rather than merely be slow, and it is the precise opposite of what v1.8.0 set out to do. TWO NAMESPACES ARE NOT A DISAGREEMENT. A number-shaped or hash-shaped baseline now decides nothing: the rule refuses to compare, and the sixty-minute clock holds the stamp exactly as it did before v1.8.0. That is the safe direction and it is the same answer the rule already gave for a stamp carrying no from-route at all \u2014 absence of a comparable baseline is not evidence, and this must never guess an order off a route. FOUND BY AN ADVERSARIAL PASS OVER MY OWN FIX, not by a test going red, which is the point of running one: every v1.8.0 test fed the rule a route name, because a route name is what I had in mind when I wrote the rule and the tests both. The new test pins the REAL fallback values read off the two call sites \u2014 \u2018DAVIS000203388\u2019, \u2018007141059\u2019, \u20186a3560cb52ef82bd1ed4516b\u2019 \u2014 so the shapes the code actually produces are the shapes the guard is proved against. AND looksLikeLoadNbr MOVES RATHER THAN MULTIPLIES: it now lives in nuvizz-list.mts and nuvizz-loads.mts imports it, so the write-grace and the load roster ask ONE definition instead of a third copy drifting from the two that already existed. Zero NuVizz calls. 4,055 green.'],
   ['1.11.0', 'A STACKER ON A BOX TRUCK NOW RAISES A FLAG, AND THE ORDER THAT SAID SO STOPPED SAYING THE OPPOSITE. Chad, on PRO 007173855: “I want to look for the text hydraulic stacker in the items on my deliveries” and “I also want it to throw a flag if i try to put this on a box truck.” THE ORDER THAT ASKED FOR IT went out on 09-09 carrying a 1,259 lb walk-behind stacker — 71% of the stop’s whole weight in one piece — came back undelivered, and was re-cut as 007173855-1 for redelivery with a Pre-Visit note reading “REDELIVER STRADDLE STACKER ON TRACTOR TRAILER 9/10”. THE MARK IS A BRIGHT YELLOW DISC WITH A DARK H on the item row that named it, not on the stop: a seven-line order gets one yellow letter pointing at the one line that needs a different truck. It is a LETTERFORM because the row is 13px text and a drawn mast-and-forks needs five or six shapes at that size — rendered small it turns to mush, which is already what happens to the truck glyphs in RESTRICTION_ICONS. The H is DARK rather than white: every existing badge uses a white glyph but all of them sit on dark fills, and readableTextColor() already returns #1f2937 for any fill as light as #facc15, so dark IS the house rule here — nothing shipped so far had been light enough to reach it. MATCHED ON THE NOUN, NOT THE PHRASE. The item line says HYDRAULIC STACKER and the note on the same order says STRADDLE STACKER: one machine, two names, one of them written by a person in a hurry. A rule anchored on “hydraulic stacker” would read the item and be deaf to the note that actually names the truck, so it matches \bSTACKERS?\b across both the line items and the order comments. IT IS THE ORDER’S FACT AND IT NEVER STICKS: it joins handling-flags.js beside DO NOT DOUBLE STACK, derived per order and written nowhere, so a customer who takes one stacker in September is not marked tractor-only forever — the mistake v0.99.3 already paid for. Each rule now declares WHICH TEXT IT MAY READ, because Uline sells placards: a carton whose product name is “DO NOT STACK SIGN” must not cost a floor position on every truck that carries one, so no-double-stack still reads comments only while the stacker reads both. THE BOX-TRUCK FLAG IS THE MIRROR OF A RULE THAT ALREADY EXISTED. R4 catches a stop the CUSTOMER cannot take a trailer at, riding a tractor; R4b catches an ORDER whose freight cannot come off a box truck, riding one — same route-class map (the load header’s own vehicleType), same one-dock-one-card merge, same red tier. And it keeps the same honesty: a route with no vehicle typed onto it is reported as unchecked, never as clean, because “we do not know the truck” is not “it is a box truck”. AND THE INVERSION THAT CAUSED THIS IS FIXED. The order’s own text reads “NO STRAIGHT TRUCK OR LIFT”, wrapped across two 25-character comment records. A bare /\bSTRAIGHT\s+TRUCK\b/ matched the middle of it and raised uline_straight_truck — labelled “straight truck only” — so the badge told the dispatcher the opposite of what the customer wrote, and routing-constraints maps that flag to “the truck must NOT be a tractor”, whose only satisfying vehicle is the 26ft box. The system was requiring the one truck the customer had ruled out, on the freight least able to take it. A negation guard now skips any positive match preceded by NO / NOT / NEVER / DO NOT within two words, and the gaps are whitespace-but-not-newline so a “NO DOCK” in one comment cannot cancel a real instruction filed in the next. Patterns carrying their own negation (“NO TRACTOR TRAILER”) are untouched. 19 new tests, both halves proven by mutation: disabling the guard fails two, and letting an unknown route class count as a box fails the one named for it.'],
   ['1.10.0', 'THE ROSTER SCAN HAS ALWAYS BEEN TOLD WHO IS DRIVING EACH LOAD, AND IT THREW THE ANSWER AWAY EVERY TIME. Chad, with the portal\u2019s Loads grid open beside the board: \u201cOur roster scan shows who the driver is for the load, why are we not using that? The loads are not dispatched but they do already have the driver assignment.\u201d He is right, and the waste was total \u2014 not a missing feature, a discarded one. Our roster pull IS that grid: the same saved search (PkgRoute, customListDefId 35833), the same rows, already paid for, its Driver Name column sitting in every response we have ever made. normalizeLoads read five columns \u2014 loadId, name, loadNbr, status, trips \u2014 and dropped the sixth on the floor, while the file\u2019s own header comment had claimed for months that the row carries \u201cname, status, driver and trip count\u201d. So the board rebuilt \u201cwho is driving this\u201d out of STOP data alone, which means a load with no stops yet had no driver by construction. THE OPERATIONAL COST WAS NOT THE BLANK CELL, IT WAS WHAT THE BLANK CELL HID. On a Draft morning most of the day\u2019s hundred-odd trailers are empty shells, and NuVizz already has a driver on nearly all of them \u2014 at Davis the route name usually IS his surname (SHEATS, THARP, CRUMPTON). The two or three shells with genuinely NOBODY on them are the only rows on that screen a dispatcher has to act on, and they rendered identically to the forty-eight that were fully staffed. The exception was invisible inside the noise, and the bottom grid\u2019s driver sort \u2014 which puts driverless loads below driven ones so the unstaffed float up \u2014 was sorting every roster row into the same tier and doing nothing at all. ZERO ADDITIONAL VENDOR CALLS: this is a parse change on bytes already on the wire, which is why it could ship without spending a single one of the day\u2019s 2,000. THE PRECEDENCE IS THE SAFETY STORY AND IT WAS ALREADY WRITTEN CORRECTLY. day-loads merges board over roster (board || roster), so a live driver read off stops NuVizz is executing right now still wins; the roster capture \u2014 as old as the last pull \u2014 only fills a gap. A dispatcher who reassigns mid-morning cannot be shown a name the vendor has moved on from while a live one exists. The rail\u2019s load row needed no change at all: it has read `r.driver || \u2026` since it was written and was simply starved of data. FOUR THINGS THE PARSER REFUSES, EACH ONE A BUG THIS REPO HAS ALREADY PAID FOR. The grid renders its driver cell as an editable widget, so an unassigned load\u2019s cell reads \u201cEnter driver name\u201d \u2014 presentation, not data, and letting it through would make the one row that needs a driver look staffed. A bare driverId is refused (#254 put a Mongo ObjectId on the board\u2019s Driver cell as \u201cjibberish\u201d). A load number is refused, in case the column we picked is mislabelled. And the driver is read ONLY from its own column, never hunted for by value shape the way the load number is \u2014 because Davis route names ARE mostly driver surnames, so a row-wide hunt would confidently return \u201cSHEATS\u201d as the driver of SHEATS and be wrong in a way nobody would ever question. ONE BUG FOUND ON THE WAY IN: the route-name matcher\u2019s second tier accepts a bare \u201c.name\u201d, and route.driver.name ends in exactly that \u2014 so on a saved search that labels no column \u201cLoad Name\u201d, every load on the board would have been relabelled with the person driving it. Fixed and pinned. AND IT SAYS WHEN IT STOPS WORKING. If the saved search ever loses its Driver Name column, a hundred staffed trailers would render as unassigned and look exactly like a quiet day \u2014 opposite actions, one blank screen, which is the failure mode that cost three rounds of guessing in v0.93.12. So each pull now records how many loads carried a driver, the log line shouts \u201cNOT ONE LOAD CARRIES A DRIVER\u201d when kept rows produce none, and ?explain=1 reports driven-of-total from the cached document at zero call cost, for documents of any age. AND THE ROUTES CARDS AGREE WITH THE LOADS PANEL NOW, which they did not the moment the roster learned this: those cards are built from STOPS, so a load whose stops had not caught up derived \u2018Unassigned\u2019 beside a Loads row naming the man on it \u2014 a false Unassigned on the one panel a dispatcher filters to find the routes that still need somebody. buildRosterDriverMap shares buildRosterStatusMap\u2019s keying to the letter so the \u2018#amb:\u2019 guard is the same one: a name two live loads carry hands its driver to neither card, because putting the wrong man on a route is a call to somebody forty miles away. AND IT DOES NOT QUIETLY WIDEN WHAT FIRES. The roster driver is kept in its OWN field, never folded into the one the write gates read. Folding them would have let a name that was in a grid column hours ago authorize the per-card Dispatch button and Dispatch all \u2014 the least reversible thing this app does, a production release of a load to a driver with no undo \u2014 on the strength of a cache. Chad asked to SEE the driver, not to widen what fires without him, so every surface that DISPLAYS reads driver-or-roster and every surface that WRITES still reads the confirmed driver alone, exactly as before. What did change is the sentence: a route he can read a name on may no longer be reported as \u2018no driver assigned\u2019, and now says \u2018NuVizz has Sirdedrick Sheats on this load, but the board has not confirmed it \u2014 assign to dispatch\u2019. If he wants a roster name to be enough to dispatch, that is one line and his call to make. ONE MORE CROSS-MATCH FOUND THE SAME WAY: \u2018Driver Status\u2019 matches the status matcher too, so a driver\u2019s duty state could have become the LOAD\u2019s status and decided whether every row read Draft or Dispatched. 26 new tests including the full parser-to-Firestore path, the board-wins-over-roster precedence, Chad\u2019s two STEVENs and the dispatch gate refusing a roster-only driver; the Loads-tab browser guard now carries drivers on its fixtures and fails on origin/main with \u2018the empty shell\u2019s roster driver never reaches the panel\u2019 on desktop AND phone, and the phone layout guard finally renders roster rows at all so a sixth populated column is measured at 390px. 4,101 green after merging main (v1.9.0) forward.'],
   ['1.9.0', 'THE DRIVER BOX IS A SEARCH BAR NOW \u2014 AND STILL A DROPDOWN. Chad, on the route card\u2019s driver control: \u201ci want this to be a search bar as well as a drop down.\u201d Davis runs about 59 drivers, so the native <select> it replaces was a 59-item scroll to reach FRYE, and on a phone an OS wheel with no way to type at all. AND a dropdown, not instead of one: the full list is still one tap away on an empty box, because a dispatcher who cannot remember a name still has to browse for it. Typing only ever narrows what is already on screen. ALL THREE PICKERS, NOT THE ONE IN THE SCREENSHOT. The same <select> was pasted in three places \u2014 the Compare panel\u2019s per-route assign, the route-card footer, and the New route dialog \u2014 and fixing only the one he photographed is how this app ends up with two controls that behave differently for the same job. One component, three call sites. WHAT IT MATCHES, AND WHY EACH RULE IS THERE. Any order (\u201cfrye michael\u201d and \u201cmichael frye\u201d both find him \u2014 a manifest is read surname first as often as not); any field (the name OR the NuVizz user code, because the code is what is printed on the paperwork); prefixes, so a driver is found before his name is finished. EVERY typed word must hit, not any \u2014 an OR turns the box into a no-op the moment a second word is typed, widening back out to the whole roster while the dispatcher believes it is filtering. AND IT IS DELIBERATELY NOT FUZZY. No edit distance, no subsequence, no mid-word substring: \u201cmrye\u201d finds nobody and \u201crye\u201d does not quietly offer Frye. This control assigns a truck to a human being, and a near-miss politely suggesting a different driver is the failure that costs a delivery \u2014 the Brent Boyd/Bryd alias trouble this repo has already paid for once. A typo MISSES, visibly, and says the query back (\u201cNo driver matches \u2018fyre\u2019\u201d) so it reads as a typo rather than a roster that failed to load. THE LIST OPENS IN FLOW, NOT AS AN ABSOLUTE OVERLAY. This control sits in the route-card footer \u2014 a scrolling flex column with a shrink-0 footer \u2014 so a pinned menu would be clipped by the card, and CLAUDE.md is explicit that overlay furniture at measured offsets is how the draw buttons landed on the status card. In flow the card grows, what is below it moves, the list caps itself at 40vh and scrolls. One behaviour on both views and nothing for the overlap guard to find; the phone gets its 44px rows from tap-target-y while the desktop stays compact. CLOSED, THE BOX SHOWS WHO IS ASSIGNED rather than a leftover search term \u2014 the question it is looked at for all day is \u201cwho is on this truck?\u201d \u2014 and the un-assign row stays reachable, because a route assigned by mistake has to be clearable. Keyboard throughout: arrows wrap at both ends (the bottom of 59 names is one key from the top), Enter takes a single match so typing \u201cfrye\u201d and pressing Enter assigns him, and it never guesses while the search is still ambiguous. Highlight arithmetic is pure and tested, because an off-by-one here assigns the driver ABOVE the one being looked at. 22 new tests, mutation-checked four ways \u2014 any-word instead of every-word, substring instead of prefix, an id compared with === across the number/string boundary (which would show an assigned route as empty), and an empty list highlighting row 0. The substring mutation initially passed every test, which meant the prefix rule was a comment and not a rule; a test now pins it. Zero NuVizz calls.'],
@@ -4461,65 +4464,134 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
 // other screens (Routing renders it too). Collapsible to just the stops count; the
 // refresh icon fires the cheap manual scan (useManualScan). Pure presentation — all
 // state comes in as props so each screen wires its own useStops/useManualScan.
-function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, unplannedAt, completedAt, isToday, ops, scanErr, scanning, scanCooldown, scanDenied = null, onRefresh, collapsed, onToggleCollapsed, scanUnplannedCount, visibleUnplannedCount, drawnCount = null }) {
+function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, unplannedAt, completedAt, isToday, ops, scanErr, scanning, scanCooldown, scanDenied = null, onRefresh, collapsed, onToggleCollapsed, scanUnplannedCount, visibleUnplannedCount, drawnCount = null, barMode = false }) {
   // `drawnCount` (Routing) = pins actually on the map right now. The card used to publish the
   // whole day board while the map drew a filtered subset, so the number on the chip matched
   // neither the pins beneath it nor the bottom grid — Chad, counting dots: "there are more dots
   // on the map than on the bottom panel, they should match." When a filter is hiding stops the
   // header now reads "15 of 833 stops" so the chip describes the map you are looking at.
   const filtering = typeof drawnCount === 'number' && drawnCount !== stopCount;
+  // What is visible, decided once for both placements — see lib/board-status-card.js.
+  const panel = boardStatusPanel({ collapsed, scanErr });
+  // ONE SET OF PARTS, TWO PLACEMENTS. The map pill stacks the detail under the header row
+  // inside the same floating card; the app-bar card (desktop Routing) keeps the header row
+  // ON the bar and DROPS the detail below it. Building the pieces once is the point — two
+  // copies of this markup is two chances for the bar and the pill to disagree about the
+  // board, and the count is the number a router trusts before building anything.
+  const countBtn = (
+    <button
+      onClick={onToggleCollapsed}
+      className="flex items-center gap-1 font-semibold hover:text-slate-600"
+      title={collapsed ? 'Show details' : 'Collapse'}
+      aria-expanded={!collapsed}
+    >
+      {collapsed ? <ChevronDown size={13} className="text-slate-400" /> : <ChevronUp size={13} className="text-slate-400" />}
+      <span
+        title={filtering
+          ? `${drawnCount.toLocaleString()} of ${Number(stopCount || 0).toLocaleString()} stops are on the map — the rest are hidden by the bottom grid's status/driver filter. Stops on an open route card and anything you have selected always stay visible.`
+          : undefined}
+      >
+        {filtering ? <><span className="text-amber-700">{drawnCount.toLocaleString()}</span> of {Number(stopCount || 0).toLocaleString()} stops</> : <>{stopCount} stops</>}
+        {carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}
+      </span>
+    </button>
+  );
+  // DISABLED, NOT HIDDEN, for a role that cannot scan: a greyed button with a title
+  // naming the role costs a hover; a button that runs nothing while looking like it
+  // worked costs a morning on a stale board.
+  //
+  // The 44px touch box is a PHONE rule and it is dropped in bar mode on purpose: the app
+  // bar is 45px tall, so a 44px target inside it either blows the bar's height or forces
+  // every other control on it to grow. Bar mode is desktop-only (see the portal in
+  // RoutingScreen), where the pointer is a mouse.
+  const refreshBtn = (
+    <button
+      onClick={onRefresh}
+      disabled={scanning || scanCooldown || !!scanDenied}
+      className={`rounded hover:bg-slate-100 disabled:opacity-50 inline-flex items-center justify-center ${barMode ? 'p-1' : 'ml-auto p-1 min-w-[44px] min-h-[44px]'}`}
+      title={scanDenied || (scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)')}
+    >
+      <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
+    </button>
+  );
+  const details = (
+    <>
+      <div className="text-slate-600">{Number(totalPallets || 0).toLocaleString()} total pallets</div>
+      <UnplannedScanCount count={scanUnplannedCount} visible={visibleUnplannedCount} className="text-slate-600" />
+      <FeedTimestamps loadAt={loadAt} unplannedAt={unplannedAt} completedAt={completedAt} isToday={isToday} className="text-slate-500" stacked />
+      {ops && typeof ops.dayCount === 'number' && (
+        <>
+          <div className="text-slate-500" title={`Today's NuVizz API calls (${ops.mode})${ops.byRoute && Object.keys(ops.byRoute).length ? ' · ' + Object.entries(ops.byRoute).map(([k, v]) => `${k}:${v}`).join(' ') : ''}`}>
+            NuVizz calls: {ops.dayCount.toLocaleString()}{ops.ceiling ? ` / ${ops.ceiling.toLocaleString()}` : ''} <span className="text-slate-400">({ops.mode}{ops.breaker ? ', halted' : ''})</span>
+          </div>
+          <HourlyCalls byHour={ops.byHour} className="text-slate-400 text-[10px] mt-0.5" />
+        </>
+      )}
+    </>
+  );
+
+  // ── APP-BAR MODE — desktop Routing, the card sits ON the nav bar ────────────────────
+  //
+  // Chad, on the pill floating over the routing map: "I want to move this to just above
+  // filters on the bar with more, but just far enough left on that bar to where when it
+  // drops down it doesn't cover up filters or flags."
+  //
+  // So the header row is a flat control on the bar (no floating pill, no backdrop-blur —
+  // a blurred wrapper CLIPS an absolutely-positioned child, which is the mobile Map bug
+  // BoardFlagsChip's own comment warns about) and the detail becomes a real dropdown.
+  //
+  // right-full IS THE "FAR ENOUGH LEFT", AND IT IS MEASURED RATHER THAN HOPED. The card is
+  // mounted immediately left of More, which at 1440px sits all but directly above the map's
+  // Filters button — More spans x 983..1085 and Filters 971..1046. A panel right-ALIGNED to
+  // the card (right-0) therefore ends at x 979 and clips the left 8px of Filters, which is
+  // the very thing this change is for. right-full anchors the panel's right edge to the
+  // card's LEFT edge instead, so it drops down and to the left with the card's own width as
+  // the clearance (~110px at 1440) — a gap that scales with the control instead of a pixel
+  // somebody has to re-guess. scripts/verify-routing-topbar.mjs walks the real bundle at
+  // 1440 and 1920 and fails the build if this panel ever touches Filters or the flags chip;
+  // it was written against the right-0 draft first and fails it, because a layout guard that
+  // has never seen the bug it describes is not evidence of anything.
+  //
+  // THE SCAN ERROR STAYS ON THE BAR. Same rule as the pill: the refresh button is always
+  // visible, so an error that only exists inside a closed dropdown is feedback nobody
+  // sees — the icon spins, stops, and the button reads as broken.
+  if (barMode) {
+    return (
+      <div className="relative text-xs" data-testid="routing-bar-status">
+        <div className="flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-slate-700">
+          {countBtn}
+          {refreshBtn}
+        </div>
+        {/* ONE panel, not two. The detail and the scan error are both absolutely placed at
+            top-full here, so rendering them as siblings would stack an open dropdown and an
+            error on the same pixels — in the flow-stacked pill they simply sit one under the
+            other, and that difference is exactly the kind of thing that only shows up on the
+            morning a scan fails. The panel therefore opens when EITHER has something to say,
+            which also preserves the pill's rule that a scan error is visible while collapsed. */}
+        {panel.open && (
+          <div className="absolute right-full mr-1 top-full mt-1 w-60 rounded-lg border border-slate-200 bg-white shadow-xl px-2.5 py-2 leading-tight z-40" data-testid="routing-bar-status-drop">
+            {panel.showDetails && details}
+            {panel.showError && <div className={`text-[11px] text-red-600${panel.showDetails ? ' mt-1' : ''}`}>{scanErr}</div>}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── MAP-PILL MODE — the floating card on the dispatch Map (and phone Routing) ───────
   return (
     <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 text-xs">
       {/* Header row: stops count + collapse/refresh — always visible. */}
       <div className="flex items-center gap-2">
-        <button
-          onClick={onToggleCollapsed}
-          className="flex items-center gap-1 font-semibold hover:text-slate-600"
-          title={collapsed ? 'Show details' : 'Collapse'}
-          aria-expanded={!collapsed}
-        >
-          {collapsed ? <ChevronDown size={13} className="text-slate-400" /> : <ChevronUp size={13} className="text-slate-400" />}
-          <span
-            title={filtering
-              ? `${drawnCount.toLocaleString()} of ${Number(stopCount || 0).toLocaleString()} stops are on the map — the rest are hidden by the bottom grid's status/driver filter. Stops on an open route card and anything you have selected always stay visible.`
-              : undefined}
-          >
-            {filtering ? <><span className="text-amber-700">{drawnCount.toLocaleString()}</span> of {Number(stopCount || 0).toLocaleString()} stops</> : <>{stopCount} stops</>}
-            {carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}
-          </span>
-        </button>
-        {/* DISABLED, NOT HIDDEN, for a role that cannot scan: a greyed button with a title
-            naming the role costs a hover; a button that runs nothing while looking like it
-            worked costs a morning on a stale board. */}
-        <button
-          onClick={onRefresh}
-          disabled={scanning || scanCooldown || !!scanDenied}
-          className="ml-auto p-1 rounded hover:bg-slate-100 disabled:opacity-50 min-w-[44px] min-h-[44px] inline-flex items-center justify-center"
-          title={scanDenied || (scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)')}
-        >
-          <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
-        </button>
+        {countBtn}
+        {refreshBtn}
       </div>
       {/* Stacked details — hidden when collapsed. */}
-      {!collapsed && (
-        <div className="mt-0.5 leading-tight">
-          <div className="text-slate-600">{Number(totalPallets || 0).toLocaleString()} total pallets</div>
-          <UnplannedScanCount count={scanUnplannedCount} visible={visibleUnplannedCount} className="text-slate-600" />
-          <FeedTimestamps loadAt={loadAt} unplannedAt={unplannedAt} completedAt={completedAt} isToday={isToday} className="text-slate-500" stacked />
-          {ops && typeof ops.dayCount === 'number' && (
-            <>
-              <div className="text-slate-500" title={`Today's NuVizz API calls (${ops.mode})${ops.byRoute && Object.keys(ops.byRoute).length ? ' · ' + Object.entries(ops.byRoute).map(([k, v]) => `${k}:${v}`).join(' ') : ''}`}>
-                NuVizz calls: {ops.dayCount.toLocaleString()}{ops.ceiling ? ` / ${ops.ceiling.toLocaleString()}` : ''} <span className="text-slate-400">({ops.mode}{ops.breaker ? ', halted' : ''})</span>
-              </div>
-              <HourlyCalls byHour={ops.byHour} className="text-slate-400 text-[10px] mt-0.5" />
-            </>
-          )}
-        </div>
-      )}
+      {panel.showDetails && <div className="mt-0.5 leading-tight">{details}</div>}
       {/* OUTSIDE the collapse. The refresh button lives in the always-visible header, so a scan
           error rendered inside the collapsed body is feedback nobody sees — on a phone the icon
           spins for a minute, goes quiet, and the button reads as broken. */}
-      {scanErr && <div className="mt-0.5 text-[11px] text-red-600">{scanErr}</div>}
+      {panel.showError && <div className="mt-0.5 text-[11px] text-red-600">{scanErr}</div>}
     </div>
   );
 }
@@ -19923,8 +19995,9 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // reference during this line and throw "Cannot access 'drawnStops' before initialization" —
   // the same temporal-dead-zone crash that blanked Routing in v0.32.11. A function body is not
   // evaluated until it's called, and both call sites are below the declaration.
-  const statusCard = () => (
+  const statusCard = (barMode = false) => (
     <StopsStatusCard
+      barMode={barMode}
       // THE POOL THE MAP DRAWS FROM, not the selected day's board.
       //
       // Chad, on an iPad, reading "564 of 2 stops": a ratio where the numerator is 282x the
@@ -23017,6 +23090,12 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // so it is looked up in an effect rather than during render.
   const [appBarSlot, setAppBarSlot] = useState(null);
   useEffect(() => { setAppBarSlot(isMobile ? document.getElementById('phone-appbar-slot') : null); }, [isMobile]);
+  // The desktop twin of the phone slot: the app bar's own mount point for the board-status
+  // card, left of More. Two lookups rather than one shared one because they are two views —
+  // the phone bar holds the gear, the desktop bar holds this card, and neither screen should
+  // be able to render the other's furniture by getting a boolean wrong.
+  const [deskBarSlot, setDeskBarSlot] = useState(null);
+  useEffect(() => { setDeskBarSlot(isMobile ? null : document.getElementById('desktop-appbar-slot')); }, [isMobile]);
   const phoneGearEl = isMobile ? <RoutingSettingsMenu views={routingSettingsViews} panels={phoneGearPanels} actions={routingSettingsActions} capHeight panelsFirst tone="appbar" /> : null;
   // A FUNCTION on desktop (v1.3.0): the grid hands its own gear items in (Check vs NuVizz, which
   // lives in the grid's state) and they lead the list — they are about the panel the gear sits on.
@@ -23641,9 +23720,21 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
         <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
-        {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button),
-            with the Board Flags chip stacked above it. */}
-        <div className="absolute top-12 right-2 z-[15] max-w-[240px] flex flex-col items-end gap-1">{flagsOverlay()}{statusCard()}</div>
+        {/* THE BOARD-STATUS CARD IS NOT ON THE MAP ANY MORE (desktop). It is portalled onto
+            the app bar, left of More — see #desktop-appbar-slot for the geometry and why
+            that position is the one that keeps its dropdown off Filters and the flags.
+            The map keeps the flags chip alone in this column. */}
+        {deskBarSlot && createPortal(statusCard(true), deskBarSlot)}
+        {/* THE FLAGS SLIDE DOWN — Chad: "slide the flags down just enough to where it doesn't
+            get covered by the drop down either." top-32 is the "just enough", measured on a
+            board carrying real numbers rather than the empty one: the panel bottoms out at
+            page y 165, top-28 would put the chip at y 157 and still under it, top-32 puts it
+            at y 173. It is the SECOND margin and not the first — the panel already clears
+            this column horizontally by ~147px (see right-full above) — but the two together
+            mean a dispatcher dragging the right rail wider has to pass BOTH before anything
+            is hidden, and a flag count that goes quiet is pixel-identical to a clean board,
+            which is the one failure on this map nobody can see happening. */}
+        <div className="absolute top-32 right-2 z-[15] max-w-[240px] flex flex-col items-end gap-1">{flagsOverlay()}</div>
         {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} legendInventory={routingLegendInventory} satellite={routeSatellite} onToggleSatellite={() => setRouteSatellite((v) => !v)} />}
         {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
         {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[80%] bg-slate-900/90 text-white text-[12px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={13} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
@@ -26059,6 +26150,25 @@ function Shell() {
               <TabBtn label="Quote" icon={<Calculator size={14} />} active={tab === 'quote'} onClick={() => setTab('quote')} />
               <TabBtn label="Messages" icon={<MessageSquare size={14} />} active={messagesOpen} onClick={openMessages} badge={smsUnread} />
             </nav>
+            {/* THE ROUTING BOARD-STATUS CARD LANDS HERE — "0 of 805 stops", the pill that
+                used to float over the routing map. Chad: "move this to just above filters
+                on the bar with more, but just far enough left on that bar to where when it
+                drops down it doesn't cover up filters or flags."
+
+                LEFT OF More, and that is the geometry rather than a decoration: More sits
+                almost exactly above the map's Filters button, and the card's detail panel
+                hangs from its own RIGHT edge growing leftward — so mounting the card left
+                of More puts the whole panel left of Filters and of the flags chip beneath
+                it. Proven in the real bundle by scripts/verify-routing-topbar.mjs.
+
+                OUTSIDE the <nav> for the same reason MoreMenu is (see the note above it):
+                overflow-x:auto computes overflow-y to auto as well, so a dropdown rendered
+                inside that row opens into a ~40px clipping box and is invisible.
+
+                Routing-only, so no other screen pays a stray flex gap for an empty slot;
+                RoutingScreen portals into it (desktop only — the phone keeps the card in
+                its own flow column, because these are two views and not one). */}
+            {tab === 'routing' && ROUTING_FLAG && <div id="desktop-appbar-slot" className="flex items-center shrink-0" />}
             {/* Overflow tabs. Screens you visit deliberately rather than live in go here
                 instead of shrinking the whole nav row; the badge surfaces a problem from
                 a screen you are NOT on, which is the entire point of the manifest check. */}

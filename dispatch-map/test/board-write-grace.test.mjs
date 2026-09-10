@@ -163,3 +163,23 @@ test('the un-plan stamp records the route the order came OFF', () => {
   assert.equal(boardWriteUnplannedFields('t', '   ').board_write_from, undefined, 'a blank route is no baseline');
   assert.equal(boardWriteUnplannedFields('t', null).board_write_from, undefined);
 });
+
+test('A LOAD NUMBER IS NOT A ROUTE NAME: a baseline in the wrong namespace decides nothing', () => {
+  // The way this rule could LOSE freight rather than merely be slow. Both write-through callers
+  // fall back to something that is not a route name when a card has no resolvable one — the
+  // server takes the load NUMBER, the client can take a hex card key — while the list always
+  // reports the human NAME. Comparing the two reads "different route" for EVERY such stop and
+  // would release exactly the holds that must stand. Caught by an adversarial pass over the
+  // first cut of this fix, which shipped without it.
+  for (const bogus of ['DAVIS000203388', '007141059', '6a3560cb52ef82bd1ed4516b']) {
+    const fresh = freshPlannedOn('RONALD', 2);
+    const prior = priorWrite(boardWriteUnplannedFields(mins(5), bogus), 5);
+    assert.equal(unplanStampOvertaken(prior, fresh), false, `${bogus} is not comparable to a route name`);
+    assert.equal(applyBoardWriteGrace(fresh, prior, NOW), true, `${bogus} must still be HELD by the clock`);
+    assert.equal(fresh.isPlanned, false);
+  }
+  // …and a real route name still decides, including ones that merely look busy.
+  for (const real of ['TREVARR', 'BEN 2', 'COLIN/DJ 1', 'SUW 5']) {
+    assert.equal(unplanStampOvertaken(priorWrite(boardWriteUnplannedFields(mins(5), real), 5), freshPlannedOn('RONALD')), true, real);
+  }
+});
