@@ -235,17 +235,20 @@ for (const mobile of [false, true]) {
     else bad(`TRAILER 9 vanished from both tabs (${view})`);
     if (/3 empty/.test(text) && /2 built in Routes/.test(text) && /1 not on the board/.test(text)) ok('the header counts this panel’s own rows: 3 empty · 2 built in Routes · 1 not on the board');
     else bad(`header line wrong (${view}): ${JSON.stringify((text.split('\n').find((l) => /empty/.test(l)) || '').slice(0, 120))}`);
-    // THE DRIVER NUVIZZ ALREADY HAS ON AN EMPTY SHELL (v1.7.0). Chad: "Our roster scan shows
-    // who the driver is for the load, why are we not using that?" These rows have no stops, so
-    // nothing but the roster can answer it — a unit test cannot prove it reaches the pixels.
-    if (text.includes('Sirdedrick Sheats')) ok('1 SATL names the driver NuVizz already has on it');
-    else bad(`the empty shell's roster driver never reaches the panel (${view})`);
-    if (text.includes('Marcus Crumpton')) ok('…and so does 1 WATL');
-    else bad(`only one of the two staffed shells shows its driver (${view})`);
-    // And the one with NOBODY on it must still read as a Draft, not borrow a neighbour's name.
-    const alphaLine = (text.split('\n').find((l) => /ALPHA/.test(l)) || '');
-    if (!/Sheats|Crumpton|Tharp/.test(alphaLine)) ok('…and ALPHA, which nobody is on, borrows no one else’s driver');
-    else bad(`ALPHA picked up another load's driver (${view}): ${JSON.stringify(alphaLine.slice(0, 120))}`);
+    // A LEFTOVER NAME ON AN EMPTY TRAILER IS NOT AN ASSIGNMENT (v1.18.1). The fixture shells
+    // DO carry drivers, exactly as NuVizz sends them — 1 SATL and 1 WATL both have one. The
+    // panel must WITHHOLD them, because a zero-stop shell's name is whatever that trailer was
+    // last used for. The first version of this block asserted the opposite and the live board
+    // disproved it: MARTIN and TERRY came back carrying Sirdedrick, spelled two different ways,
+    // on a day with no SHEATS route at all. Chad: "no one assigned sheats to our load."
+    for (const nm of ['Sirdedrick Sheats', 'Marcus Crumpton']) {
+      if (text.includes(nm)) bad(`an EMPTY trailer is showing a leftover driver (${nm}) on the Loads tab (${view})`);
+      else ok(`no empty trailer borrows ${nm} — the shells read as unassigned, which is what they are`);
+    }
+    // And the load that HAS freight keeps its driver: that is the half of the capture that was
+    // right all along — 35 of 35 real loads, on the morning this was measured.
+    if (text.includes('Michael Tharp')) ok(`${OFF_BOARD.name} carries ${OFF_BOARD.trips} trips, so it still names its driver`);
+    else bad(`a load with ${OFF_BOARD.trips} trips lost its driver (${view})`);
   });
 
   await run(`A day whose roster could not be read — ${view}`, { mobile, rosterFail: true }, (text) => {

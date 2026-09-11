@@ -96,8 +96,46 @@ export function buildRosterStatusMap(rosterLoads = []) {
  * load's driver to the other's card. Putting the wrong man on a route is a phone call to
  * somebody who is forty miles away.
  */
+/**
+ * IS THIS ROSTER ROW'S DRIVER A DISPATCH FACT, OR LEFTOVER? (PURE)
+ *
+ * Chad, on a Loads panel searched for "sir": MARTIN and TERRY both reading Sirdedrick Sheats.
+ * "no one assigned sheats to our load."
+ *
+ * The parse was not wrong — that is the point, and it is why the rule lives here rather than in
+ * the parser. Read off the live roster the morning it was reported:
+ *
+ *   loads WITH trips   35 of 35 carry a driver, 34 distinct names — every one of them right
+ *   EMPTY shells       30 of 67 carry a driver, and MARTIN and TERRY carry SIRDEDRICK
+ *
+ * MARTIN's row and TERRY's row each hold their own value, spelled two different ways
+ * ("Sirdedrick  Sheats" and "Sirdedrick Sheets"), so the parser is reading each row's own cell.
+ * NuVizz's zero-stop shells simply carry a name left over from whenever that trailer was last
+ * used; there was no SHEATS route on the board at all that day.
+ *
+ * WHICH MAKES IT A LOGISTICS BUG, NOT A PARSING ONE, AND IT IS MINE. The whole case for
+ * capturing the driver was that an empty trailer nobody is on becomes VISIBLE among the fifty
+ * that are staffed. A leftover name on an empty shell does the exact opposite: it makes the one
+ * trailer that needs a driver look like it already has one, and it puts a man's name against
+ * freight he is not running. On a 700-stop morning that is a phone call to the wrong person.
+ *
+ * So the driver is shown for a load that has FREIGHT ON IT — the boundary where the data is
+ * proven good — and a zero-stop shell reads as unassigned, which is what it is. Chad's original
+ * ask is untouched: he asked for the driver on loads "not dispatched but they do already have
+ * the driver assignment", and those loads carry trips.
+ *
+ * The capture still keeps every driver it reads, so ?explain=1 and the pull meta are unchanged
+ * and this stays a DISPLAY rule that one commit can put back.
+ */
+export function rosterDriverOf(load) {
+  const name = String(load?.driver ?? '').trim();
+  if (!name) return '';
+  const trips = Number(load?.trips);
+  return Number.isFinite(trips) && trips > 0 ? name : '';
+}
+
 export function buildRosterDriverMap(rosterLoads = []) {
-  return buildRosterFieldMap(rosterLoads, (l) => String(l?.driver ?? '').trim());
+  return buildRosterFieldMap(rosterLoads, rosterDriverOf);
 }
 
 function buildRosterFieldMap(rosterLoads, read) {

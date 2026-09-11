@@ -31,6 +31,8 @@
 // loads share a name and the board group has no id, the group genuinely CANNOT be attributed
 // to either — and it is left as its own row saying so, rather than being guessed onto one.
 
+import { rosterDriverOf } from './route-status.js';
+
 /** Loads that carry orders sort FIRST — on a board that is mostly empty drafts, the working
  *  routes must not be buried under 90-odd Drafts. Within each half, by display name. */
 function compareLoads(a, b) {
@@ -57,7 +59,7 @@ function rowFromRoster(l, ambiguous) {
     // unchanged and is the correct one: live board data still wins, this is what fills the gap
     // when there is none. Chad: "the loads are not dispatched but they do already have the
     // driver assignment."
-    driver: String(l?.driver ?? '').trim(),
+    driver: rosterDriverOf(l),
     // The roster's own trip count — so a load with orders reads correctly even before any of
     // its stops reach the board (and, for two same-named loads, each shows ITS own count).
     count: num(l?.trips), locCount: 0, delivered: 0, exceptions: 0,
