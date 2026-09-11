@@ -90,6 +90,7 @@ import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDrive
 import { boardStatusPanel } from './lib/board-status-card.js';
 import { buildRosterStatusMap, buildRosterDriverMap, resolveRosterStatus, resolveRosterDriver, resolveNameOwner, rosterDriverOf } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
+import { shouldAutoStageBuild } from './lib/build-autostage.js';
 import { planSendSelection, selectionSendTargets } from './lib/send-selection.js';
 import { MIRROR_MISCONFIGURED_MESSAGE } from './lib/mirror-site.js';
 import { satelliteControlSpec, paintSatelliteControl, SATELLITE_BUTTON_CSS } from './lib/map-satellite-control.js';
@@ -23072,6 +23073,31 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     setLastAction(bits.join(' · '));
     if (isMobile) { setMobilePanel('setup'); setSheetOpen(true); }
   }, [lastRequest, routesView, wbRoutes, stopById, isMobile]);
+
+  // A FINISHED BUILD OPENS ITS OWN CARDS. Chad: "when this gets done building it should
+  // pop the routes up in the compare panels so i can see them." Build was the only solver
+  // on this screen that stopped short — the Engine's draft and cleanup runners have always
+  // called their stagers the moment the solve returned, so their cards are simply there.
+  // Until the button was found and pressed, a finished plan existed only as engine-coloured
+  // lines on the map: nothing to drag, no driver picker, no Save, because the CARD is the
+  // editable object. The decision is in lib/build-autostage.js (trucks-mode builds have no
+  // load to land on; it waits for routesView; once per job so a closed card stays closed;
+  // never while a saved load is being viewed) and is unit-tested there.
+  // The manual "Stage onto Compare cards →" button is untouched — staging skips ids already
+  // on a card, so it stays the way to put the plan back after closing one on purpose.
+  const autoStagedJobRef = useRef(null);
+  useEffect(() => {
+    if (!shouldAutoStageBuild({
+      jobId: job?.id || null,
+      status: job?.status || null,
+      hasPlannedLoads: !!plannedLoadsBound,
+      routeCount: routesView.length,
+      viewing,
+      stagedJobId: autoStagedJobRef.current,
+    })) return;
+    autoStagedJobRef.current = String(job.id);
+    stagePlanOntoLoads();
+  }, [job?.id, job?.status, plannedLoadsBound, routesView.length, viewing, stagePlanOntoLoads]);
 
   // ── Engine draft (Assist slice 1): name 2-3 drivers, the LEARNED engine drafts
   // their routes from the day's unplanned pool. Drafting reads Firestore only
