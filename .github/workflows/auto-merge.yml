@@ -67,6 +67,59 @@ jobs:
           fi
 
           echo "Squash-merging PR #$num ($HEAD_BRANCH)…"
-          # If it isn't mergeable yet (e.g. a conflict), this exits non-zero; that's
-          # fine — the next green CI run on the branch will retry.
-          gh pr merge "$num" --repo "$GITHUB_REPOSITORY" --squash --delete-branch
+
+          # NOT-MERGEABLE-YET IS THE EXPECTED CASE, NOT A FAILURE — AND IT MUST NOT
+          # GO RED. Several agents work different problems in parallel here, so every
+          # branch bumps APP_VERSION and adds its changelog row against whatever main
+          # was when it started. Whichever branch merges first moves both lines, and
+          # the others are then conflicted on the version alone — never on feature
+          # code. The branch rebases, CI goes green again, and THIS job merges it.
+          # Wholly self-healing, and the comment that used to sit here already said
+          # so ("that's fine — the next green CI run on the branch will retry").
+          #
+          # But `gh pr merge` exits non-zero, `set -e` failed the job, and GitHub
+          # mailed "Run failed: auto-merge - main" every time. In the 41 hours to
+          # 2026-09-11 03:09 UTC, 11 of the repo's 18 red runs were THIS and nothing
+          # else — roughly one in four auto-merge runs that did any work — which
+          # buried the 7 real `tests` failures in the same pile of red. An alert that
+          # is usually wrong teaches you to stop reading the channel, and it takes
+          # the real ones down with it.
+          #
+          # So: swallow ONLY the two not-mergeable messages. Every other failure — a
+          # bad token, a revoked permission, branch protection, an API outage — still
+          # fails the job loudly, because none of those fix themselves.
+          if merge_out=$(gh pr merge "$num" --repo "$GITHUB_REPOSITORY" --squash --delete-branch 2>&1); then
+            echo "$merge_out"
+            echo "Merged PR #$num." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "$merge_out"
+
+          case "$merge_out" in
+            # "Pull Request has merge conflicts" (a real conflict) and "is not
+            # mergeable: the merge commit cannot be cleanly created" (GitHub has not
+            # finished computing mergeability, or the same conflict by another name).
+            *"merge conflicts"*|*"not mergeable"*)
+              # A GREEN RUN THAT DID NOT MERGE MUST STILL SAY SO. Exiting 0 silently
+              # would report an intent as an outcome — the run page would look like a
+              # merge happened. The notice and the step summary put "did not merge,
+              # and why" on the run itself, where it can be read without an email.
+              echo "::notice::PR #$num is not mergeable yet (version bump needs rebasing onto main). Left open — the next green run on $HEAD_BRANCH will merge it."
+              {
+                echo "### Not merged — PR #$num"
+                echo ""
+                echo "\`$HEAD_BRANCH\` is not mergeable against main yet. This is the"
+                echo "expected parallel-branch case: rebase the version bump and the"
+                echo "changelog row, and the next green CI run merges it automatically."
+                echo ""
+                echo "\`\`\`"
+                echo "$merge_out"
+                echo "\`\`\`"
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+          esac
+
+          echo "::error::gh pr merge failed for PR #$num, and not because of a merge conflict — this one needs a person."
+          exit 1

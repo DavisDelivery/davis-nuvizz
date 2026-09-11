@@ -91,7 +91,16 @@ async function fireSingle(requester: RequesterLike, op: SingleOp, payload: any, 
   // can never approach the Firestore document limit. These ride `steps[].result` into
   // putOpRecord, which is what `nuvizz-write-log?status=failed` reads back — at zero NuVizz
   // cost. `sentBody` is the request as built; headers are NOT captured (they carry Basic auth).
-  const capture = (v: any) => { try { const t = typeof v === 'string' ? v : JSON.stringify(v); return t == null ? null : t.slice(0, 8192); } catch { return null; } };
+  // A capture that is cut SAYS it was cut. This whole change exists because a truncation with
+  // no marker read as a complete answer for three days; a silent cut one layer down would be
+  // the same bug wearing a different hat.
+  const capture = (v: any) => {
+    try {
+      const t = typeof v === 'string' ? v : JSON.stringify(v);
+      if (t == null) return null;
+      return t.length <= 8192 ? t : `${t.slice(0, 8192)}… [cut — ${t.length - 8192} more chars NuVizz sent that did not fit the ledger row]`;
+    } catch { return null; }
+  };
   if (!parsed?.ok) {
     return { ...parsed, httpStatus: resp.status, sentUrl: br.url, sentBody: capture(br.body), rawBody: capture(j) };
   }

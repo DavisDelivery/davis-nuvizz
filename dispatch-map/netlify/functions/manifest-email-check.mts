@@ -21,17 +21,18 @@
 
 import { isFirestoreEnabled, getDoc, setDoc } from './lib/firestore.mts';
 import { runManifestBoardDiff } from './lib/manifest-run.mts';
-import { ingestManifestEmails, LATEST_DOC } from './lib/manifest-email-ingest.mts';
+import { ingestManifestEmails, explainManifestEmails, LATEST_DOC } from './lib/manifest-email-ingest.mts';
 import { archiveManifest } from './lib/manifest-archive-store.mts';
 
 const TENANT = 'davis';
 import { buildMailSources, recordGmailRun, summarizeCycle } from './lib/mail-sources.mts';
 import { requireUser } from './lib/require-user.mts';
+import { PARSE_SCHEDULE_LABEL } from '../../src/lib/manifest-schedule.js';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'Content-Type',
-  'Access-Control-Allow-Methods': 'POST,OPTIONS',
+  'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
   'Content-Type': 'application/json',
   'Cache-Control': 'no-store',
 };
@@ -39,6 +40,40 @@ const J = (o: any, s = 200) => new Response(JSON.stringify(o, null, 1), { status
 
 export default async (req: Request): Promise<Response> => {
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: CORS });
+
+  // ── ?explain=1 — WHAT WOULD THIS PASS DO, WITHOUT DOING IT ────────────────
+  //
+  // The one question the Manifest history could not answer on 2026-09-10, when it showed
+  // "1 report" against five Uline sends: WHICH email, and WHY. A job that wrote nothing and
+  // a panel that got nothing look the same from outside, and guessing between the four
+  // possible causes is how an evening gets burned (CLAUDE.md, "ASK FOR THE CALL").
+  //
+  // GET is safe here precisely because this branch writes NOTHING — no marker, no run doc,
+  // no archive — so the POST-only rule below, which exists to stop a speculative GET from
+  // rewriting the run every browser shows, has nothing to protect against. It is gated at
+  // VIEWER rather than dispatcher for the same reason: reading is not acting.
+  //
+  //   GET ?explain=1          every candidate email, its marker, and whether this pass reaches it
+  //   GET ?explain=1&deep=1   also downloads and diffs the unmarked ones, still writing nothing
+  //
+  // Cost: one list call per mailbox plus one marker read each; with deep, one download and
+  // one board diff per email the pass would open. ZERO NuVizz calls either way.
+  if (req.method === 'GET' && new URL(req.url).searchParams.get('explain') === '1') {
+    const gate = await requireUser(req, { role: 'viewer' });
+    if (!gate.ok) return gate.response;
+    if (!isFirestoreEnabled()) return J({ ok: false, error: 'Firestore off — no markers to read' });
+    const { sources, off } = await buildMailSources(fetch);
+    const out = await explainManifestEmails({
+      sources,
+      fetchImpl: fetch,
+      getDoc,
+      setDoc: async () => { throw new Error('explain must never write'); },
+      runDiff: (buf) => runManifestBoardDiff(buf),
+      deep: new URL(req.url).searchParams.get('deep') === '1',
+    });
+    return J({ ...out, off, parseSchedule: PARSE_SCHEDULE_LABEL });
+  }
+
   // POST only: this reads mailboxes and rewrites the run every browser shows, so
   // it must not be reachable by anything that speculatively GETs a URL.
   if (req.method !== 'POST') return J({ ok: false, error: 'POST only' }, 405);
