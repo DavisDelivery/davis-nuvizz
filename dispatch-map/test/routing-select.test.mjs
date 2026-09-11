@@ -619,3 +619,93 @@ test('VICTOR, 2026-09-11: the radial sort overshoots 11 miles north and comes ba
     assert.equal(Math.abs(a - b), 1, `${pair.join(' / ')} split apart: ${ids(out).join(' → ')}`);
   }
 });
+
+
+// ── Sequencing on a real road matrix (Chad, 2026-09-11) ─────────────────────────────────────
+// "Logic is still not fixed look at this." — a 23-stop JEAN card sequenced Shortest distance.
+// It was not the search: that order was already within 0.6% of the best straight-line one.
+// JEAN works both banks of the Chattahoochee, and the straight-line order crossed the river
+// four times on legs of half a mile to a mile and a half, each a 3-6x longer real drive.
+import { resequenceOnMatrix, openPathCost, loopPathCost } from '../src/lib/routing-select.js';
+
+// Node 0 is the depot. A and B sit close together on THIS bank; C is just across the river from
+// B — 1 unit away in a straight line — and the only bridge makes the real drive 20. A crow-flies
+// matrix says B->C is the cheapest next leg in the world; the road matrix says it is the worst.
+const RIVER_CROW = [
+  //      depot   A     B     C
+  /* d */ [0,     10,   11,   12],
+  /* A */ [10,    0,    1,    2],
+  /* B */ [11,    1,    0,    1],
+  /* C */ [12,    2,    1,    0],
+];
+const RIVER_ROAD = [
+  [0,     10,   11,   30],
+  [10,    0,    1,    21],
+  [11,    1,    0,    20],
+  [30,    21,   20,   0],
+];
+const ABC = [{ id: 'A' }, { id: 'B' }, { id: 'C' }];
+
+test('the same strategy on a haversine matrix reproduces resequence() exactly — the road path is a generalisation, not a rewrite', () => {
+  // Real stops, real geometry: every strategy must agree with the shipped one when the matrix
+  // it is handed is the same straight-line distance the shipped one computes for itself.
+  const pts = [BUFORD, ...JEFF];
+  const crow = pts.map((a) => pts.map((b) => haversineMeters(a, b)));
+  for (const strategy of ['min', 'loop', 'farthest', 'closest', 'reverse']) {
+    assert.deepEqual(
+      ids(resequenceOnMatrix(JEFF, crow, strategy)),
+      ids(resequence(JEFF, BUFORD, strategy)),
+      `${strategy} differs between the matrix and the depot form`,
+    );
+  }
+});
+
+test('a river the straight line cannot see: the road matrix stops the route hopping the bank', () => {
+  // On crow-flies, C is B's neighbour, so the cheap order visits it mid-route.
+  const crowOrder = ids(resequenceOnMatrix(ABC, RIVER_CROW, 'min'));
+  assert.deepEqual(crowOrder, ['A', 'B', 'C']);
+  assert.equal(openPathCost([1, 2, 3], RIVER_CROW), 12);
+  // The same leg is a 20-unit detour to a bridge. Scored on roads, the truck finishes this bank
+  // first and pays the crossing once, at the end — and the order it picks really is the cheaper
+  // one on the road matrix.
+  const roadOrder = resequenceOnMatrix(ABC, RIVER_ROAD, 'min');
+  const asNodes = roadOrder.map((s) => ABC.findIndex((x) => x.id === s.id) + 1);
+  assert.ok(openPathCost(asNodes, RIVER_ROAD) <= openPathCost([1, 2, 3], RIVER_ROAD));
+  // and it is a permutation, always
+  assert.deepEqual([...ids(roadOrder)].sort(), ['A', 'B', 'C']);
+});
+
+test('road sequencing keeps every stop when the matrix cannot score one — it rides at the end, never dropped', () => {
+  const stops = [{ id: 'A' }, { id: 'GHOST' }, { id: 'B' }, { id: 'C' }];
+  // node 2 (GHOST) has a non-finite row: an address Google could not reach.
+  const cost = [
+    [0, 10, NaN, 11, 12],
+    [10, 0, NaN, 1, 2],
+    [NaN, NaN, 0, NaN, NaN],
+    [11, 1, NaN, 0, 1],
+    [12, 2, NaN, 1, 0],
+  ];
+  const out = resequenceOnMatrix(stops, cost, 'min');
+  assert.equal(out.length, 4);
+  assert.deepEqual([...ids(out)].sort(), ['A', 'B', 'C', 'GHOST']);
+  assert.equal(out[out.length - 1].id, 'GHOST', `unscored stop should ride last: ${ids(out).join(' → ')}`);
+});
+
+test('road sequencing: the degenerate inputs behave, and reverse never needs a matrix', () => {
+  assert.deepEqual(ids(resequenceOnMatrix(ABC, RIVER_ROAD, 'reverse')), ['C', 'B', 'A']);
+  assert.deepEqual(resequenceOnMatrix([], RIVER_ROAD, 'min'), []);
+  assert.deepEqual(ids(resequenceOnMatrix([{ id: 'A' }], RIVER_ROAD, 'min')), ['A']);
+  assert.deepEqual(resequenceOnMatrix(null, RIVER_ROAD, 'min'), []);
+  assert.deepEqual(ids(resequenceOnMatrix(ABC, RIVER_ROAD, 'bogus')), ['A', 'B', 'C']);   // unknown = untouched
+  // A matrix that scores nothing leaves the card exactly as it was, rather than throwing.
+  const dead = [[0, NaN, NaN, NaN], [NaN, 0, NaN, NaN], [NaN, NaN, 0, NaN], [NaN, NaN, NaN, 0]];
+  assert.deepEqual(ids(resequenceOnMatrix(ABC, dead, 'min')), ['A', 'B', 'C']);
+});
+
+test('loop on a matrix is scored as a round trip, min as a one-way path', () => {
+  // The two objectives differ only in the return leg, and loopPathCost must include it.
+  assert.equal(loopPathCost([1, 2, 3], RIVER_CROW), openPathCost([1, 2, 3], RIVER_CROW) + RIVER_CROW[3][0]);
+  assert.equal(loopPathCost([], RIVER_CROW), 0);
+  const loop = resequenceOnMatrix(JEFF, (() => { const p = [BUFORD, ...JEFF]; return p.map((a) => p.map((b) => haversineMeters(a, b))); })(), 'loop');
+  assert.deepEqual([...ids(loop)].sort(), [...ids(JEFF)].sort());
+});
