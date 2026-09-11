@@ -31,6 +31,7 @@ import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { scanPressVerdict, SCAN_POLL_WINDOW_SEC, SCAN_SPINNER_SEC } from './lib/scan-press-verdict.js';
 import { routeStopEta, routeStopFreight, routeStopSeq, routeStopTime, loadDefaultWindow } from './lib/route-stop-line.js';
 import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt, foldFreshStop } from './lib/stop-card-sections.js';
+import { mergeStopHistory } from './lib/stop-history.js';
 import { resolveStopContact, resolveStopPhone, orderContactAside, mergeSavedContact, isDialable } from './lib/stop-contact.js';
 import { readViewportSize } from './lib/viewport.js';
 import { restoreBar, reachableBar, settingsForSave, normalizeBar, sameBar, BAR_DEFAULTS } from './lib/bar-memory.js';
@@ -127,7 +128,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '1.14.6';
+const APP_VERSION = '1.14.7';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -198,6 +199,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.14.7', 'ONE PRO, ONE ROW — AND THE MISSING DRIVER WAS THE SAME BUG. Chad, on a WINTERS INDUSTRIES card: “why are we showing the same pro 3 different ways and why is the one pro missing the drivers name.” PRO 007142362 appeared twice under “Recent PROs at this customer” (07/07/26 and 07/06/26, no driver) and once under “Recent deliveries here” (07/06/26, Enock Akyea). THE TWO SECTIONS WERE NEVER THE SAME RECORD. The warehouse rollup is a DELIVERY: the day the freight was delivered and the driver who ran it, already one row per PRO. customer_notes.pro_history is a log of NOTE SAVES — bumpProHistory appends a row every time a dispatcher presses Save on the customer note, stamped with the day of the SAVE and de-duped only against the row immediately before it. So one order whose note was saved on two days is two rows, both dated when somebody opened the note rather than when we delivered, and the row shape is {pro, date}: it has NEVER carried a driver. That is the whole of the second question. The chip filled the driver in from a separate NAME search, which AND-filters every query word against the stored name, so a note whose saved name carries one word the warehouse name lacks returns nothing and the driver silently vanishes — on the very rows sitting above a warehouse row that found its driver by exact matchKey. THE OPERATIONAL COST: “007142362 · 07/07/26” sat one line above “007142362 · Enock Akyea · 07/06/26”, so the card contradicted itself about when we were last at a customer and nothing on screen said which line to believe — and a dispatcher on the phone reads whichever is nearer the top. ONE SECTION NOW, one row per PRO: the delivered fact wins wherever there is one, a PRO with no delivery on file rides below as “Also seen here — no delivery recorded” (kept, because for a customer served before capture began those rows are the only trace we were ever there, and labelled so they can never read as a delivery date), and the stop’s OWN PROs are dropped — today’s open order is in the header and in the PROs list two inches up, and it is not this customer’s history. A numeric PRO padded in one store and bare in the other is matched as one order. pro_history is still written and the customer-history SEARCH screen is untouched. Pure mergeStopHistory + 10 tests, including the real WINTERS card. Zero NuVizz calls; one commit, so git revert is the whole way back.'],
   ['1.14.6', 'HOW FAR BACK DOES “RECENT DELIVERIES HERE” ACTUALLY GO — THE SCREEN CAN NOW SAY IT. Chad, on a stop card reading “No prior deliveries recorded — first visit to this customer”: how recent is that, from the beginning of time of our Firestore data? THE PANEL HAS NO DATE CUTOFF AT ALL — it reads one history_customers rollup doc and renders the newest 8 of the 20 PROs stored there, so a PRO falls off only when twenty NEWER ones push it out, never because it got old. For a daily customer that is about four weeks; for a twice-a-year customer it reaches back years, all the way to the oldest day in the warehouse. So the real answer is the WAREHOUSE FLOOR, and that was a fact nobody could read from any screen — which also makes “first visit to this customer” ambiguous in the dangerous direction: it means no CAPTURED delivery, and a customer last served the day before capture began looks identical to a genuinely new one. Capture health now carries a coverage line: the oldest and newest warehoused day, the day count, and the day the per-customer rollup actually starts from. rollup_from is deliberately NOT first_date — the rollup is a post-seal derivation, so an unsealed day contributed nothing and a tombstoned (no-board) day had nothing to contribute; sealed days whose customer-rollup hook FAILED are named separately as holes INSIDE the range, re-derivable with nuvizz-rebuild-customer-history-background?date=. FREE: the endpoint already lists every manifest to build its 21-day strip and then discarded the older ones — this summarises the list it already held. Zero extra Firestore reads, zero NuVizz calls. Pure summarizeCoverage + 8 tests.'],
   ['1.14.5', 'A PIN ON THE ROUTING MAP STOPS OPENING THE ORDER \u2014 PUTTING v1.7.0 BACK, ONE DAY OLD. Chad: \u201ci asked that when i click on a stop it opens the stop and i don\u2019t want that to happen anymore, i don\u2019t want it to open every order i click on when i\u2019m clicking it on the map.\u201d THE LOGISTICS READ IS WHY THE ASK REVERSED SO FAST: a router BUILDS a load by clicking pins \u2014 put this on the truck, show me this route, grab this whole dock \u2014 and on a 700-stop morning that is hundreds of clicks in a rhythm, not a series of questions. A full-height order card on every one of them covers the map, takes the right rail away from the route being tuned, and has to be dismissed before the next click. The card is a READING tool and the pin is a BUILDING tool; asking one click to be both taxes every act of building with the cost of reading. WHAT A PIN DOES NOW is exactly what it did before v1.7.0: a planned pin opens its ROUTE in Compare, a pool pin toggles its whole place into the selection, a saved load stays read-only and silent, select-mode still takes the marker\u2019s POSITION and ninja-add still queues the stop. THE CARD DID NOT GO AWAY, IT WENT BACK TO THE ROWS \u2014 the list row and the bottom grid open the identical panel through the same panelStop state, on desktop and on the phone sheet, so nothing became unreadable. ONE EXCEPTION IS LEFT STANDING ON PURPOSE: paint mode still marks the stop AND opens the card, because \u201cfirst click does both\u201d is an older and separate dispatcher request that predates this change, and painting is one deliberate click at a time rather than the routing rhythm \u2014 say the word and it goes too. THE RULE STAYED A FUNCTION: mapPinClickActions in lib/routing-select.js flipped one expression, the handler holds no policy, and 13 tests mutation-checked three ways \u2014 card creeping back onto every pin, the revert also killing the pin\u2019s routing work, and paint losing its card \u2014 each failing exactly the tests that claim to guard it. Zero NuVizz calls.'],
   ['1.14.4', 'FARTHEST FIRST IS A SWEEP HOME NOW, NOT A SORT. Chad, on a 14-stop JEFF route re-sequenced Farthest first: \u201cit should be pretty linear from furthest point out to the last but this is jumping all around.\u201d IT WAS A SORT. Farthest first and Closest first both ranked every stop by its crow-flies RADIUS from Buford and by nothing else \u2014 and a radius says nothing about direction. Three towns at about the same distance in three different directions (Canton to the south-west, Tate to the north-east, Ball Ground between them) interleave in a radial sort, so the driver was sent Jasper \u2192 Canton \u2192 Tate \u2192 Ball Ground \u2192 \u2026 \u2192 back out east on 53, and every one of those jumps was road driven twice. WHAT THE WORDS MEAN ON A DOCK: run out to the far end with the load, then deliver on the way home. That is a path whose both ends are already known \u2014 the farthest stop, then the yard \u2014 and the only open question is the order in between. So the far stop is pinned first, the yard is pinned last, and the shortest path between them is found the way Shortest distance finds its order: nearest-neighbour seeds, 2-opt reversals, and or-opt relocations of one to three stops for the straggler a reversal cannot reach, from four starting orders with the shortest kept. Closest first is the same sweep run outward: nearest stop first, farthest stop last. REPORTED TWICE, BECAUSE THIS SAT UNMERGED: the same complaint came back on 2026-09-11 against a 12-stop VICTOR card on the live build \u2014 \u201cthis is not a good route, look at all the bouncing around\u201d \u2014 and the live order was reproduced stop-for-stop from that day\u2019s real board: the radial sort sent the truck to Gardner Metal in the south, then ELEVEN MILES NORTH past six stops, then back down through the ones it had just driven past. Cartersville sits due west of Buford, so every stop on that card was within five miles of the same radius and the sort was ordering them on a number that could not tell them apart. The sweep walks that line once, 5.8 miles shorter, and a test now pins VICTOR\u2019s real coordinates. AND ONE TOWN AT A TIME. Shown what the plain shortest path does with an outlier \u2014 Canton sits nine miles west of the Ball Ground stops, and on paper it is 3.3 miles cheaper to pay for it as a spur from the MIDDLE of Ball Ground than at the end, so the card would have read Ball Ground, Ball Ground, Ball Ground, Canton, Ball Ground \u2014 Chad chose the town: \u201c2 let\u2019s try that and have a way to flip it back if I don\u2019t like the orders it\u2019s putting things in.\u201d So a town is worked in one visit: stops within about two and a half miles of each other are one town (and towns chain, so an industrial belt is one town and a lone customer off the corridor is its own), the towns are ordered as the sweep, and the stops inside each town from where the truck arrives to where it leaves for next. A spur to a lone stop can still happen, because it has to be visited somewhere, but never through the middle of another town. THE WAY BACK IS ONE WORD: SWEEP_MODE in lib/routing-select.js (and its twin in routing-solver.mts) is \u2018towns\u2019; set it to \u2018pure\u2019 and the plain shortest path is back. MEASURED ON A FIXTURE, NOT ON HIS CARD \u2014 the card\u2019s real pins are NuVizz data and are not in the repo, so the test places the JEFF stops by the towns on the card: there the old order was 151 crow-flies miles round trip, the plain shortest path 131, and the town-by-town order 132 \u2014 Ellijay, the three Jasper stops, Tate, out to the pin on 53, then Ball Ground top to bottom, then Canton, then home. Same stop set, same answer, whatever order the card was in when the strategy was picked. THE ENGINE AGREES: a build with FARTHEST_FIRST or CLOSEST_FIRST (routing-solver) runs the identical sweep on its matrix \u2014 read in the driving direction, so a Google road matrix is honoured too \u2014 and a route built there and a card re-sequenced here mean the same thing by the same words. Still straight-line distance on the card, like every client-side re-sequence; and no re-sequence strategy consults receiving windows (none ever did \u2014 the card flags them, and a stop that opens at 9:00a is still the dispatcher\u2019s call to drag). A stop with no map position rides at the end of the list untouched instead of poisoning the arithmetic for the ones that have one. 16 new tests: the JEFF route (far end first, no self-crossing, every town in one visit, beats the old sort by a fifth, within 5% of the plain shortest path and no longer than either order a dispatcher would draw by hand), the switch (\u2018pure\u2019 brings the mid-town spur back, the picker follows the word), Closest first on JEFF (nearest first, Ellijay last, towns whole), towns chaining within the radius either way round on a one-way matrix, the same stops in five shuffled orders giving one answer, two arms at one radius that the sort alternated between on every stop, the Closest-first mirror, unmapped stops kept at the end, two orders at one address kept together, a ring of stops all one distance out, an asymmetric road matrix, and 150 stops \u2014 the selection cap \u2014 in about 60 ms with the same answer every time.'],
@@ -8810,33 +8812,6 @@ function fmtMdy(ymd) {
   return m ? `${m[2]}/${m[3]}/${m[1].slice(2)}` : (ymd || '');
 }
 
-// Session cache: customer name → Map(pro → driver) from the Firestore history rollup, so a
-// re-opened stop panel doesn't re-fetch. pro_history stores only {pro,date}; the rollup
-// (nuvizz-customer-history, zero NuVizz calls) carries the driver who ran each PRO.
-const _proDriverCache = new Map();
-function useProDrivers(name, historyLen) {
-  const [map, setMap] = useState(() => _proDriverCache.get(name || '') || null);
-  useEffect(() => {
-    const nm = (name || '').trim();
-    if (!nm || !historyLen) { setMap(null); return; }
-    if (_proDriverCache.has(nm)) { setMap(_proDriverCache.get(nm)); return; }
-    let alive = true;
-    apiFetch(`/.netlify/functions/nuvizz-customer-history?name=${encodeURIComponent(nm)}`)
-      .then((r) => r.json())
-      .then((j) => {
-        const m = new Map();
-        // Each customer's rollup lists its PROs under `pros` = [{pro,date,driver}] (shapeCustomer).
-        if (j?.ok) for (const c of (j.customers || [])) for (const h of (c.pros || [])) {
-          if (h?.pro && h?.driver && !m.has(String(h.pro))) m.set(String(h.pro), h.driver);
-        }
-        if (j?.ok) _proDriverCache.set(nm, m);       // never cache a failure as "no drivers"
-        if (alive) setMap(m);
-      })
-      .catch(() => { /* best-effort — chips just omit the driver */ });
-    return () => { alive = false; };
-  }, [name, historyLen]);
-  return map;
-}
 
 // Always-on history footer for the stop card ("history at the bottom of the stop card when it
 // comes up") — this customer's recent deliveries straight from the saved history warehouse
@@ -8879,19 +8854,34 @@ function useCustomerRecent(matchKey, name) {
   }, [cacheKey]);
   return rows;
 }
-function StopRecentDeliveries({ stop }) {
+// THE ONE HISTORY SECTION ON THE CARD. Chad, on a WINTERS INDUSTRIES card carrying
+// PRO 007142362 three times: "why are we showing the same pro 3 different ways and
+// why is the one pro missing the drivers name". Two of those three rows came from
+// customer_notes.pro_history, which is a record of NOTE SAVES — see mergeStopHistory
+// for why that is not delivery history and why those rows could never carry a driver.
+// The merge is pure and tested; this component only draws the two lists it returns.
+function StopRecentDeliveries({ stop, note }) {
   const rows = useCustomerRecent(stop?.matchKey, stop?.businessName);
-  // rows === null → still loading (or no identity at all): stay silent.
-  // rows === []   → the lookup RAN and found nothing: say so, so an empty
+  const currentPros = stop?.pros || (stop?.pro ? [stop.pro] : []);
+  // currentPros is a fresh array every render, so the PROs are joined into a string
+  // for the dep list — depending on the array itself would recompute on every render.
+  const proKeys = currentPros.join(',');
+  const history = useMemo(
+    () => (rows ? mergeStopHistory(rows, note?.pro_history, proKeys ? proKeys.split(',') : []) : null),
+    [rows, note?.pro_history, proKeys],
+  );
+  // history === null → still loading (or no identity at all): stay silent.
+  // delivered === [] → the lookup RAN and found nothing: say so, so an empty
   // section is distinguishable from the feature not existing (Chad's mobile
   // report — desktop and mobile render this identically; it was hiding).
-  if (!rows) return null;
+  if (!history) return null;
+  const { delivered, seen } = history;
   return (
     <div className="px-4 py-3 border-t">
       <div className="text-xs uppercase font-semibold text-slate-500 mb-1.5">Recent deliveries here</div>
-      {rows.length ? (
+      {delivered.length ? (
         <div className="flex flex-wrap gap-1">
-          {rows.slice(0, 8).map((h, i) => (
+          {delivered.slice(0, 8).map((h, i) => (
             <span key={i} className="text-[10px] bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 whitespace-nowrap">
               <span className="font-mono">{h.pro}</span>
               {h.driver && <span className="text-slate-700"> · {h.driver}</span>}
@@ -8902,6 +8892,24 @@ function StopRecentDeliveries({ stop }) {
       ) : (
         <div className="text-xs text-slate-500 italic">No prior deliveries recorded — first visit to this customer.</div>
       )}
+
+      {/* PROs we have SEEN at this customer with no delivery on file — typically a
+          customer served before the history warehouse began capturing. Kept because
+          for those customers it is the only trace we were ever here, and labelled
+          for what it is so it can never be read as "delivered on this date". */}
+      {seen.length > 0 && (
+        <div className="mt-2 pt-2 border-t">
+          <div className="text-[11px] text-slate-500 mb-1">Also seen here — no delivery recorded</div>
+          <div className="flex flex-wrap gap-1">
+            {seen.slice(0, 8).map((h, i) => (
+              <span key={i} className="text-[10px] bg-white border border-dashed border-slate-300 rounded px-1.5 py-0.5 whitespace-nowrap text-slate-500">
+                <span className="font-mono">{h.pro}</span>
+                {h.date && <span className="text-slate-400"> · seen {fmtMdy(h.date)}</span>}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -8909,7 +8917,6 @@ function StopRecentDeliveries({ stop }) {
 // Customer-notes section wrapper: the Edit toggle, the read-only view, the full
 // editor, and recent-PRO history. Shared by desktop + mobile.
 function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact = false, drivers = [] }) {
-  const proDrivers = useProDrivers(note?.raw_name, note?.pro_history?.length || 0);
   return (
     <div className="px-4 py-3 space-y-3">
       <div className="flex items-center justify-between">
@@ -8923,23 +8930,6 @@ function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact 
       {!editing && !note && <div className="text-xs text-slate-500 italic">No notes yet. {compact ? 'Click' : 'Tap'} Edit to add.</div>}
       {!editing && note && <ReadOnlyNoteView note={note} />}
       {editing && <StopNotesEditor draft={draft} setDraft={setDraft} compact={compact} drivers={drivers} />}
-      {note?.pro_history?.length > 0 && (
-        <div className="pt-2 border-t">
-          <div className="text-xs font-semibold text-slate-600 mb-1">Recent PROs at this customer</div>
-          <div className="flex flex-wrap gap-1">
-            {[...note.pro_history].reverse().slice(0, 10).map((h, i) => {
-              const drv = h.driver || proDrivers?.get(String(h.pro)) || '';
-              return (
-                <span key={i} className="text-[10px] bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 whitespace-nowrap">
-                  <span className="font-mono">{h.pro}</span>
-                  {drv && <span className="text-slate-700"> · {drv}</span>}
-                  <span className="text-slate-400"> · {fmtMdy(h.date)}</span>
-                </span>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -9139,7 +9129,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
         <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} onSaveContacts={saveContacts} savingNote={saving} noteSaveError={saveError} />
         <ProsSection stop={live} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} compact drivers={drivers} />
-        <StopRecentDeliveries stop={stop} />
+        <StopRecentDeliveries stop={stop} note={note} />
       </div>
 
       {editing && (
@@ -10737,7 +10727,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
         <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} onSaveContacts={saveContacts} savingNote={saving} noteSaveError={saveError} />
         <ProsSection stop={live} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} drivers={drivers} />
-        <StopRecentDeliveries stop={stop} />
+        <StopRecentDeliveries stop={stop} note={note} />
       </div>
       {/* Sticky save bar — visible while editing */}
       {editing && (
