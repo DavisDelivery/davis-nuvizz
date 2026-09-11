@@ -223,6 +223,17 @@ jobs:
       - run: npm run verify:routing-topbar
         env:
           SMOKE_PORT: '8810'
+      # CAN YOU STILL COLLAPSE THE RIGHT RAIL AFTER SQUEEZING IT? Chad, with it dragged to the
+      # minimum: "i lose my collapse button, the other 2 buttons don't shrink like they
+      # should." At 280px the header wanted 291px of a 255px content box and put the chevron
+      # 56px past the panel edge — off a 1440px screen — so the control that undoes the
+      # squeeze was the one the squeeze destroyed. Another geometry claim, so another real
+      # browser: four rail widths, the chevron inside AND clickable, ＋ New route whole rather
+      # than clipped, and the default width losing neither its label nor its counts. Written
+      # against the broken bundle first and fails it at 280px and 300px.
+      - run: npm run verify:rail-header
+        env:
+          SMOKE_PORT: '8814'
       # "Hide place labels" can only misbehave on a build that HAS a cloud mapId: Google
       # ignores the JS `styles` array on those maps, so the toggle had nothing to do on the
       # roadmap base. Honouring it means REBUILDING the map without the mapId, and the risk
