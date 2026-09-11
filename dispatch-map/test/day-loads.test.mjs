@@ -221,16 +221,28 @@ test('splitDayLoads survives the absent and the malformed', () => {
 // have the driver assignment." The roster row always knew; this merge hardcoded '' and threw it
 // away, so on a Draft morning every empty trailer read blank — and the two that genuinely had
 // nobody on them looked exactly like the forty-eight that did.
-test('an empty Draft shell shows the driver NuVizz already has on it, before any stop exists', () => {
+test('a load with freight shows the driver NuVizz has on it, before any stop reaches the board', () => {
   const rows = mergeDayLoads([], [
-    roster({ name: 'SHEATS', loadId: 'hexS', loadNbr: 'DAVIS000203725', driver: 'Sirdedrick Sheats', trips: 0 }),
-    roster({ name: 'ESTES', loadId: 'hexE', loadNbr: 'DAVIS000203722', driver: '', trips: 0 }),
+    roster({ name: 'ENOCK', loadId: 'hexE', loadNbr: 'DAVIS000203499', driver: 'Enock Akyea', trips: 18 }),
+    roster({ name: 'ESTES', loadId: 'hexS', loadNbr: 'DAVIS000203722', driver: '', trips: 8 }),
   ]);
-  const sheats = rows.find((r) => r.name === 'SHEATS');
-  const estes = rows.find((r) => r.name === 'ESTES');
-  assert.equal(sheats.driver, 'Sirdedrick Sheats');
-  assert.equal(sheats.onBoard, false, 'no stops — this driver came from the roster, not the board');
-  assert.equal(estes.driver, '', 'genuinely unassigned, and now distinguishable from the ones that are not');
+  assert.equal(rows.find((r) => r.name === 'ENOCK').driver, 'Enock Akyea');
+  assert.equal(rows.find((r) => r.name === 'ENOCK').onBoard, false, 'no stops on the board — this came from the roster');
+  assert.equal(rows.find((r) => r.name === 'ESTES').driver, '', 'genuinely unassigned stays unassigned');
+});
+
+test('an EMPTY trailer does not borrow the leftover name NuVizz kept on it', () => {
+  // v1.10.0 asserted the opposite, and the live board disproved it: MARTIN and TERRY — both
+  // zero-stop Drafts — came back carrying "Sirdedrick  Sheats" and "Sirdedrick Sheets" on a day
+  // with no SHEATS route at all. Chad: "no one assigned sheats to our load." A leftover name on
+  // an empty shell hides the one trailer that actually needs a driver, which is the whole thing
+  // this feature exists to surface.
+  const rows = mergeDayLoads([], [
+    roster({ name: 'MARTIN', loadId: 'hexM', loadNbr: 'DAVIS000203490', driver: 'Sirdedrick  Sheats', trips: 0 }),
+    roster({ name: 'TERRY', loadId: 'hexT', loadNbr: 'DAVIS000203494', driver: 'Sirdedrick Sheets', trips: 0 }),
+  ]);
+  assert.deepEqual(rows.map((r) => [r.name, r.driver]), [['MARTIN', ''], ['TERRY', '']]);
+  assert.ok(rows.every((r) => r.empty), 'and they are still listed as the empty loads they are');
 });
 
 test('the board’s live driver still WINS over the roster’s capture — the roster only fills a gap', () => {

@@ -18,7 +18,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  buildRosterStatusMap, buildRosterDriverMap, resolveRosterStatus, resolveRosterDriver, resolveNameOwner, isCancelledStatus,
+  buildRosterStatusMap, buildRosterDriverMap, resolveRosterStatus, resolveRosterDriver, resolveNameOwner, isCancelledStatus, rosterDriverOf,
   rosterIdKey, rosterAmbiguousKey,
 } from '../src/lib/route-status.js';
 
@@ -129,8 +129,8 @@ test('junk in, no crash out', () => {
 // one: putting the wrong driver on a route is a call to somebody forty miles away.
 test('the roster names the driver for a load whose stops have not caught up', () => {
   const m = buildRosterDriverMap([
-    { loadId: 'hexS', name: 'SHEATS', loadNbr: 'DAVIS000203725', driver: 'Sirdedrick Sheats', status: 'Draft' },
-    { loadId: 'hexE', name: 'ESTES', loadNbr: 'DAVIS000203722', driver: '', status: 'Draft' },
+    { loadId: 'hexS', name: 'SHEATS', loadNbr: 'DAVIS000203725', driver: 'Sirdedrick Sheats', trips: 15, status: 'Draft' },
+    { loadId: 'hexE', name: 'ESTES', loadNbr: 'DAVIS000203722', driver: '', trips: 8, status: 'Draft' },
   ]);
   assert.equal(resolveRosterDriver({ name: 'SHEATS', loadId: 'hexS' }, m), 'Sirdedrick Sheats');
   assert.equal(resolveRosterDriver({ name: 'SHEATS' }, m), 'Sirdedrick Sheats', 'by name when the name is unique');
@@ -141,8 +141,8 @@ test('the roster names the driver for a load whose stops have not caught up', ()
 test('two live loads sharing a name: NEITHER driver is handed to a card', () => {
   // Chad's two STEVENs. Guessing here puts a driver on a route he is not running.
   const m = buildRosterDriverMap([
-    { loadId: 'hexA', name: 'STEVEN', loadNbr: 'DAVIS000200100', driver: 'Steven Adjetey', status: 'Dispatched' },
-    { loadId: 'hexB', name: 'STEVEN', loadNbr: 'DAVIS000200400', driver: 'Somebody Else', status: 'Dispatched' },
+    { loadId: 'hexA', name: 'STEVEN', loadNbr: 'DAVIS000200100', driver: 'Steven Adjetey', trips: 12, status: 'Dispatched' },
+    { loadId: 'hexB', name: 'STEVEN', loadNbr: 'DAVIS000200400', driver: 'Somebody Else', trips: 9, status: 'Dispatched' },
   ]);
   assert.equal(resolveRosterDriver({ name: 'STEVEN' }, m), '', 'a contested name may not speak');
   // Identity still settles it — that is the whole reason the id keys exist.
@@ -151,8 +151,8 @@ test('two live loads sharing a name: NEITHER driver is handed to a card', () => 
 
 test('a CANCELLED twin never lends its driver to the live load holding the name', () => {
   const m = buildRosterDriverMap([
-    { loadId: 'hexOLD', name: 'STEVEN', loadNbr: 'DAVIS000200100', driver: 'Old Hand', status: 'Cancelled' },
-    { loadId: 'hexNEW', name: 'STEVEN', loadNbr: 'DAVIS000200400', driver: 'Steven Adjetey', status: 'Dispatched' },
+    { loadId: 'hexOLD', name: 'STEVEN', loadNbr: 'DAVIS000200100', driver: 'Old Hand', trips: 5, status: 'Cancelled' },
+    { loadId: 'hexNEW', name: 'STEVEN', loadNbr: 'DAVIS000200400', driver: 'Steven Adjetey', trips: 16, status: 'Dispatched' },
   ]);
   assert.equal(resolveRosterDriver({ name: 'STEVEN' }, m), 'Steven Adjetey');
 });
@@ -166,7 +166,55 @@ test('a roster with no drivers at all resolves to empty, never undefined or "und
 });
 
 test('the driver map does not disturb the status map — the two are built over the same rows', () => {
-  const loads = [{ loadId: 'hexS', name: 'SHEATS', loadNbr: 'DAVIS000203725', driver: 'Sirdedrick Sheats', status: 'Draft' }];
+  const loads = [{ loadId: 'hexS', name: 'SHEATS', loadNbr: 'DAVIS000203725', driver: 'Sirdedrick Sheats', trips: 15, status: 'Draft' }];
   assert.equal(resolveRosterStatus({ name: 'SHEATS', loadId: 'hexS' }, buildRosterStatusMap(loads)), 'Draft');
   assert.equal(resolveRosterDriver({ name: 'SHEATS', loadId: 'hexS' }, buildRosterDriverMap(loads)), 'Sirdedrick Sheats');
+});
+
+// ── A LEFTOVER NAME ON AN EMPTY TRAILER IS NOT AN ASSIGNMENT ───────────────────────────────
+//
+// Chad, on the Loads panel searched for "sir": MARTIN and TERRY both reading Sirdedrick Sheats.
+// "no one assigned sheats to our load."
+//
+// These four rows are VERBATIM from the live roster that morning. The parser was reading each
+// row's own cell correctly — MARTIN and TERRY hold two DIFFERENT spellings, which a misaligned
+// column could not produce — and every load carrying freight was right. What is wrong is
+// showing a name that NuVizz left on a zero-stop shell.
+const LIVE_ROWS = [
+  { loadId: 'h1', name: 'ENOCK',   loadNbr: 'DAVIS000203499', driver: 'Enock Akyea',        trips: 18, status: 'Draft' },
+  { loadId: 'h2', name: 'WILLIAM', loadNbr: 'DAVIS000203441', driver: 'William Kidd',       trips: 16, status: 'Draft' },
+  { loadId: 'h3', name: 'TERRY',   loadNbr: 'DAVIS000203494', driver: 'Sirdedrick Sheets',  trips: 0,  status: 'Draft' },
+  { loadId: 'h4', name: 'MARTIN',  loadNbr: 'DAVIS000203490', driver: 'Sirdedrick  Sheats', trips: 0,  status: 'Draft' },
+];
+
+test('a load carrying freight keeps its driver; an empty trailer does not borrow one', () => {
+  assert.deepEqual(LIVE_ROWS.map((l) => [l.name, rosterDriverOf(l)]), [
+    ['ENOCK', 'Enock Akyea'],      // 18 stops — a real assignment, and it was right
+    ['WILLIAM', 'William Kidd'],   // 16 stops — likewise
+    ['TERRY', ''],                 // 0 stops — Sirdedrick is not running TERRY
+    ['MARTIN', ''],                // 0 stops — nor MARTIN
+  ]);
+});
+
+test('the empty shell reads as unassigned, which is the row the dispatcher is hunting for', () => {
+  // The whole case for capturing the driver was that an unstaffed trailer becomes VISIBLE. A
+  // leftover name does the opposite, so the rule has to fail toward "nobody".
+  assert.equal(rosterDriverOf({ name: 'MARTIN', driver: 'Sirdedrick  Sheats', trips: 0 }), '');
+  assert.equal(rosterDriverOf({ name: 'MARTIN', driver: 'Sirdedrick  Sheats' }), '', 'no trips field at all is not freight');
+  assert.equal(rosterDriverOf({ name: 'MARTIN', driver: 'Sirdedrick  Sheats', trips: null }), '');
+  assert.equal(rosterDriverOf({ name: 'MARTIN', driver: 'Sirdedrick  Sheats', trips: 'x' }), '', 'a non-numeric trip count is not freight');
+});
+
+test('no driver stays no driver, whatever the trip count', () => {
+  assert.equal(rosterDriverOf({ name: 'ESTES', driver: '', trips: 8 }), '');
+  assert.equal(rosterDriverOf({ name: 'ESTES', trips: 8 }), '');
+  assert.equal(rosterDriverOf(null), '');
+  assert.equal(rosterDriverOf({ name: 'X', driver: '   ', trips: 4 }), '');
+});
+
+test('the driver MAP is built on the same rule — an empty shell speaks for nobody', () => {
+  const m = buildRosterDriverMap(LIVE_ROWS);
+  assert.equal(resolveRosterDriver({ name: 'ENOCK', loadId: 'h1' }, m), 'Enock Akyea');
+  assert.equal(resolveRosterDriver({ name: 'MARTIN', loadId: 'h4' }, m), '', 'the Routes card cannot pick it up either');
+  assert.equal(resolveRosterDriver({ name: 'TERRY', loadId: 'h3' }, m), '');
 });
