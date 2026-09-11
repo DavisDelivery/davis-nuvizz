@@ -572,6 +572,142 @@ export function farthestFirst(stops, depot, mode = SWEEP_MODE) { return sweep(st
 // Closest first: the nearest stop first, walking outward town by town; the farthest stop is last.
 export function closestFirst(stops, depot, mode = SWEEP_MODE) { return sweep(stops, depot, 'outward', mode); }
 
+// ── SEQUENCING ON A REAL ROAD MATRIX ─────────────────────────────────────────
+//
+// Chad, 2026-09-11, on a 23-stop JEAN card re-sequenced Shortest distance: "Logic is still
+// not fixed look at this."
+//
+// He was right, and it was not the search. Shortest distance was already within 0.6% of the
+// best straight-line order on his own routes — there was nothing left to win there. The
+// straight line itself is the lie. JEAN works both banks of the Chattahoochee, and the order
+// it produced crossed the river FOUR times on legs of half a mile to a mile and a half,
+// because on a crow-flies map the two banks are neighbours. Measured against real roads:
+//
+//   Weezie -> Dexter Axle          0.67 mi straight   3.76 mi by road   5.6x
+//   Century -> Switch ATL          1.39 mi            5.26 mi           3.8x
+//   Dexter Axle -> National Div.   0.82 mi            3.03 mi           3.7x
+//   National Div. -> Bosch         0.50 mi            1.51 mi           3.0x
+//
+// 3.4 apparent miles, 13.6 real ones, 33 minutes of driving the optimizer could not see. No
+// amount of better searching fixes that, because the map it searches is wrong. The only fix
+// is to hand it real driving distances — which is what these functions take.
+//
+// Everything below is the SAME set of strategies as resequence(), re-expressed to read a cost
+// MATRIX instead of computing crow-flies internally. Node 0 is the depot and node k is
+// stops[k-1], the convention the sweep already used. Feed it a haversine matrix and it agrees
+// with resequence() exactly; feed it a Google driving matrix and the river appears.
+
+/** Length of depot -> order[0] -> … (an open path; no return leg). */
+export function openPathCost(order, cost) {
+  if (!order.length) return 0;
+  let total = cost[0][order[0]];
+  for (let i = 0; i + 1 < order.length; i++) total += cost[order[i]][order[i + 1]];
+  return total;
+}
+
+/** Length of depot -> order… -> depot (a closed loop). */
+export function loopPathCost(order, cost) {
+  if (!order.length) return 0;
+  return openPathCost(order, cost) + cost[order[order.length - 1]][0];
+}
+
+/** Greedy nearest-neighbour walk from the depot over `nodes`. */
+function nnFromDepot(nodes, cost) {
+  const remaining = [...nodes].sort((a, b) => a - b);   // canonical: same set, same answer
+  const out = [];
+  let cur = 0;
+  while (remaining.length) {
+    let bi = 0, bd = Infinity;
+    for (let i = 0; i < remaining.length; i++) { const d = cost[cur][remaining[i]]; if (d < bd) { bd = d; bi = i; } }
+    cur = remaining.splice(bi, 1)[0];
+    out.push(cur);
+  }
+  return out;
+}
+
+/**
+ * 2-opt + or-opt over an order scored by `score`, which is either openPathCost (Shortest
+ * distance: the depot is pinned at the front, the last stop is free) or loopPathCost (Loop:
+ * the depot is pinned at both ends). Scored whole rather than by edge deltas because the two
+ * objectives differ in which edges a move touches, and at a card's size (well under the
+ * 150-stop cap) the whole-path score is still milliseconds — correctness over cleverness on
+ * a path that a dispatcher is about to send a truck down.
+ */
+function improveOrder(order, cost, score, maxPasses = 40) {
+  let best = [...order];
+  if (best.length < 2) return best;
+  let bestLen = score(best, cost);
+  const EPS = 1e-6;
+  for (let pass = 0; pass < maxPasses; pass++) {
+    let improved = false;
+    for (let i = 0; i < best.length - 1; i++) {
+      for (let k = i + 1; k < best.length; k++) {
+        const cand = best.slice(0, i).concat(best.slice(i, k + 1).reverse(), best.slice(k + 1));
+        const len = score(cand, cost);
+        if (len + EPS < bestLen) { best = cand; bestLen = len; improved = true; }
+      }
+    }
+    for (let len_ = 1; len_ <= 3 && len_ < best.length; len_++) {
+      for (let i = 0; i + len_ <= best.length; i++) {
+        const seg = best.slice(i, i + len_);
+        const rest = best.slice(0, i).concat(best.slice(i + len_));
+        const segRev = [...seg].reverse();
+        let moved = false;
+        for (let j = 0; j <= rest.length && !moved; j++) {
+          for (const piece of (len_ > 1 ? [seg, segRev] : [seg])) {
+            if (j === i && piece === seg) continue;
+            const cand = rest.slice(0, j).concat(piece, rest.slice(j));
+            const l = score(cand, cost);
+            if (l + EPS < bestLen) { best = cand; bestLen = l; improved = true; moved = true; break; }
+          }
+        }
+      }
+    }
+    if (!improved) break;
+  }
+  return best;
+}
+
+/**
+ * Re-sequence on a cost MATRIX. `stops` are the card's stops in any order; `cost` is
+ * (stops.length + 1)² with node 0 the depot and node k+1 = stops[k]. Returns a permutation of
+ * `stops`, same contract as resequence(). Strategies mean exactly what they mean there.
+ *
+ * A stop the matrix cannot score (a missing or non-finite row) is not silently dropped and is
+ * not allowed to poison the arithmetic either: it rides at the END in its own order, the same
+ * rule sweep() uses for a stop with no map position.
+ */
+export function resequenceOnMatrix(stops, cost, strategy, mode = SWEEP_MODE) {
+  const arr = Array.isArray(stops) ? stops : [];
+  if (arr.length < 2) return [...arr];
+  if (strategy === 'reverse') return [...arr].reverse();
+  // WHICH STOPS THE MATRIX CAN ACTUALLY SCORE. A node needs a finite cost to and from the
+  // depot, and to and from every other node that survives. It is a pairwise question, not a
+  // per-row one: one unreachable address puts a NaN in EVERY other stop's row, so a naive
+  // "is this whole row finite" test throws the entire card away over one bad geocode.
+  const all = arr.map((_, i) => i + 1);
+  const finite = (a, b) => Number.isFinite(cost?.[a]?.[b]);
+  let keep = all.filter((k) => Array.isArray(cost?.[k]) && finite(0, k) && finite(k, 0));
+  for (let guard = 0; guard < all.length; guard++) {
+    const next = keep.filter((k) => keep.every((j) => j === k || (finite(k, j) && finite(j, k))));
+    if (next.length === keep.length) break;
+    keep = next;
+  }
+  const keepSet = new Set(keep);
+  const nodes = keep;
+  const unusable = all.filter((k) => !keepSet.has(k));
+  if (nodes.length < 2) return [...arr];
+  let order;
+  switch (strategy) {
+    case 'closest': order = mode === 'pure' ? pureSweepNodes(nodes, cost, 'outward') : townSweepNodes(nodes, cost, 'outward'); break;
+    case 'farthest': order = mode === 'pure' ? pureSweepNodes(nodes, cost, 'homeward') : townSweepNodes(nodes, cost, 'homeward'); break;
+    case 'loop': order = improveOrder(nnFromDepot(nodes, cost), cost, loopPathCost); break;
+    case 'min': order = improveOrder(nnFromDepot(nodes, cost), cost, openPathCost); break;
+    default: return [...arr];
+  }
+  return [...order, ...unusable].map((k) => arr[k - 1]);
+}
+
 // Re-sequence one route's stops by strategy. 'reverse' flips the current order;
 // the others are computed fresh from depot + positions.
 //   loop     — nearest-neighbour seed + closed-loop 2-opt → U-shape (down one side,

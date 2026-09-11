@@ -31,6 +31,7 @@ import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { scanPressVerdict, SCAN_POLL_WINDOW_SEC, SCAN_SPINNER_SEC } from './lib/scan-press-verdict.js';
 import { routeStopEta, routeStopFreight, routeStopSeq, routeStopTime, loadDefaultWindow } from './lib/route-stop-line.js';
 import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt, foldFreshStop } from './lib/stop-card-sections.js';
+import { mergeStopHistory } from './lib/stop-history.js';
 import { resolveStopContact, resolveStopPhone, orderContactAside, mergeSavedContact, isDialable } from './lib/stop-contact.js';
 import { readViewportSize } from './lib/viewport.js';
 import { restoreBar, reachableBar, settingsForSave, normalizeBar, sameBar, BAR_DEFAULTS } from './lib/bar-memory.js';
@@ -44,7 +45,7 @@ import { diffRouteStyle, DIFF_ORIGINAL_COLOR, groupDispatchTrips } from './lib/d
 import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -199,7 +200,12 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+<<<<<<< HEAD
   ['1.15.0', 'ROUTE CREATION: THE DOCUMENT HAD THE ANSWER, AND SO DID OUR OWN ERROR HANDLER — IT CUT IT OFF AT 300 CHARACTERS. Chad, on a 14-order “Steven Adjenty” card: “Route Creation still not working from our system go to devloper api from nuvizz and figure out what you are doing wrong.” NuVizz answered the create with a 500 carrying a DeliverItLoadResponse — DocumentID UNKNOWN, Status 99, and an Errors list saying what it objected to. THE SCREEN NEVER SHOWED THAT LIST, AND NEITHER DID THE WRITE LEDGER: firstError() returned the message .slice(0, 300), and the cut lands — to the character — immediately after <Errors class=“java.util.ArrayList”>. The vendor had already said it out loud; we truncated it and then spent a day inferring it. THE BUG THE DOCUMENT NAMES. RoutePlanStopSchedule.seq numbers a route’s LEGS, not its stops — 14 orders are 28 legs — and all three worked examples give every leg its own number (Stop001 from=1 to=3, Stop002 from=2 to=4). We sent from.seq === to.seq === the card position: leg 1 twice, leg 2 twice, … leg 14 twice, and 15–28 never used. The body was STRUCTURALLY PERFECT against RoutePlanLoad the whole time — every key legal, nothing extra, every length and type fine — which is why nothing caught it: JSON Schema cannot say “these integers must be distinct”. Only the examples say it. Now from-legs 1..N then to-legs N+1..2N, which is also the leg model RWB already proved against the portal (legsFor: every _PU, then every _DO) and what the freight actually does out of Buford. THE GUARD THAT MAKES IT STICK: test/nuvizz-openapi-conformance.test.mjs validates the bodies this app builds against the shipped reference/nuvizz-openapi-v7.json, and re-reads the leg-uniqueness rule out of the vendor’s own examples — so a spec drop that changes the convention fails a test instead of a route. Proven able to go red before it was trusted green. AND THE SCHEDULES STOP BEING ECHOED RAW. planStops copied whatever live stop/info handed back, skipping all three rules the import path learned on Jul 2 (“an epoch number from a raw read must never be echoed”): an epoch, a millis/offset suffix or a bare date went straight onto the wire, and a Java worker that binds one of those into a yyyy-MM-ddTHH:mm:ss field dies inside the worker — which is the shape of the answer we got. One isoOrNull now, shared by all four paths; a window that is not the contract’s shape is DROPPED, never invented; and srvcTimeCode/estimatedDuration are gone, because §I had already ruled them unproven and two write paths in one file disagreeing about that is how a rule gets lost. SO THE NEXT ONE IS READ, NOT INFERRED. The vendor’s text is no longer truncated; a rejected write journals the exact JSON we POSTed AND NuVizz’s verbatim answer (failures only, no auth headers) into the ledger, so nuvizz-write-log?op=newRoute&status=failed reads the real error at ZERO NuVizz cost; the toast leads with NuVizz’s own complaint dug out of the JSON-wrapped, JSON-escaped XML, and MARKS its cut instead of ending mid-tag; and the dry run finally prints the body it would send. That dry-run line had claimed “HEADER ONLY (no stops in the payload)” for five weeks after Aug 3 made it false — the one surface that says what this op is about to do was describing a payload the code no longer built. HONEST ABOUT WHAT IS NOT PROVEN: the duplicate seq is the only deviation from the contract in the whole payload, which makes it the best candidate for the 500, but no NuVizz call was spent working any of this out and only a live create can settle it. If it still fails, the next failure names its own cause. AND THE UAT SITE IS ALREADY WIRED TO NUVIZZ UAT — IT JUST COULD NOT SEE ANYTHING. Chad: “why don’t we hook up our uat to nuvizz’s uat so we can test and work through things — go through all my repos because one of them is wired to nuvizz’s uat.” IT HAS BEEN WIRED SINCE JUL 2: dd-dispatch-map-uat runs NUVIZZ_BASE_URL=https://uat.nuvizz.com/deliverit/openapi/v7 against company DAVISV5 with its own credentials, its own Firestore database (uat-mirror), NUVIZZ_WRITE_ENABLED=true and the import engine on. dispatch-beta2’s prod-mirror is the same trick and its README says so outright — “how it points at UAT (environment only — zero code fork)”. Nothing needed wiring. WHAT IT NEEDED WAS EYES, AND NOT BY SCANNING. isMirrorDeploy() shuts every read path on every mirror (v0.90.0, after UAT quietly spent 109 NuVizz calls in a day), and that gate is in CODE — no env var re-opens it, the manual-scan button included. So the UAT site could WRITE to NuVizz all day and never SEE one order to write about. Confirmed live off the site rather than inferred: nuvizz-scan-config answered scansEnabled:false. THAT STAYS SHUT. Chad, on the fix: “we need to use firestore to see what data/orders are put into system daily so we are not running scans.” A mirror still never scans. What changes here is only that the refusal SAYS WHICH of the three reasons it was — “a mirror may not scan”, “somebody pulled the kill switch” and “it is running” were one blank screen, and nuvizz-scan-config reported two of the three. It now returns reason plus the mirror’s database. That is the same defect as the 300-character truncation arriving from the other direction, and it is pure reporting: nothing about what scans, only about what is said when nothing does. AND THE UAT TEST BENCH, WHICH IS HOW A ROUTE-CREATE CALL GETS SPENT SAFELY. Chad: “we need to use firestore to see what data/orders are put into system daily so we are not running scans. Then we can design a way to test using that information so we need to test something we will write just the orders we need to test whatever scenario we are testing into the uat.” PRODUCTION’S FIRESTORE IS THE CATALOGUE, UAT IS A STAGE. Every order production scanned is already on file with its address, its geocoded pin, its window and its freight — so the bench reads THAT (zero NuVizz calls, zero scans), you tick the orders a scenario needs, and only those are written into the DAVISV5 tenant. A 14-stop route test costs ~14 calls on a tenant nobody ships from and NOTHING against production. FOUR RULES, EACH PINNED BY A TEST BECAUSE EACH IS A WAY THIS GOES WRONG. (1) A seeded order is always identifiable as one: UT- prefix, the production number it stands for on the record, and a seed ledger — and a CLEAR requires the prefix AND the ledger, because “cancel everything that looks like a test” is the phrasing you cannot undo. (2) The UAT number is DERIVED from the production number, never minted, so re-seeding upserts instead of duplicating and any order on the test board reads straight back to the one it copies; an over-long number keeps its TAIL, because production numbers are prefix-heavy and cutting the front would collapse two orders onto one. (3) The scenario IS the window — a 2pm close crosses verbatim, and when a row has no window the bench SAYS SO rather than inventing the builder’s 12–5 and turning a deadline test into a test of nothing. (4) Production’s plan never crosses: not the load, not the driver, not the sequence, not the planned ETA. The geometry does, because it is the same physical delivery and re-geocoding it would spend a Google call to learn what we already know. AND THE BOARD FILLS WITHOUT A SCAN, which is the step that was missing: the seeder knows what it created, so it writes the rows itself — identity swapped to the UAT order, plan stripped, pin kept. preview shows the exact JSON for every order before a single call is spent. The bench REFUSES ON PRODUCTION structurally, keyed on FIRESTORE_DATABASE before an op is even parsed, and a clear needs the mirror’s own MIRROR_ALLOW_OUTBOUND grant. The catalogue reader has NO writer at all — not a disabled one — and can only ever address the default database, both asserted against its source text.'],
+=======
+  ['1.15.0', 'A ROUTE CAN BE SEQUENCED ON REAL DRIVING DISTANCES NOW, BECAUSE A STRAIGHT LINE CANNOT SEE A RIVER. Chad, on a 23-stop JEAN card re-sequenced Shortest distance: \u201cLogic is still not fixed look at this.\u201d HE WAS RIGHT, AND IT WAS NOT THE SEARCH \u2014 measured on his own routes, Shortest distance was already within 0.6% of the best straight-line order there is, so there was nothing left to win by optimising harder. THE MAP IT OPTIMISES ON IS THE PROBLEM. JEAN works both banks of the Chattahoochee, and the order it produced crossed the river FOUR times on legs of half a mile to a mile and a half \u2014 because on a crow-flies map the two banks are neighbours. Against real roads those four legs measured 0.67 mi \u2192 3.76 mi (5.6x), 1.39 \u2192 5.26 (3.8x), 0.82 \u2192 3.03 (3.7x) and 0.50 \u2192 1.51 (3.0x): 3.4 apparent miles that are 13.6 real ones and 33 minutes of driving to reach a bridge and come back. No amount of better searching fixes that. SO THE CARD CAN NOW BE SEQUENCED ON A GOOGLE DRIVING MATRIX. Every strategy \u2014 Shortest distance, Farthest first, Closest first, Loop \u2014 reads the matrix instead of computing straight lines, and on JEAN\u2019s real stops that took Shortest distance from 73.2 real road miles and four river crossings to 68.8 and one. The same functions on a straight-line matrix return byte-identical orders to the ones that shipped yesterday, which is the property that makes this a generalisation rather than a rewrite, and a test pins it on real geometry. IT IS OFF UNTIL YOU TICK IT, because it spends money per re-sequence: the box sits under the dropdown on the card, says what that card will cost (a 23-stop card is about $2.88), and remembers itself per browser. UNTICK IT AND YOU ARE EXACTLY BACK where you were. The straight-line order still lands INSTANTLY on every pick whether the box is ticked or not \u2014 roads only ever replace it a moment later \u2014 so the dropdown never got slower, and a slow, failed or unavailable matrix leaves a working card and says so rather than silently pretending. The server reporting that it fell back to straight lines is treated as a failure, not a success, so the card never claims roads it did not get. A stop the matrix cannot reach (a bad geocode) rides at the end of the list instead of taking the whole card down with it \u2014 that is a pairwise check, because one unreachable address puts a hole in every other stop\u2019s row. 7 new tests, 4,191 green.'],
+  ['1.14.7', 'ONE PRO, ONE ROW — AND THE MISSING DRIVER WAS THE SAME BUG. Chad, on a WINTERS INDUSTRIES card: “why are we showing the same pro 3 different ways and why is the one pro missing the drivers name.” PRO 007142362 appeared twice under “Recent PROs at this customer” (07/07/26 and 07/06/26, no driver) and once under “Recent deliveries here” (07/06/26, Enock Akyea). THE TWO SECTIONS WERE NEVER THE SAME RECORD. The warehouse rollup is a DELIVERY: the day the freight was delivered and the driver who ran it, already one row per PRO. customer_notes.pro_history is a log of NOTE SAVES — bumpProHistory appends a row every time a dispatcher presses Save on the customer note, stamped with the day of the SAVE and de-duped only against the row immediately before it. So one order whose note was saved on two days is two rows, both dated when somebody opened the note rather than when we delivered, and the row shape is {pro, date}: it has NEVER carried a driver. That is the whole of the second question. The chip filled the driver in from a separate NAME search, which AND-filters every query word against the stored name, so a note whose saved name carries one word the warehouse name lacks returns nothing and the driver silently vanishes — on the very rows sitting above a warehouse row that found its driver by exact matchKey. THE OPERATIONAL COST: “007142362 · 07/07/26” sat one line above “007142362 · Enock Akyea · 07/06/26”, so the card contradicted itself about when we were last at a customer and nothing on screen said which line to believe — and a dispatcher on the phone reads whichever is nearer the top. ONE SECTION NOW, one row per PRO: the delivered fact wins wherever there is one, a PRO with no delivery on file rides below as “Also seen here — no delivery recorded” (kept, because for a customer served before capture began those rows are the only trace we were ever there, and labelled so they can never read as a delivery date), and the stop’s OWN PROs are dropped — today’s open order is in the header and in the PROs list two inches up, and it is not this customer’s history. A numeric PRO padded in one store and bare in the other is matched as one order. pro_history is still written and the customer-history SEARCH screen is untouched. Pure mergeStopHistory + 10 tests, including the real WINTERS card. Zero NuVizz calls; one commit, so git revert is the whole way back.'],
+>>>>>>> origin/main
   ['1.14.6', 'HOW FAR BACK DOES “RECENT DELIVERIES HERE” ACTUALLY GO — THE SCREEN CAN NOW SAY IT. Chad, on a stop card reading “No prior deliveries recorded — first visit to this customer”: how recent is that, from the beginning of time of our Firestore data? THE PANEL HAS NO DATE CUTOFF AT ALL — it reads one history_customers rollup doc and renders the newest 8 of the 20 PROs stored there, so a PRO falls off only when twenty NEWER ones push it out, never because it got old. For a daily customer that is about four weeks; for a twice-a-year customer it reaches back years, all the way to the oldest day in the warehouse. So the real answer is the WAREHOUSE FLOOR, and that was a fact nobody could read from any screen — which also makes “first visit to this customer” ambiguous in the dangerous direction: it means no CAPTURED delivery, and a customer last served the day before capture began looks identical to a genuinely new one. Capture health now carries a coverage line: the oldest and newest warehoused day, the day count, and the day the per-customer rollup actually starts from. rollup_from is deliberately NOT first_date — the rollup is a post-seal derivation, so an unsealed day contributed nothing and a tombstoned (no-board) day had nothing to contribute; sealed days whose customer-rollup hook FAILED are named separately as holes INSIDE the range, re-derivable with nuvizz-rebuild-customer-history-background?date=. FREE: the endpoint already lists every manifest to build its 21-day strip and then discarded the older ones — this summarises the list it already held. Zero extra Firestore reads, zero NuVizz calls. Pure summarizeCoverage + 8 tests.'],
   ['1.14.5', 'A PIN ON THE ROUTING MAP STOPS OPENING THE ORDER \u2014 PUTTING v1.7.0 BACK, ONE DAY OLD. Chad: \u201ci asked that when i click on a stop it opens the stop and i don\u2019t want that to happen anymore, i don\u2019t want it to open every order i click on when i\u2019m clicking it on the map.\u201d THE LOGISTICS READ IS WHY THE ASK REVERSED SO FAST: a router BUILDS a load by clicking pins \u2014 put this on the truck, show me this route, grab this whole dock \u2014 and on a 700-stop morning that is hundreds of clicks in a rhythm, not a series of questions. A full-height order card on every one of them covers the map, takes the right rail away from the route being tuned, and has to be dismissed before the next click. The card is a READING tool and the pin is a BUILDING tool; asking one click to be both taxes every act of building with the cost of reading. WHAT A PIN DOES NOW is exactly what it did before v1.7.0: a planned pin opens its ROUTE in Compare, a pool pin toggles its whole place into the selection, a saved load stays read-only and silent, select-mode still takes the marker\u2019s POSITION and ninja-add still queues the stop. THE CARD DID NOT GO AWAY, IT WENT BACK TO THE ROWS \u2014 the list row and the bottom grid open the identical panel through the same panelStop state, on desktop and on the phone sheet, so nothing became unreadable. ONE EXCEPTION IS LEFT STANDING ON PURPOSE: paint mode still marks the stop AND opens the card, because \u201cfirst click does both\u201d is an older and separate dispatcher request that predates this change, and painting is one deliberate click at a time rather than the routing rhythm \u2014 say the word and it goes too. THE RULE STAYED A FUNCTION: mapPinClickActions in lib/routing-select.js flipped one expression, the handler holds no policy, and 13 tests mutation-checked three ways \u2014 card creeping back onto every pin, the revert also killing the pin\u2019s routing work, and paint losing its card \u2014 each failing exactly the tests that claim to guard it. Zero NuVizz calls.'],
   ['1.14.4', 'FARTHEST FIRST IS A SWEEP HOME NOW, NOT A SORT. Chad, on a 14-stop JEFF route re-sequenced Farthest first: \u201cit should be pretty linear from furthest point out to the last but this is jumping all around.\u201d IT WAS A SORT. Farthest first and Closest first both ranked every stop by its crow-flies RADIUS from Buford and by nothing else \u2014 and a radius says nothing about direction. Three towns at about the same distance in three different directions (Canton to the south-west, Tate to the north-east, Ball Ground between them) interleave in a radial sort, so the driver was sent Jasper \u2192 Canton \u2192 Tate \u2192 Ball Ground \u2192 \u2026 \u2192 back out east on 53, and every one of those jumps was road driven twice. WHAT THE WORDS MEAN ON A DOCK: run out to the far end with the load, then deliver on the way home. That is a path whose both ends are already known \u2014 the farthest stop, then the yard \u2014 and the only open question is the order in between. So the far stop is pinned first, the yard is pinned last, and the shortest path between them is found the way Shortest distance finds its order: nearest-neighbour seeds, 2-opt reversals, and or-opt relocations of one to three stops for the straggler a reversal cannot reach, from four starting orders with the shortest kept. Closest first is the same sweep run outward: nearest stop first, farthest stop last. REPORTED TWICE, BECAUSE THIS SAT UNMERGED: the same complaint came back on 2026-09-11 against a 12-stop VICTOR card on the live build \u2014 \u201cthis is not a good route, look at all the bouncing around\u201d \u2014 and the live order was reproduced stop-for-stop from that day\u2019s real board: the radial sort sent the truck to Gardner Metal in the south, then ELEVEN MILES NORTH past six stops, then back down through the ones it had just driven past. Cartersville sits due west of Buford, so every stop on that card was within five miles of the same radius and the sort was ordering them on a number that could not tell them apart. The sweep walks that line once, 5.8 miles shorter, and a test now pins VICTOR\u2019s real coordinates. AND ONE TOWN AT A TIME. Shown what the plain shortest path does with an outlier \u2014 Canton sits nine miles west of the Ball Ground stops, and on paper it is 3.3 miles cheaper to pay for it as a spur from the MIDDLE of Ball Ground than at the end, so the card would have read Ball Ground, Ball Ground, Ball Ground, Canton, Ball Ground \u2014 Chad chose the town: \u201c2 let\u2019s try that and have a way to flip it back if I don\u2019t like the orders it\u2019s putting things in.\u201d So a town is worked in one visit: stops within about two and a half miles of each other are one town (and towns chain, so an industrial belt is one town and a lone customer off the corridor is its own), the towns are ordered as the sweep, and the stops inside each town from where the truck arrives to where it leaves for next. A spur to a lone stop can still happen, because it has to be visited somewhere, but never through the middle of another town. THE WAY BACK IS ONE WORD: SWEEP_MODE in lib/routing-select.js (and its twin in routing-solver.mts) is \u2018towns\u2019; set it to \u2018pure\u2019 and the plain shortest path is back. MEASURED ON A FIXTURE, NOT ON HIS CARD \u2014 the card\u2019s real pins are NuVizz data and are not in the repo, so the test places the JEFF stops by the towns on the card: there the old order was 151 crow-flies miles round trip, the plain shortest path 131, and the town-by-town order 132 \u2014 Ellijay, the three Jasper stops, Tate, out to the pin on 53, then Ball Ground top to bottom, then Canton, then home. Same stop set, same answer, whatever order the card was in when the strategy was picked. THE ENGINE AGREES: a build with FARTHEST_FIRST or CLOSEST_FIRST (routing-solver) runs the identical sweep on its matrix \u2014 read in the driving direction, so a Google road matrix is honoured too \u2014 and a route built there and a card re-sequenced here mean the same thing by the same words. Still straight-line distance on the card, like every client-side re-sequence; and no re-sequence strategy consults receiving windows (none ever did \u2014 the card flags them, and a stop that opens at 9:00a is still the dispatcher\u2019s call to drag). A stop with no map position rides at the end of the list untouched instead of poisoning the arithmetic for the ones that have one. 16 new tests: the JEFF route (far end first, no self-crossing, every town in one visit, beats the old sort by a fifth, within 5% of the plain shortest path and no longer than either order a dispatcher would draw by hand), the switch (\u2018pure\u2019 brings the mid-town spur back, the picker follows the word), Closest first on JEFF (nearest first, Ellijay last, towns whole), towns chaining within the radius either way round on a one-way matrix, the same stops in five shuffled orders giving one answer, two arms at one radius that the sort alternated between on every stop, the Closest-first mirror, unmapped stops kept at the end, two orders at one address kept together, a ring of stops all one distance out, an asymmetric road matrix, and 150 stops \u2014 the selection cap \u2014 in about 60 ms with the same answer every time.'],
@@ -1134,6 +1140,9 @@ const LS_MOBILE_STOP_SORT = 'dispatchMap.mobileStopSort';
 const LS_DRIVER_LABELS = 'dispatchMap.driverLabelsVisible';
 const LS_SEARCH_HISTORY = 'dispatchMap.searchHistory';
 const LS_LEGEND_EXPANDED = 'dispatchMap.legendExpanded';
+// Road-distance re-sequencing is OPT-IN and per browser: it spends Google matrix money, so it
+// must never be on because nobody looked. Unticking it is the whole way back.
+const LS_ROUTE_ROAD_MATRIX = 'dispatchMap.routeRoadMatrix';
 const LS_TABLE_COLUMNS = 'dispatchMap.tableColumns';
 // Saved bottom-panel PROFILES — named snapshots of the grid's bar settings (view,
 // status filter, date window + range, driver, no-location filter, sort). The list now
@@ -8812,33 +8821,6 @@ function fmtMdy(ymd) {
   return m ? `${m[2]}/${m[3]}/${m[1].slice(2)}` : (ymd || '');
 }
 
-// Session cache: customer name → Map(pro → driver) from the Firestore history rollup, so a
-// re-opened stop panel doesn't re-fetch. pro_history stores only {pro,date}; the rollup
-// (nuvizz-customer-history, zero NuVizz calls) carries the driver who ran each PRO.
-const _proDriverCache = new Map();
-function useProDrivers(name, historyLen) {
-  const [map, setMap] = useState(() => _proDriverCache.get(name || '') || null);
-  useEffect(() => {
-    const nm = (name || '').trim();
-    if (!nm || !historyLen) { setMap(null); return; }
-    if (_proDriverCache.has(nm)) { setMap(_proDriverCache.get(nm)); return; }
-    let alive = true;
-    apiFetch(`/.netlify/functions/nuvizz-customer-history?name=${encodeURIComponent(nm)}`)
-      .then((r) => r.json())
-      .then((j) => {
-        const m = new Map();
-        // Each customer's rollup lists its PROs under `pros` = [{pro,date,driver}] (shapeCustomer).
-        if (j?.ok) for (const c of (j.customers || [])) for (const h of (c.pros || [])) {
-          if (h?.pro && h?.driver && !m.has(String(h.pro))) m.set(String(h.pro), h.driver);
-        }
-        if (j?.ok) _proDriverCache.set(nm, m);       // never cache a failure as "no drivers"
-        if (alive) setMap(m);
-      })
-      .catch(() => { /* best-effort — chips just omit the driver */ });
-    return () => { alive = false; };
-  }, [name, historyLen]);
-  return map;
-}
 
 // Always-on history footer for the stop card ("history at the bottom of the stop card when it
 // comes up") — this customer's recent deliveries straight from the saved history warehouse
@@ -8881,19 +8863,34 @@ function useCustomerRecent(matchKey, name) {
   }, [cacheKey]);
   return rows;
 }
-function StopRecentDeliveries({ stop }) {
+// THE ONE HISTORY SECTION ON THE CARD. Chad, on a WINTERS INDUSTRIES card carrying
+// PRO 007142362 three times: "why are we showing the same pro 3 different ways and
+// why is the one pro missing the drivers name". Two of those three rows came from
+// customer_notes.pro_history, which is a record of NOTE SAVES — see mergeStopHistory
+// for why that is not delivery history and why those rows could never carry a driver.
+// The merge is pure and tested; this component only draws the two lists it returns.
+function StopRecentDeliveries({ stop, note }) {
   const rows = useCustomerRecent(stop?.matchKey, stop?.businessName);
-  // rows === null → still loading (or no identity at all): stay silent.
-  // rows === []   → the lookup RAN and found nothing: say so, so an empty
+  const currentPros = stop?.pros || (stop?.pro ? [stop.pro] : []);
+  // currentPros is a fresh array every render, so the PROs are joined into a string
+  // for the dep list — depending on the array itself would recompute on every render.
+  const proKeys = currentPros.join(',');
+  const history = useMemo(
+    () => (rows ? mergeStopHistory(rows, note?.pro_history, proKeys ? proKeys.split(',') : []) : null),
+    [rows, note?.pro_history, proKeys],
+  );
+  // history === null → still loading (or no identity at all): stay silent.
+  // delivered === [] → the lookup RAN and found nothing: say so, so an empty
   // section is distinguishable from the feature not existing (Chad's mobile
   // report — desktop and mobile render this identically; it was hiding).
-  if (!rows) return null;
+  if (!history) return null;
+  const { delivered, seen } = history;
   return (
     <div className="px-4 py-3 border-t">
       <div className="text-xs uppercase font-semibold text-slate-500 mb-1.5">Recent deliveries here</div>
-      {rows.length ? (
+      {delivered.length ? (
         <div className="flex flex-wrap gap-1">
-          {rows.slice(0, 8).map((h, i) => (
+          {delivered.slice(0, 8).map((h, i) => (
             <span key={i} className="text-[10px] bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 whitespace-nowrap">
               <span className="font-mono">{h.pro}</span>
               {h.driver && <span className="text-slate-700"> · {h.driver}</span>}
@@ -8904,6 +8901,24 @@ function StopRecentDeliveries({ stop }) {
       ) : (
         <div className="text-xs text-slate-500 italic">No prior deliveries recorded — first visit to this customer.</div>
       )}
+
+      {/* PROs we have SEEN at this customer with no delivery on file — typically a
+          customer served before the history warehouse began capturing. Kept because
+          for those customers it is the only trace we were ever here, and labelled
+          for what it is so it can never be read as "delivered on this date". */}
+      {seen.length > 0 && (
+        <div className="mt-2 pt-2 border-t">
+          <div className="text-[11px] text-slate-500 mb-1">Also seen here — no delivery recorded</div>
+          <div className="flex flex-wrap gap-1">
+            {seen.slice(0, 8).map((h, i) => (
+              <span key={i} className="text-[10px] bg-white border border-dashed border-slate-300 rounded px-1.5 py-0.5 whitespace-nowrap text-slate-500">
+                <span className="font-mono">{h.pro}</span>
+                {h.date && <span className="text-slate-400"> · seen {fmtMdy(h.date)}</span>}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -8911,7 +8926,6 @@ function StopRecentDeliveries({ stop }) {
 // Customer-notes section wrapper: the Edit toggle, the read-only view, the full
 // editor, and recent-PRO history. Shared by desktop + mobile.
 function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact = false, drivers = [] }) {
-  const proDrivers = useProDrivers(note?.raw_name, note?.pro_history?.length || 0);
   return (
     <div className="px-4 py-3 space-y-3">
       <div className="flex items-center justify-between">
@@ -8925,23 +8939,6 @@ function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact 
       {!editing && !note && <div className="text-xs text-slate-500 italic">No notes yet. {compact ? 'Click' : 'Tap'} Edit to add.</div>}
       {!editing && note && <ReadOnlyNoteView note={note} />}
       {editing && <StopNotesEditor draft={draft} setDraft={setDraft} compact={compact} drivers={drivers} />}
-      {note?.pro_history?.length > 0 && (
-        <div className="pt-2 border-t">
-          <div className="text-xs font-semibold text-slate-600 mb-1">Recent PROs at this customer</div>
-          <div className="flex flex-wrap gap-1">
-            {[...note.pro_history].reverse().slice(0, 10).map((h, i) => {
-              const drv = h.driver || proDrivers?.get(String(h.pro)) || '';
-              return (
-                <span key={i} className="text-[10px] bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 whitespace-nowrap">
-                  <span className="font-mono">{h.pro}</span>
-                  {drv && <span className="text-slate-700"> · {drv}</span>}
-                  <span className="text-slate-400"> · {fmtMdy(h.date)}</span>
-                </span>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -9141,7 +9138,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
         <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} onSaveContacts={saveContacts} savingNote={saving} noteSaveError={saveError} />
         <ProsSection stop={live} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} compact drivers={drivers} />
-        <StopRecentDeliveries stop={stop} />
+        <StopRecentDeliveries stop={stop} note={note} />
       </div>
 
       {editing && (
@@ -10739,7 +10736,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
         <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} onSaveContacts={saveContacts} savingNote={saving} noteSaveError={saveError} />
         <ProsSection stop={live} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} drivers={drivers} />
-        <StopRecentDeliveries stop={stop} />
+        <StopRecentDeliveries stop={stop} note={note} />
       </div>
       {/* Sticky save bar — visible while editing */}
       {editing && (
@@ -18252,7 +18249,7 @@ function PreflightBanner({ pre, isMobile }) {
   );
 }
 
-function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
+function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
   // The live-dispatch UI gate is now the gear toggle (prop) rather than the module-level
   // ?write=1/env const. Aliased to the original name so the gate sites below are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -18388,6 +18385,21 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = 
             <option value="reverse">Reverse</option>
             <option value="loop">Loop — down one side &amp; back (no crossings)</option>
           </select>
+        )}
+        {/* REAL ROADS, OPT-IN. Every strategy above measures straight lines, which cannot see a
+            river: JEAN's Shortest-distance order crossed the Chattahoochee four times on legs
+            of half a mile, each a 3-6x longer drive to reach a bridge. Ticking this re-runs the
+            SAME strategy on Google driving distances. The cost is shown because it is charged
+            per pick, and the straight-line order still lands first either way. */}
+        {!route.collapsed && onToggleRoadMatrix && (
+          <label className="mt-1 flex items-start gap-1.5 text-[10px] text-slate-600 cursor-pointer">
+            <input type="checkbox" className="mt-0.5" checked={roadMatrixOn} onChange={(e) => onToggleRoadMatrix(e.target.checked)} />
+            <span>
+              Use real road distances <b>(costs money)</b>
+              {rows.length > 1 && <> — ≈ ${(((rows.length + 1) ** 2) / 1000 * BASIC_RATE_PER_1K_USD).toFixed(2)} per re-sequence</>}
+              {route.roadSequenced && <span className="ml-1 font-semibold text-green-700">· roads applied</span>}
+            </span>
+          </label>
         )}
         {!route.collapsed && (
           <div className="mt-1 flex items-center justify-between gap-2">
@@ -18581,7 +18593,7 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = 
 // ungeocoded ones. Card membership, display, freight totals and the Save payload all use
 // boardStopById so what the card shows == what Save sends (a coord-less stop is still on
 // the load). Anything that needs geometry keeps using stopById.
-function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKey = null, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null, onRouteCreated = null, notice = null, onDismissNotice = null, maxCards = 6 }) {
+function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKey = null, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null, onRouteCreated = null, notice = null, onDismissNotice = null, maxCards = 6 }) {
   const lookup = boardStopById || stopById;
   // Save sends this whole board to NuVizz through nuvizz-write, which requires dispatcher.
   // Its own gate rather than a prop: this component owns the Save button and the confirm path,
@@ -19273,6 +19285,8 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
             dayKey={dayKey}
             stopById={lookup}
             otherKeys={wbRoutes.map((x) => x.key).filter((k) => k !== r.key)}
+            roadMatrixOn={roadMatrixOn}
+            onToggleRoadMatrix={onToggleRoadMatrix}
             ninjaMode={ninjaMode}
             isActive={activeKey === r.key}
             onSetActive={() => onSetActive(r.key)}
@@ -20577,6 +20591,12 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // mutate the board.
   const WB_MAX = 6;
   const [wbRoutes, setWbRoutes] = useState([]);
+  // Sequence a card on REAL DRIVING DISTANCES instead of straight lines. Off by default and
+  // remembered per browser: it spends Google matrix money every time a strategy is picked, so
+  // it may only ever be on because somebody ticked it. Unticking restores the old behaviour
+  // exactly — the straight-line order is still what lands first either way.
+  const [roadMatrixOn, setRoadMatrixOn] = useState(() => safeReadJSON(LS_ROUTE_ROAD_MATRIX, false) === true);
+  useEffect(() => { safeWriteJSON(LS_ROUTE_ROAD_MATRIX, roadMatrixOn); }, [roadMatrixOn]);
   // Every stop id currently STAGED on an open Compare card, mapped to its card key. The map
   // selection tools must not grab these — selecting a staged stop and sending it to another
   // load double-plans it (the save-level guard now refuses, but the selection shouldn't
@@ -20876,13 +20896,52 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     }
     const newOrder = resequence(pts, ROUTING_DEPOT, strategy).map((s) => s.id);
     const resolved = new Set(newOrder);
-    setWbRoutes((prev) => prev.map((x) => {
+    const applyOrder = (ids, suffix) => setWbRoutes((prev) => prev.map((x) => {
       if (x.key !== key) return x;
-      const tail = x.order.map(String).filter((id) => !resolved.has(id));   // never drop unresolvable ids
-      return { ...x, order: [...newOrder, ...tail], strategy };   // remember + show the applied logic
+      const done = new Set(ids);
+      const tail = x.order.map(String).filter((id) => !done.has(id));   // never drop unresolvable ids
+      return { ...x, order: [...ids, ...tail], strategy, roadSequenced: suffix === 'road' };
     }));
+    // The straight-line order lands INSTANTLY, exactly as it always has. Road distances (below)
+    // only ever replace it a moment later — so the dropdown never feels slower than it did, and
+    // a slow or failed matrix leaves a working card rather than an empty one.
+    applyOrder(newOrder, 'crow');
     setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy}`);
-  }, [wbRoutes, stopById]);
+
+    // ── REAL ROAD DISTANCES (opt-in) ──────────────────────────────────────────────────────
+    // Chad, on a 23-stop JEAN card sequenced Shortest distance: "Logic is still not fixed."
+    // It was not the search — that order was already within 0.6% of the best straight-line
+    // one. The straight line is the problem: JEAN works both banks of the Chattahoochee, and
+    // the order crossed the river FOUR times on legs of half a mile to a mile and a half, each
+    // of them a 3-6x longer real drive to reach a bridge. Sequencing the SAME strategy on a
+    // driving matrix cut it to one crossing and 4.4 road miles on the stops we could measure.
+    // Off by default because it spends money per re-sequence; the tick box shows what.
+    if (!roadMatrixOn || strategy === 'reverse') return;
+    const stopsForMatrix = pts.map((s) => ({ lat: s.lat, lng: s.lng }));
+    (async () => {
+      try {
+        const resp = await apiFetch('/.netlify/functions/google-route-matrix', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ depot: ROUTING_DEPOT, stops: stopsForMatrix, mode: 'google' }),
+        });
+        const j = await resp.json();
+        const cost = j?.matrix?.distanceMeters;
+        // `source` is the server telling us what it ACTUALLY used. It falls back to haversine
+        // when the key is missing or Google errors, and re-sequencing on that would just redo
+        // the order we already applied while claiming roads — an intent reported as an outcome.
+        if (j?.source !== 'google' || !Array.isArray(cost) || cost.length !== pts.length + 1) {
+          setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} — road distances unavailable, straight-line order kept`);
+          return;
+        }
+        const roadOrder = resequenceOnMatrix(pts, cost, strategy).map((s) => s.id);
+        applyOrder(roadOrder, 'road');
+        setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} · real road distances`);
+      } catch (e) {
+        setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} — road distances failed (${String(e?.message || e).slice(0, 60)}), straight-line order kept`);
+      }
+    })();
+  }, [wbRoutes, stopById, roadMatrixOn]);
   const wbMoveStop = useCallback((fromKey, stopNbr, toKey) => {
     if (!toKey || fromKey === toKey) return;
     const id = String(stopNbr);
@@ -23717,7 +23776,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
                     )}
                     {engineResultContent}
                     {wbRoutes.length > 0
-                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} maxCards={WB_MAX} />
+                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} roadMatrixOn={roadMatrixOn} onToggleRoadMatrix={setRoadMatrixOn} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} maxCards={WB_MAX} />
                       : controlsContent}
                   </>
                 : mobilePanel === 'loads'
@@ -23781,7 +23840,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
               flex-1/min-h-0 resolves to what is actually left. */}
           {engineResultContent && <div className="p-2 pb-0 shrink-0 max-h-[45%] overflow-y-auto">{engineResultContent}</div>}
           <div className="flex-1 min-h-0">
-          <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} maxCards={WB_MAX} notice={lastAction} onDismissNotice={() => setLastAction(null)} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} preflightByKey={wbPreflight} notes={notes} dayKey={weekdayKeyFromDate(selectedDate)} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} roadMatrixOn={roadMatrixOn} onToggleRoadMatrix={setRoadMatrixOn} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} maxCards={WB_MAX} notice={lastAction} onDismissNotice={() => setLastAction(null)} />
           </div>
         </div>
       ) : leftPanelOn ? (
