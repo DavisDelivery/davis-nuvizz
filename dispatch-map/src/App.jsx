@@ -82,7 +82,7 @@ import { mergeDayLoads, splitDayLoads } from './lib/day-loads.js';
 import { flagProvenance, provenanceLine } from './lib/flag-provenance.js';
 import { deliveredWhen } from './lib/delivered-when.js';
 import { flagDetail, sighting } from './lib/flag-detail.js';
-import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab, resolveRailQuery } from './lib/right-panel.js';
+import { RIGHT_PANEL_MODES, railHeaderLayout, normalizeRightPanelMode, isRoutesPanelMode, hasDriversTab, normalizeRoutesLoadsTab, resolveRailQuery } from './lib/right-panel.js';
 import { boardStatusPanel } from './lib/board-status-card.js';
 import { buildRosterStatusMap, buildRosterDriverMap, resolveRosterStatus, resolveRosterDriver, resolveNameOwner } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
@@ -127,7 +127,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '1.14.5';
+const APP_VERSION = '1.14.6';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -198,6 +198,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.14.6', 'SQUEEZE THE RIGHT RAIL AND YOU KEEP THE BUTTON THAT UN-SQUEEZES IT. Chad, with the Routing rail dragged to its narrowest: \u201cWhen i squeeze the right panel down to the minimum i lose my collapse button, the other 2 buttons don\u2019t shrink like they should.\u201d MEASURED BEFORE ANYTHING WAS TOUCHED, in the real bundle at the 280px minimum: the header has a 255px content box and was asking for 291px \u2014 the Routes/Loads toggle 162px, \u002b New route 98px, the chevron 15px, two 8px gaps. Every child carried shrink-0, so the row could not compress; it overflowed, and the chevron \u2014 last in the DOM and pushed right by ml-auto \u2014 landed at x 1481 on a 1440px screen. Not clipped: 56px past the edge of the display, gone. WHY THIS ONE BUTTON MATTERS MORE THAN THE OTHER TWO, which is the logistics call and not the engineering one: a router squeezes this rail because he wants MAP \u2014 on a 700-stop morning the map is the work surface and the rail is reference. So the control the squeeze destroyed is the control that UNDOES the squeeze, and the only way out was to drag the rail wide again first. The collapsed 28px strip became unreachable from the exact width a dispatcher is most likely to want it from. That is a trap, not a blemish. THE ORDER THINGS GIVE WAY IN IS THE DESIGN. \u002b New route drops its LABEL first \u2014 the \u002b, the tooltip, the colour and a full hit target all stay, and creating a route is an occasional act you go looking for, worth 70 of the 98px it costs. The tab COUNTS go second and only below 300px, because \u201cLoads (87)\u201d is a dispatch fact \u2014 how much of the day is still unbuilt \u2014 and it is still on the panel below. Nothing else gives: the tabs keep their whole words (no \u201cRout\u2026\u201d) and the chevron never moves, sitting at the same x at every width from 280 to the default 380. AT 380 NOTHING CHANGED AT ALL \u2014 the fix must not cost the ordinary dispatcher anything, and a test says so. THE RULE IS A FUNCTION: railHeaderLayout in lib/right-panel.js, beside the other rail rules, so a decision about what fits is testable instead of buried in JSX; a width that cannot be read resolves to the DEFAULT and shows everything, because a typo that silently strips a dispatcher\u2019s controls is invisible and a quietly reduced header looks exactly like a working one. AND IT IS GUARDED IN A REAL BROWSER: scripts/verify-rail-header.mjs measures boxes at four rail widths, checks the chevron is inside the panel AND that a click at its centre reaches it, that \u002b New route is drawn whole rather than clipped, that no two controls overlap, and that the default width loses neither the label nor the counts. It was written against the BROKEN bundle first and fails it on the exact defect (\u201cthe collapse button overflows the rail by 56px\u201d) at 280px and 300px. SAID PLAINLY BECAUSE IT WOULD BE EASY TO OVERSELL: the header also puts the chevron in its own shrink-0 slot beside a min-w-0 group, and checked both ways that is INSURANCE, not the fix \u2014 the guard passes on the rule alone with the old flat row restored, and under 125% and 150% zoom as well. It stays because it changes the failure mode when the arithmetic stops being true (a fourth control, a longer label, a font swap): a clipped button the guard catches, rather than a chevron off the screen. 9 unit tests mutation-checked four ways \u2014 the rule never firing, the two stages inverted, a malformed width stripping the header, and the label threshold sliding low enough for three-digit counts to overflow. Desktop only: the phone never draws this strip. Zero NuVizz calls.'],
   ['1.14.5', 'A PIN ON THE ROUTING MAP STOPS OPENING THE ORDER \u2014 PUTTING v1.7.0 BACK, ONE DAY OLD. Chad: \u201ci asked that when i click on a stop it opens the stop and i don\u2019t want that to happen anymore, i don\u2019t want it to open every order i click on when i\u2019m clicking it on the map.\u201d THE LOGISTICS READ IS WHY THE ASK REVERSED SO FAST: a router BUILDS a load by clicking pins \u2014 put this on the truck, show me this route, grab this whole dock \u2014 and on a 700-stop morning that is hundreds of clicks in a rhythm, not a series of questions. A full-height order card on every one of them covers the map, takes the right rail away from the route being tuned, and has to be dismissed before the next click. The card is a READING tool and the pin is a BUILDING tool; asking one click to be both taxes every act of building with the cost of reading. WHAT A PIN DOES NOW is exactly what it did before v1.7.0: a planned pin opens its ROUTE in Compare, a pool pin toggles its whole place into the selection, a saved load stays read-only and silent, select-mode still takes the marker\u2019s POSITION and ninja-add still queues the stop. THE CARD DID NOT GO AWAY, IT WENT BACK TO THE ROWS \u2014 the list row and the bottom grid open the identical panel through the same panelStop state, on desktop and on the phone sheet, so nothing became unreadable. ONE EXCEPTION IS LEFT STANDING ON PURPOSE: paint mode still marks the stop AND opens the card, because \u201cfirst click does both\u201d is an older and separate dispatcher request that predates this change, and painting is one deliberate click at a time rather than the routing rhythm \u2014 say the word and it goes too. THE RULE STAYED A FUNCTION: mapPinClickActions in lib/routing-select.js flipped one expression, the handler holds no policy, and 13 tests mutation-checked three ways \u2014 card creeping back onto every pin, the revert also killing the pin\u2019s routing work, and paint losing its card \u2014 each failing exactly the tests that claim to guard it. Zero NuVizz calls.'],
   ['1.14.4', 'FARTHEST FIRST IS A SWEEP HOME NOW, NOT A SORT. Chad, on a 14-stop JEFF route re-sequenced Farthest first: \u201cit should be pretty linear from furthest point out to the last but this is jumping all around.\u201d IT WAS A SORT. Farthest first and Closest first both ranked every stop by its crow-flies RADIUS from Buford and by nothing else \u2014 and a radius says nothing about direction. Three towns at about the same distance in three different directions (Canton to the south-west, Tate to the north-east, Ball Ground between them) interleave in a radial sort, so the driver was sent Jasper \u2192 Canton \u2192 Tate \u2192 Ball Ground \u2192 \u2026 \u2192 back out east on 53, and every one of those jumps was road driven twice. WHAT THE WORDS MEAN ON A DOCK: run out to the far end with the load, then deliver on the way home. That is a path whose both ends are already known \u2014 the farthest stop, then the yard \u2014 and the only open question is the order in between. So the far stop is pinned first, the yard is pinned last, and the shortest path between them is found the way Shortest distance finds its order: nearest-neighbour seeds, 2-opt reversals, and or-opt relocations of one to three stops for the straggler a reversal cannot reach, from four starting orders with the shortest kept. Closest first is the same sweep run outward: nearest stop first, farthest stop last. REPORTED TWICE, BECAUSE THIS SAT UNMERGED: the same complaint came back on 2026-09-11 against a 12-stop VICTOR card on the live build \u2014 \u201cthis is not a good route, look at all the bouncing around\u201d \u2014 and the live order was reproduced stop-for-stop from that day\u2019s real board: the radial sort sent the truck to Gardner Metal in the south, then ELEVEN MILES NORTH past six stops, then back down through the ones it had just driven past. Cartersville sits due west of Buford, so every stop on that card was within five miles of the same radius and the sort was ordering them on a number that could not tell them apart. The sweep walks that line once, 5.8 miles shorter, and a test now pins VICTOR\u2019s real coordinates. AND ONE TOWN AT A TIME. Shown what the plain shortest path does with an outlier \u2014 Canton sits nine miles west of the Ball Ground stops, and on paper it is 3.3 miles cheaper to pay for it as a spur from the MIDDLE of Ball Ground than at the end, so the card would have read Ball Ground, Ball Ground, Ball Ground, Canton, Ball Ground \u2014 Chad chose the town: \u201c2 let\u2019s try that and have a way to flip it back if I don\u2019t like the orders it\u2019s putting things in.\u201d So a town is worked in one visit: stops within about two and a half miles of each other are one town (and towns chain, so an industrial belt is one town and a lone customer off the corridor is its own), the towns are ordered as the sweep, and the stops inside each town from where the truck arrives to where it leaves for next. A spur to a lone stop can still happen, because it has to be visited somewhere, but never through the middle of another town. THE WAY BACK IS ONE WORD: SWEEP_MODE in lib/routing-select.js (and its twin in routing-solver.mts) is \u2018towns\u2019; set it to \u2018pure\u2019 and the plain shortest path is back. MEASURED ON A FIXTURE, NOT ON HIS CARD \u2014 the card\u2019s real pins are NuVizz data and are not in the repo, so the test places the JEFF stops by the towns on the card: there the old order was 151 crow-flies miles round trip, the plain shortest path 131, and the town-by-town order 132 \u2014 Ellijay, the three Jasper stops, Tate, out to the pin on 53, then Ball Ground top to bottom, then Canton, then home. Same stop set, same answer, whatever order the card was in when the strategy was picked. THE ENGINE AGREES: a build with FARTHEST_FIRST or CLOSEST_FIRST (routing-solver) runs the identical sweep on its matrix \u2014 read in the driving direction, so a Google road matrix is honoured too \u2014 and a route built there and a card re-sequenced here mean the same thing by the same words. Still straight-line distance on the card, like every client-side re-sequence; and no re-sequence strategy consults receiving windows (none ever did \u2014 the card flags them, and a stop that opens at 9:00a is still the dispatcher\u2019s call to drag). A stop with no map position rides at the end of the list untouched instead of poisoning the arithmetic for the ones that have one. 16 new tests: the JEFF route (far end first, no self-crossing, every town in one visit, beats the old sort by a fifth, within 5% of the plain shortest path and no longer than either order a dispatcher would draw by hand), the switch (\u2018pure\u2019 brings the mid-town spur back, the picker follows the word), Closest first on JEFF (nearest first, Ellijay last, towns whole), towns chaining within the radius either way round on a one-way matrix, the same stops in five shuffled orders giving one answer, two arms at one radius that the sort alternated between on every stop, the Closest-first mirror, unmapped stops kept at the end, two orders at one address kept together, a ring of stops all one distance out, an asymmetric road matrix, and 150 stops \u2014 the selection cap \u2014 in about 60 ms with the same answer every time.'],
   ['1.14.3', 'THE REFRESH BUTTON STOPS LYING, AND THE THING THAT WEDGED THE SCAN HAS A DEADLINE. Chad, 8:01pm: “Manual Refresh button is not working. Timed out and said it wouldn’t update.” WHAT THE LEDGER SAID, read before anything was changed and at zero NuVizz cost: a manual run STARTED at 20:01, recorded ZERO calls, wrote no board and was still open seven minutes later — while every other full run that day finished in 41–72 seconds. It was not refused (no refusal was logged), not the kill switch, not the breaker, not the ceiling (1,855 of 3,000). THE CAUSE, found in the code rather than guessed: `fetch` carried no signal on either the NuVizz path or the Firestore path, so a request the vendor accepted and never answered simply hung — and because a call is counted only AFTER its response returns, the stall was invisible to every counter and log we keep. The function sat there until the platform killed it at fifteen minutes, nothing closed the run row (there is an identical orphan from 09-08), and no board was written. EVERY ROUND-TRIP NOW HAS A DEADLINE: 30 seconds for NuVizz (a whole-day saved-search pull is 10–20s; a vendor silent for thirty is not about to answer), 20 for Firestore, one retry on a stall and no more — because a stall is not a 503, and a scan that finishes with an honest error beats one that hangs: the last good board stays, the failure is recorded, and the next tick tries again in minutes. The deadline is an explicit controller with an ordinary timer, NOT AbortSignal.timeout, whose timer is unref’d and therefore fires only while something else happens to be holding the event loop open — the first cut of this passed its test by hanging, which is exactly the class of bug being fixed. AND THE BUTTON NOW SAYS WHAT IS TRUE, which is the half Chad actually saw. It waited ~60 seconds; the same ledger says a full scan takes 41.4s at best, 49.2s in the middle and 72.3s at worst, so three runs in twenty-two outlast the wait and a WORKING scan reported itself as a failure roughly one press in seven. Worse, every way a press could come to nothing arrived as one sentence — “Scan running — the board will refresh automatically” — whether the scan was running, had been refused, or had died. That sentence is deleted. The board read now serves the scanner’s own run state (one getDoc, and only when the press asks: ?scanRun=1, so the two-minute board poll costs exactly what it did before), and a pure, tested module decides between four outcomes a dispatcher must tell apart: it landed (say nothing), it was refused (the server’s own sentence, verbatim), it is genuinely still running (with the age in it, so “still running” is checkable), or it started and has not finished — in which case the board on screen is as old as its own timestamp says, and it says so. The spinner releases at 80 seconds, past the slowest scan measured, while the poll keeps watching quietly. 16 new tests, including a vendor that never answers.'],
@@ -17553,11 +17554,14 @@ function RouteStatusBadge({ status }) {
 // ＋ New route, as ONE definition. It is drawn in two places — the desktop rail's tab strip and
 // the phone's Routes panel — and a button whose markup is copied is a button whose two copies
 // drift (this repo has shipped that twice: v0.46.8, v1.1.1).
-function NewRouteButton({ onNewRoute, className = '' }) {
+// `compact` drops the LABEL, not the button: the ＋, the tooltip, the colour and a full hit
+// target all stay. It is what the rail header does first when it runs out of room — see
+// railHeaderLayout in lib/right-panel.js for the order things give way in, and why.
+function NewRouteButton({ onNewRoute, compact = false, className = '' }) {
   return (
-    <button onClick={onNewRoute} title="Create a new, empty route on this day's board, then drag orders onto it"
-      className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 shrink-0 ${className}`}>
-      <Plus size={12} /> New route
+    <button onClick={onNewRoute} data-testid="rail-new-route" aria-label="New route" title="Create a new, empty route on this day's board, then drag orders onto it"
+      className={`inline-flex items-center gap-1 text-[11px] font-semibold ${compact ? 'px-1.5' : 'px-2'} py-1 rounded border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 shrink-0 ${className}`}>
+      <Plus size={12} />{compact ? null : <span>New route</span>}
     </button>
   );
 }
@@ -17781,9 +17785,9 @@ function RailSegmentToggle({ tabs, value, setValue, className = '' }) {
 // Unchanged since it shipped, including the absence of a count on Drivers — that roster is
 // fetched only when the tab is first opened, and a number that appears a second after you look
 // at it is worse than no number.
-function RoutesDriversToggle({ subTab, setSubTab, routesCount, className = '' }) {
+function RoutesDriversToggle({ subTab, setSubTab, routesCount, showCounts = true, className = '' }) {
   return <RailSegmentToggle className={className} value={subTab} setValue={setSubTab} tabs={[
-    { key: 'routes', label: `Routes${routesCount ? ` (${routesCount})` : ''}` },
+    { key: 'routes', label: `Routes${showCounts && routesCount ? ` (${routesCount})` : ''}` },
     { key: 'drivers', label: 'Drivers' },
   ]} />;
 }
@@ -17793,10 +17797,10 @@ function RoutesDriversToggle({ subTab, setSubTab, routesCount, className = '' })
 // grid shows, which stays exactly where it is. Both counts ride on the labels because that is
 // what the choice turns on — 65 routes against 106 loads is the shape of how much of the day is
 // still unbuilt.
-function RoutesLoadsToggle({ subTab, setSubTab, routesCount, loadsCount, className = '' }) {
+function RoutesLoadsToggle({ subTab, setSubTab, routesCount, loadsCount, showCounts = true, className = '' }) {
   return <RailSegmentToggle className={className} value={subTab} setValue={setSubTab} tabs={[
-    { key: 'routes', label: `Routes${routesCount ? ` (${routesCount})` : ''}` },
-    { key: 'loads', label: `Loads${loadsCount ? ` (${loadsCount})` : ''}` },
+    { key: 'routes', label: `Routes${showCounts && routesCount ? ` (${routesCount})` : ''}` },
+    { key: 'loads', label: `Loads${showCounts && loadsCount ? ` (${loadsCount})` : ''}` },
   ]} />;
 }
 
@@ -23482,9 +23486,12 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // The strip and the panel under it. One definition, so the phone and the desktop rail can
   // never disagree about which panel a tab opens — they are separate layouts, not separate
   // behaviour, and the two have drifted apart in this app before.
+  // What the header can afford to draw at the rail's CURRENT width. The strip is desktop-only
+  // (the phone renders routesModeBodyEl on its own), so this is one view's rule, not two.
+  const railHeader = railHeaderLayout(rightPanel.width);
   const routesModeToggleEl = rightPanelMode === 'routesLoads'
-    ? <RoutesLoadsToggle subTab={routesLoadsTab} setSubTab={setRoutesLoadsTab} routesCount={routeGroups.length} loadsCount={dayLoadsCount} />
-    : <RoutesDriversToggle subTab={routesSubTab} setSubTab={setRoutesSubTab} routesCount={routeGroups.length} />;
+    ? <RoutesLoadsToggle subTab={routesLoadsTab} setSubTab={setRoutesLoadsTab} routesCount={routeGroups.length} loadsCount={dayLoadsCount} showCounts={railHeader.tabCounts} />
+    : <RoutesDriversToggle subTab={routesSubTab} setSubTab={setRoutesSubTab} routesCount={routeGroups.length} showCounts={railHeader.tabCounts} />;
   const routesModeBodyEl = rightPanelMode === 'routesLoads'
     ? (routesLoadsTab === 'loads' ? dayLoadsPanelEl : routesPanelEl)
     : (routesSubTab === 'drivers'
@@ -23896,10 +23903,25 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
                 "THU, S…" — the board date is already on the grid's own bar below and in the
                 Setup panel, so this was a third copy that fit in none of its space, and giving
                 its room to ＋ New route is what lets the button sit where the tabs are. */}
-            <div className="flex items-center px-3 py-2 border-b shrink-0 gap-2">
-              {routesModeToggleEl}
-              {liveWrite && <NewRouteButton onNewRoute={openNewRoute} />}
-              <button onClick={() => setRightCollapsed(true)} className="ml-auto shrink-0 text-slate-400 hover:text-slate-700" title="Collapse panel"><ChevronRight size={15} /></button>
+            {/* THE CHEVRON IS IN ITS OWN SLOT, and that is the whole of the fix. Chad: "When
+                i squeeze the right panel down to the minimum i lose my collapse button, the
+                other 2 buttons don't shrink like they should." Every child here carried
+                shrink-0, so at the 280px minimum the row wanted 291px of a 255px content box,
+                overflowed, and put the chevron 56px past the panel's edge — off the screen.
+                The control that undoes the squeeze was the one the squeeze destroyed.
+
+                railHeaderLayout (lib/right-panel.js) is what actually fixes it: it decides
+                what the strip draws at this width, dropping the ＋ New route label first and
+                the tab counts second. The min-w-0 group and the chevron's own shrink-0 slot
+                are insurance on top — the guard passes on the rule alone, so they are not
+                load-bearing today; they change what happens WHEN the arithmetic stops being
+                true, from a chevron off the screen to a clipped button the guard catches. */}
+            <div data-testid="rail-routes-header" className="flex items-center px-3 py-2 border-b shrink-0 gap-2">
+              <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
+                {routesModeToggleEl}
+                {liveWrite && <NewRouteButton onNewRoute={openNewRoute} compact={!railHeader.newRouteLabel} />}
+              </div>
+              <button onClick={() => setRightCollapsed(true)} className="shrink-0 text-slate-400 hover:text-slate-700" title="Collapse panel"><ChevronRight size={15} /></button>
             </div>
             {routesModeBodyEl}
           </>

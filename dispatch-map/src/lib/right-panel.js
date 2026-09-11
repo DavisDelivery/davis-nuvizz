@@ -109,3 +109,64 @@ export function resolveRailQuery({ query, onChange, own, setOwn }) {
     setQ: controlled ? (typeof onChange === 'function' ? onChange : () => {}) : setOwn,
   };
 }
+
+// ── WHAT FITS IN THE RAIL'S HEADER STRIP AT A GIVEN WIDTH ───────────────────
+//
+// Chad, with the Routing rail dragged to its narrowest: "When i squeeze the right panel down
+// to the minimum i lose my collapse button, the other 2 buttons don't shrink like they should."
+//
+// MEASURED, NOT REASONED. At the 280px minimum the header has 255px of content box, and it
+// was asking for 291px: the Routes/Loads toggle (162px, more with two-digit counts), ＋ New
+// route (98px), the chevron (15px) and two 8px gaps. Every child carried `shrink-0`, so the
+// row could not compress — it overflowed, and the chevron, last in the DOM and pushed right
+// by ml-auto, ended up 56px PAST the panel's edge and off the screen entirely.
+//
+// WHY THAT PARTICULAR BUTTON IS THE ONE THAT MUST NOT GO. A router squeezes this rail because
+// he wants map: on a 700-stop board the map is the work surface and the rail is reference. So
+// the control the squeeze destroyed is the control that UNDOES the squeeze — the only way out
+// was to drag the rail wide again first, and the collapsed 28px strip became unreachable from
+// the one width a dispatcher is most likely to want it from. That is a trap, not a blemish.
+//
+// THE ORDER THINGS GIVE WAY IN, and why:
+//   1. ＋ New route drops its LABEL first (the ＋ and its tooltip stay, and it stays a full
+//      hit target). Creating a route is an occasional, deliberate act; you go looking for the
+//      button. Worth 70 of the 98px it costs.
+//   2. The tab COUNTS go next. "Loads (87)" is a real dispatch fact — how much of the day is
+//      still unbuilt — so it is given up only when the label itself would otherwise be at
+//      risk, and the counts are still on the panel below.
+//   3. Nothing else. The tabs keep their words (no "Rout…"), and the chevron never moves.
+//
+// THE THRESHOLDS carry margin for three-digit counts, because 102 loads is an ordinary Davis
+// day and "Loads (106)" is wider than the "Loads (87)" that was measured.
+//
+// THE HEADER ALSO CHANGED SHAPE, and the honest account of why: the chevron now sits in its
+// own shrink-0 slot beside a min-w-0 group, so no content in that group can push it anywhere.
+// That is insurance, not the fix — checked both ways, the browser guard passes on THIS RULE
+// ALONE with the old flat row restored, and it passes under 125% and 150% browser zoom too
+// (zoom scales the pixel budget with the text, so the ratio holds). I could not construct a
+// width where the structure is load-bearing today.
+//
+// It stays anyway, because what it changes is the FAILURE MODE. Arithmetic about font metrics
+// is exactly the kind of thing that quietly stops being true — a fourth control in the strip,
+// a longer label, a font swap — and this repo has shipped four collision patches to one phone
+// screen by reasoning about geometry. With the group, being wrong means a clipped button the
+// guard's overflow check catches; without it, being wrong means the chevron leaves the screen
+// and a dispatcher is trapped again.
+export const RAIL_MIN_W = 280;          // useSidePanelWidth's floor for 'routing.rightW'
+export const RAIL_DEFAULT_W = 380;      // and its default — the width the screen opens at
+
+/**
+ * railHeaderLayout(width) → what the Routes/Loads header strip may draw at this rail width.
+ *
+ * A malformed or missing width resolves to the DEFAULT, which shows everything. A width that
+ * cannot be read must never silently strip labels off a dispatcher's controls: that failure
+ * is invisible, and a quietly reduced header looks exactly like a working one.
+ */
+export function railHeaderLayout(width) {
+  const w = Number(width);
+  const px = Number.isFinite(w) && w > 0 ? w : RAIL_DEFAULT_W;
+  return {
+    newRouteLabel: px >= 370,
+    tabCounts: px >= 300,
+  };
+}
