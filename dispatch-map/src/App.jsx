@@ -44,7 +44,7 @@ import { diffRouteStyle, DIFF_ORIGINAL_COLOR, groupDispatchTrips } from './lib/d
 import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -127,7 +127,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '1.14.5';
+const APP_VERSION = '1.15.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -198,6 +198,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.15.0', 'A ROUTE CAN BE SEQUENCED ON REAL DRIVING DISTANCES NOW, BECAUSE A STRAIGHT LINE CANNOT SEE A RIVER. Chad, on a 23-stop JEAN card re-sequenced Shortest distance: \u201cLogic is still not fixed look at this.\u201d HE WAS RIGHT, AND IT WAS NOT THE SEARCH \u2014 measured on his own routes, Shortest distance was already within 0.6% of the best straight-line order there is, so there was nothing left to win by optimising harder. THE MAP IT OPTIMISES ON IS THE PROBLEM. JEAN works both banks of the Chattahoochee, and the order it produced crossed the river FOUR times on legs of half a mile to a mile and a half \u2014 because on a crow-flies map the two banks are neighbours. Against real roads those four legs measured 0.67 mi \u2192 3.76 mi (5.6x), 1.39 \u2192 5.26 (3.8x), 0.82 \u2192 3.03 (3.7x) and 0.50 \u2192 1.51 (3.0x): 3.4 apparent miles that are 13.6 real ones and 33 minutes of driving to reach a bridge and come back. No amount of better searching fixes that. SO THE CARD CAN NOW BE SEQUENCED ON A GOOGLE DRIVING MATRIX. Every strategy \u2014 Shortest distance, Farthest first, Closest first, Loop \u2014 reads the matrix instead of computing straight lines, and on JEAN\u2019s real stops that took Shortest distance from 73.2 real road miles and four river crossings to 68.8 and one. The same functions on a straight-line matrix return byte-identical orders to the ones that shipped yesterday, which is the property that makes this a generalisation rather than a rewrite, and a test pins it on real geometry. IT IS OFF UNTIL YOU TICK IT, because it spends money per re-sequence: the box sits under the dropdown on the card, says what that card will cost (a 23-stop card is about $2.88), and remembers itself per browser. UNTICK IT AND YOU ARE EXACTLY BACK where you were. The straight-line order still lands INSTANTLY on every pick whether the box is ticked or not \u2014 roads only ever replace it a moment later \u2014 so the dropdown never got slower, and a slow, failed or unavailable matrix leaves a working card and says so rather than silently pretending. The server reporting that it fell back to straight lines is treated as a failure, not a success, so the card never claims roads it did not get. A stop the matrix cannot reach (a bad geocode) rides at the end of the list instead of taking the whole card down with it \u2014 that is a pairwise check, because one unreachable address puts a hole in every other stop\u2019s row. 7 new tests, 4,191 green.'],
   ['1.14.5', 'A PIN ON THE ROUTING MAP STOPS OPENING THE ORDER \u2014 PUTTING v1.7.0 BACK, ONE DAY OLD. Chad: \u201ci asked that when i click on a stop it opens the stop and i don\u2019t want that to happen anymore, i don\u2019t want it to open every order i click on when i\u2019m clicking it on the map.\u201d THE LOGISTICS READ IS WHY THE ASK REVERSED SO FAST: a router BUILDS a load by clicking pins \u2014 put this on the truck, show me this route, grab this whole dock \u2014 and on a 700-stop morning that is hundreds of clicks in a rhythm, not a series of questions. A full-height order card on every one of them covers the map, takes the right rail away from the route being tuned, and has to be dismissed before the next click. The card is a READING tool and the pin is a BUILDING tool; asking one click to be both taxes every act of building with the cost of reading. WHAT A PIN DOES NOW is exactly what it did before v1.7.0: a planned pin opens its ROUTE in Compare, a pool pin toggles its whole place into the selection, a saved load stays read-only and silent, select-mode still takes the marker\u2019s POSITION and ninja-add still queues the stop. THE CARD DID NOT GO AWAY, IT WENT BACK TO THE ROWS \u2014 the list row and the bottom grid open the identical panel through the same panelStop state, on desktop and on the phone sheet, so nothing became unreadable. ONE EXCEPTION IS LEFT STANDING ON PURPOSE: paint mode still marks the stop AND opens the card, because \u201cfirst click does both\u201d is an older and separate dispatcher request that predates this change, and painting is one deliberate click at a time rather than the routing rhythm \u2014 say the word and it goes too. THE RULE STAYED A FUNCTION: mapPinClickActions in lib/routing-select.js flipped one expression, the handler holds no policy, and 13 tests mutation-checked three ways \u2014 card creeping back onto every pin, the revert also killing the pin\u2019s routing work, and paint losing its card \u2014 each failing exactly the tests that claim to guard it. Zero NuVizz calls.'],
   ['1.14.4', 'FARTHEST FIRST IS A SWEEP HOME NOW, NOT A SORT. Chad, on a 14-stop JEFF route re-sequenced Farthest first: \u201cit should be pretty linear from furthest point out to the last but this is jumping all around.\u201d IT WAS A SORT. Farthest first and Closest first both ranked every stop by its crow-flies RADIUS from Buford and by nothing else \u2014 and a radius says nothing about direction. Three towns at about the same distance in three different directions (Canton to the south-west, Tate to the north-east, Ball Ground between them) interleave in a radial sort, so the driver was sent Jasper \u2192 Canton \u2192 Tate \u2192 Ball Ground \u2192 \u2026 \u2192 back out east on 53, and every one of those jumps was road driven twice. WHAT THE WORDS MEAN ON A DOCK: run out to the far end with the load, then deliver on the way home. That is a path whose both ends are already known \u2014 the farthest stop, then the yard \u2014 and the only open question is the order in between. So the far stop is pinned first, the yard is pinned last, and the shortest path between them is found the way Shortest distance finds its order: nearest-neighbour seeds, 2-opt reversals, and or-opt relocations of one to three stops for the straggler a reversal cannot reach, from four starting orders with the shortest kept. Closest first is the same sweep run outward: nearest stop first, farthest stop last. REPORTED TWICE, BECAUSE THIS SAT UNMERGED: the same complaint came back on 2026-09-11 against a 12-stop VICTOR card on the live build \u2014 \u201cthis is not a good route, look at all the bouncing around\u201d \u2014 and the live order was reproduced stop-for-stop from that day\u2019s real board: the radial sort sent the truck to Gardner Metal in the south, then ELEVEN MILES NORTH past six stops, then back down through the ones it had just driven past. Cartersville sits due west of Buford, so every stop on that card was within five miles of the same radius and the sort was ordering them on a number that could not tell them apart. The sweep walks that line once, 5.8 miles shorter, and a test now pins VICTOR\u2019s real coordinates. AND ONE TOWN AT A TIME. Shown what the plain shortest path does with an outlier \u2014 Canton sits nine miles west of the Ball Ground stops, and on paper it is 3.3 miles cheaper to pay for it as a spur from the MIDDLE of Ball Ground than at the end, so the card would have read Ball Ground, Ball Ground, Ball Ground, Canton, Ball Ground \u2014 Chad chose the town: \u201c2 let\u2019s try that and have a way to flip it back if I don\u2019t like the orders it\u2019s putting things in.\u201d So a town is worked in one visit: stops within about two and a half miles of each other are one town (and towns chain, so an industrial belt is one town and a lone customer off the corridor is its own), the towns are ordered as the sweep, and the stops inside each town from where the truck arrives to where it leaves for next. A spur to a lone stop can still happen, because it has to be visited somewhere, but never through the middle of another town. THE WAY BACK IS ONE WORD: SWEEP_MODE in lib/routing-select.js (and its twin in routing-solver.mts) is \u2018towns\u2019; set it to \u2018pure\u2019 and the plain shortest path is back. MEASURED ON A FIXTURE, NOT ON HIS CARD \u2014 the card\u2019s real pins are NuVizz data and are not in the repo, so the test places the JEFF stops by the towns on the card: there the old order was 151 crow-flies miles round trip, the plain shortest path 131, and the town-by-town order 132 \u2014 Ellijay, the three Jasper stops, Tate, out to the pin on 53, then Ball Ground top to bottom, then Canton, then home. Same stop set, same answer, whatever order the card was in when the strategy was picked. THE ENGINE AGREES: a build with FARTHEST_FIRST or CLOSEST_FIRST (routing-solver) runs the identical sweep on its matrix \u2014 read in the driving direction, so a Google road matrix is honoured too \u2014 and a route built there and a card re-sequenced here mean the same thing by the same words. Still straight-line distance on the card, like every client-side re-sequence; and no re-sequence strategy consults receiving windows (none ever did \u2014 the card flags them, and a stop that opens at 9:00a is still the dispatcher\u2019s call to drag). A stop with no map position rides at the end of the list untouched instead of poisoning the arithmetic for the ones that have one. 16 new tests: the JEFF route (far end first, no self-crossing, every town in one visit, beats the old sort by a fifth, within 5% of the plain shortest path and no longer than either order a dispatcher would draw by hand), the switch (\u2018pure\u2019 brings the mid-town spur back, the picker follows the word), Closest first on JEFF (nearest first, Ellijay last, towns whole), towns chaining within the radius either way round on a one-way matrix, the same stops in five shuffled orders giving one answer, two arms at one radius that the sort alternated between on every stop, the Closest-first mirror, unmapped stops kept at the end, two orders at one address kept together, a ring of stops all one distance out, an asymmetric road matrix, and 150 stops \u2014 the selection cap \u2014 in about 60 ms with the same answer every time.'],
   ['1.14.3', 'THE REFRESH BUTTON STOPS LYING, AND THE THING THAT WEDGED THE SCAN HAS A DEADLINE. Chad, 8:01pm: “Manual Refresh button is not working. Timed out and said it wouldn’t update.” WHAT THE LEDGER SAID, read before anything was changed and at zero NuVizz cost: a manual run STARTED at 20:01, recorded ZERO calls, wrote no board and was still open seven minutes later — while every other full run that day finished in 41–72 seconds. It was not refused (no refusal was logged), not the kill switch, not the breaker, not the ceiling (1,855 of 3,000). THE CAUSE, found in the code rather than guessed: `fetch` carried no signal on either the NuVizz path or the Firestore path, so a request the vendor accepted and never answered simply hung — and because a call is counted only AFTER its response returns, the stall was invisible to every counter and log we keep. The function sat there until the platform killed it at fifteen minutes, nothing closed the run row (there is an identical orphan from 09-08), and no board was written. EVERY ROUND-TRIP NOW HAS A DEADLINE: 30 seconds for NuVizz (a whole-day saved-search pull is 10–20s; a vendor silent for thirty is not about to answer), 20 for Firestore, one retry on a stall and no more — because a stall is not a 503, and a scan that finishes with an honest error beats one that hangs: the last good board stays, the failure is recorded, and the next tick tries again in minutes. The deadline is an explicit controller with an ordinary timer, NOT AbortSignal.timeout, whose timer is unref’d and therefore fires only while something else happens to be holding the event loop open — the first cut of this passed its test by hanging, which is exactly the class of bug being fixed. AND THE BUTTON NOW SAYS WHAT IS TRUE, which is the half Chad actually saw. It waited ~60 seconds; the same ledger says a full scan takes 41.4s at best, 49.2s in the middle and 72.3s at worst, so three runs in twenty-two outlast the wait and a WORKING scan reported itself as a failure roughly one press in seven. Worse, every way a press could come to nothing arrived as one sentence — “Scan running — the board will refresh automatically” — whether the scan was running, had been refused, or had died. That sentence is deleted. The board read now serves the scanner’s own run state (one getDoc, and only when the press asks: ?scanRun=1, so the two-minute board poll costs exactly what it did before), and a pure, tested module decides between four outcomes a dispatcher must tell apart: it landed (say nothing), it was refused (the server’s own sentence, verbatim), it is genuinely still running (with the age in it, so “still running” is checkable), or it started and has not finished — in which case the board on screen is as old as its own timestamp says, and it says so. The spinner releases at 80 seconds, past the slowest scan measured, while the poll keeps watching quietly. 16 new tests, including a vendor that never answers.'],
@@ -1131,6 +1132,9 @@ const LS_MOBILE_STOP_SORT = 'dispatchMap.mobileStopSort';
 const LS_DRIVER_LABELS = 'dispatchMap.driverLabelsVisible';
 const LS_SEARCH_HISTORY = 'dispatchMap.searchHistory';
 const LS_LEGEND_EXPANDED = 'dispatchMap.legendExpanded';
+// Road-distance re-sequencing is OPT-IN and per browser: it spends Google matrix money, so it
+// must never be on because nobody looked. Unticking it is the whole way back.
+const LS_ROUTE_ROAD_MATRIX = 'dispatchMap.routeRoadMatrix';
 const LS_TABLE_COLUMNS = 'dispatchMap.tableColumns';
 // Saved bottom-panel PROFILES — named snapshots of the grid's bar settings (view,
 // status filter, date window + range, driver, no-location filter, sort). The list now
@@ -18225,7 +18229,7 @@ function PreflightBanner({ pre, isMobile }) {
   );
 }
 
-function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
+function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
   // The live-dispatch UI gate is now the gear toggle (prop) rather than the module-level
   // ?write=1/env const. Aliased to the original name so the gate sites below are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -18361,6 +18365,21 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = 
             <option value="reverse">Reverse</option>
             <option value="loop">Loop — down one side &amp; back (no crossings)</option>
           </select>
+        )}
+        {/* REAL ROADS, OPT-IN. Every strategy above measures straight lines, which cannot see a
+            river: JEAN's Shortest-distance order crossed the Chattahoochee four times on legs
+            of half a mile, each a 3-6x longer drive to reach a bridge. Ticking this re-runs the
+            SAME strategy on Google driving distances. The cost is shown because it is charged
+            per pick, and the straight-line order still lands first either way. */}
+        {!route.collapsed && onToggleRoadMatrix && (
+          <label className="mt-1 flex items-start gap-1.5 text-[10px] text-slate-600 cursor-pointer">
+            <input type="checkbox" className="mt-0.5" checked={roadMatrixOn} onChange={(e) => onToggleRoadMatrix(e.target.checked)} />
+            <span>
+              Use real road distances <b>(costs money)</b>
+              {rows.length > 1 && <> — ≈ ${(((rows.length + 1) ** 2) / 1000 * BASIC_RATE_PER_1K_USD).toFixed(2)} per re-sequence</>}
+              {route.roadSequenced && <span className="ml-1 font-semibold text-green-700">· roads applied</span>}
+            </span>
+          </label>
         )}
         {!route.collapsed && (
           <div className="mt-1 flex items-center justify-between gap-2">
@@ -19242,6 +19261,8 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
             dayKey={dayKey}
             stopById={lookup}
             otherKeys={wbRoutes.map((x) => x.key).filter((k) => k !== r.key)}
+            roadMatrixOn={roadMatrixOn}
+            onToggleRoadMatrix={setRoadMatrixOn}
             ninjaMode={ninjaMode}
             isActive={activeKey === r.key}
             onSetActive={() => onSetActive(r.key)}
@@ -20546,6 +20567,12 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // mutate the board.
   const WB_MAX = 6;
   const [wbRoutes, setWbRoutes] = useState([]);
+  // Sequence a card on REAL DRIVING DISTANCES instead of straight lines. Off by default and
+  // remembered per browser: it spends Google matrix money every time a strategy is picked, so
+  // it may only ever be on because somebody ticked it. Unticking restores the old behaviour
+  // exactly — the straight-line order is still what lands first either way.
+  const [roadMatrixOn, setRoadMatrixOn] = useState(() => safeReadJSON(LS_ROUTE_ROAD_MATRIX, false) === true);
+  useEffect(() => { safeWriteJSON(LS_ROUTE_ROAD_MATRIX, roadMatrixOn); }, [roadMatrixOn]);
   // Every stop id currently STAGED on an open Compare card, mapped to its card key. The map
   // selection tools must not grab these — selecting a staged stop and sending it to another
   // load double-plans it (the save-level guard now refuses, but the selection shouldn't
@@ -20845,13 +20872,52 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     }
     const newOrder = resequence(pts, ROUTING_DEPOT, strategy).map((s) => s.id);
     const resolved = new Set(newOrder);
-    setWbRoutes((prev) => prev.map((x) => {
+    const applyOrder = (ids, suffix) => setWbRoutes((prev) => prev.map((x) => {
       if (x.key !== key) return x;
-      const tail = x.order.map(String).filter((id) => !resolved.has(id));   // never drop unresolvable ids
-      return { ...x, order: [...newOrder, ...tail], strategy };   // remember + show the applied logic
+      const done = new Set(ids);
+      const tail = x.order.map(String).filter((id) => !done.has(id));   // never drop unresolvable ids
+      return { ...x, order: [...ids, ...tail], strategy, roadSequenced: suffix === 'road' };
     }));
+    // The straight-line order lands INSTANTLY, exactly as it always has. Road distances (below)
+    // only ever replace it a moment later — so the dropdown never feels slower than it did, and
+    // a slow or failed matrix leaves a working card rather than an empty one.
+    applyOrder(newOrder, 'crow');
     setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy}`);
-  }, [wbRoutes, stopById]);
+
+    // ── REAL ROAD DISTANCES (opt-in) ──────────────────────────────────────────────────────
+    // Chad, on a 23-stop JEAN card sequenced Shortest distance: "Logic is still not fixed."
+    // It was not the search — that order was already within 0.6% of the best straight-line
+    // one. The straight line is the problem: JEAN works both banks of the Chattahoochee, and
+    // the order crossed the river FOUR times on legs of half a mile to a mile and a half, each
+    // of them a 3-6x longer real drive to reach a bridge. Sequencing the SAME strategy on a
+    // driving matrix cut it to one crossing and 4.4 road miles on the stops we could measure.
+    // Off by default because it spends money per re-sequence; the tick box shows what.
+    if (!roadMatrixOn || strategy === 'reverse') return;
+    const stopsForMatrix = pts.map((s) => ({ lat: s.lat, lng: s.lng }));
+    (async () => {
+      try {
+        const resp = await apiFetch('/.netlify/functions/google-route-matrix', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ depot: ROUTING_DEPOT, stops: stopsForMatrix, mode: 'google' }),
+        });
+        const j = await resp.json();
+        const cost = j?.matrix?.distanceMeters;
+        // `source` is the server telling us what it ACTUALLY used. It falls back to haversine
+        // when the key is missing or Google errors, and re-sequencing on that would just redo
+        // the order we already applied while claiming roads — an intent reported as an outcome.
+        if (j?.source !== 'google' || !Array.isArray(cost) || cost.length !== pts.length + 1) {
+          setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} — road distances unavailable, straight-line order kept`);
+          return;
+        }
+        const roadOrder = resequenceOnMatrix(pts, cost, strategy).map((s) => s.id);
+        applyOrder(roadOrder, 'road');
+        setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} · real road distances`);
+      } catch (e) {
+        setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy} — road distances failed (${String(e?.message || e).slice(0, 60)}), straight-line order kept`);
+      }
+    })();
+  }, [wbRoutes, stopById, roadMatrixOn]);
   const wbMoveStop = useCallback((fromKey, stopNbr, toKey) => {
     if (!toKey || fromKey === toKey) return;
     const id = String(stopNbr);
