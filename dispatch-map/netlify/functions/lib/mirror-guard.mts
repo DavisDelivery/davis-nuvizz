@@ -49,41 +49,23 @@ export function isMirrorDeploy(env: Record<string, any> = process.env): boolean 
 }
 
 /**
- * MAY THIS MIRROR SCAN ITS OWN TENANT? Default NO — and that default is the point.
+ * WHY scanning is off, in one word, or null when it is on.
  *
- * isMirrorDeploy() shut reads on every mirror (Chad, 2026-09-03: "I do not want uat running
- * scans cut it off", after the UAT site quietly spent 109 NuVizz calls in a day). Keying that
- * on FIRESTORE_DATABASE rather than on a flag means a NEW mirror is born silent instead of
- * scanning until somebody notices the bill, and that stays exactly true.
+ * A MIRROR NEVER SCANS, and that is settled (Chad, 2026-09-03: "I do not want uat running
+ * scans cut it off", after the UAT site quietly spent 109 NuVizz calls in a day; and again
+ * 2026-09-10: "we need to use firestore to see what data/orders are put into system daily so
+ * we are not running scans"). isMirrorDeploy() keys on FIRESTORE_DATABASE rather than on a
+ * flag precisely so a NEW mirror is born silent instead of scanning until somebody notices
+ * the bill. Nothing here re-opens that; the UAT board gets its day from production's
+ * Firestore (lib/prod-pool.mts) and its orders from a deliberate seed, not from discovery.
  *
- * But it also made the UAT site useless as a TEST board, and not obviously: writes are on
- * there (NUVIZZ_WRITE_ENABLED=true, the DAVISV5 tenant, its own uat-mirror database), so you
- * can send to NuVizz UAT all day — you just cannot SEE anything to send, because nothing may
- * index the tenant. A dispatcher cannot test building a route with no orders on the board.
- *
- * So a mirror may now be told, deliberately and per-deploy, to scan the tenant it is pointed
- * at. NUVIZZ_MIRROR_SCANS=on is the whole switch. Three properties make it safe:
- *   • PRODUCTION CANNOT READ IT. isMirrorDeploy() is false there (FIRESTORE_DATABASE unset),
- *     so the flag is inert on the production site no matter what anyone sets.
- *   • IT ONLY RE-OPENS THE MIRROR'S OWN TENANT. The mirror's NUVIZZ_BASE_URL is the UAT host;
- *     a scan it runs can only reach what that host holds.
- *   • THE P0 KILL SWITCH STILL WINS. NUVIZZ_SCANS_ENABLED=false is checked AFTER this and
- *     still shuts everything — the runaway brake must not be overridable by a convenience.
- */
-export function mirrorScansAllowed(env: Record<string, any> = process.env): boolean {
-  if (!isMirrorDeploy(env)) return false;
-  return /^(1|true|on|yes)$/i.test(String(env.NUVIZZ_MIRROR_SCANS ?? '').trim());
-}
-
-/**
- * WHY scanning is off, in one word, or null when it is on. There are three different reasons
- * and the board showed the same blank screen for all of them — the UAT site reported
- * `scansEnabled: false` for a week with no way to tell "a mirror may not scan" from "somebody
- * pulled the kill switch". Same rule as every other diagnostic here: an unexplained refusal
- * costs more than the thing it refused.
+ * What this adds is only the REASON. Three different things can shut scanning and the board
+ * showed the same blank screen for all of them — the UAT site read `scansEnabled: false` for
+ * a week with no way to tell "a mirror may not scan" from "somebody pulled the kill switch".
+ * An unexplained refusal costs more than the thing it refused.
  */
 export function scanBlockReason(env: Record<string, any> = process.env): 'mirror' | 'kill-switch' | null {
-  if (isMirrorDeploy(env) && !mirrorScansAllowed(env)) return 'mirror';
+  if (isMirrorDeploy(env)) return 'mirror';
   if (String(env.NUVIZZ_SCANS_ENABLED ?? '').trim().toLowerCase() === 'false') return 'kill-switch';
   return null;
 }

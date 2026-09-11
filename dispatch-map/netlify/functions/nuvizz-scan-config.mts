@@ -21,7 +21,7 @@ import { refileReadCap, frozenCopyDepth } from './lib/refresh-stops-core.mts';
 import { SATURDAY_HEAL_HOUR } from './lib/scan-schedule.mts';
 import { requireUser } from './lib/require-user.mts';
 import { readBackgroundRefusals } from './lib/background-gate.mts';
-import { isMirrorDeploy, mirrorScansAllowed, scanBlockReason, firestoreDatabaseName } from './lib/mirror-guard.mts';
+import { isMirrorDeploy, scanBlockReason, firestoreDatabaseName } from './lib/mirror-guard.mts';
 import { clampScanConfig, effectiveScanConfig, scanConfigDefaults, SCAN_CONFIG_BOUNDS, scanDecision } from './lib/scan-schedule.mts';
 import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip, scanPath } from './lib/scan-plan.mts';
 import { attributeSpend } from './lib/scan-attribution.mts';
@@ -162,7 +162,7 @@ async function explain(): Promise<any> {
       env: String(process.env.NUVIZZ_SCANS_ENABLED ?? '').toLowerCase() === 'false',
       config: (cfg as any)?.scansEnabled === false,
       reason: scanBlockReason(),
-      mirror: { is: isMirrorDeploy(), database: firestoreDatabaseName(), scansAllowed: mirrorScansAllowed() },
+      mirror: { is: isMirrorDeploy(), database: firestoreDatabaseName() },
     },
     frozen: {
       pool: poolMeta ? { at: poolMeta.at, ageMin: ageMin(poolMeta.at), count: poolMeta.count, thin: poolMeta.thin, windowStart: poolMeta.windowStart, windowEnd: poolMeta.windowEnd } : null,
