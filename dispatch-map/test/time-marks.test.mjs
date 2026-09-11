@@ -141,7 +141,9 @@ test('the keys are declared most-binding first', () => {
     // The both-edges mark sits ABOVE the one-edge mark it splits off, in each pair: a stop
     // that has to land inside a box is more binding than one that merely starts late, and a
     // dawn dock with a three o'clock close is more binding than one with no close at all.
-    'hours_narrow_window', 'hours_opens_late',
+    // hours_runs_late sits between them: it constrains more than a bare late open (it names
+    // where in the day the stop belongs) and less than a window pinched at both ends.
+    'hours_narrow_window', 'hours_runs_late', 'hours_opens_late',
     'hours_runs_early', 'hours_extra_room',
   ]);
   assert.ok(SHUTS_EARLY_BEFORE < EARLY_CLOSE_BEFORE);

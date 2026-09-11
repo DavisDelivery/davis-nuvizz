@@ -29,6 +29,7 @@
 //   hours_shuts_early  the dock shuts by noon, or barely opens. First stop or nothing.
 //   hours_early_close  shuts before 3pm. A deadline inside the working day.
 //   hours_narrow_window opens 9am+ AND shuts before 5pm. It has to land mid-day.
+//   hours_runs_late    opens 9am+ AND still open at 6pm. The stop to push to the END.
 //   hours_opens_late   not open until 9am. Cannot lead a route.
 //   hours_runs_early   open by 6:30am AND shut before 5pm. Go at dawn; there is no slack.
 //   hours_extra_room   open by 6:30am or past 6pm. The one mark that is good news.
@@ -77,6 +78,7 @@ export const TIER_LABEL = {
   hours_shuts_early: 'Shuts early',
   hours_early_close: 'Early close',
   hours_narrow_window: 'Narrow window',
+  hours_runs_late: 'Runs late',
   hours_opens_late: 'Opens late',
   hours_runs_early: 'Runs early',
   hours_extra_room: 'Extra room',
