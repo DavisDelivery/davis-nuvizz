@@ -19,7 +19,7 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe } from 'lucide-react';
+  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
   query, orderBy, limit, updateDoc, deleteDoc,
@@ -80,6 +80,8 @@ import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerC
 import { cancelsIn, cancelSummary } from './lib/cancel-guard.js';
 import { validateNewRoute, resolveRouteOrigin, originLine, newRouteSeed, newRouteSeedNote } from './lib/route-create.js';
 import { clipForToast } from './lib/write-error.js';
+import UatBench from './components/UatBench.jsx';
+import { isUatHost } from './lib/mirror-site.js';
 import { mergeDayLoads, splitDayLoads } from './lib/day-loads.js';
 import { flagProvenance, provenanceLine } from './lib/flag-provenance.js';
 import { deliveredWhen } from './lib/delivered-when.js';
@@ -129,7 +131,14 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '1.17.2';
+// THE UAT TEST BENCH IS MOUNTED ONLY ON A UAT HOST. Keyed on the hostname rather than a
+// build variable for the reason mirror-site.js gives: a variable is a thing somebody has to
+// remember, and forgetting it here would put a bench that writes NuVizz orders on the
+// production board — the dangerous direction. The URL cannot be forgotten. Computed once so
+// the desktop nav, the phone menu and the router can never disagree about it.
+const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
+
+const APP_VERSION = '1.18.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -200,6 +209,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.18.0', 'THE UAT TEST BENCH IS A SCREEN NOW — PICK THE ORDERS A SCENARIO NEEDS AND SEND ONLY THOSE. Chad, asked how he wanted to choose them, picked a checkbox list of production\u2019s day; asked about teardown, picked clear-on-request. Both are what shipped. WHAT IT DOES. The UAT board gets a “UAT test bench” screen that reads PRODUCTION\u2019S DAY out of Firestore — every order it scanned, with its address, its geocoded pin, its delivery window and its freight — and lists it with checkboxes. Filter by customer, city, zip or order number; tick the fourteen a route test needs; press Seed and ONLY those fourteen are created in the DAVISV5 tenant, with the UAT board filled in directly because a mirror never scans. Clear cancels them when you are done, unplanning them off the test route first. EVERY BUTTON SAYS WHAT IT COSTS BEFORE YOU PRESS IT. The order list and Preview are marked “0 calls” because they read Firestore and nothing else; Seed says how many NuVizz calls the current selection is; Clear names the number it will cancel and says production is not touched. A bench whose cost is invisible gets used carelessly on the one tenant where careless is cheap — right up until somebody points it at the wrong one, which is why the screen also prints the NuVizz host and company code it is about to write to, in the header, at all times. PREVIEW SHOWS THE EXACT JSON. Not a summary of it — the literal body each order would be POSTed as, expandable, before a single call is spent. NOTHING IS CLAIMED THAT WAS NOT OBSERVED. The result renders what the server actually reported: which orders were created, which it refused and why, which were skipped and why, and the per-order warnings (“this one has no delivery window on the board, so the copy cannot test a deadline”). An order the server refused is shown as refused, with its reason, never folded into a count. WHERE IT CAN APPEAR, AND WHY THAT IS THE HOSTNAME. The screen mounts only on a UAT host — keyed on the URL rather than a build variable, for the reason the mirror guard already gives: a variable is a thing somebody has to remember, and forgetting THIS one would put a screen that writes NuVizz orders onto the production board. The URL cannot be forgotten, and it fails in the safe direction. The endpoint refuses independently on FIRESTORE_DATABASE, so the screen is the courtesy check and not the safety one. IT EXISTS ON A PHONE TOO, and that is a test rather than a promise: a desktop table (picking fourteen of eight hundred is a scanning job and rows scan best) and a separate stacked-card list for the phone, both gated by one shared answer so the two navigations and the router cannot disagree. This repo has shipped a screen visible on a laptop and invisible on a phone twice; the phone menu carries a note saying so. PUTTING IT BACK is one revert: this adds a screen and changes nothing that already worked, so there is no switch to find — the commit is the switch. Production cannot see it either way. STILL NEEDED ON THE UAT SITE before a seed can reach NuVizz at all: MIRROR_ALLOW_OUTBOUND=nuvizz-write. Deliberate, and Chad\u2019s to set.'],
   ['1.17.2', 'THE DRIVER CAPTURE SHIPPED INERT, AND THE ONE LINE THAT BROKE IT WAS A RULE THIS REPO HAD ALREADY LEARNED. Chad, the morning after v1.10.0: \u201cloads that have drivers already assigned to them are still not showing.\u201d He was right, and the receipt was already on disk \u2014 ?explain=1 read back \u201c105 of 105 row(s) kept \u2026 drivers: 0\u201d for Sep 10 and \u201c102 of 102 kept \u2026 drivers: 0\u201d for Sep 11, beside the note it was built to print: NOT ONE load carries a driver, suspect the saved search has lost its Driver Name column. Every row parsed perfectly and every driver came out empty, which is the single most useful shape a bug can have. THE COLUMN WAS NEVER LOST \u2014 IT WAS REFUSED. The stored 2026-09-02 column dump names it exactly: key `driver.driverId`, label `Driver Name`, values `Brent Dixon`, `Trevor Seyers`, `Sirdedrick  Sheats`. NuVizz keys the driver\u2019s NAME under driverId. v1.10.0\u2019s avoid-list carried `driverid` to keep an ObjectId off the board, so it threw out the only column that had the answer before a single value was looked at. AND THE REPO ALREADY KNEW. nuvizz-list.mts has read route.driver.driverId as a NAME candidate since #254 \u2014 \u2018in some saved searches route.driver.driverId carries the human name\u2019 \u2014 and settles it with firstNonHashName, BY VALUE. Excluding id-ish columns by NAME was re-deciding from first principles a question this codebase had already answered off a live board, and getting it backwards. SO THE VALUE DECIDES, NOT THE KEY: every column mentioning a driver is a candidate, name-labelled ones asked first, and the first whose value survives cleanDriverName wins. The guards that matter are unchanged \u2014 a real ObjectId is still refused (#254\u2019s other half), so is the \u2018Enter driver name\u2019 placeholder and a load number. WHAT THE AVOID-LIST KEEPS is only what no value guard can catch: a \u2018Driver Status\u2019 of ON_DUTY and a \u2018Driver Phone\u2019 are perfectly plausible strings, and would have gone to the board as a person\u2019s name. THE FIXTURE CAME OFF THE WIRE THIS TIME. The new test carries all 21 real columns and three real rows verbatim from the stored dump rather than a shape I imagined \u2014 which is the actual lesson, since v1.10.0\u2019s tests were green, thorough, and all agreed with each other about a grid that does not exist. Checked both ways: the new test fails on the shipped code with \u2018the driver comes through, even though the column is keyed driverId\u2019 and passes on the fix. 5 new tests.'],
   ['1.17.1', 'AUTO-MERGE STOPPED CRYING WOLF: A VERSION-BUMP CONFLICT IS NOT A BUILD FAILURE. Chad, on an inbox full of red: “look at all the prs that have failed recently.” They had not. In the 41 hours to 03:09 UTC on 11 Sep the repo logged 18 red runs, and ELEVEN were one thing — the auto-merge job calling `gh pr merge` on a PR that was not mergeable yet. Every one of those eleven conflicts was in APP_VERSION and the newest VERSION_LOG row. NOT ONE was in feature code: several agents work different problems in parallel, each bumps the version against the main it started from, whichever lands first moves both lines, and the rest are conflicted on the version alone. That is self-healing — rebase, CI goes green, this job merges it — and the comment in the workflow ALREADY SAID SO (“that’s fine — the next green CI run on the branch will retry”). It failed the job anyway, so GitHub mailed “Run failed: auto-merge” each time, roughly one in four runs that did any work, burying the 7 REAL test failures in the same red pile. An alert that is usually wrong teaches you to stop reading the channel and takes the true ones with it. Now the two not-mergeable messages exit 0 and the run says what happened in a ::notice:: and the job summary — a green run that did not merge still reports it, rather than an intent dressed as an outcome. Every OTHER failure (bad token, revoked permission, branch protection, API outage) still goes red, because none of those fix themselves. Version numbers and the changelog rule are untouched.'],
   ['1.17.0', 'THE UAT BENCH GOT AN ADVERSARIAL REVIEW AND IT FOUND SIX BLOCKING HOLES — HERE ARE THE ONES THAT MATTERED. (1) NOTHING CHECKED WHICH NUVIZZ TENANT THE BENCH WRITES TO. The mirror gate keys on FIRESTORE_DATABASE and the outbound grant is a flag; neither says a word about the TENANT, and NUVIZZ_BASE_URL and NUVIZZ_DAVIS_COMPANY_CODE both DEFAULT TO PRODUCTION when unset — while a mirror is built by copying production’s env. So: set the two mirror variables, forget to re-point the NuVizz ones, and every gate passes while the bench creates test orders on the LIVE dispatch board and then issues real cancels against them. unsafeWriteTarget() now refuses unless the host is uat.nuvizz.com AND the company code is not DAVIS, and it FAILS CLOSED — an unset variable defaults to production, so “I could not tell” reads as NO. The repo already had the mirror image of this guard (a UAT-pointed deploy refusing the default database); it was missing the direction that cancels things. (2) A GET COULD CLEAR THE BENCH. `op` arrives in the query string, clear needs no body, and the date defaults to today — so an &lt;img src&gt; on any page, a link preview or a browser prefetch would have cancelled the day’s bench, and requireUser is inert until AUTH_REQUIRED is set, which the UAT site is least likely to have on. Anything that writes is POST-or-405 now, checked before any op runs. (3) A HALF-FINISHED SEED LEFT ORDERS NOTHING COULD EVER CLEAR. The ledger was written LAST, after the whole loop; Netlify’s budget is ~10s and a create is ~1s, so a 30-order seed would be killed with orders already in the tenant, no ledger row and no board row — findable only by hand in the portal. The ledger now records INTENT BEFORE each create, one document per order rather than one array per day (two people on the bench would otherwise lose each other’s writes), keyed by TENANT not by date — the UAT order number carries no date, so a day-scoped ledger let one day’s clear cancel an order another day’s bench was using. A create that answers 5xx keeps its row, marked, because NuVizz has been seen accepting a write and reporting failure. Cap is 25, not 60. (4) THE CLEAR COULD NOT UNDO THE ONE TEST THE BENCH EXISTS FOR. NuVizz refuses to cancel a stop that is on a load, and building a route is precisely what puts every seeded order on one — so after the first successful run the teardown cancelled nothing and the remedy was unplanning fourteen orders by hand, which is the work this thing was built to replace. Clear now unplans first, then cancels, and is driven off the LEDGER rather than the board so an order with no board row is reachable at all. (5) THE WINDOW ONLY HALF-RODE. A row the scan enriched late carries an estimated ARRIVAL as scheduledFrom and no close at all; pairing that with the builder’s 17:00 sent NuVizz 18:30 → 17:00 — an inverted window, on the one field the bench exists to reproduce, with no warning. Both ends, in order, or neither. (6) trimOpRecord COULD NOT SAVE THE ROW IT EXISTS TO SAVE. It nulled two 8 KB captures, but firstError no longer truncates (deliberately), so a megabyte of vendor XML arrives in `error`: a 3 MB record stayed 3 MB, setDoc threw, the catch swallowed it, and the Save vanished from the ledger — the exact failure that function was added to prevent, reintroduced by the change that fixed the truncation. Every long string now gives way, saying so, and if the row still does not fit the RESULT is dropped and the row kept, because a Save that is invisible is the thing being prevented. The 8 KB capture cut says it was cut, too. ALSO: the seeded board no longer stamps a last_scanned_at for a scan that never ran, and a pre-existing DATE BOMB on main is defused — a twin-merge test pinned to ‘2026-09-10’ went red for everyone at midnight ET, because a live route-assigned row is clamped to TODAY by the rollover rule. The day is derived from the clock now; verified it still goes red when the v1.4.0 twin rule is regressed.'],
@@ -9868,6 +9878,18 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                 >
                   <Flag size={12} /> Flag history
                 </button>
+                {/* UAT only — and here BECAUSE of the note above: dispatch runs on a phone,
+                    and a screen added to one navigation and not the other is a screen that
+                    does not exist on a phone. */}
+                {BENCH_ON && (
+                  <button
+                    className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+                    onClick={() => onSelectMenu('uatbench')}
+                    role="menuitem"
+                  >
+                    <Beaker size={12} /> UAT test bench
+                  </button>
+                )}
                 {/* Diagnostics and Debug moved UNDER More (Chad, v0.54.82). Both are
                     tools for looking into the app rather than screens for running the
                     day, and they were sitting between the dispatcher and the Map. */}
@@ -26272,7 +26294,7 @@ function Shell() {
     // named here or the phone menu silently opens the map instead — which is what
     // happened to Manifest check in v0.54.48: the desktop nav had it, the chip
     // menu did not, and there was no way to reach it from a phone at all.
-    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory'];
+    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'uatbench'];
     setTab(next === 'diagnostics' ? 'diag' : KNOWN.includes(next) ? next : 'map');
   };
 
@@ -26388,6 +26410,11 @@ function Shell() {
                 { id: 'flaghistory', label: 'Flag history', hint: 'Every flag, and what happened to it', icon: <Flag size={14} /> },
                 { id: 'diag', label: 'Diagnostics', hint: 'Scan health, API calls, schedule', icon: <Activity size={14} /> },
                 { id: 'debug', label: 'Debug this view', hint: 'Bundle what you are looking at', icon: <Bug size={14} /> },
+                // UAT ONLY, keyed on the HOSTNAME — the one fact about a deploy nobody can
+                // forget to set, and it fails in the safe direction: a production host never
+                // shows it. The endpoint refuses independently on FIRESTORE_DATABASE, so this
+                // is the courtesy check and not the safety one.
+                ...(BENCH_ON ? [{ id: 'uatbench', label: 'UAT test bench', hint: "Seed production's orders into UAT", icon: <Beaker size={14} /> }] : []),
               ]}
             />
           </div>
@@ -26400,7 +26427,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} sendDenied={smsGate.reason} />}
