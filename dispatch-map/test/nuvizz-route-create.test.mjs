@@ -141,14 +141,19 @@ test('the create body carries the header + EXACTLY the sanitized PlanStop refere
   const flat = JSON.stringify(body);
   assert.ok(!/"stops"/.test(flat), 'no stops VALUE node at any depth');
   assert.ok(!/"X"|"Y"/.test(flat), 'caller-passed stop junk never reaches the wire');
-  // The references are the card's orders IN CARD ORDER, seq 1..N, shape pinned to the schema.
+  // The references are the card's orders IN CARD ORDER, shape pinned to the schema. seq
+  // numbers the route's LEGS, not the stops: 3 orders are SIX legs, from-legs 1..3 then
+  // to-legs 4..6. This assertion used to read `ref.to.seq === i + 1` — from.seq === to.seq —
+  // which is the defect that answered a 500 on Sep 9 and Sep 10 (see the §R comment block).
   assert.equal(body.route.planStops.length, 3);
   body.route.planStops.forEach((ref, i) => {
     assert.deepEqual(Object.keys(ref).sort(), ['from', 'stopNbr', 'to']);
     assert.equal(ref.stopNbr, NBRS[i]);
     assert.equal(ref.from.seq, i + 1);
-    assert.equal(ref.to.seq, i + 1);
+    assert.equal(ref.to.seq, 3 + i + 1);
   });
+  const legs = body.route.planStops.flatMap((p) => [p.from.seq, p.to.seq]);
+  assert.equal(new Set(legs).size, 6, 'every leg gets its OWN number — a tie is what NuVizz 500s on');
   assert.deepEqual(body.route.planStops[0].to.schedule, { timeFrom: '2026-07-31T10:00:00', timeTo: '2026-07-31T17:00:00' });
   // And the header is the proven shape.
   const h = body.route.loadHeader;
@@ -166,13 +171,32 @@ test('schedule junk off the echoed record is stripped to the schema keys — not
     stopNbr: '007155216',
     fromSchedule: { timeFrom: '2026-07-31T08:00:00', address: { addr1: '1 Rd' }, latitude: 34.1, weight: 500 },
     toSchedule: { timeConstraint: 'PREFERRED', totalCartons: 9, exec: { status: 'X' } },
-  }, 4);
+  }, 4, 9);
   assert.deepEqual(ref.from, { seq: 4, schedule: { timeFrom: '2026-07-31T08:00:00' } });
-  assert.deepEqual(ref.to, { seq: 4, schedule: { timeConstraint: 'PREFERRED' } });
+  assert.deepEqual(ref.to, { seq: 9, schedule: { timeConstraint: 'PREFERRED' } });
   // A record with no schedule at all still builds — {} is valid per the Schedule schema.
   const bare = buildPlanStopRef({ stopNbr: '007155216' });
   assert.deepEqual(bare.from, { seq: 1, schedule: {} });
-  assert.deepEqual(bare.to, { seq: 1, schedule: {} });
+  assert.deepEqual(bare.to, { seq: 2, schedule: {} });
+});
+
+test('a stop whose NuVizz record hands back a non-contract window never rides the create', () => {
+  // §I learned this on the import path in July and wrote it down: "an epoch number from a raw
+  // read must never be echoed". planStops was echoing raw stop/info values with no such guard,
+  // so an epoch, a millis/offset suffix or a bare date went straight onto the wire — and a Java
+  // worker that binds one of those into a yyyy-MM-ddTHH:mm:ss field dies INSIDE the worker,
+  // which is the shape of the answer we got (Status 99, no coded reason).
+  for (const bad of ['08:00', '2026-09-10', 1757520000000, { $date: 1 }, null, '']) {
+    const ref = buildPlanStopRef({ stopNbr: '007155216', toSchedule: { timeFrom: bad, timeTo: bad, timeConstraint: 'PREFERRED' } }, 1, 2);
+    assert.deepEqual(ref.to.schedule, { timeConstraint: 'PREFERRED' }, `a ${typeof bad} window (${JSON.stringify(bad)}) is DROPPED, never echoed`);
+  }
+  // A millis/offset suffix is truncated to the proven 19-char form rather than dropped —
+  // the window is real, only its shape is wrong. Same rule the import header applies.
+  const ok = buildPlanStopRef({ stopNbr: '007155216', toSchedule: { timeFrom: '2026-09-10T12:00:00.000+0000', timeTo: '2026-09-10T17:00:00' } }, 1, 2);
+  assert.deepEqual(ok.to.schedule, { timeFrom: '2026-09-10T12:00:00', timeTo: '2026-09-10T17:00:00' });
+  // And the two keys this repo's own audit ruled unproven are not sent at all.
+  const narrowed = buildPlanStopRef({ stopNbr: '007155216', toSchedule: { srvcTimeCode: 'SRVC01', estimatedDuration: 20, timeZone: 'EST' } }, 1, 2);
+  assert.deepEqual(narrowed.to.schedule, { timeZone: 'EST' }, 'srvcTimeCode/estimatedDuration are unproven — no upside, so never echoed');
 });
 
 test('the built REQUEST targets routePlan/update and carries the references, not a stops node', () => {
@@ -400,6 +424,34 @@ test('a rejected write reports the failure and never claims a route', async () =
   assert.equal(r.ok, false);
   assert.ok(!r.loadId, 'no route id is invented on a rejection');
   assert.match(r.error, /createRoute:/);
+});
+
+test('THE SEP 10 RECEIPT: a rejected create journals what we SENT and NuVizz\'s verbatim answer', async () => {
+  // When "Steven Adjenty" failed, nothing anywhere held either half. fireSingle built the
+  // request, fired it, parsed the reply and dropped BOTH — so the write ledger stored a
+  // 300-character fragment and the JSON we POSTed existed nowhere at all. The diagnosis had
+  // to be inferred from the vendor's spec instead of read off the wire. Failures only: a
+  // successful Save must not start hauling payloads into Firestore.
+  const vendor = { error: 'Internal Server Error', message: '<DeliverItLoadResponse><Status>99</Status><Errors class="java.util.ArrayList"><Error>SEQ_TIE</Error></Errors></DeliverItLoadResponse>' };
+  const { requester } = makeRequester({
+    createAnswer: () => new Response(JSON.stringify(vendor), { status: 500 }),
+  });
+  const r = await runNewRoute(requester, { ...OK_PAYLOAD, pacing: NOW_PACING }, CREDS);
+  assert.equal(r.ok, false);
+  const step = r.steps.find((st) => st.op === 'createRoute');
+  assert.ok(step, 'the create step is journaled');
+  assert.ok(step.result.rawBody.includes('SEQ_TIE'), 'NuVizz\'s own words are kept, whole');
+  const sent = JSON.parse(step.result.sentBody);
+  assert.equal(sent.route.planStops.length, NBRS.length, 'and the exact body we POSTed is kept');
+  assert.deepEqual(sent.route.planStops.map((p) => p.to.seq), [4, 5, 6], 'so the next failure can be read, not inferred');
+  assert.ok(!/Basic |authorization/i.test(JSON.stringify(step.result)), 'never the auth header');
+
+  // A create NuVizz accepts journals no payload — this is forensics, not a firehose.
+  const okRun = await runNewRoute(makeRequester({
+    onCreate: (body, state) => { state[body.route.loadHeader.loadNbr] = { loadId: 'ffee0011', routeName: 'TRAILER 6', stops: NBRS }; },
+  }).requester, { ...OK_PAYLOAD, pacing: NOW_PACING }, CREDS);
+  assert.equal(okRun.ok, true);
+  assert.equal(okRun.steps.find((st) => st.op === 'createRoute').result.sentBody, undefined);
 });
 
 test('the emergency brake is DEFAULT-ON and kills the path when flipped', async () => {

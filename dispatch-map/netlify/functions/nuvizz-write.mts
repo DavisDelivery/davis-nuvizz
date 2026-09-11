@@ -25,7 +25,7 @@
 //   • The response always reports `tenant` + `live` so the UI banner shows PROD vs the
 //     write-enabled state. No NuVizz creds ever reach the browser (this fn is the proxy).
 
-import { WRITE_OPS, MUTATING_OPS, hoistResultError, type WriteOp } from './lib/nuvizz-write-ops.mts';
+import { WRITE_OPS, MUTATING_OPS, hoistResultError, buildOpRequest, type WriteOp } from './lib/nuvizz-write-ops.mts';
 import { requireUser } from './lib/require-user.mts';
 import { runOp, resolveWriteCreds, loadImportBlocked } from './lib/nuvizz-write.mts';
 import { rwbEngineBlocked } from './lib/nuvizz-rwb.mts';
@@ -115,10 +115,16 @@ function planFor(op: WriteOp, payload: any): string[] {
     });
   }
   if (op === 'newRoute') {
+    // "HEADER ONLY (no stops in the payload)" stood here for five weeks after it stopped
+    // being true — the create has carried planStops since Aug 3, when the live tenant refused
+    // a stopless route (reason 903). The one surface that says what this op is about to do
+    // was describing a payload the code no longer builds.
+    const n = Array.isArray(payload?.orderedStopNbrs) ? payload.orderedStopNbrs.length : (payload?.seedStopNbr ? 1 : 0);
     return [
-      `CHECK load ${payload?.loadNbr ?? '?'} is free (must read 404 — an existing number is refused, never overwritten)`,
-      `CREATE empty route "${payload?.routeName ?? payload?.loadNbr ?? '?'}" for ${payload?.date ?? '(no date)'} — routePlan/update, HEADER ONLY (no stops in the payload)`,
-      'VERIFY by reading the load back (the ack is async) and confirm the route NAME landed',
+      `CHECK load ${payload?.loadNbr ?? '?'} is free (must read absent — an existing number is refused, never overwritten)`,
+      `READ all ${n} order(s) on the card — each must be readable, UNPLANNED and unexecuted, or the WHOLE create is refused`,
+      `CREATE route "${payload?.routeName ?? payload?.loadNbr ?? '?'}" for ${payload?.date ?? '(no date)'} — routePlan/update with the header + ${n} PlanStop REFERENCE(s) in card order, as ${2 * n} legs (from-legs 1..${n}, to-legs ${n + 1}..${2 * n})`,
+      'VERIFY by reading the load back (the ack is async) — the route NAME landed AND every order rides it',
     ];
   }
   // The three single-order partialUpdate ops all run the same ladder, and it is never one
@@ -144,6 +150,47 @@ function planFor(op: WriteOp, payload: any): string[] {
     ];
   }
   return [`${op} → 1 NuVizz call`];
+}
+
+/**
+ * The EXACT JSON a create would POST, without POSTing it (dry run only).
+ *
+ * CLAUDE.md: "Make it inspectable — every job that acts on its own needs a way to ask what
+ * it is about to do, without doing it. A dry run is part of the feature, not a nicety."
+ * Until now no path at any permission level could print this body, so a malformed one could
+ * only be discovered by spending a live production write — which is how the Sep 9/10 route
+ * creates were spent. Returns null when there is nothing to preview.
+ *
+ * THE LIMIT, STATED ON THE PAYLOAD ITSELF: the real create echoes each order's own schedule
+ * off a per-stop getStop, and a dry run must not make those reads. So the preview's schedules
+ * are empty and it says so — it shows the SHAPE (header, leg numbering, key set), not the
+ * windows. Never claim more for it than that.
+ */
+function previewBodyFor(op: WriteOp, payload: any): any {
+  if (op !== 'newRoute') return null;
+  const nbrs: string[] = Array.isArray(payload?.orderedStopNbrs)
+    ? payload.orderedStopNbrs.map((n: any) => String(n ?? '').trim()).filter(Boolean)
+    : (payload?.seedStopNbr ? [String(payload.seedStopNbr)] : []);
+  try {
+    const creds = resolveWriteCreds();
+    const br = buildOpRequest('createRoute', {
+      route: {
+        loadNbr: payload?.loadNbr, routeName: payload?.routeName, date: payload?.date,
+        earliestStartDttm: payload?.earliestStartDttm, latestStartDttm: payload?.latestStartDttm,
+        origin: payload?.origin, loadTimeZone: payload?.loadTimeZone,
+        seeds: nbrs.map((n) => ({ stopNbr: n })),
+      },
+    }, creds);
+    return {
+      url: br.url,
+      body: JSON.parse(br.body),
+      caveat: 'SHAPE ONLY — every planStops[].schedule is {} here because the real echoes come from per-stop getStop reads a dry run must not make. The live body carries each order\'s own from/to window.',
+    };
+  } catch (e: any) {
+    // A builder throw IS the useful answer here (over-long name, no origin, no date, no
+    // orders): it names the refusal without a NuVizz call. Never let it 500 the dry run.
+    return { refused: e?.message || 'the builder refused this card' };
+  }
 }
 
 async function journal(op: WriteOp, payload: any, result: any, tenant: string, clientOpId: string | null, createdBy: string | null): Promise<void> {
@@ -204,7 +251,10 @@ export default async (req: Request): Promise<Response> => {
   const ops = await opsSnapshot();
 
   // 1) DRY RUN — never touches NuVizz. The Compare panel's default mode + Beta mode.
-  if (dryRun) return J({ ok: true, op, tenant, live, dryRun: true, plan: planFor(op, payload), ops });
+  if (dryRun) {
+    const preview = previewBodyFor(op, payload);
+    return J({ ok: true, op, tenant, live, dryRun: true, plan: planFor(op, payload), ...(preview ? { preview } : {}), ops });
+  }
 
   // 2) Mutating ops require the server-side kill switch.
   if (MUTATING_OPS.has(op) && !live) {

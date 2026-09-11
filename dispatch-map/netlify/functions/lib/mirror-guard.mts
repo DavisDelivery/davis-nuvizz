@@ -48,6 +48,28 @@ export function isMirrorDeploy(env: Record<string, any> = process.env): boolean 
   return firestoreDatabaseName(env) !== '(default)';
 }
 
+/**
+ * WHY scanning is off, in one word, or null when it is on.
+ *
+ * A MIRROR NEVER SCANS, and that is settled (Chad, 2026-09-03: "I do not want uat running
+ * scans cut it off", after the UAT site quietly spent 109 NuVizz calls in a day; and again
+ * 2026-09-10: "we need to use firestore to see what data/orders are put into system daily so
+ * we are not running scans"). isMirrorDeploy() keys on FIRESTORE_DATABASE rather than on a
+ * flag precisely so a NEW mirror is born silent instead of scanning until somebody notices
+ * the bill. Nothing here re-opens that; the UAT board gets its day from production's
+ * Firestore (lib/prod-pool.mts) and its orders from a deliberate seed, not from discovery.
+ *
+ * What this adds is only the REASON. Three different things can shut scanning and the board
+ * showed the same blank screen for all of them — the UAT site read `scansEnabled: false` for
+ * a week with no way to tell "a mirror may not scan" from "somebody pulled the kill switch".
+ * An unexplained refusal costs more than the thing it refused.
+ */
+export function scanBlockReason(env: Record<string, any> = process.env): 'mirror' | 'kill-switch' | null {
+  if (isMirrorDeploy(env)) return 'mirror';
+  if (String(env.NUVIZZ_SCANS_ENABLED ?? '').trim().toLowerCase() === 'false') return 'kill-switch';
+  return null;
+}
+
 /** The doors that lead out of the building. */
 export type OutboundChannel = 'email' | 'sms' | 'nuvizz-write';
 export const OUTBOUND_CHANNELS: OutboundChannel[] = ['email', 'sms', 'nuvizz-write'];
