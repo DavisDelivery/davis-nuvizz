@@ -21,6 +21,7 @@ import { refileReadCap, frozenCopyDepth } from './lib/refresh-stops-core.mts';
 import { SATURDAY_HEAL_HOUR } from './lib/scan-schedule.mts';
 import { requireUser } from './lib/require-user.mts';
 import { readBackgroundRefusals } from './lib/background-gate.mts';
+import { isMirrorDeploy, scanBlockReason, firestoreDatabaseName } from './lib/mirror-guard.mts';
 import { clampScanConfig, effectiveScanConfig, scanConfigDefaults, SCAN_CONFIG_BOUNDS, scanDecision } from './lib/scan-schedule.mts';
 import { clampScanRules, defaultScanRules, dueKinds, overrideCadenceSkip, scanPath } from './lib/scan-plan.mts';
 import { attributeSpend } from './lib/scan-attribution.mts';
@@ -152,9 +153,16 @@ async function explain(): Promise<any> {
       // dominated with a sentence saying why. See lib/scan-attribution.
       attribution: attributeSpend(runs as any, stats.byHour ?? {}, { etDate: today }),
     },
+    // WHY scans are off, not just THAT they are. Three different things can shut scanning and
+    // the board showed the same blank screen for all of them: the UAT site read
+    // `scansEnabled: false` with no way to tell "a mirror may not scan" from "somebody pulled
+    // the kill switch". `reason` is the one word that separates them; `mirror` says whether
+    // this deploy is a mirror at all and whether it has been given permission to scan.
     killSwitch: {
       env: String(process.env.NUVIZZ_SCANS_ENABLED ?? '').toLowerCase() === 'false',
       config: (cfg as any)?.scansEnabled === false,
+      reason: scanBlockReason(),
+      mirror: { is: isMirrorDeploy(), database: firestoreDatabaseName() },
     },
     frozen: {
       pool: poolMeta ? { at: poolMeta.at, ageMin: ageMin(poolMeta.at), count: poolMeta.count, thin: poolMeta.thin, windowStart: poolMeta.windowStart, windowEnd: poolMeta.windowEnd } : null,

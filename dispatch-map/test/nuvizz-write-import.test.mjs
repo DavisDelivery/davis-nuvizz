@@ -155,6 +155,24 @@ test('importOk: a non-success body or non-2xx is a failure with a readable error
   assert.equal(http.ok, false);
 });
 
+test('THE SEP 10 CUT: a rejection carrying the vendor\'s own error list is surfaced WHOLE, never at 300 chars', () => {
+  // The "Steven Adjenty" route create answered a 500 whose Spring `message` held a JSON-escaped
+  // DeliverItLoadResponse. firstError() returned `${error}: ${message}`.slice(0, 300), and that
+  // cut landed immediately after `<Errors class="java.util.ArrayList">` — so NuVizz's account of
+  // what it objected to, the next thing in the string, never reached the screen OR the ledger.
+  // Length is a DISPLAY concern now (clipForToast), and it marks its cut.
+  const tail = 'STOP_007174458_COULD_NOT_BE_PLANNED';
+  const message = `{"reasons":[{"description":"<DeliverItLoadResponse><DocumentID>UNKNOWN</DocumentID>`
+    + `<Status>99</Status><Errors class=\"java.util.ArrayList\">${'<Error>padding</Error>'.repeat(40)}`
+    + `<Error>${tail}</Error></Errors></DeliverItLoadResponse>"}]}`;
+  const r = importOk(false, { error: 'Internal Server Error', message });
+  assert.equal(r.ok, false);
+  assert.ok(r.error.length > 300, `the vendor's text is not truncated (got ${r.error.length} chars)`);
+  assert.ok(r.error.includes(tail), 'the part that names the problem survives to the caller');
+  // A non-JSON body is the vendor talking too — also verbatim.
+  assert.equal(importOk(false, { _text: `A${'b'.repeat(900)}` }).error.length, 901);
+});
+
 // REGRESSION (journaled live, prod DAVIS Jul 2 2026 — load DAVIS000198070): prod puts the whole
 // SENTENCE in `status` ("…is SUCCESS. Find more info in AppMessageLog with Id- …"), where UAT
 // sends the bare token. The strict `status === 'SUCCESS'` equality read this SUCCESS ack as a

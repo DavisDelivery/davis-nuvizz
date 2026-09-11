@@ -86,11 +86,18 @@ export const setStopContact = (stopNbr, { name, phone } = {}, opts = {}) =>
     ...(opts.stopId ? { stopId: String(opts.stopId) } : {}),
   }, { clientOpId: newClientOpId(), ...opts, dryRun: false });
 
-// Create an EMPTY route the dispatcher can then build onto (§R). The server checks the load
-// number is genuinely free (routePlan/update is create-OR-UPDATE — an existing number would
-// be EDITED, so anything but a clean 404 refuses), writes a HEADER ONLY — no stops node, which
-// is why this cannot repeat the Jul 2 import freight-wipe — then reads the route back, because
-// the ack is async and a 200 is not proof. Resolves { ok, loadNbr, loadId, routeName }.
+// Create a route from the Compare card, orders and all (§R). The server checks the load number
+// is genuinely free (routePlan/update is create-OR-UPDATE — an existing number would be EDITED,
+// so anything but a clean absent-read refuses), reads every order on the card (each must be
+// readable, unplanned and unexecuted or the WHOLE create is refused), writes the header plus the
+// card's orders as PlanStop REFERENCES — never a `stops` VALUE node, which is why this cannot
+// repeat the Jul 2 import freight-wipe — then reads the route back, because the ack is async and
+// a 200 is not proof. Resolves { ok, loadNbr, loadId, routeName, stopsAttached }.
+//
+// (This said "writes a HEADER ONLY — no stops node" until Sep 10 2026. It stopped being true on
+// Aug 3, when the live tenant refused a stopless route with reason 903 and the create started
+// carrying the card's whole stop list. Two comments and a dry-run line went on describing a
+// payload the code no longer built.)
 export const createRoute = (payload, opts = {}) =>
   callWrite('newRoute', payload, { ...opts, dryRun: false });
 
