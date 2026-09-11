@@ -81,9 +81,10 @@ export const TIME_MARK_KEYS = [
   'hours_shuts_early',   // 1 — rose.  Closes by noon, or open ≤3h. First stop or nothing.
   'hours_early_close',   // 2 — amber. Closes before 3pm. A deadline inside the day.
   'hours_narrow_window', // 3 — teal.  Opens 9am+ AND shuts before 5pm. It has to land mid-day.
-  'hours_opens_late',    // 4 — teal.  Opens 9am+. Cannot be your first stop.
-  'hours_runs_early',    // 5 — sky.   Open by 6:30a AND shut before 5pm. The day runs early.
-  'hours_extra_room',    // 6 — sky.   Opens ≤6:30a or open past 6pm. Good news.
+  'hours_runs_late',     // 4 — teal.  Opens 9am+ AND still open at 6pm. The day runs late.
+  'hours_opens_late',    // 5 — teal.  Opens 9am+. Cannot be your first stop.
+  'hours_runs_early',    // 6 — sky.   Open by 6:30a AND shut before 5pm. The day runs early.
+  'hours_extra_room',    // 7 — sky.   Opens ≤6:30a or open past 6pm. Good news.
 ];
 
 /**
@@ -117,7 +118,23 @@ export function classifyTimeMark(openMin, closeMin) {
   //     for a stop like this ... would be arrows pointing inward towards the icon on both
   //     sides not just the one."
   if (o != null && o >= OPENS_LATE_FROM) {
-    return c != null && c < EARLY_FINISH_BEFORE ? 'hours_narrow_window' : 'hours_opens_late';
+    if (c != null && c < EARLY_FINISH_BEFORE) return 'hours_narrow_window';
+    // THE FOURTH CORNER, and it was missing. Chad, having seen the other three: "did you use
+    // same logic for opening late and closing late, 2 parallel right facing arrows." He is
+    // right that it follows, and right that it was not there — a 10:00a–7:00p dock was drawn
+    // with the SAME single arrow as a 10:00a–5:00p one, and on a route those are opposites.
+    // Both start late; only one of them is somewhere you can still be at six o'clock, which
+    // makes it the stop you push to the END when the day slips. That is the most useful
+    // single fact a pin can carry about a late dock, and the map was throwing it away.
+    //
+    // THE LATE EDGE IS OPEN_LATE_FROM (6:00p), NOT the 5:00p pivot the other two marks use.
+    // 5:00p is where a day stops being SHORT; it is not where one starts being LATE — a dock
+    // shutting at five is the most ordinary close on the board. OPEN_LATE_FROM is the dial
+    // this repo already measured for "still taking freight at six", and hours_extra_room has
+    // always used it for exactly this claim. Reusing it keeps one meaning of "late" instead
+    // of inventing a second.
+    if (c != null && c >= OPEN_LATE_FROM) return 'hours_runs_late';
+    return 'hours_opens_late';
   }
   // 4 — room at one end or the other. The only mark that reports GOOD news.
   //     AN EARLY START PAID FOR BY AN EARLY FINISH IS NOT ROOM. A 6:00a–3:00p dock was
@@ -197,7 +214,8 @@ export function timeMarkChip(note, dayKey) {
   // neither edge alone describes the stop, and the branches above guarantee both times exist
   // — each is reachable only with an open AND a close on file — so the chip can state the
   // window without inventing half of one.
-  else if (kind === 'hours_narrow_window' || kind === 'hours_runs_early') text = `${fmtMin(o)}–${fmtMin(c)}`;
+  else if (kind === 'hours_narrow_window' || kind === 'hours_runs_early'
+    || kind === 'hours_runs_late') text = `${fmtMin(o)}–${fmtMin(c)}`;
   else if (kind === 'hours_opens_late') text = `opens ${fmtMin(o)}`;
   else if (o != null && o <= OPENS_EARLY_BY) text = `opens ${fmtMin(o)}`;
   else text = `open to ${fmtMin(c)}`;
