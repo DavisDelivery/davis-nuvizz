@@ -28,7 +28,9 @@
 //   closed_day         shut on this weekday. There is no delivery to make. Do not send it.
 //   hours_shuts_early  the dock shuts by noon, or barely opens. First stop or nothing.
 //   hours_early_close  shuts before 3pm. A deadline inside the working day.
+//   hours_narrow_window opens 9am+ AND shuts before 5pm. It has to land mid-day.
 //   hours_opens_late   not open until 9am. Cannot lead a route.
+//   hours_runs_early   open by 6:30am AND shut before 5pm. Go at dawn; there is no slack.
 //   hours_extra_room   open by 6:30am or past 6pm. The one mark that is good news.
 //
 // An appointment requirement is NOT in this list. It says call somebody, which is office
@@ -62,7 +64,7 @@ const DAY_LABEL = {
 // nobody looking at both could tell which was lying. Neither was; they were answering
 // different questions. Now they ask the same one.
 //
-// The four time marks come from time-marks.js and are rendered on the map by the icons of
+// The time marks come from time-marks.js and are rendered on the map by the icons of
 // the same name, so a row here and a pin there always agree. `closed_day` sits above them
 // because a customer shut today is not a window to plan around — there is no delivery to
 // make at all — and it is drawn separately on the map as a red day badge.
@@ -74,7 +76,9 @@ export const TIER_LABEL = {
   closed_day: 'Closed today',
   hours_shuts_early: 'Shuts early',
   hours_early_close: 'Early close',
+  hours_narrow_window: 'Narrow window',
   hours_opens_late: 'Opens late',
+  hours_runs_early: 'Runs early',
   hours_extra_room: 'Extra room',
   appointment: 'Appointment / call ahead',
 };
