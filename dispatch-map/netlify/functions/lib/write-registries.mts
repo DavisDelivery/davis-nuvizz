@@ -29,6 +29,10 @@ export interface OpRecord {
   result?: any;
   tenant: string;
   at: string;
+  // Set only when trimOpRecord had to drop forensics payloads to fit the row — so a reader
+  // can tell "nothing was captured" from "the capture was too big to keep".
+  capturesDropped?: number;
+  captureNote?: string;
 }
 
 // ── Idempotency ledger ───────────────────────────────────────────────────────
@@ -49,10 +53,43 @@ export function priorShortCircuits(prior: OpRecord | null): boolean {
   return prior?.status === 'succeeded';
 }
 
+// Firestore refuses a document over 1 MiB. Stay well under it: the ROW — which op, which
+// outcome, when — is what a forensics read needs first, and it must never be lost to the
+// forensics payloads riding on it. A failed commitBoard can carry a capture per failed op
+// (see fireSingle), and enough of those would push the row past the limit; setDoc would
+// throw, the catch below would swallow it, and the Save would vanish from the ledger
+// entirely. Losing the receipt SILENTLY is the exact failure this capture exists to end.
+const OP_RECORD_MAX_BYTES = 700_000;
+
+/** PURE: the record, with its forensics payloads dropped if they would sink the row — and
+ *  SAYING SO, because "no payload captured" and "payload dropped for size" are different
+ *  facts to whoever reads this back. Exported for test. */
+export function trimOpRecord(rec: OpRecord): OpRecord {
+  let json = '';
+  try { json = JSON.stringify(rec); } catch { return rec; }
+  if (json.length <= OP_RECORD_MAX_BYTES) return rec;
+  let dropped = 0;
+  const strip = (v: any): any => {
+    if (Array.isArray(v)) return v.map(strip);
+    if (v && typeof v === 'object') {
+      const out: any = {};
+      for (const [k, val] of Object.entries(v)) {
+        if ((k === 'sentBody' || k === 'rawBody') && val != null) { dropped++; out[k] = null; continue; }
+        out[k] = strip(val);
+      }
+      return out;
+    }
+    return v;
+  };
+  const lean = { ...rec, result: strip(rec.result) } as OpRecord;
+  return { ...lean, capturesDropped: dropped, captureNote: `${dropped} request/response capture(s) dropped — the record was ${json.length} bytes, over the ${OP_RECORD_MAX_BYTES} cap` } as OpRecord;
+}
+
 /** Persist (create or update) a Save's outcome. No-op when Firestore is off. */
 export async function putOpRecord(rec: OpRecord): Promise<void> {
   if (!isFirestoreEnabled() || !rec.clientOpId) return;
-  try { await setDoc(`${OPS}/${safeKey(rec.tenant)}__${safeKey(rec.clientOpId)}`, { ...rec, at: rec.at || new Date().toISOString() }); }
+  const safe = trimOpRecord(rec);
+  try { await setDoc(`${OPS}/${safeKey(safe.tenant)}__${safeKey(safe.clientOpId)}`, { ...safe, at: safe.at || new Date().toISOString() }); }
   catch { /* best-effort journal */ }
 }
 

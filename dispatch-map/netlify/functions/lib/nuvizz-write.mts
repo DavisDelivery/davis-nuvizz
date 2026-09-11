@@ -77,7 +77,25 @@ async function fireSingle(requester: RequesterLike, op: SingleOp, payload: any, 
   const noRetry = op === 'assignDriver' || op === 'dispatchLoad' || op === 'insertStops' || op === 'removeStops' || op === 'createStop';
   const resp = await requester.request(br.url, { method: br.method, headers: br.headers, body: br.body, ...(noRetry ? { maxRetries: 0 } : {}) }, br.meta);
   const j = await safeJson(resp);
-  return { ...parseOpResponse(op, resp.ok, j), httpStatus: resp.status };
+  const parsed = parseOpResponse(op, resp.ok, j);
+  // ── FORENSICS ON A REJECTION ONLY (Sep 10 2026) ────────────────────────────
+  // Until now this function built `br`, fired it, parsed the answer, and dropped BOTH the
+  // request body and the verbatim response on the floor. So when the "Steven Adjenty" route
+  // create answered a 500, nothing anywhere — not the ledger, not the console, not the
+  // screen — held either the JSON we POSTed or the <Errors> list NuVizz sent back. The only
+  // artifact was red text on a phone, and the diagnosis had to be inferred from the vendor's
+  // spec instead of read off the wire. That is the third time a serious incident on a write
+  // path has left no receipt (the stopAssignment drift, the ESTES read-back twin, this).
+  //
+  // FAILURES ONLY, so a normal Save adds nothing to the ledger, and capped so one bad answer
+  // can never approach the Firestore document limit. These ride `steps[].result` into
+  // putOpRecord, which is what `nuvizz-write-log?status=failed` reads back — at zero NuVizz
+  // cost. `sentBody` is the request as built; headers are NOT captured (they carry Basic auth).
+  const capture = (v: any) => { try { const t = typeof v === 'string' ? v : JSON.stringify(v); return t == null ? null : t.slice(0, 8192); } catch { return null; } };
+  if (!parsed?.ok) {
+    return { ...parsed, httpStatus: resp.status, sentUrl: br.url, sentBody: capture(br.body), rawBody: capture(j) };
+  }
+  return { ...parsed, httpStatus: resp.status };
 }
 
 /** GET load/info → { load, httpStatus, hadLoadId }. `load` is the normalized load when the
