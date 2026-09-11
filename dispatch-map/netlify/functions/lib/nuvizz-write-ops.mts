@@ -142,6 +142,18 @@ export interface StopRow {
   // Dispatch notes (driver instructions) → comments[] cmtType ORD_IN (read back by
   // extractOrderInstructions → signalSources.orderInstructions + allComments on the card).
   dispatchNotes?: string | null;
+  // ── THE ORDER'S OWN DELIVERY WINDOW (optional; Sep 11 2026) ────────────────
+  // Absent → the proven default below (12:00–17:00 PREFERRED), which is what New Order, Bulk
+  // Add and the Manifest push have always sent and keep sending: none of them knows a window
+  // at create time. Present → it rides verbatim.
+  //
+  // This exists for the UAT test bench (lib/uat-seed.mts), which copies a production order in
+  // order to REPRODUCE it. A copy of "closes 2pm sharp" that arrives with a 12–5 window is not
+  // that order; it is a different one wearing its name, and a deadline test run against it
+  // proves nothing. The window is the scenario.
+  deliverFrom?: string | null;        // 'yyyy-MM-ddTHH:mm:ss'
+  deliverTo?: string | null;          // 'yyyy-MM-ddTHH:mm:ss'
+  deliverConstraint?: string | null;  // STRICT | UNRESTRICTED | PREFERRED
 }
 export interface OriginSettings {
   origin: { name: string; addr1: string; city: string; state: string; zip: string };
@@ -167,6 +179,11 @@ function safeSlice(v: string, n: number): string {
   const s = String(v);
   return s.length <= n ? s : [...s].slice(0, n).join('');
 }
+
+// The only values the v7 Schedule schema documents for timeConstraint. An unknown string is
+// silently replaced with the default rather than sent: NuVizz validates this field, and a
+// typo rejecting the whole create is a worse outcome than a softer window.
+const DELIVER_CONSTRAINTS = new Set(['STRICT', 'UNRESTRICTED', 'PREFERRED']);
 
 export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
   const tz = settings.timeZone || 'America/New_York';
@@ -263,7 +280,16 @@ export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
         addressType: 'ANY', name: row.name, addr1: row.addr1, addr2: row.addr2 || undefined,
         city: row.city, state: row.state, zip: row.zip, country: 'USA',
       },
-      schedule: { timeFrom: `${d}T12:00:00`, timeTo: `${d}T17:00:00`, timeZone: tz, timeConstraint: 'PREFERRED' },
+      // The order's own window when the caller knows one, else the proven default. isoOrNull
+      // is the same contract guard every other write path uses — a caller handing us an epoch
+      // or a bare date gets the default rather than a value that dies inside NuVizz's worker.
+      schedule: {
+        timeFrom: isoOrNull(row.deliverFrom) || `${d}T12:00:00`,
+        timeTo: isoOrNull(row.deliverTo) || `${d}T17:00:00`,
+        timeZone: tz,
+        timeConstraint: DELIVER_CONSTRAINTS.has(String(row.deliverConstraint ?? '').toUpperCase())
+          ? String(row.deliverConstraint).toUpperCase() : 'PREFERRED',
+      },
       // Consignee phone + email → the v7 to.contact block ({contactName, phone, phone2, sms,
       // fax, email}). Read back by normalizeStop as contact.phone / contact.email
       // (resolveStopPhone / Contact row / "Text customer").

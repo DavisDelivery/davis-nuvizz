@@ -77,6 +77,39 @@ test('THE SCENARIO IS THE WINDOW — a 2pm close crosses, and is never invented 
   assert.match(none.warnings[0], /cannot test a deadline/);
 });
 
+test("THE WINDOW ACTUALLY REACHES NUVIZZ — it is not just recorded on the plan and dropped", () => {
+  // buildStopPayload hard-coded to.schedule as 12:00-17:00 for every order it had ever built,
+  // because New Order/Bulk Add/Manifest genuinely do not know a window at create time. A copy
+  // does. Without this the bench would carry "closes 2pm sharp" all the way to the wire and
+  // then send a 12-5 window — a deadline test against an order with no deadline, and the
+  // comment claiming otherwise would have been the only evidence anyone had.
+  const p = buildSeedRow(prodRow());
+  const body = buildStopPayload(p.row, { origin: ORIGIN, serviceDate: '2026-09-11' });
+  assert.equal(body.to.schedule.timeFrom, '2026-09-11T08:00:00');
+  assert.equal(body.to.schedule.timeTo, '2026-09-11T14:00:00', 'the 2pm close is what NuVizz is told');
+  assert.equal(body.to.schedule.timeConstraint, 'STRICT', "and the production row's own constraint");
+
+  // No window on the board → the proven default, unchanged.
+  const none = buildSeedRow(prodRow({ scheduledFrom: null, scheduledTo: null, timeConstraint: null }));
+  const dflt = buildStopPayload(none.row, { origin: ORIGIN, serviceDate: '2026-09-11' });
+  assert.equal(dflt.to.schedule.timeFrom, '2026-09-11T12:00:00');
+  assert.equal(dflt.to.schedule.timeTo, '2026-09-11T17:00:00');
+  assert.equal(dflt.to.schedule.timeConstraint, 'PREFERRED');
+
+  // EVERY OTHER CALLER IS UNTOUCHED: a row that names no window is byte-identical to before.
+  const plain = buildStopPayload({ name: 'X', addr1: '1 Rd', city: 'Buford', state: 'GA', zip: '30518' }, { origin: ORIGIN, serviceDate: '2026-09-11' });
+  assert.deepEqual(plain.to.schedule, { timeFrom: '2026-09-11T12:00:00', timeTo: '2026-09-11T17:00:00', timeZone: 'America/New_York', timeConstraint: 'PREFERRED' });
+
+  // A window that is not the contract's shape is REFUSED into the default, never echoed —
+  // the same rule the route-create path learned. An unknown constraint likewise.
+  for (const bad of [1757520000000, '2026-09-11', '08:00', {}, '2026-09-11T12:00:00.000+0000']) {
+    const b = buildStopPayload({ ...p.row, deliverFrom: bad, deliverTo: bad, deliverConstraint: 'WHENEVER' }, { origin: ORIGIN, serviceDate: '2026-09-11' });
+    const ok = b.to.schedule.timeFrom === '2026-09-11T12:00:00' || b.to.schedule.timeFrom === '2026-09-11T12:00:00';
+    assert.ok(ok, `a ${typeof bad} window falls back to the default`);
+    assert.equal(b.to.schedule.timeConstraint, 'PREFERRED', 'an unknown constraint falls back too');
+  }
+});
+
 test('the real-world condition rides along, and the copy says what it is', () => {
   const p = buildSeedRow(prodRow(), { label: 'route-create 14 stops' });
   assert.match(p.row.dispatchNotes, /TEST COPY of production order 007174773/);

@@ -158,6 +158,12 @@ export function buildSeedRow(prodRow: any, opts: { label?: string | null } = {})
     // The dispatch note is where a scenario's real-world condition usually lives ("closes
     // 2pm", "call before delivery"), so it crosses — with a line saying what this copy is, so
     // nobody reading it in the UAT portal mistakes it for freight anybody is shipping.
+    // Rule 3, made real: the order's own window rides to NuVizz. buildStopPayload defaults to
+    // 12:00–17:00 PREFERRED when these are absent — which is right for New Order (nobody knows
+    // a window at create time) and WRONG for a copy, whose whole purpose is to reproduce one.
+    deliverFrom: from,
+    deliverTo: to,
+    deliverConstraint: str(prodRow?.timeConstraint) || null,
     dispatchNotes: [
       `TEST COPY of production order ${prodStopNbr}${opts.label ? ` · ${opts.label}` : ''}`,
       str(prodRow?.signalSources?.orderInstructions) || null,
