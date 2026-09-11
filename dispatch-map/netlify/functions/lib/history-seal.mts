@@ -318,3 +318,78 @@ export async function writeTombstone(
   await clearCaptureFailure(tenant, date);
   return { ok: true };
 }
+
+/**
+ * HOW FAR BACK DOES THE WAREHOUSE ACTUALLY GO — the floor under every "history"
+ * answer in this app, and until now a question nobody could answer without opening
+ * Firestore by hand.
+ *
+ * It matters most for the stop card's "Recent deliveries here", which has NO date
+ * cutoff at all: it reads one history_customers rollup and shows that customer's
+ * newest PROs, so its reach is bounded ONLY by the oldest day in this warehouse. The
+ * same floor decides what "No prior deliveries recorded — first visit to this
+ * customer" means: not "we have never been there", but "we have no CAPTURED delivery
+ * there", and a customer last served the day before capture began reads identically
+ * to a genuinely new one.
+ *
+ * FREE. The caller (history-capture-health) already lists every manifest in the
+ * collection to build its 21-day strip and then throws the older ones away; this
+ * summarises the list it already holds. Zero extra Firestore reads, zero NuVizz calls.
+ *
+ * rollup_from is the number that answers the question, and it is NOT first_date:
+ * the per-customer rollup is a POST-SEAL derivation (history-postseal), so an
+ * unsealed day contributed nothing to it, and a tombstoned day had no freight to
+ * contribute. rollup_gaps names the sealed days whose customer-rollup hook FAILED —
+ * those are holes INSIDE the covered range, re-derivable with
+ * nuvizz-rebuild-customer-history-background?date=.
+ *
+ * PURE (manifest docs in, summary out) so the rule is unit-testable and the endpoint
+ * stays dumb.
+ */
+export function summarizeCoverage(manifestDocs: any[], tenant: string): {
+  days: number;
+  first_date: string | null;
+  last_date: string | null;
+  rollup_from: string | null;
+  sealed_days: number;
+  tombstone_days: number;
+  unsealed_days: number;
+  rollup_gaps: string[];
+} {
+  const rows: Array<{ date: string; m: any }> = [];
+  for (const m of manifestDocs || []) {
+    const id = String(m?._id || '');
+    if (!id.startsWith(`${tenant}__`)) continue;
+    const date = id.slice(tenant.length + 2);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    rows.push({ date, m });
+  }
+  rows.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+  let sealed = 0, tombstone = 0, unsealed = 0;
+  let rollupFrom: string | null = null;
+  const rollupGaps: string[] = [];
+  for (const { date, m } of rows) {
+    // Same classification as classifyCaptureDay, minus the states that come from a
+    // failure record or the calendar — coverage is about what the warehouse HOLDS.
+    if (m?.no_board) { tombstone++; continue; }
+    if (m?.healed || m?.verified || m?.complete) {
+      sealed++;
+      const failedHooks: string[] = Array.isArray(m?.post_seal_failed) ? m.post_seal_failed.map(String) : [];
+      if (failedHooks.includes('customer-rollup')) { rollupGaps.push(date); continue; }
+      if (!rollupFrom) rollupFrom = date;
+      continue;
+    }
+    unsealed++;
+  }
+  return {
+    days: rows.length,
+    first_date: rows.length ? rows[0].date : null,
+    last_date: rows.length ? rows[rows.length - 1].date : null,
+    rollup_from: rollupFrom,
+    sealed_days: sealed,
+    tombstone_days: tombstone,
+    unsealed_days: unsealed,
+    rollup_gaps: rollupGaps,
+  };
+}
