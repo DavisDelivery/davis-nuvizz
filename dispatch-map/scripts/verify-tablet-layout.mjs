@@ -48,6 +48,7 @@ const SCREENS = [
   { key: 'manifest', label: 'Manifest check', nav: /manifest check/i, inMore: true },
   { key: 'comms', label: 'Customer emails', nav: /customer emails/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
+  { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },
   { key: 'diagnostics', label: 'Diagnostics', nav: /diagnostics/i, inMore: true },
 ];
 
@@ -128,6 +129,31 @@ for (const dev of TABLETS) {
   await page.route('**/.netlify/functions/**', (route) => {
     const u = route.request().url();
     const J = (b) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(b) });
+    if (u.includes('address-history')) return J({
+      ok: true, nuvizzCalls: 0,
+      range: { from: '2026-08-28', to: '2026-09-11', days: 15, clamped: null },
+      summary: { moved: 1, renamed: 1, suite: 1, region: 0, filled: 0, cleared: 0, formatting: 1, total: 4 },
+      matched: 4, truncated: false,
+      days: [{ date: '2026-09-11', count: 2 }, { date: '2026-09-10', count: 2 }],
+      rows: [
+        { at: '2026-09-11T14:02:11.000Z', date: '2026-09-11', stopNbr: 'ESTES-0538243875', businessName: 'TITAN ELECTRIC COMPANIES QTS DATA CENTER', source: 'scan', kind: 'moved',
+          before: { addr1: '3190 REPS MILLER RD STE 200', addr2: null, city: 'NORCROSS', state: 'GA', zip: '30071' },
+          after: { addr1: '6725 JIMMY CARTER BLVD BLDG 400', addr2: 'DOCK 7', city: 'PEACHTREE CORNERS', state: 'GA', zip: '30092' },
+          fields: ['addr1', 'addr2', 'city', 'zip'], route: 'NOR 2', planned: true, matchKey: null, actor: null },
+        { at: '2026-09-10T11:13:18.479Z', date: '2026-09-10', stopNbr: '007174397', businessName: 'LED ENERGY PLUS', source: 'scan', kind: 'renamed',
+          before: { addr1: '5965 PEACHTREE CORS E STE B3', addr2: null, city: 'NORCROSS', state: 'GA', zip: '30071' },
+          after: { addr1: '5965 PEACHTREE STREET', addr2: null, city: 'NORCROSS', state: 'GA', zip: '30071' },
+          fields: ['addr1'], route: 'NOR 2', planned: true, matchKey: null, actor: null },
+        { at: '2026-09-10T09:41:02.000Z', date: '2026-09-10', stopNbr: '007174402', businessName: 'ACME SUPPLY COMPANY OF NORTH GEORGIA', source: 'override', kind: 'suite',
+          before: { addr1: '4310 INDUSTRIAL ACCESS RD STE 200', addr2: null, city: 'DORAVILLE', state: 'GA', zip: '30360' },
+          after: { addr1: '4310 INDUSTRIAL ACCESS RD STE 410', addr2: 'RECEIVING AROUND BACK', city: 'DORAVILLE', state: 'GA', zip: '30360' },
+          fields: ['addr1', 'addr2'], route: null, planned: false, matchKey: 'acme__4310__doraville__30360', actor: 'Jessica' },
+        { at: '2026-09-11T08:15:00.000Z', date: '2026-09-11', stopNbr: 'RA59223377', businessName: 'FEDEX OFFICE', source: 'override-reset', kind: 'formatting',
+          before: { addr1: '1770 SATELLITE BLVD STE 4', addr2: null, city: 'BUFORD', state: 'GA', zip: '30518' },
+          after: { addr1: '1770 SATELLITE BLVD', addr2: 'STE 4', city: 'BUFORD', state: 'GA', zip: '30518' },
+          fields: ['addr1'], route: 'BUF 1', planned: true, matchKey: null, actor: 'Chad' },
+      ],
+    });
     if (u.includes('customer-comms-log')) return J({
       ok: true, today: '2026-09-05',
       range: { mode: 'days', from: '2026-09-04', to: '2026-09-05', days: 2, requestedDays: 2, clipped: false, maxDays: 92 },

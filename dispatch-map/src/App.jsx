@@ -43,6 +43,7 @@ import { mapBaseOptions, mapLiveOptions, mapIdKey, keepView } from './lib/map-ba
 import { stopTimelineModel } from './lib/stop-timeline.js';
 import { diffRouteStyle, DIFF_ORIGINAL_COLOR, groupDispatchTrips } from './lib/diff-route-style.js';
 import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
+import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
 import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
@@ -139,7 +140,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.19.0';
+const APP_VERSION = '1.20.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -210,6 +211,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.20.0', 'EVERY ADDRESS THAT MOVES NOW GETS WRITTEN DOWN, AND THERE IS A SCREEN FOR IT UNDER MORE. Chad asked whether we had changed the address on delivery 007174397, and answering it took a dozen file reads and five endpoint calls — then only answered half. The order arrived as “5965 PEACHTREE STREET” while our own sealed record for the same customer three months earlier read “5965 PEACHTREE CORS E STE B3”: same house number, same zip, no suite. NOTHING IN THIS SYSTEM WROTE AN ADDRESS CHANGE DOWN. The scan DETECTS one — it has to, to decide whether to re-enrich — and then throws the finding away into a local variable that dies with the run, and “Edit address” on the stop card left no trace at all. SO BOTH HALVES ARE RECORDED NOW. The vendor’s half is observed inside writeStops, which already holds the stored row and the fresh one, so it costs NO extra read and every scan path is covered by construction rather than by remembering. Our half is posted by the browser after an override saves, because “Edit address” and “Fix & move pin” write customer_notes straight from the client and never touch a function — and that override is what the pin, the board and the customer emails actually use, so a log without it would answer “did we change this” with a confident and wrong no. IT DOES NOT REUSE addrListSig, deliberately. That detector is zip5|streetNumber and it is coarse ON PURPOSE, because firing it spends a /stop/info per stop; both LED ENERGY PLUS addresses hash to “30071|5965”, so it was right to stay quiet and the change was still real. A log costs nothing to write, so its threshold is the honest one — and it only ever observes, never feeds the re-enrichment decision, or it would re-open the non-converging loop that comment warns about. CLASSIFIED BY WHAT IT COSTS TO BE WRONG ABOUT, which is also the sort order: moved (different house number or zip — the truck is loaded for the old building) → cleared → renamed → suite (a dropped STE B3 on an inside delivery is a driver in a lobby with five pallets) → city/state → filled → formatting. Rows carry the route and whether the order was ALREADY PLANNED when it moved, because an address that changes under a built truck is a different problem from one that changes while the order is still unplanned. THE NOISE FLOOR WAS MEASURED, NOT ASSUMED: 90 stops carried across the real 9/10 and 9/11 boards produced zero rows, and an address that normalises identical (“Blvd” vs “BOULEVARD”, a +4 zip) never files one — the list and /stop/info disagree like that across a large share of 700 stops every scan. Learning a field is not changing it either: our own June record carries state:null beside a good GA address. TWO VIEWS: desktop gets a table because the job is scanning a column of befores against a column of afters; the phone gets one card per change with before over after in a single flow column, since two addresses do not fit side by side at 360px. The PRO box is the first control on the screen — type 007174397 and the question that started this is answered in one tap — and nuvizz-stop-explain now carries the same rows, so asking about a stop shows its address history beside everything else. Zero NuVizz calls anywhere in it. 40 new tests. ADDRESS_HISTORY=off turns the recording and the endpoint off together.'],
   ['1.19.0', 'THE DRAW TOOL IS IN THE PANEL, AND A FINISHED BUILD OPENS ITS OWN CARDS. Two asks off one screenshot of Routing\u2019s left panel. (1) \u201cLEFT PANEL SHOULD HAVE AN ADD SELECTION BUTTON.\u201d Step 1 offered exactly one way to add stops in bulk \u2014 \u201cAdd stops in view\u201d, which takes the WHOLE viewport \u2014 while its own hint text told the dispatcher that Box, Lasso and Ninja were somewhere else: two unlabelled 36px icons on the map\u2019s left edge, where they have lived alone since v0.29.59. On a 700-stop board that gap is the difference between grabbing one dock out of a cluster and zooming until nothing else is on screen. \u201c\uff0b Add selection\u201d now sits under it and arms the SAME box draw the rail arms \u2014 one beginMode, so the amber armed block, Cancel, Esc and the rail\u2019s own highlight are unchanged; there is a second DOOR into the mode, not a second mode. ON A PHONE IT DROPS THE SHEET, because the two corners are tapped ON the map and the sheet is half the screen (the move armNinjaFromPanel already makes for the same reason), and a toast carries the instruction the dropped sheet took with it \u2014 an armed mode with nothing on screen to explain it reads as a broken map. The lasso stays on the rail and the hint now says so. (2) \u201cWHEN THIS GETS DONE BUILDING IT SHOULD POP THE ROUTES UP IN THE COMPARE PANELS SO I CAN SEE THEM.\u201d Build was the only solver on this screen that stopped short of that \u2014 the Engine\u2019s draft and cleanup runners have always staged the moment they returned. Until \u201cStage onto Compare cards\u201d was found and pressed, a finished plan existed only as engine-coloured lines on the map: nothing to drag, no driver picker, no Save, because the CARD is the editable object. It stages itself now. THE FOUR WAYS THAT SENTENCE GOES WRONG ARE A UNIT-TESTED RULE (lib/build-autostage.js, 8 tests): a TRUCKS-mode build never stages, because an abstract profile has no loadNbr to land on and staging one would invent a load nobody picked; it WAITS for routesView, which is empty for a render or two after the job lands, since staging the empty render would spend the one shot and the cards would then never open at all; it fires ONCE PER JOB, so a card closed on purpose stays closed instead of springing back with no way to be rid of it; and a SAVED load open in the result panel never re-stages last Tuesday\u2019s plan onto today\u2019s board. The manual button is untouched \u2014 staging skips ids already on a card, so it stays the way to put the plan back after closing one. Each change is its own commit: a git revert puts either one back on its own.'],
   ['1.18.1', 'A LEFTOVER NAME ON AN EMPTY TRAILER IS NOT AN ASSIGNMENT \u2014 AND SHOWING IT DID THE EXACT OPPOSITE OF WHAT THIS FEATURE IS FOR. Chad, with the Loads panel searched for \u201csir\u201d: MARTIN and TERRY both reading Sirdedrick Sheats. \u201cno one assigned sheats to our load.\u201d THE PARSER WAS RIGHT, WHICH IS WHY THE FIX IS NOT IN THE PARSER. Read straight off the live roster that morning: the 35 loads CARRYING FREIGHT had 35 drivers under 34 distinct names and every one was correct; of 67 EMPTY shells, 30 carried a name and two of them carried Sirdedrick \u2014 on a day with no SHEATS route on the board at all. MARTIN and TERRY hold two DIFFERENT spellings of him (\u2018Sirdedrick  Sheats\u2019 and \u2018Sirdedrick Sheets\u2019), which a misaligned column cannot produce: each row was read from its own cell. NuVizz simply keeps a name on a zero-stop shell from whenever that trailer was last used. SO IT IS A LOGISTICS BUG AND IT IS MINE. The whole case for capturing the driver, in my own words, was that the empty trailer NOBODY is on becomes visible among the fifty that are staffed. A leftover name does the reverse: it makes the one trailer that needs a driver look like it already has one, and it puts a man\u2019s name against freight he is not running \u2014 on a 700-stop morning that is a phone call to the wrong person. Beautifully parsed and operationally backwards, which is the failure the logistics-first rule exists to catch and which no test could have caught, because the code did exactly what I told it. THE RULE: a driver is shown for a load that HAS FREIGHT ON IT \u2014 the boundary where the data is proven good \u2014 and a zero-stop shell reads as unassigned, which is what it is. Chad\u2019s original ask is untouched: he asked for the driver on loads \u2018not dispatched but they do already have the driver assignment\u2019, and those loads carry trips. It is a DISPLAY rule in one pure function (rosterDriverOf) used by all three surfaces, so the capture still keeps every driver it reads and ?explain=1 and the pull meta are unchanged \u2014 one commit puts it back. The v1.10.0 test that asserted the opposite is rewritten rather than deleted, with the live rows that disproved it. 8 new tests, 4,301 green.'],
   ['1.18.0', 'THE UAT TEST BENCH IS A SCREEN NOW — PICK THE ORDERS A SCENARIO NEEDS AND SEND ONLY THOSE. Chad, asked how he wanted to choose them, picked a checkbox list of production\u2019s day; asked about teardown, picked clear-on-request. Both are what shipped. WHAT IT DOES. The UAT board gets a “UAT test bench” screen that reads PRODUCTION\u2019S DAY out of Firestore — every order it scanned, with its address, its geocoded pin, its delivery window and its freight — and lists it with checkboxes. Filter by customer, city, zip or order number; tick the fourteen a route test needs; press Seed and ONLY those fourteen are created in the DAVISV5 tenant, with the UAT board filled in directly because a mirror never scans. Clear cancels them when you are done, unplanning them off the test route first. EVERY BUTTON SAYS WHAT IT COSTS BEFORE YOU PRESS IT. The order list and Preview are marked “0 calls” because they read Firestore and nothing else; Seed says how many NuVizz calls the current selection is; Clear names the number it will cancel and says production is not touched. A bench whose cost is invisible gets used carelessly on the one tenant where careless is cheap — right up until somebody points it at the wrong one, which is why the screen also prints the NuVizz host and company code it is about to write to, in the header, at all times. PREVIEW SHOWS THE EXACT JSON. Not a summary of it — the literal body each order would be POSTed as, expandable, before a single call is spent. NOTHING IS CLAIMED THAT WAS NOT OBSERVED. The result renders what the server actually reported: which orders were created, which it refused and why, which were skipped and why, and the per-order warnings (“this one has no delivery window on the board, so the copy cannot test a deadline”). An order the server refused is shown as refused, with its reason, never folded into a count. WHERE IT CAN APPEAR, AND WHY THAT IS THE HOSTNAME. The screen mounts only on a UAT host — keyed on the URL rather than a build variable, for the reason the mirror guard already gives: a variable is a thing somebody has to remember, and forgetting THIS one would put a screen that writes NuVizz orders onto the production board. The URL cannot be forgotten, and it fails in the safe direction. The endpoint refuses independently on FIRESTORE_DATABASE, so the screen is the courtesy check and not the safety one. IT EXISTS ON A PHONE TOO, and that is a test rather than a promise: a desktop table (picking fourteen of eight hundred is a scanning job and rows scan best) and a separate stacked-card list for the phone, both gated by one shared answer so the two navigations and the router cannot disagree. This repo has shipped a screen visible on a laptop and invisible on a phone twice; the phone menu carries a note saying so. PUTTING IT BACK is one revert: this adds a screen and changes nothing that already worked, so there is no switch to find — the commit is the switch. Production cannot see it either way. STILL NEEDED ON THE UAT SITE before a seed can reach NuVizz at all: MIRROR_ALLOW_OUTBOUND=nuvizz-write. Deliberate, and Chad\u2019s to set.'],
@@ -6229,6 +6231,9 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
     const q = [fields.addr1, fields.city, fields.state, fields.zip].filter(Boolean).join(', ');
     if (!q) { setErr('Enter an address'); return; }
     setBusy(true);
+    // Captured BEFORE the write, from what the card is actually showing — see
+    // lib/address-log.js. After the save the old address is gone from every surface.
+    const wasShowing = shownAddress(stop, note);
     try {
       const geo = await geocodeAddress(google, q);
       await setDoc(doc(db, 'customer_notes', stop.matchKey), {
@@ -6240,6 +6245,9 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
         location_override_at: serverTimestamp(),
         last_updated: serverTimestamp(),
       }, { merge: true });
+      // Not awaited into the happy path: the address is saved, and a log that can fail a
+      // dispatcher's edit is worse than a missing row.
+      logAddressOverride({ stop, before: wasShowing, after: fields, source: 'override' });
       onSaved?.();
       onClose();
     } catch (e) {
@@ -6249,11 +6257,15 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
 
   const reset = async () => {
     setBusy(true); setErr(null);
+    // A Reset is a change TOO, and the one most likely to be argued about later: it puts the
+    // customer back on NuVizz's address, which may be the wrong one somebody had fixed.
+    const wasShowing = shownAddress(stop, note);
     try {
       await setDoc(doc(db, 'customer_notes', stop.matchKey), {
         match_key: stop.matchKey, address_override: null, address_override_at: null,
         location_override: null, last_updated: serverTimestamp(),
       }, { merge: true });
+      logAddressOverride({ stop, before: wasShowing, after: vendorAddress(stop), source: 'override-reset' });
       onSaved?.();
       onClose();
     } catch (e) { setErr(e.message || 'Could not reset'); }
@@ -9881,6 +9893,13 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                 >
                   <Flag size={12} /> Flag history
                 </button>
+                <button
+                  className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+                  onClick={() => onSelectMenu('addrhistory')}
+                  role="menuitem"
+                >
+                  <MapPinned size={12} /> Address history
+                </button>
                 {/* UAT only — and here BECAUSE of the note above: dispatch runs on a phone,
                     and a screen added to one navigation and not the other is a screen that
                     does not exist on a phone. */}
@@ -11855,11 +11874,13 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
       last_updated: serverTimestamp(),
     };
     if (geo) { payload.location_override = { lat: geo.lat, lng: geo.lng }; payload.location_override_at = serverTimestamp(); }
+    const wasShowing = shownAddress(stop, notes.get(stop.matchKey));
     await setDoc(doc(db, 'customer_notes', stop.matchKey), payload, { merge: true });
+    logAddressOverride({ stop, before: wasShowing, after: fields, source: 'override' });
     refresh({ silent: true });
     // Saved the address; surface (non-fatally) that the pin couldn't be moved.
     if (geoErr) throw new Error(`Address saved, but the pin couldn’t be moved — ${geoErr.message}. Enable the Geocoding API or use “Correct pin location” to drag it.`);
-  }, [google, refresh]);
+  }, [google, refresh, notes]);
   const cancelMoveLocation = useCallback(() => { setMovingStop(null); setMovedTo(null); }, []);
   const saveStopLocation = useCallback(async () => {
     if (!db || !movingStop || !movedTo) return;
@@ -22175,10 +22196,12 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       last_updated: serverTimestamp(),
     };
     if (geo) { payload.location_override = { lat: geo.lat, lng: geo.lng }; payload.location_override_at = serverTimestamp(); }
+    const wasShowing = shownAddress(stop, notes.get(stop.matchKey));
     await setDoc(doc(db, 'customer_notes', stop.matchKey), payload, { merge: true });
+    logAddressOverride({ stop, before: wasShowing, after: fields, source: 'override' });
     refreshStops({ silent: true });
     if (geoErr) throw new Error(`Address saved, but the pin couldn’t be moved — ${geoErr.message}. Enable the Geocoding API or use “Correct pin location” to drag it.`);
-  }, [google, refreshStops]);
+  }, [google, refreshStops, notes]);
   // Text customer + save customer note — parity with the Map stop panel (ported), so a
   // Routing stop's detail has the SAME editor/actions. resolveStopPhone / SmsComposeModal /
   // bumpProHistory are the shared helpers the Map path uses; saves write customer_notes by
@@ -26349,7 +26372,7 @@ function Shell() {
     // named here or the phone menu silently opens the map instead — which is what
     // happened to Manifest check in v0.54.48: the desktop nav had it, the chip
     // menu did not, and there was no way to reach it from a phone at all.
-    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'uatbench'];
+    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'uatbench'];
     setTab(next === 'diagnostics' ? 'diag' : KNOWN.includes(next) ? next : 'map');
   };
 
@@ -26463,6 +26486,7 @@ function Shell() {
                 { id: 'manifest', label: 'Manifest check', hint: 'Uline nightly vs the scan', icon: <FileCheck size={14} />, badge: moreBadge },
                 { id: 'comms', label: 'Customer emails', hint: 'Delivery-complete email program', icon: <Mail size={14} /> },
                 { id: 'flaghistory', label: 'Flag history', hint: 'Every flag, and what happened to it', icon: <Flag size={14} /> },
+                { id: 'addrhistory', label: 'Address history', hint: 'Every address that changed, and who changed it', icon: <MapPinned size={14} /> },
                 { id: 'diag', label: 'Diagnostics', hint: 'Scan health, API calls, schedule', icon: <Activity size={14} /> },
                 { id: 'debug', label: 'Debug this view', hint: 'Bundle what you are looking at', icon: <Bug size={14} /> },
                 // UAT ONLY, keyed on the HOSTNAME — the one fact about a deploy nobody can
@@ -26482,7 +26506,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} sendDenied={smsGate.reason} />}
@@ -29218,6 +29242,311 @@ function BulkOrderScreen() {
 // they live here. `badge` surfaces a problem from a screen you are NOT on — the
 // whole point of the manifest check is that you should not have to remember to
 // go and look.
+// ── ADDRESS HISTORY ──────────────────────────────────────────────────────────
+//
+// Chad, 2026-09-11, after "did we change the address on this delivery 007174397" took a
+// dozen file reads and five endpoint calls to half-answer: "can we start having a log of
+// every address that gets changed from the initial scan/enrichment ... lets build a history
+// under the more tab."
+//
+// THE QUESTION THIS SCREEN ANSWERS IN ONE TAP: type a PRO, see every time its address moved,
+// what it moved from and to, whether the order was already on a truck when it happened, and
+// whether the change came from NuVizz or from one of us. Nothing in the app could say any of
+// that — the scan detects a change to decide whether to re-enrich and then throws the finding
+// away (refresh-stops-core.mts), and the "Edit address" button wrote no trace at all.
+//
+// SORTED BY CONSEQUENCE, NOT BY CLOCK. A house number that moved this morning outranks a
+// "St"→"Street" from ten minutes ago, because one of them puts a truck at the wrong door.
+// lib/address-history.mts owns that ordering so the screen and the endpoint cannot drift.
+//
+// Formatting-only rows are recorded and HIDDEN behind a toggle. The default view is what
+// moved freight; the full log is one checkbox away, because a log that decides what you are
+// allowed to see cannot settle an argument.
+
+const ADDR_KINDS = [
+  { key: 'moved', label: 'Moved', hint: 'Different house number or zip — a different building', cls: 'bg-red-100 text-red-800 border-red-200' },
+  { key: 'cleared', label: 'Cleared', hint: 'The street line disappeared — nothing should do this', cls: 'bg-red-100 text-red-800 border-red-200' },
+  { key: 'renamed', label: 'Renamed', hint: 'Same number and zip, different street line', cls: 'bg-amber-100 text-amber-800 border-amber-200' },
+  { key: 'suite', label: 'Suite', hint: 'Only the unit/suite changed — matters on an inside delivery', cls: 'bg-amber-100 text-amber-800 border-amber-200' },
+  { key: 'region', label: 'City/State', hint: 'City or state changed with the street intact', cls: 'bg-sky-100 text-sky-800 border-sky-200' },
+  { key: 'filled', label: 'Filled in', hint: 'We had no street line and now we do', cls: 'bg-slate-100 text-slate-700 border-slate-200' },
+  { key: 'formatting', label: 'Formatting', hint: 'The text moved, the freight did not', cls: 'bg-slate-100 text-slate-500 border-slate-200' },
+];
+const ADDR_KIND = Object.fromEntries(ADDR_KINDS.map((k) => [k.key, k]));
+
+function AddrKindBadge({ kind }) {
+  const k = ADDR_KIND[kind] || { label: kind, cls: 'bg-slate-100 text-slate-700 border-slate-200', hint: '' };
+  return <span title={k.hint} className={`inline-block px-1.5 py-0.5 rounded border text-[10px] font-bold uppercase tracking-wide whitespace-nowrap ${k.cls}`}>{k.label}</span>;
+}
+
+/** "NuVizz" vs a person. The single most-asked thing about any row on this screen. */
+function AddrSourceChip({ row }) {
+  const ours = row.source === 'override' || row.source === 'override-reset';
+  return (
+    <span
+      title={ours
+        ? `Saved in this app${row.actor ? ` by ${row.actor}` : ''}${row.source === 'override-reset' ? ' (override cleared — back on NuVizz’s address)' : ''}`
+        : 'Observed on a scan — NuVizz’s own address for the order changed'}
+      className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap ${ours ? 'bg-blue-100 text-blue-800' : 'bg-slate-100 text-slate-600'}`}
+    >{ours ? (row.source === 'override-reset' ? 'Us · reset' : 'Us') : 'NuVizz'}</span>
+  );
+}
+
+const addrLine = (a) => [a?.addr1, a?.addr2].filter(Boolean).join(' · ');
+const addrTail = (a) => [a?.city, a?.state, a?.zip].filter(Boolean).join(', ');
+
+/** before → after, with the tail only when it is part of what changed (otherwise it is the
+ *  same city and zip printed twice, which is how a diff stops reading as a diff). */
+// Declared OUTSIDE AddrDiff on purpose: a component defined inside a render body is a new
+// component TYPE every render, so React unmounts and remounts it — a thousand rows would pay
+// for that twice each. Cheap to get wrong, invisible when you do.
+function AddrSide({ a, tone, showTail }) {
+  return (
+    <div className="min-w-0">
+      <div className={`break-words ${tone}`}>{addrLine(a) || <span className="italic text-slate-400">(no street line)</span>}</div>
+      {showTail && <div className={`text-[11px] break-words ${tone}`}>{addrTail(a)}</div>}
+    </div>
+  );
+}
+
+function AddrDiff({ row, stacked }) {
+  const tailChanged = (row.fields || []).some((f) => f === 'city' || f === 'state' || f === 'zip');
+  if (stacked) {
+    return (
+      <div className="space-y-1">
+        <div className="flex items-start gap-1.5">
+          <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400 w-8 shrink-0 pt-0.5">From</span>
+          <AddrSide a={row.before} showTail={tailChanged} tone="text-slate-500 line-through decoration-slate-300" />
+        </div>
+        <div className="flex items-start gap-1.5">
+          <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400 w-8 shrink-0 pt-0.5">To</span>
+          <AddrSide a={row.after} showTail={tailChanged} tone="text-slate-900 font-semibold" />
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-start gap-2 min-w-0">
+      <AddrSide a={row.before} showTail={tailChanged} tone="text-slate-500 line-through decoration-slate-300" />
+      <ArrowRight size={13} className="shrink-0 mt-0.5 text-slate-400" />
+      <AddrSide a={row.after} showTail={tailChanged} tone="text-slate-900 font-semibold" />
+    </div>
+  );
+}
+
+/** Where it was when it moved. An address that changes under a BUILT route is the urgent
+ *  case — the truck is loaded for the old one — so the route is never just decoration. */
+function AddrWhere({ row }) {
+  if (!row.planned && !row.route) return <span className="text-[11px] text-slate-400">un-planned</span>;
+  return (
+    <span className={`inline-block px-1.5 py-0.5 rounded text-[11px] font-semibold whitespace-nowrap ${row.planned ? 'bg-orange-100 text-orange-800' : 'bg-slate-100 text-slate-600'}`}
+      title={row.planned ? 'Already planned onto this route when the address changed' : 'Not on a route at the time'}>
+      {row.route || 'planned'}
+    </span>
+  );
+}
+
+const addrTime = (iso) => {
+  const t = Date.parse(String(iso || ''));
+  if (!Number.isFinite(t)) return '';
+  return new Date(t).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+};
+
+function AddressHistoryScreen() {
+  const viewportWidth = useViewportWidth();
+  const isMobile = viewportWidth < MOBILE_BREAKPOINT;
+  const today = todayInET();
+  const [sel, setSel] = React.useState({ kind: 'days', days: 14 });
+  const range = React.useMemo(() => resolveRange(sel, today), [sel, today]);
+  const [stopQ, setStopQ] = React.useState('');
+  const [kind, setKind] = React.useState(null);          // null = every kind
+  const [source, setSource] = React.useState(null);      // null = both
+  const [showNoise, setShowNoise] = React.useState(false);
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [err, setErr] = React.useState(null);
+
+  // The stop box is a SEARCH, not a filter of what is on screen: a PRO that changed outside
+  // the current window must still be findable, so typing one widens the read to the cap.
+  const searching = stopQ.trim().length > 0;
+  const qs = React.useMemo(() => {
+    const p = new URLSearchParams();
+    if (searching) { p.set('stop', stopQ.trim()); p.set('days', String(MAX_RANGE_DAYS)); }
+    else { p.set('from', range.from || today); p.set('to', range.to || today); }
+    if (kind) p.set('kind', kind);
+    if (source) p.set('source', source);
+    // A PRO SEARCH SHOWS EVERYTHING. Hiding formatting rows is right on a 700-stop window and
+    // wrong the moment somebody asks about ONE order: "did we change 007174397" answered with
+    // "no address changed" because the only row was a suite moving between lines is precisely
+    // the confident-and-wrong answer this feature was built to stop giving.
+    if (showNoise || searching) p.set('all', '1');
+    return p.toString();
+  }, [searching, stopQ, range.from, range.to, today, kind, source, showNoise]);
+
+  const load = React.useCallback(async () => {
+    setLoading(true); setErr(null);
+    try {
+      const r = await apiFetch(`/.netlify/functions/address-history?${qs}`);
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'read failed');
+      setData(j);
+    } catch (e) { setErr(String(e.message || e)); } finally { setLoading(false); }
+  }, [qs]);
+  React.useEffect(() => { const t = setTimeout(load, searching ? 300 : 0); return () => clearTimeout(t); }, [load, searching]);
+
+  const rows = data?.rows || [];
+  const sum = data?.summary || {};
+  // TRUE ONLY WHEN THERE REALLY ARE ROWS BEING WITHHELD. The first cut of this was inverted —
+  // it read "no formatting rows exist" — so an empty screen with the toggle ON still told the
+  // dispatcher that formatting differences were hidden, i.e. the one thing capable of turning
+  // "nothing happened" into "something is hidden from me" said so when nothing was.
+  const formattingHidden = !showNoise && !searching && Number(sum.formatting || 0) > 0;
+
+  const filters = (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <button onClick={() => setKind(null)} className={RANGE_PILL(!kind)}>All changes</button>
+      {ADDR_KINDS.filter((k) => showNoise || k.key !== 'formatting').map((k) => (
+        <button key={k.key} onClick={() => setKind(kind === k.key ? null : k.key)} title={k.hint}
+          className={RANGE_PILL(kind === k.key)}>
+          {k.label}{Number(sum[k.key] || 0) > 0 ? ` ${sum[k.key]}` : ''}
+        </button>
+      ))}
+      <span className="w-px h-6 bg-slate-200 mx-1" />
+      <button onClick={() => setSource(source === 'scan' ? null : 'scan')} className={RANGE_PILL(source === 'scan')} title="Only changes NuVizz made to the order">NuVizz</button>
+      <button onClick={() => setSource(source === 'override' ? null : 'override')} className={RANGE_PILL(source === 'override')} title="Only addresses saved in this app">Us</button>
+    </div>
+  );
+
+  return (
+    <div className="flex-1 overflow-y-auto bg-slate-50">
+      <div className={`${SCREEN_DASH} p-4 sm:p-6 space-y-4`}>
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="min-w-0">
+            <h1 className="text-xl font-bold text-slate-900">Address history</h1>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Every address that changed after we first scanned it — what it was, what it became, and whether it was NuVizz or us.
+            </p>
+          </div>
+          <button onClick={load} className="rounded-lg border px-3 py-1.5 text-xs font-semibold bg-white hover:bg-slate-50 min-h-[40px]">Refresh</button>
+        </div>
+
+        {/* THE QUESTION THAT STARTED THIS, as the first control on the screen. */}
+        <div className="rounded-xl border bg-white p-2 flex items-center gap-2">
+          <Search size={14} className="text-slate-400 shrink-0 ml-1" />
+          <input
+            value={stopQ}
+            onChange={(e) => setStopQ(e.target.value)}
+            placeholder="Find one order — e.g. 007174397"
+            aria-label="Find an order by PRO or stop number"
+            className="flex-1 min-w-0 text-sm min-h-[40px] px-1 focus:outline-none"
+          />
+          {stopQ && <button onClick={() => setStopQ('')} className="text-xs text-slate-500 hover:text-slate-800 px-2 min-h-[40px]">Clear</button>}
+        </div>
+
+        {searching
+          ? <div className="text-[11px] text-slate-500">Searching the last {MAX_RANGE_DAYS} days for {stopQ.trim()} — every change including formatting, and the date range is ignored while a PRO is typed.</div>
+          : (isMobile
+            ? <HistoryRangeBarMobile sel={sel} setSel={setSel} range={range} today={today} />
+            : <HistoryRangeBarDesktop sel={sel} setSel={setSel} range={range} today={today} />)}
+
+        {filters}
+
+        {err && <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3">{err}</div>}
+        {loading && <div className="text-xs text-slate-500">Loading…</div>}
+
+        {!loading && !err && !rows.length && (
+          <div className="rounded-xl border bg-white p-6 text-center">
+            <div className="text-sm font-semibold text-slate-700">No address changed{searching ? ` for ${stopQ.trim()}` : ' in this window'}.</div>
+            <div className="text-xs text-slate-500 mt-1">
+              {formattingHidden
+                ? `${sum.formatting} formatting-only difference${sum.formatting === 1 ? '' : 's'} ${sum.formatting === 1 ? 'is' : 'are'} hidden — turn them on below to see the complete log.`
+                : 'Nothing was recorded at all — not even a formatting difference.'}
+            </div>
+          </div>
+        )}
+
+        {!loading && !err && !!rows.length && (
+          isMobile ? <AddressHistoryListMobile rows={rows} /> : <AddressHistoryTable rows={rows} />
+        )}
+
+        <label className="flex items-center gap-2 text-xs text-slate-600 pt-1">
+          <input type="checkbox" checked={showNoise} onChange={(e) => { setShowNoise(e.target.checked); setKind(null); }} className="w-4 h-4" />
+          Show formatting-only changes ({sum.formatting || 0}) — “ST” vs “STREET”, a suite moving between lines
+        </label>
+
+        <div className="text-[11px] text-slate-400">
+          Read straight from our own ledger. Zero NuVizz calls — this screen never spends a vendor call.
+          {data?.truncated ? ' Showing the first 1,000 rows; narrow the range to see the rest.' : ''}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// DESKTOP. A table, because the question is comparative — scanning down a column of befores
+// against a column of afters is the whole job, and there is room for it.
+function AddressHistoryTable({ rows }) {
+  return (
+    <div className="rounded-xl border bg-white overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="bg-slate-50 text-slate-500">
+            <tr className="text-left">
+              <th className="px-3 py-2 font-semibold whitespace-nowrap">What</th>
+              <th className="px-3 py-2 font-semibold whitespace-nowrap">Order</th>
+              <th className="px-3 py-2 font-semibold">Address</th>
+              <th className="px-3 py-2 font-semibold whitespace-nowrap">Where</th>
+              <th className="px-3 py-2 font-semibold whitespace-nowrap">Who</th>
+              <th className="px-3 py-2 font-semibold whitespace-nowrap">When</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={`${r.stopNbr}-${r.at}-${i}`} className="border-t align-top hover:bg-slate-50">
+                <td className="px-3 py-2"><AddrKindBadge kind={r.kind} /></td>
+                <td className="px-3 py-2">
+                  <div className="font-mono font-semibold text-slate-800 whitespace-nowrap">{r.stopNbr}</div>
+                  {r.businessName && <div className="text-[11px] text-slate-500 max-w-[180px] truncate" title={r.businessName}>{r.businessName}</div>}
+                </td>
+                <td className="px-3 py-2 min-w-[280px]"><AddrDiff row={r} /></td>
+                <td className="px-3 py-2"><AddrWhere row={r} /></td>
+                <td className="px-3 py-2"><AddrSourceChip row={r} /></td>
+                <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{addrTime(r.at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// PHONE. Not the table with smaller text — an address does not fit beside another address at
+// 360px, and a sideways-scrolling table is not something a dispatcher reads standing on a
+// dock. One card per change, before over after, everything in ONE flow column so a long
+// business name pushes what is below it DOWN instead of over it.
+function AddressHistoryListMobile({ rows }) {
+  return (
+    <div className="space-y-2">
+      {rows.map((r, i) => (
+        <div key={`${r.stopNbr}-${r.at}-${i}`} className="rounded-xl border bg-white p-3 space-y-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <AddrKindBadge kind={r.kind} />
+            <AddrSourceChip row={r} />
+            <AddrWhere row={r} />
+            <span className="ml-auto text-[11px] text-slate-400 whitespace-nowrap">{addrTime(r.at)}</span>
+          </div>
+          <div className="min-w-0">
+            <div className="font-mono text-xs font-semibold text-slate-800 break-all">{r.stopNbr}</div>
+            {r.businessName && <div className="text-[11px] text-slate-500 break-words">{r.businessName}</div>}
+          </div>
+          <div className="text-xs"><AddrDiff row={r} stacked /></div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function MoreMenu({ items, activeId, onPick, badge = 0 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);

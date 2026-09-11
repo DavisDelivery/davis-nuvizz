@@ -62,6 +62,7 @@ const SCREENS = [
   { key: 'manifest', label: 'Manifest check', nav: /manifest check/i, inMore: true },
   { key: 'comms', label: 'Customer emails', nav: /customer emails/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
+  { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },
   { key: 'diagnostics', label: 'Diagnostics', nav: /diagnostics/i },
   // Both open as overlays rather than swapping `tab`, which is why they were missed.
   { key: 'messages', label: 'Messages', nav: /^messages/i },
@@ -163,6 +164,33 @@ const PROBES = {
         await page.waitForTimeout(800);
         // The drawer is proven open by a control only it renders.
         return page.getByRole('button', { name: /edit|customer #|notes/i }).first().isVisible().catch(() => false);
+      },
+    },
+  ],
+  addrhistory: [
+    {
+      // Same furniture-after-a-tap blind spot as Flag history: the calendar is two full-width
+      // date fields that only exist once opened, on a screen that also carries a wrapping row
+      // of kind pills and a search box above them.
+      name: 'Date picker open',
+      open: async (page) => {
+        const btn = page.getByRole('button', { name: /pick a day or range/i }).first();
+        if (!(await btn.isVisible().catch(() => false))) return false;
+        await btn.click();
+        await page.waitForTimeout(400);
+        return page.getByLabel(/^to date$/i).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      // Typing a PRO swaps the range bar out for a one-line note and re-reads — a different
+      // layout from the one at rest, and the one a dispatcher actually uses.
+      name: 'PRO search',
+      open: async (page) => {
+        const box = page.getByLabel(/find an order by pro/i).first();
+        if (!(await box.isVisible().catch(() => false))) return false;
+        await box.fill('007174397');
+        await page.waitForTimeout(900);
+        return page.getByRole('button', { name: /^clear$/i }).first().isVisible().catch(() => false);
       },
     },
   ],
@@ -285,6 +313,35 @@ function stubRoutes(page, emailHtml) {
       },
       recorded: null,
       reconciliation: { openAtSnapshot: 31, closedAfter: 24, stillOpen: 7, lateCloseRate: 0.77 },
+    });
+    // ADDRESS HISTORY — populated, and populated with the WORST rows rather than tidy ones:
+    // a 44-character business name, a street line that wraps twice at 360px, a suite that
+    // vanished, and a badge row carrying kind + source + route + a timestamp. An empty screen
+    // measures a header and proves nothing; the rows are where a collision would live.
+    if (u.includes('address-history')) return R({
+      ok: true, nuvizzCalls: 0,
+      range: { from: '2026-08-28', to: '2026-09-11', days: 15, clamped: null },
+      summary: { moved: 1, renamed: 1, suite: 1, region: 0, filled: 0, cleared: 0, formatting: 1, total: 4 },
+      matched: 4, truncated: false,
+      days: [{ date: '2026-09-11', count: 2 }, { date: '2026-09-10', count: 2 }],
+      rows: [
+        { at: '2026-09-11T14:02:11.000Z', date: '2026-09-11', stopNbr: 'ESTES-0538243875', businessName: 'TITAN ELECTRIC COMPANIES QTS DATA CENTER', source: 'scan', kind: 'moved',
+          before: { addr1: '3190 REPS MILLER RD STE 200', addr2: null, city: 'NORCROSS', state: 'GA', zip: '30071' },
+          after: { addr1: '6725 JIMMY CARTER BLVD BLDG 400', addr2: 'DOCK 7', city: 'PEACHTREE CORNERS', state: 'GA', zip: '30092' },
+          fields: ['addr1', 'addr2', 'city', 'zip'], route: 'NOR 2', planned: true, matchKey: null, actor: null },
+        { at: '2026-09-10T11:13:18.479Z', date: '2026-09-10', stopNbr: '007174397', businessName: 'LED ENERGY PLUS', source: 'scan', kind: 'renamed',
+          before: { addr1: '5965 PEACHTREE CORS E STE B3', addr2: null, city: 'NORCROSS', state: 'GA', zip: '30071' },
+          after: { addr1: '5965 PEACHTREE STREET', addr2: null, city: 'NORCROSS', state: 'GA', zip: '30071' },
+          fields: ['addr1'], route: 'NOR 2', planned: true, matchKey: null, actor: null },
+        { at: '2026-09-10T09:41:02.000Z', date: '2026-09-10', stopNbr: '007174402', businessName: 'ACME SUPPLY COMPANY OF NORTH GEORGIA', source: 'override', kind: 'suite',
+          before: { addr1: '4310 INDUSTRIAL ACCESS RD STE 200', addr2: null, city: 'DORAVILLE', state: 'GA', zip: '30360' },
+          after: { addr1: '4310 INDUSTRIAL ACCESS RD STE 410', addr2: 'RECEIVING AROUND BACK', city: 'DORAVILLE', state: 'GA', zip: '30360' },
+          fields: ['addr1', 'addr2'], route: null, planned: false, matchKey: 'acme__4310__doraville__30360', actor: 'Jessica' },
+        { at: '2026-09-11T08:15:00.000Z', date: '2026-09-11', stopNbr: 'RA59223377', businessName: 'FEDEX OFFICE', source: 'override-reset', kind: 'formatting',
+          before: { addr1: '1770 SATELLITE BLVD STE 4', addr2: null, city: 'BUFORD', state: 'GA', zip: '30518' },
+          after: { addr1: '1770 SATELLITE BLVD', addr2: 'STE 4', city: 'BUFORD', state: 'GA', zip: '30518' },
+          fields: ['addr1'], route: 'BUF 1', planned: true, matchKey: null, actor: 'Chad' },
+      ],
     });
     if (u.includes('manifest-check')) return R({ ok: true, days: [], missing: [], summary: { missing: 0 } });
     // The Uline forecast card, populated: a tonight line, three outlook rows (one closed), scored and

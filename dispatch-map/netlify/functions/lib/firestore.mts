@@ -20,6 +20,9 @@
 
 import { fetchWithDeadline } from './fetch-deadline.mts';
 import crypto from 'node:crypto';
+// Pure + dependency-free (matchKey.js only), so importing it here cannot drag anything into
+// this module's cold-start path. See lib/address-history.mts for what it classifies and why.
+import { buildAddressChangeRow, addressHistoryEnabled } from './address-history.mts';
 
 const FIRESTORE_BASE = 'https://firestore.googleapis.com/v1';
 
@@ -551,17 +554,47 @@ export async function writeStops(
   const existingByNbr = new Map<string, any>(existing.map((d: any) => [String(d._id), d]));
   const conc = 12;
   let i = 0;
+  // THE ADDRESS LOG WATCHES FROM HERE, and this is the reason it is here rather than in the
+  // scan that calls it (v1.20.0): `existing` is already listed at the top of this function, so
+  // the before/after comparison costs NOTHING — no extra read — and EVERY write path is
+  // covered by construction. The list-discovery scan and the cold number-probe scan are the
+  // only two callers today; a third could not forget to wire itself in.
+  //
+  // Recorded, never acted on: nothing below changes what gets written. A log that can alter
+  // the board is not a log.
+  const addrRows: any[] = [];
+  const logAddresses = addressHistoryEnabled();
+
   const writeOne = async () => {
     while (i < withNbr.length) {
       const s = withNbr[i++];
+      const ex = existingByNbr.get(String(s.stopNbr));
       // Re-apply any confirmed write stamped AFTER the scan's earlier snapshot (see graceFn
       // note in the signature) — `existing` was listed at THIS function's entry, so it sees
       // stamps the scan's own merge pass could not.
-      if (opts.graceFn) { const ex = existingByNbr.get(String(s.stopNbr)); if (ex) { try { opts.graceFn(s, ex); } catch { /* hold is best-effort */ } } }
+      if (opts.graceFn && ex) { try { opts.graceFn(s, ex); } catch { /* hold is best-effort */ } }
+      if (logAddresses && ex) {
+        try {
+          const row = buildAddressChangeRow({
+            at: scannedAt, date: dateStr, stopNbr: s.stopNbr, businessName: s.businessName,
+            source: 'scan',
+            before: { addr1: ex.addr1, addr2: ex.addr2, city: ex.city, state: ex.state, zip: ex.zip },
+            after: { addr1: s.addr1, addr2: s.addr2, city: s.city, state: s.state, zip: s.zip },
+            route: s.routeName ?? s.loadNbr ?? ex.routeName ?? ex.loadNbr,
+            planned: s.isPlanned === true || ex.isPlanned === true,
+          });
+          if (row) addrRows.push(row);
+        } catch { /* the log never breaks the write */ }
+      }
       await setDoc(`${base}/stops/${s.stopNbr}`, { ...s, last_scanned_at: scannedAt });
     }
   };
   await Promise.all(Array.from({ length: conc }, writeOne));
+  // After the stops are safely written, not before: a log row claiming a change that then
+  // failed to land would be the "never report an intent as an outcome" failure in miniature.
+  // recordAddressChanges is best-effort and returns early with no read when there is nothing
+  // to say, so a quiet day costs zero.
+  if (addrRows.length) await recordAddressChanges(tenant, dateStr, addrRows);
 
   // Counts reflect the FULL index = freshly scanned + preserved (the feed we
   // didn't re-scan this run), split by planned vs unplanned.
@@ -1378,6 +1411,55 @@ export async function readPlanVerdicts(tenant: string, dateStr: string): Promise
   if (!isFirestoreEnabled()) return [];
   try {
     const doc = await getDoc(planVerdictPath(tenant, dateStr));
+    if (!doc) return [];
+    const arr = JSON.parse(doc.rowsJson || '[]');
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+
+// ── The address-change log (v1.20.0) ─────────────────────────────────────────
+//
+// Chad: "can we start having a log of every address that gets changed from the initial
+// scan/enrichment". One document per tenant-day holding the day's rows, newest first —
+// the same shape as the plan-verdict ledger above, for the same reason: the readers ask
+// "what happened on this day", and a document per day answers that in one get.
+//
+// The rows are CLASSIFIED and filtered before they get here (lib/address-history.mts); this
+// layer only stores them. A scan-over-scan measurement on two real board days (2026-09-10
+// and 2026-09-11, 90 stops carried across both) produced zero rows, so the cap is headroom
+// for a bad day rather than a number this is expected to reach.
+const ADDRESS_CHANGE_MAX = 800;
+const addressChangePath = (tenant: string, dateStr: string) => `${OPS_COLLECTION}/addr_changes__${tenantKey(tenant)}__${dateStr}`;
+
+/** Append rows to the day's address log (newest first). BEST-EFFORT BY DESIGN: a log that
+ *  can break a scan is worse than no log, so every failure swallows and reports false. */
+export async function recordAddressChanges(tenant: string, dateStr: string, rows: any[]): Promise<boolean> {
+  if (!isFirestoreEnabled() || !Array.isArray(rows) || !rows.length) return false;
+  try {
+    const prior = await readAddressChanges(tenant, dateStr);
+    // DE-DUPE ON RE-OBSERVATION. The scan runs every fifteen minutes and compares the stored
+    // board row against the row it is about to write. The first scan after a change records
+    // it and then WRITES the new address — so the next scan sees no difference and says
+    // nothing. But a scan that fails to write (a thrown writeStops, a capped run) leaves the
+    // old row in place, and the next scan would file the identical change again. Keyed on the
+    // stop plus the exact before/after text, so a real second move still lands.
+    const seen = new Set(prior.map((r: any) => `${r?.stopNbr}|${r?.before?.addr1}|${r?.after?.addr1}|${r?.kind}`));
+    const fresh = rows.filter((r) => !seen.has(`${r?.stopNbr}|${r?.before?.addr1}|${r?.after?.addr1}|${r?.kind}`));
+    if (!fresh.length) return false;
+    const next = [...fresh, ...prior].slice(0, ADDRESS_CHANGE_MAX);
+    await setDoc(addressChangePath(tenant, dateStr), {
+      tenant: tenantKey(tenant), date: dateStr, updated_at: new Date().toISOString(),
+      count: next.length, rowsJson: JSON.stringify(next),
+    } as any);
+    return true;
+  } catch { return false; }
+}
+
+/** The day's address log, newest first; [] when none was written or the read fails. */
+export async function readAddressChanges(tenant: string, dateStr: string): Promise<any[]> {
+  if (!isFirestoreEnabled()) return [];
+  try {
+    const doc = await getDoc(addressChangePath(tenant, dateStr));
     if (!doc) return [];
     const arr = JSON.parse(doc.rowsJson || '[]');
     return Array.isArray(arr) ? arr : [];
