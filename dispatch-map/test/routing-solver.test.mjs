@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  solveRouting, twoOpt, nearestNeighbor, pathCost,
+  solveRouting, twoOpt, nearestNeighbor, pathCost, pinnedSweep, pinnedPathCost, townsOf, SWEEP_MODE, TOWN_RADIUS_METERS,
 } from '../netlify/functions/lib/routing-solver.mts';
 
 // Build a symmetric matrix from 1-D positions (depot first). cost = |Δpos|.
@@ -154,4 +154,116 @@ test('Chunk B: a dense 12+ co-located cluster routes with ZERO raw spill (Phase 
   assert.equal(out.unassigned.length, 0, `expected 0 raw spill, got ${JSON.stringify(out.unassigned)}`);
   const served = out.routes.reduce((a, r) => a + r.orderedStopIds.length, 0);
   assert.equal(served, N, 'every co-located stop must be assigned');
+});
+
+
+// ── FARTHEST_FIRST / CLOSEST_FIRST are a sweep, not a sort (Chad, 2026-09-10) ──────────────
+// "it should be pretty linear from furthest point out to the last but this is jumping all
+// around." Both were a sort by distance from the depot; towns at one radius in different
+// directions interleaved. Now the far stop is pinned first, the depot last, and the path
+// between them is optimized — the same sweep the client's re-sequence picker runs.
+
+// Symmetric plane matrix from [x, y] points (depot first). cost = straight-line distance.
+function planeMatrix(points) {
+  const d = points.map((p) => points.map((q) => Math.hypot(p[0] - q[0], p[1] - q[1])));
+  return { durationSec: d, distanceMeters: d };
+}
+// Two arms leaving the depot at right angles, at nearly the same radii: A north, B east.
+const ARM_STOPS = [
+  stop('A1', 1, 0), stop('B1', 0, 1.05), stop('A2', 2, 0), stop('B2', 0, 2.05),
+  stop('A3', 3, 0), stop('B3', 0, 3.05), stop('A4', 4, 0), stop('B4', 0, 4.05),
+];
+const ARM_MATRIX = planeMatrix([[0, 0], ...ARM_STOPS.map((s) => [s.lat, s.lng])]);
+const armSwitches = (ids) => ids.filter((id, i) => i > 0 && id[0] !== ids[i - 1][0]).length;
+
+test('FARTHEST_FIRST: the far stop first, then one arm, then the other — not alternating arms', () => {
+  const out = solveRouting({ stops: ARM_STOPS, trucks: [truck()], depot: { lat: 0, lng: 0 }, matrix: ARM_MATRIX, strategy: 'FARTHEST_FIRST', objectiveWeights: { distance: 1, time: 1, balance: 0 } });
+  const ids = out.routes[0].orderedStopIds;
+  assert.deepEqual([...ids].sort(), ['A1', 'A2', 'A3', 'A4', 'B1', 'B2', 'B3', 'B4']);
+  assert.equal(ids[0], 'B4');
+  assert.equal(armSwitches(ids), 1, `arms interleaved: ${ids.join(' → ')}`);
+});
+
+test('CLOSEST_FIRST: the near stop first, the far stop last, arms kept together', () => {
+  const out = solveRouting({ stops: ARM_STOPS, trucks: [truck()], depot: { lat: 0, lng: 0 }, matrix: ARM_MATRIX, strategy: 'CLOSEST_FIRST', objectiveWeights: { distance: 1, time: 1, balance: 0 } });
+  const ids = out.routes[0].orderedStopIds;
+  assert.deepEqual([...ids].sort(), ['A1', 'A2', 'A3', 'A4', 'B1', 'B2', 'B3', 'B4']);
+  assert.equal(ids[0], 'A1');
+  assert.equal(ids[ids.length - 1], 'B4');
+  assert.equal(armSwitches(ids), 1, `arms interleaved: ${ids.join(' → ')}`);
+});
+
+test('the sweep reads a Google (asymmetric) matrix in the driving direction', () => {
+  // Line depot(0) A(1) B(2) C(3), but B→A is a 100-unit detour (one-way road). Farthest first
+  // pins C first and the depot last; the cheap path is C→A→B→depot (2+1+2=5), and a reader
+  // that assumed symmetry would hand back C→B→A (1+100+1=102).
+  const cost = [
+    [0, 1, 2, 3],
+    [1, 0, 1, 2],
+    [2, 100, 0, 1],
+    [3, 2, 1, 0],
+  ];
+  const order = pinnedSweep([1, 2, 3], cost, 'homeward');
+  assert.deepEqual(order, [3, 1, 2]);
+  assert.equal(pinnedPathCost(order.slice(1), 3, 0, cost), 5);
+});
+
+test('the sweep on one stop, on a tie for farthest, and on a ring, returns every node exactly once', () => {
+  assert.deepEqual(pinnedSweep([2], ARM_MATRIX.distanceMeters, 'homeward'), [2]);
+  assert.deepEqual(pinnedSweep([], ARM_MATRIX.distanceMeters, 'outward'), []);
+  const ring = Array.from({ length: 6 }, (_, i) => [Math.sin((i * Math.PI) / 3), Math.cos((i * Math.PI) / 3)]);
+  const m = planeMatrix([[0, 0], ...ring]).distanceMeters;
+  for (const dir of ['homeward', 'outward']) {
+    const o = pinnedSweep([1, 2, 3, 4, 5, 6], m, dir);
+    assert.deepEqual([...o].sort(), [1, 2, 3, 4, 5, 6]);
+    // Every node ties for nearest AND farthest, so node 1 is both; and a sweep walks the ring
+    // one way round (each step to a neighbour), which a sort on tied costs would not do.
+    assert.equal(o[0], 1);
+    for (let i = 1; i < o.length; i++) assert.ok(Math.abs(o[i] - o[i - 1]) === 1 || Math.abs(o[i] - o[i - 1]) === 5, `not a walk round the ring: ${o.join(',')}`);
+  }
+  // And the node order handed in does not change the answer.
+  assert.deepEqual(pinnedSweep([6, 2, 4, 1, 5, 3], m, 'homeward'), pinnedSweep([1, 2, 3, 4, 5, 6], m, 'homeward'));
+  assert.deepEqual(pinnedSweep(ARM_STOPS.map((_, i) => 8 - i), ARM_MATRIX.distanceMeters, 'homeward'), pinnedSweep(ARM_STOPS.map((_, i) => i + 1), ARM_MATRIX.distanceMeters, 'homeward'));
+});
+
+
+// ── One town at a time (Chad, 2026-09-10) — the engine keeps the same rule as the card ──────
+// The JEFF geography from the client suite, flattened to metres so the plane matrix stands in
+// for a haversine one. Stop ids carry the town; Nelson is one stop two miles north of Ball
+// Ground and chains into it under the 2.5-mile rule.
+const JEFF_M = [
+  ['ELLIJAY', 34.6948, -84.4822], ['JASPER-1', 34.4679, -84.4291], ['JASPER-2', 34.45, -84.42], ['JASPER-3', 34.47, -84.40],
+  ['CANTON', 34.25, -84.49], ['TATE', 34.42, -84.38], ['BG-1', 34.34, -84.38], ['BG-2', 34.335, -84.375], ['BG-3', 34.33, -84.37],
+  ['BG-4', 34.32, -84.36], ['BG-5', 34.32, -84.36], ['BG-6', 34.31, -84.35], ['NELSON', 34.37, -84.37], ['HWY53', 34.43, -84.25], ['BG-7', 34.35, -84.34],
+];
+const flat = ([id, lat, lng]) => ({ id, x: lng * Math.cos((34.4 * Math.PI) / 180) * 111320, y: lat * 111320 });
+const JEFF_PTS = [flat(['DEPOT', 34.147791, -83.960911]), ...JEFF_M.map(flat)];
+const JEFF_COST = JEFF_PTS.map((p) => JEFF_PTS.map((q) => Math.hypot(p.x - q.x, p.y - q.y)));
+const areaOfId = (id) => (id.startsWith('BG') || id === 'NELSON' ? 'BG' : id.replace(/-\d$/, ''));
+const areaRunsOf = (order) => order.map((n) => areaOfId(JEFF_PTS[n].id)).filter((a, i, arr) => i === 0 || a !== arr[i - 1]);
+
+test('FARTHEST_FIRST keeps a town whole: Ellijay first, Ball Ground in one visit, Canton not a spur through it', () => {
+  assert.equal(SWEEP_MODE, 'towns');
+  assert.equal(TOWN_RADIUS_METERS, 4000);
+  const nodes = JEFF_M.map((_, i) => i + 1);
+  const out = pinnedSweep(nodes, JEFF_COST, 'homeward');
+  assert.deepEqual([...out].sort((a, b) => a - b), nodes);
+  assert.equal(JEFF_PTS[out[0]].id, 'ELLIJAY');
+  const runs = areaRunsOf(out);
+  assert.equal(new Set(runs).size, runs.length, `a town is visited twice: ${runs.join(' → ')}`);
+  // The pure sweep on the same matrix splits Ball Ground around Canton — the switch's other setting.
+  const pure = pinnedSweep(nodes, JEFF_COST, 'homeward', 'pure');
+  const canton = pure.findIndex((n) => JEFF_PTS[n].id === 'CANTON');
+  assert.equal(areaOfId(JEFF_PTS[pure[canton - 1]].id), 'BG');
+  assert.equal(areaOfId(JEFF_PTS[pure[canton + 1]].id), 'BG');
+  // Towns cost a little: within 5% of the pure path.
+  assert.ok(pinnedPathCost(out.slice(1), out[0], 0, JEFF_COST) <= 1.05 * pinnedPathCost(pure.slice(1), pure[0], 0, JEFF_COST));
+});
+
+test('townsOf on the JEFF matrix: Ball Ground and Nelson chain, the three Jasper stops chain, the rest stand alone', () => {
+  const towns = townsOf(JEFF_M.map((_, i) => i + 1), JEFF_COST, TOWN_RADIUS_METERS);
+  const named = towns.map((t) => t.map((n) => JEFF_PTS[n].id).join('+'));
+  assert.ok(named.includes('JASPER-1+JASPER-2+JASPER-3'), named.join(' | '));
+  assert.ok(named.includes('BG-1+BG-2+BG-3+BG-4+BG-5+BG-6+NELSON+BG-7'), named.join(' | '));
+  for (const lone of ['ELLIJAY', 'CANTON', 'TATE', 'HWY53']) assert.ok(named.includes(lone), `${lone} should be its own town`);
 });
