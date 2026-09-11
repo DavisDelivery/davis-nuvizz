@@ -2,6 +2,38 @@
 
 Project-level guidance for Claude Code in this repository.
 
+## NEVER GUESS. ANSWER FROM THE CODE. SAY SO WHEN YOU CANNOT. (Chad, Sep 2026)
+
+- Chad: **"we are never to guess — we always answer from the code, and if you
+  can't figure it out from the code you clearly state it."** This is the
+  governing rule of this file. Every section below is a special case of it.
+- **Three clauses, in order, and the third is not optional:**
+  1. **Never guess.** Not once, not "just to get started", not as a
+     placeholder while you go check. A guess offered as an answer is the
+     worst output this repo produces, because Chad cannot tell it from a
+     verified one.
+  2. **Answer from the code.** Open the file, run the function, read the
+     stored document, quote the line. The answer is a citation — `file:line`,
+     a returned value, a test you ran — not a chain of reasoning that ends
+     somewhere plausible.
+  3. **When the code cannot answer it, say that plainly, first.** "I cannot
+     tell from the code whether X" is a complete and correct answer. Follow
+     it with what WOULD settle it — the exact endpoint, document, or call,
+     and its cost — and then STOP and wait. Do not proceed under an
+     assumption, and do not bury the gap under a fix nobody asked for.
+- **The tell that you are about to break this rule**: the sentence you are
+  writing begins "it should", "that would be", "most likely", "probably", or
+  "it looks like". Every one of those is a guess wearing an answer's clothes.
+  Delete it and go read the code, or say you cannot tell.
+- **"I can't tell from here" is not a failure — it is half of the answer.**
+  The other half is the question. Ask it. Asking is always available, always
+  cheap, and always better than a confident wrong answer (see *ASK FOR THE
+  CALL* below, and *NEVER REASON AT ME* for what this cost when it was
+  ignored).
+- **This binds even when a guess would be convenient** — when the check is
+  blocked, when a permission is missing, when it is late. A blocked check is
+  a thing to report, not a licence to infer.
+
 ## NuVizz API — HARD RULE (cost control)
 
 - **NEVER trigger a full / number-probe scan, or any forced/explicit
