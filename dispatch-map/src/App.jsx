@@ -128,7 +128,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '1.15.0';
+const APP_VERSION = '1.15.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -199,6 +199,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.15.1', 'A PINCHED DAY AND AN EARLY DAY STOP LOOKING LIKE EVERYTHING ELSE. Chad, on BOHO GAL at 10:00a\u20134:00p wearing the single inward arrow: \u201cthe better icon for a stop like this that opens after 8am and closes before 5 would be arrows pointing inward towards the icon on both sides not just the one.\u201d And on SCOTT LITHOGRAPHING at 6:00a\u20133:00p wearing the outward span: \u201cfor a customer like this that opens before 8 and closes before 5 should be 2 parallel left facing arrows.\u201d BOTH PINS WERE TELLING HALF THE TRUTH. A dock open 10\u20134 was drawn identically to one open 10\u20136, and those are not the same stop: the first has to land INSIDE a six-hour box, which constrains what you put either side of it, while the second only has to come after mid-morning. A dock open 6\u20133 was drawn with the same \u201cextra room\u201d span as one open 6\u20137, and a dock that shuts at three has no room at all \u2014 its whole day has simply been moved forward, which is a reason to go at dawn, not a reason to relax. Two new marks say it: hours_narrow_window (arrows closing in from both sides) and hours_runs_early (two parallel arrows running left), each with the chip printing the WHOLE window rather than one edge, because an icon nobody can route against is decoration. NOT ONE NEW PIN IS LIT. Each mark SPLITS a mark the map already drew \u2014 same population, same colours, only the arrows change \u2014 and the one new dial is the 5:00p close, because the open half of both of Chad\u2019s sentences is already decided more strictly by the existing 9:00a and 6:30a dials. An 8:00a dial would have changed no pin and lit every ordinary 8\u20134 dock, which is precisely the noise v0.65 removed. The PRO report shares the vocabulary, so a row there and a pin here still agree. 13 new tests; one commit, so git revert is the whole way back.'],
   ['1.15.0', 'A ROUTE CAN BE SEQUENCED ON REAL DRIVING DISTANCES NOW, BECAUSE A STRAIGHT LINE CANNOT SEE A RIVER. Chad, on a 23-stop JEAN card re-sequenced Shortest distance: \u201cLogic is still not fixed look at this.\u201d HE WAS RIGHT, AND IT WAS NOT THE SEARCH \u2014 measured on his own routes, Shortest distance was already within 0.6% of the best straight-line order there is, so there was nothing left to win by optimising harder. THE MAP IT OPTIMISES ON IS THE PROBLEM. JEAN works both banks of the Chattahoochee, and the order it produced crossed the river FOUR times on legs of half a mile to a mile and a half \u2014 because on a crow-flies map the two banks are neighbours. Against real roads those four legs measured 0.67 mi \u2192 3.76 mi (5.6x), 1.39 \u2192 5.26 (3.8x), 0.82 \u2192 3.03 (3.7x) and 0.50 \u2192 1.51 (3.0x): 3.4 apparent miles that are 13.6 real ones and 33 minutes of driving to reach a bridge and come back. No amount of better searching fixes that. SO THE CARD CAN NOW BE SEQUENCED ON A GOOGLE DRIVING MATRIX. Every strategy \u2014 Shortest distance, Farthest first, Closest first, Loop \u2014 reads the matrix instead of computing straight lines, and on JEAN\u2019s real stops that took Shortest distance from 73.2 real road miles and four river crossings to 68.8 and one. The same functions on a straight-line matrix return byte-identical orders to the ones that shipped yesterday, which is the property that makes this a generalisation rather than a rewrite, and a test pins it on real geometry. IT IS OFF UNTIL YOU TICK IT, because it spends money per re-sequence: the box sits under the dropdown on the card, says what that card will cost (a 23-stop card is about $2.88), and remembers itself per browser. UNTICK IT AND YOU ARE EXACTLY BACK where you were. The straight-line order still lands INSTANTLY on every pick whether the box is ticked or not \u2014 roads only ever replace it a moment later \u2014 so the dropdown never got slower, and a slow, failed or unavailable matrix leaves a working card and says so rather than silently pretending. The server reporting that it fell back to straight lines is treated as a failure, not a success, so the card never claims roads it did not get. A stop the matrix cannot reach (a bad geocode) rides at the end of the list instead of taking the whole card down with it \u2014 that is a pairwise check, because one unreachable address puts a hole in every other stop\u2019s row. 7 new tests, 4,191 green.'],
   ['1.14.7', 'ONE PRO, ONE ROW — AND THE MISSING DRIVER WAS THE SAME BUG. Chad, on a WINTERS INDUSTRIES card: “why are we showing the same pro 3 different ways and why is the one pro missing the drivers name.” PRO 007142362 appeared twice under “Recent PROs at this customer” (07/07/26 and 07/06/26, no driver) and once under “Recent deliveries here” (07/06/26, Enock Akyea). THE TWO SECTIONS WERE NEVER THE SAME RECORD. The warehouse rollup is a DELIVERY: the day the freight was delivered and the driver who ran it, already one row per PRO. customer_notes.pro_history is a log of NOTE SAVES — bumpProHistory appends a row every time a dispatcher presses Save on the customer note, stamped with the day of the SAVE and de-duped only against the row immediately before it. So one order whose note was saved on two days is two rows, both dated when somebody opened the note rather than when we delivered, and the row shape is {pro, date}: it has NEVER carried a driver. That is the whole of the second question. The chip filled the driver in from a separate NAME search, which AND-filters every query word against the stored name, so a note whose saved name carries one word the warehouse name lacks returns nothing and the driver silently vanishes — on the very rows sitting above a warehouse row that found its driver by exact matchKey. THE OPERATIONAL COST: “007142362 · 07/07/26” sat one line above “007142362 · Enock Akyea · 07/06/26”, so the card contradicted itself about when we were last at a customer and nothing on screen said which line to believe — and a dispatcher on the phone reads whichever is nearer the top. ONE SECTION NOW, one row per PRO: the delivered fact wins wherever there is one, a PRO with no delivery on file rides below as “Also seen here — no delivery recorded” (kept, because for a customer served before capture began those rows are the only trace we were ever there, and labelled so they can never read as a delivery date), and the stop’s OWN PROs are dropped — today’s open order is in the header and in the PROs list two inches up, and it is not this customer’s history. A numeric PRO padded in one store and bare in the other is matched as one order. pro_history is still written and the customer-history SEARCH screen is untouched. Pure mergeStopHistory + 10 tests, including the real WINTERS card. Zero NuVizz calls; one commit, so git revert is the whole way back.'],
   ['1.14.6', 'HOW FAR BACK DOES “RECENT DELIVERIES HERE” ACTUALLY GO — THE SCREEN CAN NOW SAY IT. Chad, on a stop card reading “No prior deliveries recorded — first visit to this customer”: how recent is that, from the beginning of time of our Firestore data? THE PANEL HAS NO DATE CUTOFF AT ALL — it reads one history_customers rollup doc and renders the newest 8 of the 20 PROs stored there, so a PRO falls off only when twenty NEWER ones push it out, never because it got old. For a daily customer that is about four weeks; for a twice-a-year customer it reaches back years, all the way to the oldest day in the warehouse. So the real answer is the WAREHOUSE FLOOR, and that was a fact nobody could read from any screen — which also makes “first visit to this customer” ambiguous in the dangerous direction: it means no CAPTURED delivery, and a customer last served the day before capture began looks identical to a genuinely new one. Capture health now carries a coverage line: the oldest and newest warehoused day, the day count, and the day the per-customer rollup actually starts from. rollup_from is deliberately NOT first_date — the rollup is a post-seal derivation, so an unsealed day contributed nothing and a tombstoned (no-board) day had nothing to contribute; sealed days whose customer-rollup hook FAILED are named separately as holes INSIDE the range, re-derivable with nuvizz-rebuild-customer-history-background?date=. FREE: the endpoint already lists every manifest to build its 21-day strip and then discarded the older ones — this summarises the list it already held. Zero extra Firestore reads, zero NuVizz calls. Pure summarizeCoverage + 8 tests.'],
@@ -1470,6 +1471,27 @@ const RESTRICTION_ICONS = {
       <path d="M19.0 5.6 L19.0 17.4 M16.4 14.6 L19.0 17.6 L21.6 14.6" fill="none" stroke="currentColor" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
     `,
   },
+  // BOTH ENDS OF THE DAY ARE PINCHED — the split off hours_opens_late. Chad, on BOHO GAL at
+  // 10:00a–4:00p wearing the single arrow: "the better icon for a stop like this that opens
+  // after 8am and closes before 5 would be arrows pointing inward towards the icon on both
+  // sides not just the one." Same teal, same clock, same population of pins: only the second
+  // arrow is new, and it is the one that says the stop has to land INSIDE a box rather than
+  // merely somewhere after mid-morning.
+  hours_narrow_window: {
+    label: 'Narrow window — it has to land mid-day',
+    short: 'Narrow window',
+    bg: '#0F766E',
+    accent: '#0F766E',
+    glyph: '<circle cx="7" cy="7" r="3.7" fill="none" stroke="white" stroke-width="1.3"/><path d="M7 4.6 L7 7 L8.8 7.9" stroke="white" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M0.2 7 L2.0 7 M1.0 5.6 L2.4 7 L1.0 8.4" fill="none" stroke="white" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M13.8 7 L12.0 7 M13.0 5.6 L11.6 7 L13.0 8.4" fill="none" stroke="white" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>',
+    // Arrows closing in from BOTH sides: the day is squeezed at the open and at the close.
+    markerGlyph: `
+      <circle cx="11" cy="11" r="6.2" fill="#ffffff" stroke="currentColor" stroke-width="1.9"/>
+      <line x1="11" y1="11" x2="11" y2="6.9" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+      <line x1="11" y1="11" x2="13.9" y2="12.4" stroke="currentColor" stroke-width="1.55" stroke-linecap="round"/>
+      <path d="M-2.2 11 L2.6 11 M0.4 8.6 L3.0 11 L0.4 13.4" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M24.2 11 L19.4 11 M21.6 8.6 L19.0 11 L21.6 13.4" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+    `,
+  },
   hours_opens_late: {
     label: 'Opens late — cannot be your first stop',
     short: 'Opens late',
@@ -1482,6 +1504,26 @@ const RESTRICTION_ICONS = {
       <line x1="12.4" y1="11" x2="12.4" y2="6.4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
       <line x1="12.4" y1="11" x2="15.7" y2="12.6" stroke="currentColor" stroke-width="1.55" stroke-linecap="round"/>
       <path d="M0.6 11 L4.6 11 M3.0 9.2 L4.9 11 L3.0 12.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    `,
+  },
+  // THE WHOLE DAY IS SHIFTED FORWARD — the split off hours_extra_room. Chad, on SCOTT
+  // LITHOGRAPHING at 6:00a–3:00p drawn with the outward span: "for a customer like this that
+  // opens before 8 and closes before 5 should be 2 parallel left facing arrows." The span
+  // claimed slack, and a dock that shuts at three has none; what it has is a start you can
+  // use. Two arrows running left say that and nothing more — go at dawn, be done early.
+  hours_runs_early: {
+    label: 'Runs early — go at dawn, no slack at the close',
+    short: 'Runs early',
+    bg: '#0369A1',
+    accent: '#0369A1',
+    glyph: '<circle cx="7" cy="4.4" r="3.1" fill="none" stroke="white" stroke-width="1.2"/><path d="M7 2.3 L7 4.4 L8.5 5.2" stroke="white" stroke-width="1.2" stroke-linecap="round" fill="none"/><path d="M12.2 9.4 L3.0 9.4 M4.2 8.4 L2.8 9.4 L4.2 10.4" fill="none" stroke="white" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.2 12.2 L3.0 12.2 M4.2 11.2 L2.8 12.2 L4.2 13.2" fill="none" stroke="white" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/>',
+    // Two parallel arrows running LEFT: this dock's whole day sits earlier than yours.
+    markerGlyph: `
+      <circle cx="11" cy="6.6" r="4.7" fill="#ffffff" stroke="currentColor" stroke-width="1.9"/>
+      <line x1="11" y1="6.6" x2="11" y2="3.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+      <line x1="11" y1="6.6" x2="13.1" y2="7.7" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"/>
+      <path d="M18.8 15.6 L4.8 15.6 M6.6 13.8 L4.6 15.6 L6.6 17.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M18.8 20.8 L4.8 20.8 M6.6 19.0 L4.6 20.8 L6.6 22.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
     `,
   },
   hours_extra_room: {
