@@ -123,8 +123,23 @@ test('Routing folds the grid\'s gear items into ITS gear; the Map screen gets th
 
 test('the source line is a chip: no stop count (the toggle has it), the full accounting on hover', () => {
   assert.ok(!/Board · \{nvTotal\.toLocaleString\(\)\} stops/.test(code), 'the "Board · N stops" sentence is back — that is the line that wrapped the bar');
-  assert.ok(/<span title=\{boardSourceTitle\}>Board\{nvRemovedCount > 0 \? ` · \$\{nvRemovedCount\} removed` : ''\}<\/span>/.test(src),
-    'the chip lost the removed count (why a count DROPPED) or its hover accounting');
+  assert.ok(/<span title=\{boardSourceTitle\}>/.test(src), 'the chip lost its hover accounting');
+  assert.ok(/Board\{nvRemovedCount > 0 \? ` · \$\{nvRemovedCount\} removed` : ''\}/.test(src),
+    'the chip lost the removed count — why a count DROPPED');
+  // MOVED IS NOT REMOVED (2026-09-11). Folding `moved` into "removed" is what made a correct
+  // board read as a broken one: Chad's chip said "12 removed" while five of those twelve were
+  // open orders dated 09-14/09-15 that the NuVizz portal's forward-reaching ±7d window still
+  // showed. "Removed" means deleted to a dispatcher; those five are work he has to plan.
+  assert.match(src, /nvRemovedCount = nvReconciled \? \(nvReconciled\.closed \|\| 0\) \+ \(nvReconciled\.retired \|\| 0\) : 0/,
+    'moved must NOT be summed into the removed count');
+  assert.match(src, /nvMovedLater > 0 \? <span className="text-amber-700"> · \{nvMovedLater\} later<\/span> : null/,
+    'and it must be shown separately, in its own words');
+  // …but the chip stays SHORT: the dates, the days and the stop numbers belong on the hover,
+  // because a long source line is the exact thing that wrapped this bar.
+  assert.ok(!/nvCoveredLabel\}/.test(src.slice(src.indexOf('title={boardSourceTitle}'), src.indexOf('title={boardSourceTitle}') + 400)),
+    'the covered dates must not ride in the chip itself');
+  assert.match(src, /This window covers \$\{nvReconciled\.covered\?\.from/, 'the hover names the window it actually covered');
+  assert.match(src, /dated AFTER this window/, 'and explains the portal comparison in words');
   // A partial pull, an error and the in-flight spinner are still said in full.
   assert.ok(/≥\{nvTotal\.toLocaleString\(\)\} · partial — narrow the range/.test(src), 'a partial pull must never read as a complete one');
   assert.ok(/<RefreshCw size=\{11\} className="animate-spin" \/> pulling…/.test(src));

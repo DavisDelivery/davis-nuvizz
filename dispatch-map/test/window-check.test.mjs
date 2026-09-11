@@ -5,11 +5,10 @@ import assert from 'node:assert/strict';
 import { checkCodes, diffWindow, totalsOf, ACTIVE_CODES } from '../netlify/functions/lib/window-check.mts';
 
 test('checkCodes: clamps to open work — delivered/cancelled never ride the check; none → all four', () => {
-  assert.deepEqual(checkCodes(['10', '90', '99']), ['10']);
-  assert.deepEqual(checkCodes(['10', '10', '20']), ['10', '20']);
-  assert.deepEqual(checkCodes([]), ACTIVE_CODES);
-  assert.deepEqual(checkCodes(['90']), ACTIVE_CODES, 'a check on delivered only is a check on open work');
-  assert.deepEqual(checkCodes(undefined), ACTIVE_CODES);
+  assert.deepEqual(checkCodes(['10', '90', '99']).codes, ['10']);
+  assert.deepEqual(checkCodes(['10', '10', '20']).codes, ['10', '20']);
+  assert.deepEqual(checkCodes([]).codes, ACTIVE_CODES);
+  assert.deepEqual(checkCodes(undefined).codes, ACTIVE_CODES);
 });
 
 test('totalsOf: the four header numbers — count, weight, skids (cartons), loose (volume) — plus the planned split', () => {
@@ -102,4 +101,33 @@ test('a shown row NuVizz now files OUTSIDE the window (MARIA SIMS re-dated to 09
   assert.equal(d.changed[0].nuvizz.day, '2026-09-09');
   // Without the covering pull the old verdict stands — the caller decides what it can vouch for.
   assert.equal(diffWindow(shown, inRange).stale.length, 1);
+});
+
+// ── A HISTORY-ONLY STATUS PICK IS REFUSED, NOT QUIETLY WIDENED (2026-09-11) ─────────────────
+// Tick only "Cancelled" in the grid and the request arrives as ['99']. Every code is dropped as
+// history, and the old fallback silently substituted all four OPEN codes — then the endpoint
+// re-filtered the SHOWN rows by those same four, so `shown` went to zero and the check reported
+// NuVizz's entire open board as "in NuVizz's list but not shown here". A confidently wrong
+// answer, one filter tick away, for the price of a metered NuVizz call. Found while auditing why
+// Chad's board and the portal disagreed; it is the button he reaches for when they do.
+
+test('a Cancelled-only pick is flagged historyOnly — the caller must refuse, not compare', () => {
+  const only99 = checkCodes(['99']);
+  assert.equal(only99.historyOnly, true);
+  assert.deepEqual(only99.codes, ACTIVE_CODES, 'the codes still default, but the flag says do not use them');
+  assert.equal(checkCodes(['90', '91']).historyOnly, true, 'Completed-only is the same trap');
+  assert.equal(checkCodes(['80']).historyOnly, true);
+});
+
+test('…and an empty or absent pick is NOT history-only — it means "check all open work"', () => {
+  assert.equal(checkCodes([]).historyOnly, false);
+  assert.equal(checkCodes(undefined).historyOnly, false);
+  assert.equal(checkCodes(null).historyOnly, false);
+  assert.equal(checkCodes('nonsense').historyOnly, false);
+});
+
+test('a mixed pick keeps only the open half and is never refused', () => {
+  const mixed = checkCodes(['10', '90']);
+  assert.deepEqual(mixed.codes, ['10']);
+  assert.equal(mixed.historyOnly, false, 'there IS open work to compare, so run it');
 });

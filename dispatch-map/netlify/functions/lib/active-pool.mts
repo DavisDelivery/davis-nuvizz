@@ -138,11 +138,16 @@ export interface ReconcileStats {
   unverified: number;
   /** the pool was thin — nothing was dropped on its word */
   thin: boolean;
+  /** WHERE the `moved` rows went: day -> count, and up to a dozen of their stop numbers.
+   *  Always present (it is a handful of entries), because "moved" is the one verdict a
+   *  dispatcher must not read as "deleted" — see the note on `moved` below. */
+  movedTo?: Record<string, number>;
+  movedNbrs?: string[];
   /** with explain: the stop numbers behind each count */
   decisions?: Record<string, string[]>;
 }
 
-const emptyStats = (poolAt: string | null): ReconcileStats => ({ poolAt, closed: 0, moved: 0, retired: 0, added: 0, synced: 0, held: 0, reopened: 0, unverified: 0, thin: false });
+const emptyStats = (poolAt: string | null): ReconcileStats => ({ poolAt, closed: 0, moved: 0, retired: 0, added: 0, synced: 0, held: 0, reopened: 0, unverified: 0, thin: false, movedTo: {}, movedNbrs: [] });
 
 /** The board's write grace: a confirmed Save outranks a disagreeing list row for this long
  *  (nuvizz-list.mts BOARD_WRITE_GRACE_MIN). The window honours the same clock, so a stop planned
@@ -241,7 +246,16 @@ export function mergeWindowWithPool(
     if (p) {
       if (!inRange(p.day, opts.from, opts.to)) {
         if (stats.thin) { out.push(c); served.add(nbr); continue; }
-        stats.moved++; note('moved', nbr); continue;                           // lives on another day now
+        // MOVED IS NOT DELETED, AND THE DIFFERENCE IS THE WHOLE STORY (2026-09-11). Chad compared
+        // our "Last 7 days" against the portal's "+/-7 Days" and read a mismatch: the portal's
+        // window reaches a week FORWARD and ours stops at the board day, so five orders dated
+        // 09-14/09-15 were on his portal screen and not on ours. Our screen already counted them
+        // — inside a chip that said "12 removed". To a dispatcher "removed" means gone, and these
+        // are work he still has to plan. So the day they moved TO travels with the count.
+        stats.moved++;
+        stats.movedTo![p.day] = (stats.movedTo![p.day] || 0) + 1;
+        if (stats.movedNbrs!.length < 12) stats.movedNbrs!.push(nbr);
+        note('moved', nbr); continue;                                          // lives on another day now
       }
       out.push(overlay(c, p)); served.add(nbr); stats.synced++; note('synced', nbr);
       continue;

@@ -26,11 +26,23 @@ import { buildBody, normalize, cleanPeriod, coveringWindowForRange, rowInRange, 
 
 export const ACTIVE_CODES = ['10', '20', '40', '50'];
 
-/** PURE: the status codes a check compares — the request's, clamped to open work; none → all four. */
-export function checkCodes(requested: any): string[] {
-  const want = Array.isArray(requested) ? requested.map((c) => String(c).trim()).filter((c) => ACTIVE_CODES.includes(c)) : [];
-  const uniq = [...new Set(want)];
-  return uniq.length ? uniq : ACTIVE_CODES.slice();
+/**
+ * PURE: the status codes a check compares — the request's, clamped to open work; none → all four.
+ *
+ * `historyOnly` IS THE POINT OF THE SHAPE (2026-09-11). This used to return a bare array, and the
+ * substitution at the end was silent: tick only "Cancelled" (or only "Completed") in the grid and
+ * the request arrives as ['99'], every code is dropped as history, the fallback quietly widens it
+ * to all four OPEN codes, and the endpoint then re-filters the SHOWN rows by those same four — so
+ * `shown` becomes empty and the check reports NuVizz's entire open board as "in NuVizz's list but
+ * not shown here". A confidently wrong answer, one filter tick away, for the price of a metered
+ * NuVizz call. The caller must refuse instead, and say why.
+ */
+export function checkCodes(requested: any): { codes: string[]; historyOnly: boolean } {
+  const asked = Array.isArray(requested) ? requested.map((c) => String(c).trim()).filter(Boolean) : [];
+  const uniq = [...new Set(asked.filter((c) => ACTIVE_CODES.includes(c)))];
+  if (uniq.length) return { codes: uniq, historyOnly: false };
+  // Asked for something, and none of it was open work.
+  return { codes: ACTIVE_CODES.slice(), historyOnly: asked.length > 0 };
 }
 
 export interface ShownRow {

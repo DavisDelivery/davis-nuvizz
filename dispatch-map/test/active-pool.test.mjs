@@ -256,3 +256,45 @@ test('explain: every decision names its stop numbers, so "why did this row vanis
   assert.deepEqual(stats.decisions.closed, ['STALE-X']);
   assert.deepEqual(stats.decisions.added, ['LIVE-X']);
 });
+
+// ── "MOVED" IS NOT "REMOVED", AND THE CHIP HAS TO BE ABLE TO SAY SO (2026-09-11) ────────────
+// Chad's Routing window read "12 removed" while the NuVizz portal showed five MORE un-planned
+// orders than we did on what looked like the same filter. The five were the `moved` ones: real
+// open freight dated 09-14/09-15, outside our board-day-back-7 window and inside the portal's
+// +/-7 Days, which reaches a week forward. Our screen had counted them under a word that means
+// deleted. The day they moved to now travels with the count so the chip can name it.
+
+test('the moved rows carry the day they moved TO, and a bounded sample of their numbers', () => {
+  const cached = ['A', 'B', 'C'].map((n) => row({ stopNbr: n }));
+  const live = [
+    projectPoolRow(row({ stopNbr: 'A' }), '2026-09-14'),
+    projectPoolRow(row({ stopNbr: 'B' }), '2026-09-14'),
+    projectPoolRow(row({ stopNbr: 'C' }), '2026-09-15'),
+  ];
+  const { rows, stats } = mergeWindowWithPool(cached, pool(live), { from: '2026-09-04', to: '2026-09-11' });
+  assert.equal(rows.length, 0, 'none of them belong in this window');
+  assert.equal(stats.moved, 3);
+  assert.deepEqual(stats.movedTo, { '2026-09-14': 2, '2026-09-15': 1 }, 'the chip can say "dated later (9/14, 9/15)"');
+  assert.deepEqual(stats.movedNbrs.sort(), ['A', 'B', 'C']);
+});
+
+test('the sample is capped so the reconcile stats can never become a payload', () => {
+  const many = Array.from({ length: 40 }, (_, i) => `S${i}`);
+  const { stats } = mergeWindowWithPool(
+    many.map((n) => row({ stopNbr: n })),
+    pool(many.map((n) => projectPoolRow(row({ stopNbr: n }), '2026-09-20'))),
+    { from: '2026-09-04', to: '2026-09-11' },
+  );
+  assert.equal(stats.moved, 40);
+  assert.equal(stats.movedNbrs.length, 12, 'a dozen names is enough to recognise them');
+  assert.deepEqual(stats.movedTo, { '2026-09-20': 40 }, 'the COUNT is never truncated');
+});
+
+test('a window that contains those days reports no moves at all — the same rows, served', () => {
+  const cached = [row({ stopNbr: 'A' })];
+  const live = [projectPoolRow(row({ stopNbr: 'A' }), '2026-09-14')];
+  const { rows, stats } = mergeWindowWithPool(cached, pool(live), { from: '2026-09-04', to: '2026-09-18' });
+  assert.equal(rows.length, 1);
+  assert.equal(stats.moved, 0);
+  assert.deepEqual(stats.movedTo, {});
+});

@@ -46,7 +46,21 @@ export default async (req: Request): Promise<Response> => {
     : null;
   const period = !range && typeof body.arrivalPeriod === 'string' ? body.arrivalPeriod : null;
   if (!range && !period) return jsonResponse({ ok: false, error: 'give fromDate+toDate or arrivalPeriod' }, 400, cors);
-  const codes = checkCodes(body.statusCodes);
+  const { codes, historyOnly } = checkCodes(body.statusCodes);
+  // A check on delivered/cancelled rows alone cannot be run: NuVizz's list for this window is
+  // pulled with the OPEN codes, so comparing it against a screen showing only history compares
+  // two different questions and reports the whole open board as missing. Refused BEFORE the
+  // call, so a wrong answer never costs a NuVizz call (2026-09-11).
+  if (historyOnly) {
+    return jsonResponse({
+      ok: false,
+      error: 'This check compares OPEN work (un-planned, planned, out for delivery, arrived). '
+        + 'The status filter is set to finished rows only, so there is nothing open to compare — '
+        + 'tick an open status, or clear the status filter, and check again.',
+      statusCodes: body.statusCodes ?? null,
+      compared: null,
+    }, 400, cors);
+  }
   const shownIn: any[] = Array.isArray(body.shown) ? body.shown.slice(0, MAX_SHOWN_ROWS) : [];
   // Only open work is compared (see lib/window-check.mts): rows on screen outside the checked
   // statuses — delivered history in an unfiltered window — are set aside and reported as such.
