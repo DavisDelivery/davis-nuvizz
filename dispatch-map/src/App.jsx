@@ -28,6 +28,7 @@ import {
 import { db, mirrorMisconfig } from './lib/firebase.js';
 import { normalizeMatchKey, placeKeyOfStop } from './lib/matchKey.js';
 import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
+import { scanPressVerdict, SCAN_POLL_WINDOW_SEC, SCAN_SPINNER_SEC } from './lib/scan-press-verdict.js';
 import { routeStopEta, routeStopFreight, routeStopSeq, routeStopTime, loadDefaultWindow } from './lib/route-stop-line.js';
 import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt, foldFreshStop } from './lib/stop-card-sections.js';
 import { resolveStopContact, resolveStopPhone, orderContactAside, mergeSavedContact, isDialable } from './lib/stop-contact.js';
@@ -126,7 +127,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '1.14.2';
+const APP_VERSION = '1.14.3';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -197,6 +198,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.14.3', 'THE REFRESH BUTTON STOPS LYING, AND THE THING THAT WEDGED THE SCAN HAS A DEADLINE. Chad, 8:01pm: “Manual Refresh button is not working. Timed out and said it wouldn’t update.” WHAT THE LEDGER SAID, read before anything was changed and at zero NuVizz cost: a manual run STARTED at 20:01, recorded ZERO calls, wrote no board and was still open seven minutes later — while every other full run that day finished in 41–72 seconds. It was not refused (no refusal was logged), not the kill switch, not the breaker, not the ceiling (1,855 of 3,000). THE CAUSE, found in the code rather than guessed: `fetch` carried no signal on either the NuVizz path or the Firestore path, so a request the vendor accepted and never answered simply hung — and because a call is counted only AFTER its response returns, the stall was invisible to every counter and log we keep. The function sat there until the platform killed it at fifteen minutes, nothing closed the run row (there is an identical orphan from 09-08), and no board was written. EVERY ROUND-TRIP NOW HAS A DEADLINE: 30 seconds for NuVizz (a whole-day saved-search pull is 10–20s; a vendor silent for thirty is not about to answer), 20 for Firestore, one retry on a stall and no more — because a stall is not a 503, and a scan that finishes with an honest error beats one that hangs: the last good board stays, the failure is recorded, and the next tick tries again in minutes. The deadline is an explicit controller with an ordinary timer, NOT AbortSignal.timeout, whose timer is unref’d and therefore fires only while something else happens to be holding the event loop open — the first cut of this passed its test by hanging, which is exactly the class of bug being fixed. AND THE BUTTON NOW SAYS WHAT IS TRUE, which is the half Chad actually saw. It waited ~60 seconds; the same ledger says a full scan takes 41.4s at best, 49.2s in the middle and 72.3s at worst, so three runs in twenty-two outlast the wait and a WORKING scan reported itself as a failure roughly one press in seven. Worse, every way a press could come to nothing arrived as one sentence — “Scan running — the board will refresh automatically” — whether the scan was running, had been refused, or had died. That sentence is deleted. The board read now serves the scanner’s own run state (one getDoc, and only when the press asks: ?scanRun=1, so the two-minute board poll costs exactly what it did before), and a pure, tested module decides between four outcomes a dispatcher must tell apart: it landed (say nothing), it was refused (the server’s own sentence, verbatim), it is genuinely still running (with the age in it, so “still running” is checkable), or it started and has not finished — in which case the board on screen is as old as its own timestamp says, and it says so. The spinner releases at 80 seconds, past the slowest scan measured, while the poll keeps watching quietly. 16 new tests, including a vendor that never answers.'],
   ['1.14.2', 'LOAD-SCAN (v0.50.0): NON-ULINE FREIGHT CONFIRMS IN ONE TAP, AND THE HAND-ADDED MARKER SAYS WHICH KIND. Chad, asked what the reviewer still needed: "Anything non Uline will not have a barcode and will be manual adds." That sentence is a rule the code was missing. Scannability was inferred from whether the index row carried a piece count — the code itself called that "a correlation, not a law" — so an Estes stop that happened to carry a count was offered as scannable, and the crew typed its made-up seven-digit key into the PRO lookup, per piece, to book it. A Uline stop number is the PRO in bare digits; anything else on the board (ESTES-…, AVRT-…, a bare ten-digit Averitt PRO) is a carrier whose label the scanner cannot read, and it now gets the one-tap hand-confirm the Averitt stops already had. A row with no stop number at all keeps the old count rule rather than being declared unscannable on no evidence, and an explicit flag on the index row still overrules everything. AND A CORRECTION TO THE REVIEW PDF: it flagged the app deriving a fake seven-digit PRO from a carrier stop number as a defect to remove. The owner\'s answer means the crew RELIES on it — it is the number on the card and the number they type — so removing it would break every carrier stop. The right fix is to stop making anyone type it, which this is, and to refuse it when two stops share one, which stays on the list. THE MARKER SPLITS IN TWO, because "added by hand" meant opposite things: a TYPED- id is the PRO lookup, routine, the only way carrier freight can be added at all; a NOOG- id on a manual engine is the override tap, a person overruling the count, the audit signal. Lumped together the marker fired on every Estes stop and said nothing about the one Uline stop that mattered. The row now reads "N typed in" quietly and "N added by override" loudly. AND THERE IS ONE WAY BACK: LOADSCAN_CARRIER_HAND_CONFIRM=off on the ddsloadout site restores the pre-v0.50 count rule exactly, no deploy needed; default ON, a typo leaves it ON, every manifest response reports the position under `rules`, and /health echoes the raw variable. Seven tests pin the rule, the split and the switch; 339 load-scan tests green; this app is untouched.'],
   ['1.14.1', 'TWO ORDERS AT ONE DOCK GET ONE PIN \u2014 THE BOARD WAS GEOCODING THE SAME ADDRESS TWICE. Chad, on two Alpharetta orders: \u201cThey are same address and geocode. Nuvizz had them together in same spot on map. Dispatch map did not.\u201d CHECKED, NOT REASONED, AND MY FIRST ANSWER WAS WRONG. The obvious story was that NuVizz hands each order its own geocode \u2014 the FedEx twin in matchKey.js is on record 6.5 metres apart \u2014 but he had already ruled that out, and nothing in this app moves a marker: all five marker sites draw at exactly s.lat/s.lng, and there is no jitter, spider or de-overlap anywhere in the file. The split was made upstream. THE PIN IS NOT NUVIZZ\u2019S. A stop is enriched ONCE, and its pin comes from OUR OWN Google geocode, cached in nuvizz_geocode under addrKey \u2014 which was a sha1 of the RAW ADDRESS STRING, lower-cased and nothing else. So \u201c5640 LOGISTICS DRIVE\u201d and \u201c5640 LOGISTICS DR\u201d were two addresses: two Google calls, two answers, two pins. Measured over five realistic variations, FOUR keyed apart \u2014 the suffix (DRIVE/DR, PARKWAY/PKWY), a ZIP+4 against a ZIP5, and a missing state \u2014 while normalizePlaceKey called every one of them the same dock. TWO NOTIONS OF \u201cSAME ADDRESS\u201d IN ONE CODEBASE IS ONE TOO MANY. addrKey now defers to normalizePlaceKey, the street+zip5 rule already trusted by the selection grouping, the same-address twin guard and the board-flags trailer rule \u2014 so the screen that groups two orders as one place now draws them in one place. Suites still key apart, because STE 200 and STE 400 are two stops. AND IT COSTS NOTHING AT GOOGLE. Changing a cache key normally means re-buying every answer already owned; resolveCoords reads the LEGACY exact-string key when the new one misses and carries it forward \u2014 negative markers included, so an address Google has already refused is not resurrected and retried on every scan forever. A warm cache still answers in one read; the second read happens only on a miss, immediately before a call that costs real money. A LATENT BUG IN THE SHARED KEY, FOUND BY AN EXISTING TEST RATHER THAN BY ME. normStreetOf collapsed whitespace to underscores BEFORE trimming \u2014 and trim() removes whitespace, not underscores \u2014 so a padded address line keyed as \u201c_1_main_st_\u201d and the same address unpadded as \u201c1_main_st\u201d. Every caller of placeKeyOfStop read one dock as two: the grouping that decides whether two orders share a pin, the twin guard written so a delivery is not left on the floor beside its pickup, and the trailer rule. NuVizz pads address lines, so this was live. The file already warned about this exact hazard one function down; the fix is the same rule applied one line earlier. SAID PLAINLY, BECAUSE IT DECIDES WHAT IS ON THE SCREEN TOMORROW: this stops the board CREATING split pins and repairs any stop with no coordinates yet. It does NOT move a pin already stored \u2014 the scan geocodes only stops still MISSING coords, so the two orders on today\u2019s board keep what they were given until they are re-enriched. The repair for those is named in the PR rather than guessed at here, because picking the wrong twin would move a correct pin to a wrong place. 11 new tests \u2014 the reported case end-to-end (two spellings, ONE Google call, both orders on the same pin), the legacy carry-forward in both directions, and the padding rule mutation-checked. 4,078 green. Zero NuVizz calls.'],
   ['1.14.0', 'THE ROSTER HAS BEEN TELLING US WHICH ROUTES ARE TRACTORS ALL ALONG, AND THE BOARD COULD NOT HEAR IT DURING THE HOURS LOADS GET BUILT. Chad: “most routes have a driver assigned to them and we have an employee roster that tells what type of driver it is and we need to start using it.” IT WAS ALREADY BEING USED — route-classes.mts resolves every route through the load header first, then the MarginIQ roster, then the one-edit near-match that exists because “Brent Bryd” against “Brent Boyd” cost us Evans Contracting. What it could not do was REACH THE SCREEN AT NIGHT, and the reason was the shape of one document. route_classes was a SINGLE doc carrying a `date`, so it could only ever describe one day. The evening sweep resolves TOMORROW’s trucks from the roster at 8pm, while routing is being built — and rather than overwrite today’s map and put the browser’s whole board on the wrong clock until 7am, it deliberately computed the map, used it for its own verdicts, and threw it away. That was the right call for the shape it had; the shape was the problem. THE COST WAS INVISIBLE AND EXACTLY BACKWARDS: between 8pm and 7am, the hours loads actually get built, the board had NO class map at all, so every truck-class rule reported “not checked” — the no-tractor-trailer conflict and the new box-truck conflict both silent on the one board where a wrong truck is still free to change for nothing. THE DAY IS IN THE KEY NOW, not in a field: `…__route_classes__{date}`. Both sweeps publish the day they actually judged and neither can tread on the other, so tomorrow’s map exists from 8pm while today’s stands untouched. The endpoint answers for the day ASKED for rather than always for today, and the browser asks for the day it is SHOWING — which is the half that was missing: the client fetched with no date at all, received today’s trucks while displaying tomorrow, correctly discarded them for the date mismatch, and judged everything on the fleet clock. THE OLD REPLAY GUARD IS REPLACED, NOT DROPPED. It refused any date but today because one shared document meant a ?date= replay would write last Friday’s trucks over today’s map; keyed per day that cannot happen. What replaces it is the hazard that IS still real: the roster is CURRENT, not historical, so recomputing a past day from it would overwrite what was actually resolved that morning with an inference — quietly, in the record a later replay reads back. Today and forward only, on both sweeps. AND THE PRE-SPLIT DOCUMENT STILL ANSWERS FOR ITS OWN DAY, so the board is not blind between deploy and the next sweep — without that fallback every route would read unclassed for hours, and “not checked” looks exactly like what it always looks like. The date check that document existed for is kept exactly: a map from another day is a lie, whichever document it is in. FOUND WHILE BUILDING IT: the first draft of the evening publish referenced a `dry` flag copied from the day sweep. That sweep has one; this one does not — inspection goes through eta-flag-check, which never writes — so it would have thrown a ReferenceError inside a background function, where nobody would have seen it. AND THERE IS ONE WAY BACK, not four. Chad: \u201cbuild this in such a way if it changes something I do like I can just tell you to flip it back the way it was and it\u2019s an easy fix.\u201d ROUTE_CLASSES_PER_DAY=off restores the previous behaviour exactly \u2014 one shared document, today only, the evening sweep publishing nothing, the endpoint ignoring ?date= \u2014 across the read, both writes and the endpoint at once, because a half-reverted state where the browser asks for a day nothing writes is a new bug wearing the old feature\u2019s name. Default ON and anything malformed leaves it ON: a typo must not silently return the board to going blind overnight, which is the exact failure this ends. 10 new tests \u2014 the fallback, its date check and the revert all proven by mutation.'],
@@ -3942,7 +3944,9 @@ function useManualScan(selectedDate, lastScannedAt, refresh) {
       // Fire the ASYNC background scanner (15-min budget) in list-discovery mode (manual=1, NO
       // date), then poll the viewed date's index until it refreshes.
       const before = lastScannedAt;
-      const pollUrl = `/.netlify/functions/nuvizz-pull-today-stops?date=${encodeURIComponent(selectedDate)}`;
+      // `scanRun=1` asks the board read for the scanner's current run state as well. Only this
+      // poll sends it, so the two-minute board poll costs exactly what it always did.
+      const pollUrl = `/.netlify/functions/nuvizz-pull-today-stops?date=${encodeURIComponent(selectedDate)}&scanRun=1`;
       // PRIMARY (v0.54.30): the plain BACKGROUND manual scan — answers 202 immediately and
       // runs with the 15-minute budget, so a big board can never time out the button. The two
       // older routes below stay as fallbacks, each broken in its own documented way:
@@ -3986,34 +3990,60 @@ function useManualScan(selectedDate, lastScannedAt, refresh) {
       // served straight back on `lastScanRefusal` by the poll we are already making — no
       // extra request, no extra round trip. Degrades to the old behaviour on a deploy whose
       // read endpoint does not carry the field yet: absent means "nothing to say".
+      // HOW LONG TO WAIT, TAKEN FROM WHAT A SCAN ACTUALLY TAKES (2026-09-10).
+      //
+      // This waited ~60 seconds. The run ledger for one ordinary day says a full scan takes
+      // 41.4s at best, 49.2s in the middle and 72.3s at worst — so three runs in twenty-two
+      // outlast the wait, and a WORKING scan reported itself as a failure roughly one press in
+      // seven. The spinner now covers the slowest measured scan, and past that the press stops
+      // holding the button hostage and says what is true instead: polling continues quietly,
+      // and the sentence upgrades itself from "still running" to "it has not finished" the
+      // moment that becomes the honest description.
       let updated = false;
       let refusal = null;
-      for (let i = 0; i < 20 && !updated; i++) {          // poll up to ~60s
+      let verdict = null;
+      const startedWaiting = Date.now();
+      const waited = () => Math.round((Date.now() - startedWaiting) / 1000);
+      let spinnerReleased = false;
+      while (waited() < SCAN_POLL_WINDOW_SEC) {
         await new Promise((r) => setTimeout(r, 3000));
+        let run = null;
         try {
           const d = await fetchJsonWithRetry(pollUrl);
+          run = d?.scanRun ?? null;
           if (d && d.lastScannedAt && d.lastScannedAt !== before) updated = true;
           // WHY ageMin AND NOT A TIMESTAMP COMPARE — see scanRefusalIsThisPress above: `at` is
           // the SERVER's clock and Date.now() here is the BROWSER's, and a phone a few minutes
           // out would either blame this press for an old refusal or miss its own.
           else if (scanRefusalIsThisPress(d?.lastScanRefusal)) refusal = d.lastScanRefusal;
-        } catch { /* keep polling */ }
+        } catch { /* keep polling — a dropped poll is not an answer */ }
+        verdict = scanPressVerdict({ updated, refusal, run, waitedSec: waited() });
+        if (verdict.done) break;
+        // Past the slowest scan we have measured, stop holding the spinner: the honest
+        // "still running" answer is available now and a dispatcher should be free to act on it.
+        if (!spinnerReleased && waited() >= SCAN_SPINNER_SEC && verdict.kind === 'running') {
+          spinnerReleased = true;
+          setScanning(false);
+          setScanErr(verdict.message);
+        }
       }
+      if (!verdict) verdict = scanPressVerdict({ updated, refusal, run: null, waitedSec: waited() });
       await refresh({ silent: true });
       // DELIBERATELY NOT AN EARLY BREAK on seeing a refusal. Two dispatchers share this
       // board: if a viewer is refused at 06:00:10 and a dispatcher presses at 06:00:40, the
       // second press SUCCEEDS and its poll would still see that fresh refusal. Only reporting
       // it when the scan also failed to land keeps the sentence true for both of them; the
       // cost is that the news arrives at the end of the window it already waited out.
-      if (!updated) {
-        // The server's own sentence is used VERBATIM (refusalMessage in lib/background-gate.mts
-        // already says what happened and what to do, and it was written for the person holding
-        // the phone). Re-wording it here would give one failure two vocabularies and no way to
-        // tell which one somebody was quoting. All this adds is WHICH button it was about.
-        setScanErr(refusal
-          ? `Scan did not run. ${refusal.message || `Refused (${refusal.reason || 'no reason given'}).`}`
-          : 'Scan running — the board will refresh automatically');
-        setTimeout(() => setScanErr(null), refusal ? 12000 : 6000);
+      // WHAT THE DISPATCHER IS TOLD — decided in lib/scan-press-verdict.js, where it is tested.
+      // The server's own sentence is used VERBATIM for a refusal (refusalMessage in
+      // lib/background-gate.mts was written for the person holding the phone; re-wording it here
+      // would give one failure two vocabularies). The rest distinguishes the three things that
+      // used to arrive as one reassuring line: it landed, it is genuinely still running, or it
+      // started and died and the board on screen is as old as its own timestamp says.
+      if (verdict.kind === 'landed') setScanErr(null);
+      else if (verdict.message) {
+        setScanErr(verdict.message);
+        setTimeout(() => setScanErr(null), verdict.kind === 'running' ? 20000 : 14000);
       }
       setScanCooldown(true);
       setTimeout(() => setScanCooldown(false), 60000);
