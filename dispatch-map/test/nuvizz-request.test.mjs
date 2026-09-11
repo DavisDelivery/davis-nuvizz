@@ -11,6 +11,8 @@ import {
   scanIntervalElapsed,
   createNuvizzRequester,
   NuvizzCircuitOpenError,
+  deadlineSignal,
+  isTimeoutAbort,
 } from '../netlify/functions/lib/nuvizz-request.mts';
 
 const META = { route: '/load/info', tenant: 'DAVIS' };
@@ -509,4 +511,107 @@ test('a Firestore outage does not become one extra failing read per NuVizz call'
   assert.equal(await hydrateDailyCeiling(async () => { reads++; return 3000; }, { now }), 3000);
   assert.equal(reads, 3, 'it retried after the shorter window');
   __resetDailyCeilingCache();
+});
+
+// Chad: "Manual Refresh button is not working. Timed out and said it wouldn't update." The run
+// ledger: a manual scan started at 20:01, recorded ZERO calls, wrote no board, and was still
+// open seven minutes later while every other full run that day finished in 41-72 seconds.
+// `fetch` was called with no signal, so one request NuVizz accepted and never answered hung the
+// whole scan until the platform killed it — and because a call is counted only after its
+// response returns, the stall was invisible to every counter and log we keep.
+
+/** A fetch that never answers unless its signal aborts — the vendor stall, reproduced. */
+const hangingFetch = () => (_url, init) => new Promise((_res, rej) => {
+  const sig = init?.signal;
+  if (!sig) return;                                  // no deadline → hangs forever, as it did
+  if (sig.aborted) return rej(sig.reason);
+  sig.addEventListener('abort', () => rej(sig.reason), { once: true });
+});
+
+test('A VENDOR THAT NEVER ANSWERS FAILS THE CALL INSTEAD OF HANGING THE SCAN', async () => {
+  const h = makeHarness({ fetchImpl: hangingFetch() });
+  const r = createNuvizzRequester(
+    { ...h.r._deps ?? {}, fetchImpl: hangingFetch(), recordCall: async () => 1, isCircuitOpen: async () => false, tripCircuit: async () => {}, log: () => {}, now: () => 0, sleep: async () => {} },
+    { requestTimeoutMs: 25, maxTimeoutRetries: 1, maxRetries: 3, backoffTotalCapMs: 1_000_000 },
+  );
+  const started = Date.now();
+  await assert.rejects(
+    () => r.request('https://nuvizz.test/entity/filterdata', { method: 'POST', body: '{}' }, META),
+    /did not answer within 25ms/,
+  );
+  // Two attempts at 25ms each, not an unbounded wait: the scan gets an error it can report.
+  assert.ok(Date.now() - started < 5_000, 'the call returned promptly rather than hanging');
+});
+
+test('…and the stall is LOGGED, because a timed-out round-trip is invisible to the call counter', async () => {
+  const logs = [];
+  const r = createNuvizzRequester(
+    { fetchImpl: hangingFetch(), recordCall: async () => 1, isCircuitOpen: async () => false, tripCircuit: async () => {}, log: (e) => logs.push(e), now: () => 0, sleep: async () => {} },
+    { requestTimeoutMs: 20, maxTimeoutRetries: 0, maxRetries: 3, backoffTotalCapMs: 1_000_000 },
+  );
+  await assert.rejects(() => r.request('https://nuvizz.test/entity/filterdata', { method: 'POST' }, META));
+  assert.equal(logs.length, 1, 'the stall left a trace');
+  assert.equal(logs[0].status, 0, 'status 0 = no answer, distinct from any HTTP code');
+  assert.equal(logs[0].timeoutMs, 20);
+  assert.equal(logs[0].route, META.route);
+});
+
+test('a timeout is retried ONCE and no more — a vendor silent for 30s is not a 503', async () => {
+  let attempts = 0;
+  const fetchImpl = (_url, init) => {
+    attempts++;
+    if (attempts === 1) return hangingFetch()(_url, init);      // first attempt stalls
+    return Promise.resolve(new Response('{}', { status: 200 })); // second answers
+  };
+  const r = createNuvizzRequester(
+    { fetchImpl, recordCall: async () => 1, isCircuitOpen: async () => false, tripCircuit: async () => {}, log: () => {}, now: () => 0, sleep: async () => {} },
+    { requestTimeoutMs: 20, maxTimeoutRetries: 1, maxRetries: 3, backoffTotalCapMs: 1_000_000 },
+  );
+  const resp = await r.request('https://nuvizz.test/entity/filterdata', { method: 'POST' }, META);
+  assert.equal(resp.status, 200, 'a transient stall still recovers on the retry');
+  assert.equal(attempts, 2);
+});
+
+test("the CALLER's own cancellation is final and is never retried — their budget, their decision", async () => {
+  const ac = new AbortController();
+  let attempts = 0;
+  const fetchImpl = (_url, init) => { attempts++; return hangingFetch()(_url, init); };
+  const r = createNuvizzRequester(
+    { fetchImpl, recordCall: async () => 1, isCircuitOpen: async () => false, tripCircuit: async () => {}, log: () => {}, now: () => 0, sleep: async () => {} },
+    { requestTimeoutMs: 5_000, maxTimeoutRetries: 2, maxRetries: 3, backoffTotalCapMs: 1_000_000 },
+  );
+  const p = r.request('https://nuvizz.test/entity/filterdata', { method: 'POST', signal: ac.signal }, META);
+  setTimeout(() => ac.abort(new Error('caller gave up')), 15);
+  await assert.rejects(() => p);
+  assert.equal(attempts, 1, 'one attempt only — a cancelled request is not a stalled one');
+});
+
+test('deadlineSignal: ours, the caller\'s, or both — disabled at zero, and it fires on its own terms', async () => {
+  const ac = new AbortController();
+  assert.equal(deadlineSignal(undefined, 0).signal, undefined, '0 disables the deadline');
+  assert.equal(deadlineSignal(ac.signal, 0).signal, ac.signal, 'and leaves the caller\'s signal alone');
+  assert.ok(deadlineSignal(undefined, 50).signal instanceof AbortSignal);
+  assert.ok(deadlineSignal(ac.signal, 50).signal instanceof AbortSignal);
+  // The property the first cut of this did NOT have: it fires with nothing else keeping the
+  // event loop alive. AbortSignal.timeout's timer is unref'd and would not.
+  const d = deadlineSignal(undefined, 15);
+  await new Promise((r) => d.signal.addEventListener('abort', r, { once: true }));
+  assert.equal(d.signal.reason?.name, 'TimeoutError');
+  d.cancel();
+});
+
+test('deadlineSignal: cancel() clears the timer, so a finished request leaves nothing behind', async () => {
+  const d = deadlineSignal(undefined, 10_000);
+  d.cancel();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(d.signal.aborted, false);
+});
+
+test('isTimeoutAbort tells OUR deadline apart from the caller cancelling', () => {
+  const ac = new AbortController();
+  assert.equal(isTimeoutAbort({ name: 'TimeoutError' }), true);
+  assert.equal(isTimeoutAbort({ name: 'AbortError' }), true);
+  ac.abort();
+  assert.equal(isTimeoutAbort({ name: 'AbortError' }, ac.signal), false, 'the caller aborted — not our timeout');
+  assert.equal(isTimeoutAbort(new TypeError('network')), false);
 });

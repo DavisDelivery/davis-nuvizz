@@ -58,7 +58,7 @@ import { computeBoardFlags } from '../../src/lib/board-flags.js';
 import { isFirestoreEnabled, getDoc, setDoc, createDocIfAbsent, readStops, listFleetLoads, etDayString, readAlertRecipients } from './lib/firestore.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
 import { weekdayKey } from './lib/miss-ledger.mts';
-import { readTravelCalibration, ensureLegs } from './lib/travel-store.mts';
+import { readTravelCalibration, ensureLegs, routeClassesPath, perDayRouteClassesEnabled } from './lib/travel-store.mts';
 import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mts';
 import { mergeSweep, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
 import { auditRows } from './lib/flag-rows.mts';
@@ -130,9 +130,16 @@ export default async (req: Request): Promise<Response> => {
     // The fleet index is written per date and the tomorrow-loads scan gate opens at 20:00 ET,
     // on the same clock this sweep runs on.
     //
-    // THIS SWEEP NEVER PUBLISHES route_classes. That document is TODAY's operational state and
-    // the day sweep owns it; writing tomorrow's trucks into it at 9pm would put the browser's
-    // whole board on the wrong clock until 7am.
+    // THIS SWEEP NOW PUBLISHES THE DAY IT JUDGED, which it could not do before.
+    //
+    // route_classes used to be ONE document carrying a date, so writing tomorrow's trucks
+    // into it at 9pm would have put the browser's whole board on the wrong clock until 7am —
+    // and rather than do that, this sweep resolved the map, used it for its own verdicts and
+    // threw it away. The cost was that between 8pm and 7am, the hours loads actually get
+    // built, the board had no class map at all and every truck-class rule reported "not
+    // checked" on the one board where a wrong truck is still free to change.
+    //
+    // Keyed per day, tomorrow's map is its own document and today's is untouched.
     //
     // An empty map is a REAL and ordinary pre-day state — loads exist before anybody has said
     // what is pulling them — and board-flags reports it as skipped.noTruckClasses rather than
@@ -142,6 +149,22 @@ export default async (req: Request): Promise<Response> => {
       stops,
     ).catch(() => null);
     const routeClasses = rc?.classes && Object.keys(rc.classes).length ? rc.classes : null;
+    // Publish for the day this sweep judged, so the board being BUILT tonight can read it.
+    // Never a day already past: the roster is CURRENT, not historical, so recomputing an
+    // old day from it would overwrite what was actually resolved that morning with an
+    // inference. (This sweep has no dry-run mode of its own — eta-flag-check is where the
+    // engine is run for inspection, and it never writes.)
+    // ROUTE_CLASSES_PER_DAY=off puts this sweep back to publishing NOTHING, which is what it
+    // did before per-day keys made tomorrow's map safe to write.
+    if (routeClasses && perDayRouteClassesEnabled() && date >= etDayString()) {
+      try {
+        await setDoc(routeClassesPath(TENANT, date), { tenant: TENANT, date, classes: routeClasses, at: new Date().toISOString() });
+      } catch (e: any) {
+        // The sweep still judges on the map it holds; only the browser loses it. Say so
+        // here rather than letting the screen and the inbox disagree in silence.
+        console.error('route-classes publish failed (board will run fleet-only):', e?.message);
+      }
+    }
     // A pre-day board gets NO nowMin: nothing has departed, so the not-started clamp and
     // the driverless rule (R6) must stay out of it — a tomorrow route without a driver
     // yet is just tomorrow. After midnight the board is today's; nowMin is real, and the

@@ -178,7 +178,9 @@ function routeTotalMeters(orderedStops, depot) {
   return total;
 }
 
-// Sort by crow-flies distance from the depot (Closest first / Farthest first).
+// Sort by crow-flies distance from the depot. This WAS "Closest first" / "Farthest first" until
+// 2026-09-10 — a radial sort that ignores direction and zigzags between towns at one radius.
+// Kept as a plain utility; the picker's strategies are the sweeps below.
 export function depotSort(stops, depot, dir = 'asc') {
   const withD = stops.map((s) => ({ s, d: haversineMeters(depot, s) }));
   withD.sort((a, b) => (dir === 'asc' ? a.d - b.d : b.d - a.d));
@@ -255,18 +257,335 @@ export function twoOptLoop(stops, depot, maxPasses = 8) {
   return best;
 }
 
+// ── "Farthest first" / "Closest first" are a SWEEP, not a sort ──────────────
+//
+// Chad, 2026-09-10, on a 14-stop JEFF route re-sequenced Farthest first: "it should be pretty
+// linear from furthest point out to the last but this is jumping all around."
+//
+// IT WAS A SORT. depotSort ranked every stop by its crow-flies RADIUS from Buford and by
+// nothing else — and a radius says nothing about direction. Three towns that sit at about the
+// same distance in three different directions (Canton to the south-west, Tate to the
+// north-east, Ball Ground between them) interleave in a radial sort, so the driver was sent
+// Jasper → Canton → Tate → Ball Ground → … → back out toward Tate, and every one of those
+// jumps was a stretch of road driven twice.
+//
+// WHAT "FARTHEST FIRST" MEANS ON A DOCK: run out to the far end with the load, then deliver on
+// the way home, so every stop after the first brings the truck closer to the yard. That is a
+// path whose BOTH ends are already known — it starts at the farthest stop and it finishes at
+// the terminal — and the only open question is the order of everything in between. So the far
+// stop is pinned first, the depot is pinned last, and the shortest path between them through
+// the rest is found: a nearest-neighbour seed, then 2-opt (reverse a run of stops) and or-opt
+// (lift a run of one to three stops and set it down elsewhere) until neither move shortens it.
+// Or-opt is there for the straggler 2-opt cannot reach: one stop off to the side of the
+// corridor that a reversal alone leaves stranded between two towns. And since Chad's call the
+// same evening, the sweep runs ONE TOWN AT A TIME — the block further down.
+//
+// "Closest first" is the same sweep run the other way: nearest stop pinned first, farthest
+// pinned last, and the path walks outward. Without a pinned far end it would collapse into
+// "Shortest distance" — the picker would offer two names for one order.
+//
+// Straight-line distance throughout, the same convention as every other client-side
+// re-sequence here (recomputeRoute, twoOpt, twoOptLoop). The engine's FARTHEST_FIRST /
+// CLOSEST_FIRST (routing-solver.mts) run the same sweep on the build's matrix, so a card
+// re-sequenced here and a route built there agree about what the words mean.
+
+const mappable = (s) => Number.isFinite(s?.lat) && Number.isFinite(s?.lng);
+
+// Symmetric haversine matrix over `nodes` ([{lat,lng}, …]); index i ↔ nodes[i].
+function distanceMatrix(nodes) {
+  const n = nodes.length;
+  const m = Array.from({ length: n }, () => new Array(n).fill(0));
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) { const d = haversineMeters(nodes[i], nodes[j]); m[i][j] = d; m[j][i] = d; }
+  }
+  return m;
+}
+
+// Length of start → order[0] → … → order[last] → end on a cost matrix of node indices.
+export function pinnedPathCost(order, start, end, cost) {
+  let prev = start, total = 0;
+  for (const k of order) { total += cost[prev][k]; prev = k; }
+  return total + cost[prev][end];
+}
+
+// Greedy nearest-neighbour walk over `pool` (node indices) starting from node `from`.
+function nearestNeighborFrom(from, pool, cost) {
+  const remaining = [...pool];
+  const out = [];
+  let cur = from;
+  while (remaining.length) {
+    let bi = 0, bd = Infinity;
+    for (let i = 0; i < remaining.length; i++) { const d = cost[cur][remaining[i]]; if (d < bd) { bd = d; bi = i; } }
+    cur = remaining.splice(bi, 1)[0];
+    out.push(cur);
+  }
+  return out;
+}
+
+// Improve the interior of a path whose two ends are pinned. `order` is the interior as node
+// indices; `start` / `end` are node indices that never move. Each pass tries every 2-opt
+// reversal and every or-opt relocation (runs of 1–3, either way round), keeping any that
+// shortens the path; it stops when a whole pass finds nothing. Every kept move strictly
+// shortens the path, so the search always ends; maxPasses stops a badly seeded pass early
+// (a lattice of 150 stops seeded in radius order was still improving at 40), and the
+// multi-start below keeps whichever seed finished shortest.
+//
+// Each candidate is scored by the DELTA of the edges it changes, not by re-adding the whole
+// path: a reversal swaps two edges, a relocation swaps three. The first cut of this re-summed
+// every candidate and took 1.5 s on 150 stops — a visible freeze on the dropdown, and a
+// wall-clock test that failed on a shared CI runner. On an asymmetric (road) matrix the edges
+// INSIDE a reversed run change direction too, so those are re-read only when the matrix is
+// actually asymmetric; the straight-line matrix never is.
+export function improvePinnedPath(order, start, end, cost, maxPasses = 40) {
+  const path = [...order];
+  const n = path.length;
+  if (n < 2) return path;
+  const EPS = 1e-6;
+  const at = (i) => (i < 0 ? start : i >= n ? end : path[i]);
+  const asym = isAsymmetric(cost, [start, end, ...path]);
+  for (let pass = 0; pass < maxPasses; pass++) {
+    let improved = false;
+    // 2-opt: reverse path[i..k]. Edges (p→a) and (b→q) become (p→b) and (a→q).
+    for (let i = 0; i < n - 1; i++) {
+      for (let k = i + 1; k < n; k++) {
+        const p = at(i - 1), a = path[i], b = path[k], q = at(k + 1);
+        let delta = cost[p][b] + cost[a][q] - cost[p][a] - cost[b][q];
+        if (asym) for (let t = i; t < k; t++) delta += cost[path[t + 1]][path[t]] - cost[path[t]][path[t + 1]];
+        if (delta < -EPS) {
+          for (let lo = i, hi = k; lo < hi; lo++, hi--) { const tmp = path[lo]; path[lo] = path[hi]; path[hi] = tmp; }
+          improved = true;
+        }
+      }
+    }
+    // or-opt: lift path[i..i+len) and drop it into another slot, forwards or reversed.
+    for (let len = 1; len <= 3 && len < n; len++) {
+      for (let i = 0; i + len <= n; i++) {
+        const a = path[i], b = path[i + len - 1], p = at(i - 1), q = at(i + len);
+        let inner = 0, innerRev = 0;
+        for (let t = i; t < i + len - 1; t++) { inner += cost[path[t]][path[t + 1]]; innerRev += cost[path[t + 1]][path[t]]; }
+        const lifted = cost[p][a] + cost[b][q] - cost[p][q];          // what leaving this slot saves
+        let bestDelta = -EPS, bestJ = -1, bestRev = false;
+        for (let j = 0; j <= n; j++) {
+          if (j >= i && j <= i + len) continue;                      // its own slot
+          const u = at(j - 1), v = at(j);
+          const dF = cost[u][a] + cost[b][v] - cost[u][v] - lifted;
+          if (dF < bestDelta) { bestDelta = dF; bestJ = j; bestRev = false; }
+          if (len > 1) {
+            const dR = cost[u][b] + cost[a][v] - cost[u][v] - lifted + (innerRev - inner);
+            if (dR < bestDelta) { bestDelta = dR; bestJ = j; bestRev = true; }
+          }
+        }
+        if (bestJ >= 0) {
+          const seg = path.splice(i, len);
+          if (bestRev) seg.reverse();
+          path.splice(bestJ > i ? bestJ - len : bestJ, 0, ...seg);
+          improved = true;
+        }
+      }
+    }
+    if (!improved) break;
+  }
+  return path;
+}
+
+// Does any pair among `nodes` cost a different amount each way? (A Google road matrix can;
+// straight-line never does.)
+function isAsymmetric(cost, nodes) {
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      if (cost[nodes[i]][nodes[j]] !== cost[nodes[j]][nodes[i]]) return true;
+    }
+  }
+  return false;
+}
+
+// ── ONE TOWN AT A TIME (Chad, 2026-09-10) ────────────────────────────────────
+//
+// Shown the pure sweep's answer on JEFF — Ball Ground, Ball Ground, Ball Ground, Canton, then
+// four more Ball Ground — and the 4% of paper miles it saves: "2 let's try that and have a way
+// to flip it back if I don't like the orders it's putting things in."
+//
+// A town is worked in one visit. Two stops within TOWN_RADIUS_METERS of each other are one
+// town, and towns chain (A near B and B near C is one town of all three), so a contiguous
+// industrial belt is one town and a lone customer nine miles off the corridor is its own. The
+// sweep then runs at two levels. The towns are ordered as the pinned path — the town holding
+// the far stop first, the yard last, the distance between two towns being the shortest hop
+// between any of their stops — and inside each town the stops are ordered as a short pinned
+// path from wherever the truck arrives to the nearest stop of the town it leaves for next. A
+// spur out to a lone stop can still happen, because it has to be visited somewhere, but it can
+// no longer land in the MIDDLE of another town's stops.
+//
+// THE SWITCH. SWEEP_MODE 'towns' is the rule above; 'pure' is the plain shortest pinned path
+// (the spur-in-the-middle answer). Flip the word, bump the version, and the old order is back.
+// The server twin in routing-solver.mts carries the same two constants and must say the same.
+export const SWEEP_MODE = 'towns';
+export const TOWN_RADIUS_METERS = 4000;   // ~2.5 miles: the same neighbourhood, not the same county
+
+// Multi-start over one pinned path. 2-opt/or-opt only walk downhill, so where they finish
+// depends on where they begin, and one greedy seed can leave a straggler no single move
+// repairs. Four cheap starting orders — greedy from the pinned start, greedy from the pinned
+// end walked backwards, radius order, and the canonical ascending order — are each improved
+// and the shortest wins. `dir` only decides which way the radius seed runs. Every seed is a
+// function of the node SET, so the same stops give the same answer whatever order they came in.
+function bestPinnedPath(pool, start, end, cost, dir) {
+  if (pool.length < 2) return [...pool];
+  const byRadius = [...pool].sort((a, b) => cost[0][a] - cost[0][b]);
+  const seeds = [
+    nearestNeighborFrom(start, pool, cost),
+    nearestNeighborFrom(end, pool, cost).reverse(),
+    dir === 'homeward' ? byRadius.reverse() : byRadius,
+    [...pool].sort((a, b) => a - b),
+  ];
+  let bestOrder = [...pool], best = Infinity;          // a valid order even if every score is NaN
+  for (const seed of seeds) {
+    const cand = improvePinnedPath(seed, start, end, cost);
+    const len = pinnedPathCost(cand, start, end, cost);
+    if (len + 1e-6 < best) { best = len; bestOrder = cand; }
+  }
+  return bestOrder;
+}
+
+// Farthest and nearest node by cost from the depot (node 0); ties go to the lowest index.
+function extremes(nodes, cost) {
+  let far = nodes[0], near = nodes[0];
+  for (const n of nodes) {
+    if (cost[0][n] > cost[0][far]) far = n;
+    if (cost[0][n] < cost[0][near]) near = n;
+  }
+  return { far, near };
+}
+
+// The plain sweep: one pinned path through every node. 'homeward' = far stop first, depot
+// last; 'outward' = near stop first, far stop last.
+export function pureSweepNodes(nodes, cost, dir) {
+  nodes = [...nodes].sort((a, b) => a - b);
+  if (nodes.length < 2) return nodes;
+  const { far, near } = extremes(nodes, cost);
+  let start, end;
+  if (dir === 'homeward') { start = far; end = 0; }
+  else { start = near; end = far === near ? 0 : far; }   // every stop at one radius: nothing to pin at the end
+  const pool = nodes.filter((n) => n !== start && n !== end);
+  const interior = bestPinnedPath(pool, start, end, cost, dir);
+  return [start, ...interior, ...(end === 0 ? [] : [end])];
+}
+
+// Group nodes into towns: single-linkage, two nodes within `radius` of each other (either
+// direction on an asymmetric matrix) share a town. Towns come back as ascending arrays of node
+// indices, ordered by their lowest member — a function of the set, not of the input order.
+export function townsOf(nodes, cost, radius) {
+  const parent = new Map(nodes.map((n) => [n, n]));
+  const find = (n) => { while (parent.get(n) !== n) { parent.set(n, parent.get(parent.get(n))); n = parent.get(n); } return n; };
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      const a = nodes[i], b = nodes[j];
+      if (Math.min(cost[a][b], cost[b][a]) <= radius) { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); }
+    }
+  }
+  const groups = new Map();
+  for (const n of [...nodes].sort((a, b) => a - b)) { const r = find(n); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(n); }
+  return [...groups.values()].sort((a, b) => a[0] - b[0]);
+}
+
+// The shortest hop from any node of A to any node of B, read in the driving direction.
+function hop(A, B, cost) {
+  let best = Infinity;
+  for (const a of A) for (const b of B) if (cost[a][b] < best) best = cost[a][b];
+  return best;
+}
+// The stop of `next` the truck aims for when it leaves `town`: the one closest to any of its stops.
+function nearestEntry(town, next, cost) {
+  let bestB = next[0], best = Infinity;
+  for (const a of town) for (const b of next) if (cost[a][b] < best) { best = cost[a][b]; bestB = b; }
+  return bestB;
+}
+
+// The two-level sweep: towns first, then the stops inside each.
+export function townSweepNodes(nodes, cost, dir, radius = TOWN_RADIUS_METERS) {
+  nodes = [...nodes].sort((a, b) => a - b);
+  if (nodes.length < 2) return nodes;
+  const towns = townsOf(nodes, cost, radius);
+  if (towns.length < 2) return pureSweepNodes(nodes, cost, dir);   // one town: nothing to keep whole
+  const { far, near } = extremes(nodes, cost);
+  const townOf = new Map();
+  towns.forEach((t, i) => t.forEach((n) => townOf.set(n, i)));
+  const farTown = townOf.get(far), nearTown = townOf.get(near);
+  // Outward with the near and the far stop in one town would have to start and finish in the
+  // same town — a ring, not a corridor — and the plain sweep is the right tool for a ring.
+  if (dir === 'outward' && farTown === nearTown) return pureSweepNodes(nodes, cost, dir);
+  // Town-level matrix: index 0 is the depot, t+1 is towns[t].
+  const T = towns.length;
+  const tc = Array.from({ length: T + 1 }, () => new Array(T + 1).fill(0));
+  for (let i = 0; i < T; i++) {
+    tc[0][i + 1] = hop([0], towns[i], cost);
+    tc[i + 1][0] = hop(towns[i], [0], cost);
+    for (let j = 0; j < T; j++) if (i !== j) tc[i + 1][j + 1] = hop(towns[i], towns[j], cost);
+  }
+  let tStart, tEnd;
+  if (dir === 'homeward') { tStart = farTown + 1; tEnd = 0; }
+  else { tStart = nearTown + 1; tEnd = farTown + 1; }
+  const tPool = towns.map((_, i) => i + 1).filter((t) => t !== tStart && t !== tEnd);
+  const townOrder = [tStart, ...bestPinnedPath(tPool, tStart, tEnd, tc, dir), ...(tEnd === 0 ? [] : [tEnd])].map((t) => towns[t - 1]);
+  // Inside each town, in that order: from where the truck arrives to where it leaves for next.
+  const out = [];
+  let prev = -1;
+  for (let i = 0; i < townOrder.length; i++) {
+    const town = townOrder[i];
+    const lastTown = i === townOrder.length - 1;
+    const exit = lastTown ? (dir === 'homeward' ? 0 : far) : nearestEntry(town, townOrder[i + 1], cost);
+    let seq;
+    if (i === 0) {
+      const first = dir === 'homeward' ? far : near;           // the pinned first stop
+      seq = [first, ...bestPinnedPath(town.filter((n) => n !== first), first, exit, cost, dir)];
+    } else if (lastTown && dir === 'outward') {
+      seq = [...bestPinnedPath(town.filter((n) => n !== far), prev, far, cost, dir), far];   // the pinned last stop
+    } else {
+      seq = bestPinnedPath(town, prev, exit, cost, dir);
+    }
+    out.push(...seq);
+    prev = seq[seq.length - 1];
+  }
+  return out;
+}
+
+// The sweep over a card's stops. Node 0 is the depot, node k is stops[k-1]. Stops with no
+// usable position cannot be placed on a line and ride at the END in their input order — never
+// dropped, never allowed to poison the arithmetic for the ones that can be.
+function sweep(stops, depot, dir, mode = SWEEP_MODE) {
+  // CANONICAL ORDER FIRST. Tie-breaks and seeds read the order they are handed, and a card's
+  // order is whatever the dispatcher last dragged it into — so the same stops in a different
+  // order could land in a different local optimum, and re-picking the strategy after a drag
+  // "changed its mind". Sorting the placed stops by position (then id) makes the answer a
+  // function of the stop SET alone.
+  const placed = stops.filter(mappable).sort((a, b) => (a.lat - b.lat) || (a.lng - b.lng) || String(a.id).localeCompare(String(b.id)));
+  const unplaced = stops.filter((s) => !mappable(s));
+  if (placed.length < 2) return [...placed, ...unplaced];
+  const cost = distanceMatrix([depot, ...placed]);
+  const nodes = placed.map((_, i) => i + 1);
+  const order = mode === 'pure' ? pureSweepNodes(nodes, cost, dir) : townSweepNodes(nodes, cost, dir);
+  return [...order.map((k) => placed[k - 1]), ...unplaced];
+}
+
+// Farthest first: drive out to the far end, then deliver on the way home, one town at a time.
+// First stop is the farthest from the depot; the path from there ends at the terminal.
+export function farthestFirst(stops, depot, mode = SWEEP_MODE) { return sweep(stops, depot, 'homeward', mode); }
+
+// Closest first: the nearest stop first, walking outward town by town; the farthest stop is last.
+export function closestFirst(stops, depot, mode = SWEEP_MODE) { return sweep(stops, depot, 'outward', mode); }
+
 // Re-sequence one route's stops by strategy. 'reverse' flips the current order;
 // the others are computed fresh from depot + positions.
 //   loop     — nearest-neighbour seed + closed-loop 2-opt → U-shape (down one side,
 //              back the other), the no-crisscross order for a highway corridor.
 //   min      — nearest-neighbour seed + open-path 2-opt → shortest one-way distance.
+//   farthest — far stop first, then the shortest sweep home (see above).
+//   closest  — near stop first, then the shortest sweep out to the far stop.
 export function resequence(stops, depot, strategy) {
   const arr = Array.isArray(stops) ? stops : [];
   if (arr.length < 2) return [...arr];
   switch (strategy) {
     case 'reverse': return [...arr].reverse();
-    case 'closest': return depotSort(arr, depot, 'asc');
-    case 'farthest': return depotSort(arr, depot, 'desc');
+    case 'closest': return closestFirst(arr, depot);
+    case 'farthest': return farthestFirst(arr, depot);
     case 'loop': return twoOptLoop(nearestNeighbor(arr, depot), depot);
     case 'min': return twoOpt(nearestNeighbor(arr, depot), depot);
     default: return [...arr];
@@ -364,29 +683,35 @@ export function gridRowTone({ selected = false, tractorOk = false, carryover = f
 
 // ── WHAT A CLICK ON A ROUTING MAP PIN DOES ───────────────────────────────────
 //
-// Chad, on GEORGE L's route: "If i click on one of these dots on the map i want it to bring
-// that orders details on in the right panel." It did not, and the reason is the shape this
-// repo keeps re-learning: the dispatch Map has opened a stop on its own marker click since it
-// was built, and Routing — the screen a router spends the morning in — was never wired for it.
-// A numbered pin opened its ROUTE in Compare, a pool pin toggled the whole place into the
-// selection, and the one question a dot could not answer was "what is this order?".
+// Chad, 2026-09-11, about the change he asked for the day before: "i asked that when i click
+// on a stop it opens the stop and i don't want that to happen anymore, i don't want it to
+// open every order i click on when i'm clicking it on the map." So the order card comes back
+// OFF the pin. v1.7.0 put it on every pin in every mode but two; this puts it back.
 //
-// THE RULE IS HERE, NOT IN THE HANDLER, because the handler lives inside a marker-building
-// effect in a 25,000-line module that node:test cannot import, and Google Maps is blocked in
-// the headless guard — so a marker click is not observable there either (v0.98.0 said so when
-// it shipped the row→pin half of this). That leaves the decision untestable at both ends
-// unless it is a function. It is a function.
+// WHY THE ASK REVERSED, in dispatch terms rather than code terms: a router BUILDS a load by
+// clicking pins. A click means "put this on the truck", "show me this route", "grab this
+// whole dock" — on a 700-stop morning that is hundreds of them, and it is a rhythm, not a
+// series of questions. A full-height order card on each one covers the map, takes the right
+// rail away from the route being tuned, and has to be dismissed before the next click. The
+// card is a READING tool; the pin is a BUILDING tool. The list rows still open the card, and
+// that is the surface where a dispatcher is reading rather than routing.
 //
-// WHICH MODES OPEN THE PANEL, and why it is not simply "all of them":
-//   • normal      — the ask. The pin also keeps what it already did (open the route, or
-//                   toggle the place into the selection); nothing is taken away.
-//   • viewing     — a saved load is read-only and the click previously did NOTHING. Reading an
-//                   order is the one thing that was always safe there.
-//   • paint       — already did both ("first click does both"); unchanged.
-//   • selectMode  — NO. The click is asking for a POINT on the map (the handler reads the
-//                   marker's position, not the stop). A card about a stop is the wrong answer.
-//   • ninja       — NO. It adds stop after stop to the open route; a card popping up on each
-//                   one fights the job being done.
+// WHAT A PIN DOES NOW — exactly what it did before v1.7.0:
+//   • normal      — a planned pin opens its ROUTE in Compare; a pool pin toggles its whole
+//                   place into the selection. No card.
+//   • viewing     — a saved load is read-only and the click does nothing.
+//   • paint       — marks the stop AND opens the card. LEFT ALONE: that is an older and
+//                   separate dispatcher request ("first click does both"), it predates the
+//                   card-on-every-pin change, and it is one deliberate click at a time rather
+//                   than the routing rhythm. Say the word and it goes too.
+//   • selectMode  — hands the draw tool the marker's POSITION. No card.
+//   • ninja       — adds the stop to the open route. No card.
+//
+// PUTTING THE CARD BACK IS ONE LINE: give openPanel `!selectMode && !ninja` again (the tests
+// beside this name each case, so they say what would have to change with it). The rule lives
+// here and not in the handler because the handler sits inside a marker-building effect in a
+// 25,000-line module node:test cannot import, and Google Maps is blocked in the headless
+// guard — a decision written there is testable at neither end.
 //
 // Returns every action the click should take, so the caller is a dispatcher and holds no
 // policy of its own.
@@ -394,13 +719,12 @@ export function mapPinClickActions({
   viewing = false, paint = false, selectMode = false, ninja = false,
   isUnplanned = false, hasRouteKey = false,
 } = {}) {
-  // The two rapid-fire tools are about a point or a queue, not about this order.
-  const openPanel = !selectMode && !ninja;
-  if (viewing) return { openPanel, paint: false, selectPoint: false, ninjaAdd: false, openRoute: false, toggleGroup: false };
-  if (paint) return { openPanel, paint: true, selectPoint: false, ninjaAdd: false, openRoute: false, toggleGroup: false };
-  if (selectMode) return { openPanel, paint: false, selectPoint: true, ninjaAdd: false, openRoute: false, toggleGroup: false };
-  if (ninja) return { openPanel, paint: false, selectPoint: false, ninjaAdd: true, openRoute: false, toggleGroup: false };
+  const none = { openPanel: false, paint: false, selectPoint: false, ninjaAdd: false, openRoute: false, toggleGroup: false };
+  if (viewing) return none;                                        // saved load: read-only, click does nothing
+  if (paint) return { ...none, openPanel: true, paint: true };     // the one card a pin still opens
+  if (selectMode) return { ...none, selectPoint: true };
+  if (ninja) return { ...none, ninjaAdd: true };
   // Normal mode: a planned stop opens its route; a pool stop toggles its whole place.
   const openRoute = !isUnplanned && hasRouteKey;
-  return { openPanel, paint: false, selectPoint: false, ninjaAdd: false, openRoute, toggleGroup: !openRoute };
+  return { ...none, openRoute, toggleGroup: !openRoute };
 }

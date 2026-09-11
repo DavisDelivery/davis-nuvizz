@@ -8,9 +8,10 @@
 //   1. Assignment — best-fit-decreasing bin-packing across the N trucks, honoring
 //      equipment + capacity HARD constraints. Hard-to-place stops (oversize / most
 //      restricted / largest) are placed first; anything that fits no truck spills.
-//   2. Sequencing per strategy — CLOSEST/FARTHEST order by depot distance;
-//      MIN_DISTANCE / MIN_TIME use nearest-neighbor seeding + 2-opt improvement on
-//      the injected Google matrix.
+//   2. Sequencing per strategy — FARTHEST_FIRST pins the far stop first and the depot
+//      last and finds the shortest path between them, one town at a time (a homeward
+//      sweep); CLOSEST_FIRST is the same sweep outward (near stop first, far stop last).
+//      MIN_DISTANCE / MIN_TIME use nearest-neighbor seeding + 2-opt on the injected matrix.
 //   3. Legs + ETAs + load/capacity.
 // STRICT appointment windows are validated/enforced by the repair loop, not here.
 
@@ -226,14 +227,237 @@ export function twoOpt(order: number[], cost: number[][]): number[] {
   return best;
 }
 
+// ── the pinned-ends sweep (FARTHEST_FIRST / CLOSEST_FIRST) ───────────────────
+// Until 2026-09-10 both were a SORT by distance from the depot. A radius says nothing about
+// direction, so towns at one radius in three directions interleaved and the route crossed
+// itself — Chad, on a 14-stop route: "it should be pretty linear from furthest point out to
+// the last but this is jumping all around." What "farthest first" means on a dock is: run out
+// to the far end, then deliver on the way home. Both ends of that path are known (the far
+// stop, then the depot); only the order in between is open, and it is found the same way
+// MIN_DISTANCE finds its order — nearest-neighbour seeds, 2-opt reversals, or-opt relocations
+// — with the ends held fixed. CLOSEST_FIRST is the sweep run outward: near stop first, far
+// stop last. The client's re-sequence picker (lib/routing-select.js) runs the identical sweep
+// on straight-line distance, so a card and an engine build agree on what the words mean.
+
+// Length of start → order… → end on a cost matrix (asymmetric-safe: every edge read forward).
+export function pinnedPathCost(order: number[], start: number, end: number, cost: number[][]): number {
+  let prev = start, total = 0;
+  for (const k of order) { total += cost[prev][k]; prev = k; }
+  return total + cost[prev][end];
+}
+
+function nearestNeighborFrom(from: number, pool: number[], cost: number[][]): number[] {
+  const remaining = new Set(pool);
+  const out: number[] = [];
+  let cur = from;
+  while (remaining.size) {
+    let next = -1, bestC = Infinity;
+    for (const n of remaining) { const c = cost[cur][n]; if (c < bestC) { bestC = c; next = n; } }
+    out.push(next); remaining.delete(next); cur = next;
+  }
+  return out;
+}
+
+// 2-opt + or-opt on the interior of a path whose two ends never move. Every candidate is
+// scored by the delta of the edges it changes (two for a reversal, three for a relocation),
+// never by re-summing the path; on an asymmetric (Google) matrix the edges inside a reversed
+// run change direction too, and those are re-read only then. Every kept move strictly
+// shortens the path, so the search always ends; maxPasses cuts a badly seeded pass short
+// and the multi-start keeps whichever seed finished shortest.
+export function improvePinnedPath(order: number[], start: number, end: number, cost: number[][], maxPasses = 40): number[] {
+  const path = order.slice();
+  const n = path.length;
+  if (n < 2) return path;
+  const EPS = 1e-9;
+  const at = (i: number): number => (i < 0 ? start : i >= n ? end : path[i]);
+  const asym = isAsymmetric(cost, [start, end, ...path]);
+  for (let pass = 0; pass < maxPasses; pass++) {
+    let improved = false;
+    for (let i = 0; i < n - 1; i++) {
+      for (let k = i + 1; k < n; k++) {
+        const p = at(i - 1), a = path[i], b = path[k], q = at(k + 1);
+        let delta = cost[p][b] + cost[a][q] - cost[p][a] - cost[b][q];
+        if (asym) for (let t = i; t < k; t++) delta += cost[path[t + 1]][path[t]] - cost[path[t]][path[t + 1]];
+        if (delta < -EPS) {
+          for (let lo = i, hi = k; lo < hi; lo++, hi--) { const tmp = path[lo]; path[lo] = path[hi]; path[hi] = tmp; }
+          improved = true;
+        }
+      }
+    }
+    for (let len = 1; len <= 3 && len < n; len++) {
+      for (let i = 0; i + len <= n; i++) {
+        const a = path[i], b = path[i + len - 1], p = at(i - 1), q = at(i + len);
+        let inner = 0, innerRev = 0;
+        for (let t = i; t < i + len - 1; t++) { inner += cost[path[t]][path[t + 1]]; innerRev += cost[path[t + 1]][path[t]]; }
+        const lifted = cost[p][a] + cost[b][q] - cost[p][q];
+        let bestDelta = -EPS, bestJ = -1, bestRev = false;
+        for (let j = 0; j <= n; j++) {
+          if (j >= i && j <= i + len) continue;
+          const u = at(j - 1), v = at(j);
+          const dF = cost[u][a] + cost[b][v] - cost[u][v] - lifted;
+          if (dF < bestDelta) { bestDelta = dF; bestJ = j; bestRev = false; }
+          if (len > 1) {
+            const dR = cost[u][b] + cost[a][v] - cost[u][v] - lifted + (innerRev - inner);
+            if (dR < bestDelta) { bestDelta = dR; bestJ = j; bestRev = true; }
+          }
+        }
+        if (bestJ >= 0) {
+          const seg = path.splice(i, len);
+          if (bestRev) seg.reverse();
+          path.splice(bestJ > i ? bestJ - len : bestJ, 0, ...seg);
+          improved = true;
+        }
+      }
+    }
+    if (!improved) break;
+  }
+  return path;
+}
+
+function isAsymmetric(cost: number[][], nodes: number[]): boolean {
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      if (cost[nodes[i]][nodes[j]] !== cost[nodes[j]][nodes[i]]) return true;
+    }
+  }
+  return false;
+}
+
+// ── ONE TOWN AT A TIME (Chad, 2026-09-10) ────────────────────────────────────
+// Mirror of lib/routing-select.js: a town is worked in one visit. Two nodes within
+// TOWN_RADIUS_METERS of each other share a town (towns chain); the towns are ordered as the
+// pinned path, then the stops inside each from where the truck arrives to where it leaves.
+// SWEEP_MODE 'pure' is the plain shortest pinned path; the client carries the same constants
+// and must say the same thing.
+export const SWEEP_MODE: 'towns' | 'pure' = 'towns';
+export const TOWN_RADIUS_METERS = 4000;
+type Dir = 'homeward' | 'outward';
+
+// Multi-start over one pinned path; every seed is a function of the node set.
+function bestPinnedPath(pool: number[], start: number, end: number, cost: number[][], dir: Dir): number[] {
+  if (pool.length < 2) return pool.slice();
+  const byRadius = pool.slice().sort((a, b) => cost[0][a] - cost[0][b]);
+  const seeds = [
+    nearestNeighborFrom(start, pool, cost),
+    nearestNeighborFrom(end, pool, cost).reverse(),
+    dir === 'homeward' ? byRadius.reverse() : byRadius,
+    pool.slice().sort((a, b) => a - b),
+  ];
+  let bestOrder = pool.slice(), best = Infinity;
+  for (const seed of seeds) {
+    const cand = improvePinnedPath(seed, start, end, cost);
+    const len = pinnedPathCost(cand, start, end, cost);
+    if (len + 1e-9 < best) { best = len; bestOrder = cand; }
+  }
+  return bestOrder;
+}
+
+function extremes(nodes: number[], cost: number[][]): { far: number; near: number } {
+  let far = nodes[0], near = nodes[0];
+  for (const n of nodes) {
+    if (cost[0][n] > cost[0][far]) far = n;
+    if (cost[0][n] < cost[0][near]) near = n;
+  }
+  return { far, near };
+}
+
+// The plain sweep over matrix node indices (0 = depot).
+export function pureSweepNodes(nodes: number[], cost: number[][], dir: Dir): number[] {
+  nodes = nodes.slice().sort((a, b) => a - b);
+  if (nodes.length < 2) return nodes;
+  const { far, near } = extremes(nodes, cost);
+  let start: number, end: number;
+  if (dir === 'homeward') { start = far; end = 0; }
+  else { start = near; end = far === near ? 0 : far; }
+  const pool = nodes.filter((n) => n !== start && n !== end);
+  const interior = bestPinnedPath(pool, start, end, cost, dir);
+  return [start, ...interior, ...(end === 0 ? [] : [end])];
+}
+
+// Single-linkage towns: within `radius` either way shares a town. Ascending arrays, by lowest member.
+export function townsOf(nodes: number[], cost: number[][], radius: number): number[][] {
+  const parent = new Map<number, number>(nodes.map((n) => [n, n]));
+  const find = (n: number): number => { while (parent.get(n) !== n) { parent.set(n, parent.get(parent.get(n)!)!); n = parent.get(n)!; } return n; };
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      const a = nodes[i], b = nodes[j];
+      if (Math.min(cost[a][b], cost[b][a]) <= radius) { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); }
+    }
+  }
+  const groups = new Map<number, number[]>();
+  for (const n of nodes.slice().sort((a, b) => a - b)) { const r = find(n); if (!groups.has(r)) groups.set(r, []); groups.get(r)!.push(n); }
+  return [...groups.values()].sort((a, b) => a[0] - b[0]);
+}
+
+function hop(A: number[], B: number[], cost: number[][]): number {
+  let best = Infinity;
+  for (const a of A) for (const b of B) if (cost[a][b] < best) best = cost[a][b];
+  return best;
+}
+function nearestEntry(town: number[], next: number[], cost: number[][]): number {
+  let bestB = next[0], best = Infinity;
+  for (const a of town) for (const b of next) if (cost[a][b] < best) { best = cost[a][b]; bestB = b; }
+  return bestB;
+}
+
+// The two-level sweep: towns first, then the stops inside each.
+export function townSweepNodes(nodes: number[], cost: number[][], dir: Dir, radius = TOWN_RADIUS_METERS): number[] {
+  nodes = nodes.slice().sort((a, b) => a - b);
+  if (nodes.length < 2) return nodes;
+  const towns = townsOf(nodes, cost, radius);
+  if (towns.length < 2) return pureSweepNodes(nodes, cost, dir);
+  const { far, near } = extremes(nodes, cost);
+  const townOf = new Map<number, number>();
+  towns.forEach((t, i) => t.forEach((n) => townOf.set(n, i)));
+  const farTown = townOf.get(far)!, nearTown = townOf.get(near)!;
+  if (dir === 'outward' && farTown === nearTown) return pureSweepNodes(nodes, cost, dir);
+  const T = towns.length;
+  const tc: number[][] = Array.from({ length: T + 1 }, () => new Array(T + 1).fill(0));
+  for (let i = 0; i < T; i++) {
+    tc[0][i + 1] = hop([0], towns[i], cost);
+    tc[i + 1][0] = hop(towns[i], [0], cost);
+    for (let j = 0; j < T; j++) if (i !== j) tc[i + 1][j + 1] = hop(towns[i], towns[j], cost);
+  }
+  let tStart: number, tEnd: number;
+  if (dir === 'homeward') { tStart = farTown + 1; tEnd = 0; }
+  else { tStart = nearTown + 1; tEnd = farTown + 1; }
+  const tPool = towns.map((_, i) => i + 1).filter((t) => t !== tStart && t !== tEnd);
+  const townOrder = [tStart, ...bestPinnedPath(tPool, tStart, tEnd, tc, dir), ...(tEnd === 0 ? [] : [tEnd])].map((t) => towns[t - 1]);
+  const out: number[] = [];
+  let prev = -1;
+  for (let i = 0; i < townOrder.length; i++) {
+    const town = townOrder[i];
+    const lastTown = i === townOrder.length - 1;
+    const exit = lastTown ? (dir === 'homeward' ? 0 : far) : nearestEntry(town, townOrder[i + 1], cost);
+    let seq: number[];
+    if (i === 0) {
+      const first = dir === 'homeward' ? far : near;
+      seq = [first, ...bestPinnedPath(town.filter((n) => n !== first), first, exit, cost, dir)];
+    } else if (lastTown && dir === 'outward') {
+      seq = [...bestPinnedPath(town.filter((n) => n !== far), prev, far, cost, dir), far];
+    } else {
+      seq = bestPinnedPath(town, prev, exit, cost, dir);
+    }
+    out.push(...seq);
+    prev = seq[seq.length - 1];
+  }
+  return out;
+}
+
+// The sweep over matrix node indices (0 = depot). 'homeward' = FARTHEST_FIRST, 'outward' =
+// CLOSEST_FIRST; `mode` defaults to the switch above.
+export function pinnedSweep(nodes: number[], cost: number[][], dir: Dir, mode: 'towns' | 'pure' = SWEEP_MODE): number[] {
+  return mode === 'pure' ? pureSweepNodes(nodes, cost, dir) : townSweepNodes(nodes, cost, dir);
+}
+
 export function sequence(nodes: number[], strategy: Strategy, matrix: SolverInput['matrix']): number[] {
   if (nodes.length <= 1) return nodes.slice();
   const { distanceMeters, durationSec } = matrix;
   switch (strategy) {
     case 'CLOSEST_FIRST':
-      return nodes.slice().sort((a, b) => distanceMeters[0][a] - distanceMeters[0][b]);
+      return pinnedSweep(nodes, distanceMeters, 'outward');
     case 'FARTHEST_FIRST':
-      return nodes.slice().sort((a, b) => distanceMeters[0][b] - distanceMeters[0][a]);
+      return pinnedSweep(nodes, distanceMeters, 'homeward');
     case 'MIN_TIME':
       return twoOpt(nearestNeighbor(nodes, durationSec), durationSec);
     case 'MIN_DISTANCE':

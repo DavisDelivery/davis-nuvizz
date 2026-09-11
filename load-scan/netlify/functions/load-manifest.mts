@@ -28,7 +28,7 @@
 import { readStops, getDoc, setDoc, isFirestoreEnabled, readLoadRoster } from './lib/firestore.mts';
 import { DRIVER_AUTH, UNMATCHED_ALIASES, authenticate, normalizeRole } from './lib/auth.mts';
 import { DriverCred, normalizeDriverAlias, stopBelongsToDriver } from './lib/aliases.mts';
-import { toManifestStop, groupIntoLoads, loadSummaries } from './lib/manifest.mts';
+import { toManifestStop, groupIntoLoads, loadSummaries, carrierHandConfirmEnabled } from './lib/manifest.mts';
 import { ok, bad, unauthorized, DATE_RE } from './lib/http.mts';
 import { shiftDayString } from './lib/shift.mts';
 
@@ -49,6 +49,10 @@ export default async (req: Request): Promise<Response> => {
   // 8pm and midnight the calendar day is the shift that already finished.
   const date = DATE_RE.test(dateParam) ? dateParam : shiftDayString();
   const loadOverride = String(url.searchParams.get('loadNbr') || '').trim();
+
+  // Which way the switches are set, on every response: a switch whose position
+  // cannot be read back is not a switch. See carrierHandConfirmEnabled.
+  const rules = { carrierHandConfirm: carrierHandConfirmEnabled() };
 
   const warnings: string[] = [];
   const warn = (m: string) => {
@@ -118,6 +122,7 @@ export default async (req: Request): Promise<Response> => {
       unresolved: false,
       loads,
       warnings,
+      rules,
     });
   }
 
@@ -136,6 +141,7 @@ export default async (req: Request): Promise<Response> => {
       summariesOnly: true,
       loads: summaries,
       warnings,
+      rules,
     });
   }
 
@@ -164,6 +170,7 @@ export default async (req: Request): Promise<Response> => {
       reason: (cred.nuvizzAliases || []).length ? 'no_alias_match' : 'no_aliases_seeded',
       loads: [],
       warnings,
+      rules,
     });
   }
 
@@ -177,6 +184,7 @@ export default async (req: Request): Promise<Response> => {
     unresolved: false,
     loads,
     warnings,
+    rules,
   });
 };
 

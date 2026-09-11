@@ -211,7 +211,7 @@ test('resequence reverse flips the current order', () => {
   assert.deepEqual(ids(resequence(pts, depot0, 'reverse')), ['B', 'D', 'A', 'C']);
 });
 
-test('resequence closest/farthest sort by depot distance', () => {
+test('resequence closest/farthest on a straight line still walk the line in order', () => {
   assert.deepEqual(ids(resequence(pts, depot0, 'closest')), ['A', 'B', 'C', 'D']);
   assert.deepEqual(ids(resequence(pts, depot0, 'farthest')), ['D', 'C', 'B', 'A']);
 });
@@ -278,4 +278,344 @@ test('isPlannedStop: an unplanned pool stop is never planned', () => {
 
 test('isPlannedStop: junk input never throws', () => {
   for (const v of [null, undefined, {}, 0, '']) assert.equal(isPlannedStop(v), false);
+});
+
+
+// ── Farthest first / Closest first are a SWEEP, not a sort (Chad, 2026-09-10) ──────────────
+// "it should be pretty linear from furthest point out to the last but this is jumping all
+// around." The picker sorted by radius from the depot; a radius says nothing about direction,
+// so towns at one radius in three directions interleaved and the route crossed itself.
+import { farthestFirst, closestFirst, improvePinnedPath, pinnedPathCost, townsOf, SWEEP_MODE, TOWN_RADIUS_METERS } from '../src/lib/routing-select.js';
+
+const BUFORD = { lat: 34.147791, lng: -83.960911 };
+// The JEFF route from the report — the card read "14 stops · 15 orders" — placed by the towns
+// on the card (public geography; the card's real pins are NuVizz data and are not in the repo).
+// 15 rows: the two BOWSTONE orders share one address, as they did on the card.
+const JEFF = [
+  { id: 'TAG CITY (Ellijay)',           lat: 34.6948, lng: -84.4822 },
+  { id: 'UPS STORE (Jasper)',           lat: 34.4679, lng: -84.4291 },
+  { id: 'PREFERRED MACHINE (Jasper)',   lat: 34.4500, lng: -84.4200 },
+  { id: 'ROYSTON (Jasper)',             lat: 34.4700, lng: -84.4000 },
+  { id: 'BLACK EAGLE (Canton)',         lat: 34.2500, lng: -84.4900 },
+  { id: 'ELEVATE (Tate)',               lat: 34.4200, lng: -84.3800 },
+  { id: 'COMPASS (Ball Ground)',        lat: 34.3400, lng: -84.3800 },
+  { id: 'GO PLASTICS (Ball Ground)',    lat: 34.3350, lng: -84.3750 },
+  { id: 'CHART (Ball Ground)',          lat: 34.3300, lng: -84.3700 },
+  { id: 'BOWSTONE A (Ball Ground)',     lat: 34.3200, lng: -84.3600 },
+  { id: 'BOWSTONE B (Ball Ground)',     lat: 34.3200, lng: -84.3600 },
+  { id: 'RAYDEO (Ball Ground)',         lat: 34.3100, lng: -84.3500 },
+  { id: 'STOP 13 (Nelson)',             lat: 34.3700, lng: -84.3700 },
+  { id: 'STOP 14 (Hwy 53)',             lat: 34.4300, lng: -84.2500 },
+  { id: 'STOP 15 (Ball Ground)',        lat: 34.3500, lng: -84.3400 },
+];
+const townOf = (s) => s.id.replace(/^.*\((.*)\)$/, '$1');
+
+// Do segments p1-p2 and p3-p4 properly cross (share an interior point)?
+function segmentsCross(p1, p2, p3, p4) {
+  const orient = (a, b, c) => Math.sign((b.lng - a.lng) * (c.lat - a.lat) - (b.lat - a.lat) * (c.lng - a.lng));
+  const o1 = orient(p1, p2, p3), o2 = orient(p1, p2, p4), o3 = orient(p3, p4, p1), o4 = orient(p3, p4, p2);
+  return o1 !== 0 && o2 !== 0 && o3 !== 0 && o4 !== 0 && o1 !== o2 && o3 !== o4;
+}
+// How many times the drawn route (depot → … → depot) crosses itself.
+function selfCrossings(order, depot) {
+  const pts = [depot, ...order, depot];
+  const segs = [];
+  for (let i = 0; i + 1 < pts.length; i++) {
+    if (pts[i].lat === pts[i + 1].lat && pts[i].lng === pts[i + 1].lng) continue;   // same address twice
+    segs.push([pts[i], pts[i + 1]]);
+  }
+  let n = 0;
+  for (let i = 0; i < segs.length; i++) {
+    for (let j = i + 2; j < segs.length; j++) {
+      if (i === 0 && j === segs.length - 1) continue;   // the two depot legs share the depot
+      if (segmentsCross(segs[i][0], segs[i][1], segs[j][0], segs[j][1])) n++;
+    }
+  }
+  return n;
+}
+// Number of times the order switches from one group to another (a group visited in one run
+// contributes no switches beyond its entry).
+const groupSwitches = (order, groupOf) => order.filter((s, i) => i > 0 && groupOf(s) !== groupOf(order[i - 1])).length;
+
+// The far-end-first path, measured the way the strategy is defined: first stop → … → the yard.
+const homewardMeters = (order, depot) => {
+  let total = 0;
+  for (let i = 1; i < order.length; i++) total += haversineMeters(order[i - 1], order[i]);
+  return total + haversineMeters(order[order.length - 1], depot);
+};
+const byId = (list, ...names) => names.map((n) => list.find((s) => s.id.startsWith(n)));
+
+// Nelson is one stop two miles north of the Ball Ground cluster; by the 2.5-mile rule it is the
+// same town, so the card's labels are read as areas.
+const areaOf = (s) => (townOf(s) === 'Nelson' ? 'Ball Ground' : townOf(s));
+const areaRuns = (order) => order.filter((s, i) => i === 0 || areaOf(s) !== areaOf(order[i - 1])).map(areaOf);
+
+test('farthest first — JEFF, 2026-09-10: out to Ellijay, then home one town at a time, never crossing itself', () => {
+  const out = farthestFirst(JEFF, BUFORD);
+  assert.deepEqual([...ids(out)].sort(), [...ids(JEFF)].sort());          // every stop, once
+  assert.equal(out[0].id, 'TAG CITY (Ellijay)');                            // the far end comes first
+  assert.equal(selfCrossings(out, BUFORD), 0, `route crosses itself: ${ids(out).join(' → ')}`);
+  // THE RULE CHAD CHOSE: a town is worked in one visit. Every area on the card is one run —
+  // no town appears twice in the sequence of areas.
+  const runs = areaRuns(out);
+  assert.equal(new Set(runs).size, runs.length, `a town is visited twice: ${runs.join(' → ')}`);
+  // The old logic, on the same stops, is the card in the report: Jasper, then Canton, then Tate,
+  // then Ball Ground, then back out toward Tate — and it drives materially farther.
+  const radial = depotSort(JEFF, BUFORD, 'desc');
+  assert.deepEqual(radial.slice(0, 6).map(townOf), ['Ellijay', 'Jasper', 'Jasper', 'Jasper', 'Canton', 'Tate']);
+  assert.ok(homewardMeters(out, BUFORD) < 0.85 * homewardMeters(radial, BUFORD));
+  // Keeping towns whole costs paper miles against the pure shortest path; Chad accepted "a few
+  // percent". On this geography it is under two.
+  const pure = farthestFirst(JEFF, BUFORD, 'pure');
+  assert.ok(homewardMeters(out, BUFORD) <= 1.05 * homewardMeters(pure, BUFORD), 'towns cost more than 5% over the pure sweep');
+  // And it is no longer than either order a dispatcher would draw by hand for this route:
+  // down the east side and finish with Canton, or down the west side and finish out on 53.
+  const eastThenCanton = byId(JEFF, 'TAG', 'ROYSTON', 'UPS', 'PREFERRED', 'ELEVATE', 'STOP 14', 'STOP 13', 'COMPASS', 'GO PLASTICS', 'CHART', 'STOP 15', 'BOWSTONE A', 'BOWSTONE B', 'RAYDEO', 'BLACK');
+  const westThen53 = byId(JEFF, 'TAG', 'ROYSTON', 'UPS', 'PREFERRED', 'BLACK', 'RAYDEO', 'BOWSTONE A', 'BOWSTONE B', 'STOP 15', 'CHART', 'GO PLASTICS', 'COMPASS', 'STOP 13', 'ELEVATE', 'STOP 14');
+  for (const hand of [eastThenCanton, westThen53]) {
+    assert.equal(hand.length, JEFF.length);
+    assert.ok(hand.every(Boolean));
+    assert.ok(homewardMeters(out, BUFORD) <= homewardMeters(hand, BUFORD) + 1, `a hand-drawn order beat it: ${ids(out).join(' → ')}`);
+  }
+  // The two Bowstone orders at one address stay back to back.
+  const bow = out.map((s, i) => (/^BOWSTONE/.test(s.id) ? i : -1)).filter((i) => i >= 0);
+  assert.equal(bow[1] - bow[0], 1);
+});
+
+test('the switch: SWEEP_MODE is "towns"; "pure" is one word away and brings the mid-town spur back', () => {
+  assert.equal(SWEEP_MODE, 'towns');
+  assert.equal(TOWN_RADIUS_METERS, 4000);
+  // The pure shortest pinned path pays for Canton as a spur from the middle of Ball Ground
+  // (Chart → Canton → Raydeo): verified exact with a Held-Karp solve during review. That is
+  // what Chad was shown and chose against, and what "put it back the way it was" returns to.
+  const pure = farthestFirst(JEFF, BUFORD, 'pure');
+  const canton = pure.findIndex((s) => townOf(s) === 'Canton');
+  assert.equal(townOf(pure[canton - 1]), 'Ball Ground');
+  assert.equal(townOf(pure[canton + 1]), 'Ball Ground');
+  assert.ok(new Set(areaRuns(pure)).size < areaRuns(pure).length, 'pure mode should visit Ball Ground twice');
+  // The picker follows the switch.
+  assert.deepEqual(ids(resequence(JEFF, BUFORD, 'farthest')), ids(farthestFirst(JEFF, BUFORD, 'towns')));
+  assert.deepEqual(ids(resequence(JEFF, BUFORD, 'closest')), ids(closestFirst(JEFF, BUFORD, 'towns')));
+  assert.notDeepEqual(ids(pure), ids(farthestFirst(JEFF, BUFORD)));
+});
+
+test('closest first — JEFF: the nearest stop first, Ellijay last, towns whole on the way out', () => {
+  const out = closestFirst(JEFF, BUFORD);
+  assert.deepEqual([...ids(out)].sort(), [...ids(JEFF)].sort());
+  assert.equal(out[0].id, 'RAYDEO (Ball Ground)');                     // nearest to Buford
+  assert.equal(out[out.length - 1].id, 'TAG CITY (Ellijay)');            // farthest is last
+  const runs = areaRuns(out);
+  assert.equal(new Set(runs).size, runs.length, `a town is visited twice: ${runs.join(' → ')}`);
+});
+
+test('towns: stops chain into one town within 2.5 miles of a neighbour; a lone stop is its own', () => {
+  // Node 0 is the depot. A–B–C sit 3 km apart in a line (each within 4 km of the next, A and C
+  // 6 km apart); D is 10 km from everything. Single linkage: {A,B,C} and {D}.
+  const km = (a, b) => Math.abs(a - b) * 1000;
+  const pos = [0, 20, 23, 26, 40];                       // depot, A, B, C, D on one axis, km
+  const cost = pos.map((p) => pos.map((q) => km(p, q)));
+  assert.deepEqual(townsOf([1, 2, 3, 4], cost, 4000), [[1, 2, 3], [4]]);
+  assert.deepEqual(townsOf([4, 3, 2, 1], cost, 4000), [[1, 2, 3], [4]]);   // input order does not matter
+  assert.deepEqual(townsOf([1, 2, 3, 4], cost, 2000), [[1], [2], [3], [4]]);
+  // Asymmetric: within radius EITHER way shares a town.
+  const asym = pos.map((p) => pos.map((q) => km(p, q)));
+  asym[1][2] = 9000;                                      // A→B is a long way round; B→A is 3 km
+  assert.deepEqual(townsOf([1, 2, 3, 4], asym, 4000), [[1, 2, 3], [4]]);
+});
+
+// Two arms of stops leaving the depot in different directions, at nearly the same radii — the
+// geometry that broke the sort: it alternated arms on every stop.
+const armY = () => [
+  { id: 'A1', lat: 1, lng: 0 }, { id: 'B1', lat: 0, lng: 1.05 },
+  { id: 'A2', lat: 2, lng: 0 }, { id: 'B2', lat: 0, lng: 2.05 },
+  { id: 'A3', lat: 3, lng: 0 }, { id: 'B3', lat: 0, lng: 3.05 },
+  { id: 'A4', lat: 4, lng: 0 }, { id: 'B4', lat: 0, lng: 4.05 },
+];
+const arm = (s) => s.id[0];
+
+test('farthest first — two arms at one radius: the far end first, then one arm, then the other', () => {
+  const out = farthestFirst(armY(), depot0);
+  assert.deepEqual([...ids(out)].sort(), ['A1', 'A2', 'A3', 'A4', 'B1', 'B2', 'B3', 'B4']);
+  assert.equal(out[0].id, 'B4');
+  assert.equal(groupSwitches(depotSort(armY(), depot0, 'desc'), arm), 7, 'the old sort alternated arms every stop');
+  assert.equal(groupSwitches(out, arm), 1, `arms interleaved: ${ids(out).join(' → ')}`);
+  assert.equal(selfCrossings(out, depot0), 0);
+});
+
+test('closest first — the mirror: nearest stop first, farthest stop last, one arm then the other', () => {
+  const out = closestFirst(armY(), depot0);
+  assert.deepEqual([...ids(out)].sort(), ['A1', 'A2', 'A3', 'A4', 'B1', 'B2', 'B3', 'B4']);
+  assert.equal(out[0].id, 'A1');                       // 1.0 from the depot; B1 is 1.05
+  assert.equal(out[out.length - 1].id, 'B4');          // the far end is where this one finishes
+  assert.equal(groupSwitches(out, arm), 1, `arms interleaved: ${ids(out).join(' → ')}`);
+  // Both strategies reach the picker through resequence.
+  assert.deepEqual(ids(resequence(armY(), depot0, 'closest')), ids(out));
+  assert.deepEqual(ids(resequence(armY(), depot0, 'farthest')), ids(farthestFirst(armY(), depot0)));
+});
+
+test('sweep: a stop with no map position rides at the end in its own order — never dropped, never in the math', () => {
+  const stops = [
+    { id: 'ghost1', lat: null, lng: null },
+    ...armY(),
+    { id: 'ghost2', lat: NaN, lng: -84 },
+    { id: 'ghost3', lat: 34 },
+  ];
+  for (const fn of [farthestFirst, closestFirst]) {
+    const out = fn(stops, depot0);
+    assert.equal(out.length, stops.length);
+    assert.deepEqual(ids(out).slice(-3), ['ghost1', 'ghost2', 'ghost3']);
+    assert.deepEqual([...ids(out).slice(0, 8)].sort(), ids(armY()).sort());
+    assert.equal(groupSwitches(out.slice(0, 8), arm), 1);
+  }
+});
+
+test('sweep: two stops, one address twice, every stop at one radius, and non-array input', () => {
+  const two = [{ id: 'near', lat: 0, lng: 1 }, { id: 'far', lat: 0, lng: 2 }];
+  assert.deepEqual(ids(farthestFirst(two, depot0)), ['far', 'near']);
+  assert.deepEqual(ids(closestFirst(two, depot0)), ['near', 'far']);
+  // Same address twice (two orders, one dock): both present, back to back.
+  const dup = [{ id: 'x1', lat: 1, lng: 1 }, { id: 'y', lat: 3, lng: 0 }, { id: 'x2', lat: 1, lng: 1 }];
+  const d = ids(farthestFirst(dup, depot0));
+  assert.deepEqual([...d].sort(), ['x1', 'x2', 'y']);
+  assert.equal(Math.abs(d.indexOf('x1') - d.indexOf('x2')), 1);
+  // Every stop EXACTLY the same distance out — one degree of arc along the equator or up the
+  // meridian, which haversine scores identically (a hexagon of sin/cos points does not: the
+  // sphere is not a plane). Nothing to pin at the far end of "closest first" that is not also
+  // the near end — it must still return every stop exactly once, nearest-tied stop first.
+  const tied = [{ id: 'E', lat: 0, lng: 1 }, { id: 'W', lat: 0, lng: -1 }, { id: 'N', lat: 1, lng: 0 }];
+  assert.equal(new Set(tied.map((s) => haversineMeters(depot0, s).toFixed(3))).size, 1, 'fixture must tie exactly');
+  assert.deepEqual([...ids(closestFirst(tied, depot0))].sort(), ['E', 'N', 'W']);
+  assert.deepEqual([...ids(farthestFirst(tied, depot0))].sort(), ['E', 'N', 'W']);
+  assert.equal(closestFirst(tied, depot0).length, 3);
+  // And a near-tie hexagon still comes back whole and uncrossed.
+  const ring = Array.from({ length: 6 }, (_, i) => ({ id: `r${i}`, lat: Math.sin((i * Math.PI) / 3), lng: Math.cos((i * Math.PI) / 3) }));
+  assert.deepEqual([...ids(closestFirst(ring, depot0))].sort(), ids(ring).sort());
+  assert.equal(selfCrossings(farthestFirst(ring, depot0), depot0), 0);
+  // Single stop / nothing / not an array.
+  assert.deepEqual(ids(farthestFirst([two[0]], depot0)), ['near']);
+  assert.deepEqual(farthestFirst([], depot0), []);
+  assert.deepEqual(resequence(null, depot0, 'farthest'), []);
+});
+
+test('sweep: the same stops in any order give the same answer — a drag then a re-pick does not "change its mind"', () => {
+  let seed = 4242;
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
+  for (const n of [12, 30, 60]) {
+    const set = Array.from({ length: n }, (_, i) => ({ id: `s${i}`, lat: 34.0 + rnd() * 0.8, lng: -84.6 + rnd() * 0.8 }));
+    const base = ids(farthestFirst(set, BUFORD)), baseC = ids(closestFirst(set, BUFORD));
+    for (let k = 0; k < 5; k++) {
+      const shuffled = [...set].sort(() => rnd() - 0.5);
+      assert.deepEqual(ids(farthestFirst(shuffled, BUFORD)), base, `farthest differs on a reordered ${n}-stop set`);
+      assert.deepEqual(ids(closestFirst(shuffled, BUFORD)), baseC, `closest differs on a reordered ${n}-stop set`);
+    }
+  }
+});
+
+test('sweep: deterministic, strictly shorter than the old radial sort, and fast at the 150-stop selection cap', () => {
+  // Seeded LCG so the fixture is the same on every run (no Math.random in a test that pins a bound).
+  let seed = 20260910;
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
+  const many = Array.from({ length: 150 }, (_, i) => ({ id: `s${i}`, lat: 34.0 + rnd() * 0.8, lng: -84.6 + rnd() * 0.8 }));
+  // About 10 ms here (60 ms cold). The bound is loose on purpose: a shared CI runner under a
+  // parallel suite is many times slower than a laptop, and a wall-clock bound that fails only
+  // there is a red build with nothing to fix. It exists to catch the algorithm going back to
+  // re-summing the whole path per candidate, which took 1.5 s and would blow through it anywhere.
+  const t0 = performance.now();
+  const a = farthestFirst(many, BUFORD);
+  const ms = performance.now() - t0;
+  assert.ok(ms < 1500, `150 stops took ${ms.toFixed(0)} ms`);
+  assert.deepEqual([...ids(a)].sort(), [...ids(many)].sort());
+  assert.deepEqual(ids(farthestFirst(many, BUFORD)), ids(a));                 // same stops, same answer
+  const radial = depotSort(many, BUFORD, 'desc');
+  // Strict, and by a wide margin: the old logic IS the radial sort, so `<=` would pass a revert.
+  assert.ok(homewardMeters(a, BUFORD) < 0.5 * homewardMeters(radial, BUFORD));
+  assert.equal(a[0].id, radial[0].id);                                        // still the farthest first
+  // A regular three-lane lattice is the worst seed geometry the review found (the radius-order
+  // seed had not converged at the pass cap); it must still come back quickly and shorter.
+  const lattice = Array.from({ length: 150 }, (_, i) => ({ id: `l${i}`, lat: 34.2 + i * 0.01, lng: -84 + (i % 3) * 0.05 }));
+  const t1 = performance.now();
+  const b = farthestFirst(lattice, BUFORD);
+  const ms2 = performance.now() - t1;
+  assert.ok(ms2 < 1500, `150-stop lattice took ${ms2.toFixed(0)} ms`);
+  assert.deepEqual([...ids(b)].sort(), [...ids(lattice)].sort());
+  assert.ok(homewardMeters(b, BUFORD) < homewardMeters(depotSort(lattice, BUFORD, 'desc'), BUFORD));
+  const c = closestFirst(many, BUFORD);
+  assert.equal(c[0].id, depotSort(many, BUFORD, 'asc')[0].id);
+  assert.equal(c[c.length - 1].id, radial[0].id);
+});
+
+test('improvePinnedPath never lengthens a path and never moves either pinned end', () => {
+  let seed = 7;
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
+  const pts = Array.from({ length: 25 }, () => ({ lat: rnd() * 10, lng: rnd() * 10 }));
+  const cost = pts.map((p) => pts.map((q) => Math.hypot(p.lat - q.lat, p.lng - q.lng)));
+  const interior = Array.from({ length: 23 }, (_, i) => i + 1);      // node 0 = start, node 24 = end
+  const before = pinnedPathCost(interior, 0, 24, cost);
+  const out = improvePinnedPath(interior, 0, 24, cost);
+  assert.deepEqual([...out].sort((x, y) => x - y), interior);
+  assert.ok(pinnedPathCost(out, 0, 24, cost) < before);
+  assert.deepEqual(improvePinnedPath([], 0, 24, cost), []);
+  assert.deepEqual(improvePinnedPath([5], 0, 24, cost), [5]);
+});
+
+
+// ── VICTOR, 2026-09-11: the same bug, reported a second time from production ─────────────────
+// Chad, on a 12-stop VICTOR card re-sequenced Farthest first on the LIVE build (v1.14.2, which
+// still carried the radial sort because this fix had not merged yet): "This is not a good route.
+// Look at all the bouncing around. The route should have a much more linear structure."
+//
+// These are the real coordinates from that day's board. The shape is a north-south line of
+// Cartersville stops with one outlier (Gardner Metal) out to the south-west, and the whole
+// cluster sits ~48-53 miles due west of Buford — so every stop is at nearly the SAME radius and
+// the radial sort orders them almost arbitrarily. It sent the truck to Gardner in the south,
+// then 11 miles NORTH past six stops to Chick-fil-A, then back down through the ones it passed.
+const VICTOR = [
+  { id: 'GARDNER METAL', lat: 34.11447, lng: -84.88134 },
+  { id: 'ARCH GRAPHICS A', lat: 34.14297, lng: -84.79753 },
+  { id: 'ARCH GRAPHICS B', lat: 34.14297, lng: -84.79753 },
+  { id: 'HCL A', lat: 34.16479, lng: -84.79582 },
+  { id: 'HCL B', lat: 34.16479, lng: -84.79582 },
+  { id: 'LA FIESTA', lat: 34.21835, lng: -84.79511 },
+  { id: 'SAMUEL PKG', lat: 34.22035, lng: -84.79535 },
+  { id: 'TUG TEXTRON', lat: 34.26645, lng: -84.8036 },
+  { id: 'CHICK-FIL-A', lat: 34.2677, lng: -84.8254 },
+  { id: 'BUSKE', lat: 34.27449, lng: -84.81914 },
+  { id: 'PARAGON', lat: 34.27504, lng: -84.819 },
+];
+// How many times the route reverses along the north-south axis it is strung out on, and how far
+// it ever back-tracks. A line of stops walked once has no reversal and no back-track.
+function northSouthBacktrackMiles(order) {
+  let worst = 0;
+  for (let i = 1; i < order.length; i++) {
+    const dir = Math.sign(order[i].lat - order[i - 1].lat);
+    if (!dir) continue;
+    // look ahead: the furthest the route later travels back the other way before ending
+    for (let j = i + 1; j < order.length; j++) {
+      const back = dir > 0 ? order[i].lat - order[j].lat : order[j].lat - order[i].lat;
+      if (back > 0) worst = Math.max(worst, back * 69);   // ~69 mi per degree of latitude
+    }
+  }
+  return worst;
+}
+
+test('VICTOR, 2026-09-11: the radial sort overshoots 11 miles north and comes back; the sweep walks the line once', () => {
+  // The bug, reproduced on the real stops: the live order jumps Gardner -> Chick-fil-A, 11 miles
+  // north, over six stops it then has to come back down for.
+  const radial = depotSort(VICTOR, BUFORD, 'desc');
+  assert.equal(radial[0].id, 'GARDNER METAL');
+  assert.equal(radial[1].id, 'CHICK-FIL-A', 'fixture should reproduce the reported overshoot');
+  assert.ok(haversineMeters(radial[0], radial[1]) / 1609.344 > 10);
+  assert.ok(northSouthBacktrackMiles(radial) > 8, 'the radial order should back-track a long way');
+
+  // The fix: one pass up the line, no overshoot, and shorter.
+  const out = farthestFirst(VICTOR, BUFORD);
+  assert.deepEqual([...ids(out)].sort(), [...ids(VICTOR)].sort());
+  assert.equal(out[0].id, 'GARDNER METAL');                       // still the farthest stop first
+  assert.ok(northSouthBacktrackMiles(out) < 1.5, `the sweep back-tracks: ${ids(out).join(' → ')}`);
+  assert.ok(homewardMeters(out, BUFORD) < homewardMeters(radial, BUFORD));
+  // The pairs at one address stay together, and the two north-end neighbours do too.
+  for (const pair of [['ARCH GRAPHICS A', 'ARCH GRAPHICS B'], ['HCL A', 'HCL B'], ['BUSKE', 'PARAGON']]) {
+    const [a, b] = pair.map((n) => ids(out).indexOf(n));
+    assert.equal(Math.abs(a - b), 1, `${pair.join(' / ')} split apart: ${ids(out).join(' → ')}`);
+  }
 });

@@ -37,6 +37,11 @@ export default async (req: Request): Promise<Response> => {
       context: buildVar(process.env.CONTEXT),
       deploy_id: buildVar(process.env.DEPLOY_ID),
       build_stamp: 'see the app page — build vars are not readable from a function',
+      // The raw value of the one behaviour switch this site has, so its position
+      // can be read without a token after a flip. null means unset, which is ON.
+      // A feature flag, not a secret; parsed in manifest.carrierHandConfirmEnabled
+      // (only off/0/false/no turn it off) — deliberately not imported here.
+      carrier_hand_confirm_env: buildVar(process.env.LOADSCAN_CARRIER_HAND_CONFIRM),
       node: process.version,
       now: new Date().toISOString(),
     }),
