@@ -775,22 +775,25 @@ test('mergeTwoScan: order does not matter — a live twin arriving SECOND also w
 // to collapse to whichever the list returned LATER: the un-planned duplicate could win, and then
 // the board put the freight back in the selection pool with the route card one stop short, which
 // is exactly the state in which a dispatcher plans the same order onto a second truck.
-// DATED FROM THE ET DAY THE TEST RUNS ON, NOT THE DAY IT WAS WRITTEN. This case was pinned to
-// '9/10/26' and read the '2026-09-10' bucket, which passed only while that WAS today. The winning
-// row is on a route (routeName → loadNbr), so boardDayFor's live-route clamp rolls it forward to
-// today once the date is in the past — and the bucket the assertions read came back undefined, so
-// every branch went red at ET midnight on 2026-09-11 for a rule that had not changed. Same trap as
-// the two date-pinned guards in v0.98.6. The subject here is which TWIN WINS; the clamp is noise,
-// so date the rows today and it cannot fire.
-const ET_TODAY = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
-const [ET_Y, ET_M, ET_D] = ET_TODAY.split('-');
-const ET_TODAY_SCHED = `${Number(ET_M)}/${Number(ET_D)}/${ET_Y.slice(2)} 09:00 AM`;
-
 test('mergeTwoScan: between two LIVE twins the one ON A LOAD wins, whichever the list returned first', () => {
-  const onLoad = { stopNbr: 'AVRT-0170416694', nvStopId: LIVE_ID, statusCode: '20', routeName: 'WILLIAM', scheduledArrival: ET_TODAY_SCHED, businessName: 'RODERICL CONEY' };
-  const dup = { stopNbr: 'AVRT-0170416694', nvStopId: TWIN_ID, statusCode: '10', scheduledArrival: ET_TODAY_SCHED, businessName: 'RODERICL CONEY' };
+  // THE DAY IS DERIVED, NOT WRITTEN DOWN. This test was pinned to '2026-09-10' — the day it
+  // was written — and a live, route-assigned row is CLAMPED TO TODAY by the rollover rule
+  // (see 'bucketByDate: open route-assigned stops never bucket before today'). So at midnight
+  // ET the row moved to the new day, `.get('2026-09-10')` returned undefined, and the suite
+  // went red on main for everyone with a TypeError that says nothing about dates. The file
+  // already warns about exactly this shape a few hundred lines up ("otherwise this test
+  // silently breaks once the machine clock passes Friday"); this one had no guard. The rule
+  // being pinned is about TWINS, not about a date, so the date now comes from the clock the
+  // code reads.
+  const ET_TODAY = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  const [yy, mm, dd] = ET_TODAY.split('-');
+  const arrival = `${Number(mm)}/${Number(dd)}/${yy.slice(2)} 09:00 AM`;
+  const onLoad = { stopNbr: 'AVRT-0170416694', nvStopId: LIVE_ID, statusCode: '20', routeName: 'WILLIAM', scheduledArrival: arrival, businessName: 'RODERICL CONEY' };
+  const dup = { stopNbr: 'AVRT-0170416694', nvStopId: TWIN_ID, statusCode: '10', scheduledArrival: arrival, businessName: 'RODERICL CONEY' };
   for (const active of [[onLoad, dup], [dup, onLoad]]) {
-    const s = mergeTwoScan(active, []).get(ET_TODAY)[0];
+    const day = mergeTwoScan(active, []).get(ET_TODAY);
+    assert.ok(day, `the merged twin should land on today's ET board (${ET_TODAY})`);
+    const s = day[0];
     assert.equal(s.stopId, LIVE_ID, 'the planned record keeps the number');
     assert.equal(s.isPlanned, true);
     assert.equal(s.routeName, 'WILLIAM');

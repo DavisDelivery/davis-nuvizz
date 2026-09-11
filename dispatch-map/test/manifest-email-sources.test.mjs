@@ -114,7 +114,9 @@ test('an already-marked Gmail message is skipped without downloading its attachm
 });
 
 test('the per-cycle cap is PER MAILBOX, so a noisy inbox cannot starve the one with the report', async () => {
-  const noisy = fakeSource('resend', ['n1', 'n2', 'n3', 'n4', 'n5'].map((id) => pdfMsg(id)));
+  // More than the cap, sized off it: a fixture smaller than the cap tests nothing.
+  const noisy = fakeSource('resend',
+    Array.from({ length: MAX_EMAILS_PER_RUN + 2 }, (_, i) => pdfMsg(`n${i + 1}`)));
   const quiet = fakeSource('gmail', [pdfMsg('g1')]);
   const { deps: d, store } = deps([noisy.src, quiet.src]);
   const out = await ingestManifestEmails(d);

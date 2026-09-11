@@ -69,7 +69,7 @@ export default async (): Promise<Response> => {
   return Response.json(out);
 };
 
-// ── WHEN THE PARSE RUNS: 8:10p, 9:10p and 10:10p ET ─────────────────────────
+// ── WHEN THE PARSE RUNS: 8:10p, 9:10p, 10:10p and 1:10a ET ──────────────────
 //
 // Chad: "We need to do our first parse at 8:10 pm 9:10 10:10".
 //
@@ -83,13 +83,18 @@ export default async (): Promise<Response> => {
 // answer: fire at the UNION of the UTC slots that could be one of these ET hours in either
 // season, and let the ET clock decide which firings are real.
 //
-//   EDT (UTC-4)   8:10p 9:10p 10:10p ET  ->  00:10 01:10 02:10 UTC
-//   EST (UTC-5)   8:10p 9:10p 10:10p ET  ->  01:10 02:10 03:10 UTC
-//   union                                ->  00:10 01:10 02:10 03:10 UTC
+//   EDT (UTC-4)   8:10p 9:10p 10:10p 1:10a ET  ->  00:10 01:10 02:10 05:10 UTC
+//   EST (UTC-5)   8:10p 9:10p 10:10p 1:10a ET  ->  01:10 02:10 03:10 06:10 UTC
+//   union                                      ->  00:10 01:10 02:10 03:10 05:10 06:10 UTC
 //
-// Four firings, of which exactly three pass in either season: in EDT the 03:10 slot is 11:10p
-// ET and stands down; in EST the 00:10 slot is 7:10p ET and stands down. A test sweeps the
-// calendar rather than trusting this comment.
+// Six firings, of which exactly four pass in either season: in EDT the 03:10 and 06:10 slots
+// are 11:10p and 2:10a ET and stand down; in EST the 00:10 and 05:10 slots are 7:10p and
+// 12:10a ET and stand down. 04:10 UTC is not fired at all — it is 12:10a ET in EDT and 11:10p
+// in EST, and neither is a pass. A test sweeps 730 days rather than trusting this comment.
+//
+// THE 1:10a PASS IS WHY THIS CHANGED. Uline's last send of a night is about 12:30a ET, so the
+// 10:10p pass could never see the three biggest copies of the report — see the note beside
+// PARSE_HOURS_ET in src/lib/manifest-schedule.js for the measured send times.
 //
 // THE HOURS THEMSELVES LIVE IN src/lib/manifest-schedule.js, WITH THE SENTENCE THE SCREEN
 // PRINTS. They were declared here first, and the Manifest check tab went on telling Chad the
@@ -99,5 +104,5 @@ export default async (): Promise<Response> => {
 export { PARSE_HOURS_ET, isParseHour };
 
 export const config = {
-  schedule: '10 0,1,2,3 * * *',
+  schedule: '10 0,1,2,3,5,6 * * *',
 };

@@ -55,8 +55,9 @@ test('a dock that shuts by noon is the loudest mark on the map', () => {
 test('a three-hour window is severe wherever it falls in the day', () => {
   assert.equal(classifyTimeMark(at(13), at(16)), 'hours_shuts_early',
     'an afternoon slot this tight is as hard to hit as a morning one');
-  assert.equal(classifyTimeMark(at(13), at(16, 1)), 'hours_opens_late',
-    'one minute wider and nothing binds at the close, so the 1pm open becomes the story');
+  assert.equal(classifyTimeMark(at(13), at(16, 1)), 'hours_narrow_window',
+    'one minute wider and nothing binds HARD at the close, so the open becomes the story — '
+    + 'and a 4:01p close is still early enough that both edges are worth drawing');
 });
 
 // ── mark 2 — early close ─────────────────────────────────────────────────────
@@ -73,13 +74,21 @@ test('3:00pm exactly is the cliff, and it falls on the quiet side', () => {
   assert.equal(classifyTimeMark(at(7), at(14, 59)), 'hours_early_close');
 });
 
-test('a 6am dock that shuts at three still reads as EXTRA ROOM, not as a deadline', () => {
+test('a 6am dock that shuts at three is NOT a deadline — it is a day that runs early', () => {
   // Chad asked what the 4pm line would cost before deciding to leave it at three, and this
   // is the answer that decided it. The map goes from 56 marks to 72, and four of the newly
   // amber pins are 6am docks — NEFAB, Dixie Seal, Space Pole, FBM — that today say "go at
   // dawn". A driver sent to a 6a-3p dock first is never late, so trading the dawn signal
   // for a deadline he does not need is the expensive direction to be wrong in.
-  assert.equal(classifyTimeMark(at(6), at(15)), 'hours_extra_room');
+  //
+  // WHAT CHANGED IN v1.15.1 AND WHAT DID NOT. Chad, on SCOTT LITHOGRAPHING at 6:00a–3:00p:
+  // "for a customer like this that opens before 8 and closes before 5 should be 2 parallel
+  // left facing arrows." The dawn signal this test was written to protect is still here —
+  // the mark stays in the good-news family, same colour, never amber — but the pin no longer
+  // claims the SLACK an outward span implies, because a dock that shuts at three has none.
+  assert.equal(classifyTimeMark(at(6), at(15)), 'hours_runs_early');
+  assert.notEqual(classifyTimeMark(at(6), at(15)), 'hours_early_close',
+    'the 4pm line was rejected precisely so this dock would not go amber; it still must not');
   assert.equal(classifyTimeMark(at(6), at(14, 59)), 'hours_early_close',
     'one minute earlier and the close genuinely binds — then the deadline outranks the dawn');
 });
@@ -88,7 +97,8 @@ test('a 6am dock that shuts at three still reads as EXTRA ROOM, not as a deadlin
 
 test('a dock that opens at 9 cannot lead a route', () => {
   assert.equal(classifyTimeMark(at(9), at(17)), 'hours_opens_late');
-  assert.equal(classifyTimeMark(at(10), at(16)), 'hours_opens_late');
+  assert.equal(classifyTimeMark(at(10), at(16)), 'hours_narrow_window',
+    'BOHO GAL: 10a-4p is pinched at BOTH ends, and v1.15.1 draws the second arrow for it');
   assert.equal(classifyTimeMark(at(10), null), 'hours_opens_late', 'an open alone is enough');
 });
 
@@ -103,7 +113,8 @@ test('the close outranks the open — you are going in the morning either way', 
 test('a 6am dock that stays open is an OPPORTUNITY, not a restriction', () => {
   assert.equal(classifyTimeMark(at(6), at(17)), 'hours_extra_room',
     'this is the NEFAB / Conwed case — route a driver there at dawn');
-  assert.equal(classifyTimeMark(at(6, 30), at(16)), 'hours_extra_room');
+  assert.equal(classifyTimeMark(at(6, 30), at(16)), 'hours_runs_early',
+    'open at dawn but shut by four: the day is moved forward, which is not the same as roomy');
 });
 
 test('a dock still taking freight after 6pm is room at the other end', () => {
@@ -124,9 +135,17 @@ test('7am is deliberately NOT early enough', () => {
 
 // ── precedence is the array, and the array is the legend order ───────────────
 
-test('the four keys are declared most-binding first', () => {
-  assert.deepEqual(TIME_MARK_KEYS,
-    ['hours_shuts_early', 'hours_early_close', 'hours_opens_late', 'hours_extra_room']);
+test('the keys are declared most-binding first', () => {
+  assert.deepEqual(TIME_MARK_KEYS, [
+    'hours_shuts_early', 'hours_early_close',
+    // The both-edges mark sits ABOVE the one-edge mark it splits off, in each pair: a stop
+    // that has to land inside a box is more binding than one that merely starts late, and a
+    // dawn dock with a three o'clock close is more binding than one with no close at all.
+    // hours_runs_late sits between them: it constrains more than a bare late open (it names
+    // where in the day the stop belongs) and less than a window pinched at both ends.
+    'hours_narrow_window', 'hours_runs_late', 'hours_opens_late',
+    'hours_runs_early', 'hours_extra_room',
+  ]);
   assert.ok(SHUTS_EARLY_BEFORE < EARLY_CLOSE_BEFORE);
   assert.ok(OPENS_EARLY_BY < OPENS_LATE_FROM);
 });

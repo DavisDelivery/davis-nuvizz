@@ -16,17 +16,42 @@
 // forecast store reads davis-calendar.js this way), so the direction is the house one.
 const ET_TZ = 'America/New_York';
 
-/** The three ET hours a parse pass is real. The cron fires four UTC slots — the union across
- *  both seasons — and the handler stands the wrong one down. See the function's own header. */
-export const PARSE_HOURS_ET = [20, 21, 22];
+/**
+ * The ET hours a parse pass is real. The cron fires the UNION of the UTC slots that could be
+ * one of these in either season and the handler stands the wrong ones down — see the
+ * function's own header.
+ *
+ * WHY THERE IS A 1:10a PASS. Chad set 8:10p/9:10p/10:10p on 2026-09-09, and that was right
+ * about where Uline's report lands and wrong about when it STOPS. Read out of the mailbox
+ * rather than assumed, Uline sends the night's report hourly from 8:00p and then once more at
+ * about 12:30a — measured on two consecutive nights:
+ *
+ *   9/9 night   10:51a · 8:00p 9:00p 10:00p 11:00p 12:00a 12:30a   (7 sends)
+ *   9/10 night  10:51a · 8:00p 9:01p 10:00p 11:01p …               (still sending at 11p)
+ *
+ * So the last pass at 10:10p could never see the 11p, midnight and 12:30a copies — and those
+ * are the COMPLETE ones, because the manifest is append-only and each send is a superset of
+ * the last. They waited until 8:10p the FOLLOWING night, which is how the 9/9 night's reports
+ * #5, #6 and #7 came to be filed twenty hours late, and how they then ate the whole of the
+ * 9/10 8:10p pass under the per-run cap. One pass at 1:10a — forty minutes after Uline's last
+ * send — closes the night it belongs to. Reports still file under the night their ROWS name
+ * (manifest-archive reads the ship date off the paper), so a 1:10a pass files to the evening
+ * that just ended, not to the new calendar day.
+ *
+ * KEEP THIS ARRAY ASCENDING. lastParseSlot maps it to "HH:MM" strings, filters the ones that
+ * have passed and takes the LAST — which is only the most recent slot if the array is sorted.
+ * It also reads the final entry as the last pass of the PREVIOUS ET day, which is 22:10 and
+ * is why 1 sits at the front rather than the end.
+ */
+export const PARSE_HOURS_ET = [1, 20, 21, 22];
 
 /** Ten past, on every one of them. */
 export const PARSE_MINUTE_ET = 10;
 
 /** What the screen says out loud. Written once so the card and the tab agree. */
-export const PARSE_SCHEDULE_LABEL = '8:10p, 9:10p and 10:10p ET';
+export const PARSE_SCHEDULE_LABEL = '8:10p, 9:10p, 10:10p and 1:10a ET';
 
-/** PURE. Is this ET hour one of the three passes? The minute is deliberately not tested: the
+/** PURE. Is this ET hour one of the passes? The minute is deliberately not tested: the
  *  cron fires once an hour at :10, so the hour alone identifies the firing, and testing the
  *  minute would make the job miss its slot on a platform that runs it a minute late. */
 export function isParseHour(hour) {

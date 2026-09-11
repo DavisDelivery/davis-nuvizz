@@ -60,6 +60,8 @@ export function priorShortCircuits(prior: OpRecord | null): boolean {
 // throw, the catch below would swallow it, and the Save would vanish from the ledger
 // entirely. Losing the receipt SILENTLY is the exact failure this capture exists to end.
 const OP_RECORD_MAX_BYTES = 700_000;
+/** No single string in a ledger row needs to be longer than this to be diagnostic. */
+const STRING_MAX_BYTES = 20_000;
 
 /** PURE: the record, with its forensics payloads dropped if they would sink the row — and
  *  SAYING SO, because "no payload captured" and "payload dropped for size" are different
@@ -69,7 +71,20 @@ export function trimOpRecord(rec: OpRecord): OpRecord {
   try { json = JSON.stringify(rec); } catch { return rec; }
   if (json.length <= OP_RECORD_MAX_BYTES) return rec;
   let dropped = 0;
+  let trimmed = 0;
+  // EVERY long string gives way, not just the two named captures. The first version of this
+  // nulled sentBody/rawBody and nothing else, which could not save the row it exists to save:
+  // a NuVizz 500 whose XML `message` runs to a megabyte arrives in `error` (firstError no
+  // longer truncates it, deliberately), so stripping two 8 KB captures off a 3 MB record left
+  // 3 MB, setDoc threw, the catch below swallowed it, and the Save vanished from the ledger —
+  // the exact failure this function was added to prevent, reintroduced by the same change.
+  // A trimmed string SAYS it was trimmed, for the same reason the toast does.
+  const cut = (v: string): string => {
+    trimmed++;
+    return `${v.slice(0, STRING_MAX_BYTES)}… [trimmed ${v.length - STRING_MAX_BYTES} chars to fit the ledger row]`;
+  };
   const strip = (v: any): any => {
+    if (typeof v === 'string') return v.length > STRING_MAX_BYTES ? cut(v) : v;
     if (Array.isArray(v)) return v.map(strip);
     if (v && typeof v === 'object') {
       const out: any = {};
@@ -82,7 +97,20 @@ export function trimOpRecord(rec: OpRecord): OpRecord {
     return v;
   };
   const lean = { ...rec, result: strip(rec.result) } as OpRecord;
-  return { ...lean, capturesDropped: dropped, captureNote: `${dropped} request/response capture(s) dropped — the record was ${json.length} bytes, over the ${OP_RECORD_MAX_BYTES} cap` } as OpRecord;
+  const note = [
+    dropped ? `${dropped} request/response capture(s) dropped` : null,
+    trimmed ? `${trimmed} long string(s) trimmed` : null,
+  ].filter(Boolean).join(' and ');
+  const out = { ...lean, capturesDropped: dropped, captureNote: `${note || 'nothing could be dropped'} — the record was ${json.length} bytes, over the ${OP_RECORD_MAX_BYTES} cap` } as OpRecord;
+  // LAST RESORT. If the row STILL does not fit, the result is the part that must give way —
+  // the row itself (which op, which outcome, when) is what a forensics read needs first, and
+  // losing it silently is the thing this whole function is for.
+  let after = '';
+  try { after = JSON.stringify(out); } catch { return out; }
+  if (after.length <= OP_RECORD_MAX_BYTES) return out;
+  return { ...rec, result: { ok: (rec.result as any)?.ok ?? false, trimmedAway: true },
+    capturesDropped: dropped,
+    captureNote: `the result was dropped whole — ${json.length} bytes, still ${after.length} after trimming, over the ${OP_RECORD_MAX_BYTES} cap. The row is kept so the Save is not invisible.` } as OpRecord;
 }
 
 /** Persist (create or update) a Save's outcome. No-op when Firestore is off. */
