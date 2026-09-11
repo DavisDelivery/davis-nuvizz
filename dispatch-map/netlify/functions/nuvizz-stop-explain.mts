@@ -26,7 +26,11 @@
 //
 // Gated at viewer: it reads one stop's board facts — the same facts the stop card shows
 // whoever opens it. Inert until AUTH_REQUIRED=true.
-import { isFirestoreEnabled, getDoc, listDocs, etDayString, readStopDoc, readActivePool, readActiveUnplannedSet, readCarryoverRetired, readBoardDateOverrides, readPlanVerdicts, readLoadRoster, readScanRuns } from './lib/firestore.mts';
+import { isFirestoreEnabled, getDoc, listDocs, etDayString, readStopDoc, readActivePool, readActiveUnplannedSet, readCarryoverRetired, readBoardDateOverrides, readPlanVerdicts, readLoadRoster, readScanRuns, readAddressChanges } from './lib/firestore.mts';
+// v1.20.0 — the address log, beside everything else this endpoint already gathers. It exists
+// BECAUSE of a question asked of this endpoint ("did we change the address on 007174397")
+// that it could not answer: the facts were nowhere, and now they are one read away.
+import { selectAddressChanges } from './lib/address-history.mts';
 import { getStop as getHistoryStop } from './lib/history-store.mts';
 import { requireUser } from './lib/require-user.mts';
 import { explainStop, sameNbr } from './lib/stop-explain.mts';
@@ -143,6 +147,19 @@ export default async (req: Request): Promise<Response> => {
     writes = selectWriteRows(all, { candidates, routes, date });
   } catch (e: any) { journalError = e?.message || 'journal read failed'; }
 
+  // ── the address log: has this order's address moved, and who moved it? ───────
+  // Reads the same per-day documents the Address history screen does, over the window this
+  // endpoint already walks — so a stop's whole address story is on the page that answers
+  // "why does the board show this stop the way it does".
+  let addressChanges: any[] = [];
+  try {
+    const days = Array.from({ length: DAYS_BACK + DAYS_AHEAD + 1 }, (_, i) => addDays(date, DAYS_AHEAD - i));
+    const perDay = await Promise.all(days.map((d) => readAddressChanges(TENANT, d)));
+    // `all: true` on purpose — a formatting row is noise on a 700-stop screen and evidence
+    // when you are asking about ONE order.
+    addressChanges = selectAddressChanges(perDay.flat(), { stop: stopRaw, limit: 20 });
+  } catch { /* the log is an extra, never the reason this endpoint fails */ }
+
   // ── sealed history: has a recent prior day already recorded it finished? ─────
   let history: StopFacts['history'] = null;
   for (let i = 1; i <= HISTORY_DAYS_BACK && !history; i++) {
@@ -168,7 +185,7 @@ export default async (req: Request): Promise<Response> => {
     planVerdicts: Array.isArray(r?.dates) ? r.dates.filter((d: any) => d?.planVerdicts).map((d: any) => ({ date: d.date, ...d.planVerdicts })) : [],
   }));
   return J({
-    ok: true, nuvizzCalls: 0, candidates, ...out, recentScans,
+    ok: true, nuvizzCalls: 0, candidates, ...out, recentScans, addressChanges,
     ...(journalError ? { journalError } : {}),
     note: 'Firestore only — nothing here spent a NuVizz call. To ask NuVizz itself, POST nuvizz-stop-explorer {savedSearch:"active", full:true, find:"<stop>"} (ONE call) shows what the planned/un-planned list says about this stop right now.',
   });

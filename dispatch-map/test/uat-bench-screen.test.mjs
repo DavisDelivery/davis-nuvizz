@@ -54,7 +54,12 @@ test('IT EXISTS ON A PHONE TOO — both navigations carry it, and both are gated
   assert.match(APP, phone, 'the phone chip menu carries it');
   // And the router refuses it off a UAT host even if a tab id were restored from storage.
   assert.match(APP, /\(tab === 'uatbench' && BENCH_ON\) \? <UatBench \/>/);
-  assert.ok(APP.includes("'flaghistory', 'uatbench'"), 'the tab id is known to the restore list');
+  // The restore allowlist must carry it. Matched against the KNOWN array itself rather than
+  // against its neighbours: pinning "'flaghistory', 'uatbench'" broke the moment a screen was
+  // added between them (v1.20.0, Address history), which says nothing about this rule.
+  const known = APP.match(/const KNOWN = \[([^\]]*)\]/);
+  assert.ok(known, 'the restore allowlist exists');
+  assert.ok(known[1].includes("'uatbench'"), 'the tab id is known to the restore list');
 });
 
 test('THE SCREEN HAS TWO VIEWS, not one layout with patches', () => {

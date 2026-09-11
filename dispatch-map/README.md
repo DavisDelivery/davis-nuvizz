@@ -60,3 +60,10 @@ Required Netlify env vars (set in site → Build & deploy → Environment):
 - `NUVIZZ_DAVIS_USER` / `NUVIZZ_DAVIS_PASS` / `NUVIZZ_DAVIS_COMPANY_CODE`
 - `NUVIZZ_BASE_URL` (default `https://portal.nuvizz.com/deliverit/openapi/v7`)
 - `MOTIVE_API_KEY` (`__REDACTED__`)
+
+Optional switches (all default ON — set only to turn something off):
+
+- `ADDRESS_HISTORY=off` — stops the address-change log recording AND makes the
+  Address history screen (More → Address history) say so, together. Default ON;
+  anything that is not `off`/`0`/`false`/`no` leaves it ON, so a typo cannot
+  silently switch it off.

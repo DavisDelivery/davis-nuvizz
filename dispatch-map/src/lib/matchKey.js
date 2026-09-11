@@ -23,7 +23,11 @@ const STREET_REPLACEMENTS = [
 
 const safe = (v) => (v == null ? '' : String(v));
 
-function normStreetOf(addressLine1) {
+// Exported (v1.20.0) so the address-change log normalises a street line the SAME way the
+// place key does. A second copy of these rules is how the log and the board would come to
+// disagree about what "the same address" means — the drift placeKeyOfStop's comment exists
+// to prevent, arriving from a new direction.
+export function normStreetOf(addressLine1) {
   let normStreet = safe(addressLine1).toLowerCase();
   for (const [re, sub] of STREET_REPLACEMENTS) normStreet = normStreet.replace(re, sub);
   // TRIM BEFORE THE COLLAPSE, NOT AFTER. This ran .replace(/\s+/g,'_') first and .trim()
