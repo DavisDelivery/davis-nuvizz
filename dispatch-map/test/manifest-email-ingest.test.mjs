@@ -132,7 +132,9 @@ test('no API key = quiet no-op (receiving not set up is not an error)', async ()
 });
 
 test(`at most ${MAX_EMAILS_PER_RUN} new emails are processed per cycle`, async () => {
-  const emails = ['e1', 'e2', 'e3', 'e4', 'e5'].map((id) => reportEmail(id));
+  // Sized off the cap rather than a fixed five, so raising the cap cannot quietly turn this
+  // into a test that passes because the fixture ran out. It did exactly that once.
+  const emails = Array.from({ length: MAX_EMAILS_PER_RUN + 2 }, (_, i) => reportEmail(`e${i + 1}`));
   const files = Object.fromEntries(emails.map((e) => [`https://dl/${e.id}`, 'REPORT']));
   const { deps } = world({ emails, files, diffs: { REPORT: GOOD_DIFF } });
   const out = await ingestManifestEmails(deps);
@@ -253,9 +255,14 @@ test('the per-run cap moves the archive FORWARD in time, never backward', () => 
   // end. Each pass files at most MAX_EMAILS_PER_RUN and ends on the NEWEST message it handled,
   // so a backlog converges toward the latest report. Walking newest-first did the opposite:
   // every pass ended on an older report than the one before it.
-  const night = ['preliminary', 'midnight', '1am', '2am', '3am'].map((id, i) => ({
-    id, receivedAt: at('2026-08-27T14:00:00Z') + i * 3600_000,
-  }));
+  //
+  // The fixture is sized off the CAP, not off a night, because the property under test is
+  // "more mail than one pass can take converges forward" — with a fixture smaller than the
+  // cap there is only ever one pass and the test proves nothing. That is what happened when
+  // the cap went from 3 to 8.
+  const names = ['preliminary', ...Array.from({ length: MAX_EMAILS_PER_RUN }, (_, i) => `send${i + 1}`)];
+  const night = names.map((id, i) => ({ id, receivedAt: at('2026-08-27T14:00:00Z') + i * 3600_000 }));
+  const last = names[names.length - 1];
   const gmail = [...night].reverse(); // newest first, as Gmail delivers it
 
   const passes = [];
@@ -266,8 +273,11 @@ test('the per-run cap moves the archive FORWARD in time, never backward', () => 
     const done = new Set(batch.map((e) => e.id));
     remaining = remaining.filter((e) => !done.has(e.id)); // markers stop re-processing
   }
-  assert.deepEqual(passes, ['1am', '3am'], 'each pass ends newer than the last');
-  assert.equal(passes[passes.length - 1], '3am', 'the archive settles on the final report');
+  assert.ok(passes.length >= 2, 'the fixture must need more than one pass or this proves nothing');
+  for (let i = 1; i < passes.length; i += 1) {
+    assert.ok(names.indexOf(passes[i]) > names.indexOf(passes[i - 1]), 'each pass ends newer than the last');
+  }
+  assert.equal(passes[passes.length - 1], last, 'the archive settles on the final report');
 
   // And the proof the old behaviour was wrong: unsorted, it settles on the fragment.
   const wrong = [];
