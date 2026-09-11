@@ -90,6 +90,7 @@ import { RIGHT_PANEL_MODES, normalizeRightPanelMode, isRoutesPanelMode, hasDrive
 import { boardStatusPanel } from './lib/board-status-card.js';
 import { buildRosterStatusMap, buildRosterDriverMap, resolveRosterStatus, resolveRosterDriver, resolveNameOwner, rosterDriverOf } from './lib/route-status.js';
 import { seedStagedCard } from './lib/workbench-stage.js';
+import { shouldAutoStageBuild } from './lib/build-autostage.js';
 import { planSendSelection, selectionSendTargets } from './lib/send-selection.js';
 import { MIRROR_MISCONFIGURED_MESSAGE } from './lib/mirror-site.js';
 import { satelliteControlSpec, paintSatelliteControl, SATELLITE_BUTTON_CSS } from './lib/map-satellite-control.js';
@@ -138,7 +139,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.18.1';
+const APP_VERSION = '1.19.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -209,6 +210,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.19.0', 'THE DRAW TOOL IS IN THE PANEL, AND A FINISHED BUILD OPENS ITS OWN CARDS. Two asks off one screenshot of Routing\u2019s left panel. (1) \u201cLEFT PANEL SHOULD HAVE AN ADD SELECTION BUTTON.\u201d Step 1 offered exactly one way to add stops in bulk \u2014 \u201cAdd stops in view\u201d, which takes the WHOLE viewport \u2014 while its own hint text told the dispatcher that Box, Lasso and Ninja were somewhere else: two unlabelled 36px icons on the map\u2019s left edge, where they have lived alone since v0.29.59. On a 700-stop board that gap is the difference between grabbing one dock out of a cluster and zooming until nothing else is on screen. \u201c\uff0b Add selection\u201d now sits under it and arms the SAME box draw the rail arms \u2014 one beginMode, so the amber armed block, Cancel, Esc and the rail\u2019s own highlight are unchanged; there is a second DOOR into the mode, not a second mode. ON A PHONE IT DROPS THE SHEET, because the two corners are tapped ON the map and the sheet is half the screen (the move armNinjaFromPanel already makes for the same reason), and a toast carries the instruction the dropped sheet took with it \u2014 an armed mode with nothing on screen to explain it reads as a broken map. The lasso stays on the rail and the hint now says so. (2) \u201cWHEN THIS GETS DONE BUILDING IT SHOULD POP THE ROUTES UP IN THE COMPARE PANELS SO I CAN SEE THEM.\u201d Build was the only solver on this screen that stopped short of that \u2014 the Engine\u2019s draft and cleanup runners have always staged the moment they returned. Until \u201cStage onto Compare cards\u201d was found and pressed, a finished plan existed only as engine-coloured lines on the map: nothing to drag, no driver picker, no Save, because the CARD is the editable object. It stages itself now. THE FOUR WAYS THAT SENTENCE GOES WRONG ARE A UNIT-TESTED RULE (lib/build-autostage.js, 8 tests): a TRUCKS-mode build never stages, because an abstract profile has no loadNbr to land on and staging one would invent a load nobody picked; it WAITS for routesView, which is empty for a render or two after the job lands, since staging the empty render would spend the one shot and the cards would then never open at all; it fires ONCE PER JOB, so a card closed on purpose stays closed instead of springing back with no way to be rid of it; and a SAVED load open in the result panel never re-stages last Tuesday\u2019s plan onto today\u2019s board. The manual button is untouched \u2014 staging skips ids already on a card, so it stays the way to put the plan back after closing one. Each change is its own commit: a git revert puts either one back on its own.'],
   ['1.18.1', 'A LEFTOVER NAME ON AN EMPTY TRAILER IS NOT AN ASSIGNMENT \u2014 AND SHOWING IT DID THE EXACT OPPOSITE OF WHAT THIS FEATURE IS FOR. Chad, with the Loads panel searched for \u201csir\u201d: MARTIN and TERRY both reading Sirdedrick Sheats. \u201cno one assigned sheats to our load.\u201d THE PARSER WAS RIGHT, WHICH IS WHY THE FIX IS NOT IN THE PARSER. Read straight off the live roster that morning: the 35 loads CARRYING FREIGHT had 35 drivers under 34 distinct names and every one was correct; of 67 EMPTY shells, 30 carried a name and two of them carried Sirdedrick \u2014 on a day with no SHEATS route on the board at all. MARTIN and TERRY hold two DIFFERENT spellings of him (\u2018Sirdedrick  Sheats\u2019 and \u2018Sirdedrick Sheets\u2019), which a misaligned column cannot produce: each row was read from its own cell. NuVizz simply keeps a name on a zero-stop shell from whenever that trailer was last used. SO IT IS A LOGISTICS BUG AND IT IS MINE. The whole case for capturing the driver, in my own words, was that the empty trailer NOBODY is on becomes visible among the fifty that are staffed. A leftover name does the reverse: it makes the one trailer that needs a driver look like it already has one, and it puts a man\u2019s name against freight he is not running \u2014 on a 700-stop morning that is a phone call to the wrong person. Beautifully parsed and operationally backwards, which is the failure the logistics-first rule exists to catch and which no test could have caught, because the code did exactly what I told it. THE RULE: a driver is shown for a load that HAS FREIGHT ON IT \u2014 the boundary where the data is proven good \u2014 and a zero-stop shell reads as unassigned, which is what it is. Chad\u2019s original ask is untouched: he asked for the driver on loads \u2018not dispatched but they do already have the driver assignment\u2019, and those loads carry trips. It is a DISPLAY rule in one pure function (rosterDriverOf) used by all three surfaces, so the capture still keeps every driver it reads and ?explain=1 and the pull meta are unchanged \u2014 one commit puts it back. The v1.10.0 test that asserted the opposite is rewritten rather than deleted, with the live rows that disproved it. 8 new tests, 4,301 green.'],
   ['1.18.0', 'THE UAT TEST BENCH IS A SCREEN NOW — PICK THE ORDERS A SCENARIO NEEDS AND SEND ONLY THOSE. Chad, asked how he wanted to choose them, picked a checkbox list of production\u2019s day; asked about teardown, picked clear-on-request. Both are what shipped. WHAT IT DOES. The UAT board gets a “UAT test bench” screen that reads PRODUCTION\u2019S DAY out of Firestore — every order it scanned, with its address, its geocoded pin, its delivery window and its freight — and lists it with checkboxes. Filter by customer, city, zip or order number; tick the fourteen a route test needs; press Seed and ONLY those fourteen are created in the DAVISV5 tenant, with the UAT board filled in directly because a mirror never scans. Clear cancels them when you are done, unplanning them off the test route first. EVERY BUTTON SAYS WHAT IT COSTS BEFORE YOU PRESS IT. The order list and Preview are marked “0 calls” because they read Firestore and nothing else; Seed says how many NuVizz calls the current selection is; Clear names the number it will cancel and says production is not touched. A bench whose cost is invisible gets used carelessly on the one tenant where careless is cheap — right up until somebody points it at the wrong one, which is why the screen also prints the NuVizz host and company code it is about to write to, in the header, at all times. PREVIEW SHOWS THE EXACT JSON. Not a summary of it — the literal body each order would be POSTed as, expandable, before a single call is spent. NOTHING IS CLAIMED THAT WAS NOT OBSERVED. The result renders what the server actually reported: which orders were created, which it refused and why, which were skipped and why, and the per-order warnings (“this one has no delivery window on the board, so the copy cannot test a deadline”). An order the server refused is shown as refused, with its reason, never folded into a count. WHERE IT CAN APPEAR, AND WHY THAT IS THE HOSTNAME. The screen mounts only on a UAT host — keyed on the URL rather than a build variable, for the reason the mirror guard already gives: a variable is a thing somebody has to remember, and forgetting THIS one would put a screen that writes NuVizz orders onto the production board. The URL cannot be forgotten, and it fails in the safe direction. The endpoint refuses independently on FIRESTORE_DATABASE, so the screen is the courtesy check and not the safety one. IT EXISTS ON A PHONE TOO, and that is a test rather than a promise: a desktop table (picking fourteen of eight hundred is a scanning job and rows scan best) and a separate stacked-card list for the phone, both gated by one shared answer so the two navigations and the router cannot disagree. This repo has shipped a screen visible on a laptop and invisible on a phone twice; the phone menu carries a note saying so. PUTTING IT BACK is one revert: this adds a screen and changes nothing that already worked, so there is no switch to find — the commit is the switch. Production cannot see it either way. STILL NEEDED ON THE UAT SITE before a seed can reach NuVizz at all: MIRROR_ALLOW_OUTBOUND=nuvizz-write. Deliberate, and Chad\u2019s to set.'],
   ['1.17.2', 'THE DRIVER CAPTURE SHIPPED INERT, AND THE ONE LINE THAT BROKE IT WAS A RULE THIS REPO HAD ALREADY LEARNED. Chad, the morning after v1.10.0: \u201cloads that have drivers already assigned to them are still not showing.\u201d He was right, and the receipt was already on disk \u2014 ?explain=1 read back \u201c105 of 105 row(s) kept \u2026 drivers: 0\u201d for Sep 10 and \u201c102 of 102 kept \u2026 drivers: 0\u201d for Sep 11, beside the note it was built to print: NOT ONE load carries a driver, suspect the saved search has lost its Driver Name column. Every row parsed perfectly and every driver came out empty, which is the single most useful shape a bug can have. THE COLUMN WAS NEVER LOST \u2014 IT WAS REFUSED. The stored 2026-09-02 column dump names it exactly: key `driver.driverId`, label `Driver Name`, values `Brent Dixon`, `Trevor Seyers`, `Sirdedrick  Sheats`. NuVizz keys the driver\u2019s NAME under driverId. v1.10.0\u2019s avoid-list carried `driverid` to keep an ObjectId off the board, so it threw out the only column that had the answer before a single value was looked at. AND THE REPO ALREADY KNEW. nuvizz-list.mts has read route.driver.driverId as a NAME candidate since #254 \u2014 \u2018in some saved searches route.driver.driverId carries the human name\u2019 \u2014 and settles it with firstNonHashName, BY VALUE. Excluding id-ish columns by NAME was re-deciding from first principles a question this codebase had already answered off a live board, and getting it backwards. SO THE VALUE DECIDES, NOT THE KEY: every column mentioning a driver is a candidate, name-labelled ones asked first, and the first whose value survives cleanDriverName wins. The guards that matter are unchanged \u2014 a real ObjectId is still refused (#254\u2019s other half), so is the \u2018Enter driver name\u2019 placeholder and a load number. WHAT THE AVOID-LIST KEEPS is only what no value guard can catch: a \u2018Driver Status\u2019 of ON_DUTY and a \u2018Driver Phone\u2019 are perfectly plausible strings, and would have gone to the board as a person\u2019s name. THE FIXTURE CAME OFF THE WIRE THIS TIME. The new test carries all 21 real columns and three real rows verbatim from the stored dump rather than a shape I imagined \u2014 which is the actual lesson, since v1.10.0\u2019s tests were green, thorough, and all agreed with each other about a grid that does not exist. Checked both ways: the new test fails on the shipped code with \u2018the driver comes through, even though the column is keyed driverId\u2019 and passes on the fix. 5 new tests.'],
@@ -22979,6 +22981,24 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       return next;
     });
   }, [wbRoutes.length, isMobile]);
+  // Arm the BOX draw from step 1 of the Setup panel. Chad: "left panel should have an add
+  // selection button." Box and Lasso have lived ONLY on the map's left-edge rail since
+  // v0.29.59 — two unlabelled 36px icons over a satellite photo — while step 1's own hint
+  // told the dispatcher to go and find them there. The panel's one selection button takes
+  // the WHOLE viewport, so grabbing one dock out of a cluster meant zooming until nothing
+  // else was on screen. Same beginMode the rail calls, so the armed block, its Cancel, Esc
+  // and the rail's own highlight all behave identically — one mode, two doors into it.
+  // PHONE: drop the sheet. The corners are tapped ON the map and the sheet is half the
+  // screen (the same move armNinjaFromPanel makes), and the toast carries the instruction
+  // the dropped sheet just took with it — an armed mode with nothing on screen to explain
+  // it reads as a broken map.
+  const armSelectionFromPanel = useCallback(() => {
+    beginMode('box');
+    if (isMobile) {
+      setSheetOpen(false);
+      showMapToast('Box select on — tap two corners on the map to add that group. Tap the Box tool (left edge) again to cancel.');
+    }
+  }, [beginMode, isMobile, showMapToast]);
   // Mobile: whenever a route is opened into the Compare panel — the FIRST one or any later one —
   // jump to the Setup tab (which hosts the Compare workbench + the Ninja toggle) and open the sheet.
   // This used to fire for the first card only (0 → 1). With the sheet collapsed by default and the
@@ -23054,6 +23074,31 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     setLastAction(bits.join(' · '));
     if (isMobile) { setMobilePanel('setup'); setSheetOpen(true); }
   }, [lastRequest, routesView, wbRoutes, stopById, isMobile]);
+
+  // A FINISHED BUILD OPENS ITS OWN CARDS. Chad: "when this gets done building it should
+  // pop the routes up in the compare panels so i can see them." Build was the only solver
+  // on this screen that stopped short — the Engine's draft and cleanup runners have always
+  // called their stagers the moment the solve returned, so their cards are simply there.
+  // Until the button was found and pressed, a finished plan existed only as engine-coloured
+  // lines on the map: nothing to drag, no driver picker, no Save, because the CARD is the
+  // editable object. The decision is in lib/build-autostage.js (trucks-mode builds have no
+  // load to land on; it waits for routesView; once per job so a closed card stays closed;
+  // never while a saved load is being viewed) and is unit-tested there.
+  // The manual "Stage onto Compare cards →" button is untouched — staging skips ids already
+  // on a card, so it stays the way to put the plan back after closing one on purpose.
+  const autoStagedJobRef = useRef(null);
+  useEffect(() => {
+    if (!shouldAutoStageBuild({
+      jobId: job?.id || null,
+      status: job?.status || null,
+      hasPlannedLoads: !!plannedLoadsBound,
+      routeCount: routesView.length,
+      viewing,
+      stagedJobId: autoStagedJobRef.current,
+    })) return;
+    autoStagedJobRef.current = String(job.id);
+    stagePlanOntoLoads();
+  }, [job?.id, job?.status, plannedLoadsBound, routesView.length, viewing, stagePlanOntoLoads]);
 
   // ── Engine draft (Assist slice 1): name 2-3 drivers, the LEARNED engine drafts
   // their routes from the day's unplanned pool. Drafting reads Firestore only
@@ -23383,7 +23428,16 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
               <button onClick={addInView} className="flex-1 px-2 py-2 text-xs rounded border-2 font-semibold hover:bg-blue-50 active:bg-blue-100" style={{ borderColor: BRAND, color: BRAND }}>＋ Add stops in view</button>
               <button onClick={clearSelection} className="px-3 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">Clear</button>
             </div>
-            <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. Use the <b>Box</b> / <b>Lasso</b> / <b>Ninja</b> tools on the map (left edge), or pan/zoom then <b>Add stops in view</b>.</div>
+            {/* THE DRAW TOOL, IN THE PANEL — the requested "add selection" button. It arms the
+                same box select the map rail arms (armSelectionFromPanel → beginMode('box')), so
+                the amber block below replaces these buttons the instant it is on and Cancel/Esc
+                still end it. Full width on its own row rather than a third chip beside Clear: at
+                the 290px the Setup panel actually runs, three buttons on one line put this one at
+                ~90px and truncate its label. */}
+            <button onClick={armSelectionFromPanel} className="w-full px-2 py-2 text-xs rounded border-2 font-semibold hover:bg-blue-50 active:bg-blue-100 inline-flex items-center justify-center gap-1.5" style={{ borderColor: BRAND, color: BRAND }}>
+              <Square size={13} /> ＋ Add selection <span className="font-normal opacity-70">({isMobile ? 'tap 2 corners' : 'drag a box'})</span>
+            </button>
+            <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. <b>Add selection</b> draws a box around a group; the <b>Lasso</b> and <b>Ninja</b> tools are on the map (left edge), or pan/zoom then <b>Add stops in view</b>.</div>
           </>
         )}
         {lastAction && <div className="text-[11px] text-slate-500">{lastAction}</div>}
