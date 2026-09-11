@@ -4,8 +4,13 @@
 // reference-eligibility diagnostic. ZERO NuVizz calls.
 //
 //   GET  /.netlify/functions/history-capture-health
-//        → trailing-21-day capture health. CHEAP: one manifest list + one
-//          failures list, NO stop scans. Classifies each date as
+//        → trailing-21-day capture health, PLUS a `coverage` block: the oldest and
+//          newest day the warehouse holds, and the oldest day the per-customer
+//          rollup was built from (the floor under the stop card's "Recent
+//          deliveries here", which has no date cutoff of its own).
+//          CHEAP: one manifest list + one failures list, NO stop scans — the
+//          coverage block is summarised from the list the strip already fetched.
+//          Classifies each date as
 //          sealed | healed | tombstone | failed | missing (weekday, no manifest
 //          and no failure record) | idle_weekend.
 //        After the seal fix, an unsealed day always leaves a failure record, so
@@ -18,7 +23,7 @@
 //          the Phase-4 tool for the 2026-07-03 zero-mine question.
 import { isFirestoreEnabled, listDocs } from './lib/firestore.mts';
 import { HISTORY_COLLECTION, listStops } from './lib/history-store.mts';
-import { listCaptureFailures, classifyCaptureDay } from './lib/history-seal.mts';
+import { listCaptureFailures, classifyCaptureDay, summarizeCoverage } from './lib/history-seal.mts';
 import { loadKeyForStop, extractReferenceRoutes } from './lib/routing-reference.mts';
 import { loadEngineConfig } from './lib/routing-engine-config.mts';
 import { requireUser } from './lib/require-user.mts';
@@ -136,7 +141,15 @@ async function captureHealth(): Promise<any> {
     });
   }
 
-  return { ok: true, tenant: TENANT, window: { from, to: anchor, days: WINDOW_DAYS }, summary, days };
+  // COVERAGE — the warehouse FLOOR, from the manifest list already in hand. The strip
+  // above throws away everything older than 21 days, so "how far back does our history
+  // actually go" was unanswerable from any screen even though the answer was sitting in
+  // this function's memory. It costs nothing to say it: no extra Firestore read, no
+  // NuVizz call. See summarizeCoverage for why rollup_from (not first_date) is the
+  // number that bounds the stop card's "Recent deliveries here".
+  const coverage = summarizeCoverage(manifests, TENANT);
+
+  return { ok: true, tenant: TENANT, window: { from, to: anchor, days: WINDOW_DAYS }, coverage, summary, days };
 }
 
 export default async (req: Request): Promise<Response> => {
