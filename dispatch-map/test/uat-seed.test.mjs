@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   uatStopNbr, isUatSeededNbr, buildSeedRow, seedIndexRow, clearableRow, planSeed,
-  UAT_PREFIX, UAT_STOP_NBR_MAX, CARRIED_FIELDS, DROPPED_FIELDS,
+  unsafeWriteTarget, UAT_PREFIX, UAT_STOP_NBR_MAX, CARRIED_FIELDS, DROPPED_FIELDS,
 } from '../netlify/functions/lib/uat-seed.mts';
 import { buildStopPayload } from '../netlify/functions/lib/nuvizz-write-ops.mts';
 
@@ -263,10 +263,71 @@ test('THE CATALOGUE READER HAS NO WRITER — not a disabled one, none', () => {
 
 test('THE BENCH REFUSES ON PRODUCTION, structurally — keyed on the deploy, not on a date or a flag', () => {
   const src = fs.readFileSync(path.join(HERE, '..', 'netlify', 'functions', 'uat-seed.mts'), 'utf8');
-  assert.match(src, /if \(!isMirrorDeploy\(\)\) \{[\s\S]{0,200}?403\)/, 'the mirror gate is the FIRST thing the handler does');
-  // The gate must come before any op is read, so no path can run ahead of it.
+  assert.match(src, /if \(!isMirrorDeploy\(\)\) \{[\s\S]{0,300}?403\)/, 'the mirror gate is the FIRST thing the handler does');
   assert.ok(src.indexOf('isMirrorDeploy()') < src.indexOf("const op ="), 'production is refused before an op is even parsed');
-  // A destructive clear cannot reach NuVizz without the mirror's own outbound grant.
-  assert.match(src, /if \(op === 'clear'\) \{[\s\S]{0,400}?outboundAllowed\('nuvizz-write'\)/);
-  assert.ok(src.includes(UAT_PREFIX), 'the prefix the clear keys on is the shared one');
+  assert.ok(src.includes('isUatSeededNbr'), 'the clear keys on the shared prefix check');
+});
+
+test('NOTHING THAT WRITES RUNS ON A GET — an <img> tag must not be able to clear the bench', () => {
+  // `op` can arrive in the query string and `clear` needs no body, so without this a link
+  // preview, a browser prefetch or an <img src> on any page would cancel the whole bench —
+  // and requireUser is inert until AUTH_REQUIRED is set, which the UAT site is least likely
+  // to have on. The repo's own convention (history-tombstone.mts) is POST-or-405.
+  const src = fs.readFileSync(path.join(HERE, '..', 'netlify', 'functions', 'uat-seed.mts'), 'utf8');
+  assert.match(src, /const MUTATING = op === 'seed' \|\| op === 'clear';/);
+  assert.match(src, /if \(MUTATING && req\.method !== 'POST'\)[\s\S]{0,300}?405\)/);
+  assert.ok(src.indexOf('const MUTATING') < src.indexOf("if (op === 'catalogue')"), 'the method gate runs before any op does');
+});
+
+test('EVERY WRITING PATH ASSERTS THE NUVIZZ TENANT — all the gates, on both seed and clear', () => {
+  const src = fs.readFileSync(path.join(HERE, '..', 'netlify', 'functions', 'uat-seed.mts'), 'utf8');
+  for (const gate of ['unsafeWriteTarget(creds)', 'writeEnabled()', "outboundAllowed('nuvizz-write')"]) {
+    const n = src.split(gate).length - 1;
+    assert.ok(n >= 2, `${gate} must gate BOTH seed and clear, not one of them (found ${n})`);
+  }
+  assert.ok(src.indexOf('THE LEDGER GOES FIRST') < src.indexOf("runOp(reqr, 'createStop'"), 'intent is recorded before the first create');
+  assert.match(src, /DRIVEN OFF THE LEDGER, not the board/);
+});
+
+test('THE BOARD NEVER CLAIMS A SCAN THAT DID NOT RUN', () => {
+  const src = fs.readFileSync(path.join(HERE, '..', 'netlify', 'functions', 'uat-seed.mts'), 'utf8');
+  assert.match(src, /last_scanned_at: null, lastLoadScanAt: null, lastUnplannedScanAt: null/);
+  assert.match(src, /seededBench: true, seededAt: at/);
+});
+
+// ── the gate that keys on the TENANT, not the database ───────────────────────
+
+test('A NAMED FIRESTORE DATABASE DOES NOT MAKE THE TENANT UAT — the bench refuses a production target', () => {
+  const UAT = 'https://uat.nuvizz.com/deliverit/openapi/v7';
+  const PROD = 'https://portal.nuvizz.com/deliverit/openapi/v7';
+  assert.equal(unsafeWriteTarget({ base: UAT, companyCode: 'DAVISV5' }), null, 'the real UAT target is allowed');
+  assert.match(unsafeWriteTarget({ base: PROD, companyCode: 'DAVISV5' }), /NUVIZZ_BASE_URL/);
+  assert.match(unsafeWriteTarget({ base: UAT, companyCode: 'DAVIS' }), /COMPANY_CODE/);
+  // FAILS CLOSED: an unset var defaults to production, so "I could not tell" reads as NO.
+  for (const junk of [null, undefined, {}, { base: '', companyCode: '' }, { base: UAT }, { companyCode: 'DAVISV5' }]) {
+    assert.notEqual(unsafeWriteTarget(junk), null, JSON.stringify(junk));
+  }
+  assert.match(unsafeWriteTarget({ base: '', companyCode: 'DAVISV5' }), /PRODUCTION/);
+  assert.match(unsafeWriteTarget({ base: UAT, companyCode: '' }), /PRODUCTION/);
+});
+
+test('HALF A WINDOW IS WORSE THAN NONE — an opening with no close never reaches NuVizz', () => {
+  // A row the scan enriched late carries scheduledFrom as an estimated ARRIVAL and no
+  // scheduledTo. Pairing that with the builder's 17:00 close would send 18:30 -> 17:00: an
+  // inverted window, on the one field the whole bench exists to reproduce.
+  const half = buildSeedRow(prodRow({ scheduledFrom: '2026-09-11T18:30:00', scheduledTo: null }));
+  assert.deepEqual(half.window, { from: null, to: null }, 'neither end rides');
+  assert.match(half.warnings[0], /only an opening time/);
+  const body = buildStopPayload(half.row, { origin: ORIGIN, serviceDate: '2026-09-11' });
+  assert.equal(body.to.schedule.timeFrom, '2026-09-11T12:00:00', 'the proven default, not a half-invented window');
+  assert.equal(body.to.schedule.timeTo, '2026-09-11T17:00:00');
+
+  const inv = buildSeedRow(prodRow({ scheduledFrom: '2026-09-11T18:30:00', scheduledTo: '2026-09-11T17:00:00' }));
+  assert.deepEqual(inv.window, { from: null, to: null });
+  assert.match(inv.warnings[0], /ends before it starts/);
+
+  for (const bad of [1757520000000, '2026-09-11', '08:00', {}]) {
+    const r = buildSeedRow(prodRow({ scheduledFrom: bad, scheduledTo: bad }));
+    assert.deepEqual(r.window, { from: null, to: null }, JSON.stringify(bad));
+  }
 });

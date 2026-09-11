@@ -91,6 +91,35 @@ export const DROPPED_FIELDS = [
   'enriched', 'stopId', 'raw',
 ] as const;
 
+/**
+ * PURE. Why this NuVizz write target is not safe for the bench, or null when it is.
+ *
+ * THE HOLE THIS CLOSES, and it is the one that cancels things. isMirrorDeploy() keys on
+ * FIRESTORE_DATABASE and MIRROR_ALLOW_OUTBOUND is a flag — neither says a word about WHICH
+ * NuVizz tenant the writes reach. That comes from NUVIZZ_BASE_URL and
+ * NUVIZZ_DAVIS_COMPANY_CODE, both of which DEFAULT TO PRODUCTION when unset
+ * (nuvizz-write.mts: `|| 'https://portal.nuvizz.com/...'`, nuvizz-scan.mts: `|| 'DAVIS'`),
+ * and a mirror is built by copying production's env (mirror-guard.mts). So: set
+ * FIRESTORE_DATABASE and MIRROR_ALLOW_OUTBOUND, forget to re-point the NuVizz vars, and every
+ * gate passes while the bench creates test orders on the LIVE dispatch board and then issues
+ * real cancels against them.
+ *
+ * FAILS CLOSED. An unset var defaults to production, so "I could not tell" must read as NO.
+ * The uat.nuvizz.com test is the same literal firestore.mts uses for the mirror-image guard
+ * (a UAT-pointed deploy writing the default database), so the two read as the pair they are.
+ */
+export function unsafeWriteTarget(creds: { base?: any; companyCode?: any } | null | undefined): string | null {
+  const base = String(creds?.base ?? '');
+  const code = String(creds?.companyCode ?? '').trim().toUpperCase();
+  if (!/uat\.nuvizz\.com/i.test(base)) {
+    return `refused: this bench writes NuVizz orders, and NUVIZZ_BASE_URL on this site is ${base || '(unset — which defaults to portal.nuvizz.com, PRODUCTION)'}. Point it at uat.nuvizz.com before seeding.`;
+  }
+  if (!code || code === 'DAVIS') {
+    return `refused: NUVIZZ_DAVIS_COMPANY_CODE is ${code || '(unset — which defaults to DAVIS, PRODUCTION)'}. Set it to the UAT tenant before seeding.`;
+  }
+  return null;
+}
+
 export interface SeedPlanRow {
   /** The production order this copy stands for. */
   prodStopNbr: string;
@@ -105,6 +134,11 @@ export interface SeedPlanRow {
 }
 
 const str = (v: any): string => (v == null ? '' : String(v).trim());
+/** The contract's datetime shape, or null. Same rule as every write path — a value that is
+ *  not "yyyy-MM-ddTHH:mm:ss" is not a time we may reason about, let alone send. */
+const isoLike = (v: any): string | null =>
+  (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(v) ? v.slice(0, 19) : null);
+
 const num = (v: any): number | null => {
   if (v == null || String(v).trim() === '') return null;
   const n = Number(v);
@@ -134,12 +168,25 @@ export function buildSeedRow(prodRow: any, opts: { label?: string | null } = {})
     warnings.push(`${prodStopNbr} is longer than NuVizz allows with the UT- prefix — the copy is numbered ${nbr} (tail kept).`);
   }
 
-  // Rule 3: the scenario IS the window. Carried verbatim when the production row has one;
-  // NEVER synthesized when it does not — a fabricated 12–5 would quietly turn a test for a
-  // 2pm close into a test for nothing, and the point of the copy is the scenario.
-  const from = str(prodRow?.scheduledFrom) || null;
-  const to = str(prodRow?.scheduledTo) || null;
-  if (!from && !to) warnings.push(`${prodStopNbr} has no delivery window on the board — the copy gets the builder's default, so it cannot test a deadline.`);
+  // Rule 3: the scenario IS the window — but only when the board actually holds ONE, and a
+  // window is two ends. HALF A WINDOW IS WORSE THAN NONE: a row the scan enriched late can
+  // carry a scheduledFrom that is an estimated ARRIVAL with no scheduledTo at all, and pairing
+  // that with the builder's 17:00 close sends NuVizz 18:30 -> 17:00 — an inverted window, on
+  // the one field the whole bench exists to reproduce, with nothing on screen saying so. Both
+  // ends, in order, or neither. Never synthesized, and never half-synthesized.
+  const rawFrom = isoLike(prodRow?.scheduledFrom);
+  const rawTo = isoLike(prodRow?.scheduledTo);
+  let from: string | null = null;
+  let to: string | null = null;
+  if (rawFrom && rawTo && rawFrom < rawTo) {
+    from = rawFrom; to = rawTo;
+  } else if (rawFrom || rawTo) {
+    warnings.push(rawFrom && rawTo
+      ? `${prodStopNbr} has a window that ends before it starts on the board (${rawFrom} -> ${rawTo}) — the copy gets the builder's default instead of an inverted one.`
+      : `${prodStopNbr} has only ${rawFrom ? 'an opening' : 'a closing'} time on the board, not a window — the copy gets the builder's default, so it cannot test a deadline.`);
+  } else {
+    warnings.push(`${prodStopNbr} has no delivery window on the board — the copy gets the builder's default, so it cannot test a deadline.`);
+  }
 
   // Freight, in the same Davis terms the New Order form uses (buildStopPayload maps them onto
   // NuVizz's mislabeled fields — pallets→totalCartons, loose→volume). `cartons` on a board row

@@ -20,6 +20,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { decodeVendorText, summarizeVendorError, clipForToast, TOAST_MAX } from '../src/lib/write-error.js';
+import { trimOpRecord as trimOpRecordRef } from '../netlify/functions/lib/write-registries.mts';
 
 // The real thing, as it arrives: XML, JSON-escaped, inside a JSON string, inside `message`.
 // The tail after <Errors> is invented — this repo has never once seen inside that list,
@@ -122,4 +123,25 @@ test('an oversized ledger row drops the CAPTURES, never the row — and says it 
   // A row that fits is returned untouched — no note, nothing to mislead a reader.
   const small = { ...rec, result: { ok: false, steps: [{ op: 'createRoute', result: { sentBody: 'a', rawBody: 'b' } }] } };
   assert.deepEqual(trimOpRecord(small), small);
+});
+
+test('THE ROW SURVIVES A MEGABYTE VENDOR ERROR — stripping two captures off a 3 MB record saves nothing', () => {
+  // The first version of trimOpRecord nulled sentBody/rawBody and nothing else. firstError no
+  // longer truncates, deliberately — so a NuVizz 500 whose XML lists one <Errors> entry per
+  // planStop arrives in `error` at ~1 MB, the two 8 KB captures come off, the row is still
+  // over Firestore's limit, setDoc throws, putOpRecord swallows it, and the Save vanishes.
+  // That is the exact failure this function was added to prevent.
+  const huge = 'x'.repeat(1_000_000);
+  const rec = {
+    clientOpId: 'op_big', op: 'newRoute', status: 'failed', tenant: 'DAVIS', at: '2026-09-11T03:00:00Z',
+    result: { ok: false, error: `Internal Server Error: ${huge}`, steps: [{ op: 'createRoute', result: { ok: false, error: huge, sentBody: 'a', rawBody: 'b' } }] },
+  };
+  const t = trimOpRecordRef(rec);
+  assert.ok(JSON.stringify(t).length <= 700_000, 'the row fits, so it actually lands');
+  assert.equal(t.op, 'newRoute', 'and the row itself — which op, which outcome — survives');
+  assert.equal(t.status, 'failed');
+  assert.match(t.captureNote, /trimmed|dropped/);
+  // A trimmed string says so, for the same reason the toast does.
+  const flat = JSON.stringify(t);
+  assert.match(flat, /trimmed \d+ chars to fit the ledger row/);
 });
