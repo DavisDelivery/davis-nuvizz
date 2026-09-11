@@ -557,3 +557,65 @@ test('improvePinnedPath never lengthens a path and never moves either pinned end
   assert.deepEqual(improvePinnedPath([], 0, 24, cost), []);
   assert.deepEqual(improvePinnedPath([5], 0, 24, cost), [5]);
 });
+
+
+// ── VICTOR, 2026-09-11: the same bug, reported a second time from production ─────────────────
+// Chad, on a 12-stop VICTOR card re-sequenced Farthest first on the LIVE build (v1.14.2, which
+// still carried the radial sort because this fix had not merged yet): "This is not a good route.
+// Look at all the bouncing around. The route should have a much more linear structure."
+//
+// These are the real coordinates from that day's board. The shape is a north-south line of
+// Cartersville stops with one outlier (Gardner Metal) out to the south-west, and the whole
+// cluster sits ~48-53 miles due west of Buford — so every stop is at nearly the SAME radius and
+// the radial sort orders them almost arbitrarily. It sent the truck to Gardner in the south,
+// then 11 miles NORTH past six stops to Chick-fil-A, then back down through the ones it passed.
+const VICTOR = [
+  { id: 'GARDNER METAL', lat: 34.11447, lng: -84.88134 },
+  { id: 'ARCH GRAPHICS A', lat: 34.14297, lng: -84.79753 },
+  { id: 'ARCH GRAPHICS B', lat: 34.14297, lng: -84.79753 },
+  { id: 'HCL A', lat: 34.16479, lng: -84.79582 },
+  { id: 'HCL B', lat: 34.16479, lng: -84.79582 },
+  { id: 'LA FIESTA', lat: 34.21835, lng: -84.79511 },
+  { id: 'SAMUEL PKG', lat: 34.22035, lng: -84.79535 },
+  { id: 'TUG TEXTRON', lat: 34.26645, lng: -84.8036 },
+  { id: 'CHICK-FIL-A', lat: 34.2677, lng: -84.8254 },
+  { id: 'BUSKE', lat: 34.27449, lng: -84.81914 },
+  { id: 'PARAGON', lat: 34.27504, lng: -84.819 },
+];
+// How many times the route reverses along the north-south axis it is strung out on, and how far
+// it ever back-tracks. A line of stops walked once has no reversal and no back-track.
+function northSouthBacktrackMiles(order) {
+  let worst = 0;
+  for (let i = 1; i < order.length; i++) {
+    const dir = Math.sign(order[i].lat - order[i - 1].lat);
+    if (!dir) continue;
+    // look ahead: the furthest the route later travels back the other way before ending
+    for (let j = i + 1; j < order.length; j++) {
+      const back = dir > 0 ? order[i].lat - order[j].lat : order[j].lat - order[i].lat;
+      if (back > 0) worst = Math.max(worst, back * 69);   // ~69 mi per degree of latitude
+    }
+  }
+  return worst;
+}
+
+test('VICTOR, 2026-09-11: the radial sort overshoots 11 miles north and comes back; the sweep walks the line once', () => {
+  // The bug, reproduced on the real stops: the live order jumps Gardner -> Chick-fil-A, 11 miles
+  // north, over six stops it then has to come back down for.
+  const radial = depotSort(VICTOR, BUFORD, 'desc');
+  assert.equal(radial[0].id, 'GARDNER METAL');
+  assert.equal(radial[1].id, 'CHICK-FIL-A', 'fixture should reproduce the reported overshoot');
+  assert.ok(haversineMeters(radial[0], radial[1]) / 1609.344 > 10);
+  assert.ok(northSouthBacktrackMiles(radial) > 8, 'the radial order should back-track a long way');
+
+  // The fix: one pass up the line, no overshoot, and shorter.
+  const out = farthestFirst(VICTOR, BUFORD);
+  assert.deepEqual([...ids(out)].sort(), [...ids(VICTOR)].sort());
+  assert.equal(out[0].id, 'GARDNER METAL');                       // still the farthest stop first
+  assert.ok(northSouthBacktrackMiles(out) < 1.5, `the sweep back-tracks: ${ids(out).join(' → ')}`);
+  assert.ok(homewardMeters(out, BUFORD) < homewardMeters(radial, BUFORD));
+  // The pairs at one address stay together, and the two north-end neighbours do too.
+  for (const pair of [['ARCH GRAPHICS A', 'ARCH GRAPHICS B'], ['HCL A', 'HCL B'], ['BUSKE', 'PARAGON']]) {
+    const [a, b] = pair.map((n) => ids(out).indexOf(n));
+    assert.equal(Math.abs(a - b), 1, `${pair.join(' / ')} split apart: ${ids(out).join(' → ')}`);
+  }
+});

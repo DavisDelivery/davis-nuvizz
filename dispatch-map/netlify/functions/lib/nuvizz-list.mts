@@ -713,9 +713,19 @@ export function mergeTwoScan(activeRows: any[], completedRows: any[], overrides?
     if (prev && prev.stopId && s.stopId && String(prev.stopId) !== String(s.stopId)) {
       const prevLive = !isTerminalStatus(prev.normalizedStatus);
       const curLive = !isTerminalStatus(s.normalizedStatus);
-      // Live work outranks a finished twin; two live (or two finished) twins keep the
-      // later row — the old last-wins order, but now FLAGGED instead of silent.
-      const winner = prevLive === curLive ? s : (curLive ? s : prev);
+      // Live work outranks a finished twin. Between TWO LIVE twins, the one ON A LOAD outranks
+      // the one that is not (v1.4.0): the planned record is the freight a truck is actually
+      // going to move, and showing its unplanned duplicate instead put the order back in the
+      // selection pool with the route card one stop short — the exact state in which a
+      // dispatcher plans the same freight onto a second truck. Two live twins that agree on
+      // planned-ness (or two finished twins) keep the later row — the old last-wins order,
+      // FLAGGED rather than silent. The duplicate itself is still called out on the card
+      // (dupNbr), which is where "cancel the extra record in the portal" starts.
+      const prevPlanned = prev.isPlanned === true;
+      const curPlanned = s.isPlanned === true;
+      const winner = prevLive !== curLive ? (curLive ? s : prev)
+        : (prevLive && prevPlanned !== curPlanned) ? (curPlanned ? s : prev)
+          : s;
       const loser = winner === s ? prev : s;
       winner.dupNbr = true;
       winner.dupNbrOtherId = String(loser.stopId);
@@ -941,6 +951,65 @@ export function mergeEnrich(target: any, src: any): any {
 // stale list wiped the confirmed plan. The demotion verify's load corroboration is the real
 // guard past expiry; the longer grace just avoids burning verify reads on ordinary lag.
 export const BOARD_WRITE_GRACE_MIN = 60;
+
+/**
+ * PURE: has the world MOVED ON from a confirmed un-plan, or is the list merely lagging it?
+ *
+ * WHY THIS EXISTS (Chad, Sep 10 2026, order 007174547): "Why is this order still showing
+ * unplanned when it's on Ronald Gates in nuvizz." It was, and the board knew: a Save took it off
+ * TREVARR at 6:18am, somebody re-planned it onto RONALD in the portal, and the 6:58 and 7:15 scans
+ * BOTH read RONALD off NuVizz's own list and BOTH threw that answer away — because a confirmed
+ * un-plan outranked the list for sixty minutes and nothing was allowed to argue. For that hour the
+ * order sat in the selection pool looking free while RONALD held it, which is the setup for
+ * planning the same freight onto a second truck. His rule: "whatever the scan says is the truth."
+ *
+ * The grace is not simply wrong, which is why this is a discriminator and not a deletion. It was
+ * built because NuVizz's saved-search index lagged an ACCEPTED save by 30+ minutes (OWUSU 1), and
+ * a list that has not caught up must never revert a Save the dispatcher watched confirm. The
+ * defect was that the un-plan direction had NO way to tell those two apart — the PLANNED direction
+ * has the demotion verify (ask the load itself), and the un-plan direction had only a clock.
+ *
+ * The route name tells them apart for nothing. LAG names the OLD route: we removed it from
+ * TREVARR, so a stale index still says TREVARR. A RE-PLAN names a DIFFERENT one: it says RONALD,
+ * and it can only say RONALD because it has already seen an event that happened AFTER our Save.
+ * A list that has caught up that far is a verdict, not lag.
+ *
+ * Deliberately NOT released when the list names the SAME route we removed it from: that reading is
+ * exactly what a lagging index produces, and taking it would revert a cancelled route's un-plan
+ * (nuvizz-write-cancel-through). It stays held by the clock, as before. Closing that last case
+ * takes one metered /load/info — the demote verify's own ladder — and is not done here.
+ *
+ * No from-route on the stamp (written before v1.8.0, or a caller that had no route) → never
+ * released: absence of the baseline is not evidence, and this must not guess a stop off a route.
+ */
+// A NuVizz load NUMBER looks like the company code + zero-padded digits ("DAVIS000198197")
+// or (some tenants) a long bare number — NEVER the internal hex loadId (interspersed hex) and
+// NEVER a short human route name ("SUW"). Distinctive enough to VALIDATE a labelled column and,
+// if the column is mislabelled/absent, to FIND the number anywhere in the row — so "the loads
+// scan produces the number, just grab it" holds regardless of the saved-search column naming.
+export function looksLikeLoadNbr(v: any): boolean {
+  const s = String(v ?? '').trim();
+  return /^[A-Za-z]{2,}\d{5,}$/.test(s) || /^\d{6,}$/.test(s);
+}
+
+export function unplanStampOvertaken(prior: any, fresh: any): boolean {
+  if (prior?.board_write_planned !== false) return false;   // not an un-plan stamp — the planned side has its own verify
+  if (fresh?.isPlanned !== true) return false;              // the list agrees it is un-planned; nothing to argue about
+  const from = String(prior?.board_write_from ?? '').trim();
+  const now = String(fresh?.routeName ?? fresh?.loadNbr ?? '').trim();
+  if (!from || !now) return false;                          // cannot tell → hold, exactly as before
+  // A BASELINE THAT CANNOT BE COMPARED LIKE FOR LIKE IS NO BASELINE, and this one is the way
+  // this rule could LOSE freight rather than merely be slow. Both write-through callers fall
+  // back to something that is not a route name when a card has no resolvable one: the server
+  // takes the load NUMBER (nuvizz-write.mts — `|| String(p.loadNbr || '')`), the client can take
+  // a hex card key. The list always reports the human NAME, so "DAVIS000203388" vs "RONALD"
+  // reads as a different route for EVERY such stop — and would release exactly the holds that
+  // must stand, on a genuine un-plan the list is merely lagging. Two namespaces are not a
+  // disagreement. Refuse to decide, and let the clock hold it as it did before.
+  if (looksLikeLoadNbr(from) || isHashLikeId(from)) return false;
+  return now.toLowerCase() !== from.toLowerCase();
+}
+
 export function applyBoardWriteGrace(fresh: any, prior: any, nowMs: number, graceMin = BOARD_WRITE_GRACE_MIN): boolean {
   const at = prior?.board_write_at ? Date.parse(prior.board_write_at) : NaN;
   if (!Number.isFinite(at)) return false;
@@ -949,6 +1018,10 @@ export function applyBoardWriteGrace(fresh: any, prior: any, nowMs: number, grac
     // …or a cross-load move the list hasn't caught up on (both planned, different load).
     || (prior.isPlanned === true && String(fresh.loadNbr ?? '') !== String(prior.loadNbr ?? ''));
   if (!withinGrace || !disagrees) return false;   // stamp NOT carried forward → list authoritative again
+  // THE SCAN IS THE TRUTH WHERE IT CAN BE TOLD FROM LAG. NuVizz naming a route we did not remove
+  // this order from has seen the world after our Save; the stamp is stale and the list wins now,
+  // not in fifty-seven minutes. See unplanStampOvertaken.
+  if (unplanStampOvertaken(prior, fresh)) return false;
   for (const k of ['status', 'normalizedStatus', 'isPlanned', 'isUnplanned', 'loadNbr', 'routeName', 'routeSeq', 'driverName', 'driverUserName']) {
     fresh[k] = prior[k] ?? null;
   }
@@ -1023,28 +1096,59 @@ export function absentPlanDemoteCandidate(p: any): any {
   };
 }
 
+/**
+ * One line of the verify's ledger — WHAT the scan decided about one routed stop the list tried
+ * to un-plan, so the decision survives the run (v1.4.0). The counts alone could say "dropped 1"
+ * and nothing else; a dispatcher asking "why did my stop come off WILLIAM" needs the stop, the
+ * route and the verdict — the caller adds the basis (makeDemotionLookup's reasons) beside it.
+ */
+export interface DemotionOutcome {
+  stopNbr: string;
+  /** the route the prior board row held it on (board rows carry the route NAME in loadNbr) */
+  route: string | null;
+  verdict: 'kept' | 'held' | 'dropped';
+  /** the stop was ABSENT from the pull (absentPlanDemoteCandidate), not listed un-planned */
+  absent: boolean;
+  /** what the list row itself said this scan (raw status code), for the record */
+  listStatus: string | null;
+}
+
 export async function applyDemotionVerify(
   checks: Array<{ s: any; p: any }>,
   opts: { max: number; scannedAt: string; lookup: (stopNbr: string) => Promise<boolean | null> },
-): Promise<{ kept: number; held: number; dropped: number }> {
+): Promise<{ kept: number; held: number; dropped: number; outcomes: DemotionOutcome[] }> {
   let kept = 0, held = 0, dropped = 0;
-  if (!checks.length) return { kept, held, dropped };
-  if (!(opts.max > 0)) return { kept, held, dropped: checks.length };   // disabled → list wins
+  const outcomes: DemotionOutcome[] = [];
+  // What the LIST said is read off the fresh row BEFORE keepPlan copies the prior plan (and its
+  // status) back onto it — afterwards a kept row reads '20' whatever the list reported.
+  const asSeen = (s: any, p: any): Omit<DemotionOutcome, 'verdict'> => ({
+    stopNbr: String(s?.stopNbr ?? ''),
+    route: (p?.loadNbr ?? p?.routeName) != null ? String(p.loadNbr ?? p.routeName) : null,
+    absent: s?.absentFromPull === true,
+    listStatus: s?.absentFromPull === true ? null : (s?.status != null ? String(s.status) : null),
+  });
+  const note = (seen: Omit<DemotionOutcome, 'verdict'>, verdict: DemotionOutcome['verdict']) => outcomes.push({ ...seen, verdict });
+  if (!checks.length) return { kept, held, dropped, outcomes };
+  if (!(opts.max > 0)) {   // disabled → list wins
+    for (const { s, p } of checks) note(asSeen(s, p), 'dropped');
+    return { kept, held, dropped: checks.length, outcomes };
+  }
   const keepPlan = (s: any, p: any) => {
     for (const k of PLAN_FIELDS) s[k] = p[k] ?? null;
     if (p.board_write_at) { s.board_write_at = p.board_write_at; s.board_write_planned = p.board_write_planned; }
   };
   const cap = Math.min(checks.length, opts.max);
   for (const { s, p } of checks.slice(0, cap)) {
+    const seen = asSeen(s, p);
     let stillPlanned: boolean | null = null;
     try { stillPlanned = await opts.lookup(String(s.stopNbr)); } catch { /* read failed → hold */ }
-    if (stillPlanned === false) { dropped++; continue; }               // real unplan — list wins
+    if (stillPlanned === false) { dropped++; note(seen, 'dropped'); continue; }   // real unplan — list wins
     keepPlan(s, p);
-    if (stillPlanned === true) { s.plan_verified_at = opts.scannedAt; kept++; }
-    else held++;
+    if (stillPlanned === true) { s.plan_verified_at = opts.scannedAt; kept++; note(seen, 'kept'); }
+    else { held++; note(seen, 'held'); }
   }
-  for (const { s, p } of checks.slice(cap)) { keepPlan(s, p); held++; }
-  return { kept, held, dropped };
+  for (const { s, p } of checks.slice(cap)) { const seen = asSeen(s, p); keepPlan(s, p); held++; note(seen, 'held'); }
+  return { kept, held, dropped, outcomes };
 }
 
 // Exposed for tests: intermediate rows → board stops (dedup by stopNbr, last wins).

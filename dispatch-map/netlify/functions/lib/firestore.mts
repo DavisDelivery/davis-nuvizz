@@ -18,6 +18,7 @@
 // (REST API needs each path level to be a real doc; double-underscore is
 // unambiguous since tenant codes have no underscore).
 
+import { fetchWithDeadline } from './fetch-deadline.mts';
 import crypto from 'node:crypto';
 
 const FIRESTORE_BASE = 'https://firestore.googleapis.com/v1';
@@ -88,6 +89,17 @@ function base64UrlEncode(buf: Buffer | string): string {
   return Buffer.from(buf).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
 }
 
+// EVERY FIRESTORE ROUND-TRIP CARRIES A DEADLINE (2026-09-10).
+//
+// The same gap that wedged a manual scan on the NuVizz side existed here: `fetch` with no
+// signal waits forever, so one unanswered Firestore read hangs whatever is holding it — a
+// background scan sits until the platform kills it at fifteen minutes, having written nothing
+// and closed no run row. Twenty seconds is far past a healthy read (these are single-document
+// gets and small list pages) and far short of a scan's budget, so a stall fails the one read
+// that stalled instead of the whole job. Callers that already pass a signal keep theirs.
+const FS_TIMEOUT_MS = Number(process.env.FIRESTORE_TIMEOUT_MS) || 20_000;
+const fsFetch = (url: string, init: any = {}): Promise<Response> => fetchWithDeadline(url, init, FS_TIMEOUT_MS);
+
 export async function getAccessToken(): Promise<string> {
   if (__token && Date.now() < __token.expires_at_ms - 60_000) return __token.access_token;
 
@@ -107,7 +119,7 @@ export async function getAccessToken(): Promise<string> {
   const sigB64 = signer.sign(sa.private_key).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
   const jwt = `${unsigned}.${sigB64}`;
 
-  const resp = await fetch('https://oauth2.googleapis.com/token', {
+  const resp = await fsFetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: jwt }).toString(),
@@ -201,7 +213,7 @@ export async function getDoc(path: string): Promise<any | null> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${path}`;
-  const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  const resp = await fsFetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (resp.status === 404) return null;
   if (!resp.ok) throw new Error(`getDoc ${path} failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
   return docToObject(await resp.json());
@@ -212,7 +224,7 @@ export async function setDoc(path: string, data: any): Promise<boolean> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${path}`;
-  const resp = await fetch(url, {
+  const resp = await fsFetch(url, {
     method: 'PATCH',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ fields: objectToFields(data) }),
@@ -256,7 +268,7 @@ export async function updateDocFields(path: string, data: any): Promise<boolean>
   // containing a dot or a reserved word cannot be read as a nested path.
   const mask = keys.map((k) => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join('&');
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${path}?${mask}`;
-  const resp = await fetch(url, {
+  const resp = await fsFetch(url, {
     method: 'PATCH',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ fields: objectToFields(data) }),
@@ -288,7 +300,7 @@ export async function createDocIfAbsent(path: string, data: any): Promise<boolea
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const db = `projects/${sa.project_id}/databases/${firestoreDatabase()}`;
-  const resp = await fetch(`${FIRESTORE_BASE}/${db}/documents:commit`, {
+  const resp = await fsFetch(`${FIRESTORE_BASE}/${db}/documents:commit`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -323,7 +335,7 @@ export async function listDocs(collectionPath: string, opts?: { mask?: string[] 
     url.searchParams.set('pageSize', '300');
     if (opts?.mask && opts.mask.length) for (const f of opts.mask) url.searchParams.append('mask.fieldPaths', f);
     if (pageToken) url.searchParams.set('pageToken', pageToken);
-    const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    const resp = await fsFetch(url, { headers: { Authorization: `Bearer ${token}` } });
     if (resp.status === 404) return [];
     if (!resp.ok) throw new Error(`listDocs ${collectionPath} failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
     const body: any = await resp.json();
@@ -345,7 +357,7 @@ export async function runQuery(structuredQuery: any): Promise<any[]> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents:runQuery`;
-  const resp = await fetch(url, {
+  const resp = await fsFetch(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ structuredQuery }),
@@ -370,7 +382,7 @@ export async function listCollectionIds(docPath?: string): Promise<string[]> {
   const sa = loadServiceAccount();
   const base = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents`;
   const url = `${docPath ? `${base}/${docPath}` : base}:listCollectionIds`;
-  const resp = await fetch(url, {
+  const resp = await fsFetch(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ pageSize: 300 }),
@@ -388,7 +400,7 @@ export async function deleteDoc(path: string): Promise<void> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${path}`;
-  const resp = await fetch(url, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+  const resp = await fsFetch(url, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
   if (!resp.ok && resp.status !== 404) {
     throw new Error(`deleteDoc ${path} failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
   }
@@ -651,11 +663,20 @@ export function boardWritePlannedFields(routeName: string, seq: number, driverNa
     board_write_at: at, board_write_planned: true,
   };
 }
-export function boardWriteUnplannedFields(at: string): any {
+// `fromRoute` — THE ROUTE THE ORDER WAS TAKEN OFF, kept on the stamp (v1.8.0).
+//
+// The row itself is cleared to un-planned, which erases where it came from — and that was the
+// one fact needed to tell a LAGGING list from a re-planned order. NuVizz's index catching up
+// slowly looks like the OLD route ("you took it off TREVARR, I still say TREVARR"); an order
+// somebody re-planned after the Save looks like a DIFFERENT one ("I say RONALD"). Recording it
+// costs a field and makes that question answerable for nothing. See unplanStampOvertaken.
+export function boardWriteUnplannedFields(at: string, fromRoute?: string | null): any {
+  const from = String(fromRoute ?? '').trim();
   return {
     status: '10', normalizedStatus: 'UNPLANNED', isPlanned: false, isUnplanned: true,
     loadNbr: null, routeName: null, routeSeq: null, driverName: null, driverUserName: null,
     board_write_at: at, board_write_planned: false,
+    ...(from ? { board_write_from: from } : {}),
   };
 }
 
@@ -675,7 +696,8 @@ export async function patchBoardPlan(
   const base = `${COLLECTION}/${parentId(tenant, dateStr)}`;
   const jobs: Array<{ nbr: string; fields: any }> = [];
   patch.orderedStopNbrs.forEach((nbr, i) => jobs.push({ nbr: String(nbr), fields: boardWritePlannedFields(patch.routeName, i + 1, patch.driverName ?? null, patch.at) }));
-  for (const nbr of (patch.unplannedStopNbrs || [])) jobs.push({ nbr: String(nbr), fields: boardWriteUnplannedFields(patch.at) });
+  // patch.routeName IS the route these stops are being taken off — the from-route the stamp keeps.
+  for (const nbr of (patch.unplannedStopNbrs || [])) jobs.push({ nbr: String(nbr), fields: boardWriteUnplannedFields(patch.at, patch.routeName) });
   let patched = 0, i = 0;
   const missed: Array<{ nbr: string; fields: any }> = [];
   const worker = async () => {
@@ -1051,7 +1073,7 @@ export async function incrementCallCounter(dateStr: string, n: number, meta?: st
   // count is always transform[0] so transformResults[0] is the authoritative total.
   // Stamp the current ET hour so the same commit also grows that hour's bucket.
   const body = buildCounterCommitBody(docName, dateStr, n, attr.route ?? undefined, etHourString(), attr);
-  const resp = await fetch(url, {
+  const resp = await fsFetch(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -1089,7 +1111,7 @@ export async function incrementDocFields(path: string, increments: Record<string
   if (incKeys.length) {
     write.updateTransforms = incKeys.map((k) => ({ fieldPath: k, increment: { integerValue: String(Math.trunc(Number(increments[k]) || 0)) } }));
   }
-  const resp = await fetch(`${FIRESTORE_BASE}/${db}/documents:commit`, {
+  const resp = await fsFetch(`${FIRESTORE_BASE}/${db}/documents:commit`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ writes: [write] }),
@@ -1293,6 +1315,70 @@ export async function recordScanRun(row: ScanRunRow): Promise<void> {
       : [...prev, row];
     await setDoc(SCAN_RUNS_PATH, { runs: next.slice(-SCAN_RUNS_MAX), updated_at: new Date().toISOString() } as any);
   } catch { /* best-effort: the ledger must never affect a scan */ }
+}
+
+// ── The plan-verdict ledger: which stop came off which route, on whose word ──
+//
+// THE QUESTION THIS ANSWERS (Chad, Sep 10 2026, two orders in the Routing selection that
+// NuVizz held on WILLIAM and JOE): "figure out why." The scan had every fact that decides a
+// routed stop's fate — the list's word, the confirmed-save grace, the load's own membership
+// read, the stop record's verdict, a spent budget — and kept none of it: three counters went
+// to a console line and the row was rewritten. From the board alone, "the list un-planned it"
+// and "the verify dropped it on a lagging record" were the same unplanned row.
+//
+// One document per board day, rows newest-first, capped. Written ONLY by a scan that actually
+// disputed something (a quiet scan costs nothing here), read by nuvizz-stop-explain. It is a
+// ledger, not a judge: nothing reads it to decide a plan, so a bad row can mislead a reader but
+// never move freight. Rows carry the raw list status and whether the stop was ABSENT from the
+// pull, because those two shapes (listed un-planned vs not listed at all) fail differently.
+const PLAN_VERDICT_MAX = 600;
+export type PlanVerdictBasis =
+  | 'fresh-terminal' | 'roster-unreadable' | 'load-read-budget' | 'load-member'
+  | 'record-budget' | 'twin-mismatch' | 'record' | 'record-read-failed'
+  | 'write-grace' | 'unverified-over-cap' | 'verify-disabled';
+export interface PlanVerdictRow {
+  /** the scan's stamp (scannedAt) — every row of one scan shares it */
+  at: string;
+  stopNbr: string;
+  /** the route the board held the stop on when the list disputed it */
+  route: string | null;
+  verdict: 'kept' | 'held' | 'dropped';
+  basis: PlanVerdictBasis;
+  /** the deciding evidence, in words */
+  detail: string;
+  /** every step the lookup took, oldest first (a fall-through is visible as one) */
+  path: string[];
+  /** the stop was ABSENT from the pull (carried forward as a candidate), not listed un-planned */
+  absent: boolean;
+  /** the list row's raw status code this scan, null when absent */
+  listStatus: string | null;
+}
+const planVerdictPath = (tenant: string, dateStr: string) => `${OPS_COLLECTION}/plan_verdicts__${tenantKey(tenant)}__${dateStr}`;
+
+/** Append this scan's rows (newest first) to the day's ledger. Best-effort: a failure here
+ *  must never touch the scan that produced the rows, so it swallows and reports false. */
+export async function recordPlanVerdicts(tenant: string, dateStr: string, rows: PlanVerdictRow[]): Promise<boolean> {
+  if (!isFirestoreEnabled() || !Array.isArray(rows) || !rows.length) return false;
+  try {
+    const prior = await readPlanVerdicts(tenant, dateStr);
+    const next = [...rows, ...prior].slice(0, PLAN_VERDICT_MAX);
+    await setDoc(planVerdictPath(tenant, dateStr), {
+      tenant: tenantKey(tenant), date: dateStr, updated_at: new Date().toISOString(),
+      count: next.length, rowsJson: JSON.stringify(next),
+    } as any);
+    return true;
+  } catch { return false; }
+}
+
+/** The day's ledger, newest first; [] when none was ever written or the read fails. */
+export async function readPlanVerdicts(tenant: string, dateStr: string): Promise<PlanVerdictRow[]> {
+  if (!isFirestoreEnabled()) return [];
+  try {
+    const doc = await getDoc(planVerdictPath(tenant, dateStr));
+    if (!doc) return [];
+    const arr = JSON.parse(doc.rowsJson || '[]');
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
 }
 
 // ── The last refused scan, where the BOARD's own poll can see it ─────────────
@@ -1556,7 +1642,7 @@ export async function writeFleetIndex(
 const LOAD_ROSTER_COLLECTION = 'nuvizz_load_roster';
 export async function writeLoadRoster(
   tenant: string, dateStr: string, loads: any[], scannedAt: string,
-  meta: { emptyStreak?: number; emptyAt?: string | null; pull?: { period: string; httpStatus: number; cols: number; rows: number; kept: number } | null } = {},
+  meta: { emptyStreak?: number; emptyAt?: string | null; pull?: { period: string; httpStatus: number; cols: number; rows: number; kept: number; drivers?: number } | null } = {},
 ): Promise<void> {
   await setDoc(`${LOAD_ROSTER_COLLECTION}/${parentId(tenant, dateStr)}`, {
     tenant, date: dateStr, at: scannedAt, count: (loads || []).length, loadsJson: JSON.stringify(loads || []),
@@ -1585,7 +1671,7 @@ export async function markLoadRosterEmpty(
 }
 export async function readLoadRoster(
   tenant: string, dateStr: string,
-): Promise<{ at: string | null; loads: any[]; emptyStreak: number; emptyAt: string | null; pull: { period: string; httpStatus: number; cols: number; rows: number; kept: number } | null } | null> {
+): Promise<{ at: string | null; loads: any[]; emptyStreak: number; emptyAt: string | null; pull: { period: string; httpStatus: number; cols: number; rows: number; kept: number; drivers?: number } | null } | null> {
   const doc = await getDoc(`${LOAD_ROSTER_COLLECTION}/${parentId(tenant, dateStr)}`);
   if (!doc) return null;
   let loads: any[] = [];

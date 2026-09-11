@@ -736,12 +736,41 @@ async function probeLoad(n: number, dateStr: string, authHeader: string, company
 // The load's DELIVERY stops in NuVizz's own running order — to.seq when stamped, array
 // position as tie-break/fallback (the settling window before NuVizz assigns positions).
 // PURE (unit-tested); exactly the shape patchBoardPlan wants for a board reconcile.
+// PURE: the position of one raw load stop in the load's running order, or null when NuVizz
+// has not stamped one yet (the settling window). A DELIVERY's visit is its `to` leg (doc §10:
+// "always sort by to.seq"); a PICKUP's customer visit is its `from` leg — the same side
+// normalizeStop reads a pickup's address and seq from — with to.seq / stopSeq as fallbacks,
+// mirroring normalizeLoad in nuvizz-write-ops.
+export function rawLoadStopSeq(s: any): number | null {
+  const pickup = String(s?.stopType ?? 'DO').toUpperCase() !== 'DO';
+  const cands = pickup ? [s?.from?.seq, s?.to?.seq, s?.stopSeq] : [s?.to?.seq];
+  for (const c of cands) {
+    if (c == null || String(c).trim() === '') continue;
+    const n = Number(c);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+// The stops a load's read puts on the BOARD, in running order — every delivery, plus every
+// CUSTOMER pickup (an RA return: a non-DO stop past the origin slot, exactly the rule the RWB
+// save engine applies — doc §10 says seq 1 is the route's own origin pickup, and the origin
+// is never a board row). Until v1.4.0 this kept DO stops only, so the board reconcile could
+// heal a delivery back onto its load but silently skipped every pickup on it: an RA planned
+// on a load could never be re-stamped planned by the repair built for exactly that.
+// Delivery order is to.seq, a pickup's is its customer (`from`) leg; stops NuVizz has not
+// positioned yet keep their array order behind the positioned ones. A non-DO stop with no
+// position at all is treated as the origin, as the save engine treats it.
 export function orderedStopNbrsFromLoad(d: any): string[] {
   const rows = (d?.Load?.stops || [])
-    .map((row: any, i: number) => ({ s: row?.stop ?? row, i }))
-    .filter(({ s }: any) => s && s.stopNbr != null && String(s.stopType ?? 'DO').toUpperCase() === 'DO');
+    .map((row: any, i: number) => { const s = row?.stop ?? row; return { s, i, seq: rawLoadStopSeq(s) }; })
+    .filter(({ s, seq }: any) => {
+      if (!s || s.stopNbr == null) return false;
+      if (String(s.stopType ?? 'DO').toUpperCase() === 'DO') return true;
+      return seq != null && seq > 1;   // a customer pickup sits past the origin slot
+    });
   rows.sort((a: any, b: any) =>
-    (Number(a.s?.to?.seq ?? Number.MAX_SAFE_INTEGER) - Number(b.s?.to?.seq ?? Number.MAX_SAFE_INTEGER)) || (a.i - b.i));
+    ((a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER)) || (a.i - b.i));
   return rows.map(({ s }: any) => String(s.stopNbr));
 }
 

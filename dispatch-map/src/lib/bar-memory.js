@@ -29,9 +29,9 @@ export const BAR_WINDOWS = ['', '0d', '+/-7d', '-7d', '-14d', 'custom'];
 const DEFAULT_SORT = { key: null, dir: 'asc' };
 
 /**
- * The width below which the grid's date-window and driver controls are not rendered at all
- * (they carry Tailwind's `hidden sm:inline-block` — 640px, NOT the app's 768px phone
- * breakpoint; the band between the two shows them and must keep them).
+ * The width below which the grid's date-window control is not rendered at all (it carries
+ * Tailwind's `hidden sm:inline-block` — 640px, NOT the app's 768px phone breakpoint; the band
+ * between the two shows it and must keep it).
  */
 export const BAR_CONTROL_MIN_WIDTH = 640;
 
@@ -94,15 +94,21 @@ export function settingsForSave(snapshot, previous, width) {
  * actually show. Picking a profile by hand still applies everything, on any screen: that is
  * a deliberate act with a visible result, not something that happened to you on load.
  */
-export const BAR_DESKTOP_ONLY_FIELDS = ['nvWindow', 'nvFrom', 'nvTo', 'driverSel'];
+export const BAR_DESKTOP_ONLY_FIELDS = ['nvWindow', 'nvFrom', 'nvTo'];
 
+// THE DRIVER FILTER IS GONE, AND SO IS ITS SETTING (v1.3.0). Chad: "Remove the all drivers
+// drivers." Profiles and device memory written by older builds still carry `driverSel`, and
+// normalizeBar DROPS it rather than carrying it along: a filter with no control on screen is
+// the invisible-filter trap this module exists to keep shut (v0.45.6), and restoring
+// "STEVEN" from a year-old profile would hide every other driver's rows with nothing to
+// un-tick. Typing a driver's name in the search box does the same job — the search matches
+// driverName — and the search box is the one control that is always on screen.
 export const BAR_DEFAULTS = Object.freeze({
   view: 'stops',
   status: [],
   nvWindow: '',
   nvFrom: '',
   nvTo: '',
-  driverSel: '',
   unmappedOnly: false,
   stopSort: DEFAULT_SORT,
   loadSort: DEFAULT_SORT,
@@ -138,7 +144,6 @@ export function normalizeBar(raw) {
     // must not survive a reload — the pull refuses to fire until both are valid anyway.
     nvFrom: nvWindow === 'custom' && isYmd(s.nvFrom) ? s.nvFrom : '',
     nvTo: nvWindow === 'custom' && isYmd(s.nvTo) ? s.nvTo : '',
-    driverSel: typeof s.driverSel === 'string' ? s.driverSel : '',
     unmappedOnly: !!s.unmappedOnly,
     stopSort: normSort(s.stopSort),
     loadSort: normSort(s.loadSort),
@@ -151,7 +156,7 @@ export function sameBar(a, b) {
   return x.view === y.view
     && x.status.join(',') === y.status.join(',')     // normalizeBar canonicalises the order
     && x.nvWindow === y.nvWindow && x.nvFrom === y.nvFrom && x.nvTo === y.nvTo
-    && x.driverSel === y.driverSel && x.unmappedOnly === y.unmappedOnly
+    && x.unmappedOnly === y.unmappedOnly
     && x.stopSort.key === y.stopSort.key && x.stopSort.dir === y.stopSort.dir
     && x.loadSort.key === y.loadSort.key && x.loadSort.dir === y.loadSort.dir;
 }

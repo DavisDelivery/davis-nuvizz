@@ -92,6 +92,12 @@ export interface StopDetail {
   complete: boolean;
   handConfirmed: boolean;
   damagedCount: number;
+  /** Pieces a person added rather than scanned — typed, or the override tap. */
+  handAddedCount: number;
+  /** Of those, typed into the PRO lookup: routine for non-Uline freight, which has no barcode. */
+  typedCount: number;
+  /** Of those, the override tap — a person overruling the count. The audit signal. */
+  overrideCount: number;
   damagedOgs: string[];
   scannedOgs: string[];
   /** When the LAST piece landed here, so the dispatcher can see whether "all
@@ -143,6 +149,25 @@ export function reconcileStops(stops: any[], scans: any[], handConfirms: any[]):
     const confirmedPieces = handConfirmed ? Math.max(0, expected - scannedPieces) : 0;
     const scanned = scannedPieces + confirmedPieces;
     const damaged = [...m.values()].filter((x) => x.damaged);
+    // ADDED BY HAND, not scanned. record() stamps engine 'manual' on both routes a
+    // person can put a piece on the truck: typing a PRO into the lookup (a TYPED-
+    // id) and the "Another piece" override (a NOOG- id). Everything else carries
+    // the decoder that read it. This is counted because the difference matters:
+    // on 2026-09-09 a full-screen warning was transparent to touch with the
+    // override button underneath it, so loaders were adding freight over the
+    // manifest while trying to dismiss a warning, and nothing above the scan log
+    // said so. An added piece is a claim a person made; a scanned one is a
+    // barcode. A dispatcher reconciling a short truck needs to see which.
+    const byHand = [...m.values()].filter((x) => String(x.engine || '') === 'manual');
+    // TWO KINDS OF "BY HAND", AND THEY MEAN OPPOSITE THINGS. A TYPED- id is the
+    // PRO lookup — routine, because non-Uline freight has no barcode and is
+    // always added this way (the owner's rule). A NOOG- id on engine 'manual'
+    // is the "Another piece" / "Add OVER the count" override — a person
+    // asserting the paperwork is wrong, which is the thing a dispatcher needs
+    // to see. Lumping them made the marker fire on every Estes stop and say
+    // nothing about the one Uline stop that mattered.
+    const typed = byHand.filter((x) => /^TYPED-/i.test(String(x.og || '')));
+    const overridden = byHand.filter((x) => /^NOOG-/i.test(String(x.og || '')));
     return {
       stopNbr,
       businessName: String(st?.businessName || ''),
@@ -154,6 +179,9 @@ export function reconcileStops(stops: any[], scans: any[], handConfirms: any[]):
       complete: st?.isPickup ? true : expected > 0 && scanned === expected,
       handConfirmed,
       damagedCount: damaged.length,
+      handAddedCount: byHand.length,
+      typedCount: typed.length,
+      overrideCount: overridden.length,
       damagedOgs: damaged.map((x) => String(x.og).toUpperCase()),
       scannedOgs: [...m.keys()],
       scannedAt: lastAtByStop.get(stopNbr) || null,

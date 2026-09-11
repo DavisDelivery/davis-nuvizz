@@ -222,3 +222,83 @@ test('demotion: matching stopId (or no id on either side) keeps the record\'s ve
   assert.equal(await mk(null, 'ffffffffffffffffffffffff').lookup('301'), false, 'board row has no id → cannot judge, old behavior');
   assert.equal(await mk('6a63c5844524f7f7b8ab5410', null).lookup('301'), false, 'record has no id → same');
 });
+
+// ── WHY the verify answered (v1.4.0) ─────────────────────────────────────────
+// Chad, 2026-09-10: two orders NuVizz held on WILLIAM and JOE reading un-planned on our board,
+// and the scan that decided their fate had kept nothing but three counters. Every lookup now
+// records WHICH evidence decided and every step it took to get there.
+test('reasonFor: positive load membership names the load; a fall-through from "no such load" to the record shows both steps', async () => {
+  const { deps } = makeDeps({
+    readRoster: async () => ({ loads: [{ name: 'JOE', loadNbr: 'DAVIS000203002' }] }),
+    readLoadStopNbrs: async () => new Set(['RA5732712']),
+    readStopRecord: async () => ({ ok: true, stop: { normalizedStatus: 'UNPLANNED', isPlanned: false, loadNbr: null } }),
+  });
+  deps.demoteByNbr = new Map([chk('RA5732712', { routeName: 'JOE' }), chk('AVRT-0170416694', { routeName: 'WILLIAM' })]);
+  const d = makeDemotionLookup(deps);
+  assert.equal(await d.lookup('RA5732712'), true);
+  assert.deepEqual(d.reasonFor('RA5732712'), { basis: 'load-member', detail: 'load DAVIS000203002 (JOE) still holds it', path: ['load DAVIS000203002 (JOE) still holds it'] });
+  assert.equal(await d.lookup('AVRT-0170416694'), false, 'roster has no WILLIAM → the record decides, and it says un-planned');
+  assert.deepEqual(d.reasonFor('AVRT-0170416694'), {
+    basis: 'record',
+    detail: 'stop record: UNPLANNED, on no load',
+    path: ['roster (1 load): no load named WILLIAM', 'stop record: UNPLANNED, on no load'],
+  });
+  assert.equal(d.reasonFor('never-asked'), null);
+});
+
+test('reasonFor: a record that shows the stop on a load says which load; "not a member" is recorded as the step it is', async () => {
+  const { deps } = makeDeps({
+    readRoster: async () => ({ loads: [{ name: 'JEAN', loadNbr: 'DAVIS000198333' }] }),
+    readLoadStopNbrs: async () => new Set(['other-stop']),
+    readStopRecord: async () => ({ ok: true, stop: { normalizedStatus: 'SCHEDULED', isPlanned: true, loadNbr: 'DAVIS000198999', routeName: 'JEAN' } }),
+  });
+  deps.demoteByNbr = new Map([chk('201', { routeName: 'JEAN' })]);
+  const d = makeDemotionLookup(deps);
+  assert.equal(await d.lookup('201'), true);
+  assert.deepEqual(d.reasonFor('201').path, [
+    'load DAVIS000198333 (JEAN) read — 1 stop(s) on it, this one not among them',
+    'stop record: SCHEDULED, on load DAVIS000198999 (JEAN)',
+  ]);
+  assert.equal(d.reasonFor('201').basis, 'record');
+});
+
+test('reasonFor: the holds each name their cause — unreadable roster, spent budgets, a failed record read, a twin', async () => {
+  const unreadable = makeDeps({ readRoster: async () => { throw new Error('boom'); } });
+  unreadable.deps.demoteByNbr = new Map([chk('1', { routeName: 'X' })]);
+  const u = makeDemotionLookup(unreadable.deps);
+  assert.equal(await u.lookup('1'), null);
+  assert.equal(u.reasonFor('1').basis, 'roster-unreadable');
+
+  const loadBudget = makeDeps({ readRoster: async () => ({ loads: [{ name: 'X', loadNbr: 'DAVIS000000001' }] }), loadReadBudget: 0 });
+  loadBudget.deps.demoteByNbr = new Map([chk('2', { routeName: 'X' })]);
+  const lb = makeDemotionLookup(loadBudget.deps);
+  assert.equal(await lb.lookup('2'), null);
+  assert.equal(lb.reasonFor('2').basis, 'load-read-budget');
+  assert.match(lb.reasonFor('2').detail, /load DAVIS000000001 \(X\) not read — this scan's load-read budget \(0\) was spent/);
+
+  const recBudget = makeDeps({ stopReadBudget: 0 });
+  recBudget.deps.demoteByNbr = new Map([chk('3', { routeName: null })]);
+  const rb = makeDemotionLookup(recBudget.deps);
+  assert.equal(await rb.lookup('3'), null);
+  assert.equal(rb.reasonFor('3').basis, 'record-budget');
+  assert.deepEqual(rb.reasonFor('3').path, ['prior row carried no route name', "stop record not read — this scan's record-read budget (0) was spent"]);
+
+  const failed = makeDeps();   // default record read: http_404
+  failed.deps.demoteByNbr = new Map([chk('4', { routeName: null })]);
+  const f = makeDemotionLookup(failed.deps);
+  assert.equal(await f.lookup('4'), null);
+  assert.equal(f.reasonFor('4').basis, 'record-read-failed');
+  assert.match(f.reasonFor('4').detail, /read failed \(http_404\) — held/);
+
+  const twin = makeDeps({ readStopRecord: async () => ({ ok: true, stop: { stopId: 'ffffffffffffffffffffffff', normalizedStatus: 'UNPLANNED', isPlanned: false } }) });
+  twin.deps.demoteByNbr = new Map([['5', { s: { stopNbr: '5', normalizedStatus: 'UNPLANNED', isPlanned: false }, p: { stopNbr: '5', isPlanned: true, loadNbr: null, stopId: '6a63c5844524f7f7b8ab5410' } }]]);
+  const t = makeDemotionLookup(twin.deps);
+  assert.equal(await t.lookup('5'), null);
+  assert.equal(t.reasonFor('5').basis, 'twin-mismatch');
+
+  const terminal = makeDeps();
+  terminal.deps.demoteByNbr = new Map([chk('6', { status: 'DELIVERED', routeName: 'X' })]);
+  const tt = makeDemotionLookup(terminal.deps);
+  assert.equal(await tt.lookup('6'), false);
+  assert.equal(tt.reasonFor('6').basis, 'fresh-terminal');
+});

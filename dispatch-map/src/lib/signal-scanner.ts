@@ -103,11 +103,45 @@ interface ScannableStop {
   addr2?: string | null;
 }
 
+// A NEGATION IMMEDIATELY BEFORE A MATCH INVERTS IT, AND WE USED TO READ IT AS AGREEMENT.
+//
+// Found on PRO 007173855 (SHARPS MWS, 2026-09-09). Uline sent "NO STRAIGHT TRUCK OR LIFT
+// GATE! MUST SHIP UPRIGHT.", wrapped across two 25-character comment records. The bare
+// /\bSTRAIGHT\s+TRUCK\b/ matched the middle of it and raised uline_straight_truck —
+// labelled "Uline: straight truck only" — so the badge told the dispatcher the exact
+// opposite of what the customer wrote. It does not stop at the badge: routing-constraints
+// maps that flag to "the truck must NOT be a tractor", and the only non-tractor in the
+// fleet is the 26ft box, which is the one vehicle this freight cannot go on.
+//
+// The positive patterns ("STRAIGHT TRUCK ONLY", "BOX TRUCK ONLY", "26FT MAX") are the ones
+// at risk; the patterns that carry their own NO ("NO TRACTOR TRAILER") are unaffected,
+// because their negation is INSIDE the match and nothing precedes it.
+//
+// Scans every occurrence rather than the first: "NO STRAIGHT TRUCK. STRAIGHT TRUCK ONLY
+// AFTER 3PM" is contrived, but a rule that stops at the first hit would take the negated
+// one and drop a real instruction on the floor.
+// Up to two plain words may sit between the negation and the phrase — that is where SEND,
+// USE and DELIVER turn up ("DO NOT SEND STRAIGHT TRUCK") — matching the allowance the
+// no-double-stack rule in handling-flags.js already makes for the same reason.
+//
+// The inter-word gaps are [^\S\n] (whitespace but NOT a newline) rather than \s, because
+// these comments arrive as SEPARATE NuVizz records joined with '\n'. With plain \s, a stop
+// whose notes read "NO DOCK" then "STRAIGHT TRUCK ONLY" would have the first record's
+// negation reach across the join and cancel the second record's real instruction.
+const NEGATED_BEFORE = /\b(?:NO|NOT|NEVER|DO[^\S\n]*N(?:OT|'?T)|CAN[^\S\n]*N(?:OT|'?T)|WON'?T)[^\S\n]+(?:\w+[^\S\n]+){0,2}$/i;
+
 function firstHit(text: string | null | undefined, patterns: RegExp[]): { text: string; pattern: string } | null {
   if (!text) return null;
   for (const p of patterns) {
-    const m = p.exec(text);
-    if (m) return { text: m[0], pattern: p.source };
+    // Fresh global clone: these RegExps are shared module constants and a sticky lastIndex
+    // on one would silently change what the NEXT stop matches.
+    const scan = new RegExp(p.source, p.flags.includes('g') ? p.flags : p.flags + 'g');
+    let m: RegExpExecArray | null;
+    while ((m = scan.exec(text)) !== null) {
+      if (m[0] === '') { scan.lastIndex += 1; continue; }
+      if (NEGATED_BEFORE.test(text.slice(0, m.index))) continue;
+      return { text: m[0], pattern: p.source };
+    }
   }
   return null;
 }

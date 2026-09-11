@@ -646,3 +646,80 @@ export function selectionRowTone({ tractorOk = false, hot = false } = {}) {
 export function toneIsGreen(tone) {
   return /(^|\s|:)bg-green-/.test(String(tone || ''));
 }
+
+// THE BOTTOM DATA GRID'S ROW, RANKED. Chad (v1.3.0): "I want this bottom panel to highlight
+// the tractor friendly rows." The Selected window has painted a tractor row green since
+// v0.46.5; the board's own spreadsheet — the 700 rows a router picks FROM — never did, so the
+// only way to learn which stops a 53-footer could run was to select them first and look. Now
+// the grid reads the same rule (tractorFriendlySelection, through one helper in App.jsx) and
+// paints the same green, so the two surfaces cannot disagree about a stop.
+//
+// FOUR THINGS CAN CLAIM A ROW, ranked by how recent the act behind them is, most recent first:
+//   selected  — the map selection tool is on this stop RIGHT NOW (blue; the grid and the
+//               lasso must read as one thing)
+//   [staged]  — it sits on an open route card, saved to nothing yet. Painted as an INLINE
+//               style in the card's own colour by the caller (grid-staged-rows pins that
+//               markup), and an inline background beats every class here, so staging sits
+//               between selection and the two facts below without this function naming it.
+//   tractorOk — a tractor trailer can be sent here: a fact about the freight (green)
+//   carryover — folded in from a prior day: a fact about the date (amber)
+// A fact about the freight outranks a fact about the date because the router acts on the
+// first (which truck) and only NOTES the second — and the Day column already says the day
+// in window mode, while nothing else on the row says "a trailer fits".
+export const GRID_ROW_TONE = {
+  selected: 'bg-blue-100 hover:bg-blue-200/70',
+  tractor: ROW_TONE.tractor,
+  carryover: 'bg-amber-50/60 hover:bg-blue-50',
+  plain: 'hover:bg-blue-50',
+};
+
+/** The background classes for one row of the bottom data grid. */
+export function gridRowTone({ selected = false, tractorOk = false, carryover = false } = {}) {
+  if (selected) return GRID_ROW_TONE.selected;
+  if (tractorOk) return GRID_ROW_TONE.tractor;
+  if (carryover) return GRID_ROW_TONE.carryover;
+  return GRID_ROW_TONE.plain;
+}
+
+// ── WHAT A CLICK ON A ROUTING MAP PIN DOES ───────────────────────────────────
+//
+// Chad, on GEORGE L's route: "If i click on one of these dots on the map i want it to bring
+// that orders details on in the right panel." It did not, and the reason is the shape this
+// repo keeps re-learning: the dispatch Map has opened a stop on its own marker click since it
+// was built, and Routing — the screen a router spends the morning in — was never wired for it.
+// A numbered pin opened its ROUTE in Compare, a pool pin toggled the whole place into the
+// selection, and the one question a dot could not answer was "what is this order?".
+//
+// THE RULE IS HERE, NOT IN THE HANDLER, because the handler lives inside a marker-building
+// effect in a 25,000-line module that node:test cannot import, and Google Maps is blocked in
+// the headless guard — so a marker click is not observable there either (v0.98.0 said so when
+// it shipped the row→pin half of this). That leaves the decision untestable at both ends
+// unless it is a function. It is a function.
+//
+// WHICH MODES OPEN THE PANEL, and why it is not simply "all of them":
+//   • normal      — the ask. The pin also keeps what it already did (open the route, or
+//                   toggle the place into the selection); nothing is taken away.
+//   • viewing     — a saved load is read-only and the click previously did NOTHING. Reading an
+//                   order is the one thing that was always safe there.
+//   • paint       — already did both ("first click does both"); unchanged.
+//   • selectMode  — NO. The click is asking for a POINT on the map (the handler reads the
+//                   marker's position, not the stop). A card about a stop is the wrong answer.
+//   • ninja       — NO. It adds stop after stop to the open route; a card popping up on each
+//                   one fights the job being done.
+//
+// Returns every action the click should take, so the caller is a dispatcher and holds no
+// policy of its own.
+export function mapPinClickActions({
+  viewing = false, paint = false, selectMode = false, ninja = false,
+  isUnplanned = false, hasRouteKey = false,
+} = {}) {
+  // The two rapid-fire tools are about a point or a queue, not about this order.
+  const openPanel = !selectMode && !ninja;
+  if (viewing) return { openPanel, paint: false, selectPoint: false, ninjaAdd: false, openRoute: false, toggleGroup: false };
+  if (paint) return { openPanel, paint: true, selectPoint: false, ninjaAdd: false, openRoute: false, toggleGroup: false };
+  if (selectMode) return { openPanel, paint: false, selectPoint: true, ninjaAdd: false, openRoute: false, toggleGroup: false };
+  if (ninja) return { openPanel, paint: false, selectPoint: false, ninjaAdd: true, openRoute: false, toggleGroup: false };
+  // Normal mode: a planned stop opens its route; a pool stop toggles its whole place.
+  const openRoute = !isUnplanned && hasRouteKey;
+  return { openPanel, paint: false, selectPoint: false, ninjaAdd: false, openRoute, toggleGroup: !openRoute };
+}

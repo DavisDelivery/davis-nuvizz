@@ -609,12 +609,14 @@ const demoFresh = () => ({
   stopNbr: '007144188', isPlanned: false, isUnplanned: true, status: '10', normalizedStatus: 'UNPLANNED',
   loadNbr: null, routeName: null, routeSeq: null,
 });
+// The three counters, without the per-stop outcomes the verify also returns (v1.4.0).
+const counts = (r) => ({ kept: r.kept, held: r.held, dropped: r.dropped });
 
 test('applyDemotionVerify: NuVizz stop record says ASSIGNED → the list is wrong, plan kept + verified stamp', async () => {
   const s = demoFresh(), p = demoPrior();
   const asked = [];
   const r = await applyDemotionVerify([{ s, p }], { max: 8, scannedAt: 'T1', lookup: async (nbr) => { asked.push(nbr); return true; } });
-  assert.deepEqual(r, { kept: 1, held: 0, dropped: 0 });
+  assert.deepEqual(counts(r), { kept: 1, held: 0, dropped: 0 });
   assert.deepEqual(asked, ['007144188'], 'exactly one /stop/info per flip');
   assert.equal(s.isPlanned, true);
   assert.equal(s.loadNbr, 'DAWSONVILLE');
@@ -626,7 +628,7 @@ test('applyDemotionVerify: NuVizz stop record says ASSIGNED → the list is wron
 test('applyDemotionVerify: NuVizz stop record says UNASSIGNED → a real portal unplan stands', async () => {
   const s = demoFresh(), p = demoPrior();
   const r = await applyDemotionVerify([{ s, p }], { max: 8, scannedAt: 'T1', lookup: async () => false });
-  assert.deepEqual(r, { kept: 0, held: 0, dropped: 1 });
+  assert.deepEqual(counts(r), { kept: 0, held: 0, dropped: 1 });
   assert.equal(s.isPlanned, false, 'fresh unplanned row untouched');
   assert.equal(s.loadNbr, null);
 });
@@ -649,7 +651,7 @@ test('applyDemotionVerify: flips beyond the cap are HELD without spending reads 
   let reads = 0;
   const r = await applyDemotionVerify(checks, { max: 2, scannedAt: 'T1', lookup: async () => { reads++; return true; } });
   assert.equal(reads, 2, 'only the cap is verified');
-  assert.deepEqual(r, { kept: 2, held: 3, dropped: 0 });
+  assert.deepEqual(counts(r), { kept: 2, held: 3, dropped: 0 });
   for (const { s } of checks) assert.equal(s.isPlanned, true, 'every flip is kept planned this cycle');
 });
 
@@ -657,9 +659,35 @@ test('applyDemotionVerify: max=0 disables → legacy list-wins (all dropped, no 
   const s = demoFresh(), p = demoPrior();
   let reads = 0;
   const r = await applyDemotionVerify([{ s, p }], { max: 0, scannedAt: 'T1', lookup: async () => { reads++; return true; } });
-  assert.deepEqual(r, { kept: 0, held: 0, dropped: 1 });
+  assert.deepEqual(counts(r), { kept: 0, held: 0, dropped: 1 });
   assert.equal(reads, 0);
   assert.equal(s.isPlanned, false);
+});
+
+// ── the verdicts survive the run (v1.4.0) ────────────────────────────────────
+// Chad, 2026-09-10, two orders NuVizz held on WILLIAM and JOE reading un-planned on our board:
+// "figure out why." The verify had decided their fate and kept nothing but three counters.
+test('applyDemotionVerify: every check comes back as an OUTCOME naming the stop, the route it was on and the verdict', async () => {
+  const kept = { s: demoFresh(), p: demoPrior() };
+  const dropped = { s: { ...demoFresh(), stopNbr: 'AVRT-0170416694' }, p: { ...demoPrior(), stopNbr: 'AVRT-0170416694', loadNbr: 'WILLIAM', routeName: 'WILLIAM' } };
+  const absent = { s: { ...demoFresh(), stopNbr: 'RA5732712', absentFromPull: true }, p: { ...demoPrior(), stopNbr: 'RA5732712', loadNbr: 'JOE', routeName: 'JOE' } };
+  const r = await applyDemotionVerify([kept, dropped, absent], { max: 8, scannedAt: 'T1', lookup: async (nbr) => (nbr === '007144188' ? true : nbr === 'AVRT-0170416694' ? false : null) });
+  assert.deepEqual(counts(r), { kept: 1, held: 1, dropped: 1 });
+  assert.deepEqual(r.outcomes, [
+    { stopNbr: '007144188', route: 'DAWSONVILLE', verdict: 'kept', absent: false, listStatus: '10' },
+    { stopNbr: 'AVRT-0170416694', route: 'WILLIAM', verdict: 'dropped', absent: false, listStatus: '10' },
+    // an ABSENT candidate has no list status to report — the list said nothing about it
+    { stopNbr: 'RA5732712', route: 'JOE', verdict: 'held', absent: true, listStatus: null },
+  ]);
+});
+
+test('applyDemotionVerify: beyond the cap and with the verify disabled, the outcomes still name every stop', async () => {
+  const checks = Array.from({ length: 3 }, (_, i) => ({ s: { ...demoFresh(), stopNbr: `S${i}` }, p: { ...demoPrior(), stopNbr: `S${i}` } }));
+  const capped = await applyDemotionVerify(checks, { max: 1, scannedAt: 'T1', lookup: async () => true });
+  assert.deepEqual(capped.outcomes.map((o) => o.verdict), ['kept', 'held', 'held']);
+  const off = await applyDemotionVerify(checks, { max: 0, scannedAt: 'T1', lookup: async () => true });
+  assert.deepEqual(off.outcomes.map((o) => `${o.stopNbr}:${o.verdict}`), ['S0:dropped', 'S1:dropped', 'S2:dropped']);
+  assert.deepEqual((await applyDemotionVerify([], { max: 8, scannedAt: 'T1', lookup: async () => true })).outcomes, []);
 });
 
 // ── demotionLookupVerdict: the real /stop/info → keep/drop/hold policy (Jul 9 audit) ──
@@ -741,6 +769,40 @@ test('mergeTwoScan: order does not matter — a live twin arriving SECOND also w
   const s = m.get('2026-06-24')[0];
   assert.equal(s.stopId, LIVE_ID);
   assert.equal(s.dupNbr, true);
+});
+
+// TWO LIVE TWINS (v1.4.0). A carrier order keyed twice — one record on a load, one not — used
+// to collapse to whichever the list returned LATER: the un-planned duplicate could win, and then
+// the board put the freight back in the selection pool with the route card one stop short, which
+// is exactly the state in which a dispatcher plans the same order onto a second truck.
+test('mergeTwoScan: between two LIVE twins the one ON A LOAD wins, whichever the list returned first', () => {
+  const onLoad = { stopNbr: 'AVRT-0170416694', nvStopId: LIVE_ID, statusCode: '20', routeName: 'WILLIAM', scheduledArrival: '9/10/26 09:00 AM', businessName: 'RODERICL CONEY' };
+  const dup = { stopNbr: 'AVRT-0170416694', nvStopId: TWIN_ID, statusCode: '10', scheduledArrival: '9/10/26 09:00 AM', businessName: 'RODERICL CONEY' };
+  for (const active of [[onLoad, dup], [dup, onLoad]]) {
+    const s = mergeTwoScan(active, []).get('2026-09-10')[0];
+    assert.equal(s.stopId, LIVE_ID, 'the planned record keeps the number');
+    assert.equal(s.isPlanned, true);
+    assert.equal(s.routeName, 'WILLIAM');
+    assert.equal(s.dupNbr, true, 'and the duplicate is still called out');
+    assert.equal(s.dupNbrOtherId, TWIN_ID);
+  }
+});
+
+test('mergeTwoScan: two live twins that AGREE on planned-ness keep the later row, flagged — the old order, unchanged', () => {
+  const a = { stopNbr: 'E7', nvStopId: LIVE_ID, statusCode: '10', scheduledArrival: '9/10/26 09:00 AM', businessName: 'FIRST' };
+  const b = { stopNbr: 'E7', nvStopId: TWIN_ID, statusCode: '10', scheduledArrival: '9/10/26 09:00 AM', businessName: 'SECOND' };
+  const s = mergeTwoScan([a, b], []).get('2026-09-10')[0];
+  assert.equal(s.stopId, TWIN_ID);
+  assert.equal(s.businessName, 'SECOND');
+  assert.equal(s.dupNbr, true);
+});
+
+test('mergeTwoScan: a live twin still beats a FINISHED twin even when the finished one is the planned one', () => {
+  const finishedPlanned = { stopNbr: 'E8', nvStopId: TWIN_ID, statusCode: '90', routeName: 'OLD', scheduledArrival: '9/10/26 09:00 AM', updatedTime: '9/10/26 02:00 PM' };
+  const liveUnplanned = { stopNbr: 'E8', nvStopId: LIVE_ID, statusCode: '10', scheduledArrival: '9/10/26 09:00 AM' };
+  const s = mergeTwoScan([liveUnplanned], [finishedPlanned]).get('2026-09-10')[0];
+  assert.equal(s.stopId, LIVE_ID, 'live work outranks a finished twin — the Estes rule stands');
+  assert.equal(s.isPlanned, false);
 });
 
 test('mergeTwoScan: SAME id is the normal lifecycle — completed wins, no flag', () => {

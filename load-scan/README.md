@@ -431,6 +431,7 @@ lines gives 4 pieces for one physical pallet. Charge lines are not freight.
 | `LOADSCAN_ADMIN_PROXY_SECRET` | yes | at least 16 chars, set on **both** ddsloadout and dd-dispatch-map. Proves an admin call came from dispatch-map's server. |
 | `LOADSCAN_ADMIN_BOOTSTRAP_SECRET` | temporary | at least 16 chars. Lets one request create the first dispatcher credential. **Already used and removed — set it again only to create another first dispatcher.** |
 | `FIRESTORE_DATABASE` | no | named database; unset = `(default)` |
+| `LOADSCAN_CARRIER_HAND_CONFIRM` | no | **The way back for v0.50.** Default ON: a stop whose number is not a bare Uline PRO (`ESTES-…`, `AVRT-…`, a 10-digit carrier PRO) is hand-confirmed in one tap, never offered to the scanner. `off` (also `0`, `false`, `no`) restores the pre-v0.50 rule exactly — scannability from the piece count alone. Anything else, a typo included, leaves it ON. No deploy needed; read the position back under `rules.carrierHandConfirm` on any `/load-manifest` response, or the raw value on `/health`. |
 
 `FIREBASE_SA` is defined **twice**: site-scoped on dd-dispatch-map and site-scoped
 here. Team-level was considered and rejected — Netlify shared variables reach every

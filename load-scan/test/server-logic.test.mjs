@@ -1125,3 +1125,134 @@ test('an empty roster resolves nothing and does not throw', async () => {
   }
   assert.equal(resolveLoadIdentity(roster0812, '').loadId, null);
 });
+
+// ── A piece a PERSON added is not a piece a barcode proved ───────────────────
+//
+// Chad, looking at a truck's stop list: "does this show the ones they manually
+// added?" It did not — the rows counted distinct pieces and said nothing about
+// how any of them got there, so a stop reading "all here" off an override tap
+// looked exactly like one read off a barcode. That distinction stopped being
+// academic on 2026-09-09, when a touch-transparent warning panel sat over the
+// override button and loaders were adding freight over the manifest by reflex.
+
+test('a stop reports how many of its pieces a person added rather than scanned', async () => {
+  const rows = ACT.reconcileStops(dstops, [
+    sc('OG0000000001', '1', { engine: 'quagga' }),
+    sc('NOOG-7000000-1', '1', { engine: 'manual' }),   // the "Another piece" override
+    sc('TYPED-7000000-1', '1', { engine: 'manual' }),  // typed into the PRO lookup
+  ], []);
+  const one = rows.find((r) => r.stopNbr === '1');
+  assert.equal(one.scanned, 3, 'all three are on the truck either way');
+  assert.equal(one.handAddedCount, 2, 'two of them are a person’s word, not a barcode');
+});
+
+test('a scanned piece whose piece id never decoded is still a SCAN, not a hand add', async () => {
+  // The fallback id looks synthetic and is not: a barcode was read, the top one
+  // just did not decode. Counting it as hand-added would cry wolf on ordinary
+  // freight and make the real signal worthless.
+  const rows = ACT.reconcileStops(dstops, [
+    sc('NOOG-7000000-1', '1', { engine: 'quagga' }),
+    sc('NOOG-7000000-2', '1', { engine: 'wedge' }),
+    sc('NOOG-7000000-3', '1', { engine: 'native' }),
+  ], []);
+  assert.equal(rows.find((r) => r.stopNbr === '1').handAddedCount, 0);
+});
+
+test('a voided hand-added piece stops being counted — it is off the truck', async () => {
+  const rows = ACT.reconcileStops(dstops, [
+    sc('OG0000000001', '1', { engine: 'quagga' }),
+    sc('NOOG-7000000-9', '1', { engine: 'manual', voidedAt: '2026-09-09T12:00:00Z' }),
+  ], []);
+  assert.equal(rows.find((r) => r.stopNbr === '1').handAddedCount, 0, 'a removed override is not a claim any more');
+});
+
+test('an ordinary all-scanned stop reports none, so the marker means something', async () => {
+  const rows = ACT.reconcileStops(dstops, [sc('OG0000000001', '1', { engine: 'quagga' })], []);
+  assert.equal(rows.find((r) => r.stopNbr === '1').handAddedCount, 0);
+  assert.equal(rows.find((r) => r.stopNbr === '2').handAddedCount, 0, 'and an untouched stop reports zero, not undefined');
+});
+
+// ── Non-Uline freight has no barcode — the owner's rule, not a correlation ───
+//
+// Chad, 2026-09-10: "Anything non-Uline will not have a barcode and will be
+// manual adds." Scannability used to be inferred from whether the index row
+// carried a piece count, which the code itself called "a correlation, not a
+// law": an Estes stop WITH a count was offered as scannable, so the crew typed
+// its made-up 7-digit key per piece instead of confirming the stop in one tap.
+
+test('a Uline stop number is bare digits — the zero-padded PRO — and nothing else is', () => {
+  const { looksLikeUlineStop } = manifest;
+  for (const ok of ['007174272', '7174272', '07174272']) assert.equal(looksLikeUlineStop(ok), true, ok);
+  for (const no of ['ESTES-2914474379', 'AVRT-0657035236', '0259185096', 'RA53140416', '', null]) {
+    assert.equal(looksLikeUlineStop(no), false, String(no));
+  }
+});
+
+test('a carrier stop is not scannable even when it carries a piece count', () => {
+  assert.equal(manifest.stopIsScannable({ stopNbr: 'ESTES-2914474379', cartons: 1, pallets: 1 }, false), false, 'Estes, counted');
+  assert.equal(manifest.stopIsScannable({ stopNbr: 'AVRT-0657035236' }, true), false, 'Averitt, uncounted');
+  assert.equal(manifest.stopIsScannable({ stopNbr: '0259185096' }, false), false, 'a bare 10-digit Averitt PRO is not Uline');
+});
+
+test('a Uline stop keeps the count rule, and an explicit flag on the row still wins', () => {
+  assert.equal(manifest.stopIsScannable({ stopNbr: '007174272' }, false), true, 'Uline with a count');
+  assert.equal(manifest.stopIsScannable({ stopNbr: '007174272' }, true), false, 'Uline with no count falls back to the old rule');
+  assert.equal(manifest.stopIsScannable({ stopNbr: 'ESTES-1', scannable: true }, false), true, 'the index can overrule');
+  assert.equal(manifest.stopIsScannable({ stopNbr: '007174272', scannable: false }, false), false);
+});
+
+// ── The way back: LOADSCAN_CARRIER_HAND_CONFIRM ─────────────────────────────
+
+test('LOADSCAN_CARRIER_HAND_CONFIRM=off restores the pre-v0.50 count rule exactly', () => {
+  const { stopIsScannable } = manifest;
+  // Switched off, a counted Estes stop is scannable again — the old behaviour, not a third one.
+  assert.equal(stopIsScannable({ stopNbr: 'ESTES-2914474379', pallets: 1 }, false, false), true, 'carrier, counted, switch off');
+  assert.equal(stopIsScannable({ stopNbr: 'AVRT-0657035236' }, true, false), false, 'carrier, uncounted, switch off');
+  assert.equal(stopIsScannable({ stopNbr: '007174272' }, false, false), true, 'Uline unaffected by the switch');
+  // The explicit flag on the index row wins in either position.
+  assert.equal(stopIsScannable({ stopNbr: 'ESTES-1', scannable: false }, false, false), false);
+  assert.equal(stopIsScannable({ stopNbr: 'ESTES-1', scannable: true }, true, false), true);
+});
+
+test('the switch is ON by default, ON on a typo, and OFF only on an explicit off-word', () => {
+  const { carrierHandConfirmEnabled: on } = manifest;
+  assert.equal(on({}), true, 'unset');
+  assert.equal(on({ LOADSCAN_CARRIER_HAND_CONFIRM: '' }), true, 'empty');
+  assert.equal(on({ LOADSCAN_CARRIER_HAND_CONFIRM: 'of' }), true, 'a typo must not silently disable the rule');
+  assert.equal(on({ LOADSCAN_CARRIER_HAND_CONFIRM: 'on' }), true);
+  for (const word of ['off', 'OFF', ' Off ', '0', 'false', 'no']) {
+    assert.equal(on({ LOADSCAN_CARRIER_HAND_CONFIRM: word }), false, JSON.stringify(word));
+  }
+  // The default argument of stopIsScannable is the live env: prove the wiring, not just the parser.
+  const prev = process.env.LOADSCAN_CARRIER_HAND_CONFIRM;
+  try {
+    process.env.LOADSCAN_CARRIER_HAND_CONFIRM = 'off';
+    assert.equal(manifest.stopIsScannable({ stopNbr: 'ESTES-2914474379' }, false), true, 'env off reaches the rule');
+    delete process.env.LOADSCAN_CARRIER_HAND_CONFIRM;
+    assert.equal(manifest.stopIsScannable({ stopNbr: 'ESTES-2914474379' }, false), false, 'env unset is ON');
+  } finally {
+    if (prev === undefined) delete process.env.LOADSCAN_CARRIER_HAND_CONFIRM;
+    else process.env.LOADSCAN_CARRIER_HAND_CONFIRM = prev;
+  }
+});
+
+// ── Typed is routine; an override is the signal ──────────────────────────────
+
+test('the marker tells a typed piece from an override, because they mean opposite things', async () => {
+  const rows = ACT.reconcileStops(dstops, [
+    sc('TYPED-7000000-1', '1', { engine: 'manual' }),   // carrier freight, added the only way it can be
+    sc('TYPED-7000000-2', '1', { engine: 'manual' }),
+    sc('NOOG-7000000-1', '1', { engine: 'manual' }),    // a person overruling the count
+  ], []);
+  const one = rows.find((r) => r.stopNbr === '1');
+  assert.equal(one.typedCount, 2);
+  assert.equal(one.overrideCount, 1);
+  assert.equal(one.handAddedCount, 3, 'the total still counts both');
+});
+
+test('a scanned fallback id is neither typed nor an override', async () => {
+  const rows = ACT.reconcileStops(dstops, [sc('NOOG-7000000-1', '1', { engine: 'quagga' })], []);
+  const one = rows.find((r) => r.stopNbr === '1');
+  assert.equal(one.typedCount, 0);
+  assert.equal(one.overrideCount, 0);
+});

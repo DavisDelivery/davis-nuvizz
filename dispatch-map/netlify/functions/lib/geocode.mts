@@ -16,6 +16,7 @@
 
 import crypto from 'node:crypto';
 import { getDoc, setDoc } from './firestore.mts';
+import { normalizePlaceKey } from '../../../src/lib/matchKey.js';
 
 const GEOCODE_KEY =
   process.env.GOOGLE_GEOCODE_API_KEY ||
@@ -27,12 +28,44 @@ const CACHE = 'nuvizz_geocode';
 export interface GeoPoint { lat: number; lng: number }
 export interface AddrParts { addr1?: string | null; city?: string | null; state?: string | null; zip?: string | null }
 
-// Stable cache key for an address (case/space-insensitive). Null when there's no
-// usable street address (we never geocode a bare city/zip — too imprecise for pins).
-export function addrKey(p: AddrParts): string | null {
+// THE OLD KEY — an exact hash of the address STRING, case- and space-insensitive and
+// nothing more. Kept because every entry written before this change is filed under it, and
+// resolveCoords reads it as a fallback so the fix costs ZERO new Google calls.
+export function legacyAddrKey(p: AddrParts): string | null {
   if (!p || !String(p.addr1 || '').trim()) return null;
   const norm = [p.addr1, p.city, p.state, p.zip].map((x) => String(x || '').trim().toLowerCase()).filter(Boolean).join(', ');
   return norm ? crypto.createHash('sha1').update(norm).digest('hex').slice(0, 24) : null;
+}
+
+/**
+ * ONE DOCK, ONE GEOCODE, ONE PIN.
+ *
+ * Chad, on two orders at one Alpharetta address: "They are same address and geocode. Nuvizz
+ * had them together in same spot on map. Dispatch map did not."
+ *
+ * CHECKED, NOT REASONED. Nothing in the app moves a marker — every one is drawn at exactly
+ * s.lat/s.lng, and there is no jitter or spider anywhere. The split was made upstream, here:
+ * this key was a hash of the RAW address string, so "5640 LOGISTICS DRIVE" and "5640
+ * LOGISTICS DR" were two different addresses, geocoded separately by Google and pinned
+ * separately on the board. Measured across five realistic variations, FOUR of them keyed
+ * apart — the suffix (DRIVE/DR, PARKWAY/PKWY), a ZIP+4 against a ZIP5, and a missing state.
+ *
+ * THE APP ALREADY HAD THE RIGHT ANSWER AND WAS NOT USING IT HERE. normalizePlaceKey — the
+ * street+zip5 rule written for the FedEx twin that got left on the floor (see matchKey.js) —
+ * says "same dock" for every one of those pairs, and it is what the selection grouping, the
+ * same-address twin guard and the board-flags trailer rule already ask. Two notions of "same
+ * address" in one codebase is one too many: this key now defers to that one, so the screen
+ * that groups two orders as one place also draws them in one place.
+ *
+ * Falls back to the legacy exact-string key when there is no usable street+zip (a stop with
+ * an address line but no ZIP still gets a key, exactly as before) — the coverage does not
+ * shrink, only the false splits.
+ */
+export function addrKey(p: AddrParts): string | null {
+  if (!p || !String(p.addr1 || '').trim()) return null;
+  const place = normalizePlaceKey(p.addr1, p.zip);
+  if (place) return crypto.createHash('sha1').update(`place:${place}`).digest('hex').slice(0, 24);
+  return legacyAddrKey(p);
 }
 
 function addrString(p: AddrParts): string {
@@ -87,6 +120,20 @@ export async function resolveCoords(items: AddrParts[], seed?: Map<string, GeoPo
     if (seed && seed.has(k)) { out.set(k, seed.get(k)!); continue; }
     let cached: any = null;
     try { cached = await getDoc(`${CACHE}/${k}`); } catch { /* treat as miss */ }
+    // MISS UNDER THE NEW KEY IS NOT A MISS. Every address geocoded before addrKey started
+    // normalising is filed under the exact-string hash, so without this the key change would
+    // re-geocode the entire book of addresses at Google's price for answers we already own.
+    // Read the legacy entry and carry it forward under the new key; the legacy doc is left
+    // where it is (harmless, and it keeps this reversible).
+    if (!cached) {
+      const lk = legacyAddrKey(it);
+      if (lk && lk !== k) {
+        try { cached = await getDoc(`${CACHE}/${lk}`); } catch { /* treat as miss */ }
+        if (cached) {
+          try { await setDoc(`${CACHE}/${k}`, { ...cached, migratedFrom: lk, ts: new Date().toISOString() }); } catch { /* best-effort */ }
+        }
+      }
+    }
     if (cached) {
       if (typeof cached.lat === 'number' && typeof cached.lng === 'number') out.set(k, { lat: cached.lat, lng: cached.lng });
       continue; // present (positive or negative) → don't re-geocode

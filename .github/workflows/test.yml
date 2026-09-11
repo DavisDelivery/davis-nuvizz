@@ -213,6 +213,16 @@ jobs:
       - run: npm run verify:loads-tab
         env:
           SMOKE_PORT: '8809'
+      # WHERE THE BOARD-STATUS CARD SITS. Chad asked for the "805 stops" pill off the routing
+      # map and onto the app bar, "far enough left ... to where when it drops down it doesn't
+      # cover up filters or flags." That is a geometry claim, and geometry is what this repo
+      # has repeatedly got wrong by reasoning about it — the phone map's top overlays were
+      # collision-patched four separate times and still shipped controls on top of each other.
+      # This measures the real boxes in the real bundle at 1440 and 1920. It was written
+      # against the broken draft first and fails it.
+      - run: npm run verify:routing-topbar
+        env:
+          SMOKE_PORT: '8810'
       # "Hide place labels" can only misbehave on a build that HAS a cloud mapId: Google
       # ignores the JS `styles` array on those maps, so the toggle had nothing to do on the
       # roadmap base. Honouring it means REBUILDING the map without the mapId, and the risk
