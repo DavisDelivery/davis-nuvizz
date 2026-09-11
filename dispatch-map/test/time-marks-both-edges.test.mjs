@@ -168,12 +168,24 @@ test('the marker arrows actually point the way Chad asked', () => {
   assert.ok(Math.max(...xs(leftPath)) < 11, 'the left arrow lives left of the dial centre');
   assert.ok(Math.min(...xs(rightPath)) > 11, 'the right arrow lives right of the dial centre');
 
-  // Runs early: two arrows, parallel (same length, different y) and both pointing LEFT.
+  // Runs early: two arrows STACKED IN LINE — same row, different stretches of it — and both
+  // pointing LEFT. Chad, on the first cut: "stack the arrows not make them parallel." They
+  // used to sit one above the other at the same x, which at map size read as a bar rather
+  // than as arrows; this pins the arrangement that replaced it.
   const earlyArrows = marker('hours_runs_early').match(/<path[^>]*d="([^"]*)"/g) || [];
   assert.equal(earlyArrows.length, 2, 'two arrows');
   const ys = (p) => [...p.matchAll(/[ML]-?[\d.]+ (-?[\d.]+)/g)].map((m) => Number(m[1]));
   const [a1, a2] = earlyArrows;
-  assert.notDeepEqual(ys(a1), ys(a2), 'the two arrows sit at different heights — parallel, not on top of each other');
+  assert.deepEqual(ys(a1), ys(a2), 'both arrows sit on ONE row — stacked in line, not parallel rails');
+
+  // …and they occupy different stretches of that row, with clear air between them. The gap is
+  // load-bearing: the outline pass adds 1.5 to every stroke, so a pair closer than about 3
+  // units has its halos meet and welds back into the single shape this replaced.
+  const span = (p) => { const x = xs(p); return [Math.min(...x), Math.max(...x)]; };
+  const [lead, trail] = [span(a1), span(a2)].sort((p, q) => p[0] - q[0]);
+  const gap = trail[0] - lead[1];
+  assert.ok(gap > 3, `the two arrows need air between them — gap is ${gap}`);
+
   // Both shafts run from a HIGH x to a LOW x: right to left.
   for (const p of [a1, a2]) {
     const shaft = xs(p).slice(0, 2);
@@ -189,14 +201,18 @@ test('runs_late is an exact horizontal mirror of runs_early', () => {
   const arrows = (key) => (app.slice(app.indexOf(`  ${key}: {`), app.indexOf(`  ${key}: {`) + 3000)
     .match(/markerGlyph: `([\s\S]*?)`/)[1].match(/<path[^>]*d="([^"]*)"/g) || [])
     .map((p) => p.match(/d="([^"]*)"/)[1]);
-  const mirror = (d) => d.replace(/(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)/g,
+  // Compared as GEOMETRY, not as text. 22 - 14 is 8 and a glyph may spell that 8.0; a string
+  // compare would fail on the formatting and send the next person hunting a bug that is not
+  // there. Every coordinate is put through Number() on both sides first.
+  const nums = (d) => d.replace(/-?\d+(?:\.\d+)?/g, (n) => String(Number(n)));
+  const mirror = (d) => nums(d).replace(/(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)/g,
     (_m, x, y) => `${Number((22 - Number(x)).toFixed(2))} ${y}`);
 
   const early = arrows('hours_runs_early');
   const late = arrows('hours_runs_late');
   assert.equal(early.length, 2);
   assert.equal(late.length, 2);
-  for (let i = 0; i < 2; i += 1) assert.equal(mirror(early[i]), late[i], `arrow ${i + 1} mirrors`);
+  for (let i = 0; i < 2; i += 1) assert.equal(mirror(early[i]), nums(late[i]), `arrow ${i + 1} mirrors`);
 
   // And they point opposite ways: each shaft is drawn from its tail to its head.
   const shaftX = (d) => [...d.matchAll(/[ML](-?[\d.]+) /g)].map((m) => Number(m[1])).slice(0, 2);
