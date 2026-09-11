@@ -24,7 +24,7 @@
 
 import fixture from '../../test/fixtures/nuvizz-today-stops.json' with { type: 'json' };
 import { scanDate, normalizeStop } from './lib/nuvizz-scan.mts';
-import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString, readScanMetrics, readScanConfig, readActiveUnplannedSet, readCarryoverRetired, readScanRefusal, readActivePool } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString, readScanMetrics, readScanConfig, readActiveUnplannedSet, readCarryoverRetired, readScanRefusal, readActivePool , readScanRuns } from './lib/firestore.mts';
 import { poolUsable, POOL_LIVE_FIELDS, WINDOW_WRITE_GRACE_MS, type ActivePool } from './lib/active-pool.mts';
 import { summarizeScanMetrics } from './lib/scan-metrics.mts';
 import { filterFinishedPriorDay, unplanStampOvertaken } from './lib/nuvizz-list.mts';
@@ -387,6 +387,43 @@ export default async (req: Request): Promise<Response> => {
     // Kept OUT of the ops block below: ops is a Promise.all of four reads, and one of those
     // failing must not be able to swallow the sentence that tells a dispatcher their scan did
     // not happen. A missing or unreadable refusal reads as "none", never as an error.
+    // WHAT THE SCANNER IS ACTUALLY DOING, for the press that is waiting on it (2026-09-10).
+    //
+    // The refusal channel below answers "was this press turned away". It cannot answer the
+    // other two ways a press comes to nothing: the scan is still running (a full run measured
+    // 41-72s, and one in seven outlasts the button's own patience), or the run STARTED and then
+    // died without writing a board — which is what happened at 20:01 when a vendor request with
+    // no deadline hung the whole run. Both used to reach the dispatcher as the same sentence,
+    // "Scan running — the board will refresh automatically", and one of the two is a lie.
+    //
+    // ONE getDoc (the ledger is a single document), and only when the caller asks: ?scanRun=1
+    // is sent by the manual-scan poll and by nothing else, so the two-minute board poll — the
+    // busiest read in the app — costs exactly what it did before.
+    //
+    // Ages are computed HERE, on the server's clock, and served as durations. A phone a few
+    // minutes out would otherwise read its own press as an old run, or miss it entirely.
+    let scanRun: any = null;
+    if (url.searchParams.get('scanRun') === '1' && isFirestoreEnabled()) {
+      try {
+        const runs = await readScanRuns();
+        const newest = [...runs].sort((a: any, b: any) => String(b?.startedAt || '').localeCompare(String(a?.startedAt || ''))).find((r: any) => r?.startedAt);
+        if (newest) {
+          const startMs = Date.parse(String(newest.startedAt));
+          const endMs = newest.finishedAt ? Date.parse(String(newest.finishedAt)) : NaN;
+          scanRun = {
+            startedAt: newest.startedAt,
+            startedAgeSec: Number.isFinite(startMs) ? Math.max(0, Math.round((Date.now() - startMs) / 1000)) : null,
+            finished: !!newest.finishedAt,
+            finishedAgeSec: Number.isFinite(endMs) ? Math.max(0, Math.round((Date.now() - endMs) / 1000)) : null,
+            trigger: newest.trigger ?? null,
+            outcome: newest.outcome ?? null,
+            path: newest.path ?? null,
+            error: newest.error ?? null,
+          };
+        }
+      } catch { /* a missing ledger means "nothing to say", never an error on the board read */ }
+    }
+
     let lastScanRefusal: any = null;
     const refusal = await refusalPromise;
     const refusedMs = refusal?.at ? Date.parse(refusal.at) : NaN;
@@ -460,6 +497,7 @@ export default async (req: Request): Promise<Response> => {
       lastCompletedScanAt,
       scanState,
       lastScanRefusal,
+      scanRun,
       count: stops.length,
       unplannedCount,
       carryoverCount,

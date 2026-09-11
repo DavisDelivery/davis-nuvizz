@@ -18,6 +18,7 @@
 // (REST API needs each path level to be a real doc; double-underscore is
 // unambiguous since tenant codes have no underscore).
 
+import { fetchWithDeadline } from './fetch-deadline.mts';
 import crypto from 'node:crypto';
 
 const FIRESTORE_BASE = 'https://firestore.googleapis.com/v1';
@@ -88,6 +89,17 @@ function base64UrlEncode(buf: Buffer | string): string {
   return Buffer.from(buf).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
 }
 
+// EVERY FIRESTORE ROUND-TRIP CARRIES A DEADLINE (2026-09-10).
+//
+// The same gap that wedged a manual scan on the NuVizz side existed here: `fetch` with no
+// signal waits forever, so one unanswered Firestore read hangs whatever is holding it — a
+// background scan sits until the platform kills it at fifteen minutes, having written nothing
+// and closed no run row. Twenty seconds is far past a healthy read (these are single-document
+// gets and small list pages) and far short of a scan's budget, so a stall fails the one read
+// that stalled instead of the whole job. Callers that already pass a signal keep theirs.
+const FS_TIMEOUT_MS = Number(process.env.FIRESTORE_TIMEOUT_MS) || 20_000;
+const fsFetch = (url: string, init: any = {}): Promise<Response> => fetchWithDeadline(url, init, FS_TIMEOUT_MS);
+
 export async function getAccessToken(): Promise<string> {
   if (__token && Date.now() < __token.expires_at_ms - 60_000) return __token.access_token;
 
@@ -107,7 +119,7 @@ export async function getAccessToken(): Promise<string> {
   const sigB64 = signer.sign(sa.private_key).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
   const jwt = `${unsigned}.${sigB64}`;
 
-  const resp = await fetch('https://oauth2.googleapis.com/token', {
+  const resp = await fsFetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: jwt }).toString(),
@@ -201,7 +213,7 @@ export async function getDoc(path: string): Promise<any | null> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${path}`;
-  const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  const resp = await fsFetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (resp.status === 404) return null;
   if (!resp.ok) throw new Error(`getDoc ${path} failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
   return docToObject(await resp.json());
@@ -212,7 +224,7 @@ export async function setDoc(path: string, data: any): Promise<boolean> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${path}`;
-  const resp = await fetch(url, {
+  const resp = await fsFetch(url, {
     method: 'PATCH',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ fields: objectToFields(data) }),
@@ -256,7 +268,7 @@ export async function updateDocFields(path: string, data: any): Promise<boolean>
   // containing a dot or a reserved word cannot be read as a nested path.
   const mask = keys.map((k) => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join('&');
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${path}?${mask}`;
-  const resp = await fetch(url, {
+  const resp = await fsFetch(url, {
     method: 'PATCH',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ fields: objectToFields(data) }),
@@ -288,7 +300,7 @@ export async function createDocIfAbsent(path: string, data: any): Promise<boolea
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const db = `projects/${sa.project_id}/databases/${firestoreDatabase()}`;
-  const resp = await fetch(`${FIRESTORE_BASE}/${db}/documents:commit`, {
+  const resp = await fsFetch(`${FIRESTORE_BASE}/${db}/documents:commit`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -323,7 +335,7 @@ export async function listDocs(collectionPath: string, opts?: { mask?: string[] 
     url.searchParams.set('pageSize', '300');
     if (opts?.mask && opts.mask.length) for (const f of opts.mask) url.searchParams.append('mask.fieldPaths', f);
     if (pageToken) url.searchParams.set('pageToken', pageToken);
-    const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    const resp = await fsFetch(url, { headers: { Authorization: `Bearer ${token}` } });
     if (resp.status === 404) return [];
     if (!resp.ok) throw new Error(`listDocs ${collectionPath} failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
     const body: any = await resp.json();
@@ -345,7 +357,7 @@ export async function runQuery(structuredQuery: any): Promise<any[]> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents:runQuery`;
-  const resp = await fetch(url, {
+  const resp = await fsFetch(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ structuredQuery }),
@@ -370,7 +382,7 @@ export async function listCollectionIds(docPath?: string): Promise<string[]> {
   const sa = loadServiceAccount();
   const base = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents`;
   const url = `${docPath ? `${base}/${docPath}` : base}:listCollectionIds`;
-  const resp = await fetch(url, {
+  const resp = await fsFetch(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ pageSize: 300 }),
@@ -388,7 +400,7 @@ export async function deleteDoc(path: string): Promise<void> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${path}`;
-  const resp = await fetch(url, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+  const resp = await fsFetch(url, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
   if (!resp.ok && resp.status !== 404) {
     throw new Error(`deleteDoc ${path} failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
   }
@@ -1061,7 +1073,7 @@ export async function incrementCallCounter(dateStr: string, n: number, meta?: st
   // count is always transform[0] so transformResults[0] is the authoritative total.
   // Stamp the current ET hour so the same commit also grows that hour's bucket.
   const body = buildCounterCommitBody(docName, dateStr, n, attr.route ?? undefined, etHourString(), attr);
-  const resp = await fetch(url, {
+  const resp = await fsFetch(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -1099,7 +1111,7 @@ export async function incrementDocFields(path: string, increments: Record<string
   if (incKeys.length) {
     write.updateTransforms = incKeys.map((k) => ({ fieldPath: k, increment: { integerValue: String(Math.trunc(Number(increments[k]) || 0)) } }));
   }
-  const resp = await fetch(`${FIRESTORE_BASE}/${db}/documents:commit`, {
+  const resp = await fsFetch(`${FIRESTORE_BASE}/${db}/documents:commit`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ writes: [write] }),

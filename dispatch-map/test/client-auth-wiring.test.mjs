@@ -26,6 +26,7 @@ function walk(dir) {
 const FILES = walk(SRC).map((p) => ({ rel: path.relative(SRC, p).replace(/\\/g, '/'), text: readFileSync(p, 'utf8') }));
 const byName = (rel) => FILES.find((f) => f.rel === rel)?.text ?? assert.fail(`missing ${rel}`);
 const APP = byName('App.jsx');
+const VERDICT = readFileSync(new URL('../src/lib/scan-press-verdict.js', import.meta.url), 'utf8');
 
 // The only files allowed to call fetch() at a function URL directly, and why.
 const RAW_FETCH_ALLOWED = {
@@ -552,23 +553,37 @@ test('BOTH COPIES OF THE NOTES SAVE ARE GATED — there are two, in two componen
 
 // ── THE SCAN BUTTON'S 202 ────────────────────────────────────────────────────
 
-test('A REFUSED SCAN MUST NOT READ AS A RUNNING ONE', () => {
+test('A REFUSED SCAN MUST NOT READ AS A RUNNING ONE — nor may a DEAD one', () => {
   // nuvizz-manual-scan-background is a *-background* function: Netlify answers 202 the instant
   // the request lands and DISCARDS the handler's 401, so resp.ok is true, both fallbacks are
   // skipped, the poll finds nothing changed — and the button said "Scan running — the board
   // will refresh automatically" while nothing ran and nothing ever would. That is the
   // reassurance version of a hardcoded success: a dispatcher who believes a scan is running
   // does not press it again and does not call anyone; they work a stale board until the dock
-  // notices. The gate writes nuvizz_ops/scan_refusal and the read endpoint serves it back on
-  // the poll the button is already making.
+  // notices.
+  //
+  // THAT SENTENCE IS NOW GONE ENTIRELY (2026-09-10). Chad: "Manual Refresh button is not
+  // working. Timed out and said it wouldn't update." The ledger showed a manual run that
+  // started at 20:01, recorded zero calls, wrote no board and was still open seven minutes
+  // later — and the button gave him the same reassurance, this time about a scan that had
+  // died rather than one that was refused. A refusal is not the only way a press comes to
+  // nothing, so the decision moved to a pure, tested module (src/lib/scan-press-verdict.js)
+  // that separates landed / refused / genuinely-running / stalled, and this guard now pins
+  // that the hook asks it rather than inventing a sentence of its own.
   const hook = APP.slice(APP.indexOf('function useManualScan'), APP.indexOf('function UnplannedScanCount'));
   assert.match(hook, /d\?\.lastScanRefusal/, 'the poll reads the refusal it is already being handed');
-  assert.match(hook, /Scan did not run\./, 'and says it did not run rather than that it is running');
-  assert.match(hook, /refusal\.message/,
-    'quoting the server’s own sentence verbatim — refusalMessage already says what to do, and '
-    + 're-wording it here would give one failure two vocabularies');
-  assert.match(hook, /refusal\s*\?[\s\S]{0,200}?'Scan running — the board will refresh automatically'/s,
-    'the reassurance survives ONLY as the no-refusal branch — a deploy whose read endpoint does not carry the field yet degrades to today’s behaviour');
+  assert.match(hook, /scanPressVerdict\(\{[\s\S]{0,120}?refusal/, 'and hands it to the one rule that decides what is said');
+  assert.match(hook, /verdict\.message/, 'the sentence comes from that rule, never from here');
+  assert.ok(!/Scan running — the board will refresh automatically/.test(hook),
+    'THE REASSURANCE IS DELETED: it was said about a refused scan, and then about a dead one. '
+    + 'A press that cannot be shown to have landed must say what is true of the board on screen.');
+
+  // The verdict module owns the wording, and quotes the SERVER's own sentence verbatim for a
+  // refusal — refusalMessage already says what happened and what to do, and re-wording it
+  // would give one failure two vocabularies. (Its behaviour is pinned in
+  // test/scan-press-verdict.test.mjs; this only checks the words live in one place.)
+  assert.match(VERDICT, /Scan did not run\./);
+  assert.match(VERDICT, /refusal\.message/);
 
   // SERVER-COMPUTED AGE, NOT A TIMESTAMP COMPARE. `at` is the server's clock and Date.now()
   // in the browser is not; a phone a few minutes out would either blame this press for an old
@@ -584,7 +599,9 @@ test('A REFUSED SCAN MUST NOT READ AS A RUNNING ONE', () => {
 
   // AND IT ONLY SPEAKS WHEN THE SCAN ALSO FAILED TO LAND. Two dispatchers share this board:
   // a viewer refused at 06:00:10 and a dispatcher pressing at 06:00:40 would otherwise have
-  // the second person told their successful scan was refused.
-  assert.match(hook, /if \(!updated\) \{[\s\S]{0,600}?setScanErr\(refusal/, 'reported only when nothing was scanned');
+  // the second person told their successful scan was refused. The verdict returns `landed`
+  // whenever the board moved, whatever else it saw.
+  assert.match(hook, /verdict\.kind === 'landed'\) setScanErr\(null\)/, 'a scan that landed says nothing');
   assert.ok(!/if \(refusal\) break;/.test(hook), 'no early break — that is what would mis-blame the second press');
 });
+

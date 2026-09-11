@@ -302,7 +302,7 @@ Touch-safe, desktop + mobile.
 ### Tests / evidence
 - Real-window detection + the key **ordering** test: a placeholder-window build's
   route **equals `sequence(nodes,'MIN_DISTANCE',matrix)`** and **≠ raw input order**;
-  CLOSEST_FIRST equals the depot-distance sort; placeholder windows never flag/spill;
+  CLOSEST_FIRST is the outward pinned sweep (near stop first, far stop last — v1.2.3; it was a depot-distance sort before); placeholder windows never flag/spill;
   a genuine wide window stays served + unflagged. Existing strict/advisory window
   tests (real 08:00–08:05 windows) stay green. **96 tests green.**
 - Before → after for the skew fixture (depot at origin; stops A=lng3, B=lng1, C=lng2):
@@ -811,7 +811,9 @@ unit-tested with mocks.
 - `lib/freight-geometry.mts` — PURE skids/weight/linear-inches/oversize derivation;
   deterministic-first, Opus assist only on ambiguous stops, cached by SKU.
 - `lib/routing-solver.mts` — best-fit bin-packing + strategy sequencing
-  (CLOSEST/FARTHEST by depot distance; MIN_DISTANCE/MIN_TIME = nearest-neighbor + 2-opt).
+  (FARTHEST_FIRST = far stop pinned first, depot last, shortest path between, one town at a time —
+  the homeward sweep; CLOSEST_FIRST = the same sweep outward; SWEEP_MODE 'pure' drops the town level;
+  MIN_DISTANCE/MIN_TIME = nearest-neighbor + 2-opt).
 - `lib/routing-repair.mts` — feasibility/repair; **guarantees every shown route is
   valid** (capacity + equipment + STRICT windows), spills the rest with reasons.
 - `lib/routing-intent.mts` — defensive parsing of model JSON with deterministic fallback.

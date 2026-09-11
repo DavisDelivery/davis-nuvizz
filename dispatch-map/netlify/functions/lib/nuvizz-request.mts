@@ -160,6 +160,10 @@ export interface RequesterConfig {
   backoffMaxMs: number;
   /** Absolute cap on total time spent sleeping across all retries of one call. */
   backoffTotalCapMs: number;
+  /** Hard deadline on ONE network round-trip. 0 disables (not recommended — see below). */
+  requestTimeoutMs: number;
+  /** How many times a TIMED-OUT attempt may be retried (separate from the 5xx policy). */
+  maxTimeoutRetries: number;
 }
 
 export const DEFAULT_CONFIG: RequesterConfig = {
@@ -173,7 +177,32 @@ export const DEFAULT_CONFIG: RequesterConfig = {
   backoffFactor: 2,
   backoffMaxMs: 8_000,
   backoffTotalCapMs: 20_000,
+  // A REQUEST THAT NEVER ANSWERS USED TO WEDGE THE WHOLE SCAN (2026-09-10).
+  //
+  // Chad, 8:01pm: "Manual Refresh button is not working. Timed out and said it wouldn't
+  // update." The run ledger said exactly what happened: the manual run STARTED at 20:01,
+  // recorded ZERO calls, wrote no board, and was still open seven minutes later — while every
+  // other full run that day finished in 41-72 seconds. `fetch` here carried no signal, so one
+  // request NuVizz accepted and never answered simply hung, and because a call is counted only
+  // AFTER its response returns, the stall was invisible to every counter and log we keep. The
+  // function sat there until the platform killed it at fifteen minutes; nothing closed the run
+  // row (there is an identical orphan from 09-08), and the button told a dispatcher the board
+  // would refresh automatically, which it never would.
+  //
+  // Thirty seconds, because a saved-search pull of a whole day is ~10-20s and a vendor that has
+  // not answered in thirty is not about to. ONE retry on a timeout and no more: a stall is not a
+  // 503, and the scan finishing with an honest error beats it hanging — a failed run leaves the
+  // last good board in place, records the failure, and the next tick tries again in minutes.
+  requestTimeoutMs: Number(process.env.NUVIZZ_REQUEST_TIMEOUT_MS) || 30_000,
+  maxTimeoutRetries: 1,
 };
+
+/** True when this rejection is OUR deadline firing rather than the caller cancelling. */
+export function isTimeoutAbort(err: any, callerSignal?: AbortSignal | null): boolean {
+  if (callerSignal?.aborted) return false;
+  const name = String(err?.name || '');
+  return name === 'TimeoutError' || name === 'AbortError';
+}
 
 // Runtime daily-ceiling override (Diagnostics UI → scan_config). The requester is a
 // warm-instance singleton built once with DEFAULT_CONFIG, so the editable ceiling is
@@ -436,13 +465,33 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
   async function doFetchWithRetry(url: string, init: any, maxRetries: number, meta: NvRequestMeta): Promise<Response> {
     let attempt = 0;
     let sleptTotal = 0;
+    let timeouts = 0;
     // attempt 0 = first try; up to maxRetries additional tries.
     while (true) {
       const started = now();
       let resp: Response;
+      // A FRESH DEADLINE PER ATTEMPT, merged with whatever the caller passed. Without this a
+      // single unanswered request hangs the scan until the platform kills it (see the config).
+      const deadline = deadlineSignal(init.signal, cfg.requestTimeoutMs);
       try {
-        resp = await deps.fetchImpl(url, init);
+        resp = await deps.fetchImpl(url, { ...init, signal: deadline.signal });
       } catch (err) {
+        deadline.cancel();
+        // The CALLER cancelling is final — their budget, their decision, never retried.
+        if (init.signal?.aborted) throw err;
+        // Our own deadline: a stall, not a 503. Logged (a timed-out round-trip is invisible to
+        // the call counter, which only counts answered requests) and retried at most once.
+        if (isTimeoutAbort(err, init.signal)) {
+          timeouts++;
+          log({ app: APP_NAME, trigger: meta.trigger ?? __callTrigger ?? 'unknown', source: meta.source, route: meta.route, tenant: meta.tenant, status: 0, ms: now() - started, dayTotal: null, mode: cfg.breakerMode, timeoutMs: cfg.requestTimeoutMs });
+          if (timeouts > cfg.maxTimeoutRetries || attempt >= maxRetries) {
+            throw new Error(`NuVizz ${meta.route} did not answer within ${cfg.requestTimeoutMs}ms (${timeouts} attempt(s)) — failing the call so the scan can finish instead of hanging`);
+          }
+          const wait = computeBackoffMs(attempt, cfg);
+          sleptTotal += wait; attempt++;
+          await sleep(wait);
+          continue;
+        }
         // Network error — treat like a retryable 5xx.
         if (attempt >= maxRetries) throw err;
         const wait = computeBackoffMs(attempt, cfg);
@@ -451,6 +500,7 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
         await sleep(wait);
         continue;
       }
+      deadline.cancel();
       const ms = now() - started;
       // Count + log every actual network round-trip (success or failure).
       const total = await deps.recordCall(meta, 1);
@@ -536,6 +586,8 @@ export function scanIntervalElapsed(lastScannedAtISO: string | null | undefined,
 // ── Production wiring (Firestore-backed counter + breaker) ───────────────────
 // A singleton per warm instance so in-flight dedupe + breaker memo survive across
 // invocations. Imported lazily to keep the pure module test-friendly.
+import { deadlineSignal } from './fetch-deadline.mts';
+export { deadlineSignal };
 import { incrementCallCounter, readCircuit, setCircuit, etDayString, readScanConfig, readCallStats, isFirestoreEnabled } from './firestore.mts';
 
 /**
