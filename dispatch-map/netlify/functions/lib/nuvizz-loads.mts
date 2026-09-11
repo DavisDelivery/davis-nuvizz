@@ -93,9 +93,29 @@ export interface RosterLoad {
 // is the exact row a dispatcher is scanning for.
 const DRIVER_PLACEHOLDER = /^(enter\s+driver\s+name|select\s+driver|unassigned|none|n\/a|-{1,2})$/i;
 
-// Columns that carry the word "driver" but are not a driver's NAME. `driverid` is spelled out
-// because \bid\b cannot see the "id" inside it, and it is the exact column #254 put on the board.
-const DRIVER_AVOID = /(driverid|\bid\b|phone|email|dttm|date|time|count|nbr|number|status)/;
+// Columns that cannot be a driver's NAME whatever they contain, so they are refused by their
+// KEY. Note what is NOT here: anything id-shaped.
+//
+// v1.10.0 shipped this list with `driverid` and `\bid\b` in it, and that one decision made the
+// whole feature inert on Davis's actual grid. The real column, read back out of the stored
+// 2026-09-02 column dump at zero cost:
+//
+//     key 'driver.driverId'   label 'Driver Name'   values 'Brent Dixon', 'Trevor Seyers', …
+//
+// NuVizz keys the driver's NAME under `driverId`. The avoid-list matched `driverid`, the column
+// was refused before anything looked at it, and every one of the 105 rows parsed perfectly with
+// an empty driver — `kept: 105, drivers: 0`, which is precisely the reading the pull meta exists
+// to make visible.
+//
+// The repo already knew. nuvizz-list.mts has read `route.driver.driverId` as a NAME candidate
+// since #254 ("in some saved searches route.driver.driverId carries the human name") and judges
+// it with firstNonHashName — BY VALUE. Excluding id-ish columns by NAME was me re-deciding, from
+// first principles, a question this codebase had already answered from a live board.
+//
+// The tokens that remain are the ones no value guard can catch: a "Driver Status" of ON_DUTY or a
+// "Driver Phone" is a perfectly plausible-looking string, and cleanDriverName would hand it to
+// the board as a person's name.
+const DRIVER_AVOID = /(phone|email|mobile|dttm|date|time|count|nbr|number|status)/;
 
 // PURE: what a driver column's raw value is worth as a NAME. '' means "no driver", and every
 // rejection here is a bug this repo has already paid for once:
@@ -149,11 +169,17 @@ export function normalizeLoads(j: any): RosterLoad[] {
   // driver+name-ish column; tier 2 takes any driver column that is not plainly an id, a
   // contact detail or a timestamp. Whichever tier answers, the VALUE still has to survive
   // cleanDriverName — the column choice is a preference, the value guard is the rule.
-  const driverIx = cols.indexOf(
-    find(/driver.*name|name.*driver/, DRIVER_AVOID)   // "Driver Name" / route.driver.name — the one we want
-    ?? find(/driver/, DRIVER_AVOID)                   // any other driver column that is not an id/contact/time
-    ?? '',
-  );
+  // DRIVER: every column that could carry one, best-labelled first — and the VALUE decides which
+  // of them actually speaks. A single up-front pick is what shipped broken: it had to be right
+  // about the column's NAME before any data was consulted, and on this grid the name lies.
+  // firstNonHashName has resolved the identical problem on the stop list since #254; this is the
+  // same rule, over columns instead of fixed keys.
+  const driverIxs = cols
+    .filter((k) => /driver/.test(colHay(k)) && !DRIVER_AVOID.test(colHay(k)))
+    // A column that says "name" is asked first; the rest are fallbacks, in grid order.
+    .sort((a, b) => Number(/name/.test(colHay(b))) - Number(/name/.test(colHay(a))))
+    .map((k) => cols.indexOf(k))
+    .filter((i) => i >= 0 && i !== idIx);
   const out: RosterLoad[] = [];
   for (const row of ((j && j.values) || [])) {
     const loadId = String(linkVal(row[idIx]) ?? '').trim();
@@ -184,7 +210,11 @@ export function normalizeLoads(j: any): RosterLoad[] {
     // not, and a row-wide hunt would happily return the route name ("SHEATS") or a status word
     // and call it the driver. When the column is absent the honest answer is "we do not know",
     // which is '' — the same thing the board showed before this field existed.
-    const driver = driverIx >= 0 && driverIx !== idIx ? cleanDriverName(linkVal(row[driverIx])) : '';
+    let driver = '';
+    for (const ix of driverIxs) {
+      const v = cleanDriverName(linkVal(row[ix]));
+      if (v) { driver = v; break; }
+    }
     out.push({
       loadId,
       name,

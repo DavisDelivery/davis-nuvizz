@@ -212,3 +212,94 @@ test('a "Driver Status" column never becomes the LOAD\'s status', () => {
   });
   assert.deepEqual(rows.map((r) => [r.name, r.status, r.driver]), [['SHEATS', 'Draft', 'Sirdedrick Sheats']]);
 });
+
+// ── THE REAL GRID, READ BACK FROM THE STORED COLUMN DUMP (nuvizz_ops/load_columns__2026-09-02) ──
+//
+// v1.10.0 shipped the driver capture and it was inert: `kept: 105, drivers: 0` on every day.
+// Chad: "loads that have drivers already assigned to them are still not showing."
+//
+// The cause is one line of my own avoid-list. Davis's grid keys the driver's NAME under
+// `driver.driverId` and labels it "Driver Name" — so an avoid-list carrying `driverid` refused
+// the only column that had the answer, before any value was looked at. These 21 columns and
+// these three rows are VERBATIM from the stored dump of the real response; nothing here is
+// invented, which is the whole point — the fixture that would have caught this had to come off
+// the wire, not out of my head.
+const REAL_GRID_COLUMNS = [
+  ['KeyColumn', 'KeyColumn'], ['name', 'Load Name'], ['load.ref', 'Reference'],
+  ['driver.driverId', 'Driver Name'], ['status', 'Load Status'], ['noOfTrips', 'Total Stops'],
+  ['load.totalCtn', 'Load - Total Cartons'], ['load.volume', 'Load - Volume'],
+  ['load.totalPlt', 'Load - Total Pallets'], ['schEndTime', 'Load Latest Departure'],
+  ['load.weight', 'Load - Weight'], ['load.origin', 'Load Origin'], ['actStartTime', 'Load Start'],
+  ['updatedTime', 'Load Updated Dttm'], ['actEndTime', 'Load Completed'], ['load.proNbr', 'PRO Number'],
+  ['statusDTTM', 'Load Status Dttm'], ['createdTime', 'Load Created Dttm'],
+  ['plannedDist', 'Planned Route Distance'], ['rteNbr', 'Load Number'], ['canSelect', 'canSelect'],
+];
+const realGrid = (rows) => ({
+  filterData: [Object.fromEntries(REAL_GRID_COLUMNS.map(([k, label]) => [k, { columnName: label }]))],
+  values: rows,
+});
+// Column order matches REAL_GRID_COLUMNS exactly.
+const realRow = ({ id, name, driver, status, trips, nbr }) => [
+  id, name, '', driver, status, trips, '', '', '', '', '', '', '', '', '', '', '', '', '', nbr, true,
+];
+
+test('Davis’s actual loads grid: the driver comes through, even though the column is keyed driverId', () => {
+  const rows = normalizeLoads(realGrid([
+    realRow({ id: '6a97ea133f19d7b6672d774f', name: 'DIXON', driver: 'Brent Dixon', status: 'In-Progress', trips: '11', nbr: 'DAVIS000203100' }),
+    realRow({ id: '6a97e9562f0a32d70efc04ea', name: 'TREVOR', driver: 'Trevor Seyers', status: 'In-Progress', trips: '14', nbr: 'DAVIS000203099' }),
+    realRow({ id: '6a97e5f256b05189facc2214', name: 'SHEATS', driver: 'Sirdedrick  Sheats', status: 'In-Progress', trips: '15', nbr: 'DAVIS000203098' }),
+  ]));
+  assert.deepEqual(rows.map((r) => [r.name, r.driver]), [
+    ['DIXON', 'Brent Dixon'],
+    ['TREVOR', 'Trevor Seyers'],
+    ['SHEATS', 'Sirdedrick  Sheats'],   // the vendor's own double space is preserved, as the stop list does
+  ]);
+  // And the rest of the row is untouched by the driver hunt.
+  assert.deepEqual(rows[0], {
+    loadId: '6a97ea133f19d7b6672d774f', name: 'DIXON', loadNbr: 'DAVIS000203100',
+    status: 'In-Progress', driver: 'Brent Dixon', trips: 11,
+  });
+});
+
+test('an unassigned load on the real grid still reads as unassigned', () => {
+  const rows = normalizeLoads(realGrid([
+    realRow({ id: 'hexA', name: 'ESTES', driver: '', status: 'Draft', trips: '0', nbr: 'DAVIS000203722' }),
+    realRow({ id: 'hexB', name: 'ALPHA 2', driver: 'Enter driver name', status: 'Draft', trips: '0', nbr: 'DAVIS000203707' }),
+  ]));
+  assert.deepEqual(rows.map((r) => [r.name, r.driver]), [['ESTES', ''], ['ALPHA 2', '']]);
+});
+
+test('a driverId column carrying a REAL ObjectId is still refused — the value decides, not the key', () => {
+  // The other half of #254. Now that id-keyed columns are considered, the value guard is the
+  // only thing standing between an ObjectId and the board's Driver cell. It holds.
+  const rows = normalizeLoads(realGrid([
+    realRow({ id: 'hexC', name: 'BEN 2', driver: '6a3560cb52ef82bd1ed4516b', status: 'Draft', trips: '0', nbr: 'DAVIS000203800' }),
+  ]));
+  assert.deepEqual(rows.map((r) => [r.name, r.driver]), [['BEN 2', '']]);
+});
+
+test('a name-labelled driver column is preferred over an id-labelled one carrying a hash', () => {
+  const rows = normalizeLoads({
+    filterData: [{
+      KeyColumn: { columnName: 'KeyColumn' },
+      name: { columnName: 'Load Name' },
+      'driver.driverId': { columnName: 'Driver Id' },
+      'driver.name': { columnName: 'Driver Name' },
+    }],
+    values: [['hexD', 'CHE', '6a3560cb52ef82bd1ed4516b', 'Che Roberts']],
+  });
+  assert.deepEqual(rows.map((r) => [r.name, r.driver]), [['CHE', 'Che Roberts']]);
+});
+
+test('a "Driver Status" column is never mistaken for the driver — ON_DUTY is not a person', () => {
+  // This is why the avoid-list still exists at all: no value guard can tell ON_DUTY from a name.
+  const rows = normalizeLoads({
+    filterData: [{
+      KeyColumn: {}, name: { columnName: 'Load Name' },
+      'driver.status': { columnName: 'Driver Status' },
+      'driver.phone': { columnName: 'Driver Phone' },
+    }],
+    values: [['hexE', 'THARP', 'ON_DUTY', '770-555-0134']],
+  });
+  assert.deepEqual(rows.map((r) => [r.name, r.driver]), [['THARP', '']]);
+});
