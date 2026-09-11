@@ -22979,6 +22979,24 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       return next;
     });
   }, [wbRoutes.length, isMobile]);
+  // Arm the BOX draw from step 1 of the Setup panel. Chad: "left panel should have an add
+  // selection button." Box and Lasso have lived ONLY on the map's left-edge rail since
+  // v0.29.59 — two unlabelled 36px icons over a satellite photo — while step 1's own hint
+  // told the dispatcher to go and find them there. The panel's one selection button takes
+  // the WHOLE viewport, so grabbing one dock out of a cluster meant zooming until nothing
+  // else was on screen. Same beginMode the rail calls, so the armed block, its Cancel, Esc
+  // and the rail's own highlight all behave identically — one mode, two doors into it.
+  // PHONE: drop the sheet. The corners are tapped ON the map and the sheet is half the
+  // screen (the same move armNinjaFromPanel makes), and the toast carries the instruction
+  // the dropped sheet just took with it — an armed mode with nothing on screen to explain
+  // it reads as a broken map.
+  const armSelectionFromPanel = useCallback(() => {
+    beginMode('box');
+    if (isMobile) {
+      setSheetOpen(false);
+      showMapToast('Box select on — tap two corners on the map to add that group. Tap the Box tool (left edge) again to cancel.');
+    }
+  }, [beginMode, isMobile, showMapToast]);
   // Mobile: whenever a route is opened into the Compare panel — the FIRST one or any later one —
   // jump to the Setup tab (which hosts the Compare workbench + the Ninja toggle) and open the sheet.
   // This used to fire for the first card only (0 → 1). With the sheet collapsed by default and the
@@ -23383,7 +23401,16 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
               <button onClick={addInView} className="flex-1 px-2 py-2 text-xs rounded border-2 font-semibold hover:bg-blue-50 active:bg-blue-100" style={{ borderColor: BRAND, color: BRAND }}>＋ Add stops in view</button>
               <button onClick={clearSelection} className="px-3 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">Clear</button>
             </div>
-            <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. Use the <b>Box</b> / <b>Lasso</b> / <b>Ninja</b> tools on the map (left edge), or pan/zoom then <b>Add stops in view</b>.</div>
+            {/* THE DRAW TOOL, IN THE PANEL — the requested "add selection" button. It arms the
+                same box select the map rail arms (armSelectionFromPanel → beginMode('box')), so
+                the amber block below replaces these buttons the instant it is on and Cancel/Esc
+                still end it. Full width on its own row rather than a third chip beside Clear: at
+                the 290px the Setup panel actually runs, three buttons on one line put this one at
+                ~90px and truncate its label. */}
+            <button onClick={armSelectionFromPanel} className="w-full px-2 py-2 text-xs rounded border-2 font-semibold hover:bg-blue-50 active:bg-blue-100 inline-flex items-center justify-center gap-1.5" style={{ borderColor: BRAND, color: BRAND }}>
+              <Square size={13} /> ＋ Add selection <span className="font-normal opacity-70">({isMobile ? 'tap 2 corners' : 'drag a box'})</span>
+            </button>
+            <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. <b>Add selection</b> draws a box around a group; the <b>Lasso</b> and <b>Ninja</b> tools are on the map (left edge), or pan/zoom then <b>Add stops in view</b>.</div>
           </>
         )}
         {lastAction && <div className="text-[11px] text-slate-500">{lastAction}</div>}
