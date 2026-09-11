@@ -364,29 +364,35 @@ export function gridRowTone({ selected = false, tractorOk = false, carryover = f
 
 // ── WHAT A CLICK ON A ROUTING MAP PIN DOES ───────────────────────────────────
 //
-// Chad, on GEORGE L's route: "If i click on one of these dots on the map i want it to bring
-// that orders details on in the right panel." It did not, and the reason is the shape this
-// repo keeps re-learning: the dispatch Map has opened a stop on its own marker click since it
-// was built, and Routing — the screen a router spends the morning in — was never wired for it.
-// A numbered pin opened its ROUTE in Compare, a pool pin toggled the whole place into the
-// selection, and the one question a dot could not answer was "what is this order?".
+// Chad, 2026-09-11, about the change he asked for the day before: "i asked that when i click
+// on a stop it opens the stop and i don't want that to happen anymore, i don't want it to
+// open every order i click on when i'm clicking it on the map." So the order card comes back
+// OFF the pin. v1.7.0 put it on every pin in every mode but two; this puts it back.
 //
-// THE RULE IS HERE, NOT IN THE HANDLER, because the handler lives inside a marker-building
-// effect in a 25,000-line module that node:test cannot import, and Google Maps is blocked in
-// the headless guard — so a marker click is not observable there either (v0.98.0 said so when
-// it shipped the row→pin half of this). That leaves the decision untestable at both ends
-// unless it is a function. It is a function.
+// WHY THE ASK REVERSED, in dispatch terms rather than code terms: a router BUILDS a load by
+// clicking pins. A click means "put this on the truck", "show me this route", "grab this
+// whole dock" — on a 700-stop morning that is hundreds of them, and it is a rhythm, not a
+// series of questions. A full-height order card on each one covers the map, takes the right
+// rail away from the route being tuned, and has to be dismissed before the next click. The
+// card is a READING tool; the pin is a BUILDING tool. The list rows still open the card, and
+// that is the surface where a dispatcher is reading rather than routing.
 //
-// WHICH MODES OPEN THE PANEL, and why it is not simply "all of them":
-//   • normal      — the ask. The pin also keeps what it already did (open the route, or
-//                   toggle the place into the selection); nothing is taken away.
-//   • viewing     — a saved load is read-only and the click previously did NOTHING. Reading an
-//                   order is the one thing that was always safe there.
-//   • paint       — already did both ("first click does both"); unchanged.
-//   • selectMode  — NO. The click is asking for a POINT on the map (the handler reads the
-//                   marker's position, not the stop). A card about a stop is the wrong answer.
-//   • ninja       — NO. It adds stop after stop to the open route; a card popping up on each
-//                   one fights the job being done.
+// WHAT A PIN DOES NOW — exactly what it did before v1.7.0:
+//   • normal      — a planned pin opens its ROUTE in Compare; a pool pin toggles its whole
+//                   place into the selection. No card.
+//   • viewing     — a saved load is read-only and the click does nothing.
+//   • paint       — marks the stop AND opens the card. LEFT ALONE: that is an older and
+//                   separate dispatcher request ("first click does both"), it predates the
+//                   card-on-every-pin change, and it is one deliberate click at a time rather
+//                   than the routing rhythm. Say the word and it goes too.
+//   • selectMode  — hands the draw tool the marker's POSITION. No card.
+//   • ninja       — adds the stop to the open route. No card.
+//
+// PUTTING THE CARD BACK IS ONE LINE: give openPanel `!selectMode && !ninja` again (the tests
+// beside this name each case, so they say what would have to change with it). The rule lives
+// here and not in the handler because the handler sits inside a marker-building effect in a
+// 25,000-line module node:test cannot import, and Google Maps is blocked in the headless
+// guard — a decision written there is testable at neither end.
 //
 // Returns every action the click should take, so the caller is a dispatcher and holds no
 // policy of its own.
@@ -394,13 +400,12 @@ export function mapPinClickActions({
   viewing = false, paint = false, selectMode = false, ninja = false,
   isUnplanned = false, hasRouteKey = false,
 } = {}) {
-  // The two rapid-fire tools are about a point or a queue, not about this order.
-  const openPanel = !selectMode && !ninja;
-  if (viewing) return { openPanel, paint: false, selectPoint: false, ninjaAdd: false, openRoute: false, toggleGroup: false };
-  if (paint) return { openPanel, paint: true, selectPoint: false, ninjaAdd: false, openRoute: false, toggleGroup: false };
-  if (selectMode) return { openPanel, paint: false, selectPoint: true, ninjaAdd: false, openRoute: false, toggleGroup: false };
-  if (ninja) return { openPanel, paint: false, selectPoint: false, ninjaAdd: true, openRoute: false, toggleGroup: false };
+  const none = { openPanel: false, paint: false, selectPoint: false, ninjaAdd: false, openRoute: false, toggleGroup: false };
+  if (viewing) return none;                                        // saved load: read-only, click does nothing
+  if (paint) return { ...none, openPanel: true, paint: true };     // the one card a pin still opens
+  if (selectMode) return { ...none, selectPoint: true };
+  if (ninja) return { ...none, ninjaAdd: true };
   // Normal mode: a planned stop opens its route; a pool stop toggles its whole place.
   const openRoute = !isUnplanned && hasRouteKey;
-  return { openPanel, paint: false, selectPoint: false, ninjaAdd: false, openRoute, toggleGroup: !openRoute };
+  return { ...none, openRoute, toggleGroup: !openRoute };
 }
