@@ -36,7 +36,7 @@ import { resolveStopContact, resolveStopPhone, orderContactAside, mergeSavedCont
 import { readViewportSize } from './lib/viewport.js';
 import { restoreBar, reachableBar, settingsForSave, normalizeBar, sameBar, BAR_DEFAULTS } from './lib/bar-memory.js';
 import { sortStops, nextStopSort, stopSort, STOP_SORTS } from './lib/stop-sort.js';
-import { manifestIssues, manifestHeadline, manifestProvenance, loadStored, saveStored } from './lib/manifest-check-view.js';
+import { manifestIssues, manifestHeadline, manifestProvenance, manifestFreshness, loadStored, saveStored } from './lib/manifest-check-view.js';
 import { noteFreshness } from './lib/stop-notes-freshness.js';
 import { stopHandlingFlags, itemHandlingFlags, stopNeedsTractor, tallyHandlingFlags, HANDLING_FLAGS } from './lib/handling-flags.js';
 import { mapBaseOptions, mapLiveOptions, mapIdKey, keepView } from './lib/map-base-options.js';
@@ -140,7 +140,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.20.0';
+const APP_VERSION = '1.20.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -211,6 +211,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.20.1', 'THE MANIFEST CARD WAS A PHOTOGRAPH, AND NOTHING ON IT SAID SO \u2014 SO A SCAN THAT FIXED THE BOARD COULD NOT BE SEEN TO. Chad, Saturday 10:42, on an amber card reading \u201c136 orders not routed yet \u2014 no board has been built for 2026-09-16\u201d: \u201cIf we ran a scan this morning to complete the board from last week which looks like we did. It should have fixed the manifest incompleteness.\u201d IT COULD NOT HAVE, AND NO SCAN EVER COULD. nuvizz_ops/manifest_check_latest \u2014 the document that card subscribes to \u2014 has exactly ONE writer, the email ingest, and it is reached only when a NEW, unmarked report email is parsed. A NuVizz scan does not touch it. \u201cCheck email now\u201d could not move it either: every email carries a per-email marker and an already-checked report is skipped for ever. So the verdict was read at the 1:10a pass, the board was refilled at 07:00 (141 calls, 136 stop_info), and between the overnight pass and the next night\u2019s report there was no way to ask again. AND THE SENTENCE ITSELF NAMED THE WRONG DAY. 2026-09-16 is the +2 SLACK day, of which manifest-window says in as many words: \u201cextra places to LOOK, and deliberately not extra days that must be scanned.\u201d The day that DECIDES was 2026-09-14, and it was covered \u2014 424 stops. THE CAUSE WAS NOT IN THE GRADING RULES, WHICH ARE RIGHT. v0.81.5 established that the count must travel with its standing and filed coverage/grade/expectedDelivery on the ARCHIVE record and the HISTORY row \u2014 and missed toStoredEmailRun, the one writer of the document the SCREEN reads. With the verdict dropped, the browser re-derives it from checkedAgainst alone, with no `required` and no `asOf`, which is the conservative reading that demands EVERY day in the window. THE DANGEROUS HALF: the day after tomorrow is never routed yet, so `conclusive` was false on essentially every nightly run, and gradeSuspects downgraded \u2018missing\u2019 to \u2018unrouted\u2019 on a false verdict. The RED alert and the nav badge were structurally DEAD \u2014 the one check that can catch an order Uline handed us that NuVizz never received could not raise its alarm. A missed flag is the order that never shipped, and this one had been mute. The four fields the server already computed are now carried; App.jsx\u2019s \u201cShipped X \u00b7 expected delivery Y\u201d line, written months ago and never once rendered for an email run, comes on with them. AND THE CARD CAN BE ASKED AGAIN. A new Re-check against the board button re-reads the ARCHIVED PDF and re-runs the same free diff against the board as it stands now \u2014 Firestore and the blob store only, ZERO NuVizz calls, with ?explain=1 as a dry run that says which night it would open and writes nothing. The card also states how old its reading is (\u201cRead against the board as it stood 10h ago\u201d), because the scan runs every five minutes and a ten-hour-old verdict looked identical to a fresh one \u2014 the same silent failure as a build that changes while the footer version does not. It states the age and nothing more: it cannot observe that a scan has run since, and claiming so would be reporting an intent as an outcome. It nudges only when pressing the button could change the answer, never on a clean card. THE OPERATIONAL CASE, PLAINLY: a Friday manifest is checked overnight against a Monday board still being built, so the run is honestly inconclusive; the board fills over the weekend; and if freight really is missing the next thing that could say so was Monday\u2019s own pass \u2014 the morning it was already due. That two-day blind spot is now a click. 15 new tests, including the card reproduced character-for-character from the stored shape and the red alert proven to fire again. MANIFEST_STORED_GRADE=off puts the old stripped shape and its grading back; the button and the endpoint are additive and revert with the commit.'],
   ['1.20.0', 'EVERY ADDRESS THAT MOVES NOW GETS WRITTEN DOWN, AND THERE IS A SCREEN FOR IT UNDER MORE. Chad asked whether we had changed the address on delivery 007174397, and answering it took a dozen file reads and five endpoint calls — then only answered half. The order arrived as “5965 PEACHTREE STREET” while our own sealed record for the same customer three months earlier read “5965 PEACHTREE CORS E STE B3”: same house number, same zip, no suite. NOTHING IN THIS SYSTEM WROTE AN ADDRESS CHANGE DOWN. The scan DETECTS one — it has to, to decide whether to re-enrich — and then throws the finding away into a local variable that dies with the run, and “Edit address” on the stop card left no trace at all. SO BOTH HALVES ARE RECORDED NOW. The vendor’s half is observed inside writeStops, which already holds the stored row and the fresh one, so it costs NO extra read and every scan path is covered by construction rather than by remembering. Our half is posted by the browser after an override saves, because “Edit address” and “Fix & move pin” write customer_notes straight from the client and never touch a function — and that override is what the pin, the board and the customer emails actually use, so a log without it would answer “did we change this” with a confident and wrong no. IT DOES NOT REUSE addrListSig, deliberately. That detector is zip5|streetNumber and it is coarse ON PURPOSE, because firing it spends a /stop/info per stop; both LED ENERGY PLUS addresses hash to “30071|5965”, so it was right to stay quiet and the change was still real. A log costs nothing to write, so its threshold is the honest one — and it only ever observes, never feeds the re-enrichment decision, or it would re-open the non-converging loop that comment warns about. CLASSIFIED BY WHAT IT COSTS TO BE WRONG ABOUT, which is also the sort order: moved (different house number or zip — the truck is loaded for the old building) → cleared → renamed → suite (a dropped STE B3 on an inside delivery is a driver in a lobby with five pallets) → city/state → filled → formatting. Rows carry the route and whether the order was ALREADY PLANNED when it moved, because an address that changes under a built truck is a different problem from one that changes while the order is still unplanned. THE NOISE FLOOR WAS MEASURED, NOT ASSUMED: 90 stops carried across the real 9/10 and 9/11 boards produced zero rows, and an address that normalises identical (“Blvd” vs “BOULEVARD”, a +4 zip) never files one — the list and /stop/info disagree like that across a large share of 700 stops every scan. Learning a field is not changing it either: our own June record carries state:null beside a good GA address. TWO VIEWS: desktop gets a table because the job is scanning a column of befores against a column of afters; the phone gets one card per change with before over after in a single flow column, since two addresses do not fit side by side at 360px. The PRO box is the first control on the screen — type 007174397 and the question that started this is answered in one tap — and nuvizz-stop-explain now carries the same rows, so asking about a stop shows its address history beside everything else. Zero NuVizz calls anywhere in it. 40 new tests. ADDRESS_HISTORY=off turns the recording and the endpoint off together.'],
   ['1.19.0', 'THE DRAW TOOL IS IN THE PANEL, AND A FINISHED BUILD OPENS ITS OWN CARDS. Two asks off one screenshot of Routing\u2019s left panel. (1) \u201cLEFT PANEL SHOULD HAVE AN ADD SELECTION BUTTON.\u201d Step 1 offered exactly one way to add stops in bulk \u2014 \u201cAdd stops in view\u201d, which takes the WHOLE viewport \u2014 while its own hint text told the dispatcher that Box, Lasso and Ninja were somewhere else: two unlabelled 36px icons on the map\u2019s left edge, where they have lived alone since v0.29.59. On a 700-stop board that gap is the difference between grabbing one dock out of a cluster and zooming until nothing else is on screen. \u201c\uff0b Add selection\u201d now sits under it and arms the SAME box draw the rail arms \u2014 one beginMode, so the amber armed block, Cancel, Esc and the rail\u2019s own highlight are unchanged; there is a second DOOR into the mode, not a second mode. ON A PHONE IT DROPS THE SHEET, because the two corners are tapped ON the map and the sheet is half the screen (the move armNinjaFromPanel already makes for the same reason), and a toast carries the instruction the dropped sheet took with it \u2014 an armed mode with nothing on screen to explain it reads as a broken map. The lasso stays on the rail and the hint now says so. (2) \u201cWHEN THIS GETS DONE BUILDING IT SHOULD POP THE ROUTES UP IN THE COMPARE PANELS SO I CAN SEE THEM.\u201d Build was the only solver on this screen that stopped short of that \u2014 the Engine\u2019s draft and cleanup runners have always staged the moment they returned. Until \u201cStage onto Compare cards\u201d was found and pressed, a finished plan existed only as engine-coloured lines on the map: nothing to drag, no driver picker, no Save, because the CARD is the editable object. It stages itself now. THE FOUR WAYS THAT SENTENCE GOES WRONG ARE A UNIT-TESTED RULE (lib/build-autostage.js, 8 tests): a TRUCKS-mode build never stages, because an abstract profile has no loadNbr to land on and staging one would invent a load nobody picked; it WAITS for routesView, which is empty for a render or two after the job lands, since staging the empty render would spend the one shot and the cards would then never open at all; it fires ONCE PER JOB, so a card closed on purpose stays closed instead of springing back with no way to be rid of it; and a SAVED load open in the result panel never re-stages last Tuesday\u2019s plan onto today\u2019s board. The manual button is untouched \u2014 staging skips ids already on a card, so it stays the way to put the plan back after closing one. Each change is its own commit: a git revert puts either one back on its own.'],
   ['1.18.1', 'A LEFTOVER NAME ON AN EMPTY TRAILER IS NOT AN ASSIGNMENT \u2014 AND SHOWING IT DID THE EXACT OPPOSITE OF WHAT THIS FEATURE IS FOR. Chad, with the Loads panel searched for \u201csir\u201d: MARTIN and TERRY both reading Sirdedrick Sheats. \u201cno one assigned sheats to our load.\u201d THE PARSER WAS RIGHT, WHICH IS WHY THE FIX IS NOT IN THE PARSER. Read straight off the live roster that morning: the 35 loads CARRYING FREIGHT had 35 drivers under 34 distinct names and every one was correct; of 67 EMPTY shells, 30 carried a name and two of them carried Sirdedrick \u2014 on a day with no SHEATS route on the board at all. MARTIN and TERRY hold two DIFFERENT spellings of him (\u2018Sirdedrick  Sheats\u2019 and \u2018Sirdedrick Sheets\u2019), which a misaligned column cannot produce: each row was read from its own cell. NuVizz simply keeps a name on a zero-stop shell from whenever that trailer was last used. SO IT IS A LOGISTICS BUG AND IT IS MINE. The whole case for capturing the driver, in my own words, was that the empty trailer NOBODY is on becomes visible among the fifty that are staffed. A leftover name does the reverse: it makes the one trailer that needs a driver look like it already has one, and it puts a man\u2019s name against freight he is not running \u2014 on a 700-stop morning that is a phone call to the wrong person. Beautifully parsed and operationally backwards, which is the failure the logistics-first rule exists to catch and which no test could have caught, because the code did exactly what I told it. THE RULE: a driver is shown for a load that HAS FREIGHT ON IT \u2014 the boundary where the data is proven good \u2014 and a zero-stop shell reads as unassigned, which is what it is. Chad\u2019s original ask is untouched: he asked for the driver on loads \u2018not dispatched but they do already have the driver assignment\u2019, and those loads carry trips. It is a DISPLAY rule in one pure function (rosterDriverOf) used by all three surfaces, so the capture still keeps every driver it reads and ?explain=1 and the pull meta are unchanged \u2014 one commit puts it back. The v1.10.0 test that asserted the opposite is rewritten rather than deleted, with the live rows that disproved it. 8 new tests, 4,301 green.'],
@@ -32127,6 +32128,36 @@ function ManifestCheckScreen() {
     window.dispatchEvent(new Event('dd-manifest-check-updated'));
   }, []);
 
+  // ── ASK THE BOARD AGAIN ───────────────────────────────────────────────────
+  //
+  // Chad, Saturday 10:42: "If we ran a scan this morning to complete the board from last week
+  // which looks like we did. It should have fixed the manifest incompleteness."
+  //
+  // It had not, and no scan could have. The verdict on this card is written by ONE thing —
+  // the email ingest, when a NEW unmarked report is parsed — so a scan that fills the board at
+  // 07:00 cannot move a card written at 01:10, and "Check email now" cannot either, because
+  // the per-email marker makes an already-checked report a permanent skip. Between the
+  // overnight pass and the next night's report there was no way to ask the question again.
+  //
+  // This button re-reads the ARCHIVED PDF and re-runs the same free diff against the board as
+  // it stands now. Zero NuVizz calls — Firestore and the blob store only.
+  const [recheck, setRecheck] = useState({ busy: false, note: null, err: null });
+  const recheckNow = useCallback(async () => {
+    setRecheck({ busy: true, note: null, err: null });
+    try {
+      const r = await apiFetch('/.netlify/functions/manifest-recheck', { method: 'POST' });
+      const d = await r.json();
+      if (d?.ok === false || !d?.stored) {
+        setRecheck({ busy: false, note: null, err: d?.error || 'the re-check failed' });
+        return;
+      }
+      adoptRun(d.stored);
+      setRecheck({ busy: false, err: null, note: `Re-checked the ${d.date} report against the board just now.` });
+    } catch (e) {
+      setRecheck({ busy: false, note: null, err: String(e?.message || e) });
+    }
+  }, [adoptRun]);
+
   // THE DROP BOX IS GONE. Chad: "there is no need for the manual manifest drop in box any
   // longer as we are pulling it out of the emails." Every report now arrives through the
   // Gmail ingest (three passes a night, self-validating, archived with its PDF), so the only thing
@@ -32183,6 +32214,35 @@ function ManifestCheckScreen() {
               {manifestProvenance(result) && (
                 <div className="text-[11px] text-slate-400 mt-0.5">{manifestProvenance(result)}</div>
               )}
+              {/* HOW OLD THIS VERDICT IS, AND HOW TO ASK AGAIN. One wrapping flow row — never
+                  pinned siblings — so on a 390px phone the button drops below the sentence
+                  instead of landing on top of it. */}
+              {(() => {
+                const fresh = manifestFreshness(result);
+                if (!fresh) return null;
+                return (
+                  <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="text-[11px] text-slate-500">
+                      Read against the board as it stood {agoText(result.at) || 'just now'}.
+                    </span>
+                    <button
+                      onClick={recheckNow}
+                      disabled={recheck.busy}
+                      title="Re-run the same free check on the filed report, against the board as it is now. Zero NuVizz calls."
+                      className={`text-[11px] px-2 py-1 rounded border font-semibold inline-flex items-center gap-1 ${
+                        fresh.suggestRecheck
+                          ? 'border-slate-400 bg-white text-slate-800 hover:bg-slate-50'
+                          : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+                      }`}
+                    >
+                      <RefreshCw size={11} className={recheck.busy ? 'animate-spin' : ''} />
+                      {recheck.busy ? 'Re-checking…' : 'Re-check against the board'}
+                    </button>
+                  </div>
+                );
+              })()}
+              {recheck.note && <div className="text-[11px] text-emerald-700 mt-1">{recheck.note}</div>}
+              {recheck.err && <div className="text-[11px] text-red-700 mt-1">{recheck.err}</div>}
             </div>
 
             {m && (

@@ -59,7 +59,96 @@ const SCREENS = [
     prefs: { 'routing.rightPanel': 'routesLoads', 'routing.routesLoadsTab': 'loads' } },
   { key: 'neworder', label: 'New Order', nav: /new order/i },
   { key: 'quote', label: 'Quote', nav: /quote/i },
-  { key: 'manifest', label: 'Manifest check', nav: /manifest check/i, inMore: true },
+  // SEEDED WITH A REAL RUN ON PURPOSE. With no stored verdict this screen is a header, a
+  // mailbox card and nothing else — so the part that carries the furniture (the verdict
+  // banner, its freshness line and the Re-check button beside it) was never measured at
+  // all. This is Chad's 2026-09-12 card, fields and all.
+  { key: 'manifest', label: 'Manifest check', nav: /manifest check/i, inMore: true,
+    prefs: { 'dd_manifest_check_last': JSON.stringify({
+          "at": "2026-09-12T05:10:00.000Z",
+          "source": "email",
+          "mailbox": "gmail",
+          "from": "outbound.logistics@uline.com",
+          "subject": "Uline Freight Report",
+          "fileName": "Uline_Freight_Report_DA_213265914_1.pdf",
+          "checkedAgainst": [
+                {
+                      "date": "2026-09-14",
+                      "stops": 424
+                },
+                {
+                      "date": "2026-09-15",
+                      "stops": 2
+                },
+                {
+                      "date": "2026-09-16",
+                      "stops": 0
+                }
+          ],
+          "manifest": {
+                "orders": 556,
+                "verified": true,
+                "totals": {
+                      "lbs": 291494,
+                      "skids": 899,
+                      "pieces": 96
+                }
+          },
+          "onBoard": 420,
+          "boardOnly": 6,
+          "duplicatePros": [],
+          "suspects": [
+                {
+                      "pro": "0071583412",
+                      "custName": "ACME SUPPLY CO",
+                      "city": "DALTON",
+                      "state": "GA",
+                      "zip": "30720"
+                },
+                {
+                      "pro": "0071583413",
+                      "custName": "NORTHSIDE MEDICAL CENTER",
+                      "city": "CHATTANOOGA",
+                      "state": "TN",
+                      "zip": "37402"
+                },
+                {
+                      "pro": "0071583414",
+                      "custName": "LED ENERGY PLUS",
+                      "city": "NORCROSS",
+                      "state": "GA",
+                      "zip": "30071"
+                }
+          ],
+          "suspectsTotal": 136,
+          "shipDate": "2026-09-11",
+          "expectedDelivery": "2026-09-14",
+          "coverage": {
+                "days": 3,
+                "checked": [
+                      "2026-09-14",
+                      "2026-09-15"
+                ],
+                "empty": [
+                      "2026-09-16"
+                ],
+                "known": true,
+                "required": [
+                      "2026-09-14"
+                ],
+                "missingRequired": [],
+                "pending": [
+                      "2026-09-14"
+                ],
+                "asOf": "2026-09-12",
+                "conclusive": false,
+                "totalStops": 426
+          },
+          "grade": {
+                "verdict": "unrouted",
+                "count": 136
+          }
+    }) } },
   { key: 'comms', label: 'Customer emails', nav: /customer emails/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },

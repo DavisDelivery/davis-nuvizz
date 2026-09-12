@@ -45,3 +45,37 @@ test('the app-wide drag guard is untouched — a stray PDF must still not naviga
   assert.match(APP, /window\.addEventListener\('dragover', swallow\)/);
   assert.match(APP, /window\.addEventListener\('drop', swallow\)/);
 });
+
+// ── ASKING THE BOARD AGAIN (v1.20.1) ─────────────────────────────────────────
+//
+// Chad, Saturday 10:42: "If we ran a scan this morning to complete the board from last week
+// which looks like we did. It should have fixed the manifest incompleteness." Nothing on this
+// screen could ask, and nothing on it said how old the answer was.
+
+test('the verdict can be re-checked against the board, and it spends no NuVizz calls', () => {
+  assert.match(SCREEN, /manifest-recheck/, 'the button that closes the two-day blind spot');
+  assert.match(SCREEN, /const recheckNow = useCallback/);
+  assert.match(SCREEN, /Re-check against the board/, 'and it says what it does in freight language');
+  assert.match(SCREEN, /adoptRun\(d\.stored\)/, 'the new run lands on the screen you are looking at');
+  // The probe step is the only thing here that can spend a NuVizz call, and it lives behind
+  // its own click in manifest-check.mts. This screen must never reach it.
+  assert.ok(!/probe=1/.test(SCREEN), 'no path from this screen spends a NuVizz call');
+});
+
+test('the card says how old its reading is — a 10h-old verdict must not look fresh', () => {
+  assert.match(SCREEN, /manifestFreshness\(result\)/);
+  assert.match(SCREEN, /Read against the board as it stood/);
+  // It states the AGE and stops there. Claiming the scan has run since would be reporting an
+  // intent as an outcome — this screen cannot observe that.
+  assert.ok(!/the scan has run since/i.test(SCREEN));
+});
+
+test('the re-check furniture is IN FLOW, never pinned over what it sits beside', () => {
+  // Mobile and desktop are two views, and on a phone overlay furniture lives in one flow
+  // container: absolutely-pinned siblings put the draw buttons on top of the status card on
+  // 2026-08-19 after four collision patches. When the sentence wraps, the button MOVES.
+  const row = SCREEN.slice(SCREEN.indexOf('Read against the board as it stood') - 900,
+                           SCREEN.indexOf('Read against the board as it stood') + 900);
+  assert.ok(!/\babsolute\b/.test(row), 'nothing in this row is absolutely positioned');
+  assert.match(row, /flex flex-wrap items-center/, 'one wrapping flow row, so 390px stacks instead of colliding');
+});

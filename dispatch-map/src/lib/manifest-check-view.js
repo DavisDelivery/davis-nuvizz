@@ -99,6 +99,43 @@ export function manifestHeadline(result) {
 const MAILBOX_LABELS = { gmail: 'Gmail', resend: 'the warehouse inbox' };
 
 /**
+ * A VERDICT IS ONLY AS CURRENT AS THE BOARD IT WAS READ AGAINST, and this card never said so.
+ *
+ * Chad, Saturday 10:42, on an amber card: "If we ran a scan this morning to complete the board
+ * from last week which looks like we did. It should have fixed the manifest incompleteness."
+ * The reading on screen had been taken at the 1:10a pass — ten hours and a whole morning's
+ * scanning earlier — and nothing on the card distinguished it from one taken a minute ago. A
+ * ten-hour-old verdict and a fresh one looked identical, which is the same silent failure as a
+ * build that changes while the footer version does not.
+ *
+ * THE BOARD MOVES UNDER IT: nuvizz-refresh-stops-background runs every five minutes, 24/7. So
+ * thirty minutes is six scans, and past that the boards this run counted are simply not the
+ * boards on the screen any more.
+ *
+ * IT STATES THE AGE AND NOTHING MORE. It does NOT claim the scan has run since — this card
+ * cannot observe that, and asserting it would be reporting an intent as an outcome. The age is
+ * a fact; what it implies is the dispatcher's call, with the re-check button next to it.
+ */
+export const STALE_MINUTES = 30;
+
+export function manifestFreshness(result, now = Date.now()) {
+  const t = Date.parse(String(result?.at || ''));
+  if (!Number.isFinite(t)) return null;
+  const minutes = Math.max(0, Math.round((now - t) / 60000));
+  const suspects = Number(result?.suspectsTotal ?? (result?.suspects || []).length) || 0;
+  return {
+    at: result.at,
+    minutes,
+    stale: minutes >= STALE_MINUTES,
+    // NUDGE ONLY WHEN PRESSING THE BUTTON COULD CHANGE THE ANSWER. A clean run re-checked is
+    // still clean, and a banner urging action on a green card is the false flag this file
+    // exists to prevent. An unclean verdict read against a board that has had time to move is
+    // the one case where asking again is worth a click.
+    suggestRecheck: suspects > 0 && minutes >= STALE_MINUTES,
+  };
+}
+
+/**
  * Where this run came from. A dispatcher reads an automatic run and a
  * hand-dropped one differently — an automatic one can be hours old and may have
  * checked a board the morning scan had not filled yet, while a dropped one is as
@@ -113,6 +150,10 @@ export function manifestProvenance(result) {
     box ? `Checked automatically from ${box}` : 'Checked automatically from email',
     String(result.from || '').trim() || null,
     result.fileName || null,
+    // A RE-READ OF FILED PAPER IS NOT A FRESH REPORT OFF THE WIRE, and a dispatcher reads the
+    // two differently: one says "Uline sent this and it is clean", the other "we asked the
+    // board again and it is clean". Same verdict, different provenance, so say which.
+    result.recheckedAt ? 're-checked against the board' : null,
   ].filter(Boolean).join(' · ');
 }
 

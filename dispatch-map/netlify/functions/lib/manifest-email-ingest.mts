@@ -90,8 +90,46 @@ export interface IngestDeps {
 const isPdfAttachment = (a: any) =>
   /pdf/i.test(String(a?.contentType ?? '')) || /\.pdf$/i.test(String(a?.filename ?? ''));
 
+/** The switch's position, read once per call so a test can flip it. Anything but an explicit
+ *  off-word leaves it ON — a malformed value must not silently take the alert back off, which
+ *  is the exact failure this carries the verdict to fix.
+ *  MANIFEST_STORED_GRADE=off puts the stripped shape back, and with it the old grading. */
+export function storedGradeEnabled(env: any = process.env): boolean {
+  const v = String(env?.MANIFEST_STORED_GRADE ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
 /** The stored shape — mirrors the client's toStored() so a stored email run and a
  *  stored manual run are interchangeable to the flag and the tab. */
+/**
+ * THE COUNT MUST TRAVEL WITH ITS STANDING — and on this document it did not.
+ *
+ * v0.81.5 established the rule and filed coverage/grade/expectedDelivery on the ARCHIVE
+ * record (manifest-archive-store) and re-graded the HISTORY row from them
+ * (manifest-history.gradeForRow). This function — the one that writes
+ * nuvizz_ops/manifest_check_latest, which is the document the Manifest check SCREEN
+ * subscribes to — was missed, and kept writing the stripped shape.
+ *
+ * What that cost, measured on Chad's 2026-09-12 card. The run shipped Friday 09-11, expected
+ * delivery Monday 09-14, and checked 09-14 (424 stops) · 09-15 (2) · 09-16 (0). With the
+ * verdict dropped, manifest-check-view falls back to `boardCoverage(checkedAgainst)` with NO
+ * `required` and NO `asOf` — which manifest-window documents as "demand ALL of them, the
+ * conservative reading". So:
+ *
+ *   • it named 2026-09-16 — the +2 SLACK day, which that module says explicitly is "extra
+ *     places to LOOK, and deliberately not extra days that must be scanned" — instead of
+ *     2026-09-14, the day that decides and the one that was covered;
+ *   • and, far worse, `conclusive` is then false on essentially EVERY nightly run, because
+ *     the day after tomorrow is never routed yet. gradeSuspects downgrades 'missing' to
+ *     'unrouted' on a false verdict, so the RED alert and the nav badge were structurally
+ *     dead: the one check that can catch an order Uline handed us that NuVizz never received
+ *     could not raise its alarm. A missed flag is the order that never shipped.
+ *
+ * Carrying the four fields the server already computed is the whole fix. The client prefers
+ * a stored verdict over a re-derived one and always has (manifest-check-view.gradeOf), so
+ * nothing downstream changes shape — and App.jsx's "Shipped X · expected delivery Y" line,
+ * written months ago and never once rendered for an email run, comes on with it.
+ */
 export function toStoredEmailRun(diff: any, email: any, fileName: string | null, at: string, mailbox = 'email') {
   return {
     at,
@@ -108,6 +146,15 @@ export function toStoredEmailRun(diff: any, email: any, fileName: string | null,
     duplicatePros: diff.duplicatePros || [],
     suspects: (diff.suspects || []).slice(0, 200),
     suspectsTotal: (diff.suspects || []).length,
+    // WHY THE WINDOW IS THE WINDOW, and what the boards behind it were worth. `?? null`
+    // throughout: Firestore rejects undefined, and a field that is absent must read as
+    // "this run did not record it" rather than vanishing.
+    ...(storedGradeEnabled() ? {
+      shipDate: diff.shipDate ?? null,
+      expectedDelivery: diff.expectedDelivery ?? null,
+      coverage: diff.coverage ?? null,
+      grade: diff.grade ?? null,
+    } : {}),
   };
 }
 

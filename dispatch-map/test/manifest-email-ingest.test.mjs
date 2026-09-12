@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   ingestManifestEmails, toStoredEmailRun, markerDoc, LATEST_DOC, MAX_EMAILS_PER_RUN,
-  orderOldestFirst,
+  orderOldestFirst, storedGradeEnabled,
 } from '../netlify/functions/lib/manifest-email-ingest.mts';
 
 // A scripted world: emails in the inbox, bytes behind download URLs, and a diff
@@ -334,4 +334,44 @@ test('the ingest loop actually USES the ordering', () => {
   const src = readFileSync(new URL('../netlify/functions/lib/manifest-email-ingest.mts', import.meta.url), 'utf8');
   assert.match(src, /for \(const email of orderOldestFirst\(emails\)\)/,
     'the loop must iterate the ordered list, not the raw one');
+});
+
+// ── THE COUNT MUST TRAVEL WITH ITS STANDING (v1.20.1) ────────────────────────
+//
+// v0.81.5 filed coverage/grade/expectedDelivery on the ARCHIVE record and re-graded the
+// HISTORY row from them, and missed the one document the SCREEN actually reads. These pin
+// the fix on the stored run itself; manifest-check-view.test.mjs pins what it cost.
+
+test('the stored run carries the verdict the server computed, not just the counts', () => {
+  const diff = {
+    ...GOOD_DIFF,
+    shipDate: '2026-09-11',
+    expectedDelivery: '2026-09-14',
+    coverage: { required: ['2026-09-14'], missingRequired: [], pending: ['2026-09-14'], conclusive: false, known: true },
+    grade: { verdict: 'unrouted', count: 1 },
+  };
+  const run = toStoredEmailRun(diff, { id: 'e', from: 'f', subject: 's' }, 'freight.pdf', '2026-09-12T05:10:00.000Z');
+  assert.equal(run.shipDate, '2026-09-11');
+  assert.equal(run.expectedDelivery, '2026-09-14', "the screen's 'expected delivery' line has no other source");
+  assert.deepEqual(run.grade, { verdict: 'unrouted', count: 1 });
+  assert.deepEqual(run.coverage.required, ['2026-09-14'], 'the day that DECIDES must survive the write');
+});
+
+test('a diff that recorded no verdict stores nulls, never undefined (Firestore rejects undefined)', () => {
+  const run = toStoredEmailRun(GOOD_DIFF, { id: 'e', from: 'f', subject: 's' }, 'freight.pdf', '2026-09-12T05:10:00.000Z');
+  for (const k of ['shipDate', 'expectedDelivery', 'coverage', 'grade']) {
+    assert.ok(k in run, `stored run missing ${k}`);
+    assert.equal(run[k], null, `${k} must be null, not undefined`);
+  }
+});
+
+test('MANIFEST_STORED_GRADE=off puts the old stripped shape back, and nothing else', () => {
+  assert.equal(storedGradeEnabled({ MANIFEST_STORED_GRADE: 'off' }), false);
+  assert.equal(storedGradeEnabled({ MANIFEST_STORED_GRADE: '0' }), false);
+  assert.equal(storedGradeEnabled({ MANIFEST_STORED_GRADE: 'FALSE' }), false);
+  assert.equal(storedGradeEnabled({}), true, 'default ON');
+  // A TYPO MUST NEVER SILENTLY DISABLE IT. The failure this switch guards is invisible —
+  // a quiet feature looks exactly like a working one.
+  assert.equal(storedGradeEnabled({ MANIFEST_STORED_GRADE: 'offf' }), true);
+  assert.equal(storedGradeEnabled({ MANIFEST_STORED_GRADE: 'no thanks' }), true);
 });
