@@ -19,7 +19,7 @@ import type {
 } from './routing-types.mts';
 import { assembleRoute, sequence } from './routing-solver.mts';
 import {
-  computeLoad, capacityFits, capacityBreaches, equipmentOk, windowOk, emptyLoad, REASON,
+  computeLoad, capacityFits, capacityBreaches, equipmentOk, windowOk, emptyLoad, REASON, serviceStartSec,
 } from './routing-constraints.mts';
 import { DEFAULT_SERVICE_MIN } from './routing-types.mts';
 
@@ -27,51 +27,87 @@ function serviceSec(s: SolverStop): number {
   return Math.max(0, Number.isFinite(s.serviceMin) ? s.serviceMin : DEFAULT_SERVICE_MIN) * 60;
 }
 
-// Window-aware order: STRICT-windowed stops by earliest deadline (EDF) first, then
-// the remaining stops by nearest-neighbor distance. Deterministic.
-function windowAwareOrder(stops: SolverStop[], indexById: Map<string, number>, matrix: SolverInput['matrix']): SolverStop[] {
-  const strict = stops.filter((s) => s.timeConstraint === 'STRICT' && s.timeWindow)
-    .sort((a, b) => (a.timeWindow!.endSec - b.timeWindow!.endSec) || (a.timeWindow!.startSec - b.timeWindow!.startSec));
-  const rest = stops.filter((s) => !(s.timeConstraint === 'STRICT' && s.timeWindow));
-  // nearest-neighbor the rest by distance starting from depot.
-  const dist = matrix.distanceMeters;
-  const remaining = new Set(rest.map((s) => s.id));
-  const ordered: SolverStop[] = [...strict];
-  let cur = 0;
-  while (remaining.size) {
-    let next: SolverStop | null = null, bestC = Infinity;
-    for (const s of rest) {
-      if (!remaining.has(s.id)) continue;
-      const c = dist[cur][indexById.get(s.id)!];
-      if (c < bestC) { bestC = c; next = s; }
-    }
-    ordered.push(next!); remaining.delete(next!.id); cur = indexById.get(next!.id)!;
+const hasWindow = (s: SolverStop) => s.timeConstraint === 'STRICT' && !!s.timeWindow;
+
+// The clock down an ordered route: service-start ETAs (after any wait for a dock to open)
+// and the wait itself per stop. ONE walk, shared with assembleRoute's arithmetic, so what
+// the repair loop validates against is what the card shows.
+function timeline(ordered: SolverStop[], indexById: Map<string, number>, matrix: SolverInput['matrix'], depart: number): { etas: number[]; waits: number[] } {
+  const etas: number[] = [], waits: number[] = [];
+  let prev = 0, clock = depart;
+  for (const s of ordered) {
+    const idx = indexById.get(s.id)!;
+    clock += matrix.durationSec[prev][idx];
+    const start = serviceStartSec(s, clock);
+    waits.push(start - clock);
+    clock = start;
+    etas.push(clock);
+    clock += serviceSec(s);
+    prev = idx;
   }
-  return ordered;
+  return { etas, waits };
 }
 
-// The order repair both VALIDATES and ASSEMBLES with, so the two never diverge:
-// when STRICT windows exist, EDF (window-aware); otherwise the dispatcher's chosen
-// strategy order (windows are then irrelevant to validity, capacity is order-free).
+// WINDOW-AWARE ORDER — cheapest feasible insertion over the dispatcher's own strategy order.
+//
+// The rule this replaces was EDF: every windowed stop FIRST, sorted by deadline, then the
+// rest by nearest neighbour. It was harmless while no window ever reached the solver (the
+// board's stamps never parsed — see routing-time-windows.mts) and it would be a disaster
+// now that they do: a 1:00p appointment sorted to the front is a truck idling at that dock
+// from 7:02a with every other stop pushed past 1:30p. A restriction has TWO edges. A close
+// is a deadline to beat; an open is a reason to come back later. Both have to be honoured.
+//
+// So the un-windowed stops keep the strategy order exactly as before (min distance, closest
+// first, …), and each windowed stop — earliest deadline first — is INSERTED at the position
+// that (1) leaves every windowed stop on time, then (2) idles the least waiting for docks to
+// open, then (3) adds the least distance. When no position is on time it takes the least-late
+// one and the repair loop decides whether that stop stays and is flagged (advisory) or comes
+// off the truck (strict). Deterministic. O(W·N²) for W windowed stops — trivial under the
+// 150-stop selection cap.
+function windowAwareOrder(stops: SolverStop[], indexById: Map<string, number>, matrix: SolverInput['matrix'], depart: number, strategy: SolverInput['strategy']): SolverStop[] {
+  const windowed = stops.filter(hasWindow)
+    .sort((a, b) => (a.timeWindow!.endSec - b.timeWindow!.endSec) || (a.timeWindow!.startSec - b.timeWindow!.startSec));
+  const rest = stops.filter((s) => !hasWindow(s));
+  const byNode = new Map(stops.map((s) => [indexById.get(s.id)!, s]));
+  const node = (s: SolverStop) => indexById.get(s.id)!;
+  let order: SolverStop[] = sequence(rest.map(node), strategy, matrix).map((n) => byNode.get(n)!);
+  const dist = matrix.distanceMeters;
+  for (const w of windowed) {
+    let best: { pos: number; late: number; wait: number; added: number } | null = null;
+    for (let pos = 0; pos <= order.length; pos++) {
+      const cand = [...order.slice(0, pos), w, ...order.slice(pos)];
+      const { etas, waits } = timeline(cand, indexById, matrix, depart);
+      let late = 0, wait = 0;
+      cand.forEach((s, i) => {
+        if (hasWindow(s) && etas[i] > s.timeWindow!.endSec) late += etas[i] - s.timeWindow!.endSec;
+        wait += waits[i];
+      });
+      const prev = pos === 0 ? 0 : node(order[pos - 1]);
+      const next = pos < order.length ? node(order[pos]) : null;
+      const added = dist[prev][node(w)] + (next != null ? dist[node(w)][next] - dist[prev][next] : 0);
+      const better = best == null
+        || late < best.late
+        || (late === best.late && (wait < best.wait || (wait === best.wait && added < best.added)));
+      if (better) best = { pos, late, wait, added };
+    }
+    order = [...order.slice(0, best!.pos), w, ...order.slice(best!.pos)];
+  }
+  return order;
+}
+
+// The order repair both VALIDATES and ASSEMBLES with, so the two never diverge: with any
+// real window on the truck, the window-aware insertion above; otherwise the dispatcher's
+// chosen strategy order untouched (windows are then irrelevant to validity, capacity is
+// order-free).
 function orderForTruck(stops: SolverStop[], input: SolverInput, indexById: Map<string, number>): SolverStop[] {
-  const hasStrict = stops.some((s) => s.timeConstraint === 'STRICT' && s.timeWindow);
-  if (hasStrict) return windowAwareOrder(stops, indexById, input.matrix);
+  if (stops.some(hasWindow)) return windowAwareOrder(stops, indexById, input.matrix, input.departEpochSec ?? 0, input.strategy);
   const byNode = new Map(stops.map((s) => [indexById.get(s.id)!, s]));
   const nodes = stops.map((s) => indexById.get(s.id)!);
   return sequence(nodes, input.strategy, input.matrix).map((n) => byNode.get(n)!);
 }
 
 function etasFor(ordered: SolverStop[], indexById: Map<string, number>, matrix: SolverInput['matrix'], depart: number): number[] {
-  const etas: number[] = [];
-  let prev = 0, clock = depart;
-  for (const s of ordered) {
-    const idx = indexById.get(s.id)!;
-    clock += matrix.durationSec[prev][idx];
-    etas.push(clock);
-    clock += serviceSec(s);
-    prev = idx;
-  }
-  return etas;
+  return timeline(ordered, indexById, matrix, depart).etas;
 }
 
 // Pick the worst violator in an ordered route, with its spill reason. Capacity /
@@ -101,6 +137,9 @@ function worstViolator(
   // STRICT window: the stop with the greatest lateness past its window end.
   // Skipped entirely in advisory mode (windows flag, never spill).
   if (!enforceWindows) return null;
+  // A customer shut on the day has no window to be late for — there is no delivery to make.
+  const shut = ordered.find((s) => s.closedToday);
+  if (shut) return { stop: shut, reasons: [REASON.closedToday] };
   let worst: SolverStop | null = null, worstLate = 0;
   ordered.forEach((s, i) => {
     if (!windowOk(s, etas[i])) {
