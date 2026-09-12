@@ -21,7 +21,7 @@ import type {
 } from './routing-types.mts';
 import { DEFAULT_SERVICE_MIN } from './routing-types.mts';
 import {
-  truckCanCarry, capacityFits, loadFraction, emptyLoad, addLoad, computeLoad, REASON,
+  truckCanCarry, capacityFits, loadFraction, emptyLoad, addLoad, computeLoad, REASON, serviceStartSec,
 } from './routing-constraints.mts';
 
 const DEPOT_ID = 'DEPOT';
@@ -479,6 +479,7 @@ export function assembleRoute(
   const orderedStopIds = orderedNodes.map((n) => idByIndex.get(n)!);
   const legs: RouteLeg[] = [];
   const etas: number[] = [];
+  const waitSec: number[] = [];
   let prev = 0; // depot
   let clock = departEpochSec;
   for (const node of orderedNodes) {
@@ -491,7 +492,12 @@ export function assembleRoute(
       durationSec: matrix.durationSec[prev][node],
     });
     clock += matrix.durationSec[prev][node];
-    etas.push(clock);          // arrival at this stop
+    // A truck that beats the dock's opening WAITS — the ETA shown is when service can start,
+    // and the wait is carried separately so a card can say "idles 40 min for the dock".
+    const start = serviceStartSec(stop, clock);
+    waitSec.push(start - clock);
+    clock = start;
+    etas.push(clock);          // service start at this stop
     clock += serviceSec(stop); // dwell before departing
     prev = node;
   }
@@ -501,6 +507,7 @@ export function assembleRoute(
     orderedStopIds,
     legs,
     etas,
+    waitSec,
     load,
     capacity: { skids: truck.maxSkids, weightLbs: truck.maxWeightLbs, linearFeetIn: truck.deckLengthIn },
     feasible: true,

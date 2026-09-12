@@ -46,7 +46,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -140,7 +140,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.20.1';
+const APP_VERSION = '1.21.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -211,6 +211,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.21.0', 'THE BUILD PAYS ATTENTION TO TIME RESTRICTIONS NOW \u2014 AND THE SETUP PANEL SAYS WHAT IT IS DOING. Chad, on the panel review: \u201cDo them all. We can do an ai assist box. We need them to be able to pay attention to time restrictions, whether or not it\u2019s a tractor friendly stop.\u201d THE BIG ONE, MEASURED FIRST: a stop with a real 1:00p\u20131:30p appointment, stored the way the board stores it, went through a build with an ETA of 7:02a and no flag. The pipeline read windows with a parser anchored at \u201cHH:MM\u201d and the board carries full stamps (\u201c2026-09-14T13:00:00\u201d), so every window came back null and every stop went into the solver SOFT \u2014 for as long as the feature has existed. Receiving hours, on the very customer note the resolver already fetched for equipment, were never read at all. WHAT READS THE CLOCK NOW (lib/routing-time-windows.mts, 12 tests): the order\u2019s own window only when it is NARROWER than a working day and not the vendor\u2019s default creation slot \u2014 NuVizz stamps 08:00\u201320:00 on 88% of stops and STRICT on 93%, and accepting those would have overridden the chosen strategy on every build \u2014 combined with the customer\u2019s receiving hours for the BOARD day (typed or auto, legacy strings included) and closed days, through the same rules the map draws its clock marks by. The tightest combination wins; a 3pm appointment at a dock whose hours say 2pm keeps the appointment and names the disagreement. NEVER A TRACTOR MARK: the rule cannot read one, and a test pins that a green stop and a red stop with the same hours get the same window. WHAT THE SOLVER DOES WITH IT: the old window order was earliest-deadline-first, which with windows that actually exist would have idled a truck at a 1pm dock from 7am; a window has two edges and both are honoured \u2014 un-windowed stops keep the strategy order, each windowed stop is inserted where it is on time, then idles least, then adds least distance, and ETAs wait for a dock to open with the wait on the card (\u201cwaits 7 min for the dock\u201d). Advisory by default: a stop the ETA cannot make stays on the truck and is flagged; \u201cRespect time restrictions strictly\u201d in step 3 leaves it off, listed under Could not place with its reason \u2014 including \u201ccustomer is closed on the delivery day\u201d. The route header carries \u201c\u23f1 3 timed\u201d and \u201c\u26a0 1 outside window\u201d so a 30-stop route is judged from its first line, and each row shows the clock the build honoured. ROUTING_TIME_RESTRICTIONS=off puts the build back to the blind behaviour, every side at once. THE SEVEN SMALLER ONES from the same review, each a rule in lib/routing-select.js with tests: (1) \u201cLOOSE PIECES\u201d WAS TOTAL PIECES \u2014 the panel summed NuVizz pallets (skids + loose) under the word Loose, so Chad\u2019s screenshot read \u201cLoose pieces 29\u201d beside a Selected window reading \u201c0 loose\u201d for the same orders; Loose (volume) and Total pieces (pallets) are two lines now, and Selected reads \u201c24 orders \u00b7 21 stops\u201d in the unit the Compare header counts. (2) THE NOTE BOX DID NOTHING: the server has always gated the model on request.aiAssist and the panel never sent it. An AI assist checkbox (2 model calls per build, default off) reveals the box and sends the flag, and the result panel tells \u201cnever asked\u201d from \u201casked, and the site has no ANTHROPIC_API_KEY\u201d. (3) MIN TIME IS MIN DISTANCE on the free estimate \u2014 measured, 50 random boards, 50 of 50 identical \u2014 so it is offered only with Google drive-times on, and the pick is remembered. (4) Trucks-mode capacity fields wrote the fleet profile on blur, and a blank box wrote 0 skids for every later build in both modes; each profile is a draft with a Save that refuses anything that is not a truck. (5) Only the Compare card\u2019s Save says Save now that a build stages itself \u2014 the result panel\u2019s copy is \u201cKeep a copy (our system only)\u201d. (6) The green-only trailer rule is disabled, with the reason, when no trailer is in play. (7) Discard plan can close the cards the build opened by itself, and only those. 4,430 green.'],
   ['1.20.1', 'THE MANIFEST CARD WAS A PHOTOGRAPH, AND NOTHING ON IT SAID SO \u2014 SO A SCAN THAT FIXED THE BOARD COULD NOT BE SEEN TO. Chad, Saturday 10:42, on an amber card reading \u201c136 orders not routed yet \u2014 no board has been built for 2026-09-16\u201d: \u201cIf we ran a scan this morning to complete the board from last week which looks like we did. It should have fixed the manifest incompleteness.\u201d IT COULD NOT HAVE, AND NO SCAN EVER COULD. nuvizz_ops/manifest_check_latest \u2014 the document that card subscribes to \u2014 has exactly ONE writer, the email ingest, and it is reached only when a NEW, unmarked report email is parsed. A NuVizz scan does not touch it. \u201cCheck email now\u201d could not move it either: every email carries a per-email marker and an already-checked report is skipped for ever. So the verdict was read at the 1:10a pass, the board was refilled at 07:00 (141 calls, 136 stop_info), and between the overnight pass and the next night\u2019s report there was no way to ask again. AND THE SENTENCE ITSELF NAMED THE WRONG DAY. 2026-09-16 is the +2 SLACK day, of which manifest-window says in as many words: \u201cextra places to LOOK, and deliberately not extra days that must be scanned.\u201d The day that DECIDES was 2026-09-14, and it was covered \u2014 424 stops. THE CAUSE WAS NOT IN THE GRADING RULES, WHICH ARE RIGHT. v0.81.5 established that the count must travel with its standing and filed coverage/grade/expectedDelivery on the ARCHIVE record and the HISTORY row \u2014 and missed toStoredEmailRun, the one writer of the document the SCREEN reads. With the verdict dropped, the browser re-derives it from checkedAgainst alone, with no `required` and no `asOf`, which is the conservative reading that demands EVERY day in the window. THE DANGEROUS HALF: the day after tomorrow is never routed yet, so `conclusive` was false on essentially every nightly run, and gradeSuspects downgraded \u2018missing\u2019 to \u2018unrouted\u2019 on a false verdict. The RED alert and the nav badge were structurally DEAD \u2014 the one check that can catch an order Uline handed us that NuVizz never received could not raise its alarm. A missed flag is the order that never shipped, and this one had been mute. The four fields the server already computed are now carried; App.jsx\u2019s \u201cShipped X \u00b7 expected delivery Y\u201d line, written months ago and never once rendered for an email run, comes on with them. AND THE CARD CAN BE ASKED AGAIN. A new Re-check against the board button re-reads the ARCHIVED PDF and re-runs the same free diff against the board as it stands now \u2014 Firestore and the blob store only, ZERO NuVizz calls, with ?explain=1 as a dry run that says which night it would open and writes nothing. The card also states how old its reading is (\u201cRead against the board as it stood 10h ago\u201d), because the scan runs every five minutes and a ten-hour-old verdict looked identical to a fresh one \u2014 the same silent failure as a build that changes while the footer version does not. It states the age and nothing more: it cannot observe that a scan has run since, and claiming so would be reporting an intent as an outcome. It nudges only when pressing the button could change the answer, never on a clean card. THE OPERATIONAL CASE, PLAINLY: a Friday manifest is checked overnight against a Monday board still being built, so the run is honestly inconclusive; the board fills over the weekend; and if freight really is missing the next thing that could say so was Monday\u2019s own pass \u2014 the morning it was already due. That two-day blind spot is now a click. 15 new tests, including the card reproduced character-for-character from the stored shape and the red alert proven to fire again. MANIFEST_STORED_GRADE=off puts the old stripped shape and its grading back; the button and the endpoint are additive and revert with the commit.'],
   ['1.20.0', 'EVERY ADDRESS THAT MOVES NOW GETS WRITTEN DOWN, AND THERE IS A SCREEN FOR IT UNDER MORE. Chad asked whether we had changed the address on delivery 007174397, and answering it took a dozen file reads and five endpoint calls — then only answered half. The order arrived as “5965 PEACHTREE STREET” while our own sealed record for the same customer three months earlier read “5965 PEACHTREE CORS E STE B3”: same house number, same zip, no suite. NOTHING IN THIS SYSTEM WROTE AN ADDRESS CHANGE DOWN. The scan DETECTS one — it has to, to decide whether to re-enrich — and then throws the finding away into a local variable that dies with the run, and “Edit address” on the stop card left no trace at all. SO BOTH HALVES ARE RECORDED NOW. The vendor’s half is observed inside writeStops, which already holds the stored row and the fresh one, so it costs NO extra read and every scan path is covered by construction rather than by remembering. Our half is posted by the browser after an override saves, because “Edit address” and “Fix & move pin” write customer_notes straight from the client and never touch a function — and that override is what the pin, the board and the customer emails actually use, so a log without it would answer “did we change this” with a confident and wrong no. IT DOES NOT REUSE addrListSig, deliberately. That detector is zip5|streetNumber and it is coarse ON PURPOSE, because firing it spends a /stop/info per stop; both LED ENERGY PLUS addresses hash to “30071|5965”, so it was right to stay quiet and the change was still real. A log costs nothing to write, so its threshold is the honest one — and it only ever observes, never feeds the re-enrichment decision, or it would re-open the non-converging loop that comment warns about. CLASSIFIED BY WHAT IT COSTS TO BE WRONG ABOUT, which is also the sort order: moved (different house number or zip — the truck is loaded for the old building) → cleared → renamed → suite (a dropped STE B3 on an inside delivery is a driver in a lobby with five pallets) → city/state → filled → formatting. Rows carry the route and whether the order was ALREADY PLANNED when it moved, because an address that changes under a built truck is a different problem from one that changes while the order is still unplanned. THE NOISE FLOOR WAS MEASURED, NOT ASSUMED: 90 stops carried across the real 9/10 and 9/11 boards produced zero rows, and an address that normalises identical (“Blvd” vs “BOULEVARD”, a +4 zip) never files one — the list and /stop/info disagree like that across a large share of 700 stops every scan. Learning a field is not changing it either: our own June record carries state:null beside a good GA address. TWO VIEWS: desktop gets a table because the job is scanning a column of befores against a column of afters; the phone gets one card per change with before over after in a single flow column, since two addresses do not fit side by side at 360px. The PRO box is the first control on the screen — type 007174397 and the question that started this is answered in one tap — and nuvizz-stop-explain now carries the same rows, so asking about a stop shows its address history beside everything else. Zero NuVizz calls anywhere in it. 40 new tests. ADDRESS_HISTORY=off turns the recording and the endpoint off together.'],
   ['1.19.0', 'THE DRAW TOOL IS IN THE PANEL, AND A FINISHED BUILD OPENS ITS OWN CARDS. Two asks off one screenshot of Routing\u2019s left panel. (1) \u201cLEFT PANEL SHOULD HAVE AN ADD SELECTION BUTTON.\u201d Step 1 offered exactly one way to add stops in bulk \u2014 \u201cAdd stops in view\u201d, which takes the WHOLE viewport \u2014 while its own hint text told the dispatcher that Box, Lasso and Ninja were somewhere else: two unlabelled 36px icons on the map\u2019s left edge, where they have lived alone since v0.29.59. On a 700-stop board that gap is the difference between grabbing one dock out of a cluster and zooming until nothing else is on screen. \u201c\uff0b Add selection\u201d now sits under it and arms the SAME box draw the rail arms \u2014 one beginMode, so the amber armed block, Cancel, Esc and the rail\u2019s own highlight are unchanged; there is a second DOOR into the mode, not a second mode. ON A PHONE IT DROPS THE SHEET, because the two corners are tapped ON the map and the sheet is half the screen (the move armNinjaFromPanel already makes for the same reason), and a toast carries the instruction the dropped sheet took with it \u2014 an armed mode with nothing on screen to explain it reads as a broken map. The lasso stays on the rail and the hint now says so. (2) \u201cWHEN THIS GETS DONE BUILDING IT SHOULD POP THE ROUTES UP IN THE COMPARE PANELS SO I CAN SEE THEM.\u201d Build was the only solver on this screen that stopped short of that \u2014 the Engine\u2019s draft and cleanup runners have always staged the moment they returned. Until \u201cStage onto Compare cards\u201d was found and pressed, a finished plan existed only as engine-coloured lines on the map: nothing to drag, no driver picker, no Save, because the CARD is the editable object. It stages itself now. THE FOUR WAYS THAT SENTENCE GOES WRONG ARE A UNIT-TESTED RULE (lib/build-autostage.js, 8 tests): a TRUCKS-mode build never stages, because an abstract profile has no loadNbr to land on and staging one would invent a load nobody picked; it WAITS for routesView, which is empty for a render or two after the job lands, since staging the empty render would spend the one shot and the cards would then never open at all; it fires ONCE PER JOB, so a card closed on purpose stays closed instead of springing back with no way to be rid of it; and a SAVED load open in the result panel never re-stages last Tuesday\u2019s plan onto today\u2019s board. The manual button is untouched \u2014 staging skips ids already on a card, so it stays the way to put the plan back after closing one. Each change is its own commit: a git revert puts either one back on its own.'],
@@ -16826,12 +16827,8 @@ const LIVE_WRITE_FLAG = (() => {
 // within 500 feet, so this is a correction of the RECORD more than of the math.
 // Every route stem, re-sequence and finish-time estimate measures from here.
 const ROUTING_DEPOT = { name: 'Buford Terminal', lat: 34.147791, lng: -83.960911 };
-const ROUTING_STRATEGIES = [
-  ['MIN_DISTANCE', 'Min distance'],
-  ['MIN_TIME', 'Min time'],
-  ['CLOSEST_FIRST', 'Closest first'],
-  ['FARTHEST_FIRST', 'Farthest first'],
-];
+// The strategy list lives in lib/routing-select.js (strategyChoices) — "Min time" is gated
+// on Google drive-times there, and a rule in JSX could not be tested for it.
 const ROUTING_MAX_SELECTION = 150; // matrix cost is quadratic (Appendix B)
 const BASIC_RATE_PER_1K_USD = 5.0; // mirror of routing-types BASIC_MATRIX_RATE (display only)
 
@@ -18087,6 +18084,77 @@ function RoutingToolBtn({ active, onClick, disabled, title, children }) {
       onClick={onClick} disabled={disabled} title={title} aria-pressed={!!active}
       className={`w-9 h-9 flex items-center justify-center rounded-lg border shadow-sm ${active ? 'bg-blue-600 border-blue-700 text-white' : 'bg-white/95 border-slate-300 text-slate-700 hover:bg-white'} disabled:opacity-40 disabled:cursor-not-allowed`}
     >{children}</button>
+  );
+}
+
+// TRUCK PROFILE EDITOR — Trucks mode, one card per fleet profile. HOISTED to module scope for
+// the same reason RoutingToolBtn is: declared inside the screen it would be a new component
+// type on every render and lose its draft (and the cursor) on every board poll.
+//
+// WHY A DRAFT AND A BUTTON. The fields used to be defaultValue + onBlur → setDoc, so tabbing
+// out of a box WROTE the fleet profile: no "saved", no undo, and Number('') is 0, so a box
+// left blank became a 0-skid truck for every later build in BOTH modes (loads mode reads the
+// same profiles for its per-load vehicle picker). Nothing is written now until
+// profileDraftCheck (lib/routing-select.js, tested) says it is a truck and something changed.
+// `base` is what the draft is compared against: the stored profile, or the last thing this
+// card saved — so the button goes away after a save whether or not the profile list re-reads.
+function TruckProfileEditor({ p, picked, onTogglePicked, onSave }) {
+  const fromProfile = (prof) => ({
+    maxSkids: String(prof?.maxSkids ?? ''), maxWeightLbs: String(prof?.maxWeightLbs ?? ''), deckLengthIn: String(prof?.deckLengthIn ?? ''),
+    capabilities: { liftgate: !!prof?.capabilities?.liftgate },
+  });
+  const [base, setBase] = useState(p);
+  const [draft, setDraft] = useState(() => fromProfile(p));
+  const [flash, setFlash] = useState(null); // 'saving' | 'saved' | an error message
+  const check = profileDraftCheck(draft, base);
+  // A profile that changed elsewhere (another device, the nightly job) re-seeds an UNTOUCHED
+  // draft only — a half-typed number is never replaced under the dispatcher's cursor.
+  useEffect(() => {
+    if (check.dirty) return;
+    setBase(p); setDraft(fromProfile(p));
+  }, [p.maxSkids, p.maxWeightLbs, p.deckLengthIn, p.capabilities?.liftgate]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (flash !== 'saved') return undefined;
+    const t = setTimeout(() => setFlash(null), 2500);
+    return () => clearTimeout(t);
+  }, [flash]);
+  const save = async () => {
+    if (!check.valid || !check.dirty) return;
+    setFlash('saving');
+    try {
+      await onSave(check.normalized);
+      setBase(check.normalized); setDraft(fromProfile(check.normalized)); setFlash('saved');
+    } catch (e) { setFlash(e?.message || 'Could not save this profile'); }
+  };
+  const set = (k, v) => setDraft((d) => ({ ...d, [k]: v }));
+  return (
+    <div className="border rounded p-1.5">
+      <label className="flex items-center gap-2">
+        <input type="checkbox" checked={picked} onChange={onTogglePicked} />
+        <span className="font-medium">{p.label}</span>
+      </label>
+      <div className="grid grid-cols-3 gap-1 mt-1 text-[10px] text-slate-500">
+        {PROFILE_NUMERIC_FIELDS.map(([k, label]) => (
+          <label key={k} className="flex flex-col">{label}
+            <input type="number" value={draft[k]} onChange={(e) => set(k, e.target.value)} className="border rounded px-1 py-0.5 text-slate-800" />
+          </label>
+        ))}
+      </div>
+      <div className="flex items-center justify-between gap-2 mt-1">
+        <label className="flex items-center gap-1 text-[11px]">
+          <input type="checkbox" checked={!!draft.capabilities.liftgate} onChange={(e) => setDraft((d) => ({ ...d, capabilities: { ...d.capabilities, liftgate: e.target.checked } }))} /> liftgate
+        </label>
+        {check.dirty && (
+          <button onClick={save} disabled={!check.valid || flash === 'saving'} title={check.valid ? 'Write this profile — it applies to every later build, in both modes' : check.problems.join('; ')}
+            className="px-2 py-1 text-[11px] rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
+            {flash === 'saving' ? 'Saving…' : 'Save profile'}
+          </button>
+        )}
+        {!check.dirty && flash === 'saved' && <span className="text-[11px] text-emerald-700 font-semibold">Saved ✓</span>}
+      </div>
+      {check.dirty && !check.valid && <div className="text-[10px] text-red-600 mt-0.5">{check.problems.join(' · ')}</div>}
+      {flash && flash !== 'saving' && flash !== 'saved' && <div className="text-[10px] text-red-600 mt-0.5">{flash}</div>}
+    </div>
   );
 }
 
@@ -20771,6 +20839,15 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // A different day = a different roster — stale picks must never carry across dates.
   useEffect(() => { setPlanTargetKeys(new Set()); setPlanTargetProfileById(new Map()); setPlanLoadFilter(''); }, [selectedDate]);
   const [intent, setIntent] = useState('');
+  // AI assist is OPT-IN per build. The server has always gated the model on request.aiAssist
+  // (routing-build-background.mts) and the panel never sent it — so the note box was read by
+  // nothing, on every build, since it shipped. Default off: a build spends no model calls
+  // unless the dispatcher ticks it, and the result panel says which it was.
+  const [aiAssist, setAiAssist] = useState(false);
+  // Time restrictions are ADVISORY by default (sequenced around, flagged when missed);
+  // strict leaves an unmeetable stop off the truck. Same server switch (windowMode) the
+  // pipeline has carried since v0.3x — the panel simply never offered it.
+  const [windowStrict, setWindowStrict] = useState(false);
   const [strategy, setStrategy] = useState('MIN_DISTANCE');
   const [useGoogle, setUseGoogle] = useState(false);
   // When on, the auto-router puts ONLY green (tractor-friendly) stops on a 53'
@@ -21859,21 +21936,25 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // oversize across the selected stops, resolved through the same helpers the
   // map markers use.
   const tally = useMemo(() => {
-    let skids = 0, pieces = 0, weight = 0;
     const counts = {};
     let oversize = 0;
     const picked = [];
     for (const id of selectedIds) {
       const s = stopById.get(String(id));
       if (!s) continue;
-      skids += Number(s.cartons) || 0;       // NuVizz totalCartons = real skids
-      pieces += Number(s.pallets) || 0;      // NuVizz totalPallets = total pieces
-      weight += Number(s.weight) || 0;
       if (stopLooksOversize(s)) oversize += 1;
       picked.push(s);
       const note = notes.get(s.matchKey);
       for (const k of getRestrictionBadgeKeys(note || null)) counts[k] = (counts[k] || 0) + 1;
     }
+    // THE FREIGHT NUMBERS ARE A RULE, NOT ARITHMETIC IN A LOOP. This loop used to sum
+    // NuVizz `pallets` and the panel printed it as "Loose pieces" — `pallets` is the TOTAL
+    // piece count, loose is `volume`, and Chad's screenshot had the panel reading "Loose
+    // pieces 29" beside a Selected window reading "0 loose" for the same 24 orders.
+    // selectionTally (lib/routing-select.js, tested against exactly that fixture) also
+    // counts PHYSICAL stops the way the Compare header does, so "Selected 24" and a card
+    // saying "21 stops" stop looking like a disagreement.
+    const { orders, places, skids, loose, pieces, weight } = selectionTally(picked);
     const summary = Object.entries(counts).map(([k, n]) => `${n} ${RESTRICTION_ICONS[k]?.short || k}`);
     if (oversize) summary.push(`${oversize} oversize`);
     // THE CUBE LINE, AND IT COUNTS A DIFFERENT THING ON PURPOSE. Every entry above
@@ -21884,7 +21965,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     for (const [k, t] of Object.entries(tallyHandlingFlags(picked))) {
       summary.push(`${t.skids} skid${t.skids === 1 ? '' : 's'} ${HANDLING_FLAGS[k]?.short || k}`);
     }
-    return { count: selectedIds.size, skids, pieces, weight, summary };
+    return { count: orders, places, skids, loose, pieces, weight, summary };
   }, [selectedIds, stopById, notes]);
 
   const selectedStops = useMemo(
@@ -22833,9 +22914,18 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       truckProfileIds: loadsBound ? [] : selectedTrucks.map((t) => t.id),
       truckSnapshots: loadsBound ? solverTrucks : selectedTrucks,
       ...(loadsBound ? { trucks: solverTrucks, plannedLoads } : {}),
-      intent: intent.trim(), strategy,
+      intent: aiAssist ? intent.trim() : '',
+      // The REMEMBERED pick, gated on the matrix: Min time only means something on Google
+      // drive-times (lib/routing-select.js effectiveStrategy — the select shows the same).
+      strategy: effectiveStrategy(strategy, useGoogle),
       matrixMode: useGoogle ? 'google' : 'haversine',
       tractorOnlyGreen: trailerGreenOnly,
+      // OPT-IN per build. routing-build-background gates every model call on exactly this
+      // flag; the panel never sent it, so the note box was read by nothing (review finding #2).
+      aiAssist: aiAssist === true,
+      // Time restrictions: advisory (sequence around, flag a miss) unless the dispatcher asks
+      // for strict, which leaves an unmeetable stop off the truck.
+      windowMode: windowStrict ? 'strict' : 'advisory',
     };
     setLastRequest(request);
     try {
@@ -22851,7 +22941,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     } catch (e) {
       setJob({ status: 'error', error: e.message }); setBuilding(false);
     }
-  }, [selectedDate, selectedIds, selectedTrucks, intent, strategy, useGoogle, trailerGreenOnly, planMode, planTargets]);
+  }, [selectedDate, selectedIds, selectedTrucks, intent, strategy, useGoogle, trailerGreenOnly, planMode, planTargets, aiAssist, windowStrict]);
 
   // Save panel — a name (prefilled with a sensible auto-name per build) + optional
   // free-text initials. No native prompt(); no auth.
@@ -23042,11 +23132,23 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // Firestore write, saved Loads untouched. `planEdited` (a manual reorder or P3
   // re-sequence) gates a one-tap confirm so hand-tuning isn't lost by accident.
   const planEdited = !!(routeState && Object.values(routeState).some((s) => s.reordered));
+  // Cards the last finished build opened BY ITSELF (the v1.19.0 auto-stage). Kept so Discard
+  // can offer to close exactly those; a card the dispatcher opened by hand is never on it.
+  const [autoStagedKeys, setAutoStagedKeys] = useState([]);
+  const autoStagedOpenCount = useMemo(() => wbRoutes.filter((r) => autoStagedKeys.includes(r.key)).length, [wbRoutes, autoStagedKeys]);
   const discardPlan = useCallback(() => {
     setJob(null); setRouteState(null); setSaveState(null); setBuilding(false); setLastRequest(null);
+    // A plain discard leaves the cards standing, so from here on they are the dispatcher's.
+    setAutoStagedKeys([]);
     setLastAction('Discarded plan — selection kept');
     setMobilePanel('setup');
   }, []);
+  const discardPlanAndCloseCards = useCallback(() => {
+    const drop = new Set(autoStagedKeys);
+    setWbRoutes((prev) => prev.filter((r) => !drop.has(r.key)));
+    discardPlan();
+    setLastAction(`Discarded plan and closed its ${drop.size} card${drop.size === 1 ? '' : 's'} — selection kept`);
+  }, [autoStagedKeys, discardPlan]);
 
   // ── Stage a loads-bound build onto Compare cards ───────────────────────────
   // Each built route (keyed by the picked load's name) becomes/merges into a Compare card
@@ -23121,8 +23223,11 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       stagedJobId: autoStagedJobRef.current,
     })) return;
     autoStagedJobRef.current = String(job.id);
+    // Remember which cards THIS stage opens — not ones already open — so "Discard plan and
+    // close its cards" can take back exactly what the build put up and nothing else.
+    setAutoStagedKeys(plannedLoadsBound.map((b) => String(b.key)).filter((k) => !openRouteKeys.has(k)));
     stagePlanOntoLoads();
-  }, [job?.id, job?.status, plannedLoadsBound, routesView.length, viewing, stagePlanOntoLoads]);
+  }, [job?.id, job?.status, plannedLoadsBound, routesView.length, viewing, stagePlanOntoLoads, openRouteKeys]);
 
   // ── Engine draft (Assist slice 1): name 2-3 drivers, the LEARNED engine drafts
   // their routes from the day's unplanned pool. Drafting reads Firestore only
@@ -23404,6 +23509,10 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     </div>
   );
 
+  // Is a 53′ trailer among the vehicles this build would use? Loads mode: the profile picked
+  // per load; Trucks mode: the ticked profiles. Gates the green-only rule's checkbox.
+  const trailerRuleOn = tractorInPlay(planMode === 'loads' ? planTargets.map((t) => t.profile) : selectedTrucks);
+
   const controlsContent = (
     <>
       {/* DESKTOP ONLY. On a phone the date picker and the gear live in the sheet's board row — the one
@@ -23466,9 +23575,13 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         )}
         {lastAction && <div className="text-[11px] text-slate-500">{lastAction}</div>}
         <div className="bg-slate-50 rounded p-2 text-[12px] space-y-0.5">
-          <div className="flex justify-between"><span>Selected</span><b>{tally.count}</b></div>
+          {/* ORDERS AND STOPS, BOTH, in the unit the Compare header uses: orders sharing an
+              address ride as one truck stop, so "Selected 24" and a card reading "21 stops"
+              are the same freight. Shown as one number only when they agree. */}
+          <div className="flex justify-between"><span>Selected</span><b>{tally.places !== tally.count ? `${tally.count} orders · ${tally.places} stops` : tally.count}</b></div>
           <div className="flex justify-between"><span>Skids</span><b>{tally.skids}</b></div>
-          <div className="flex justify-between"><span>Loose pieces</span><b>{tally.pieces}</b></div>
+          <div className="flex justify-between"><span>Loose</span><b>{tally.loose}</b></div>
+          <div className="flex justify-between"><span>Total pieces</span><b>{tally.pieces}</b></div>
           <div className="flex justify-between"><span>Weight</span><b>{tally.weight.toLocaleString()} lb</b></div>
           {tally.summary.length > 0 && (
             <div className="text-[11px] text-amber-700 pt-1">⚠ {tally.summary.join(' · ')}</div>
@@ -23560,27 +23673,12 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         ) : (
           <>
             <div className="text-[11px] text-slate-400">({selectedTrucks.length} in play)</div>
+            {/* Each profile is a DRAFT with a Save — the fields used to write Firestore on blur
+                (TruckProfileEditor, module scope, says why that was a fleet-wide hazard). */}
             {profiles.map((p) => (
-              <div key={p.id} className="border rounded p-1.5">
-                <label className="flex items-center gap-2">
-                  <input type="checkbox" checked={selectedTruckIds.has(p.id)} onChange={() => setSelectedTruckIds((prev) => { const n = new Set(prev); n.has(p.id) ? n.delete(p.id) : n.add(p.id); return n; })} />
-                  <span className="font-medium">{p.label}</span>
-                </label>
-                <div className="grid grid-cols-3 gap-1 mt-1 text-[10px] text-slate-500">
-                  <label className="flex flex-col">Skids
-                    <input type="number" defaultValue={p.maxSkids} onBlur={(e) => saveProfile({ ...p, maxSkids: Number(e.target.value) })} className="border rounded px-1 py-0.5 text-slate-800" />
-                  </label>
-                  <label className="flex flex-col">Weight
-                    <input type="number" defaultValue={p.maxWeightLbs} onBlur={(e) => saveProfile({ ...p, maxWeightLbs: Number(e.target.value) })} className="border rounded px-1 py-0.5 text-slate-800" />
-                  </label>
-                  <label className="flex flex-col">Deck in
-                    <input type="number" defaultValue={p.deckLengthIn} onBlur={(e) => saveProfile({ ...p, deckLengthIn: Number(e.target.value) })} className="border rounded px-1 py-0.5 text-slate-800" />
-                  </label>
-                </div>
-                <label className="flex items-center gap-1 text-[11px] mt-1">
-                  <input type="checkbox" defaultChecked={!!p.capabilities?.liftgate} onChange={(e) => saveProfile({ ...p, capabilities: { ...p.capabilities, liftgate: e.target.checked } })} /> liftgate
-                </label>
-              </div>
+              <TruckProfileEditor key={p.id} p={p} picked={selectedTruckIds.has(p.id)}
+                onTogglePicked={() => setSelectedTruckIds((prev) => { const n = new Set(prev); n.has(p.id) ? n.delete(p.id) : n.add(p.id); return n; })}
+                onSave={saveProfile} />
             ))}
           </>
         )}
@@ -23589,20 +23687,50 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       {/* Controls */}
       <div className="border rounded p-2 space-y-2">
         <div className="font-semibold text-slate-700">3 · Plan</div>
-        <textarea value={intent} onChange={(e) => setIntent(e.target.value)} placeholder="Optional: tell the engine what you want (e.g. 'tight appointments first, keep the trailer off downtown')" rows={2} className="w-full border rounded p-1.5 text-[12px]" />
+        {/* STRATEGY. "Min time" is offered only with Google drive-times on: on the free
+            estimate the two are the same route (haversine makes every duration a constant
+            multiple of its distance — measured 50/50 identical), and a dropdown with two
+            identical answers teaches that the dropdown does nothing. The pick is KEPT:
+            effectiveStrategy reads it, so ticking Google brings Min time straight back. */}
         <label className="flex items-center justify-between text-[12px]">Strategy
-          <select value={strategy} onChange={(e) => setStrategy(e.target.value)} className="border rounded px-1 py-1">
-            {ROUTING_STRATEGIES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          <select value={effectiveStrategy(strategy, useGoogle)} onChange={(e) => setStrategy(e.target.value)} className="border rounded px-1 py-1">
+            {strategyChoices(useGoogle).map((c) => <option key={c.value} value={c.value} disabled={c.disabled}>{c.label}</option>)}
           </select>
         </label>
         <label className={`flex items-start gap-2 text-[12px] rounded p-1.5 ${useGoogle ? 'bg-amber-50 border border-amber-300' : 'bg-slate-50'}`}>
           <input type="checkbox" checked={useGoogle} onChange={(e) => setUseGoogle(e.target.checked)} className="mt-0.5" />
           <span>Use live Google drive-times <b>(costs money)</b><br /><span className="text-[11px] text-slate-500">Default is a free straight-line estimate. {selectedIds.size > 0 && <>This build ≈ {wouldBeElements} elements ≈ <b>${wouldBeCost.toFixed(2)}</b>.</>}</span></span>
         </label>
-        <label className="flex items-start gap-2 text-[12px] rounded p-1.5 bg-slate-50">
-          <input type="checkbox" checked={trailerGreenOnly} onChange={(e) => setTrailerGreenOnly(e.target.checked)} className="mt-0.5" />
-          <span>Only put <b style={{ color: ELIG_TRACTOR_COLOR }}>green</b> (tractor-OK) stops on a 53′ trailer<br /><span className="text-[11px] text-slate-500">Any stop not marked tractor-friendly is kept on a box truck. Red (box-only) stops are always kept off trailers.</span></span>
+        {/* TIME RESTRICTIONS. Chad: "we need them to be able to pay attention to time
+            restrictions, whether or not it's a tractor friendly stop." Every build now reads
+            each stop's appointment window AND its customer's receiving hours for the board
+            day (the server derives both, independent of any eligibility mark) and sequences
+            around them. Advisory = a stop the ETA cannot make stays on the truck and is
+            flagged; strict = it is left off and listed under "Could not place". */}
+        <label className={`flex items-start gap-2 text-[12px] rounded p-1.5 ${windowStrict ? 'bg-amber-50 border border-amber-300' : 'bg-slate-50'}`}>
+          <input type="checkbox" checked={windowStrict} onChange={(e) => setWindowStrict(e.target.checked)} className="mt-0.5" />
+          <span>Respect time restrictions <b>strictly</b><br /><span className="text-[11px] text-slate-500">Builds always sequence around appointment windows and receiving hours and flag a stop they cannot make in time. Strict leaves that stop <b>off the truck</b> (listed under “Could not place”) instead of flagging it.</span></span>
         </label>
+        {/* THE TRAILER RULE HAS A JOB ONLY WHEN A TRAILER IS IN PLAY. tractorOnlyGreen adds
+            box_truck_only to every non-green stop, which a box truck satisfies — with two
+            26ft loads picked (Chad's screenshot: NOR 2 / NOR 3) it changed nothing, and a
+            choice that changes nothing is offered as disabled, with the reason. */}
+        <label className={`flex items-start gap-2 text-[12px] rounded p-1.5 bg-slate-50 ${trailerRuleOn ? '' : 'opacity-60'}`}>
+          <input type="checkbox" checked={trailerGreenOnly} disabled={!trailerRuleOn} onChange={(e) => setTrailerGreenOnly(e.target.checked)} className="mt-0.5" />
+          <span>Only put <b style={{ color: ELIG_TRACTOR_COLOR }}>green</b> (tractor-OK) stops on a 53′ trailer<br /><span className="text-[11px] text-slate-500">{trailerRuleOn ? 'Any stop not marked tractor-friendly is kept on a box truck. Red (box-only) stops are always kept off trailers.' : 'No 53′ trailer among the vehicles in play — this rule has nothing to hold off. Pick a trailer load (or tick a tractor profile) and it lights up.'}</span></span>
+        </label>
+        {/* AI ASSIST — the note box lives behind it. Two model calls per build (the note →
+            strategy, and the plan → rationale + risk flags; per-stop geometry help is capped
+            at ten and rarely fires). Off, the build is fully deterministic. The word "engine"
+            is gone from this section: 4 · Engine below is the LEARNED engine, a different
+            system, and one word for two of them cost a second of attention every time. */}
+        <label className={`flex items-start gap-2 text-[12px] rounded p-1.5 ${aiAssist ? 'bg-amber-50 border border-amber-300' : 'bg-slate-50'}`}>
+          <input type="checkbox" checked={aiAssist} onChange={(e) => setAiAssist(e.target.checked)} className="mt-0.5" />
+          <span>AI assist <b>(2 model calls per build)</b><br /><span className="text-[11px] text-slate-500">Reads your note below into the strategy and writes the plan’s rationale and risk flags. Off, the note is not read and the build is fully deterministic.</span></span>
+        </label>
+        {aiAssist && (
+          <textarea value={intent} onChange={(e) => setIntent(e.target.value)} placeholder="Tell AI assist what you want (e.g. 'tight appointments first, keep the trailer off downtown')" rows={2} className="w-full border rounded p-1.5 text-[12px]" />
+        )}
         <button onClick={runBuild} disabled={!canBuild} className="w-full py-2 rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
           {building ? 'Building…'
             : planMode === 'loads' && planTargets.length > 0 ? `Build onto ${planTargets.length} load${planTargets.length === 1 ? '' : 's'}${useGoogle ? ' · Google drive-times' : ''}`
@@ -23692,7 +23820,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     <RoutingResultPanel job={job} result={baseResult} meta={meta} usedGoogle={usedGoogle} stopById={vStopById}
       plannedLoads={plannedLoadsBound} onStagePlan={stagePlanOntoLoads}
       onSave={savePlan} saveState={saveState} saveName={saveName} setSaveName={setSaveName} savedBy={savedBy} setSavedBy={setSavedBy}
-      onDiscard={discardPlan} planEdited={planEdited}
+      onDiscard={discardPlan} planEdited={planEdited} autoStagedOpen={autoStagedOpenCount} onDiscardAndClose={discardPlanAndCloseCards}
       routesView={routesView} onReorder={reorderStop} onMove={moveStop} onResequence={onResequence} readOnly={viewing}
       hoverId={hoverId} setHoverId={setHoverId} onOpenStop={openStop}
       savedLoad={viewedLoad} onCloseLoad={() => setViewedLoad(null)}
@@ -24232,8 +24360,11 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   );
 }
 
-function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, plannedLoads, onStagePlan, onSave, saveState, saveName, setSaveName, savedBy, setSavedBy, onDiscard, planEdited, routesView, onReorder, onMove, onResequence, readOnly, hoverId, setHoverId, onOpenStop, savedLoad, onCloseLoad, onRename, onToggleDispatch, onDelete, manageError }) {
+function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, plannedLoads, onStagePlan, onSave, saveState, saveName, setSaveName, savedBy, setSavedBy, onDiscard, planEdited, routesView, onReorder, onMove, onResequence, readOnly, hoverId, setHoverId, onOpenStop, savedLoad, onCloseLoad, onRename, onToggleDispatch, onDelete, manageError, autoStagedOpen = 0, onDiscardAndClose = null }) {
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  // Which discard is pending the hand-tuned confirm: the plan alone, or the plan AND the
+  // cards the build opened by itself (v1.19.0 auto-stage left them standing on Discard).
+  const [pendingClose, setPendingClose] = useState(false);
   const [riskOpen, setRiskOpen] = useState(false); // risk flags are a collapsed disclosure; never auto-expand
   useEffect(() => { setConfirmDiscard(false); setRiskOpen(false); }, [job, savedLoad]);
   // Live-build status gates only apply when NOT viewing a saved load.
@@ -24254,6 +24385,10 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, plannedLo
 
   const cost = meta.estimatedCostUsd || 0;
   const ai = result.aiAssist || {};
+  // Only the Compare card's Save writes NuVizz. With a loads-bound build now staging itself,
+  // this panel's own Save (a plan COPY in our store) sits on screen beside it — so it may not
+  // be called Save there (lib/routing-select.js planCopyLabels).
+  const copy = planCopyLabels(!!(plannedLoads && plannedLoads.length));
   return (
     <div className="space-y-3">
       {savedLoad ? (
@@ -24268,9 +24403,9 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, plannedLo
           its load's Compare card (real loadNbr/loadId); the card Save is the one write path. */}
       {!savedLoad && plannedLoads && plannedLoads.length > 0 && onStagePlan && (
         <div className="rounded border-2 p-2 text-[12px] space-y-1.5" style={{ borderColor: BRAND }}>
-          <div className="font-semibold text-slate-800">Bound to your NuVizz loads</div>
-          <div className="text-[11px] text-slate-600">One route per picked load: <b>{plannedLoads.map((b) => b.key).join(', ')}</b>. Stage them onto Compare cards, tweak anything (drag / ninja / driver), then hit <b>Save</b> on the cards — that's what writes NuVizz, with the full post-save verify.</div>
-          <button onClick={onStagePlan} className="w-full py-2 rounded text-white font-semibold" style={{ background: BRAND }}>Stage onto Compare cards →</button>
+          <div className="font-semibold text-slate-800">On your NuVizz loads’ Compare cards</div>
+          <div className="text-[11px] text-slate-600">One route per picked load: <b>{plannedLoads.map((b) => b.key).join(', ')}</b>. They opened as Compare cards the moment the build finished — tweak anything there (drag / ninja / driver), then hit <b>Save</b> on the cards; that is what writes NuVizz, with the full post-save verify. Closed a card? Put the plan back:</div>
+          <button onClick={onStagePlan} className="w-full py-2 rounded text-white font-semibold" style={{ background: BRAND }}>Stage onto Compare cards again →</button>
         </div>
       )}
 
@@ -24279,7 +24414,9 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, plannedLo
         <div className="font-semibold">{usedGoogle ? 'Google live drive-times' : 'Free estimate (straight-line)'}</div>
         <div className="flex justify-between"><span>Matrix elements</span><b>{meta.googleElementCount ?? '—'}</b></div>
         <div className="flex justify-between"><span>Estimated cost</span><b>${Number(cost).toFixed(2)}</b></div>
-        <div className="flex justify-between"><span>AI assist</span><b>{result.aiConfigured ? `${[ai.intent && 'intent', ai.explain && 'rationale', ai.geometry && 'geometry'].filter(Boolean).join(', ') || 'available, not needed'}` : 'off'}</b></div>
+        {/* Three states, not two: "off" used to cover both "never asked" and "asked, and the
+            site has no key" — and the second is a configuration problem somebody must fix. */}
+        <div className="flex justify-between"><span>AI assist</span><b>{aiAssistStatus({ requested: !!result.aiRequested, configured: !!result.aiConfigured, ai })}</b></div>
       </div>
 
       {!readOnly && <div className="text-[11px] text-slate-500">Drag a stop (or use ▲▼) to reorder a route. The map and ETAs update live.</div>}
@@ -24298,7 +24435,7 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, plannedLo
 
       {/* Routes (numbered; reorderable unless viewing a saved load) */}
       {(routesView || []).map((rv) => (
-        <RoutingRouteCard key={rv.truckId} rv={rv} stopById={stopById} usedGoogle={usedGoogle} readOnly={readOnly}
+        <RoutingRouteCard key={rv.truckId} rv={rv} stopById={stopById} usedGoogle={usedGoogle} readOnly={readOnly} timeRestrictions={result.timeRestrictions || {}}
           onReorder={onReorder} onMove={onMove} onResequence={onResequence} hoverId={hoverId} setHoverId={setHoverId} onOpenStop={onOpenStop} />
       ))}
 
@@ -24340,17 +24477,18 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, plannedLo
       {/* Save panel (live build only) */}
       {!savedLoad && (
         <div className="border-t pt-2 space-y-1.5">
-          <label className="block text-[11px] font-semibold text-slate-600">Save as
+          {copy.hint && <div className="text-[10px] text-slate-500">{copy.hint}</div>}
+          <label className="block text-[11px] font-semibold text-slate-600">{copy.title}
             <input value={saveName} onChange={(e) => setSaveName(e.target.value)} placeholder="Load name" className="mt-0.5 w-full border rounded px-2 py-1 text-[12px] font-normal text-slate-800" />
           </label>
           <input value={savedBy} onChange={(e) => setSavedBy(e.target.value)} placeholder="Saved by (initials, optional)" className="w-full border rounded px-2 py-1 text-[12px] text-slate-800" />
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             <button onClick={onSave} disabled={saveState === 'saving'} className="flex-1 py-2 rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
-              {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? '✓ Saved — shared' : 'Save load'}
+              {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? '✓ Saved — shared' : copy.button}
             </button>
             {onDiscard && (
               confirmDiscard ? (
-                <button onClick={() => { setConfirmDiscard(false); onDiscard(); }} className="shrink-0 px-3 py-2 rounded bg-red-600 text-white text-[12px] font-semibold">Discard hand-tuned plan?</button>
+                <button onClick={() => { setConfirmDiscard(false); if (pendingClose && onDiscardAndClose) onDiscardAndClose(); else onDiscard(); setPendingClose(false); }} className="shrink-0 px-3 py-2 rounded bg-red-600 text-white text-[12px] font-semibold">{pendingClose ? 'Discard hand-tuned plan + close its cards?' : 'Discard hand-tuned plan?'}</button>
               ) : (
                 <button
                   onClick={() => (planEdited ? setConfirmDiscard(true) : onDiscard())}
@@ -24358,6 +24496,17 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, plannedLo
                   className="shrink-0 px-3 py-2 rounded border border-red-300 text-red-700 text-[12px] font-semibold hover:bg-red-50"
                 >Discard plan</button>
               )
+            )}
+            {/* THE CARDS THE BUILD OPENED BY ITSELF. Since v1.19.0 a finished build stages
+                its own Compare cards, and Discard left them standing — consistent with a
+                manual stage, but now the default path. This takes back exactly what the
+                build put up; a card the dispatcher opened by hand is never touched. */}
+            {onDiscard && onDiscardAndClose && autoStagedOpen > 0 && !confirmDiscard && (
+              <button
+                onClick={() => { if (planEdited) { setPendingClose(true); setConfirmDiscard(true); } else onDiscardAndClose(); }}
+                title="Discard this plan AND close the Compare cards the build opened for it"
+                className="shrink-0 px-3 py-2 rounded border border-red-300 text-red-700 text-[12px] font-semibold hover:bg-red-50"
+              >…and close its {autoStagedOpen} card{autoStagedOpen === 1 ? '' : 's'}</button>
             )}
           </div>
           {saveState && saveState !== 'saving' && saveState !== 'saved' && <div className="text-[11px] text-red-600">{saveState}</div>}
@@ -24734,13 +24883,18 @@ function fmtRouteDur(sec) {
 // One truck's route — NUMBERED stops in the CURRENT sequence (matching the map
 // markers). On a live build: drag-and-drop or ▲▼ to reorder. When viewing a
 // saved load (readOnly), the reorder affordances are hidden (view-only this PR).
-function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMove, onResequence, hoverId, setHoverId, onOpenStop }) {
+function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMove, onResequence, hoverId, setHoverId, onOpenStop, timeRestrictions = {} }) {
   const route = rv.route;
   const rows = rv.order.map((id, idx) => {
     const s = stopById.get(String(id));
     return { seq: idx + 1, stopId: String(id), stop: s, customer: s?.businessName || id, eta: rv.etas?.[idx] ?? null,
+      // The build's own wait-for-the-dock at this stop. Only honest while the engine's order
+      // stands: a hand reorder recomputes ETAs straight-line, with no waiting model.
+      wait: rv.reordered ? 0 : (Number(route?.waitSec?.[idx]) || 0),
+      restriction: timeRestrictions[String(id)] || null,
       skids: Number(s?.cartons) || 0, pieces: Number(s?.pallets) || 0, weight: Number(s?.weight) || 0 };
   });
+  const timedCount = rows.filter((r) => r.restriction).length;
   const piecesTotal = rows.reduce((a, r) => a + r.pieces, 0);
   const skidsTotal = rows.reduce((a, r) => a + r.skids, 0);
   const miles = rv.totalDistanceMeters != null ? rv.totalDistanceMeters / 1609.34 : null;
@@ -24759,6 +24913,11 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
       <div className="px-2 py-1.5 flex items-center gap-2 border-b flex-wrap" style={{ borderLeft: `4px solid ${rv.color}` }}>
         <span className="font-semibold">{route.truckId}</span>
         <span className="text-[11px] text-slate-500">{rows.length} stops · {skidsTotal} skid{skidsTotal === 1 ? '' : 's'} · {piecesTotal} pc{piecesTotal === 1 ? '' : 's'}{miles != null ? ` · ~${miles.toFixed(1)} mi · ~${fmtRouteDur(rv.totalDurationSec)}` : ''}</span>
+        {/* THE CLOCK, ON THE HEADER — where the eye decides whether a route is good. A miss
+            used to be amber text under one row and a collapsed risk-flags disclosure, so a
+            30-stop route with three misses meant scrolling every row to find them. */}
+        {timedCount > 0 && <span className="text-[10px] font-semibold bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded" title="Stops with an appointment window, receiving hours or a closed day the build sequenced around">⏱ {timedCount} timed</span>}
+        {winViolated.size > 0 && <span className="text-[10px] font-semibold bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded" title="Stops whose ETA misses their window (or whose customer is closed that day) — kept on the route as advisory">⚠ {winViolated.size} outside window</span>}
         {rv.reordered && <span className="text-[9px] font-bold uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">Manual order</span>}
         {!readOnly && onResequence && rows.length > 1 && (
           <select
@@ -24805,7 +24964,14 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
                   {row.stop && <span className="shrink-0 text-[10px]"><ProLink stop={row.stop} onOpen={onOpenStop} /></span>}
                 </div>
                 <div className="text-[10px] text-slate-500">{formatRoutingEta(row.eta)} · {row.skids} sk · {row.pieces} pc · {row.weight.toLocaleString()} lb</div>
-                {winViolated.has(row.stopId) && <div className="text-[10px] text-amber-700 font-semibold">⚠ outside appointment window{apptWindowLabel(row.stop) ? ` (${apptWindowLabel(row.stop)})` : ''}</div>}
+                {/* The clock the build honoured for this stop: quiet grey when it was met,
+                    amber when the ETA misses it. The label is the build's own (order window ∩
+                    receiving hours, or "closed Friday"), not the raw NuVizz schedule. */}
+                {winViolated.has(row.stopId)
+                  ? <div className="text-[10px] text-amber-700 font-semibold" title={row.restriction ? row.restriction.sources.join(' · ') : undefined}>⚠ {row.restriction?.closedToday ? row.restriction.label : `outside its window${(row.restriction?.label || apptWindowLabel(row.stop)) ? ` (${row.restriction?.label || apptWindowLabel(row.stop)})` : ''}`}</div>
+                  : row.restriction
+                    ? <div className="text-[10px] text-slate-500" title={row.restriction.sources.join(' · ')}>⏱ {row.restriction.label}{row.wait >= 60 ? ` · waits ${Math.round(row.wait / 60)} min for the dock` : ''}</div>
+                    : null}
               </div>
               {!readOnly && (
                 /* Abreast on a phone, stacked on desktop. The touch floor makes each arrow a

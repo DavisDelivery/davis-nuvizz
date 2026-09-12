@@ -27,6 +27,7 @@ export const REASON = {
   needsLiftgate: 'needs a liftgate',
   needsLowClearance: 'needs a low-overhead-clearance truck',
   windowUnsatisfiable: 'appointment window cannot be met',
+  closedToday: 'customer is closed on the delivery day',
   noTruckFits: 'no selected truck can carry this stop',
 } as const;
 
@@ -149,7 +150,19 @@ export function truckCanCarry(stop: SolverStop, truck: SolverTruck): { ok: boole
 
 // Window check for a STRICT stop given an arrival time (epoch sec). SOFT windows
 // never fail (they're advisory and surface as risk flags instead).
+// `arrivalSec` is the SERVICE START — the ETA after any wait for the dock to open (the
+// repair loop and assembleRoute both wait, so an early truck is never "outside" a window it
+// simply idles into). What can still fail is arriving after the close, or a customer that
+// is shut on the day at all.
 export function windowOk(stop: SolverStop, arrivalSec: number): boolean {
+  if (stop.closedToday) return false;
   if (stop.timeConstraint !== 'STRICT' || !stop.timeWindow) return true;
   return arrivalSec >= stop.timeWindow.startSec && arrivalSec <= stop.timeWindow.endSec;
+}
+
+// The moment service can start at `stop` for a truck arriving at `arrivalSec`: the arrival,
+// or the window's open if the dock is not taking freight yet (classic VRPTW waiting).
+export function serviceStartSec(stop: SolverStop, arrivalSec: number): number {
+  const open = stop.timeConstraint === 'STRICT' && stop.timeWindow ? stop.timeWindow.startSec : null;
+  return open != null && arrivalSec < open ? open : arrivalSec;
 }

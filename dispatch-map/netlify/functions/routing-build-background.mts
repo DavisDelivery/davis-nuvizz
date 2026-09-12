@@ -22,6 +22,7 @@ import { isAnthropicEnabled, parseIntentModel, geometryAssistModel, explainModel
 import { DEPOT, type EquipmentReq, type SolverTruck } from './lib/routing-types.mts';
 import { getDoc } from './lib/firestore.mts';
 import { normalizeMatchKey } from '../../src/lib/matchKey.js';
+import { stopTimeRestriction, boardDefaultSlots, timeRestrictionsEnabled } from './lib/routing-time-windows.mts';
 import { withDeadline } from './lib/async-util.mts';
 import { requireUserForBackground } from './lib/background-gate.mts';
 
@@ -46,10 +47,17 @@ const TRAILER_BLOCKERS = new Set<EquipmentReq>([
   '26ft_max', 'no_53', 'no_overhead_clearance',
 ]);
 
-async function equipmentReqsFor(stop: any, opts?: { tractorOnlyGreen?: boolean }): Promise<EquipmentReq[]> {
+// ONE read of the customer note per stop. The equipment rule and the clock rule
+// (routing-time-windows) both read it; neither reads the other's fields.
+async function readNoteFor(stop: any): Promise<any | null> {
   try {
     const key = normalizeMatchKey(stop.businessName, stop.addr1, stop.city, stop.zip);
-    const note = await getDoc(`customer_notes/${key}`);
+    return (await getDoc(`customer_notes/${key}`)) || null;
+  } catch { return null; }
+}
+
+function equipmentReqsFrom(note: any, opts?: { tractorOnlyGreen?: boolean }): EquipmentReq[] {
+  try {
     let reqs: EquipmentReq[] = [];
     const arr = note?.equipment_restrictions;
     if (Array.isArray(arr)) for (const r of arr) if (KNOWN_REQS.has(r)) reqs.push(r);
@@ -72,12 +80,19 @@ async function equipmentReqsFor(stop: any, opts?: { tractorOnlyGreen?: boolean }
 // Resolve the pipeline's stop inputs from selectedStopIds against the live cache.
 async function resolveStops(tenant: string, date: string, selectedStopIds: string[], opts?: { tractorOnlyGreen?: boolean }): Promise<PipelineStopInput[]> {
   const { stops } = await readStops(tenant, date);
+  // TIME RESTRICTIONS (routing-time-windows.mts) — on unless ROUTING_TIME_RESTRICTIONS=off.
+  // The vendor's default creation slot is detected over the WHOLE board, never the
+  // selection: 21 unrelated customers on one 09:00–09:30 stamp is the tell, and a
+  // five-stop selection could never see it.
+  const timeOn = timeRestrictionsEnabled();
+  const defaultSlots = timeOn ? boardDefaultSlots(stops) : null;
   const byId = new Map(stops.map((s: any) => [String(s.stopNbr), s]));
   const want = new Set(selectedStopIds.map(String));
   const out: PipelineStopInput[] = [];
   for (const id of want) {
     const s = byId.get(id);
     if (!s || s.lat == null || s.lng == null) continue; // unmappable → skip (surfaced as missing)
+    const note = await readNoteFor(s);
     out.push({
       stopNbr: s.stopNbr, lat: Number(s.lat), lng: Number(s.lng),
       pallets: s.pallets, weight: s.weight, weightUOM: s.weightUOM,
@@ -85,7 +100,11 @@ async function resolveStops(tenant: string, date: string, selectedStopIds: strin
       signalSources: s.signalSources || null, addr2: s.addr2 || null,
       scheduledFrom: s.scheduledFrom || null, scheduledTo: s.scheduledTo || null,
       timeConstraint: s.timeConstraint || null,
-      equipmentReqs: await equipmentReqsFor(s, opts),
+      equipmentReqs: equipmentReqsFrom(note, opts),
+      // "Whether or not it's a tractor friendly stop": the clock rule never reads an
+      // eligibility mark (pinned by test), so a green stop and a red stop with the same
+      // hours get the same window.
+      timeRestriction: timeOn ? stopTimeRestriction({ stop: s, note, date, defaultSlots }) : null,
       businessName: s.businessName || null,
     });
   }
@@ -199,7 +218,10 @@ export default async function handler(req: Request): Promise<Response> {
     await updateJob(jobId, {
       status: 'done',
       finished_at: new Date().toISOString(),
-      result: { ...plan, aiConfigured: aiOn },
+      // aiRequested lets the result panel tell "never asked" apart from "asked, and the site
+      // has no ANTHROPIC_API_KEY" — the second is a configuration problem, and it used to read
+      // as the same "off".
+      result: { ...plan, aiConfigured: aiOn, aiRequested: r.aiAssist === true },
     });
   } catch (e: any) {
     console.error('routing-build:', e?.message);

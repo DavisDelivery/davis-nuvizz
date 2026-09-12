@@ -24,6 +24,7 @@ import { deriveGeometryForStops, type GeometryAssist } from './freight-geometry.
 import { parseIntentResponse, parseGeometryAssist } from './routing-intent.mts';
 import { solveRouting } from './routing-solver.mts';
 import { repair } from './routing-repair.mts';
+import type { StopTimeRestriction } from './routing-time-windows.mts';
 
 export interface PipelineStopInput {
   stopNbr?: string;
@@ -41,6 +42,9 @@ export interface PipelineStopInput {
   timeConstraint?: string | null; // "STRICT" | soft
   equipmentReqs?: EquipmentReq[];
   businessName?: string | null;
+  // The stop's clock as routing-time-windows resolved it (order window ∩ receiving hours,
+  // closed days), when the build reads time restrictions. Wins over the raw schedule fields.
+  timeRestriction?: StopTimeRestriction | null;
 }
 
 export interface PipelineRequest {
@@ -76,6 +80,8 @@ export interface RoutingPlan {
   rationale: string;
   riskFlags: string[];
   aiAssist: { intent: boolean; geometry: boolean; explain: boolean };
+  // stopId → the clock the build honoured for it (label + sources), for the route cards.
+  timeRestrictions: Record<string, StopTimeRestriction>;
   meta: Record<string, unknown>;
   generatedAt: string;
 }
@@ -122,16 +128,37 @@ function toSolverStops(
     // REAL-window detection: a placeholder/zero-length schedule yields no window and
     // SOFT, so a normal build has hasStrict=false and orderForTruck re-runs
     // sequence(strategy) — the optimizer's order is what ships.
-    const win = realWindowSec(date, s.scheduledFrom, s.scheduledTo);
+    let win = realWindowSec(date, s.scheduledFrom, s.scheduledTo);
     const strictFlag = String(s.timeConstraint || '').toUpperCase() === 'STRICT';
+    let strict = !!(win && strictFlag);
+    let closedToday = false;
+    let windowLabel: string | undefined;
+    // THE RESOLVED CLOCK WINS over the raw schedule fields. routing-time-windows has already
+    // combined the order's window with the dock's receiving hours for the board day, thrown
+    // out the vendor's all-day stamp and its default creation slot, and read closed days —
+    // through the same rules the map draws by. Minutes on the board day, on the same
+    // UTC-anchored clock as departure. A resolved window is STRICT regardless of NuVizz's
+    // timeConstraint flag (that flag is on 93% of stops and means nothing on its own).
+    const tr = s.timeRestriction;
+    if (tr) {
+      const midnight = hhmmToEpochSec(date, '00:00');
+      closedToday = !!tr.closedToday;
+      if (!closedToday && (tr.openMin != null || tr.closeMin != null)) {
+        win = { startSec: midnight + (tr.openMin ?? 0) * 60, endSec: midnight + (tr.closeMin ?? (24 * 60 - 1)) * 60 };
+        strict = win.endSec > win.startSec;
+      } else { win = null; strict = false; }
+      windowLabel = tr.label;
+    }
     return {
       id,
       lat: s.lat, lng: s.lng,
       skids: g.skids, weightLbs: g.weightLbs, linearFeetIn: g.linearFeetIn, oversize: g.oversize,
       serviceMin,
-      timeWindow: win,
-      timeConstraint: (win && strictFlag) ? 'STRICT' : 'SOFT',  // STRICT only with a REAL window
+      timeWindow: strict ? win : null,
+      timeConstraint: strict ? 'STRICT' : 'SOFT',  // STRICT only with a REAL window
       equipmentReqs: s.equipmentReqs || [],
+      closedToday,
+      windowLabel,
     };
   });
 }
@@ -165,7 +192,10 @@ function deterministicRiskFlags(input: SolverInput, plan: { routes: BuiltRoute[]
       if (s?.oversize) flags.push(`Stop ${id} is oversize — confirm it fits the assigned truck.`);
       if (s?.equipmentReqs?.length) flags.push(`Stop ${id} has equipment restrictions (${s.equipmentReqs.join(', ')}) — confirm before dispatch.`);
       // Advisory windows: flag only the stops actually OUT OF WINDOW, not every STRICT stop.
-      if (violated.has(id)) { const w = windowLabel(s); flags.push(`Stop ${id} is outside its appointment window${w ? ` (${w})` : ''} — kept on the route as advisory.`); }
+      if (violated.has(id)) {
+        if (s?.closedToday) flags.push(`Stop ${id}: customer is ${s.windowLabel || 'closed on the delivery day'} — kept on the route as advisory; there is no delivery to make.`);
+        else { const w = s?.windowLabel || windowLabel(s); flags.push(`Stop ${id} is outside its time window${w ? ` (${w})` : ''} — kept on the route as advisory.`); }
+      }
     }
   }
   if (plan.unassigned.length) flags.push(`${plan.unassigned.length} stop(s) spilled — review reasons.`);
@@ -261,6 +291,7 @@ export async function runPipeline(req: PipelineRequest, deps: PipelineDeps): Pro
     rationale,
     riskFlags,
     aiAssist: { intent: intentUsed && intent.source === 'model', geometry: geometryUsed, explain: explainUsed },
+    timeRestrictions: Object.fromEntries(req.stops.filter((s) => s.timeRestriction).map((s) => [String(s.stopNbr ?? s.id), s.timeRestriction!])),
     meta: {
       ...repaired.meta, depot, departEpochSec, serviceMin,
       matrixMode, matrixSource, googleElementCount, estimatedCostUsd,

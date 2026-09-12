@@ -98,6 +98,11 @@ export interface SolverStop {
   timeWindow: TimeWindowSec | null;
   timeConstraint: 'STRICT' | 'SOFT';
   equipmentReqs: EquipmentReq[];
+  // The customer is shut on the board's weekday (routing-time-windows). Advisory mode keeps
+  // the stop and flags it; strict mode leaves it off the truck with its own reason.
+  closedToday?: boolean;
+  // The clock in words, for the card and the risk flags ("8:00a–2:00p", "closed Friday").
+  windowLabel?: string;
 }
 
 export interface RouteLeg { fromId: string; toId: string; distanceMeters: number; durationSec: number }
@@ -113,6 +118,7 @@ export interface BuiltRoute {
   capacity: RouteLoad;     // the assigned truck's capacity (for load-vs-capacity bars)
   feasible: boolean;       // always true for a SHOWN route (repair guarantees it)
   windowViolatedIds?: string[]; // stops kept on this route whose STRICT window the ETA misses (advisory flag)
+  waitSec?: number[];      // aligned to orderedStopIds: seconds the truck idles at each stop for the dock to open
 }
 
 export interface UnassignedStop { stopId: string; reasons: string[] }

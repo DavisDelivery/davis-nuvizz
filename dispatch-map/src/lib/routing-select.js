@@ -864,3 +864,110 @@ export function mapPinClickActions({
   const openRoute = !isUnplanned && hasRouteKey;
   return { ...none, openRoute, toggleGroup: !openRoute };
 }
+
+// ── THE SETUP PANEL'S OWN RULES (v1.21.0) ────────────────────────────────────
+// Each of these was a decision buried in JSX until the panel review of 2026-09-12
+// found four of them wrong on screen. A rule in JSX cannot be tested; these can.
+
+// Step 1's tally. THE WORDS ARE THE POINT: the panel used to sum NuVizz `pallets`
+// and call it "Loose pieces". `pallets` is the TOTAL piece count (skids + loose);
+// loose is `volume`. Chad's own screenshot had the panel saying "Loose pieces 29"
+// beside a Selected window saying "0 loose" for the same 24 orders — both computing
+// correctly, one mislabelled. `places` is the physical-stop count the Compare
+// header uses (orders sharing a matchKey ride together as ONE truck stop), so the
+// panel and the card finally count in the same unit.
+export function selectionTally(stops) {
+  let skids = 0, loose = 0, pieces = 0, weight = 0, orders = 0;
+  const places = new Set();
+  for (const s of stops || []) {
+    if (!s) continue;
+    orders += 1;
+    skids += Number(s.cartons) || 0;    // NuVizz totalCartons = skids
+    loose += Number(s.volume) || 0;     // NuVizz volume = loose pieces
+    pieces += Number(s.pallets) || 0;   // NuVizz totalPallets = TOTAL pieces (skids + loose)
+    weight += Number(s.weight) || 0;
+    places.add(s.matchKey || String(s.stopNbr ?? ''));
+  }
+  return { orders, places: places.size, skids, loose, pieces, weight };
+}
+
+// The strategy dropdown. "Min time" is "Min distance" on the free estimate — the
+// haversine matrix makes every duration a constant multiple of its distance, so the
+// same order wins both (measured: 50 random boards of 10–49 stops, 50/50 identical).
+// Only live Google drive-times give the two anything to disagree about, so the option
+// is offered only then; the dispatcher's pick is REMEMBERED and comes back the moment
+// Google is ticked again (effectiveStrategy reads it, nothing overwrites it).
+export const ROUTING_STRATEGIES = [
+  ['MIN_DISTANCE', 'Min distance'],
+  ['MIN_TIME', 'Min time'],
+  ['CLOSEST_FIRST', 'Closest first'],
+  ['FARTHEST_FIRST', 'Farthest first'],
+];
+export function strategyChoices(useGoogle) {
+  return ROUTING_STRATEGIES.map(([value, label]) => {
+    const gated = value === 'MIN_TIME' && !useGoogle;
+    return { value, label: gated ? `${label} (needs Google drive-times)` : label, disabled: gated };
+  });
+}
+export function effectiveStrategy(strategy, useGoogle) {
+  const known = ROUTING_STRATEGIES.some(([v]) => v === strategy);
+  if (!known) return 'MIN_DISTANCE';
+  return (strategy === 'MIN_TIME' && !useGoogle) ? 'MIN_DISTANCE' : strategy;
+}
+
+// "Only put green stops on a 53′ trailer" is a rule about TRAILERS. With no tractor
+// among the vehicles in play it changes nothing — tractorOnlyGreen only adds
+// box_truck_only to non-green stops, which a box truck satisfies — so the checkbox is
+// shown disabled with the reason rather than offered as a choice that does nothing.
+export function tractorInPlay(profiles) {
+  return (profiles || []).some((p) => p?.capabilities?.tractor === true);
+}
+
+// The result panel's Save writes a plan COPY to our own store; the Compare card's Save
+// writes NuVizz. With a loads-bound build now staging itself, both are on screen at
+// once, so only the one that sends may say "Save".
+export function planCopyLabels(loadsBound) {
+  if (loadsBound) {
+    return {
+      title: 'Keep a copy as',
+      button: 'Keep a copy (our system only)',
+      hint: 'A copy of this plan in our system — it does not send anything. Save on the Compare cards is what writes NuVizz.',
+    };
+  }
+  return { title: 'Save as', button: 'Save load', hint: null };
+}
+
+// What the result panel says about AI assist. Three states, because "off" used to
+// cover two very different facts: the dispatcher never asked, or asked and the site
+// has no key — and the second one is a configuration problem somebody has to fix.
+export function aiAssistStatus({ requested = false, configured = false, ai = null } = {}) {
+  if (!requested) return 'off';
+  if (!configured) return 'requested — ANTHROPIC_API_KEY is not set on the site';
+  const used = [ai?.intent && 'note read', ai?.explain && 'rationale', ai?.geometry && 'geometry'].filter(Boolean);
+  return used.length ? `on — ${used.join(', ')}` : 'on — nothing needed it';
+}
+
+// A truck profile draft in "Trucks" mode. The old fields wrote Firestore on blur; a
+// blank Skids box became Number('') = 0 and a 0-skid fleet profile for every later
+// build in both modes. Nothing writes until it is a truck: every capacity a positive
+// finite number, liftgate a boolean, and something actually changed.
+export const PROFILE_NUMERIC_FIELDS = [
+  ['maxSkids', 'Skids'],
+  ['maxWeightLbs', 'Weight'],
+  ['deckLengthIn', 'Deck in'],
+];
+export function profileDraftCheck(draft, saved) {
+  const problems = [];
+  const normalized = { ...(saved || {}), ...(draft || {}) };
+  for (const [k, label] of PROFILE_NUMERIC_FIELDS) {
+    const raw = draft?.[k];
+    const n = typeof raw === 'string' ? Number(raw.trim() === '' ? NaN : raw) : Number(raw);
+    if (!Number.isFinite(n) || n <= 0) problems.push(`${label} must be a number above 0`);
+    else normalized[k] = n;
+  }
+  normalized.capabilities = { ...(saved?.capabilities || {}), ...(draft?.capabilities || {}) };
+  normalized.capabilities.liftgate = !!normalized.capabilities.liftgate;
+  const dirty = PROFILE_NUMERIC_FIELDS.some(([k]) => Number(draft?.[k]) !== Number(saved?.[k]))
+    || !!draft?.capabilities?.liftgate !== !!saved?.capabilities?.liftgate;
+  return { dirty, valid: problems.length === 0, problems, normalized };
+}
