@@ -48,6 +48,7 @@ const VIEWER_SET = [
   'nuvizz-driver-route', 'nuvizz-loads-roster', 'nuvizz-pull-today-stops',
   'nuvizz-undelivered-report', 'nuvizz-write-log', 'route-departures', 'routing-engine-data',
   'travel-model', 'customer-comms-config', 'gmail-auth', 'alert-recipients-config',
+  'address-queue',
 ];
 const DISPATCHER_SET = [
   'ai-search', 'anthropic-routing', 'debug-capture', 'manifest-email-check', 'manifest-upload',
@@ -80,6 +81,11 @@ test('the split endpoints gate their acting branch above their read — collapsi
     // because ADMIN_SET alone only greps for the word 'admin' — it cannot tell a gated read
     // from an open one, and an earlier draft of this endpoint did ship with the GET open.
     ['alert-recipients-config', 'viewer', 'admin', /POST/],
+    // The READ names a customer's address — the same fact the stop card shows anyone who opens
+    // it, so viewer. The POST waves a problem address off EVERY dispatcher's screen, which is
+    // why it is not: a work queue anybody passing by can silence is not a work queue, and the
+    // row it hides is one that sends a truck to the wrong door.
+    ['address-queue', 'viewer', 'dispatcher', /POST/],
   ];
   for (const [name, readRole, actRole, branch] of SPLIT) {
     const body = src(name);

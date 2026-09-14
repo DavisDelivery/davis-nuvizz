@@ -181,6 +181,7 @@ const SERVER_ONLY = [
   'loadscan_worklog',
   'loadscan_assignments',
   'load_scan_unmatched_aliases',
+  'address_queue_dismissals',
 ];
 
 // ── the LIVE block: the only part of this file that protects anything today ──
@@ -207,7 +208,7 @@ test('nothing in dispatch-map/src has a call site for a server-only collection �
 
 // ── the guard that keeps a real cutover from happening by accident ───────────
 
-test('a stranger with the public web config cannot write driver_auth/9999 {role:"dispatcher"} — the seven server-only collections are denied outright', () => {
+test('a stranger with the public web config cannot write driver_auth/9999 {role:"dispatcher"} — every server-only collection is denied outright', () => {
   for (const coll of SERVER_ONLY) {
     const body = grantsFor(coll);
     assert.ok(body != null, `${coll} has no match block in the cutover ruleset`);
