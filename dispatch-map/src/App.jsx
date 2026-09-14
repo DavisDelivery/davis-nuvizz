@@ -142,7 +142,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.25.0';
+const APP_VERSION = '1.25.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -213,6 +213,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.25.1', 'v1.25.0 SHIPPED ITS OWN CHANGELOG AND NOT ITS CODE. THIS IS THE CODE. Chad, on a phone showing v1.25.0: “No correct all button and no row drop down with the map!” He was right and the footer was lying to him. WHAT HAPPENED, PLAINLY: merging main mid-work hit a conflict on APP_VERSION and the newest changelog row — the routine collision this log has a whole entry about. The `git stash pop` that was meant to put the feature work back REFUSED, because a stash cannot apply over unmerged paths; it printed “the stash entry is kept” and left everything in the stash. The conflict was then resolved, `git add -A` committed the merge result, and out went a version bump plus a changelog describing a map, labelled address lines and two group buttons — with none of them in the bundle. An intent reported as an outcome, and it reached production. THE TESTS COULD NOT CATCH IT BECAUSE THEY WERE IN THE SAME STASH. The suite went green on 4,592 over code that was not there; with the work restored it is 4,603. Eleven assertions that each name one of the missing features sat in the stash beside the features. A suite that vanishes with the change it guards proves nothing, and “tests passed” is not evidence the change shipped. WHAT IS ACTUALLY HERE NOW, verified marker by marker in the built bundle rather than assumed: the editor opens seeded with the suggested split instead of the mis-split; the address lines are labelled Address 1 · street and Address 2 · suite / dock; there are two group buttons — Correct N on the board (0 calls) and Correct N + NuVizz (3 each) — and the price quoted counts only the rows a push would actually change; every row has a Map button opening a grey pin where it sits against a green pin where the fix lands, draggable, savable; and a red count rides Address history in both navigations. AND THE SHIPPED BUNDLE STILL CARRIED THE v1.24.0 GROUP-PUSH BUG, which is the part that mattered: its runner sent row.shown. For an uncorrected mis-split row row.shown EQUALS what NuVizz already holds, so the ORDER’s address would not have changed and no freight was mis-addressed — but Firestore would have taken an address_override of the broken split, and addressLooksOff returns false the moment an override exists. Five genuinely broken addresses would have gone quiet: dropped off the queue as corrected, 15 vendor calls spent to restate the vendor’s own address, and a dispatcher note on each live order claiming a correction that never happened. A row that leaves the work list while still wrong is the worst outcome this screen can produce.'],
   ['1.25.0', 'THE QUEUE’S “CORRECT” BUTTON DID NOT CORRECT, AND ITS GROUP PUSH WOULD HAVE SENT NUVIZZ ITS OWN BAD ADDRESS BACK. Chad, an hour after v1.24.0 shipped: “i clicked correct but it didn’t correct”. The editor opened seeded with what the row SHOWS — which on a mis-split row IS the mis-split: “PMB 271” in the street box and “90F GLENDA TRCE” in the suite box. The row had computed the fix and never offered it, and on desktop it did not even print that one existed. THE WORSE HALF WAS NOT ON SCREEN: the group push sent the same shown fields, so pushing a mis-split row would have handed the carrier back its own broken address AND written it as an address_override — marking the row corrected when nothing had been. A bulk action that quietly certifies broken rows as fixed is worse than no bulk action. Both now send correctedFields(row), and a row whose address NuVizz already holds is corrected on the board and NOT pushed, because 3 calls to restate the vendor’s own address buys the freight nothing — the fix for those rows is the pin. THE ADDRESS LINES ARE LABELLED NOW. They were placeholders, and a placeholder disappears the moment a field has a value, which here it always does — so the two lines rendered as two unlabelled boxes with nothing saying which one the geocoder reads. That is the exact fact a mis-split row exists to make you judge. CORRECT ALL AT ONCE, AND ON THE BOARD ALONE. Two group buttons off one runner: “Correct N on the board” applies every suggested split and re-geocodes the pin for nothing, and “Correct N + NuVizz” does that and tells the carrier at 3 calls each. The price quoted is for the rows a push would actually change, not everything ticked. AND THERE IS A MAP ON EVERY ROW. Chad: “show original pin and new pin location as well as be able to just move the pin where i want it.” Grey pin where it sits today, green pin where the corrected address lands, drag the green one anywhere and save it. On a corrected-not-pinned row that IS the diagnosis — the grey pin was geocoded from the OLD address, and only seeing them side by side says so. A geocode Google refuses still opens the map with a draggable pin, because the addresses it cannot find are the ones most worth a human who has been there. A RED COUNT ON “ADDRESS HISTORY” IN BOTH NAVIGATIONS says how many are waiting, so the queue is not a screen you have to remember to go looking at. One Firestore read a session, zero NuVizz calls, and working the list down moves it.'],
   ['1.24.1', '“RH 1-5” IS ONE IN THE AFTERNOON, AND WE WERE READING IT AS ONE IN THE MORNING. Chad: “fix that rh 1-5 is always going to be pm as you have to imagine our delivery window for the most part is 8am - 5pm so no one is going to have those receiving hours.” MEASURED ON v1.24.0 BEFORE ANYTHING WAS CHANGED: “RH 1-5” stored 01:00–05:00, “RECEIVING HOURS 2-4” stored 02:00–04:00, “RH 1-4 30” stored 01:00–04:30. A window that sits in the small hours says the customer is SHUT FOR THE WHOLE WORKING DAY, so every stop there carried an hours_risk row for ever — crying wolf, which is the exact complaint that opened v1.23.1 a day earlier, and a dispatcher who learns to scroll past a flag has lost the flag. Worse than a bad flag: routing-time-windows.mts has read these same hours since v1.2x, so the solver was building against a window no truck could serve. Run, not argued — a synthetic board with a 1-5 dock produced “the load cannot reach MERIDIAN SUPPLY before it closes at 5:00a” in CRITICAL, and after the fix produced no flag at all. WHY IT SLIPPED THROUGH FOR MONTHS. The business-hours correction only ever fired on a DESCENDING pair — “7-3” becomes 7:00a–3:00p because a close cannot precede its open — and an ASCENDING pair of small numbers is perfectly well-formed, so it sailed past as dawn. TWO PARSERS HAD THE SAME HOLE, and finding only the first would have fixed nothing for the customers most affected: signal-scanner reads a fresh Uline order, while board-flags’ legacy-string branch reads a range already sitting in Firestore as “1-5”, and those notes are never re-parsed from an order. Both now import ONE rule (lib/daytime-window.js), so a stored “1-5” and a freshly scanned “1-5” can never come to disagree about the same dock. THE RULE IS A COMPARISON, NOT A THRESHOLD, and that is the whole design. When NEITHER half wrote a meridiem both readings are grammatically available, so we take the one that actually overlaps the 8am–5pm delivery day: “1-5” overlaps it for 0 minutes as morning and 240 as afternoon, so afternoon wins. A TIE CHANGES NOTHING — “6-7” and “7-8” fit the delivery day in neither reading, and a threshold rule like “shift anything ending before 8am” would have flung them to six and seven in the evening on no evidence at all. A tie means we were told nothing, and the honest answer to being told nothing is to change nothing. WHAT IT REFUSES TO TOUCH, each pinned by a test: a written meridiem is the customer speaking, so “1AM-5AM” stays pre-dawn even though no dock works then — guessing over an explicit statement is how the v0.54.60 “CLOSES AT 4” regression happened; genuine early docks that reach the delivery day keep their mornings (“5-9”, “6-10”, “4-12”); “8-12” and “9-11” are unmoved; a naked “1-5” with no hours label is still refused, because reading it as afternoon does not smuggle it past the last-resort tier’s daytime gate; a shift that would cross midnight is refused rather than wrapped; and the two <input type="time"> boxes on the stop card write explicit 24-hour values that the rule has no business touching. The WEAVER lunch split from v1.23.1 still reads as one 8-to-5 envelope, and “RH 8-12 & 1-5” still closes at five rather than stacking two twelve-hour shifts. A clean before/after against a real origin/main worktree changed exactly SEVEN rows out of forty-odd and left everything else byte-identical. THE ONE JUDGEMENT CALL, SAID OUT LOUD: “RH 4-8” now reads 4:00p–8:00p instead of 4:00a–8:00a. Chad’s ruling is that a pre-dawn dock is not a real thing here, and 4pm at least touches the delivery day where 4am touches nothing — but it is the only row that moved which nobody explicitly asked about. AND A LONE OPEN WAS WORSE THAN A BAD RANGE, which the mapping pass turned up and is fixed here rather than left: “OPENS AT 1”, “RECEIVING AFTER 1” and “NO DELIVERIES BEFORE 1” all stored 01:00, and “OPENS AT 12” stored MIDNIGHT — the AM rule maps hour 12 to 0. A bad close cries wolf; a bad OPEN is silent and costs freight, because routing-time-windows takes Math.max of the opens, so a 01:00 open is no constraint whatsoever and the solver books the stop first thing for a dock that does not raise its door until one in the afternoon. That is a truck at a closed dock. A lone open has no second number to compare, so it gets a FLOOR instead of a comparison, and the floor is not a new opinion: 5:00a is what the bare-pair tier has called the earliest a dock opens since Chad asked it to learn bare pairs. So 1 through 4 read as afternoon, 12 reads as noon, and 5, 6 and 7 keep their mornings because early docks are ordinary. The asymmetry with the close-only rule (which reads 1 through 7 as afternoon) is deliberate and the reason is one line: a dock that opens at 6am is normal and a dock that closes at 6am is not. PUT IT BACK WITH HOURS_PM_SHIFT=off on the functions and VITE_HOURS_PM_SHIFT=off in the bundle; the rule is read on both sides on purpose, because a switch that reverted the scanner and not the board would leave the two disagreeing about the same customer, which is a new bug wearing the old feature’s name. Default ON, and a malformed value leaves it ON. 48 new tests, 4,592 green. A clean before/after against a real origin/main worktree moved 13 rows of 59 and left the other 46 byte-identical.'],
   ['1.24.0', 'THERE IS A LIST OF THE ADDRESSES THAT WILL SEND A TRUCK TO THE WRONG DOOR, AND YOU CAN FIX THEM FROM IT. Chad: “list by board day every stop that the system has flagged as a problem address, let us correct it there, and push individuals or the group to nuvizz with the correction.” ADDRESS HISTORY IS THREE TABS NOW. Problem addresses (the queue, and the default), NuVizz changed it — its own tab because “they re-addressed our order” is different work from “we need to fix this”, and the full log. Today plus the next two BUSINESS days, which is exactly what the scan still rewrites; older days are frozen and correcting them is archaeology after the freight moved. THREE SIGNALS, AND THE MIDDLE ONE NOTHING COULD SEE BEFORE. No pin at all (the stop cannot be routed or lasso-selected). Mis-split (a suite where the street should be, so the pin was geocoded off the wrong line). And CORRECTED, PIN NOT MOVED — an address somebody fixed while the geocode quietly failed. stopPosition then falls through to the FEED coordinates, which were geocoded from the OLD wrong address: the card reads the right street, the pin sits on the old building, no_location stays silent because a position does exist, and nothing flagged it. Chad, shown it: “WE should flag this if it happens.” It flags retroactively, so stops corrected weeks ago whose geocode failed appear the first time the screen is opened. AND THE BUG THAT CREATED THEM IS FIXED. “Edit address” put its geocode INSIDE the same try as the Firestore write, so a ZERO_RESULTS threw the whole correction away — on exactly the addresses most likely to be wrong. “Fix & move pin” had always saved anyway; the two paths disagreed and only one was right. Both now save the text, skip the pin, and say so. PUSHING IS 3 CALLS AND THE NOTE IS FREE. Chad asked for a dispatcher note recording that we fixed the address, then asked whether it meant more calls. It does not: addStopNote runs the same read/write/verify ladder, so bolting it on would have doubled every push to 6 and a 40-row group to 240. It is merged into the SAME partialUpdate as the address block — and because both drift diffs ignore `comments` by design, a note NuVizz silently dropped would have read as a clean success, so the op now carries an explicit noteLanded read from the order. The note says what it was and what it is now, not just that something changed. EVERY BUTTON PRICES ITSELF BEFORE YOU PRESS IT, read free from a dry run that also reports whether live writes are switched on at all. A run that would blow the day’s ceiling cannot be started; the ceiling comes from the stored setting, never the 2,000 constant. The group push is strictly serial (each order is three round trips inside a 26-second budget, and one row can spend 20 seconds in backoff), stops dead on a role, switch, breaker or ceiling refusal rather than producing N identical failures, and its abort says “stop after this one” because there is no in-flight abort to promise. Select-all skips delivered freight and rows with no order id — the twin guard is disarmed without one, and re-addressing the wrong twin sends freight where nobody chose. WAVING A ROW OFF HIDES IT FOR EVERYONE, and it comes BACK if the address changes again, because the dismissal stores a fingerprint of what was waved off rather than just the row’s name. Server-written into its own collection, field-masked so two dispatchers clearing two rows both land, and closed to the browser in firestore.rules. ADDRESS_QUEUE=off puts the whole screen back.'],
@@ -10026,7 +10027,7 @@ function makeDriverLabelOverlayClass(google) {
 // on the morning something is already wrong. The bar that is actually at the top carries it,
 // and Shell is the one that knows which that is (see headerAtTop) — this component never
 // guesses. Defaults true so any caller that does not pass it behaves exactly as before.
-function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnread = 0, presence = null, manifestBadge = 0, atTop = true }) {
+function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnread = 0, presence = null, manifestBadge = 0, addrBadge = 0, atTop = true }) {
   // Starts open so the tabs under it stay one tap away; remembered per device.
   const [moreOpen, setMoreOpen] = useState(() => {
     try { return window.localStorage.getItem('dd_more_open') !== '0'; } catch { return true; }
@@ -10144,8 +10145,8 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
             >
               <MoreHorizontal size={12} /> More
               <ChevronDown size={11} className={`ml-auto ${moreOpen ? 'rotate-180' : ''} transition-transform`} />
-              {!moreOpen && manifestBadge > 0 && (
-                <span className="min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{manifestBadge > 99 ? '99+' : manifestBadge}</span>
+              {!moreOpen && (manifestBadge + addrBadge) > 0 && (
+                <span className="min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{(manifestBadge + addrBadge) > 99 ? '99+' : (manifestBadge + addrBadge)}</span>
               )}
             </button>
             {moreOpen && (
@@ -10183,6 +10184,9 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                   role="menuitem"
                 >
                   <MapPinned size={12} /> Address history
+                  {/* BOTH NAVIGATIONS OR NEITHER. A badge on the laptop and not the phone is
+                      the v0.54.50 shape — dispatch runs on a phone. */}
+                  {addrBadge > 0 && <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{addrBadge > 99 ? '99+' : addrBadge}</span>}
                 </button>
                 {/* UAT only — and here BECAUSE of the note above: dispatch runs on a phone,
                     and a screen added to one navigation and not the other is a screen that
@@ -27038,6 +27042,7 @@ function Shell() {
   }, []);
 
   const [moreBadge, setMoreBadge] = useState(() => manifestIssues(loadStored()).badge);
+  const addrBadge = useProblemAddressCount();
   useEffect(() => {
     const sync = () => setMoreBadge(manifestIssues(loadStored()).badge);
     window.addEventListener('dd-manifest-check-updated', sync);
@@ -27202,6 +27207,7 @@ function Shell() {
           smsUnread={smsUnread}
           presence={presence}
           manifestBadge={moreBadge}
+          addrBadge={addrBadge}
           atTop={headerAtTop}
         />
       ) : (
@@ -27272,12 +27278,12 @@ function Shell() {
             <MoreMenu
               activeId={debugOpen ? 'debug' : tab}
               onPick={(id) => (id === 'debug' ? setDebugOpen(true) : setTab(id))}
-              badge={moreBadge}
+              badge={moreBadge + addrBadge}
               items={[
                 { id: 'manifest', label: 'Manifest check', hint: 'Uline nightly vs the scan', icon: <FileCheck size={14} />, badge: moreBadge },
                 { id: 'comms', label: 'Customer emails', hint: 'Delivery-complete email program', icon: <Mail size={14} /> },
                 { id: 'flaghistory', label: 'Flag history', hint: 'Every flag, and what happened to it', icon: <Flag size={14} /> },
-                { id: 'addrhistory', label: 'Address history', hint: 'Every address that changed, and who changed it', icon: <MapPinned size={14} /> },
+                { id: 'addrhistory', label: 'Address history', hint: addrBadge > 0 ? `${addrBadge} address${addrBadge === 1 ? '' : 'es'} to fix — wrong door, wrong pin, or no pin at all` : 'Every address that changed, and who changed it', icon: <MapPinned size={14} />, badge: addrBadge },
                 { id: 'diag', label: 'Diagnostics', hint: 'Scan health, API calls, schedule', icon: <Activity size={14} /> },
                 { id: 'debug', label: 'Debug this view', hint: 'Bundle what you are looking at', icon: <Bug size={14} /> },
                 // UAT ONLY, keyed on the HOSTNAME — the one fact about a deploy nobody can
@@ -30181,6 +30187,34 @@ const QueueSignalBadge = ({ signal }) => {
 
 const oneLineAddr = (a) => [a?.addr1, a?.addr2, a?.city, a?.state, a?.zip].filter(Boolean).join(', ');
 
+/**
+ * WHAT A CORRECTION ACTUALLY SENDS — the fixed address, never the broken one.
+ *
+ * THIS WAS THE BUG. The editor opened seeded with `row.shown`, which on a mis-split row IS the
+ * mis-split: "PMB 271" in the street box and the real street in the suite box. Chad pressed
+ * Correct and nothing was corrected, because the row knew the fix and never offered it.
+ *
+ * Worse, the GROUP push sent `row.shown` too — so pushing a mis-split row would have handed
+ * NuVizz back its own bad address AND written it as an address_override, marking the row
+ * corrected when nothing had been. A queue whose bulk action quietly certifies broken rows as
+ * fixed is worse than no queue.
+ *
+ * For a row with no suggested split (no pin, or a stale pin) the address is already right and
+ * the fix is the PIN — so the fields are unchanged and the geocode does the work.
+ */
+function correctedFields(row) {
+  const s = row?.suggestion;
+  const base = row?.shown || {};
+  return s ? { ...base, addr1: s.addr1 || base.addr1, addr2: s.addr2 ?? base.addr2 } : { ...base };
+}
+
+/** Is there anything for NuVizz to learn from this row? Pushing an address the order already
+ *  holds spends 3 calls to tell the vendor what it told us. The fix for those rows is the pin,
+ *  which is ours alone and never travels. */
+function worthPushing(row) {
+  return oneLineAddr(correctedFields(row)) !== oneLineAddr(row?.vendor);
+}
+
 /** The dispatcher note that rides the SAME partialUpdate as the address (no extra call).
  *  It states what Davis corrected and when — true whether or not the vendor stored it, which
  *  matters because the note and the address land or fail together. A bare "address corrected"
@@ -30474,6 +30508,8 @@ function useAddressQueue(nonce) {
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'read failed');
       setData(j);
+      // Working the list down has to move the badge, or it goes stale and stops being read.
+      bustProblemAddressCount();
     } catch (e) { setErr(String(e.message || e)); } finally { setLoading(false); }
   }, [showDismissed]);
   React.useEffect(() => { load(); }, [load, nonce]);
@@ -30557,15 +30593,31 @@ function useQueuePush(today, reload) {
   }, []);
   React.useEffect(() => { readBudget(); }, [readBudget]);
 
-  const runGroup = React.useCallback(async (rows, google) => {
+  // ONE RUNNER, TWO BUTTONS. Chad: "I want to be able to correct all at once" and "correct only
+  // in dispatch map as well". Board-only spends nothing and is the safe sweep; with-push is the
+  // same pass plus the vendor write. Sharing the loop is what stops the two drifting about what
+  // "corrected" means.
+  const runGroup = React.useCallback(async (rows, google, push = true) => {
     setRunning(true); setFatal(null); stopRef.current = false;
     const acc = {};
     for (const row of rows) {
       if (stopRef.current) { acc[row.key] = { kind: 'skipped', text: 'Stopped before this one.' }; setResults({ ...acc }); continue; }
       try {
-        const { pushed } = await saveQueueCorrection({
-          row, fields: row.shown, google, push: true, today, clientOpId: `op_queue_${row.key}`,
+        // Board-only for a row whose address NuVizz already holds, even on a push run: the
+        // fix for those is the pin, and 3 calls to restate the vendor's own address is spend
+        // for nothing.
+        const sendToVendor = push && worthPushing(row);
+        const { pushed, geoErr } = await saveQueueCorrection({
+          row, fields: correctedFields(row), google, push: sendToVendor, today, clientOpId: `op_queue_${row.key}`,
         });
+        if (!sendToVendor && !pushed) {
+          acc[row.key] = geoErr
+            ? { kind: 'partial', text: 'Address saved, but the pin could not be moved — still on the queue.' }
+            : { kind: 'ok', text: push ? 'Corrected on the board (NuVizz already had this address).' : 'Corrected on the board.' };
+          setResults({ ...acc });
+          await new Promise((r) => setTimeout(r, 0));
+          continue;
+        }
         acc[row.key] = pushed;
         setResults({ ...acc });
         if (pushed?.fatal) {
@@ -30583,7 +30635,7 @@ function useQueuePush(today, reload) {
       await new Promise((r) => setTimeout(r, 500));
     }
     setRunning(false);
-    readBudget();
+    if (push) readBudget();
     reload();
   }, [today, reload, readBudget]);
 
@@ -30598,6 +30650,41 @@ function queueCostLine(selected, budget) {
   const left = budget && budget.ceiling ? ` · ${Math.max(0, budget.ceiling - budget.current).toLocaleString()} left today` : '';
   return `${selected} order${selected === 1 ? '' : 's'} — ${calls} NuVizz call${calls === 1 ? '' : 's'}${left}`;
 }
+
+/**
+ * HOW MANY ADDRESSES NEED FIXING, for the navigation badge.
+ *
+ * Chad: "also want a flag here if there are things to fix." Without it the queue only exists
+ * for somebody who thinks to go looking — and the whole point is the ones nobody knows about.
+ *
+ * ONE READ PER SESSION, shared. This is the same endpoint the screen uses, so opening the
+ * screen costs nothing extra; the badge is what that read pays for. It is not free — three days
+ * of board rows is a real Firestore read — so it is not polled, and Refresh on the screen is
+ * what updates it. Zero NuVizz calls either way.
+ */
+let __addrQueueBadgeCache = null;
+function useProblemAddressCount() {
+  const [n, setN] = React.useState(() => __addrQueueBadgeCache);
+  React.useEffect(() => {
+    if (__addrQueueBadgeCache != null) return undefined;
+    let dead = false;
+    (async () => {
+      try {
+        const r = await apiFetch('/.netlify/functions/address-queue', { cache: 'no-store' });
+        const j = await r.json();
+        if (!j?.ok) return;
+        const s = j.summary || {};
+        const total = Number(s.mis_split || 0) + Number(s.no_pin || 0) + Number(s.corrected_not_pinned || 0);
+        __addrQueueBadgeCache = total;
+        if (!dead) setN(total);
+      } catch { /* a badge that fails to load must never break the navigation */ }
+    })();
+    return () => { dead = true; };
+  }, []);
+  return n || 0;
+}
+/** Cleared when the screen reloads, so working the queue down is reflected in the badge. */
+function bustProblemAddressCount() { __addrQueueBadgeCache = null; }
 
 /** The state every queue view shares. Kept here so the phone and desktop renders cannot
  *  disagree about what is selected or what a push returned. */
@@ -30632,10 +30719,34 @@ function useProblemQueue(nonce, today) {
 /** One row's inline editor. Shared logic; each view decides where it sits. */
 function useQueueRowEdit(row, google, today, reload) {
   const [open, setOpen] = React.useState(false);
-  const [f, setF] = React.useState(() => ({ ...row.shown }));
+  // SEEDED WITH THE FIX, NOT THE FAULT. Opening on the broken split and calling the button
+  // "Correct" is how a dispatcher presses it, sees the same wrong address, and concludes the
+  // screen is broken — which is exactly what happened.
+  const [f, setF] = React.useState(() => correctedFields(row));
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState(null);
-  React.useEffect(() => { setF({ ...row.shown }); }, [row.shown]);
+  React.useEffect(() => { setF(correctedFields(row)); }, [row]);
+  // The map lives behind its own toggle rather than always-on: a Google map per row on a
+  // 40-row day is 40 map instances, and the queue has to stay usable on a phone.
+  const [mapOpen, setMapOpen] = React.useState(false);
+  const usePin = React.useCallback(async (pos) => {
+    setBusy(true); setMsg(null);
+    try {
+      if (!db || !row.matchKey) throw new Error('This row has no customer key — open it on the Map to move the pin.');
+      // FIELD-MASKED MERGE, never a blind write: customer_notes carries the dispatcher's own
+      // receiving hours and restrictions, and setDoc here REPLACES.
+      await setDoc(doc(db, 'customer_notes', row.matchKey), {
+        match_key: row.matchKey,
+        raw_name: row.businessName || '',
+        location_override: { lat: pos.lat, lng: pos.lng },
+        location_override_at: serverTimestamp(),
+        last_updated: serverTimestamp(),
+      }, { merge: true });
+      setMsg({ kind: 'ok', text: 'Pin saved. This customer’s stops use it from now on.' });
+      setMapOpen(false);
+      reload();
+    } catch (e) { setMsg({ kind: 'warn', text: String(e?.message || e) }); } finally { setBusy(false); }
+  }, [row, reload]);
   const save = React.useCallback(async (push) => {
     setBusy(true); setMsg(null);
     try {
@@ -30652,7 +30763,7 @@ function useQueueRowEdit(row, google, today, reload) {
       reload();
     } catch (e) { setMsg({ kind: 'warn', text: String(e?.message || e) }); } finally { setBusy(false); }
   }, [row, f, google, today, reload]);
-  return { open, setOpen, f, setF, busy, msg, save };
+  return { open, setOpen, f, setF, busy, msg, save, mapOpen, setMapOpen, usePin };
 }
 
 // ── PHONE. A card per row, worked one at a time with a thumb. ───────────────
@@ -30711,6 +30822,7 @@ function QueueRowMobile({ row, q, today }) {
       </div>
       <QueueRowActions row={row} q={q} e={e} pushable={pushable} verdict={verdict} stacked />
       {e.open && <QueueRowEditor e={e} row={row} pushable={pushable} stacked />}
+      {e.mapOpen && <QueuePinMap row={row} google={q.google} fields={e.f} onUsePin={e.usePin} busy={e.busy} />}
     </div>
   );
 }
@@ -30776,7 +30888,13 @@ function QueueRowDesktop({ row, q, today }) {
           <div className="font-semibold text-slate-800">{row.businessName || '—'}</div>
           <div className="text-[11px] text-slate-500">{row.stopNbr}{row.routeName ? ` · ${row.routeName}` : ''}</div>
         </td>
-        <td className="px-3 py-2 text-slate-700 break-words">{oneLineAddr(row.shown) || <span className="italic text-slate-400">(no street line)</span>}</td>
+        <td className="px-3 py-2 text-slate-700 break-words">
+          {oneLineAddr(row.shown) || <span className="italic text-slate-400">(no street line)</span>}
+          {/* The desktop row showed no sign a fix was even available — the mobile card did. */}
+          {row.suggestion && (
+            <div className="text-[11px] text-amber-700 mt-0.5">→ <span className="font-mono">{row.suggestion.addr1}</span>{row.suggestion.addr2 ? <> · suite <span className="font-mono">{row.suggestion.addr2}</span></> : null}</div>
+          )}
+        </td>
         <td className="px-3 py-2 text-slate-500 break-words">{oneLineAddr(row.vendor) || <span className="italic text-slate-400">(nothing)</span>}</td>
         <td className="px-3 py-2"><QueueRowActions row={row} q={q} e={e} pushable={pushable} verdict={verdict} /></td>
       </tr>
@@ -30785,7 +30903,118 @@ function QueueRowDesktop({ row, q, today }) {
           <td colSpan={6} className="px-3 py-3"><QueueRowEditor e={e} row={row} pushable={pushable} /></td>
         </tr>
       )}
+      {e.mapOpen && (
+        <tr className="border-b last:border-0 bg-slate-50">
+          <td colSpan={6} className="px-3 py-3"><QueuePinMap row={row} google={q.google} fields={e.f} onUsePin={e.usePin} busy={e.busy} /></td>
+        </tr>
+      )}
     </>
+  );
+}
+
+/**
+ * WHERE IT IS NOW vs WHERE IT WOULD GO — both pins on one map, and the new one draggable.
+ *
+ * Chad: "I want to be able to click on the row to see a drop down to be able to see a map where
+ * it's at as well as move the pin ... show original pin and new pin location as well as be able
+ * to just move the pin where I want it."
+ *
+ * The whole queue is really one question — is the pin on the right building — and until now it
+ * was answered in prose. On a `corrected_not_pinned` row it cannot be: the coordinate on screen
+ * came from the OLD address, and the only way to see that is to put it next to the new one.
+ *
+ * THE DRAG IS THE LAST WORD. A geocode gets you close and is sometimes wrong about which side
+ * of a business park a dock is on; a dispatcher who has been there knows. Dragging beats
+ * re-typing the address, and a dragged pin is what stopPosition prefers over everything.
+ */
+function QueuePinMap({ row, google, fields, onUsePin, busy }) {
+  const holder = React.useRef(null);
+  const mapRef = React.useRef(null);
+  const markersRef = React.useRef([]);
+  const [pos, setPos] = React.useState(null);        // the NEW pin, wherever it now sits
+  const [geoErr, setGeoErr] = React.useState(null);
+  const [moved, setMoved] = React.useState(false);
+  const orig = row.pin && Number.isFinite(row.pin.lat) ? row.pin : null;
+
+  // Geocode the CORRECTED address once the panel opens. A failure is not fatal: the pin falls
+  // back to where the stop already is so it can still be dragged, which is the whole point for
+  // an address Google cannot find.
+  const q = [fields?.addr1, fields?.city, fields?.state, fields?.zip].filter(Boolean).join(', ');
+  React.useEffect(() => {
+    let dead = false;
+    if (!google) return () => { dead = true; };
+    (async () => {
+      try {
+        const g = await geocodeAddress(google, q);
+        if (!dead) { setPos({ lat: g.lat, lng: g.lng }); setGeoErr(null); setMoved(false); }
+      } catch (e) {
+        if (!dead) { setGeoErr(e?.message || 'could not find that address'); setPos(orig ? { lat: orig.lat, lng: orig.lng } : null); }
+      }
+    })();
+    return () => { dead = true; };
+  }, [google, q, orig?.lat, orig?.lng]);
+
+  // Build the map once, then keep the markers in step.
+  React.useEffect(() => {
+    if (!google || !holder.current) return undefined;
+    const centre = pos || (orig ? { lat: orig.lat, lng: orig.lng } : null);
+    if (!centre) return undefined;
+    if (!mapRef.current) {
+      mapRef.current = new google.maps.Map(holder.current, {
+        center: centre, zoom: 18, mapTypeId: 'hybrid',
+        streetViewControl: false, fullscreenControl: false, mapTypeControl: true,
+      });
+    }
+    for (const m of markersRef.current) m.setMap(null);
+    markersRef.current = [];
+
+    // WHERE IT IS NOW — muted, not draggable. Drawn only when it differs from the new pin,
+    // because two markers on the same spot read as one and invite "which am I dragging".
+    if (orig && (!pos || Math.abs(orig.lat - pos.lat) > 1e-6 || Math.abs(orig.lng - pos.lng) > 1e-6)) {
+      markersRef.current.push(new google.maps.Marker({
+        position: { lat: orig.lat, lng: orig.lng }, map: mapRef.current, zIndex: 1,
+        icon: { url: pinSvgStatus('#94a3b8', {}), scaledSize: new google.maps.Size(30, 39), anchor: new google.maps.Point(15, 37) },
+        title: orig.source === 'override' ? 'Where the pin is now (saved by hand)' : 'Where the pin is now (from NuVizz’s address)',
+      }));
+    }
+    if (pos) {
+      const m = new google.maps.Marker({
+        position: pos, map: mapRef.current, draggable: true, zIndex: 99999,
+        icon: { url: pinSvgStatus('#16a34a', {}), scaledSize: new google.maps.Size(34, 44), anchor: new google.maps.Point(17, 42) },
+        title: 'Drag me to the right door',
+      });
+      m.addListener('dragend', () => {
+        const p = m.getPosition();
+        if (p) { setPos({ lat: p.lat(), lng: p.lng() }); setMoved(true); }
+      });
+      markersRef.current.push(m);
+    }
+    const b = mapRef.current.getBounds();
+    if (!b || !b.contains(new google.maps.LatLng(centre.lat, centre.lng))) mapRef.current.panTo(centre);
+    return undefined;
+  // effect-every-render: not needed — markers are rebuilt only when a position actually moves.
+  }, [google, pos?.lat, pos?.lng, orig?.lat, orig?.lng, orig?.source]);
+
+  if (!google) return <div className="text-[11px] text-slate-500">Loading the map…</div>;
+  return (
+    <div className="space-y-2">
+      <div ref={holder} className="w-full rounded-lg border" style={{ height: 260 }} />
+      <div className="flex items-center gap-3 flex-wrap text-[11px]">
+        {orig && <span className="inline-flex items-center gap-1 text-slate-500"><span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: '#94a3b8' }} />Where it is now{orig.source === 'feed' ? ' (from NuVizz’s address)' : ' (saved by hand)'}</span>}
+        <span className="inline-flex items-center gap-1 text-green-700"><span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: '#16a34a' }} />{moved ? 'Where you dragged it' : 'Where the corrected address lands'}</span>
+      </div>
+      {geoErr && (
+        <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
+          Google could not find “{q}”, so the green pin starts where the stop already is. Drag it to the right door — a dragged pin beats an address nobody can geocode.
+        </div>
+      )}
+      {!orig && <div className="text-[11px] text-slate-500">This stop has no pin at all today, so there is nothing to compare against.</div>}
+      <button
+        onClick={() => pos && onUsePin(pos)} disabled={!pos || busy}
+        style={{ minHeight: 44, background: pos && !busy ? '#16a34a' : undefined }}
+        className="rounded px-3 text-xs font-semibold text-white disabled:opacity-50 disabled:bg-slate-300"
+      >{busy ? 'Saving…' : moved ? 'Use the pin where I dragged it' : 'Use this pin'}</button>
+    </div>
   );
 }
 
@@ -30800,6 +31029,11 @@ function QueueRowActions({ row, q, e, pushable, verdict, stacked }) {
       <div className="flex items-center gap-1.5 flex-wrap">
         <button onClick={() => e.setOpen((v) => !v)} disabled={busy} className={`${btn} bg-white border-slate-300 text-slate-700 hover:bg-slate-50`}>
           {e.open ? 'Close' : 'Correct'}
+        </button>
+        {/* The question behind every row on this queue is "is the pin on the right building",
+            and it cannot be answered in prose. */}
+        <button onClick={() => e.setMapOpen((v) => !v)} disabled={busy} className={`${btn} bg-white border-slate-300 text-slate-700 hover:bg-slate-50`}>
+          {e.mapOpen ? 'Hide map' : 'Map'}
         </button>
         {!row.dismissed
           ? <button onClick={() => q.dismiss(row, false)} disabled={busy} className={`${btn} bg-white border-slate-300 text-slate-500 hover:bg-slate-50`} title="Hide this row for everyone. It comes back if the address changes again.">Wave off</button>
@@ -30829,15 +31063,43 @@ function QueueRowEditor({ e, row, pushable, stacked }) {
   const set = (k) => (ev) => e.setF((p) => ({ ...p, [k]: ev.target.value }));
   return (
     <div className="space-y-2">
+      {/* VISIBLE LABELS, not placeholders. A placeholder disappears the moment a field has a
+          value — and these fields always do — so the two address lines rendered as two
+          unlabelled boxes with "PMB 271" in one and "90F GLENDA TRCE" in the other, and nothing
+          on screen said which was the street. On a mis-split row that is precisely the fact the
+          dispatcher is there to judge. */}
       <div className={stacked ? 'space-y-2' : 'grid grid-cols-6 gap-2'}>
-        <input className={`${f} ${stacked ? '' : 'col-span-2'}`} value={e.f.addr1 || ''} onChange={set('addr1')} placeholder="Street address" aria-label="Street address" />
-        <input className={`${f} ${stacked ? '' : 'col-span-2'}`} value={e.f.addr2 || ''} onChange={set('addr2')} placeholder="Suite / dock (not geocoded)" aria-label="Suite, unit or dock" />
-        <input className={f} value={e.f.city || ''} onChange={set('city')} placeholder="City" aria-label="City" />
+        <label className={stacked ? 'block' : 'col-span-2'}>
+          <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-500 mb-0.5">Address 1 · street</span>
+          <input className={f} value={e.f.addr1 || ''} onChange={set('addr1')} aria-label="Address 1, the street line" />
+          <span className="block text-[10px] text-slate-400 mt-0.5">This line is what gets geocoded — the house number belongs here.</span>
+        </label>
+        <label className={stacked ? 'block' : 'col-span-2'}>
+          <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-500 mb-0.5">Address 2 · suite / dock</span>
+          <input className={f} value={e.f.addr2 || ''} onChange={set('addr2')} aria-label="Address 2, the suite, unit or dock" />
+          <span className="block text-[10px] text-slate-400 mt-0.5">Never geocoded. Kept, and shown to the driver.</span>
+        </label>
+        <label className="block">
+          <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-500 mb-0.5">City</span>
+          <input className={f} value={e.f.city || ''} onChange={set('city')} aria-label="City" />
+        </label>
         <div className="grid grid-cols-2 gap-2">
-          <input className={f} value={e.f.state || ''} onChange={set('state')} placeholder="State" aria-label="State" />
-          <input className={f} value={e.f.zip || ''} onChange={set('zip')} placeholder="ZIP" aria-label="ZIP" />
+          <label className="block">
+            <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-500 mb-0.5">State</span>
+            <input className={f} value={e.f.state || ''} onChange={set('state')} aria-label="State" />
+          </label>
+          <label className="block">
+            <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-500 mb-0.5">ZIP</span>
+            <input className={f} value={e.f.zip || ''} onChange={set('zip')} aria-label="ZIP" />
+          </label>
         </div>
       </div>
+      {row.suggestion && (
+        <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
+          Pre-filled with the suggested split — the street moved out of Address 2. Was:
+          <span className="font-mono"> {row.shown.addr1 || '(blank)'}</span> / <span className="font-mono">{row.shown.addr2 || '(blank)'}</span>
+        </div>
+      )}
       <div className="flex items-center gap-2 flex-wrap">
         <button onClick={() => e.save(false)} disabled={e.busy} style={{ minHeight: 44 }}
           className="rounded border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
@@ -30867,8 +31129,11 @@ function QueueRowEditor({ e, row, pushable, stacked }) {
 function QueueSummaryBar({ q, stacked }) {
   const sum = q.data?.summary || {};
   const sel = q.selected.length;
+  // The push is priced on the rows it would actually CHANGE, not on everything ticked — see
+  // worthPushing. Quoting the wrong number here is how a dispatcher is surprised by the bill.
+  const pushWorth = q.selected.filter(worthPushing).length;
   const b = q.push.budget;
-  const overBudget = !!(b && b.ceiling && sel * 3 > Math.max(0, b.ceiling - b.current));
+  const overBudget = !!(b && b.ceiling && pushWorth * 3 > Math.max(0, b.ceiling - b.current));
   return (
     <div className="rounded-xl border bg-white p-3 space-y-2">
       <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
@@ -30884,17 +31149,26 @@ function QueueSummaryBar({ q, stacked }) {
           </label>
         )}
       </div>
-      <div className={`flex items-center gap-2 flex-wrap ${stacked ? '' : ''}`}>
+      <div className="flex items-center gap-2 flex-wrap">
         <button onClick={q.sweep} disabled={q.push.running || !q.sweepable.length} style={{ minHeight: 44 }}
           className="rounded border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
           {q.picked.size >= q.sweepable.length && q.sweepable.length ? 'Clear selection' : `Select all ${q.sweepable.length}`}
         </button>
-        {!q.push.running ? (
-          <button onClick={() => q.push.runGroup(q.selected, q.google)} disabled={!sel || overBudget} style={{ minHeight: 44, background: sel && !overBudget ? '#16a34a' : undefined }}
-            className="rounded px-3 text-xs font-semibold text-white disabled:opacity-50 disabled:bg-slate-300">
-            Push {sel || ''} to NuVizz
+        {!q.push.running ? (<>
+          {/* TWO GROUP ACTIONS, because they are different decisions with different costs.
+              Chad: "I want to be able to correct all at once" AND "correct only in dispatch map
+              as well". Board-only applies every suggested split and re-geocodes the pin — it
+              fixes our map, our routing and this customer's future orders, and spends NOTHING.
+              The second does that and also tells the carrier, per order, at 3 calls each. */}
+          <button onClick={() => q.push.runGroup(q.selected, q.google, false)} disabled={!sel} style={{ minHeight: 44 }}
+            className="rounded border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+            Correct {sel || ''} on the board
           </button>
-        ) : (
+          <button onClick={() => q.push.runGroup(q.selected, q.google, true)} disabled={!sel || overBudget || !pushWorth} style={{ minHeight: 44, background: sel && !overBudget && pushWorth ? '#16a34a' : undefined }}
+            className="rounded px-3 text-xs font-semibold text-white disabled:opacity-50 disabled:bg-slate-300">
+            Correct {pushWorth || ''} + NuVizz
+          </button>
+        </>) : (
           // "Stop after this one", never "Cancel": there is no in-flight abort — the server
           // finishes the write it started whatever the browser does, and a button promising
           // otherwise would be an intent dressed as an outcome.
@@ -30903,8 +31177,15 @@ function QueueSummaryBar({ q, stacked }) {
           </button>
         )}
         {/* EVERY BUTTON SAYS WHAT IT COSTS BEFORE YOU PRESS IT. */}
-        <span className={`text-[11px] ${overBudget ? 'text-red-700 font-semibold' : 'text-slate-500'}`}>{queueCostLine(sel, b)}</span>
+        <span className={`text-[11px] ${overBudget ? 'text-red-700 font-semibold' : 'text-slate-500'}`}>{queueCostLine(pushWorth, b)}</span>
       </div>
+      {sel > pushWorth && (
+        // Pushing an address the order already holds spends 3 calls to tell the vendor what it
+        // told us. Those rows are still corrected on the board — their fix is the pin.
+        <div className="text-[11px] text-slate-500">
+          {sel - pushWorth} of the {sel} selected {sel - pushWorth === 1 ? 'needs' : 'need'} only a pin moved — NuVizz already has that address, so {sel - pushWorth === 1 ? 'it is' : 'they are'} corrected on the board and not pushed.
+        </div>
+      )}
       {overBudget && <div className="text-[11px] text-red-700">That is more calls than today’s ceiling has left. Push fewer rows, or wait for the ceiling to reset.</div>}
       {b && b.live === false && (
         <div className="text-[11px] text-amber-700">Live writes are switched off on the server, so a push would reach nothing. Corrections still save to the board.</div>

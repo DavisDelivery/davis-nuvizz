@@ -25,7 +25,9 @@ test('EVERY BUTTON SAYS WHAT IT COSTS BEFORE IT IS PRESSED', () => {
   // A dispatcher who cannot see the number has been handed a scan button. 30 rows is 90
   // metered calls off one press.
   const bar = fnSource('QueueSummaryBar');
-  assert.match(bar, /queueCostLine\(sel, b\)/);
+  // Priced on the rows a push would actually CHANGE (pushWorth), not on everything ticked —
+  // quoting the wrong number is how a dispatcher is surprised by the bill.
+  assert.match(bar, /queueCostLine\(pushWorth, b\)/);
   const line = fnSource('queueCostLine');
   assert.match(line, /NuVizz call/);
   assert.match(line, /left today/, 'and what is left, not just what it costs');
@@ -34,8 +36,8 @@ test('EVERY BUTTON SAYS WHAT IT COSTS BEFORE IT IS PRESSED', () => {
 test('A RUN THAT WOULD BLOW THE CEILING CANNOT BE STARTED', () => {
   const bar = fnSource('QueueSummaryBar');
   assert.match(bar, /overBudget/);
-  assert.match(bar, /sel \* 3 > Math\.max\(0, b\.ceiling - b\.current\)/, '3 calls per order is the arithmetic');
-  assert.match(bar, /disabled=\{!sel \|\| overBudget\}/);
+  assert.match(bar, /pushWorth \* 3 > Math\.max\(0, b\.ceiling - b\.current\)/, '3 calls per order is the arithmetic');
+  assert.match(bar, /disabled=\{!sel \|\| overBudget \|\| !pushWorth\}/);
 });
 
 test('THE PUSH IS SERIAL — never a parallel fan-out', () => {
@@ -149,4 +151,109 @@ test('A WAVED-OFF ROW IS HONEST ABOUT NOT BEING LIVE', () => {
 test('THE QUEUE DOES NOT FIRE THE LOG ENDPOINT BEHIND IT', () => {
   const screen = fnSource('AddressHistoryScreen');
   assert.match(screen, /if \(!logSection\) return undefined;/, 'a Firestore read per keystroke for a screen nobody is looking at');
+});
+
+// ── v1.25.0 — what Chad found by using it ────────────────────────────────────
+
+test('"CORRECT" ACTUALLY CORRECTS — the editor opens with the fix, not the fault', () => {
+  // Chad: "i clicked correct but it didn't correct". It opened seeded with row.shown, which on
+  // a mis-split row IS the mis-split — "PMB 271" in the street box and the real street in the
+  // suite box. The row knew the fix and never offered it.
+  const hook = fnSource('useQueueRowEdit');
+  assert.match(hook, /React\.useState\(\(\) => correctedFields\(row\)\)/);
+  assert.ok(!/useState\(\(\) => \(\{ \.\.\.row\.shown \}\)\)/.test(hook), 'never seeded from the broken values');
+  const cf = fnSource('correctedFields');
+  assert.match(cf, /addr1: s\.addr1 \|\| base\.addr1/);
+  assert.match(cf, /addr2: s\.addr2 \?\? base\.addr2/, 'an explicitly empty suite is honoured, not skipped by ||');
+});
+
+test('THE GROUP ACTION SENDS THE CORRECTED ADDRESS, NEVER THE BROKEN ONE', () => {
+  // The worse half of the same bug: the group push sent row.shown, so pushing a mis-split row
+  // would have handed NuVizz back its own bad address AND written it as an override — marking
+  // the row corrected when nothing had been.
+  const run = fnSource('useQueuePush');
+  assert.match(run, /fields: correctedFields\(row\)/);
+  assert.ok(!/fields: row\.shown/.test(run), 'row.shown is the fault, not the fix');
+});
+
+test('A ROW NUVIZZ ALREADY AGREES WITH IS NOT PUSHED — 3 calls to restate their own address', () => {
+  const w = fnSource('worthPushing');
+  assert.match(w, /oneLineAddr\(correctedFields\(row\)\) !== oneLineAddr\(row\?\.vendor\)/);
+  const run = fnSource('useQueuePush');
+  assert.match(run, /const sendToVendor = push && worthPushing\(row\)/);
+  // …and the price quoted is for the rows that would actually change, not everything ticked.
+  const bar = fnSource('QueueSummaryBar');
+  assert.match(bar, /const pushWorth = q\.selected\.filter\(worthPushing\)\.length/);
+  assert.match(bar, /queueCostLine\(pushWorth, b\)/);
+  assert.match(bar, /need.*only a pin moved/s, 'and the difference is explained, not silently dropped');
+});
+
+test('BOARD-ONLY IS ITS OWN BUTTON, sharing the runner so the two cannot drift', () => {
+  // Chad: "i want to be able to correct only in dispatch map as well".
+  const bar = fnSource('QueueSummaryBar');
+  assert.match(bar, /runGroup\(q\.selected, q\.google, false\)/, 'board-only');
+  assert.match(bar, /runGroup\(q\.selected, q\.google, true\)/, 'and with the vendor');
+  assert.match(bar, /Correct \{sel \|\| ''\} on the board/);
+  const run = fnSource('useQueuePush');
+  assert.match(run, /async \(rows, google, push = true\)/, 'one loop, a flag — not two copies');
+  assert.match(run, /if \(push\) readBudget\(\)/, 'a board-only sweep spends nothing to re-read');
+});
+
+test('THE ADDRESS LINES ARE LABELLED — a placeholder vanishes the moment there is a value', () => {
+  // And there is always a value here, so the two lines rendered as two unlabelled boxes with no
+  // way to tell which one the geocoder reads.
+  const ed = fnSource('QueueRowEditor');
+  assert.match(ed, /Address 1 · street/);
+  assert.match(ed, /Address 2 · suite \/ dock/);
+  assert.match(ed, /aria-label="Address 1, the street line"/);
+  assert.match(ed, /This line is what gets geocoded/);
+});
+
+test('THE SUGGESTED FIX IS VISIBLE ON BOTH VIEWS, not just the phone', () => {
+  assert.match(fnSource('QueueRowDesktop'), /row\.suggestion &&/, 'the desktop row showed no sign one existed');
+  assert.match(fnSource('QueueRowMobile'), /row\.suggestion &&/);
+});
+
+test('THE MAP SHOWS BOTH PINS — where it is now and where the fix lands', () => {
+  // Chad: "show original pin and new pin location as well as be able to just move the pin where
+  // i want it". On a corrected_not_pinned row this is the whole diagnosis: the coordinate on
+  // screen came from the OLD address, and only seeing them together says so.
+  const m = fnSource('QueuePinMap');
+  assert.match(m, /Where the pin is now/);
+  assert.match(m, /draggable: true/);
+  assert.match(m, /addListener\('dragend'/);
+  // Two markers on the same spot read as one, and invite "which am I dragging".
+  assert.match(m, /Math\.abs\(orig\.lat - pos\.lat\) > 1e-6/);
+});
+
+test('A FAILED GEOCODE STILL LETS YOU DROP THE PIN BY HAND', () => {
+  // The addresses Google cannot find are exactly the ones most worth a human who has been there.
+  const m = fnSource('QueuePinMap');
+  assert.match(m, /setPos\(orig \? \{ lat: orig\.lat, lng: orig\.lng \} : null\)/);
+  assert.match(m, /a dragged pin beats an address nobody can geocode/);
+});
+
+test('SAVING A PIN MERGES — customer_notes carries the dispatcher\'s own receiving hours', () => {
+  const hook = fnSource('useQueueRowEdit');
+  assert.match(hook, /location_override: \{ lat: pos\.lat, lng: pos\.lng \}/);
+  assert.match(hook, /\{ merge: true \}/, 'setDoc REPLACES here; a blind write takes the hours with it');
+});
+
+test('THE TO-FIX FLAG IS ON BOTH NAVIGATIONS, or it does not exist on a phone', () => {
+  // v0.54.50 shipped a screen visible on a laptop and invisible on a phone. Dispatch runs on a
+  // phone.
+  const bar = fnSource('MobileAppBar');
+  assert.match(bar, /addrBadge = 0/, 'the phone bar takes it');
+  assert.match(bar, /addrBadge > 0 &&/, 'and renders it on the item');
+  assert.match(bar, /\(manifestBadge \+ addrBadge\) > 0/, 'and rolls it into the collapsed More chip');
+  assert.match(APP, /badge: addrBadge/, 'the desktop More menu item carries it');
+  assert.match(APP, /badge=\{moreBadge \+ addrBadge\}/, 'and the desktop More chip rolls it up too');
+});
+
+test('THE BADGE COSTS ONE READ PER SESSION, and working the list moves it', () => {
+  const hook = fnSource('useProblemAddressCount');
+  assert.match(hook, /if \(__addrQueueBadgeCache != null\) return undefined;/, 'not polled');
+  assert.ok(!/setInterval/.test(hook), 'three days of board rows is a real read');
+  const q = fnSource('useAddressQueue');
+  assert.match(q, /bustProblemAddressCount\(\)/, 'or the badge goes stale and stops being read');
 });
