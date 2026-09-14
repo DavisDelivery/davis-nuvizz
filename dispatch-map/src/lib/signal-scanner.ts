@@ -339,13 +339,80 @@ function stripCommentPrefixes(text: string): string {
 // short wait, not a miss. Bare afternoon halves ("& 1-5", "AND 2-5") read as PM — a
 // continuation can only extend the day, never rewind it — and anything incoherent
 // (before the prior close after the PM shift, or past 8:00p) stops the chain.
-const CONTINUATION_RE = new RegExp(`^\\s*(?:&|AND|,|/|;|\\+|THEN)\\s*(${TIME_RANGE})`, 'i');
+// WHAT MAY SIT BETWEEN THE TWO HALVES OF ONE DAY. Three bridges, and never bare adjacency.
+//
+// Chad, 2026-09-14, on a CRITICAL board flag for WEAVER DISTRIBUTORS (PRO 007175532): "we are
+// flagging this stop incorrectly as having shortened hours when they just close for lunch."
+// WEAVER writes the split the way a dock actually writes it — the gap gets a NAME, and the
+// afternoon half gets the label again:
+//
+//     RH 8 00AM-12 00PM
+//     LUNCH 12 00-1 30PM
+//     RH 1 30PM-5 00PM
+//
+// Neither of those is a conjunction, so the chain stopped at the first range and stored a NOON
+// close. The scanner wrote 8:00a-12:00p onto all seven days of that customer's notes, and a
+// truck arriving 1:33p — three minutes after the dock reopened — scored 99 minutes late in the
+// loudest tier. That is the crying-wolf direction, and it is the one a dispatcher stops
+// trusting the panel over.
+//
+// BARE ADJACENCY IS NOT A BRIDGE, and that is the whole safety argument. "RH 8-12" followed by
+// a naked "1-2" is far more likely to BE the lunch closure than the afternoon shift, and
+// reading it as a continuation would push a genuine noon close out to 2pm — a missed delivery
+// nobody was warned about, which is the expensive direction. So a continuation must be
+// ANNOUNCED, by one of exactly three things:
+//   CONJ  — "& 1-5", "AND 1PM-4PM", ", 2-5"     the shape already supported, unchanged.
+//   GAP   — the customer NAMED the break: "LUNCH 12 00-1 30PM", "CLOSED FOR LUNCH", "BREAK".
+//           The gap's own times are optional and are CONSUMED, not stored — a lunch range is
+//           not receiving hours, which is why the bare-pair guards below refuse it outright.
+//   LABEL — the hours label repeated on the second half: "RH 8-12 ... RH 1 30-5".
+// A leading conjunction is allowed on all three, so ", LUNCH 12-1, RH 1-5" still reads.
+//
+// Every bridge still answers to the sanity guards in envelopeClose: the second half must start
+// at or after the first close, must end after it starts, and must not run past 8:00p. Those are
+// what refuse "RH MON-THU 8-4 RH 8-12" and every other pair that is not one day continuing —
+// and they are why a day-qualified second segment ("& FRI 1130-4", "RH FRI 8-12") is still read
+// as a new day rather than eaten as a continuation: a day word is not a time token.
+const CONT_LEAD = `(?:(?:&|AND|,|/|;|\\+|THEN)\\s*)?`;
+// The word that NAMES the gap, with the optional CLOSED/FOR that dispatchers put in front.
+const GAP_WORD = `(?:CLOSED?\\s+)?(?:FOR\\s+)?(?:LUNCH|BREAK)`;
+// What may introduce the afternoon half once a bridge has been crossed: an optional
+// conjunction and an optional repeat of the hours label.
+const CONT_HEAD = `${CONT_LEAD}(?:(?:${HOURS_LABEL})\\s*[:\\-]?\\s*)?`;
+const CONTINUATION_RES: RegExp[] = [
+  // 1 — the conjunction, exactly as before.
+  new RegExp(`^\\s*(?:&|AND|,|/|;|\\+|THEN)\\s*(${TIME_RANGE})`, 'i'),
+  // 2a — the gap is named and then timed: "LUNCH 12 00-1 30PM", "CLOSED FOR LUNCH 12-1".
+  new RegExp(`^\\s*${CONT_LEAD}${GAP_WORD}\\s*[:\\-]?\\s*${TIME_RANGE}\\s*${CONT_HEAD}(${TIME_RANGE})`, 'i'),
+  // 2b — the gap is timed and then named: "CLOSED 12-1 FOR LUNCH".
+  new RegExp(`^\\s*${CONT_LEAD}(?:CLOSED?\\s+)?${TIME_RANGE}\\s*(?:FOR\\s+)?(?:LUNCH|BREAK)\\b\\s*${CONT_HEAD}(${TIME_RANGE})`, 'i'),
+  // 2c — the gap is named and NOT timed: "LUNCH" then the afternoon half.
+  //      The lookahead is what keeps a lunch RANGE from being read as the afternoon half: if a
+  //      time range follows the word directly, those are the gap's own times and 2a owns them.
+  //      Without it, "RH 8-12 / LUNCH 12-1 30" with no afternoon half stated would have stored
+  //      a 1:30p close the customer never gave us — inventing hours out of a closure.
+  new RegExp(`^\\s*${CONT_LEAD}${GAP_WORD}\\b\\s*[:\\-]?\\s*(?!\\s*${TIME_RANGE})${CONT_HEAD}(${TIME_RANGE})`, 'i'),
+  // 2d — the REOPENING is named outright: "AFTER LUNCH 1PM-5PM", "REOPENS 1-5", "OPEN AGAIN
+  //       1PM-4PM". Here the range that follows is the afternoon half, not the gap's times —
+  //       the opposite of 2a — because the phrase says so. Kept separate for exactly that
+  //       reason: 2c's lookahead assumes a range after a bare LUNCH belongs to the closure.
+  new RegExp(`^\\s*${CONT_LEAD}(?:AFTER\\s+(?:LUNCH|BREAK)|RE-?OPENS?|OPENS?\\s+AGAIN)\\s*[:\\-]?\\s*${CONT_HEAD}(${TIME_RANGE})`, 'i'),
+  // 3 — the hours label repeated on the second half: "RH 8-12 ... RH 1 30-5".
+  new RegExp(`^\\s*${CONT_LEAD}(?:${HOURS_LABEL})\\s*[:\\-]?\\s*(${TIME_RANGE})`, 'i'),
+];
+function continuationAt(slice: string): RegExpExecArray | null {
+  for (const re of CONTINUATION_RES) {
+    const m = re.exec(slice);
+    if (m) return m;
+  }
+  return null;
+}
 function envelopeClose(normalized: string, afterIdx: number, firstClose: string): { close: string; extraText: string } {
   const toMin = (t: string) => parseInt(t.slice(0, 2), 10) * 60 + parseInt(t.slice(3), 10);
   const fmt = (min: number) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
   let close = firstClose; let idx = afterIdx; let extraText = '';
   for (;;) {
-    const m = CONTINUATION_RE.exec(normalized.slice(idx));
+    const m = continuationAt(normalized.slice(idx));
     if (!m) break;
     const p = parseTimeRange(m[1]);
     if (!p) break;
