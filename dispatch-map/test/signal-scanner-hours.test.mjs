@@ -266,3 +266,101 @@ test('a NAMED reopening carries the afternoon half directly — "AFTER LUNCH 1PM
   assert.equal(hours('SPL-INSTR-TEXT: RH 8AM-12PM\nSPL-INSTR-TEXT: OPEN AGAIN 1PM-4PM').close, '16:00');
   assert.equal(hours('SPL-INSTR-TEXT: RH 8AM-12PM\nSPL-INSTR-TEXT: AFTER BREAK 1PM-5PM').close, '17:00');
 });
+
+// ── "RH 1-5" is one in the AFTERNOON (Chad, 2026-09-14) ───────────────────────────────
+//
+// "fix that rh 1-5 is always going to be pm as you have to imagine our delivery window for
+// the most part is 8am - 5pm so no one is going to have those receiving hours."
+//
+// The business-hours correction above only ever fired on a DESCENDING pair, so "7-3" became
+// 7a-3p but an ascending pair of small numbers sailed through as a pre-dawn window. A stored
+// 01:00-05:00 marks that customer shut for the whole working day, so every arrival there
+// flags forever — the crying-wolf failure the lunch-split fix was about — and the routing
+// engine builds against a window no truck can serve.
+
+test('a dock whose note says "RH 1-5" receives in the afternoon, not at one in the morning', () => {
+  assert.deepEqual(hours('RH 1-5'), {
+    open: '13:00', close: '17:00', matchedSource: 'orderInstructions', matchedText: 'RH 1-5',
+  });
+});
+
+test('"RECEIVING HOURS 2-4" is a 2pm-4pm dock', () => {
+  const h = hours('RECEIVING HOURS 2-4');
+  assert.deepEqual([h.open, h.close], ['14:00', '16:00']);
+});
+
+test('the afternoon shift carries the half hour: "RH 1-4 30" closes at 4:30p', () => {
+  const h = hours('RH 1-4 30');
+  assert.deepEqual([h.open, h.close], ['13:00', '16:30']);
+});
+
+test('a genuine noon-closing morning dock is untouched: "RH 8-12" stays 8a-12p', () => {
+  const h = hours('RH 8-12');
+  assert.deepEqual([h.open, h.close], ['08:00', '12:00']);
+});
+
+test('a genuine morning window is untouched: "RECEIVING HOURS 9-11"', () => {
+  const h = hours('RECEIVING HOURS 9-11');
+  assert.deepEqual([h.open, h.close], ['09:00', '11:00']);
+});
+
+test('an early dock that opens before the delivery day keeps its morning: "RH 5-9"', () => {
+  const h = hours('RH 5-9');
+  assert.deepEqual([h.open, h.close], ['05:00', '09:00']);
+});
+
+test('a written meridiem is never overruled: "RH 1AM-5AM" stays pre-dawn', () => {
+  const h = hours('RH 1AM-5AM');
+  assert.deepEqual([h.open, h.close], ['01:00', '05:00']);
+});
+
+test('the descending correction still owns its own cases: "RH 7-3" is 7a-3p', () => {
+  const h = hours('RH 7-3');
+  assert.deepEqual([h.open, h.close], ['07:00', '15:00']);
+});
+
+test('a bare "1-5" with no hours label is still refused, shift or no shift', () => {
+  // The last-resort tier wants a daytime OPEN between 5:00a and noon. Reading the pair as
+  // afternoon does not smuggle it past that gate — a naked pair is still not evidence.
+  assert.equal(hours('1-5'), null);
+  assert.equal(hours('2-4'), null);
+});
+
+test('the lunch split still closes at five when the halves are bare: "RH 8-12 & 1-5"', () => {
+  // envelopeClose does its own +12h shift on a continuation that opens before the running
+  // close. The parser now hands it an afternoon window already, and the two must not stack.
+  const h = hours('RH 8-12 & 1-5');
+  assert.deepEqual([h.open, h.close], ['08:00', '17:00']);
+});
+
+test('WEAVER is still whole: 8a-12p, lunch, 1:30p-5p reads as one 8-to-5 envelope', () => {
+  const h = hours('RH 8 00AM-12 00PM\nLUNCH 12 00-1 30PM\nRH 1 30PM-5 00PM');
+  assert.deepEqual([h.open, h.close], ['08:00', '17:00']);
+});
+
+test('"OPENS AT 1" reads as 1pm — routing takes the max open, so 1am is no constraint at all', () => {
+  // The expensive direction: an open of 01:00 lets the solver schedule the stop first thing,
+  // and the truck reaches a dock that does not open until the afternoon. A refused delivery.
+  assert.equal(hours('OPENS AT 1').open, '13:00');
+  assert.equal(hours('RECEIVING AFTER 1').open, '13:00');
+  assert.equal(hours('NO DELIVERIES BEFORE 1').open, '13:00');
+});
+
+test('a dock that "OPENS AT 12" opens at noon, not at midnight', () => {
+  assert.equal(hours('OPENS AT 12').open, '12:00');
+});
+
+test('early docks keep their mornings: "OPENS AT 6", "NO DELIVERIES BEFORE 7"', () => {
+  assert.equal(hours('OPENS AT 6').open, '06:00');
+  assert.equal(hours('NO DELIVERIES BEFORE 7').open, '07:00');
+  assert.equal(hours('OPENS AT 8').open, '08:00');
+});
+
+test('a written meridiem on a lone open still wins: "OPENS AT 1PM"', () => {
+  assert.equal(hours('OPENS AT 1PM').open, '13:00');
+});
+
+test('the close-only forms are untouched by the lone-open rule', () => {
+  const h = hours('CLOSES AT 4');
+  assert.deepEqual([h.open, h.close], ['06:00', '16:00']);
+});

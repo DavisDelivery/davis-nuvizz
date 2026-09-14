@@ -1178,3 +1178,53 @@ test('an assumed close does NOT manufacture a no-driver card', () => {
   assert.equal(r.rows.filter((x) => x.rule === 'no_driver_hours').length, 0,
     'an assumption is not a recorded deadline');
 });
+
+// ── A legacy string that says "1-5" is an afternoon dock (Chad, 2026-09-14) ────────────
+//
+// The scanner's parser and this one are two independent implementations of the same idea,
+// and BOTH only rescued a descending pair. Fixing the scanner alone would have left every
+// legacy string still reading dawn, because those notes are never re-parsed from an order
+// — a customer whose doc holds "1-5" is read only through this branch. Measured before the
+// fix: "1-5" here returned 1:00a-5:00a.
+
+test('a legacy "1-5" is a 1pm-5pm dock, not a customer shut all working day', () => {
+  assert.deepEqual(
+    dayReceivingWindow(note({ receiving_hours: { mon: '1-5' } }), 'mon'),
+    { openMin: 13 * 60, closeMin: 17 * 60, tier: 'auto' },
+  );
+});
+
+test('a legacy "2-4" reads as the afternoon, and "1:00-5:00" does too', () => {
+  assert.equal(dayReceivingWindow(note({ receiving_hours: { mon: '2-4' } }), 'mon').openMin, 14 * 60);
+  assert.equal(dayReceivingWindow(note({ receiving_hours: { mon: '1:00-5:00' } }), 'mon').closeMin, 17 * 60);
+});
+
+test('the scanner and the board agree about "1-5" — one rule, imported by both', () => {
+  // Two parsers disagreeing about the same customer is how a pin and a flag card end up
+  // telling a dispatcher different things about the same dock.
+  const fromBoard = dayReceivingWindow(note({ receiving_hours: { mon: '1-5' } }), 'mon');
+  assert.deepEqual([fromBoard.openMin, fromBoard.closeMin], [13 * 60, 17 * 60]);
+});
+
+test('legacy morning windows are untouched: "8-12", "9-11", "7-3"', () => {
+  assert.equal(dayReceivingWindow(note({ receiving_hours: { mon: '8-12' } }), 'mon').openMin, 8 * 60);
+  assert.equal(dayReceivingWindow(note({ receiving_hours: { mon: '9-11' } }), 'mon').closeMin, 11 * 60);
+  assert.equal(dayReceivingWindow(note({ receiving_hours: { mon: '7-3' } }), 'mon').closeMin, 15 * 60);
+});
+
+test('a legacy early dock that reaches the delivery day keeps its morning: "5-9"', () => {
+  assert.equal(dayReceivingWindow(note({ receiving_hours: { mon: '5-9' } }), 'mon').openMin, 5 * 60);
+});
+
+test('a written meridiem still wins on a legacy string: "1AM-5AM" stays pre-dawn', () => {
+  const w = dayReceivingWindow(note({ receiving_hours: { mon: '1AM-5AM' } }), 'mon');
+  assert.deepEqual([w.openMin, w.closeMin], [60, 5 * 60]);
+});
+
+test('a dispatcher-typed {open,close} object is an explicit statement and never shifted', () => {
+  // The two <input type="time"> boxes on the stop card write 24-hour values. Those are
+  // somebody saying what they mean, not an ambiguous bare pair, so the afternoon rule has
+  // no business touching them.
+  const w = dayReceivingWindow(note({ receiving_hours: { mon: { open: '01:00', close: '05:00' } } }), 'mon');
+  assert.deepEqual([w.openMin, w.closeMin], [60, 5 * 60]);
+});

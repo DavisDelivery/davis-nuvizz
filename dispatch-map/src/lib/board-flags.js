@@ -49,6 +49,9 @@ import { dispatcherTrailerBlock, trailerBlockerLabels } from './trailer-block.js
 // truck question from the customer-keyed marks above.
 import { stopNeedsTractor, stopHandlingFlags, HANDLING_FLAGS } from './handling-flags.js';
 import { placeKeyOfStop } from './matchKey.js';
+// The 8am-5pm delivery day, and the reading of a meridiem-less range that matches it. Shared
+// with signal-scanner so a stored "1-5" and a freshly scanned "1-5" can never disagree.
+import { resolveDaytimeWindow } from './daytime-window.js';
 
 // ── time + hours parsing ──────────────────────────────────────────────────────
 
@@ -103,7 +106,16 @@ export function dayReceivingWindow(note, dayKey) {
         if (closeHasMeridiem || closeMin >= 720) return null; // overnight dock — refuse
         closeMin += 720; // "8-5" = 8:00a–5:00p
       }
-      return { openMin, closeMin, tier: tierOfHours(note) };
+      // The SAME hole the scanner had, in the branch that reads a legacy string already sitting
+      // in Firestore. The rescue above only fires on a descending pair, so a stored "1-5" stayed
+      // 1:00a–5:00a and marked that customer shut all working day. Fixing only the scanner would
+      // have left every legacy string still reading dawn, because those notes are never re-parsed
+      // from an order — measured before the fix, "1-5" here returned 1:00a-5:00a.
+      const openHasMeridiem = /[ap]\.?m?\.?\s*$/i.test(m[1]);
+      const shifted = resolveDaytimeWindow(
+        openMin, closeMin, openHasMeridiem || /[ap]\.?m?\.?\s*$/i.test(m[2]),
+      );
+      return { openMin: shifted.openMin, closeMin: shifted.closeMin, tier: tierOfHours(note) };
     }
     const one = parseClockMin(v);
     return one == null ? null : { openMin: null, closeMin: one, tier: tierOfHours(note) };
