@@ -143,7 +143,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.25.1';
+const APP_VERSION = '1.26.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -214,6 +214,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.26.0', 'WHAT TIME THE ORDERS HIT OUR SYSTEM — SO A HEAVY NIGHT IS CALLED AT 6PM INSTEAD OF AT MIDNIGHT. Chad: “I want a durable way of knowing what time the orders hit our system and tracking that information in the manifest to try to see if we can predict days when the volume is heavier than normal, sooner than at the end of the day.” THE ANSWER WAS ALREADY IN FIRESTORE AND NOBODY HAD READ IT. Uline’s forecast says what is coming and the nightly manifest says what came — both are end-of-night, and at 6pm, building tomorrow’s loads, the dispatcher has neither. The scan pulls /stop/info exactly ONCE per order, the first time it ever sees that stop number, and stamps enriched_at in a registry keyed by the number (“record the newly-enriched PROs so they’re never auto-enriched again (any day)”). It is not a LIVE list field, so mergeEnrich carries it forward untouched and it never drifts: a FIRST-SIGHT stamp already sitting on every stop we have ever indexed, and never once read. So this ships with its whole history available — the sealer BACKFILLS over days indexed long before the feature existed. THE AXIS IS LEAD HOURS, NOT CLOCK TIME, and that is correctness rather than taste: Monday’s board is Friday’s freight, so “6pm the day before” for a Monday delivery is a Sunday holding almost nothing. Hours are measured back from the delivery day’s 5am ET roll — the same rollover the manifest archive and the forecast scorer already use — so every day sits on one axis and a Tuesday is still only ever compared against other Tuesdays. THE THRESHOLDS ARE DELIBERATELY ASYMMETRIC. Calling a normal night HEAVY costs one short route; calling a heavy night NORMAL costs late deliveries into closed receiving windows, refusals, redeliveries and carryover. So HEAVY fires at +8% and LIGHT waits for −15%: warn early, stand down only when it is obvious. AND EVERY REFUSAL IS NAMED, because a projection this thing declines to make is what keeps a wrong number off the screen: no baseline yet (under 3 sealed same-weekday nights), coverage too thin, too early in the night, no orders — each prints its own sentence and the raw count beside it, never a blank. HONEST ABOUT WHAT THE STAMP IS: first sight is not NuVizz’s order-creation time (vizzonInfo.createdTime is read off the list row and toBoardStop never carries it through, so it is stored nowhere). It trails by a scan tick plus any enrichment backlog, and that backlog is longest on a heavy drop — so the bias runs toward UNDER-calling a heavy night, which is the argument for the asymmetry above. AND A CORRECTION TO A CLAIM I MADE ON THE WAY HERE: `source` does not identify Uline. On the list path it is the literal ‘nuvizz-list’ provenance tag and it is LIVE, so the list value overwrites any origin company every scan; a filter on source === ‘ULINE’ would read zero for ever. The discriminator is the 9-digit PRO, the same rule uline-manifest.mts already uses, and a test pins it. Card on the Manifest tab, phone and desktop written separately. ZERO NuVizz calls anywhere in the feature, held by an import-graph guard. 25 new tests, 4,637 green. THE WAY BACK: ORDER_ARRIVALS_ENABLED=off stops the sealing and the card degrades to “not enough sealed nights yet”; otherwise it is additive and git revert is the whole job.'],
   ['1.25.1', 'FILTERS CAME BACK TO THE MAP, AND THE BOARD-STATUS PILL WENT UP TO THE BAR INSTEAD. Chad, within the hour of v1.23.0 going live: “move filters back to where it was” — and, pointing at the “696 stops · 4 c/o” pill floating over the map — “this to the right of more on this page.” THE ARGUMENT FOR THE BAR WAS REAL AND IT IS STILL NOT THE ONE THAT WINS. Filters was the one control in the map’s right-hand column that GREW when you opened it, pushing a 240px card down over metro Atlanta; that is why it was moved. But a dispatcher opens Filters WHILE reading the map, and a panel up on the chrome is a trip away from the pins it is filtering — the board-status card is a thing you GLANCE at, which is why the bar suits it and not this. Both halves of that are now written into the components themselves, so the move does not get re-proposed in three weeks from the same reasoning as last time. WHAT FILTERS KEPT from its day on the bar: a count on its header when a filter is HIDING stops. This card sits collapsed by default, and a board quietly holding back half its freight behind “Unplanned only” is pixel-identical to a quiet morning. Only the three toggles that REMOVE stops count — clustering and place labels change how the same freight is drawn, and a badge that lights for a cosmetic toggle is one people stop reading. THE PILL IS RIGHT OF MORE, and the side is geometry rather than taste. Filters is back in the map’s top-right column at 240px when open, ending at the window’s edge; the card’s panel therefore hangs from its LEFT edge and grows leftward, clearing it by 160px at 1440 and 400px at 1920. A right-ALIGNED panel would end a few pixels INSIDE an open Filters card — the same eight-pixel clip v1.13.0 had to measure its way out of on Routing, arriving from the opposite side. Routing keeps its card on the OTHER side of More, because its map has no right rail to clear: two screens, two positions, each right on its own map, which is cheaper than one position slightly wrong on both. The flags chip travels inside the pill because it IS inside the pill — Chad pointed at one control, not at a control and a chip. AND THE MAP STOPPED CARRYING A SECOND COPY OF THAT CARD. This screen had a hand-rolled twin of StopsStatusCard — same count button, same refresh, same five detail lines — so the bar and the pill had two places to learn the board from and two chances to disagree about it, on the one number a dispatcher checks before doing anything. It is one component now, using the app-bar frame already built and measured for Routing, with the flags chip passed in as a slot (Routing fills it with nothing; its chip lives on its own map). THE GUARD THAT CAUGHT WHAT THAT COULD HAVE COST: consolidating took the scan button from THREE gated call sites to TWO while the number of guarded SURFACES stayed at three, and the auth-wiring test failed on the count. The count was right and the test was measuring the wrong thing — a number falling is also exactly what ADDING AN UNGATED BUTTON looks like. It now asserts that every StopsStatusCard mount hands the card the refusal reason, the in-flight state and the cooldown, which is the property that actually matters: a mount without scanDenied renders an ENABLED scan button for a viewer who cannot scan, and a person who believes a scan ran works a stale board all morning. Proven by removing the prop and watching it fail. THE LAYOUT GUARD NOW WALKS BOTH SCREENS at 1440 and 1920, opening Filters first — collapsed it is ~75px wide and clears everything, so a guard checking the resting state would pass the very layout it exists to reject. Written against the broken anchoring FIRST and proven to reject it, because a layout guard that has never seen its own bug is not evidence of anything. AND THE WALL DISPLAY STOPPED LYING, WHICH IS THE REAL HEADLINE OF THIS RELEASE. Chad photographed the office TV at 7:45am on its first morning: “0 stops”, “loading…”, a blank white map — and beside all of it a GREEN “Nothing needs a call” with “All clear · no stop is predicted past its close” in the rail. The board had never been read ONCE. THE CAUSE WAS MINE AND IT WAS ONE FUNCTION’S BLIND SPOT. tvFeedStale() answers “has a board that LOADED gone quiet” and returns false for a null timestamp, on the correct reasoning that the first ten seconds of a morning are not a failure. The reasoning was right and the CONCLUSION was wrong: a board that has never loaded is not “not stale”, it is NOT THERE — and with no third state to fall into it came out of tvVerdict() as `clear`. v1.23.0’s own changelog claims this exact failure was closed (“a blank panel and a panel whose data never arrived are the same pixels”); it was closed for the went-quiet case and left wide open for the never-arrived one, which is the case a wall display actually hits on a bad morning. “Not yet” and “never” are different claims and they now get different words. tvFeedState() replaces the boolean with four states — loading / live / stale / down — and ONE of them drives the headline, the freshness line AND the rail, so those three can no longer contradict each other on the same screen the way they did in the photograph. A 90-second grace keeps “loading…” honest during a boot; past it, a board with no successful read is DOWN and says “NO BOARD — nothing is being read” in red, with “This is not an all-clear — nothing has been checked” under the empty rail. An error SHORT-CIRCUITS the grace, because waiting out a timer to admit a refusal is just a slower lie. A board that loaded and then failed stays ‘live’ until the staleness budget — the freight on screen came from a real read, and “NO BOARD” over real stops would be false in the direction that teaches a room to stop believing the screen. AND IT SAYS WHAT WENT WRONG. useStops has always returned `error`; this screen threw it away, so a refused fetch read as “loading…” for ever and NEITHER the office NOR anybody asked about it could tell why — the reason the cause of Chad’s blank morning still is not known from here. The message is now on the wall. THE WHITE MAP: the live bundle carries VITE_GOOGLE_MAP_ID, so production runs a VECTOR map, which renders through WebGL — and a browser that cannot drive it paints nothing and raises no error, which is why there was no red box on the photo. Not proven on that television and not claimed to be; what IS done is that TV mode now drops the mapId and takes the RASTER base, the same path “Hide place labels” has used for years. It trades 3D tilt and the rotate compass — mouse gestures, on a wall, nobody performs — for a map that draws on anything. And a tilesloaded watchdog turns a silent white rectangle into a sentence naming WebGL, so if it is still blank the screen says so itself. THE DISPATCH BOARD IS UNTOUCHED: it keeps the vector map, the tilt and the compass. AND THE TRUCKS STOPPED BURYING THE FREIGHT. Chad, on the board once the map came back: “Truck icons are too big. Too much text showing covering the stops up. Want to take all the stale and in route text off and lower the font size of the drivers name.” THE ICON WAS 28px — the same size as the LARGEST stop marker (a 30px cluster) and DOUBLE an ordinary 14px stop dot — so on metro Atlanta the fleet read as the foreground and the freight as texture behind it. It is 20px now: still unmistakable against a 14px stop, because finding the trucks at a glance is what the layer is FOR, while covering under half the pins it used to. The name plate’s offset derives from that constant, so it followed the truck down on its own. THE STATUS LINE IS GONE, and the reasoning is a rule about labels rather than a preference about this one: “en route” was printed on nearly every moving truck AT ONCE. A label that is on everything distinguishes nothing — it is weather — and it cost a whole second line of white box over the stops underneath. STALENESS IS NOT LOST WITH THE WORD: a fix older than 30 minutes already dims the truck to 55% and the plate to 60%, independently of the text, so “do not trust this dot” still reads, and reads from across a room rather than needing somebody to read 9px type. What SURVIVES on line 2 is route progress (“Stop 3 of 12”), because that is not weather — it differs per truck, it moves through the day, and it is the one thing on the plate a dispatcher acts on. Most boards carry no route match, so in practice nearly every plate is now one line. Driver name to 10px, the second line to 9px, tighter padding — the white BOX is what covers the freight, and the type is what sizes the box. THE WORDS MOVED OUT OF THE COMPONENT into lib/driver-label.js, pure and tested, so “no en route, no stale” is pinned by a test across a moving truck, a stopped truck, a two-hour-old fix and a routed truck rather than being a thing somebody remembered. It also folded in the first-name/last-initial logic, which had two spellings for the two shapes the Motive feed sends — one driver appearing under two names on two boards is how a dispatcher comes to believe in two of them. THE STOP-ROW “en route” IN THE ROUTE DETAIL LIST IS UNTOUCHED: it is in a panel, it is per-stop, and it covers nothing. 11 tests on lib/driver-label.js, 25 on lib/tv-mode.js, 4,487 green.'],
   ['1.25.0', 'THE QUEUE’S “CORRECT” BUTTON DID NOT CORRECT, AND ITS GROUP PUSH WOULD HAVE SENT NUVIZZ ITS OWN BAD ADDRESS BACK. Chad, an hour after v1.24.0 shipped: “i clicked correct but it didn’t correct”. The editor opened seeded with what the row SHOWS — which on a mis-split row IS the mis-split: “PMB 271” in the street box and “90F GLENDA TRCE” in the suite box. The row had computed the fix and never offered it, and on desktop it did not even print that one existed. THE WORSE HALF WAS NOT ON SCREEN: the group push sent the same shown fields, so pushing a mis-split row would have handed the carrier back its own broken address AND written it as an address_override — marking the row corrected when nothing had been. A bulk action that quietly certifies broken rows as fixed is worse than no bulk action. Both now send correctedFields(row), and a row whose address NuVizz already holds is corrected on the board and NOT pushed, because 3 calls to restate the vendor’s own address buys the freight nothing — the fix for those rows is the pin. THE ADDRESS LINES ARE LABELLED NOW. They were placeholders, and a placeholder disappears the moment a field has a value, which here it always does — so the two lines rendered as two unlabelled boxes with nothing saying which one the geocoder reads. That is the exact fact a mis-split row exists to make you judge. CORRECT ALL AT ONCE, AND ON THE BOARD ALONE. Two group buttons off one runner: “Correct N on the board” applies every suggested split and re-geocodes the pin for nothing, and “Correct N + NuVizz” does that and tells the carrier at 3 calls each. The price quoted is for the rows a push would actually change, not everything ticked. AND THERE IS A MAP ON EVERY ROW. Chad: “show original pin and new pin location as well as be able to just move the pin where i want it.” Grey pin where it sits today, green pin where the corrected address lands, drag the green one anywhere and save it. On a corrected-not-pinned row that IS the diagnosis — the grey pin was geocoded from the OLD address, and only seeing them side by side says so. A geocode Google refuses still opens the map with a draggable pin, because the addresses it cannot find are the ones most worth a human who has been there. A RED COUNT ON “ADDRESS HISTORY” IN BOTH NAVIGATIONS says how many are waiting, so the queue is not a screen you have to remember to go looking at. One Firestore read a session, zero NuVizz calls, and working the list down moves it.'],
   ['1.24.1', '“RH 1-5” IS ONE IN THE AFTERNOON, AND WE WERE READING IT AS ONE IN THE MORNING. Chad: “fix that rh 1-5 is always going to be pm as you have to imagine our delivery window for the most part is 8am - 5pm so no one is going to have those receiving hours.” MEASURED ON v1.24.0 BEFORE ANYTHING WAS CHANGED: “RH 1-5” stored 01:00–05:00, “RECEIVING HOURS 2-4” stored 02:00–04:00, “RH 1-4 30” stored 01:00–04:30. A window that sits in the small hours says the customer is SHUT FOR THE WHOLE WORKING DAY, so every stop there carried an hours_risk row for ever — crying wolf, which is the exact complaint that opened v1.23.1 a day earlier, and a dispatcher who learns to scroll past a flag has lost the flag. Worse than a bad flag: routing-time-windows.mts has read these same hours since v1.2x, so the solver was building against a window no truck could serve. Run, not argued — a synthetic board with a 1-5 dock produced “the load cannot reach MERIDIAN SUPPLY before it closes at 5:00a” in CRITICAL, and after the fix produced no flag at all. WHY IT SLIPPED THROUGH FOR MONTHS. The business-hours correction only ever fired on a DESCENDING pair — “7-3” becomes 7:00a–3:00p because a close cannot precede its open — and an ASCENDING pair of small numbers is perfectly well-formed, so it sailed past as dawn. TWO PARSERS HAD THE SAME HOLE, and finding only the first would have fixed nothing for the customers most affected: signal-scanner reads a fresh Uline order, while board-flags’ legacy-string branch reads a range already sitting in Firestore as “1-5”, and those notes are never re-parsed from an order. Both now import ONE rule (lib/daytime-window.js), so a stored “1-5” and a freshly scanned “1-5” can never come to disagree about the same dock. THE RULE IS A COMPARISON, NOT A THRESHOLD, and that is the whole design. When NEITHER half wrote a meridiem both readings are grammatically available, so we take the one that actually overlaps the 8am–5pm delivery day: “1-5” overlaps it for 0 minutes as morning and 240 as afternoon, so afternoon wins. A TIE CHANGES NOTHING — “6-7” and “7-8” fit the delivery day in neither reading, and a threshold rule like “shift anything ending before 8am” would have flung them to six and seven in the evening on no evidence at all. A tie means we were told nothing, and the honest answer to being told nothing is to change nothing. WHAT IT REFUSES TO TOUCH, each pinned by a test: a written meridiem is the customer speaking, so “1AM-5AM” stays pre-dawn even though no dock works then — guessing over an explicit statement is how the v0.54.60 “CLOSES AT 4” regression happened; genuine early docks that reach the delivery day keep their mornings (“5-9”, “6-10”, “4-12”); “8-12” and “9-11” are unmoved; a naked “1-5” with no hours label is still refused, because reading it as afternoon does not smuggle it past the last-resort tier’s daytime gate; a shift that would cross midnight is refused rather than wrapped; and the two <input type="time"> boxes on the stop card write explicit 24-hour values that the rule has no business touching. The WEAVER lunch split from v1.23.1 still reads as one 8-to-5 envelope, and “RH 8-12 & 1-5” still closes at five rather than stacking two twelve-hour shifts. A clean before/after against a real origin/main worktree changed exactly SEVEN rows out of forty-odd and left everything else byte-identical. THE ONE JUDGEMENT CALL, SAID OUT LOUD: “RH 4-8” now reads 4:00p–8:00p instead of 4:00a–8:00a. Chad’s ruling is that a pre-dawn dock is not a real thing here, and 4pm at least touches the delivery day where 4am touches nothing — but it is the only row that moved which nobody explicitly asked about. AND A LONE OPEN WAS WORSE THAN A BAD RANGE, which the mapping pass turned up and is fixed here rather than left: “OPENS AT 1”, “RECEIVING AFTER 1” and “NO DELIVERIES BEFORE 1” all stored 01:00, and “OPENS AT 12” stored MIDNIGHT — the AM rule maps hour 12 to 0. A bad close cries wolf; a bad OPEN is silent and costs freight, because routing-time-windows takes Math.max of the opens, so a 01:00 open is no constraint whatsoever and the solver books the stop first thing for a dock that does not raise its door until one in the afternoon. That is a truck at a closed dock. A lone open has no second number to compare, so it gets a FLOOR instead of a comparison, and the floor is not a new opinion: 5:00a is what the bare-pair tier has called the earliest a dock opens since Chad asked it to learn bare pairs. So 1 through 4 read as afternoon, 12 reads as noon, and 5, 6 and 7 keep their mornings because early docks are ordinary. The asymmetry with the close-only rule (which reads 1 through 7 as afternoon) is deliberate and the reason is one line: a dock that opens at 6am is normal and a dock that closes at 6am is not. PUT IT BACK WITH HOURS_PM_SHIFT=off on the functions and VITE_HOURS_PM_SHIFT=off in the bundle; the rule is read on both sides on purpose, because a switch that reverted the scanner and not the board would leave the two disagreeing about the same customer, which is a new bug wearing the old feature’s name. Default ON, and a malformed value leaves it ON. 48 new tests, 4,592 green. A clean before/after against a real origin/main worktree moved 13 rows of 59 and left the other 46 byte-identical.'],
@@ -33551,6 +33552,154 @@ function ForecastDesktop({ data, reload }) {
   );
 }
 
+// ── WHEN TONIGHT'S ORDERS LANDED, AND WHETHER THE DAY IS RUNNING HEAVY ────────────────────
+//
+// Chad, Sep 2026: "I want a durable way of knowing what time the orders hit our system and
+// tracking that information in the manifest to try to see if we can predict days when the
+// volume is heavier than normal, sooner than at the end of the day."
+//
+// Everything here is computed by src/lib/order-arrivals.js on the server and arrives as plain
+// data (GET order-arrivals, Firestore only, ZERO NuVizz calls). The card renders it and makes
+// no judgements of its own — including the refusals: when the server declines to project, the
+// card prints the reason it gave rather than an empty space the reader fills in themselves.
+const ARRIVALS_REFRESH_MS = 5 * 60 * 1000;
+
+function useOrderArrivals() {
+  const [state, setState] = useState({ loading: true, err: null, data: null });
+  const load = useCallback(async () => {
+    setState((s) => ({ ...s, loading: true, err: null }));
+    try {
+      const r = await apiFetch('/.netlify/functions/order-arrivals');
+      const j = await r.json();
+      setState({ loading: false, err: j?.ok === false ? (j.error || 'could not read the arrival curve') : null, data: j && typeof j === 'object' ? { ...j, fetchedAt: Date.now() } : j });
+    } catch (e) { setState((s) => ({ ...s, loading: false, err: String(e?.message || e) })); }
+  }, []);
+  // The whole value of this card is that it is CURRENT — a pace reading that quietly stopped
+  // updating at 4pm is worse than no reading, because it looks exactly like a live one.
+  useEffect(() => {
+    load();
+    const onVisible = () => { if (document.visibilityState === 'visible') load(); };
+    document.addEventListener('visibilitychange', onVisible);
+    const timer = setInterval(() => { if (document.visibilityState === 'visible') load(); }, ARRIVALS_REFRESH_MS);
+    return () => { document.removeEventListener('visibilitychange', onVisible); clearInterval(timer); };
+  }, [load]);
+  return { ...state, reload: load };
+}
+
+const ARRIVAL_TONE = {
+  heavy: 'bg-amber-50 border-amber-300 text-amber-800',
+  light: 'bg-sky-50 border-sky-200 text-sky-800',
+  normal: 'bg-emerald-50 border-emerald-200 text-emerald-800',
+  unknown: 'bg-slate-50 border-slate-200 text-slate-700',
+};
+const ARRIVAL_WORD = { heavy: 'RUNNING HEAVY', light: 'RUNNING LIGHT', normal: 'ON PACE', unknown: 'NO READING' };
+
+/** The one line worth acting on, and the numbers behind it. */
+function ArrivalHeadline({ data }) {
+  const v = data?.verdict || null;
+  const tone = ARRIVAL_TONE[v?.verdict || 'unknown'];
+  return (
+    <div className={`border rounded p-2 ${tone}`}>
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[11px] font-bold tracking-wide">{ARRIVAL_WORD[v?.verdict || 'unknown']}</span>
+        <span className="text-[11px] opacity-80">{data?.date ? `${v?.dow || ''} ${data.date}` : ''}</span>
+      </div>
+      <div className="text-xs mt-0.5">{v?.text || 'no reading yet'}</div>
+      {v?.projected != null && data?.baseline?.typicalFinal != null && (
+        <div className="text-[11px] mt-1 opacity-80 tabular-nums">
+          tracking to ~{v.projected} · typical {v.dow} {data.baseline.typicalFinal} · from {data.baseline.n} sealed nights
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Today against a normal night, hour by hour. `—` means the hour has not arrived yet; it is
+ *  deliberately not a zero, because a column of zeros running into tomorrow reads as a collapse. */
+function ArrivalCheckpoints({ rows, phone }) {
+  if (!arr(rows).length) return null;
+  return (
+    <div className="border rounded overflow-hidden">
+      <table className="w-full text-[11px] tabular-nums">
+        <thead className="bg-slate-50 text-slate-500">
+          <tr><th className="text-left px-2 py-1 font-medium">by</th><th className="text-right px-2 py-1 font-medium">in hand</th><th className="text-right px-2 py-1 font-medium">typical</th>{!phone && <th className="text-right px-2 py-1 font-medium">vs</th>}</tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const delta = r.soFar != null && r.typical != null ? r.soFar - r.typical : null;
+            return (
+              <tr key={r.lead} className={`border-t ${r.reached ? '' : 'text-slate-400'}`}>
+                <td className="px-2 py-1">{r.clock || `T−${r.lead}h`}</td>
+                <td className="text-right px-2 py-1">{r.soFar == null ? '—' : r.soFar}</td>
+                <td className="text-right px-2 py-1 text-slate-500">{r.typical == null ? '—' : r.typical}</td>
+                {!phone && <td className={`text-right px-2 py-1 ${delta == null ? 'text-slate-400' : delta > 0 ? 'text-amber-700' : 'text-slate-500'}`}>{delta == null ? '—' : `${delta >= 0 ? '+' : '−'}${Math.abs(delta)}`}</td>}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Coverage is stated on every read, not only when it is bad. The number this card is built on
+ *  is a first-sight stamp, and a reader who does not know how much of the board carries one
+ *  cannot tell a real pace from a partial one. */
+function ArrivalFootnote({ data }) {
+  const c = data?.curve || null;
+  if (!c) return null;
+  const pctStamped = c.coverage == null ? null : Math.round(c.coverage * 100);
+  const thin = pctStamped != null && pctStamped < Math.round((data?.rules?.minCoverage ?? 0.8) * 100);
+  return (
+    <div className={`text-[10px] ${thin ? 'text-amber-700' : 'text-slate-400'}`}>
+      {c.total} orders on this board · {c.stamped} carry an arrival stamp{pctStamped != null ? ` (${pctStamped}%)` : ''}
+      {thin ? ' — too thin to project; the counts above are real, the projection is withheld' : ''}
+      {data?.ulineTotal != null ? ` · ${data.ulineTotal} are Uline PROs` : ''}
+      <div className="mt-0.5">“In hand” is when our scan FIRST saw the order, not when Uline created it — accurate to a scan tick.</div>
+    </div>
+  );
+}
+
+function ArrivalsPhone({ data }) {
+  return (
+    <div className="space-y-2">
+      <ArrivalHeadline data={data} />
+      <ArrivalCheckpoints rows={data?.checkpoints} phone />
+      <ArrivalFootnote data={data} />
+    </div>
+  );
+}
+
+function ArrivalsDesktop({ data, reload }) {
+  return (
+    <div className="grid gap-3 xl:grid-cols-5">
+      <div className="xl:col-span-3 space-y-2">
+        <ArrivalHeadline data={data} />
+        <ArrivalFootnote data={data} />
+      </div>
+      <div className="xl:col-span-2 space-y-2">
+        <ArrivalCheckpoints rows={data?.checkpoints} />
+        <button onClick={reload} className="px-2 py-1 text-[11px] font-semibold text-slate-600 border rounded hover:bg-slate-50">Refresh</button>
+      </div>
+    </div>
+  );
+}
+
+function OrderArrivalsCard({ arrivals, isMobile }) {
+  const { loading, err, data } = arrivals;
+  return (
+    <div className="bg-white border rounded-lg p-3 space-y-2" data-order-arrivals>
+      <div className="flex items-center gap-2">
+        <span className="font-semibold text-sm text-slate-800">Order arrivals</span>
+        <span className="text-[11px] text-slate-400">what time tonight’s freight landed, against a normal week</span>
+      </div>
+      {loading && !data ? <div className="text-xs text-slate-500">Loading…</div> : null}
+      {err ? <div className="text-xs text-red-700">{err}</div> : null}
+      {data && data.ok !== false ? (isMobile ? <ArrivalsPhone data={data} /> : <ArrivalsDesktop data={data} reload={arrivals.reload} />) : null}
+    </div>
+  );
+}
+
 function UlineForecastCard({ forecast, isMobile }) {
   const { loading, err, data, reload } = forecast;
   return (
@@ -33572,6 +33721,7 @@ function ManifestCheckScreen() {
   const [result, setResult] = useState(() => loadStored());
   const isMobile = useViewportWidth() < MOBILE_BREAKPOINT;
   const forecast = useUlineForecast(60);
+  const arrivals = useOrderArrivals();
 
   // ADOPT A RUN THAT ARRIVED WHILE THIS SCREEN WAS OPEN. The automatic checks
   // (the Gmail poll, the Resend poll) write one Firestore doc; Shell mirrors it
@@ -33801,6 +33951,7 @@ function ManifestCheckScreen() {
           </>
         )}
 
+        <OrderArrivalsCard arrivals={arrivals} isMobile={isMobile} />
         <UlineForecastCard forecast={forecast} isMobile={isMobile} />
         <ManifestHistoryCard />
       </div>
