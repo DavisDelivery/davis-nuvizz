@@ -141,7 +141,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.23.0';
+const APP_VERSION = '1.23.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -212,6 +212,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.23.1', 'FILTERS CAME BACK TO THE MAP, AND THE BOARD-STATUS PILL WENT UP TO THE BAR INSTEAD. Chad, within the hour of v1.23.0 going live: “move filters back to where it was” — and, pointing at the “696 stops · 4 c/o” pill floating over the map — “this to the right of more on this page.” THE ARGUMENT FOR THE BAR WAS REAL AND IT IS STILL NOT THE ONE THAT WINS. Filters was the one control in the map’s right-hand column that GREW when you opened it, pushing a 240px card down over metro Atlanta; that is why it was moved. But a dispatcher opens Filters WHILE reading the map, and a panel up on the chrome is a trip away from the pins it is filtering — the board-status card is a thing you GLANCE at, which is why the bar suits it and not this. Both halves of that are now written into the components themselves, so the move does not get re-proposed in three weeks from the same reasoning as last time. WHAT FILTERS KEPT from its day on the bar: a count on its header when a filter is HIDING stops. This card sits collapsed by default, and a board quietly holding back half its freight behind “Unplanned only” is pixel-identical to a quiet morning. Only the three toggles that REMOVE stops count — clustering and place labels change how the same freight is drawn, and a badge that lights for a cosmetic toggle is one people stop reading. THE PILL IS RIGHT OF MORE, and the side is geometry rather than taste. Filters is back in the map’s top-right column at 240px when open, ending at the window’s edge; the card’s panel therefore hangs from its LEFT edge and grows leftward, clearing it by 160px at 1440 and 400px at 1920. A right-ALIGNED panel would end a few pixels INSIDE an open Filters card — the same eight-pixel clip v1.13.0 had to measure its way out of on Routing, arriving from the opposite side. Routing keeps its card on the OTHER side of More, because its map has no right rail to clear: two screens, two positions, each right on its own map, which is cheaper than one position slightly wrong on both. The flags chip travels inside the pill because it IS inside the pill — Chad pointed at one control, not at a control and a chip. AND THE MAP STOPPED CARRYING A SECOND COPY OF THAT CARD. This screen had a hand-rolled twin of StopsStatusCard — same count button, same refresh, same five detail lines — so the bar and the pill had two places to learn the board from and two chances to disagree about it, on the one number a dispatcher checks before doing anything. It is one component now, using the app-bar frame already built and measured for Routing, with the flags chip passed in as a slot (Routing fills it with nothing; its chip lives on its own map). THE GUARD THAT CAUGHT WHAT THAT COULD HAVE COST: consolidating took the scan button from THREE gated call sites to TWO while the number of guarded SURFACES stayed at three, and the auth-wiring test failed on the count. The count was right and the test was measuring the wrong thing — a number falling is also exactly what ADDING AN UNGATED BUTTON looks like. It now asserts that every StopsStatusCard mount hands the card the refusal reason, the in-flight state and the cooldown, which is the property that actually matters: a mount without scanDenied renders an ENABLED scan button for a viewer who cannot scan, and a person who believes a scan ran works a stale board all morning. Proven by removing the prop and watching it fail. THE LAYOUT GUARD NOW WALKS BOTH SCREENS at 1440 and 1920, opening Filters first — collapsed it is ~75px wide and clears everything, so a guard checking the resting state would pass the very layout it exists to reject. Written against the broken anchoring FIRST and proven to reject it, because a layout guard that has never seen its own bug is not evidence of anything. 4,467 green.'],
   ['1.23.0', 'THE BOARD GOES ON THE OFFICE WALL, AND FILTERS GETS OFF THE MAP. Chad: “I want to create a netlify site that just has the map from dispatch map that allows me to display the view in my office on a 55 inch tv” — and then, on the shape of it: “i’m good with the /tv route but i want the button for fullscreen under filters as i don’t want anymore buttons on the screen”, “I want map status bar flag rail but i want this view only showing on the full screen[,] don’t want to crowd my actual desktop map”, and “live trucks but still want the filters drop down on the map so i can turn live drivers on and off”. IT IS A ROUTE, NOT A SECOND SITE, AND THAT IS A COST FINDING RATHER THAN A PREFERENCE. A second Netlify site built from this repo deploys netlify/functions with it — THIRTEEN scheduled background functions, among them nuvizz-refresh-stops-background on */5 (the NuVizz scan) and customer-comms-sweep-background on */30 (the delivery emails to real customers). A second production deploy runs every one of them a SECOND TIME: double the scan spend against a 2,000/day ceiling, and every delivered-customer email sent twice. Same-origin also means the stops function, Firestore and the Maps key work untouched, with no second key referrer list to widen and nothing to re-do when the Firestore rules lockdown lands. Open dd-dispatch-map.netlify.app/tv on the TV and leave it. TV MODE IS ITS OWN VIEW, the same rule this repo already applies to phone vs desktop: rendered INSTEAD of the shell rather than inside it with the chrome hidden, so the update banner, the tab row and the footer are not merely invisible on a screen with no pointer — they are not mounted, and a control added to the board tomorrow cannot arrive on the television by accident. WHAT IS ON IT: two numbers big enough to read across a room (stops, % complete — through formatCompletionPct, so 815 of 816 can never print as a finished day), a one-line verdict, the clock, and a flag rail carrying CRITICAL AND RED ONLY. Amber is a count, not a row: on a board with twenty-five advisories behind three reds, listing all of them pushes the three somebody can still save off a screen that cannot scroll. The cap is 12 and THE OVERFLOW IS PRINTED, because twelve rows on a thirty-flag morning with the truncation unmentioned reads as twelve problems. THE FAILURES A WALL DISPLAY HAS AND A DISPATCHER’S TAB DOES NOT, each closed: a stale feed OUTRANKS a clean board (the scan dies at 6am and the television otherwise shows a perfect morning all day — stale is its own tone and its own sentence, checked before the counts); “nothing needs a call” is said in WORDS, never left as an empty rail, because a blank panel and a panel whose data never arrived are the same pixels; the TV RELOADS ITSELF on a new build, since UpdateBanner waits for a click nobody is there to give and holds no unsaved work to lose; a screen wake lock is re-taken on every visibility change rather than requested once and assumed to hold for twelve hours; and the display NEVER PUBLISHES PRESENCE — a board nobody touches, reporting itself as a live device all day, would make “who else is on” permanently wrong, and an indicator that is usually wrong takes the true readings with it. AND FILTERS MOVED TO THE BAR, ON BOTH SCREENS. Chad: “I want my filters drop down moved to the bar above where its at and set to the left to not get in the way of buttons on right of screen[,] and make the routing tab the same way.” It was the one control in the map’s right-hand column that GREW when you opened it, pushing a 240px card down over metro Atlanta on the side of the board a dispatcher reads — the same argument that took the board-status card onto the bar in v1.13.0. The LEFT end is the geometry and not a tidy-up: the bar’s right end carries More, the status card and the presence chip with the map’s right rail directly beneath them, so the panel is anchored to its button’s LEFT edge and grows the other way, into the map’s top-left, and cannot reach that stack at any window width. One body, two frames, so the bar and the phone drawer can never come to disagree about which toggles exist. A filter that HIDES freight now shows a count on the collapsed button, because a board quietly holding back half its stops behind “Unplanned only” is pixel-identical to a quiet morning. The phone keeps its on-map button; so does TV mode, where there is no bar to hang off — which is exactly what Chad asked for when he said the filters dropdown had to stay reachable on the map to turn live drivers on and off. 16 new tests on the pure rules (lib/tv-mode.js). THE WAY BACK: this is additive — one commit, and git revert is the whole job.'],
   ['1.22.0', 'CORRECTING AN ADDRESS NOW REACHES THE DRIVER’S MANIFEST, NOT JUST OUR MAP. Chad: “when we edit an address because it’s wrong — do we change it in nuVizz, or do we just change it in dispatch map?” Just dispatch map. All three edit paths — the editor, and “Fix & move pin” on the Map and on Routing — wrote customer_notes.address_override with the browser’s Firestore SDK and never touched a function, so the board and the pin were right while the ORDER kept whatever street came in on the import. The driver’s manifest app never reads customer_notes at all, and the delivered-customer email renders the cached board row, so BOTH quoted the wrong address back at the two people most able to act on it. The server op to fix this has existed and been tested since Sep 9 and was wired to no button in the app. IT IS WIRED NOW, AS A CHOICE, IN THE EDITOR ONLY. “Also correct order X in NuVizz” rides the same ladder the note and date writes use — read by number, REFUSE on a twin (two orders share a number and re-addressing the other one sends freight where nobody chose it), REFUSE on delivered freight, write the address as a literal ANY block with no label so the vendor cannot refill it from its own address book, then read the order back. THE MODAL STAYS OPEN UNTIL IT HAS, and the green line quotes WHAT NUVIZZ STORED — not what we sent. TWO PLACES, NEITHER COVERING THE OTHER, both said out loud on the checkbox: Firestore is per-CUSTOMER and carries onto their next order; NuVizz is per-ORDER and is what the portal, the carrier and the paperwork show. THE BOARD HALF NEVER DEPENDS ON THE VENDOR HALF — a refused push is amber, states the saved half first, and says the manifest still needs the portal, because a dispatcher reading red assumes they lost the edit. The one-click “Fix & move pin” stays board-only ON PURPOSE and now says so on the banner: a mis-split is the same address with the lines swapped, NuVizz already holds both, so the push buys the freight nothing and a vendor write fired from one unconfirmed tap is precisely how the wrong twin gets re-addressed. ADDRESS HISTORY ANSWERS “DID IT REACH THEM”: rows read Us → NuVizz when it landed, amber Us · not in NuVizz when it was attempted and did not — recorded as a field, not a new source, so the screen’s own “Us” filter cannot hide the corrections that travelled furthest. THE WAY BACK IS ONE ENV VAR: NUVIZZ_ADDRESS_WRITE=off refuses every push server-side before it costs a call and leaves the board override behaving exactly as it did before this shipped. Default-on, and a malformed value leaves it ON.'],
   ['1.21.0', 'THE BUILD PAYS ATTENTION TO TIME RESTRICTIONS NOW \u2014 AND THE SETUP PANEL SAYS WHAT IT IS DOING. Chad, on the panel review: \u201cDo them all. We can do an ai assist box. We need them to be able to pay attention to time restrictions, whether or not it\u2019s a tractor friendly stop.\u201d THE BIG ONE, MEASURED FIRST: a stop with a real 1:00p\u20131:30p appointment, stored the way the board stores it, went through a build with an ETA of 7:02a and no flag. The pipeline read windows with a parser anchored at \u201cHH:MM\u201d and the board carries full stamps (\u201c2026-09-14T13:00:00\u201d), so every window came back null and every stop went into the solver SOFT \u2014 for as long as the feature has existed. Receiving hours, on the very customer note the resolver already fetched for equipment, were never read at all. WHAT READS THE CLOCK NOW (lib/routing-time-windows.mts, 12 tests): the order\u2019s own window only when it is NARROWER than a working day and not the vendor\u2019s default creation slot \u2014 NuVizz stamps 08:00\u201320:00 on 88% of stops and STRICT on 93%, and accepting those would have overridden the chosen strategy on every build \u2014 combined with the customer\u2019s receiving hours for the BOARD day (typed or auto, legacy strings included) and closed days, through the same rules the map draws its clock marks by. The tightest combination wins; a 3pm appointment at a dock whose hours say 2pm keeps the appointment and names the disagreement. NEVER A TRACTOR MARK: the rule cannot read one, and a test pins that a green stop and a red stop with the same hours get the same window. WHAT THE SOLVER DOES WITH IT: the old window order was earliest-deadline-first, which with windows that actually exist would have idled a truck at a 1pm dock from 7am; a window has two edges and both are honoured \u2014 un-windowed stops keep the strategy order, each windowed stop is inserted where it is on time, then idles least, then adds least distance, and ETAs wait for a dock to open with the wait on the card (\u201cwaits 7 min for the dock\u201d). Advisory by default: a stop the ETA cannot make stays on the truck and is flagged; \u201cRespect time restrictions strictly\u201d in step 3 leaves it off, listed under Could not place with its reason \u2014 including \u201ccustomer is closed on the delivery day\u201d. The route header carries \u201c\u23f1 3 timed\u201d and \u201c\u26a0 1 outside window\u201d so a 30-stop route is judged from its first line, and each row shows the clock the build honoured. ROUTING_TIME_RESTRICTIONS=off puts the build back to the blind behaviour, every side at once. THE SEVEN SMALLER ONES from the same review, each a rule in lib/routing-select.js with tests: (1) \u201cLOOSE PIECES\u201d WAS TOTAL PIECES \u2014 the panel summed NuVizz pallets (skids + loose) under the word Loose, so Chad\u2019s screenshot read \u201cLoose pieces 29\u201d beside a Selected window reading \u201c0 loose\u201d for the same orders; Loose (volume) and Total pieces (pallets) are two lines now, and Selected reads \u201c24 orders \u00b7 21 stops\u201d in the unit the Compare header counts. (2) THE NOTE BOX DID NOTHING: the server has always gated the model on request.aiAssist and the panel never sent it. An AI assist checkbox (2 model calls per build, default off) reveals the box and sends the flag, and the result panel tells \u201cnever asked\u201d from \u201casked, and the site has no ANTHROPIC_API_KEY\u201d. (3) MIN TIME IS MIN DISTANCE on the free estimate \u2014 measured, 50 random boards, 50 of 50 identical \u2014 so it is offered only with Google drive-times on, and the pick is remembered. (4) Trucks-mode capacity fields wrote the fleet profile on blur, and a blank box wrote 0 skids for every later build in both modes; each profile is a draft with a Save that refuses anything that is not a truck. (5) Only the Compare card\u2019s Save says Save now that a build stages itself \u2014 the result panel\u2019s copy is \u201cKeep a copy (our system only)\u201d. (6) The green-only trailer rule is disabled, with the reason, when no trailer is in play. (7) Discard plan can close the cards the build opened by itself, and only those. 4,430 green.'],
@@ -4620,7 +4621,13 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
 // other screens (Routing renders it too). Collapsible to just the stops count; the
 // refresh icon fires the cheap manual scan (useManualScan). Pure presentation — all
 // state comes in as props so each screen wires its own useStops/useManualScan.
-function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, unplannedAt, completedAt, isToday, ops, scanErr, scanning, scanCooldown, scanDenied = null, onRefresh, collapsed, onToggleCollapsed, scanUnplannedCount, visibleUnplannedCount, drawnCount = null, barMode = false }) {
+// `flagsChip` is a SLOT, not a boolean, and only the dispatch Map fills it. On that screen the
+// flags chip has always lived inside this pill's header row — it is what Chad pointed at when
+// he said "move ... this to the right of more", one control in his eyes — so it travels with
+// the card. Routing keeps its chip on the map in its own column (v1.13.0) and passes nothing.
+// A slot rather than a flag because the two screens hand it different props, and the moment
+// this component starts deciding which to build it owns both screens' flag state.
+function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, unplannedAt, completedAt, isToday, ops, scanErr, scanning, scanCooldown, scanDenied = null, onRefresh, collapsed, onToggleCollapsed, scanUnplannedCount, visibleUnplannedCount, drawnCount = null, barMode = false, flagsChip = null }) {
   // `drawnCount` (Routing) = pins actually on the map right now. The card used to publish the
   // whole day board while the map drew a filtered subset, so the number on the chip matched
   // neither the pins beneath it nor the bottom grid — Chad, counting dots: "there are more dots
@@ -4716,6 +4723,7 @@ function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, 
       <div className="relative text-xs" data-testid="routing-bar-status">
         <div className="flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-slate-700">
           {countBtn}
+          {flagsChip}
           {refreshBtn}
         </div>
         {/* ONE panel, not two. The detail and the scan error are both absolutely placed at
@@ -4737,9 +4745,10 @@ function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, 
   // ── MAP-PILL MODE — the floating card on the dispatch Map (and phone Routing) ───────
   return (
     <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 text-xs">
-      {/* Header row: stops count + collapse/refresh — always visible. */}
+      {/* Header row: stops count + flags chip + collapse/refresh — always visible. */}
       <div className="flex items-center gap-2">
         {countBtn}
+        {flagsChip}
         {refreshBtn}
       </div>
       {/* Stacked details — hidden when collapsed. */}
@@ -6538,53 +6547,33 @@ function CarryoverControl({ value = 0, onChange, boardDate }) {
   );
 }
 
-// ── FILTERS: A CARD ON THE MAP, OR A CONTROL ON THE BAR ──────────────────────
+// FILTERS — the collapsible card on the map's top-right column, where it has always been.
 //
-// Chad: "I want my filters drop down moved to the bar above where its at and set to the
-// left to not get in the way of buttons on right of screen."
+// IT WENT TO THE APP BAR IN v1.23.0 AND CAME BACK IN v1.23.1 — it was live in between, so
+// this is history rather than a draft. Chad asked for the move and then, looking at it on the
+// board: "move filters back to where it was." The argument for the bar was real — it was the
+// one control in that column that GREW when you opened it, pushing a 240px card down over
+// metro Atlanta — but it is not the argument that wins, because a dispatcher opens Filters
+// WHILE reading the map, and a panel up on the chrome is a trip away from the pins it is
+// filtering. The board-status card is a thing you GLANCE at, which is why the bar suits that
+// and not this. Recorded rather than quietly reverted, so nobody re-proposes it in three
+// weeks from the same reasoning.
 //
-// WHY THE BAR. The map's top-right column is where every other control already lives — the
-// status pill, the flags chip, Routes, Messages, the AI bubble — and Filters was the one
-// that GREW when you opened it, pushing a 240px card down over metro Atlanta on the exact
-// side of the board a dispatcher reads. The same argument took the board-status card onto
-// the bar in v1.13.0; this is the other half of it. Board chrome belongs on the chrome.
-//
-// AND IT HANGS LEFT, which is geometry rather than preference. The bar's right end carries
-// More, the board-status card and the presence chip, and the map's right rail sits directly
-// beneath them — so a panel opening rightward would reach back across both, which is the
-// one thing Chad asked it not to do. Anchored to the button's LEFT edge it grows the other
-// way, into the map's top-left, where the only furniture is the date picker, and only while
-// it is open.
-//
-// ONE BODY, TWO FRAMES. The rows are built once and rendered into either shell, for the
-// same reason board-status-card.js is a function and not two `&&`s in the JSX: the markup
-// may differ, the rule about what a dispatcher can reach must not. A toggle that exists on
-// the map and not on the bar is one nobody can find and nobody can report.
-function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled, showRoutes, setShowRoutes, boardDate, barMode = false, onEnterTv = null }) {
+// The one thing that stayed from that release is the "Fullscreen TV view" button at the
+// bottom of the panel — see onEnterTv. Chad put it here on purpose: "i want the button for
+// fullscreen under filters as i don't want anymore buttons on the screen."
+function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled, showRoutes, setShowRoutes, boardDate, onEnterTv = null }) {
   const set = (key) => (v) => setFilters((prev) => ({ ...prev, [key]: v }));
-  const [barOpen, setBarOpen] = useState(false);
-  const ref = useRef(null);
-  // Outside-click + Escape, BAR MODE ONLY. The card on the map is opened and shut by its own
-  // chevron and has no business closing itself because somebody clicked the map — that card
-  // is a persistent panel, this one is a popover, and they are dismissed differently.
-  useEffect(() => {
-    if (!barMode || !barOpen) return undefined;
-    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setBarOpen(false); };
-    const onKey = (e) => { if (e.key === 'Escape') setBarOpen(false); };
-    document.addEventListener('mousedown', onDoc);
-    window.addEventListener('keydown', onKey);
-    return () => { document.removeEventListener('mousedown', onDoc); window.removeEventListener('keydown', onKey); };
-  }, [barMode, barOpen]);
   // Clustering is off by default now; with icons memoized, unclustered rendering is far
   // cheaper, so only warn on genuinely huge boards rather than nagging every busy day.
   const clusterWarning = !filters.showClustered && stopCount > 800
     ? `Rendering ${stopCount} markers individually may be slow — turn on clustering if the map lags`
     : null;
-  // A FILTER THAT HIDES FREIGHT IS SAID ON THE BUTTON. Collapsed to a bar control the panel
-  // is shut most of the time, and a board quietly holding back half its stops behind
-  // "Unplanned only" is pixel-identical to a quiet morning. Only the three that REMOVE stops
-  // count here — clustering and place labels change how the same freight is drawn, and a dot
-  // that says "on" for a cosmetic toggle is one people stop reading.
+  // A FILTER THAT HIDES FREIGHT IS SAID ON THE HEADER, so it survives the collapse. A board
+  // quietly holding back half its stops behind "Unplanned only" is pixel-identical to a quiet
+  // morning, and this card sits collapsed by default. Only the three that REMOVE stops count —
+  // clustering and place labels change how the same freight is DRAWN, and a badge that lights
+  // for a cosmetic toggle is one people stop reading.
   const hidingCount = [filters.hideTerminal, filters.hideStemOut, filters.unplannedOnly].filter(Boolean).length;
 
   const body = (
@@ -6663,33 +6652,6 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
     </>
   );
 
-  // BAR MODE — a button on the app bar whose panel drops down and to the RIGHT.
-  if (barMode) {
-    return (
-      <div className="relative" ref={ref}>
-        <button
-          onClick={() => setBarOpen((o) => !o)}
-          className={`flex items-center gap-1 px-2 py-1 rounded border text-[11px] font-semibold shadow-sm ${barOpen || hidingCount ? 'border-slate-400 bg-white text-slate-800' : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-600'}`}
-          aria-expanded={barOpen}
-          title="Map filters"
-        >
-          <Filter size={13} /> Filters
-          {hidingCount > 0 && (
-            <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-amber-500 text-white text-[9px] font-bold w-4 h-4" title={`${hidingCount} filter${hidingCount === 1 ? '' : 's'} is hiding stops`}>
-              {hidingCount}
-            </span>
-          )}
-        </button>
-        {barOpen && (
-          <div className="absolute left-0 top-full mt-1 w-60 bg-white border border-slate-300 rounded-lg shadow-xl px-3 py-2 text-[12px] z-[80]">
-            {body}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // CARD MODE — the phone drawer and any surface with no bar to hang off (the TV view).
   return (
     <div
       className="bg-white rounded-lg shadow-md border border-slate-200 overflow-hidden"
@@ -6702,6 +6664,11 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
       >
         <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
           <Filter size={13} /> Filters
+          {hidingCount > 0 && (
+            <span className="inline-flex items-center justify-center rounded-full bg-amber-500 text-white text-[9px] font-bold w-4 h-4" title={`${hidingCount} filter${hidingCount === 1 ? '' : 's'} is hiding stops`}>
+              {hidingCount}
+            </span>
+          )}
         </span>
         {collapsed ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
       </button>
@@ -11781,14 +11748,16 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   // same Motive driver overlay that previously lived in the left panel; the
   // duplicate left-panel toggle is removed.
   const [toolbarCollapsed, setToolbarCollapsed] = useState(() => safeReadJSON(LS_FILTER_TOOLBAR_COLLAPSED, true));
-  // WHERE THE FILTERS CONTROL ACTUALLY RENDERS on desktop: the app bar's left-hand slot,
-  // reached by portal. Null on a phone (the drawer carries its own copy) and null in TV mode
-  // (no app bar exists in that tree), and in both of those the control renders in flow where
-  // it always did. Read in an effect rather than during render because the element is a
-  // sibling mounted by Shell in the same commit — there is no node to find until after it.
-  const [deskFiltersSlot, setDeskFiltersSlot] = useState(null);
+  // WHERE THE BOARD-STATUS CARD RENDERS on desktop: the app bar, to the RIGHT of More.
+  // Chad, pointing at the "696 stops · 4 c/o · flags · refresh" pill floating over the map:
+  // "move ... this to the right of more on this page." Null on a phone (its own overlay
+  // carries the pill) and null in TV mode (that tree has no app bar, and the wall display
+  // prints these numbers far larger anyway) — in both, the pill renders where it always did.
+  // Read in an effect rather than during render because the element is a sibling mounted by
+  // Shell in the same commit, so there is no node to find until after it.
+  const [deskStatusSlot, setDeskStatusSlot] = useState(null);
   useEffect(() => {
-    setDeskFiltersSlot(isMobile || tvMode ? null : document.getElementById('desktop-appbar-filters-slot'));
+    setDeskStatusSlot(isMobile || tvMode ? null : document.getElementById('desktop-appbar-status-slot'));
   }, [isMobile, tvMode]);
   const [statusCollapsed, setStatusCollapsed] = useState(() => safeReadJSON(LS_STATUS_PILL_COLLAPSED, false));
   // M4.5 — Mobile drawer is closed by default on every load; active tab is
@@ -13890,98 +13859,80 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             {selectNote && <div className="text-[11px] bg-white/95 border border-slate-200 rounded px-2 py-0.5 shadow text-slate-700">{selectNote}</div>}
           </div>
         )}
-        {/* M5.1 — top-right controls live in ONE right-aligned vertical column:
-            status pill (row), then the filter toolbar. Stacking them in-flow
-            (instead of absolute offsets) means the toolbar can never be buried
-            under the pill regardless of the pill's height — the overlap bug
-            that hid the toolbar. "Show routes" now lives inside the toolbar. */}
+        {/* M5.1 — top-right controls live in ONE right-aligned vertical column: the filter
+            toolbar, Routes, and the two launchers. Stacking them in-flow (instead of at
+            absolute offsets) means nothing here can be buried under whatever grows above
+            it — the overlap bug that hid the toolbar. "Show routes" lives inside it.
+
+            THE z-INDEX IS A CONSTANT AGAIN. It used to be raised to z-[71] while the flags
+            panel was open, because that panel hung in this column and `position:absolute`
+            plus a z-index makes a stacking context — at z-[6] the messages button (z-[39])
+            painted straight over the flag list. Both the status pill and the flags panel are
+            on the app bar now, outside this column entirely, so the condition guarded
+            nothing and raising the whole column over the rest of the map furniture for a
+            panel that is no longer in it is the kind of leftover that reads as deliberate
+            three months later. */}
         {!isMobile && (
-          // z-index is CONDITIONAL. `position:absolute` + a z-index creates a stacking
-          // context, so the open panel's own z-[70] is capped by whatever this container
-          // is — at z-[6] the map's other overlays (the messages button at z-[39]) paint
-          // straight over it, which is what put the chat bubble on top of the flag list.
-          // Raised only while the panel is open, so the resting pill keeps its old
-          // stacking against the rest of the map furniture.
-          <div className={`absolute top-3 right-3 flex flex-col items-end gap-2 ${flagsPanelOpen ? 'z-[71]' : 'z-[6]'}`}>
-            {/* This wrapper exists ONLY to anchor the flags panel, and it deliberately has
-                no backdrop-blur of its own. The panel used to live inside the blurred pill
-                below, and backdrop-filter creates a STACKING CONTEXT — which capped the
-                panel's z-[70] inside the pill, so the round message button further down
-                this same column (no z-index, but later in the DOM) painted straight over
-                the flag list. That is the chat bubble sitting on top of the flags.
-                Routing already knew this rule and says so in as many words: "never nest it
-                in a backdrop-blur pill". The desktop Map was the one place still doing it. */}
-            <div className="relative flex flex-col items-end">
-            <div className="relative bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 text-xs">
-              {/* Header row: stops count + collapse/refresh — always visible. */}
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setStatusCollapsed((c) => !c)}
-                  className="flex items-center gap-1 font-semibold hover:text-slate-600"
-                  title={statusCollapsed ? 'Show details' : 'Collapse'}
-                  aria-expanded={!statusCollapsed}
-                >
-                  {statusCollapsed ? <ChevronDown size={13} className="text-slate-400" /> : <ChevronUp size={13} className="text-slate-400" />}
-                  <span>{stops.length} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}</span>
-                </button>
-                <BoardFlagsChip flags={visibleFlagCounts} open={flagsPanelOpen} onToggle={() => setFlagsPanelOpen((o) => !o)} />
-                {/* DESKTOP — its own markup, per CLAUDE.md. Same rule as the phone twin. */}
-                <button
-                  onClick={manualScan}
-                  disabled={scanning || scanCooldown || !!scanDenied}
-                  className="ml-auto p-1 rounded hover:bg-slate-100 disabled:opacity-50 min-w-[44px] min-h-[44px] inline-flex items-center justify-center"
-                  title={scanDenied || (scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)')}
-                >
-                  <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
-                </button>
-              </div>
-              {/* Stacked details — hidden when collapsed. */}
-              {!statusCollapsed && (
-                <div className="mt-0.5 leading-tight">
-                  <div className="text-slate-600">{totalPalletsCount.toLocaleString()} total pallets</div>
-                  <UnplannedScanCount count={scanUnplannedCount} visible={visibleUnplannedCount} className="text-slate-600" />
-                  <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} completedAt={lastCompletedScanAt} isToday={dateIsToday} className="text-slate-500" stacked />
-                  {ops && typeof ops.dayCount === 'number' && (
-                    <>
-                      <div className="text-slate-500" title={`Today's NuVizz API calls (${ops.mode})${ops.byRoute && Object.keys(ops.byRoute).length ? ' · ' + Object.entries(ops.byRoute).map(([k, v]) => `${k}:${v}`).join(' ') : ''}`}>
-                        NuVizz calls: {ops.dayCount.toLocaleString()}{ops.ceiling ? ` / ${ops.ceiling.toLocaleString()}` : ''} <span className="text-slate-400">({ops.mode}{ops.breaker ? ', halted' : ''})</span>
-                      </div>
-                      <HourlyCalls byHour={ops.byHour} className="text-slate-400 text-[10px] mt-0.5" />
-                    </>
-                  )}
-                  {scanErr && <div className="text-[11px] text-red-600">{scanErr}</div>}
-                </div>
-              )}
-            </div>
-            {flagsPanelOpen && (
-              <div className="absolute right-0 top-full mt-1 z-[70]">
-                <BoardFlagsPanel flags={boardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} minimized={flagsMinimized} onToggleMinimized={toggleFlagsMinimized} history={flagHistory?.history || null} />
-              </div>
+          <div className="absolute top-3 right-3 z-[6] flex flex-col items-end gap-2">
+            {/* THE BOARD-STATUS PILL IS NOT ON THE MAP ANY MORE (desktop). It is portalled
+                onto the app bar, to the RIGHT of More — see #desktop-appbar-status-slot for
+                the geometry and why that side. The flags chip travels inside it, because it
+                is inside it: Chad pointed at one pill, not at a pill and a chip.
+
+                AND IT IS StopsStatusCard NOW, not a second copy of it. This screen carried
+                its own hand-rolled twin of that component — same count button, same refresh,
+                same five detail lines — so the bar and the pill had two places to learn the
+                board from and two chances to disagree about it. The component already had the
+                app-bar frame built and measured for Routing; the Map had no reason to grow a
+                third. The props differ because the screens differ (this one counts the served
+                day and reports the filter gap; Routing counts its whole drawn pool). */}
+            {deskStatusSlot && createPortal(
+              // The wrapper anchors the FLAGS panel. It hangs right-full — off the card's LEFT
+              // edge, growing left — for the same reason the card's own detail dropdown does:
+              // Filters is back in the map's top-right column and can be 240px wide when open,
+              // and a right-ALIGNED panel would end a few pixels inside it.
+              <div className="relative">
+                <StopsStatusCard
+                  barMode
+                  stopCount={stops.length}
+                  carryoverCount={carryoverCount}
+                  totalPallets={totalPalletsCount}
+                  loadAt={lastLoadScanAt}
+                  unplannedAt={lastUnplannedScanAt}
+                  completedAt={lastCompletedScanAt}
+                  isToday={dateIsToday}
+                  scanUnplannedCount={scanUnplannedCount}
+                  visibleUnplannedCount={visibleUnplannedCount}
+                  ops={ops}
+                  scanErr={scanErr}
+                  scanning={scanning}
+                  scanCooldown={scanCooldown}
+                  scanDenied={scanDenied}
+                  onRefresh={manualScan}
+                  collapsed={statusCollapsed}
+                  onToggleCollapsed={() => setStatusCollapsed((c) => !c)}
+                  flagsChip={<BoardFlagsChip flags={visibleFlagCounts} open={flagsPanelOpen} onToggle={() => setFlagsPanelOpen((o) => !o)} />}
+                />
+                {flagsPanelOpen && (
+                  <div className="absolute right-full mr-1 top-full mt-1 z-[70]">
+                    <BoardFlagsPanel flags={boardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} minimized={flagsMinimized} onToggleMinimized={toggleFlagsMinimized} history={flagHistory?.history || null} />
+                  </div>
+                )}
+              </div>,
+              deskStatusSlot,
             )}
-            </div>
-            {/* FILTERS IS NOT IN THIS COLUMN ANY MORE. It is portalled onto the app bar, at
-                the LEFT end — see #desktop-appbar-filters-slot for the geometry and why that
-                end. It was the one control in this stack that GREW when you opened it,
-                pushing a 240px card down over the freight on the side of the map a
-                dispatcher reads; the board-status card left for the same reason in v1.13.0.
-                Chad: "moved to the bar above where its at and set to the left to not get in
-                the way of buttons on right of screen." */}
-            {deskFiltersSlot && createPortal(
-              <FilterToolbar
-                barMode
-                filters={mapFilters}
-                setFilters={setMapFilters}
-                collapsed={toolbarCollapsed}
-                setCollapsed={setToolbarCollapsed}
-                stopCount={filteredStops.length}
-                vehicleDisabled={!dateIsToday}
-                showRoutes={showRoutes}
-                setShowRoutes={setShowRoutes}
-                boardDate={selectedDate}
-                onEnterTv={onEnterTv}
-              />,
-              deskFiltersSlot,
-            )}
+            <FilterToolbar
+              filters={mapFilters}
+              setFilters={setMapFilters}
+              collapsed={toolbarCollapsed}
+              setCollapsed={setToolbarCollapsed}
+              stopCount={filteredStops.length}
+              vehicleDisabled={!dateIsToday}
+              showRoutes={showRoutes}
+              setShowRoutes={setShowRoutes}
+              boardDate={selectedDate}
+              onEnterTv={onEnterTv}
+            />
             {/* Routes panel toggle — opens the read-only route roster on the right (route name, driver,
                 status incl. Draft, stops/skids/loose/weight, % delivered; click to frame on the map). */}
             <button
@@ -20328,11 +20279,10 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
 // view (hybrid imagery vs the plain roadmap base), and Show routes (draws each load's stops
 // connected in delivery sequence). (The old build-version badge lived here; version history now
 // lives in the gear settings, since the dispatcher reads the version from the page footer.)
-// `barMode` puts this on the app bar instead of the map, at its LEFT end — the same move
-// the dispatch Map's FilterToolbar makes, asked for in the same sentence: Chad, "make the
-// routing tab the same way." The phone keeps its on-map button (there is no desktop bar to
-// portal into down there), which is why this still has two frames rather than one.
-function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setShowRoutes, hideLabels, setHideLabels, barMode = false }) {
+// ON THE MAP, top-right, on both views. It went to the app bar in v1.23.0 alongside the
+// dispatch Map's and came back with it in v1.23.1 — Chad: "move filters back to where it
+// was." See FilterToolbar for why the bar lost that argument."
+function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setShowRoutes, hideLabels, setHideLabels }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -20347,10 +20297,7 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setSho
   // longer counts toward "some filter is on".
   const anyOn = unplannedOnly || showRoutes || hideLabels;
   return (
-    // On the bar this is a plain in-flow control and its panel drops LEFT-anchored so it
-    // grows away from More, the board-status card and the map's right rail beneath them. On
-    // the map (phone) it stays pinned top-right with a right-anchored panel, as it was.
-    <div className={barMode ? 'relative' : 'absolute top-2 right-2 z-20'} ref={ref}>
+    <div className="absolute top-2 right-2 z-20" ref={ref}>
       <button
         onClick={() => setOpen((o) => !o)}
         className={`flex items-center gap-1 px-2 py-1 rounded border text-[11px] font-semibold shadow-sm ${open || anyOn ? 'border-slate-400 bg-white text-slate-800' : 'border-slate-200 bg-white/90 hover:bg-white text-slate-600'}`}
@@ -20360,7 +20307,7 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setSho
         <Filter size={13} /> Filters
       </button>
       {open && (
-        <div className={`absolute mt-1 w-52 bg-white border border-slate-300 rounded-lg shadow-xl px-3 py-1.5 text-[12px] ${barMode ? 'left-0 top-full z-[80]' : 'right-0'}`}>
+        <div className="absolute right-0 mt-1 w-52 bg-white border border-slate-300 rounded-lg shadow-xl px-3 py-1.5 text-[12px]">
           <MapFilterToggle label="Unplanned only" checked={unplannedOnly} onChange={setUnplannedOnly} />
           <MapFilterToggle label="Hide place labels" checked={hideLabels} onChange={setHideLabels} />
           <MapFilterToggle label="Show routes" checked={showRoutes} onChange={setShowRoutes} />
@@ -23957,11 +23904,6 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // be able to render the other's furniture by getting a boolean wrong.
   const [deskBarSlot, setDeskBarSlot] = useState(null);
   useEffect(() => { setDeskBarSlot(isMobile ? null : document.getElementById('desktop-appbar-slot')); }, [isMobile]);
-  // The bar's LEFT-hand slot — Filters. Separate from deskBarSlot above (which is the
-  // board-status card, at the bar's right end, left of More) because they are two controls
-  // at two ends of the same bar and sharing one handle would stack them.
-  const [deskFiltersSlot, setDeskFiltersSlot] = useState(null);
-  useEffect(() => { setDeskFiltersSlot(isMobile ? null : document.getElementById('desktop-appbar-filters-slot')); }, [isMobile]);
   const phoneGearEl = isMobile ? <RoutingSettingsMenu views={routingSettingsViews} panels={phoneGearPanels} actions={routingSettingsActions} capHeight panelsFirst tone="appbar" /> : null;
   // A FUNCTION on desktop (v1.3.0): the grid hands its own gear items in (Check vs NuVizz, which
   // lives in the grid's state) and they lead the list — they are about the panel the gear sits on.
@@ -24617,14 +24559,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       {/* Center: the map canvas */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
-        {/* FILTERS IS NOT ON THIS MAP ANY MORE EITHER (desktop) — it is portalled onto the
-            app bar's LEFT end, beside the Map screen's own. Chad: "make the routing tab the
-            same way." Same reason as the board-status card below it: a popover that opens
-            over the pins is one a router has to close before they can read the board. */}
-        {deskFiltersSlot && createPortal(
-          <RoutingMapFilters barMode unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />,
-          deskFiltersSlot,
-        )}
+        <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
         {/* THE BOARD-STATUS CARD IS NOT ON THE MAP ANY MORE (desktop). It is portalled onto
             the app bar, left of More — see #desktop-appbar-slot for the geometry and why
             that position is the one that keeps its dropdown off Filters and the flags.
@@ -27159,25 +27094,6 @@ function Shell() {
                 already says whose app this is, and letting this be crushed instead ran the
                 title into the tab row. */}
             <div className="hidden xl:block font-bold leading-tight text-slate-800 border-l border-slate-200 pl-3">Dispatch Map</div>
-            {/* FILTERS LIVES ON THE BAR NOW, AND IT LIVES ON THE LEFT END OF IT. Chad: "I
-                want my filters drop down moved to the bar above where its at and set to the
-                left to not get in the way of buttons on right of screen."
-
-                THE LEFT END IS THE WHOLE POINT rather than a tidy-up. The bar's right end
-                carries More, the board-status card and the presence chip, and the map's own
-                right rail (status pill, flags, Routes, Messages, AI) sits directly beneath
-                them — which is the stack Chad is telling us to stay out of. Opened from
-                here the panel drops into the map's top-left, where the only furniture is
-                the date picker, and it cannot reach the right rail at any window width
-                because the whole nav row is between them.
-
-                A SLOT RATHER THAN THE CONTROL ITSELF, for the same reason #desktop-appbar-slot
-                below is a slot: the filter state belongs to the SCREEN (the Map's mapFilters,
-                Routing's four route toggles), and hoisting that state into Shell so the bar
-                could own the button would put two screens' filters in one place and make
-                them each other's problem. Each screen portals its own control in. Empty and
-                zero-width on every screen that has no filters. */}
-            <div id="desktop-appbar-filters-slot" className="flex items-center shrink-0" />
           </div>
           {/* The scrolling tab row and the More button are SIBLINGS, and that is load-
               bearing. A scroll container clips absolutely-positioned descendants, and CSS
@@ -27234,6 +27150,27 @@ function Shell() {
                 ...(BENCH_ON ? [{ id: 'uatbench', label: 'UAT test bench', hint: "Seed production's orders into UAT", icon: <Beaker size={14} /> }] : []),
               ]}
             />
+            {/* THE MAP'S BOARD-STATUS CARD LANDS HERE — "696 stops · 4 c/o", the flags chip
+                and the refresh, the pill that used to float over the dispatch map. Chad,
+                pointing at it: "move ... this to the right of more on this page."
+
+                RIGHT OF More, and that is the geometry rather than a decoration. Filters is
+                back in the map's top-right column and can be 240px wide when open, ending at
+                the right edge of the window; this card's panel hangs from the card's LEFT
+                edge growing leftward (right-full, see StopsStatusCard), so mounting it here
+                puts the whole dropdown left of the card and it cannot reach Filters at any
+                width. Right-ALIGNING the panel instead would end it a few pixels INTO an
+                open Filters card — the same eight-pixel clip v1.13.0 measured on Routing and
+                had to move the card to avoid.
+
+                ROUTING KEEPS ITS OWN SLOT, on the other side of More: its map has no right
+                rail to clear, and that position is measured and guarded (see
+                #desktop-appbar-slot and scripts/verify-routing-topbar.mjs). Two screens, two
+                positions, each for a reason on its own map — which is cheaper than one
+                position that is slightly wrong on both.
+
+                Map-only, so no other screen pays a stray flex gap for an empty slot. */}
+            {tab === 'map' && <div id="desktop-appbar-status-slot" className="flex items-center shrink-0 ml-1" />}
           </div>
           {/* Far right of the nav row: the presence chip (who else is on) plus the Routing
               Build/Engine toggle — the toggle shows ONLY on the Routing screen. */}
