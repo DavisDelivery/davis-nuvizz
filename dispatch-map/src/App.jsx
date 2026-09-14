@@ -19,7 +19,7 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker } from 'lucide-react';
+  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2 } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
   query, orderBy, limit, updateDoc, deleteDoc,
@@ -62,10 +62,12 @@ import { reportDenied, deniedSurfaces, subscribeDenied } from './lib/permission-
 import { serverLoginEnabled, ensureFirebaseSession, dropFirebaseSession, signOut as endSession, currentResetLink, scrubResetLink, fetchMe } from './lib/auth-client.js';
 import { getSession, setSession, subscribeSession, onAuthEvent, clearSession } from './lib/session.js';
 import { formatCompletionPct } from './lib/completion-pct.js';
+import { isTvPath, tvRailRows, tvVerdict, tvFeedStale, TV_RAIL_LIMIT } from './lib/tv-mode.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress } from './lib/nuvizzWrite.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
+import { hoursProvenance } from './lib/hours-provenance.js';
 import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS } from './lib/time-marks.js';
 import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS } from './lib/history-range.js';
 import {
@@ -140,7 +142,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.22.0';
+const APP_VERSION = '1.23.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -211,6 +213,8 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.23.1', 'A DOCK THAT BREAKS FOR LUNCH IS NOT A DOCK THAT SHUTS AT NOON, AND THE CARD NOW SAYS WHO SET THE HOURS. Chad, on a CRITICAL board flag for WEAVER DISTRIBUTORS (PRO 007175532, stop 2 on KOBE BOAYKE): “we are flagging this stop incorrectly as having shortened hours when they just close for lunch and shouldn’t be flagged as well as i think that our system auto updated the hours at the bottom.” BOTH HALVES WERE ONE BUG, AND THE WHOLE CHAIN WAS REPRODUCED BEFORE ANYTHING WAS CHANGED — on v1.23.0, the build he was looking at. WEAVER’s Uline instructions read “RH 8 00AM-12 00PM / LUNCH 12 00-1 30PM / RH 1 30PM-5 00PM”: open eight to noon, break, then receiving again until five. The scanner returned 08:00–12:00 and stopped; the writer stamped 8:00a–12:00p onto ALL SEVEN DAYS of the customer’s notes (that is the block he spotted, and he was right that the system wrote it); dayReceivingWindow read a noon close; and the flag engine produced the exact card he photographed — “estimated arrival ~1:33p vs close 12:00p (99 min late)”. The truck was three minutes LATE FOR NOTHING: the dock had reopened at 1:30. WHY IT STOPPED. The lunch-split rule has existed since Aug 12 and stores the ENVELOPE (first open, last close) precisely so an arrival in the gap reads as a short wait rather than a miss — but its continuation only fired on a CONJUNCTION (“8-12 & 1-5”). WEAVER writes it the way a dock actually writes it: the gap gets a NAME, and the afternoon half gets the LABEL again. Neither is a conjunction, so the chain broke at the first range. FIVE BRIDGES NOW, AND NEVER BARE ADJACENCY — that last part is the whole safety argument. A naked “1-2” after a noon close is likelier to BE the lunch closure than the afternoon shift, and reading it as a continuation would push a genuine noon close out to 2pm: a missed delivery nobody was warned about, which is the expensive direction. So a continuation must be ANNOUNCED — by a conjunction; by a named gap with its own times (“LUNCH 12 00-1 30PM”, “CLOSED 12-1 FOR LUNCH”, either order); by a named gap with no times; by a named REOPENING (“AFTER LUNCH 1PM-5PM”, “REOPENS 1-5”), where the range that follows is the afternoon half rather than the closure’s; or by the hours label repeated. A lunch line is a BRIDGE, never a source: “CLOSED 1-2 FOR LUNCH” on its own is still nothing, and a LUNCH line with no afternoon half stated still closes at noon rather than inventing a 1:30 reopening the customer never gave us. Subaru still really does close at noon, and “& FRI 1130-4” is still a new day rather than a continuation — a day word is not a time token. THE STORED DOC SELF-HEALS: the scanner owns that field (auto_sources fingerprint), so the next scan that sees a WEAVER order rewrites all seven days to 8:00a–5:00p, verified by running decideWrite. A dispatcher-typed window is still untouchable — the manual_overrides latch writes nothing at all, as it has since v0.76.7. AND THE SECOND HALF OF HIS MESSAGE WAS ITS OWN DEFECT: he had to GUESS that the app wrote those hours. The grid rendered a parser’s reading of one Uline order in exactly the typeface a colleague’s phone call to the dock would have used, and the two call for opposite actions. The board flag has disclosed provenance for months (“Hours auto-detected — verify”) and the PRO report has a column for it; the card a dispatcher actually opens was the one surface that never said. It now carries one line — dispatcher-set, auto-detected, or source-not-recorded — AND, when the parser wrote them, THE TEXT IT READ. That matters beyond attribution: the schema holds one window per day, so the lunch break itself has nowhere to live, and the raw line is the only place it stays visible — somebody sequencing the route can see the dock is shut over lunch even though the stored window cannot say so. The envelope is what the rules compare against; the text is what a person reads. SAID OUT LOUD, BECAUSE IT IS A JUDGEMENT AND NOT A FACT: an arrival inside the lunch gap is still not flagged. It is a wait, not a miss — the repo’s settled policy since Aug 12 — and a dispatcher who wants the gap enforced should say so, because that is a different feature. FOUND AND NOT FIXED HERE, deliberately, to keep this change the size of the bug: a labelled meridiem-less afternoon range reads as dawn (“RH 1-5” stores 01:00–05:00, verified), which would mark a customer shut for the whole working day. Same family as the v0.54.60 “CLOSES AT 4” regression; it is raised separately rather than widening this PR. 13 new tests on the two pure modules, 4,484 green.'],
+  ['1.23.0', 'THE BOARD GOES ON THE OFFICE WALL, AND FILTERS GETS OFF THE MAP. Chad: “I want to create a netlify site that just has the map from dispatch map that allows me to display the view in my office on a 55 inch tv” — and then, on the shape of it: “i’m good with the /tv route but i want the button for fullscreen under filters as i don’t want anymore buttons on the screen”, “I want map status bar flag rail but i want this view only showing on the full screen[,] don’t want to crowd my actual desktop map”, and “live trucks but still want the filters drop down on the map so i can turn live drivers on and off”. IT IS A ROUTE, NOT A SECOND SITE, AND THAT IS A COST FINDING RATHER THAN A PREFERENCE. A second Netlify site built from this repo deploys netlify/functions with it — THIRTEEN scheduled background functions, among them nuvizz-refresh-stops-background on */5 (the NuVizz scan) and customer-comms-sweep-background on */30 (the delivery emails to real customers). A second production deploy runs every one of them a SECOND TIME: double the scan spend against a 2,000/day ceiling, and every delivered-customer email sent twice. Same-origin also means the stops function, Firestore and the Maps key work untouched, with no second key referrer list to widen and nothing to re-do when the Firestore rules lockdown lands. Open dd-dispatch-map.netlify.app/tv on the TV and leave it. TV MODE IS ITS OWN VIEW, the same rule this repo already applies to phone vs desktop: rendered INSTEAD of the shell rather than inside it with the chrome hidden, so the update banner, the tab row and the footer are not merely invisible on a screen with no pointer — they are not mounted, and a control added to the board tomorrow cannot arrive on the television by accident. WHAT IS ON IT: two numbers big enough to read across a room (stops, % complete — through formatCompletionPct, so 815 of 816 can never print as a finished day), a one-line verdict, the clock, and a flag rail carrying CRITICAL AND RED ONLY. Amber is a count, not a row: on a board with twenty-five advisories behind three reds, listing all of them pushes the three somebody can still save off a screen that cannot scroll. The cap is 12 and THE OVERFLOW IS PRINTED, because twelve rows on a thirty-flag morning with the truncation unmentioned reads as twelve problems. THE FAILURES A WALL DISPLAY HAS AND A DISPATCHER’S TAB DOES NOT, each closed: a stale feed OUTRANKS a clean board (the scan dies at 6am and the television otherwise shows a perfect morning all day — stale is its own tone and its own sentence, checked before the counts); “nothing needs a call” is said in WORDS, never left as an empty rail, because a blank panel and a panel whose data never arrived are the same pixels; the TV RELOADS ITSELF on a new build, since UpdateBanner waits for a click nobody is there to give and holds no unsaved work to lose; a screen wake lock is re-taken on every visibility change rather than requested once and assumed to hold for twelve hours; and the display NEVER PUBLISHES PRESENCE — a board nobody touches, reporting itself as a live device all day, would make “who else is on” permanently wrong, and an indicator that is usually wrong takes the true readings with it. AND FILTERS MOVED TO THE BAR, ON BOTH SCREENS. Chad: “I want my filters drop down moved to the bar above where its at and set to the left to not get in the way of buttons on right of screen[,] and make the routing tab the same way.” It was the one control in the map’s right-hand column that GREW when you opened it, pushing a 240px card down over metro Atlanta on the side of the board a dispatcher reads — the same argument that took the board-status card onto the bar in v1.13.0. The LEFT end is the geometry and not a tidy-up: the bar’s right end carries More, the status card and the presence chip with the map’s right rail directly beneath them, so the panel is anchored to its button’s LEFT edge and grows the other way, into the map’s top-left, and cannot reach that stack at any window width. One body, two frames, so the bar and the phone drawer can never come to disagree about which toggles exist. A filter that HIDES freight now shows a count on the collapsed button, because a board quietly holding back half its stops behind “Unplanned only” is pixel-identical to a quiet morning. The phone keeps its on-map button; so does TV mode, where there is no bar to hang off — which is exactly what Chad asked for when he said the filters dropdown had to stay reachable on the map to turn live drivers on and off. 16 new tests on the pure rules (lib/tv-mode.js). THE WAY BACK: this is additive — one commit, and git revert is the whole job.'],
   ['1.22.0', 'CORRECTING AN ADDRESS NOW REACHES THE DRIVER’S MANIFEST, NOT JUST OUR MAP. Chad: “when we edit an address because it’s wrong — do we change it in nuVizz, or do we just change it in dispatch map?” Just dispatch map. All three edit paths — the editor, and “Fix & move pin” on the Map and on Routing — wrote customer_notes.address_override with the browser’s Firestore SDK and never touched a function, so the board and the pin were right while the ORDER kept whatever street came in on the import. The driver’s manifest app never reads customer_notes at all, and the delivered-customer email renders the cached board row, so BOTH quoted the wrong address back at the two people most able to act on it. The server op to fix this has existed and been tested since Sep 9 and was wired to no button in the app. IT IS WIRED NOW, AS A CHOICE, IN THE EDITOR ONLY. “Also correct order X in NuVizz” rides the same ladder the note and date writes use — read by number, REFUSE on a twin (two orders share a number and re-addressing the other one sends freight where nobody chose it), REFUSE on delivered freight, write the address as a literal ANY block with no label so the vendor cannot refill it from its own address book, then read the order back. THE MODAL STAYS OPEN UNTIL IT HAS, and the green line quotes WHAT NUVIZZ STORED — not what we sent. TWO PLACES, NEITHER COVERING THE OTHER, both said out loud on the checkbox: Firestore is per-CUSTOMER and carries onto their next order; NuVizz is per-ORDER and is what the portal, the carrier and the paperwork show. THE BOARD HALF NEVER DEPENDS ON THE VENDOR HALF — a refused push is amber, states the saved half first, and says the manifest still needs the portal, because a dispatcher reading red assumes they lost the edit. The one-click “Fix & move pin” stays board-only ON PURPOSE and now says so on the banner: a mis-split is the same address with the lines swapped, NuVizz already holds both, so the push buys the freight nothing and a vendor write fired from one unconfirmed tap is precisely how the wrong twin gets re-addressed. ADDRESS HISTORY ANSWERS “DID IT REACH THEM”: rows read Us → NuVizz when it landed, amber Us · not in NuVizz when it was attempted and did not — recorded as a field, not a new source, so the screen’s own “Us” filter cannot hide the corrections that travelled furthest. THE WAY BACK IS ONE ENV VAR: NUVIZZ_ADDRESS_WRITE=off refuses every push server-side before it costs a call and leaves the board override behaving exactly as it did before this shipped. Default-on, and a malformed value leaves it ON.'],
   ['1.21.0', 'THE BUILD PAYS ATTENTION TO TIME RESTRICTIONS NOW \u2014 AND THE SETUP PANEL SAYS WHAT IT IS DOING. Chad, on the panel review: \u201cDo them all. We can do an ai assist box. We need them to be able to pay attention to time restrictions, whether or not it\u2019s a tractor friendly stop.\u201d THE BIG ONE, MEASURED FIRST: a stop with a real 1:00p\u20131:30p appointment, stored the way the board stores it, went through a build with an ETA of 7:02a and no flag. The pipeline read windows with a parser anchored at \u201cHH:MM\u201d and the board carries full stamps (\u201c2026-09-14T13:00:00\u201d), so every window came back null and every stop went into the solver SOFT \u2014 for as long as the feature has existed. Receiving hours, on the very customer note the resolver already fetched for equipment, were never read at all. WHAT READS THE CLOCK NOW (lib/routing-time-windows.mts, 12 tests): the order\u2019s own window only when it is NARROWER than a working day and not the vendor\u2019s default creation slot \u2014 NuVizz stamps 08:00\u201320:00 on 88% of stops and STRICT on 93%, and accepting those would have overridden the chosen strategy on every build \u2014 combined with the customer\u2019s receiving hours for the BOARD day (typed or auto, legacy strings included) and closed days, through the same rules the map draws its clock marks by. The tightest combination wins; a 3pm appointment at a dock whose hours say 2pm keeps the appointment and names the disagreement. NEVER A TRACTOR MARK: the rule cannot read one, and a test pins that a green stop and a red stop with the same hours get the same window. WHAT THE SOLVER DOES WITH IT: the old window order was earliest-deadline-first, which with windows that actually exist would have idled a truck at a 1pm dock from 7am; a window has two edges and both are honoured \u2014 un-windowed stops keep the strategy order, each windowed stop is inserted where it is on time, then idles least, then adds least distance, and ETAs wait for a dock to open with the wait on the card (\u201cwaits 7 min for the dock\u201d). Advisory by default: a stop the ETA cannot make stays on the truck and is flagged; \u201cRespect time restrictions strictly\u201d in step 3 leaves it off, listed under Could not place with its reason \u2014 including \u201ccustomer is closed on the delivery day\u201d. The route header carries \u201c\u23f1 3 timed\u201d and \u201c\u26a0 1 outside window\u201d so a 30-stop route is judged from its first line, and each row shows the clock the build honoured. ROUTING_TIME_RESTRICTIONS=off puts the build back to the blind behaviour, every side at once. THE SEVEN SMALLER ONES from the same review, each a rule in lib/routing-select.js with tests: (1) \u201cLOOSE PIECES\u201d WAS TOTAL PIECES \u2014 the panel summed NuVizz pallets (skids + loose) under the word Loose, so Chad\u2019s screenshot read \u201cLoose pieces 29\u201d beside a Selected window reading \u201c0 loose\u201d for the same orders; Loose (volume) and Total pieces (pallets) are two lines now, and Selected reads \u201c24 orders \u00b7 21 stops\u201d in the unit the Compare header counts. (2) THE NOTE BOX DID NOTHING: the server has always gated the model on request.aiAssist and the panel never sent it. An AI assist checkbox (2 model calls per build, default off) reveals the box and sends the flag, and the result panel tells \u201cnever asked\u201d from \u201casked, and the site has no ANTHROPIC_API_KEY\u201d. (3) MIN TIME IS MIN DISTANCE on the free estimate \u2014 measured, 50 random boards, 50 of 50 identical \u2014 so it is offered only with Google drive-times on, and the pick is remembered. (4) Trucks-mode capacity fields wrote the fleet profile on blur, and a blank box wrote 0 skids for every later build in both modes; each profile is a draft with a Save that refuses anything that is not a truck. (5) Only the Compare card\u2019s Save says Save now that a build stages itself \u2014 the result panel\u2019s copy is \u201cKeep a copy (our system only)\u201d. (6) The green-only trailer rule is disabled, with the reason, when no trailer is in play. (7) Discard plan can close the cards the build opened by itself, and only those. 4,430 green.'],
   ['1.20.1', 'THE MANIFEST CARD WAS A PHOTOGRAPH, AND NOTHING ON IT SAID SO \u2014 SO A SCAN THAT FIXED THE BOARD COULD NOT BE SEEN TO. Chad, Saturday 10:42, on an amber card reading \u201c136 orders not routed yet \u2014 no board has been built for 2026-09-16\u201d: \u201cIf we ran a scan this morning to complete the board from last week which looks like we did. It should have fixed the manifest incompleteness.\u201d IT COULD NOT HAVE, AND NO SCAN EVER COULD. nuvizz_ops/manifest_check_latest \u2014 the document that card subscribes to \u2014 has exactly ONE writer, the email ingest, and it is reached only when a NEW, unmarked report email is parsed. A NuVizz scan does not touch it. \u201cCheck email now\u201d could not move it either: every email carries a per-email marker and an already-checked report is skipped for ever. So the verdict was read at the 1:10a pass, the board was refilled at 07:00 (141 calls, 136 stop_info), and between the overnight pass and the next night\u2019s report there was no way to ask again. AND THE SENTENCE ITSELF NAMED THE WRONG DAY. 2026-09-16 is the +2 SLACK day, of which manifest-window says in as many words: \u201cextra places to LOOK, and deliberately not extra days that must be scanned.\u201d The day that DECIDES was 2026-09-14, and it was covered \u2014 424 stops. THE CAUSE WAS NOT IN THE GRADING RULES, WHICH ARE RIGHT. v0.81.5 established that the count must travel with its standing and filed coverage/grade/expectedDelivery on the ARCHIVE record and the HISTORY row \u2014 and missed toStoredEmailRun, the one writer of the document the SCREEN reads. With the verdict dropped, the browser re-derives it from checkedAgainst alone, with no `required` and no `asOf`, which is the conservative reading that demands EVERY day in the window. THE DANGEROUS HALF: the day after tomorrow is never routed yet, so `conclusive` was false on essentially every nightly run, and gradeSuspects downgraded \u2018missing\u2019 to \u2018unrouted\u2019 on a false verdict. The RED alert and the nav badge were structurally DEAD \u2014 the one check that can catch an order Uline handed us that NuVizz never received could not raise its alarm. A missed flag is the order that never shipped, and this one had been mute. The four fields the server already computed are now carried; App.jsx\u2019s \u201cShipped X \u00b7 expected delivery Y\u201d line, written months ago and never once rendered for an email run, comes on with them. AND THE CARD CAN BE ASKED AGAIN. A new Re-check against the board button re-reads the ARCHIVED PDF and re-runs the same free diff against the board as it stands now \u2014 Firestore and the blob store only, ZERO NuVizz calls, with ?explain=1 as a dry run that says which night it would open and writes nothing. The card also states how old its reading is (\u201cRead against the board as it stood 10h ago\u201d), because the scan runs every five minutes and a ten-hour-old verdict looked identical to a fresh one \u2014 the same silent failure as a build that changes while the footer version does not. It states the age and nothing more: it cannot observe that a scan has run since, and claiming so would be reporting an intent as an outcome. It nudges only when pressing the button could change the answer, never on a clean card. THE OPERATIONAL CASE, PLAINLY: a Friday manifest is checked overnight against a Monday board still being built, so the run is honestly inconclusive; the board fills over the weekend; and if freight really is missing the next thing that could say so was Monday\u2019s own pass \u2014 the morning it was already due. That two-day blind spot is now a click. 15 new tests, including the card reproduced character-for-character from the stored shape and the red alert proven to fire again. MANIFEST_STORED_GRADE=off puts the old stripped shape and its grading back; the button and the endpoint are additive and revert with the commit.'],
@@ -1269,6 +1273,14 @@ const STOP_ZOOM = 18;
 // How often the map silently re-reads the Firestore stop index (DB, not NuVizz)
 // so a long-open tab stays current. The background cron scans NuVizz every ~5m.
 const STOPS_REFRESH_MS = 120000; // 2 minutes
+// When the WALL DISPLAY should stop claiming the board is current. useStops re-reads every
+// STOPS_REFRESH_MS while the tab is visible — and a television is visible by definition, all
+// day — so a gap of several intervals means the silent polls are failing silently, which is
+// exactly what they are designed to do (a failed silent poll deliberately raises no banner).
+// Correct on a dispatcher's tab, dangerous on a wall: 5 intervals is late enough that a
+// single slow morning does not cry wolf, early enough that nobody reads a dead board for
+// an hour. Tuned in ONE place because two numbers for one idea drift apart.
+const TV_FEED_BUDGET_MS = STOPS_REFRESH_MS * 5; // 10 minutes
 
 // Stops-table column visibility defaults. PRO and Flag are off by default —
 // dispatchers turn them on via the Columns gear when they need PRO search or
@@ -6528,13 +6540,158 @@ function CarryoverControl({ value = 0, onChange, boardDate }) {
   );
 }
 
-function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled, showRoutes, setShowRoutes, boardDate }) {
+// ── FILTERS: A CARD ON THE MAP, OR A CONTROL ON THE BAR ──────────────────────
+//
+// Chad: "I want my filters drop down moved to the bar above where its at and set to the
+// left to not get in the way of buttons on right of screen."
+//
+// WHY THE BAR. The map's top-right column is where every other control already lives — the
+// status pill, the flags chip, Routes, Messages, the AI bubble — and Filters was the one
+// that GREW when you opened it, pushing a 240px card down over metro Atlanta on the exact
+// side of the board a dispatcher reads. The same argument took the board-status card onto
+// the bar in v1.13.0; this is the other half of it. Board chrome belongs on the chrome.
+//
+// AND IT HANGS LEFT, which is geometry rather than preference. The bar's right end carries
+// More, the board-status card and the presence chip, and the map's right rail sits directly
+// beneath them — so a panel opening rightward would reach back across both, which is the
+// one thing Chad asked it not to do. Anchored to the button's LEFT edge it grows the other
+// way, into the map's top-left, where the only furniture is the date picker, and only while
+// it is open.
+//
+// ONE BODY, TWO FRAMES. The rows are built once and rendered into either shell, for the
+// same reason board-status-card.js is a function and not two `&&`s in the JSX: the markup
+// may differ, the rule about what a dispatcher can reach must not. A toggle that exists on
+// the map and not on the bar is one nobody can find and nobody can report.
+function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled, showRoutes, setShowRoutes, boardDate, barMode = false, onEnterTv = null }) {
   const set = (key) => (v) => setFilters((prev) => ({ ...prev, [key]: v }));
+  const [barOpen, setBarOpen] = useState(false);
+  const ref = useRef(null);
+  // Outside-click + Escape, BAR MODE ONLY. The card on the map is opened and shut by its own
+  // chevron and has no business closing itself because somebody clicked the map — that card
+  // is a persistent panel, this one is a popover, and they are dismissed differently.
+  useEffect(() => {
+    if (!barMode || !barOpen) return undefined;
+    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setBarOpen(false); };
+    const onKey = (e) => { if (e.key === 'Escape') setBarOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    window.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDoc); window.removeEventListener('keydown', onKey); };
+  }, [barMode, barOpen]);
   // Clustering is off by default now; with icons memoized, unclustered rendering is far
   // cheaper, so only warn on genuinely huge boards rather than nagging every busy day.
   const clusterWarning = !filters.showClustered && stopCount > 800
     ? `Rendering ${stopCount} markers individually may be slow — turn on clustering if the map lags`
     : null;
+  // A FILTER THAT HIDES FREIGHT IS SAID ON THE BUTTON. Collapsed to a bar control the panel
+  // is shut most of the time, and a board quietly holding back half its stops behind
+  // "Unplanned only" is pixel-identical to a quiet morning. Only the three that REMOVE stops
+  // count here — clustering and place labels change how the same freight is drawn, and a dot
+  // that says "on" for a cosmetic toggle is one people stop reading.
+  const hidingCount = [filters.hideTerminal, filters.hideStemOut, filters.unplannedOnly].filter(Boolean).length;
+
+  const body = (
+    <>
+      <CarryoverControl
+        value={filters.carryoverDays}
+        onChange={(d) => setFilters((prev) => ({ ...prev, carryoverDays: d }))}
+        boardDate={boardDate}
+      />
+      <MapFilterToggle
+        label="Hide terminal markers"
+        checked={filters.hideTerminal}
+        onChange={set('hideTerminal')}
+      />
+      <MapFilterToggle
+        label="Hide stem out"
+        checked={filters.hideStemOut}
+        onChange={set('hideStemOut')}
+      />
+      <MapFilterToggle
+        label="Unplanned only"
+        checked={filters.unplannedOnly}
+        onChange={set('unplannedOnly')}
+      />
+      <MapFilterToggle
+        label="Show drivers (live)"
+        checked={filters.showVehicleLocation}
+        onChange={set('showVehicleLocation')}
+        disabled={vehicleDisabled}
+        disabledHint="Live drivers only available for today's date."
+      />
+      {vehicleDisabled && (
+        <div className="text-[10px] text-slate-500 italic -mt-1 mb-1 leading-tight">Live drivers only available for today.</div>
+      )}
+      <MapFilterToggle
+        label="Show clustered markers"
+        checked={filters.showClustered}
+        onChange={set('showClustered')}
+      />
+      {clusterWarning && (
+        <div className="text-[10px] text-amber-700 italic mt-1 leading-tight">{clusterWarning}</div>
+      )}
+      {/* Satellite view moved ONTO the map (beside the Recenter crosshair) — see the
+          satBtn control in the map-init effect. It is a look-at-the-picture control, and
+          the phone sheet never carried it at all. */}
+      <MapFilterToggle
+        label="Hide place labels"
+        checked={filters.hideLabels}
+        onChange={set('hideLabels')}
+      />
+      {setShowRoutes && (
+        <MapFilterToggle
+          label="Show routes"
+          checked={showRoutes}
+          onChange={setShowRoutes}
+        />
+      )}
+      {/* THE WALL-DISPLAY DOOR, AND IT IS IN HERE ON PURPOSE. Chad: "i want the button for
+          fullscreen under filters as i don't want anymore buttons on the screen." He is
+          right on the operational point as well as the cosmetic one — this is a control you
+          press once a day, when you walk in and put the board on the office TV, and a
+          once-a-day control that sits permanently on the map is paying rent on the one
+          surface where every pixel is freight. */}
+      {onEnterTv && (
+        <div className="mt-1.5 pt-1.5 border-t border-slate-200">
+          <button
+            type="button"
+            onClick={() => { setBarOpen(false); onEnterTv(); }}
+            className="w-full inline-flex items-center justify-center gap-1.5 rounded border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+            title="Full-screen wall display — map, board status and the open flags, sized to read across a room"
+          >
+            <Tv size={13} /> Fullscreen TV view
+          </button>
+        </div>
+      )}
+    </>
+  );
+
+  // BAR MODE — a button on the app bar whose panel drops down and to the RIGHT.
+  if (barMode) {
+    return (
+      <div className="relative" ref={ref}>
+        <button
+          onClick={() => setBarOpen((o) => !o)}
+          className={`flex items-center gap-1 px-2 py-1 rounded border text-[11px] font-semibold shadow-sm ${barOpen || hidingCount ? 'border-slate-400 bg-white text-slate-800' : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-600'}`}
+          aria-expanded={barOpen}
+          title="Map filters"
+        >
+          <Filter size={13} /> Filters
+          {hidingCount > 0 && (
+            <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-amber-500 text-white text-[9px] font-bold w-4 h-4" title={`${hidingCount} filter${hidingCount === 1 ? '' : 's'} is hiding stops`}>
+              {hidingCount}
+            </span>
+          )}
+        </button>
+        {barOpen && (
+          <div className="absolute left-0 top-full mt-1 w-60 bg-white border border-slate-300 rounded-lg shadow-xl px-3 py-2 text-[12px] z-[80]">
+            {body}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // CARD MODE — the phone drawer and any surface with no bar to hang off (the TV view).
   return (
     <div
       className="bg-white rounded-lg shadow-md border border-slate-200 overflow-hidden"
@@ -6552,59 +6709,7 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
       </button>
       {!collapsed && (
         <div className="px-3 pb-2 border-t">
-          <CarryoverControl
-            value={filters.carryoverDays}
-            onChange={(d) => setFilters((prev) => ({ ...prev, carryoverDays: d }))}
-            boardDate={boardDate}
-          />
-          <MapFilterToggle
-            label="Hide terminal markers"
-            checked={filters.hideTerminal}
-            onChange={set('hideTerminal')}
-          />
-          <MapFilterToggle
-            label="Hide stem out"
-            checked={filters.hideStemOut}
-            onChange={set('hideStemOut')}
-          />
-          <MapFilterToggle
-            label="Unplanned only"
-            checked={filters.unplannedOnly}
-            onChange={set('unplannedOnly')}
-          />
-          <MapFilterToggle
-            label="Show drivers (live)"
-            checked={filters.showVehicleLocation}
-            onChange={set('showVehicleLocation')}
-            disabled={vehicleDisabled}
-            disabledHint="Live drivers only available for today's date."
-          />
-          {vehicleDisabled && (
-            <div className="text-[10px] text-slate-500 italic -mt-1 mb-1 leading-tight">Live drivers only available for today.</div>
-          )}
-          <MapFilterToggle
-            label="Show clustered markers"
-            checked={filters.showClustered}
-            onChange={set('showClustered')}
-          />
-          {clusterWarning && (
-            <div className="text-[10px] text-amber-700 italic mt-1 leading-tight">{clusterWarning}</div>
-          )}
-          {/* Satellite view moved ONTO the map (beside the Recenter crosshair) — see the
-              satBtn control in the map-init effect. It is a look-at-the-picture control, and
-              the phone sheet never carried it at all. */}
-          <MapFilterToggle
-            label="Hide place labels"
-            checked={filters.hideLabels}
-            onChange={set('hideLabels')}
-          />
-          {setShowRoutes && (
-            <MapFilterToggle
-              label="Show routes"
-              checked={showRoutes}
-              onChange={setShowRoutes}
-            />
-          )}
+          {body}
         </div>
       )}
     </div>
@@ -9754,17 +9859,46 @@ function ReadOnlyNoteView({ note }) {
     return fmtTime12(v.open || v.close) || '—';
   };
   if (hoursAny) {
+    // WHO SET THESE HOURS. Chad, 2026-09-14, on a card reading MON–SUN 8:00a–12:00p: "i think
+    // that our system auto updated the hours at the bottom." He was right, and he had to GUESS —
+    // the grid rendered a parser's reading of one Uline order in exactly the typeface a
+    // colleague's phone call to the dock would have used, and those two call for opposite
+    // actions. The board flag has disclosed this for months ("Hours auto-detected — verify") and
+    // the PRO report has a whole column for it; the card a dispatcher actually opens was the one
+    // surface that never said. See lib/hours-provenance.js.
+    //
+    // THE MATCHED TEXT IS NOT DECORATION. The schema holds ONE window per day, so a dock that
+    // breaks for lunch is stored as the envelope (8:00a–5:00p) and the break itself has nowhere
+    // to live. The raw line does show it — "RH 8 00AM-12 00PM LUNCH 12 00-1 30PM RH 1 30PM-5
+    // 00PM" — so somebody sequencing this route can see the dock is shut over lunch even though
+    // the stored window cannot say so. The envelope is what the rules compare against; this is
+    // what a person reads.
+    const prov = hoursProvenance(note);
     items.push({
       k: 'Hours',
       v: (
-        <div className="grid grid-cols-7 gap-1 mt-1">
-          {DAYS.map((d) => (
-            <div key={d} className="text-center">
-              <div className="text-[9px] uppercase text-slate-500">{d}</div>
-              <div className={`text-[10px] ${closedSet.has(d) ? 'text-red-600 font-semibold' : ''}`}>{renderDayHours(d)}</div>
+        <>
+          <div className="grid grid-cols-7 gap-1 mt-1">
+            {DAYS.map((d) => (
+              <div key={d} className="text-center">
+                <div className="text-[9px] uppercase text-slate-500">{d}</div>
+                <div className={`text-[10px] ${closedSet.has(d) ? 'text-red-600 font-semibold' : ''}`}>{renderDayHours(d)}</div>
+              </div>
+            ))}
+          </div>
+          {prov && (
+            <div className="mt-1.5" data-hours-provenance={prov.kind}>
+              <div className={`text-[10px] ${prov.kind === 'auto' ? 'text-amber-700' : 'text-slate-500'}`}>
+                <span className="font-semibold">{prov.label}</span> · {prov.detail}
+              </div>
+              {prov.matchedText && (
+                <div className="mt-0.5 text-[10px] font-mono text-slate-500 break-words" title="The order text these hours were read from">
+                  “{prov.matchedText}”
+                </div>
+              )}
             </div>
-          ))}
-        </div>
+          )}
+        </>
       ),
     });
   }
@@ -11486,7 +11620,7 @@ function DebugCaptureSheet({ open, onClose, captureRef }) {
   );
 }
 
-function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = null }) {
+function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = null, tvMode = false, onExitTv = null, onEnterTv = null }) {
   // M5 — selectedDate drives every fetch. Defaults to today (ET) and is NOT
   // persisted: every page load resets to today (brief P2.2).
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
@@ -11678,6 +11812,15 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   // same Motive driver overlay that previously lived in the left panel; the
   // duplicate left-panel toggle is removed.
   const [toolbarCollapsed, setToolbarCollapsed] = useState(() => safeReadJSON(LS_FILTER_TOOLBAR_COLLAPSED, true));
+  // WHERE THE FILTERS CONTROL ACTUALLY RENDERS on desktop: the app bar's left-hand slot,
+  // reached by portal. Null on a phone (the drawer carries its own copy) and null in TV mode
+  // (no app bar exists in that tree), and in both of those the control renders in flow where
+  // it always did. Read in an effect rather than during render because the element is a
+  // sibling mounted by Shell in the same commit — there is no node to find until after it.
+  const [deskFiltersSlot, setDeskFiltersSlot] = useState(null);
+  useEffect(() => {
+    setDeskFiltersSlot(isMobile || tvMode ? null : document.getElementById('desktop-appbar-filters-slot'));
+  }, [isMobile, tvMode]);
   const [statusCollapsed, setStatusCollapsed] = useState(() => safeReadJSON(LS_STATUS_PILL_COLLAPSED, false));
   // M4.5 — Mobile drawer is closed by default on every load; active tab is
   // restored from localStorage so repeat dispatchers land where they left off.
@@ -11882,6 +12025,53 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     [stops],
   );
   const carryoverCount = useMemo(() => stops.reduce((n, s) => n + (s.carryover ? 1 : 0), 0), [stops]);
+  // ── WHAT THE WALL DISPLAY NEEDS AND THE BOARD DOES NOT ──────────────────────
+  // All three are inert unless tvMode is on — declared up here because they are hooks and
+  // hooks cannot live inside the branch that renders the television.
+  //
+  // A CLOCK, because the top-right of this screen prints the time and "updated N min ago",
+  // and both are lies the moment the render that produced them goes stale. 30s is twice the
+  // resolution of anything it prints, which is the point: the minute never looks wrong.
+  const [tvClock, setTvClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (!tvMode) return undefined;
+    const t = setInterval(() => setTvClock(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, [tvMode]);
+  // ESCAPE IS THE WAY OUT, and it is the documented one. The on-screen exit is deliberately
+  // faint (see the button) because Chad does not want furniture on the map; a key that
+  // always works means the faint control never has to become a loud one.
+  useEffect(() => {
+    if (!tvMode || !onExitTv) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') onExitTv(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [tvMode, onExitTv]);
+  // KEEP THE SCREEN AWAKE. A board that blanks itself at 10am is a board nobody looks at
+  // again, and the failure is silent — the TV looks switched off rather than broken, so the
+  // first report is "that screen you set up stopped working" a week later. Wake Lock is
+  // best-effort by design: it is unsupported on some TV browsers and it is DROPPED by the
+  // browser whenever the page is hidden, so it is re-taken on every visibility change rather
+  // than requested once at mount and assumed to hold for twelve hours.
+  useEffect(() => {
+    if (!tvMode) return undefined;
+    let lock = null;
+    let dead = false;
+    const take = async () => {
+      try {
+        if (dead || document.visibilityState !== 'visible') return;
+        if (!navigator.wakeLock?.request) return;
+        lock = await navigator.wakeLock.request('screen');
+      } catch { /* unsupported, or refused — the TV's own sleep settings are the fallback */ }
+    };
+    take();
+    document.addEventListener('visibilitychange', take);
+    return () => {
+      dead = true;
+      document.removeEventListener('visibilitychange', take);
+      try { lock?.release?.(); } catch { /* ignore */ }
+    };
+  }, [tvMode]);
   // Unplanned stops the board is CURRENTLY showing — the map-filtered set, which is what
   // feeds the stops list. Paired with the scan's own tally (scanUnplannedCount) so the
   // status card can name how many the filters are holding back.
@@ -12993,6 +13183,160 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   // Mobile path: map fills the area, FAB + drawer surface the lists/filters,
   // and the existing stop/driver sidebars switch to absolute full-screen
   // overlay mode. PR 2 of M4.5 will swap those overlays for proper drawers.
+  // ── THE OFFICE WALL DISPLAY ─────────────────────────────────────────────────
+  //
+  // A THIRD VIEW, and it is checked BEFORE the phone branch on purpose. This is not the
+  // desktop board scaled up: it is the one screen in the building nobody can touch, read
+  // from fifteen feet by somebody carrying a clipboard, and it answers two questions only —
+  // "is anything on fire" and "how is the day going". Everything a dispatcher reaches for on
+  // the board (the stop list, the order card, the bottom grid, the drawing tools, search)
+  // is deliberately absent: on a surface with no pointer those are not features, they are
+  // pixels taken off the map.
+  //
+  // WHY IT OUT-RANKS isMobile. A television is desktop-width in theory and whatever it feels
+  // like in practice — TV browsers under-report, over-report, and letterbox. Someone who
+  // asked for /tv must get /tv, not the phone drawer, whatever the viewport claims.
+  if (tvMode) {
+    const rail = tvRailRows(boardFlags.rows, dismissedFlags, TV_RAIL_LIMIT);
+    const feedStale = tvFeedStale(lastRefreshed, tvClock, TV_FEED_BUDGET_MS);
+    const verdict = tvVerdict({ urgent: rail.urgent, amber: rail.amber, stale: feedStale });
+    const finished = stops.reduce((n, s) => n + (isFinishedStatus(s.normalizedStatus) ? 1 : 0), 0);
+    // formatCompletionPct, not Math.round — 815 of 816 must never read "100%" on a wall.
+    const pct = stops.length ? formatCompletionPct(finished / stops.length) : '—';
+    const verdictTone = verdict.tone === 'urgent' ? 'bg-red-600 text-white'
+      : verdict.tone === 'stale' ? 'bg-amber-400 text-slate-900'
+        : verdict.tone === 'watch' ? 'bg-amber-950 text-amber-200 border border-amber-700'
+          : 'bg-emerald-700 text-white';
+    const clock = new Date(tvClock).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    // "Updated N min ago" rather than a timestamp: a clock face tells a room nothing unless
+    // it also does the subtraction. Absent is "still loading", NOT "0 minutes" — see
+    // tvFeedStale for why a missing reading is never dressed as a fresh one.
+    const agoMin = lastRefreshed ? Math.max(0, Math.floor((tvClock - lastRefreshed.getTime()) / 60000)) : null;
+    const feedLine = agoMin == null ? 'loading…' : agoMin < 1 ? 'updated just now' : `updated ${agoMin} min ago`;
+    return (
+      <div className="flex-1 flex flex-col min-h-0 bg-slate-950 text-white">
+        {/* ── THE STATUS BAR. Two numbers big enough to read across a room, one verdict in
+            words, and the clock. Chad picked this content ("map status bar flag rail") and
+            the sizes are the room rather than a style: a 55" panel at ~15ft puts these at
+            roughly the angular size of body text held at arm's length. */}
+        <div className="shrink-0 flex items-center gap-8 px-8 py-4 bg-slate-900 border-b border-slate-700">
+          <div className="flex items-baseline gap-3 shrink-0">
+            <span className="text-6xl font-bold tabular-nums leading-none">{stops.length}</span>
+            <span className="text-2xl text-slate-400">stops</span>
+            {carryoverCount > 0 && (
+              <span className="text-2xl font-semibold text-amber-400" title="carried over from earlier days">· {carryoverCount} c/o</span>
+            )}
+          </div>
+          <div className="flex items-baseline gap-3 shrink-0">
+            <span className="text-6xl font-bold tabular-nums leading-none text-emerald-400">{pct}</span>
+            <span className="text-2xl text-slate-400">complete</span>
+          </div>
+          <div className={`px-5 py-2.5 rounded-xl text-3xl font-bold shrink-0 ${verdictTone}`}>{verdict.text}</div>
+          <div className="ml-auto text-right shrink-0">
+            <div className="text-4xl font-semibold tabular-nums leading-none">{clock}</div>
+            {/* THE FRESHNESS LINE GOES RED WHEN IT IS OLD, and it is the only thing on this
+                screen that can tell the room the board has stopped moving. A wall display
+                whose feed died at 6am is otherwise a perfect morning, all day. */}
+            <div className={`text-base mt-1.5 ${feedStale ? 'text-amber-300 font-semibold' : 'text-slate-400'}`}>{feedLine}</div>
+          </div>
+        </div>
+
+        <div className="flex-1 flex min-h-0">
+          {/* ── THE MAP ─────────────────────────────────────────────────────── */}
+          <div className="flex-1 relative min-w-0">
+            <div ref={mapDiv} className="absolute inset-0" />
+            {/* FILTERS, ON THE MAP — the one control Chad asked to keep in here: "still want
+                the filters drop down on the map so i can turn live drivers on and off."
+                CARD mode, not bar mode, because in this view there is no app bar to hang a
+                dropdown from. Bottom-LEFT: the map's own zoom / Street View / recenter stack
+                is bottom-right, and the flag rail owns the right edge. */}
+            <div className="absolute bottom-4 left-4 z-[20]">
+              <FilterToolbar
+                filters={mapFilters}
+                setFilters={setMapFilters}
+                collapsed={toolbarCollapsed}
+                setCollapsed={setToolbarCollapsed}
+                stopCount={filteredStops.length}
+                vehicleDisabled={!dateIsToday}
+                showRoutes={showRoutes}
+                setShowRoutes={setShowRoutes}
+                boardDate={selectedDate}
+              />
+            </div>
+            {/* THE WAY OUT, kept faint. Chad: "i don't want anymore buttons on the screen."
+                Escape does the same job and is the documented exit; this exists so a mouse
+                that wanders onto the display has somewhere to click, and so the mode is not
+                a one-way door on a machine with no keyboard. */}
+            {onExitTv && (
+              <button
+                onClick={onExitTv}
+                className="absolute top-3 right-3 z-[20] inline-flex items-center gap-1.5 rounded-lg bg-slate-900/80 border border-slate-600 px-3 py-1.5 text-xs font-semibold text-slate-300 opacity-40 hover:opacity-100 focus:opacity-100 transition-opacity"
+                title="Leave the wall display (Esc)"
+              >
+                <Minimize2 size={13} /> Exit
+              </button>
+            )}
+            {mapsError && (
+              <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[22] bg-red-900 border border-red-500 text-red-100 text-lg font-semibold rounded-lg px-4 py-2">
+                {mapsError}
+              </div>
+            )}
+          </div>
+
+          {/* ── THE FLAG RAIL ───────────────────────────────────────────────────
+              Critical and red only — see tvRailRows for why amber is a count here and not a
+              row. Fixed width so the map never reflows as flags come and go: a map that
+              jumps every time a stop goes red is one nobody can read a route off. */}
+          <div className="shrink-0 w-[400px] bg-slate-900 border-l border-slate-700 flex flex-col min-h-0">
+            <div className="shrink-0 px-5 py-3 border-b border-slate-700 flex items-baseline justify-between gap-3">
+              <span className="text-xl font-bold text-slate-200">Needs a call</span>
+              {rail.amber > 0 && <span className="text-base text-amber-400 font-semibold">{rail.amber} to watch</span>}
+            </div>
+            {rail.rows.length === 0 ? (
+              // SAID IN WORDS, never left blank. An empty rail and a rail whose data never
+              // arrived are the same pixels; this app has shipped that mistake before.
+              <div className="flex-1 flex items-center justify-center px-6 text-center">
+                <div>
+                  <div className="text-3xl font-bold text-emerald-400">All clear</div>
+                  <div className="text-base text-slate-400 mt-2">
+                    {feedStale ? 'but the board has stopped updating' : 'no stop is predicted past its close'}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="flex-1 min-h-0 overflow-hidden divide-y divide-slate-800">
+                {rail.rows.map((r) => (
+                  <div key={r.dismissKey} className="px-5 py-3 flex items-start gap-3">
+                    <span
+                      className={`mt-2 rounded-full shrink-0 ${r.tier === 'critical' ? 'w-3.5 h-3.5 bg-red-500 ring-4 ring-red-900' : 'w-3 h-3 bg-red-500'}`}
+                      title={r.tier}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-lg font-bold text-slate-100 leading-snug truncate">{r.title}</div>
+                      <div className="text-base text-slate-300 leading-snug">{r.detail}</div>
+                      {r.routeName && (
+                        <div className="text-sm text-slate-500 mt-0.5 truncate">
+                          {r.routeName}
+                          {r.driverName ? ` · ${r.driverName}` : r.routeDriverCount > 1 ? ` · ${r.routeDriverCount} drivers` : ''}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {/* THE OVERFLOW IS PRINTED. Twelve rows on a thirty-flag morning, with the
+                truncation unmentioned, reads as twelve problems. */}
+            {rail.overflow > 0 && (
+              <div className="shrink-0 px-5 py-2.5 border-t border-slate-700 text-base font-semibold text-slate-400">
+                + {rail.overflow} more not shown
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
   if (isMobile) {
     const pickStopFromMobile = (s) => {
       setSelectedDriver(null);
@@ -13646,17 +13990,29 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
               </div>
             )}
             </div>
-            <FilterToolbar
-              filters={mapFilters}
-              setFilters={setMapFilters}
-              collapsed={toolbarCollapsed}
-              setCollapsed={setToolbarCollapsed}
-              stopCount={filteredStops.length}
-              vehicleDisabled={!dateIsToday}
-              showRoutes={showRoutes}
-              setShowRoutes={setShowRoutes}
-              boardDate={selectedDate}
-            />
+            {/* FILTERS IS NOT IN THIS COLUMN ANY MORE. It is portalled onto the app bar, at
+                the LEFT end — see #desktop-appbar-filters-slot for the geometry and why that
+                end. It was the one control in this stack that GREW when you opened it,
+                pushing a 240px card down over the freight on the side of the map a
+                dispatcher reads; the board-status card left for the same reason in v1.13.0.
+                Chad: "moved to the bar above where its at and set to the left to not get in
+                the way of buttons on right of screen." */}
+            {deskFiltersSlot && createPortal(
+              <FilterToolbar
+                barMode
+                filters={mapFilters}
+                setFilters={setMapFilters}
+                collapsed={toolbarCollapsed}
+                setCollapsed={setToolbarCollapsed}
+                stopCount={filteredStops.length}
+                vehicleDisabled={!dateIsToday}
+                showRoutes={showRoutes}
+                setShowRoutes={setShowRoutes}
+                boardDate={selectedDate}
+                onEnterTv={onEnterTv}
+              />,
+              deskFiltersSlot,
+            )}
             {/* Routes panel toggle — opens the read-only route roster on the right (route name, driver,
                 status incl. Draft, stops/skids/loose/weight, % delivered; click to frame on the map). */}
             <button
@@ -20003,7 +20359,11 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
 // view (hybrid imagery vs the plain roadmap base), and Show routes (draws each load's stops
 // connected in delivery sequence). (The old build-version badge lived here; version history now
 // lives in the gear settings, since the dispatcher reads the version from the page footer.)
-function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setShowRoutes, hideLabels, setHideLabels }) {
+// `barMode` puts this on the app bar instead of the map, at its LEFT end — the same move
+// the dispatch Map's FilterToolbar makes, asked for in the same sentence: Chad, "make the
+// routing tab the same way." The phone keeps its on-map button (there is no desktop bar to
+// portal into down there), which is why this still has two frames rather than one.
+function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setShowRoutes, hideLabels, setHideLabels, barMode = false }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -20018,7 +20378,10 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setSho
   // longer counts toward "some filter is on".
   const anyOn = unplannedOnly || showRoutes || hideLabels;
   return (
-    <div className="absolute top-2 right-2 z-20" ref={ref}>
+    // On the bar this is a plain in-flow control and its panel drops LEFT-anchored so it
+    // grows away from More, the board-status card and the map's right rail beneath them. On
+    // the map (phone) it stays pinned top-right with a right-anchored panel, as it was.
+    <div className={barMode ? 'relative' : 'absolute top-2 right-2 z-20'} ref={ref}>
       <button
         onClick={() => setOpen((o) => !o)}
         className={`flex items-center gap-1 px-2 py-1 rounded border text-[11px] font-semibold shadow-sm ${open || anyOn ? 'border-slate-400 bg-white text-slate-800' : 'border-slate-200 bg-white/90 hover:bg-white text-slate-600'}`}
@@ -20028,7 +20391,7 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setSho
         <Filter size={13} /> Filters
       </button>
       {open && (
-        <div className="absolute right-0 mt-1 w-52 bg-white border border-slate-300 rounded-lg shadow-xl px-3 py-1.5 text-[12px]">
+        <div className={`absolute mt-1 w-52 bg-white border border-slate-300 rounded-lg shadow-xl px-3 py-1.5 text-[12px] ${barMode ? 'left-0 top-full z-[80]' : 'right-0'}`}>
           <MapFilterToggle label="Unplanned only" checked={unplannedOnly} onChange={setUnplannedOnly} />
           <MapFilterToggle label="Hide place labels" checked={hideLabels} onChange={setHideLabels} />
           <MapFilterToggle label="Show routes" checked={showRoutes} onChange={setShowRoutes} />
@@ -23625,6 +23988,11 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // be able to render the other's furniture by getting a boolean wrong.
   const [deskBarSlot, setDeskBarSlot] = useState(null);
   useEffect(() => { setDeskBarSlot(isMobile ? null : document.getElementById('desktop-appbar-slot')); }, [isMobile]);
+  // The bar's LEFT-hand slot — Filters. Separate from deskBarSlot above (which is the
+  // board-status card, at the bar's right end, left of More) because they are two controls
+  // at two ends of the same bar and sharing one handle would stack them.
+  const [deskFiltersSlot, setDeskFiltersSlot] = useState(null);
+  useEffect(() => { setDeskFiltersSlot(isMobile ? null : document.getElementById('desktop-appbar-filters-slot')); }, [isMobile]);
   const phoneGearEl = isMobile ? <RoutingSettingsMenu views={routingSettingsViews} panels={phoneGearPanels} actions={routingSettingsActions} capHeight panelsFirst tone="appbar" /> : null;
   // A FUNCTION on desktop (v1.3.0): the grid hands its own gear items in (Check vs NuVizz, which
   // lives in the grid's state) and they lead the list — they are about the panel the gear sits on.
@@ -24280,7 +24648,14 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       {/* Center: the map canvas */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
-        <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
+        {/* FILTERS IS NOT ON THIS MAP ANY MORE EITHER (desktop) — it is portalled onto the
+            app bar's LEFT end, beside the Map screen's own. Chad: "make the routing tab the
+            same way." Same reason as the board-status card below it: a popover that opens
+            over the pins is one a router has to close before they can read the board. */}
+        {deskFiltersSlot && createPortal(
+          <RoutingMapFilters barMode unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />,
+          deskFiltersSlot,
+        )}
         {/* THE BOARD-STATUS CARD IS NOT ON THE MAP ANY MORE (desktop). It is portalled onto
             the app bar, left of More — see #desktop-appbar-slot for the geometry and why
             that position is the one that keeps its dropdown off Filters and the flags.
@@ -26391,7 +26766,13 @@ function RoutingSection({ debugCaptureRef, routingTab, setRoutingTab, showSubTab
 // ENTIRELY fail-soft: no Firestore (or a denied rule) just means the feature is
 // off — the app behaves exactly as before, nothing throws.
 const PRESENCE_COLL = 'dispatch_presence';
-function useDispatchPresence(screen) {
+// `broadcast` is how the OFFICE WALL TV stays out of the presence chip. Presence exists so
+// two dispatchers don't grab the same unplanned stop onto different loads; a display that
+// nobody touches, sitting on the board all day, would report itself as a live device
+// forever and make "who else is on" permanently wrong. An indicator that is usually wrong
+// is one people stop reading, and it takes the true readings with it. The TV still READS
+// presence (it costs nothing and it is the same subscription) — it just never publishes.
+function useDispatchPresence(screen, broadcast = true) {
   const [identity] = useState(() => loadDeviceIdentity(typeof localStorage !== 'undefined' ? localStorage : null));
   const [name, setName] = useState(identity.name);
   const [peers, setPeers] = useState([]);
@@ -26403,7 +26784,7 @@ function useDispatchPresence(screen) {
   selfRef.current.screen = screen;
 
   const publish = useCallback(() => {
-    if (!db) return;
+    if (!db || !broadcast) return;
     const s = selfRef.current;
     // A REFUSED HEARTBEAT IS THE ONE THAT MATTERS MOST HERE, AND IT WAS THE ONE SWALLOWED.
     // The READ side already reports (see the subscribe below), so a rule that denies both
@@ -26427,7 +26808,7 @@ function useDispatchPresence(screen) {
         appVersion: APP_VERSION,
       }, { merge: true }).catch((e) => { reportDenied('dispatch_presence:heartbeat', e, 'write'); });
     } catch { /* presence must never break the app */ }
-  }, [identity.id]);
+  }, [identity.id, broadcast]);
 
   // Debounced publish for chatty updates (staged-set edits while building).
   const pushTimer = useRef(null);
@@ -26440,11 +26821,12 @@ function useDispatchPresence(screen) {
   // staleness window covers a killed tab that never got to say goodbye).
   useEffect(() => { publish(); }, [screen, publish]);
   useEffect(() => {
+    if (!broadcast) return undefined;
     const t = setInterval(publish, PRESENCE_HEARTBEAT_MS);
     const bye = () => { try { if (db) deleteDoc(doc(db, PRESENCE_COLL, identity.id)); } catch { /* ignore */ } };
     window.addEventListener('beforeunload', bye);
     return () => { clearInterval(t); if (pushTimer.current) clearTimeout(pushTimer.current); window.removeEventListener('beforeunload', bye); };
-  }, [publish, identity.id]);
+  }, [publish, identity.id, broadcast]);
 
   // Subscribe to everyone's presence; re-evaluate staleness every 30s so a peer
   // whose heartbeat stopped (without a doc change) still ages out of the chip.
@@ -26525,6 +26907,10 @@ function PresenceChip({ presence, compact = false }) {
   );
 }
 
+// The thin edge over lib/tv-mode.js's pure rule: this is the only place that touches the
+// address bar, so the rule itself stays runnable in a test with no browser.
+const onTvUrl = () => { try { return isTvPath(window.location.pathname); } catch { return false; } };
+
 function Shell() {
   // Google sends the browser back to "/" after the Gmail consent screen, with
   // the outcome in the query string (see gmail-auth.mts). Land on the Manifest
@@ -26534,6 +26920,40 @@ function Shell() {
     try { return new URLSearchParams(window.location.search).has('gmail') ? 'manifest' : 'map'; }
     catch { return 'map'; }
   });
+  // ── THE OFFICE WALL DISPLAY ─────────────────────────────────────────────────
+  //
+  // Chad wants the board on a 55" TV in the office. TV MODE IS ITS OWN VIEW, not the board
+  // with its chrome hidden — the same rule this repo already applies to phone vs desktop,
+  // and for the same reason. What a dispatcher needs under the mouse and what a room needs
+  // to read from fifteen feet are different screens; one layout trying to be both is bad at
+  // each. Chad said it in as many words when he picked the content: "i want this view only
+  // showing on the full screen[,] don't want to crowd my actual desktop map."
+  //
+  // TWO DOORS, ONE STATE. "Fullscreen TV view" inside the Filters panel — where Chad asked
+  // for it, because he does not want another button living on the map — and the /tv URL, so
+  // the TV's browser can be pointed at an address and left alone. The URL matters more than
+  // it looks: a wall display has no keyboard, and after a power cut somebody has to be able
+  // to get the board back by doing nothing at all.
+  const [tvMode, setTvMode] = useState(() => onTvUrl());
+  const enterTv = useCallback(() => {
+    setTvMode(true);
+    // pushState, not replaceState: Back is then the exit for anybody who opened this on a
+    // desktop to look at it, and the browser does the work.
+    try { window.history.pushState({ tv: 1 }, '', '/tv'); } catch { /* URL is a convenience, never the state */ }
+  }, []);
+  const exitTv = useCallback(() => {
+    setTvMode(false);
+    try { if (onTvUrl()) window.history.pushState({}, '', '/'); } catch { /* ignore */ }
+  }, []);
+  // Back/forward must agree with what is on screen. Without this, Back off /tv leaves the
+  // address bar at "/" and the TV layout still up — a URL that lies about the page is how
+  // somebody reloads to "fix" it and lands somewhere else again.
+  useEffect(() => {
+    const onPop = () => setTvMode(onTvUrl());
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
   // Shared "Debug this view" capture: the active screen registers its bundle
   // builder here; the chip menu / nav entry opens the sheet, which posts it.
   const debugCaptureRef = useRef(null);
@@ -26542,6 +26962,18 @@ function Shell() {
   const { h: viewportHeight, w: visibleWidth, x: viewportLeft, y: viewportTop } = useViewportSize();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
   const updateAvailable = useBuildUpdate();
+  // A WALL TV CANNOT PRESS "RELOAD". UpdateBanner is the right answer on a dispatcher's tab —
+  // it asks, because reloading mid-edit would throw away a plan somebody is building. On a
+  // display with no pointer that same banner is a permanent stripe over a board that keeps
+  // getting older, and it is the ONLY thing standing between the office and a television
+  // quietly serving a bundle from three weeks ago. There is nothing to lose here: the TV
+  // holds no unsaved work, so it takes the update itself. The delay is so a deploy that is
+  // still propagating gets a moment to settle rather than being caught half-published.
+  useEffect(() => {
+    if (!tvMode || !updateAvailable) return undefined;
+    const t = setTimeout(() => { try { window.location.reload(); } catch { /* ignore */ } }, 20000);
+    return () => clearTimeout(t);
+  }, [tvMode, updateAvailable]);
   // A Firestore rule that refused a read or a write, and a function that refused this
   // account's ROLE, are two different problems and read differently — see the two bars.
   const denials = usePermissionDenials();
@@ -26630,7 +27062,7 @@ function Shell() {
 
   // Multi-dispatcher presence — published for every tab so "who's on" is honest
   // even from New Order / Quote; the Routing screen adds its staged-stop claims.
-  const presence = useDispatchPresence(tab);
+  const presence = useDispatchPresence(tvMode ? 'tv' : tab, !tvMode);
 
   // SMS messages + unread badge. Messages is a WINDOW over the current screen
   // (it doesn't navigate away), so it's a toggle, not a tab.
@@ -26668,6 +27100,31 @@ function Shell() {
     const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'uatbench'];
     setTab(next === 'diagnostics' ? 'diag' : KNOWN.includes(next) ? next : 'map');
   };
+
+  // ── THE WALL DISPLAY IS ITS OWN TREE ────────────────────────────────────────
+  //
+  // Rendered INSTEAD of the shell, not inside it with the chrome switched off, and the
+  // difference is not stylistic. Hiding the header and footer with `!tvMode &&` leaves
+  // every one of their behaviours mounted — the update banner waiting for a click, the
+  // permission bar, the tab row's keyboard handlers, the footer's version chip — on a
+  // screen that has no pointer and no keyboard. Chad asked for this view "only showing on
+  // the full screen[,] don't want to crowd my actual desktop map", and the cheapest way to
+  // keep that promise permanently is to make the two trees separate, so a control added to
+  // the board tomorrow cannot arrive on the television by accident.
+  //
+  // EVERY HOOK IN Shell HAS ALREADY RUN by this line, which is what makes an early return
+  // legal here: entering and leaving TV mode re-renders, it does not remount, so the hook
+  // order above is identical on both sides of this branch.
+  if (tvMode) {
+    return (
+      <div
+        className="h-screen flex flex-col overflow-hidden bg-slate-950"
+        style={viewportHeight ? { height: viewportHeight } : undefined}
+      >
+        <MapScreen tvMode onExitTv={exitTv} debugCaptureRef={debugCaptureRef} presence={presence} />
+      </div>
+    );
+  }
 
   return (
     // h-screen is the SSR/first-paint fallback; once mounted we pin the shell to
@@ -26733,6 +27190,25 @@ function Shell() {
                 already says whose app this is, and letting this be crushed instead ran the
                 title into the tab row. */}
             <div className="hidden xl:block font-bold leading-tight text-slate-800 border-l border-slate-200 pl-3">Dispatch Map</div>
+            {/* FILTERS LIVES ON THE BAR NOW, AND IT LIVES ON THE LEFT END OF IT. Chad: "I
+                want my filters drop down moved to the bar above where its at and set to the
+                left to not get in the way of buttons on right of screen."
+
+                THE LEFT END IS THE WHOLE POINT rather than a tidy-up. The bar's right end
+                carries More, the board-status card and the presence chip, and the map's own
+                right rail (status pill, flags, Routes, Messages, AI) sits directly beneath
+                them — which is the stack Chad is telling us to stay out of. Opened from
+                here the panel drops into the map's top-left, where the only furniture is
+                the date picker, and it cannot reach the right rail at any window width
+                because the whole nav row is between them.
+
+                A SLOT RATHER THAN THE CONTROL ITSELF, for the same reason #desktop-appbar-slot
+                below is a slot: the filter state belongs to the SCREEN (the Map's mapFilters,
+                Routing's four route toggles), and hoisting that state into Shell so the bar
+                could own the button would put two screens' filters in one place and make
+                them each other's problem. Each screen portals its own control in. Empty and
+                zero-width on every screen that has no filters. */}
+            <div id="desktop-appbar-filters-slot" className="flex items-center shrink-0" />
           </div>
           {/* The scrolling tab row and the More button are SIBLINGS, and that is load-
               bearing. A scroll container clips absolutely-positioned descendants, and CSS
@@ -26799,7 +27275,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} sendDenied={smsGate.reason} />}
