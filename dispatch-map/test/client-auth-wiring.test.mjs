@@ -492,8 +492,14 @@ test('THE HIGH-TRAFFIC DISPATCHER CONTROLS ARE DISABLED, NOT HIDDEN, WITH THE RE
   //
   // Each entry is a control whose endpoint requires dispatcher server-side.
   const controls = [
-    // Scan now — three buttons, one rule, resolved inside useManualScan.
-    ['scan (map, phone + desktop, and the Routing status card)', /disabled=\{scanning \|\| scanCooldown \|\| !!scanDenied\}/g, 3],
+    // Scan now — THREE SURFACES, TWO call sites, one rule, resolved inside useManualScan.
+    // It was three call sites until v1.23.1, when the dispatch Map's desktop pill stopped
+    // being a hand-rolled twin of StopsStatusCard and started BEING one (Chad moved that pill
+    // onto the app bar, right of More). Its scan button is now the card's own — the same
+    // gated button Routing has always used — so the count fell by one while the number of
+    // guarded surfaces did not. The assertion below pins that directly, because a count
+    // dropping is exactly what an ungated button being added would also look like.
+    ['scan (map phone + the shared StopsStatusCard button)', /disabled=\{scanning \|\| scanCooldown \|\| !!scanDenied\}/g, 2],
     ['scan (Diagnostics: the API-calls panel and the schedule panel)', /disabled=\{scanning \|\| !!scanDenied\} title=\{scanDenied \|\| undefined\}/g, 2],
     // The routing engine — a 12s solve that can only answer 403 is the worst one to walk into.
     ['engine draft', /disabled=\{draftBusy \|\| !draftNames\.trim\(\) \|\| !engineGate\.allowed\}/g, 1],
@@ -509,6 +515,21 @@ test('THE HIGH-TRAFFIC DISPATCHER CONTROLS ARE DISABLED, NOT HIDDEN, WITH THE RE
   for (const [what, re, count] of controls) {
     assert.equal((APP.match(re) || []).length, count, `${what}: expected ${count} gated call site(s)`);
   }
+  // AND EVERY SURFACE THAT MOUNTS THE SHARED CARD HANDS IT THE REASON. The gate lives on one
+  // button now, which is only a guard if every caller actually passes the refusal down —
+  // a StopsStatusCard mounted without scanDenied renders an ENABLED scan button for a viewer
+  // who cannot scan, and that is the exact failure this test exists for: a person who
+  // believes a scan ran, working a stale board for the rest of the morning. Both mounts (the
+  // dispatch Map's app-bar pill and Routing's) are checked, so adding a third without the
+  // prop fails here rather than on somebody's 6am board.
+  const cardMounts = APP.match(/<StopsStatusCard\b[\s\S]*?\/>/g) || [];
+  assert.equal(cardMounts.length, 2, 'expected the Map and Routing mounts of StopsStatusCard');
+  for (const m of cardMounts) {
+    assert.match(m, /scanDenied=\{scanDenied\}/, 'every StopsStatusCard mount passes the refusal reason');
+    assert.match(m, /scanning=\{scanning\}/, 'and the in-flight state, so the button cannot double-fire');
+    assert.match(m, /scanCooldown=\{scanCooldown\}/, 'and the cooldown');
+  }
+
   // The SMS composer lives in its own file and gets the reason as a prop, because the panel
   // floats over every screen and is a child of none of them.
   const msgs = byName('components/MessagesPanel.jsx');

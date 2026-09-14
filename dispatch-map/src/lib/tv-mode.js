@@ -78,40 +78,103 @@ export function tvRailRows(rows, dismissed = null, limit = TV_RAIL_LIMIT) {
 }
 
 /**
+ * PURE. WHAT THE FEED IS DOING — and the state this screen got wrong on day one.
+ *
+ * THE BUG THIS REPLACES, because it is the whole reason this function exists. tvFeedStale()
+ * below answers "has a board that LOADED gone quiet", and it deliberately answers `false`
+ * when nothing has ever loaded, on the reasoning that the first ten seconds of a morning are
+ * not a failure. That reasoning is right and the conclusion was wrong: a board that has never
+ * loaded is not "not stale", it is NOT THERE — and with no other state to fall into it came
+ * out of tvVerdict() as `clear`. Chad's wall display spent its first morning printing a green
+ * "Nothing needs a call" and "All clear" over a board it had never once read.
+ *
+ * That is the exact failure this file's own header warns about, arriving through the one door
+ * left open: a detector that could not look, pixel-identical to a clean board. "Not yet" and
+ * "never" are different claims and they need different words.
+ *
+ * SO THERE IS A GRACE WINDOW AND THEN THERE IS NOT. Inside it, "loading…" is honest and the
+ * verdict stays quiet — nobody should read a boot as a breakage. Past it, a board with no
+ * successful read is DOWN, and it says so in the same place a late stop would.
+ *
+ * AND AN ERROR SHORT-CIRCUITS THE GRACE. If the fetch has already come back refused, waiting
+ * out a timer to admit it is just a slower lie.
+ *
+ * @param lastRefreshed  Date|ms of the last SUCCESSFUL read, or null
+ * @param error          the message from the last failed read, or null
+ * @param bootedAt       ms when this screen mounted — the clock the grace runs on
+ * @param nowMs          now
+ * @param budgetMs       how long a loaded board may go unrefreshed before it is stale
+ * @param graceMs        how long "loading…" is an acceptable answer (default 90s)
+ * @returns {{state:'loading'|'live'|'stale'|'down', text:string}}
+ */
+export function tvFeedState({ lastRefreshed, error, bootedAt, nowMs, budgetMs, graceMs = 90 * 1000 } = {}) {
+  const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+  const at = lastRefreshed instanceof Date ? lastRefreshed.getTime() : Number(lastRefreshed);
+  const loaded = Number.isFinite(at) && at > 0;
+  const err = typeof error === 'string' ? error.trim() : (error ? String(error) : '');
+
+  if (!loaded) {
+    const boot = Number.isFinite(Number(bootedAt)) ? Number(bootedAt) : now;
+    const waited = now - boot;
+    const grace = Number.isFinite(Number(graceMs)) && Number(graceMs) > 0 ? Number(graceMs) : 90 * 1000;
+    // Refused already, or waited long enough that "loading" has stopped being true.
+    if (err) return { state: 'down', text: `Board will not load — ${err}` };
+    if (waited > grace) return { state: 'down', text: 'Board has not loaded' };
+    return { state: 'loading', text: 'loading…' };
+  }
+
+  // It HAS loaded at least once. A later failure is worth saying, but the board on screen is
+  // real freight from a real read, so this is "going stale", not "not there".
+  const mins = Math.max(0, Math.floor((now - at) / 60000));
+  const ago = mins < 1 ? 'updated just now' : `updated ${mins} min ago`;
+  if (tvFeedStale(at, now, budgetMs)) return { state: 'stale', text: `${ago} — not updating` };
+  return { state: 'live', text: ago };
+}
+
+/**
  * PURE. THE ONE-LINE VERDICT ACROSS THE TOP, and the tone that paints it.
  *
  * "NOTHING NEEDS A CALL" IS SAID OUT LOUD rather than left as an empty rail. An empty panel
  * and a panel whose data never arrived are the same pixels, and this app has already shipped
  * that mistake once (v0.54.x, the flags chip): a detector that could not look must never be
- * indistinguishable from a clean board. `stale` is therefore its OWN tone and its own
- * sentence — a wall display whose feed died at 6am otherwise reads as a perfect morning for
- * the rest of the day, which is the single worst thing this screen could do.
+ * indistinguishable from a clean board.
+ *
+ * `feed` IS CHECKED FIRST AND BEATS EVERY COUNT. A wall display whose feed died at 6am
+ * otherwise reads as a perfect morning for the rest of the day, which is the single worst
+ * thing this screen could do — and a board that never loaded at all is the same claim with
+ * less excuse. Both 'stale' and 'down' take the headline; only 'live' and 'loading' let the
+ * counts speak, and 'loading' does so because on a board mid-boot the counts are simply 0.
  *
  * @param urgent  count of critical+red rows on the rail
  * @param amber   count of advisory rows
- * @param stale   true when the feed has not refreshed within its expected window
+ * @param feed    the state from tvFeedState() — 'loading' | 'live' | 'stale' | 'down'
  */
-export function tvVerdict({ urgent = 0, amber = 0, stale = false } = {}) {
+export function tvVerdict({ urgent = 0, amber = 0, feed = 'live' } = {}) {
   const u = Number.isFinite(Number(urgent)) && Number(urgent) > 0 ? Math.floor(Number(urgent)) : 0;
   const a = Number.isFinite(Number(amber)) && Number(amber) > 0 ? Math.floor(Number(amber)) : 0;
-  // Checked FIRST and regardless of the counts: with a dead feed the counts are yesterday's
-  // news, and printing "all clear" over them is the claim that must never be made.
-  if (stale) return { tone: 'stale', text: 'Board not updating — check the scan' };
+  if (feed === 'down') return { tone: 'down', text: 'NO BOARD — nothing is being read' };
+  if (feed === 'stale') return { tone: 'stale', text: 'Board not updating — check the scan' };
+  // Mid-boot the counts are 0 because nothing has arrived, not because the day is clean.
+  if (feed === 'loading') return { tone: 'loading', text: 'Loading the board…' };
   if (u > 0) return { tone: 'urgent', text: `${u} stop${u === 1 ? '' : 's'} need${u === 1 ? 's' : ''} a call` };
   if (a > 0) return { tone: 'watch', text: `${a} to watch · nothing needs a call` };
   return { tone: 'clear', text: 'Nothing needs a call' };
 }
 
 /**
- * PURE. IS THE FEED STALE? Minutes since the last refresh, against a budget.
+ * PURE. IS A BOARD THAT HAS LOADED NOW STALE? Minutes since the last successful read,
+ * against a budget. Used by tvFeedState above; kept separate because it is one idea.
  *
  * useStops re-reads every STOPS_REFRESH_MS while the tab is visible, so on a wall display
  * — which is visible by definition, all day — a gap much past that interval means the
  * fetches are failing, silently, the way a silent poll is designed to. That silence is
  * correct on a dispatcher's tab (they can see the board is alive) and dangerous on a wall.
  *
- * A NULL TIMESTAMP IS NOT STALE. It is "we have not loaded yet", which is the first ten
- * seconds of every morning; painting the boot as a failure teaches the room to ignore it.
+ * A NULL TIMESTAMP IS NOT STALE — it is "we have never read", which is a DIFFERENT and worse
+ * claim, and tvFeedState is what tells the two apart. This answering `false` for null is why
+ * the first cut of the wall display printed "All clear" over a board it had never read; the
+ * behaviour is correct for the question this function asks, and the bug was asking only this
+ * question. Left as it was, with that noted, because the fix belonged one level up.
  */
 export function tvFeedStale(lastRefreshed, nowMs, budgetMs) {
   const at = lastRefreshed instanceof Date ? lastRefreshed.getTime() : Number(lastRefreshed);
