@@ -4646,6 +4646,17 @@ function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, 
   const filtering = typeof drawnCount === 'number' && drawnCount !== stopCount;
   // What is visible, decided once for both placements — see lib/board-status-card.js.
   const panel = boardStatusPanel({ collapsed, scanErr });
+  // Bar mode only: dismiss the dropdown on an outside click or Escape (see the wrapper below).
+  // The map PILL needs none of this — it stacks its detail in flow and covers nothing.
+  const barRef = useRef(null);
+  useEffect(() => {
+    if (!barMode || collapsed) return undefined;
+    const onDoc = (e) => { if (barRef.current && !barRef.current.contains(e.target)) onToggleCollapsed?.(); };
+    const onKey = (e) => { if (e.key === 'Escape') onToggleCollapsed?.(); };
+    document.addEventListener('mousedown', onDoc);
+    window.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDoc); window.removeEventListener('keydown', onKey); };
+  }, [barMode, collapsed, onToggleCollapsed]);
   // ONE SET OF PARTS, TWO PLACEMENTS. The map pill stacks the detail under the header row
   // inside the same floating card; the app-bar card (desktop Routing) keeps the header row
   // ON the bar and DROPS the detail below it. Building the pieces once is the point — two
@@ -4730,7 +4741,14 @@ function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, 
   // sees — the icon spins, stops, and the button reads as broken.
   if (barMode) {
     return (
-      <div className="relative text-xs" data-testid="routing-bar-status">
+      // OUTSIDE-CLICK AND ESCAPE CLOSE IT, which is not decoration — it is what stops an open
+      // panel becoming a DEAD CONTROL. This detail hangs off the bar and over the map, and
+      // what is under it moves: open the right panel and the map's Filters card slides left,
+      // straight beneath this. Without a dismiss, a dispatcher clicks Filters, the click
+      // lands on this panel, and nothing at all happens — the worst kind of broken, because
+      // the button looks fine. With it, that first click closes the panel and the second one
+      // works, which is how every other popover on this app bar already behaves.
+      <div className="relative text-xs" data-testid="routing-bar-status" ref={barRef}>
         <div className="flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-slate-700">
           {countBtn}
           {flagsChip}
@@ -11821,7 +11839,26 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   useEffect(() => {
     setDeskStatusSlot(isMobile || tvMode ? null : document.getElementById('desktop-appbar-status-slot'));
   }, [isMobile, tvMode]);
-  const [statusCollapsed, setStatusCollapsed] = useState(() => safeReadJSON(LS_STATUS_PILL_COLLAPSED, false));
+  // COLLAPSED BY DEFAULT ON THE MAP, and this is a bug fix rather than a preference.
+  //
+  // Once this card moved onto the app bar its detail stopped being a panel stacked inside a
+  // floating pill and became a DROPDOWN HANGING OVER THE MAP — 240px wide, ~90px below the
+  // bar. Open by default, it sat on top of whatever was under it, and what is under it moves:
+  // the map's right-hand control column slides LEFT whenever a stop card opens the right
+  // panel. Measured at 1440: Filters rests at x 1324..1427 and is clear, but with an order
+  // open it slides to x 944..1047 — straight under the dropdown at x 784..1024. A dispatcher
+  // reading an order could not click Filters at all; the click landed on the dropdown.
+  //
+  // There is no fixed position that fixes this, because the panel is user-resizable and
+  // Filters can be anywhere across a wide range. What fixes it is not leaving an information
+  // panel open over a working map: the detail (pallets, feed times, the call meter) is
+  // reference you consult, not something to keep open over the freight. Collapsed, the bar
+  // shows exactly the row Chad pointed at — "696 stops · 4 c/o", the flags chip and refresh,
+  // which his own screenshot showed with the chevron DOWN, already collapsed.
+  //
+  // Routing keeps its default (see its own copy below): its map has no right rail for the
+  // dropdown to land on, which is why that screen never hit this.
+  const [statusCollapsed, setStatusCollapsed] = useState(() => safeReadJSON(LS_STATUS_PILL_COLLAPSED, true));
   // M4.5 — Mobile drawer is closed by default on every load; active tab is
   // restored from localStorage so repeat dispatchers land where they left off.
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);

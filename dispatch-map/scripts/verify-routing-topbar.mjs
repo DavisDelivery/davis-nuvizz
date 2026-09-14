@@ -195,6 +195,27 @@ for (const vp of [{ name: 'laptop', width: 1440, height: 900 }, { name: 'desktop
     else if (!mapFiltBox) bad('Map: the Filters card was not found — the overlap check proved nothing');
     else if (intersects(mapDropBox, mapFiltBox)) bad(`Map: the dropdown covers the open Filters card (${fmt(mapDropBox)} over ${fmt(mapFiltBox)})`);
     else ok('Map: the dropdown clears the open Filters card');
+
+    // ── THE COLLISION WITH AN ORDER OPEN IS *NOT* CHECKED HERE, DELIBERATELY ───────
+    //
+    // v1.24.1 shipped a real one: the board-status detail was open by DEFAULT, hanging off
+    // the bar over the map, and opening a stop card narrows the map and slides the whole
+    // right-hand control column left — at 1440, Filters goes from x 1324..1427 to x 944..1047,
+    // straight under a dropdown at x 784..1024. Clicking Filters then did nothing at all,
+    // because the click landed on the dropdown. Fixed by collapsing that card by default on
+    // the Map (see MapScreen) and by dismissing the bar dropdown on an outside click.
+    //
+    // I TRIED TO PIN IT HERE AND COULD NOT, and the failed attempt is worth more written down
+    // than deleted. This script's fixture opens the right panel via the Routes roster, which
+    // is narrower than a stop card: Filters lands at x 1004..1107, its centre clear of the
+    // dropdown, so the click succeeds and the check passes WITH THE BUG REINSTATED. A guard
+    // that cannot fail on its own bug is not evidence — it is a green tick that teaches
+    // people the case is covered when it is not, which is worse than no check at all.
+    //
+    // IT IS ALREADY COVERED, by the guard that actually caught this: verify-hide-place-labels
+    // opens a real stop card and clicks Filters, and it went red on exactly this collision
+    // ("subtree intercepts pointer events"). That is the right home for it — it is the script
+    // that already knows how to get a stop card open.
   }
 
   await ctx.close();
