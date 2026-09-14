@@ -186,6 +186,11 @@ export function buildQueueRow(stop: any, note: any, date: string): Record<string
     vendor: vendorAddress(stop),
     corrected: !!note?.address_override,
     pinSource: pos ? pos.source : null,
+    // WHERE THE PIN IS NOW, carried so the row can draw it. A dispatcher deciding whether an
+    // address is wrong is really asking "is the pin on the right building" — and on a
+    // corrected_not_pinned row the whole point is that this coordinate came from the OLD
+    // address, so it has to be visible next to the new one rather than described.
+    pin: pos ? { lat: pos.lat, lng: pos.lng, source: pos.source } : null,
     // Only meaningful for mis_split; null elsewhere, never a fabricated suggestion.
     suggestion: signal === 'mis_split' ? suggestAddressFix(stop) : null,
     fp: queueRowFingerprint(stop, note),

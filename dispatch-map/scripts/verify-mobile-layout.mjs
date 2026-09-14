@@ -270,7 +270,7 @@ const PROBES = {
         if (!(await btn.isVisible().catch(() => false))) return false;
         await btn.click();
         await page.waitForTimeout(300);
-        return page.getByLabel(/^street address$/i).first().isVisible().catch(() => false);
+        return page.getByLabel(/^address 1, the street line$/i).first().isVisible().catch(() => false);
       },
     },
     {
@@ -282,7 +282,7 @@ const PROBES = {
         if (!(await all.isVisible().catch(() => false))) return false;
         await all.click();
         await page.waitForTimeout(250);
-        return page.getByRole('button', { name: /push \d+ to nuvizz/i }).first().isVisible().catch(() => false);
+        return page.getByRole('button', { name: /correct \d* ?\+ nuvizz/i }).first().isVisible().catch(() => false);
       },
     },
     {
