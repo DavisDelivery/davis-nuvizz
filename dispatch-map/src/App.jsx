@@ -143,7 +143,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.23.2';
+const APP_VERSION = '1.24.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -214,7 +214,8 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.23.2', 'FILTERS CAME BACK TO THE MAP, AND THE BOARD-STATUS PILL WENT UP TO THE BAR INSTEAD. Chad, within the hour of v1.23.0 going live: “move filters back to where it was” — and, pointing at the “696 stops · 4 c/o” pill floating over the map — “this to the right of more on this page.” THE ARGUMENT FOR THE BAR WAS REAL AND IT IS STILL NOT THE ONE THAT WINS. Filters was the one control in the map’s right-hand column that GREW when you opened it, pushing a 240px card down over metro Atlanta; that is why it was moved. But a dispatcher opens Filters WHILE reading the map, and a panel up on the chrome is a trip away from the pins it is filtering — the board-status card is a thing you GLANCE at, which is why the bar suits it and not this. Both halves of that are now written into the components themselves, so the move does not get re-proposed in three weeks from the same reasoning as last time. WHAT FILTERS KEPT from its day on the bar: a count on its header when a filter is HIDING stops. This card sits collapsed by default, and a board quietly holding back half its freight behind “Unplanned only” is pixel-identical to a quiet morning. Only the three toggles that REMOVE stops count — clustering and place labels change how the same freight is drawn, and a badge that lights for a cosmetic toggle is one people stop reading. THE PILL IS RIGHT OF MORE, and the side is geometry rather than taste. Filters is back in the map’s top-right column at 240px when open, ending at the window’s edge; the card’s panel therefore hangs from its LEFT edge and grows leftward, clearing it by 160px at 1440 and 400px at 1920. A right-ALIGNED panel would end a few pixels INSIDE an open Filters card — the same eight-pixel clip v1.13.0 had to measure its way out of on Routing, arriving from the opposite side. Routing keeps its card on the OTHER side of More, because its map has no right rail to clear: two screens, two positions, each right on its own map, which is cheaper than one position slightly wrong on both. The flags chip travels inside the pill because it IS inside the pill — Chad pointed at one control, not at a control and a chip. AND THE MAP STOPPED CARRYING A SECOND COPY OF THAT CARD. This screen had a hand-rolled twin of StopsStatusCard — same count button, same refresh, same five detail lines — so the bar and the pill had two places to learn the board from and two chances to disagree about it, on the one number a dispatcher checks before doing anything. It is one component now, using the app-bar frame already built and measured for Routing, with the flags chip passed in as a slot (Routing fills it with nothing; its chip lives on its own map). THE GUARD THAT CAUGHT WHAT THAT COULD HAVE COST: consolidating took the scan button from THREE gated call sites to TWO while the number of guarded SURFACES stayed at three, and the auth-wiring test failed on the count. The count was right and the test was measuring the wrong thing — a number falling is also exactly what ADDING AN UNGATED BUTTON looks like. It now asserts that every StopsStatusCard mount hands the card the refusal reason, the in-flight state and the cooldown, which is the property that actually matters: a mount without scanDenied renders an ENABLED scan button for a viewer who cannot scan, and a person who believes a scan ran works a stale board all morning. Proven by removing the prop and watching it fail. THE LAYOUT GUARD NOW WALKS BOTH SCREENS at 1440 and 1920, opening Filters first — collapsed it is ~75px wide and clears everything, so a guard checking the resting state would pass the very layout it exists to reject. Written against the broken anchoring FIRST and proven to reject it, because a layout guard that has never seen its own bug is not evidence of anything. AND THE WALL DISPLAY STOPPED LYING, WHICH IS THE REAL HEADLINE OF THIS RELEASE. Chad photographed the office TV at 7:45am on its first morning: “0 stops”, “loading…”, a blank white map — and beside all of it a GREEN “Nothing needs a call” with “All clear · no stop is predicted past its close” in the rail. The board had never been read ONCE. THE CAUSE WAS MINE AND IT WAS ONE FUNCTION’S BLIND SPOT. tvFeedStale() answers “has a board that LOADED gone quiet” and returns false for a null timestamp, on the correct reasoning that the first ten seconds of a morning are not a failure. The reasoning was right and the CONCLUSION was wrong: a board that has never loaded is not “not stale”, it is NOT THERE — and with no third state to fall into it came out of tvVerdict() as `clear`. v1.23.0’s own changelog claims this exact failure was closed (“a blank panel and a panel whose data never arrived are the same pixels”); it was closed for the went-quiet case and left wide open for the never-arrived one, which is the case a wall display actually hits on a bad morning. “Not yet” and “never” are different claims and they now get different words. tvFeedState() replaces the boolean with four states — loading / live / stale / down — and ONE of them drives the headline, the freshness line AND the rail, so those three can no longer contradict each other on the same screen the way they did in the photograph. A 90-second grace keeps “loading…” honest during a boot; past it, a board with no successful read is DOWN and says “NO BOARD — nothing is being read” in red, with “This is not an all-clear — nothing has been checked” under the empty rail. An error SHORT-CIRCUITS the grace, because waiting out a timer to admit a refusal is just a slower lie. A board that loaded and then failed stays ‘live’ until the staleness budget — the freight on screen came from a real read, and “NO BOARD” over real stops would be false in the direction that teaches a room to stop believing the screen. AND IT SAYS WHAT WENT WRONG. useStops has always returned `error`; this screen threw it away, so a refused fetch read as “loading…” for ever and NEITHER the office NOR anybody asked about it could tell why — the reason the cause of Chad’s blank morning still is not known from here. The message is now on the wall. THE WHITE MAP: the live bundle carries VITE_GOOGLE_MAP_ID, so production runs a VECTOR map, which renders through WebGL — and a browser that cannot drive it paints nothing and raises no error, which is why there was no red box on the photo. Not proven on that television and not claimed to be; what IS done is that TV mode now drops the mapId and takes the RASTER base, the same path “Hide place labels” has used for years. It trades 3D tilt and the rotate compass — mouse gestures, on a wall, nobody performs — for a map that draws on anything. And a tilesloaded watchdog turns a silent white rectangle into a sentence naming WebGL, so if it is still blank the screen says so itself. THE DISPATCH BOARD IS UNTOUCHED: it keeps the vector map, the tilt and the compass. AND THE TRUCKS STOPPED BURYING THE FREIGHT. Chad, on the board once the map came back: “Truck icons are too big. Too much text showing covering the stops up. Want to take all the stale and in route text off and lower the font size of the drivers name.” THE ICON WAS 28px — the same size as the LARGEST stop marker (a 30px cluster) and DOUBLE an ordinary 14px stop dot — so on metro Atlanta the fleet read as the foreground and the freight as texture behind it. It is 20px now: still unmistakable against a 14px stop, because finding the trucks at a glance is what the layer is FOR, while covering under half the pins it used to. The name plate’s offset derives from that constant, so it followed the truck down on its own. THE STATUS LINE IS GONE, and the reasoning is a rule about labels rather than a preference about this one: “en route” was printed on nearly every moving truck AT ONCE. A label that is on everything distinguishes nothing — it is weather — and it cost a whole second line of white box over the stops underneath. STALENESS IS NOT LOST WITH THE WORD: a fix older than 30 minutes already dims the truck to 55% and the plate to 60%, independently of the text, so “do not trust this dot” still reads, and reads from across a room rather than needing somebody to read 9px type. What SURVIVES on line 2 is route progress (“Stop 3 of 12”), because that is not weather — it differs per truck, it moves through the day, and it is the one thing on the plate a dispatcher acts on. Most boards carry no route match, so in practice nearly every plate is now one line. Driver name to 10px, the second line to 9px, tighter padding — the white BOX is what covers the freight, and the type is what sizes the box. THE WORDS MOVED OUT OF THE COMPONENT into lib/driver-label.js, pure and tested, so “no en route, no stale” is pinned by a test across a moving truck, a stopped truck, a two-hour-old fix and a routed truck rather than being a thing somebody remembered. It also folded in the first-name/last-initial logic, which had two spellings for the two shapes the Motive feed sends — one driver appearing under two names on two boards is how a dispatcher comes to believe in two of them. THE STOP-ROW “en route” IN THE ROUTE DETAIL LIST IS UNTOUCHED: it is in a panel, it is per-stop, and it covers nothing. 11 tests on lib/driver-label.js, 25 on lib/tv-mode.js, 4,487 green.'],
+  ['1.24.1', 'FILTERS CAME BACK TO THE MAP, AND THE BOARD-STATUS PILL WENT UP TO THE BAR INSTEAD. Chad, within the hour of v1.23.0 going live: “move filters back to where it was” — and, pointing at the “696 stops · 4 c/o” pill floating over the map — “this to the right of more on this page.” THE ARGUMENT FOR THE BAR WAS REAL AND IT IS STILL NOT THE ONE THAT WINS. Filters was the one control in the map’s right-hand column that GREW when you opened it, pushing a 240px card down over metro Atlanta; that is why it was moved. But a dispatcher opens Filters WHILE reading the map, and a panel up on the chrome is a trip away from the pins it is filtering — the board-status card is a thing you GLANCE at, which is why the bar suits it and not this. Both halves of that are now written into the components themselves, so the move does not get re-proposed in three weeks from the same reasoning as last time. WHAT FILTERS KEPT from its day on the bar: a count on its header when a filter is HIDING stops. This card sits collapsed by default, and a board quietly holding back half its freight behind “Unplanned only” is pixel-identical to a quiet morning. Only the three toggles that REMOVE stops count — clustering and place labels change how the same freight is drawn, and a badge that lights for a cosmetic toggle is one people stop reading. THE PILL IS RIGHT OF MORE, and the side is geometry rather than taste. Filters is back in the map’s top-right column at 240px when open, ending at the window’s edge; the card’s panel therefore hangs from its LEFT edge and grows leftward, clearing it by 160px at 1440 and 400px at 1920. A right-ALIGNED panel would end a few pixels INSIDE an open Filters card — the same eight-pixel clip v1.13.0 had to measure its way out of on Routing, arriving from the opposite side. Routing keeps its card on the OTHER side of More, because its map has no right rail to clear: two screens, two positions, each right on its own map, which is cheaper than one position slightly wrong on both. The flags chip travels inside the pill because it IS inside the pill — Chad pointed at one control, not at a control and a chip. AND THE MAP STOPPED CARRYING A SECOND COPY OF THAT CARD. This screen had a hand-rolled twin of StopsStatusCard — same count button, same refresh, same five detail lines — so the bar and the pill had two places to learn the board from and two chances to disagree about it, on the one number a dispatcher checks before doing anything. It is one component now, using the app-bar frame already built and measured for Routing, with the flags chip passed in as a slot (Routing fills it with nothing; its chip lives on its own map). THE GUARD THAT CAUGHT WHAT THAT COULD HAVE COST: consolidating took the scan button from THREE gated call sites to TWO while the number of guarded SURFACES stayed at three, and the auth-wiring test failed on the count. The count was right and the test was measuring the wrong thing — a number falling is also exactly what ADDING AN UNGATED BUTTON looks like. It now asserts that every StopsStatusCard mount hands the card the refusal reason, the in-flight state and the cooldown, which is the property that actually matters: a mount without scanDenied renders an ENABLED scan button for a viewer who cannot scan, and a person who believes a scan ran works a stale board all morning. Proven by removing the prop and watching it fail. THE LAYOUT GUARD NOW WALKS BOTH SCREENS at 1440 and 1920, opening Filters first — collapsed it is ~75px wide and clears everything, so a guard checking the resting state would pass the very layout it exists to reject. Written against the broken anchoring FIRST and proven to reject it, because a layout guard that has never seen its own bug is not evidence of anything. AND THE WALL DISPLAY STOPPED LYING, WHICH IS THE REAL HEADLINE OF THIS RELEASE. Chad photographed the office TV at 7:45am on its first morning: “0 stops”, “loading…”, a blank white map — and beside all of it a GREEN “Nothing needs a call” with “All clear · no stop is predicted past its close” in the rail. The board had never been read ONCE. THE CAUSE WAS MINE AND IT WAS ONE FUNCTION’S BLIND SPOT. tvFeedStale() answers “has a board that LOADED gone quiet” and returns false for a null timestamp, on the correct reasoning that the first ten seconds of a morning are not a failure. The reasoning was right and the CONCLUSION was wrong: a board that has never loaded is not “not stale”, it is NOT THERE — and with no third state to fall into it came out of tvVerdict() as `clear`. v1.23.0’s own changelog claims this exact failure was closed (“a blank panel and a panel whose data never arrived are the same pixels”); it was closed for the went-quiet case and left wide open for the never-arrived one, which is the case a wall display actually hits on a bad morning. “Not yet” and “never” are different claims and they now get different words. tvFeedState() replaces the boolean with four states — loading / live / stale / down — and ONE of them drives the headline, the freshness line AND the rail, so those three can no longer contradict each other on the same screen the way they did in the photograph. A 90-second grace keeps “loading…” honest during a boot; past it, a board with no successful read is DOWN and says “NO BOARD — nothing is being read” in red, with “This is not an all-clear — nothing has been checked” under the empty rail. An error SHORT-CIRCUITS the grace, because waiting out a timer to admit a refusal is just a slower lie. A board that loaded and then failed stays ‘live’ until the staleness budget — the freight on screen came from a real read, and “NO BOARD” over real stops would be false in the direction that teaches a room to stop believing the screen. AND IT SAYS WHAT WENT WRONG. useStops has always returned `error`; this screen threw it away, so a refused fetch read as “loading…” for ever and NEITHER the office NOR anybody asked about it could tell why — the reason the cause of Chad’s blank morning still is not known from here. The message is now on the wall. THE WHITE MAP: the live bundle carries VITE_GOOGLE_MAP_ID, so production runs a VECTOR map, which renders through WebGL — and a browser that cannot drive it paints nothing and raises no error, which is why there was no red box on the photo. Not proven on that television and not claimed to be; what IS done is that TV mode now drops the mapId and takes the RASTER base, the same path “Hide place labels” has used for years. It trades 3D tilt and the rotate compass — mouse gestures, on a wall, nobody performs — for a map that draws on anything. And a tilesloaded watchdog turns a silent white rectangle into a sentence naming WebGL, so if it is still blank the screen says so itself. THE DISPATCH BOARD IS UNTOUCHED: it keeps the vector map, the tilt and the compass. AND THE TRUCKS STOPPED BURYING THE FREIGHT. Chad, on the board once the map came back: “Truck icons are too big. Too much text showing covering the stops up. Want to take all the stale and in route text off and lower the font size of the drivers name.” THE ICON WAS 28px — the same size as the LARGEST stop marker (a 30px cluster) and DOUBLE an ordinary 14px stop dot — so on metro Atlanta the fleet read as the foreground and the freight as texture behind it. It is 20px now: still unmistakable against a 14px stop, because finding the trucks at a glance is what the layer is FOR, while covering under half the pins it used to. The name plate’s offset derives from that constant, so it followed the truck down on its own. THE STATUS LINE IS GONE, and the reasoning is a rule about labels rather than a preference about this one: “en route” was printed on nearly every moving truck AT ONCE. A label that is on everything distinguishes nothing — it is weather — and it cost a whole second line of white box over the stops underneath. STALENESS IS NOT LOST WITH THE WORD: a fix older than 30 minutes already dims the truck to 55% and the plate to 60%, independently of the text, so “do not trust this dot” still reads, and reads from across a room rather than needing somebody to read 9px type. What SURVIVES on line 2 is route progress (“Stop 3 of 12”), because that is not weather — it differs per truck, it moves through the day, and it is the one thing on the plate a dispatcher acts on. Most boards carry no route match, so in practice nearly every plate is now one line. Driver name to 10px, the second line to 9px, tighter padding — the white BOX is what covers the freight, and the type is what sizes the box. THE WORDS MOVED OUT OF THE COMPONENT into lib/driver-label.js, pure and tested, so “no en route, no stale” is pinned by a test across a moving truck, a stopped truck, a two-hour-old fix and a routed truck rather than being a thing somebody remembered. It also folded in the first-name/last-initial logic, which had two spellings for the two shapes the Motive feed sends — one driver appearing under two names on two boards is how a dispatcher comes to believe in two of them. THE STOP-ROW “en route” IN THE ROUTE DETAIL LIST IS UNTOUCHED: it is in a panel, it is per-stop, and it covers nothing. 11 tests on lib/driver-label.js, 25 on lib/tv-mode.js, 4,487 green.'],
+  ['1.24.0', 'THERE IS A LIST OF THE ADDRESSES THAT WILL SEND A TRUCK TO THE WRONG DOOR, AND YOU CAN FIX THEM FROM IT. Chad: “list by board day every stop that the system has flagged as a problem address, let us correct it there, and push individuals or the group to nuvizz with the correction.” ADDRESS HISTORY IS THREE TABS NOW. Problem addresses (the queue, and the default), NuVizz changed it — its own tab because “they re-addressed our order” is different work from “we need to fix this”, and the full log. Today plus the next two BUSINESS days, which is exactly what the scan still rewrites; older days are frozen and correcting them is archaeology after the freight moved. THREE SIGNALS, AND THE MIDDLE ONE NOTHING COULD SEE BEFORE. No pin at all (the stop cannot be routed or lasso-selected). Mis-split (a suite where the street should be, so the pin was geocoded off the wrong line). And CORRECTED, PIN NOT MOVED — an address somebody fixed while the geocode quietly failed. stopPosition then falls through to the FEED coordinates, which were geocoded from the OLD wrong address: the card reads the right street, the pin sits on the old building, no_location stays silent because a position does exist, and nothing flagged it. Chad, shown it: “WE should flag this if it happens.” It flags retroactively, so stops corrected weeks ago whose geocode failed appear the first time the screen is opened. AND THE BUG THAT CREATED THEM IS FIXED. “Edit address” put its geocode INSIDE the same try as the Firestore write, so a ZERO_RESULTS threw the whole correction away — on exactly the addresses most likely to be wrong. “Fix & move pin” had always saved anyway; the two paths disagreed and only one was right. Both now save the text, skip the pin, and say so. PUSHING IS 3 CALLS AND THE NOTE IS FREE. Chad asked for a dispatcher note recording that we fixed the address, then asked whether it meant more calls. It does not: addStopNote runs the same read/write/verify ladder, so bolting it on would have doubled every push to 6 and a 40-row group to 240. It is merged into the SAME partialUpdate as the address block — and because both drift diffs ignore `comments` by design, a note NuVizz silently dropped would have read as a clean success, so the op now carries an explicit noteLanded read from the order. The note says what it was and what it is now, not just that something changed. EVERY BUTTON PRICES ITSELF BEFORE YOU PRESS IT, read free from a dry run that also reports whether live writes are switched on at all. A run that would blow the day’s ceiling cannot be started; the ceiling comes from the stored setting, never the 2,000 constant. The group push is strictly serial (each order is three round trips inside a 26-second budget, and one row can spend 20 seconds in backoff), stops dead on a role, switch, breaker or ceiling refusal rather than producing N identical failures, and its abort says “stop after this one” because there is no in-flight abort to promise. Select-all skips delivered freight and rows with no order id — the twin guard is disarmed without one, and re-addressing the wrong twin sends freight where nobody chose. WAVING A ROW OFF HIDES IT FOR EVERYONE, and it comes BACK if the address changes again, because the dismissal stores a fingerprint of what was waved off rather than just the row’s name. Server-written into its own collection, field-masked so two dispatchers clearing two rows both land, and closed to the browser in firestore.rules. ADDRESS_QUEUE=off puts the whole screen back.'],
   ['1.23.1', 'A DOCK THAT BREAKS FOR LUNCH IS NOT A DOCK THAT SHUTS AT NOON, AND THE CARD NOW SAYS WHO SET THE HOURS. Chad, on a CRITICAL board flag for WEAVER DISTRIBUTORS (PRO 007175532, stop 2 on KOBE BOAYKE): “we are flagging this stop incorrectly as having shortened hours when they just close for lunch and shouldn’t be flagged as well as i think that our system auto updated the hours at the bottom.” BOTH HALVES WERE ONE BUG, AND THE WHOLE CHAIN WAS REPRODUCED BEFORE ANYTHING WAS CHANGED — on v1.23.0, the build he was looking at. WEAVER’s Uline instructions read “RH 8 00AM-12 00PM / LUNCH 12 00-1 30PM / RH 1 30PM-5 00PM”: open eight to noon, break, then receiving again until five. The scanner returned 08:00–12:00 and stopped; the writer stamped 8:00a–12:00p onto ALL SEVEN DAYS of the customer’s notes (that is the block he spotted, and he was right that the system wrote it); dayReceivingWindow read a noon close; and the flag engine produced the exact card he photographed — “estimated arrival ~1:33p vs close 12:00p (99 min late)”. The truck was three minutes LATE FOR NOTHING: the dock had reopened at 1:30. WHY IT STOPPED. The lunch-split rule has existed since Aug 12 and stores the ENVELOPE (first open, last close) precisely so an arrival in the gap reads as a short wait rather than a miss — but its continuation only fired on a CONJUNCTION (“8-12 & 1-5”). WEAVER writes it the way a dock actually writes it: the gap gets a NAME, and the afternoon half gets the LABEL again. Neither is a conjunction, so the chain broke at the first range. FIVE BRIDGES NOW, AND NEVER BARE ADJACENCY — that last part is the whole safety argument. A naked “1-2” after a noon close is likelier to BE the lunch closure than the afternoon shift, and reading it as a continuation would push a genuine noon close out to 2pm: a missed delivery nobody was warned about, which is the expensive direction. So a continuation must be ANNOUNCED — by a conjunction; by a named gap with its own times (“LUNCH 12 00-1 30PM”, “CLOSED 12-1 FOR LUNCH”, either order); by a named gap with no times; by a named REOPENING (“AFTER LUNCH 1PM-5PM”, “REOPENS 1-5”), where the range that follows is the afternoon half rather than the closure’s; or by the hours label repeated. A lunch line is a BRIDGE, never a source: “CLOSED 1-2 FOR LUNCH” on its own is still nothing, and a LUNCH line with no afternoon half stated still closes at noon rather than inventing a 1:30 reopening the customer never gave us. Subaru still really does close at noon, and “& FRI 1130-4” is still a new day rather than a continuation — a day word is not a time token. THE STORED DOC SELF-HEALS: the scanner owns that field (auto_sources fingerprint), so the next scan that sees a WEAVER order rewrites all seven days to 8:00a–5:00p, verified by running decideWrite. A dispatcher-typed window is still untouchable — the manual_overrides latch writes nothing at all, as it has since v0.76.7. AND THE SECOND HALF OF HIS MESSAGE WAS ITS OWN DEFECT: he had to GUESS that the app wrote those hours. The grid rendered a parser’s reading of one Uline order in exactly the typeface a colleague’s phone call to the dock would have used, and the two call for opposite actions. The board flag has disclosed provenance for months (“Hours auto-detected — verify”) and the PRO report has a column for it; the card a dispatcher actually opens was the one surface that never said. It now carries one line — dispatcher-set, auto-detected, or source-not-recorded — AND, when the parser wrote them, THE TEXT IT READ. That matters beyond attribution: the schema holds one window per day, so the lunch break itself has nowhere to live, and the raw line is the only place it stays visible — somebody sequencing the route can see the dock is shut over lunch even though the stored window cannot say so. The envelope is what the rules compare against; the text is what a person reads. SAID OUT LOUD, BECAUSE IT IS A JUDGEMENT AND NOT A FACT: an arrival inside the lunch gap is still not flagged. It is a wait, not a miss — the repo’s settled policy since Aug 12 — and a dispatcher who wants the gap enforced should say so, because that is a different feature. FOUND AND NOT FIXED HERE, deliberately, to keep this change the size of the bug: a labelled meridiem-less afternoon range reads as dawn (“RH 1-5” stores 01:00–05:00, verified), which would mark a customer shut for the whole working day. Same family as the v0.54.60 “CLOSES AT 4” regression; it is raised separately rather than widening this PR. 13 new tests on the two pure modules, 4,484 green.'],
   ['1.23.0', 'THE BOARD GOES ON THE OFFICE WALL, AND FILTERS GETS OFF THE MAP. Chad: “I want to create a netlify site that just has the map from dispatch map that allows me to display the view in my office on a 55 inch tv” — and then, on the shape of it: “i’m good with the /tv route but i want the button for fullscreen under filters as i don’t want anymore buttons on the screen”, “I want map status bar flag rail but i want this view only showing on the full screen[,] don’t want to crowd my actual desktop map”, and “live trucks but still want the filters drop down on the map so i can turn live drivers on and off”. IT IS A ROUTE, NOT A SECOND SITE, AND THAT IS A COST FINDING RATHER THAN A PREFERENCE. A second Netlify site built from this repo deploys netlify/functions with it — THIRTEEN scheduled background functions, among them nuvizz-refresh-stops-background on */5 (the NuVizz scan) and customer-comms-sweep-background on */30 (the delivery emails to real customers). A second production deploy runs every one of them a SECOND TIME: double the scan spend against a 2,000/day ceiling, and every delivered-customer email sent twice. Same-origin also means the stops function, Firestore and the Maps key work untouched, with no second key referrer list to widen and nothing to re-do when the Firestore rules lockdown lands. Open dd-dispatch-map.netlify.app/tv on the TV and leave it. TV MODE IS ITS OWN VIEW, the same rule this repo already applies to phone vs desktop: rendered INSTEAD of the shell rather than inside it with the chrome hidden, so the update banner, the tab row and the footer are not merely invisible on a screen with no pointer — they are not mounted, and a control added to the board tomorrow cannot arrive on the television by accident. WHAT IS ON IT: two numbers big enough to read across a room (stops, % complete — through formatCompletionPct, so 815 of 816 can never print as a finished day), a one-line verdict, the clock, and a flag rail carrying CRITICAL AND RED ONLY. Amber is a count, not a row: on a board with twenty-five advisories behind three reds, listing all of them pushes the three somebody can still save off a screen that cannot scroll. The cap is 12 and THE OVERFLOW IS PRINTED, because twelve rows on a thirty-flag morning with the truncation unmentioned reads as twelve problems. THE FAILURES A WALL DISPLAY HAS AND A DISPATCHER’S TAB DOES NOT, each closed: a stale feed OUTRANKS a clean board (the scan dies at 6am and the television otherwise shows a perfect morning all day — stale is its own tone and its own sentence, checked before the counts); “nothing needs a call” is said in WORDS, never left as an empty rail, because a blank panel and a panel whose data never arrived are the same pixels; the TV RELOADS ITSELF on a new build, since UpdateBanner waits for a click nobody is there to give and holds no unsaved work to lose; a screen wake lock is re-taken on every visibility change rather than requested once and assumed to hold for twelve hours; and the display NEVER PUBLISHES PRESENCE — a board nobody touches, reporting itself as a live device all day, would make “who else is on” permanently wrong, and an indicator that is usually wrong takes the true readings with it. AND FILTERS MOVED TO THE BAR, ON BOTH SCREENS. Chad: “I want my filters drop down moved to the bar above where its at and set to the left to not get in the way of buttons on right of screen[,] and make the routing tab the same way.” It was the one control in the map’s right-hand column that GREW when you opened it, pushing a 240px card down over metro Atlanta on the side of the board a dispatcher reads — the same argument that took the board-status card onto the bar in v1.13.0. The LEFT end is the geometry and not a tidy-up: the bar’s right end carries More, the status card and the presence chip with the map’s right rail directly beneath them, so the panel is anchored to its button’s LEFT edge and grows the other way, into the map’s top-left, and cannot reach that stack at any window width. One body, two frames, so the bar and the phone drawer can never come to disagree about which toggles exist. A filter that HIDES freight now shows a count on the collapsed button, because a board quietly holding back half its stops behind “Unplanned only” is pixel-identical to a quiet morning. The phone keeps its on-map button; so does TV mode, where there is no bar to hang off — which is exactly what Chad asked for when he said the filters dropdown had to stay reachable on the map to turn live drivers on and off. 16 new tests on the pure rules (lib/tv-mode.js). THE WAY BACK: this is additive — one commit, and git revert is the whole job.'],
   ['1.22.0', 'CORRECTING AN ADDRESS NOW REACHES THE DRIVER’S MANIFEST, NOT JUST OUR MAP. Chad: “when we edit an address because it’s wrong — do we change it in nuVizz, or do we just change it in dispatch map?” Just dispatch map. All three edit paths — the editor, and “Fix & move pin” on the Map and on Routing — wrote customer_notes.address_override with the browser’s Firestore SDK and never touched a function, so the board and the pin were right while the ORDER kept whatever street came in on the import. The driver’s manifest app never reads customer_notes at all, and the delivered-customer email renders the cached board row, so BOTH quoted the wrong address back at the two people most able to act on it. The server op to fix this has existed and been tested since Sep 9 and was wired to no button in the app. IT IS WIRED NOW, AS A CHOICE, IN THE EDITOR ONLY. “Also correct order X in NuVizz” rides the same ladder the note and date writes use — read by number, REFUSE on a twin (two orders share a number and re-addressing the other one sends freight where nobody chose it), REFUSE on delivered freight, write the address as a literal ANY block with no label so the vendor cannot refill it from its own address book, then read the order back. THE MODAL STAYS OPEN UNTIL IT HAS, and the green line quotes WHAT NUVIZZ STORED — not what we sent. TWO PLACES, NEITHER COVERING THE OTHER, both said out loud on the checkbox: Firestore is per-CUSTOMER and carries onto their next order; NuVizz is per-ORDER and is what the portal, the carrier and the paperwork show. THE BOARD HALF NEVER DEPENDS ON THE VENDOR HALF — a refused push is amber, states the saved half first, and says the manifest still needs the portal, because a dispatcher reading red assumes they lost the edit. The one-click “Fix & move pin” stays board-only ON PURPOSE and now says so on the banner: a mis-split is the same address with the lines swapped, NuVizz already holds both, so the push buys the freight nothing and a vendor write fired from one unconfirmed tap is precisely how the wrong twin gets re-addressed. ADDRESS HISTORY ANSWERS “DID IT REACH THEM”: rows read Us → NuVizz when it landed, amber Us · not in NuVizz when it was attempted and did not — recorded as a field, not a new source, so the screen’s own “Us” filter cannot hide the corrections that travelled furthest. THE WAY BACK IS ONE ENV VAR: NUVIZZ_ADDRESS_WRITE=off refuses every push server-side before it costs a call and leaves the board override behaving exactly as it did before this shipped. Default-on, and a malformed value leaves it ON.'],
@@ -6298,18 +6299,34 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
     // lib/address-log.js. After the save the old address is gone from every surface.
     const wasShowing = shownAddress(stop, note);
     try {
-      const geo = await geocodeAddress(google, q);
-      // FIRESTORE FIRST, AND UNCONDITIONALLY. It is the durable half, and a vendor write that
-      // fails must never cost the dispatcher the address they just typed.
+      // THE GEOCODE IS BEST-EFFORT, AND THE ADDRESS SAVES EITHER WAY (v1.23.0).
+      //
+      // This used to be `const geo = await geocodeAddress(...)` INSIDE the try whose only
+      // handler sets a red "Could not save" — so a ZERO_RESULTS threw the whole correction
+      // away, on exactly the addresses most likely to be wrong. "Fix & move pin" has always
+      // saved anyway and simply left the pin; the two paths disagreed and only one of them was
+      // right. Chad, shown the consequence: "WE should flag this if it happens" — it now does,
+      // as a `corrected_not_pinned` row on the problem-address queue, because a corrected
+      // address over a STALE feed pin still routes a truck to the old building.
+      let geo = null, geoErr = null;
+      try { geo = await geocodeAddress(google, q); } catch (e) { geoErr = e; }
+
+      // FIRESTORE FIRST, AND UNCONDITIONALLY. It is the durable half, and neither a failed
+      // geocode nor a failed vendor write may cost the dispatcher the address they just typed.
       await setDoc(doc(db, 'customer_notes', stop.matchKey), {
         match_key: stop.matchKey,
         raw_name: stop.businessName || '',
         address_override: fields,
         address_override_at: serverTimestamp(),
-        location_override: { lat: geo.lat, lng: geo.lng },
-        location_override_at: serverTimestamp(),
+        // Only written when we actually have one: a half-written pin is worse than none, and
+        // an absent location_override is what puts this stop on the queue to be finished.
+        ...(geo ? { location_override: { lat: geo.lat, lng: geo.lng }, location_override_at: serverTimestamp() } : {}),
         last_updated: serverTimestamp(),
       }, { merge: true });
+
+      if (geoErr) {
+        setPush({ kind: 'warn', text: `Address saved, but the pin could not be moved — ${geoErr.message}. It still points at the old spot, so this stop is now on the problem-address queue under “Pin not moved”. Drag it with “Correct pin location” to finish.` });
+      }
 
       if (!(canPush && toNuvizz)) {
         // Board-only, exactly as this modal has always behaved. Not awaited into the happy
@@ -6317,7 +6334,10 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
         // than a missing row.
         logAddressOverride({ stop, before: wasShowing, after: fields, source: 'override' });
         onSaved?.();
-        onClose();
+        // Held open when the pin could not be moved — closing over that warning is how a
+        // dispatcher comes away believing the stop is fixed when the map still points at the
+        // old building.
+        if (!geoErr) onClose();
         return;
       }
 
@@ -30121,10 +30141,95 @@ const addrTime = (iso) => {
   return new Date(t).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 };
 
+// ── THE PROBLEM-ADDRESS QUEUE ────────────────────────────────────────────────
+//
+// Chad: "list by board day every stop that the system has flagged as a problem address, let us
+// correct it there, and push individuals or the group to nuvizz with the correction."
+//
+// ONE REGISTRY, so the phone chooser and the desktop chooser cannot drift into offering
+// different sections. Same shape as DIAG_SECTIONS.
+const ADDR_TAB_KEY = 'dispatchMap.addrHistory.section';
+const ADDR_SECTIONS = [
+  { id: 'problems', label: 'Problem addresses', hint: 'Stops whose address will send a truck to the wrong door — fix them here' },
+  { id: 'carrier', label: 'NuVizz changed it', hint: 'Orders the carrier re-addressed after we scanned them' },
+  { id: 'log', label: 'Full log', hint: 'Every address change, ours and theirs' },
+];
+
+const QUEUE_SIGNALS = {
+  no_pin: { label: 'No pin', cls: 'bg-red-100 text-red-800 border-red-200', hint: 'Never geocoded — this stop cannot be routed or lasso-selected, and is easy to miss entirely' },
+  corrected_not_pinned: { label: 'Pin not moved', cls: 'bg-amber-100 text-amber-800 border-amber-200', hint: 'The address was corrected but the pin never moved — the map still points at the OLD building' },
+  mis_split: { label: 'Mis-split', cls: 'bg-amber-100 text-amber-800 border-amber-200', hint: 'A suite or dock is where the street should be, so the pin was geocoded off the wrong line' },
+};
+const QueueSignalBadge = ({ signal }) => {
+  const m = QUEUE_SIGNALS[signal] || { label: signal, cls: 'bg-slate-100 text-slate-700 border-slate-200', hint: '' };
+  return <span title={m.hint} className={`inline-block px-1.5 py-0.5 rounded border text-[10px] font-bold uppercase tracking-wide whitespace-nowrap ${m.cls}`}>{m.label}</span>;
+};
+
+const oneLineAddr = (a) => [a?.addr1, a?.addr2, a?.city, a?.state, a?.zip].filter(Boolean).join(', ');
+
+/** The dispatcher note that rides the SAME partialUpdate as the address (no extra call).
+ *  It states what Davis corrected and when — true whether or not the vendor stored it, which
+ *  matters because the note and the address land or fail together. A bare "address corrected"
+ *  tells the next reader nothing they can act on. */
+function queueNoteText(row, fields, today) {
+  const was = oneLineAddr(row?.vendor) || '(no address on the order)';
+  const now = oneLineAddr(fields);
+  return `Davis dispatch corrected the delivery address on ${today}: was "${was}" — now "${now}".`;
+}
+
+/** A stop the SERVER will refuse anyway, judged here for free. The refusal costs a NuVizz call
+ *  and carries no boolean to branch on — only prose — so spending one to be told no is waste. */
+const queueRowExecuted = (row) => ['DELIVERED', 'ARRIVED', 'EXCEPTION'].includes(String(row?.status || ''));
+/** Without a stopId the server's twin guard is disarmed and a push can re-address the OTHER
+ *  order sharing that number. Those rows are pushable one at a time, deliberately, but never
+ *  swept up by select-all. */
+const queueRowPushable = (row) => !!row.stopNbr && !!row.stopId && !queueRowExecuted(row);
+
+/**
+ * THE GROUP PUSH RUNNER — strictly serial, one order per request.
+ *
+ * NOT a server-side fan-out. runSetStopAddress is three sequential vendor round trips inside a
+ * 26-second function budget, and one row may legitimately spend 20s asleep in backoff. Two
+ * rows per invocation is already unsafe; one row each gives every row a fresh budget and makes
+ * the run length unbounded instead of the platform killing it mid-write.
+ *
+ * FIVE OUTCOMES ARE RUN-FATAL and the rest are per-row. Stopping on the fatal ones is the
+ * whole point: continuing produces N identical failures, spends nothing useful, and buries the
+ * one sentence that explains it.
+ */
+function classifyPushResult(j) {
+  const http = j?.httpStatus;
+  const err = String(j?.error || '');
+  if (http === 403 && /^requires\s+\w+$/i.test(err)) return { fatal: true, kind: 'role', text: 'This account may not push to NuVizz.' };
+  if (http === 403) return { fatal: true, kind: 'switch', text: 'Live writes are switched off on the server (NUVIZZ_WRITE_ENABLED). Nothing was sent — the board corrections are saved.' };
+  if (http === 503) return { fatal: true, kind: 'breaker', text: 'The NuVizz call breaker is open — no further writes will go out today.' };
+  if (http === 429) return { fatal: true, kind: 'ceiling', text: err || 'The daily NuVizz call ceiling was reached.' };
+  const out = j?.result || {};
+  if (j?.idempotent) return { kind: 'already', text: 'Already pushed earlier — no call spent.' };
+  if (j?.ok && out.noteLanded === false) return { kind: 'partial', text: `${out.message || 'Address corrected.'}` };
+  if (j?.ok) return { kind: 'ok', text: out.now ? `NuVizz now reads ${out.now}.` : 'Written onto the order.' };
+  if (out.blocked) return { kind: 'blocked', text: 'Address writes are switched off on this server (NUVIZZ_ADDRESS_WRITE=off). The board correction is saved.' };
+  if (out.unverified) return { kind: 'unknown', text: `${out.error || err} — check the order in the portal before re-trying.` };
+  return { kind: 'refused', text: out.error || err || 'NuVizz refused the write.' };
+}
+
 function AddressHistoryScreen() {
   const viewportWidth = useViewportWidth();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
   const today = todayInET();
+  // Remembered per device. A dispatcher who works the queue every morning should land on it,
+  // not on the log — and unlike Routing there is no reason to force-reset it on entry.
+  const [section, setSection] = React.useState(() => {
+    try { const s = localStorage.getItem(ADDR_TAB_KEY); if (ADDR_SECTIONS.some((x) => x.id === s)) return s; } catch { /* private mode */ }
+    return ADDR_SECTIONS[0].id;
+  });
+  // Bumped by Refresh to re-run the queue's own fetch. A nonce rather than a callback ref so
+  // the queue owns its loading state and the header button stays dumb.
+  const [queueNonce, setQueueNonce] = React.useState(0);
+  const pickSection = React.useCallback((id) => {
+    setSection(id);
+    try { localStorage.setItem(ADDR_TAB_KEY, id); } catch { /* a remembered tab is a convenience, never a requirement */ }
+  }, []);
   const [sel, setSel] = React.useState({ kind: 'days', days: 14 });
   const range = React.useMemo(() => resolveRange(sel, today), [sel, today]);
   const [stopQ, setStopQ] = React.useState('');
@@ -30161,9 +30266,23 @@ function AddressHistoryScreen() {
       setData(j);
     } catch (e) { setErr(String(e.message || e)); } finally { setLoading(false); }
   }, [qs]);
-  React.useEffect(() => { const t = setTimeout(load, searching ? 300 : 0); return () => clearTimeout(t); }, [load, searching]);
+  // Only the log and carrier sections read the change ledger. The queue has its own endpoint,
+  // and firing this one behind it would be a Firestore read per keystroke for a screen nobody
+  // is looking at.
+  const logSection = section === 'log' || section === 'carrier';
+  React.useEffect(() => {
+    if (!logSection) return undefined;
+    const t = setTimeout(load, searching ? 300 : 0);
+    return () => clearTimeout(t);
+  }, [load, searching, logSection]);
 
-  const rows = data?.rows || [];
+  const allRows = data?.rows || [];
+  // "NuVizz changed it on us" is its own tab because it is different work from "we need to fix
+  // this" — Chad asked for it separately. Narrowed to what the SCAN observed, and to the kinds
+  // that actually move freight: a formatting difference the carrier made is not an event.
+  const rows = section === 'carrier'
+    ? allRows.filter((r) => r.source === 'scan' && ['moved', 'cleared', 'renamed'].includes(r.kind))
+    : allRows;
   const sum = data?.summary || {};
   // TRUE ONLY WHEN THERE REALLY ARE ROWS BEING WITHHELD. The first cut of this was inverted —
   // it read "no formatting rows exist" — so an empty screen with the toggle ON still told the
@@ -30191,13 +30310,34 @@ function AddressHistoryScreen() {
       <div className={`${SCREEN_DASH} p-4 sm:p-6 space-y-4`}>
         <div className="flex items-start justify-between gap-3 flex-wrap">
           <div className="min-w-0">
+            {/* THE LITERAL "Address history" STAYS IN THE BODY. verify-desktop-layout.mjs proves
+                it arrived on this screen with document.body.innerText.includes('Address history')
+                — rename it and a screen that opened perfectly fails as "could not be opened". */}
             <h1 className="text-xl font-bold text-slate-900">Address history</h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              Every address that changed after we first scanned it — what it was, what it became, and whether it was NuVizz or us.
+              {section === 'problems'
+                ? 'Stops on the board whose address will send a truck to the wrong door — corrected here, and pushed to the order in NuVizz.'
+                : section === 'carrier'
+                  ? 'Orders NuVizz re-addressed after we had already scanned them. Nobody here did this.'
+                  : 'Every address that changed after we first scanned it — what it was, what it became, and whether it was NuVizz or us.'}
             </p>
           </div>
-          <button onClick={load} className="rounded-lg border px-3 py-1.5 text-xs font-semibold bg-white hover:bg-slate-50 min-h-[40px]">Refresh</button>
+          <button onClick={() => (section === 'problems' ? setQueueNonce((n) => n + 1) : load())} className="rounded-lg border px-3 py-1.5 text-xs font-semibold bg-white hover:bg-slate-50 min-h-[40px]">Refresh</button>
         </div>
+
+        {/* TWO CHOOSERS, NOT ONE RESPONSIVE ONE. A scrollable chip row is right under a thumb
+            and wrong on a 1920px board; a segmented bar is the reverse. */}
+        {isMobile
+          ? <AddrSectionChipsMobile section={section} pick={pickSection} />
+          : <AddrSectionBarDesktop section={section} pick={pickSection} />}
+
+        {section === 'problems' && (
+          isMobile
+            ? <ProblemQueueMobile nonce={queueNonce} today={today} />
+            : <ProblemQueueDesktop nonce={queueNonce} today={today} />
+        )}
+
+        {logSection && (<>
 
         {/* THE QUESTION THAT STARTED THIS, as the first control on the screen. */}
         <div className="rounded-xl border bg-white p-2 flex items-center gap-2">
@@ -30243,11 +30383,538 @@ function AddressHistoryScreen() {
           Show formatting-only changes ({sum.formatting || 0}) — “ST” vs “STREET”, a suite moving between lines
         </label>
 
+        {/* THIS CLAIM BELONGS TO THE LOG ONLY. The queue section can spend vendor calls, and a
+            screen that says it never does while a push is running is a lie the code contradicts —
+            so the sentence lives inside the log/carrier branch, not on the page. */}
         <div className="text-[11px] text-slate-400">
           Read straight from our own ledger. Zero NuVizz calls — this screen never spends a vendor call.
           {data?.truncated ? ' Showing the first 1,000 rows; narrow the range to see the rest.' : ''}
         </div>
+        </>)}
       </div>
+    </div>
+  );
+}
+
+// PHONE CHOOSER. A scrollable chip row: three labels do not fit across 360px, and a wrapping
+// row pushes everything below it down mid-tap. The active chip scrolls itself into view so the
+// one you are on is never the one off-screen.
+function AddrSectionChipsMobile({ section, pick }) {
+  const ref = React.useRef(null);
+  React.useEffect(() => {
+    const el = ref.current?.querySelector('[aria-selected="true"]');
+    if (el) el.scrollIntoView({ inline: 'center', block: 'nearest' });
+  }, [section]);
+  return (
+    <div ref={ref} role="tablist" aria-label="Address history sections" className="flex gap-1.5 overflow-x-auto -mx-1 px-1 pb-0.5">
+      {ADDR_SECTIONS.map((s) => (
+        <button
+          key={s.id} role="tab" aria-selected={section === s.id} onClick={() => pick(s.id)}
+          className={`shrink-0 rounded-full px-3 text-xs font-semibold border min-h-[40px] ${
+            section === s.id ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-300'}`}
+        >{s.label}</button>
+      ))}
+    </div>
+  );
+}
+
+// DESKTOP CHOOSER. A segmented bar with the hint under it — there is room for the sentence that
+// says what each section is for, and on a board this size the hint is what stops somebody
+// working the wrong list.
+function AddrSectionBarDesktop({ section, pick }) {
+  const active = ADDR_SECTIONS.find((s) => s.id === section) || ADDR_SECTIONS[0];
+  return (
+    <div>
+      <div role="tablist" aria-label="Address history sections" className="inline-flex rounded-lg border bg-white p-0.5">
+        {ADDR_SECTIONS.map((s) => (
+          <button
+            key={s.id} role="tab" aria-selected={section === s.id} onClick={() => pick(s.id)} title={s.hint}
+            className={`rounded-md px-3 text-xs font-semibold min-h-[40px] ${
+              section === s.id ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+          >{s.label}</button>
+        ))}
+      </div>
+      <div className="text-[11px] text-slate-500 mt-1">{active.hint}</div>
+    </div>
+  );
+}
+
+/**
+ * THE QUEUE'S DATA + ACTIONS, shared by both views.
+ *
+ * A hook rather than a component so the phone list and the desktop table are genuinely separate
+ * renders of one set of facts — the two-views rule is about layout, and duplicating the fetch,
+ * the selection set and the push runner into two components is how they come to disagree about
+ * what was pushed.
+ */
+function useAddressQueue(nonce) {
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [err, setErr] = React.useState(null);
+  const [showDismissed, setShowDismissed] = React.useState(false);
+
+  const load = React.useCallback(async () => {
+    setLoading(true); setErr(null);
+    try {
+      const r = await apiFetch(`/.netlify/functions/address-queue${showDismissed ? '?dismissed=1' : ''}`, { cache: 'no-store' });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'read failed');
+      setData(j);
+    } catch (e) { setErr(String(e.message || e)); } finally { setLoading(false); }
+  }, [showDismissed]);
+  React.useEffect(() => { load(); }, [load, nonce]);
+
+  return { data, loading, err, showDismissed, setShowDismissed, reload: load };
+}
+
+/**
+ * SAVE ONE CORRECTION — the board half, and optionally the order half.
+ *
+ * ONE DEFINITION, TWO VIEWS. address-log.js:11-14 already records what happens when a save like
+ * this is copied per call site: "the log would come to disagree with itself about what before
+ * means". The phone list and the desktop table call this; neither owns a copy.
+ *
+ * GEOCODE IS BEST-EFFORT AND THE ADDRESS SAVES EITHER WAY — the autoFix semantics, not the
+ * modal's. The modal put its geocode inside the same try as the setDoc, so a ZERO_RESULTS threw
+ * away the whole correction on exactly the addresses most likely to be wrong. Here a failed
+ * geocode still saves the text and simply leaves the row on the queue as "pin not moved", which
+ * is honest and visible rather than silent. Chad: "WE should flag this if it happens."
+ */
+async function saveQueueCorrection({ row, fields, google, push, today, clientOpId }) {
+  if (!db || !row?.matchKey) throw new Error('This row has no customer key — open it on the Map to correct it.');
+  const q = [fields.addr1, fields.city, fields.state, fields.zip].filter(Boolean).join(', ');
+  let geo = null, geoErr = null;
+  try { geo = await geocodeAddress(google, q); } catch (e) { geoErr = e; }
+
+  const payload = {
+    match_key: row.matchKey,
+    raw_name: row.businessName || '',
+    address_override: fields,
+    address_override_at: serverTimestamp(),
+    last_updated: serverTimestamp(),
+  };
+  if (geo) { payload.location_override = { lat: geo.lat, lng: geo.lng }; payload.location_override_at = serverTimestamp(); }
+  // The board half FIRST and unconditionally — a vendor write that fails must never cost the
+  // dispatcher the address they just typed.
+  await setDoc(doc(db, 'customer_notes', row.matchKey), payload, { merge: true });
+
+  const stopLike = { stopNbr: row.stopNbr, businessName: row.businessName, matchKey: row.matchKey, boardDate: row.date, routeName: row.routeName, isPlanned: true };
+  if (!push) {
+    logAddressOverride({ stop: stopLike, before: row.shown, after: fields, source: 'override' });
+    return { geoErr, pushed: null };
+  }
+
+  // The note rides the SAME partialUpdate as the address — no extra vendor call. See
+  // nuvizzWrite.js. A stable clientOpId per ROW makes a re-press replay a succeeded row for
+  // free instead of re-firing it.
+  const j = await setStopAddress(row.stopNbr, fields, {
+    stopId: row.stopId || undefined,
+    note: queueNoteText(row, fields, today),
+    clientOpId,
+  });
+  const verdict = classifyPushResult(j);
+  logAddressOverride({ stop: stopLike, before: row.shown, after: fields, source: 'override', nuvizz: verdict.kind === 'ok' || verdict.kind === 'partial' || verdict.kind === 'already' });
+  return { geoErr, pushed: verdict };
+}
+
+/**
+ * THE GROUP PUSH. Serial, one order per request, abortable between rows.
+ *
+ * Never parallel: the write endpoint's own requester refuses to coalesce writes, each order is
+ * three vendor round trips inside a 26s function budget, and one row can legitimately spend 20s
+ * in backoff. One row per invocation gives every row a fresh budget.
+ */
+function useQueuePush(today, reload) {
+  const [running, setRunning] = React.useState(false);
+  const [results, setResults] = React.useState({});   // key -> verdict
+  const [fatal, setFatal] = React.useState(null);
+  const stopRef = React.useRef(false);
+  const [budget, setBudget] = React.useState(null);   // { current, ceiling, live }
+
+  // THE BUDGET IS READ FOR FREE. A dry run returns the ops snapshot and the live flag before
+  // the write-enable gate and without touching NuVizz, so the button can say what a run costs
+  // and how much is left — and can tell "the switch is off" from "the vendor refused" BEFORE
+  // spending anything. A dispatcher who cannot see the number has been handed a scan button.
+  const readBudget = React.useCallback(async () => {
+    try {
+      const j = await callWrite('setStopAddress', { stopNbr: 'preflight', address: { addr1: 'preflight' } }, { dryRun: true });
+      if (j?.ops) setBudget({ current: Number(j.ops.current) || 0, ceiling: Number(j.ops.ceiling) || 0, live: j.live !== false });
+    } catch { /* the gauge is a courtesy; its absence must not block a correction */ }
+  }, []);
+  React.useEffect(() => { readBudget(); }, [readBudget]);
+
+  const runGroup = React.useCallback(async (rows, google) => {
+    setRunning(true); setFatal(null); stopRef.current = false;
+    const acc = {};
+    for (const row of rows) {
+      if (stopRef.current) { acc[row.key] = { kind: 'skipped', text: 'Stopped before this one.' }; setResults({ ...acc }); continue; }
+      try {
+        const { pushed } = await saveQueueCorrection({
+          row, fields: row.shown, google, push: true, today, clientOpId: `op_queue_${row.key}`,
+        });
+        acc[row.key] = pushed;
+        setResults({ ...acc });
+        if (pushed?.fatal) {
+          // Continuing produces N identical failures, spends nothing useful, and buries the one
+          // sentence that explains it.
+          setFatal(pushed.text);
+          break;
+        }
+      } catch (e) {
+        acc[row.key] = { kind: 'refused', text: String(e?.message || e) };
+        setResults({ ...acc });
+      }
+      // The house's own first pause. Writes are never coalesced, so this is politeness to the
+      // vendor rather than correctness — but a tight loop against a metered API is a bad neighbour.
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    setRunning(false);
+    readBudget();
+    reload();
+  }, [today, reload, readBudget]);
+
+  return { running, results, fatal, budget, runGroup, stop: () => { stopRef.current = true; }, setResults };
+}
+
+/** Shared furniture both queue views render: the cost/budget line and the run banner. Text, not
+ *  layout — the two views place it differently and that is the point of them being two. */
+function queueCostLine(selected, budget) {
+  const calls = selected * 3;
+  if (!selected) return 'Select rows to push them to NuVizz — 3 calls each.';
+  const left = budget && budget.ceiling ? ` · ${Math.max(0, budget.ceiling - budget.current).toLocaleString()} left today` : '';
+  return `${selected} order${selected === 1 ? '' : 's'} — ${calls} NuVizz call${calls === 1 ? '' : 's'}${left}`;
+}
+
+/** The state every queue view shares. Kept here so the phone and desktop renders cannot
+ *  disagree about what is selected or what a push returned. */
+function useProblemQueue(nonce, today) {
+  const { data, loading, err, showDismissed, setShowDismissed, reload } = useAddressQueue(nonce);
+  const { google } = useGoogleMaps();
+  const push = useQueuePush(today, reload);
+  const [picked, setPicked] = React.useState(() => new Set());
+  const days = data?.days || [];
+  const allRows = React.useMemo(() => days.flatMap((d) => d.rows || []), [days]);
+  // Select-all deliberately skips what the server would refuse (delivered freight) and what it
+  // cannot pin to one record (no stopId — the twin guard is disarmed without it). Those rows
+  // stay pushable one at a time, as a deliberate act.
+  const sweepable = React.useMemo(() => allRows.filter((r) => queueRowPushable(r) && !r.dismissed), [allRows]);
+  const selected = React.useMemo(() => allRows.filter((r) => picked.has(r.key)), [allRows, picked]);
+  const toggle = React.useCallback((key) => setPicked((prev) => {
+    const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n;
+  }), []);
+  const sweep = React.useCallback(() => setPicked((prev) =>
+    (prev.size >= sweepable.length ? new Set() : new Set(sweepable.map((r) => r.key)))), [sweepable]);
+  const dismiss = React.useCallback(async (row, undo) => {
+    try {
+      await apiFetch('/.netlify/functions/address-queue', {
+        method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ date: row.date, key: row.key, fp: row.fp, signal: row.signal, stopNbr: row.stopNbr, undo: !!undo }),
+      });
+    } finally { reload(); }
+  }, [reload]);
+  return { data, loading, err, days, allRows, sweepable, selected, picked, toggle, sweep, dismiss, showDismissed, setShowDismissed, reload, google, push };
+}
+
+/** One row's inline editor. Shared logic; each view decides where it sits. */
+function useQueueRowEdit(row, google, today, reload) {
+  const [open, setOpen] = React.useState(false);
+  const [f, setF] = React.useState(() => ({ ...row.shown }));
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);
+  React.useEffect(() => { setF({ ...row.shown }); }, [row.shown]);
+  const save = React.useCallback(async (push) => {
+    setBusy(true); setMsg(null);
+    try {
+      const { geoErr, pushed } = await saveQueueCorrection({
+        row, fields: f, google, push, today, clientOpId: `op_queue_${row.key}`,
+      });
+      // NEVER AN INTENT AS AN OUTCOME — quote what NuVizz stored, and say plainly when the pin
+      // could not be moved rather than letting a corrected address sit on a stale pin silently.
+      const parts = [];
+      if (pushed) parts.push(pushed.text);
+      if (geoErr) parts.push('The address is saved but the pin could not be moved — it still points at the old spot, so this row stays on the queue.');
+      setMsg({ kind: pushed?.fatal ? 'warn' : (geoErr || pushed?.kind === 'partial' || pushed?.kind === 'refused' || pushed?.kind === 'blocked' || pushed?.kind === 'unknown') ? 'warn' : 'ok', text: parts.join(' ') || 'Saved on the board.' });
+      if (!geoErr && !pushed?.fatal) setOpen(false);
+      reload();
+    } catch (e) { setMsg({ kind: 'warn', text: String(e?.message || e) }); } finally { setBusy(false); }
+  }, [row, f, google, today, reload]);
+  return { open, setOpen, f, setF, busy, msg, save };
+}
+
+// ── PHONE. A card per row, worked one at a time with a thumb. ───────────────
+// Not a table: five columns at 360px is a horizontal scroll on the one screen where a
+// dispatcher is standing at a dock, and the editor has to open IN FLOW so what is below it
+// moves down rather than being covered.
+function ProblemQueueMobile({ nonce, today }) {
+  const q = useProblemQueue(nonce, today);
+  if (q.loading) return <div className="text-xs text-slate-500">Loading the board…</div>;
+  if (q.err) return <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3">{q.err}</div>;
+  return (
+    <div className="space-y-3">
+      <QueueSummaryBar q={q} stacked />
+      {q.days.map((d) => (
+        <div key={d.date} className="space-y-2">
+          <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
+            {d.date} · {d.rows.length} to fix <span className="font-normal normal-case text-slate-400">of {d.stopsRead} stops</span>
+          </div>
+          {!d.rows.length && <div className="rounded-xl border bg-white p-4 text-xs text-slate-500">Nothing wrong with this day’s addresses.</div>}
+          {d.rows.map((row) => (
+            <QueueRowMobile key={row.key} row={row} q={q} today={today} />
+          ))}
+        </div>
+      ))}
+      <QueueFooterNote data={q.data} />
+    </div>
+  );
+}
+
+function QueueRowMobile({ row, q, today }) {
+  const e = useQueueRowEdit(row, q.google, today, q.reload);
+  const verdict = q.push.results[row.key];
+  const pushable = queueRowPushable(row);
+  return (
+    <div className={`rounded-xl border bg-white p-3 space-y-2 ${row.dismissed ? 'opacity-60' : ''}`}>
+      <div className="flex items-start gap-2">
+        {pushable && !row.dismissed && (
+          <input type="checkbox" checked={q.picked.has(row.key)} onChange={() => q.toggle(row.key)}
+            aria-label={`Select ${row.businessName || row.stopNbr}`} className="mt-1 accent-blue-700" style={{ minWidth: 18, minHeight: 18 }} />
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <QueueSignalBadge signal={row.signal} />
+            {row.dismissed && <span className="text-[10px] px-1 rounded bg-slate-100 text-slate-500">waved off</span>}
+          </div>
+          <div className="font-semibold text-sm text-slate-800 break-words mt-1">{row.businessName || row.stopNbr}</div>
+          <div className="text-[11px] text-slate-500 break-words">{row.stopNbr}{row.routeName ? ` · ${row.routeName}` : ''}</div>
+          <div className="text-xs text-slate-700 break-words mt-1">{oneLineAddr(row.shown) || <span className="italic text-slate-400">(no street line)</span>}</div>
+          {row.corrected && oneLineAddr(row.vendor) !== oneLineAddr(row.shown) && (
+            <div className="text-[11px] text-slate-400 break-words">NuVizz still has: {oneLineAddr(row.vendor) || '(nothing)'}</div>
+          )}
+          {row.signal === 'mis_split' && row.suggestion && (
+            <div className="text-[11px] text-amber-700 break-words mt-0.5">Suggested: <span className="font-mono">{row.suggestion.addr1}</span></div>
+          )}
+        </div>
+      </div>
+      <QueueRowActions row={row} q={q} e={e} pushable={pushable} verdict={verdict} stacked />
+      {e.open && <QueueRowEditor e={e} row={row} pushable={pushable} stacked />}
+    </div>
+  );
+}
+
+// ── DESKTOP. A table, because the job here is comparative: scanning a column of what we show
+// against a column of what NuVizz holds is how you decide which rows to sweep. ─────────────
+function ProblemQueueDesktop({ nonce, today }) {
+  const q = useProblemQueue(nonce, today);
+  if (q.loading) return <div className="text-xs text-slate-500">Loading the board…</div>;
+  if (q.err) return <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3">{q.err}</div>;
+  return (
+    <div className="space-y-4">
+      <QueueSummaryBar q={q} />
+      {q.days.map((d) => (
+        <div key={d.date} className="rounded-xl border bg-white overflow-hidden">
+          <div className="px-3 py-2 bg-slate-50 text-xs font-bold text-slate-600 flex items-center justify-between">
+            <span>{d.date}</span>
+            <span className="font-normal text-slate-400">{d.rows.length} to fix of {d.stopsRead} stops</span>
+          </div>
+          {!d.rows.length
+            ? <div className="p-6 text-center text-xs text-slate-500">Nothing wrong with this day’s addresses.</div>
+            : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-white text-slate-500 border-b">
+                    <tr className="text-left">
+                      <th className="px-3 py-2 w-8" />
+                      <th className="px-3 py-2 font-semibold whitespace-nowrap">What</th>
+                      <th className="px-3 py-2 font-semibold">Customer</th>
+                      <th className="px-3 py-2 font-semibold">We show</th>
+                      <th className="px-3 py-2 font-semibold">NuVizz has</th>
+                      <th className="px-3 py-2 font-semibold whitespace-nowrap">Do</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {d.rows.map((row) => <QueueRowDesktop key={row.key} row={row} q={q} today={today} />)}
+                  </tbody>
+                </table>
+              </div>
+            )}
+        </div>
+      ))}
+      <QueueFooterNote data={q.data} />
+    </div>
+  );
+}
+
+function QueueRowDesktop({ row, q, today }) {
+  const e = useQueueRowEdit(row, q.google, today, q.reload);
+  const verdict = q.push.results[row.key];
+  const pushable = queueRowPushable(row);
+  return (
+    <>
+      <tr className={`border-b last:border-0 align-top ${row.dismissed ? 'opacity-60' : ''}`}>
+        <td className="px-3 py-2">
+          {pushable && !row.dismissed && (
+            <input type="checkbox" checked={q.picked.has(row.key)} onChange={() => q.toggle(row.key)}
+              aria-label={`Select ${row.businessName || row.stopNbr}`} className="accent-blue-700 w-4 h-4" />
+          )}
+        </td>
+        <td className="px-3 py-2"><QueueSignalBadge signal={row.signal} />{row.dismissed && <div className="text-[10px] text-slate-400 mt-0.5">waved off</div>}</td>
+        <td className="px-3 py-2">
+          <div className="font-semibold text-slate-800">{row.businessName || '—'}</div>
+          <div className="text-[11px] text-slate-500">{row.stopNbr}{row.routeName ? ` · ${row.routeName}` : ''}</div>
+        </td>
+        <td className="px-3 py-2 text-slate-700 break-words">{oneLineAddr(row.shown) || <span className="italic text-slate-400">(no street line)</span>}</td>
+        <td className="px-3 py-2 text-slate-500 break-words">{oneLineAddr(row.vendor) || <span className="italic text-slate-400">(nothing)</span>}</td>
+        <td className="px-3 py-2"><QueueRowActions row={row} q={q} e={e} pushable={pushable} verdict={verdict} /></td>
+      </tr>
+      {e.open && (
+        <tr className="border-b last:border-0 bg-slate-50">
+          <td colSpan={6} className="px-3 py-3"><QueueRowEditor e={e} row={row} pushable={pushable} /></td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+/** The per-row buttons, and the one line reporting what NuVizz actually did. */
+function QueueRowActions({ row, q, e, pushable, verdict, stacked }) {
+  const busy = e.busy || q.push.running;
+  // 44px ON BOTH VIEWS. A tablet renders the DESKTOP branch, so a 32px button that is fine
+  // under a mouse is a miss under a thumb at 768px — which is what the tablet guard caught.
+  const btn = `rounded border px-3 text-[11px] font-semibold disabled:opacity-50 min-h-[44px]`;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <button onClick={() => e.setOpen((v) => !v)} disabled={busy} className={`${btn} bg-white border-slate-300 text-slate-700 hover:bg-slate-50`}>
+          {e.open ? 'Close' : 'Correct'}
+        </button>
+        {!row.dismissed
+          ? <button onClick={() => q.dismiss(row, false)} disabled={busy} className={`${btn} bg-white border-slate-300 text-slate-500 hover:bg-slate-50`} title="Hide this row for everyone. It comes back if the address changes again.">Wave off</button>
+          : <button onClick={() => q.dismiss(row, true)} disabled={busy} className={`${btn} bg-white border-slate-300 text-slate-500 hover:bg-slate-50`}>Put back</button>}
+      </div>
+      {!pushable && (
+        <div className="text-[10px] text-slate-400">
+          {queueRowExecuted(row)
+            ? 'Already worked — delivered freight cannot be re-addressed.'
+            : 'No order id on this row, so a push cannot be pinned to one record. Correct it on the board.'}
+        </div>
+      )}
+      {verdict && (
+        <div className={`text-[10px] break-words ${verdict.kind === 'ok' || verdict.kind === 'already' ? 'text-green-700' : verdict.kind === 'skipped' ? 'text-slate-400' : 'text-amber-700'}`}>
+          {verdict.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The inline editor. IN FLOW in both views — on a phone it is a block inside the card, on
+ *  desktop a full-width row under the one being edited. Never absolutely positioned over
+ *  anything: when it opens, what is below it moves down. */
+function QueueRowEditor({ e, row, pushable, stacked }) {
+  const f = 'w-full text-sm border border-slate-300 rounded px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-200';
+  const set = (k) => (ev) => e.setF((p) => ({ ...p, [k]: ev.target.value }));
+  return (
+    <div className="space-y-2">
+      <div className={stacked ? 'space-y-2' : 'grid grid-cols-6 gap-2'}>
+        <input className={`${f} ${stacked ? '' : 'col-span-2'}`} value={e.f.addr1 || ''} onChange={set('addr1')} placeholder="Street address" aria-label="Street address" />
+        <input className={`${f} ${stacked ? '' : 'col-span-2'}`} value={e.f.addr2 || ''} onChange={set('addr2')} placeholder="Suite / dock (not geocoded)" aria-label="Suite, unit or dock" />
+        <input className={f} value={e.f.city || ''} onChange={set('city')} placeholder="City" aria-label="City" />
+        <div className="grid grid-cols-2 gap-2">
+          <input className={f} value={e.f.state || ''} onChange={set('state')} placeholder="State" aria-label="State" />
+          <input className={f} value={e.f.zip || ''} onChange={set('zip')} placeholder="ZIP" aria-label="ZIP" />
+        </div>
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <button onClick={() => e.save(false)} disabled={e.busy} style={{ minHeight: 44 }}
+          className="rounded border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+          {e.busy ? 'Saving…' : 'Save to board'}
+        </button>
+        {pushable && (
+          <button onClick={() => e.save(true)} disabled={e.busy} style={{ minHeight: 44, background: '#16a34a' }}
+            className="rounded px-3 text-xs font-semibold text-white disabled:opacity-50">
+            {e.busy ? 'Saving…' : 'Save & correct NuVizz (3 calls)'}
+          </button>
+        )}
+      </div>
+      <div className="text-[10px] text-slate-400">
+        Saving fixes the board for this customer’s future orders too. Correcting NuVizz changes THIS order only —
+        the portal, the carrier’s record and the driver’s manifest — and adds a dispatcher note saying what we changed.
+      </div>
+      {e.msg && (
+        <div className={`text-[11px] rounded p-2 break-words ${e.msg.kind === 'warn' ? 'bg-amber-50 border border-amber-200 text-amber-900' : 'bg-green-50 border border-green-200 text-green-900'}`}>
+          {e.msg.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Counts, the group push, and what it costs BEFORE anyone presses it. */
+function QueueSummaryBar({ q, stacked }) {
+  const sum = q.data?.summary || {};
+  const sel = q.selected.length;
+  const b = q.push.budget;
+  const overBudget = !!(b && b.ceiling && sel * 3 > Math.max(0, b.ceiling - b.current));
+  return (
+    <div className="rounded-xl border bg-white p-3 space-y-2">
+      <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+        {['no_pin', 'corrected_not_pinned', 'mis_split'].map((k) => (
+          <span key={k} className="inline-flex items-center gap-1">
+            <QueueSignalBadge signal={k} /><span className="text-slate-600 font-semibold">{sum[k] || 0}</span>
+          </span>
+        ))}
+        {Number(sum.dismissed || 0) > 0 && (
+          <label className="inline-flex items-center gap-1 text-slate-500 cursor-pointer ml-1">
+            <input type="checkbox" checked={q.showDismissed} onChange={(ev) => q.setShowDismissed(ev.target.checked)} className="w-4 h-4 accent-slate-500" />
+            show {sum.dismissed} waved off
+          </label>
+        )}
+      </div>
+      <div className={`flex items-center gap-2 flex-wrap ${stacked ? '' : ''}`}>
+        <button onClick={q.sweep} disabled={q.push.running || !q.sweepable.length} style={{ minHeight: 44 }}
+          className="rounded border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+          {q.picked.size >= q.sweepable.length && q.sweepable.length ? 'Clear selection' : `Select all ${q.sweepable.length}`}
+        </button>
+        {!q.push.running ? (
+          <button onClick={() => q.push.runGroup(q.selected, q.google)} disabled={!sel || overBudget} style={{ minHeight: 44, background: sel && !overBudget ? '#16a34a' : undefined }}
+            className="rounded px-3 text-xs font-semibold text-white disabled:opacity-50 disabled:bg-slate-300">
+            Push {sel || ''} to NuVizz
+          </button>
+        ) : (
+          // "Stop after this one", never "Cancel": there is no in-flight abort — the server
+          // finishes the write it started whatever the browser does, and a button promising
+          // otherwise would be an intent dressed as an outcome.
+          <button onClick={q.push.stop} style={{ minHeight: 44 }} className="rounded border border-amber-300 bg-amber-50 px-3 text-xs font-semibold text-amber-800">
+            Stop after this one
+          </button>
+        )}
+        {/* EVERY BUTTON SAYS WHAT IT COSTS BEFORE YOU PRESS IT. */}
+        <span className={`text-[11px] ${overBudget ? 'text-red-700 font-semibold' : 'text-slate-500'}`}>{queueCostLine(sel, b)}</span>
+      </div>
+      {overBudget && <div className="text-[11px] text-red-700">That is more calls than today’s ceiling has left. Push fewer rows, or wait for the ceiling to reset.</div>}
+      {b && b.live === false && (
+        <div className="text-[11px] text-amber-700">Live writes are switched off on the server, so a push would reach nothing. Corrections still save to the board.</div>
+      )}
+      {q.push.fatal && <div className="text-[11px] rounded p-2 bg-amber-50 border border-amber-200 text-amber-900 break-words">Run stopped: {q.push.fatal}</div>}
+    </div>
+  );
+}
+
+/** The honest footer: what this screen read, and what it cannot promise. */
+function QueueFooterNote({ data }) {
+  const notes = Number(data?.notesLoaded ?? -1);
+  return (
+    <div className="text-[11px] text-slate-400 space-y-0.5">
+      <div>
+        Read from the board — {data?.dates?.length || 0} day{(data?.dates?.length || 0) === 1 ? '' : 's'}, zero NuVizz calls.
+        Pushing an order costs 3.
+      </div>
+      {notes === 0 && (
+        // A queue with rows and no notes is the 778-stops-no-notes failure: every stop joined
+        // to nothing, so every correction looks unmade. Say so rather than render the list.
+        <div className="text-red-700 font-semibold">No customer notes loaded — corrections already made will look unmade. Do not work this list until that is fixed.</div>
+      )}
+      <div>Waving a row off hides it for everyone. It is not live — another dispatcher sees it on their next Refresh.</div>
     </div>
   );
 }

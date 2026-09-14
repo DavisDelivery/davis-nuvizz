@@ -19,7 +19,10 @@
 //   • Idempotency: a Save carries a clientOpId; a repeat returns the prior success
 //     without re-firing (no duplicate orders/assignments on a retry).
 //   • Pre-flight budget: refuse to start a write once the day's NuVizz call count is at
-//     the ceiling (the breaker is monitor-mode by default and won't block on its own).
+//     the ceiling. (This said the breaker is monitor-mode by default and won't block on its
+//     own. It has not been true since Jul 29: nuvizz-request.mts:70 defaults BREAKER_MODE to
+//     ENFORCE, and monitor is the explicit opt-out. It matters here — a group push that
+//     crosses the ceiling mid-run is BLOCKED, not merely counted.)
 //   • Every call routes through getNuvizzRequester() (counted, breaker-guarded, POSTs not
 //     deduped) — enforced fleet-wide by test/no-direct-nuvizz-fetch.test.mjs.
 //   • The response always reports `tenant` + `live` so the UI banner shows PROD vs the
@@ -143,9 +146,16 @@ function planFor(op: WriteOp, payload: any): string[] {
       : op === 'setStopDate' ? `move the delivery window to ${payload?.date ?? '(no date)'}`
         : op === 'setStopAddress' ? `RE-ADDRESS the delivery to ${[a.addr1, a.city, a.state, a.zip].filter(Boolean).join(', ') || '(no address)'} — sent as a literal ANY address with no label, so NuVizz cannot resolve it away`
           : `set the customer contact to ${[payload?.name, payload?.phone].filter(Boolean).join(' · ') || '(nothing)'}`;
+    // The note rides the SAME write on an address correction, so the plan must say so. A dry
+    // run that describes half of what the live call will do is the inspectability rule broken —
+    // and this is the surface a dispatcher checks before spending a group push.
+    const noteText = String(payload?.note ?? '').trim();
+    const noteLine = op === 'setStopAddress' && noteText
+      ? ` AND append a ${payload?.noteAudience ?? 'dispatcher'} note ("${noteText.slice(0, 80)}${noteText.length > 80 ? '…' : ''}") to the order's EXISTING comments — same write, no extra NuVizz call`
+      : '';
     return [
       `READ stop ${payload?.stopNbr ?? '?'} (partialUpdate is a FULL replace — the current record is what gets echoed back)`,
-      `WRITE the echo with one block swapped: ${what}`,
+      `WRITE the echo with one block swapped: ${what}${noteLine}`,
       'VERIFY by reading the order back — the change must be there AND every other field byte-identical',
     ];
   }
@@ -280,7 +290,8 @@ export default async (req: Request): Promise<Response> => {
     if (priorShortCircuits(prior)) return J({ ok: true, op, tenant, live, dryRun: false, idempotent: true, result: prior!.result, ops });
   }
 
-  // 5) Pre-flight budget — refuse to start at/over the ceiling (breaker is monitor by default).
+  // 5) Pre-flight budget — refuse to start at/over the ceiling. The breaker itself defaults to
+  //    ENFORCE (nuvizz-request.mts:70), so this is the polite refusal before the hard one.
   if (ops.current >= ops.ceiling) {
     return J({ ok: false, op, tenant, live, error: `daily NuVizz call ceiling reached (${ops.current}/${ops.ceiling}) — write refused`, ops }, 429);
   }

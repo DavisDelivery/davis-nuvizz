@@ -260,7 +260,11 @@ service cloud.firestore {
         'nuvizz_load_scans',
         'loadscan_worklog',
         'loadscan_assignments',
-        'load_scan_unmatched_aliases'
+        'load_scan_unmatched_aliases',
+        // Written ONLY by netlify/functions/address-queue.mts. These records hide a problem
+        // address from every dispatcher's screen, so a browser that could wipe or forge them
+        // could either bury a bad address or un-bury one somebody deliberately waved off.
+        'address_queue_dismissals'
       ];
     }
 
@@ -348,6 +352,11 @@ service cloud.firestore {
     // match /loadscan_worklog/{doc=**}            { allow read, write: if false; }
     // match /loadscan_assignments/{doc=**}        { allow read, write: if false; }
     // match /load_scan_unmatched_aliases/{doc=**} { allow read, write: if false; }
+    // match /address_queue_dismissals/{doc=**}    { allow read, write: if false; }
+    //   ^ reached only through netlify/functions/address-queue.mts, which gates the write at
+    //     dispatcher. A dismissal hides a problem address from EVERY dispatcher's screen, so a
+    //     browser able to forge one could bury a bad address and a browser able to delete one
+    //     could un-bury a row somebody deliberately waved off.
     //
     // ── The dispatcher's working set ───────────────────────────────────────
     //

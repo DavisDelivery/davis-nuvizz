@@ -116,6 +116,13 @@ export const setStopAddress = (stopNbr, address = {}, opts = {}) =>
       zip: String(address.zip ?? '').trim(),
     },
     ...(opts.stopId ? { stopId: String(opts.stopId) } : {}),
+    // THE DISPATCHER NOTE RIDES THE SAME WRITE AND COSTS NOTHING EXTRA. Chad asked for a note
+    // recording that we fixed the address, then asked whether it meant more calls. It does not:
+    // the server merges it into the very same partialUpdate as the address block, so this stays
+    // 3 calls. Bolted on as a second addStopNote it would have been 6 — the same ladder twice.
+    // The result carries `noteLanded`, because both drift diffs ignore `comments` by design and
+    // a dropped note would otherwise read as a clean success.
+    ...(opts.note ? { note: String(opts.note), noteAudience: opts.noteAudience || 'dispatcher' } : {}),
   }, { clientOpId: newClientOpId(), ...opts, dryRun: false });
 
 // Create a route from the Compare card, orders and all (§R). The server checks the load number

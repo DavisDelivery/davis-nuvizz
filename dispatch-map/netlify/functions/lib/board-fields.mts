@@ -37,3 +37,31 @@ export const LEAN_STOP_FIELDS = [
   'stopType', 'terms', 'timeConstraint', 'volume', 'warehouse', 'weight',
   'zip', 'raw.stopExecutionInfo', 'raw.load', 'raw.stop.from',
 ];
+
+/**
+ * THE PROBLEM-ADDRESS QUEUE'S PROJECTION — narrower than lean, on purpose.
+ *
+ * The queue judges three things: is there a pin, is the saved pin older than the saved
+ * address, and does addr1 look mis-split. That needs the address, the coordinates and enough
+ * identity to push the order and to name it on screen — and nothing else. LEAN_STOP_FIELDS
+ * is ~70 fields and this file's own header records what a fat board payload cost once: a cold
+ * load blocked for seconds on a multi-megabyte response. A queue that ships three whole boards
+ * to a phone to find twenty rows repeats it.
+ *
+ * `stopId` is not optional furniture: without it the server's twin guard is disarmed
+ * (nuvizz-write-ops.mts:823) and a push can re-address the wrong order sharing that number.
+ * `normalizedStatus` is what lets the queue skip delivered freight for free instead of
+ * spending a vendor call to be refused.
+ */
+export const QUEUE_STOP_FIELDS = [
+  'addr1', 'addr2', 'boardDate', 'businessName', 'city', 'isPlanned',
+  'lat', 'lng', 'loadNbr', 'normalizedStatus', 'primaryPro', 'pro',
+  'routeName', 'scheduledDate', 'state', 'status', 'stopId', 'stopNbr', 'zip',
+];
+
+/** The customer_notes fields the queue joins against — the override, the pin, and the two
+ *  stamps that decide whether the pin is older than the address. Read server-side, where
+ *  these come back as RFC3339 strings (firestore.mts:157), never Firestore Timestamps. */
+export const QUEUE_NOTE_FIELDS = [
+  'match_key', 'address_override', 'address_override_at', 'location_override', 'location_override_at',
+];
