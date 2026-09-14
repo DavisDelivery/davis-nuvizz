@@ -143,9 +143,16 @@ function planFor(op: WriteOp, payload: any): string[] {
       : op === 'setStopDate' ? `move the delivery window to ${payload?.date ?? '(no date)'}`
         : op === 'setStopAddress' ? `RE-ADDRESS the delivery to ${[a.addr1, a.city, a.state, a.zip].filter(Boolean).join(', ') || '(no address)'} — sent as a literal ANY address with no label, so NuVizz cannot resolve it away`
           : `set the customer contact to ${[payload?.name, payload?.phone].filter(Boolean).join(' · ') || '(nothing)'}`;
+    // The note rides the SAME write on an address correction, so the plan must say so. A dry
+    // run that describes half of what the live call will do is the inspectability rule broken —
+    // and this is the surface a dispatcher checks before spending a group push.
+    const noteText = String(payload?.note ?? '').trim();
+    const noteLine = op === 'setStopAddress' && noteText
+      ? ` AND append a ${payload?.noteAudience ?? 'dispatcher'} note ("${noteText.slice(0, 80)}${noteText.length > 80 ? '…' : ''}") to the order's EXISTING comments — same write, no extra NuVizz call`
+      : '';
     return [
       `READ stop ${payload?.stopNbr ?? '?'} (partialUpdate is a FULL replace — the current record is what gets echoed back)`,
-      `WRITE the echo with one block swapped: ${what}`,
+      `WRITE the echo with one block swapped: ${what}${noteLine}`,
       'VERIFY by reading the order back — the change must be there AND every other field byte-identical',
     ];
   }

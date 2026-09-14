@@ -238,3 +238,74 @@ test('the warn branch is reached by a throw as well as by a refusal', () => {
   assert.ok(push.indexOf('let landed = false') < push.indexOf('await setStopAddress('),
     'landed starts false, so nothing but an observed ok can set it true');
 });
+
+// ── THE DISPATCHER NOTE, FOLDED INTO THE SAME WRITE (v1.23.0) ────────────────
+//
+// Chad: "when we push one to nuvizz ... it adds a dispatcher note that we fixed the address."
+// Then: "would that create any extra calls?" It does not — addStopNote runs the identical
+// ladder (read, partialUpdate, read-back), so bolting it on would double every push to 6 calls.
+// Folded into the address write it is free, because buildNoteWriteStop IS
+// buildPartialUpdateStop(raw, { comments }).
+
+import {
+  buildPartialUpdateStop, buildStopNoteComment, mergeStopComments, stopCommentsFrom,
+} from '../netlify/functions/lib/nuvizz-write-ops.mts';
+
+test('ONE WRITE CARRIES BOTH — the note is free, not a second round trip', () => {
+  const raw = { stopId: 'a1', stopNbr: 'ESTES-1', comments: [{ commentDescription: 'DO NOT BREAKDOWN SKID', cmtType: 'PVST_IN' }], to: { address: { addr1: '1 WRONG ST' } } };
+  const note = buildStopNoteComment('Address corrected by Davis dispatch', 'dispatcher');
+  const { comments } = mergeStopComments(stopCommentsFrom(raw), note);
+  const sent = buildPartialUpdateStop(raw, { to: { address: { addr1: '800 N COMMERCE ST' } }, comments });
+  assert.equal(sent.to.address.addr1, '800 N COMMERCE ST', 'the address went out');
+  assert.equal(sent.comments.length, 2, 'and the note went out in the same body');
+});
+
+test("THE CARRIER'S OWN INSTRUCTIONS SURVIVE — comments is a full replace on partialUpdate", () => {
+  // A blind write here erases "DO NOT BREAKDOWN SKID" off the order. mergeStopComments echoes
+  // what was there and appends.
+  const existing = [{ commentDescription: 'DO NOT BREAKDOWN SKID', cmtType: 'PVST_IN' }];
+  const { comments } = mergeStopComments(existing, buildStopNoteComment('Address corrected', 'dispatcher'));
+  assert.equal(comments[0].commentDescription, 'DO NOT BREAKDOWN SKID', 'theirs is still first');
+  assert.equal(comments.length, 2);
+});
+
+test('RE-PUSHING THE SAME ORDER DOES NOT STACK THE NOTE', () => {
+  const note = buildStopNoteComment('Address corrected by Davis dispatch', 'dispatcher');
+  const { comments, duplicate } = mergeStopComments([note], note);
+  assert.equal(duplicate, true, 'an identical note is a no-op, not a second line');
+  assert.equal(comments.length, 1);
+});
+
+test('A DROPPED NOTE CANNOT READ AS A CLEAN PUSH — both drift diffs ignore comments by design', () => {
+  // ECHO_IGNORE_TOP skips `comments` so a note write never cries wolf as drift. The cost is
+  // that a note NuVizz silently dropped is invisible to every existing check, so the op must
+  // carry an explicit read-back of its own. Without it this is "an intent reported as an
+  // outcome" — the failure that let a hardcoded "routed to Google" run for weeks.
+  const WRITE = fs.readFileSync(new URL('../netlify/functions/lib/nuvizz-write.mts', import.meta.url), 'utf8');
+  const op = WRITE.slice(WRITE.indexOf('export async function runSetStopAddress'));
+  const body = op.slice(0, op.indexOf('\nexport async function '));
+  assert.match(body, /const noteLanded = !note \? null/, 'the op computes it');
+  assert.match(body, /stopCommentsFrom\(rawAfter\)\.some/, 'from the READ-BACK, not from what we sent');
+  // …and every terminal return carries it, or the caller cannot render it.
+  assert.ok((body.match(/noteLanded/g) || []).length >= 4, 'carried on the success and failure returns alike');
+});
+
+test('a note that landed while the ADDRESS did not is named, not swallowed', () => {
+  const WRITE = fs.readFileSync(new URL('../netlify/functions/lib/nuvizz-write.mts', import.meta.url), 'utf8');
+  assert.match(WRITE, /the order now carries a note about a correction that is not on it/,
+    'the stranded note is the dispatcher\'s next action, so it has to be in the message');
+});
+
+test('the DRY RUN names the note — a plan describing half the write is not inspectable', () => {
+  const FN = fs.readFileSync(new URL('../netlify/functions/nuvizz-write.mts', import.meta.url), 'utf8');
+  assert.match(FN, /AND append a \$\{payload\?\.noteAudience \?\? 'dispatcher'\} note/);
+  assert.match(FN, /same write, no extra NuVizz call/);
+});
+
+test('the client sends the note only when asked, and defaults it to the dispatcher', async () => {
+  const [withNote] = await captureWrite(() => setStopAddress('ESTES-1', { addr1: '1 MAIN ST' }, { note: 'Address corrected' }));
+  assert.equal(withNote.body.payload.note, 'Address corrected');
+  assert.equal(withNote.body.payload.noteAudience, 'dispatcher', 'Chad asked for a dispatcher note, not a driver one');
+  const [without] = await captureWrite(() => setStopAddress('ESTES-1', { addr1: '1 MAIN ST' }));
+  assert.ok(!('note' in without.body.payload), 'absent, not an empty string the server would reject');
+});
