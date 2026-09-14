@@ -10,6 +10,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 const APP = fs.readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+
+/** One top-level component's source. Index-anchored slices silently re-point at different code
+ *  when a shared line (like `shownAddress(stop, note)`) gains an earlier occurrence — and then
+ *  pass for the wrong reason. */
+function fnSource(name) {
+  const start = APP.indexOf(`function ${name}(`);
+  assert.ok(start > 0, `${name} not found in App.jsx`);
+  const next = APP.indexOf('\nfunction ', start + 1);
+  return APP.slice(start, next > 0 ? next : undefined);
+}
 const LOG = fs.readFileSync(new URL('../src/lib/address-log.js', import.meta.url), 'utf8');
 
 test('IT EXISTS ON A PHONE TOO — both navigations carry Address history', () => {
@@ -28,7 +38,27 @@ test('THE SCREEN HAS TWO VIEWS, not one layout with patches', () => {
   assert.match(APP, /function AddressHistoryTable\(/, 'a desktop table');
   assert.match(APP, /function AddressHistoryListMobile\(/, 'and a separate phone list');
   // And it picks between them on the measured viewport, like every other screen here.
-  assert.match(APP, /isMobile \? <AddressHistoryListMobile rows=\{rows\} \/> : <AddressHistoryTable rows=\{rows\} \/>/);
+  assert.match(APP, /isMobile\s*\n?\s*\? <AddressHistoryListMobile rows=\{rows\} \/> : <AddressHistoryTable rows=\{rows\} \/>/);
+});
+
+test('EVERY SECTION HAS TWO VIEWS — a chooser that is one responsive control is the easy way out', () => {
+  // Chad, repeatedly: mobile and desktop are TWO VIEWS, not one layout with patches. Three
+  // sections now live on this screen, and each needs its own pair — including the chooser
+  // itself, which is a scrollable chip row under a thumb and a segmented bar on a board.
+  for (const [mobile, desktop] of [
+    ['AddrSectionChipsMobile', 'AddrSectionBarDesktop'],
+    ['ProblemQueueMobile', 'ProblemQueueDesktop'],
+    ['AddressHistoryListMobile', 'AddressHistoryTable'],
+  ]) {
+    assert.match(APP, new RegExp(`function ${mobile}\\(`), `${mobile} must exist`);
+    assert.match(APP, new RegExp(`function ${desktop}\\(`), `${desktop} must exist`);
+  }
+  // …and none of them may take isMobile as a prop and branch inside — that is one component
+  // wearing two hats, which is the shape the rule forbids.
+  for (const name of ['ProblemQueueMobile', 'ProblemQueueDesktop', 'AddrSectionChipsMobile', 'AddrSectionBarDesktop']) {
+    const fn = fnSource(name);
+    assert.ok(!/\bisMobile\b/.test(fn), `${name} must not branch on isMobile — it IS the branch`);
+  }
 });
 
 test('the wide table is the only thing allowed to scroll sideways', () => {
@@ -37,25 +67,32 @@ test('the wide table is the only thing allowed to scroll sideways', () => {
   assert.match(APP, /function AddressHistoryTable\([\s\S]{0,400}?overflow-x-auto/);
 });
 
-test('EVERY override call site logs — and the modal logs exactly once per Save', () => {
-  // The override is saved from the Map card, the Routing card, and the modal's Save and
-  // Reset. A site that saves without logging is a silent hole in an audit trail, which is
-  // worse than no audit trail because it reads as proof nothing happened.
-  const saves = APP.match(/address_override: fields/g) || [];
-  const logs = APP.match(/logAddressOverride\(\{/g) || [];
-  assert.equal(saves.length, 3, 'three address_override writes (Map, Routing, modal Save)');
-  // FIVE since v1.22.0, not four. The modal's Save split into two branches when it learned to
-  // push the correction to NuVizz: the board-only path logs and closes, the pushed path waits
-  // for the vendor read-back and logs the OUTCOME (nuvizz: landed). They are the two arms of
-  // one `if`, so a Save still writes exactly one row — which is the rule this test is for, and
-  // the assertion below is what actually pins it. The count is only the cheap half.
-  assert.equal(logs.length, 5, 'Map, Routing, the modal Save\'s two branches, and the Reset');
+test('EVERY ADDRESS WRITE IS LOGGED — derived from the source, not counted', () => {
+  // THIS USED TO BE TWO HARD-CODED COUNTS (3 saves, 5 logs) and it broke the moment the
+  // problem-address queue added a fourth save site — which is the failure mode of a count:
+  // it has to be bumped on every change, so eventually it gets bumped without being read.
+  // The RULE is what matters: a site that writes an address override without logging it is a
+  // silent hole in an audit trail, and that is worse than no audit trail because it reads as
+  // proof nothing happened.
+  //
+  // Split the file on top-level function boundaries and check each unit that writes an
+  // override also records one.
+  const units = APP.split(/\n(?=(?:async )?function [A-Za-z])/);
+  const writers = units.filter((u) => /setDoc\(\s*doc\(db, 'customer_notes'/.test(u) && /address_override:/.test(u));
+  assert.ok(writers.length >= 4, `expected every address-override writer to be found, got ${writers.length}`);
+  for (const u of writers) {
+    const name = (u.match(/^(?:async )?function ([A-Za-z0-9_]+)/) || [])[1] || u.slice(0, 60);
+    assert.match(u, /logAddressOverride\(/, `${name} writes an address override without logging it`);
+  }
   assert.match(APP, /source: 'override-reset'/, 'clearing an override is recorded too');
+});
 
-  // ONE ROW PER SAVE. The board-only branch returns before it can reach the pushed branch's
-  // log — without that `return`, a board-only save would log twice and the history would show
-  // a correction that happened once as two.
-  const modal = APP.slice(APP.indexOf('function AddressEditModal('), APP.indexOf('\nfunction ', APP.indexOf('function AddressEditModal(') + 1));
+test('the modal logs exactly ONCE per Save, whichever branch it takes', () => {
+  // The modal's Save has two arms since it learned to push to NuVizz: board-only logs and
+  // closes, pushed waits for the vendor read-back and logs the OUTCOME. Without the `return`
+  // between them a board-only save would log twice and the history would show one correction
+  // as two.
+  const modal = fnSource('AddressEditModal');
   const guard = modal.indexOf('if (!(canPush && toNuvizz))');
   const boardOnlyLog = modal.indexOf("source: 'override' }", guard);
   const ret = modal.indexOf('return;', boardOnlyLog);
@@ -84,8 +121,28 @@ test('the shown address is what the CARD shows — override first, then NuVizz',
   assert.match(LOG, /addr1: clean\(ov\.addr1 \|\| stop\?\.addr1\)/);
 });
 
-test('the screen says it costs nothing, because every other screen here has to', () => {
-  assert.match(APP, /Zero NuVizz calls/);
+test('THE COST CLAIM IS TWO-SIDED — the log costs nothing, the queue says what a push costs', () => {
+  // The lazy fix when the queue arrived was to delete or loosen this assertion. Both directions
+  // ship a lie: leaving "never spends a vendor call" on a screen whose push button spends 3 per
+  // order, or deleting the claim from the log, which is the one place it is true and the reason
+  // a dispatcher opens it freely.
+  const screen = fnSource('AddressHistoryScreen');
+  assert.match(screen, /Zero NuVizz calls — this screen never spends a vendor call/, 'the log still promises it');
+  assert.match(screen, /\{logSection && \(<>/, 'and the promise is inside the log branch, not on the page');
+  // The queue states its price on the button itself, before anyone presses it.
+  assert.match(APP, /Save & correct NuVizz \(3 calls\)/, 'the per-row button prices itself');
+  assert.match(APP, /NuVizz call\$\{calls === 1 \? '' : 's'\}/, 'and the group button prices the selection');
+  const footer = fnSource('QueueFooterNote');
+  assert.ok(!/never spends a vendor call/.test(footer), 'the queue must not carry the log\'s claim');
+});
+
+test('the queue shows the budget it is spending against, not a hardcoded ceiling', () => {
+  // The enforced number is a stored Diagnostics setting, not the 2,000 constant. A button
+  // quoting the constant would be confidently wrong the moment somebody lowers it.
+  const runner = fnSource('useQueuePush');
+  assert.match(runner, /dryRun: true/, 'read free, before the write-enable gate');
+  assert.match(runner, /ceiling: Number\(j\.ops\.ceiling\)/);
+  assert.ok(!/2000|2_000/.test(runner), 'never the constant');
 });
 
 test('formatting rows are hidden by default, and a PRO search shows every one of them', () => {

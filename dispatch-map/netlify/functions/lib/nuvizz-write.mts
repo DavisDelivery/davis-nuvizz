@@ -2571,7 +2571,34 @@ export async function runSetStopAddress(requester: RequesterLike, payload: any, 
   const from = oneLine(wasAddr);
   const to = oneLine(block.address);   // the INTENT — what we sent
 
-  const sent = buildPartialUpdateStop({ ...rawBefore, stopId, stopNbr: String(rawBefore.stopNbr ?? stopNbr) }, { [side]: block });
+  // ── THE DISPATCHER NOTE, IN THE SAME WRITE (Chad: "when we push one to nuvizz ... it adds a
+  //    dispatcher note that we fixed the address"; then: "would that create any extra calls?")
+  //
+  // NO. Bolted on as a second op it would be 3 more calls — addStopNote runs this identical
+  // ladder (read, partialUpdate, read-back) on the same order. Folded in here it is FREE:
+  // buildNoteWriteStop IS buildPartialUpdateStop(raw, { comments }) (nuvizz-write-ops.mts:644),
+  // so one write carries both top-level keys and the cost stays reads:2 / writes:1.
+  //
+  // MERGE, NEVER REPLACE. `comments` is a FULL REPLACE on partialUpdate, so a blind write
+  // erases the carrier's own instructions ("DO NOT BREAKDOWN SKID"). mergeStopComments echoes
+  // what was there and appends — and reports `duplicate` for an identical note, which is what
+  // makes re-pushing an order idempotent instead of stacking the same line twice.
+  let note: any = null, noteDuplicate = false;
+  let comments: any[] | null = null;
+  const noteText = String(payload?.note ?? '').trim();
+  if (noteText) {
+    // 'dispatcher' by default, not 'both': Chad asked for a dispatcher note. A driver-visible
+    // line on every correction is a different decision with a different noise cost.
+    note = buildStopNoteComment(noteText, payload?.noteAudience ?? 'dispatcher');
+    const merged = mergeStopComments(stopCommentsFrom(rawBefore), note);
+    noteDuplicate = merged.duplicate;
+    if (!noteDuplicate) comments = merged.comments;
+  }
+
+  const sent = buildPartialUpdateStop(
+    { ...rawBefore, stopId, stopNbr: String(rawBefore.stopNbr ?? stopNbr) },
+    { [side]: block, ...(comments ? { comments } : {}) },
+  );
   const fpBefore = stopNoteFingerprint(rawBefore);
   const wrote = await fireSingle(requester, 'partialUpdateStop', { stops: [sent] }, creds);
   calls.writes += 1;
@@ -2580,7 +2607,7 @@ export async function runSetStopAddress(requester: RequesterLike, payload: any, 
   const after = await fireSingle(requester, 'getStop', { stopNbr }, creds);
   calls.reads += 1;
   if (!after?.ok) {
-    return { ok: false, unverified: true, calls, from, to, error: `setStopAddress: the change was accepted but the read-back failed (${after?.error || 'read failed'}) — check ${stopNbr} in the portal before re-trying.` };
+    return { ok: false, unverified: true, calls, from, to, noteAttempted: !!noteText, error: `setStopAddress: the change was accepted but the read-back failed (${after?.error || 'read failed'}) — check ${stopNbr} in the portal before re-trying.` };
   }
   const rawAfter = rawStopFrom(after.raw ?? after);
   const pinned = isIdShaped(payload?.stopId) && String(payload.stopId) === String(stopId);
@@ -2595,6 +2622,17 @@ export async function runSetStopAddress(requester: RequesterLike, payload: any, 
   // any single one of them is not enough. `addressMatchesTyped` is checked against `next` —
   // what the human typed — never against the merged block, so a field the caller left alone
   // can never vote that the write landed.
+  // THE NOTE PROVES ITSELF OR NOTHING DOES — and this is not belt-and-braces, it is the only
+  // check there is. BOTH drift diffs ignore `comments` on purpose (ECHO_IGNORE_TOP at
+  // nuvizz-write-ops.mts:1298, and no comments path in NOTE_GUARD_PATHS), because flagging the
+  // field we came to change would cry wolf on every clean save. The consequence is that a note
+  // NuVizz silently dropped would read as a perfectly green push. That is "an intent reported
+  // as an outcome" — the failure that let a hardcoded "routed to Google" run for weeks.
+  // null = no note was asked for; true/false = observed on the read-back.
+  const noteLanded = !note ? null
+    : (noteDuplicate ? true   // it was already on the order before we wrote; nothing to land
+      : stopCommentsFrom(rawAfter).some((c: any) => String(c?.commentDescription ?? '') === note.commentDescription
+        && String(c?.cmtType ?? '') === note.cmtType));
   const alreadyRight = addressMatchesTyped(wasAddr, next);   // a legitimate re-save no-op
   const landed = addressLanded(readAddr, block.address)
     && addressMatchesTyped(readAddr, next)
@@ -2618,18 +2656,26 @@ export async function runSetStopAddress(requester: RequesterLike, payload: any, 
   // the half that was easier to see.
   const details = [...driftDetail(sent, afterEcho, drift), ...losses.map((l) => `${l.path}: LOST ${l.lost.join(' · ')}`)];
   if (drift.length || losses.length) {
-    return { ok: false, calls, stopNbr, stopId, side, from, to, now, drift, driftDetails: details, addressLanded: landed,
+    return { ok: false, calls, stopNbr, stopId, side, from, to, now, drift, driftDetails: details, addressLanded: landed, noteLanded, noteDuplicate,
       error: `setStopAddress: ${landed ? `the address changed to ${now}` : `the address did NOT change (${stopNbr} still reads ${now || '(no address)'})`} AND partialUpdate changed ${drift.length + losses.length} other field(s) on the order. ${details.slice(0, 5).join(' | ')}${details.length > 5 ? ` (+${details.length - 5} more)` : ''}. Check ${stopNbr} in the portal.` };
   }
   if (!landed) {
-    return { ok: false, calls, stopNbr, stopId, side, from, to, now, drift,
-      error: `setStopAddress: NuVizz accepted the write but ${stopNbr} still reads ${now || '(no address)'}, not ${to} — the address did NOT change. Check it in the portal; do not assume it took.` };
+    return { ok: false, calls, stopNbr, stopId, side, from, to, now, drift, noteLanded, noteDuplicate,
+      // The note rode in the SAME write, so if it landed while the address did not, there is now
+      // a line on the order claiming a correction that is not there. Name it — a dispatcher who
+      // is not told goes looking for the address and never sees the stranded note.
+      error: `setStopAddress: NuVizz accepted the write but ${stopNbr} still reads ${now || '(no address)'}, not ${to} — the address did NOT change.${noteLanded ? ' The dispatcher note DID land, so the order now carries a note about a correction that is not on it — remove it in the portal.' : ''} Check it in the portal; do not assume it took.` };
   }
   // The message quotes what NuVizz STORED, not what we sent. Quoting the payload makes the
   // one sentence a dispatcher reads unfalsifiable — runSetStopContact already reports the
   // read-back for the same reason.
-  return { ok: true, stopNbr, stopId, side, from, to, now, calls,
-    message: `Order ${stopNbr} now reads ${now}.` };
+  // A note that did NOT land is not a failed correction — the address is on the order and the
+  // freight will go to the right door. It IS a half-done job, so it is reported rather than
+  // swallowed, and the caller renders it amber.
+  return { ok: true, stopNbr, stopId, side, from, to, now, calls, noteLanded, noteDuplicate,
+    message: `Order ${stopNbr} now reads ${now}.`
+      + (noteLanded === false ? ' The dispatcher note did NOT land — add it in the portal.' : '')
+      + (noteDuplicate ? ' (That note was already on the order.)' : '') };
 }
 
 export async function runSetStopDate(requester: RequesterLike, payload: any, creds: WriteCreds): Promise<any> {

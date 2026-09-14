@@ -57,6 +57,17 @@ const SCREENS = [
 const PROBES = {
   routing: [{ name: 'Status menu', open: async (page) => openByName(page, /^status/i) }],
   map: [{ name: 'Status menu', open: async (page) => openByName(page, /^status/i) }],
+  // The queue's sub-tabs at iPad width: a segmented bar on a 1024px tablet and a chip row on a
+  // 768px one, with a six-input editor opening under whichever is showing. Nothing measured any
+  // sub-view of this screen before — PROBES listed only routing and map.
+  addrhistory: [
+    { name: 'Problem queue — row editor open', open: async (page) => {
+      const tab = page.getByRole('tab', { name: /problem addresses/i }).first();
+      if (await tab.isVisible().catch(() => false)) { await tab.click(); await page.waitForTimeout(300); }
+      return openByName(page, /^correct$/i);
+    } },
+    { name: 'Carrier-changed section', open: async (page) => openByName(page, /nuvizz changed it/i) },
+  ],
 };
 
 async function openByName(page, re) {
@@ -129,6 +140,49 @@ for (const dev of TABLETS) {
   await page.route('**/.netlify/functions/**', (route) => {
     const u = route.request().url();
     const J = (b) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(b) });
+    // THE PROBLEM-ADDRESS QUEUE — seeded with the worst rows, per the rule above. One of each
+    // signal; a 44-character business name; a street that wraps twice at 360px; a row already
+    // waved off; a row with NO stopId (excluded from select-all, so its explanatory line
+    // renders); and a delivered row (also excluded, different line). The checkbox column, the
+    // per-row buttons and the group-push bar are where a collision would live.
+    // NOTE the name: anything containing 'address-history' is swallowed by the stub above.
+    if (u.includes('address-queue')) return J({
+      ok: true, tenant: 'davis', nuvizzCalls: 0, notesLoaded: 412,
+      dates: ['2026-09-14', '2026-09-15', '2026-09-16'],
+      summary: { mis_split: 2, no_pin: 2, corrected_not_pinned: 1, dismissed: 1 },
+      days: [
+        { date: '2026-09-14', stopsRead: 781, rows: [
+          { signal: 'no_pin', rank: 0, date: '2026-09-14', key: 'no_pin__estes-0538243875', fp: 'v1|a', stopNbr: 'ESTES-0538243875', stopId: 'sid-1', pro: '007174397',
+            matchKey: 'titan|3190|norcross', businessName: 'TITAN ELECTRIC COMPANIES QTS DATA CENTER', routeName: 'NOR 2', loadNbr: 'DAVIS000203707', status: 'SCHEDULED',
+            shown: { addr1: '3190 REPS MILLER RD BUILDING 400 SUITE 200', addr2: 'DOCK 7 REAR', city: 'PEACHTREE CORNERS', state: 'GA', zip: '30092' },
+            vendor: { addr1: '3190 REPS MILLER RD BUILDING 400 SUITE 200', addr2: 'DOCK 7 REAR', city: 'PEACHTREE CORNERS', state: 'GA', zip: '30092' },
+            corrected: false, pinSource: null, suggestion: null },
+          { signal: 'corrected_not_pinned', rank: 1, date: '2026-09-14', key: 'corrected_not_pinned__007174402', fp: 'v1|b', stopNbr: '007174402', stopId: 'sid-2', pro: '007174402',
+            matchKey: 'acme|5965|norcross', businessName: 'ACME SUPPLY COMPANY OF NORTH GEORGIA', routeName: 'DUL 2', loadNbr: 'DAVIS000203723', status: 'SCHEDULED',
+            shown: { addr1: '800 N COMMERCE ST', addr2: '', city: 'MONROE', state: 'GA', zip: '30655' },
+            vendor: { addr1: '1 WRONG ST', addr2: '', city: 'BUFORD', state: 'GA', zip: '30518' },
+            corrected: true, pinSource: 'feed', suggestion: null },
+          { signal: 'mis_split', rank: 2, date: '2026-09-14', key: 'mis_split__avrt-0028093763', fp: 'v1|c', stopNbr: 'AVRT-0028093763', stopId: null, pro: 'AVRT-0028093763',
+            matchKey: 'prop|2611|atlanta', businessName: 'PROPERTY MANAGER', routeName: '', loadNbr: '', status: 'UNPLANNED',
+            shown: { addr1: 'BLDG 200', addr2: '4310 INDUSTRIAL ACCESS RD', city: 'ATLANTA', state: 'GA', zip: '30336' },
+            vendor: { addr1: 'BLDG 200', addr2: '4310 INDUSTRIAL ACCESS RD', city: 'ATLANTA', state: 'GA', zip: '30336' },
+            corrected: false, pinSource: 'feed', suggestion: { addr1: '4310 INDUSTRIAL ACCESS RD', addr2: 'BLDG 200', reason: 'street was in addr2 (swapped)' } },
+          { signal: 'mis_split', rank: 2, date: '2026-09-14', key: 'mis_split__007174500', fp: 'v1|d', stopNbr: '007174500', stopId: 'sid-4', pro: '007174500',
+            matchKey: 'led|5965|norcross', businessName: 'LED ENERGY PLUS', routeName: 'NOR 1', loadNbr: '', status: 'DELIVERED',
+            shown: { addr1: 'STE B3', addr2: '5965 PEACHTREE CORNERS E', city: 'NORCROSS', state: 'GA', zip: '30071' },
+            vendor: { addr1: 'STE B3', addr2: '5965 PEACHTREE CORNERS E', city: 'NORCROSS', state: 'GA', zip: '30071' },
+            corrected: false, pinSource: 'feed', suggestion: { addr1: '5965 PEACHTREE CORNERS E', addr2: 'STE B3', reason: 'street was in addr2 (swapped)' } },
+          { signal: 'no_pin', rank: 0, date: '2026-09-14', key: 'no_pin__007174600', fp: 'v1|e', stopNbr: '007174600', stopId: 'sid-5', pro: '007174600',
+            matchKey: 'waved|1|x', businessName: 'WAVED OFF WAREHOUSE', routeName: 'DUL 1', loadNbr: '', status: 'SCHEDULED',
+            shown: { addr1: '1 NOWHERE RD', addr2: '', city: 'BUFORD', state: 'GA', zip: '30518' },
+            vendor: { addr1: '1 NOWHERE RD', addr2: '', city: 'BUFORD', state: 'GA', zip: '30518' },
+            corrected: false, pinSource: null, suggestion: null,
+            dismissed: true, dismissedBy: 'Dispatcher 9F2A', dismissedAt: '2026-09-14T08:02:00.000Z', dismissedWhy: null },
+        ] },
+        { date: '2026-09-15', stopsRead: 402, rows: [] },
+        { date: '2026-09-16', stopsRead: 118, rows: [] },
+      ],
+    });
     if (u.includes('address-history')) return J({
       ok: true, nuvizzCalls: 0,
       range: { from: '2026-08-28', to: '2026-09-11', days: 15, clamped: null },
