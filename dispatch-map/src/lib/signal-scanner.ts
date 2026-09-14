@@ -15,6 +15,8 @@
 // who wrote it, not what they wrote. Keeping the source as the trust signal
 // means the markers / filters / notes stay honest.
 
+import { resolveDaytimeWindow, resolveDaytimeOpen } from './daytime-window.js';
+
 export type SignalSource = 'addressLine2' | 'orderInstructions';
 export type FlagValue = 'no_tractor_trailer' | 'uline_straight_truck';
 export type DayCode = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
@@ -269,6 +271,22 @@ function parseTimeRange(rangeText: string): { open: string; close: string } | nu
     if (closeHadMeridiem || toMin(close) >= 720) return null;
     close = `${String(parseInt(close.slice(0, 2), 10) + 12).padStart(2, '0')}:${close.slice(3)}`;
   }
+  // "RH 1-5" IS ONE IN THE AFTERNOON. The rescue above only fires on a DESCENDING pair, so an
+  // ascending pair of small numbers ("1-5", "2-4", "1-4 30") sailed through as a pre-dawn
+  // window — which marks the customer shut for the whole working day and flags every arrival
+  // there forever. Chad, 2026-09-14: "no one is going to have those receiving hours." When
+  // NEITHER half wrote a meridiem both readings are grammatically available, so we take the
+  // one that actually overlaps the 8am-5pm delivery day; a tie changes nothing. The rule and
+  // the whole argument for it live in daytime-window.js, shared with board-flags so the
+  // scanner and the board can never disagree about what "1-5" means.
+  const wroteMeridiem = (p: string) => /(?:(A|P)M?\.?|NOON)\s*$/i.test(p);
+  const shifted = resolveDaytimeWindow(
+    toMin(open), toMin(close), wroteMeridiem(parts[0]) || wroteMeridiem(parts[1]),
+  );
+  if (shifted.shifted) {
+    const fmt = (min: number) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+    return { open: fmt(shifted.openMin), close: fmt(shifted.closeMin) };
+  }
   return { open, close };
 }
 
@@ -516,7 +534,18 @@ function scanHours(text: string | null | undefined, source: SignalSource): Hours
   for (const re of OPEN_ONLY_WRAPPERS) {
     const m = re.exec(normalized);
     if (!m) continue;
-    const open = parseTimePiece(m[1].trim(), 'AM');
+    let open = parseTimePiece(m[1].trim(), 'AM');
+    // "OPENS AT 1" is one in the AFTERNOON, and the 'AM' hint above forced it to 01:00 — while
+    // "OPENS AT 12" became MIDNIGHT, because the AM rule maps hour 12 to 0. An open is the one
+    // half routing cannot shrug off: it takes Math.max of the opens, so a 01:00 open is no
+    // constraint and the solver sends a truck at eight to a dock that opens at one. Floor it at
+    // the 5:00a the bare-pair tier already calls the earliest a dock opens. See daytime-window.js.
+    if (open) {
+      const piece = m[1].trim();
+      const openMin = parseInt(open.slice(0, 2), 10) * 60 + parseInt(open.slice(3), 10);
+      const r = resolveDaytimeOpen(openMin, /(?:(A|P)M?\.?|NOON)\s*$/i.test(piece));
+      if (r.shifted) open = `${String(Math.floor(r.openMin / 60)).padStart(2, '0')}:${String(r.openMin % 60).padStart(2, '0')}`;
+    }
     if (open) return { open, close: '', matchedSource: source, matchedText: m[0] };
   }
 
