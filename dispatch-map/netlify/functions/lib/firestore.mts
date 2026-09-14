@@ -463,6 +463,51 @@ function loadDigits(loadNbr: any): number | null {
   return d ? parseInt(d, 10) : null;
 }
 
+// ── FIRST SIGHT, STAMPED ONCE AND NEVER AGAIN ────────────────────────────────
+//
+// Chad, Sep 2026: "tracking the orders volume as it comes in." Nothing recorded WHEN an order
+// landed, and the two fields that looked like they might were MEASURED on the live index and
+// are not it: `enriched_at` was on 2 of 643 stops on a live board, and `listUpdatedDTTM` is a
+// LIVE field — on Tue 2026-09-08, 650 of 704 stamps had drifted onto the delivery day, the
+// arrival time overwritten by the delivery flip. No history can be rebuilt from either.
+//
+// This is the stamp that fixes it going forward, and it costs NOTHING: writeStops already
+// lists `existing` at its own entry (the same free before/after the address log rides on), so
+// a stop number absent from it is NEW to this day's index by construction.
+//
+// PURE so the rule is testable without a Firestore. Three decisions, each a way this goes
+// wrong if taken the other way:
+//
+//  1. WRITE-ONCE. An existing doc keeps the value it already had. setDoc REPLACES, so the
+//     carry-forward has to be explicit or every scan would re-stamp every order with `now`.
+//  2. A DOC THAT PREDATES THIS CHANGE GETS NOTHING — not today's clock. Stamping those would
+//     say every order already in the index arrived at deploy time, which is worse than absent
+//     because it looks like data. They read as unstamped, the coverage floor counts them
+//     honestly and refuses to seal the night, and the board heals as it turns over.
+//  3. THE FRESH ROW IS STRIPPED of both stamps first. mergeEnrich copies the per-PRO registry
+//     record onto the row, and that record is a whole stop from whatever day it was first
+//     enriched — so the incoming row can carry ANOTHER day's first_seen_at. Stripping makes
+//     the existing doc, or this scan's first-sight decision, the only possible source.
+//
+// `arrived_list_dttm` is NuVizz's own "Stop Updated Dttm" frozen at first sight: on a stop we
+// are seeing for the first time it has not been touched since the order landed, so it is a
+// truer arrival time than our scan tick. It is captured HERE and never refreshed, which is
+// exactly what stops it drifting the way the live field does. Stored as the raw ET-local
+// string the vendor sends; the reader (order-arrivals.js) is what knows the zone.
+export function firstSightStamps(
+  existing: any | null | undefined,
+  fresh: any,
+  scannedAt: string,
+): { clean: any; stamps: Record<string, string> } {
+  const { first_seen_at: _priorSeen, arrived_list_dttm: _priorArrived, ...clean } = (fresh || {}) as any;
+  const firstSeenAt = existing ? (existing.first_seen_at ?? null) : scannedAt;
+  const arrivedLocal = existing ? (existing.arrived_list_dttm ?? null) : (fresh?.listUpdatedDTTM ?? null);
+  const stamps: Record<string, string> = {};
+  if (firstSeenAt) stamps.first_seen_at = String(firstSeenAt);
+  if (arrivedLocal) stamps.arrived_list_dttm = String(arrivedLocal);
+  return { clean, stamps };
+}
+
 export function preserveStopOnWrite(
   stop: { isPlanned?: boolean; loadNbr?: any },
   opts: { includeUnplanned: boolean; includeLoads: boolean; partialLoads?: boolean; partialUnplanned?: boolean; rescannedLoads?: Set<number> },
@@ -586,7 +631,8 @@ export async function writeStops(
           if (row) addrRows.push(row);
         } catch { /* the log never breaks the write */ }
       }
-      await setDoc(`${base}/stops/${s.stopNbr}`, { ...s, last_scanned_at: scannedAt });
+      const { clean, stamps } = firstSightStamps(ex, s, scannedAt);
+      await setDoc(`${base}/stops/${s.stopNbr}`, { ...clean, ...stamps, last_scanned_at: scannedAt });
     }
   };
   await Promise.all(Array.from({ length: conc }, writeOne));
