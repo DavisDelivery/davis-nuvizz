@@ -37,15 +37,31 @@ test('the wide table is the only thing allowed to scroll sideways', () => {
   assert.match(APP, /function AddressHistoryTable\([\s\S]{0,400}?overflow-x-auto/);
 });
 
-test('EVERY override call site logs — all four of them', () => {
+test('EVERY override call site logs — and the modal logs exactly once per Save', () => {
   // The override is saved from the Map card, the Routing card, and the modal's Save and
   // Reset. A site that saves without logging is a silent hole in an audit trail, which is
   // worse than no audit trail because it reads as proof nothing happened.
   const saves = APP.match(/address_override: fields/g) || [];
   const logs = APP.match(/logAddressOverride\(\{/g) || [];
   assert.equal(saves.length, 3, 'three address_override writes (Map, Routing, modal Save)');
-  assert.equal(logs.length, 4, 'plus the Reset — four logged changes in total');
+  // FIVE since v1.22.0, not four. The modal's Save split into two branches when it learned to
+  // push the correction to NuVizz: the board-only path logs and closes, the pushed path waits
+  // for the vendor read-back and logs the OUTCOME (nuvizz: landed). They are the two arms of
+  // one `if`, so a Save still writes exactly one row — which is the rule this test is for, and
+  // the assertion below is what actually pins it. The count is only the cheap half.
+  assert.equal(logs.length, 5, 'Map, Routing, the modal Save\'s two branches, and the Reset');
   assert.match(APP, /source: 'override-reset'/, 'clearing an override is recorded too');
+
+  // ONE ROW PER SAVE. The board-only branch returns before it can reach the pushed branch's
+  // log — without that `return`, a board-only save would log twice and the history would show
+  // a correction that happened once as two.
+  const modal = APP.slice(APP.indexOf('function AddressEditModal('), APP.indexOf('\nfunction ', APP.indexOf('function AddressEditModal(') + 1));
+  const guard = modal.indexOf('if (!(canPush && toNuvizz))');
+  const boardOnlyLog = modal.indexOf("source: 'override' }", guard);
+  const ret = modal.indexOf('return;', boardOnlyLog);
+  const pushedLog = modal.indexOf('nuvizz: landed', guard);
+  assert.ok(guard > 0 && boardOnlyLog > guard, 'the board-only branch logs');
+  assert.ok(ret > boardOnlyLog && ret < pushedLog, 'and returns before the pushed branch can log too');
 });
 
 test('the BEFORE is captured before the write, never after', () => {

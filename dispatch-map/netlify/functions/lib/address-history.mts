@@ -101,6 +101,22 @@ export interface AddressChangeRow {
   matchKey: string | null;
   /** who saved it, for an override. null for anything the scan observed. */
   actor: string | null;
+  /**
+   * HOW FAR THE CORRECTION REACHED — the question this whole feature exists to answer.
+   *
+   * `true`  the same edit was also written onto the ORDER in NuVizz, so the portal, the
+   *         carrier's record and the driver's manifest agree with the board.
+   * `false` we tried and the vendor did not take it: the board is right and the manifest is
+   *         still wrong, which is the state somebody has to go fix in the portal.
+   * `null`  board-only — nobody asked for the vendor half.
+   *
+   * A BOOLEAN AND NOT A NEW `source`. Making this "override-nuvizz" would have hidden every
+   * pushed correction behind the screen's own "Us" filter (it sends source=override and the
+   * query matches exactly), so filtering to what WE changed would have dropped precisely the
+   * rows that changed the most. That is the confident-and-wrong answer this screen exists to
+   * stop giving.
+   */
+  nuvizz: boolean | null;
 }
 
 /** Kinds worth a dispatcher's attention by default. `formatting` is recorded and hidden. */
@@ -256,6 +272,9 @@ export interface BuildRowInput {
   planned?: boolean;
   matchKey?: any;
   actor?: any;
+  /** true = it also landed on the order in NuVizz, false = we tried and it did not,
+   *  omitted = board-only. See AddressChangeRow.nuvizz. */
+  nuvizz?: boolean | null;
 }
 
 /** One log row, or null when nothing changed. Callers push the non-nulls. */
@@ -276,6 +295,9 @@ export function buildAddressChangeRow(input: BuildRowInput): AddressChangeRow | 
     planned: input.planned === true,
     matchKey: s(input.matchKey) || null,
     actor: s(input.actor) || null,
+    // Tri-state, so `undefined` (board-only) can never be confused with `false` (the vendor
+    // refused it). Only an explicit boolean survives.
+    nuvizz: typeof input.nuvizz === 'boolean' ? input.nuvizz : null,
   };
 }
 
