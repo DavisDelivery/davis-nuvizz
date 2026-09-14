@@ -188,3 +188,81 @@ test('a genuine noon close is NOT extended, and day pairs are not eaten as conti
   assert.deepEqual(h.byDay.mon, { open: '12:00', close: '17:00' });
   assert.deepEqual(h.byDay.fri, { open: '11:30', close: '16:00' }, '"& FRI ..." is a new day segment, not a same-day continuation');
 });
+
+// ── The NAMED lunch gap and the repeated label (Chad, 2026-09-14) ─────────────
+//
+// WEAVER DISTRIBUTORS (PRO 007175532) writes the split the way a dock writes it: the gap gets
+// a NAME and the afternoon half gets the label again. Neither is a conjunction, so the chain
+// stopped at the first range, stored a noon close, and a 1:33p arrival — three minutes after
+// the dock reopened — raised a CRITICAL "may miss receiving hours".
+
+test('THE WEAVER FALSE FLAG: a named LUNCH gap bridges to the afternoon half', () => {
+  const h = hours([
+    'SPL-INSTR-TEXT: RH 8 00AM-12 00PM',
+    'SPL-INSTR-TEXT: LUNCH 12 00-1 30PM',
+    'SPL-INSTR-TEXT: RH 1 30PM-5 00PM',
+    'SPL-INSTR-TEXT: TOTAL-AMOUNT : 55.90',
+  ].join('\n'));
+  assert.deepEqual([h.open, h.close], ['08:00', '17:00'], 'the noon close was a lunch break, not the day end');
+  assert.match(h.matchedText, /LUNCH 12 00-1 30PM/, 'the gap stays in the audit trail — it is the only place the break is visible');
+});
+
+test('the hours label repeated on the second half is a bridge on its own', () => {
+  assert.equal(hours('SPL-INSTR-TEXT: RH 8 00AM-12 00PM\nSPL-INSTR-TEXT: RH 1 30PM-5 00PM').close, '17:00');
+  assert.equal(hours('SPL-INSTR-TEXT: RECEIVING HOURS 8-12\nSPL-INSTR-TEXT: RECEIVING HOURS 1-5').close, '17:00');
+  assert.equal(hours('SPL-INSTR-TEXT: RH 8AM-12PM\nSPL-INSTR-TEXT: HRS 1PM-5PM').close, '17:00');
+});
+
+test('the gap may be spelled CLOSED FOR LUNCH or BREAK, with or without its own times', () => {
+  assert.equal(hours('SPL-INSTR-TEXT: RH 8AM-12PM\nSPL-INSTR-TEXT: CLOSED 12-1 FOR LUNCH\nSPL-INSTR-TEXT: RH 1PM-5PM').close, '17:00');
+  assert.equal(hours('SPL-INSTR-TEXT: RH 8AM-12PM\nSPL-INSTR-TEXT: CLOSED FOR LUNCH 12-1\nSPL-INSTR-TEXT: HRS 1PM-5PM').close, '17:00');
+  assert.equal(hours('SPL-INSTR-TEXT: RH 8-12 LUNCH RH 1-5').close, '17:00', 'no times on the gap at all');
+  assert.equal(hours('SPL-INSTR-TEXT: RH 8-12 BREAK 12-1 RH 1-5').close, '17:00');
+});
+
+test('BARE ADJACENCY IS STILL NOT A BRIDGE — the expensive direction stays shut', () => {
+  // A naked "1-2" after a noon close is far likelier to BE the lunch closure than the
+  // afternoon shift. Reading it as a continuation would push a real noon close out to 2pm —
+  // a missed delivery nobody was warned about.
+  assert.equal(hours('SPL-INSTR-TEXT: RECEIVING HOURS 8-12\nSPL-INSTR-TEXT: 1-2').close, '12:00');
+  assert.equal(hours('SPL-INSTR-TEXT: RECEIVING HOURS\nSPL-INSTR-TEXT: 8 AM -12 PM').close, '12:00', 'Subaru really does close at noon');
+  assert.equal(hours('SPL-INSTR-TEXT: RH 8-12\nSPL-INSTR-TEXT: TOTAL-AMOUNT : 55.90').close, '12:00');
+  assert.equal(hours('SPL-INSTR-TEXT: RH 8-12 678-900-4210').close, '12:00');
+});
+
+test('a LUNCH line with no afternoon half does NOT invent one, and LUNCH alone is never hours', () => {
+  assert.equal(hours('SPL-INSTR-TEXT: RH 8 00AM-12 00PM\nSPL-INSTR-TEXT: LUNCH 12 00-1 30PM').close, '12:00',
+    'they told us when they break, not when they reopen — 12:00 is the honest close');
+  assert.equal(hours('SPL-INSTR-TEXT: LUNCH 12 00-1 30PM'), null);
+  assert.equal(hours('SPL-INSTR-TEXT: CLOSED 1-2 FOR LUNCH'), null);
+});
+
+test('a day-qualified second segment is still a new day, never eaten as a continuation', () => {
+  const h = hours('SPL-INSTR-TEXT: RH MON-THU 8-4\nSPL-INSTR-TEXT: RH FRI 8-12');
+  assert.deepEqual(h.byDay.mon, { open: '08:00', close: '16:00' });
+  assert.deepEqual(h.byDay.fri, { open: '08:00', close: '12:00' }, 'Friday still closes at noon');
+  const g = hours('SPL-INSTR-TEXT: RECEIVING HOURS\nSPL-INSTR-TEXT: MON-TH 12-5 & FRI 1130-4');
+  assert.deepEqual(g.byDay.fri, { open: '11:30', close: '16:00' });
+});
+
+test('a day-qualified LUNCH split keeps the envelope on the named days only', () => {
+  const h = hours('SPL-INSTR-TEXT: RH MON-FRI 8 00AM-12 00PM\nSPL-INSTR-TEXT: LUNCH 12 00-1 30PM\nSPL-INSTR-TEXT: RH 1 30PM-5 00PM');
+  assert.deepEqual(h.byDay.mon, { open: '08:00', close: '17:00' });
+  assert.deepEqual(h.byDay.fri, { open: '08:00', close: '17:00' });
+  assert.equal(h.byDay.sat, undefined, 'unnamed days stay unset');
+});
+
+test('the sanity guards still refuse a second range that cannot be the same day continuing', () => {
+  assert.equal(hours('SPL-INSTR-TEXT: RH MON-THU 8-4\nSPL-INSTR-TEXT: RH 8-12').byDay.mon.close, '16:00',
+    'a morning range after an afternoon close is not a continuation');
+  assert.equal(hours('SPL-INSTR-TEXT: RH 8-12 LUNCH 12-1 RH 7PM-11PM').close, '12:00', 'we never run nights');
+});
+
+test('a NAMED reopening carries the afternoon half directly — "AFTER LUNCH 1PM-5PM"', () => {
+  // The opposite of the LUNCH-then-times shape: here the phrase says the range that follows is
+  // the reopening, so it is the afternoon half rather than the closure's own times.
+  assert.equal(hours('SPL-INSTR-TEXT: RH 8AM-12PM\nSPL-INSTR-TEXT: AFTER LUNCH 1PM-5PM').close, '17:00');
+  assert.equal(hours('SPL-INSTR-TEXT: RH 8AM-12PM\nSPL-INSTR-TEXT: REOPENS 1PM-5PM').close, '17:00');
+  assert.equal(hours('SPL-INSTR-TEXT: RH 8AM-12PM\nSPL-INSTR-TEXT: OPEN AGAIN 1PM-4PM').close, '16:00');
+  assert.equal(hours('SPL-INSTR-TEXT: RH 8AM-12PM\nSPL-INSTR-TEXT: AFTER BREAK 1PM-5PM').close, '17:00');
+});
