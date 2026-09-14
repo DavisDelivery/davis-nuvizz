@@ -21,6 +21,11 @@
     timeout = 26
   [functions."nuvizz-pull-today-stops"]
     timeout = 26
+  # The arrival-curve read lists a whole day's stops (masked to two fields) and the admin
+  # backfill seals up to 60 nights in one POST. Both are Firestore-only and neither fits the
+  # 10s default, which returns an HTML 502 the client cannot parse.
+  [functions."order-arrivals"]
+    timeout = 26
   [functions."nuvizz-manual-scan"]
     timeout = 26
   # The write endpoint needs headroom for the LOAD IMPORT path (load read + per-stop reads +

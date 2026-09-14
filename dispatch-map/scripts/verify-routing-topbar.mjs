@@ -85,7 +85,7 @@ const intersects = (a, b) => !!a && !!b
   && a.y < b.y + b.height && b.y < a.y + a.height;
 const fmt = (b) => (b ? `x ${Math.round(b.x)}..${Math.round(b.x + b.width)}, y ${Math.round(b.y)}..${Math.round(b.y + b.height)}` : 'absent');
 
-console.log('\nRouting top bar — the board-status dropdown must not cover Filters or the flags\n');
+console.log('\nApp-bar board-status cards — on Routing AND on the Map, the dropdown must not cover Filters or the flags\n');
 
 for (const vp of [{ name: 'laptop', width: 1440, height: 900 }, { name: 'desktop', width: 1920, height: 1080 }]) {
   console.log(`\x1b[1m${vp.name} (${vp.width}x${vp.height})\x1b[0m`);
@@ -149,6 +149,75 @@ for (const vp of [{ name: 'laptop', width: 1440, height: 900 }, { name: 'desktop
     console.log(`  \x1b[33m•\x1b[0m the flags chip still sits within the dropdown's vertical band — clearance here is horizontal only`);
   } else if (flagBox) ok('the flags chip sits below the dropdown as well as clear of it');
 
+  // ── THE DISPATCH MAP, WHICH NOW HAS THE SAME CARD ON THE SAME BAR ──────────────────
+  //
+  // v1.23.1 moved the Map's board-status pill onto the app bar too — Chad: "move ... this to
+  // the right of more on this page" — while Filters went back to the MAP's top-right column.
+  // That is the mirror image of Routing's geometry and it has the mirror-image trap: an open
+  // Filters card here is 240px wide and ends at the window's right edge, so a right-ALIGNED
+  // dropdown on a card mounted right of More ends a few pixels INSIDE it. Eight pixels is
+  // invisible in a screenshot and is the exact bug v1.13.0 measured on the other screen.
+  //
+  // Filters is opened FIRST and deliberately: collapsed it is ~75px wide and clears
+  // everything, so a guard that checked the resting state would pass the very layout it
+  // exists to reject.
+  await page.getByText('Map', { exact: true }).first().click().catch(() => {});
+  await page.waitForTimeout(1200);
+
+  const mapCard = page.locator('header [data-testid="routing-bar-status"]').first();
+  if (!(await mapCard.count())) {
+    bad('Map: the board-status card is not on the app bar — it did not move off the map');
+  } else {
+    ok('Map: the board-status card sits on the app bar');
+    // RIGHT of More, which is the side Chad asked for and the side the clearance depends on.
+    const moreBox = await page.getByRole('button', { name: /^More$/i }).first().boundingBox().catch(() => null);
+    const mapCardBox = await mapCard.boundingBox();
+    if (!moreBox) bad('Map: the More button was not found — the side check proved nothing');
+    else if (mapCardBox.x <= moreBox.x) bad(`Map: the status card is not right of More (card ${fmt(mapCardBox)}, More ${fmt(moreBox)})`);
+    else ok('Map: the status card sits to the right of More');
+
+    const mapFilt = page.locator('button[aria-expanded]').filter({ hasText: 'Filters' }).first();
+    await mapFilt.click().catch(() => {});
+    await page.waitForTimeout(400);
+    let mapDrop = page.locator('header [data-testid="routing-bar-status-drop"]').first();
+    if (!(await mapDrop.count())) {
+      await mapCard.getByRole('button', { name: /stops/i }).first().click().catch(() => {});
+      await page.waitForTimeout(400);
+      mapDrop = page.locator('header [data-testid="routing-bar-status-drop"]').first();
+    }
+    const mapDropBox = await mapDrop.boundingBox().catch(() => null);
+    // The whole Filters CARD, not its header button: the card is what grows to 240px when
+    // open, and the card is what a clipped dropdown would land on.
+    const mapFiltBox = await mapFilt.locator('xpath=..').boundingBox().catch(() => null);
+    console.log(`    Map dropdown ${fmt(mapDropBox)}`);
+    console.log(`    Map Filters  ${fmt(mapFiltBox)}`);
+    if (!mapDropBox) bad('Map: the dropdown never opened, so nothing about its position was checked');
+    else if (!mapFiltBox) bad('Map: the Filters card was not found — the overlap check proved nothing');
+    else if (intersects(mapDropBox, mapFiltBox)) bad(`Map: the dropdown covers the open Filters card (${fmt(mapDropBox)} over ${fmt(mapFiltBox)})`);
+    else ok('Map: the dropdown clears the open Filters card');
+
+    // ── THE COLLISION WITH AN ORDER OPEN IS *NOT* CHECKED HERE, DELIBERATELY ───────
+    //
+    // v1.24.1 shipped a real one: the board-status detail was open by DEFAULT, hanging off
+    // the bar over the map, and opening a stop card narrows the map and slides the whole
+    // right-hand control column left — at 1440, Filters goes from x 1324..1427 to x 944..1047,
+    // straight under a dropdown at x 784..1024. Clicking Filters then did nothing at all,
+    // because the click landed on the dropdown. Fixed by collapsing that card by default on
+    // the Map (see MapScreen) and by dismissing the bar dropdown on an outside click.
+    //
+    // I TRIED TO PIN IT HERE AND COULD NOT, and the failed attempt is worth more written down
+    // than deleted. This script's fixture opens the right panel via the Routes roster, which
+    // is narrower than a stop card: Filters lands at x 1004..1107, its centre clear of the
+    // dropdown, so the click succeeds and the check passes WITH THE BUG REINSTATED. A guard
+    // that cannot fail on its own bug is not evidence — it is a green tick that teaches
+    // people the case is covered when it is not, which is worse than no check at all.
+    //
+    // IT IS ALREADY COVERED, by the guard that actually caught this: verify-hide-place-labels
+    // opens a real stop card and clicks Filters, and it went red on exactly this collision
+    // ("subtree intercepts pointer events"). That is the right home for it — it is the script
+    // that already knows how to get a stop card open.
+  }
+
   await ctx.close();
 }
 
@@ -159,4 +228,4 @@ if (fails.length) {
   console.error(`\n\x1b[31m✗ ${fails.length} problem${fails.length === 1 ? '' : 's'} with the routing top bar\x1b[0m`);
   process.exit(1);
 }
-console.log('\n\x1b[32m✓ the board-status dropdown clears Filters and the flags chip at both desktop sizes\x1b[0m');
+console.log('\n\x1b[32m✓ both bar cards clear Filters and the flags chip at both desktop sizes\x1b[0m');
