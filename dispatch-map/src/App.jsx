@@ -63,7 +63,7 @@ import { serverLoginEnabled, ensureFirebaseSession, dropFirebaseSession, signOut
 import { getSession, setSession, subscribeSession, onAuthEvent, clearSession } from './lib/session.js';
 import { formatCompletionPct } from './lib/completion-pct.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
-import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact } from './lib/nuvizzWrite.js';
+import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress } from './lib/nuvizzWrite.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS } from './lib/time-marks.js';
@@ -140,7 +140,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.21.0';
+const APP_VERSION = '1.22.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -211,6 +211,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.22.0', 'CORRECTING AN ADDRESS NOW REACHES THE DRIVER’S MANIFEST, NOT JUST OUR MAP. Chad: “when we edit an address because it’s wrong — do we change it in nuVizz, or do we just change it in dispatch map?” Just dispatch map. All three edit paths — the editor, and “Fix & move pin” on the Map and on Routing — wrote customer_notes.address_override with the browser’s Firestore SDK and never touched a function, so the board and the pin were right while the ORDER kept whatever street came in on the import. The driver’s manifest app never reads customer_notes at all, and the delivered-customer email renders the cached board row, so BOTH quoted the wrong address back at the two people most able to act on it. The server op to fix this has existed and been tested since Sep 9 and was wired to no button in the app. IT IS WIRED NOW, AS A CHOICE, IN THE EDITOR ONLY. “Also correct order X in NuVizz” rides the same ladder the note and date writes use — read by number, REFUSE on a twin (two orders share a number and re-addressing the other one sends freight where nobody chose it), REFUSE on delivered freight, write the address as a literal ANY block with no label so the vendor cannot refill it from its own address book, then read the order back. THE MODAL STAYS OPEN UNTIL IT HAS, and the green line quotes WHAT NUVIZZ STORED — not what we sent. TWO PLACES, NEITHER COVERING THE OTHER, both said out loud on the checkbox: Firestore is per-CUSTOMER and carries onto their next order; NuVizz is per-ORDER and is what the portal, the carrier and the paperwork show. THE BOARD HALF NEVER DEPENDS ON THE VENDOR HALF — a refused push is amber, states the saved half first, and says the manifest still needs the portal, because a dispatcher reading red assumes they lost the edit. The one-click “Fix & move pin” stays board-only ON PURPOSE and now says so on the banner: a mis-split is the same address with the lines swapped, NuVizz already holds both, so the push buys the freight nothing and a vendor write fired from one unconfirmed tap is precisely how the wrong twin gets re-addressed. ADDRESS HISTORY ANSWERS “DID IT REACH THEM”: rows read Us → NuVizz when it landed, amber Us · not in NuVizz when it was attempted and did not — recorded as a field, not a new source, so the screen’s own “Us” filter cannot hide the corrections that travelled furthest. THE WAY BACK IS ONE ENV VAR: NUVIZZ_ADDRESS_WRITE=off refuses every push server-side before it costs a call and leaves the board override behaving exactly as it did before this shipped. Default-on, and a malformed value leaves it ON.'],
   ['1.21.0', 'THE BUILD PAYS ATTENTION TO TIME RESTRICTIONS NOW \u2014 AND THE SETUP PANEL SAYS WHAT IT IS DOING. Chad, on the panel review: \u201cDo them all. We can do an ai assist box. We need them to be able to pay attention to time restrictions, whether or not it\u2019s a tractor friendly stop.\u201d THE BIG ONE, MEASURED FIRST: a stop with a real 1:00p\u20131:30p appointment, stored the way the board stores it, went through a build with an ETA of 7:02a and no flag. The pipeline read windows with a parser anchored at \u201cHH:MM\u201d and the board carries full stamps (\u201c2026-09-14T13:00:00\u201d), so every window came back null and every stop went into the solver SOFT \u2014 for as long as the feature has existed. Receiving hours, on the very customer note the resolver already fetched for equipment, were never read at all. WHAT READS THE CLOCK NOW (lib/routing-time-windows.mts, 12 tests): the order\u2019s own window only when it is NARROWER than a working day and not the vendor\u2019s default creation slot \u2014 NuVizz stamps 08:00\u201320:00 on 88% of stops and STRICT on 93%, and accepting those would have overridden the chosen strategy on every build \u2014 combined with the customer\u2019s receiving hours for the BOARD day (typed or auto, legacy strings included) and closed days, through the same rules the map draws its clock marks by. The tightest combination wins; a 3pm appointment at a dock whose hours say 2pm keeps the appointment and names the disagreement. NEVER A TRACTOR MARK: the rule cannot read one, and a test pins that a green stop and a red stop with the same hours get the same window. WHAT THE SOLVER DOES WITH IT: the old window order was earliest-deadline-first, which with windows that actually exist would have idled a truck at a 1pm dock from 7am; a window has two edges and both are honoured \u2014 un-windowed stops keep the strategy order, each windowed stop is inserted where it is on time, then idles least, then adds least distance, and ETAs wait for a dock to open with the wait on the card (\u201cwaits 7 min for the dock\u201d). Advisory by default: a stop the ETA cannot make stays on the truck and is flagged; \u201cRespect time restrictions strictly\u201d in step 3 leaves it off, listed under Could not place with its reason \u2014 including \u201ccustomer is closed on the delivery day\u201d. The route header carries \u201c\u23f1 3 timed\u201d and \u201c\u26a0 1 outside window\u201d so a 30-stop route is judged from its first line, and each row shows the clock the build honoured. ROUTING_TIME_RESTRICTIONS=off puts the build back to the blind behaviour, every side at once. THE SEVEN SMALLER ONES from the same review, each a rule in lib/routing-select.js with tests: (1) \u201cLOOSE PIECES\u201d WAS TOTAL PIECES \u2014 the panel summed NuVizz pallets (skids + loose) under the word Loose, so Chad\u2019s screenshot read \u201cLoose pieces 29\u201d beside a Selected window reading \u201c0 loose\u201d for the same orders; Loose (volume) and Total pieces (pallets) are two lines now, and Selected reads \u201c24 orders \u00b7 21 stops\u201d in the unit the Compare header counts. (2) THE NOTE BOX DID NOTHING: the server has always gated the model on request.aiAssist and the panel never sent it. An AI assist checkbox (2 model calls per build, default off) reveals the box and sends the flag, and the result panel tells \u201cnever asked\u201d from \u201casked, and the site has no ANTHROPIC_API_KEY\u201d. (3) MIN TIME IS MIN DISTANCE on the free estimate \u2014 measured, 50 random boards, 50 of 50 identical \u2014 so it is offered only with Google drive-times on, and the pick is remembered. (4) Trucks-mode capacity fields wrote the fleet profile on blur, and a blank box wrote 0 skids for every later build in both modes; each profile is a draft with a Save that refuses anything that is not a truck. (5) Only the Compare card\u2019s Save says Save now that a build stages itself \u2014 the result panel\u2019s copy is \u201cKeep a copy (our system only)\u201d. (6) The green-only trailer rule is disabled, with the reason, when no trailer is in play. (7) Discard plan can close the cards the build opened by itself, and only those. 4,430 green.'],
   ['1.20.1', 'THE MANIFEST CARD WAS A PHOTOGRAPH, AND NOTHING ON IT SAID SO \u2014 SO A SCAN THAT FIXED THE BOARD COULD NOT BE SEEN TO. Chad, Saturday 10:42, on an amber card reading \u201c136 orders not routed yet \u2014 no board has been built for 2026-09-16\u201d: \u201cIf we ran a scan this morning to complete the board from last week which looks like we did. It should have fixed the manifest incompleteness.\u201d IT COULD NOT HAVE, AND NO SCAN EVER COULD. nuvizz_ops/manifest_check_latest \u2014 the document that card subscribes to \u2014 has exactly ONE writer, the email ingest, and it is reached only when a NEW, unmarked report email is parsed. A NuVizz scan does not touch it. \u201cCheck email now\u201d could not move it either: every email carries a per-email marker and an already-checked report is skipped for ever. So the verdict was read at the 1:10a pass, the board was refilled at 07:00 (141 calls, 136 stop_info), and between the overnight pass and the next night\u2019s report there was no way to ask again. AND THE SENTENCE ITSELF NAMED THE WRONG DAY. 2026-09-16 is the +2 SLACK day, of which manifest-window says in as many words: \u201cextra places to LOOK, and deliberately not extra days that must be scanned.\u201d The day that DECIDES was 2026-09-14, and it was covered \u2014 424 stops. THE CAUSE WAS NOT IN THE GRADING RULES, WHICH ARE RIGHT. v0.81.5 established that the count must travel with its standing and filed coverage/grade/expectedDelivery on the ARCHIVE record and the HISTORY row \u2014 and missed toStoredEmailRun, the one writer of the document the SCREEN reads. With the verdict dropped, the browser re-derives it from checkedAgainst alone, with no `required` and no `asOf`, which is the conservative reading that demands EVERY day in the window. THE DANGEROUS HALF: the day after tomorrow is never routed yet, so `conclusive` was false on essentially every nightly run, and gradeSuspects downgraded \u2018missing\u2019 to \u2018unrouted\u2019 on a false verdict. The RED alert and the nav badge were structurally DEAD \u2014 the one check that can catch an order Uline handed us that NuVizz never received could not raise its alarm. A missed flag is the order that never shipped, and this one had been mute. The four fields the server already computed are now carried; App.jsx\u2019s \u201cShipped X \u00b7 expected delivery Y\u201d line, written months ago and never once rendered for an email run, comes on with them. AND THE CARD CAN BE ASKED AGAIN. A new Re-check against the board button re-reads the ARCHIVED PDF and re-runs the same free diff against the board as it stands now \u2014 Firestore and the blob store only, ZERO NuVizz calls, with ?explain=1 as a dry run that says which night it would open and writes nothing. The card also states how old its reading is (\u201cRead against the board as it stood 10h ago\u201d), because the scan runs every five minutes and a ten-hour-old verdict looked identical to a fresh one \u2014 the same silent failure as a build that changes while the footer version does not. It states the age and nothing more: it cannot observe that a scan has run since, and claiming so would be reporting an intent as an outcome. It nudges only when pressing the button could change the answer, never on a clean card. THE OPERATIONAL CASE, PLAINLY: a Friday manifest is checked overnight against a Monday board still being built, so the run is honestly inconclusive; the board fills over the weekend; and if freight really is missing the next thing that could say so was Monday\u2019s own pass \u2014 the morning it was already due. That two-day blind spot is now a click. 15 new tests, including the card reproduced character-for-character from the stored shape and the red alert proven to fire again. MANIFEST_STORED_GRADE=off puts the old stripped shape and its grading back; the button and the endpoint are additive and revert with the commit.'],
   ['1.20.0', 'EVERY ADDRESS THAT MOVES NOW GETS WRITTEN DOWN, AND THERE IS A SCREEN FOR IT UNDER MORE. Chad asked whether we had changed the address on delivery 007174397, and answering it took a dozen file reads and five endpoint calls — then only answered half. The order arrived as “5965 PEACHTREE STREET” while our own sealed record for the same customer three months earlier read “5965 PEACHTREE CORS E STE B3”: same house number, same zip, no suite. NOTHING IN THIS SYSTEM WROTE AN ADDRESS CHANGE DOWN. The scan DETECTS one — it has to, to decide whether to re-enrich — and then throws the finding away into a local variable that dies with the run, and “Edit address” on the stop card left no trace at all. SO BOTH HALVES ARE RECORDED NOW. The vendor’s half is observed inside writeStops, which already holds the stored row and the fresh one, so it costs NO extra read and every scan path is covered by construction rather than by remembering. Our half is posted by the browser after an override saves, because “Edit address” and “Fix & move pin” write customer_notes straight from the client and never touch a function — and that override is what the pin, the board and the customer emails actually use, so a log without it would answer “did we change this” with a confident and wrong no. IT DOES NOT REUSE addrListSig, deliberately. That detector is zip5|streetNumber and it is coarse ON PURPOSE, because firing it spends a /stop/info per stop; both LED ENERGY PLUS addresses hash to “30071|5965”, so it was right to stay quiet and the change was still real. A log costs nothing to write, so its threshold is the honest one — and it only ever observes, never feeds the re-enrichment decision, or it would re-open the non-converging loop that comment warns about. CLASSIFIED BY WHAT IT COSTS TO BE WRONG ABOUT, which is also the sort order: moved (different house number or zip — the truck is loaded for the old building) → cleared → renamed → suite (a dropped STE B3 on an inside delivery is a driver in a lobby with five pallets) → city/state → filled → formatting. Rows carry the route and whether the order was ALREADY PLANNED when it moved, because an address that changes under a built truck is a different problem from one that changes while the order is still unplanned. THE NOISE FLOOR WAS MEASURED, NOT ASSUMED: 90 stops carried across the real 9/10 and 9/11 boards produced zero rows, and an address that normalises identical (“Blvd” vs “BOULEVARD”, a +4 zip) never files one — the list and /stop/info disagree like that across a large share of 700 stops every scan. Learning a field is not changing it either: our own June record carries state:null beside a good GA address. TWO VIEWS: desktop gets a table because the job is scanning a column of befores against a column of afters; the phone gets one card per change with before over after in a single flow column, since two addresses do not fit side by side at 360px. The PRO box is the first control on the screen — type 007174397 and the question that started this is answered in one tap — and nuvizz-stop-explain now carries the same rows, so asking about a stop shows its address history beside everything else. Zero NuVizz calls anywhere in it. 40 new tests. ADDRESS_HISTORY=off turns the recording and the endpoint off together.'],
@@ -6190,6 +6191,13 @@ function AddressFixBanner({ stop, note, onAutoFix, onEdit }) {
               <button onClick={() => onEdit(stop, fix)} disabled={busy} className="px-2 py-1 rounded border border-amber-300 text-amber-800 text-[11px] font-semibold disabled:opacity-50 hover:bg-amber-100">Edit…</button>
             )}
           </div>
+          {/* SAY WHICH HALF THIS FIXES. Since v1.22.0 the editor can also correct the order in
+              NuVizz; this one-click button deliberately cannot. A mis-split is the same address
+              with the lines in the wrong order — NuVizz already holds both — so the push buys
+              the freight nothing, and a vendor write fired from a single unconfirmed tap is
+              exactly the silent outward action that re-addresses the wrong twin. Anyone who
+              does want it pushed is one button away. */}
+          {fix && <div className="mt-1 text-[10px] text-amber-700/80">Fixes the board and the pin. To correct the order in NuVizz too, use Edit…</div>}
         </div>
       </div>
     </div>
@@ -6225,6 +6233,31 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
   const [err, setErr] = useState(null);
   const hasOverride = !!note?.address_override;
 
+  // ── THE ORDER HALF (v1.22.0) ───────────────────────────────────────────────
+  // Until now this modal wrote one place: customer_notes.address_override, which is OUR
+  // Firestore — our board, our pin, our routing. NuVizz never heard about it, so the portal,
+  // the carrier's record and THE DRIVER'S MANIFEST kept whatever street came in on the import,
+  // and nothing anywhere said the two disagreed. Chad: "do we change it in nuVizz, or do we
+  // just change it in dispatch map?" — it was the second, and only the second.
+  //
+  // TWO PLACES AN ADDRESS CAN LIVE, and neither covers the other (the same shape as the
+  // CUSTOMER # block, which Chad already settled the same way):
+  //   • Firestore is per-CUSTOMER — it carries onto this customer's NEXT order, and it is what
+  //     the board, the pin and the routing read.
+  //   • NuVizz is per-ORDER — it is what the portal, the carrier and the driver's paperwork show,
+  //     and it does not follow the customer anywhere.
+  // So the checkbox is on by default, and the Firestore half NEVER depends on the vendor half:
+  // an address the dispatcher typed is saved whatever NuVizz does with it.
+  const pro = stop?.stopNbr || stop?.pro || '';
+  // Freight already dropped cannot be re-addressed — the server refuses it outright, and
+  // offering a button that can only be refused is worse than not offering one. Same predicate
+  // the map pins are coloured from, so the modal and the card cannot disagree about it.
+  const kind = classifyStopStatus(stop);
+  const executed = kind === 'DELIVERED' || kind === 'ARRIVED' || kind === 'EXCEPTION';
+  const canPush = !!pro && !executed;
+  const [toNuvizz, setToNuvizz] = useState(true);
+  const [push, setPush] = useState(null);   // { kind:'busy'|'ok'|'warn', text }
+
   const save = async () => {
     setErr(null);
     // addr2 (suite/dock/contact) is stored but deliberately kept OUT of the
@@ -6232,12 +6265,14 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
     const fields = { addr1: addr1.trim(), addr2: addr2.trim(), city: city.trim(), state: state.trim(), zip: zip.trim() };
     const q = [fields.addr1, fields.city, fields.state, fields.zip].filter(Boolean).join(', ');
     if (!q) { setErr('Enter an address'); return; }
-    setBusy(true);
+    setBusy(true); setPush(null);
     // Captured BEFORE the write, from what the card is actually showing — see
     // lib/address-log.js. After the save the old address is gone from every surface.
     const wasShowing = shownAddress(stop, note);
     try {
       const geo = await geocodeAddress(google, q);
+      // FIRESTORE FIRST, AND UNCONDITIONALLY. It is the durable half, and a vendor write that
+      // fails must never cost the dispatcher the address they just typed.
       await setDoc(doc(db, 'customer_notes', stop.matchKey), {
         match_key: stop.matchKey,
         raw_name: stop.businessName || '',
@@ -6247,11 +6282,50 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
         location_override_at: serverTimestamp(),
         last_updated: serverTimestamp(),
       }, { merge: true });
-      // Not awaited into the happy path: the address is saved, and a log that can fail a
-      // dispatcher's edit is worse than a missing row.
-      logAddressOverride({ stop, before: wasShowing, after: fields, source: 'override' });
-      onSaved?.();
-      onClose();
+
+      if (!(canPush && toNuvizz)) {
+        // Board-only, exactly as this modal has always behaved. Not awaited into the happy
+        // path: the address is saved, and a log that can fail a dispatcher's edit is worse
+        // than a missing row.
+        logAddressOverride({ stop, before: wasShowing, after: fields, source: 'override' });
+        onSaved?.();
+        onClose();
+        return;
+      }
+
+      // THE MODAL STAYS OPEN FOR THIS. CLAUDE.md: never report an intent as an outcome —
+      // closing on "sent" would tell the dispatcher the manifest is fixed before anything has
+      // read it back. The line below quotes what NuVizz STORED, not what we sent.
+      setPush({ kind: 'busy', text: 'Writing it onto the order in NuVizz…' });
+      onSaved?.();                       // the board half is done; repaint it now
+      // THE VENDOR HALF GETS ITS OWN try/catch, and it is not decoration. The outer one ends
+      // in setErr — a RED "Could not save" over an address that IS saved, which is the exact
+      // lie the amber wording below exists to prevent — and it would skip the log entirely, so
+      // the one failure worth having a record of would be the one that left none. callWrite
+      // resolves network errors rather than throwing, so nothing SHOULD land here; `should` is
+      // not a reason to leave the hole open.
+      let landed = false, why = '';
+      try {
+        // stopId pins the write to THIS record: two NuVizz orders can share one number, and
+        // re-addressing the other twin sends freight to a place nobody chose. The server
+        // refuses rather than guess.
+        const r = await setStopAddress(pro, fields, { stopId: stop?.stopId || undefined });
+        const out = r?.result || r || {};
+        landed = r?.ok === true;
+        why = r?.error || out.error || 'the write failed.';
+        if (landed) setPush({ kind: 'ok', text: out.now ? `NuVizz now reads ${out.now}.` : 'Written onto the order in NuVizz.' });
+      } catch (e) {
+        why = e?.message || 'the write failed.';
+      }
+      // Amber, not red, and the saved half is stated FIRST — the board, the pin and the routing
+      // ARE corrected either way, and a dispatcher reading a red error assumes they lost the
+      // edit. What they actually have to do is fix the portal.
+      if (!landed) {
+        setPush({ kind: 'warn', text: `Saved on the board, but NuVizz did not take it: ${why} The driver's manifest still has the old address — fix the order in the portal.` });
+      }
+      // Logged ONCE, after the vendor half resolves, so the row records what happened rather
+      // than what was attempted. `nuvizz` is the outcome: see lib/address-log.js.
+      logAddressOverride({ stop, before: wasShowing, after: fields, source: 'override', nuvizz: landed });
     } catch (e) {
       setErr(e.message || 'Could not save');
     } finally { setBusy(false); }
@@ -6292,14 +6366,66 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
           </div>
           <input className={field} value={zip} onChange={(e) => setZip(e.target.value)} placeholder="ZIP" aria-label="ZIP" />
         </div>
+
+        {/* THE ORDER HALF. In FLOW, never pinned: this row wraps to two lines on a 360px
+            phone and everything below it moves down, which is the whole mobile-overlay rule.
+            Offered only when we know WHICH order to write and the freight has not been
+            dropped — a re-address the server can only refuse is not a choice worth showing. */}
+        {canPush ? (
+          <label className="flex items-start gap-2 text-[11px] text-slate-600 cursor-pointer">
+            <input
+              type="checkbox" checked={toNuvizz} onChange={(e) => setToNuvizz(e.target.checked)}
+              className="mt-0.5 accent-blue-700" style={{ minWidth: 16, minHeight: 16 }}
+              aria-label="Also correct this order in NuVizz"
+            />
+            <span>
+              <span className="font-semibold text-slate-700">Also correct order {pro} in NuVizz</span>
+              {' — '}the portal, the carrier’s record and the driver’s manifest see it too.
+              {' '}<span className="text-slate-400">This order only; the board fix carries to the customer’s next one. 3 NuVizz calls.</span>
+            </span>
+          </label>
+        ) : (
+          // Never silently drop the option: a dispatcher who expects the manifest to follow
+          // needs to be told it will not, and why.
+          <div className="text-[11px] text-slate-400">
+            {executed
+              ? `Board only — the driver has already ${kind === 'DELIVERED' ? 'delivered this' : kind === 'ARRIVED' ? 'arrived at this' : 'worked this'} stop, and delivered freight cannot be re-addressed in NuVizz.`
+              : 'Board only — no order number on this row, so there is nothing to correct in NuVizz.'}
+          </div>
+        )}
+
         {err && <div className="text-xs text-red-600">{err}</div>}
+
+        {/* WHAT NUVIZZ ACTUALLY DID. Kept on screen rather than closing the modal on send:
+            "written to NuVizz" before anything read it back is an intent dressed as an
+            outcome, and this op's whole ladder exists because that is how freight moves to a
+            place nobody chose. */}
+        {push && (
+          <div className={`text-[11px] rounded p-2 break-words flex items-start gap-1.5 ${
+            push.kind === 'warn' ? 'bg-amber-50 border border-amber-200 text-amber-900'
+              : push.kind === 'ok' ? 'bg-green-50 border border-green-200 text-green-900'
+                : 'bg-slate-50 border border-slate-200 text-slate-600'}`}
+          >
+            {push.kind === 'busy' && <RefreshCw size={11} className="animate-spin mt-0.5 shrink-0" />}
+            <span>
+              {push.text}
+              {push.kind === 'ok' && (
+                <span className="block mt-0.5 text-green-800/70">
+                  “Reset to original” clears the board correction only — the order keeps this address in NuVizz.
+                </span>
+              )}
+            </span>
+          </div>
+        )}
         <div className="flex items-center justify-between gap-2 pt-1">
           {hasOverride
             ? <button onClick={reset} disabled={busy} className="text-[11px] px-2 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50" title="Clear the correction (back to NuVizz address + pin)">Reset to original</button>
             : <span />}
           <div className="flex items-center gap-2">
-            <button onClick={onClose} disabled={busy} className="text-xs px-3 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50">Cancel</button>
-            <button onClick={save} disabled={busy} className="text-xs px-3 py-1.5 rounded text-white font-semibold disabled:opacity-50" style={{ background: '#16a34a' }}>{busy ? 'Saving…' : 'Save & move pin'}</button>
+            {/* Once the order half has reported back there is nothing left to cancel — the
+                board is already saved — so the button says what it now does. */}
+            <button onClick={onClose} disabled={busy} className="text-xs px-3 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50">{push && push.kind !== 'busy' ? 'Done' : 'Cancel'}</button>
+            <button onClick={save} disabled={busy} className="text-xs px-3 py-1.5 rounded text-white font-semibold disabled:opacity-50" style={{ background: '#16a34a' }}>{busy ? 'Saving…' : (canPush && toNuvizz ? 'Save, move pin & correct NuVizz' : 'Save & move pin')}</button>
           </div>
         </div>
       </div>
@@ -29449,13 +29575,25 @@ function AddrKindBadge({ kind }) {
 /** "NuVizz" vs a person. The single most-asked thing about any row on this screen. */
 function AddrSourceChip({ row }) {
   const ours = row.source === 'override' || row.source === 'override-reset';
+  // HOW FAR IT REACHED (v1.22.0). An edit saved here is per-CUSTOMER — our board, our pin, our
+  // routing. Since the editor can also write the ORDER in NuVizz, "we changed it" stopped being
+  // one fact: the row now says whether the driver's manifest agrees, and a push that FAILED is
+  // called out in amber because that is the state where the board is right and the paperwork is
+  // still wrong. `null` (board-only) keeps the plain chip this screen has always shown.
+  const pushed = ours && row.nuvizz === true;
+  const pushFailed = ours && row.nuvizz === false;
+  const label = row.source === 'override-reset' ? 'Us · reset' : pushed ? 'Us → NuVizz' : pushFailed ? 'Us · not in NuVizz' : 'Us';
+  const tone = pushFailed ? 'bg-amber-100 text-amber-800' : ours ? 'bg-blue-100 text-blue-800' : 'bg-slate-100 text-slate-600';
   return (
     <span
       title={ours
         ? `Saved in this app${row.actor ? ` by ${row.actor}` : ''}${row.source === 'override-reset' ? ' (override cleared — back on NuVizz’s address)' : ''}`
+          + (pushed ? ' — and written onto the order in NuVizz, so the portal and the driver’s manifest match'
+            : pushFailed ? ' — the NuVizz write was attempted and did NOT take: the driver’s manifest still has the old address'
+              : '')
         : 'Observed on a scan — NuVizz’s own address for the order changed'}
-      className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap ${ours ? 'bg-blue-100 text-blue-800' : 'bg-slate-100 text-slate-600'}`}
-    >{ours ? (row.source === 'override-reset' ? 'Us · reset' : 'Us') : 'NuVizz'}</span>
+      className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap ${tone}`}
+    >{ours ? label : 'NuVizz'}</span>
   );
 }
 

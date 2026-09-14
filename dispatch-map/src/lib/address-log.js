@@ -53,11 +53,16 @@ export function vendorAddress(stop) {
  * Record one dispatcher-made address change. Fire-and-forget by design: the caller has
  * already saved, and the row is a note about what happened, not part of the save.
  *
+ * `nuvizz` is the vendor half's OUTCOME, never its intent: pass true only once the write has
+ * been read back as landed, false when it was attempted and did not, and leave it off when
+ * nobody asked for it. A caller that logs before the push resolves is claiming an outcome the
+ * system has not observed.
+ *
  * Returns true when the server said it recorded a row — used only by tests and by anyone
  * debugging the log itself. Callers in the UI ignore it and MUST NOT await it in a way that
  * can surface an error to the dispatcher.
  */
-export async function logAddressOverride({ stop, before, after, source = 'override' }) {
+export async function logAddressOverride({ stop, before, after, source = 'override', nuvizz = null }) {
   try {
     if (!stop || !before || !after) return false;
     const res = await apiFetch(ENDPOINT, {
@@ -74,6 +79,11 @@ export async function logAddressOverride({ stop, before, after, source = 'overri
         date: stop.boardDate || stop.scheduledDate || null,
         route: stop.routeName ?? stop.loadNbr ?? null,
         planned: stop.isPlanned === true,
+        // HOW FAR IT REACHED. true = the same edit also landed on the order in NuVizz;
+        // false = we asked and the vendor refused, so the board and the driver's manifest
+        // now disagree and somebody has to fix the portal; null = board-only.
+        // Only a real boolean is sent — see the tri-state note on AddressChangeRow.nuvizz.
+        ...(typeof nuvizz === 'boolean' ? { nuvizz } : {}),
         before, after,
       }),
     });

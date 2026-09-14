@@ -86,6 +86,38 @@ export const setStopContact = (stopNbr, { name, phone } = {}, opts = {}) =>
     ...(opts.stopId ? { stopId: String(opts.stopId) } : {}),
   }, { clientOpId: newClientOpId(), ...opts, dryRun: false });
 
+// Correct the delivery address ON THE ORDER in NuVizz (§E). The mirror of setStopContact,
+// and for the same reason: "Edit address" writes customer_notes.address_override — per-CUSTOMER,
+// what OUR board, OUR pin and OUR routing use — and NuVizz never heard about it, so the portal,
+// the carrier's record and the DRIVER'S MANIFEST kept the street that came in on the import.
+// Neither half covers the other: the override carries onto this customer's next order and this
+// does not; this reaches the driver's paperwork and the override does not.
+//
+// `address` takes { addr1, addr2, city, state, zip }. NO `name` — the server falls back to the
+// consignee name already on the order, and re-addressing freight should never silently rename
+// who it is consigned to. NO lat/lng either: NuVizz re-derives its own from the street we send
+// (see the drift note in runSetStopAddress), and asserting our Google geocode into the vendor's
+// record would put a coordinate there that the vendor did not compute — and on the geocode-denied
+// path we have none to send anyway.
+//
+// 3 NuVizz calls (read → write → verify). opts.stopId: the same wrong-twin pin as the three ops
+// above, and it matters most here — re-addressing the other twin sends freight somewhere nobody
+// chose.
+export const setStopAddress = (stopNbr, address = {}, opts = {}) =>
+  callWrite('setStopAddress', {
+    stopNbr,
+    address: {
+      addr1: String(address.addr1 ?? '').trim(),
+      // An explicit '' CLEARS addr2 server-side (buildLiteralAddress), which is what a
+      // dispatcher emptying the suite box means. Always sent, never omitted.
+      addr2: String(address.addr2 ?? '').trim(),
+      city: String(address.city ?? '').trim(),
+      state: String(address.state ?? '').trim(),
+      zip: String(address.zip ?? '').trim(),
+    },
+    ...(opts.stopId ? { stopId: String(opts.stopId) } : {}),
+  }, { clientOpId: newClientOpId(), ...opts, dryRun: false });
+
 // Create a route from the Compare card, orders and all (§R). The server checks the load number
 // is genuinely free (routePlan/update is create-OR-UPDATE — an existing number would be EDITED,
 // so anything but a clean absent-read refuses), reads every order on the card (each must be

@@ -2495,6 +2495,24 @@ export async function runCancelOrder(requester: RequesterLike, payload: any, cre
 }
 
 /**
+ * THE WAY BACK (CLAUDE.md: "ship it so it can be put back").
+ *
+ * This is the one op in the app that re-addresses freight in the CARRIER'S record, so it gets
+ * a named brake that reverts the whole outward half without a deploy: set
+ * NUVIZZ_ADDRESS_WRITE=0/false/off/no and every push is refused server-side while "Edit
+ * address" keeps saving the board override exactly as it did before this shipped. That is the
+ * complete pre-v1.22.0 behaviour, restored by one env var.
+ *
+ * DEFAULT-ON, and anything malformed leaves it ON — the house shape (routeCreateBlocked's
+ * brake, `nearMatchEnabled`, `attEnabled`). A typo in an env var must never silently stop a
+ * dispatcher's correction from reaching the driver's manifest: a quiet feature looks exactly
+ * like a working one.
+ */
+export function addressWriteBlocked(): boolean {
+  return /^(0|false|off|no)$/i.test(String(process.env.NUVIZZ_ADDRESS_WRITE ?? '').trim());
+}
+
+/**
  * CORRECT THE DELIVERY ADDRESS ON AN ORDER, IN NUVIZZ.
  *
  * The gap this closes: "Edit address" on the stop card has only ever written OUR Firestore
@@ -2517,6 +2535,13 @@ export async function runCancelOrder(requester: RequesterLike, payload: any, cre
  */
 export async function runSetStopAddress(requester: RequesterLike, payload: any, creds: WriteCreds): Promise<any> {
   const stopNbr = req(payload?.stopNbr, 'setStopAddress: stopNbr');
+  // Refused BEFORE the read, so the brake costs nothing at NuVizz. The message names the
+  // switch and says what still works, because a dispatcher hitting this needs to know their
+  // board correction was NOT lost.
+  if (addressWriteBlocked()) {
+    return { ok: false, blocked: true, calls: { reads: 0, writes: 0 },
+      error: 'address writes to NuVizz are switched off on this server (NUVIZZ_ADDRESS_WRITE=off). The correction is saved on the board; fix the order in the portal.' };
+  }
   const next = (payload?.address && typeof payload.address === 'object') ? payload.address : null;
   if (!next) return { ok: false, error: 'setStopAddress: an address object is required.', calls: { reads: 0, writes: 0 } };
   const calls = { reads: 0, writes: 0 };

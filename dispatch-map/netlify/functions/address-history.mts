@@ -154,6 +154,10 @@ async function recordOne(req: Request, J: (o: any, s?: number) => Response): Pro
     route: body?.route,
     planned: body?.planned === true,
     matchKey: body?.matchKey,
+    // Did the same edit also reach the ORDER in NuVizz? Only an explicit boolean is taken —
+    // anything else records board-only, so a caller that never tried can never be read as
+    // a vendor write that failed.
+    nuvizz: typeof body?.nuvizz === 'boolean' ? body.nuvizz : null,
     // AUTH_REQUIRED is still off here, so every caller arrives as LEGACY_PRINCIPAL. Record
     // that honestly as null rather than stamping the row "Dispatch (no login)", which reads
     // like a person and is not one — the rest of the row is still worth having, and the day
