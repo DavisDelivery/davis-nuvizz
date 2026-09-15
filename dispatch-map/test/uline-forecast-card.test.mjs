@@ -10,7 +10,14 @@ const SCREEN = (() => { const i = APP.indexOf('function ManifestCheckScreen('); 
 const CARD = APP.slice(APP.indexOf('const arr = (x) =>'), APP.indexOf('function ManifestCheckScreen('));
 
 test('the card is mounted on the Manifest check screen, between the verdict and the archive', () => {
-  assert.match(SCREEN, /<UlineForecastCard forecast=\{forecast\} isMobile=\{isMobile\} \/>\s*\n\s*<ManifestHistoryCard \/>/);
+  // Pinned as ORDER, not as two tags that happen to touch: each panel is wrapped in its own
+  // <section data-section> for the jump dropdown (v1.28.0), so an adjacency regex would fail on
+  // a layout change that moved nothing. This still fails if the cards are reordered.
+  const arrivalsAt = SCREEN.indexOf('<OrderArrivalsCard arrivals={arrivals}');
+  const forecastAt = SCREEN.indexOf('<UlineForecastCard forecast={forecast}');
+  const historyAt = SCREEN.indexOf('<ManifestHistoryCard />');
+  assert.ok(arrivalsAt > 0 && forecastAt > arrivalsAt && historyAt > forecastAt,
+    'order arrivals → Uline forecast → manifest history');
   assert.match(SCREEN, /const forecast = useUlineForecast\(60\)/);
 });
 
