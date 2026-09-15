@@ -1,9 +1,15 @@
 // nuvizz-rebuild-customer-history-background.mts
 //
-// Rebuilds the per-customer history rollup (history_customers) FROM the immutable
-// warehouse (history_days). Reads only our own Firestore — NEVER calls NuVizz.
-// Used to backfill the rollup over already-captured days (the nightly snapshot
-// keeps it current going forward; this seeds it for the past).
+// Rebuilds the per-customer history rollup (history_customers) AND the PRO → day
+// pointer index (history_pros) FROM the immutable warehouse (history_days). Reads
+// only our own Firestore — NEVER calls NuVizz. Used to backfill both over
+// already-captured days (the nightly capture's post-seal hooks keep them current
+// going forward; this seeds them for the past).
+//
+// RUN IT IN CHUNKS. A full 200-day range is ~140k pointer writes and can crowd the
+// 15-minute background budget; a month at a time (?from=&to=) finishes comfortably
+// and is safely re-runnable — every write here is idempotent, so a repeated or
+// overlapping range costs time and nothing else.
 //
 // Background fn (15-min budget) so a multi-day backfill can't hit the 30s cap.
 //
@@ -16,6 +22,7 @@ import { isFirestoreEnabled } from './lib/firestore.mts';
 import { requireUserForBackground } from './lib/background-gate.mts';
 import { listStops } from './lib/history-store.mts';
 import { updateCustomerRollupsForDay } from './lib/history-customers.mts';
+import { updateProIndexForDay, proIndexEnabled } from './lib/history-pro-index.mts';
 
 const TENANT = 'davis';
 const MAX_DAYS = 200;
@@ -47,7 +54,7 @@ export default async (req: Request): Promise<Response> => {
   if (!isFirestoreEnabled()) {
     return new Response(JSON.stringify({ ok: false, error: 'FIREBASE_SA not set' }), { status: 200, headers });
   }
-  // GATED AT admin. A rebuild rewrites history_customers over up to 200 days — the rollup the
+  // GATED AT admin. A rebuild rewrites history_customers + history_pros over up to 200 days — the
   // customer history screen serves — and an anonymous caller could pin the function for
   // fifteen minutes on every hit. Netlify already answered 202 and discarded our status
   // (lib/background-gate.mts); this is run by hand and has no doc a screen polls, so the
@@ -65,7 +72,13 @@ export default async (req: Request): Promise<Response> => {
     try {
       const stops = await listStops(TENANT, date);
       const r = await updateCustomerRollupsForDay(TENANT, date, stops);
-      results.push({ date, stops: stops.length, ...r, ms: Date.now() - t0 });
+      // The pointer index is what makes a PRO older than a customer's last 20
+      // findable at all. PRO_INDEX=off skips it here exactly as it does in the
+      // nightly hook, so the switch reverts the backfill too.
+      const pi = proIndexEnabled()
+        ? await updateProIndexForDay(TENANT, date, stops)
+        : { skipped: 'PRO_INDEX=off' };
+      results.push({ date, stops: stops.length, ...r, pro_index: pi, ms: Date.now() - t0 });
     } catch (e: any) {
       results.push({ date, ok: false, error: e?.message, ms: Date.now() - t0 });
     }

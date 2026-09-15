@@ -154,6 +154,11 @@ export function explainStop(f: StopFacts): StopExplanation {
   // ── 1. What the board serves for the day, and where it came from ─────────────
   if (served.source === 'none') {
     say(`${f.stopNbr} is on NO board document for ${dayWord}, and no prior day inside the carry-over reach holds it open and un-planned — so the ${f.date} Map does not show it at all.`);
+    // v1.31.0 — the scan took it off this day on purpose: the list names a route, the roster
+    // names ONE load by that name, and that load's own membership read does not hold it.
+    if (latestVerdict && latestVerdict.basis === 'name-collision' && latestVerdict.verdict === 'dropped') {
+      say(`${clock(latestVerdict.at)}: the scan left it OFF the ${f.date} board — ${latestVerdict.detail}${latestVerdict.path?.length ? ` (steps: ${latestVerdict.path.join(' → ')})` : ''}.`);
+    }
     const elsewhere = copies.filter((c) => c.row);
     if (elsewhere.length) say(`It is filed on ${elsewhere.map((c) => `${c.day} (${describe(c.row)})`).join(', ')}.`);
   } else if (served.source === 'carry-over') {
