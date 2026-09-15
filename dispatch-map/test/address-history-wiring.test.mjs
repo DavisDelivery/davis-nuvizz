@@ -200,3 +200,33 @@ test('saving the address that was already there records nothing and is still a s
     assert.equal(body.recorded, false);
   } finally { fake.restore(); }
 });
+
+// ── THE READER MUST BE ABLE TO ASK FOR WHERE THE WRITER PUT IT ────────────────
+//
+// 2026-09-14. Ten queue corrections, ten rows written, and an empty screen. The writer was
+// never broken: every row landed in the day document for the BOARD DAY the stop sat on, which
+// that evening was tomorrow. The endpoint resolves its window through resolveRange, which
+// clamped `to` at today — so the document holding them could not be REQUESTED. Then, even
+// inside the window, the default view hid them: the queue's own fix classifies as `formatting`
+// and `hideNoise` dropped that kind outright.
+//
+// Two independent defects, both invisible, both rendering as the same blank screen as a failed
+// write. This is the wiring test that would have caught either one.
+
+test('THE ENDPOINT REACHES THE BOARD DAYS THE QUEUE FILES ROWS AGAINST', async () => {
+  const src = await import('node:fs').then((fs) => fs.readFileSync(new URL('../netlify/functions/address-history.mts', import.meta.url), 'utf8'));
+  assert.match(src, /resolveRange\(selectionFromParams\(get\), etDayString\(\), QUEUE_DAYS_AHEAD\)/,
+    'the endpoint passes the forward horizon');
+  assert.match(src, /QUEUE_DAYS_AHEAD \} from '\.\.\/\.\.\/src\/lib\/history-range\.js'/,
+    'and from the shared module, so the screen cannot resolve a different window');
+});
+
+test('the POST files a row against the BOARD DAY, which is the thing that needed a reader', async () => {
+  // Not a bug — this is correct and must stay. A dispatcher looking for "what did we fix on
+  // Tuesday's board" means the board, not the evening somebody typed it.
+  const src = await import('node:fs').then((fs) => fs.readFileSync(new URL('../netlify/functions/address-history.mts', import.meta.url), 'utf8'));
+  assert.match(src, /const date = \/\^\\d\{4\}-\\d\{2\}-\\d\{2\}\$\/\.test\(String\(body\?\.date\)\) \? String\(body\.date\) : etDayString\(\)/,
+    'the body\'s date wins over today, and is not clamped on the way in');
+  const client = await import('node:fs').then((fs) => fs.readFileSync(new URL('../src/lib/address-log.js', import.meta.url), 'utf8'));
+  assert.match(client, /date: stop\.boardDate \|\| stop\.scheduledDate \|\| null/, 'and the client sends the board day');
+});

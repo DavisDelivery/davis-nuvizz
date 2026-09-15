@@ -8,7 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   resolveRange, expandRange, rangeLabel, shortDay, daysBetween, addDays, isDateStr,
-  selectionFromParams, paramsForRange, MAX_RANGE_DAYS, DEFAULT_DAYS,
+  selectionFromParams, paramsForRange, MAX_RANGE_DAYS, DEFAULT_DAYS, QUEUE_DAYS_AHEAD,
 } from '../src/lib/history-range.js';
 
 const TODAY = '2026-08-21';   // the Friday board this screen was built against.
@@ -176,4 +176,59 @@ test('only one end given is that single day, not a range to today', () => {
   const qs = new URLSearchParams('from=2026-08-19');
   const r = resolveRange(selectionFromParams((k) => qs.get(k)), TODAY);
   assert.deepEqual({ from: r.from, to: r.to }, { from: '2026-08-19', to: '2026-08-19' });
+});
+
+// ── THE ADDRESS LOG HAS A FUTURE, AND THAT IS NOT A CONTRADICTION ─────────────
+//
+// An address change is filed against the BOARD DAY the stop sits on, not the day it was typed.
+// The problem-address queue works the next business days, so a dispatcher clearing it in the
+// evening writes rows dated tomorrow. Ten such rows on 2026-09-14 were written correctly and
+// could not be READ: `to > today` clamped every request back to today, so the day document
+// holding them could not be asked for. Two sessions went looking for a broken write.
+
+test('a forward horizon lets the log reach the board days it files rows against', () => {
+  const r = resolveRange({ kind: 'day', date: '2026-08-24' }, TODAY, QUEUE_DAYS_AHEAD);
+  assert.equal(r.from, '2026-08-24');
+  assert.equal(r.to, '2026-08-24');
+  assert.equal(r.clamped, null, 'a day inside the horizon is not a clamp');
+});
+
+test('the default window reaches forward too — otherwise the fix is invisible on arrival', () => {
+  // This is the one that mattered. A dispatcher who just cleared the queue opens the log on its
+  // default 14 days; if that window still ends today, the rows they just made are not in it.
+  const r = resolveRange({ kind: 'days', days: 14 }, TODAY, QUEUE_DAYS_AHEAD);
+  assert.equal(r.from, addDays(TODAY, -13), 'still anchored 14 days back');
+  assert.equal(r.to, addDays(TODAY, QUEUE_DAYS_AHEAD), 'and runs to the horizon');
+  assert.ok(expandRange(r.from, r.to).includes(addDays(TODAY, 1)), 'tomorrow is inside it');
+});
+
+test('and it still stops somewhere — a horizon is a ceiling, not an open door', () => {
+  const r = resolveRange({ kind: 'day', date: '2026-12-25' }, TODAY, QUEUE_DAYS_AHEAD);
+  assert.equal(r.to, addDays(TODAY, QUEUE_DAYS_AHEAD));
+  assert.equal(r.clamped, 'future', 'and it SAYS it clamped');
+});
+
+test('NO CALLER IS WIDENED BY ACCIDENT — omitting the horizon is the old behaviour exactly', () => {
+  // The flag history shares this module and genuinely cannot hold a day that has not happened:
+  // an outcome is joined overnight. A default that reached forward would silently give that
+  // screen a stretch of empty days that read as a quiet week.
+  for (const sel of [{ kind: 'days', days: 14 }, { kind: 'today' }, { kind: 'range', from: '2026-08-01', to: '2026-12-25' }]) {
+    assert.equal(resolveRange(sel, TODAY).to, TODAY, `${sel.kind} still ends today`);
+  }
+  assert.equal(resolveRange({ kind: 'day', date: '2026-12-25' }, TODAY).clamped, 'future');
+});
+
+test('a malformed horizon collapses to today rather than reaching somewhere arbitrary', () => {
+  // A typo in a constant must never silently widen an audit window — the same house rule as an
+  // env switch that stays ON when it cannot be parsed, pointing the safe way for this case.
+  for (const bad of [undefined, null, '', 'four', NaN, -3, 0]) {
+    assert.equal(resolveRange({ kind: 'days', days: 7 }, TODAY, bad).to, TODAY, `horizon ${String(bad)}`);
+  }
+});
+
+test('the header says the window reaches forward instead of calling it "Last 14 days"', () => {
+  const r = resolveRange({ kind: 'days', days: 14 }, TODAY, QUEUE_DAYS_AHEAD);
+  assert.equal(rangeLabel(r, TODAY), 'Last 14 days + the board ahead');
+  // Unchanged for every window that ends today.
+  assert.equal(rangeLabel(resolveRange({ kind: 'days', days: 14 }, TODAY), TODAY), 'Last 14 days');
 });

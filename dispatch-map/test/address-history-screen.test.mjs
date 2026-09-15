@@ -115,11 +115,22 @@ test('a logging failure can never fail the save', () => {
   // asserted now — because the group runner MUST await, or it cannot count what reached the
   // log, and four pushes went unlogged with nothing on screen able to say so.
   //
-  // 1. The logger cannot throw. Its whole body is wrapped and it returns false on any failure,
-  //    so `await` on it can only ever resolve — it can never route into a caller's catch and
-  //    report a save as failed when the save landed.
-  assert.match(LOG, /catch \{[\s\S]{0,200}?return false;/, 'the POST swallows its own errors');
+  // 1. The logger cannot throw. Its whole body is wrapped and every exit RESOLVES, so `await`
+  //    on it can only ever resolve — it can never route into a caller's catch and report a
+  //    save as failed when the save landed.
+  assert.match(LOG, /catch \(e\) \{[\s\S]{0,700}?return \{ recorded: false, outcome: 'failed'/, 'a thrown error resolves as a failed outcome');
+  // A `throw` STATEMENT, not the word 'throw' wherever it appears: the first draft of this
+  // line matched the word "throws" in the comment below the catch and would have failed a
+  // correct implementation — a test that fails on prose is a test nobody trusts.
+  assert.doesNotMatch(LOG.slice(LOG.indexOf('export async function logAddressOverride')), /(^|\n)\s*throw\s/, 'and is never rethrown at the caller');
   assert.match(LOG, /export async function logAddressOverride[\s\S]{0,400}?try \{/, 'and the try wraps the whole body');
+
+  //    EVERY exit is an object, never a bare boolean. This is not style: the caller reads
+  //    `.recorded` off it, and every object in JavaScript is truthy — so one `return false`
+  //    left among the object returns reads as a success at one call site and a failure at
+  //    another, from the same function, on the same run.
+  const fn = LOG.slice(LOG.indexOf('export async function logAddressOverride'));
+  assert.doesNotMatch(fn, /return (true|false);/, 'no exit returns a bare boolean');
 
   // 2. Every awaited call site has already made the durable write. A log awaited BEFORE the
   //    setDoc would put a network round trip between the dispatcher and their own save.
