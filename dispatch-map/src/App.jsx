@@ -65,12 +65,12 @@ import { formatCompletionPct } from './lib/completion-pct.js';
 import { isTvPath, tvRailRows, tvVerdict, tvFeedState, TV_RAIL_LIMIT } from './lib/tv-mode.js';
 import { driverLabelLines, driverFixStale } from './lib/driver-label.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
-import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress } from './lib/nuvizzWrite.js';
+import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress, addressReachedNuvizz } from './lib/nuvizzWrite.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { hoursProvenance } from './lib/hours-provenance.js';
 import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS } from './lib/time-marks.js';
-import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS } from './lib/history-range.js';
+import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS, QUEUE_DAYS_AHEAD } from './lib/history-range.js';
 import {
   drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
   legendIsEmpty, pinTintKind, visibleIconKeys, tractorPaintAllowed,
@@ -144,7 +144,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.28.0';
+const APP_VERSION = '1.29.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -215,6 +215,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.29.0', 'THE FIX HISTORY WAS RECORDING PERFECTLY AND NOBODY COULD SEE IT, AND THE BANNER OVER IT WAS TELLING CHAD THE OPPOSITE OF WHAT THE SERVER HAD OBSERVED. Twenty orders were corrected from the problem-address queue on the evening of 2026-09-14 and pushed to NuVizz. The address log showed nothing at all, and ten of the twenty came back under an amber banner reading “Saved on the board, but NuVizz did not take it — the driver’s manifest still has the old address, fix the order in the portal.” ALL TWENTY ORDERS WERE READ BACK ONE BY ONE AGAINST WHAT WAS SENT. Every address landed, every pin moved with it, every BOL still attached, nothing lost — eighteen byte-for-byte identical and the other two re-spelled by NuVizz’s own normaliser (GA→GEORGIA, RD→ROAD, LAWRENCEVILLE SUWANEE→LAWRENCEVILLE-SUWANEE), which is the vendor tidying its own record, not damage. Not one correction had failed. THE MISSING HISTORY WAS TWO INDEPENDENT DEFECTS, NEITHER OF THEM IN THE WRITER. A correction is filed against the BOARD DAY the stop sits on — correct, and that evening the board was tomorrow. (1) Every history request resolves through resolveRange, which clamped the window at today, so the day document holding the rows could not be REQUESTED; there is now a forward horizon of four calendar days, derived from the queue’s three BUSINESS days (Friday→Tuesday is the widest that span gets). (2) Even inside the window the default view hid them: the queue’s own fix swaps addr1/addr2, classifyChange calls that `formatting` ON PURPOSE so the app’s own fix button cannot fire the red `moved` class, and hideNoise dropped that kind outright. Noise is the VENDOR’s — hundreds of St→Street rows nobody can act on. A row a PERSON made on purpose is the record of the work and is never hidden. Two sessions were spent hunting a write that had never failed, while nuvizz-stop-explain, which reads three days ahead with no clamp, had the rows the whole time. THE BANNER WAS ONE BOOLEAN ANSWERING TWO QUESTIONS. `ok` means the write was CLEAN — the address landed AND nothing else on the order moved. What the screen needed was “did the ADDRESS land”, which the server proves by read-back and records separately as `addressLanded`, and which was sitting `true` on the very same object that produced the banner. What actually fired is the attachment guard (`documents: LOST to|BOL|03||pdf||01`). THAT GUARD IS NOT WEAKENED BY ONE LINE OF THIS: it still fails the write, still shows amber, still names the order. What changes is that it stops claiming the address failed, stops sending a dispatcher to the portal to re-type an address already correct there, and stops writing `nuvizz: false` — “we asked and the vendor refused” — into the permanent record of ten orders NuVizz had accepted. There is a third outcome now, the common one, which had no wording at all: the address IS on the order and the write also touched something else. WHY THE GUARD FIRES ON HALF OF THEM CANNOT BE ANSWERED FROM THE CODE AND IS NOT GUESSED AT HERE. The ledger kept the verdict and threw away the evidence — `lost` names what went missing and nothing recorded what the read-back actually held. It now stores both sides of the attachment diff on the flagged path only, so the next one is answerable from one free nuvizz-write-log read: did the after-side come back EMPTY (a read that caught the vendor mid-restamp) or carrying a different identity. AND A SELECT-ALL BOX ABOVE THE ROW BOXES, per day rather than per screen — the toolbar’s button takes every board day at once, and clearing tomorrow should not drag Thursday into the same push at 3 calls each. Half-filled when some rows are picked, because a plain empty box over four selected rows claims a selection that is not there. Desktop puts it in the header cell over the column; the phone gets its own labelled 44px control.'],
   ['1.28.0', 'A DROPDOWN FOR THE SECTIONS, BECAUSE THE MANIFEST PAGE IS FIVE PANELS DEEP AND THE BOTTOM ONE IS THE ONE YOU STOP USING. Chad: “need a dropdown in the ui for all the different sections of this page.” Mailbox, tonight’s check, order arrivals, Uline forecast, manifest history — and tonight’s check alone runs to a several-hundred-row suspects table on the night it matters most, which is exactly when scrolling to the history stops happening. A NATIVE <select> ON PURPOSE, and that is the opposite of the easy way out: a custom overlay would be a second floating layer over a screen that already stacks a sticky bar on a long table, which is the precise shape of the Map’s four collision patches. The native control opens the OS picker on a phone, takes a keyboard on the desktop, and occupies one box IN FLOW that nothing can land on top of. TWO PLACEMENTS, WRITTEN SEPARATELY: the phone gets a full-width bar under the title where a thumb lands, the desktop a compact right-aligned row that does not push the page down. Same body, placed twice — one control, two views, never one responsive compromise. THE MENU IS BUILT FROM WHAT IS ON THE SCREEN: tonight’s check does not exist until a report has been read, and an entry that scrolls nowhere is indistinguishable from a broken one. AND THE OFFSET IS ARITHMETIC, NOT CSS: scrolling a section to the top of the container puts it UNDER the sticky picker — the one heading you asked for is the one you cannot see — so the stop position is computed in a pure function where the bar’s height for each layout lives once, instead of a scroll-margin value drifting between two files. The tests caught a real one on the way: Number(null) is 0 and 0 is finite, so a failed getBoundingClientRect read would have become a perfectly plausible instruction to fling the pane to the top — the same coercion scar this repo already carries. 6 new tests.'],
   ['1.27.0', 'THE ARRIVAL STAMP v1.26.0 WAS BUILT ON TURNED OUT TO BE EMPTY, AND THE FIRST READ SAID SO INSTEAD OF GUESSING. v1.26.0 shipped the arrival curve on `enriched_at`, reasoned out of the code and never measured against the live index. The first ?explain=1 read answered in one line: 643 stops on the next delivery day, TWO of them stamped — 0% coverage. THE GUARD HELD, which is the only reason this is a follow-up and not an incident: the card printed the coverage and REFUSED the projection rather than dividing a board by a handful of orders and calling it a forecast. THE OTHER CANDIDATE WAS MEASURED TOO, and it is worse: `listUpdatedDTTM` is populated on all 643, but it is a LIVE field — on Tue 2026-09-08, 650 of 704 stamps had drifted onto the delivery day itself, the arrival time overwritten by the delivery flip. So NO history can be rebuilt from either, and this ships honest about that: the baseline starts empty and fills a Tuesday at a time. WHAT REPLACES IT costs nothing, because writeStops already lists the day’s existing docs at its own entry — the same free before/after the address log rides on — so a stop number absent from it is NEW by construction. Two write-once stamps: `first_seen_at` (our scan clock) and `arrived_list_dttm` (NuVizz’s own Stop Updated Dttm FROZEN at first sight, which is what stops it drifting the way the live field does, and is the truer of the two because it is the vendor’s clock). THREE RULES, each a way this goes wrong taken the other way: write-once, because setDoc REPLACES and without an explicit carry-forward every 5-minute scan would re-stamp every order with `now`; a doc that PREDATES this change gets NOTHING rather than today’s clock, because a whole board that appears to have arrived in one minute is worse than absent — it looks like data; and the fresh row is STRIPPED of both stamps first, because mergeEnrich copies the per-PRO registry record onto it and that record is a whole stop from whatever day it was first enriched, so a recurring PRO could carry August’s first_seen_at onto tonight’s board. AND THE ZONE, which would have been the next silent four-hour error: NuVizz sends listUpdatedDTTM zone-less ET (“2026-09-14T19:05:00”) and Date.parse reads that in the RUNTIME’s zone — UTC on Netlify — filing a 7pm arrival four hours early and shifting a whole evening’s curve. Resolved through the offset ET actually reports, checked in both seasons. A THIN NIGHT IS NOW REFUSED AT BOTH BOUNDARIES: the sealer will not write a night under the coverage floor and the baseline will not read one, because buildBaseline only dropped a night at ZERO stamps and a 2-of-643 night would have sailed through a “> 0” filter and dragged every projection that used it. 10 new tests, 4,647 green. THE WAY BACK is unchanged: ORDER_ARRIVALS_ENABLED=off, and the stamping itself is additive — git revert is the whole job.'],
   ['1.26.2', 'THE ACTION BUTTONS STAY ON ONE ROW, THE MAP GOT TALLER, AND A GROUP RUN NOW COUNTS WHAT REACHED THE LOG. Chad, on a queue row with its map open: “map needs to be a little taller. I want these buttons in a row no matter height of the row.” THE WRAP WAS THE TABLE, NOT THE BUTTONS. “Do” is a column, not a card, and the browser kept shrinking it until “Wave off” fell onto its own line — which happened the moment the map button grew from “Map” to “Hide map”. Two halves, and one without the other does nothing: the desktop row is flex-nowrap AND the cell is whitespace-nowrap, so the table WIDENS the column instead of clipping it. The address columns already declare break-words, so they give the space up. The phone card keeps wrapping on purpose — three 44px buttons do not fit across 360px, and a card has room to grow downward, which is what the flow rule is for. Map 260px to 320px. AND THE THING THAT USING IT IN ANGER TURNED UP: four orders were pushed to NuVizz and NOT ONE reached the address history. The calls fired and nothing landed, and nothing on screen could have said so, because logAddressOverride swallows its own failure by design. That is the right shape for ONE save — a missing audit row must never cost a dispatcher the address they typed — and the wrong shape for a batch, where the whole point is a record. The group runner now AWAITS the log and counts it, and says “2 of 4 did not reach the address history” when one misses, wording it so it cannot be read as the correction having failed. It still cannot fail a save: the logger is wrapped end to end and returns false rather than throwing, and the durable write always lands first. The single-save paths stay fire-and-forget. THE TEST THAT BLOCKED THIS WAS PINNING A PROXY: it banned `await logAddressOverride` outright, when the rule is that a log failure must never fail a save. It now asserts the two properties that actually make awaiting safe, and that the editor still never waits. A ban is not a reason.'],
@@ -6378,23 +6379,36 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
       // the one failure worth having a record of would be the one that left none. callWrite
       // resolves network errors rather than throwing, so nothing SHOULD land here; `should` is
       // not a reason to leave the hole open.
-      let landed = false, why = '';
+      let landed = false, clean = false, why = '';
       try {
         // stopId pins the write to THIS record: two NuVizz orders can share one number, and
         // re-addressing the other twin sends freight to a place nobody chose. The server
         // refuses rather than guess.
         const r = await setStopAddress(pro, fields, { stopId: stop?.stopId || undefined });
         const out = r?.result || r || {};
-        landed = r?.ok === true;
+        // TWO QUESTIONS, ASKED SEPARATELY. `landed` is whether the ADDRESS reached the order —
+        // read back and proven server-side. `clean` is whether the write disturbed nothing
+        // else. Reading `ok` for both is what printed "NuVizz did not take it … the driver's
+        // manifest still has the old address" over an order NuVizz had taken perfectly; see
+        // addressReachedNuvizz for the order number and what it cost.
+        landed = addressReachedNuvizz(r);
+        clean = r?.ok === true;
         why = r?.error || out.error || 'the write failed.';
-        if (landed) setPush({ kind: 'ok', text: out.now ? `NuVizz now reads ${out.now}.` : 'Written onto the order in NuVizz.' });
+        if (landed && clean) setPush({ kind: 'ok', text: out.now ? `NuVizz now reads ${out.now}.` : 'Written onto the order in NuVizz.' });
       } catch (e) {
         why = e?.message || 'the write failed.';
       }
       // Amber, not red, and the saved half is stated FIRST — the board, the pin and the routing
       // ARE corrected either way, and a dispatcher reading a red error assumes they lost the
       // edit. What they actually have to do is fix the portal.
-      if (!landed) {
+      //
+      // THREE OUTCOMES, NOT TWO. The middle one is the common one and it had no wording at all:
+      // the address IS on the order and the write also touched something else. That reads as a
+      // green success with a warning attached, never as a failed write — and it must not send
+      // anybody to the portal to re-type an address that is already correct there.
+      if (landed && !clean) {
+        setPush({ kind: 'warn', text: `${out.now ? `NuVizz now reads ${out.now}.` : 'The address is on the order in NuVizz.'} The write also touched something else on the order, so check it in the portal before the truck goes: ${why}` });
+      } else if (!landed) {
         setPush({ kind: 'warn', text: `Saved on the board, but NuVizz did not take it: ${why} The driver's manifest still has the old address — fix the order in the portal.` });
       }
       // Logged ONCE, after the vendor half resolves, so the row records what happened rather
@@ -30275,6 +30289,11 @@ const queueRowPushable = (row) => !!row.stopNbr && !!row.stopId && !queueRowExec
  * whole point: continuing produces N identical failures, spends nothing useful, and buries the
  * one sentence that explains it.
  */
+/** Verdict kinds the editor shows in amber rather than green. `dirty` is in here because the
+ *  write touched something besides the address; it is NOT in the failure set below, because
+ *  the address itself did land and the row is genuinely corrected. */
+const QUEUE_WARN_KINDS = new Set(['partial', 'refused', 'blocked', 'unknown', 'dirty']);
+
 function classifyPushResult(j) {
   const http = j?.httpStatus;
   const err = String(j?.error || '');
@@ -30288,6 +30307,15 @@ function classifyPushResult(j) {
   if (j?.ok) return { kind: 'ok', text: out.now ? `NuVizz now reads ${out.now}.` : 'Written onto the order.' };
   if (out.blocked) return { kind: 'blocked', text: 'Address writes are switched off on this server (NUVIZZ_ADDRESS_WRITE=off). The board correction is saved.' };
   if (out.unverified) return { kind: 'unknown', text: `${out.error || err} — check the order in the portal before re-trying.` };
+  // THE ADDRESS LANDED AND THE WRITE WAS NOT CLEAN — four of six rows on 2026-09-14, every one
+  // of them reported to the dispatcher as "NuVizz refused the write". It did not: the server
+  // proved the new street on the read-back and recorded `addressLanded: true` on this very
+  // object. What it also saw was collateral (an attachment identity moving), which is worth
+  // saying and is a different sentence. Amber, and the row does NOT go back on the queue as
+  // unfixed, because the order is fixed.
+  if (addressReachedNuvizz(j)) {
+    return { kind: 'dirty', text: `${out.now ? `NuVizz now reads ${out.now}.` : 'The address is on the order.'} The write also touched something else — check it in the portal: ${out.error || err || 'see the write log.'}` };
+  }
   return { kind: 'refused', text: out.error || err || 'NuVizz refused the write.' };
 }
 
@@ -30309,7 +30337,10 @@ function AddressHistoryScreen() {
     try { localStorage.setItem(ADDR_TAB_KEY, id); } catch { /* a remembered tab is a convenience, never a requirement */ }
   }, []);
   const [sel, setSel] = React.useState({ kind: 'days', days: 14 });
-  const range = React.useMemo(() => resolveRange(sel, today), [sel, today]);
+  // SAME HORIZON AS THE ENDPOINT. The two resolve the identical selection and a difference
+  // here is a header describing one window over rows from another — the exact failure
+  // history-range.js exists to prevent. QUEUE_DAYS_AHEAD is why it reaches forward at all.
+  const range = React.useMemo(() => resolveRange(sel, today, QUEUE_DAYS_AHEAD), [sel, today]);
   const [stopQ, setStopQ] = React.useState('');
   const [kind, setKind] = React.useState(null);          // null = every kind
   const [source, setSource] = React.useState(null);      // null = both
@@ -30600,7 +30631,11 @@ async function saveQueueCorrection({ row, fields, google, push, today, clientOpI
     clientOpId,
   });
   const verdict = classifyPushResult(j);
-  const logged = await logAddressOverride({ stop: stopLike, before: row.shown, after: fields, source: 'override', nuvizz: verdict.kind === 'ok' || verdict.kind === 'partial' || verdict.kind === 'already' });
+  // THE LOG RECORDS WHAT WAS OBSERVED, not how the banner reads. `nuvizz: false` on this row
+  // means "we asked and the vendor refused — the manifest and the board disagree", which is a
+  // thing somebody is expected to go and fix. Deriving it from the clean-write verdict wrote
+  // that sentence into the permanent record for six orders NuVizz had accepted.
+  const logged = await logAddressOverride({ stop: stopLike, before: row.shown, after: fields, source: 'override', nuvizz: addressReachedNuvizz(j) });
   return { geoErr, pushed: verdict, logged };
 }
 
@@ -30652,7 +30687,13 @@ function useQueuePush(today, reload) {
         const { pushed, geoErr, logged } = await saveQueueCorrection({
           row, fields: correctedFields(row), google, push: sendToVendor, today, clientOpId: `op_queue_${row.key}`,
         });
-        loggedTried += 1; if (logged) loggedOk += 1;
+        // `logged` is an OBJECT now, and every object is truthy — counting it directly would
+        // report a perfect run whatever happened. A DECLINE is not a failure either: the
+        // server refuses a row that carries no material change, or one the day already holds
+        // (firestore.mts de-dupes on stop + before/after + kind), and warning about the log
+        // correctly doing its job is crying wolf on a clean run.
+        loggedTried += 1;
+        if (logged?.recorded || logged?.outcome === 'declined') loggedOk += 1;
         if (!sendToVendor && !pushed) {
           acc[row.key] = geoErr
             ? { kind: 'partial', text: 'Address saved, but the pin could not be moved — still on the queue.' }
@@ -30749,6 +30790,16 @@ function useProblemQueue(nonce, today) {
   }), []);
   const sweep = React.useCallback(() => setPicked((prev) =>
     (prev.size >= sweepable.length ? new Set() : new Set(sweepable.map((r) => r.key)))), [sweepable]);
+  // PER DAY, because that is the unit of work. The toolbar's "Select all N" takes every row on
+  // screen across every board day; a dispatcher clearing tomorrow's board does not want to
+  // drag Thursday's rows into the same 3-calls-each push. Adds and removes explicitly rather
+  // than toggling each key, so a day that is half-picked resolves to all-on in one press
+  // instead of inverting into a different half.
+  const sweepDay = React.useCallback((rows, on) => setPicked((prev) => {
+    const next = new Set(prev);
+    for (const r of rows) { if (on) next.add(r.key); else next.delete(r.key); }
+    return next;
+  }), []);
   const dismiss = React.useCallback(async (row, undo) => {
     try {
       await apiFetch('/.netlify/functions/address-queue', {
@@ -30757,7 +30808,48 @@ function useProblemQueue(nonce, today) {
       });
     } finally { reload(); }
   }, [reload]);
-  return { data, loading, err, days, allRows, sweepable, selected, picked, toggle, sweep, dismiss, showDismissed, setShowDismissed, reload, google, push };
+  return { data, loading, err, days, allRows, sweepable, selected, picked, toggle, sweep, sweepDay, dismiss, showDismissed, setShowDismissed, reload, google, push };
+}
+
+/**
+ * PURE: how many of one day's rows can be picked, and how many are. The header box reads
+ * checked only when EVERY selectable row on the day is picked, and half-filled when some are —
+ * a plain checked/unchecked box on a partly-picked day claims a selection that is not there,
+ * and the next press would silently push rows the dispatcher never chose.
+ *
+ * Counts the same rows the box can actually act on: `queueRowPushable` and not waved off, the
+ * identical test the toolbar's sweep uses, so the two controls can never disagree about what
+ * "all" means.
+ */
+function dayPickState(rows, picked) {
+  const keys = (rows || []).filter((r) => queueRowPushable(r) && !r.dismissed).map((r) => r.key);
+  const on = keys.filter((k) => picked.has(k)).length;
+  return { total: keys.length, on, all: keys.length > 0 && on === keys.length, some: on > 0 && on < keys.length };
+}
+
+/**
+ * SELECT ALL, ABOVE THE BOXES IT CONTROLS. Chad: "there should be a select all check box above
+ * the individual check boxes." The toolbar already had a Select all BUTTON, but it sits in a
+ * different block at the top of the screen and takes every day at once — so on a screen showing
+ * three board days there was no way to say "this day" without sixteen presses.
+ *
+ * `indeterminate` is not a React prop and cannot be set in JSX; it only exists on the DOM node,
+ * which is why this carries a ref. Without it a part-picked day renders as an empty box.
+ */
+function QueueSelectAllBox({ d, q, className = 'accent-blue-700 w-4 h-4' }) {
+  const st = dayPickState(d.rows, q.picked);
+  const ref = React.useRef(null);
+  React.useEffect(() => { if (ref.current) ref.current.indeterminate = st.some; }, [st.some]);
+  if (!st.total) return null;
+  return (
+    <input
+      ref={ref} type="checkbox" checked={st.all} onChange={() => q.sweepDay(d.rows, !st.all)}
+      disabled={q.push.running}
+      aria-label={`Select every fixable row on ${d.date}`}
+      title={st.all ? `Clear all ${st.total} on ${d.date}` : `Select all ${st.total} on ${d.date}`}
+      className={className}
+    />
+  );
 }
 
 /** One row's inline editor. Shared logic; each view decides where it sits. */
@@ -30802,7 +30894,7 @@ function useQueueRowEdit(row, google, today, reload) {
       const parts = [];
       if (pushed) parts.push(pushed.text);
       if (geoErr) parts.push('The address is saved but the pin could not be moved — it still points at the old spot, so this row stays on the queue.');
-      setMsg({ kind: pushed?.fatal ? 'warn' : (geoErr || pushed?.kind === 'partial' || pushed?.kind === 'refused' || pushed?.kind === 'blocked' || pushed?.kind === 'unknown') ? 'warn' : 'ok', text: parts.join(' ') || 'Saved on the board.' });
+      setMsg({ kind: pushed?.fatal ? 'warn' : (geoErr || QUEUE_WARN_KINDS.has(pushed?.kind)) ? 'warn' : 'ok', text: parts.join(' ') || 'Saved on the board.' });
       if (!geoErr && !pushed?.fatal) setOpen(false);
       reload();
     } catch (e) { setMsg({ kind: 'warn', text: String(e?.message || e) }); } finally { setBusy(false); }
@@ -30826,6 +30918,12 @@ function ProblemQueueMobile({ nonce, today }) {
           <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
             {d.date} · {d.rows.length} to fix <span className="font-normal normal-case text-slate-400">of {d.stopsRead} stops</span>
           </div>
+          {dayPickState(d.rows, q.picked).total > 0 && (
+            <label className="flex items-center gap-2 text-xs text-slate-600 px-1" style={{ minHeight: 44 }}>
+              <QueueSelectAllBox d={d} q={q} className="accent-blue-700" />
+              <span>Select all {dayPickState(d.rows, q.picked).total} on this day</span>
+            </label>
+          )}
           {!d.rows.length && <div className="rounded-xl border bg-white p-4 text-xs text-slate-500">Nothing wrong with this day’s addresses.</div>}
           {d.rows.map((row) => (
             <QueueRowMobile key={row.key} row={row} q={q} today={today} />
@@ -30893,7 +30991,7 @@ function ProblemQueueDesktop({ nonce, today }) {
                 <table className="w-full text-xs">
                   <thead className="bg-white text-slate-500 border-b">
                     <tr className="text-left">
-                      <th className="px-3 py-2 w-8" />
+                      <th className="px-3 py-2 w-8"><QueueSelectAllBox d={d} q={q} /></th>
                       <th className="px-3 py-2 font-semibold whitespace-nowrap">What</th>
                       <th className="px-3 py-2 font-semibold">Customer</th>
                       <th className="px-3 py-2 font-semibold">We show</th>

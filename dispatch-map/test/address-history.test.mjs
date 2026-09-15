@@ -258,10 +258,31 @@ test('a MOVED from an hour ago outranks a FORMATTING from ten minutes ago', () =
   assert.equal(out[out.length - 1].kind, 'formatting');
 });
 
-test('hideNoise drops formatting rows and nothing else', () => {
+test('hideNoise drops the VENDOR\'s formatting rows and nothing else', () => {
   const out = selectAddressChanges(ROWS, { hideNoise: true });
   assert.equal(out.length, 3);
-  assert.ok(!out.some((r) => r.kind === 'formatting'));
+  assert.ok(!out.some((r) => r.kind === 'formatting' && r.source === 'scan'));
+});
+
+test('A DISPATCHER\'S OWN CORRECTION IS NEVER NOISE, whatever kind it classifies as', () => {
+  // The queue's fix button swaps addr1/addr2 on a mis-split, and classifyChange calls that
+  // `formatting` ON PURPOSE — the text moved between two lines and no freight moved, so it must
+  // not fire the red `moved` class on the app's own suggested fix.
+  //
+  // Hiding it by default then withheld every queue correction from the screen built to show
+  // them. Ten of them on 2026-09-14 recorded perfectly and rendered as an empty log. `formatting`
+  // means "hundreds of rows of vendor drift nobody can act on"; a row a PERSON made on purpose
+  // is the record of the work, and there are never hundreds of those.
+  const rows = [...ROWS, { at: '2026-09-14T20:13:00.000Z', stopNbr: '007176667', kind: 'formatting', source: 'override' }];
+  const out = selectAddressChanges(rows, { hideNoise: true });
+  assert.ok(out.some((r) => r.stopNbr === '007176667'), 'the queue correction survives the default view');
+  assert.ok(!out.some((r) => r.kind === 'formatting' && r.source === 'scan'), 'and the vendor drift is still hidden');
+  // A reset is a person too.
+  const reset = selectAddressChanges(
+    [{ at: '2026-09-14T20:14:00.000Z', stopNbr: '007176668', kind: 'formatting', source: 'override-reset' }],
+    { hideNoise: true },
+  );
+  assert.equal(reset.length, 1);
 });
 
 test('a stop search matches the zero-padded form NuVizz files numeric PROs under', () => {

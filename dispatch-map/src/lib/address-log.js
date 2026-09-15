@@ -15,6 +15,14 @@
 //
 // NOTHING HERE MAY THROW. A failure to log must never fail the save the dispatcher just made;
 // the worst outcome allowed is a missing row.
+//
+// THE ROWS WERE NEVER MISSING (2026-09-14, and worth recording because two sessions went the
+// other way). Ten queue corrections read as an empty log and the search started here, on the
+// writer. The writer was fine: every row landed, in the day document for the BOARD DAY the
+// stop sat on — which was tomorrow. The reader clamped every request at today and the screen
+// hid `formatting` rows by default, so ten correct writes were invisible twice over. See
+// QUEUE_DAYS_AHEAD in history-range.js and the source test in selectAddressChanges. When a
+// write "fails" with no error anywhere, check that the reader can ask for where it went.
 
 import { apiFetch } from './api.js';
 
@@ -58,13 +66,18 @@ export function vendorAddress(stop) {
  * nobody asked for it. A caller that logs before the push resolves is claiming an outcome the
  * system has not observed.
  *
- * Returns true when the server said it recorded a row — used only by tests and by anyone
- * debugging the log itself. Callers in the UI ignore it and MUST NOT await it in a way that
- * can surface an error to the dispatcher.
+ * Returns { recorded, outcome, detail } where outcome is 'recorded' | 'declined' | 'failed'.
+ * DECLINED means the server correctly refused the row (no material change, or the day already
+ * holds an identical one); FAILED means the POST did not land. One boolean could not tell a
+ * correct refusal from a lost write, so a group run could only ever report a number without a
+ * reason. It never throws, so a caller may await it; single-save call sites still fire and
+ * forget, and none may surface a logging failure to the dispatcher as a failed save.
  */
 export async function logAddressOverride({ stop, before, after, source = 'override', nuvizz = null }) {
   try {
-    if (!stop || !before || !after) return false;
+    // Shaped like every other exit, because a bare `false` here is truthy-object's mirror
+    // image: a caller reading `.recorded` off it gets undefined and counts a silent success.
+    if (!stop || !before || !after) return { recorded: false, outcome: 'failed', detail: 'nothing to log' };
     const res = await apiFetch(ENDPOINT, {
       method: 'POST',
       cache: 'no-store',
@@ -88,9 +101,20 @@ export async function logAddressOverride({ stop, before, after, source = 'overri
       }),
     });
     const j = await res.json().catch(() => ({}));
-    return j?.recorded === true;
-  } catch {
-    // Swallowed on purpose — see the header. The dispatcher's address is already saved.
-    return false;
+    if (j?.recorded === true) return { recorded: true, outcome: 'recorded', detail: '' };
+    // DECLINED IS NOT FAILED. The server says `recorded: false` for two completely different
+    // reasons:
+    // the row carried no material change, or the day already holds an identical row (the
+    // scan's de-dupe, firestore.mts — keyed on stop + before/after + kind). Neither is a
+    // fault, and a batch that warned about them would cry wolf on its own correct behaviour.
+    if (res.ok && j?.ok !== false) {
+      return { recorded: false, outcome: 'declined', detail: String(j?.reason || 'already recorded') };
+    }
+    return { recorded: false, outcome: 'failed', detail: String(j?.error || `HTTP ${res.status}`) };
+  } catch (e) {
+    // The POST still never throws at a caller — the dispatcher's address is already saved, and
+    // a logging failure must never surface as a failed save. It now says WHAT went wrong so a
+    // batch can report a reason instead of a bare count.
+    return { recorded: false, outcome: 'failed', detail: String(e?.message || e || 'network error') };
   }
 }

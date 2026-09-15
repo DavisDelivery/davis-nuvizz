@@ -16,7 +16,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { setStopAddress } from '../src/lib/nuvizzWrite.js';
+import { setStopAddress, addressReachedNuvizz } from '../src/lib/nuvizzWrite.js';
 import { addressWriteBlocked } from '../netlify/functions/lib/nuvizz-write.mts';
 import { buildAddressChangeRow } from '../netlify/functions/lib/address-history.mts';
 
@@ -308,4 +308,85 @@ test('the client sends the note only when asked, and defaults it to the dispatch
   assert.equal(withNote.body.payload.noteAudience, 'dispatcher', 'Chad asked for a dispatcher note, not a driver one');
   const [without] = await captureWrite(() => setStopAddress('ESTES-1', { addr1: '1 MAIN ST' }));
   assert.ok(!('note' in without.body.payload), 'absent, not an empty string the server would reject');
+});
+
+// ── "NUVIZZ DID NOT TAKE IT" ABOUT AN ORDER NUVIZZ TOOK ───────────────────────
+//
+// Chad, 2026-09-14, a screenshot of order 007175992: "Saved on the board, but NuVizz did not
+// take it … The driver's manifest still has the old address — fix the order in the portal."
+// It had taken it. Twenty orders pushed that night were read back one by one against what was
+// sent: every address landed, every pin moved with it, every BOL still attached, nothing lost.
+// Ten of the twenty carried that banner.
+//
+// The cause is one boolean answering two questions. `ok` means "the write was CLEAN" — the
+// address landed AND nothing else on the order moved. The banner needed "did the ADDRESS
+// land", which the server proves by read-back and records separately as `addressLanded`.
+//
+// What was actually flagged is `documents: LOST to|BOL|03||pdf||01` — the attachment identity
+// guard. NONE of these tests weaken it. It still fails the write, still rides the result, and
+// still shows the dispatcher an amber warning. What changes is that the warning stops claiming
+// the address failed, and the audit row stops recording a refusal that did not happen.
+
+test('a write that landed the address but disturbed something else still LANDED the address', () => {
+  const j = { ok: false, result: { addressLanded: true, driftDetails: ['documents: LOST to|BOL|03||pdf||01'] } };
+  assert.equal(addressReachedNuvizz(j), true);
+});
+
+test('a write that did NOT land the address is never reported as landed', () => {
+  assert.equal(addressReachedNuvizz({ ok: false, result: { addressLanded: false } }), false);
+  // The worst case: the address did not change AND the write cost the order something.
+  assert.equal(addressReachedNuvizz({ ok: false, result: { addressLanded: false, driftDetails: ['documents: LOST x'] } }), false);
+});
+
+test('a clean success has no addressLanded to read, and is still landed', () => {
+  // The success path returns a different shape — measured on every "succeeded" row in the live
+  // write ledger, where addressLanded is absent. Falling back to `ok` is what keeps those true.
+  assert.equal(addressReachedNuvizz({ ok: true, result: { now: '4080 BONSAL RD, CONLEY, GA' } }), true);
+});
+
+test('a write that never ran is never claimed as landed', () => {
+  // NEVER AN INTENT AS AN OUTCOME. A 403 from the write switch, a 429 at the ceiling, a network
+  // error — none of these reached NuVizz, so none may record `nuvizz: true` on an audit row.
+  assert.equal(addressReachedNuvizz({ ok: false, httpStatus: 403, error: 'requires dispatcher' }), false);
+  assert.equal(addressReachedNuvizz({ ok: false, result: { blocked: true } }), false);
+  assert.equal(addressReachedNuvizz({ ok: false, error: 'network error: fetch failed' }), false);
+  assert.equal(addressReachedNuvizz({}), false);
+  assert.equal(addressReachedNuvizz(null), false);
+  // An unverified read-back is the one case where we genuinely do not know. It must read false:
+  // "we could not prove it" and "it landed" are different, and only one of them is safe to log.
+  assert.equal(addressReachedNuvizz({ ok: false, result: { unverified: true } }), false);
+});
+
+test('an idempotent replay costs no call and is still on the order', () => {
+  assert.equal(addressReachedNuvizz({ ok: true, idempotent: true }), true);
+  assert.equal(addressReachedNuvizz({ idempotent: true, result: {} }), true);
+});
+
+test('THE AUDIT ROW RECORDS WHAT WAS OBSERVED, not how the banner reads', () => {
+  // `nuvizz: false` on a history row means "we asked and the vendor refused — the board and the
+  // driver's manifest disagree and somebody has to fix the portal". Deriving it from the
+  // clean-write verdict wrote that sentence into the permanent record for ten orders NuVizz had
+  // accepted, on the one screen built to answer "did our fix reach the order".
+  const save = fnSource('saveQueueCorrection');
+  assert.match(save, /nuvizz: addressReachedNuvizz\(j\)/);
+  assert.doesNotMatch(save, /nuvizz: verdict\.kind === 'ok'/, 'never from the clean-write verdict');
+});
+
+test('the stop card tells a dispatcher the address is there before warning about the rest', () => {
+  const modal = APP.slice(APP.indexOf('let landed = false, clean = false'));
+  assert.match(modal, /landed = addressReachedNuvizz\(r\)/, 'the address question is asked on its own');
+  assert.match(modal, /clean = r\?\.ok === true/, 'and the clean question separately');
+  // The middle outcome — landed but not clean — is the common one and had no wording at all.
+  assert.match(modal, /if \(landed && !clean\)[\s\S]{0,400}?The write also touched something else/);
+  // And it must NOT send anybody to the portal to re-type an address already correct there.
+  const mid = modal.slice(modal.indexOf('if (landed && !clean)'), modal.indexOf('} else if (!landed)'));
+  assert.doesNotMatch(mid, /still has the old address/, 'no false claim about the manifest');
+});
+
+test('the drift warning is not silenced — it is still shown, as what it is', () => {
+  const modal = APP.slice(APP.indexOf('let landed = false, clean = false'));
+  assert.match(modal, /if \(landed && !clean\)[\s\S]{0,400}?\$\{why\}/, 'the vendor text still reaches the screen');
+  const cls = fnSource('classifyPushResult');
+  assert.match(cls, /kind: 'dirty'/, 'and the queue row gets its own verdict for it');
+  assert.match(APP, /QUEUE_WARN_KINDS = new Set\(\[[^\]]*'dirty'/, 'rendered amber, never green');
 });

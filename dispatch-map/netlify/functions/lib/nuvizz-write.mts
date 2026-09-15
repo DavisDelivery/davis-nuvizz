@@ -24,7 +24,7 @@ import {
   rawStopExecStatus, isExecutedStopStatus, cancelResponseConfirms,
   buildStopNoteComment, rawStopFrom, stopCommentsFrom, mergeStopComments,
   stopNoteFingerprint, fingerprintDrift, buildNoteWriteStop, echoDrift, driftDetail,
-  unsentLosses, documentHandlesMoved, type NoteAudience,
+  unsentLosses, documentHandlesMoved, documentIdentities, documentHandles, type NoteAudience,
   buildPartialUpdateStop, buildStopDateOverride, stopDeliveryDate, isDayString, boardDateHoldWarning,
   stopInstanceMismatch, readBackInstanceMismatch, readBackUnidentifiable, isIdShaped, orderDriftPaths, addressDriftWarning,
   buildStopAddressOverride, addressLanded, addressMatchesTyped, addressMoved,
@@ -2657,6 +2657,22 @@ export async function runSetStopAddress(requester: RequesterLike, payload: any, 
   const details = [...driftDetail(sent, afterEcho, drift), ...losses.map((l) => `${l.path}: LOST ${l.lost.join(' · ')}`)];
   if (drift.length || losses.length) {
     return { ok: false, calls, stopNbr, stopId, side, from, to, now, drift, driftDetails: details, addressLanded: landed, noteLanded, noteDuplicate,
+      // BOTH SIDES OF THE ATTACHMENT DIFF, ON THE LEDGER ROW, WHEN AND ONLY WHEN IT FIRED.
+      //
+      // Twenty address pushes on 2026-09-14 produced ten `documents: LOST to|BOL|03||pdf||01`
+      // and a direct read of all twenty orders found every BOL still attached — zero losses,
+      // ten alarms. Why it fires on half of them and not the other half CANNOT BE DETERMINED
+      // from what the ledger stored, because the row kept the verdict and threw away the
+      // evidence: `lost` names what went missing and nothing records what the read-back
+      // actually held. So the same investigation has to start from scratch every time.
+      //
+      // This is the free diagnostic, not a fix and not a relaxation: `unsentLosses` is
+      // untouched and still fails the write. The next occurrence is answerable from one
+      // nuvizz-write-log read — did the after-side come back EMPTY (a read that caught the
+      // vendor mid-restamp) or carrying a different identity (a real change)? Only written on
+      // the flagged path, so a clean write stores nothing extra.
+      docsBefore: documentIdentities(rawBefore), docsAfter: documentIdentities(rawAfter),
+      handlesBefore: documentHandles(rawBefore), handlesAfter: documentHandles(rawAfter),
       error: `setStopAddress: ${landed ? `the address changed to ${now}` : `the address did NOT change (${stopNbr} still reads ${now || '(no address)'})`} AND partialUpdate changed ${drift.length + losses.length} other field(s) on the order. ${details.slice(0, 5).join(' | ')}${details.length > 5 ? ` (+${details.length - 5} more)` : ''}. Check ${stopNbr} in the portal.` };
   }
   if (!landed) {

@@ -38,7 +38,7 @@ import {
   selectAddressChanges, summarizeAddressChanges, buildAddressChangeRow, addressHistoryEnabled,
   type AddressChangeKind, type AddressChangeSource,
 } from './lib/address-history.mts';
-import { resolveRange, expandRange, selectionFromParams } from '../../src/lib/history-range.js';
+import { resolveRange, expandRange, selectionFromParams, QUEUE_DAYS_AHEAD } from '../../src/lib/history-range.js';
 import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
@@ -69,7 +69,10 @@ export default async (req: Request): Promise<Response> => {
 
   const url = new URL(req.url);
   const get = (k: string) => url.searchParams.get(k);
-  const range = resolveRange(selectionFromParams(get), etDayString());
+  // REACHES FORWARD, and it has to. A queue correction is filed against the BOARD DAY the stop
+  // sits on, which is routinely tomorrow or the day after — see QUEUE_DAYS_AHEAD for the ten
+  // rows that were written correctly and could not be asked for.
+  const range = resolveRange(selectionFromParams(get), etDayString(), QUEUE_DAYS_AHEAD);
   if (!range.from || !range.to) return J({ ok: false, error: 'could not resolve a date range' }, 400);
 
   const kinds = String(get('kind') || '').split(',').map((k) => k.trim()).filter((k) => KINDS.has(k)) as AddressChangeKind[];

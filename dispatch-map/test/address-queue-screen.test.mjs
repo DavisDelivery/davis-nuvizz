@@ -279,15 +279,23 @@ test('the phone keeps wrapping — three 44px buttons do not fit across 360px', 
 });
 
 test('A GROUP RUN COUNTS WHAT REACHED THE ADDRESS LOG, and says so when one did not', () => {
-  // Four orders were pushed to NuVizz on 2026-09-14 and not one reached the address log. The
-  // calls fired and nothing landed — and nothing could have said so, because logAddressOverride
-  // swallows its own failure by design. That is right for a single save (a missing row must
-  // never cost a dispatcher their edit) and wrong for a batch.
+  // Ten queue corrections read as an empty address log on 2026-09-14, so the runner learned to
+  // count what it logged. (The rows had in fact all been written — to the BOARD DAY, which the
+  // reader clamped away; see history-range.js. The count stays useful either way and is what
+  // would have shown the writer was fine on the first evening instead of the third.)
   const save = fnSource('saveQueueCorrection');
   assert.match(save, /const logged = await logAddressOverride\(/, 'awaited, so its answer exists');
   assert.match(save, /return \{ geoErr, pushed: verdict, logged \}/, 'and is carried back to the runner');
   const run = fnSource('useQueuePush');
-  assert.match(run, /loggedTried \+= 1; if \(logged\) loggedOk \+= 1;/);
+  // THE OBJECT IS ALWAYS TRUTHY. `if (logged)` counts every attempt a success and reports a
+  // perfect run whatever happened — the failure mode this whole counter exists to catch,
+  // reintroduced by the thing that fixed it.
+  assert.doesNotMatch(run, /if \(logged\) loggedOk/, 'never counts the object itself');
+  assert.match(run, /logged\?\.recorded/, 'counts the recorded flag');
+  // A DECLINE IS NOT A FAILURE. The server refuses a row carrying no material change, and one
+  // the day already holds (firestore.mts de-dupes on stop + before/after + kind). Warning about
+  // either is the banner crying wolf on the log doing its job correctly.
+  assert.match(run, /logged\?\.outcome === 'declined'/, 'and a correct refusal is not counted against the run');
   assert.match(run, /setLogged\(\{ ok: loggedOk, tried: loggedTried \}\)/);
 });
 
@@ -301,7 +309,11 @@ test('…and the warning appears ONLY when a row failed to log', () => {
 test('a failed log can still never fail the correction', () => {
   // The await must not turn a missing audit row into a lost address.
   const log = fs.readFileSync(new URL('../src/lib/address-log.js', import.meta.url), 'utf8');
-  assert.match(log, /catch \{[\s\S]{0,200}?return false;/, 'the POST still swallows its own errors');
+  assert.match(log, /catch \(e\) \{[\s\S]{0,700}?return \{ recorded: false, outcome: 'failed'/, 'the POST still resolves its own errors rather than throwing them');
+  // A `throw` STATEMENT anywhere in the function, not the word 'throw' wherever it appears —
+  // the first draft of this line matched the word "throws" in the comment directly below the
+  // catch and would have failed a correct implementation.
+  assert.doesNotMatch(log.slice(log.indexOf('export async function logAddressOverride')), /(^|\n)\s*throw\s/, 'and still never rethrows');
   const save = fnSource('saveQueueCorrection');
   const board = save.indexOf("setDoc(doc(db, 'customer_notes'");
   const firstLog = save.indexOf('await logAddressOverride(');
@@ -310,4 +322,64 @@ test('a failed log can still never fail the correction', () => {
 
 test('THE MAP IS TALLER — it is the whole diagnosis on a pin row', () => {
   assert.match(fnSource('QueuePinMap'), /style=\{\{ height: 320 \}\}/);
+});
+
+// ── SELECT ALL, ABOVE THE BOXES IT CONTROLS ──────────────────────────────────
+//
+// Chad: "there should be a select all check box above the individual check boxes." The toolbar
+// already had a Select all BUTTON, but it lives in a different block at the top of the screen
+// and takes EVERY board day at once. On a screen showing three days that is not the control a
+// dispatcher wants: clearing tomorrow's board should not drag Thursday's rows into the same
+// push at 3 metered calls each.
+
+test('the desktop box sits in the header cell directly above the row boxes', () => {
+  const desk = fnSource('ProblemQueueDesktop');
+  assert.match(desk, /<th className="px-3 py-2 w-8"><QueueSelectAllBox d=\{d\} q=\{q\} \/><\/th>/,
+    'the blank header cell over the checkbox column is where it goes');
+});
+
+test('the phone gets its own labelled control, not the desktop one reflowed', () => {
+  // Two views, always. There is no header row on a card list, so the box needs a label of its
+  // own — and a 44px touch target, which an 16px checkbox in a table header does not need.
+  const mob = fnSource('ProblemQueueMobile');
+  assert.match(mob, /<QueueSelectAllBox d=\{d\} q=\{q\}/, 'the same rule');
+  assert.match(mob, /Select all \{dayPickState\(d\.rows, q\.picked\)\.total\} on this day/, 'with its own wording');
+  assert.match(mob, /<label[^>]*minHeight: 44/, 'and a thumb-sized target');
+});
+
+test('A PART-PICKED DAY IS NEVER DRAWN AS AN EMPTY BOX', () => {
+  // A plain unchecked box over four picked rows claims a selection that is not there, and the
+  // next press would push rows the dispatcher never chose. `indeterminate` is not a React prop
+  // and cannot be set in JSX — it exists only on the DOM node, which is why this needs a ref.
+  const box = fnSource('QueueSelectAllBox');
+  assert.match(box, /ref\.current\.indeterminate = st\.some/);
+  assert.match(box, /checked=\{st\.all\}/, 'checked only when every selectable row is picked');
+});
+
+test('the box counts exactly the rows it can act on — the same test the toolbar sweep uses', () => {
+  // A box that counts rows it cannot push reads "4 of 6" for ever and never goes checked.
+  const st = fnSource('dayPickState');
+  assert.match(st, /queueRowPushable\(r\) && !r\.dismissed/);
+  const hook = fnSource('useProblemQueue');
+  assert.match(hook, /sweepable = React\.useMemo\(\(\) => allRows\.filter\(\(r\) => queueRowPushable\(r\) && !r\.dismissed\)/,
+    'and the toolbar sweep tests the same thing, so the two can never disagree about "all"');
+});
+
+test('a half-picked day resolves to ALL on one press, never inverting into the other half', () => {
+  // Toggling each key individually would turn "4 of 9 picked" into "5 of 9 picked" — a control
+  // that scrambles a selection rather than completing it.
+  const hook = fnSource('useProblemQueue');
+  assert.match(hook, /const sweepDay = React\.useCallback\(\(rows, on\) =>/);
+  assert.match(hook, /if \(on\) next\.add\(r\.key\); else next\.delete\(r\.key\);/, 'explicit add/remove, not a toggle');
+  assert.match(fnSource('QueueSelectAllBox'), /q\.sweepDay\(d\.rows, !st\.all\)/);
+  assert.match(hook, /sweepable, selected, picked, toggle, sweep, sweepDay,/, 'and the views can reach it');
+});
+
+test('it cannot be pressed mid-run, when the selection is what is being spent', () => {
+  assert.match(fnSource('QueueSelectAllBox'), /disabled=\{q\.push\.running\}/);
+});
+
+test('a day with nothing selectable shows no box at all', () => {
+  // An always-disabled checkbox over "Nothing wrong with this day's addresses" is furniture.
+  assert.match(fnSource('QueueSelectAllBox'), /if \(!st\.total\) return null;/);
 });
