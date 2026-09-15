@@ -25106,6 +25106,20 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, plannedLo
           trap: on a board where nothing is marked green every stop is held to a box, and the
           53' leaves the plan without a word. Amber, not red: an idle truck is a thing to know,
           not necessarily a thing that went wrong. */}
+      {/* A CAP THE BUILD HAD TO SUPPLY. A truck profile with a blank Skids box used to plan as
+          if the truck were bottomless — capLimited reads a non-positive cap as "no limit", which
+          switches off the skid gate AND the balance term, and is how 25 skids landed 4/20 across
+          two box trucks that hold 14. The build fills the class floor in now; this says it did,
+          because a number nobody chose is only safe while it is visible. */}
+      {Array.isArray(result.capacityNotes) && result.capacityNotes.length > 0 && (
+        <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[12px]">
+          <div className="font-semibold text-amber-800 mb-1">
+            {result.capacityNotes.length === 1 ? 'A truck had no limit set — the build supplied one' : `${result.capacityNotes.length} truck limits were missing — the build supplied them`}
+          </div>
+          {result.capacityNotes.map((n, i) => <div key={i} className="text-amber-900 leading-snug">{n.text}</div>)}
+        </div>
+      )}
+
       {result.idleTrucks && result.idleTrucks.length > 0 && (
         <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[12px]">
           <div className="font-semibold text-amber-800 mb-1">
