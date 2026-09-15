@@ -24,6 +24,7 @@ import crypto from 'node:crypto';
 // this module's cold-start path. See lib/address-history.mts for what it classifies and why.
 import { buildAddressChangeRow, addressHistoryEnabled } from './address-history.mts';
 import { finishedGuardEnabled, isFinishedBoardRow } from './finished-guard.mts';
+import { routeMoved, moveClearsDriverEnabled } from './route-identity.mts';
 
 const FIRESTORE_BASE = 'https://firestore.googleapis.com/v1';
 
@@ -738,11 +739,25 @@ export async function patchStopFields(tenant: string, dateStr: string, stopNbr: 
 //
 // PURE field builders (exported for tests) — mirror toBoardStop's shapes exactly:
 // planned open stop = status '20'/SCHEDULED, board loadNbr = the route NAME.
-export function boardWritePlannedFields(routeName: string, seq: number, driverName: string | null, at: string): any {
+// A DRIVER BELONGS TO THE LOAD, NOT TO THE ORDER (Chad, Sep 2026 — PRO 7175976). He moved that
+// order off COLIN 1 onto GAINESVILLE, which had nobody on it, and the board came back naming
+// COLIN as GAINESVILLE's driver. Nothing was assigned in NuVizz: this stamp sets the row's new
+// route and, with no driver to write, left the row's OLD one standing — so a single moved row
+// carried its previous truck onto the destination. Everything downstream reads a load's driver
+// off its rows (the Loads grid takes the first row that has one; board-flags fillRouteDrivers
+// spreads a route's single driver name onto every flag row, which is what puts a name in a
+// miss-window email and an SMS), so one stale field names the wrong driver on the whole load.
+// `priorRoute` is the row's CURRENT route — pass it and a stamp with no driver CLEARS the stale
+// one when the order is demonstrably changing loads (routeMoved refuses to compare a load number
+// or a hex key against a name). Omit it (or pass null) and behaviour is exactly as before: a
+// re-sequence, or any stamp on the route the order is already on, never touches the driver, so a
+// load that IS crewed keeps its name on screen.
+export function boardWritePlannedFields(routeName: string, seq: number, driverName: string | null, at: string, priorRoute: string | null = null): any {
+  const cleared = !driverName && routeMoved(priorRoute, routeName);
   return {
     status: '20', normalizedStatus: 'SCHEDULED', isPlanned: true, isUnplanned: false,
     loadNbr: routeName, routeName, routeSeq: seq,
-    ...(driverName ? { driverName, driverUserName: driverName } : {}),
+    ...(driverName ? { driverName, driverUserName: driverName } : cleared ? { driverName: null, driverUserName: null } : {}),
     board_write_at: at, board_write_planned: true,
   };
 }
@@ -777,10 +792,21 @@ export async function patchBoardPlan(
 ): Promise<{ patched: number; missing: number; rescued: number; missingNbrs: string[]; skippedFinished: number; skippedFinishedNbrs: string[] }> {
   if (!isFirestoreEnabled()) return { patched: 0, missing: 0, rescued: 0, missingNbrs: [], skippedFinished: 0, skippedFinishedNbrs: [] };
   const base = `${COLLECTION}/${parentId(tenant, dateStr)}`;
-  const jobs: Array<{ nbr: string; fields: any }> = [];
-  patch.orderedStopNbrs.forEach((nbr, i) => jobs.push({ nbr: String(nbr), fields: boardWritePlannedFields(patch.routeName, i + 1, patch.driverName ?? null, patch.at) }));
+  // `fieldsFor` takes the row AS IT STANDS, because a planned stamp's driver decision depends on
+  // the route the row is on right now (see boardWritePlannedFields). Both write paths below —
+  // the direct patch and the carry-over rescue — already hold that row, so neither costs a read.
+  // With the switch off, priorRoute is never passed and every stamp is byte-identical to before.
+  const clearsDriverOnMove = moveClearsDriverEnabled();
+  const jobs: Array<{ nbr: string; fieldsFor: (cur: any) => any }> = [];
+  patch.orderedStopNbrs.forEach((nbr, i) => jobs.push({
+    nbr: String(nbr),
+    fieldsFor: (cur: any) => boardWritePlannedFields(
+      patch.routeName, i + 1, patch.driverName ?? null, patch.at,
+      clearsDriverOnMove ? (cur?.routeName ?? cur?.loadNbr ?? null) : null,
+    ),
+  }));
   // patch.routeName IS the route these stops are being taken off — the from-route the stamp keeps.
-  for (const nbr of (patch.unplannedStopNbrs || [])) jobs.push({ nbr: String(nbr), fields: boardWriteUnplannedFields(patch.at, patch.routeName) });
+  for (const nbr of (patch.unplannedStopNbrs || [])) jobs.push({ nbr: String(nbr), fieldsFor: () => boardWriteUnplannedFields(patch.at, patch.routeName) });
   // FINISHED FREIGHT NEVER TAKES A PLAN STAMP (v1.29.1 — lib/finished-guard.mts). Order 007174583
   // had delivered at 04:37 when a 05:59 strike-off stamped it UNPLANNED, route and driver blanked,
   // and the write grace defended that for an hour. A row already DELIVERED / EXCEPTION / CANCELLED
@@ -793,7 +819,7 @@ export async function patchBoardPlan(
   const skippedFinishedNbrs: string[] = [];
   const skipFinished = (nbr: string) => { skippedFinished++; if (skippedFinishedNbrs.length < 20) skippedFinishedNbrs.push(nbr); };
   let patched = 0, i = 0;
-  const missed: Array<{ nbr: string; fields: any }> = [];
+  const missed: Array<{ nbr: string; fieldsFor: (cur: any) => any }> = [];
   const worker = async () => {
     while (i < jobs.length) {
       const j = jobs[i++];
@@ -802,7 +828,7 @@ export async function patchBoardPlan(
         if (!cur) { missed.push(j); continue; }
         if (guard && isFinishedBoardRow(cur)) { skipFinished(j.nbr); continue; }
         const { _id, ...rest } = cur as any;
-        await setDoc(`${base}/stops/${j.nbr}`, { ...rest, ...j.fields });
+        await setDoc(`${base}/stops/${j.nbr}`, { ...rest, ...j.fieldsFor(cur) });
         patched++;
       } catch { missed.push(j); }
     }
@@ -845,8 +871,9 @@ export async function patchBoardPlan(
             // copying it forward re-stamped would put a delivery on today's board as open work.
             if (guard && isFinishedBoardRow(cur)) { skipFinished(j.nbr); continue; }
             const { _id, ...rest } = cur as any;
-            await setDoc(`${priorBase}/stops/${j.nbr}`, { ...rest, ...j.fields });
-            await setDoc(`${base}/stops/${j.nbr}`, { ...rest, ...j.fields, boardDate: dateStr, carryover: true });
+            const fields = j.fieldsFor(cur);
+            await setDoc(`${priorBase}/stops/${j.nbr}`, { ...rest, ...fields });
+            await setDoc(`${base}/stops/${j.nbr}`, { ...rest, ...fields, boardDate: dateStr, carryover: true });
             rescued++;
           } catch { next.push(j); }
         }
@@ -1433,7 +1460,10 @@ const PLAN_VERDICT_MAX = 600;
 export type PlanVerdictBasis =
   | 'fresh-terminal' | 'roster-unreadable' | 'load-read-budget' | 'load-member'
   | 'record-budget' | 'twin-mismatch' | 'record' | 'record-read-failed'
-  | 'write-grace' | 'unverified-over-cap' | 'verify-disabled';
+  | 'write-grace' | 'unverified-over-cap' | 'verify-disabled'
+  // v1.31.0 — the row is on ANOTHER load of the same name; today's instance (the roster's
+  // one load by that name) was read and does not hold it. See lib/name-collision.mts.
+  | 'name-collision';
 export interface PlanVerdictRow {
   /** the scan's stamp (scannedAt) — every row of one scan shares it */
   at: string;
@@ -1477,6 +1507,36 @@ export async function readPlanVerdicts(tenant: string, dateStr: string): Promise
     const arr = JSON.parse(doc.rowsJson || '[]');
     return Array.isArray(arr) ? arr : [];
   } catch { return []; }
+}
+
+// ── The name-collision memo (v1.31.0) ────────────────────────────────────────
+//
+// One document per tenant: load number → the membership the scan last read for it, and the
+// SIGNATURE (roster count + the exact stop numbers under the name) that read is valid for.
+// This is what turns "one /load/info per colliding load per scan" (~63 planned scans a
+// weekday) into "one per collision, then only when it changes". A memo, not a judge: an
+// unreadable or absent memo only means the next scan asks NuVizz again. Whole-document
+// write, because the scan is the only writer and the document is entirely its own.
+import type { CollisionMemoEntry } from './name-collision.mts';
+const nameCollisionMemoPath = (tenant: string) => `${OPS_COLLECTION}/name_collision__${tenantKey(tenant)}`;
+export async function readNameCollisionMemo(tenant: string): Promise<Record<string, CollisionMemoEntry>> {
+  if (!isFirestoreEnabled()) return {};
+  try {
+    const doc = await getDoc(nameCollisionMemoPath(tenant));
+    if (!doc) return {};
+    const obj = JSON.parse(doc.memoJson || '{}');
+    return obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : {};
+  } catch { return {}; }
+}
+export async function writeNameCollisionMemo(tenant: string, memo: Record<string, CollisionMemoEntry>): Promise<boolean> {
+  if (!isFirestoreEnabled()) return false;
+  try {
+    await setDoc(nameCollisionMemoPath(tenant), {
+      tenant: tenantKey(tenant), updated_at: new Date().toISOString(),
+      count: Object.keys(memo || {}).length, memoJson: JSON.stringify(memo || {}),
+    } as any);
+    return true;
+  } catch { return false; }
 }
 
 // ── The address-change log (v1.20.0) ─────────────────────────────────────────

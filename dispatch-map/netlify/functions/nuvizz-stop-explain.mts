@@ -186,6 +186,8 @@ export default async (req: Request): Promise<Response> => {
   const recentScans = (runs || []).slice(-6).reverse().map((r: any) => ({
     startedAt: r?.startedAt ?? null, finishedAt: r?.finishedAt ?? null, trigger: r?.trigger ?? null, path: r?.path ?? null, outcome: r?.outcome ?? null,
     planVerdicts: Array.isArray(r?.dates) ? r.dates.filter((d: any) => d?.planVerdicts).map((d: any) => ({ date: d.date, ...d.planVerdicts })) : [],
+    // v1.31.0 — what the run did about two loads sharing a name (checked / read / dropped).
+    nameCollisions: Array.isArray(r?.dates) ? r.dates.filter((d: any) => d?.nameCollisions).map((d: any) => ({ date: d.date, ...d.nameCollisions })) : [],
   }));
   return J({
     ok: true, nuvizzCalls: 0, candidates, ...out, recentScans, addressChanges,

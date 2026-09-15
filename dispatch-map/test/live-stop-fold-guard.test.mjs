@@ -20,11 +20,15 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 const src = await readFile(fileURLToPath(new URL('../src/App.jsx', import.meta.url)), 'utf8');
+// isHashLikeId moved to src/lib/route-identity.js (v1.31.1) so the board paint and the server's
+// board write could share ONE definition of what a route label is. Lifted from there now — same
+// technique, same real code, just its new home.
+const idSrc = await readFile(fileURLToPath(new URL('../src/lib/route-identity.js', import.meta.url)), 'utf8');
 
 // The guard depends on isHashLikeId; lift both and run the real code.
-const hashFn = src.match(/function isHashLikeId\(v\) \{[\s\S]*?\n\}/)?.[0];
+const hashFn = idSrc.match(/export function isHashLikeId\(v\) \{[\s\S]*?\n\}/)?.[0]?.replace(/^export /, '');
 const guardFn = src.match(/function liveStopFoldGuard\(cardStopId, incoming\) \{[\s\S]*?\n\}/)?.[0];
-assert.ok(hashFn, 'isHashLikeId is gone from App.jsx');
+assert.ok(hashFn, 'isHashLikeId is gone from src/lib/route-identity.js');
 assert.ok(guardFn, 'liveStopFoldGuard is gone from App.jsx — if renamed, update this test');
 const liveStopFoldGuard = new Function(`${hashFn}; ${guardFn}; return liveStopFoldGuard;`)();
 
