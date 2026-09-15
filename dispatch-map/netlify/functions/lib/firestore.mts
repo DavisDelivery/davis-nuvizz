@@ -1433,7 +1433,10 @@ const PLAN_VERDICT_MAX = 600;
 export type PlanVerdictBasis =
   | 'fresh-terminal' | 'roster-unreadable' | 'load-read-budget' | 'load-member'
   | 'record-budget' | 'twin-mismatch' | 'record' | 'record-read-failed'
-  | 'write-grace' | 'unverified-over-cap' | 'verify-disabled';
+  | 'write-grace' | 'unverified-over-cap' | 'verify-disabled'
+  // v1.31.0 — the row is on ANOTHER load of the same name; today's instance (the roster's
+  // one load by that name) was read and does not hold it. See lib/name-collision.mts.
+  | 'name-collision';
 export interface PlanVerdictRow {
   /** the scan's stamp (scannedAt) — every row of one scan shares it */
   at: string;
@@ -1477,6 +1480,36 @@ export async function readPlanVerdicts(tenant: string, dateStr: string): Promise
     const arr = JSON.parse(doc.rowsJson || '[]');
     return Array.isArray(arr) ? arr : [];
   } catch { return []; }
+}
+
+// ── The name-collision memo (v1.31.0) ────────────────────────────────────────
+//
+// One document per tenant: load number → the membership the scan last read for it, and the
+// SIGNATURE (roster count + the exact stop numbers under the name) that read is valid for.
+// This is what turns "one /load/info per colliding load per scan" (~63 planned scans a
+// weekday) into "one per collision, then only when it changes". A memo, not a judge: an
+// unreadable or absent memo only means the next scan asks NuVizz again. Whole-document
+// write, because the scan is the only writer and the document is entirely its own.
+import type { CollisionMemoEntry } from './name-collision.mts';
+const nameCollisionMemoPath = (tenant: string) => `${OPS_COLLECTION}/name_collision__${tenantKey(tenant)}`;
+export async function readNameCollisionMemo(tenant: string): Promise<Record<string, CollisionMemoEntry>> {
+  if (!isFirestoreEnabled()) return {};
+  try {
+    const doc = await getDoc(nameCollisionMemoPath(tenant));
+    if (!doc) return {};
+    const obj = JSON.parse(doc.memoJson || '{}');
+    return obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : {};
+  } catch { return {}; }
+}
+export async function writeNameCollisionMemo(tenant: string, memo: Record<string, CollisionMemoEntry>): Promise<boolean> {
+  if (!isFirestoreEnabled()) return false;
+  try {
+    await setDoc(nameCollisionMemoPath(tenant), {
+      tenant: tenantKey(tenant), updated_at: new Date().toISOString(),
+      count: Object.keys(memo || {}).length, memoJson: JSON.stringify(memo || {}),
+    } as any);
+    return true;
+  } catch { return false; }
 }
 
 // ── The address-change log (v1.20.0) ─────────────────────────────────────────
