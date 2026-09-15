@@ -30,6 +30,7 @@ import {
   buildStopAddressOverride, addressLanded, addressMatchesTyped, addressMoved,
   CANCEL_REASON_DEFAULT,
   buildStopContactOverride, stopContactFrom, normalizeContactPhone,
+  isTransportRetryable,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId, statusFromCode, isTerminalStatus } from './nuvizz-list.mts';
@@ -76,7 +77,12 @@ async function fireSingle(requester: RequesterLike, op: SingleOp, payload: any, 
   // NON-IDEMPOTENT writes are never transport-retried: an assign/dispatch whose first attempt
   // APPLIED but answered 5xx would double-fire on retry (a duplicate DISPATCH to the driver).
   // Reads and the DECLARATIVE import keep the default retry policy — re-sending those is safe.
-  const noRetry = op === 'assignDriver' || op === 'dispatchLoad' || op === 'insertStops' || op === 'removeStops' || op === 'createStop';
+  //
+  // The classification lives in RETRY_SAFE_MUTATIONS (nuvizz-write-ops.mts) rather than in an
+  // expression here. This line used to name five ops literally; createRoute joined SINGLE_OPS
+  // later and was never added, so every failed route create quietly fired FIVE POSTs instead
+  // of one. An allowlist fails closed — see the note on that constant.
+  const noRetry = !isTransportRetryable(op);
   const resp = await requester.request(br.url, { method: br.method, headers: br.headers, body: br.body, ...(noRetry ? { maxRetries: 0 } : {}) }, br.meta);
   const j = await safeJson(resp);
   const parsed = parseOpResponse(op, resp.ok, j);
