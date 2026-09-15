@@ -23,6 +23,7 @@ import { DEPOT, type EquipmentReq, type SolverTruck } from './lib/routing-types.
 import { getDoc } from './lib/firestore.mts';
 import { normalizeMatchKey } from '../../src/lib/matchKey.js';
 import { stopTimeRestriction, boardDefaultSlots, timeRestrictionsEnabled } from './lib/routing-time-windows.mts';
+import { resolveTruckCaps } from './lib/truck-capacity.mts';
 import { withDeadline } from './lib/async-util.mts';
 import { requireUserForBackground } from './lib/background-gate.mts';
 
@@ -167,7 +168,16 @@ export default async function handler(req: Request): Promise<Response> {
     const stops: PipelineStopInput[] = Array.isArray(r.stops) && r.stops.length
       ? r.stops
       : await resolveStops(tenant, date, r.selectedStopIds || [], { tractorOnlyGreen });
-    const trucks = Array.isArray(r.trucks) && r.trucks.length ? r.trucks : await resolveTrucks(r.truckProfileIds || []);
+    const rawTrucks = Array.isArray(r.trucks) && r.trucks.length ? r.trucks : await resolveTrucks(r.truckProfileIds || []);
+    // NO TRUCK IS PLANNED AS IF IT WERE BOTTOMLESS. routing-constraints.capLimited reads a
+    // non-positive cap as NO LIMIT — right for an abstract profile nobody has filled in, wrong
+    // for a truck — so a single blank Skids box switched off the skid gate AND the balance term
+    // and put 19 skids on a box truck that holds 14 (Chad, 2026-09-15; measured 6/19 vs 11/14
+    // with the cap in place). Applied to BOTH paths: the trucks the panel sends and the ones
+    // read from truck_profiles. Never lowers a cap somebody set; every substitution is reported
+    // back to the screen, because a defaulted cap nobody can see is the same failure in nicer
+    // clothes. See lib/truck-capacity.mts.
+    const { trucks, notes: capacityNotes } = resolveTruckCaps(rawTrucks);
 
     if (!stops.length) { await updateJob(jobId, { status: 'error', error: 'no mappable stops selected', finished_at: new Date().toISOString() }); return json({ ok: true, jobId, accepted: true }); }
     if (!trucks.length) { await updateJob(jobId, { status: 'error', error: 'no truck profiles selected', finished_at: new Date().toISOString() }); return json({ ok: true, jobId, accepted: true }); }
@@ -221,7 +231,7 @@ export default async function handler(req: Request): Promise<Response> {
       // aiRequested lets the result panel tell "never asked" apart from "asked, and the site
       // has no ANTHROPIC_API_KEY" — the second is a configuration problem, and it used to read
       // as the same "off".
-      result: { ...plan, aiConfigured: aiOn, aiRequested: r.aiAssist === true },
+      result: { ...plan, aiConfigured: aiOn, aiRequested: r.aiAssist === true, capacityNotes },
     });
   } catch (e: any) {
     console.error('routing-build:', e?.message);
