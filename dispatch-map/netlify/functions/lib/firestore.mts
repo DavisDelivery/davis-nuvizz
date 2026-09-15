@@ -23,6 +23,7 @@ import crypto from 'node:crypto';
 // Pure + dependency-free (matchKey.js only), so importing it here cannot drag anything into
 // this module's cold-start path. See lib/address-history.mts for what it classifies and why.
 import { buildAddressChangeRow, addressHistoryEnabled } from './address-history.mts';
+import { finishedGuardEnabled, isFinishedBoardRow } from './finished-guard.mts';
 
 const FIRESTORE_BASE = 'https://firestore.googleapis.com/v1';
 
@@ -773,13 +774,24 @@ export async function patchBoardPlan(
   tenant: string,
   dateStr: string,
   patch: { routeName: string; orderedStopNbrs: string[]; unplannedStopNbrs?: string[]; driverName?: string | null; at: string },
-): Promise<{ patched: number; missing: number; rescued: number; missingNbrs: string[] }> {
-  if (!isFirestoreEnabled()) return { patched: 0, missing: 0, rescued: 0, missingNbrs: [] };
+): Promise<{ patched: number; missing: number; rescued: number; missingNbrs: string[]; skippedFinished: number; skippedFinishedNbrs: string[] }> {
+  if (!isFirestoreEnabled()) return { patched: 0, missing: 0, rescued: 0, missingNbrs: [], skippedFinished: 0, skippedFinishedNbrs: [] };
   const base = `${COLLECTION}/${parentId(tenant, dateStr)}`;
   const jobs: Array<{ nbr: string; fields: any }> = [];
   patch.orderedStopNbrs.forEach((nbr, i) => jobs.push({ nbr: String(nbr), fields: boardWritePlannedFields(patch.routeName, i + 1, patch.driverName ?? null, patch.at) }));
   // patch.routeName IS the route these stops are being taken off — the from-route the stamp keeps.
   for (const nbr of (patch.unplannedStopNbrs || [])) jobs.push({ nbr: String(nbr), fields: boardWriteUnplannedFields(patch.at, patch.routeName) });
+  // FINISHED FREIGHT NEVER TAKES A PLAN STAMP (v1.29.1 — lib/finished-guard.mts). Order 007174583
+  // had delivered at 04:37 when a 05:59 strike-off stamped it UNPLANNED, route and driver blanked,
+  // and the write grace defended that for an hour. A row already DELIVERED / EXCEPTION / CANCELLED
+  // is skipped by BOTH masks: un-planning it is how delivered freight goes back in the selection
+  // pool, and re-planning it (a re-save of a load with finished stops on it) would flip a delivery
+  // back to SCHEDULED until the next completed scan. Skips are COUNTED and returned, never silent —
+  // the write journal and the Save toast both say "left finished N".
+  const guard = finishedGuardEnabled();
+  let skippedFinished = 0;
+  const skippedFinishedNbrs: string[] = [];
+  const skipFinished = (nbr: string) => { skippedFinished++; if (skippedFinishedNbrs.length < 20) skippedFinishedNbrs.push(nbr); };
   let patched = 0, i = 0;
   const missed: Array<{ nbr: string; fields: any }> = [];
   const worker = async () => {
@@ -788,6 +800,7 @@ export async function patchBoardPlan(
       try {
         const cur = await getDoc(`${base}/stops/${encodeURIComponent(j.nbr)}`);
         if (!cur) { missed.push(j); continue; }
+        if (guard && isFinishedBoardRow(cur)) { skipFinished(j.nbr); continue; }
         const { _id, ...rest } = cur as any;
         await setDoc(`${base}/stops/${j.nbr}`, { ...rest, ...j.fields });
         patched++;
@@ -828,6 +841,9 @@ export async function patchBoardPlan(
           try {
             const cur = await getDoc(`${priorBase}/stops/${encodeURIComponent(j.nbr)}`);
             if (!cur) { next.push(j); continue; }
+            // A prior-day copy that already finished is FOUND, not rescued: it is history, and
+            // copying it forward re-stamped would put a delivery on today's board as open work.
+            if (guard && isFinishedBoardRow(cur)) { skipFinished(j.nbr); continue; }
             const { _id, ...rest } = cur as any;
             await setDoc(`${priorBase}/stops/${j.nbr}`, { ...rest, ...j.fields });
             await setDoc(`${base}/stops/${j.nbr}`, { ...rest, ...j.fields, boardDate: dateStr, carryover: true });
@@ -841,7 +857,7 @@ export async function patchBoardPlan(
   }
   // missingNbrs: WHICH stops couldn't be patched anywhere (bounded) — surfaced through the
   // sync response so a miss is diagnosable from the client console, not just a count.
-  return { patched, missing: stillMissing.length, rescued, missingNbrs: stillMissing.slice(0, 20).map((j) => j.nbr) };
+  return { patched, missing: stillMissing.length, rescued, missingNbrs: stillMissing.slice(0, 20).map((j) => j.nbr), skippedFinished, skippedFinishedNbrs };
 }
 
 // ── Per-PRO enrichment registry (day-independent) ────────────────────────────
