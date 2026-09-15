@@ -118,6 +118,7 @@ import ChatPanel, { ChatLauncher, MessagesLauncher } from './components/ChatPane
 import MessagesPanel from './components/MessagesPanel.jsx';
 import DriverPicker from './components/DriverPicker.jsx';
 import { MANIFEST_SECTIONS, JUMP_OFFSET_DESKTOP, JUMP_OFFSET_PHONE, sectionScrollTop, visibleSections } from './lib/section-jump.js';
+import { isHashLikeId, looksLikeLoadNbr, plannedDriverName } from './lib/route-identity.js';
 
 // Quote console — lazy so its ~345 KB (the @davisdelivery/quote-generator code plus its
 // geo/model JSON) loads only when the Quote tab is first opened, instead of riding in the
@@ -144,7 +145,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.31.0';
+const APP_VERSION = '1.31.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -186,16 +187,6 @@ const BUILD_CONTEXT = typeof __BUILD_CONTEXT__ !== 'undefined' ? __BUILD_CONTEXT
 // 'local' in dev (the vite fallback is 'dev'). Never blank / 'undefined'.
 const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(0, 7) : 'local';
 
-// Mirror of the backend isHashLikeId (nuvizz-list.mts) — keeps a bare NuVizz ObjectId / internal
-// load-id from ever rendering as a human load/route NAME. A recurring load's real name is its
-// loadNbr ("BEN 2"); loadId is a 24-hex id. Defense-in-depth with the backend guard (#254-style).
-function isHashLikeId(v) {
-  const s = String(v ?? '').trim();
-  if (!s || /\s/.test(s)) return false;            // human names have spaces or are short words
-  if (/^[0-9a-f]{24}$/i.test(s)) return true;      // Mongo ObjectId
-  if (/^[0-9a-f]{16,}$/i.test(s)) return true;     // long hex token
-  return /^[A-Za-z0-9_-]{20,}$/.test(s) && /\d/.test(s); // long id-ish token with a digit
-}
 // First non-hash human label among the candidates; '' if none — NEVER a raw id. Callers that always
 // represent a real load (the Compare card title / send buttons) add their own 'Unnamed load' fallback;
 // cell renderers leave it blank when a stop simply has no load.
@@ -203,18 +194,12 @@ function loadDisplayName(...vals) {
   for (const v of vals) { const s = String(v ?? '').trim(); if (s && !isHashLikeId(s)) return s; }
   return '';
 }
-// A NuVizz load NUMBER ("DAVIS000198197") — company code + zero-padded digits, or a long bare
-// number. Distinguishes the real number load/info needs from the human route name ("SUW") that
-// stops carry in loadNbr. Mirrors looksLikeLoadNbr in netlify/functions/lib/nuvizz-loads.mts.
-function looksLikeLoadNbr(v) {
-  const s = String(v ?? '').trim();
-  return /^[A-Za-z]{2,}\d{5,}$/.test(s) || /^\d{6,}$/.test(s);
-}
 
 // Beta version history — shown when the dispatcher taps the build badge, so it's
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.31.1', 'A MOVED ORDER WAS CARRYING ITS OLD DRIVER ONTO THE NEW LOAD. Chad, on PRO 7175976: “i moved an order from colin 1 to gainesville load — gainesville load did not have anyone assigned to it but when i moved the order it assigned colin to the load.” NOTHING WAS ASSIGNED IN NUVIZZ, and that is worth saying first: assignDriver only ever fires for a driver STAGED on the card (hasDriverId(p.L?.driverId)), and a move stages none — no call went out. What moved was the BOARD ROW. The confirmed-plan stamp (boardWritePlannedFields) writes the row’s new route and, when the Save carries no driver, wrote no driver field at all — so the row kept COLIN while now reading GAINESVILLE, and the client’s own overlay paint did the same thing one line at a time (driverName: e.driverName ?? s.driverName). ONE STALE FIELD NAMES THE WRONG TRUCK EVERYWHERE, because everything reads a load’s driver off its rows: the Loads grid takes the first row that has one (so an unassigned GAINESVILLE read COLIN), and board-flags’ fillRouteDrivers spreads a route’s single driver name onto every flag row — which is the name a miss-window email and a driver text print. A dispatcher phones the wrong driver about freight he is not carrying. THE RULE, NOW PINNED: a driver belongs to the LOAD, not to the order. A planned stamp with no driver CLEARS the row’s driver when the order is demonstrably changing loads, and touches nothing when it is not — a re-sequence on a crewed load keeps its driver, and so does any stamp on the route the order is already on. TWO NAMESPACES ARE NOT A DISAGREEMENT (v1.12.0’s lesson, arriving from the other direction): both write-through callers fall back to a load NUMBER or a hex card key when a card has no resolvable name, while the row holds the human name, so “DAVIS000203388” against “RONALD” decides nothing here either — it would have blanked drivers on routes nobody left. The judgement lives in lib/route-identity (server and client mirror, one test asserts they answer identically), and isHashLikeId / looksLikeLoadNbr MOVE there rather than multiply. The route card now reads its driver from the first row that HAS one (the printed manifest already did), so a just-moved row with no driver can never make a crewed route read “—”. MOVE_CLEARS_DRIVER=off puts the write back byte for byte. Zero NuVizz calls, and zero were spent finding it. 12 new tests, checked against a deliberately reintroduced regression — they go red on it. 4,759 green.'],
   ['1.31.0', 'TWO LOADS WEARING ONE NAME, AND THE BOARD NOW TELLS THEM APART — using the roster it already had. Chad, on ESTES reading 16 stops against NuVizz’s 10 and BUFORD 8 against 7 after fresh scans of each: “our roster scans do carry the load id you just aren’t using it correctly.” He was right. The stop list names a stop’s route by NAME only (route.name — no load number, no id), so an undelivered order left on last Tuesday’s ESTES still says “ESTES” today, boardDayFor clamps its past arrival forward onto today, and the card groups by name: six orders on a week-old Draft printed on Trevor’s dispatched truck, and ANNANDALE VILLAGE (007174083-1, on the 9/14 BUFORD DAVIS000203544 — the server itself had read that at 7:43 AM and refused a Save over it) rode today’s BUFORD to 8. WHAT THE ROSTER HOLDS AND THE BOARD NOW USES (lib/name-collision.mts, PURE): per day, ONE load per name with NuVizz’s own stop count. More rows under a name than that load holds — or two rows claiming one sequence number — is proof of a second instance, and the scan asks the load itself which rows are its own (ONE /load/info, the demotion verify’s own read). Rows it does not hold whose own arrival day is past come OFF today’s board and stay on their own day’s document; today’s dispatched ESTES reads 10, BUFORD 7, exactly NuVizz. Nothing is displayed — the counts are simply right. WHAT IT COSTS, honestly: the planned pull fires ~63 times a weekday, so an unmemoised read would be ~126 calls a day for two standing collisions. It is memoised by SIGNATURE (load number + roster count + the exact stop numbers under the name): one read when a collision first appears, again only when that set or that count changes, or every 6 h as a safety re-check; hard cap NUVIZZ_NAME_COLLISION_LOAD_MAX (4) per run; a manual scan pays the same. NEVER HIDES TODAY’S FREIGHT: a row the load does not hold whose own day is today (or later) stays and is ledgered HELD, as does a row a confirmed Save stamped inside the write grace; a failed read, an empty read against a counted load, a contested name or a missing roster drop nothing. Every decision lands in the plan-verdict ledger (basis name-collision) and nuvizz-stop-explain reads it back — “the scan left it OFF the 09-15 board — not on DAVIS000203661 (BUFORD, 7 stops on the 09-15 roster) … another load named BUFORD is on the 09-14 roster (DAVIS000203544, Draft, 1 stop)” — and the run ledger carries checked / reads / dropped. NUVIZZ_NAME_COLLISION=off puts it back. ALSO: “Orders paused until 10 AM” is gone from the status card — it was the browser’s clock, not a scanner state, over a feed that had run seven times that morning. The stamp is the truth.'],
   ['1.30.3','A FAILED ROUTE CREATE WAS FIRING FIVE POSTS AT NUVIZZ, NOT ONE \u2014 and the one that would have half-landed would have made two routes. Chad, on a \u2795 New route for Sheats: \u201cStill not working review the nuvizz developers api settings to see what we are doing wrong.\u201d The route create itself is NOT fixed by this and is not ours to fix \u2014 the diagnosis is in the report: our payload conforms to NuVizz\u2019s published v7 schema at every level (their own examples, their own additionalProperties:false), and their server answers a schema-legal body with an unhandled Java NullPointerException (ErrorMsgID 998, \u201cdeliverItLoad is null\u201d) instead of the ImportFailureReason its contract promises. That is a vendor defect whatever triggers it, and the Aug 3 receipt proves where it breaks: a header with no stops got a clean 400 quoting our own loadNbr back, so they parse and validate us fine and the crash is downstream in the conversion. WHAT THIS COMMIT ACTUALLY FIXES is the bug that hunt turned up in OUR code. fireSingle decided retry with an inline denylist \u2014 op === assignDriver || dispatchLoad || insertStops || removeStops || createStop \u2014 naming the five ops that existed when it was written. createRoute joined SINGLE_OPS afterwards and nobody extended that expression, so it inherited maxRetries 4, and isRetryableStatus() calls every 5xx retryable. Every failed route create therefore sent FIVE identical POSTs to NuVizz and fireSingle recorded only the LAST one \u2014 5x the call spend on the one write that has never once succeeded, on a repo whose first rule is call cost, while throwing away the forensics of the first attempt we were trying to read. The worse half is the day a create half-lands: a first attempt that APPLIED but answered 5xx double-fires and the dispatcher gets two routes for one card, which is the exact failure the comment above that line already warned about for assign/dispatch. The classification now lives in RETRY_SAFE_MUTATIONS next to the op registry and answers from ALLOWLISTS ONLY \u2014 a known read or an explicitly declarative mutation earns a retry, anything else fails closed, so the next op added to SINGLE_OPS cannot drift the same way. importLoad, partialUpdateStop and cancelStop keep the retry they were deliberately given (re-sending those sets the same end state); createRoute joins the imperative writes that never retry. Behaviour changes for createRoute ONLY. Six tests pin the rule rather than the list, and were checked against a deliberately reintroduced regression \u2014 they go red on it.'],
   ['1.30.2', 'THE ROW HEALED AND THE DRILL-DOWN UNDER IT DID NOT \u2014 one night, two answers, and nothing saying which was current. v1.30.0 wired the manifest self-heal into the collapsed LIST row only. So on 2026-09-11 the row read \u201c2 not on the board \u00b7 re-checked \u00b7 was 136\u201d, and one tap below it the \u201cNot on the board\u201d list still printed all 136 off the filed record while the Rows viewer\u2019s header still said \u201c136 not routed yet\u201d. THAT IS WORSE THAN THE STALE ROW IT REPLACED: a stale number is a number you learn to discount, but a screen contradicting itself reads as broken, and a dispatcher has no way to tell which of the two figures is the live one. Found by the adversarial review of v1.30.0\u2019s own PR \u2014 three of its four lenses reported it independently, and it survived the refutation pass. THE CAUSE was that the heal stored COUNTS ONLY, so no other surface could mark rows even if it wanted to. It now records stillOffPros \u2014 WHICH orders are still off, not merely how many \u2014 bounded by the archive\u2019s own 500-row cap on stored suspects, and both other surfaces read it: the ?rows=1 branch marks and grades from the healed set with the verdict override applied AFTER gradeForRow (the order is load-bearing, the same way it is in the list branch), and the drill-down filters the filed list down to what is still off, heading it \u201cStill not on the board \u2014 2 of the 136 filed\u201d. A night where everything landed says so in one green line instead of an empty section. THE CLIENT APPLIES THE SERVER\u2019S OWN ofAt RULE before trusting a heal, so the two surfaces cannot disagree about whether one is valid. HEAL_VERSION goes to 3 because the shape changed: a v2 heal carries no stillOffPros, and a drill-down reading one would highlight nothing and look CLEAN \u2014 which is the dangerous direction, so those are discarded and recomputed rather than served. AND THE REVIEW ALSO KILLED FIFTEEN CLAIMS, which is the half worth recording: a 404 board read folding into an empty one, a calendar-vs-delivery-day tail, legacy nights graded on the wrong window, the capped remainder driving a hard red, an unbounded ?days=180 read bill \u2014 each mechanically accurate about the code and each unreachable in practice when the case was actually run. The two comments that had gone stale are corrected: the endpoint header no longer claims it writes nothing, and the SectionJump comment no longer describes a placement that moved. MANIFEST_HISTORY_SELFHEAL=off still reverts every side of the feature in one switch. 21 tests.'],
@@ -1918,9 +1903,17 @@ function applyPlanOverlay(stops, boardScannedAt = null) {
           delete m[key]; dirty = true; return s;
         }
         touched = true;
+        // A DRIVER BELONGS TO THE LOAD, NOT TO THE ORDER (PRO 7175976). This literal already
+        // refuses to carry the row's loadNbr/routeSeq — carrying its driverName was the one
+        // field that still did, so an order painted onto a load it had just been MOVED to wore
+        // the truck it came off. plannedDriverName keeps it for a re-sequence (same route, or
+        // two labels that can't be compared) and drops it for a move.
+        const wasOn = s.routeName ?? s.loadNbr ?? null;
         return e.isPlanned
-          ? { ...s, isPlanned: true, isUnplanned: false, status: '20', normalizedStatus: 'SCHEDULED', loadNbr: e.loadNbr, routeName: e.loadNbr, routeSeq: e.routeSeq, driverName: e.driverName ?? s.driverName, driverUserName: e.driverName ?? s.driverUserName, planOverlay: true }
-          : { ...s, isPlanned: false, isUnplanned: true, status: '10', normalizedStatus: 'UNPLANNED', loadNbr: null, routeName: null, routeSeq: null, planOverlay: true };
+          ? { ...s, isPlanned: true, isUnplanned: false, status: '20', normalizedStatus: 'SCHEDULED', loadNbr: e.loadNbr, routeName: e.loadNbr, routeSeq: e.routeSeq, driverName: plannedDriverName(e.driverName, s.driverName, wasOn, e.loadNbr), driverUserName: plannedDriverName(e.driverName, s.driverUserName, wasOn, e.loadNbr), planOverlay: true }
+          // driver cleared with the route, exactly as the server's own un-plan stamp does
+          // (boardWriteUnplannedFields): an order that is off every load is on nobody's truck.
+          : { ...s, isPlanned: false, isUnplanned: true, status: '10', normalizedStatus: 'UNPLANNED', loadNbr: null, routeName: null, routeSeq: null, driverName: null, driverUserName: null, planOverlay: true };
       });
     }
     if (dirty) safeWriteJSON(LS_PLAN_OVERLAY, m);
@@ -1952,7 +1945,12 @@ function reflectBoardPlan(rows, boardByNbr) {
       touched = true;
       // normalizedStatus copies as-is (null when the board didn't set one) so a delivered
       // board row ('90') still classifies DELIVERED via its code instead of a forced label.
-      return { ...r, isPlanned: true, isUnplanned: false, status: b.status ?? '20', normalizedStatus: b.normalizedStatus ?? null, loadNbr: b.loadNbr ?? b.routeName ?? null, routeName: b.routeName ?? b.loadNbr ?? null, routeSeq: b.routeSeq ?? null, driverName: b.driverName ?? r.driverName, driverUserName: b.driverUserName ?? b.driverName ?? r.driverUserName, boardReflected: true };
+      // Same rule as the overlay above: a window row taking the board's load must not keep the
+      // driver of the load it is being moved OFF (PRO 7175976). The board's own driver wins
+      // where it has one; a blank one only falls back to the row's while the route is unchanged.
+      const nextRoute = b.routeName ?? b.loadNbr ?? null;
+      const wasOn = r.routeName ?? r.loadNbr ?? null;
+      return { ...r, isPlanned: true, isUnplanned: false, status: b.status ?? '20', normalizedStatus: b.normalizedStatus ?? null, loadNbr: b.loadNbr ?? b.routeName ?? null, routeName: nextRoute, routeSeq: b.routeSeq ?? null, driverName: plannedDriverName(b.driverName, r.driverName, wasOn, nextRoute), driverUserName: plannedDriverName(b.driverUserName ?? b.driverName, r.driverUserName, wasOn, nextRoute), boardReflected: true };
     }
     if (b.isUnplanned && r.isPlanned) {
       touched = true;
@@ -11251,7 +11249,11 @@ function RouteDetailBody({ stops, onPickStop, onViewOnMap, etaByStop = null }) {
   // The load's shared saved-search window, so it is never printed as twelve appointments.
   const defaultWindowTs = React.useMemo(() => loadDefaultWindow(stops), [stops]);
   const sorted = orderRouteStops(stops);
-  const driverName = sorted[0]?.driverName || sorted[0]?.driverUserName || '—';
+  // The FIRST ROW THAT HAS ONE, not the first row (same rule as the printed manifest). A load's
+  // driver is a fact about the load, and a single row without one — an order just moved onto the
+  // route, whose driver is cleared until the next scan names this load's — must not make a crewed
+  // route read "—" just because it sorted to the top.
+  const driverName = sorted.find((s) => s.driverName)?.driverName || sorted.find((s) => s.driverUserName)?.driverUserName || '—';
   const delivered = sorted.filter((s) => classifyStopStatus(s) === 'DELIVERED').length;
   const pct = sorted.length ? Math.round((100 * delivered) / sorted.length) : 0;
   // Route freight totals — the same four fields the printed manifest cover sums
