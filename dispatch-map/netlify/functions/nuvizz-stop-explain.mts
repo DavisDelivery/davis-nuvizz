@@ -61,9 +61,12 @@ export function stopIdCandidates(raw: string): string[] {
  *  matched by route + day instead. */
 export function summarizeWriteOp(rec: any): string {
   const r = rec?.result ?? {};
-  if (rec?.op === 'boardSync') return `${r.routeName ?? '?'} on ${r.date ?? '?'}: ${r.ordered ?? 0} planned, ${r.unplanned ?? 0} un-planned → patched ${r.patched ?? 0}, rescued ${r.rescued ?? 0}, missing ${r.missing ?? 0}${Array.isArray(r.missingNbrs) && r.missingNbrs.length ? ` (${r.missingNbrs.slice(0, 5).join(', ')})` : ''}${r.error ? ` — ${r.error}` : ''}`;
+  // "left finished N" — stops a stamp skipped because the board already held them finished
+  // (lib/finished-guard.mts). Shown wherever the counts are, so a skip is never a silent no-op.
+  const finished = (b: any) => (b?.skippedFinished ? `, left finished ${b.skippedFinished}${Array.isArray(b.skippedFinishedNbrs) && b.skippedFinishedNbrs.length ? ` (${b.skippedFinishedNbrs.slice(0, 5).join(', ')})` : ''}` : '');
+  if (rec?.op === 'boardSync') return `${r.routeName ?? '?'} on ${r.date ?? '?'}: ${r.ordered ?? 0} planned, ${r.unplanned ?? 0} un-planned → patched ${r.patched ?? 0}, rescued ${r.rescued ?? 0}, missing ${r.missing ?? 0}${Array.isArray(r.missingNbrs) && r.missingNbrs.length ? ` (${r.missingNbrs.slice(0, 5).join(', ')})` : ''}${finished(r)}${r.error ? ` — ${r.error}` : ''}`;
   if (Array.isArray(r.loads)) {
-    return r.loads.map((l: any) => `${l?.loadNbr ?? '?'}: ${l?.ok ? 'ok' : `FAILED — ${String(l?.error ?? 'no reason').slice(0, 160)}`}${l?.boardSync ? ` (board patched ${l.boardSync.patched ?? 0}, rescued ${l.boardSync.rescued ?? 0}, missing ${l.boardSync.missing ?? 0})` : ''}`).join('; ');
+    return r.loads.map((l: any) => `${l?.loadNbr ?? '?'}: ${l?.ok ? 'ok' : `FAILED — ${String(l?.error ?? 'no reason').slice(0, 160)}`}${l?.boardSync ? ` (board patched ${l.boardSync.patched ?? 0}, rescued ${l.boardSync.rescued ?? 0}, missing ${l.boardSync.missing ?? 0}${finished(l.boardSync)})` : ''}${l?.finishedRecorded ? ` [record read ${l.finishedRecorded.normalizedStatus}: ${l.finishedRecorded.patched ? 'recorded on the board' : (l.finishedRecorded.reason || 'not recorded')}]` : ''}`).join('; ');
   }
   return r?.error ? String(r.error).slice(0, 200) : (r?.ok === false ? 'failed' : 'ok');
 }

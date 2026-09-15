@@ -14,6 +14,7 @@
 import { getNuvizzRequester } from './nuvizz-request.mts';
 import { getCreds, basicAuthHeader, isAttemptShipment } from './nuvizz-scan.mts';
 import { etDayString } from './firestore.mts';
+import { finishedGuardEnabled } from './finished-guard.mts';
 
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
 export const OPENAPI_BASE = NUVIZZ_BASE.replace(/\/v7\/?$/, ''); // → .../deliverit/openapi
@@ -1013,6 +1014,12 @@ export function unplanStampOvertaken(prior: any, fresh: any): boolean {
 export function applyBoardWriteGrace(fresh: any, prior: any, nowMs: number, graceMin = BOARD_WRITE_GRACE_MIN): boolean {
   const at = prior?.board_write_at ? Date.parse(prior.board_write_at) : NaN;
   if (!Number.isFinite(at)) return false;
+  // A DELIVERY IS NOT A LAGGING INDEX (v1.29.1 — lib/finished-guard.mts). This hold exists because
+  // NuVizz's list can trail a Save by minutes; a fresh row that says DELIVERED / EXCEPTION /
+  // CANCELLED is not the list trailing anything — it is the world after the truck. 007174583 came
+  // back from the completed pull DELIVERED on AB and this hold handed it back to a 05:59 un-plan
+  // stamp: grey pin, no route, no driver, for the rest of the grace. Finished freight is the truth.
+  if (finishedGuardEnabled() && isTerminalStatus(fresh?.normalizedStatus)) return false;
   const withinGrace = nowMs - at < graceMin * 60_000;
   const disagrees = fresh.isPlanned !== prior.isPlanned
     // …or a cross-load move the list hasn't caught up on (both planned, different load).

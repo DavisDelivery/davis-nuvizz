@@ -32,8 +32,10 @@ import {
   buildStopContactOverride, stopContactFrom, normalizeContactPhone,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
-import { isHashLikeId } from './nuvizz-list.mts';
-import { patchBoardPlan, isFirestoreEnabled, etDayString, setBoardDateOverride, moveBoardStopDay } from './firestore.mts';
+import { isHashLikeId, statusFromCode, isTerminalStatus } from './nuvizz-list.mts';
+import { patchBoardPlan, isFirestoreEnabled, etDayString, setBoardDateOverride, moveBoardStopDay, readStopDoc, patchStopFields } from './firestore.mts';
+import { completionPatch } from './scan-completions.mts';
+import { finishedGuardEnabled } from './finished-guard.mts';
 import { rwbEngineBlocked, rwbConfigReady, rwbAddStopsToRoute, rwbSequenceStops, rwbSequenceRoutes } from './nuvizz-rwb.mts';
 
 const hasDriverId = (v: any) => v != null && String(v).trim() !== '' && Number(v) !== 0;
@@ -589,7 +591,7 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
           const r = await patchBoardPlan(tenantET, boardDay, {
             routeName: '', orderedStopNbrs: [], unplannedStopNbrs, driverName: null, at: new Date().toISOString(),
           });
-          p.result.boardSync = { patched: r.patched, rescued: r.rescued, missing: r.missing, ...(r.missingNbrs?.length ? { missingNbrs: r.missingNbrs } : {}) };
+          p.result.boardSync = { patched: r.patched, rescued: r.rescued, missing: r.missing, ...(r.missingNbrs?.length ? { missingNbrs: r.missingNbrs } : {}), ...(r.skippedFinished ? { skippedFinished: r.skippedFinished, skippedFinishedNbrs: r.skippedFinishedNbrs } : {}) };
         } catch (e: any) {
           p.result.boardSync = { error: e?.message || 'board write-through failed' };
         }
@@ -1362,13 +1364,56 @@ function rwbSettleMs(): number {
 // failure paths to turn "planned on another load" into an actionable load. `nbr` drives the
 // same-load comparison; `label` is the card-style display name. Null when the stop reads
 // unplanned OR the read fails — callers phrase both as "holder unknown".
-async function rwbStopHolder(requester: RequesterLike, stopNbr: string, creds: WriteCreds): Promise<{ nbr: string; label: string } | null> {
+async function rwbStopHolder(requester: RequesterLike, stopNbr: string, creds: WriteCreds): Promise<{ nbr: string; label: string; status: any; stopId: any } | null> {
   try {
     const gs = await fireSingle(requester, 'getStop', { stopNbr }, creds);
     const nbr = String(gs?.stop?.assignedLoadNbr ?? '').trim();
     if (!nbr || isHashLikeId(nbr)) return null;
-    return { nbr, label: loadLabel(gs?.stop?.routeName, nbr) };
+    // The record's status and id ride along: the same read that names the holder is the read
+    // that says whether the stop is already finished there (recordFinishedHolder).
+    return { nbr, label: loadLabel(gs?.stop?.routeName, nbr), status: gs?.stop?.status ?? null, stopId: gs?.stop?.stopId ?? null };
   } catch { return null; }
+}
+
+/**
+ * THE REFUSAL ALREADY READ THE RECORD — KEEP WHAT IT LEARNED (v1.29.1, lib/finished-guard.mts).
+ *
+ * When NuVizz refuses an add because ANOTHER load holds the stop, the read that named the holder
+ * also carried the stop's status. For 007174583 that status was 90: delivered at 04:37 on
+ * yesterday's AB (DAVIS000203402), and the 05:59 refusal to add it to today's AB (DAVIS000203506)
+ * discarded it — so the strike-off fourteen seconds later met a board row that still read
+ * SCHEDULED, and un-planned a delivery. Record a FINISHED status on the board row right here:
+ *   • the same fields the completed scan would write (completionPatch — status, normalized status,
+ *     isUnplanned:false, the day pin for a rolled-over copy), so the row is indistinguishable from
+ *     one the overlay wrote; deliveredDTTM stays with the list, where it is write-once;
+ *   • through a FIELD-MASKED patch — never a blind replace of a document the scan owns;
+ *   • pinned to the record on the screen: a different stopId is a twin under the same number and
+ *     is refused, exactly as planCompletions refuses it;
+ *   • never fabricating a row the day document does not hold (readStopDoc first; absent = skip).
+ * Zero NuVizz calls — the read was already paid for. Best-effort and REPORTED: the outcome rides
+ * the load result into the write journal, and the refusal message says "the board now says so"
+ * only when the patch was observed to land.
+ */
+async function recordFinishedHolder(
+  tenant: string, boardDay: string, stopNbr: string, rec: { status?: any; stopId?: any } | null | undefined,
+): Promise<{ status: string; normalizedStatus: string; patched: boolean; reason?: string } | null> {
+  if (!finishedGuardEnabled() || !isFirestoreEnabled()) return null;
+  const code = String(rec?.status ?? '').trim();
+  if (!code) return null;
+  const { status: normalizedStatus } = statusFromCode(code, true);
+  if (!isTerminalStatus(normalizedStatus)) return null;
+  const out: { status: string; normalizedStatus: string; patched: boolean; reason?: string } = { status: code, normalizedStatus, patched: false };
+  try {
+    const existing = await readStopDoc(tenant, boardDay, stopNbr);
+    if (!existing) { out.reason = "not on this day's board"; return out; }
+    const exId = String(existing.stopId ?? '').trim(), recId = String(rec?.stopId ?? '').trim();
+    if (exId && recId && exId !== recId) { out.reason = 'a different record shares this number'; return out; }
+    const fields = completionPatch(existing, { stopNbr, stopId: recId || null, status: code, normalizedStatus, deliveredDTTM: null, listUpdatedDTTM: null }, { today: boardDay });
+    if (!fields) { out.reason = 'already recorded'; return out; }
+    await patchStopFields(tenant, boardDay, stopNbr, fields);
+    out.patched = true;
+  } catch (e: any) { out.reason = e?.message || 'board patch failed'; }
+  return out;
 }
 
 /**
@@ -1794,6 +1839,10 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
   // batched validate+add, then the post-add verify re-read (the 0.39.7 no-false-success guard:
   // addStopsToRouteAfterValidation silently NO-OPS a stop already planned on another route).
   // MOVE arrivals need none of this — the combined save below transfers them.
+  // Where a refused add records what it learned (recordFinishedHolder): the same board day and
+  // tenant the write-through below anchors on, so the row it patches is the row a strike-off hits.
+  const boardDayForRecord = /^\d{4}-\d{2}-\d{2}$/.test(String(payload?.date ?? '')) ? String(payload.date) : etDayString();
+  const tenantForRecord = String((creds as any)?.companyCode || 'DAVIS').toUpperCase();
   for (const p of live) {
     if (!p.result.ok || !p.addArrivals.length) continue;
     try {
@@ -1838,6 +1887,9 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
           const srcNbr = gs?.ok ? String(gs.stop?.assignedLoadNbr ?? '').trim() : '';
           if (gs?.ok && srcNbr && srcNbr !== String(p.loadNbr) && !batchNbrs.has(srcNbr)) {
             holdErr = (() => { const src = loadLabel(gs?.stop?.routeName, srcNbr); const self = loadLabel(p.L?.routeName, p.loadNbr); return `commitBoard(rwb): stop ${a.nbr} couldn't be added to ${self} — NuVizz holds it on ${src}. Open ${src} in Compare to move it, or unplan it there in the portal (RWB can't pull a stop off a route that isn't part of the Save).`; })();
+            // The record just read says whether the stop is already FINISHED on that holder. Keep it.
+            const rec = await recordFinishedHolder(tenantForRecord, boardDayForRecord, String(a.nbr), gs?.stop);
+            if (rec) { p.result.finishedRecorded = { stopNbr: String(a.nbr), ...rec }; if (rec.patched) holdErr += ` It is already ${rec.normalizedStatus} there — the board now says so.`; }
             break;
           }
           if (gs?.ok && gs.stop?.stopId && String(gs.stop.stopId) !== String(a.stopId)) fresh.push({ nbr: String(a.nbr), stopId: String(gs.stop.stopId) });
@@ -1870,6 +1922,12 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
         p.result.error = holder && holder.nbr !== String(p.loadNbr)
           ? `commitBoard(rwb): stop ${miss.nbr} couldn't be added to ${selfLbl} — NuVizz still holds it on ${holder.label}. ${holderHint(holder, batchNbrs)}`
           : `commitBoard(rwb): ${missingAdds.length > 1 ? `${missingAdds.length} stops (${missingAdds.slice(0, 3).map((a: any) => a.nbr).join(', ')}${missingAdds.length > 3 ? '…' : ''})` : `stop ${miss.nbr}`} did not appear on ${selfLbl} after the add — the stop record ${recordState} (nothing was double-planned). Wait a few seconds and Save again.`;
+        // Same rule as the straggler path above: a holder outside the Save whose record is already
+        // finished is recorded on the board now, not discovered by the next completed scan.
+        if (holder && holder.nbr !== String(p.loadNbr)) {
+          const rec = await recordFinishedHolder(tenantForRecord, boardDayForRecord, String(miss.nbr), holder);
+          if (rec) { p.result.finishedRecorded = { stopNbr: String(miss.nbr), ...rec }; if (rec.patched) p.result.error += ` It is already ${rec.normalizedStatus} there — the board now says so.`; }
+        }
         continue;
       }
     } catch (e: any) {
@@ -2246,7 +2304,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
           driverName: driverApplied ? (p.L?.driverName || null) : null,
           at: new Date().toISOString(),
         });
-        p.result.boardSync = { patched: r.patched, rescued: r.rescued, missing: r.missing, ...(r.missingNbrs?.length ? { missingNbrs: r.missingNbrs } : {}) };
+        p.result.boardSync = { patched: r.patched, rescued: r.rescued, missing: r.missing, ...(r.missingNbrs?.length ? { missingNbrs: r.missingNbrs } : {}), ...(r.skippedFinished ? { skippedFinished: r.skippedFinished, skippedFinishedNbrs: r.skippedFinishedNbrs } : {}) };
       } catch (e: any) {
         p.result.boardSync = { error: e?.message || 'board write-through failed' };
       }
@@ -2279,6 +2337,10 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       // Membership-confirmed order/removal failures carry NuVizz's OBSERVED delivery order so the
       // client can write the board through with the truth despite the ✗ (SCOTT SHP29379, Jul 10).
       observedOrder: p.result.observedOrder || undefined,
+      // A refused add whose holder already had the stop FINISHED: what the record said and whether
+      // the board was told (recordFinishedHolder) — journaled, so "the board still says unplanned"
+      // is answerable from nuvizz-write-log alone.
+      finishedRecorded: p.result.finishedRecorded || undefined,
       seededStopNbr: p.result.seededStopNbr || undefined, seededLoadNbr: p.result.seededLoadNbr || undefined,
     })),
   ];
