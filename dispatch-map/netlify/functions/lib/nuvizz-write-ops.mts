@@ -58,6 +58,51 @@ export const MUTATING_OPS = new Set<WriteOp>([
 ]);
 
 /**
+ * Mutating single ops that are SAFE to transport-retry on a 429/5xx.
+ *
+ * WHY THIS IS AN ALLOWLIST AND NOT A DENYLIST. fireSingle used to carry the denylist
+ * inline — `op === 'assignDriver' || op === 'dispatchLoad' || ...` — naming the five ops
+ * that existed when it was written. `createRoute` was added to SINGLE_OPS afterwards and
+ * nobody remembered to extend that expression, so every route create inherited the default
+ * maxRetries: 4. isRetryableStatus() treats every 5xx as retryable, so each failed ＋ New
+ * route fired FIVE identical POSTs to NuVizz, not one, and fireSingle records only the LAST
+ * response — 5x the call spend on the one write that has never once succeeded, and the
+ * forensics of the first attempt thrown away. A denylist fails OPEN: the cost of forgetting
+ * it is a silent duplicate write. An allowlist fails CLOSED — a new mutation is not retried
+ * until someone deliberately says it is safe.
+ *
+ * What earns a place here is DECLARATIVE or IDEMPOTENT: re-sending sets the same end state.
+ * `importLoad` restates a load's whole stop list; `partialUpdateStop` sets named fields to
+ * named values; `cancelStop` cancels an already-cancelled stop to the same effect. What can
+ * never be here is IMPERATIVE — create, insert, remove, assign, dispatch — where a first
+ * attempt that APPLIED but answered 5xx double-fires on retry (a second route, a duplicate
+ * DISPATCH to a driver's phone).
+ */
+export const RETRY_SAFE_MUTATIONS: ReadonlySet<SingleOp> = new Set<SingleOp>([
+  'importLoad', 'partialUpdateStop', 'cancelStop',
+]);
+
+/** The single ops that only READ. Derived from the two lists above rather than typed out a
+ *  third time, so it cannot drift from them. */
+export const READ_ONLY_SINGLE_OPS: ReadonlySet<SingleOp> = new Set<SingleOp>(
+  SINGLE_OPS.filter((op) => !MUTATING_OPS.has(op as WriteOp)),
+);
+
+/**
+ * PURE. May this op be re-sent by the transport after a 429/5xx?
+ *
+ * Answered from the ALLOWLISTS only, never by elimination. Asking "is it a mutation?" and
+ * defaulting the `no` branch to retryable is how the original bug worked: an op the lists
+ * had never heard of looked like a read and got four free retries. So an op earns a retry
+ * by being a known read or an explicitly declarative mutation, and anything else — a typo,
+ * a new op nobody classified — comes back false.
+ */
+export function isTransportRetryable(op: SingleOp): boolean {
+  if (RETRY_SAFE_MUTATIONS.has(op)) return true;
+  return READ_ONLY_SINGLE_OPS.has(op);
+}
+
+/**
  * Hoist the REASON a fired op failed onto the HTTP envelope.
  *
  * runOp's executors put their diagnosis on `result.error` — precise, actionable strings
