@@ -199,6 +199,8 @@ rules_version = '2';
 //   bottom_panel_profiles ...... saved grid layouts (it also falls back to the
 //                                 localStorage cache, so it looks RIGHT and is stale)
 //   truck_profiles ............. the trucks the router plans against
+//   routing_load_vehicles ...... which truck each named load runs (the Routing panel's
+//                                 Box/Tractor memory)
 //   dispatch_presence .......... who else is working the board
 //   nuvizz_ops/manifest_check_latest ... the overnight manifest check's result
 //
@@ -406,6 +408,20 @@ service cloud.firestore {
     // No deleteDoc: a truck deleted out from under a saved route is a route that
     // cannot be re-opened.
     // match /truck_profiles/{doc} {
+    //   allow read:           if canRead();
+    //   allow create, update: if isStaff();
+    //   allow delete:         if false;
+    // }
+    //
+    // WHICH TRUCK RUNS EACH NAMED LOAD — the Routing panel's Box/Tractor memory,
+    // keyed by the load's NAME (loadId/loadNbr are minted fresh every day). Shared,
+    // like truck_profiles: "does SUW run a tractor" belongs to the operation, not
+    // to one browser.
+    //   read   onSnapshot over the collection
+    //   write  setDoc MERGE on every Box/Tractor tap
+    // No deleteDoc: nothing in the app forgets a load, and a memory that vanished
+    // would look exactly like one that was never set.
+    // match /routing_load_vehicles/{doc} {
     //   allow read:           if canRead();
     //   allow create, update: if isStaff();
     //   allow delete:         if false;
