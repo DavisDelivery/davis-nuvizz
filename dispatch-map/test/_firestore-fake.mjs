@@ -60,7 +60,27 @@ export function installFirestoreFake(seed = {}, onOther) {
       if (url.includes('/documents:commit')) {
         const body = JSON.parse(String(init.body));
         log.commits.push(body);
-        return new Response(JSON.stringify({ writeResults: body.writes.map(() => ({})) }), { status: 200 });
+        // APPLY plain document writes to the store. The fake used to only LOG them, so a
+        // createDocIfAbsent landed a document that no later getDoc could see — which makes
+        // an atomic-create write path (history-pro-index's one-op common case) untestable
+        // and, worse, testable-looking: the write "succeeded" and the read came back empty,
+        // exactly the silent half-write these tests exist to catch.
+        // Only writes that carry `update.fields` and no transform are applied; the
+        // increment/transform commits (call counters) keep their log-only behaviour.
+        for (const w of body.writes || []) {
+          const name = w?.update?.name;
+          if (!name || !w.update.fields || w.updateTransforms || w.transform) continue;
+          const wPath = String(name).split('/documents/')[1];
+          if (!wPath) continue;
+          // currentDocument: { exists: false } is a real compare-and-swap — the caller
+          // relies on losing it to mean "someone already has this", so the fake must
+          // refuse rather than overwrite.
+          if (w.currentDocument && w.currentDocument.exists === false && store.has(wPath)) {
+            return new Response(JSON.stringify({ error: { status: 'FAILED_PRECONDITION', message: 'document already exists' } }), { status: 400 });
+          }
+          store.set(wPath, decDoc(w.update.fields));
+        }
+        return new Response(JSON.stringify({ writeResults: (body.writes || []).map(() => ({})) }), { status: 200 });
       }
       const m = url.match(/\/documents\/(.+?)(\?|$)/);
       const path = m ? decodeURIComponent(m[1]) : '';
