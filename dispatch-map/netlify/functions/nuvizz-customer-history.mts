@@ -7,10 +7,14 @@
 //
 //   GET ?name=<business name>   → customers whose name starts with the query,
 //                                 each with their last 20 {pro,date}
-//   GET ?pro=<pro number>       → customers whose saved history contains that PRO
-//                                 (numeric PROs are matched zero-padded to 9 too)
+//   GET ?pro=<pro number>       → the customer + delivery day for that PRO, resolved
+//                                 through the PRO→day pointer index (history_pros),
+//                                 which covers EVERY captured order rather than only
+//                                 a customer's most recent 20. Falls back to the old
+//                                 last-20 scan for days indexed before the backfill.
 import { isFirestoreEnabled } from './lib/firestore.mts';
 import { queryCustomersByName, queryCustomersByPro, getCustomerByMatchKey } from './lib/history-customers.mts';
+import { lookupProDays, proIndexEnabled } from './lib/history-pro-index.mts';
 import { getStop } from './lib/history-store.mts';
 import { requireUser } from './lib/require-user.mts';
 
@@ -58,21 +62,46 @@ export default async (req: Request): Promise<Response> => {
       return new Response(JSON.stringify({ ok: true, mode: 'name', customers }), { status: 200, headers: cors });
     }
     if (pro) {
-      // Match both the raw token and the zero-padded-to-9 form NuVizz stores for
-      // numeric PROs, then de-dupe by customer.
-      const candidates = new Set<string>([pro]);
-      if (/^[0-9]+$/.test(pro)) candidates.add(pro.padStart(9, '0'));
       const seen = new Set<string>();
       const customers: any[] = [];
-      for (const c of candidates) {
-        for (const row of await queryCustomersByPro(c, 25)) {
-          const key = row.matchKey || row.name;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          customers.push(row);
+      const take = (row: any) => {
+        // Keyed by customer, but a pointer whose stop carried no customer key and no
+        // business name must still reach the screen — it falls back to the PRO itself
+        // rather than being silently dropped as an empty key.
+        const key = row.matchKey || row.name || row.hitPro;
+        if (!key || seen.has(key)) return null;
+        seen.add(key);
+        customers.push(row);
+        return row;
+      };
+      // PRIMARY: the PRO → day pointer index. Two doc reads at most, no scan, and it
+      // covers every order we have ever captured — which the per-customer rollup does
+      // NOT: that one holds a customer's most recent 20 PROs, so a week-old order to a
+      // busy customer had already fallen off it and the screen offered to spend a
+      // NuVizz call on an order sitting in our own warehouse (Chad, 2026-09-15).
+      if (proIndexEnabled()) {
+        for (const hit of await lookupProDays(TENANT, pro)) {
+          const c = hit.matchKey ? await getCustomerByMatchKey(TENANT, hit.matchKey) : null;
+          // The hit rides FIRST in `pros` so the screen opens the PRO that was searched
+          // for, not whatever this customer's newest delivery happens to be — and
+          // hitPro/hitDate say so, rather than the card claiming "most recent delivery".
+          const rest = (c?.pros || []).filter((p: any) => !(p?.pro === hit.pro && p?.date === hit.date));
+          const merged = [{ pro: hit.pro, date: hit.date, driver: (c?.pros || []).find((p: any) => p?.pro === hit.pro && p?.date === hit.date)?.driver ?? null }, ...rest];
+          take({
+            matchKey: hit.matchKey || c?.matchKey || null,
+            name: c?.name || hit.name || hit.pro,
+            addr1: c?.addr1 ?? null, city: c?.city ?? null, state: c?.state ?? null, zip: c?.zip ?? null,
+            pros: merged,
+            hitPro: hit.pro, hitDate: hit.date,
+          });
         }
       }
-      return new Response(JSON.stringify({ ok: true, mode: 'pro', customers }), { status: 200, headers: cors });
+      // FALLBACK: the pre-index last-20 scan. Still matches days captured before the
+      // backfill ran, and is the whole answer when PRO_INDEX=off.
+      const candidates = new Set<string>([pro]);
+      if (/^[0-9]+$/.test(pro)) candidates.add(pro.padStart(9, '0'));
+      for (const c of candidates) for (const row of await queryCustomersByPro(c, 25)) take(row);
+      return new Response(JSON.stringify({ ok: true, mode: 'pro', indexed: proIndexEnabled(), customers }), { status: 200, headers: cors });
     }
     return new Response(JSON.stringify({ ok: false, reason: 'missing name or pro', customers: [] }), { status: 400, headers: cors });
   } catch (e: any) {
