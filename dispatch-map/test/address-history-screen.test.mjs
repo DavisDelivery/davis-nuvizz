@@ -109,9 +109,33 @@ test('the BEFORE is captured before the write, never after', () => {
 });
 
 test('a logging failure can never fail the save', () => {
+  // THIS USED TO BAN `await logAddressOverride` OUTRIGHT, which is a proxy for the rule rather
+  // than the rule. The rule is that a missing audit row must never cost a dispatcher the
+  // address they typed. Awaiting is safe precisely when two things hold, and they are what is
+  // asserted now — because the group runner MUST await, or it cannot count what reached the
+  // log, and four pushes went unlogged with nothing on screen able to say so.
+  //
+  // 1. The logger cannot throw. Its whole body is wrapped and it returns false on any failure,
+  //    so `await` on it can only ever resolve — it can never route into a caller's catch and
+  //    report a save as failed when the save landed.
   assert.match(LOG, /catch \{[\s\S]{0,200}?return false;/, 'the POST swallows its own errors');
-  // And the call sites must not await it into the happy path.
-  assert.doesNotMatch(APP, /await logAddressOverride/, 'never awaited into a save');
+  assert.match(LOG, /export async function logAddressOverride[\s\S]{0,400}?try \{/, 'and the try wraps the whole body');
+
+  // 2. Every awaited call site has already made the durable write. A log awaited BEFORE the
+  //    setDoc would put a network round trip between the dispatcher and their own save.
+  for (const name of ['saveQueueCorrection']) {
+    const start = APP.indexOf(`function ${name}(`);
+    assert.ok(start > 0, `${name} not found`);
+    const fn = APP.slice(start, APP.indexOf('\nfunction ', start + 1));
+    if (!/await logAddressOverride/.test(fn)) continue;
+    assert.ok(fn.indexOf("setDoc(doc(db, 'customer_notes'") < fn.indexOf('await logAddressOverride'),
+      `${name} must write the override before it awaits the log`);
+  }
+
+  // 3. The SINGLE-save paths stay fire-and-forget. One dispatcher saving one address should
+  //    never wait on a forensic row; only a batch needs the count.
+  const modal = APP.slice(APP.indexOf('function AddressEditModal('), APP.indexOf('\nfunction ', APP.indexOf('function AddressEditModal(') + 1));
+  assert.doesNotMatch(modal, /await logAddressOverride/, 'the editor never waits on the log');
 });
 
 test('the shown address is what the CARD shows — override first, then NuVizz', () => {
