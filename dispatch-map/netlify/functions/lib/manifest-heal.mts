@@ -63,6 +63,7 @@
 // PURE. No Firestore, no blobs, no clock — the caller supplies today, the board and the rows.
 
 import { boardCoverage, gradeSuspects, gradeText, deliveryWindow } from '../../../src/lib/manifest-window.js';
+import { boardProIndex, onBoard } from './manifest-reconcile.mts';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -85,6 +86,21 @@ export const HEAL_SPAN_DAYS = 2;
  * late re-route inside that tail is exactly the case a dispatcher would want picked up.
  */
 export const HEAL_TAIL_DAYS = 3;
+
+/**
+ * THE HEAL'S SCHEMA VERSION — how a heal written by a BUILD WE NO LONGER TRUST gets thrown away.
+ *
+ * v1.30.0 shipped with every stale night's board PROs pooled into one index, so a night could
+ * heal CLEAN off a day in another night's delivery window. Clean is terminal, so any such
+ * record would have sat in Firestore being served for ever, and nothing would revisit it: the
+ * feature's one genuinely unrecoverable failure mode, written by the feature itself.
+ *
+ * Bumping this is the repair. validHeal refuses a heal that does not carry the CURRENT version —
+ * including every heal from v1.30.0, which carries none at all — so those are discarded and
+ * recomputed correctly the next time the panel is opened. No migration to run, no rows to hunt
+ * for, and the same mechanism is there for the next time a heal's meaning changes.
+ */
+export const HEAL_VERSION = 2;
 
 function addDays(date: string, n: number): string {
   const d = new Date(`${date}T12:00:00Z`);
@@ -157,11 +173,18 @@ export function needsHeal(l: any, today: string, prior: any = null): { heal: boo
  * after a heal and supersede the manifest it was computed against. `ofAt` is the guard: a heal
  * whose `ofAt` no longer matches `latest.at` is a heal of a document that has moved on, and is
  * discarded rather than shown against numbers it was never computed from.
+ *
+ * AND THE VERSION IS THE SECOND GUARD. A heal carrying anything but the current HEAL_VERSION was
+ * written by a build whose answer we no longer trust — v1.30.0's pooled index could mark a night
+ * clean off another night's board, and clean is terminal, so such a record would be served for
+ * ever. Refusing it here is what makes that repairable: it is dropped and recomputed on the next
+ * read, with nothing to migrate.
  */
 export function validHeal(doc: any): any | null {
   const h = doc?.heal;
   const at = doc?.latest?.at;
   if (!h || typeof h !== 'object') return null;
+  if (Number(h.v) !== HEAL_VERSION) return null;
   if (!at || String(h.ofAt ?? '') !== String(at)) return null;
   return h;
 }
@@ -177,6 +200,8 @@ export function healDates(l: any, span = HEAL_SPAN_DAYS): string[] {
 }
 
 export interface HealResult {
+  /** the schema version this heal was written by — see HEAL_VERSION and validHeal */
+  v: number;
   at: string;
   /** the `latest.at` this heal was computed against — see validHeal */
   ofAt: string | null;
@@ -219,8 +244,9 @@ export function healNight(
   const coverage = boardCoverage(opts.boardDays, required, opts.asOf);
   const grade = gradeSuspects(suspects, coverage);
   return {
+    v: HEAL_VERSION,
     at: opts.at,
-    ofAt: l?.at ?? null,
+    ofAt: (l && l.at) ?? null,
     asOf: opts.asOf,
     checkedAgainst: opts.boardDays,
     reAsked: rows.length,
@@ -230,4 +256,56 @@ export function healNight(
     verdictText: gradeText(grade, coverage),
     filed: { verdict: l?.grade?.verdict ?? null, missingCount: Number(l.missingCount) || 0 },
   };
+}
+
+/**
+ * PURE. THE WHOLE HEAL PASS, so the decision does not live in a handler no test can reach.
+ *
+ * This function exists because of a bug that got this far: the endpoint pooled every stale
+ * night's board PROs into ONE index and handed it to all of them, so a 2026-09-04 manifest's
+ * missing order was found on the 2026-09-15 board — a day in a LATER night's window, not its
+ * own — and healed CLEAN. The same night got a different answer depending on which other
+ * nights happened to share the request, and because clean is terminal that false clean would
+ * never have been re-asked: genuinely missing freight, marked resolved, for good.
+ *
+ * It was invisible to the unit tests because every one of them tested the pure module, and the
+ * pooling was in the endpoint. CLAUDE.md names exactly this: "Pure core, thin edges. Every
+ * non-trivial decision in this repo that shipped broken shipped inside a handler nobody could
+ * unit-test." So the decision moved here, where `healPass` is one call with plain data in and
+ * plain data out, and the endpoint is left doing IO only.
+ *
+ * THE INVARIANT IT EXISTS TO HOLD: a night is graded against ITS OWN delivery window and
+ * nothing else, so re-asking it alone and re-asking it beside thirty others give the identical
+ * answer. Reads are still shared by the caller — one per distinct day — because sharing the
+ * READ is free and sharing the LOOKUP is the bug.
+ *
+ * `prosByDate` carries only days that were actually READ. A day absent from it is a board we
+ * could not open, which is not the same as an empty one: that night is skipped and said so,
+ * never graded against a board nobody looked at.
+ */
+export function healPass(
+  candidates: Array<{ date: string; l: any }>,
+  opts: { prosByDate: Map<string, string[]>; stopsByDate: Map<string, number>; asOf: string; at: string },
+): { healed: Array<{ date: string; heal: HealResult }>; skipped: Array<{ date: string; why: string }> } {
+  const healed: Array<{ date: string; heal: HealResult }> = [];
+  const skipped: Array<{ date: string; why: string }> = [];
+  for (const c of (candidates || [])) {
+    if (!c || !c.l) continue;
+    const days = healDates(c.l);
+    if (!days.length) { skipped.push({ date: c.date, why: 'no delivery window on file for this night — it cannot be re-asked' }); continue; }
+    if (days.some((d) => !opts.stopsByDate.has(d))) {
+      skipped.push({ date: c.date, why: 'a board for one of its delivery days could not be read — left as filed' });
+      continue;
+    }
+    // THIS NIGHT'S OWN WINDOW, AND NOTHING ELSE. See the header.
+    const index = boardProIndex(days.flatMap((d) => opts.prosByDate.get(d) || []));
+    const h = healNight(c.l, {
+      isOnBoard: (pro) => onBoard(index, pro),
+      boardDays: days.map((d) => ({ date: d, stops: opts.stopsByDate.get(d) as number })),
+      asOf: opts.asOf, at: opts.at,
+    });
+    if (!h) { skipped.push({ date: c.date, why: 'no suspect PROs stored — cannot be re-asked' }); continue; }
+    healed.push({ date: c.date, heal: h });
+  }
+  return { healed, skipped };
 }

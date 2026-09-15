@@ -16,7 +16,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  healEnabled, needsHeal, healDates, healNight, storedSuspects, validHeal, HEAL_SPAN_DAYS,
+  healEnabled, needsHeal, healDates, healNight, healPass, storedSuspects, validHeal,
+  HEAL_SPAN_DAYS, HEAL_VERSION,
 } from '../netlify/functions/lib/manifest-heal.mts';
 import { manifestWindow, boardCoverage, gradeSuspects, gradeText } from '../src/lib/manifest-window.js';
 import { boardProIndex, onBoard } from '../netlify/functions/lib/manifest-reconcile.mts';
@@ -231,14 +232,26 @@ test('healDates: the expected day plus the same slack the nightly diff allows, f
 // ── 5. THE HEAL MUST SPEAK FOR THE MANIFEST ON FILE ──────────────────────────
 
 test('validHeal: a heal of a superseded manifest is discarded, not shown against numbers it never saw', () => {
-  const h = { ofAt: FILED_AT, stillOff: 2 };
+  const h = { v: HEAL_VERSION, ofAt: FILED_AT, stillOff: 2 };
   assert.deepEqual(validHeal({ latest: { at: FILED_AT }, heal: h }), h);
   // A fifth report landed after the heal — the heal speaks for a revision that is gone.
   assert.equal(validHeal({ latest: { at: '2026-09-12T06:00:00.000Z' }, heal: h }), null);
   assert.equal(validHeal({ latest: { at: FILED_AT } }), null);
   assert.equal(validHeal({ heal: h }), null);
   assert.equal(validHeal({ latest: { at: FILED_AT }, heal: 'not an object' }), null);
+  // THE REPAIR. v1.30.0 wrote heals with no version at all, off a pooled index that could mark a
+  // night clean using another night's board. Clean is terminal, so those records would be served
+  // for ever — refusing them here is what throws them away and recomputes them on the next read.
+  assert.equal(validHeal({ latest: { at: FILED_AT }, heal: { ofAt: FILED_AT, stillOff: 0 } }), null, 'v1.30.0 heal: no version, discarded');
+  assert.equal(validHeal({ latest: { at: FILED_AT }, heal: { v: HEAL_VERSION - 1, ofAt: FILED_AT, stillOff: 0 } }), null, 'older schema, discarded');
+  assert.equal(validHeal({ latest: { at: FILED_AT }, heal: { v: 'two', ofAt: FILED_AT, stillOff: 0 } }), null, 'junk version, discarded');
   assert.equal(validHeal(null), null);
+  // THE LOOP CLOSES: what healNight actually produces must be accepted by validHeal. Without
+  // this, stamping the wrong shape would silently make every heal un-servable — the panel would
+  // recompute on every single load and nobody would see anything wrong.
+  const fresh = healNight(filedNight(), healOpts(boardNow(134)));
+  assert.equal(fresh.v, HEAL_VERSION);
+  assert.deepEqual(validHeal({ latest: { at: FILED_AT }, heal: fresh }), fresh);
 });
 
 // ── 6. THE WAY BACK ──────────────────────────────────────────────────────────
@@ -254,4 +267,72 @@ test('MANIFEST_HISTORY_SELFHEAL: ON by default, off only on an explicit off-word
   for (const bad of ['of', 'flase', 'disabled', 'nope', 'n', 'true', 'on', '1', 'yes']) {
     assert.equal(healEnabled({ MANIFEST_HISTORY_SELFHEAL: bad }), true, bad);
   }
+});
+
+// ── 7. ONE NIGHT, ONE WINDOW — the bug review caught before this shipped ─────
+//
+// The first cut of the endpoint pooled every stale night's board PROs into ONE index and handed
+// it to all of them. A 2026-09-04 manifest's missing order was then found on the 2026-09-15
+// board — a day in a LATER night's window, not its own — and healed CLEAN. The same night got a
+// different answer depending on which other nights happened to share the request, and clean is
+// TERMINAL, so that false clean would never have been re-asked: genuinely missing freight,
+// marked resolved, for good. It was invisible to every test above because it lived in the
+// handler, which is why healPass exists.
+
+const nightOf = (at, expected, pro) => ({
+  at, orders: 500, missingCount: 1, missing: [{ pro }],
+  expectedDelivery: expected, grade: { verdict: 'unrouted', count: 1 },
+});
+/** A = due Mon 09-07 (window 07/08/09); B = due Mon 09-14 (window 14/15/16). */
+const NIGHT_A = { date: '2026-09-04', l: nightOf('2026-09-05T05:10:00.000Z', '2026-09-07', '007111111') };
+const NIGHT_B = { date: '2026-09-11', l: nightOf('2026-09-12T05:10:00.000Z', '2026-09-14', '007222222') };
+// A's order NEVER appears on any of A's own days. It turns up on 09-15 — inside B's window only.
+const PROS_BY_DATE = new Map([
+  ['2026-09-07', ['009000001', '009000002']],
+  ['2026-09-08', ['009000003']],
+  ['2026-09-09', []],
+  ['2026-09-14', ['007222222-1', '009000004']],
+  ['2026-09-15', ['007111111-1', '009000005']],
+  ['2026-09-16', []],
+]);
+const STOPS_BY_DATE = new Map([...PROS_BY_DATE].map(([d, p]) => [d, p.length]));
+const passOpts = { prosByDate: PROS_BY_DATE, stopsByDate: STOPS_BY_DATE, asOf: TODAY, at: NOW };
+
+test('a night is graded against ITS OWN window — sharing a request with another night cannot change its answer', () => {
+  const alone = healPass([NIGHT_A], passOpts).healed[0].heal;
+  const beside = healPass([NIGHT_A, NIGHT_B], passOpts).healed.find((h) => h.date === NIGHT_A.date).heal;
+  assert.equal(alone.stillOff, 1, 'its order is on none of 09-07/08/09');
+  assert.equal(beside.stillOff, 1, 'and it is still 1 when a later night rides along');
+  assert.deepEqual(alone, beside, 'byte-identical: the request it arrived in is not evidence');
+  // The 09-15 board proves nothing about a manifest due 09-07, and the stated checkedAgainst
+  // must be the set the answer actually came from.
+  assert.deepEqual(beside.checkedAgainst.map((d) => d.date), ['2026-09-07', '2026-09-08', '2026-09-09']);
+  assert.equal(beside.verdict, 'missing');
+  // Meanwhile B, whose order really is on its own 09-14 board, heals clean.
+  const b = healPass([NIGHT_A, NIGHT_B], passOpts).healed.find((h) => h.date === NIGHT_B.date).heal;
+  assert.equal(b.stillOff, 0);
+  assert.equal(b.verdict, 'none');
+});
+
+test('healPass skips a night whose board could not be read, and says which — never grades it against an unopened board', () => {
+  // A day absent from stopsByDate was NOT read. That is not an empty board, and treating it as
+  // one would mark every suspect on it missing off a board nobody opened.
+  const partial = { prosByDate: PROS_BY_DATE, stopsByDate: new Map([['2026-09-07', 2], ['2026-09-08', 1]]), asOf: TODAY, at: NOW };
+  const r = healPass([NIGHT_A], partial);
+  assert.equal(r.healed.length, 0);
+  assert.equal(r.skipped.length, 1);
+  assert.equal(r.skipped[0].date, '2026-09-04');
+  assert.match(r.skipped[0].why, /could not be read — left as filed/);
+});
+
+test('healPass reports every night it could not re-ask, and survives junk candidates', () => {
+  const noWindow = { date: '2026-08-01', l: { at: 'x', missingCount: 1, missing: [{ pro: '1' }], expectedDelivery: null, checkedAgainst: [] } };
+  const noSuspects = { date: '2026-08-02', l: { at: 'y', missingCount: 3, missing: [], expectedDelivery: '2026-09-07' } };
+  const r = healPass([noWindow, noSuspects, null, { date: 'z' }], passOpts);
+  assert.equal(r.healed.length, 0);
+  assert.deepEqual(r.skipped.map((s) => s.date).sort(), ['2026-08-01', '2026-08-02']);
+  assert.match(r.skipped.find((s) => s.date === '2026-08-01').why, /no delivery window/);
+  assert.match(r.skipped.find((s) => s.date === '2026-08-02').why, /no suspect PROs/);
+  assert.deepEqual(healPass([], passOpts), { healed: [], skipped: [] });
+  assert.deepEqual(healPass(null, passOpts), { healed: [], skipped: [] });
 });

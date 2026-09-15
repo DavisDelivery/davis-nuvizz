@@ -20,11 +20,11 @@
 // app, and this one must answer a browser.
 import { isFirestoreEnabled, getDoc, listDocs, updateDocFields, etDayString } from './lib/firestore.mts';
 import { manifestDayPath, describeDay } from './lib/manifest-archive.mts';
-import { healEnabled, needsHeal, healDates, healNight, validHeal } from './lib/manifest-heal.mts';
+import { healEnabled, needsHeal, healDates, healPass, validHeal } from './lib/manifest-heal.mts';
 import { getManifestPdf, blobSelfTest, blobsAvailable } from './lib/manifest-blobs.mts';
 import { boardCoverage, gradeSuspects, gradeText } from '../../src/lib/manifest-window.js';
 import { readUlineManifest } from './lib/uline-manifest.mts';
-import { proKeys, boardProIndex, onBoard } from './lib/manifest-reconcile.mts';
+import { proKeys } from './lib/manifest-reconcile.mts';
 import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
@@ -230,7 +230,15 @@ export default async (req: Request): Promise<Response> => {
         // One read per distinct day, shared across every night whose window covers it.
         const dates = [...new Set(candidates.flatMap((c) => healDates(c.l)))];
         const stops = new Map<string, number>();
-        const pros: string[] = [];
+        // THE PROs ARE KEPT PER DAY, NOT POOLED. The read is shared — one listDocs per distinct
+        // day, however many nights want it — but the LOOKUP must not be, and pooling them was a
+        // real bug caught by review before this shipped: with one flat index across every
+        // night's days, a 09-04 manifest's missing order was found on the 09-15 board (which
+        // belongs only to a LATER night's window) and healed CLEAN. Same night, same board,
+        // a different answer purely because another night happened to share the request — and
+        // clean is terminal, so that false clean would never have been re-asked. A false clean
+        // is the expensive mistake here: genuinely missing freight, marked resolved, for good.
+        const prosByDate = new Map<string, string[]>();
         await Promise.all(dates.map(async (d) => {
           // A READ THAT FAILED IS NOT AN EMPTY BOARD. listDocs throwing and a day with no stops
           // on it are the same `[]` to a careless caller, and treating the first as the second
@@ -238,21 +246,18 @@ export default async (req: Request): Promise<Response> => {
           const rowsOnDay = await listDocs(`nuvizz_stop_index/${TENANT}__${d}/stops`, { mask: ['stopNbr'] }).then((r) => r || []).catch(() => null);
           if (rowsOnDay === null) return;                     // absent from `stops` ⇒ unreadable
           stops.set(d, rowsOnDay.length);
-          for (const r of rowsOnDay) { const id = String((r as any)?._id ?? (r as any)?.stopNbr ?? ''); if (id) pros.push(id); }
+          const ids: string[] = [];
+          for (const r of rowsOnDay) { const id = String((r as any)?._id ?? (r as any)?.stopNbr ?? ''); if (id) ids.push(id); }
+          prosByDate.set(d, ids);
         }));
         heal.boardsRead = stops.size;
-        const index = boardProIndex(pros);
-        const at = new Date().toISOString();
-        for (const c of candidates) {
-          const days = healDates(c.l);
-          if (days.some((d) => !stops.has(d))) { heal.skipped.push({ date: c.date, why: 'a board for one of its delivery days could not be read — left as filed' }); continue; }
-          const h = healNight(c.l, {
-            isOnBoard: (pro) => onBoard(index, pro),
-            boardDays: days.map((d) => ({ date: d, stops: stops.get(d) as number })),
-            asOf: today, at,
-          });
-          if (!h) { heal.skipped.push({ date: c.date, why: 'no suspect PROs stored — cannot be re-asked' }); continue; }
-          healByDate.set(c.date, h);
+        // THE DECISION IS THE PURE MODULE'S, NOT THIS HANDLER'S. It graded each night against
+        // its OWN window — the invariant healPass exists to hold, after a pooled index healed a
+        // night clean off another night's board day and review caught it here.
+        const pass = healPass(candidates, { prosByDate, stopsByDate: stops, asOf: today, at: new Date().toISOString() });
+        heal.skipped.push(...pass.skipped);
+        for (const { date, heal: h } of pass.healed) {
+          healByDate.set(date, h);
           heal.healed += 1;
           // FIELD-MASKED, ITS OWN TOP-LEVEL KEY, and never over latest.grade/coverage/
           // missingCount — those are the filed record of what that night's run concluded and
@@ -260,7 +265,7 @@ export default async (req: Request): Promise<Response> => {
           // from a literal and drops this key; that is CORRECT rather than a loss, because such
           // a report supersedes the manifest the heal was computed from and validHeal would
           // discard it anyway. Best-effort: a failed write costs one re-read, never the answer.
-          await updateDocFields(manifestDayPath(TENANT, c.date), { heal: h }).catch(() => { heal.skipped.push({ date: c.date, why: 'recomputed, but could not be filed — it will be recomputed next read' }); });
+          await updateDocFields(manifestDayPath(TENANT, date), { heal: h }).catch(() => { heal.skipped.push({ date, why: 'recomputed, but could not be filed — it will be recomputed next read' }); });
         }
       }
     }
