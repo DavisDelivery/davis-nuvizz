@@ -46,7 +46,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, cardSendState, routePaintSource } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -17417,6 +17417,19 @@ function formatRoutingEta(sec) {
   return new Date(sec * 1000).toLocaleTimeString('en-US', { timeZone: 'UTC', hour: 'numeric', minute: '2-digit' });
 }
 
+// Module scope, so "no routes are painted" is the SAME Map on every render: the marker effect
+// depends on effectiveRouteInfo, and a fresh empty Map each time tore down and rebuilt every
+// pin on the board on every poll (the ref-stability trap applyPlanOverlay documents).
+const EMPTY_ROUTE_INFO = new Map();
+
+// A wall-clock stamp for something that happened on THIS device just now — the Compare card's
+// "Sent to NuVizz 2:14 PM". Local time on purpose, unlike the planning clock above, which is
+// UTC-anchored because it is arithmetic rather than a moment the dispatcher lived through.
+function fmtClockMs(ms) {
+  if (!Number.isFinite(Number(ms))) return '';
+  return new Date(Number(ms)).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
 // A selected stop "looks oversize" for the live tally if any line item is NuVizz
 // category L. (The authoritative geometry is computed server-side at build time.)
 function stopLooksOversize(s) {
@@ -19004,7 +19017,7 @@ function PreflightBanner({ pre, isMobile }) {
   );
 }
 
-function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
+function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, savedAt = null, liveMode = true, isMobile, liveWrite }) {
   // The live-dispatch UI gate is now the gear toggle (prop) rather than the module-level
   // ?write=1/env const. Aliased to the original name so the gate sites below are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -19083,12 +19096,27 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = 
             {route.collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
             <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color }} title="Route colour on the map" />
             <span className="font-semibold text-slate-800 truncate" title={route.name || loadDisplayName(route.key) || 'Unnamed load'}>{route.name || loadDisplayName(route.key) || 'Unnamed load'}</span>
-            {route.pendingCreate && (
-              <span className="text-[9px] font-bold uppercase text-amber-800 bg-amber-100 border border-amber-300 rounded px-1 shrink-0"
-                title="This route exists only on this screen so far — Save creates it in NuVizz with all its stops (NuVizz refuses an empty route)">
-                not sent
-              </span>
-            )}
+            {/* IS THIS IN NUVIZZ OR ONLY ON THIS SCREEN — Chad: "it's hard to know when
+                something is pushed to nuvizz." The old chip said "not sent" for a pending NEW
+                route and nothing at all for an existing load, so on a real load the only signal
+                was the header's Save button appearing and then disappearing, plus a toast that
+                may already have been dismissed. Every card now carries its state, always, and
+                the green one is only ever earned by a confirmed write (cardSendState, tested). */}
+            {(() => {
+              const st = cardSendState({ dirty, pendingCreate: route.pendingCreate, savedAt, liveMode });
+              const tone = st.tone === 'green' ? 'text-emerald-800 bg-emerald-100 border-emerald-300'
+                : st.tone === 'amber' ? 'text-amber-800 bg-amber-100 border-amber-300'
+                : 'text-slate-600 bg-slate-100 border-slate-300';
+              return (
+                /* data-card-send is the STABLE hook for the guards. verify-loads-tab identified
+                   a pending card by the words "not sent" in this header — its own comment said
+                   so — so renaming the chip made every shell-tap check report "no card opened"
+                   when the card had opened fine. Prose is not an API; the kind is. */
+                <span data-card-send={st.kind} className={`text-[9px] font-bold uppercase border rounded px-1 shrink-0 ${tone}`} title={st.title}>
+                  {st.label}{st.kind === 'sent' && savedAt ? ` ${fmtClockMs(savedAt)}` : ''}
+                </span>
+              );
+            })()}
           </button>
           <div className="flex items-center gap-1.5 shrink-0">
             {ninjaMode && (
@@ -19420,6 +19448,10 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
   // order at open, so "dirty" = the staged order/membership differs, or a driver/dispatch is set.
   const [staged, setStaged] = useState({});        // key → { driverId, driverName, dispatch }
   const [baselines, setBaselines] = useState({});  // key → stopNbr[] (order at open / last save)
+  // key → ms of the last CONFIRMED write for that card (markSaved). The card chip's only
+  // evidence that anything reached NuVizz; pruned with the baseline when a card closes, so a
+  // reopened load describes THIS card rather than a save from an hour ago.
+  const [savedAtByKey, setSavedAtByKey] = useState({});
   const [confirm, setConfirm] = useState(null);
   const [busy, setBusy] = useState(false);
   const [closeGuard, setCloseGuard] = useState(null);
@@ -19439,6 +19471,13 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
     const liveKeys = new Set(wbRoutes.map((r) => r.key));
     // Prune closed routes (so a reopen re-seeds against the FRESH order, not a stale baseline),
     // then seed any newly-opened route's baseline = its order at open.
+    // The saved-at stamp is pruned on the same rule as the baseline: a closed card's history
+    // must not follow a freshly reopened one, which is seeded from the board all over again.
+    setSavedAtByKey((prev) => {
+      let next = prev, changed = false;
+      for (const k of Object.keys(prev)) if (!liveKeys.has(k)) { if (!changed) { next = { ...prev }; changed = true; } delete next[k]; }
+      return changed ? next : prev;
+    });
     setBaselines((prev) => {
       let next = prev, changed = false;
       for (const k of Object.keys(prev)) if (!liveKeys.has(k)) { if (!changed) { next = { ...prev }; changed = true; } delete next[k]; }
@@ -19649,11 +19688,18 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
     if (pending.length) await sendPendingCreates(pending);
   };
 
-  const markSaved = (keys) => setBaselines((prev) => {
-    const n = { ...prev };
-    for (const k of keys) { const r = wbRoutes.find((x) => x.key === k); if (r) n[k] = r.order.slice(); }
-    return n;
-  });
+  const markSaved = (keys) => {
+    setBaselines((prev) => {
+      const n = { ...prev };
+      for (const k of keys) { const r = wbRoutes.find((x) => x.key === k); if (r) n[k] = r.order.slice(); }
+      return n;
+    });
+    // THE ONLY PLACE A CARD EARNS ITS GREEN CHIP. markSaved runs on a CONFIRMED write and
+    // nowhere else — Beta returns long before it, and a refused or partial save never reaches
+    // it — so "Sent to NuVizz" can never be an intent reported as an outcome.
+    const at = Date.now();
+    setSavedAtByKey((prev) => { const n = { ...prev }; for (const k of keys) n[k] = at; return n; });
+  };
 
   // Runs the real write. Called directly by onPanelSave with { loads, clientOpId } now that
   // the confirm popup is gone (falls back to the `confirm` state if ever called without args).
@@ -19994,6 +20040,19 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
               <Save size={12} /> {busy ? '…' : `Save (${dirtyRoutes.length})`}
             </button>
           )}
+          {/* THE ABSENCE OF A BUTTON IS NOT A MESSAGE. With nothing staged, the Save button
+              above simply does not render — which is how "everything is in NuVizz" and "you
+              have not done anything yet" came to look identical. This says which. */}
+          {LIVE_WRITE_FLAG && dirtyRoutes.length === 0 && wbRoutes.length > 0 && (
+            <span
+              title={wbRoutes.some((r) => savedAtByKey[r.key])
+                ? 'Every staged change on these cards has been written to NuVizz and verified.'
+                : 'Nothing is staged on these cards — they match the loads as NuVizz holds them.'}
+              className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border ${wbRoutes.some((r) => savedAtByKey[r.key]) ? 'border-emerald-600 bg-emerald-50 text-emerald-800' : 'border-slate-300 bg-white text-slate-500'}`}
+            >
+              {wbRoutes.some((r) => savedAtByKey[r.key]) ? '✓ All sent to NuVizz' : 'Nothing to send'}
+            </span>
+          )}
           {/* Engine indicator, not a picker — RWB is the only Save engine now (see the pin above). */}
           {LIVE_WRITE_FLAG && (
             <span
@@ -20066,6 +20125,8 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
             staged={staged[r.key]}
             onStage={(patch) => setStageFor(r.key, patch)}
             dirty={isDirty(r)}
+            savedAt={savedAtByKey[r.key] || null}
+            liveMode={liveMode}
             isMobile={isMobile}
             liveWrite={liveWrite}
           />
@@ -21435,6 +21496,11 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   const [job, setJob] = useState(null);     // { status, result, error }
   const [building, setBuilding] = useState(false);
   const [saveState, setSaveState] = useState(null); // null | 'saving' | 'saved' | error string
+  // Has THIS build's plan been handed to Compare cards? Declared up here, ahead of
+  // effectiveRouteInfo, because it decides what the map paints: once a plan is staged the cards
+  // are the working set, so closing them all releases the stops instead of falling back to the
+  // engine's own routes (routePaintSource). Cleared by a new build and by Discard.
+  const [planStaged, setPlanStaged] = useState(false);
   const [lastRequest, setLastRequest] = useState(null);
 
   // Every coord-bearing stop with any address fix applied — the UNFILTERED base. The "Unplanned only"
@@ -22491,7 +22557,18 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     }
     return m;
   }, [wbRoutes, stopById, notes, selectedDate, travelInputs, departTable, flagsClockTick]); // eslint-disable-line react-hooks/exhaustive-deps
-  const effectiveRouteInfo = wbRoutesColored.length ? wbRouteInfo : routeInfo;
+  // WHICH PLAN THE MAP PAINTS AS ROUTES. Chad: "if i don't push to nuvizz, when i close the
+  // routes out of the compare panel it should just let them go and not act like those stops are
+  // on the route." Closing a card already released the stops everywhere else — the selection
+  // guard, the grid's staged badge and the presence claim all derive from wbRoutes, and nothing
+  // is written to the plan overlay short of a confirmed save (recordPlanOverlay has exactly one
+  // caller: syncBoardAfterSave). What it did NOT release was the map: this expression fell back
+  // to the BUILD's own plan the moment the last card closed, so the same stops came straight
+  // back numbered, route-coloured and joined by a polyline, with nothing sent to NuVizz.
+  // routePaintSource (lib/routing-select.js, tested) makes the cards the working set once a plan
+  // has been staged; the result panel's "Stage onto Compare cards again →" is the way back.
+  const routePaint = routePaintSource({ openCards: wbRoutesColored.length, planStaged });
+  const effectiveRouteInfo = routePaint === 'cards' ? wbRouteInfo : routePaint === 'plan' ? routeInfo : EMPTY_ROUTE_INFO;
 
   // The plan to persist on Save — engine result with any manual order applied.
   const editedResultForSave = useMemo(() => {
@@ -23472,7 +23549,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
 
   const runBuild = useCallback(async () => {
     if (!db) { setJob({ status: 'error', error: 'Firestore not configured' }); return; }
-    setBuilding(true); setJob({ status: 'queued' }); setSaveState(null);
+    setBuilding(true); setJob({ status: 'queued' }); setSaveState(null); setPlanStaged(false);
     const jobId = `job_${(crypto.randomUUID ? crypto.randomUUID() : String(Date.now()))}`;
     // "Plan onto my loads": ONE solver truck per picked roster load, keyed by the load's
     // display name — the solver builds exactly one route per key, so route cards, reorder
@@ -23719,6 +23796,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     setJob(null); setRouteState(null); setSaveState(null); setBuilding(false); setLastRequest(null);
     // A plain discard leaves the cards standing, so from here on they are the dispatcher's.
     setAutoStagedKeys([]);
+    setPlanStaged(false);
     setLastAction('Discarded plan — selection kept');
     setMobilePanel('setup');
   }, []);
@@ -23773,6 +23851,9 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       }
     }
     setWbRoutes(next);
+    // From here the CARDS are this plan's working set: closing them all releases the stops
+    // rather than handing the map back to the engine's own routes (routePaintSource).
+    setPlanStaged(true);
     const bits = [`Staged ${added} stop${added === 1 ? '' : 's'} onto ${Math.min(bound.length, next.length)} card${bound.length === 1 ? '' : 's'} — review, then Save to send to NuVizz`];
     if (skippedHeld) bits.push(`${skippedHeld} already staged on another open card (left there)`);
     if (fullSkipped.length) bits.push(`workbench full — couldn't open: ${fullSkipped.join(', ')}`);
