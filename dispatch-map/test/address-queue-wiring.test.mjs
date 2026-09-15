@@ -98,3 +98,51 @@ test('stopId is in the projection because without it the twin guard is disarmed'
   const FIELDS = fs.readFileSync(new URL('../netlify/functions/lib/board-fields.mts', import.meta.url), 'utf8');
   assert.match(FIELDS, /twin guard is disarmed/, 'and the reason is written down where the field is chosen');
 });
+
+// ── THE SECOND HISTORY: WHAT WE ALREADY FIXED ON THIS DAY ────────────────────
+//
+// Chad: "there should be a dropdown in the days where the previously listed problem addresses
+// were where a 2nd history of the ones we fixed lived."
+//
+// Not a missing record — every one of those sixteen corrections was logged. The queue's job is
+// to empty itself, and when it did, the day read "Nothing wrong with this day's addresses":
+// pixel-identical to a day nobody had touched. The evidence lived on a different tab from the
+// screen the work was done on.
+
+test('the queue hands back each day\'s fixes from the SAME document the log reads', () => {
+  assert.match(FN, /readAddressChanges/, 'the address log, not a second store that could disagree with it');
+  assert.match(FN, /dates\.map\(\(d\) => readAddressChanges\(TENANT, d\)/, 'one get per board day');
+  assert.match(FN, /out\.push\(\{ date: d, stopsRead: stops\.length, rows: sortQueueRows\(rows\), fixed \}\)/);
+});
+
+test('…and it is still ZERO NuVizz calls', () => {
+  // The whole point of this screen is that looking costs nothing. A per-day read that reached
+  // the vendor would turn opening a disclosure into three metered calls.
+  const imports = FN.split('\n').filter((l) => l.startsWith('import '));
+  for (const line of imports) {
+    assert.ok(!/nuvizz-request|nuvizz-write|nuvizz-scan/.test(line), `vendor client crept in: ${line}`);
+  }
+  assert.match(FN, /nuvizzCalls: 0/);
+});
+
+test('OURS ONLY — the vendor\'s own edits have their own tab and must not pollute this list', () => {
+  // `scan` rows are NuVizz changing the address out from under us. Real, and answered by the
+  // "NuVizz changed it" tab. This list answers "what did WE fix here"; mixing them makes a
+  // dispatcher's own work unreadable.
+  assert.match(FN, /r\?\.source === 'override' \|\| r\?\.source === 'override-reset'/);
+});
+
+test('a read failure on the log can never take the work queue down with it', () => {
+  // The fixes are the receipt. The rows are the job. A day document that fails to read must
+  // cost the receipt, never the list of addresses that will send a truck to the wrong door.
+  assert.match(FN, /readAddressChanges\(TENANT, d\)\.catch\(\(\) => \[\]\)/);
+});
+
+test('the three day reads are sliced apart correctly, not off by one window', () => {
+  // Three parallel reads per date land in ONE array. Slicing stops at dates.length twice was
+  // the bug waiting here: the dismissals would have been read as day stops and every row's
+  // waved-off state would have come from the wrong place.
+  assert.match(FN, /dayReads\.slice\(0, dates\.length\)/);
+  assert.match(FN, /dayReads\.slice\(dates\.length, dates\.length \* 2\)/);
+  assert.match(FN, /dayReads\.slice\(dates\.length \* 2\)/);
+});

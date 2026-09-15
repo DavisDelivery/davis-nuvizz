@@ -180,19 +180,30 @@ test('the queue shows the budget it is spending against, not a hardcoded ceiling
   assert.ok(!/2000|2_000/.test(runner), 'never the constant');
 });
 
-test('formatting rows are hidden by default, and a PRO search shows every one of them', () => {
+test("the VENDOR's formatting rows are hidden by default, and a PRO search shows every one", () => {
   // Hiding them is right on a 700-stop window and wrong the moment somebody asks about ONE
   // order: "did we change 007174397" coming back "no address changed" because the only row
   // was a suite moving between lines is the confident-and-wrong answer this replaces.
-  assert.match(APP, /Show formatting-only changes/);
+  assert.match(APP, /Show the vendor’s formatting-only changes/);
   assert.match(APP, /if \(showNoise \|\| searching\) p\.set\('all', '1'\);/);
+  // AND IT SAYS WHOSE. A dispatcher's own corrections classify as `formatting` by design (the
+  // queue's fix swaps two lines and moves no freight) and are never withheld — a toggle that
+  // did not say so reads as if their own work were being hidden from them too.
+  assert.match(APP, /Your own corrections are never hidden here/);
 });
 
 test('the empty state never claims rows are hidden when none are', () => {
   // The inverted version of this said "formatting differences are hidden" on a screen with
   // the toggle already ON and nothing to show — turning "nothing happened" into "something is
   // being kept from me", which is the one thing a log must never do.
-  assert.match(APP, /const formattingHidden = !showNoise && !searching && Number\(sum\.formatting \|\| 0\) > 0;/);
+  //
+  // It then failed the OTHER way round: once override rows started surviving the default view,
+  // the summary still counted them as hidden, printing "20 hidden" directly above those same
+  // twenty rows. The count is now what is actually withheld — shown subtracted from total —
+  // so it cannot over- or under-report whichever way the filter moves.
+  assert.match(APP, /const withheldFormatting = Math\.max\(0, Number\(sum\.formatting \|\| 0\) - shownFormatting\);/);
+  assert.match(APP, /const formattingHidden = !showNoise && !searching && withheldFormatting > 0;/);
+  assert.doesNotMatch(APP, /Number\(sum\.formatting \|\| 0\) > 0;/, 'never the raw total again');
   assert.match(APP, /Nothing was recorded at all/);
 });
 

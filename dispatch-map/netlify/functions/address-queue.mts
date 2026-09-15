@@ -31,11 +31,12 @@
 // Skipping withCustomerKeys means every stop joins to no note, every correction looks unmade,
 // and the queue fills with confident wrong rows for addresses fixed weeks ago.
 
-import { isFirestoreEnabled, readStops, listDocs, getDoc, updateDocFields, etDayString } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, listDocs, getDoc, updateDocFields, etDayString, readAddressChanges } from './lib/firestore.mts';
 import { QUEUE_STOP_FIELDS, QUEUE_NOTE_FIELDS } from './lib/board-fields.mts';
 import { withCustomerKeys } from './lib/customer-key.mts';
 import { scanDatesFrom } from './lib/refresh-stops-core.mts';
 import { addressQueueEnabled, buildQueueRow, sortQueueRows, isDismissed } from './lib/address-queue.mts';
+import { selectAddressChanges } from './lib/address-history.mts';
 import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
@@ -43,6 +44,10 @@ const MAX_DAYS = 3;
 const NOTES_COLLECTION = 'customer_notes';
 const dismissalPath = (date: string) => `address_queue_dismissals/${date}`;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+/** How many of a day's fixes the queue hands back. A board day is ~780 stops; a day where
+ *  somebody swept the whole queue is tens of rows, not hundreds, and the screen collapses them
+ *  behind a disclosure anyway. */
+const FIXED_PER_DAY = 200;
 
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
@@ -86,10 +91,28 @@ export default async (req: Request): Promise<Response> => {
       listDocs(NOTES_COLLECTION, { mask: QUEUE_NOTE_FIELDS }),
       ...dates.map((d) => readStops(TENANT, d, { mask: QUEUE_STOP_FIELDS }).then((r) => ({ d, stops: r.stops || [] }))),
       ...dates.map((d) => getDoc(dismissalPath(d)).then((doc) => ({ d, items: (doc as any)?.items || {} }))),
+      // WHAT WE ALREADY FIXED ON THIS DAY. Chad: "there should be a dropdown in the days where
+      // the previously listed problem addresses were where a 2nd history of the ones we fixed
+      // lived." A day that goes from "16 to fix" to "Nothing wrong with this day's addresses"
+      // erases the evidence of the work — the screen looks identical to a day nobody touched,
+      // which is the one thing a work queue must never do. The rows have been sitting in the
+      // address log the whole time, filed against this same board day; they were just on a
+      // different screen from the one where the work happened.
+      //
+      // The same per-day document the log reads, so the two can never disagree, and ZERO NuVizz
+      // calls — one Firestore get per day, on a day document that is usually absent and empty.
+      ...dates.map((d) => readAddressChanges(TENANT, d).catch(() => []).then((rows) => ({ d, rows: rows || [] }))),
     ]);
     const days = dayReads.slice(0, dates.length) as Array<{ d: string; stops: any[] }>;
-    const dismissals = dayReads.slice(dates.length) as Array<{ d: string; items: any }>;
+    const dismissals = dayReads.slice(dates.length, dates.length * 2) as Array<{ d: string; items: any }>;
+    const fixedReads = dayReads.slice(dates.length * 2) as Array<{ d: string; rows: any[] }>;
     const dismissedFor = new Map(dismissals.map((x) => [x.d, x.items]));
+    // OURS ONLY, on purpose. `scan` rows are NuVizz changing the address out from under us —
+    // real, and they have their own tab ("NuVizz changed it"). This list answers "what did WE
+    // fix here", and mixing the vendor's edits into it would make a dispatcher's own work
+    // unreadable. `all: true` because the queue's own fix classifies as `formatting`.
+    const fixedFor = new Map(fixedReads.map((x) => [x.d, selectAddressChanges(x.rows, { limit: FIXED_PER_DAY })
+      .filter((r: any) => r?.source === 'override' || r?.source === 'override-reset')]));
 
     const notes = new Map<string, any>();
     for (const n of noteDocs || []) {
@@ -98,7 +121,7 @@ export default async (req: Request): Promise<Response> => {
     }
 
     const out: any[] = [];
-    const summary = { mis_split: 0, no_pin: 0, corrected_not_pinned: 0, dismissed: 0 };
+    const summary = { mis_split: 0, no_pin: 0, corrected_not_pinned: 0, dismissed: 0, fixed: 0 };
     for (const { d, stops } of days) {
       // withCustomerKeys BEFORE anything is judged — see the header. Without it every stop
       // joins to no note and the queue reports a board full of problems that were fixed weeks
@@ -122,7 +145,9 @@ export default async (req: Request): Promise<Response> => {
         (summary as any)[row.signal] += 1;
         rows.push(row);
       }
-      out.push({ date: d, stopsRead: stops.length, rows: sortQueueRows(rows) });
+      const fixed = fixedFor.get(d) || [];
+      summary.fixed += fixed.length;
+      out.push({ date: d, stopsRead: stops.length, rows: sortQueueRows(rows), fixed });
     }
 
     return J({

@@ -144,7 +144,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.29.0';
+const APP_VERSION = '1.30.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -215,6 +215,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.30.0', 'A DAY YOU CLEARED NO LONGER LOOKS LIKE A DAY NOBODY TOUCHED. Chad, after fixing all sixteen problem addresses on the 9/15 board and pushing every one to NuVizz: “Still not recording my fixed stops. I did 16 fixes in dispatch map and its not reflecting them in the history.” THEY WERE ALL RECORDED — the endpoint returns twenty override rows for that board day, checked against the live log, and v1.29.0 had already fixed the two defects that made them unreadable. He was looking at the Problem addresses tab, which correctly read 0 because there was nothing left to fix. THAT IS THE BUG, and it is his to name: the queue’s job is to empty itself, and when it did, the day collapsed to “Nothing wrong with this day’s addresses” — the same sentence, pixel for pixel, that a day nobody has opened shows. An evening of work erased itself at the moment it succeeded, and the receipt for it lived on a different tab from the screen where the work happened. A work queue that cannot show you what you just did is a work queue you stop trusting. HIS FIX, BUILT AS ASKED: “there should be a dropdown in the days where the previously listed problem addresses were where a 2nd history of the ones we fixed lived.” Every board day now carries an “N fixed on this day” disclosure, collapsed, exactly where the problem rows were — open it and you get when, which customer, what the address WAS struck through against what it is now, who saved it, and how far the fix reached. The empty state under it stops lying too: a day that was cleared says “Nothing left to fix — 16 corrected on this day”, and only a genuinely quiet day still says nothing was wrong. THE REACHED CHIP IS TRI-STATE AND THE THREE ARE NOT INTERCHANGEABLE. Board + NuVizz (green) means the portal and the driver’s manifest agree with our board. Board only (blue) means nobody asked for the order to change — rendering that as a failure invents a problem that does not exist. Board only — NuVizz refused (amber, never red) means we asked and the vendor write did not land, so the paperwork is outstanding and somebody has a job; amber because the board, the pin and the routing are corrected either way. COSTS NOTHING: the same per-day address-log document the Full log reads — one Firestore get per board day, zero NuVizz calls, and the two screens cannot disagree because there is one source. A log read that fails costs the receipt and never the queue, because the rows are the job and the receipt is not. OURS ONLY, deliberately: a `scan` row is NuVizz changing an address out from under us, which is real and already has the “NuVizz changed it” tab — mixing the vendor’s edits into “what did WE fix here” makes a dispatcher’s own work unreadable. AND THE FULL LOG STOPPED CLAIMING TO HIDE ROWS IT WAS SHOWING. Since v1.29.0 a dispatcher’s own corrections survive the default view, but the strip still counted every `formatting` row as withheld — printing “20 hidden” directly above those same twenty rows. It now counts what is actually being held back, and says whose: the vendor’s formatting drift is hidden, your own corrections never are.'],
   ['1.29.0', 'THE FIX HISTORY WAS RECORDING PERFECTLY AND NOBODY COULD SEE IT, AND THE BANNER OVER IT WAS TELLING CHAD THE OPPOSITE OF WHAT THE SERVER HAD OBSERVED. Twenty orders were corrected from the problem-address queue on the evening of 2026-09-14 and pushed to NuVizz. The address log showed nothing at all, and ten of the twenty came back under an amber banner reading “Saved on the board, but NuVizz did not take it — the driver’s manifest still has the old address, fix the order in the portal.” ALL TWENTY ORDERS WERE READ BACK ONE BY ONE AGAINST WHAT WAS SENT. Every address landed, every pin moved with it, every BOL still attached, nothing lost — eighteen byte-for-byte identical and the other two re-spelled by NuVizz’s own normaliser (GA→GEORGIA, RD→ROAD, LAWRENCEVILLE SUWANEE→LAWRENCEVILLE-SUWANEE), which is the vendor tidying its own record, not damage. Not one correction had failed. THE MISSING HISTORY WAS TWO INDEPENDENT DEFECTS, NEITHER OF THEM IN THE WRITER. A correction is filed against the BOARD DAY the stop sits on — correct, and that evening the board was tomorrow. (1) Every history request resolves through resolveRange, which clamped the window at today, so the day document holding the rows could not be REQUESTED; there is now a forward horizon of four calendar days, derived from the queue’s three BUSINESS days (Friday→Tuesday is the widest that span gets). (2) Even inside the window the default view hid them: the queue’s own fix swaps addr1/addr2, classifyChange calls that `formatting` ON PURPOSE so the app’s own fix button cannot fire the red `moved` class, and hideNoise dropped that kind outright. Noise is the VENDOR’s — hundreds of St→Street rows nobody can act on. A row a PERSON made on purpose is the record of the work and is never hidden. Two sessions were spent hunting a write that had never failed, while nuvizz-stop-explain, which reads three days ahead with no clamp, had the rows the whole time. THE BANNER WAS ONE BOOLEAN ANSWERING TWO QUESTIONS. `ok` means the write was CLEAN — the address landed AND nothing else on the order moved. What the screen needed was “did the ADDRESS land”, which the server proves by read-back and records separately as `addressLanded`, and which was sitting `true` on the very same object that produced the banner. What actually fired is the attachment guard (`documents: LOST to|BOL|03||pdf||01`). THAT GUARD IS NOT WEAKENED BY ONE LINE OF THIS: it still fails the write, still shows amber, still names the order. What changes is that it stops claiming the address failed, stops sending a dispatcher to the portal to re-type an address already correct there, and stops writing `nuvizz: false` — “we asked and the vendor refused” — into the permanent record of ten orders NuVizz had accepted. There is a third outcome now, the common one, which had no wording at all: the address IS on the order and the write also touched something else. WHY THE GUARD FIRES ON HALF OF THEM CANNOT BE ANSWERED FROM THE CODE AND IS NOT GUESSED AT HERE. The ledger kept the verdict and threw away the evidence — `lost` names what went missing and nothing recorded what the read-back actually held. It now stores both sides of the attachment diff on the flagged path only, so the next one is answerable from one free nuvizz-write-log read: did the after-side come back EMPTY (a read that caught the vendor mid-restamp) or carrying a different identity. AND A SELECT-ALL BOX ABOVE THE ROW BOXES, per day rather than per screen — the toolbar’s button takes every board day at once, and clearing tomorrow should not drag Thursday into the same push at 3 calls each. Half-filled when some rows are picked, because a plain empty box over four selected rows claims a selection that is not there. Desktop puts it in the header cell over the column; the phone gets its own labelled 44px control.'],
   ['1.28.0', 'A DROPDOWN FOR THE SECTIONS, BECAUSE THE MANIFEST PAGE IS FIVE PANELS DEEP AND THE BOTTOM ONE IS THE ONE YOU STOP USING. Chad: “need a dropdown in the ui for all the different sections of this page.” Mailbox, tonight’s check, order arrivals, Uline forecast, manifest history — and tonight’s check alone runs to a several-hundred-row suspects table on the night it matters most, which is exactly when scrolling to the history stops happening. A NATIVE <select> ON PURPOSE, and that is the opposite of the easy way out: a custom overlay would be a second floating layer over a screen that already stacks a sticky bar on a long table, which is the precise shape of the Map’s four collision patches. The native control opens the OS picker on a phone, takes a keyboard on the desktop, and occupies one box IN FLOW that nothing can land on top of. TWO PLACEMENTS, WRITTEN SEPARATELY: the phone gets a full-width bar under the title where a thumb lands, the desktop a compact right-aligned row that does not push the page down. Same body, placed twice — one control, two views, never one responsive compromise. THE MENU IS BUILT FROM WHAT IS ON THE SCREEN: tonight’s check does not exist until a report has been read, and an entry that scrolls nowhere is indistinguishable from a broken one. AND THE OFFSET IS ARITHMETIC, NOT CSS: scrolling a section to the top of the container puts it UNDER the sticky picker — the one heading you asked for is the one you cannot see — so the stop position is computed in a pure function where the bar’s height for each layout lives once, instead of a scroll-margin value drifting between two files. The tests caught a real one on the way: Number(null) is 0 and 0 is finite, so a failed getBoundingClientRect read would have become a perfectly plausible instruction to fling the pane to the top — the same coercion scar this repo already carries. 6 new tests.'],
   ['1.27.0', 'THE ARRIVAL STAMP v1.26.0 WAS BUILT ON TURNED OUT TO BE EMPTY, AND THE FIRST READ SAID SO INSTEAD OF GUESSING. v1.26.0 shipped the arrival curve on `enriched_at`, reasoned out of the code and never measured against the live index. The first ?explain=1 read answered in one line: 643 stops on the next delivery day, TWO of them stamped — 0% coverage. THE GUARD HELD, which is the only reason this is a follow-up and not an incident: the card printed the coverage and REFUSED the projection rather than dividing a board by a handful of orders and calling it a forecast. THE OTHER CANDIDATE WAS MEASURED TOO, and it is worse: `listUpdatedDTTM` is populated on all 643, but it is a LIVE field — on Tue 2026-09-08, 650 of 704 stamps had drifted onto the delivery day itself, the arrival time overwritten by the delivery flip. So NO history can be rebuilt from either, and this ships honest about that: the baseline starts empty and fills a Tuesday at a time. WHAT REPLACES IT costs nothing, because writeStops already lists the day’s existing docs at its own entry — the same free before/after the address log rides on — so a stop number absent from it is NEW by construction. Two write-once stamps: `first_seen_at` (our scan clock) and `arrived_list_dttm` (NuVizz’s own Stop Updated Dttm FROZEN at first sight, which is what stops it drifting the way the live field does, and is the truer of the two because it is the vendor’s clock). THREE RULES, each a way this goes wrong taken the other way: write-once, because setDoc REPLACES and without an explicit carry-forward every 5-minute scan would re-stamp every order with `now`; a doc that PREDATES this change gets NOTHING rather than today’s clock, because a whole board that appears to have arrived in one minute is worse than absent — it looks like data; and the fresh row is STRIPPED of both stamps first, because mergeEnrich copies the per-PRO registry record onto it and that record is a whole stop from whatever day it was first enriched, so a recurring PRO could carry August’s first_seen_at onto tonight’s board. AND THE ZONE, which would have been the next silent four-hour error: NuVizz sends listUpdatedDTTM zone-less ET (“2026-09-14T19:05:00”) and Date.parse reads that in the RUNTIME’s zone — UTC on Netlify — filing a 7pm arrival four hours early and shifting a whole evening’s curve. Resolved through the offset ET actually reports, checked in both seasons. A THIN NIGHT IS NOW REFUSED AT BOTH BOUNDARIES: the sealer will not write a night under the coverage floor and the baseline will not read one, because buildBaseline only dropped a night at ZERO stamps and a 2-of-643 night would have sailed through a “> 0” filter and dragged every projection that used it. 10 new tests, 4,647 green. THE WAY BACK is unchanged: ORDER_ARRIVALS_ENABLED=off, and the stamping itself is additive — git revert is the whole job.'],
@@ -30397,7 +30398,14 @@ function AddressHistoryScreen() {
   // it read "no formatting rows exist" — so an empty screen with the toggle ON still told the
   // dispatcher that formatting differences were hidden, i.e. the one thing capable of turning
   // "nothing happened" into "something is hidden from me" said so when nothing was.
-  const formattingHidden = !showNoise && !searching && Number(sum.formatting || 0) > 0;
+  // COUNT WHAT IS ACTUALLY WITHHELD, not every row of that kind. `formatting` stopped meaning
+  // "hidden" the moment a dispatcher's own corrections started surviving the default view —
+  // they classify as formatting BY DESIGN (the queue's fix swaps two lines and moves no
+  // freight). A strip reading "20 hidden" above those same 20 rows is the screen arguing with
+  // itself, which is the exact failure the summary's own comment warns about.
+  const shownFormatting = (data?.rows || []).filter((r) => r?.kind === 'formatting').length;
+  const withheldFormatting = Math.max(0, Number(sum.formatting || 0) - shownFormatting);
+  const formattingHidden = !showNoise && !searching && withheldFormatting > 0;
 
   const filters = (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -30477,7 +30485,7 @@ function AddressHistoryScreen() {
             <div className="text-sm font-semibold text-slate-700">No address changed{searching ? ` for ${stopQ.trim()}` : ' in this window'}.</div>
             <div className="text-xs text-slate-500 mt-1">
               {formattingHidden
-                ? `${sum.formatting} formatting-only difference${sum.formatting === 1 ? '' : 's'} ${sum.formatting === 1 ? 'is' : 'are'} hidden — turn them on below to see the complete log.`
+                ? `${withheldFormatting} formatting-only difference${withheldFormatting === 1 ? '' : 's'} ${withheldFormatting === 1 ? 'is' : 'are'} hidden — turn them on below to see the complete log.`
                 : 'Nothing was recorded at all — not even a formatting difference.'}
             </div>
           </div>
@@ -30489,7 +30497,8 @@ function AddressHistoryScreen() {
 
         <label className="flex items-center gap-2 text-xs text-slate-600 pt-1">
           <input type="checkbox" checked={showNoise} onChange={(e) => { setShowNoise(e.target.checked); setKind(null); }} className="w-4 h-4" />
-          Show formatting-only changes ({sum.formatting || 0}) — “ST” vs “STREET”, a suite moving between lines
+          Show the vendor’s formatting-only changes ({withheldFormatting}) — “ST” vs “STREET”, a suite moving between lines.
+          {' '}Your own corrections are never hidden here.
         </label>
 
         {/* THIS CLAIM BELONGS TO THE LOG ONLY. The queue section can spend vendor calls, and a
@@ -30906,8 +30915,141 @@ function useQueueRowEdit(row, google, today, reload) {
 // Not a table: five columns at 360px is a horizontal scroll on the one screen where a
 // dispatcher is standing at a dock, and the editor has to open IN FLOW so what is below it
 // moves down rather than being covered.
+/**
+ * WHAT WE ALREADY FIXED ON THIS DAY — the second history, where the work happened.
+ *
+ * Chad: "there should be a dropdown in the days where the previously listed problem addresses
+ * were where a 2nd history of the ones we fixed lived and the other history records what we
+ * fixed and what was changed in nuvizz so it records everything."
+ *
+ * THE PROBLEM IT SOLVES IS NOT A MISSING RECORD. Sixteen corrections were made and every one of
+ * them was logged. But the queue's job is to empty itself, and when it did, the day collapsed to
+ * "Nothing wrong with this day's addresses" — pixel-identical to a day nobody had touched. The
+ * evidence of an evening's work was on a different tab from the screen the work was done on, and
+ * a dispatcher looking at the day they had just cleared saw a blank.
+ *
+ * Costs nothing: the same per-day address-log document, one Firestore get, zero NuVizz calls.
+ * Collapsed by default — this is the receipt, not the work.
+ */
+function fixedOutcome(row) {
+  if (row?.source === 'override-reset') return { label: 'Reset', tone: 'bg-slate-100 text-slate-600', title: 'The override was cleared — back on NuVizz’s own address' };
+  if (row?.nuvizz === true) return { label: 'Board + NuVizz', tone: 'bg-green-100 text-green-800', title: 'Corrected here AND written onto the order in NuVizz, so the portal and the driver’s manifest match' };
+  // AMBER, NOT RED, AND IT SAYS WHICH HALF. The board, the pin and the routing ARE corrected
+  // either way. What is outstanding is the paperwork.
+  if (row?.nuvizz === false) return { label: 'Board only — NuVizz refused', tone: 'bg-amber-100 text-amber-800', title: 'We asked and the vendor write did not land: the driver’s manifest still has the old address' };
+  return { label: 'Board only', tone: 'bg-blue-100 text-blue-800', title: 'Corrected on our board and pin. Nobody asked for the NuVizz order to be changed.' };
+}
+
+const fixedWhen = (at) => {
+  const t = Date.parse(String(at || ''));
+  return Number.isFinite(t) ? new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+};
+
+/** The disclosure itself. One button, one count — and it is not rendered at all on a day with
+ *  no fixes, because "0 fixed" on every quiet day is furniture a dispatcher learns to skip. */
+function QueueFixedToggle({ d, open, onToggle, stacked = false }) {
+  const count = (d.fixed || []).length;
+  if (!count) return null;
+  return (
+    <button
+      type="button" onClick={onToggle}
+      aria-expanded={open}
+      style={{ minHeight: stacked ? 44 : 32 }}
+      className={`inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 ${stacked ? 'w-full justify-between' : ''}`}
+    >
+      <span>{count} fixed on this day</span>
+      <span aria-hidden="true" className="text-slate-400">{open ? '▾' : '▸'}</span>
+    </button>
+  );
+}
+
+/** DESKTOP: a table, because the question here is the same comparative one the queue above
+ *  asks — what it was, what it is now, and whether the order agrees. */
+function QueueFixedDesktop({ d }) {
+  return (
+    <div className="border-t bg-slate-50/60 overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead className="text-slate-500 border-b border-slate-200">
+          <tr className="text-left">
+            <th className="px-3 py-2 font-semibold whitespace-nowrap">When</th>
+            <th className="px-3 py-2 font-semibold">Customer</th>
+            <th className="px-3 py-2 font-semibold">Was</th>
+            <th className="px-3 py-2 font-semibold">Now</th>
+            <th className="px-3 py-2 font-semibold whitespace-nowrap">Reached</th>
+          </tr>
+        </thead>
+        <tbody>
+          {d.fixed.map((r, i) => {
+            const o = fixedOutcome(r);
+            return (
+              <tr key={`${r.stopNbr}-${r.at}-${i}`} className="border-b last:border-0 align-top">
+                <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{fixedWhen(r.at)}</td>
+                <td className="px-3 py-2">
+                  <div className="font-semibold text-slate-800">{r.businessName || '—'}</div>
+                  <div className="text-[11px] text-slate-500">{r.stopNbr}{r.actor ? ` · ${r.actor}` : ''}</div>
+                </td>
+                <td className="px-3 py-2 text-slate-500 break-words line-through decoration-slate-300">{oneLineAddr(r.before) || '(nothing)'}</td>
+                <td className="px-3 py-2 text-slate-800 break-words">{oneLineAddr(r.after) || '(nothing)'}</td>
+                <td className="px-3 py-2 whitespace-nowrap">
+                  <span title={o.title} className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${o.tone}`}>{o.label}</span>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** PHONE: cards. A five-column table at 390px is a five-column table nobody can read. */
+function QueueFixedMobile({ d }) {
+  return (
+    <div className="space-y-2">
+      {d.fixed.map((r, i) => {
+        const o = fixedOutcome(r);
+        return (
+          <div key={`${r.stopNbr}-${r.at}-${i}`} className="rounded-xl border bg-slate-50 p-3">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="font-semibold text-sm text-slate-800 break-words">{r.businessName || r.stopNbr}</div>
+                <div className="text-[11px] text-slate-500 break-words">{r.stopNbr} · {fixedWhen(r.at)}{r.actor ? ` · ${r.actor}` : ''}</div>
+              </div>
+              <span title={o.title} className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold ${o.tone}`}>{o.label}</span>
+            </div>
+            <div className="text-[11px] text-slate-500 break-words mt-1.5 line-through decoration-slate-300">{oneLineAddr(r.before) || '(nothing)'}</div>
+            <div className="text-xs text-slate-800 break-words">{oneLineAddr(r.after) || '(nothing)'}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * WHAT AN EMPTY DAY SAYS. "Nothing wrong with this day's addresses" is true of a quiet day AND
+ * of a day somebody spent an evening clearing, and rendering both the same is what made sixteen
+ * corrections feel like they had vanished. A day that was WORKED says so.
+ */
+function queueEmptyText(d) {
+  const fixed = (d?.fixed || []).length;
+  if (!fixed) return 'Nothing wrong with this day\u2019s addresses.';
+  return `Nothing left to fix \u2014 ${fixed} corrected on this day. Open the list above to see them.`;
+}
+
+/** Which days have their fixed-list open. Per day rather than one flag, because a dispatcher
+ *  checking what they did to tomorrow's board should not have Thursday unfold underneath it. */
+function useOpenDays() {
+  const [open, setOpen] = React.useState(() => new Set());
+  const toggle = React.useCallback((date) => setOpen((prev) => {
+    const next = new Set(prev); if (next.has(date)) next.delete(date); else next.add(date); return next;
+  }), []);
+  return { open, toggle };
+}
+
 function ProblemQueueMobile({ nonce, today }) {
   const q = useProblemQueue(nonce, today);
+  const fx = useOpenDays();
   if (q.loading) return <div className="text-xs text-slate-500">Loading the board…</div>;
   if (q.err) return <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3">{q.err}</div>;
   return (
@@ -30918,13 +31060,15 @@ function ProblemQueueMobile({ nonce, today }) {
           <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
             {d.date} · {d.rows.length} to fix <span className="font-normal normal-case text-slate-400">of {d.stopsRead} stops</span>
           </div>
+          <QueueFixedToggle d={d} open={fx.open.has(d.date)} onToggle={() => fx.toggle(d.date)} stacked />
+          {fx.open.has(d.date) && <QueueFixedMobile d={d} />}
           {dayPickState(d.rows, q.picked).total > 0 && (
             <label className="flex items-center gap-2 text-xs text-slate-600 px-1" style={{ minHeight: 44 }}>
               <QueueSelectAllBox d={d} q={q} className="accent-blue-700" />
               <span>Select all {dayPickState(d.rows, q.picked).total} on this day</span>
             </label>
           )}
-          {!d.rows.length && <div className="rounded-xl border bg-white p-4 text-xs text-slate-500">Nothing wrong with this day’s addresses.</div>}
+          {!d.rows.length && <div className="rounded-xl border bg-white p-4 text-xs text-slate-500">{queueEmptyText(d)}</div>}
           {d.rows.map((row) => (
             <QueueRowMobile key={row.key} row={row} q={q} today={today} />
           ))}
@@ -30973,6 +31117,7 @@ function QueueRowMobile({ row, q, today }) {
 // against a column of what NuVizz holds is how you decide which rows to sweep. ─────────────
 function ProblemQueueDesktop({ nonce, today }) {
   const q = useProblemQueue(nonce, today);
+  const fx = useOpenDays();
   if (q.loading) return <div className="text-xs text-slate-500">Loading the board…</div>;
   if (q.err) return <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3">{q.err}</div>;
   return (
@@ -30980,12 +31125,16 @@ function ProblemQueueDesktop({ nonce, today }) {
       <QueueSummaryBar q={q} />
       {q.days.map((d) => (
         <div key={d.date} className="rounded-xl border bg-white overflow-hidden">
-          <div className="px-3 py-2 bg-slate-50 text-xs font-bold text-slate-600 flex items-center justify-between">
+          <div className="px-3 py-2 bg-slate-50 text-xs font-bold text-slate-600 flex items-center justify-between gap-3 flex-wrap">
             <span>{d.date}</span>
-            <span className="font-normal text-slate-400">{d.rows.length} to fix of {d.stopsRead} stops</span>
+            <span className="flex items-center gap-3">
+              <QueueFixedToggle d={d} open={fx.open.has(d.date)} onToggle={() => fx.toggle(d.date)} />
+              <span className="font-normal text-slate-400">{d.rows.length} to fix of {d.stopsRead} stops</span>
+            </span>
           </div>
+          {fx.open.has(d.date) && <QueueFixedDesktop d={d} />}
           {!d.rows.length
-            ? <div className="p-6 text-center text-xs text-slate-500">Nothing wrong with this day’s addresses.</div>
+            ? <div className="p-6 text-center text-xs text-slate-500">{queueEmptyText(d)}</div>
             : (
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
