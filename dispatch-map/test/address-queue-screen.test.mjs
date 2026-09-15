@@ -383,3 +383,83 @@ test('a day with nothing selectable shows no box at all', () => {
   // An always-disabled checkbox over "Nothing wrong with this day's addresses" is furniture.
   assert.match(fnSource('QueueSelectAllBox'), /if \(!st\.total\) return null;/);
 });
+
+// ── A CLEARED DAY MUST NOT LOOK LIKE AN UNTOUCHED ONE ────────────────────────
+//
+// Sixteen corrections were made, logged, and pushed to NuVizz. The dispatcher who made them
+// opened the queue and read "Nothing wrong with this day's addresses" — the same sentence a day
+// nobody has touched shows. That is the failure this section fixes: not a missing record, a
+// screen that erases the evidence of its own work the moment the work succeeds.
+
+test('the day says it was WORKED, not merely that it is quiet', () => {
+  const t = fnSource('queueEmptyText');
+  assert.match(t, /if \(!fixed\) return 'Nothing wrong with this day/, 'a genuinely quiet day is unchanged');
+  assert.match(t, /Nothing left to fix .*\$\{fixed\} corrected on this day/, 'a cleared day names the work');
+  // And both views use it — a sentence fixed on one screen and not the other is the two-views
+  // rule failing in the direction nobody notices.
+  assert.match(fnSource('ProblemQueueMobile'), /queueEmptyText\(d\)/);
+  assert.match(fnSource('ProblemQueueDesktop'), /queueEmptyText\(d\)/);
+});
+
+test('THE DROPDOWN IS ON THE DAY, where the problem rows used to be', () => {
+  for (const view of ['ProblemQueueMobile', 'ProblemQueueDesktop']) {
+    const src = fnSource(view);
+    assert.match(src, /<QueueFixedToggle d=\{d\} open=\{fx\.open\.has\(d\.date\)\} onToggle=\{\(\) => fx\.toggle\(d\.date\)\}/, view);
+    assert.match(src, /fx\.open\.has\(d\.date\) && <QueueFixed(Mobile|Desktop) d=\{d\} \/>/, view);
+  }
+});
+
+test('two views, not one reflowed — a five-column table at 390px is unreadable', () => {
+  assert.match(fnSource('QueueFixedDesktop'), /<table className="w-full text-xs">/);
+  assert.match(fnSource('QueueFixedMobile'), /rounded-xl border bg-slate-50 p-3/);
+  assert.match(fnSource('ProblemQueueMobile'), /<QueueFixedMobile d=\{d\} \/>/);
+  assert.match(fnSource('ProblemQueueDesktop'), /<QueueFixedDesktop d=\{d\} \/>/);
+});
+
+test('each day opens on its own — Thursday must not unfold under tomorrow', () => {
+  const h = fnSource('useOpenDays');
+  assert.match(h, /if \(next\.has\(date\)\) next\.delete\(date\); else next\.add\(date\);/);
+  assert.match(fnSource('QueueFixedToggle'), /aria-expanded=\{open\}/, 'and a screen reader is told which it is');
+});
+
+test('a day with no fixes renders no control at all', () => {
+  // "0 fixed" on every quiet day is furniture a dispatcher learns to skip past, and then skips
+  // past the day it says 16.
+  assert.match(fnSource('QueueFixedToggle'), /if \(!count\) return null;/);
+});
+
+test('THE OUTCOME CHIP TELLS THE TRUTH ABOUT HOW FAR EACH FIX REACHED', () => {
+  const o = fnSource('fixedOutcome');
+  // Three states and they are not interchangeable. `null` is board-only — nobody asked for the
+  // order to change, and rendering it as a failure invents a problem. `false` is "we asked and
+  // the vendor refused", which is a job for somebody. Collapsing the two is what this whole
+  // branch has been about.
+  assert.match(o, /row\?\.nuvizz === true[\s\S]{0,260}?Board \+ NuVizz/);
+  assert.match(o, /row\?\.nuvizz === false[\s\S]{0,300}?NuVizz refused/);
+  assert.match(o, /return \{ label: 'Board only', tone: 'bg-blue/, 'board-only is the plain chip, never amber');
+  assert.match(o, /source === 'override-reset'[\s\S]{0,200}?Reset/);
+  // Amber, not red: the board, the pin and the routing ARE corrected either way.
+  assert.match(o, /nuvizz === false[\s\S]{0,200}?bg-amber-100/);
+});
+
+test('the fixed list shows what it WAS against what it is now', () => {
+  // A list of corrected addresses with no "before" answers "what is it now", which the board
+  // already answers. The question this list exists for is "what did we change".
+  for (const view of ['QueueFixedDesktop', 'QueueFixedMobile']) {
+    const src = fnSource(view);
+    assert.match(src, /oneLineAddr\(r\.before\)/, view);
+    assert.match(src, /oneLineAddr\(r\.after\)/, view);
+  }
+});
+
+test('THE LOG STOPS CLAIMING TO HIDE ROWS IT IS SHOWING', () => {
+  // A dispatcher's own corrections classify as `formatting` by design, and they now survive the
+  // default view — so counting every formatting row as "hidden" puts "20 hidden" above those
+  // same 20 rows. A screen that cannot say what it is withholding is worse than one that
+  // withholds nothing.
+  assert.match(APP, /const shownFormatting = \(data\?\.rows \|\| \[\]\)\.filter\(\(r\) => r\?\.kind === 'formatting'\)\.length;/);
+  assert.match(APP, /const withheldFormatting = Math\.max\(0, Number\(sum\.formatting \|\| 0\) - shownFormatting\);/);
+  assert.match(APP, /formattingHidden = !showNoise && !searching && withheldFormatting > 0/);
+  assert.doesNotMatch(APP, /\$\{sum\.formatting\} formatting-only difference/, 'the empty state quotes the withheld count too');
+  assert.match(APP, /Show the vendor’s formatting-only changes \(\{withheldFormatting\}\)/);
+});
