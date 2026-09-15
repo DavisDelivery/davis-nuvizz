@@ -18,12 +18,13 @@
 //
 // NO SCHEDULE ON PURPOSE: a function carrying a cron is not reachable over plain HTTP in this
 // app, and this one must answer a browser.
-import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
+import { isFirestoreEnabled, getDoc, listDocs, updateDocFields, etDayString } from './lib/firestore.mts';
 import { manifestDayPath, describeDay } from './lib/manifest-archive.mts';
+import { healEnabled, needsHeal, healDates, healNight, validHeal } from './lib/manifest-heal.mts';
 import { getManifestPdf, blobSelfTest, blobsAvailable } from './lib/manifest-blobs.mts';
 import { boardCoverage, gradeSuspects, gradeText } from '../../src/lib/manifest-window.js';
 import { readUlineManifest } from './lib/uline-manifest.mts';
-import { proKeys } from './lib/manifest-reconcile.mts';
+import { proKeys, boardProIndex, onBoard } from './lib/manifest-reconcile.mts';
 import { requireUser } from './lib/require-user.mts';
 
 const TENANT = 'davis';
@@ -200,6 +201,70 @@ export default async (req: Request): Promise<Response> => {
     const wanted = Array.from({ length: days }, (_, i) => addDays(today, -i));
     const docs = await Promise.all(wanted.map((d) => getDoc(manifestDayPath(TENANT, d)).catch(() => null)));
 
+    // ── THE ROWS ASK THE BOARD AGAIN (v1.30.0 — lib/manifest-heal.mts) ────────
+    //
+    // Chad: "why do these show not routed yet i think that is stale and it needs to be dynamic
+    // and self heal." A Friday manifest is graded overnight against a MONDAY board that does
+    // not exist yet, so it is filed 'unrouted' — honestly — and nothing ever re-asked. See the
+    // module header for why re-grading with a fresh `asOf` alone makes the row lie instead of
+    // healing it: the BOARD has to be re-read, not just the clock.
+    //
+    // ZERO NuVizz calls. The suspects are already on the archive document, so this is one
+    // masked stop-index read per DISTINCT delivery day across every stale night — and nothing
+    // at all on the ordinary day when no row is stale, which is most days.
+    const heal = { enabled: healEnabled() && url.searchParams.get('heal') !== '0', asked: 0, healed: 0, boardsRead: 0, skipped: [] as Array<{ date: string; why: string }> };
+    const healByDate = new Map<string, any>();
+    if (heal.enabled) {
+      const candidates: Array<{ date: string; l: any }> = [];
+      for (let i = 0; i < wanted.length; i++) {
+        const l = docs[i]?.latest;
+        if (!l) continue;
+        const prior = validHeal(docs[i]);
+        if (prior) healByDate.set(wanted[i], prior);          // a heal already on file, still valid
+        const v = needsHeal(l, today, prior);
+        if (v.heal) candidates.push({ date: wanted[i], l });
+        else if (Number(l.missingCount) > 0 && !prior) heal.skipped.push({ date: wanted[i], why: v.why });
+      }
+      heal.asked = candidates.length;
+      if (candidates.length) {
+        // One read per distinct day, shared across every night whose window covers it.
+        const dates = [...new Set(candidates.flatMap((c) => healDates(c.l)))];
+        const stops = new Map<string, number>();
+        const pros: string[] = [];
+        await Promise.all(dates.map(async (d) => {
+          // A READ THAT FAILED IS NOT AN EMPTY BOARD. listDocs throwing and a day with no stops
+          // on it are the same `[]` to a careless caller, and treating the first as the second
+          // would grade a night against a board we never actually opened.
+          const rowsOnDay = await listDocs(`nuvizz_stop_index/${TENANT}__${d}/stops`, { mask: ['stopNbr'] }).then((r) => r || []).catch(() => null);
+          if (rowsOnDay === null) return;                     // absent from `stops` ⇒ unreadable
+          stops.set(d, rowsOnDay.length);
+          for (const r of rowsOnDay) { const id = String((r as any)?._id ?? (r as any)?.stopNbr ?? ''); if (id) pros.push(id); }
+        }));
+        heal.boardsRead = stops.size;
+        const index = boardProIndex(pros);
+        const at = new Date().toISOString();
+        for (const c of candidates) {
+          const days = healDates(c.l);
+          if (days.some((d) => !stops.has(d))) { heal.skipped.push({ date: c.date, why: 'a board for one of its delivery days could not be read — left as filed' }); continue; }
+          const h = healNight(c.l, {
+            isOnBoard: (pro) => onBoard(index, pro),
+            boardDays: days.map((d) => ({ date: d, stops: stops.get(d) as number })),
+            asOf: today, at,
+          });
+          if (!h) { heal.skipped.push({ date: c.date, why: 'no suspect PROs stored — cannot be re-asked' }); continue; }
+          healByDate.set(c.date, h);
+          heal.healed += 1;
+          // FIELD-MASKED, ITS OWN TOP-LEVEL KEY, and never over latest.grade/coverage/
+          // missingCount — those are the filed record of what that night's run concluded and
+          // the design exists to keep them. A later report for this night rebuilds the document
+          // from a literal and drops this key; that is CORRECT rather than a loss, because such
+          // a report supersedes the manifest the heal was computed from and validHeal would
+          // discard it anyway. Best-effort: a failed write costs one re-read, never the answer.
+          await updateDocFields(manifestDayPath(TENANT, c.date), { heal: h }).catch(() => { heal.skipped.push({ date: c.date, why: 'recomputed, but could not be filed — it will be recomputed next read' }); });
+        }
+      }
+    }
+
     const rows = docs.map((doc, i) => {
       const date = wanted[i];
       if (!doc?.latest) return null;
@@ -225,6 +290,25 @@ export default async (req: Request): Promise<Response> => {
         // built yet. Re-derived for nights filed before the grade was stored, so an old row
         // is graded rather than assumed conclusive.
         ...gradeForRow(l),
+        // WHAT THE ROW SHOWS IS THE LIVE ANSWER; WHAT IT WAS FILED AS IS KEPT BESIDE IT.
+        // `...gradeForRow(l)` ABOVE produced the filed verdict; this overrides it, and the order
+        // is load-bearing. It applies only where a heal was actually computed, so a night that
+        // could not be re-asked reads exactly as it did before rather than claiming freshness.
+        ...(healByDate.get(date)
+          ? (() => {
+              const h = healByDate.get(date);
+              return {
+                verdict: h.verdict, verdictText: h.verdictText,
+                expectedDelivery: l.expectedDelivery ?? null,
+                liveMissingCount: h.stillOff,
+                healedAt: h.at, healedAsOf: h.asOf,
+                // Stated, not implied: the count that was filed, and how many of that night's
+                // suspects this read could not speak for (the archive's 500-row cap).
+                filedMissingCount: h.filed?.missingCount ?? (Number(l.missingCount) || 0),
+                healUnreadable: h.unreadable || 0,
+              };
+            })()
+          : {}),
         verified: !!l.verified,
         pdfStored: !!l.pdfStored,
         mailbox: l.mailbox ?? null,
@@ -235,6 +319,11 @@ export default async (req: Request): Promise<Response> => {
     return J({
       ok: true, days, from: wanted[wanted.length - 1], to: today,
       nightsOnFile: rows.length,
+      // MAKE IT INSPECTABLE. How many nights were re-asked, how many boards that cost, and —
+      // named, not just counted — every night left as filed and why. A heal that quietly does
+      // nothing looks exactly like a heal that worked, which is the failure this repo keeps
+      // paying for. `?heal=0` serves the filed verdicts untouched without changing any setting.
+      heal,
       blobsAvailable: await blobsAvailable(),
       // Say it plainly when nothing is filed yet rather than returning a bare empty list —
       // "no history" and "the archive is broken" must not look the same.
