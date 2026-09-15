@@ -145,7 +145,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.31.2';
+const APP_VERSION = '1.31.3';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -199,6 +199,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.31.3', 'THE “?” FLAG WAS A SECOND SHADE OF THE UNPLANNED VIOLET, AND IT WAS TELLING DISPATCHERS THE WRONG THING. Chad: “get rid of this flag it doesn’t do anything and its also the color of the unplanned orders so is confusing for dispatcher — i want the flag replaced with a question mark and color stays whatever the icon is from the order.” THE COLLISION IS IN THE CONSTANTS, not in his eyes: FLAG_COLORS.question is #6366f1 and STATUS_META.UNPLANNED.color is #6d28d9. On a 16px dot, on a 700-stop board, those are the same violet — so a SCHEDULED stop someone had flagged “look into this” read as unplanned work still waiting to be routed, and an actually-unplanned stop read as flagged. The pin was answering a question nobody asked with a colour that already meant something else. NOW THE “?” MARKS THE PIN INSTEAD OF COLOURING IT. A question-flagged stop keeps the colour its own order earned — unplanned violet, delivered green, address-off amber, Estes black — and wears a white “?” in the middle. The glyph was already being drawn; what changed is that the hue no longer overrides the order underneath it. THE HUE WAS REACHABLE BY TWO ROUTES and both had to go: the `flagHue` term, and flagColor()’s PIN_TINTS lookup at the END of the same `||` chain — a SCHEDULED stop’s STATUS_META colour is null, so dropping only the first would have landed it back on the same indigo through the back door. That is the Estes-paint failure exactly (v0.97.2 shipped with every right word in the source and the colour still wrong on half the board), so these tests BUILD REAL MARKERS through the shipped stopMarkerIcon and read the colour out of the SVG rather than grepping App.jsx for words. THE REPLACEMENT IS EXACTLY AS WIDE AS THE GLYPH, which is the part worth knowing: where the status already owns the centre (delivered ✓, en-route ➜, exception !), where the pin is a restriction icon, or where a selection/search hit has recoloured it, the tint is the flag’s ONLY channel on that pin and it KEEPS it. A flag that shows nothing at all is worse than one that shows a confusable colour — the first is indistinguishable from an unflagged stop, and silently losing a dispatcher’s mark is not a tidier map, it is a lost note. Those pins are also not the ones Chad was describing: his collision is between two violet DOTS, and a restriction pin is a white disc. SCOPE WAS HIS CALL — the map pin only. The Filters chip, the stop-card picker, the legend row and the stops-table dot all keep the indigo swatch, so the flag still has a colour everywhere a dispatcher SETS or FILTERS by it; a test pins that boundary so nobody later “finishes the job” and takes the swatch out from under the picker. Red, yellow and green are untouched and still colour the pin. 9 new tests, four of which go red against the previous behaviour and five of which stay green — checked both ways rather than assumed. One commit, so `git revert` is the whole way back.'],
   ['1.31.2', 'A WEEK-OLD ORDER WAS IN OUR HISTORY THE WHOLE TIME AND THE SEARCH COULD NOT SEE IT. Chad, typing PRO 7175119 into Search past PROs and being offered a NuVizz call for it: “this order is a week old why is it not in the history? we should be keeping all orders in history it shouldn’t be asking for a nuvizz call here.” He was right, and we WERE keeping it — history_days keeps every stop of every captured day and never prunes. The SEARCH was the problem. The only PRO-searchable structure was pro_index on the per-customer rollup, and that array is a customer’s most recent 20 deliveries (MAX_PROS). Order 21 and older fell out of the index while the full stop record — route, driver, ticket, line items — sat in the warehouse untouched. The warehouse could not answer a bare PRO by itself because it is partitioned by DAY, so resolving a number without its date meant scanning every day; nothing did, so the screen said “nothing in saved history” and offered to spend a vendor call on an order we already owned. TWO MORE WAYS IT MISSED, both fixed here: the lookup only tried the raw token and zero-padded-to-9, so a 10-digit stored PRO was unreachable from a 7-digit search; and it never stripped the board’s segment suffix, so an order stored as 007157687-1 could not be found by typing 7157687. NOW: a new PRO→day pointer index (history_pros) — one tiny document per PRO saying which day it was on, written by the nightly post-seal hooks. A PRO search is at most TWO document reads, covers EVERY order we have ever captured no matter how many deliveries that customer has had since, and the hit rides first so tapping the card opens the order you searched for rather than the customer’s newest. Every padding of a number is one key, the segment suffix is stripped, and a carrier PRO is findable by its digits or its whole string, upper or lower case — while keeping its full digit run, so AVRT-0028093763 can never be read as a sibling of ESTES-0538243875. A first-time PRO costs ONE Firestore op (no read); an attempt and its redelivery both survive rather than the newer capture blind-writing the older day away. The old last-20 scan stays as the fallback, so days not yet backfilled still answer. BACKFILL, which is what makes the past searchable: nuvizz-rebuild-customer-history-background now writes the pointers as well as the rollups — run it a month at a time (?from=&to=), Firestore-only, ZERO NuVizz calls, and safe to repeat. STILL ONE HONEST CASE FOR THE BUTTON: capture runs nightly for the day just ended, so an order created TODAY is not in the warehouse yet and the single deliberate NuVizz lookup is the right answer for it — the screen now says so instead of implying we lost the order. PRO_INDEX=off reverts the read, both writes and the backfill together. 28 new tests, five of them driving the real endpoint against an in-memory Firestore that throws on any non-Firestore fetch — so \u201czero NuVizz calls\u201d is proved, and PRO_INDEX=off reproduces the original miss.'],
   ['1.31.1', 'A MOVED ORDER WAS CARRYING ITS OLD DRIVER ONTO THE NEW LOAD. Chad, on PRO 7175976: “i moved an order from colin 1 to gainesville load — gainesville load did not have anyone assigned to it but when i moved the order it assigned colin to the load.” NOTHING WAS ASSIGNED IN NUVIZZ, and that is worth saying first: assignDriver only ever fires for a driver STAGED on the card (hasDriverId(p.L?.driverId)), and a move stages none — no call went out. What moved was the BOARD ROW. The confirmed-plan stamp (boardWritePlannedFields) writes the row’s new route and, when the Save carries no driver, wrote no driver field at all — so the row kept COLIN while now reading GAINESVILLE, and the client’s own overlay paint did the same thing one line at a time (driverName: e.driverName ?? s.driverName). ONE STALE FIELD NAMES THE WRONG TRUCK EVERYWHERE, because everything reads a load’s driver off its rows: the Loads grid takes the first row that has one (so an unassigned GAINESVILLE read COLIN), and board-flags’ fillRouteDrivers spreads a route’s single driver name onto every flag row — which is the name a miss-window email and a driver text print. A dispatcher phones the wrong driver about freight he is not carrying. THE RULE, NOW PINNED: a driver belongs to the LOAD, not to the order. A planned stamp with no driver CLEARS the row’s driver when the order is demonstrably changing loads, and touches nothing when it is not — a re-sequence on a crewed load keeps its driver, and so does any stamp on the route the order is already on. TWO NAMESPACES ARE NOT A DISAGREEMENT (v1.12.0’s lesson, arriving from the other direction): both write-through callers fall back to a load NUMBER or a hex card key when a card has no resolvable name, while the row holds the human name, so “DAVIS000203388” against “RONALD” decides nothing here either — it would have blanked drivers on routes nobody left. The judgement lives in lib/route-identity (server and client mirror, one test asserts they answer identically), and isHashLikeId / looksLikeLoadNbr MOVE there rather than multiply. The route card now reads its driver from the first row that HAS one (the printed manifest already did), so a just-moved row with no driver can never make a crewed route read “—”. MOVE_CLEARS_DRIVER=off puts the write back byte for byte. Zero NuVizz calls, and zero were spent finding it. 12 new tests, checked against a deliberately reintroduced regression — they go red on it. 4,759 green.'],
   ['1.31.0', 'TWO LOADS WEARING ONE NAME, AND THE BOARD NOW TELLS THEM APART — using the roster it already had. Chad, on ESTES reading 16 stops against NuVizz’s 10 and BUFORD 8 against 7 after fresh scans of each: “our roster scans do carry the load id you just aren’t using it correctly.” He was right. The stop list names a stop’s route by NAME only (route.name — no load number, no id), so an undelivered order left on last Tuesday’s ESTES still says “ESTES” today, boardDayFor clamps its past arrival forward onto today, and the card groups by name: six orders on a week-old Draft printed on Trevor’s dispatched truck, and ANNANDALE VILLAGE (007174083-1, on the 9/14 BUFORD DAVIS000203544 — the server itself had read that at 7:43 AM and refused a Save over it) rode today’s BUFORD to 8. WHAT THE ROSTER HOLDS AND THE BOARD NOW USES (lib/name-collision.mts, PURE): per day, ONE load per name with NuVizz’s own stop count. More rows under a name than that load holds — or two rows claiming one sequence number — is proof of a second instance, and the scan asks the load itself which rows are its own (ONE /load/info, the demotion verify’s own read). Rows it does not hold whose own arrival day is past come OFF today’s board and stay on their own day’s document; today’s dispatched ESTES reads 10, BUFORD 7, exactly NuVizz. Nothing is displayed — the counts are simply right. WHAT IT COSTS, honestly: the planned pull fires ~63 times a weekday, so an unmemoised read would be ~126 calls a day for two standing collisions. It is memoised by SIGNATURE (load number + roster count + the exact stop numbers under the name): one read when a collision first appears, again only when that set or that count changes, or every 6 h as a safety re-check; hard cap NUVIZZ_NAME_COLLISION_LOAD_MAX (4) per run; a manual scan pays the same. NEVER HIDES TODAY’S FREIGHT: a row the load does not hold whose own day is today (or later) stays and is ledgered HELD, as does a row a confirmed Save stamped inside the write grace; a failed read, an empty read against a counted load, a contested name or a missing roster drop nothing. Every decision lands in the plan-verdict ledger (basis name-collision) and nuvizz-stop-explain reads it back — “the scan left it OFF the 09-15 board — not on DAVIS000203661 (BUFORD, 7 stops on the 09-15 roster) … another load named BUFORD is on the 09-14 roster (DAVIS000203544, Draft, 1 stop)” — and the run ledger carries checked / reads / dropped. NUVIZZ_NAME_COLLISION=off puts it back. ALSO: “Orders paused until 10 AM” is gone from the status card — it was the browser’s clock, not a scanner state, over a feed that had run seven times that morning. The stamp is the truth.'],
@@ -2935,6 +2936,18 @@ function flagColor(note) {
   return PIN_TINTS[pinTintKind(note)] || UNFLAGGED_TINT;
 }
 
+// A note as a pin should read it when the "?" is being DRAWN — everything except the
+// 'question' priority flag, so the tint falls through to what the stop would wear with no
+// flag at all (restricted purple / plain blue). Only the marker uses this: the legend, the
+// Filters chip, the picker and the stops-table dot keep reading the raw note, so the flag
+// still has its colour everywhere a dispatcher SETS or FILTERS by it. See the rule at
+// statusPinFlagHue below.
+function noteWithoutQuestionFlag(note) {
+  if (note?.priority_flag !== 'question') return note;
+  const { priority_flag, ...rest } = note;
+  return rest;
+}
+
 // Resolve a stored restriction string to a canonical key in RESTRICTION_ICONS.
 // Unknown values pass through untouched so the caller can detect them.
 function resolveRestrictionKey(raw) {
@@ -3821,7 +3834,24 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // handling; only the COLOR differs, so a selected stop and a searched stop read distinctly
     // when both are on the map at once (Chad). Selection wins the color if a stop is somehow both.
     const hi = matched || searchMatched;
-    const addressOff = !hi && !flagHue
+    // THE "?" FLAG MARKS A PIN. IT DOES NOT COLOUR ONE. Chad, 2026-09-15: "get rid of this
+    // flag it doesn't do anything and its also the color of the unplanned orders so is
+    // confusing for dispatcher — i want the flag replaced with a question mark and color
+    // stays whatever the icon is from the order." The collision is real and it is in the
+    // constants: the question flag is #6366f1 and an UNPLANNED stop is #6d28d9 — two violets
+    // nobody can tell apart on a 16px dot, so a flagged scheduled stop read as unplanned work.
+    // Where the "?" is actually drawn the hue is redundant AND misleading, so it goes and the
+    // pin keeps the colour its own order earned (unplanned violet, address-off amber, …).
+    //
+    // THE REPLACEMENT IS EXACTLY AS WIDE AS THE GLYPH. Where the status already owns the
+    // glyph slot — delivered ✓, en-route ➜, exception ! — or the pin is highlighted (a
+    // selection/search hit recolours it and drops the glyph), the tint is the flag's ONLY
+    // channel on that pin and it KEEPS it. A flag that shows nothing at all is worse than one
+    // that shows a confusable colour: the first is indistinguishable from an unflagged stop.
+    const questionFlag = note?.priority_flag === 'question';
+    const questionGlyph = questionFlag && !hi && !meta.glyph;
+    const pinFlagHue = questionGlyph ? null : flagHue;
+    const addressOff = !hi && !pinFlagHue
       && (statusKind === 'SCHEDULED' || statusKind === 'UNPLANNED')
       && addrOff;
     const color = matched ? '#f59e0b'
@@ -3832,13 +3862,14 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       : noTractorOverride ? eligColor
       : tractorDelivered ? TRACTOR_DELIVERED_COLOR
       : eligColor
-      || flagHue
-      || (addressOff ? ADDRESS_OFF_TINT : (estesFill || meta.color || flagColor(note)));
+      || pinFlagHue
+      // flagColor() is the last fallback and reads the flag a SECOND way (PIN_TINTS), so it
+      // has to be told the same thing — otherwise a question-flagged SCHEDULED stop, whose
+      // STATUS_META colour is null, lands back on the same indigo through the back door.
+      || (addressOff ? ADDRESS_OFF_TINT : (estesFill || meta.color || flagColor(questionGlyph ? noteWithoutQuestionFlag(note) : note)));
     let glyph = meta.glyph;
-    if (!hi) {
-      if (note?.priority_flag === 'question' && !glyph) glyph = 'question';
-      else if (addressOff) glyph = 'bang';
-    }
+    if (questionGlyph) glyph = 'question';
+    else if (!hi && addressOff) glyph = 'bang';
     // UNPLANNED resting pins (not highlighted, no AM/PM tag) render as a white-circle-wrapped DOT
     // instead of the washed-out small teardrop — same ≤16px footprint, so it never grows. A
     // co-located count sits inside the dot. Highlighted/tagged unplanned keep the pop pin.
