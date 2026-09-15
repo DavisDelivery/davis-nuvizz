@@ -383,3 +383,73 @@ test('a day with nothing selectable shows no box at all', () => {
   // An always-disabled checkbox over "Nothing wrong with this day's addresses" is furniture.
   assert.match(fnSource('QueueSelectAllBox'), /if \(!st\.total\) return null;/);
 });
+
+// ── v1.35.0 — THE DAY’S HISTORY, ON THE DAY ROW ──────────────────────────────
+//
+// Chad, on "0 to fix of 912 stops · Nothing wrong with this day's addresses" the morning after
+// he had fixed one: "there should be a dropdown for this day that i can see the ones that i
+// fixed and should be in the regular history as well as well as any that were fixed in nuvizz
+// or reconsigned it should be the history of all things."
+//
+// The ledger already held every one of those. These pin the VIEW — and, more importantly, the
+// two ways this could go quietly wrong: a switched-off log reading as a quiet day, and an
+// empty state that still claims nothing happened.
+
+test('both views show the day history — a phone-only drawer is a screen that does not exist on desktop', () => {
+  for (const view of ['ProblemQueueMobile', 'ProblemQueueDesktop']) {
+    const src = fnSource(view);
+    assert.match(src, /useDayChangeLog\(q\.data\?\.dates, nonce\)/,
+      `${view} must read the change ledger for the queue's own dates — a different window is a drawer describing another day.`);
+    assert.match(src, /<QueueDayLogToggle/, `${view} has no history control on the day row.`);
+    assert.match(src, /<QueueDayLogPanel/, `${view} never renders the drawer it advertises.`);
+  }
+});
+
+test('the drawer is shut by default and opens per day', () => {
+  for (const view of ['ProblemQueueMobile', 'ProblemQueueDesktop']) {
+    const src = fnSource(view);
+    assert.match(src, /useState\(\(\) => new Set\(\)\)/,
+      `${view} must start with every day's drawer shut — Chad asked for a dropdown, not another wall of rows.`);
+    assert.match(src, /openLog\.has\(d\.date\)/,
+      `${view} must track open state PER DAY: one flag would open three days at once.`);
+  }
+});
+
+test('ONE read for the whole queue span, not one per day', () => {
+  const src = fnSource('useDayChangeLog');
+  assert.match(src, /from: span\[0\], to: span\[span\.length - 1\]/,
+    'the day log must fetch the whole window in a single request — a fetch per day header is an N+1 that grows with the window.');
+  assert.doesNotMatch(src, /days\.map[\s\S]*apiFetch/, 'no per-day fetch loop.');
+});
+
+test('a switched-off log says so — it must never read as a quiet day', () => {
+  // ADDRESS_HISTORY=off makes the endpoint refuse by design. Answering that with "0 changes"
+  // is a dead feature wearing a working one's face, which is the exact failure the switch's
+  // own comment in address-history.mts warns about.
+  const hook = fnSource('useDayChangeLog');
+  assert.match(hook, /j\?\.disabled/, 'the hook must detect the endpoint\'s disabled refusal.');
+  const toggle = fnSource('QueueDayLogToggle');
+  assert.match(toggle, /log\.disabled/, 'the day row must surface the disabled state.');
+  assert.match(toggle, /log\.err/, 'a failed read must not render as zero changes either.');
+});
+
+test('"Nothing wrong" stops implying "nothing happened"', () => {
+  // The old copy was true about PROBLEMS and was being read as a claim about the whole day —
+  // which is what sent Chad looking for a history that had been recording all along.
+  const src = fnSource('QueueDayEmpty');
+  assert.match(src, /Nothing wrong with this day’s addresses\./, 'the problem claim itself still belongs there.');
+  assert.match(src, /address change/, 'on a day carrying recorded changes the empty state must say so.');
+  for (const view of ['ProblemQueueMobile', 'ProblemQueueDesktop']) {
+    assert.match(fnSource(view), /<QueueDayEmpty/, `${view} still prints the bare old empty state.`);
+  }
+});
+
+test('the drawer reuses the log row parts rather than growing a second copy', () => {
+  // A second definition of "what a change row looks like" is how the drawer and the Full log
+  // come to disagree about the same ledger row.
+  const src = fnSource('QueueDayLogPanel');
+  for (const part of ['AddrSourceChip', 'AddrKindBadge', 'AddrWhere', 'AddrDiff']) {
+    assert.match(src, new RegExp(`<${part}`), `the drawer must render rows with ${part}, not its own markup.`);
+  }
+  assert.match(src, /stacked=\{stacked\}/, 'the phone must get the stacked diff, same switch the full log uses.');
+});

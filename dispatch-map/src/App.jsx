@@ -146,7 +146,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.34.0';
+const APP_VERSION = '1.35.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -200,6 +200,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.35.0', 'THE DAY ROW CAN SAY WHAT HAPPENED TO IT, AND THE LEDGER IT READS HAD BEEN RECORDING ALL ALONG. Chad, on \u201c0 to fix of 912 stops \u00b7 Nothing wrong with this day\u2019s addresses\u201d the morning after he had corrected one himself: \u201ci have a history in a drop down for any addresses that were under a day like this one i fixed one and there should be a dropdown for this day that i can see the ones that i fixed and should be in the regular history as well as well as any that were fixed in nuvizz or reconsigned it should be the history of all things.\u201d EVERY ONE OF THOSE WAS ALREADY IN THE LEDGER and none of them could reach that row. An address saved in this app lands as `override`, carrying whether the same edit also reached the ORDER in NuVizz; a Reset lands as `override-reset`; anything the carrier did to us \u2014 a RECONSIGNMENT included, which is the case refresh-stops-core\u2019s own detector re-enriches on \u2014 lands as `scan`. All of them are filed under the BOARD DAY the stop sat on, which is the exact key this queue groups by, so the drawer is a view over a ledger rather than a new record of anything. THE OLD EMPTY STATE WAS THE ACTUAL BUG. \u201cNothing wrong with this day\u2019s addresses\u201d is a true statement about PROBLEMS and was being read as a statement about the DAY \u2014 so a dispatcher who had fixed something and came back to check it stuck was told in plain English there was nothing to see. It now carries the count beside it, and the count is on the CLOSED row too: a drawer labelled only \u201cHistory\u201d is invisible in the one way that matters, because nobody opens it to find out whether anything is inside, and a day with three carrier re-addresses would look exactly like a quiet one. ONE READ FOR THE WHOLE QUEUE SPAN, not one per day header \u2014 three round trips to answer one question, growing the moment somebody widens the window. Firestore-only either way: this endpoint spends zero NuVizz calls and says so on the drawer\u2019s own footer. A SWITCHED-OFF LOG SAYS SO RATHER THAN READING AS A QUIET DAY: with ADDRESS_HISTORY=off the endpoint refuses by design, and answering that with \u201c0 changes\u201d would be a dead feature wearing a working one\u2019s face \u2014 the precise failure that switch\u2019s own comment warns about \u2014 so the row says \u201clog off\u201d, and a failed read says \u201clog unavailable\u201d instead of zero. THE ROWS REUSE THE FULL LOG\u2019S OWN PARTS (AddrSourceChip, AddrKindBadge, AddrWhere, AddrDiff, phone-stacked by the same switch) rather than growing a second definition of what a change looks like \u2014 which is how the drawer and the log would come to disagree about one ledger row. Two views, wired separately: on a phone the control sits on its own line under the date, because a date, a to-fix tally, a stop count and a button on one row at 360px wrap into a ragged block with the thumb target wherever the wrap left it. 4,920 tests green.'],
   ['1.34.0', 'ONE TAP SAYS WHICH TRUCK A LOAD RUNS, AND THE SYSTEM REMEMBERS IT. Chad: “on the loads when we put them in the [selection] panel make a quick button tractor or box truck and have system remember the choice going forward.” WHAT IT REPLACED, AND WHY HE IS RIGHT. Each ticked load row carried a dropdown of every truck profile, defaulted by A REGEX ON THE LOAD’S NAME — /(trailer|trl|53)/. Read that against the names Davis actually runs (ALPHA, ALPHA 2, ATL, SUW, SUW 2) and IT NEVER MATCHES ONCE, so every load defaulted to the box profile every morning and a load that runs a trailer had to be re-picked from a dropdown on every single build. Forget once and the solver plans a 28-skid trailer’s work at a 14-skid box’s ceiling — the same class of failure as the 4/20 split fixed in v1.33.0, arriving from the other direction. A daily correction the system threw away overnight is the cheapest kind of bug to fix and the most expensive to keep. THE ROW IS NOW TWO BUTTONS, Box | Tractor, the same segmented shape as “My loads / Trucks” above it, and the tap does two things: it sets THIS build, and it writes the class to a shared routing_load_vehicles document so it is already lit tomorrow. KEYED ON THE LOAD’S NAME, never on loadId or loadNbr — those are minted fresh for every day’s roster, so a memory keyed on either would forget overnight, which is the exact thing this exists to stop. Shared rather than localStorage, because “does SUW run a tractor” belongs to the operation and not to one browser; the write is FIELD-MASKED (setDoc REPLACES here) and a refusal reports through the permission bar instead of vanishing. AND A FACT NOW BEATS THE REGEX. route-classes.mts has been resolving which truck is on each load — the NuVizz load header first, the MarginIQ driver roster second — and travel-model already hands that map to the browser for the day on screen, keyed by BOTH load number and route name, classing a load from its HEADER even with no stops on it. That is exactly the empty loads this panel fills, it was already paid for, and nothing was reading it: five sources now decide each row, in order — this session’s tap, the remembered class, what NuVizz says is on it today, the old name guess, then the box profile (the smaller truck, so an unknown never over-plans). ZERO NuVizz calls; the same date guard the flag memos use, because a class map from another day is a lie whichever document it came out of. A STANDING PREFERENCE MAY NOT QUIETLY OUT-PLAN THE TRUCK IN THE YARD. “SUW runs a tractor” and “a box is on SUW today” are different claims, and route-classes’ own header says the day that matters is the one where the tractor is in the shop. He asked to be remembered, so the memory wins — but when the two disagree the row says so in one line naming what NuVizz has, and one tap follows it. In FLOW, not pinned: a line that appears per row is exactly the thing that lands on top of something else when it is positioned at a measured offset. THE KEY IS PROVEN INJECTIVE, because two load names collapsing onto one document is a load silently inheriting another load’s truck and nobody would think to look there for it — 20,000 names, zero collisions, and a test pins the pair (“~e” against U+07EE) that the obvious two-pass version of the escape gets wrong. 26 new tests, EIGHT mutations killed, and two of them were my own tests: a lazy regex in the wiring pin borrowed truck_profiles’ own merge flag twenty lines down and passed a blind setDoc, and the first injectivity mutation I wrote was not a bug at all. A class the fleet cannot run comes back as a DISABLED button that says why — an enabled button that does nothing teaches that the control is broken, and this one decides what the truck can carry.'],
   ['1.33.1', 'A TRUCK WITH A DRIVER ASSIGNED SAID “(no driver)”, AND THE MOTIVE DOCS SAY WHY. Chad: “when trucks are displayed on the map for motive, it’s saying no driver assigned, which is not factual. A lot of the times there is a driver assigned … go back through the motive API instructions, make sure we haven’t done something wrong.” WE HAD, AND IT IS IN THEIR DOCUMENTATION RATHER THAN A GUESS. A Motive vehicle carries TWO driver fields: current_driver, who is LOGGED IN on the truck’s ELD right now, and permanent_driver, the ADMINISTRATIVE assignment a fleet manager makes. GET /v1/vehicle_locations — the one call this layer made — carries current_driver only; Motive’s own scope for it is literally named “Vehicle Current Location/Driver”. permanent_driver lives on GET /v1/vehicles and on no version of vehicle_locations at all (v1 and v2 expose the logged-in driver, v3 exposes nobody). So a driver assigned to a truck who had not yet signed in on its tablet was, to us, nobody — and the plate said “(no driver)” over a truck Chad could see had a name on it in Motive. NOW IT READS BOTH: the signed-in driver wins, the assigned one fills in behind, and the record says which it was (driverSource), so the driver sidebar reads “Truck 7750 · Chris Head · assigned” when he is assigned but not yet signed in — which is exactly the state a dispatcher rings a driver about. TWO SMALLER DEFECTS ON THE SAME READ, both fixed: a name was only composed when BOTH first and last name were present (Motive documents no full_name), so a one-name driver fell through to nobody; and the old fallback called GET /v2/driver_vehicle_assignments, an endpoint that appears NOWHERE in Motive’s documentation index, with every error swallowed — it has contributed nothing for as long as it has existed, and HANDOFF.md had said in as many words that the field shapes were “assumed” and “still need live verification”. Retired. COST: one extra Motive call per 60-second cache miss, and only when at least one truck on the board has nobody signed in. A failed vehicles read degrades to the old logged-in-only behaviour and is REPORTED on the response (permanentDriverError) rather than hidden. NOT A PERMISSIONS PROBLEM, checked: Motive API keys are organisation-scoped, and the docs make no claim that nested driver fields are gated. MOTIVE_PERMANENT_DRIVER=off puts the old behaviour back; default ON, and a malformed value leaves it ON. 9 new tests, 4,888 green.'],
   ['1.33.0', 'WHAT IS IN NUVIZZ, WHAT IS ONLY ON THIS SCREEN, AND A TRUCK THAT IS NOT BOTTOMLESS. Three things off two mornings on the Routing screen. (1) \u201cIT IS HARD TO KNOW WHEN SOMETHING IS PUSHED TO NUVIZZ.\u201d Read off the code rather than guessed at: the workbench header\u2019s Save button renders only while something is staged, so \u201ceverything is in NuVizz\u201d was expressed by a button DISAPPEARING, backed by a toast that may already have been dismissed \u2014 and the one chip that existed was gated on pendingCreate, so a NEW route said \u201cnot sent\u201d and an existing load said nothing at all. A card saved five minutes ago and a card nobody had touched looked identical. Every card now carries its state, always: amber NOT SENT TO NUVIZZ while anything is staged, NOT CREATED IN NUVIZZ for a route that does not exist yet, green SENT TO NUVIZZ 2:14 PM once a write is confirmed, grey NOTHING TO SEND when the card matches the load. The green one is earned in exactly one place \u2014 markSaved, which runs on a confirmed write and nowhere else \u2014 and a test pins that it has one writer, so it can never report an intent as an outcome. BETA WINS OVER EVERY NOT-SENT WORDING, because there the Save button is blue, says \u201cSave (2)\u201d and sends nothing, which is the most expensive thing on this screen to misread. The header gained the other half: with nothing staged it says \u201c\u2713 All sent to NuVizz\u201d or \u201cNothing to send\u201d instead of rendering no control at all. (2) \u201cIF I DO NOT PUSH TO NUVIZZ, CLOSING THE ROUTES OUT OF THE COMPARE PANEL SHOULD JUST LET THEM GO.\u201d Closing a card already released the stops everywhere except the MAP: the selection guard, the grid\u2019s staged badge and the other device\u2019s presence claim all derive from wbRoutes, and nothing reaches the plan overlay short of a confirmed save. But effectiveRouteInfo read \u201copen cards, else the BUILD\u2019s own plan\u201d \u2014 right while a finished build sat waiting to be staged by hand, wrong since v1.19.0 made a build stage itself. Closing the last card fell straight through to the engine plan and the same stops came back numbered, route-coloured and joined by a polyline on a board where nothing had been sent. Closing a card is the dispatcher saying \u201cnot this\u201d, so once a plan has been staged the cards ARE the working set and nothing else paints; a plan never staged still paints, and the result panel\u2019s \u201cStage onto Compare cards again\u201d is the way back. (3) A TRUCK WITH NO SKID LIMIT IS A MISSING NUMBER, NOT A BOTTOMLESS TRUCK. Chad: \u201cI gave it two box truckloads to put 25 orders on that was about 25 skids. Box trucks hold, let\u2019s call it 14 pallets. It gave four pallets to one box truck and 20 to the other.\u201d RUN, NOT REASONED \u2014 the same 25 orders over his own four towns through the real pipeline: maxSkids 14 (the shipped 26ft Box default) splits 11/14, balanced and inside the truck; maxSkids 0 (a blank box) splits 6/19; maxSkids 26 (a number typed too big) splits 6/19. The lopsided split is the cap NOT BINDING, and the zero case is the dangerous one: capLimited reads a non-positive cap as NO LIMIT, which is right for an abstract profile nobody filled in and wrong for a truck \u2014 it switches off the skid gate AND makes loadFraction return 0, silently killing the balance term the assignment uses to spread work. One blank field and nineteen skids go on a truck that holds fourteen with nothing on screen saying why. Where the zero came from: until this release the Trucks-mode capacity fields wrote the fleet profile ON BLUR and Number(\u2018\u2019) is 0, so tabbing out of a cleared Skids box stored a 0-skid profile every later build in both modes then read. Every truck now takes its CLASS floor before it reaches the solver when its skid or weight cap is missing (26ft box 14 / 10,000 lb; 53ft trailer 28 / 44,000 lb), it NEVER lowers a cap somebody set, and every substitution is reported in the result panel naming the truck and where to fix it \u2014 a defaulted cap nobody can see is the same invisible failure in nicer clothes. THE BALANCE TERM WAS DELIBERATELY NOT TOUCHED: with a real 14-skid cap the same board already returns 11/14, and BALANCE_M decides every build on this screen. Also in this release: the Trucks-mode profile editor is a draft with an explicit Save that refuses a blank or zero capacity, so no new 0 can be written. 17 new tests \u2014 including Chad\u2019s board end to end, before ([6, 19], the big one over what a 26ft box can hold) and after ([11, 14], nothing spilled) \u2014 plus 8 wiring pins, because two of these three failures do not error: they just quietly overload a truck or repaint a route nobody sent.'],
@@ -31374,12 +31375,179 @@ function useQueueRowEdit(row, google, today, reload) {
   return { open, setOpen, f, setF, busy, msg, save, mapOpen, setMapOpen, usePin };
 }
 
+// ── WHAT ACTUALLY HAPPENED TO THIS DAY'S ADDRESSES ──────────────────────────
+//
+// Chad, on a day row reading "0 to fix of 912 stops · Nothing wrong with this day's
+// addresses" — the morning after he had fixed one himself: "i have a history in a drop down
+// for any addresses that were under a day like this one i fixed one and there should be a
+// dropdown for this day that i can see the ones that i fixed and should be in the regular
+// history as well as well as any that were fixed in nuvizz or reconsigned it should be the
+// history of all things."
+//
+// THE DATA WAS ALL THERE ALREADY; THE DAY ROW JUST COULD NOT SAY SO. The change ledger has
+// recorded every one of these since v1.19: an address saved in this app lands as `override`
+// (with `nuvizz` saying whether the same edit also reached the ORDER), a Reset as
+// `override-reset`, and anything the carrier did to us — a reconsignment included, which is
+// what refresh-stops-core's reconsignment detector re-enriches on — as `scan`. Every row is
+// filed under the BOARD DAY the stop sat on (firestore.mts records with the scanned dateStr;
+// the client POST sends stop.boardDate), which is the very key this queue groups by. So this
+// is a view over a ledger, not a new record of anything.
+//
+// AND THE OLD EMPTY STATE WAS THE ACTUAL BUG. "Nothing wrong with this day's addresses" is
+// true and reads as "nothing happened here" — on a day when an order was reconsigned at 11am
+// and a dispatcher corrected two more. A dispatcher who fixed something and came back to
+// check it stuck was told, in plain English, that there was nothing to see.
+//
+// ONE REQUEST FOR THE WHOLE QUEUE SPAN, not one per day. The queue shows today plus two
+// business days; a fetch per day header is three round trips to answer one question, and it
+// grows the day somebody widens the window. Firestore-only either way — this endpoint spends
+// zero NuVizz calls and says so in its own header.
+function useDayChangeLog(dates, nonce) {
+  const [state, setState] = React.useState({ rows: [], loading: true, err: null, disabled: false });
+  // The dates come out of the queue payload as a fresh array each load; keying the effect on
+  // the ARRAY would refetch on every queue render for an unchanged window.
+  const key = React.useMemo(() => (dates || []).filter(Boolean).slice().sort().join(','), [dates]);
+  React.useEffect(() => {
+    if (!key) { setState({ rows: [], loading: false, err: null, disabled: false }); return undefined; }
+    let cancelled = false;
+    const span = key.split(',');
+    (async () => {
+      setState((s) => ({ ...s, loading: true, err: null }));
+      try {
+        // all=1: a suite moving between lines is noise on a 700-stop sweep and is exactly the
+        // kind of thing somebody asks about when checking ONE day's work. Same reasoning the
+        // full log applies to a PRO search.
+        const p = new URLSearchParams({ from: span[0], to: span[span.length - 1], all: '1' });
+        const r = await apiFetch(`/.netlify/functions/address-history?${p.toString()}`, { cache: 'no-store' });
+        const j = await r.json();
+        if (cancelled) return;
+        // DISABLED IS NOT EMPTY. With ADDRESS_HISTORY=off (or Firestore off) the endpoint
+        // refuses by design — and a drawer that answered that with "0 changes" would be a
+        // switched-off feature wearing a working one's face, which is the failure the switch's
+        // own comment warns about. It says so instead.
+        if (j?.disabled) { setState({ rows: [], loading: false, err: null, disabled: true }); return; }
+        if (!j?.ok) throw new Error(j?.error || 'read failed');
+        setState({ rows: Array.isArray(j.rows) ? j.rows : [], loading: false, err: null, disabled: false });
+      } catch (e) {
+        if (!cancelled) setState({ rows: [], loading: false, err: String(e?.message || e), disabled: false });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [key, nonce]);
+  // Grouped once, here, so neither view does it in a render body.
+  const byDate = React.useMemo(() => {
+    const m = new Map();
+    for (const r of state.rows) {
+      const d = String(r?.date || '');
+      if (!d) continue;
+      if (!m.has(d)) m.set(d, []);
+      m.get(d).push(r);
+    }
+    return m;
+  }, [state.rows]);
+  return { ...state, byDate };
+}
+
+/**
+ * The day header's history control — the COUNT lives on the closed row, deliberately.
+ *
+ * A drawer labelled only "History" is invisible in the one way that matters: nobody opens it
+ * to find out whether there is anything inside, so a day with three carrier re-addresses looks
+ * exactly like a quiet one. The number is the whole point of putting it here.
+ */
+function QueueDayLogToggle({ log, date, open, onToggle }) {
+  if (log.disabled) {
+    return <span className="text-[11px] text-amber-700" title="ADDRESS_HISTORY=off — nothing is being recorded, so this is not a quiet day, it is an unwatched one">log off</span>;
+  }
+  if (log.err) return <span className="text-[11px] text-amber-700" title={log.err}>log unavailable</span>;
+  if (log.loading) return <span className="text-[11px] text-slate-400">loading changes…</span>;
+  const n = (log.byDate.get(date) || []).length;
+  if (!n) return <span className="text-[11px] text-slate-400">no changes recorded</span>;
+  return (
+    <button
+      onClick={onToggle}
+      aria-expanded={open}
+      className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-700 hover:text-blue-900 hover:underline"
+      title="Everything recorded against this board day — what we fixed, what reached NuVizz, and what the carrier changed on us"
+    >
+      {n} change{n === 1 ? '' : 's'}
+      {open ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+    </button>
+  );
+}
+
+/**
+ * The drawer itself. Newest first — the endpoint already orders it that way through
+ * selectAddressChanges, and re-sorting here is how the drawer and the full log would come to
+ * disagree about the same rows.
+ *
+ * `stacked` is the phone: from/to on their own lines, the same switch AddrDiff already takes
+ * for the full log on a phone. Two views, one definition of a row.
+ */
+function QueueDayLogPanel({ log, date, stacked = false }) {
+  const rows = log.byDate.get(date) || [];
+  if (!rows.length) return null;
+  return (
+    <div className={`border-t bg-slate-50 ${stacked ? 'rounded-b-xl' : ''}`}>
+      <div className="px-3 py-2 space-y-2 max-h-[46vh] overflow-y-auto">
+        {rows.map((r, i) => (
+          <div key={`${r.stopNbr}-${r.at}-${i}`} className="rounded-lg border bg-white px-2.5 py-2">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <AddrSourceChip row={r} />
+              <AddrKindBadge kind={r.kind} />
+              <AddrWhere row={r} />
+              <span className="text-[10px] text-slate-400 tabular-nums ml-auto">{addrTime(r.at)}</span>
+            </div>
+            <div className="text-xs font-semibold text-slate-800 break-words mt-1">
+              {r.businessName || r.stopNbr}
+              {r.businessName ? <span className="font-normal text-slate-400"> · {r.stopNbr}</span> : null}
+            </div>
+            <div className="mt-1"><AddrDiff row={r} stacked={stacked} /></div>
+          </div>
+        ))}
+      </div>
+      <div className="px-3 pb-2 text-[10px] text-slate-400">
+        Everything filed against {date} — ours, NuVizz’s, and resets. Read from our own ledger; zero NuVizz calls.
+        {' '}The full log across every day is under <span className="font-semibold">Full log</span>.
+      </div>
+    </div>
+  );
+}
+
+/** The queue's empty state, which must not claim more than it knows. "Nothing wrong" is a
+ *  statement about PROBLEMS; on a day that carries recorded changes it was being read as
+ *  "nothing happened", which is what sent Chad looking for a history that was already there. */
+function QueueDayEmpty({ log, date, open = false }) {
+  const n = log.disabled || log.err || log.loading ? 0 : (log.byDate.get(date) || []).length;
+  return (
+    <>
+      Nothing wrong with this day’s addresses.
+      {/* The pointer drops once the drawer is open: "open the changes above to see them" over
+          a drawer that is already open is an instruction to do what you just did. The COUNT
+          keeps printing either way — it is the half that stops this line reading as
+          "nothing happened today". */}
+      {n > 0 && (
+        <span className="text-slate-400">
+          {' '}{n} address change{n === 1 ? '' : 's'} {n === 1 ? 'was' : 'were'} recorded{open ? ', above.' : <> — open the changes above to see {n === 1 ? 'it' : 'them'}.</>}
+        </span>
+      )}
+    </>
+  );
+}
+
 // ── PHONE. A card per row, worked one at a time with a thumb. ───────────────
 // Not a table: five columns at 360px is a horizontal scroll on the one screen where a
 // dispatcher is standing at a dock, and the editor has to open IN FLOW so what is below it
 // moves down rather than being covered.
 function ProblemQueueMobile({ nonce, today }) {
   const q = useProblemQueue(nonce, today);
+  // Hooks before the early returns — a loading queue that unmounts these would change hook
+  // order on the render after it arrives.
+  const log = useDayChangeLog(q.data?.dates, nonce);
+  const [openLog, setOpenLog] = React.useState(() => new Set());
+  const toggleLog = React.useCallback((date) => setOpenLog((prev) => {
+    const n = new Set(prev); if (n.has(date)) n.delete(date); else n.add(date); return n;
+  }), []);
   if (q.loading) return <div className="text-xs text-slate-500">Loading the board…</div>;
   if (q.err) return <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3">{q.err}</div>;
   return (
@@ -31387,16 +31555,28 @@ function ProblemQueueMobile({ nonce, today }) {
       <QueueSummaryBar q={q} stacked />
       {q.days.map((d) => (
         <div key={d.date} className="space-y-2">
+          {/* PHONE: the count and the history sit on their own line under the date rather than
+              beside it. At 360px a date, a to-fix tally, a stop count and a changes button on
+              one row wrap into a ragged block, and the control a thumb has to find ends up
+              wherever the wrap left it. */}
           <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
             {d.date} · {d.rows.length} to fix <span className="font-normal normal-case text-slate-400">of {d.stopsRead} stops</span>
           </div>
+          <div className="px-1 -mt-1" style={{ minHeight: 28 }}>
+            <QueueDayLogToggle log={log} date={d.date} open={openLog.has(d.date)} onToggle={() => toggleLog(d.date)} />
+          </div>
+          {openLog.has(d.date) && (
+            <div className="rounded-xl border bg-white overflow-hidden">
+              <QueueDayLogPanel log={log} date={d.date} stacked />
+            </div>
+          )}
           {dayPickState(d.rows, q.picked).total > 0 && (
             <label className="flex items-center gap-2 text-xs text-slate-600 px-1" style={{ minHeight: 44 }}>
               <QueueSelectAllBox d={d} q={q} className="accent-blue-700" />
               <span>Select all {dayPickState(d.rows, q.picked).total} on this day</span>
             </label>
           )}
-          {!d.rows.length && <div className="rounded-xl border bg-white p-4 text-xs text-slate-500">Nothing wrong with this day’s addresses.</div>}
+          {!d.rows.length && <div className="rounded-xl border bg-white p-4 text-xs text-slate-500"><QueueDayEmpty log={log} date={d.date} open={openLog.has(d.date)} /></div>}
           {d.rows.map((row) => (
             <QueueRowMobile key={row.key} row={row} q={q} today={today} />
           ))}
@@ -31445,6 +31625,12 @@ function QueueRowMobile({ row, q, today }) {
 // against a column of what NuVizz holds is how you decide which rows to sweep. ─────────────
 function ProblemQueueDesktop({ nonce, today }) {
   const q = useProblemQueue(nonce, today);
+  // Hooks before the early returns — see the phone view's note.
+  const log = useDayChangeLog(q.data?.dates, nonce);
+  const [openLog, setOpenLog] = React.useState(() => new Set());
+  const toggleLog = React.useCallback((date) => setOpenLog((prev) => {
+    const n = new Set(prev); if (n.has(date)) n.delete(date); else n.add(date); return n;
+  }), []);
   if (q.loading) return <div className="text-xs text-slate-500">Loading the board…</div>;
   if (q.err) return <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3">{q.err}</div>;
   return (
@@ -31452,12 +31638,20 @@ function ProblemQueueDesktop({ nonce, today }) {
       <QueueSummaryBar q={q} />
       {q.days.map((d) => (
         <div key={d.date} className="rounded-xl border bg-white overflow-hidden">
-          <div className="px-3 py-2 bg-slate-50 text-xs font-bold text-slate-600 flex items-center justify-between">
+          {/* DESKTOP: date on the left, the day's numbers and its history together on the
+              right. There is room for one row here, and putting the changes control beside
+              the to-fix tally is what lets the two be read as one sentence about the day —
+              "nothing to fix, three things happened". */}
+          <div className="px-3 py-2 bg-slate-50 text-xs font-bold text-slate-600 flex items-center justify-between gap-3">
             <span>{d.date}</span>
-            <span className="font-normal text-slate-400">{d.rows.length} to fix of {d.stopsRead} stops</span>
+            <span className="flex items-center gap-3 min-w-0">
+              <QueueDayLogToggle log={log} date={d.date} open={openLog.has(d.date)} onToggle={() => toggleLog(d.date)} />
+              <span className="font-normal text-slate-400 whitespace-nowrap">{d.rows.length} to fix of {d.stopsRead} stops</span>
+            </span>
           </div>
+          {openLog.has(d.date) && <QueueDayLogPanel log={log} date={d.date} />}
           {!d.rows.length
-            ? <div className="p-6 text-center text-xs text-slate-500">Nothing wrong with this day’s addresses.</div>
+            ? <div className="p-6 text-center text-xs text-slate-500"><QueueDayEmpty log={log} date={d.date} open={openLog.has(d.date)} /></div>
             : (
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
