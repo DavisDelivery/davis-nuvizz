@@ -1020,3 +1020,128 @@ export function routePaintSource({ openCards = 0, planStaged = false } = {}) {
   if (Number(openCards) > 0) return 'cards';
   return planStaged ? 'none' : 'plan';
 }
+
+// ── WHICH TRUCK RUNS THIS LOAD — ONE TAP, AND IT STICKS (v1.34.0) ────────────
+//
+// Chad: "on the loads when we put them in the [selection] panel make a quick button tractor
+// or box truck and have system remember the choice going forward."
+//
+// WHAT IT REPLACED, AND WHY THE ASK IS RIGHT. Each ticked load row carried a <select> of every
+// truck profile, defaulted by a REGEX ON THE LOAD'S NAME — /(trailer|trl|53)/. Read that
+// against the names Davis actually runs (ALPHA, ALPHA 2, ATL, SUW, SUW 2) and it never
+// matches once, so EVERY load defaulted to the box profile, every day, and a load that runs a
+// tractor had to be re-picked from a dropdown on every single build. Forget once and the
+// solver plans a 28-skid trailer's work at a 14-skid box's ceiling, or refuses tractor-only
+// freight onto a box that could not have taken it anyway. A daily correction the system threw
+// away overnight is the cheapest kind of bug to fix and the most expensive to keep.
+//
+// FIVE SOURCES, IN ORDER, AND THE ORDER IS THE DESIGN:
+//
+//   picked       what the dispatcher tapped in this session. Nothing outranks a person.
+//   remembered   what they tapped on this load NAME before — the memory Chad asked for.
+//   assigned     what NUVIZZ says is on this load today (the load header's vehicleType,
+//                resolved by route-classes.mts and already in the browser for the day on
+//                screen, at zero calls). A fact beats a regex.
+//   name         the old /(trailer|trl|53)/ guess, kept as the last resort it always was.
+//   default      the box profile — the smaller truck, so an unknown never over-plans.
+//
+// THE MEMORY IS KEYED ON THE LOAD'S NAME, NOT ITS ID. loadId and loadNbr are minted fresh for
+// every day's roster, so a memory keyed on either would forget overnight — which is the exact
+// thing this exists to stop.
+//
+// AND `remembered` OUTRANKING `assigned` IS A DELIBERATE, VISIBLE CHOICE. They are different
+// claims: "SUW runs a tractor" is Chad's standing plan for a name; "a box is on SUW today" is
+// a fact about this morning (route-classes.mts: "on exactly the day that matters — tractor in
+// the shop, driver in a rental box — the header knows"). He asked to be remembered, so the
+// memory wins — but when the two DISAGREE the row says so in one line, because a standing
+// preference quietly out-planning the truck that is actually in the yard is a refused
+// delivery nobody would go looking for. One tap follows NuVizz; doing nothing keeps his plan.
+export const LOAD_VEHICLE_CLASSES = ['box', 'tractor'];
+
+// Which class a truck PROFILE is. `capabilities.tractor` is the field the solver itself reads
+// (routing-constraints.equipmentReqOk), so it is the field that decides here too; the length
+// fallback catches a profile somebody added with the length filled in and the flag not.
+export function vehicleClassOf(profile) {
+  const cap = profile?.capabilities;
+  if (cap?.tractor === true) return 'tractor';
+  if (Number(cap?.lengthClassFt) >= 40) return 'tractor';
+  return 'box';
+}
+
+// The profile that RUNS a class, out of the profiles the fleet actually has. `null` when the
+// fleet has none of that class — which is a button to disable with a reason, never a silent
+// no-op.
+export function profileForClass(profiles = [], cls) {
+  const list = Array.isArray(profiles) ? profiles.filter(Boolean) : [];
+  return list.find((p) => vehicleClassOf(p) === cls) || null;
+}
+
+// The two buttons, with the profile each would use. A class the fleet cannot run comes back
+// disabled and SAYS WHY — an enabled button that does nothing teaches that the control is
+// broken, and this one decides what the truck can carry.
+export function loadVehicleChoices(profiles = []) {
+  return LOAD_VEHICLE_CLASSES.map((cls) => {
+    const profile = profileForClass(profiles, cls);
+    const label = cls === 'tractor' ? 'Tractor' : 'Box';
+    return {
+      cls,
+      label,
+      profile,
+      disabled: !profile,
+      title: profile
+        ? `Plan this load as a ${label.toLowerCase()} — ${profile.label || profile.id}. Remembered for this load name from now on.`
+        : `No ${label.toLowerCase()} profile in the fleet. Add one in 2 · Plan onto → Trucks.`,
+    };
+  });
+}
+
+// The Firestore document id for a load NAME's remembered class.
+//
+// A document id may not contain '/', may not be '.' or '..', and may not match __…__. Davis's
+// load names are route codes ("SUW 2", "ALPHA"), so this is belt and braces — but an id built
+// by substitution has to stay INJECTIVE, because two load names collapsing onto one id is a
+// load silently inheriting another load's truck, and nobody would ever think to look here for
+// it. '~' is the escape and is escaped first, every escape is delimited at both ends, so the
+// mapping can always be read back. The 200-character cap is above any name a TMS route code
+// can carry; names are normalised (trim, lowercase, whitespace collapsed) so "SUW  2" and
+// "suw 2" are the same load.
+export function loadVehicleKey(name) {
+  const n = String(name ?? '').trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 200);
+  if (!n) return null;
+  // ONE pass, and that is load-bearing: '~' is not in the allowed set, so it escapes to
+  // '~7e~' here like anything else. Escaping it in a separate earlier pass — the obvious
+  // way to write this — feeds '~7e~' straight back into the second replace, which escapes
+  // its own delimiters and turns a name into mush that no longer reads back.
+  const esc = n.replace(/[^a-z0-9 ._-]/g, (c) => `~${c.charCodeAt(0).toString(16)}~`);
+  return /^\.\.?$/.test(esc) || /^__.*__$/.test(esc) ? `n${esc}` : esc;
+}
+
+/**
+ * WHICH TRUCK THIS LOAD IS PLANNED AS, and WHERE THAT CAME FROM. Pure; the panel renders it
+ * and the build sends `profile` straight to the solver as the load's capacity + capability.
+ *
+ * `source` is returned because the five sources are not equally strong and a screen is
+ * entitled to say which one it is quoting — the same reasoning as route-classes' own
+ * `sourceByRoute`. `conflict` is true only when a class the FLEET CAN RUN is assigned in
+ * NuVizz today and the row is planned as something else; an assigned class with no profile
+ * behind it is not actionable, so it raises nothing.
+ */
+export function resolveLoadVehicle({ profiles = [], name = '', picked = null, remembered = null, assigned = null } = {}) {
+  const runnable = (c) => (c === 'tractor' || c === 'box') && !!profileForClass(profiles, c);
+  const use = (c, source) => (runnable(c) ? { cls: c, source } : null);
+  const nameGuess = /(^|\W)(trailer|trl|53)(\W|$)/i.test(String(name || '')) ? 'tractor' : null;
+  const hit = use(picked, 'picked')
+    || use(remembered, 'remembered')
+    || use(assigned, 'assigned')
+    || use(nameGuess, 'name')
+    || use('box', 'default')
+    || use('tractor', 'default');
+  if (!hit) return { cls: null, source: 'none', profile: null, assigned: null, conflict: false };
+  return {
+    cls: hit.cls,
+    source: hit.source,
+    profile: profileForClass(profiles, hit.cls),
+    assigned: runnable(assigned) ? assigned : null,
+    conflict: runnable(assigned) && assigned !== hit.cls,
+  };
+}

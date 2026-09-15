@@ -46,7 +46,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, cardSendState, routePaintSource } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, cardSendState, routePaintSource, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -146,7 +146,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.33.1';
+const APP_VERSION = '1.34.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -200,6 +200,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.34.0', 'ONE TAP SAYS WHICH TRUCK A LOAD RUNS, AND THE SYSTEM REMEMBERS IT. Chad: “on the loads when we put them in the [selection] panel make a quick button tractor or box truck and have system remember the choice going forward.” WHAT IT REPLACED, AND WHY HE IS RIGHT. Each ticked load row carried a dropdown of every truck profile, defaulted by A REGEX ON THE LOAD’S NAME — /(trailer|trl|53)/. Read that against the names Davis actually runs (ALPHA, ALPHA 2, ATL, SUW, SUW 2) and IT NEVER MATCHES ONCE, so every load defaulted to the box profile every morning and a load that runs a trailer had to be re-picked from a dropdown on every single build. Forget once and the solver plans a 28-skid trailer’s work at a 14-skid box’s ceiling — the same class of failure as the 4/20 split fixed in v1.33.0, arriving from the other direction. A daily correction the system threw away overnight is the cheapest kind of bug to fix and the most expensive to keep. THE ROW IS NOW TWO BUTTONS, Box | Tractor, the same segmented shape as “My loads / Trucks” above it, and the tap does two things: it sets THIS build, and it writes the class to a shared routing_load_vehicles document so it is already lit tomorrow. KEYED ON THE LOAD’S NAME, never on loadId or loadNbr — those are minted fresh for every day’s roster, so a memory keyed on either would forget overnight, which is the exact thing this exists to stop. Shared rather than localStorage, because “does SUW run a tractor” belongs to the operation and not to one browser; the write is FIELD-MASKED (setDoc REPLACES here) and a refusal reports through the permission bar instead of vanishing. AND A FACT NOW BEATS THE REGEX. route-classes.mts has been resolving which truck is on each load — the NuVizz load header first, the MarginIQ driver roster second — and travel-model already hands that map to the browser for the day on screen, keyed by BOTH load number and route name, classing a load from its HEADER even with no stops on it. That is exactly the empty loads this panel fills, it was already paid for, and nothing was reading it: five sources now decide each row, in order — this session’s tap, the remembered class, what NuVizz says is on it today, the old name guess, then the box profile (the smaller truck, so an unknown never over-plans). ZERO NuVizz calls; the same date guard the flag memos use, because a class map from another day is a lie whichever document it came out of. A STANDING PREFERENCE MAY NOT QUIETLY OUT-PLAN THE TRUCK IN THE YARD. “SUW runs a tractor” and “a box is on SUW today” are different claims, and route-classes’ own header says the day that matters is the one where the tractor is in the shop. He asked to be remembered, so the memory wins — but when the two disagree the row says so in one line naming what NuVizz has, and one tap follows it. In FLOW, not pinned: a line that appears per row is exactly the thing that lands on top of something else when it is positioned at a measured offset. THE KEY IS PROVEN INJECTIVE, because two load names collapsing onto one document is a load silently inheriting another load’s truck and nobody would think to look there for it — 20,000 names, zero collisions, and a test pins the pair (“~e” against U+07EE) that the obvious two-pass version of the escape gets wrong. 26 new tests, EIGHT mutations killed, and two of them were my own tests: a lazy regex in the wiring pin borrowed truck_profiles’ own merge flag twenty lines down and passed a blind setDoc, and the first injectivity mutation I wrote was not a bug at all. A class the fleet cannot run comes back as a DISABLED button that says why — an enabled button that does nothing teaches that the control is broken, and this one decides what the truck can carry.'],
   ['1.33.1', 'A TRUCK WITH A DRIVER ASSIGNED SAID “(no driver)”, AND THE MOTIVE DOCS SAY WHY. Chad: “when trucks are displayed on the map for motive, it’s saying no driver assigned, which is not factual. A lot of the times there is a driver assigned … go back through the motive API instructions, make sure we haven’t done something wrong.” WE HAD, AND IT IS IN THEIR DOCUMENTATION RATHER THAN A GUESS. A Motive vehicle carries TWO driver fields: current_driver, who is LOGGED IN on the truck’s ELD right now, and permanent_driver, the ADMINISTRATIVE assignment a fleet manager makes. GET /v1/vehicle_locations — the one call this layer made — carries current_driver only; Motive’s own scope for it is literally named “Vehicle Current Location/Driver”. permanent_driver lives on GET /v1/vehicles and on no version of vehicle_locations at all (v1 and v2 expose the logged-in driver, v3 exposes nobody). So a driver assigned to a truck who had not yet signed in on its tablet was, to us, nobody — and the plate said “(no driver)” over a truck Chad could see had a name on it in Motive. NOW IT READS BOTH: the signed-in driver wins, the assigned one fills in behind, and the record says which it was (driverSource), so the driver sidebar reads “Truck 7750 · Chris Head · assigned” when he is assigned but not yet signed in — which is exactly the state a dispatcher rings a driver about. TWO SMALLER DEFECTS ON THE SAME READ, both fixed: a name was only composed when BOTH first and last name were present (Motive documents no full_name), so a one-name driver fell through to nobody; and the old fallback called GET /v2/driver_vehicle_assignments, an endpoint that appears NOWHERE in Motive’s documentation index, with every error swallowed — it has contributed nothing for as long as it has existed, and HANDOFF.md had said in as many words that the field shapes were “assumed” and “still need live verification”. Retired. COST: one extra Motive call per 60-second cache miss, and only when at least one truck on the board has nobody signed in. A failed vehicles read degrades to the old logged-in-only behaviour and is REPORTED on the response (permanentDriverError) rather than hidden. NOT A PERMISSIONS PROBLEM, checked: Motive API keys are organisation-scoped, and the docs make no claim that nested driver fields are gated. MOTIVE_PERMANENT_DRIVER=off puts the old behaviour back; default ON, and a malformed value leaves it ON. 9 new tests, 4,888 green.'],
   ['1.33.0', 'WHAT IS IN NUVIZZ, WHAT IS ONLY ON THIS SCREEN, AND A TRUCK THAT IS NOT BOTTOMLESS. Three things off two mornings on the Routing screen. (1) \u201cIT IS HARD TO KNOW WHEN SOMETHING IS PUSHED TO NUVIZZ.\u201d Read off the code rather than guessed at: the workbench header\u2019s Save button renders only while something is staged, so \u201ceverything is in NuVizz\u201d was expressed by a button DISAPPEARING, backed by a toast that may already have been dismissed \u2014 and the one chip that existed was gated on pendingCreate, so a NEW route said \u201cnot sent\u201d and an existing load said nothing at all. A card saved five minutes ago and a card nobody had touched looked identical. Every card now carries its state, always: amber NOT SENT TO NUVIZZ while anything is staged, NOT CREATED IN NUVIZZ for a route that does not exist yet, green SENT TO NUVIZZ 2:14 PM once a write is confirmed, grey NOTHING TO SEND when the card matches the load. The green one is earned in exactly one place \u2014 markSaved, which runs on a confirmed write and nowhere else \u2014 and a test pins that it has one writer, so it can never report an intent as an outcome. BETA WINS OVER EVERY NOT-SENT WORDING, because there the Save button is blue, says \u201cSave (2)\u201d and sends nothing, which is the most expensive thing on this screen to misread. The header gained the other half: with nothing staged it says \u201c\u2713 All sent to NuVizz\u201d or \u201cNothing to send\u201d instead of rendering no control at all. (2) \u201cIF I DO NOT PUSH TO NUVIZZ, CLOSING THE ROUTES OUT OF THE COMPARE PANEL SHOULD JUST LET THEM GO.\u201d Closing a card already released the stops everywhere except the MAP: the selection guard, the grid\u2019s staged badge and the other device\u2019s presence claim all derive from wbRoutes, and nothing reaches the plan overlay short of a confirmed save. But effectiveRouteInfo read \u201copen cards, else the BUILD\u2019s own plan\u201d \u2014 right while a finished build sat waiting to be staged by hand, wrong since v1.19.0 made a build stage itself. Closing the last card fell straight through to the engine plan and the same stops came back numbered, route-coloured and joined by a polyline on a board where nothing had been sent. Closing a card is the dispatcher saying \u201cnot this\u201d, so once a plan has been staged the cards ARE the working set and nothing else paints; a plan never staged still paints, and the result panel\u2019s \u201cStage onto Compare cards again\u201d is the way back. (3) A TRUCK WITH NO SKID LIMIT IS A MISSING NUMBER, NOT A BOTTOMLESS TRUCK. Chad: \u201cI gave it two box truckloads to put 25 orders on that was about 25 skids. Box trucks hold, let\u2019s call it 14 pallets. It gave four pallets to one box truck and 20 to the other.\u201d RUN, NOT REASONED \u2014 the same 25 orders over his own four towns through the real pipeline: maxSkids 14 (the shipped 26ft Box default) splits 11/14, balanced and inside the truck; maxSkids 0 (a blank box) splits 6/19; maxSkids 26 (a number typed too big) splits 6/19. The lopsided split is the cap NOT BINDING, and the zero case is the dangerous one: capLimited reads a non-positive cap as NO LIMIT, which is right for an abstract profile nobody filled in and wrong for a truck \u2014 it switches off the skid gate AND makes loadFraction return 0, silently killing the balance term the assignment uses to spread work. One blank field and nineteen skids go on a truck that holds fourteen with nothing on screen saying why. Where the zero came from: until this release the Trucks-mode capacity fields wrote the fleet profile ON BLUR and Number(\u2018\u2019) is 0, so tabbing out of a cleared Skids box stored a 0-skid profile every later build in both modes then read. Every truck now takes its CLASS floor before it reaches the solver when its skid or weight cap is missing (26ft box 14 / 10,000 lb; 53ft trailer 28 / 44,000 lb), it NEVER lowers a cap somebody set, and every substitution is reported in the result panel naming the truck and where to fix it \u2014 a defaulted cap nobody can see is the same invisible failure in nicer clothes. THE BALANCE TERM WAS DELIBERATELY NOT TOUCHED: with a real 14-skid cap the same board already returns 11/14, and BALANCE_M decides every build on this screen. Also in this release: the Trucks-mode profile editor is a draft with an explicit Save that refuses a blank or zero capacity, so no new 0 can be written. 17 new tests \u2014 including Chad\u2019s board end to end, before ([6, 19], the big one over what a 26ft box can hold) and after ([11, 14], nothing spilled) \u2014 plus 8 wiring pins, because two of these three failures do not error: they just quietly overload a truck or repaint a route nobody sent.'],
   ['1.32.1', 'A NOTICE THAT A DOCK SHUTS FOR LUNCH WAS READ AS THE ONLY HOUR IT RECEIVES. Chad, on PRO 007176487 (DOUGLASVILLE DOUGLAS COUNTY OF, VINCENT stop 18): “parser is incorrectly reading this customers hours they are just stating that they are closed for lunch 1230-130 and all day friday.” THE SENTENCE HAS FOUR FACTS IN IT AND EVERY ONE CAME OUT WRONG. NuVizz cuts a comment at about 25 characters, so it arrives as “CLOSED MON-THUR 12 30PM-” and “1 30 PM AND ALL DAY FRI”. Reproduced on v1.31.2 before anything was changed: the day-qualified hours tier stored byDay mon–thu = 12:30–13:30, which says the dock receives ONLY during the hour nobody is on it — the exact inverse of the truth, so every real delivery would flag and the router would try to cram stop 18 into that hour. The closed-day scanner matched “CLOSED MON” out of the middle of the span and marked MONDAY shut, a day they are open. And FRIDAY, the one genuine closed day, was missed completely. Three defects, one governing idea they all missed: THE WORD CLOSED OWNS THE WHOLE SENTENCE. WHAT CHANGED. (1) The day-qualified hours tier now refuses a span a closure word sits directly against. The bare-pair tier has refused a closure context since it was written; the day-qualified tier, which OUTRANKS it, never did — so the most specific evidence in the scanner was the one tier that could not tell an opening from a shutting. It is anchored tight, so “CLOSED SAT, MON-FRI 8-5” still reads the weekday hours. (2) “CLOSED <span>” now governs the WHOLE span rather than its first day, so “CLOSED SAT-SUN” closes Sunday too — it had been silently dropping it for as long as the patterns have existed. And a span followed by a TIME RANGE is a closure WINDOW, not a closed day: “CLOSED MON-FRI 12-1” shuts nobody out, because marking those five days closed would send no truck at all to a dock open every weekday. (3) “ALL DAY <day>” closes a day, but ONLY when a closure word governs it and no OPEN sits between the two — “OPEN ALL DAY FRI” is the opposite instruction and must never be read as a shutting. (4) The closed-day scanner now strips the SPL-INSTR-TEXT prefixes exactly as the hours scanner always has. It was reading the RAW text, so a closure window split across two comment records was invisible to it and all four weekdays came out shut. WHAT IT NOW SAYS ABOUT DOUGLASVILLE: hours null — they never told us when they are open, and inventing a window is how this started — and Friday closed. The lunch gap itself still has nowhere to live, because the schema holds one window per day; the raw order text on the card is where a dispatcher reads it, which is what the provenance line added in v1.23.1 is for. A clean before/after against a real origin/main worktree moved 10 rows of 36 and left the other 26 byte-identical — early closes, ordinary day-qualified hours, the WEAVER lunch split and every plain range unchanged. 10 new tests, 4,855 green.'],
@@ -17920,6 +17921,50 @@ function useTruckProfiles() {
   return { profiles, ready, saveProfile };
 }
 
+// WHICH TRUCK EACH NAMED LOAD RUNS, remembered across days.
+//
+// Chad: "on the loads when we put them in the [selection] panel make a quick button tractor
+// or box truck and have system remember the choice going forward."
+//
+// KEYED ON THE LOAD'S NAME (loadVehicleKey), never on loadId or loadNbr: those are minted
+// fresh for every day's roster, so a memory keyed on either would forget overnight — the
+// exact thing this exists to stop. Shared, like truck_profiles: the answer to "does SUW run a
+// tractor" belongs to the operation, not to one browser, so localStorage was never an option.
+//
+// THIS IS NOT route-classes.mts AND MUST NOT BE FOLDED INTO IT. That module answers "which
+// truck is ASSIGNED to this load today", from the NuVizz load header and the driver roster,
+// and is deliberately ABSENT when it does not know. This is Chad's standing plan for a load
+// NAME. They are different claims; the panel shows both when they disagree rather than
+// picking a winner behind his back (resolveLoadVehicle's `conflict`).
+function useLoadVehicles() {
+  const [byKey, setByKey] = useState(() => new Map());
+  useEffect(() => {
+    if (!db) return;
+    const unsub = onSnapshot(collection(db, 'routing_load_vehicles'), (snap) => {
+      const m = new Map();
+      for (const d of snap.docs) {
+        const cls = d.data()?.cls;
+        if (cls === 'tractor' || cls === 'box') m.set(d.id, cls);
+      }
+      setByKey(m);
+    }, (err) => reportDenied('routing_load_vehicles', err));
+    return () => unsub();
+  }, []);
+  // FIELD-MASKED, because setDoc REPLACES and this document is shared across every dispatcher
+  // and every day. A refusal REPORTS — a remembered choice that silently did not save is a
+  // dropdown he would go back to re-picking every morning without ever being told why.
+  const remember = useCallback(async (name, cls) => {
+    const key = loadVehicleKey(name);
+    if (!key || !db || !(cls === 'tractor' || cls === 'box')) return;
+    try {
+      await setDoc(doc(db, 'routing_load_vehicles', key), {
+        name: String(name ?? '').trim(), cls, updatedAt: serverTimestamp(),
+      }, { merge: true });
+    } catch (e) { reportDenied('routing_load_vehicles', e, 'write'); }
+  }, []);
+  return { loadVehicleByKey: byKey, rememberLoadVehicle: remember };
+}
+
 // Shared, live-synced saved loads. Subscribes to routing_routes (created_at desc)
 // so a save/rename/delete/dispatch on ANY device shows here within seconds, no
 // refresh. Clean teardown on unmount. Surfaces loading + error explicitly (never
@@ -21268,6 +21313,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   const { notes } = useCustomerNotes();
   const tractorLocs = useTractorLocations();
   const { profiles, saveProfile } = useTruckProfiles();
+  const { loadVehicleByKey, rememberLoadVehicle } = useLoadVehicles();
   const { google, error: mapsError } = useGoogleMaps();
   const viewportWidth = useViewportWidth();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
@@ -21757,12 +21803,17 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // dispatcher flow ("select alpha, alpha 2, atl, suw, suw 2 then plan my selection onto them").
   const [planMode, setPlanMode] = useState(() => { try { return localStorage.getItem('routing.planMode') === 'trucks' ? 'trucks' : 'loads'; } catch { return 'loads'; } });
   useEffect(() => { try { localStorage.setItem('routing.planMode', planMode); } catch { /* ignore */ } }, [planMode]);
-  // Picked roster loads (row keys) + a per-load truck-profile override for capacity/eligibility.
+  // Picked roster loads (row keys) + this session's per-load Box/Tractor taps. The tap is
+  // stored as a CLASS, not a profile id, because that is what gets remembered across days
+  // (useLoadVehicles) and what the two buttons express — a profile id would pin the memory to
+  // a Firestore document that can be renamed or replaced under it.
   const [planTargetKeys, setPlanTargetKeys] = useState(() => new Set());
-  const [planTargetProfileById, setPlanTargetProfileById] = useState(() => new Map());
+  const [planTargetClassById, setPlanTargetClassById] = useState(() => new Map());
   const [planLoadFilter, setPlanLoadFilter] = useState('');
-  // A different day = a different roster — stale picks must never carry across dates.
-  useEffect(() => { setPlanTargetKeys(new Set()); setPlanTargetProfileById(new Map()); setPlanLoadFilter(''); }, [selectedDate]);
+  // A different day = a different roster — stale picks must never carry across dates. The
+  // REMEMBERED class is deliberately not cleared here: it is keyed by load name and being
+  // right tomorrow is the whole point of it.
+  useEffect(() => { setPlanTargetKeys(new Set()); setPlanTargetClassById(new Map()); setPlanLoadFilter(''); }, [selectedDate]);
   const [intent, setIntent] = useState('');
   // AI assist is OPT-IN per build. The server has always gated the model on request.aiAssist
   // (routing-build-background.mts) and the panel never sent it — so the note box was read by
@@ -23809,22 +23860,41 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     rows.sort((a, b) => (Number(a.boardCount > 0) - Number(b.boardCount > 0)) || a.display.localeCompare(b.display));
     return rows;
   }, [loadRosterList, boardCountByName]);
-  // Default vehicle per load: the name says trailer → the tractor profile, else the box
-  // profile. The per-load chip in the panel overrides it.
-  const guessProfileFor = useCallback((name) => {
-    const tractor = profiles.find((p) => p.capabilities?.tractor) || profiles.find((p) => /53|trailer|tractor/i.test(p.label || p.id));
-    const box = profiles.find((p) => !p.capabilities?.tractor) || profiles[0];
-    return (/(^|\W)(trailer|trl|53)(\W|$)/i.test(String(name || '')) && tractor) ? tractor : (box || tractor || profiles[0]);
-  }, [profiles]);
+  // WHAT NUVIZZ ITSELF SAYS IS ON EACH LOAD TODAY — free, already in the browser, ZERO calls.
+  // travel-model hands the board route-classes.mts's map (load header first, driver roster
+  // second), keyed by BOTH the load number and the route name, and it classes a load from its
+  // HEADER even with no stops on it — which is exactly the empty loads this panel fills. The
+  // date guard is the one the flag memos already use: a class map from another day is a lie,
+  // whichever document it came out of.
+  const assignedClassFor = useCallback((row) => {
+    const map = travelInputs?.routeClasses;
+    if (!map || travelInputs?.routeClassesDate !== selectedDate) return null;
+    const cls = map[row?.display] || (row?.loadNbr ? map[row.loadNbr] : null) || null;
+    return cls === 'tractor' || cls === 'box' ? cls : null;
+  }, [travelInputs, selectedDate]);
+  // The five-source rule lives in routing-select (resolveLoadVehicle); this only feeds it the
+  // four facts. Tapping Box/Tractor sets the session pick AND writes the memory, so the answer
+  // is right on this build and on every build after it.
+  const loadVehicleFor = useCallback((row) => resolveLoadVehicle({
+    profiles,
+    name: row?.display,
+    picked: planTargetClassById.get(row?.rowKey) || null,
+    remembered: loadVehicleByKey.get(loadVehicleKey(row?.display)) || null,
+    assigned: assignedClassFor(row),
+  }), [profiles, planTargetClassById, loadVehicleByKey, assignedClassFor]);
+  const pickLoadVehicle = useCallback((row, cls) => {
+    setPlanTargetClassById((prev) => { const m = new Map(prev); m.set(row.rowKey, cls); return m; });
+    rememberLoadVehicle(row.display, cls);
+  }, [rememberLoadVehicle]);
   const planTargets = useMemo(() => {
     const out = [];
     for (const r of planPickRows) {
       if (!planTargetKeys.has(r.rowKey) || r.ambiguous) continue;
-      const p = profiles.find((x) => x.id === planTargetProfileById.get(r.rowKey)) || guessProfileFor(r.display);
-      if (p) out.push({ ...r, profile: p });
+      const v = loadVehicleFor(r);
+      if (v.profile) out.push({ ...r, profile: v.profile, vehicleClass: v.cls, vehicleSource: v.source });
     }
     return out;
-  }, [planPickRows, planTargetKeys, planTargetProfileById, profiles, guessProfileFor]);
+  }, [planPickRows, planTargetKeys, loadVehicleFor]);
 
   const canBuild = selectedIds.size >= 1
     && (planMode === 'loads' ? planTargets.length >= 1 : selectedTrucks.length >= 1)
@@ -24582,28 +24652,50 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
                     .filter((r) => { const n = planLoadFilter.trim().toLowerCase(); return !n || r.display.toLowerCase().includes(n); })
                     .map((r) => {
                       const on = planTargetKeys.has(r.rowKey) && !r.ambiguous;
-                      const prof = profiles.find((x) => x.id === planTargetProfileById.get(r.rowKey)) || guessProfileFor(r.display);
+                      const veh = loadVehicleFor(r);
                       return (
-                        <div key={r.rowKey} className={`px-1.5 py-1 text-[12px] flex items-center gap-1.5 ${r.ambiguous ? 'opacity-50' : ''}`}>
-                          {/* tap-target-y (phone-only, index.css): the whole row is a label, and the
-                              44px floor the stylesheet puts on buttons/selects/inputs skips labels —
-                              an unticked load row was ~26px tall on a phone. */}
-                          <label className={`tap-target-y flex items-center gap-1.5 flex-1 min-w-0 ${r.ambiguous ? '' : 'cursor-pointer'}`} title={r.ambiguous ? 'Two loads share this name today — rename one in the portal to plan onto it.' : undefined}>
-                            <input type="checkbox" disabled={r.ambiguous} checked={on}
-                              onChange={() => setPlanTargetKeys((prev) => { const n = new Set(prev); n.has(r.rowKey) ? n.delete(r.rowKey) : n.add(r.rowKey); return n; })} />
-                            <span className="font-medium truncate">{r.display}</span>
-                            {r.ambiguous
-                              ? <span className="px-1 rounded text-[10px] bg-red-50 text-red-600 border border-red-200 shrink-0">duplicate name</span>
-                              : r.boardCount > 0
-                                ? <span className="px-1 rounded text-[10px] bg-slate-100 text-slate-600 border border-slate-200 shrink-0" title="This load already holds stops — the build ADDS to it.">{r.boardCount} on board</span>
-                                : <span className="px-1 rounded text-[10px] bg-amber-50 text-amber-700 border border-amber-200 shrink-0">empty</span>}
-                          </label>
-                          {on && (
-                            <select value={prof?.id || ''} title="Vehicle for this load — sets its capacity + what's allowed on it"
-                              onChange={(e) => setPlanTargetProfileById((prev) => { const m = new Map(prev); m.set(r.rowKey, e.target.value); return m; })}
-                              className="border rounded px-1 py-0.5 text-[10px] text-slate-700 shrink-0">
-                              {profiles.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-                            </select>
+                        /* IN FLOW, NOT PINNED. The conflict line below can appear and disappear per
+                           row, and on a phone anything pinned at a measured offset lands on top of
+                           whatever grew (CLAUDE.md: one flow container). */
+                        <div key={r.rowKey} className={r.ambiguous ? 'opacity-50' : undefined}>
+                          <div className="px-1.5 py-1 text-[12px] flex items-center gap-1.5">
+                            {/* tap-target-y (phone-only, index.css): the whole row is a label, and the
+                                44px floor the stylesheet puts on buttons/selects/inputs skips labels —
+                                an unticked load row was ~26px tall on a phone. */}
+                            <label className={`tap-target-y flex items-center gap-1.5 flex-1 min-w-0 ${r.ambiguous ? '' : 'cursor-pointer'}`} title={r.ambiguous ? 'Two loads share this name today — rename one in the portal to plan onto it.' : undefined}>
+                              <input type="checkbox" disabled={r.ambiguous} checked={on}
+                                onChange={() => setPlanTargetKeys((prev) => { const n = new Set(prev); n.has(r.rowKey) ? n.delete(r.rowKey) : n.add(r.rowKey); return n; })} />
+                              <span className="font-medium truncate">{r.display}</span>
+                              {r.ambiguous
+                                ? <span className="px-1 rounded text-[10px] bg-red-50 text-red-600 border border-red-200 shrink-0">duplicate name</span>
+                                : r.boardCount > 0
+                                  ? <span className="px-1 rounded text-[10px] bg-slate-100 text-slate-600 border border-slate-200 shrink-0" title="This load already holds stops — the build ADDS to it.">{r.boardCount} on board</span>
+                                  : <span className="px-1 rounded text-[10px] bg-amber-50 text-amber-700 border border-amber-200 shrink-0">empty</span>}
+                            </label>
+                            {/* ONE TAP, AND IT STICKS. Same segmented shape as "My loads / Trucks"
+                                above it, so the panel has one vocabulary for "pick one of these".
+                                The tap sets this build AND remembers the class for the load NAME. */}
+                            {on && (
+                              <div className="flex rounded border border-slate-300 overflow-hidden text-[10px] shrink-0"
+                                role="group" aria-label={`Vehicle for ${r.display}`}
+                                data-load-vehicle={veh.cls || ''} data-load-vehicle-source={veh.source}>
+                                {loadVehicleChoices(profiles).map((c, i) => (
+                                  <button key={c.cls} type="button" disabled={c.disabled} title={c.title}
+                                    aria-pressed={veh.cls === c.cls}
+                                    onClick={() => pickLoadVehicle(r, c.cls)}
+                                    className={`px-1.5 py-0.5 font-semibold disabled:opacity-40 ${i ? 'border-l border-slate-300' : ''} ${veh.cls === c.cls ? 'text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                                    style={veh.cls === c.cls ? { background: BRAND } : undefined}>{c.label}</button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          {/* A STANDING PREFERENCE MAY NOT QUIETLY OUT-PLAN THE TRUCK IN THE YARD.
+                              Only when NuVizz's own class for today disagrees with what this row is
+                              planned as — rare, and the one case where being remembered is wrong. */}
+                          {on && veh.conflict && (
+                            <div className="px-1.5 pb-1 text-[10px] text-amber-700" data-load-vehicle-conflict={veh.assigned}>
+                              NuVizz has a {veh.assigned === 'tractor' ? 'tractor' : 'box truck'} on {r.display} today — tap <b>{veh.assigned === 'tractor' ? 'Tractor' : 'Box'}</b> to plan it that way.
+                            </div>
                           )}
                         </div>
                       );
