@@ -445,6 +445,11 @@ function envelopeClose(normalized: string, afterIdx: number, firstClose: string)
   return { close, extraText };
 }
 
+// The words that turn a following day span into a CLOSURE rather than a schedule. Anchored
+// at the end so only a word immediately governing the span counts: "CLOSED SAT, MON-FRI 8-5"
+// still reads Monday to Friday as hours.
+const CLOSURE_BEFORE_DAY = /\b(?:CLOSE[SD]?|NOT\s+OPEN|NO\s+DELIVER\w*)\s+(?:ON\s+)?$/i;
+
 function scanHours(text: string | null | undefined, source: SignalSource): HoursScanResult | null {
   if (!text) return null;
   const normalized = stripCommentPrefixes(text);
@@ -456,6 +461,14 @@ function scanHours(text: string | null | undefined, source: SignalSource): Hours
   const matchedBits: string[] = [];
   const daySegRe = new RegExp(`\\b(${DAY_SPAN})\\s*(?:ONLY)?\\s*[:\\-]?\\s*(${TIME_RANGE})`, 'gi');
   for (let m = daySegRe.exec(normalized); m; m = daySegRe.exec(normalized)) {
+    // A CLOSURE IS NOT A RECEIVING WINDOW, AND READING IT AS ONE RECORDS THE EXACT INVERSE.
+    // DOUGLASVILLE (PRO 007176487) writes "CLOSED MON-THUR 12 30PM-1 30 PM AND ALL DAY FRI":
+    // they are shut for that hour and open the rest of the day. This loop saw only
+    // "MON-THUR 12 30PM-1 30 PM" and stored it as the ONLY hour they receive, Monday through
+    // Thursday — so every real delivery flagged, and the router would try to cram the stop
+    // into the one hour nobody is on the dock. The bare-pair tier has refused a closure
+    // context since it was written; the day-qualified tier, which outranks it, never did.
+    if (CLOSURE_BEFORE_DAY.test(normalized.slice(Math.max(0, m.index - 24), m.index))) continue;
     const days = expandDaySpan(m[1]);
     const parsed = parseTimeRange(m[2]);
     if (!days.length || !parsed) continue;
@@ -600,21 +613,69 @@ const CLOSED_DAY_PATTERNS: { day: DayCode; patterns: RegExp[] }[] = [
   { day: 'sun', patterns: [/\bCLOSED\s+(?:ON\s+)?SUN(?:DAY)?S?\b/i, /\bNO\s+SUNDAYS?\b/i, /\bSUNDAYS?\s+CLOSED\b/i, /\bNO\s+DELIVER(?:Y|IES)?\s+(?:ON\s+)?SUNDAYS?\b/i] },
 ];
 
-function scanClosedDays(text: string | null | undefined, source: SignalSource): ClosedDayScanResult[] {
-  if (!text) return [];
+// "CLOSED FRI AT 12PM" is an EARLY CLOSE, not a closed day — the customer is open Friday
+// morning. The day-qualified hours scanner owns that form; marking the day closed here would
+// tell dispatch to skip a morning that is actually deliverable.
+const EARLY_CLOSE_TAIL = /^\s*AT\s+(?:NOON|[0-9])/i;
+
+function scanClosedDays(rawText: string | null | undefined, source: SignalSource): ClosedDayScanResult[] {
+  if (!rawText) return [];
+  // The SAME normalisation the hours scanner has always done, and this side needed it just as
+  // badly: NuVizz cuts a comment at ~25 characters, so DOUGLASVILLE's closure window arrived as
+  // "CLOSED MON-THUR 12 30PM-" and "1 30 PM AND ALL DAY FRI" in two records. Reading the raw
+  // text, the span rule below could not see the time range that makes the sentence a closure
+  // WINDOW, and marked all four days shut — a dock open four days a week, closed on the board.
+  const text = stripCommentPrefixes(rawText);
   const out: ClosedDayScanResult[] = [];
+  const seen = new Set<DayCode>();
+  // Character ranges a span rule has already ruled on. The per-day patterns below must not
+  // re-decide them: they match the FIRST day of a span and stop, which is how "CLOSED
+  // MON-THUR" came out as "closed Monday" — three days lost and one day wrong.
+  const handled: [number, number][] = [];
+  const add = (day: DayCode, matchedText: string) => {
+    if (seen.has(day)) return;
+    seen.add(day);
+    out.push({ day, matchedSource: source, matchedText });
+  };
+
+  // 1 — "CLOSED <span>" governs the WHOLE span, and a TIME RANGE after it makes the sentence a
+  //     closure WINDOW rather than a closed day. DOUGLASVILLE (PRO 007176487) writes "CLOSED
+  //     MON-THUR 12 30PM-1 30 PM": they are shut for that hour and open the rest of the day, so
+  //     marking those four days closed would send no truck at all to a dock open four days a week.
+  const closedSpanRe = new RegExp(
+    `\\bCLOSE[SD]?\\s+(?:ON\\s+)?(${DAY_SPAN})\\s*(?:[:\\-]\\s*)?(${TIME_RANGE})?`, 'gi',
+  );
+  for (let m = closedSpanRe.exec(text); m; m = closedSpanRe.exec(text)) {
+    handled.push([m.index, m.index + m[0].length]);
+    if (m[2]) continue; // a window of closure, not a day of it
+    if (EARLY_CLOSE_TAIL.test(text.slice(m.index + m[0].length, m.index + m[0].length + 16))) continue;
+    for (const d of expandDaySpan(m[1])) add(d, m[0]);
+  }
+
+  // 2 — "... AND ALL DAY FRI", the other half of the same sentence. ALL DAY only means CLOSED
+  //     when a closure word governs it — "OPEN ALL DAY FRI" is the opposite instruction — so the
+  //     run between the two may not contain OPEN, and may not cross a sentence end.
+  const allDayRe = new RegExp(
+    `\\bCLOSE[SD]?\\b(?:(?!\\bOPEN\\b)[^.]){0,80}?\\bALL\\s+DAY\\s+(${DAY_SPAN})\\b`, 'gi',
+  );
+  for (let m = allDayRe.exec(text); m; m = allDayRe.exec(text)) {
+    for (const d of expandDaySpan(m[1])) add(d, m[0]);
+  }
+
+  // 3 — the single-day phrasings, skipping anything a span rule above already ruled on.
   for (const entry of CLOSED_DAY_PATTERNS) {
+    if (seen.has(entry.day)) continue;
     for (const p of entry.patterns) {
-      const m = p.exec(text);
-      if (m) {
-        // "CLOSED FRI AT 12PM" is an EARLY CLOSE, not a closed day — the customer is open
-        // Friday morning. The day-qualified hours scanner owns that form; marking the day
-        // closed here would tell dispatch to skip a morning that is actually deliverable.
-        const tail = text.slice(m.index + m[0].length, m.index + m[0].length + 16);
-        if (/^\s+AT\s+(?:NOON|[0-9])/i.test(tail)) continue;
-        out.push({ day: entry.day, matchedSource: source, matchedText: m[0] });
-        break; // one hit per day is enough
+      const g = new RegExp(p.source, 'gi');
+      let hit = false;
+      for (let m = g.exec(text); m; m = g.exec(text)) {
+        if (handled.some(([a, b]) => m!.index >= a && m!.index < b)) continue;
+        if (EARLY_CLOSE_TAIL.test(text.slice(m.index + m[0].length, m.index + m[0].length + 16))) continue;
+        add(entry.day, m[0]);
+        hit = true;
+        break;
       }
+      if (hit) break;
     }
   }
   return out;
