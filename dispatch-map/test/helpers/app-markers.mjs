@@ -90,7 +90,7 @@ const ICON_NEEDED = [
   'stopMarkerIcon', '__stopIconCache',
   'getRestrictionBadgeKeys', 'resolveRestrictionKey', 'classifyStopStatus',
   'execArrivalTs', 'execDeliveredTs', 'hasReceivingHours',
-  'STATUS_META', 'FLAG_COLORS', 'PIN_TINTS', 'flagColor',
+  'STATUS_META', 'FLAG_COLORS', 'PIN_TINTS', 'flagColor', 'noteWithoutQuestionFlag',
   'RESTRICTION_TINT', 'UNFLAGGED_TINT', 'DNS_COLOR', 'PLANNED_MUTED_COLOR', 'SEARCH_MATCH_COLOR',
   'TRACTOR_DELIVERED_COLOR', 'ELIG_TRACTOR_COLOR', 'ELIG_BOX_COLOR', 'ADDRESS_OFF_TINT',
   'readableTextColor', 'countBadgeSvg', 'unplannedDotSvg', 'circleMarkerSvg',
