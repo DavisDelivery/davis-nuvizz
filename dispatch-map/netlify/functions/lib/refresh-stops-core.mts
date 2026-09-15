@@ -29,6 +29,9 @@ import { buildActivePool } from './active-pool.mts';
 import { strayFinishedRows, openPastRows, planRefile, planOpenStrays, nextCopyDays, rotate } from './refile-core.mts';
 import type { FrozenCopy, StrayRow, Heal } from './refile-core.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterPull } from './nuvizz-loads.mts';
+import { nameCollisionEnabled, nameCollisionLoadMax, nameCollisionMemoTtlMs, detectNameCollisions, membershipUsable, splitByMembership, otherInstances, memoUsable, collisionLedgerRows } from './name-collision.mts';
+import type { CollisionMemoEntry, RosterLoadLite } from './name-collision.mts';
+import { readNameCollisionMemo, writeNameCollisionMemo } from './firestore.mts';
 import { getStop } from './history-store.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
@@ -619,6 +622,19 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // bled in. Best-effort: a load-list failure is swallowed and the board is unchanged.
   const LOAD_ANCHOR = (process.env.NUVIZZ_LOAD_ANCHOR || '').toLowerCase() === 'on';
   const loadIdCache = new Map<string, Set<string>>();
+  // NAME-COLLISION ANCHOR (v1.31.0; NUVIZZ_NAME_COLLISION, default ON — see lib/name-collision.mts).
+  // The anchor above needs a per-stop loadId that list rows never carry, so it could not tell
+  // Tuesday's ESTES from today's. This one uses what the ROSTER carries — one load per name per
+  // day, with NuVizz's own stop count — and asks the load itself (ONE /load/info, memoised by
+  // signature) which rows it holds. Rows it does not hold, whose own day is past, come off this
+  // board. Budget is per RUN, shared across dates, like the enrichment cap.
+  const NAME_COLLISION = nameCollisionEnabled();
+  const NAME_COLLISION_LOAD_MAX = nameCollisionLoadMax();
+  const NAME_COLLISION_TTL_MS = nameCollisionMemoTtlMs();
+  let nameCollisionCalls = 0;
+  let nameCollisionMemo: Record<string, CollisionMemoEntry> | null = null;   // read once per run, lazily
+  let nameCollisionMemoDirty = false;
+  const rosterLoadsCache = new Map<string, RosterLoadLite[] | null>();       // cached roster docs, per run
   // Hard per-scan enrichment cap (backstop against a burst). 250 comfortably covers a
   // real day's incremental new orders (~700/day spread across many */15 scans) while
   // bounding the worst case if the registry is ever cold/unavailable — a cold board just
@@ -804,6 +820,13 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // What today's pass did about frozen days (filed / healed / capped), so "why is this
       // delivery on today's board" is answered by the run that put it there.
       ...(ds.find((d) => d?.frozen) ? { frozen: ds.find((d) => d?.frozen).frozen } : {}),
+      // Two loads sharing a name (v1.31.0): the reads this run spent on it and the rows it took
+      // off a board, so a "why did 5:26 cost two more calls" is answered from the run row.
+      ...(ds.some((d) => d?.nameCollisions) ? { nameCollisions: {
+        checked: ds.reduce((a, d) => a + (Number(d?.nameCollisions?.checked) || 0), 0),
+        reads: ds.reduce((a, d) => a + (Number(d?.nameCollisions?.reads) || 0), 0),
+        dropped: ds.reduce((a, d) => a + (Number(d?.nameCollisions?.dropped) || 0), 0),
+      } } : {}),
     };
   };
   const finishRun = async (extra: Record<string, any>) => {
@@ -2030,6 +2053,87 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           } catch (e: any) { console.warn(`[scan] load-anchor ${date} skipped: ${e?.message}`); }
         }
 
+        // ── NAME-COLLISION ANCHOR (v1.31.0) — two loads wearing one name, told apart. ──────────
+        // Chad, ESTES 16 on the board against NuVizz's 10, BUFORD 8 against 7: "our roster scans
+        // do carry the load id you just aren't using it correctly." The list row says "ESTES";
+        // the day's cached roster says which ESTES today's board is for and how many stops it
+        // holds. More rows than stops (or two rows on one sequence number) → read that load's own
+        // membership (one /load/info, memoised by signature) and take the rows it does not hold
+        // off this board — they are a past day's freight on a past day's instance of the name,
+        // and they stay on that day's document. Everything here is best-effort and fail-closed
+        // toward the board as it is: no roster, a contested name, a failed read, an empty read
+        // against a counted load, or a spent budget all leave every row exactly where it was.
+        let nameCollisionSummary: Record<string, any> | null = null;
+        if (NAME_COLLISION && TWO_SCAN) {
+          try {
+            const rosterLoads = await (async () => {
+              if (!rosterLoadsCache.has(date)) rosterLoadsCache.set(date, (await readLoadRoster(TENANT, date).catch(() => null))?.loads ?? null);
+              return rosterLoadsCache.get(date) ?? null;
+            })();
+            const collisions = rosterLoads ? detectNameCollisions(dateStops, rosterLoads) : [];
+            if (collisions.length) {
+              if (!nameCollisionMemo) nameCollisionMemo = await readNameCollisionMemo(TENANT);
+              const nowMs = Date.now();
+              const ledger: PlanVerdictRow[] = [];
+              let dropped = 0, held = 0, skipped = 0, memoHits = 0, reads = 0;
+              const droppedSample: string[] = [];
+              // Where else the name lives — the prior week's cached rosters, read once per run,
+              // only to word the ledger row (a dispatcher asking "then where IS it?").
+              const otherRosters = async () => {
+                const out: Array<{ date: string; loads: RosterLoadLite[] | null }> = [];
+                for (let i = 1; i <= 7; i++) {
+                  const d = addDaysUTC(date, -i);
+                  if (!rosterLoadsCache.has(d)) rosterLoadsCache.set(d, (await readLoadRoster(TENANT, d).catch(() => null))?.loads ?? null);
+                  out.push({ date: d, loads: rosterLoadsCache.get(d) ?? null });
+                }
+                return out;
+              };
+              for (const c of collisions) {
+                const memo = nameCollisionMemo[c.loadNbr];
+                let members: Set<string> | null = null;
+                let readAt = scannedAt;
+                let fromMemo = false;
+                if (memoUsable(memo, c.signature, nowMs, NAME_COLLISION_TTL_MS)) {
+                  members = new Set(memo.members); readAt = memo.at; fromMemo = true; memoHits++;
+                } else if (nameCollisionCalls < NAME_COLLISION_LOAD_MAX) {
+                  nameCollisionCalls++; reads++;
+                  members = await lookupLoadStopNbrs(c.loadNbr);
+                  if (members) {
+                    nameCollisionMemo[c.loadNbr] = { sig: c.signature, at: scannedAt, members: [...members], rows: c.rows.length, trips: c.trips };
+                    nameCollisionMemoDirty = true;
+                  }
+                } else {
+                  skipped++;
+                  console.warn(`[scan] ${date}: name-collision ${c.name} (${c.loadNbr}: ${c.rows.length} rows vs ${c.trips} stops) NOT read — this run's load-read budget (${NAME_COLLISION_LOAD_MAX}) is spent; next scan`);
+                  continue;
+                }
+                if (!membershipUsable(members, c.trips)) {
+                  skipped++;
+                  console.warn(`[scan] ${date}: name-collision ${c.name} (${c.loadNbr}: ${c.rows.length} rows vs ${c.trips} stops) — ${members ? 'the load read back EMPTY against a counted load' : 'the load could not be read'}; nothing dropped`);
+                  continue;
+                }
+                const split = splitByMembership(c, members!, { date: boardEtDate, nowMs, graceMin: BOARD_WRITE_GRACE_MIN, overrides: boardDateOverrides });
+                if (split.foreign.length) {
+                  const drop = new Set(split.foreign.map((r: any) => String(r.stopNbr)));
+                  dateStops = dateStops.filter((s) => !drop.has(String(s.stopNbr)));
+                  dropped += split.foreign.length;
+                  for (const r of split.foreign.slice(0, 5)) droppedSample.push(`${r.stopNbr}<${c.name}`);
+                }
+                held += split.keptSameDay.length + split.keptStamped.length;
+                // Ledgered when the load was READ, not on every scan that reused the memo — a
+                // standing collision re-decided ~63 times a weekday would bury the ledger.
+                if (!fromMemo && (split.foreign.length || split.keptSameDay.length || split.keptStamped.length)) {
+                  const others = otherInstances(c.name, await otherRosters(), { exceptDate: date });
+                  ledger.push(...collisionLedgerRows(c, split, { date, at: scannedAt, readAt, fromMemo, others }));
+                }
+                console.log(`[scan] ${date}: name-collision ${c.name} → ${c.loadNbr}: board ${c.rows.length} row(s) vs roster ${c.trips}${c.dupSeq ? ' (duplicate sequence)' : ''} — ${fromMemo ? 'memo' : 'read'} holds ${split.keep.length}; off this board ${split.foreign.length}, kept same-day ${split.keptSameDay.length}, kept stamped ${split.keptStamped.length}`);
+              }
+              if (ledger.length) await recordPlanVerdicts(TENANT, date, ledger).catch(() => { /* the ledger must never break a scan */ });
+              nameCollisionSummary = { checked: collisions.length, reads, memoHits, dropped, held, skipped, ...(droppedSample.length ? { sample: droppedSample } : {}) };
+            }
+          } catch (e: any) { console.warn(`[scan] ${date}: name-collision anchor skipped: ${e?.message}`); }
+        }
+
         // includeCompleted: a two-search pull fetches 77131 alongside 77128, so this write IS
         // a completed scan and stamps as one. With TWO_SCAN off there is no completed pull in
         // this path at all, and claiming one would date-stamp a scan that never happened.
@@ -2077,10 +2181,14 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           // How many routed stops the list disputed this scan and what became of them — so a run
           // that un-planned something is legible from the run ledger without opening the day.
           ...((demoteChecks.length || graceHolds.length) ? { planVerdicts: { disputed: demoteChecks.length, kept: dv.kept, held: dv.held, dropped: dv.dropped, graceHeld: graceHolds.length } } : {}),
+          // Two loads sharing a name this scan: how many were checked, read, and what came off.
+          ...(nameCollisionSummary ? { nameCollisions: nameCollisionSummary } : {}),
         });
         // Both saved searches answered AND a day's board actually landed. NOW a scan happened.
         await stampScanKinds();
       }
+      // The memo is written once per run, after every date has had its say.
+      if (nameCollisionMemoDirty && nameCollisionMemo) await writeNameCollisionMemo(TENANT, nameCollisionMemo).catch(() => { /* a memo, never a scan */ });
 
       // ── Retire carried rows the live snapshot can't judge (phantom-unplanned fix) ──
       // Best-effort and strictly additive: any failure leaves the board exactly as it is

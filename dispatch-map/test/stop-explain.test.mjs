@@ -256,3 +256,24 @@ test('a short numeric PRO finds its 9-digit copy, and a stop nowhere on any boar
     has(none.findings, /on NO board document for today/);
   });
 });
+
+// ── v1.31.0: taken off the day on purpose — two loads wearing one name ──────────
+
+test('007174083-1 — off today\'s board because today\'s BUFORD does not hold it: the explain says the scan left it off, on whose word, and where the other BUFORD is', () => {
+  const at = today + 'T11:40:15.325Z';
+  const D5 = addDays(today, -5);
+  const detail = `not on DAVIS000203661 (BUFORD, 7 stops on the ${today} roster) — the load's own membership read at ${at} does not list it; another load named BUFORD is on the ${D1} roster (DAVIS000203544, Draft, 1 stop) — its own day is ${D5}, so it stays on that day's board and comes off ${today}`;
+  const out = explainStop(base({
+    stopNbr: '007174083-1',
+    copies: [{ day: D1, row: planned({ stopNbr: '007174083-1', loadNbr: 'BUFORD', routeName: 'BUFORD', routeSeq: 1, driverName: null, boardDate: D5 }), scannedAt: at }],
+    verdicts: [{ at, stopNbr: '007174083-1', route: 'BUFORD', verdict: 'dropped', basis: 'name-collision', absent: false, listStatus: '20', detail,
+      path: [`roster ${today}: BUFORD → DAVIS000203661, 7 stops; the board held 8 rows under the name`, 'membership read: DAVIS000203661 holds 7 of them'] }],
+    roster: { at, loads: [{ name: 'BUFORD', loadNbr: 'DAVIS000203661', status: 'Draft' }] },
+  }));
+  assert.equal(out.served.source, 'none', 'a prior-day PLANNED copy never carries over — so the day serves nothing');
+  has(out.findings, /007174083-1 is on NO board document for today/);
+  has(out.findings, new RegExp(`the scan left it OFF the ${today} board — not on DAVIS000203661 \\(BUFORD, 7 stops on the ${today} roster\\)`));
+  has(out.findings, new RegExp(`another load named BUFORD is on the ${D1} roster \\(DAVIS000203544, Draft, 1 stop\\)`));
+  has(out.findings, /steps: roster .* → membership read: DAVIS000203661 holds 7 of them/);
+  has(out.findings, new RegExp(`It is filed on ${D1}`));
+});
