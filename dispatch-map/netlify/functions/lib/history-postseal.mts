@@ -21,6 +21,7 @@
 import { updateDocFields } from './firestore.mts';
 import { dayPath } from './history-store.mts';
 import { updateCustomerRollupsForDay } from './history-customers.mts';
+import { updateProIndexForDay, proIndexEnabled } from './history-pro-index.mts';
 import { updateTractorFlagsForDay } from './tractor-flags.mts';
 import { updateRoutingReferencesForDay } from './routing-reference.mts';
 import { updateDriverDaysForDay } from './routing-driver-days.mts';
@@ -31,6 +32,11 @@ import { updateCustomerDriversForDay } from './routing-customer-drivers.mts';
 // paint, then the engine miners) but each is independent.
 const HOOKS: Array<{ name: string; run: (t: string, d: string, s: any[]) => Promise<any> }> = [
   { name: 'customer-rollup', run: updateCustomerRollupsForDay },
+  // PRO → day pointers. The customer rollup above indexes only a customer's most
+  // recent 20 PROs, so an older order was in the warehouse but unfindable by its
+  // number and the screen offered to spend a NuVizz call on it. This hook makes
+  // every captured PRO resolvable for ever. PRO_INDEX=off puts it back.
+  { name: 'pro-index', run: (t, d, s) => (proIndexEnabled() ? updateProIndexForDay(t, d, s) : Promise.resolve({ skipped: 'PRO_INDEX=off' })) },
   { name: 'tractor-flags', run: updateTractorFlagsForDay },
   { name: 'routing-reference', run: updateRoutingReferencesForDay },
   { name: 'driver-days', run: updateDriverDaysForDay },
