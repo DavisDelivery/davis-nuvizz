@@ -14,7 +14,13 @@
 // and an archive that silently stopped storing is discovered months later by the person who
 // needed the document — so "is it actually writing?" has to be one click, not an excavation.
 //
-// Firestore + blob reads only. ZERO NuVizz calls, writes nothing, sends nothing.
+// Firestore + blob reads only. ZERO NuVizz calls, sends nothing.
+//
+// IT DOES WRITE ONE THING, and the header said otherwise for a release. The ?days=N branch
+// re-asks stale manifest nights against the board as it stands now and files the answer back
+// under the day document's own `heal` key (lib/manifest-heal.mts) — a field-masked PATCH per
+// healed night, on a GET, so the Refresh button issues writes. Nothing else here writes, and
+// ?heal=0 serves the filed verdicts without any.
 //
 // NO SCHEDULE ON PURPOSE: a function carrying a cron is not reachable over plain HTTP in this
 // app, and this one must answer a browser.
@@ -147,11 +153,22 @@ export default async (req: Request): Promise<Response> => {
       try { parsed = readUlineManifest(buf); } catch (e: any) {
         return J({ ok: false, date: one, error: `could not read the stored PDF: ${String(e?.message || e).slice(0, 160)}` }, 500);
       }
-      // Which PROs the run found off the board. Matched on every form proKeys produces, the
-      // same way the diff matched them — a row must never be marked missing here for a reason
-      // the reconciler would not have used.
+      // Which PROs are off the board. Matched on every form proKeys produces, the same way the
+      // diff matched them — a row must never be marked missing here for a reason the reconciler
+      // would not have used.
+      //
+      // THE HEALED SET WHEN THERE IS ONE (v1.30.2). v1.30.0 wired the self-heal into the list
+      // branch only, so the collapsed row read "2 not on the board" while this viewer, one tap
+      // below it, still highlighted all 136 off the filed record and its header still said "136
+      // not routed yet". Two answers for one night, with nothing saying which was current — and
+      // a contradiction reads as a broken screen, not as a stale number. Where a valid heal
+      // exists it is the live answer here too, and `healedAt` tells the screen to say so.
+      const healed = validHeal(doc);
+      const offSource: any[] = healed
+        ? (healed.stillOffPros || []).map((pro: any) => ({ pro }))
+        : (Array.isArray(l.missing) ? l.missing : []);
       const offIdx = new Set<string>();
-      for (const m of (Array.isArray(l.missing) ? l.missing : [])) {
+      for (const m of offSource) {
         for (const k of proKeys((m as any)?.pro)) offIdx.add(k);
       }
       // ONLY WHAT THE SCREEN DRAWS. `via`, `whs` and `shipDate` are parsed and have never been
@@ -179,10 +196,16 @@ export default async (req: Request): Promise<Response> => {
         // written since the cap existed and read by nothing, which left the screen accusing one
         // of the two numbers of being wrong when both were correct and only one was complete.
         missingTruncated: !!l.missingTruncated,
+        // Said, not implied: this viewer is showing the re-checked set, what it was filed as,
+        // and how many of that night's suspects the heal could not speak for.
+        ...(healed ? { healedAt: healed.at, healedAsOf: healed.asOf, filedMissingCount: healed.filed?.missingCount ?? (Number(l.missingCount) || 0), healUnreadable: healed.unreadable || 0 } : {}),
         // The parser's own complaints — a column layout it could not reconcile, a duplicate
         // PRO. Computed on every read and thrown away here until now.
         warnings: Array.isArray(parsed.warnings) ? parsed.warnings.slice(0, 20) : [],
         ...gradeForRow(l),
+        // AFTER gradeForRow, never before — the order is load-bearing, the same way it is in the
+        // list branch. Only where a heal was actually computed; otherwise this reads as it did.
+        ...(healed ? { verdict: healed.verdict, verdictText: healed.verdictText } : {}),
         reportNo: l.reportNo ?? null,
         fileName: l.fileName ?? null,
       });

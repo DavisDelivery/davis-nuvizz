@@ -144,7 +144,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.30.1';
+const APP_VERSION = '1.30.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -215,6 +215,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.30.2', 'THE ROW HEALED AND THE DRILL-DOWN UNDER IT DID NOT \u2014 one night, two answers, and nothing saying which was current. v1.30.0 wired the manifest self-heal into the collapsed LIST row only. So on 2026-09-11 the row read \u201c2 not on the board \u00b7 re-checked \u00b7 was 136\u201d, and one tap below it the \u201cNot on the board\u201d list still printed all 136 off the filed record while the Rows viewer\u2019s header still said \u201c136 not routed yet\u201d. THAT IS WORSE THAN THE STALE ROW IT REPLACED: a stale number is a number you learn to discount, but a screen contradicting itself reads as broken, and a dispatcher has no way to tell which of the two figures is the live one. Found by the adversarial review of v1.30.0\u2019s own PR \u2014 three of its four lenses reported it independently, and it survived the refutation pass. THE CAUSE was that the heal stored COUNTS ONLY, so no other surface could mark rows even if it wanted to. It now records stillOffPros \u2014 WHICH orders are still off, not merely how many \u2014 bounded by the archive\u2019s own 500-row cap on stored suspects, and both other surfaces read it: the ?rows=1 branch marks and grades from the healed set with the verdict override applied AFTER gradeForRow (the order is load-bearing, the same way it is in the list branch), and the drill-down filters the filed list down to what is still off, heading it \u201cStill not on the board \u2014 2 of the 136 filed\u201d. A night where everything landed says so in one green line instead of an empty section. THE CLIENT APPLIES THE SERVER\u2019S OWN ofAt RULE before trusting a heal, so the two surfaces cannot disagree about whether one is valid. HEAL_VERSION goes to 3 because the shape changed: a v2 heal carries no stillOffPros, and a drill-down reading one would highlight nothing and look CLEAN \u2014 which is the dangerous direction, so those are discarded and recomputed rather than served. AND THE REVIEW ALSO KILLED FIFTEEN CLAIMS, which is the half worth recording: a 404 board read folding into an empty one, a calendar-vs-delivery-day tail, legacy nights graded on the wrong window, the capped remainder driving a hard red, an unbounded ?days=180 read bill \u2014 each mechanically accurate about the code and each unreachable in practice when the case was actually run. The two comments that had gone stale are corrected: the endpoint header no longer claims it writes nothing, and the SectionJump comment no longer describes a placement that moved. MANIFEST_HISTORY_SELFHEAL=off still reverts every side of the feature in one switch. 21 tests.'],
   ['1.30.1', 'ONE NIGHT, ONE WINDOW \u2014 v1.30.0 SHIPPED A POOLED BOARD INDEX THAT HEALED A NIGHT CLEAN OFF ANOTHER NIGHT\u2019S BOARD, AND THE ADVERSARIAL REVIEW CAUGHT IT MINUTES AFTER IT MERGED. The self-heal reads one board per DISTINCT delivery day and shares those reads across every stale night \u2014 which is right, and cheap, and was never the bug. The bug was sharing the LOOKUP: all of those days\u2019 PROs went into ONE boardProIndex handed to every night. REPRODUCED BEFORE IT WAS FIXED, on two nights: a 2026-09-04 manifest (due Monday 09-07, window 09-07/08/09) had its one missing order found on the 2026-09-15 board \u2014 a day belonging only to a LATER night\u2019s window \u2014 and healed CLEAN. Alone it read stillOff 1 / missing; with an unrelated night in the same request it read stillOff 0 / none, while checkedAgainst still named 09-07/08/09. TWO THINGS MAKE THAT SERIOUS RATHER THAN COSMETIC. The answer depended on which OTHER nights happened to share the request \u2014 same night, same board, different verdict. And clean is TERMINAL by design, so the false clean would never have been re-asked: genuinely missing freight, marked resolved, for good, which is the precise direction v1.30.0\u2019s own rationale said must never happen. WHY SEVENTEEN GREEN TESTS MISSED IT: every one tested the pure module and the pooling was in the handler \u2014 the exact failure CLAUDE.md names by hand, \u201cevery non-trivial decision in this repo that shipped broken shipped inside a handler nobody could unit-test.\u201d So the fix is structural, not a patch in place: healPass() takes the whole pass into the pure module, plain data in and plain data out, each night graded against its OWN delivery window and nothing else. The reads stay shared; the lookup is per night, which is CPU only. The endpoint is left doing IO. AND IT REPAIRS WHAT v1.30.0 MAY ALREADY HAVE WRITTEN. A false clean from the buggy build is sitting in Firestore wherever the panel was opened with two stale nights on it, and nothing would ever revisit it. Every heal now carries a schema version; validHeal discards any heal without the current one, so those records are thrown away and recomputed correctly on the next read \u2014 the self-heal healing itself, with no migration to run and no rows to hunt. 3 new tests pin the invariant that broke: the same night re-asked alone and beside another must return byte-identical results; a night whose board could not be read is skipped and says so rather than being graded against an unopened board; and a heal written by an older build is never served. 22 new tests in all.'],
   ['1.30.0', 'THE MANIFEST HISTORY ROW ASKS THE BOARD AGAIN \u2014 it was a photograph, and the one it kept was of a Monday that had not happened yet. Chad, on the history panel: \u201cwhy do these show not routed yet i think that is stale and it needs to be dynamic and self heal.\u201d HE IS RIGHT, AND THE MECHANISM IS EXACT, RUN RATHER THAN REASONED. 2026-09-11 is a FRIDAY, so manifestWindow puts its freight due MONDAY the 14th. The nightly pass read that manifest overnight Fri\u2192Sat with asOf = 09-12, when Monday\u2019s board did not exist \u2014 so it filed \u201c136 orders not routed yet \u2014 2026-09-14 has not come round yet\u201d, which was TRUE when written. Nothing ever re-asked. manifest-history prefers the stored latest.grade verbatim, and its fallback is no fresher: it feeds boardCoverage the same night\u2019s stop-count snapshot with asOf taken from the run\u2019s own stamp. Both roads lead back to Saturday morning, and the Refresh button re-fetches the same frozen documents. THE ONE-LINE FIX IS A TRAP, and it is pinned by a test so nobody reaches for it again: un-freezing asOf alone \u2014 re-grading with today\u2019s date but the STORED board \u2014 keeps the row amber AND swaps a true sentence for a false one, \u201cno board has been built for 2026-09-14\u201d, when 09-14 carries 728 orders. A heal that does not re-read the BOARD is not a heal. WHAT IT DOES NOW: the archive already stores the suspects themselves (latest.missing, each row carrying its PRO), so the row is re-asked for free \u2014 take those PROs, look them up in the stop index AS IT STANDS NOW, re-grade. ZERO NuVizz calls and no PDF re-parse; one masked stop-index read per DISTINCT delivery day across every stale night, and nothing at all on the ordinary day when no row is stale. AND IT IS NOT A GREEN-WASHER \u2014 THIS IS THE OPERATIONAL POINT. On the real 09-11 numbers 134 of the 136 are on the board now and TWO never arrived, so the row turns an ignorable amber 136 into \u201c2 orders on the manifest are not in the scan\u201d. The stale count was CONCEALING a genuine red: a dispatcher who has learned to ignore \u201cMonday hasn\u2019t happened\u201d ignores the two orders that never came with it. Matching goes through proKeys, because the board holds 007174583-1 where the paper prints 007174583 and an exact lookup would report every such order missing. IT CONVERGES, DELIBERATELY. A night healed clean is never read again \u2014 once an order has been seen on the board it was received. A night left holding a real miss keeps being asked through a three-delivery-day tail and then settles, because a masked Firestore read still bills per document (~1,100 for that night) and freight absent that long is missing, not late. The capped remainder of a >500-suspect night counts as STILL OFF, never as resolved: a false clean is the expensive mistake here, a false amber only costs attention. THE WRITE-BACK TOUCHES NOTHING IT DOES NOT OWN: field-masked, its own top-level key, never over latest.grade/coverage/missingCount, which are the filed record of what that night concluded. A later report rebuilds the day document from a literal and drops the heal \u2014 correct rather than lost, since such a report supersedes the manifest it spoke for and the ofAt guard would discard it anyway. The row says \u201cre-checked \u00b7 was 136\u201d rather than silently sliding to 2, and the response carries a heal block naming every night left as filed and why. ALSO, THE JUMP-TO MOVED LEFT. Chad: \u201ci want the jump to to move to the left of the screen not the right.\u201d justify-end \u2192 justify-start, and the picker and its \u201c5 sections\u201d count SWAP: left-aligning the pair alone would put the label in the hard-left slot and leave the control second, and the label is not the thing anybody reaches for. Desktop only \u2014 the phone already gives it the full width under the title. MANIFEST_HISTORY_SELFHEAL=off puts the frozen rows back \u2014 read, write and endpoint in one switch (default ON, an explicit off-word turns it off, anything malformed leaves it ON); ?heal=0 serves the filed verdicts once without changing a setting. 17 new tests, including the frozen row and the trap replayed on 09-11\u2019s own dates and numbers.'],
   ['1.29.1', 'FINISHED FREIGHT NEVER TAKES A PLAN STAMP — the un-plan write-through, the planned write-through and the scan’s write grace all had the same hole, and order 007174583 fell through it. Chad, 2026-09-11 06:27, TAJ MA HOUND grey on his board while NuVizz’s own Stop screen read Completed: “why is this showing unplanned on my board when scan is showing it completed?” READ BACK FROM THE BOARD’S OWN DOCUMENTS, ZERO NUVIZZ CALLS (nuvizz-stop-explain, the free diagnostic built the day before): TWO LOADS WERE NAMED AB — yesterday’s instance DAVIS000203402 and today’s DAVIS000203506 — and the order sat on yesterday’s, where it delivered at 04:37. At 09:59:18Z a Save to today’s AB was REFUSED by NuVizz (“holds it on AB (DAVIS000203402)”): the refusal read the stop record, status 90 and all, and threw that knowledge away. At 09:59:32Z the dispatcher struck the stop off the card — the toast had named the holder and what to do, in full and held until dismissed (checked: a ✗ message never auto-dismisses and wraps, never truncates) — and the un-plan write-through stamped the row status 10 / UNPLANNED, route null, driver null, board_write_planned false: delivered freight back in the selection pool, the record of who delivered it blanked, deliveredDTTM orphaned on a row claiming to be un-planned. And when the completed pull came back DELIVERED on AB, applyBoardWriteGrace handed it straight back to the stamp, because a fresh DELIVERED row “disagrees” with a prior un-plan on isPlanned and the hold only ever asked about lag. THREE DOORS, ONE RULE, stated once in lib/finished-guard.mts so they cannot drift: (1) patchBoardPlan skips a row the board already holds DELIVERED / EXCEPTION / CANCELLED for BOTH masks — un-planning it is how a delivery gets routed twice; re-planning it (a re-save of a load with finished stops on it) flipped deliveries back to SCHEDULED until the next completed scan. The prior-day rescue skips them too: history is found, not copied forward as open work. Skips are COUNTED and returned (skippedFinished, with the numbers), carried into the write journal, the explain’s journal line (“left finished N”) and the Save toast — a skip is never a silent no-op. (2) applyBoardWriteGrace never holds a stamp over a FRESH terminal list row: a delivery is not a lagging index, it is the world after the truck. (3) THE REFUSAL KEEPS WHAT IT READ. When NuVizz refuses an add because another load holds the stop and the record it just read is finished, that status is written to the board row right then — the same fields the completed scan would write (completionPatch), through a FIELD-MASKED patch (never a blind replace of a document the scan owns), pinned to the record on the screen (a different stopId is a twin under the same number and is refused), never fabricating a row the day document does not hold, deliveredDTTM left to the list where it is write-once, and REPORTED: finishedRecorded rides the load result into the journal, and the refusal message says “the board now says so” only when the patch was observed to land. Both refusal doors (the straggler re-resolution and the post-add holder read) share the one helper. So the strike-off fourteen seconds later meets a row that already knows the freight is done, and the grey pin never happens — the incident is replayed end to end in board-write-finished-guard.test.mjs on its own numbers, ids and timestamps, and closed. SAID PLAINLY: whether the board had already recorded the delivery at 09:59 could not be read back (the scan-run ledger keeps six runs), so the fix does not depend on it — door 3 closes the window in which door 1 would have had nothing to go on. BOARD_WRITE_FINISHED_GUARD=off puts every door back at once (house shape: default ON, an explicit off-word turns it off, anything malformed leaves it ON), and the off position is pinned on every door. 27 new tests; the neighbouring write-through, grace, RWB, cancel-through, completions and explain suites unchanged at 136 green.'],
@@ -33350,14 +33351,41 @@ function ManifestHistoryCard() {
                 </div>
               ) : null}
 
-              {/* WHO WAS MISSING — the half Chad asked for by name. The manifest is
+              {/* WHO IS MISSING — the half Chad asked for by name. The manifest is
                   append-only, so the report that stood is the complete one and this is the
-                  authoritative list for the night. */}
-              {day.doc?.latest?.missing?.length ? (
+                  authoritative list for the night.
+                  AND IT FOLLOWS THE HEAL (v1.30.2). v1.30.0 healed the collapsed row and left
+                  this list alone, so the row read "2 not on the board" and this still printed
+                  all 136 — two answers for one night, with nothing saying which was current.
+                  Where the night carries a valid heal, these are the orders still off the board
+                  NOW, and the heading says as much; where it does not, this reads exactly as it
+                  always did off the filed record. */}
+              {(() => {
+                const filed = day.doc?.latest?.missing;
+                if (!Array.isArray(filed) || !filed.length) return null;
+                const h = day.doc?.heal;
+                // Trust the heal only when it speaks for the manifest on file — the same ofAt
+                // rule the server applies, so the two surfaces cannot disagree about validity.
+                const live = h && Array.isArray(h.stillOffPros) && String(h.ofAt || '') === String(day.doc?.latest?.at || '');
+                const keep = live ? new Set(h.stillOffPros.map(String)) : null;
+                const missing = keep ? filed.filter((m) => keep.has(String(m?.pro))) : filed;
+                if (!missing.length) {
+                  return (
+                    <div className="mt-1 border-t pt-1">
+                      <div className="text-[11px] text-emerald-700">
+                        All {filed.length} order{filed.length === 1 ? '' : 's'} that were off the board that night are on it now
+                        {h?.asOf ? ` — re-checked ${h.asOf}` : ''}.
+                      </div>
+                    </div>
+                  );
+                }
+                return (
                 <div className="mt-1 border-t pt-1">
-                  <div className="text-[11px] font-semibold text-slate-600 mb-0.5">Not on the board</div>
+                  <div className="text-[11px] font-semibold text-slate-600 mb-0.5">
+                    {live ? `Still not on the board — ${missing.length} of the ${filed.length} filed` : 'Not on the board'}
+                  </div>
                   <div className="max-h-48 overflow-auto">
-                    {day.doc.latest.missing.slice(0, 60).map((m, i) => (
+                    {missing.slice(0, 60).map((m, i) => (
                       <div key={`${m.pro}-${i}`} className="flex flex-wrap gap-x-2 text-[11px] text-slate-600 py-0.5">
                         <span className="font-semibold tabular-nums">{m.pro}</span>
                         <span className="truncate">{m.custName || ''}</span>
@@ -33365,11 +33393,19 @@ function ManifestHistoryCard() {
                       </div>
                     ))}
                   </div>
-                  {day.doc.latest.missing.length > 60 ? (
-                    <div className="text-[11px] text-slate-400">…and {day.doc.latest.missing.length - 60} more — open the PDF for the full report.</div>
+                  {missing.length > 60 ? (
+                    <div className="text-[11px] text-slate-400">…and {missing.length - 60} more — open the PDF for the full report.</div>
+                  ) : null}
+                  {/* The archive stores at most 500 suspects while the count stays exact, so a
+                      very bad night cannot be fully re-asked. Those rows are counted as still
+                      off, never as resolved, and this says so rather than leaving a partial
+                      answer to read as a whole one. */}
+                  {live && h.unreadable > 0 ? (
+                    <div className="text-[11px] text-amber-700">{h.unreadable} more could not be re-checked and are still counted off the board.</div>
                   ) : null}
                 </div>
-              ) : null}
+                );
+              })()}
             </div>
           ) : null}
         </div>
@@ -34175,9 +34211,11 @@ function UlineForecastCard({ forecast, isMobile }) {
 // occupies one box in flow that nothing can land on top of.
 //
 // TWO PLACEMENTS, WRITTEN SEPARATELY, because the two screens need different things from it:
-// the desktop puts it inline beside the heading where it costs no vertical space, the phone
-// gives it the full width under the title where a thumb can hit it. Same body, placed twice —
-// which is the rule this repo has: one control, two views, never one responsive compromise.
+// the desktop puts it inline on the LEFT where it costs no vertical space (Chad, v1.30.0: "i
+// want the jump to to move to the left of the screen not the right" — it shipped right-aligned
+// in v1.28.0), the phone gives it the full width under the title where a thumb can hit it. Same
+// body, placed twice — the rule this repo has: one control, two views, never one responsive
+// compromise.
 function SectionJump({ sections, onJump, phone }) {
   const [value, setValue] = useState('');
   if (!sections.length) return null;
