@@ -16,7 +16,7 @@
 // day is the only one ever built from stops.
 
 import { isFirestoreEnabled, getDoc, setDoc, readStops, listDocs } from './firestore.mts';
-import { buildCurve, buildBaseline, sealedDoc, sameWeekdayDates } from '../../../src/lib/order-arrivals.js';
+import { buildCurve, buildBaseline, sealedDoc, sameWeekdayDates, MIN_COVERAGE } from '../../../src/lib/order-arrivals.js';
 
 export const ARRIVALS_COLLECTION = 'order_arrival_days';
 export const TENANT = 'davis';
@@ -42,7 +42,7 @@ export const ULINE_PRO_RE = /^\d{9}$/;
  * LIVE_LIST_FIELDS pins it to the list value), so including it guarantees no real stop is ever
  * fields-less, and the unstamped ones are counted as what they are.
  */
-export const ARRIVAL_MASK = ['stopNbr', 'enriched_at', 'primaryPro', 'pro'];
+export const ARRIVAL_MASK = ['stopNbr', 'first_seen_at', 'arrived_list_dttm', 'enriched_at', 'primaryPro', 'pro'];
 
 export const sealedPath = (tenant: string, date: string): string =>
   `${ARRIVALS_COLLECTION}/${String(tenant || '').toLowerCase()}__${date}`;
@@ -92,6 +92,16 @@ export async function sealDate(tenant: string, date: string, atISO: string): Pro
   // A day with NO stops indexed is not a quiet night — it is a day nothing was captured for,
   // and sealing it as zero would drag every baseline it later joins. Refused, and said so.
   if (!curves.all.total) return { date, ok: false, reason: 'no stops indexed for this date' };
+  // AND A THIN NIGHT IS REFUSED TOO, which is the guard the catch-up walk needs.
+  // Every day indexed before the first-sight stamp shipped carries almost no stamps; sealing
+  // those would not leave the baseline empty, it would fill it with nights whose curve is
+  // built on a handful of orders — and buildBaseline only drops a night at ZERO stamps, so a
+  // 2-of-643 night would sail through and drag every projection that later used it. A night
+  // that cannot describe itself does not get to describe a normal Tuesday.
+  const cov = curves.all.coverage;
+  if (cov == null || cov < MIN_COVERAGE) {
+    return { date, ok: false, reason: `arrival-stamp coverage ${Math.round((cov ?? 0) * 100)}% is below the ${Math.round(MIN_COVERAGE * 100)}% floor — not sealed`, total: curves.all.total, stamped: curves.all.stamped };
+  }
   const doc = {
     tenant, date, dow: curves.all.dow, sealedAt: atISO,
     all: sealedDoc(curves.all, { sealedAt: atISO }),

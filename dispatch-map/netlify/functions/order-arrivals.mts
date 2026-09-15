@@ -18,11 +18,12 @@
 // `enriched_at`, a stamp the scan already wrote the first time it ever saw each order, so the
 // history can be backfilled over days that were indexed long before this endpoint existed.
 //
-// ?explain=1 IS NOT A NICETY. The whole feature rests on one premise — that `enriched_at` is
-// actually populated on stored stops — and that premise was read out of the code, not measured
-// against the live index. explain reports the coverage outright, so the first read either
-// confirms it or names the gap. A projection is refused below MIN_COVERAGE either way: the
-// screen must never divide by a partial count and call the result a forecast.
+// ?explain=1 IS NOT A NICETY, AND IT ALREADY EARNED ITS KEEP. v1.26.0 built this on
+// `enriched_at`, a premise read out of the code rather than measured. The first explain read
+// against the live index answered: 643 stops on the next delivery day, TWO of them stamped.
+// The guard did its job — it printed the coverage and refused to project instead of dividing
+// by a third of a board and calling the result a forecast. v1.27.0 replaces the stamp; this
+// endpoint keeps reporting coverage on every read so the next wrong premise is as cheap.
 
 import { isFirestoreEnabled } from './lib/firestore.mts';
 import { requireUser, readJsonBody } from './lib/require-user.mts';
@@ -94,8 +95,11 @@ export default async (req: Request): Promise<Response> => {
             total: curve.total, stamped: curve.stamped, unstamped: curve.unstamped,
             pct: curve.coverage == null ? null : Math.round(curve.coverage * 100),
             firstAt: curve.firstAt, lastAt: curve.lastAt, afterRoll: curve.afterRoll,
+            // Which field each stamp came from — a curve on the legacy fallback must not
+            // look like one on the vendor stamp.
+            sources: curve.sources ?? {},
             note: curve.total === 0 ? 'no stops indexed for this date'
-              : curve.stamped === 0 ? 'NOT ONE stop on this date carries enriched_at — the curve cannot be built from this index'
+              : curve.stamped === 0 ? 'NOT ONE stop on this date carries an arrival stamp — every stop here predates the first-sight stamp, so this day can never be sealed'
               : (curve.coverage as number) < MIN_COVERAGE ? 'coverage below the floor — counts are real, the projection is refused'
               : 'coverage is sufficient to project',
           },
