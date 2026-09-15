@@ -257,3 +257,57 @@ test('THE BADGE COSTS ONE READ PER SESSION, and working the list moves it', () =
   const q = fnSource('useAddressQueue');
   assert.match(q, /bustProblemAddressCount\(\)/, 'or the badge goes stale and stops being read');
 });
+
+// ── v1.26.2 — what using it in anger turned up ───────────────────────────────
+
+test('THE DESKTOP ACTION BUTTONS NEVER WRAP, whatever the row height', () => {
+  // Chad, on a row whose map was open: "I want these buttons in a row no matter height of the
+  // row". The "Do" cell is a table column, not a card — the browser was shrinking it until
+  // "Wave off" fell onto its own line, which happened the moment the map button grew from
+  // "Map" to "Hide map". Two halves, and one without the other does nothing: the row must not
+  // wrap, AND the <td> must refuse to be squeezed so the table widens the column instead.
+  const actions = fnSource('QueueRowActions');
+  assert.match(actions, /flex-nowrap whitespace-nowrap/);
+  assert.match(actions, /stacked \? 'flex items-center gap-1\.5 flex-wrap'/, 'the phone card still wraps — it has room to grow down');
+  const desktop = fnSource('QueueRowDesktop');
+  assert.match(desktop, /className="px-3 py-2 whitespace-nowrap"><QueueRowActions/, 'the column must widen rather than clip');
+});
+
+test('the phone keeps wrapping — three 44px buttons do not fit across 360px', () => {
+  const mobile = fnSource('QueueRowMobile');
+  assert.match(mobile, /<QueueRowActions[^>]*stacked/, 'the card passes stacked, which selects the wrapping row');
+});
+
+test('A GROUP RUN COUNTS WHAT REACHED THE ADDRESS LOG, and says so when one did not', () => {
+  // Four orders were pushed to NuVizz on 2026-09-14 and not one reached the address log. The
+  // calls fired and nothing landed — and nothing could have said so, because logAddressOverride
+  // swallows its own failure by design. That is right for a single save (a missing row must
+  // never cost a dispatcher their edit) and wrong for a batch.
+  const save = fnSource('saveQueueCorrection');
+  assert.match(save, /const logged = await logAddressOverride\(/, 'awaited, so its answer exists');
+  assert.match(save, /return \{ geoErr, pushed: verdict, logged \}/, 'and is carried back to the runner');
+  const run = fnSource('useQueuePush');
+  assert.match(run, /loggedTried \+= 1; if \(logged\) loggedOk \+= 1;/);
+  assert.match(run, /setLogged\(\{ ok: loggedOk, tried: loggedTried \}\)/);
+});
+
+test('…and the warning appears ONLY when a row failed to log', () => {
+  // A line that renders on every clean run is one nobody reads, and this exists to be noticed.
+  const bar = fnSource('QueueSummaryBar');
+  assert.match(bar, /q\.push\.logged\.ok < q\.push\.logged\.tried/);
+  assert.match(bar, /only the audit row is missing/, 'and it must not read as if the correction failed');
+});
+
+test('a failed log can still never fail the correction', () => {
+  // The await must not turn a missing audit row into a lost address.
+  const log = fs.readFileSync(new URL('../src/lib/address-log.js', import.meta.url), 'utf8');
+  assert.match(log, /catch \{[\s\S]{0,200}?return false;/, 'the POST still swallows its own errors');
+  const save = fnSource('saveQueueCorrection');
+  const board = save.indexOf("setDoc(doc(db, 'customer_notes'");
+  const firstLog = save.indexOf('await logAddressOverride(');
+  assert.ok(board > 0 && firstLog > board, 'the durable write still happens before any logging');
+});
+
+test('THE MAP IS TALLER — it is the whole diagnosis on a pin row', () => {
+  assert.match(fnSource('QueuePinMap'), /style=\{\{ height: 320 \}\}/);
+});
