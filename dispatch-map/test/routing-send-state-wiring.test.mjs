@@ -81,6 +81,20 @@ test('CLOSING THE LAST STAGED CARD RELEASES THE STOPS — the map does not fall 
   assert.ok(/^const EMPTY_ROUTE_INFO = new Map\(\);$/m.test(code), 'the empty paint map is not module-scoped');
 });
 
+test('…AND THE LINES LET GO WITH THE PINS — the polyline effect reads the same rule', () => {
+  // Chad, the morning after v1.33.0, every card closed and the loads back to Draft: "the lines
+  // were left." The pins had been routed through routePaint; the polyline effect kept its own
+  // copy of the old fall-back and drew the build's plan the moment the last card closed.
+  assert.ok(/const routesToPaint = routePaint === 'cards' \? wbRoutesColored : routePaint === 'plan' \? routesView : EMPTY_ROUTES;/.test(code), 'the lines do not honour the rule');
+  const m = /\/\/ Route polylines \(one per route, depot-anchored\)([\s\S]*?)\n  \}, \[([^\]]*)\]\);/.exec(code);
+  assert.ok(m, 'the route polyline effect is gone');
+  assert.ok(/const toDraw = routesToPaint;/.test(m[1]), 'the polyline effect picks its own routes instead of the shared answer');
+  assert.ok(!/wbRoutesColored\.length \? wbRoutesColored : routesView/.test(code), 'the old fall-back-to-the-plan expression is back');
+  assert.ok(/\broutesToPaint\b/.test(m[2]), 'the effect does not depend on what it paints');
+  assert.ok(!/\broutesView\b/.test(m[2]) && !/\bwbRoutesColored\b/.test(m[2]), 'the effect still re-runs on the raw sources, bypassing the rule');
+  assert.ok(/^const EMPTY_ROUTES = \[\];$/m.test(code), 'the empty route list is not module-scoped (ref stability)');
+});
+
 test('planStaged is raised by staging and cleared by a new build and by Discard', () => {
   assert.ok(/const \[planStaged, setPlanStaged\] = useState\(false\);/.test(code), 'planStaged is gone');
   assert.ok(/setWbRoutes\(next\);\n {4}\/\/ From here the CARDS[\s\S]{0,200}?setPlanStaged\(true\);/.test(code), 'staging the plan does not raise planStaged');
