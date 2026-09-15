@@ -27,6 +27,9 @@ export const LEAN_STOP_FIELDS = [
   'bol', 'businessName', 'carryover', 'cartons', 'city', 'contact',
   'custRef', 'customerAccount', 'deliveredDTTM', 'driverId', 'driverName', 'driverUserName',
   'enriched', 'enriched_at', 'estimatedDurationMin', 'isAttempt', 'isPlanned', 'isTerminal',
+  // When the scan FIRST saw this order, and NuVizz's own stamp frozen at that moment.
+  // Both write-once (firestore.mts writeStops); the order-arrivals curve is built on them.
+  'first_seen_at', 'arrived_list_dttm',
   'isUnplanned', 'itemsSummary', 'lat', 'listUpdatedDTTM', 'lng', 'loadId',
   'loadNbr', 'loadStopSeq', 'normalizedStatus', 'orderNbr', 'pallets', 'plannedDistanceToNextStop',
   'plannedDurationToNextStop', 'plannedEtaDTTM', 'poRef', 'podDocs', 'primaryPro', 'pro',

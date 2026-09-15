@@ -222,3 +222,58 @@ test('an hour that has not happened yet is null, never zero', async () => {
   // The typical column is populated for every hour, reached or not — that is the whole point.
   assert.ok(Number.isFinite(byLead[2].typical));
 });
+
+// ── THE STAMP ITSELF, AFTER THE FIRST ONE TURNED OUT TO BE EMPTY ─────────────
+//
+// Measured on the live index, 2026-09-14: enriched_at was on 2 of 643 stops on tomorrow's
+// board, and on a past Tuesday listUpdatedDTTM had drifted onto the delivery day for 650 of
+// 704 — the arrival time overwritten by the delivery flip. These pin the replacement.
+
+test('a zone-less ET string is read as ET, not as the runtime zone, in BOTH seasons', async () => {
+  // Date.parse would read NuVizz's "2026-09-14T19:05:00" in the runtime zone — UTC on Netlify
+  // — filing a 7pm ET arrival four hours early and shifting a whole evening's curve. Silent,
+  // plausible, and wrong.
+  const { etLocalToInstant } = await import('../src/lib/order-arrivals.js');
+  assert.equal(new Date(etLocalToInstant('2026-09-14T19:05:00')).toISOString(), '2026-09-14T23:05:00.000Z', 'EDT is UTC-4');
+  assert.equal(new Date(etLocalToInstant('2026-12-01T08:00:00')).toISOString(), '2026-12-01T13:00:00.000Z', 'EST is UTC-5');
+  assert.equal(etLocalToInstant(''), null);
+  assert.equal(etLocalToInstant('not a date'), null);
+});
+
+test('the vendor stamp outranks our scan clock, and the legacy field is last', async () => {
+  const { stampInstant } = await import('../src/lib/order-arrivals.js');
+  // All three present: NuVizz's own frozen stamp wins — it is the vendor's clock, and earlier.
+  const all = stampInstant({ arrived_list_dttm: '2026-09-14T19:05:00', first_seen_at: '2026-09-14T23:10:00Z', enriched_at: '2026-09-10T12:00:00Z' });
+  assert.equal(all.from, 'arrived_list_dttm');
+  assert.equal(all.ms, Date.parse('2026-09-14T23:05:00Z'));
+  // Without it, our scan clock.
+  assert.equal(stampInstant({ first_seen_at: '2026-09-14T23:10:00Z', enriched_at: '2026-09-10T12:00:00Z' }).from, 'first_seen_at');
+  // And enriched_at only as a last resort — it was measured at 2 of 643.
+  assert.equal(stampInstant({ enriched_at: '2026-09-10T12:00:00Z' }).from, 'enriched_at');
+  assert.equal(stampInstant({}), null);
+  assert.equal(stampInstant(null), null);
+});
+
+test('the curve reports WHICH field each stamp came from', async () => {
+  // A curve resting on the legacy fallback must not look like one built on the vendor stamp.
+  const curve = buildCurve({
+    deliveryDate: TUE,
+    stops: [
+      ...Array.from({ length: 3 }, () => ({ arrived_list_dttm: '2026-09-14T16:00:00Z'.replace('Z', '') })),
+      ...Array.from({ length: 2 }, () => ({ first_seen_at: '2026-09-14T20:00:00Z' })),
+      { enriched_at: '2026-09-14T20:00:00Z' },
+    ],
+  });
+  assert.equal(curve.stamped, 6);
+  assert.deepEqual(curve.sources, { arrived_list_dttm: 3, first_seen_at: 2, enriched_at: 1 });
+});
+
+test('a thinly-stamped night never becomes a normal Tuesday', () => {
+  // THE FAILURE THIS PREVENTS, measured: every day indexed before the first-sight stamp
+  // shipped carries almost no stamps. buildBaseline only drops a night at ZERO, so a 2-of-643
+  // night would sail through a "> 0" filter and drag every projection that later used it.
+  const thin = { ...typicalTuesday(780, 429), total: 643, stamped: 2, coverage: 2 / 643 };
+  const baseline = buildBaseline([typicalTuesday(780, 429), typicalTuesday(760, 418), typicalTuesday(800, 440), thin]);
+  assert.equal(baseline.n, 3, 'the thin night is excluded');
+  assert.equal(baseline.typicalFinal, 780);
+});

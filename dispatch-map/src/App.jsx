@@ -117,6 +117,7 @@ import {
 import ChatPanel, { ChatLauncher, MessagesLauncher } from './components/ChatPanel.jsx';
 import MessagesPanel from './components/MessagesPanel.jsx';
 import DriverPicker from './components/DriverPicker.jsx';
+import { MANIFEST_SECTIONS, JUMP_OFFSET_DESKTOP, JUMP_OFFSET_PHONE, sectionScrollTop, visibleSections } from './lib/section-jump.js';
 
 // Quote console — lazy so its ~345 KB (the @davisdelivery/quote-generator code plus its
 // geo/model JSON) loads only when the Quote tab is first opened, instead of riding in the
@@ -143,7 +144,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.26.2';
+const APP_VERSION = '1.28.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -214,6 +215,8 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.28.0', 'A DROPDOWN FOR THE SECTIONS, BECAUSE THE MANIFEST PAGE IS FIVE PANELS DEEP AND THE BOTTOM ONE IS THE ONE YOU STOP USING. Chad: “need a dropdown in the ui for all the different sections of this page.” Mailbox, tonight’s check, order arrivals, Uline forecast, manifest history — and tonight’s check alone runs to a several-hundred-row suspects table on the night it matters most, which is exactly when scrolling to the history stops happening. A NATIVE <select> ON PURPOSE, and that is the opposite of the easy way out: a custom overlay would be a second floating layer over a screen that already stacks a sticky bar on a long table, which is the precise shape of the Map’s four collision patches. The native control opens the OS picker on a phone, takes a keyboard on the desktop, and occupies one box IN FLOW that nothing can land on top of. TWO PLACEMENTS, WRITTEN SEPARATELY: the phone gets a full-width bar under the title where a thumb lands, the desktop a compact right-aligned row that does not push the page down. Same body, placed twice — one control, two views, never one responsive compromise. THE MENU IS BUILT FROM WHAT IS ON THE SCREEN: tonight’s check does not exist until a report has been read, and an entry that scrolls nowhere is indistinguishable from a broken one. AND THE OFFSET IS ARITHMETIC, NOT CSS: scrolling a section to the top of the container puts it UNDER the sticky picker — the one heading you asked for is the one you cannot see — so the stop position is computed in a pure function where the bar’s height for each layout lives once, instead of a scroll-margin value drifting between two files. The tests caught a real one on the way: Number(null) is 0 and 0 is finite, so a failed getBoundingClientRect read would have become a perfectly plausible instruction to fling the pane to the top — the same coercion scar this repo already carries. 6 new tests.'],
+  ['1.27.0', 'THE ARRIVAL STAMP v1.26.0 WAS BUILT ON TURNED OUT TO BE EMPTY, AND THE FIRST READ SAID SO INSTEAD OF GUESSING. v1.26.0 shipped the arrival curve on `enriched_at`, reasoned out of the code and never measured against the live index. The first ?explain=1 read answered in one line: 643 stops on the next delivery day, TWO of them stamped — 0% coverage. THE GUARD HELD, which is the only reason this is a follow-up and not an incident: the card printed the coverage and REFUSED the projection rather than dividing a board by a handful of orders and calling it a forecast. THE OTHER CANDIDATE WAS MEASURED TOO, and it is worse: `listUpdatedDTTM` is populated on all 643, but it is a LIVE field — on Tue 2026-09-08, 650 of 704 stamps had drifted onto the delivery day itself, the arrival time overwritten by the delivery flip. So NO history can be rebuilt from either, and this ships honest about that: the baseline starts empty and fills a Tuesday at a time. WHAT REPLACES IT costs nothing, because writeStops already lists the day’s existing docs at its own entry — the same free before/after the address log rides on — so a stop number absent from it is NEW by construction. Two write-once stamps: `first_seen_at` (our scan clock) and `arrived_list_dttm` (NuVizz’s own Stop Updated Dttm FROZEN at first sight, which is what stops it drifting the way the live field does, and is the truer of the two because it is the vendor’s clock). THREE RULES, each a way this goes wrong taken the other way: write-once, because setDoc REPLACES and without an explicit carry-forward every 5-minute scan would re-stamp every order with `now`; a doc that PREDATES this change gets NOTHING rather than today’s clock, because a whole board that appears to have arrived in one minute is worse than absent — it looks like data; and the fresh row is STRIPPED of both stamps first, because mergeEnrich copies the per-PRO registry record onto it and that record is a whole stop from whatever day it was first enriched, so a recurring PRO could carry August’s first_seen_at onto tonight’s board. AND THE ZONE, which would have been the next silent four-hour error: NuVizz sends listUpdatedDTTM zone-less ET (“2026-09-14T19:05:00”) and Date.parse reads that in the RUNTIME’s zone — UTC on Netlify — filing a 7pm arrival four hours early and shifting a whole evening’s curve. Resolved through the offset ET actually reports, checked in both seasons. A THIN NIGHT IS NOW REFUSED AT BOTH BOUNDARIES: the sealer will not write a night under the coverage floor and the baseline will not read one, because buildBaseline only dropped a night at ZERO stamps and a 2-of-643 night would have sailed through a “> 0” filter and dragged every projection that used it. 10 new tests, 4,647 green. THE WAY BACK is unchanged: ORDER_ARRIVALS_ENABLED=off, and the stamping itself is additive — git revert is the whole job.'],
   ['1.26.2', 'THE ACTION BUTTONS STAY ON ONE ROW, THE MAP GOT TALLER, AND A GROUP RUN NOW COUNTS WHAT REACHED THE LOG. Chad, on a queue row with its map open: “map needs to be a little taller. I want these buttons in a row no matter height of the row.” THE WRAP WAS THE TABLE, NOT THE BUTTONS. “Do” is a column, not a card, and the browser kept shrinking it until “Wave off” fell onto its own line — which happened the moment the map button grew from “Map” to “Hide map”. Two halves, and one without the other does nothing: the desktop row is flex-nowrap AND the cell is whitespace-nowrap, so the table WIDENS the column instead of clipping it. The address columns already declare break-words, so they give the space up. The phone card keeps wrapping on purpose — three 44px buttons do not fit across 360px, and a card has room to grow downward, which is what the flow rule is for. Map 260px to 320px. AND THE THING THAT USING IT IN ANGER TURNED UP: four orders were pushed to NuVizz and NOT ONE reached the address history. The calls fired and nothing landed, and nothing on screen could have said so, because logAddressOverride swallows its own failure by design. That is the right shape for ONE save — a missing audit row must never cost a dispatcher the address they typed — and the wrong shape for a batch, where the whole point is a record. The group runner now AWAITS the log and counts it, and says “2 of 4 did not reach the address history” when one misses, wording it so it cannot be read as the correction having failed. It still cannot fail a save: the logger is wrapped end to end and returns false rather than throwing, and the durable write always lands first. The single-save paths stay fire-and-forget. THE TEST THAT BLOCKED THIS WAS PINNING A PROXY: it banned `await logAddressOverride` outright, when the rule is that a log failure must never fail a save. It now asserts the two properties that actually make awaiting safe, and that the editor still never waits. A ban is not a reason.'],
   ['1.26.1', 'v1.25.0 SHIPPED ITS OWN CHANGELOG AND NOT ITS CODE. THIS IS THE CODE. Chad, on a phone showing v1.25.0: “No correct all button and no row drop down with the map!” He was right and the footer was lying to him. WHAT HAPPENED, PLAINLY: merging main mid-work hit a conflict on APP_VERSION and the newest changelog row — the routine collision this log has a whole entry about. The `git stash pop` that was meant to put the feature work back REFUSED, because a stash cannot apply over unmerged paths; it printed “the stash entry is kept” and left everything in the stash. The conflict was then resolved, `git add -A` committed the merge result, and out went a version bump plus a changelog describing a map, labelled address lines and two group buttons — with none of them in the bundle. An intent reported as an outcome, and it reached production. THE TESTS COULD NOT CATCH IT BECAUSE THEY WERE IN THE SAME STASH. The suite went green on 4,592 over code that was not there; with the work restored it is 4,603. Eleven assertions that each name one of the missing features sat in the stash beside the features. A suite that vanishes with the change it guards proves nothing, and “tests passed” is not evidence the change shipped. WHAT IS ACTUALLY HERE NOW, verified marker by marker in the built bundle rather than assumed: the editor opens seeded with the suggested split instead of the mis-split; the address lines are labelled Address 1 · street and Address 2 · suite / dock; there are two group buttons — Correct N on the board (0 calls) and Correct N + NuVizz (3 each) — and the price quoted counts only the rows a push would actually change; every row has a Map button opening a grey pin where it sits against a green pin where the fix lands, draggable, savable; and a red count rides Address history in both navigations. AND THE SHIPPED BUNDLE STILL CARRIED THE v1.24.0 GROUP-PUSH BUG, which is the part that mattered: its runner sent row.shown. For an uncorrected mis-split row row.shown EQUALS what NuVizz already holds, so the ORDER’s address would not have changed and no freight was mis-addressed — but Firestore would have taken an address_override of the broken split, and addressLooksOff returns false the moment an override exists. Five genuinely broken addresses would have gone quiet: dropped off the queue as corrected, 15 vendor calls spent to restate the vendor’s own address, and a dispatcher note on each live order claiming a correction that never happened. A row that leaves the work list while still wrong is the worst outcome this screen can produce.'],
   ['1.26.0', 'WHAT TIME THE ORDERS HIT OUR SYSTEM — SO A HEAVY NIGHT IS CALLED AT 6PM INSTEAD OF AT MIDNIGHT. Chad: “I want a durable way of knowing what time the orders hit our system and tracking that information in the manifest to try to see if we can predict days when the volume is heavier than normal, sooner than at the end of the day.” THE ANSWER WAS ALREADY IN FIRESTORE AND NOBODY HAD READ IT. Uline’s forecast says what is coming and the nightly manifest says what came — both are end-of-night, and at 6pm, building tomorrow’s loads, the dispatcher has neither. The scan pulls /stop/info exactly ONCE per order, the first time it ever sees that stop number, and stamps enriched_at in a registry keyed by the number (“record the newly-enriched PROs so they’re never auto-enriched again (any day)”). It is not a LIVE list field, so mergeEnrich carries it forward untouched and it never drifts: a FIRST-SIGHT stamp already sitting on every stop we have ever indexed, and never once read. So this ships with its whole history available — the sealer BACKFILLS over days indexed long before the feature existed. THE AXIS IS LEAD HOURS, NOT CLOCK TIME, and that is correctness rather than taste: Monday’s board is Friday’s freight, so “6pm the day before” for a Monday delivery is a Sunday holding almost nothing. Hours are measured back from the delivery day’s 5am ET roll — the same rollover the manifest archive and the forecast scorer already use — so every day sits on one axis and a Tuesday is still only ever compared against other Tuesdays. THE THRESHOLDS ARE DELIBERATELY ASYMMETRIC. Calling a normal night HEAVY costs one short route; calling a heavy night NORMAL costs late deliveries into closed receiving windows, refusals, redeliveries and carryover. So HEAVY fires at +8% and LIGHT waits for −15%: warn early, stand down only when it is obvious. AND EVERY REFUSAL IS NAMED, because a projection this thing declines to make is what keeps a wrong number off the screen: no baseline yet (under 3 sealed same-weekday nights), coverage too thin, too early in the night, no orders — each prints its own sentence and the raw count beside it, never a blank. HONEST ABOUT WHAT THE STAMP IS: first sight is not NuVizz’s order-creation time (vizzonInfo.createdTime is read off the list row and toBoardStop never carries it through, so it is stored nowhere). It trails by a scan tick plus any enrichment backlog, and that backlog is longest on a heavy drop — so the bias runs toward UNDER-calling a heavy night, which is the argument for the asymmetry above. AND A CORRECTION TO A CLAIM I MADE ON THE WAY HERE: `source` does not identify Uline. On the list path it is the literal ‘nuvizz-list’ provenance tag and it is LIVE, so the list value overwrites any origin company every scan; a filter on source === ‘ULINE’ would read zero for ever. The discriminator is the 9-digit PRO, the same rule uline-manifest.mts already uses, and a test pins it. Card on the Manifest tab, phone and desktop written separately. ZERO NuVizz calls anywhere in the feature, held by an import-graph guard. 25 new tests, 4,637 green. THE WAY BACK: ORDER_ARRIVALS_ENABLED=off stops the sealing and the card degrades to “not enough sealed nights yet”; otherwise it is additive and git revert is the whole job.'],
@@ -34028,11 +34031,69 @@ function UlineForecastCard({ forecast, isMobile }) {
   );
 }
 
+// ── THE SECTION PICKER FOR A FIVE-PANEL SCREEN ───────────────────────────────────────────
+//
+// Chad: "need a dropdown in the ui for all the different sections of this page."
+//
+// A NATIVE <select> ON PURPOSE, and that is the opposite of the easy way out. A custom overlay
+// would be a second floating layer on a screen that already stacks a sticky bar over a
+// 500-row suspects table — the exact shape the Map's overlay collisions kept taking. The
+// native control opens the OS picker on a phone, is reachable by keyboard on the desktop, and
+// occupies one box in flow that nothing can land on top of.
+//
+// TWO PLACEMENTS, WRITTEN SEPARATELY, because the two screens need different things from it:
+// the desktop puts it inline beside the heading where it costs no vertical space, the phone
+// gives it the full width under the title where a thumb can hit it. Same body, placed twice —
+// which is the rule this repo has: one control, two views, never one responsive compromise.
+function SectionJump({ sections, onJump, phone }) {
+  const [value, setValue] = useState('');
+  if (!sections.length) return null;
+  const pick = (key) => {
+    setValue('');           // always reads "Jump to…", so the same section can be picked twice
+    if (key) onJump(key);
+  };
+  const select = (
+    <select
+      aria-label="Jump to a section of this page"
+      value={value}
+      onChange={(e) => pick(e.target.value)}
+      // 44px on the phone, not the 34px the padding alone gives: this repo's own touch floor
+      // (layout-measure.mjs flags a control under 40px) and the reason the iPad grid header
+      // went from 29px to 44 in v0.93.1. A picker mis-tapped at a dock is worse than no picker.
+      className={`border rounded bg-white text-slate-700 px-2 ${phone ? 'w-full h-11 text-sm' : 'py-1 text-xs'}`}
+    >
+      <option value="">Jump to…</option>
+      {sections.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+    </select>
+  );
+  if (phone) return <div className="sticky top-0 z-20 -mx-4 px-4 py-2 bg-slate-50 border-b">{select}</div>;
+  return (
+    <div className="sticky top-0 z-20 flex items-center justify-end gap-2 py-2 bg-slate-50">
+      <span className="text-[11px] text-slate-400">{sections.length} sections</span>
+      {select}
+    </div>
+  );
+}
 function ManifestCheckScreen() {
   const [result, setResult] = useState(() => loadStored());
   const isMobile = useViewportWidth() < MOBILE_BREAKPOINT;
   const forecast = useUlineForecast(60);
   const arrivals = useOrderArrivals();
+  // The scroll container the picker moves. Measured, never assumed: the offset comes out of
+  // section-jump.js so the sticky bar's height lives in one place instead of a CSS guess.
+  const scrollRef = useRef(null);
+  const jumpTo = useCallback((key) => {
+    const container = scrollRef.current;
+    const el = container?.querySelector(`[data-section="${key}"]`);
+    if (!container || !el) return;
+    const top = sectionScrollTop({
+      elTop: el.getBoundingClientRect().top,
+      containerTop: container.getBoundingClientRect().top,
+      containerScrollTop: container.scrollTop,
+      offset: isMobile ? JUMP_OFFSET_PHONE : JUMP_OFFSET_DESKTOP,
+    });
+    if (top != null) container.scrollTo({ top, behavior: 'smooth' });
+  }, [isMobile]);
 
   // ADOPT A RUN THAT ARRIVED WHILE THIS SCREEN WAS OPEN. The automatic checks
   // (the Gmail poll, the Resend poll) write one Firestore doc; Shell mirrors it
@@ -34104,8 +34165,12 @@ function ManifestCheckScreen() {
   const suspects = result?.suspects || [];
   const m = result?.manifest;
 
+  // Built from what is ACTUALLY rendered — tonight's check does not exist until a report has
+  // been read, and an entry that scrolls nowhere reads exactly like a broken one.
+  const sections = visibleSections(['mailbox', ...(result ? ['check'] : []), 'arrivals', 'forecast', 'history']);
+
   return (
-    <div className="flex-1 overflow-auto bg-slate-50">
+    <div ref={scrollRef} className="flex-1 overflow-auto bg-slate-50">
       <div className={`p-4 space-y-3 ${SCREEN_WIDE}`}>
         <div>
           <h1 className="text-lg font-bold text-slate-800">Manifest check</h1>
@@ -34117,13 +34182,20 @@ function ManifestCheckScreen() {
           </p>
         </div>
 
-        <GmailCard onStoredRun={adoptRun} />
+        {/* TWO PLACEMENTS, not one responsive box: the phone gets a full-width bar under the
+            title where a thumb lands; the desktop gets a compact right-aligned row that does
+            not push the page down. Both stay put while the panels scroll under them. */}
+        {isMobile
+          ? <SectionJump sections={sections} onJump={jumpTo} phone />
+          : <SectionJump sections={sections} onJump={jumpTo} />}
+
+        <section data-section="mailbox"><GmailCard onStoredRun={adoptRun} /></section>
         {/* ON THE PHONE, tonight's line sits HERE — above a result list that can run to 500
             cards on the night it matters most. The desktop keeps it inside the card. */}
         {isMobile && <ForecastTonightStrip data={forecast.data} />}
 
         {result && (
-          <>
+          <section data-section="check" className="space-y-3">
             <div className={`rounded-lg border p-3 ${level === 'alert' ? 'border-red-300 bg-red-50' : level === 'warn' ? 'border-amber-300 bg-amber-50' : 'border-emerald-300 bg-emerald-50'}`}>
               <div className={`text-sm font-bold ${level === 'alert' ? 'text-red-800' : level === 'warn' ? 'text-amber-800' : 'text-emerald-800'}`}>
                 {manifestHeadline(result)}
@@ -34259,12 +34331,12 @@ function ManifestCheckScreen() {
               <button onClick={clear} className="px-2 py-1 text-xs font-semibold text-slate-600 border rounded hover:bg-slate-50">Clear</button>
               {result.at && <span className="text-[11px] text-slate-400">checked {String(result.at).slice(0, 16).replace('T', ' ')}</span>}
             </div>
-          </>
+          </section>
         )}
 
-        <OrderArrivalsCard arrivals={arrivals} isMobile={isMobile} />
-        <UlineForecastCard forecast={forecast} isMobile={isMobile} />
-        <ManifestHistoryCard />
+        <section data-section="arrivals"><OrderArrivalsCard arrivals={arrivals} isMobile={isMobile} /></section>
+        <section data-section="forecast"><UlineForecastCard forecast={forecast} isMobile={isMobile} /></section>
+        <section data-section="history"><ManifestHistoryCard /></section>
       </div>
     </div>
   );

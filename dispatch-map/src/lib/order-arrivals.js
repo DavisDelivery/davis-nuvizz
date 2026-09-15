@@ -123,6 +123,50 @@ export function clockLabelFor(lead, deliveryDate) {
 }
 
 /**
+ * NuVizz sends listUpdatedDTTM as a ZONE-LESS ET-LOCAL string ("2026-09-14T19:05:00").
+ *
+ * Date.parse reads that in the RUNTIME's zone — UTC on Netlify — which would file a 7pm ET
+ * arrival at 7pm UTC and shift a whole evening's curve four hours early, silently and
+ * plausibly. Resolved instead through the offset the ET zone actually reports for that
+ * instant, so it is right on both sides of a DST flip.
+ */
+export function etLocalToInstant(local) {
+  const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})/.exec(String(local || ''));
+  if (!m) return null;
+  const naive = Date.parse(`${m[1]}T${m[2]}:${m[3]}:00Z`);
+  if (!Number.isFinite(naive)) return null;
+  const p = etParts(naive);
+  if (!p) return null;
+  const seen = Date.parse(`${p.date}T${String(p.hour).padStart(2, '0')}:${String(p.minute).padStart(2, '0')}:00Z`);
+  if (!Number.isFinite(seen)) return null;
+  return naive + (naive - seen);
+}
+
+/**
+ * THE ARRIVAL STAMP, IN ORDER OF TRUTH — and the order is the result of measuring, not taste.
+ *
+ *  1. `arrived_list_dttm` — NuVizz's own "Stop Updated Dttm", frozen by writeStops at the
+ *     moment we first saw the order. Earliest and truest: it is the vendor's clock, not ours.
+ *  2. `first_seen_at` — our scan's clock at that same moment. Always present on a stop first
+ *     indexed since v1.27.0, accurate to the 5-minute tick.
+ *  3. `enriched_at` — the legacy stamp. Kept only as a last resort: MEASURED at 2 of 643 stops
+ *     on a live board, so it is a fallback and never the plan.
+ *
+ * Returns the instant AND which field gave it, because a curve built mostly on (3) deserves to
+ * say so on the screen rather than look like one built on (1).
+ */
+export function stampInstant(stop) {
+  if (!stop) return null;
+  const arrived = stop.arrived_list_dttm;
+  if (arrived) { const ms = etLocalToInstant(arrived); if (Number.isFinite(ms)) return { ms, from: 'arrived_list_dttm' }; }
+  for (const f of ['first_seen_at', 'enriched_at']) {
+    const v = stop[f];
+    if (v) { const ms = typeof v === 'string' ? Date.parse(v) : Number(v); if (Number.isFinite(ms)) return { ms, from: f }; }
+  }
+  return null;
+}
+
+/**
  * One night's arrival curve, from the stops themselves.
  *
  * `buckets[i]` is how many orders were first seen in the hour whose lead is i; anything older
@@ -130,16 +174,18 @@ export function clockLabelFor(lead, deliveryDate) {
  * with no `enriched_at` is NOT dropped silently — it is counted in `unstamped`, because a
  * curve that quietly ignores a third of the freight looks exactly like a light night.
  */
-export function buildCurve({ stops = [], deliveryDate, stampField = 'enriched_at' } = {}) {
+export function buildCurve({ stops = [], deliveryDate } = {}) {
   const buckets = new Array(LEAD_MAX_HOURS + 1).fill(0);
   let stamped = 0; let unstamped = 0; let afterRoll = 0;
   let firstMs = null; let lastMs = null;
+  const sources = {};
   for (const s of Array.isArray(stops) ? stops : []) {
-    const raw = s?.[stampField];
-    const lead = raw == null || raw === '' ? null : leadHoursFor(raw, deliveryDate);
+    const hit = stampInstant(s);
+    const lead = hit ? leadHoursFor(hit.ms, deliveryDate) : null;
     if (lead == null || !Number.isFinite(lead)) { unstamped += 1; continue; }
     stamped += 1;
-    const ms = typeof raw === 'string' ? Date.parse(raw) : Number(raw);
+    sources[hit.from] = (sources[hit.from] || 0) + 1;
+    const ms = hit.ms;
     if (firstMs == null || ms < firstMs) firstMs = ms;
     if (lastMs == null || ms > lastMs) lastMs = ms;
     if (lead < 0) afterRoll += 1;
@@ -152,6 +198,8 @@ export function buildCurve({ stops = [], deliveryDate, stampField = 'enriched_at
     dow: ISO_RE.test(String(deliveryDate || '')) ? DOW[isoWeekday(deliveryDate)] : null,
     total, stamped, unstamped, afterRoll,
     coverage: total ? stamped / total : null,
+    // Which field each stamp came from, so a curve resting on the legacy fallback says so.
+    sources,
     firstAt: firstMs ? new Date(firstMs).toISOString() : null,
     lastAt: lastMs ? new Date(lastMs).toISOString() : null,
     buckets,
@@ -178,7 +226,11 @@ export function inHandAt(curve, lead) {
  * zero and make a quiet night look like a flood.
  */
 export function buildBaseline(curves = [], { minDays = MIN_BASELINE_DAYS } = {}) {
-  const usable = (Array.isArray(curves) ? curves : []).filter((c) => c && Number(c.stamped) > 0 && Number(c.total) > 0);
+  // A night must be able to describe ITSELF before it describes a normal Tuesday: zero stamps
+  // would drag every fraction toward zero, and a thinly-stamped night is worse — it survives a
+  // "> 0" filter while its curve is built on a handful of orders.
+  const usable = (Array.isArray(curves) ? curves : []).filter((c) => c && Number(c.stamped) > 0 && Number(c.total) > 0
+    && (c.coverage == null || Number(c.coverage) >= MIN_COVERAGE));
   const finals = usable.map((c) => Number(c.total));
   const fraction = new Array(LEAD_MAX_HOURS + 1).fill(null);
   for (let L = 0; L <= LEAD_MAX_HOURS; L++) {
@@ -295,6 +347,7 @@ export function sealedDoc(curve, { sealedAt } = {}) {
     total: curve.total, stamped: curve.stamped, unstamped: curve.unstamped, afterRoll: curve.afterRoll,
     coverage: curve.coverage == null ? null : round1(curve.coverage * 100) / 100,
     firstAt: curve.firstAt, lastAt: curve.lastAt,
+    sources: curve.sources ?? {},
     buckets: curve.buckets,
     sealedAt: sealedAt ?? null,
   };
