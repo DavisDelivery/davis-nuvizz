@@ -68,3 +68,78 @@ test('driver attribution: embedded current_driver first, assignment fallback sec
   const none = normalizeEntry({ vehicle: { id: 9, number: '1606', current_location: { lat: 34, lon: -84 } } }, new Map());
   assert.equal(none.driverName, null, '"(no driver)" is the honest label when Motive names nobody');
 });
+
+// ── A truck with a driver ASSIGNED said "(no driver)" (Chad, 2026-09-15) ────────────────
+//
+// "when trucks are displayed on the map for motive, it's saying no driver assigned, which is
+// not factual. A lot of the times there is a driver assigned."
+//
+// Motive keeps two driver fields on a vehicle. current_driver is who is LOGGED IN on the ELD
+// and rides on /v1/vehicle_locations. permanent_driver is the fleet manager's ASSIGNMENT and
+// rides on /v1/vehicles only. This layer read the first and never the second, so an assigned
+// driver who had not signed in was nobody. These pin the rule, checked against Motive's docs.
+import { composeDriverName, permanentDriverEnabled, fetchPermanentDrivers } from '../netlify/functions/motive-driver-positions.mts';
+
+const at = { lat: 34, lon: -84 };
+
+test('CHRIS HEAD IS ASSIGNED TO 7750 AND NOT SIGNED IN — the plate names him, and says so', () => {
+  const d = normalizeEntry(
+    { vehicle: { id: 42, number: '7750', current_location: at, current_driver: null } },
+    new Map([[42, { id: 9, first_name: 'Chris', last_name: 'Head' }]]),
+  );
+  assert.equal(d.driverName, 'Chris Head');
+  assert.equal(d.driverSource, 'permanent', 'assigned, not logged in — the sidebar has to be able to say that');
+});
+
+test('a driver LOGGED IN outranks the assignment — the tablet is the truth about who is driving', () => {
+  const d = normalizeEntry(
+    { vehicle: { id: 42, number: '7750', current_location: at, current_driver: { id: 4, first_name: 'Enock', last_name: 'Akyea' } } },
+    new Map([[42, { id: 9, first_name: 'Chris', last_name: 'Head' }]]),
+  );
+  assert.equal(d.driverName, 'Enock Akyea');
+  assert.equal(d.driverSource, 'current');
+});
+
+test('nobody logged in AND nobody assigned is still an honest "(no driver)"', () => {
+  const d = normalizeEntry({ vehicle: { id: 43, number: '1606', current_location: at } }, new Map());
+  assert.equal(d.driverName, null);
+  assert.equal(d.driverSource, null);
+});
+
+test('a permanent_driver riding on the entry itself is honoured without a lookup', () => {
+  const d = normalizeEntry({ vehicle: { id: 44, number: '0805', current_location: at, permanent_driver: { id: 2, first_name: 'Mone', last_name: 'Watkins' } } }, new Map());
+  assert.deepEqual([d.driverName, d.driverSource], ['Mone Watkins', 'permanent']);
+});
+
+test('ONE NAME ON FILE IS STILL A DRIVER — Motive documents no full_name, and both were required', () => {
+  assert.equal(composeDriverName({ first_name: 'Cher', last_name: '' }), 'Cher');
+  assert.equal(composeDriverName({ first_name: null, last_name: 'Suljic' }), 'Suljic');
+  assert.equal(composeDriverName({ first_name: ' Rasko ', last_name: ' Suljic ' }), 'Rasko Suljic');
+  assert.equal(composeDriverName({}), null);
+  assert.equal(composeDriverName(null), null);
+  const d = normalizeEntry({ vehicle: { id: 45, number: '2618T', current_location: at, current_driver: { id: 1, first_name: 'Rasko' } } }, new Map());
+  assert.equal(d.driverName, 'Rasko', 'used to fall through to "(no driver)"');
+});
+
+test('the /v1/vehicles walk keys permanent_driver by vehicle id and skips empty ones', async () => {
+  const map = await fetchPermanentDrivers(async () => ({
+    vehicles: [
+      { vehicle: { id: 1, number: '0367', permanent_driver: { id: 7, first_name: 'Allen', last_name: 'Council' } } },
+      { vehicle: { id: 2, number: '0424', permanent_driver: null } },
+      { vehicle: { id: 3, number: '0186T', permanent_driver: {} } },
+    ],
+  }));
+  assert.deepEqual([...map.keys()], [1]);
+  assert.equal(composeDriverName(map.get(1)), 'Allen Council');
+});
+
+test('an assigned driver with no name on file never becomes a blank plate', () => {
+  const d = normalizeEntry({ vehicle: { id: 46, number: '5042', current_location: at } }, new Map([[46, { id: 3 }]]));
+  assert.equal(d.driverName, null);
+  assert.equal(d.driverSource, null);
+});
+
+test('MOTIVE_PERMANENT_DRIVER: default on, off-words off, a typo leaves it ON', () => {
+  for (const v of [undefined, '', 'on', 'true', 'banana']) assert.equal(permanentDriverEnabled({ MOTIVE_PERMANENT_DRIVER: v }), true, String(v));
+  for (const v of ['off', '0', 'false', 'no', ' OFF ']) assert.equal(permanentDriverEnabled({ MOTIVE_PERMANENT_DRIVER: v }), false, v);
+});
