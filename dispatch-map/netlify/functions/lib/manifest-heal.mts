@@ -99,8 +99,12 @@ export const HEAL_TAIL_DAYS = 3;
  * including every heal from v1.30.0, which carries none at all — so those are discarded and
  * recomputed correctly the next time the panel is opened. No migration to run, no rows to hunt
  * for, and the same mechanism is there for the next time a heal's meaning changes.
+ *
+ * 3 (v1.30.2): the heal gained `stillOffPros`, because the row healed and the drill-down under
+ * it did not — see that field. A v2 heal carries none, and a drill-down reading one would
+ * highlight nothing and look clean, which is worse than the contradiction it replaced.
  */
-export const HEAL_VERSION = 2;
+export const HEAL_VERSION = 3;
 
 function addDays(date: string, n: number): string {
   const d = new Date(`${date}T12:00:00Z`);
@@ -211,6 +215,19 @@ export interface HealResult {
   /** suspects re-asked, and how many are still not on the board */
   reAsked: number;
   stillOff: number;
+  /**
+   * WHICH suspects are still off, not merely how many.
+   *
+   * The v1.30.0/.1 heal stored counts only, so the collapsed row healed to "2 not on the board"
+   * while the drill-down one tap below it still listed all 136 off the filed record, and the
+   * Rows viewer still read "136 not routed yet". A dispatcher was shown two different answers
+   * for one night and given no way to tell which was current — worse than the stale row, because
+   * a contradiction is not obviously a staleness bug. Both surfaces now mark rows from this set.
+   *
+   * Bounded by the archive's own cap on stored suspects, so it can never be larger than the list
+   * it is a subset of.
+   */
+  stillOffPros: string[];
   /** suspects the stored list could not carry (cap), counted as unresolved — never as resolved */
   unreadable: number;
   verdict: string;
@@ -251,6 +268,7 @@ export function healNight(
     checkedAgainst: opts.boardDays,
     reAsked: rows.length,
     stillOff: suspects.length,
+    stillOffPros: stillOffRows.map((r: any) => String(r.pro)),
     unreadable: capped,
     verdict: String(grade?.verdict || 'none'),
     verdictText: gradeText(grade, coverage),

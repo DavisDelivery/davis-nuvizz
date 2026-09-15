@@ -251,6 +251,11 @@ test('validHeal: a heal of a superseded manifest is discarded, not shown against
   // recompute on every single load and nobody would see anything wrong.
   const fresh = healNight(filedNight(), healOpts(boardNow(134)));
   assert.equal(fresh.v, HEAL_VERSION);
+  // WHICH orders are still off, not merely how many — the drill-down and the Rows viewer mark
+  // their rows from this. Storing counts only is what left the row healed and the list under it
+  // still showing all 136.
+  assert.equal(fresh.stillOffPros.length, fresh.stillOff);
+  assert.deepEqual(fresh.stillOffPros, ['007174134', '007174135'], 'exactly the two that never arrived');
   assert.deepEqual(validHeal({ latest: { at: FILED_AT }, heal: fresh }), fresh);
 });
 
