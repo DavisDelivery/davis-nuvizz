@@ -119,7 +119,8 @@ export interface AddressChangeRow {
   nuvizz: boolean | null;
 }
 
-/** Kinds worth a dispatcher's attention by default. `formatting` is recorded and hidden. */
+/** Kinds worth a dispatcher's attention by default. `formatting` is recorded and hidden —
+ *  but only when the SCAN produced it; see the source test in selectAddressChanges. */
 export const NOISY_KINDS: AddressChangeKind[] = ['formatting'];
 
 /** Severity order — the screen sorts on this, not on the clock alone. */
@@ -343,7 +344,15 @@ export function selectAddressChanges(all: any[], q: AddressHistoryQuery = {}): A
     if (want && !want.has(String(r.stopNbr).toUpperCase())) return false;
     if (kinds && !kinds.has(r.kind)) return false;
     if (q.source && String(r.source) !== q.source) return false;
-    if (q.hideNoise && NOISY_KINDS.includes(r.kind)) return false;
+    // NOISE IS THE VENDOR'S, NEVER A DISPATCHER'S. `formatting` exists for scan drift — "St"
+    // becoming "Street", a padded zip — which is hundreds of rows a day nobody can act on.
+    // A row a PERSON made is the record of work they did on purpose, and the queue's own fix
+    // button produces `formatting` BY DESIGN (classifyChange: a mis-split swap moves the text
+    // between the two lines and moves no freight, so it is deliberately not `moved`). Hiding
+    // it by default meant every correction made from the problem-address queue was recorded
+    // and then withheld from the screen built to show it — the second of the two reasons ten
+    // real corrections read as an empty log.
+    if (q.hideNoise && NOISY_KINDS.includes(r.kind) && r.source === 'scan') return false;
     return true;
   });
   filtered.sort((a, b) => {

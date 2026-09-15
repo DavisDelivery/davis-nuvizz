@@ -65,12 +65,12 @@ import { formatCompletionPct } from './lib/completion-pct.js';
 import { isTvPath, tvRailRows, tvVerdict, tvFeedState, TV_RAIL_LIMIT } from './lib/tv-mode.js';
 import { driverLabelLines, driverFixStale } from './lib/driver-label.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
-import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress } from './lib/nuvizzWrite.js';
+import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress, addressReachedNuvizz } from './lib/nuvizzWrite.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { hoursProvenance } from './lib/hours-provenance.js';
 import { timeMarkForDay, timeMarkChip, TIME_MARK_KEYS } from './lib/time-marks.js';
-import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS } from './lib/history-range.js';
+import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS, QUEUE_DAYS_AHEAD } from './lib/history-range.js';
 import {
   drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
   legendIsEmpty, pinTintKind, visibleIconKeys, tractorPaintAllowed,
@@ -6375,23 +6375,36 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
       // the one failure worth having a record of would be the one that left none. callWrite
       // resolves network errors rather than throwing, so nothing SHOULD land here; `should` is
       // not a reason to leave the hole open.
-      let landed = false, why = '';
+      let landed = false, clean = false, why = '';
       try {
         // stopId pins the write to THIS record: two NuVizz orders can share one number, and
         // re-addressing the other twin sends freight to a place nobody chose. The server
         // refuses rather than guess.
         const r = await setStopAddress(pro, fields, { stopId: stop?.stopId || undefined });
         const out = r?.result || r || {};
-        landed = r?.ok === true;
+        // TWO QUESTIONS, ASKED SEPARATELY. `landed` is whether the ADDRESS reached the order —
+        // read back and proven server-side. `clean` is whether the write disturbed nothing
+        // else. Reading `ok` for both is what printed "NuVizz did not take it … the driver's
+        // manifest still has the old address" over an order NuVizz had taken perfectly; see
+        // addressReachedNuvizz for the order number and what it cost.
+        landed = addressReachedNuvizz(r);
+        clean = r?.ok === true;
         why = r?.error || out.error || 'the write failed.';
-        if (landed) setPush({ kind: 'ok', text: out.now ? `NuVizz now reads ${out.now}.` : 'Written onto the order in NuVizz.' });
+        if (landed && clean) setPush({ kind: 'ok', text: out.now ? `NuVizz now reads ${out.now}.` : 'Written onto the order in NuVizz.' });
       } catch (e) {
         why = e?.message || 'the write failed.';
       }
       // Amber, not red, and the saved half is stated FIRST — the board, the pin and the routing
       // ARE corrected either way, and a dispatcher reading a red error assumes they lost the
       // edit. What they actually have to do is fix the portal.
-      if (!landed) {
+      //
+      // THREE OUTCOMES, NOT TWO. The middle one is the common one and it had no wording at all:
+      // the address IS on the order and the write also touched something else. That reads as a
+      // green success with a warning attached, never as a failed write — and it must not send
+      // anybody to the portal to re-type an address that is already correct there.
+      if (landed && !clean) {
+        setPush({ kind: 'warn', text: `${out.now ? `NuVizz now reads ${out.now}.` : 'The address is on the order in NuVizz.'} The write also touched something else on the order, so check it in the portal before the truck goes: ${why}` });
+      } else if (!landed) {
         setPush({ kind: 'warn', text: `Saved on the board, but NuVizz did not take it: ${why} The driver's manifest still has the old address — fix the order in the portal.` });
       }
       // Logged ONCE, after the vendor half resolves, so the row records what happened rather
@@ -30272,6 +30285,11 @@ const queueRowPushable = (row) => !!row.stopNbr && !!row.stopId && !queueRowExec
  * whole point: continuing produces N identical failures, spends nothing useful, and buries the
  * one sentence that explains it.
  */
+/** Verdict kinds the editor shows in amber rather than green. `dirty` is in here because the
+ *  write touched something besides the address; it is NOT in the failure set below, because
+ *  the address itself did land and the row is genuinely corrected. */
+const QUEUE_WARN_KINDS = new Set(['partial', 'refused', 'blocked', 'unknown', 'dirty']);
+
 function classifyPushResult(j) {
   const http = j?.httpStatus;
   const err = String(j?.error || '');
@@ -30285,6 +30303,15 @@ function classifyPushResult(j) {
   if (j?.ok) return { kind: 'ok', text: out.now ? `NuVizz now reads ${out.now}.` : 'Written onto the order.' };
   if (out.blocked) return { kind: 'blocked', text: 'Address writes are switched off on this server (NUVIZZ_ADDRESS_WRITE=off). The board correction is saved.' };
   if (out.unverified) return { kind: 'unknown', text: `${out.error || err} — check the order in the portal before re-trying.` };
+  // THE ADDRESS LANDED AND THE WRITE WAS NOT CLEAN — four of six rows on 2026-09-14, every one
+  // of them reported to the dispatcher as "NuVizz refused the write". It did not: the server
+  // proved the new street on the read-back and recorded `addressLanded: true` on this very
+  // object. What it also saw was collateral (an attachment identity moving), which is worth
+  // saying and is a different sentence. Amber, and the row does NOT go back on the queue as
+  // unfixed, because the order is fixed.
+  if (addressReachedNuvizz(j)) {
+    return { kind: 'dirty', text: `${out.now ? `NuVizz now reads ${out.now}.` : 'The address is on the order.'} The write also touched something else — check it in the portal: ${out.error || err || 'see the write log.'}` };
+  }
   return { kind: 'refused', text: out.error || err || 'NuVizz refused the write.' };
 }
 
@@ -30306,7 +30333,10 @@ function AddressHistoryScreen() {
     try { localStorage.setItem(ADDR_TAB_KEY, id); } catch { /* a remembered tab is a convenience, never a requirement */ }
   }, []);
   const [sel, setSel] = React.useState({ kind: 'days', days: 14 });
-  const range = React.useMemo(() => resolveRange(sel, today), [sel, today]);
+  // SAME HORIZON AS THE ENDPOINT. The two resolve the identical selection and a difference
+  // here is a header describing one window over rows from another — the exact failure
+  // history-range.js exists to prevent. QUEUE_DAYS_AHEAD is why it reaches forward at all.
+  const range = React.useMemo(() => resolveRange(sel, today, QUEUE_DAYS_AHEAD), [sel, today]);
   const [stopQ, setStopQ] = React.useState('');
   const [kind, setKind] = React.useState(null);          // null = every kind
   const [source, setSource] = React.useState(null);      // null = both
@@ -30597,7 +30627,11 @@ async function saveQueueCorrection({ row, fields, google, push, today, clientOpI
     clientOpId,
   });
   const verdict = classifyPushResult(j);
-  const logged = await logAddressOverride({ stop: stopLike, before: row.shown, after: fields, source: 'override', nuvizz: verdict.kind === 'ok' || verdict.kind === 'partial' || verdict.kind === 'already' });
+  // THE LOG RECORDS WHAT WAS OBSERVED, not how the banner reads. `nuvizz: false` on this row
+  // means "we asked and the vendor refused — the manifest and the board disagree", which is a
+  // thing somebody is expected to go and fix. Deriving it from the clean-write verdict wrote
+  // that sentence into the permanent record for six orders NuVizz had accepted.
+  const logged = await logAddressOverride({ stop: stopLike, before: row.shown, after: fields, source: 'override', nuvizz: addressReachedNuvizz(j) });
   return { geoErr, pushed: verdict, logged };
 }
 
@@ -30649,7 +30683,13 @@ function useQueuePush(today, reload) {
         const { pushed, geoErr, logged } = await saveQueueCorrection({
           row, fields: correctedFields(row), google, push: sendToVendor, today, clientOpId: `op_queue_${row.key}`,
         });
-        loggedTried += 1; if (logged) loggedOk += 1;
+        // `logged` is an OBJECT now, and every object is truthy — counting it directly would
+        // report a perfect run whatever happened. A DECLINE is not a failure either: the
+        // server refuses a row that carries no material change, or one the day already holds
+        // (firestore.mts de-dupes on stop + before/after + kind), and warning about the log
+        // correctly doing its job is crying wolf on a clean run.
+        loggedTried += 1;
+        if (logged?.recorded || logged?.outcome === 'declined') loggedOk += 1;
         if (!sendToVendor && !pushed) {
           acc[row.key] = geoErr
             ? { kind: 'partial', text: 'Address saved, but the pin could not be moved — still on the queue.' }
@@ -30746,6 +30786,16 @@ function useProblemQueue(nonce, today) {
   }), []);
   const sweep = React.useCallback(() => setPicked((prev) =>
     (prev.size >= sweepable.length ? new Set() : new Set(sweepable.map((r) => r.key)))), [sweepable]);
+  // PER DAY, because that is the unit of work. The toolbar's "Select all N" takes every row on
+  // screen across every board day; a dispatcher clearing tomorrow's board does not want to
+  // drag Thursday's rows into the same 3-calls-each push. Adds and removes explicitly rather
+  // than toggling each key, so a day that is half-picked resolves to all-on in one press
+  // instead of inverting into a different half.
+  const sweepDay = React.useCallback((rows, on) => setPicked((prev) => {
+    const next = new Set(prev);
+    for (const r of rows) { if (on) next.add(r.key); else next.delete(r.key); }
+    return next;
+  }), []);
   const dismiss = React.useCallback(async (row, undo) => {
     try {
       await apiFetch('/.netlify/functions/address-queue', {
@@ -30754,7 +30804,48 @@ function useProblemQueue(nonce, today) {
       });
     } finally { reload(); }
   }, [reload]);
-  return { data, loading, err, days, allRows, sweepable, selected, picked, toggle, sweep, dismiss, showDismissed, setShowDismissed, reload, google, push };
+  return { data, loading, err, days, allRows, sweepable, selected, picked, toggle, sweep, sweepDay, dismiss, showDismissed, setShowDismissed, reload, google, push };
+}
+
+/**
+ * PURE: how many of one day's rows can be picked, and how many are. The header box reads
+ * checked only when EVERY selectable row on the day is picked, and half-filled when some are —
+ * a plain checked/unchecked box on a partly-picked day claims a selection that is not there,
+ * and the next press would silently push rows the dispatcher never chose.
+ *
+ * Counts the same rows the box can actually act on: `queueRowPushable` and not waved off, the
+ * identical test the toolbar's sweep uses, so the two controls can never disagree about what
+ * "all" means.
+ */
+function dayPickState(rows, picked) {
+  const keys = (rows || []).filter((r) => queueRowPushable(r) && !r.dismissed).map((r) => r.key);
+  const on = keys.filter((k) => picked.has(k)).length;
+  return { total: keys.length, on, all: keys.length > 0 && on === keys.length, some: on > 0 && on < keys.length };
+}
+
+/**
+ * SELECT ALL, ABOVE THE BOXES IT CONTROLS. Chad: "there should be a select all check box above
+ * the individual check boxes." The toolbar already had a Select all BUTTON, but it sits in a
+ * different block at the top of the screen and takes every day at once — so on a screen showing
+ * three board days there was no way to say "this day" without sixteen presses.
+ *
+ * `indeterminate` is not a React prop and cannot be set in JSX; it only exists on the DOM node,
+ * which is why this carries a ref. Without it a part-picked day renders as an empty box.
+ */
+function QueueSelectAllBox({ d, q, className = 'accent-blue-700 w-4 h-4' }) {
+  const st = dayPickState(d.rows, q.picked);
+  const ref = React.useRef(null);
+  React.useEffect(() => { if (ref.current) ref.current.indeterminate = st.some; }, [st.some]);
+  if (!st.total) return null;
+  return (
+    <input
+      ref={ref} type="checkbox" checked={st.all} onChange={() => q.sweepDay(d.rows, !st.all)}
+      disabled={q.push.running}
+      aria-label={`Select every fixable row on ${d.date}`}
+      title={st.all ? `Clear all ${st.total} on ${d.date}` : `Select all ${st.total} on ${d.date}`}
+      className={className}
+    />
+  );
 }
 
 /** One row's inline editor. Shared logic; each view decides where it sits. */
@@ -30799,7 +30890,7 @@ function useQueueRowEdit(row, google, today, reload) {
       const parts = [];
       if (pushed) parts.push(pushed.text);
       if (geoErr) parts.push('The address is saved but the pin could not be moved — it still points at the old spot, so this row stays on the queue.');
-      setMsg({ kind: pushed?.fatal ? 'warn' : (geoErr || pushed?.kind === 'partial' || pushed?.kind === 'refused' || pushed?.kind === 'blocked' || pushed?.kind === 'unknown') ? 'warn' : 'ok', text: parts.join(' ') || 'Saved on the board.' });
+      setMsg({ kind: pushed?.fatal ? 'warn' : (geoErr || QUEUE_WARN_KINDS.has(pushed?.kind)) ? 'warn' : 'ok', text: parts.join(' ') || 'Saved on the board.' });
       if (!geoErr && !pushed?.fatal) setOpen(false);
       reload();
     } catch (e) { setMsg({ kind: 'warn', text: String(e?.message || e) }); } finally { setBusy(false); }
@@ -30823,6 +30914,12 @@ function ProblemQueueMobile({ nonce, today }) {
           <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
             {d.date} · {d.rows.length} to fix <span className="font-normal normal-case text-slate-400">of {d.stopsRead} stops</span>
           </div>
+          {dayPickState(d.rows, q.picked).total > 0 && (
+            <label className="flex items-center gap-2 text-xs text-slate-600 px-1" style={{ minHeight: 44 }}>
+              <QueueSelectAllBox d={d} q={q} className="accent-blue-700" />
+              <span>Select all {dayPickState(d.rows, q.picked).total} on this day</span>
+            </label>
+          )}
           {!d.rows.length && <div className="rounded-xl border bg-white p-4 text-xs text-slate-500">Nothing wrong with this day’s addresses.</div>}
           {d.rows.map((row) => (
             <QueueRowMobile key={row.key} row={row} q={q} today={today} />
@@ -30890,7 +30987,7 @@ function ProblemQueueDesktop({ nonce, today }) {
                 <table className="w-full text-xs">
                   <thead className="bg-white text-slate-500 border-b">
                     <tr className="text-left">
-                      <th className="px-3 py-2 w-8" />
+                      <th className="px-3 py-2 w-8"><QueueSelectAllBox d={d} q={q} /></th>
                       <th className="px-3 py-2 font-semibold whitespace-nowrap">What</th>
                       <th className="px-3 py-2 font-semibold">Customer</th>
                       <th className="px-3 py-2 font-semibold">We show</th>

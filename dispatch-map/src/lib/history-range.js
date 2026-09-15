@@ -20,6 +20,32 @@
 export const MAX_RANGE_DAYS = 60;   // the endpoint reads one document per day; this is the cap.
 export const DEFAULT_DAYS = 14;
 
+/**
+ * HOW FAR FORWARD A LOG MAY REACH, and why a history has a future at all.
+ *
+ * It sounds like a contradiction, and for the flag history it is one — an outcome cannot be
+ * recorded before it happens, so that screen still clamps at today and should.
+ *
+ * The ADDRESS log is a different animal, because an address change is filed against the BOARD
+ * DAY the stop sits on, not the day somebody typed it. The problem-address queue works the
+ * next business days (address-queue.mts: MAX_DAYS = 3 through scanDatesFrom), so a dispatcher
+ * clearing the queue at 8pm on Monday is writing rows dated Tuesday and Wednesday. Those rows
+ * are correct and they are where a dispatcher would go looking for them.
+ *
+ * WHAT THAT COST, 2026-09-14. Six orders were corrected and pushed to NuVizz from the queue
+ * and every one of them recorded a row — dated 2026-09-15, the board day they were on. The
+ * history screen could not show one of them, and not because of a filter: `to > today` clamps
+ * to today (below), so the day document holding them could not be REQUESTED. Four more the
+ * night before went the same way. Two full sessions were spent hunting a write that had never
+ * failed, because the reader was structurally incapable of asking for the day it wrote to.
+ * `nuvizz-stop-explain` reads three days ahead with no clamp and had the rows the whole time.
+ *
+ * FOUR CALENDAR DAYS, DERIVED NOT GUESSED: the queue walks 3 BUSINESS days, and the widest a
+ * 3-business-day span gets is Friday → Tuesday, which is four calendar days. Asking for a
+ * weekend document nothing ever wrote costs one Firestore get and returns empty.
+ */
+export const QUEUE_DAYS_AHEAD = 4;
+
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export function isDateStr(s) {
@@ -61,11 +87,18 @@ export function daysBetween(from, to) {
  * Never throws: this backs a control a person is typing into, and a half-typed date must not
  * blank the page.
  */
-export function resolveRange(sel, today) {
+export function resolveRange(sel, today, daysAhead = 0) {
   const t = isDateStr(today) ? today : null;
   if (!t) return { from: null, to: null, days: 0, kind: 'none', clamped: 'no-today' };
 
-  const fallback = () => ({ from: addDays(t, -(DEFAULT_DAYS - 1)), to: t, days: DEFAULT_DAYS, kind: 'days' });
+  // THE CEILING, which is `today` for every caller that does not opt in. A malformed or
+  // negative `daysAhead` collapses to today rather than throwing or reaching somewhere
+  // arbitrary — a history that quietly widened on a bad argument is worse than one that did
+  // not widen at all.
+  const ahead = Math.floor(Number(daysAhead));
+  const h = Number.isFinite(ahead) && ahead > 0 ? addDays(t, ahead) : t;
+
+  const fallback = () => ({ from: addDays(t, -(DEFAULT_DAYS - 1)), to: h, days: daysBetween(addDays(t, -(DEFAULT_DAYS - 1)), h), kind: 'days' });
   const kind = sel?.kind;
   let from; let to; let clamped = null;
 
@@ -77,7 +110,11 @@ export function resolveRange(sel, today) {
   } else if (kind === 'days') {
     const n = Math.floor(Number(sel.days));
     if (!Number.isFinite(n) || n < 1) return { ...fallback(), clamped: 'bad-days' };
-    to = t; from = addDays(t, -(n - 1));
+    // "The last N days" is anchored on today at the BACK end and runs to the ceiling at the
+    // front, so the default view of the address log contains the forward board days a
+    // correction is filed against. With no ceiling (`h === t`) this is the old behaviour
+    // exactly, which is what keeps the flag history untouched.
+    to = h; from = addDays(t, -(n - 1));
   } else if (kind === 'range') {
     if (!isDateStr(sel.from) || !isDateStr(sel.to)) return { ...fallback(), clamped: 'bad-range' };
     from = sel.from; to = sel.to;
@@ -90,8 +127,8 @@ export function resolveRange(sel, today) {
 
   // The history cannot hold a day that has not happened. Clamping rather than erroring keeps
   // "1st to the end of the month" working on the 12th, which is how people type a month.
-  if (to > t) { to = t; clamped = 'future'; }
-  if (from > t) { from = t; clamped = 'future'; }
+  if (to > h) { to = h; clamped = 'future'; }
+  if (from > h) { from = h; clamped = 'future'; }
 
   // Cap by moving the START forward and keeping the end: when a too-wide range is asked for,
   // the recent end is the half somebody wanted.
@@ -145,6 +182,13 @@ export function shortDay(date, today) {
 export function rangeLabel(r, today) {
   if (!r?.from || !r?.to) return '';
   if (r.from === r.to) return r.to === today ? 'Today' : shortDay(r.to, today);
+  // A window that runs past today is the address log reaching over the board days the queue
+  // files corrections against. Say so: "Last 14 days" over a range ending Thursday is the
+  // header lying about its own contents, which is the one thing this module exists to stop.
+  if (isDateStr(today) && r.to > today) {
+    const back = daysBetween(r.from, today);
+    return back > 1 ? `Last ${back} days + the board ahead` : 'Today + the board ahead';
+  }
   if (r.to === today && r.days > 1) return `Last ${r.days} days`;
   return `${shortDay(r.from, today)} – ${shortDay(r.to, today)} · ${r.days} days`;
 }

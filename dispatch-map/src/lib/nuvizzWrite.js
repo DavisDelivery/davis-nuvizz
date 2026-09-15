@@ -86,6 +86,37 @@ export const setStopContact = (stopNbr, { name, phone } = {}, opts = {}) =>
     ...(opts.stopId ? { stopId: String(opts.stopId) } : {}),
   }, { clientOpId: newClientOpId(), ...opts, dryRun: false });
 
+/**
+ * DID THE CORRECTED ADDRESS REACH THE ORDER? — and it is NOT the same question as `ok`.
+ *
+ * `ok` answers "was the write completely clean": the address landed AND nothing else on the
+ * order moved. Those are two findings, and welding them into one boolean made the app tell a
+ * dispatcher the opposite of what the server had just observed.
+ *
+ * WHAT IT SAID, 2026-09-14 (Chad's screenshot, order 007175992): "Saved on the board, but
+ * NuVizz did not take it … The driver's manifest still has the old address — fix the order in
+ * the portal." The very same result object carried `addressLanded: true`, and a direct read of
+ * the order confirmed it: NuVizz held the corrected street exactly as sent. The banner sent a
+ * dispatcher into the portal to fix something that was already right — and six of six orders
+ * read back that night had taken their address perfectly, four of them under this banner.
+ *
+ * What was actually flagged is collateral: `documents: LOST to|BOL|03||pdf||01`, the
+ * attachment identity check in unsentLosses. THAT WARNING STAYS AND IS NOT WEAKENED HERE — no
+ * guard is relaxed, no path is silenced, and the drift text still rides the result. All that
+ * changes is which of the two questions the headline and the address log answer.
+ *
+ * The server proves `addressLanded` by READ-BACK (nuvizz-write.mts: addressLanded &&
+ * addressMatchesTyped && addressMoved), which is a stronger fact than `ok` and an observed one.
+ * When it is absent — an idempotent replay, a fatal that never reached the ladder — fall back
+ * to the verdict, because a write that never ran cannot be claimed as landed.
+ */
+export function addressReachedNuvizz(j) {
+  const landed = (j && j.result) ? j.result.addressLanded : undefined;
+  if (typeof landed === 'boolean') return landed;
+  if (j && j.idempotent) return true;     // replayed a row that succeeded earlier; no call spent
+  return j?.ok === true;
+}
+
 // Correct the delivery address ON THE ORDER in NuVizz (§E). The mirror of setStopContact,
 // and for the same reason: "Edit address" writes customer_notes.address_override — per-CUSTOMER,
 // what OUR board, OUR pin and OUR routing use — and NuVizz never heard about it, so the portal,
