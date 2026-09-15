@@ -297,9 +297,12 @@ for (const mobile of [false, true]) {
       await page.locator('[data-day-loads-panel] [data-plan-shell="SUW 2"]').first().click().catch(() => {});
       await page.waitForTimeout(1200);
       // A PENDING card has no "Cancel route" (closing it IS its cancel) — its marker is the
-      // "not sent" badge in the card header, beside the route name.
+      // send-state chip in the card header, beside the route name. Keyed on
+      // data-card-send="new", NOT on the chip's words: this guard used to match the text
+      // "not sent", so v1.31.0 renaming that chip to "Not created in NuVizz" made all eight
+      // shell-tap checks report "no card opened" for cards that had opened perfectly.
       const card = await page.evaluate(() => {
-        const heads = Array.from(document.querySelectorAll('button[aria-expanded]')).filter((b) => /not sent/i.test(b.innerText || ''));
+        const heads = Array.from(document.querySelectorAll('button[aria-expanded]')).filter((b) => b.querySelector('[data-card-send="new"]'));
         const sheetUp = !!document.querySelector('button[aria-label="Collapse"]');
         return { cards: heads.length, named: heads.some((h) => /SUW 2/.test(h.innerText || '')), sheetUp };
       });
@@ -334,7 +337,7 @@ for (const mobile of [false, true]) {
         await page.locator(`[data-day-loads-panel] [data-plan-shell="${n}"]`).first().click().catch(() => {});
         await page.waitForTimeout(500);
       }
-      const six = await page.evaluate(() => Array.from(document.querySelectorAll('button[aria-expanded]')).filter((b) => /not sent/i.test(b.innerText || '')).length);
+      const six = await page.evaluate(() => Array.from(document.querySelectorAll('button[aria-expanded]')).filter((b) => b.querySelector('[data-card-send="new"]')).length);
       if (six === 6) ok('six shells open six pending cards');
       else bad(`expected six pending cards before the cap, got ${six} (${view})`);
       await reopenLoads();
@@ -345,7 +348,7 @@ for (const mobile of [false, true]) {
       // count them where they are rendered (the toast is global and is read either way).
       if (mobile) { await page.getByRole('button', { name: /^Setup/ }).first().click().catch(() => {}); await page.waitForTimeout(500); }
       const capped = await page.evaluate(() => ({
-        cards: Array.from(document.querySelectorAll('button[aria-expanded]')).filter((b) => /not sent/i.test(b.innerText || '')).length,
+        cards: Array.from(document.querySelectorAll('button[aria-expanded]')).filter((b) => b.querySelector('[data-card-send="new"]')).length,
         said: /Compare is full/i.test(document.body.innerText || ''),
       }));
       if (capped.cards === 6 && capped.said) ok(`the seventh shell (${seventh}) is refused OUT LOUD — "Compare is full" — instead of doing nothing`);
@@ -508,6 +511,16 @@ for (const mobile of [false, true]) {
     await page.waitForTimeout(1200);
     if ((await sheetUp()) && (await cardsUp()) === 1) ok('tapping CHAD in the grid opens its card AND raises the sheet');
     else bad(`card 1 from the grid: sheet up=${await sheetUp()}, cards=${await cardsUp()} (phone)`);
+    // IS IT IN NUVIZZ OR ONLY ON THIS SCREEN (v1.31.0). An existing load's card used to say
+    // nothing at all about NuVizz — the only signal was the header Save button appearing and
+    // then disappearing. A freshly opened CHAD matches the board, so its chip must read
+    // 'clean'; it must never open already claiming it has been sent.
+    const chip = await page.evaluate(() => {
+      const el = document.querySelector('button[aria-expanded] [data-card-send]');
+      return el ? { kind: el.getAttribute('data-card-send'), text: (el.innerText || '').trim() } : null;
+    });
+    if (chip && chip.kind === 'clean') ok(`…and the card says where it stands with NuVizz ("${chip.text}")`);
+    else bad(`a freshly opened load card has no honest send state (phone): ${JSON.stringify(chip)}`);
     await page.evaluate(() => { const b = Array.from(document.querySelectorAll('button')).find((x) => /^Stops\s+\d+/.test((x.innerText || '').replace(/\n/g, ' ').trim())); if (b) b.click(); });
     await page.waitForTimeout(800);
     if (!(await sheetUp())) ok('reopening the grid drops the sheet — one bottom surface at a time');
@@ -565,7 +578,7 @@ for (const mobile of [false, true]) {
       await page.locator('tr[data-plan-shell="SUW 2"]').first().click().catch(() => {});
       await page.waitForTimeout(1200);
       const card = await page.evaluate(() => {
-        const heads = Array.from(document.querySelectorAll('button[aria-expanded]')).filter((b) => /not sent/i.test(b.innerText || ''));
+        const heads = Array.from(document.querySelectorAll('button[aria-expanded]')).filter((b) => b.querySelector('[data-card-send="new"]'));
         return { cards: heads.length, named: heads.some((h) => /SUW 2/.test(h.innerText || '')), sheetUp: !!document.querySelector('button[aria-label="Collapse"]') };
       });
       if (card.cards === 1 && card.named) ok('tapping the SUW 2 row opens ONE pending route card carrying that name');

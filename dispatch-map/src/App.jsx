@@ -46,7 +46,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, cardSendState, routePaintSource } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -146,7 +146,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.32.2';
+const APP_VERSION = '1.33.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -200,7 +200,8 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.32.2', 'A TRUCK WITH A DRIVER ASSIGNED SAID “(no driver)”, AND THE MOTIVE DOCS SAY WHY. Chad: “when trucks are displayed on the map for motive, it’s saying no driver assigned, which is not factual. A lot of the times there is a driver assigned … go back through the motive API instructions, make sure we haven’t done something wrong.” WE HAD, AND IT IS IN THEIR DOCUMENTATION RATHER THAN A GUESS. A Motive vehicle carries TWO driver fields: current_driver, who is LOGGED IN on the truck’s ELD right now, and permanent_driver, the ADMINISTRATIVE assignment a fleet manager makes. GET /v1/vehicle_locations — the one call this layer made — carries current_driver only; Motive’s own scope for it is literally named “Vehicle Current Location/Driver”. permanent_driver lives on GET /v1/vehicles and on no version of vehicle_locations at all (v1 and v2 expose the logged-in driver, v3 exposes nobody). So a driver assigned to a truck who had not yet signed in on its tablet was, to us, nobody — and the plate said “(no driver)” over a truck Chad could see had a name on it in Motive. NOW IT READS BOTH: the signed-in driver wins, the assigned one fills in behind, and the record says which it was (driverSource), so the driver sidebar reads “Truck 7750 · Chris Head · assigned” when he is assigned but not yet signed in — which is exactly the state a dispatcher rings a driver about. TWO SMALLER DEFECTS ON THE SAME READ, both fixed: a name was only composed when BOTH first and last name were present (Motive documents no full_name), so a one-name driver fell through to nobody; and the old fallback called GET /v2/driver_vehicle_assignments, an endpoint that appears NOWHERE in Motive’s documentation index, with every error swallowed — it has contributed nothing for as long as it has existed, and HANDOFF.md had said in as many words that the field shapes were “assumed” and “still need live verification”. Retired. COST: one extra Motive call per 60-second cache miss, and only when at least one truck on the board has nobody signed in. A failed vehicles read degrades to the old logged-in-only behaviour and is REPORTED on the response (permanentDriverError) rather than hidden. NOT A PERMISSIONS PROBLEM, checked: Motive API keys are organisation-scoped, and the docs make no claim that nested driver fields are gated. MOTIVE_PERMANENT_DRIVER=off puts the old behaviour back; default ON, and a malformed value leaves it ON. 9 new tests.'],
+  ['1.33.1', 'A TRUCK WITH A DRIVER ASSIGNED SAID “(no driver)”, AND THE MOTIVE DOCS SAY WHY. Chad: “when trucks are displayed on the map for motive, it’s saying no driver assigned, which is not factual. A lot of the times there is a driver assigned … go back through the motive API instructions, make sure we haven’t done something wrong.” WE HAD, AND IT IS IN THEIR DOCUMENTATION RATHER THAN A GUESS. A Motive vehicle carries TWO driver fields: current_driver, who is LOGGED IN on the truck’s ELD right now, and permanent_driver, the ADMINISTRATIVE assignment a fleet manager makes. GET /v1/vehicle_locations — the one call this layer made — carries current_driver only; Motive’s own scope for it is literally named “Vehicle Current Location/Driver”. permanent_driver lives on GET /v1/vehicles and on no version of vehicle_locations at all (v1 and v2 expose the logged-in driver, v3 exposes nobody). So a driver assigned to a truck who had not yet signed in on its tablet was, to us, nobody — and the plate said “(no driver)” over a truck Chad could see had a name on it in Motive. NOW IT READS BOTH: the signed-in driver wins, the assigned one fills in behind, and the record says which it was (driverSource), so the driver sidebar reads “Truck 7750 · Chris Head · assigned” when he is assigned but not yet signed in — which is exactly the state a dispatcher rings a driver about. TWO SMALLER DEFECTS ON THE SAME READ, both fixed: a name was only composed when BOTH first and last name were present (Motive documents no full_name), so a one-name driver fell through to nobody; and the old fallback called GET /v2/driver_vehicle_assignments, an endpoint that appears NOWHERE in Motive’s documentation index, with every error swallowed — it has contributed nothing for as long as it has existed, and HANDOFF.md had said in as many words that the field shapes were “assumed” and “still need live verification”. Retired. COST: one extra Motive call per 60-second cache miss, and only when at least one truck on the board has nobody signed in. A failed vehicles read degrades to the old logged-in-only behaviour and is REPORTED on the response (permanentDriverError) rather than hidden. NOT A PERMISSIONS PROBLEM, checked: Motive API keys are organisation-scoped, and the docs make no claim that nested driver fields are gated. MOTIVE_PERMANENT_DRIVER=off puts the old behaviour back; default ON, and a malformed value leaves it ON. 9 new tests, 4,888 green.'],
+  ['1.33.0', 'WHAT IS IN NUVIZZ, WHAT IS ONLY ON THIS SCREEN, AND A TRUCK THAT IS NOT BOTTOMLESS. Three things off two mornings on the Routing screen. (1) \u201cIT IS HARD TO KNOW WHEN SOMETHING IS PUSHED TO NUVIZZ.\u201d Read off the code rather than guessed at: the workbench header\u2019s Save button renders only while something is staged, so \u201ceverything is in NuVizz\u201d was expressed by a button DISAPPEARING, backed by a toast that may already have been dismissed \u2014 and the one chip that existed was gated on pendingCreate, so a NEW route said \u201cnot sent\u201d and an existing load said nothing at all. A card saved five minutes ago and a card nobody had touched looked identical. Every card now carries its state, always: amber NOT SENT TO NUVIZZ while anything is staged, NOT CREATED IN NUVIZZ for a route that does not exist yet, green SENT TO NUVIZZ 2:14 PM once a write is confirmed, grey NOTHING TO SEND when the card matches the load. The green one is earned in exactly one place \u2014 markSaved, which runs on a confirmed write and nowhere else \u2014 and a test pins that it has one writer, so it can never report an intent as an outcome. BETA WINS OVER EVERY NOT-SENT WORDING, because there the Save button is blue, says \u201cSave (2)\u201d and sends nothing, which is the most expensive thing on this screen to misread. The header gained the other half: with nothing staged it says \u201c\u2713 All sent to NuVizz\u201d or \u201cNothing to send\u201d instead of rendering no control at all. (2) \u201cIF I DO NOT PUSH TO NUVIZZ, CLOSING THE ROUTES OUT OF THE COMPARE PANEL SHOULD JUST LET THEM GO.\u201d Closing a card already released the stops everywhere except the MAP: the selection guard, the grid\u2019s staged badge and the other device\u2019s presence claim all derive from wbRoutes, and nothing reaches the plan overlay short of a confirmed save. But effectiveRouteInfo read \u201copen cards, else the BUILD\u2019s own plan\u201d \u2014 right while a finished build sat waiting to be staged by hand, wrong since v1.19.0 made a build stage itself. Closing the last card fell straight through to the engine plan and the same stops came back numbered, route-coloured and joined by a polyline on a board where nothing had been sent. Closing a card is the dispatcher saying \u201cnot this\u201d, so once a plan has been staged the cards ARE the working set and nothing else paints; a plan never staged still paints, and the result panel\u2019s \u201cStage onto Compare cards again\u201d is the way back. (3) A TRUCK WITH NO SKID LIMIT IS A MISSING NUMBER, NOT A BOTTOMLESS TRUCK. Chad: \u201cI gave it two box truckloads to put 25 orders on that was about 25 skids. Box trucks hold, let\u2019s call it 14 pallets. It gave four pallets to one box truck and 20 to the other.\u201d RUN, NOT REASONED \u2014 the same 25 orders over his own four towns through the real pipeline: maxSkids 14 (the shipped 26ft Box default) splits 11/14, balanced and inside the truck; maxSkids 0 (a blank box) splits 6/19; maxSkids 26 (a number typed too big) splits 6/19. The lopsided split is the cap NOT BINDING, and the zero case is the dangerous one: capLimited reads a non-positive cap as NO LIMIT, which is right for an abstract profile nobody filled in and wrong for a truck \u2014 it switches off the skid gate AND makes loadFraction return 0, silently killing the balance term the assignment uses to spread work. One blank field and nineteen skids go on a truck that holds fourteen with nothing on screen saying why. Where the zero came from: until this release the Trucks-mode capacity fields wrote the fleet profile ON BLUR and Number(\u2018\u2019) is 0, so tabbing out of a cleared Skids box stored a 0-skid profile every later build in both modes then read. Every truck now takes its CLASS floor before it reaches the solver when its skid or weight cap is missing (26ft box 14 / 10,000 lb; 53ft trailer 28 / 44,000 lb), it NEVER lowers a cap somebody set, and every substitution is reported in the result panel naming the truck and where to fix it \u2014 a defaulted cap nobody can see is the same invisible failure in nicer clothes. THE BALANCE TERM WAS DELIBERATELY NOT TOUCHED: with a real 14-skid cap the same board already returns 11/14, and BALANCE_M decides every build on this screen. Also in this release: the Trucks-mode profile editor is a draft with an explicit Save that refuses a blank or zero capacity, so no new 0 can be written. 17 new tests \u2014 including Chad\u2019s board end to end, before ([6, 19], the big one over what a 26ft box can hold) and after ([11, 14], nothing spilled) \u2014 plus 8 wiring pins, because two of these three failures do not error: they just quietly overload a truck or repaint a route nobody sent.'],
   ['1.32.1', 'A NOTICE THAT A DOCK SHUTS FOR LUNCH WAS READ AS THE ONLY HOUR IT RECEIVES. Chad, on PRO 007176487 (DOUGLASVILLE DOUGLAS COUNTY OF, VINCENT stop 18): “parser is incorrectly reading this customers hours they are just stating that they are closed for lunch 1230-130 and all day friday.” THE SENTENCE HAS FOUR FACTS IN IT AND EVERY ONE CAME OUT WRONG. NuVizz cuts a comment at about 25 characters, so it arrives as “CLOSED MON-THUR 12 30PM-” and “1 30 PM AND ALL DAY FRI”. Reproduced on v1.31.2 before anything was changed: the day-qualified hours tier stored byDay mon–thu = 12:30–13:30, which says the dock receives ONLY during the hour nobody is on it — the exact inverse of the truth, so every real delivery would flag and the router would try to cram stop 18 into that hour. The closed-day scanner matched “CLOSED MON” out of the middle of the span and marked MONDAY shut, a day they are open. And FRIDAY, the one genuine closed day, was missed completely. Three defects, one governing idea they all missed: THE WORD CLOSED OWNS THE WHOLE SENTENCE. WHAT CHANGED. (1) The day-qualified hours tier now refuses a span a closure word sits directly against. The bare-pair tier has refused a closure context since it was written; the day-qualified tier, which OUTRANKS it, never did — so the most specific evidence in the scanner was the one tier that could not tell an opening from a shutting. It is anchored tight, so “CLOSED SAT, MON-FRI 8-5” still reads the weekday hours. (2) “CLOSED <span>” now governs the WHOLE span rather than its first day, so “CLOSED SAT-SUN” closes Sunday too — it had been silently dropping it for as long as the patterns have existed. And a span followed by a TIME RANGE is a closure WINDOW, not a closed day: “CLOSED MON-FRI 12-1” shuts nobody out, because marking those five days closed would send no truck at all to a dock open every weekday. (3) “ALL DAY <day>” closes a day, but ONLY when a closure word governs it and no OPEN sits between the two — “OPEN ALL DAY FRI” is the opposite instruction and must never be read as a shutting. (4) The closed-day scanner now strips the SPL-INSTR-TEXT prefixes exactly as the hours scanner always has. It was reading the RAW text, so a closure window split across two comment records was invisible to it and all four weekdays came out shut. WHAT IT NOW SAYS ABOUT DOUGLASVILLE: hours null — they never told us when they are open, and inventing a window is how this started — and Friday closed. The lunch gap itself still has nowhere to live, because the schema holds one window per day; the raw order text on the card is where a dispatcher reads it, which is what the provenance line added in v1.23.1 is for. A clean before/after against a real origin/main worktree moved 10 rows of 36 and left the other 26 byte-identical — early closes, ordinary day-qualified hours, the WEAVER lunch split and every plain range unchanged. 10 new tests, 4,855 green.'],
   ['1.32.0', 'THE FLAG LIST CAME DOWN THE RIGHT-HAND EDGE OF THE MAP, AND THE BUTTONS UNDER IT MOVED \u2014 because they are in the same stack now, not because anybody measured them. Chad, on a panel dropping out of the app bar and across metro Atlanta: \u201ci want to take the stops and flag card and move to edge of map so when the flags drop down they come down the right side of map and the buttons that are underneath drop down below the flags drop down.\u201d THE LAST CLAUSE IS THE WHOLE ARCHITECTURE AND IT IS WHY THE CARD HAD TO MOVE TOO. v1.23.1 put the board-status pill on the app bar at his own asking, and the flag list hung down from there \u2014 a different container from the map\u2019s right-hand control column, so the ONLY way to slide Filters, Routes and the launchers out from under it is to measure the open panel and push that column down by the answer. This repo has bought that architecture four separate times on the phone map (v0.54.80, .82, the wrap fix, the flags-chip clip) and it still put the draw buttons on top of the status card. In FLOW there is nothing to measure: the panel is the column\u2019s sibling, so twenty flags, or the new drawer opening, moves everything below it by exactly as much as it grew, at every width, for ever. The card travels with the panel because the chip IS the card \u2014 a list opening at the map\u2019s right edge from a control sitting mid-bar is a dropdown with no visible parent \u2014 and it renders as the PILL, which stacks its own detail in flow as well, so the dropdown-over-Filters collision that forced v1.24.1 to collapse this card by default cannot occur in this placement at all. ROUTING KEEPS ITS BAR CARD: its map has no right-hand control column for a panel to push, so the bar still suits it \u2014 two screens, two positions, each right on its own map. THE PANEL IS CAPPED AT 52vh HERE against its 80vh default, for the same reason the buttons move at all: a column that is pushed by whatever opens above it is a column an unbounded panel walks off the bottom of the screen, and a feature that hides the controls it sits above is a new bug wearing the old feature\u2019s name. AND \u201cWHAT WAS CHECKED\u201d IS A DRAWER NOW, SHUT BY DEFAULT. Chad: \u201cI want this information to be an additional drop down in the flags drop down where its not always displaying.\u201d Twelve lines of 10px prose under every flag list, on every board, every day, is read once and then never again \u2014 which is the same as not being there, and the honesty rule it was built for was never \u201cprint every sentence\u201d. It is that a quiet panel must be a CLAIM and not an absence, and the SHUT row still makes it, in the numbers a dispatcher can check at a glance: \u201cChecked: 650 stops \u00b7 64 routes judged\u201d, and in amber beside them anything the sweep could not judge \u2014 route checks off, the no-trailer check off, or N routes skipped \u2014 counted from the same `sk` the prose behind the drawer prints, so the row and the drawer can never come to disagree about one sweep. THE RESTORE-DISMISSED LINK STAYED OUT OF THE DRAWER: it is an ACTION and everything inside is reference, and a way back filed behind a shut panel is one nobody finds on the morning they need it. THE GUARD NOW MEASURES THE FLOW CLAIM RATHER THAN A GAP. Two boxes 300px apart also fail to overlap, so verify-routing-topbar asserts that Filters STARTS below where the panel ENDS and that it got there by MOVING when the panel opened \u2014 which the old app-bar layout fails \u2014 plus that the panel hugs the map\u2019s right edge and that the launchers are still on screen underneath it. 4,817 tests green.'],
   ['1.31.4', 'THE WALL DISPLAY DRAWS ITS MAP AS A PICTURE NOW, AND THE SCREEN SAYS WHY IT KEEPS GOING TO SLEEP. Chad, after two rounds of a television that would not draw a map: “i’m thinking i like the idea of of making a static image lets write it merge it and just a switch to take it back the way it was” — and, separately, “tv is going to sleep on me”. A WALL DISPLAY IS THE ONE SCREEN HERE THAT CANNOT BE INTERACTED WITH. Nobody pans it, nobody zooms it, nobody clicks a pin — so EVERY SINGLE THING the Maps JavaScript API buys over an image is an interaction that never happens, and the price is a WebGL-capable modern browser sitting on a wall for twelve hours. On the office set (a 2020 Samsung TU8000) that price came due twice: a white rectangle on the vector map, then still unreliable on raster. An <img> is a picture. It draws on anything that can draw a picture, it cannot half-initialise, and when it fails it fails in ONE obvious way instead of silently painting nothing. For a screen with no pointer that is not a downgrade, it is the right instrument. AND THE JS MAP IS NOT LOADED AT ALL on that screen — useGoogleMaps takes an `enabled` now. Not an optimisation: the script was the thing that would not work, so the fix is to stop asking it to rather than to keep asking and report the failure more politely. It also saves a billed dynamic map load every time the television reloads. WHICH PINS SURVIVE IS A LOGISTICS DECISION, NOT A TECHNICAL ONE. A Static Maps URL dies past 8192 characters — a few hundred pins — and a bad day here is seven hundred stops, so something gets dropped. The order is trucks, then stops that still need a phone call, then open freight, then delivered: where the fleet is, is what a room looks up at, and a delivered stop is the only thing on the board that cannot generate another call. THE CAP IS PRINTED ON THE SCREEN (“showing 401 of 640 pins”), because a map quietly showing 400 of 700 reports a lighter morning than the one being worked — the same failure as a flag rail that truncates in silence. Measured on a 640-stop fixture: 7,783 characters, 401 pins, under the limit. THE TOGGLES A PICTURE CANNOT HONOUR ARE NOT OFFERED. Clustering, place labels and route lines are hidden from the TV’s Filters panel rather than left inert, because a switch that moves and changes nothing teaches the person holding the remote that the panel is broken — and they stop trusting the toggles that DO work, which here includes live drivers, the one Chad kept that panel for. Carry-over, hide-terminal, hide-stem-out, unplanned-only and live drivers all still work, because they change the STOP SET rather than the rendering. THE SLEEP, ANSWERED HONESTLY RATHER THAN PAPERED OVER. The wake lock swallowed every outcome — unsupported, refused, released — into one silent catch, so a television going dark at 10am and one holding its lock all day were the same code path and the same screen: a lock whose position cannot be read is not a lock. It reports now, and when it cannot be taken the rail says so and NAMES THE SETTING THAT ACTUALLY FIXES IT (Samsung: Settings › General › System Manager › Time › Sleep Timer, and Eco / Auto Power Off). The Screen Wake Lock API is Chromium 84+ and this set predates it; a web page cannot overrule a television’s power settings, and pretending otherwise would be the same class of lie as the “all clear” this screen printed over a board it had never read. AND THE OLD DIAGNOSTIC STOPPED BLAMING WEBGL, which stopped being true the moment TV mode dropped the vector map — a message naming an already-eliminated cause sends the next person down a road known to be empty. ONE BUG CAUGHT BY OPENING THE PAGE RATHER THAN READING THE DIFF: the refresh constant was declared 110 lines ABOVE the one it referenced, a temporal dead zone that threw at module load and rendered the ENTIRE APP blank — every screen, not just the television. The build compiled it happily. THE WAY BACK IS ONE ENV VAR: VITE_TV_STATIC_MAP=off returns the TV to the live JS map, every side at once, and anything malformed leaves it ON so a typo cannot silently restore the map that could not draw. THE SPEND, STATED: one billed Maps Static API request per refresh on the board’s own 2-minute cadence — ~300/day, ~9,000/month; and “Maps Static API” is a SEPARATE API from “Maps JavaScript API” in the Google console, so if the key lacks it the screen says exactly that instead of showing an empty frame. 16 tests on lib/tv-static-map.js, including the Number(null)-is-0 trap that would have put a phantom pin in the Atlantic and zoomed the whole board out to fit it.'],
@@ -17702,6 +17703,19 @@ function formatRoutingEta(sec) {
   return new Date(sec * 1000).toLocaleTimeString('en-US', { timeZone: 'UTC', hour: 'numeric', minute: '2-digit' });
 }
 
+// Module scope, so "no routes are painted" is the SAME Map on every render: the marker effect
+// depends on effectiveRouteInfo, and a fresh empty Map each time tore down and rebuilt every
+// pin on the board on every poll (the ref-stability trap applyPlanOverlay documents).
+const EMPTY_ROUTE_INFO = new Map();
+
+// A wall-clock stamp for something that happened on THIS device just now — the Compare card's
+// "Sent to NuVizz 2:14 PM". Local time on purpose, unlike the planning clock above, which is
+// UTC-anchored because it is arithmetic rather than a moment the dispatcher lived through.
+function fmtClockMs(ms) {
+  if (!Number.isFinite(Number(ms))) return '';
+  return new Date(Number(ms)).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
 // A selected stop "looks oversize" for the live tally if any line item is NuVizz
 // category L. (The authoritative geometry is computed server-side at build time.)
 function stopLooksOversize(s) {
@@ -19289,7 +19303,7 @@ function PreflightBanner({ pre, isMobile }) {
   );
 }
 
-function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
+function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, savedAt = null, liveMode = true, isMobile, liveWrite }) {
   // The live-dispatch UI gate is now the gear toggle (prop) rather than the module-level
   // ?write=1/env const. Aliased to the original name so the gate sites below are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -19368,12 +19382,27 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = 
             {route.collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
             <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color }} title="Route colour on the map" />
             <span className="font-semibold text-slate-800 truncate" title={route.name || loadDisplayName(route.key) || 'Unnamed load'}>{route.name || loadDisplayName(route.key) || 'Unnamed load'}</span>
-            {route.pendingCreate && (
-              <span className="text-[9px] font-bold uppercase text-amber-800 bg-amber-100 border border-amber-300 rounded px-1 shrink-0"
-                title="This route exists only on this screen so far — Save creates it in NuVizz with all its stops (NuVizz refuses an empty route)">
-                not sent
-              </span>
-            )}
+            {/* IS THIS IN NUVIZZ OR ONLY ON THIS SCREEN — Chad: "it's hard to know when
+                something is pushed to nuvizz." The old chip said "not sent" for a pending NEW
+                route and nothing at all for an existing load, so on a real load the only signal
+                was the header's Save button appearing and then disappearing, plus a toast that
+                may already have been dismissed. Every card now carries its state, always, and
+                the green one is only ever earned by a confirmed write (cardSendState, tested). */}
+            {(() => {
+              const st = cardSendState({ dirty, pendingCreate: route.pendingCreate, savedAt, liveMode });
+              const tone = st.tone === 'green' ? 'text-emerald-800 bg-emerald-100 border-emerald-300'
+                : st.tone === 'amber' ? 'text-amber-800 bg-amber-100 border-amber-300'
+                : 'text-slate-600 bg-slate-100 border-slate-300';
+              return (
+                /* data-card-send is the STABLE hook for the guards. verify-loads-tab identified
+                   a pending card by the words "not sent" in this header — its own comment said
+                   so — so renaming the chip made every shell-tap check report "no card opened"
+                   when the card had opened fine. Prose is not an API; the kind is. */
+                <span data-card-send={st.kind} className={`text-[9px] font-bold uppercase border rounded px-1 shrink-0 ${tone}`} title={st.title}>
+                  {st.label}{st.kind === 'sent' && savedAt ? ` ${fmtClockMs(savedAt)}` : ''}
+                </span>
+              );
+            })()}
           </button>
           <div className="flex items-center gap-1.5 shrink-0">
             {ninjaMode && (
@@ -19705,6 +19734,10 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
   // order at open, so "dirty" = the staged order/membership differs, or a driver/dispatch is set.
   const [staged, setStaged] = useState({});        // key → { driverId, driverName, dispatch }
   const [baselines, setBaselines] = useState({});  // key → stopNbr[] (order at open / last save)
+  // key → ms of the last CONFIRMED write for that card (markSaved). The card chip's only
+  // evidence that anything reached NuVizz; pruned with the baseline when a card closes, so a
+  // reopened load describes THIS card rather than a save from an hour ago.
+  const [savedAtByKey, setSavedAtByKey] = useState({});
   const [confirm, setConfirm] = useState(null);
   const [busy, setBusy] = useState(false);
   const [closeGuard, setCloseGuard] = useState(null);
@@ -19724,6 +19757,13 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
     const liveKeys = new Set(wbRoutes.map((r) => r.key));
     // Prune closed routes (so a reopen re-seeds against the FRESH order, not a stale baseline),
     // then seed any newly-opened route's baseline = its order at open.
+    // The saved-at stamp is pruned on the same rule as the baseline: a closed card's history
+    // must not follow a freshly reopened one, which is seeded from the board all over again.
+    setSavedAtByKey((prev) => {
+      let next = prev, changed = false;
+      for (const k of Object.keys(prev)) if (!liveKeys.has(k)) { if (!changed) { next = { ...prev }; changed = true; } delete next[k]; }
+      return changed ? next : prev;
+    });
     setBaselines((prev) => {
       let next = prev, changed = false;
       for (const k of Object.keys(prev)) if (!liveKeys.has(k)) { if (!changed) { next = { ...prev }; changed = true; } delete next[k]; }
@@ -19934,11 +19974,18 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
     if (pending.length) await sendPendingCreates(pending);
   };
 
-  const markSaved = (keys) => setBaselines((prev) => {
-    const n = { ...prev };
-    for (const k of keys) { const r = wbRoutes.find((x) => x.key === k); if (r) n[k] = r.order.slice(); }
-    return n;
-  });
+  const markSaved = (keys) => {
+    setBaselines((prev) => {
+      const n = { ...prev };
+      for (const k of keys) { const r = wbRoutes.find((x) => x.key === k); if (r) n[k] = r.order.slice(); }
+      return n;
+    });
+    // THE ONLY PLACE A CARD EARNS ITS GREEN CHIP. markSaved runs on a CONFIRMED write and
+    // nowhere else — Beta returns long before it, and a refused or partial save never reaches
+    // it — so "Sent to NuVizz" can never be an intent reported as an outcome.
+    const at = Date.now();
+    setSavedAtByKey((prev) => { const n = { ...prev }; for (const k of keys) n[k] = at; return n; });
+  };
 
   // Runs the real write. Called directly by onPanelSave with { loads, clientOpId } now that
   // the confirm popup is gone (falls back to the `confirm` state if ever called without args).
@@ -20279,6 +20326,19 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
               <Save size={12} /> {busy ? '…' : `Save (${dirtyRoutes.length})`}
             </button>
           )}
+          {/* THE ABSENCE OF A BUTTON IS NOT A MESSAGE. With nothing staged, the Save button
+              above simply does not render — which is how "everything is in NuVizz" and "you
+              have not done anything yet" came to look identical. This says which. */}
+          {LIVE_WRITE_FLAG && dirtyRoutes.length === 0 && wbRoutes.length > 0 && (
+            <span
+              title={wbRoutes.some((r) => savedAtByKey[r.key])
+                ? 'Every staged change on these cards has been written to NuVizz and verified.'
+                : 'Nothing is staged on these cards — they match the loads as NuVizz holds them.'}
+              className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border ${wbRoutes.some((r) => savedAtByKey[r.key]) ? 'border-emerald-600 bg-emerald-50 text-emerald-800' : 'border-slate-300 bg-white text-slate-500'}`}
+            >
+              {wbRoutes.some((r) => savedAtByKey[r.key]) ? '✓ All sent to NuVizz' : 'Nothing to send'}
+            </span>
+          )}
           {/* Engine indicator, not a picker — RWB is the only Save engine now (see the pin above). */}
           {LIVE_WRITE_FLAG && (
             <span
@@ -20351,6 +20411,8 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
             staged={staged[r.key]}
             onStage={(patch) => setStageFor(r.key, patch)}
             dirty={isDirty(r)}
+            savedAt={savedAtByKey[r.key] || null}
+            liveMode={liveMode}
             isMobile={isMobile}
             liveWrite={liveWrite}
           />
@@ -21719,6 +21781,11 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   const [job, setJob] = useState(null);     // { status, result, error }
   const [building, setBuilding] = useState(false);
   const [saveState, setSaveState] = useState(null); // null | 'saving' | 'saved' | error string
+  // Has THIS build's plan been handed to Compare cards? Declared up here, ahead of
+  // effectiveRouteInfo, because it decides what the map paints: once a plan is staged the cards
+  // are the working set, so closing them all releases the stops instead of falling back to the
+  // engine's own routes (routePaintSource). Cleared by a new build and by Discard.
+  const [planStaged, setPlanStaged] = useState(false);
   const [lastRequest, setLastRequest] = useState(null);
 
   // Every coord-bearing stop with any address fix applied — the UNFILTERED base. The "Unplanned only"
@@ -22775,7 +22842,18 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     }
     return m;
   }, [wbRoutes, stopById, notes, selectedDate, travelInputs, departTable, flagsClockTick]); // eslint-disable-line react-hooks/exhaustive-deps
-  const effectiveRouteInfo = wbRoutesColored.length ? wbRouteInfo : routeInfo;
+  // WHICH PLAN THE MAP PAINTS AS ROUTES. Chad: "if i don't push to nuvizz, when i close the
+  // routes out of the compare panel it should just let them go and not act like those stops are
+  // on the route." Closing a card already released the stops everywhere else — the selection
+  // guard, the grid's staged badge and the presence claim all derive from wbRoutes, and nothing
+  // is written to the plan overlay short of a confirmed save (recordPlanOverlay has exactly one
+  // caller: syncBoardAfterSave). What it did NOT release was the map: this expression fell back
+  // to the BUILD's own plan the moment the last card closed, so the same stops came straight
+  // back numbered, route-coloured and joined by a polyline, with nothing sent to NuVizz.
+  // routePaintSource (lib/routing-select.js, tested) makes the cards the working set once a plan
+  // has been staged; the result panel's "Stage onto Compare cards again →" is the way back.
+  const routePaint = routePaintSource({ openCards: wbRoutesColored.length, planStaged });
+  const effectiveRouteInfo = routePaint === 'cards' ? wbRouteInfo : routePaint === 'plan' ? routeInfo : EMPTY_ROUTE_INFO;
 
   // The plan to persist on Save — engine result with any manual order applied.
   const editedResultForSave = useMemo(() => {
@@ -23756,7 +23834,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
 
   const runBuild = useCallback(async () => {
     if (!db) { setJob({ status: 'error', error: 'Firestore not configured' }); return; }
-    setBuilding(true); setJob({ status: 'queued' }); setSaveState(null);
+    setBuilding(true); setJob({ status: 'queued' }); setSaveState(null); setPlanStaged(false);
     const jobId = `job_${(crypto.randomUUID ? crypto.randomUUID() : String(Date.now()))}`;
     // "Plan onto my loads": ONE solver truck per picked roster load, keyed by the load's
     // display name — the solver builds exactly one route per key, so route cards, reorder
@@ -24003,6 +24081,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     setJob(null); setRouteState(null); setSaveState(null); setBuilding(false); setLastRequest(null);
     // A plain discard leaves the cards standing, so from here on they are the dispatcher's.
     setAutoStagedKeys([]);
+    setPlanStaged(false);
     setLastAction('Discarded plan — selection kept');
     setMobilePanel('setup');
   }, []);
@@ -24057,6 +24136,9 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       }
     }
     setWbRoutes(next);
+    // From here the CARDS are this plan's working set: closing them all releases the stops
+    // rather than handing the map back to the engine's own routes (routePaintSource).
+    setPlanStaged(true);
     const bits = [`Staged ${added} stop${added === 1 ? '' : 's'} onto ${Math.min(bound.length, next.length)} card${bound.length === 1 ? '' : 's'} — review, then Save to send to NuVizz`];
     if (skippedHeld) bits.push(`${skippedHeld} already staged on another open card (left there)`);
     if (fullSkipped.length) bits.push(`workbench full — couldn't open: ${fullSkipped.join(', ')}`);
@@ -25308,6 +25390,20 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, plannedLo
           trap: on a board where nothing is marked green every stop is held to a box, and the
           53' leaves the plan without a word. Amber, not red: an idle truck is a thing to know,
           not necessarily a thing that went wrong. */}
+      {/* A CAP THE BUILD HAD TO SUPPLY. A truck profile with a blank Skids box used to plan as
+          if the truck were bottomless — capLimited reads a non-positive cap as "no limit", which
+          switches off the skid gate AND the balance term, and is how 25 skids landed 4/20 across
+          two box trucks that hold 14. The build fills the class floor in now; this says it did,
+          because a number nobody chose is only safe while it is visible. */}
+      {Array.isArray(result.capacityNotes) && result.capacityNotes.length > 0 && (
+        <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[12px]">
+          <div className="font-semibold text-amber-800 mb-1">
+            {result.capacityNotes.length === 1 ? 'A truck had no limit set — the build supplied one' : `${result.capacityNotes.length} truck limits were missing — the build supplied them`}
+          </div>
+          {result.capacityNotes.map((n, i) => <div key={i} className="text-amber-900 leading-snug">{n.text}</div>)}
+        </div>
+      )}
+
       {result.idleTrucks && result.idleTrucks.length > 0 && (
         <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[12px]">
           <div className="font-semibold text-amber-800 mb-1">
