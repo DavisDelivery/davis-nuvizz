@@ -63,6 +63,7 @@ import { serverLoginEnabled, ensureFirebaseSession, dropFirebaseSession, signOut
 import { getSession, setSession, subscribeSession, onAuthEvent, clearSession } from './lib/session.js';
 import { formatCompletionPct } from './lib/completion-pct.js';
 import { isTvPath, tvRailRows, tvVerdict, tvFeedState, TV_RAIL_LIMIT } from './lib/tv-mode.js';
+import { tvStaticMapEnabled, buildTvStaticMapUrl } from './lib/tv-static-map.js';
 import { driverLabelLines, driverFixStale } from './lib/driver-label.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress, addressReachedNuvizz } from './lib/nuvizzWrite.js';
@@ -145,7 +146,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.31.4';
+const APP_VERSION = '1.31.5';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -199,7 +200,8 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.31.4', 'A NOTICE THAT A DOCK SHUTS FOR LUNCH WAS READ AS THE ONLY HOUR IT RECEIVES. Chad, on PRO 007176487 (DOUGLASVILLE DOUGLAS COUNTY OF, VINCENT stop 18): “parser is incorrectly reading this customers hours they are just stating that they are closed for lunch 1230-130 and all day friday.” THE SENTENCE HAS FOUR FACTS IN IT AND EVERY ONE CAME OUT WRONG. NuVizz cuts a comment at about 25 characters, so it arrives as “CLOSED MON-THUR 12 30PM-” and “1 30 PM AND ALL DAY FRI”. Reproduced on v1.31.2 before anything was changed: the day-qualified hours tier stored byDay mon–thu = 12:30–13:30, which says the dock receives ONLY during the hour nobody is on it — the exact inverse of the truth, so every real delivery would flag and the router would try to cram stop 18 into that hour. The closed-day scanner matched “CLOSED MON” out of the middle of the span and marked MONDAY shut, a day they are open. And FRIDAY, the one genuine closed day, was missed completely. Three defects, one governing idea they all missed: THE WORD CLOSED OWNS THE WHOLE SENTENCE. WHAT CHANGED. (1) The day-qualified hours tier now refuses a span a closure word sits directly against. The bare-pair tier has refused a closure context since it was written; the day-qualified tier, which OUTRANKS it, never did — so the most specific evidence in the scanner was the one tier that could not tell an opening from a shutting. It is anchored tight, so “CLOSED SAT, MON-FRI 8-5” still reads the weekday hours. (2) “CLOSED <span>” now governs the WHOLE span rather than its first day, so “CLOSED SAT-SUN” closes Sunday too — it had been silently dropping it for as long as the patterns have existed. And a span followed by a TIME RANGE is a closure WINDOW, not a closed day: “CLOSED MON-FRI 12-1” shuts nobody out, because marking those five days closed would send no truck at all to a dock open every weekday. (3) “ALL DAY <day>” closes a day, but ONLY when a closure word governs it and no OPEN sits between the two — “OPEN ALL DAY FRI” is the opposite instruction and must never be read as a shutting. (4) The closed-day scanner now strips the SPL-INSTR-TEXT prefixes exactly as the hours scanner always has. It was reading the RAW text, so a closure window split across two comment records was invisible to it and all four weekdays came out shut. WHAT IT NOW SAYS ABOUT DOUGLASVILLE: hours null — they never told us when they are open, and inventing a window is how this started — and Friday closed. The lunch gap itself still has nowhere to live, because the schema holds one window per day; the raw order text on the card is where a dispatcher reads it, which is what the provenance line added in v1.23.1 is for. A clean before/after against a real origin/main worktree moved 10 rows of 36 and left the other 26 byte-identical — early closes, ordinary day-qualified hours, the WEAVER lunch split and every plain range unchanged. 10 new tests, 4,835 green.'],
+  ['1.31.5', 'A NOTICE THAT A DOCK SHUTS FOR LUNCH WAS READ AS THE ONLY HOUR IT RECEIVES. Chad, on PRO 007176487 (DOUGLASVILLE DOUGLAS COUNTY OF, VINCENT stop 18): “parser is incorrectly reading this customers hours they are just stating that they are closed for lunch 1230-130 and all day friday.” THE SENTENCE HAS FOUR FACTS IN IT AND EVERY ONE CAME OUT WRONG. NuVizz cuts a comment at about 25 characters, so it arrives as “CLOSED MON-THUR 12 30PM-” and “1 30 PM AND ALL DAY FRI”. Reproduced on v1.31.2 before anything was changed: the day-qualified hours tier stored byDay mon–thu = 12:30–13:30, which says the dock receives ONLY during the hour nobody is on it — the exact inverse of the truth, so every real delivery would flag and the router would try to cram stop 18 into that hour. The closed-day scanner matched “CLOSED MON” out of the middle of the span and marked MONDAY shut, a day they are open. And FRIDAY, the one genuine closed day, was missed completely. Three defects, one governing idea they all missed: THE WORD CLOSED OWNS THE WHOLE SENTENCE. WHAT CHANGED. (1) The day-qualified hours tier now refuses a span a closure word sits directly against. The bare-pair tier has refused a closure context since it was written; the day-qualified tier, which OUTRANKS it, never did — so the most specific evidence in the scanner was the one tier that could not tell an opening from a shutting. It is anchored tight, so “CLOSED SAT, MON-FRI 8-5” still reads the weekday hours. (2) “CLOSED <span>” now governs the WHOLE span rather than its first day, so “CLOSED SAT-SUN” closes Sunday too — it had been silently dropping it for as long as the patterns have existed. And a span followed by a TIME RANGE is a closure WINDOW, not a closed day: “CLOSED MON-FRI 12-1” shuts nobody out, because marking those five days closed would send no truck at all to a dock open every weekday. (3) “ALL DAY <day>” closes a day, but ONLY when a closure word governs it and no OPEN sits between the two — “OPEN ALL DAY FRI” is the opposite instruction and must never be read as a shutting. (4) The closed-day scanner now strips the SPL-INSTR-TEXT prefixes exactly as the hours scanner always has. It was reading the RAW text, so a closure window split across two comment records was invisible to it and all four weekdays came out shut. WHAT IT NOW SAYS ABOUT DOUGLASVILLE: hours null — they never told us when they are open, and inventing a window is how this started — and Friday closed. The lunch gap itself still has nowhere to live, because the schema holds one window per day; the raw order text on the card is where a dispatcher reads it, which is what the provenance line added in v1.23.1 is for. A clean before/after against a real origin/main worktree moved 10 rows of 36 and left the other 26 byte-identical — early closes, ordinary day-qualified hours, the WEAVER lunch split and every plain range unchanged. 10 new tests, 4,851 green.'],
+  ['1.31.4', 'THE WALL DISPLAY DRAWS ITS MAP AS A PICTURE NOW, AND THE SCREEN SAYS WHY IT KEEPS GOING TO SLEEP. Chad, after two rounds of a television that would not draw a map: “i’m thinking i like the idea of of making a static image lets write it merge it and just a switch to take it back the way it was” — and, separately, “tv is going to sleep on me”. A WALL DISPLAY IS THE ONE SCREEN HERE THAT CANNOT BE INTERACTED WITH. Nobody pans it, nobody zooms it, nobody clicks a pin — so EVERY SINGLE THING the Maps JavaScript API buys over an image is an interaction that never happens, and the price is a WebGL-capable modern browser sitting on a wall for twelve hours. On the office set (a 2020 Samsung TU8000) that price came due twice: a white rectangle on the vector map, then still unreliable on raster. An <img> is a picture. It draws on anything that can draw a picture, it cannot half-initialise, and when it fails it fails in ONE obvious way instead of silently painting nothing. For a screen with no pointer that is not a downgrade, it is the right instrument. AND THE JS MAP IS NOT LOADED AT ALL on that screen — useGoogleMaps takes an `enabled` now. Not an optimisation: the script was the thing that would not work, so the fix is to stop asking it to rather than to keep asking and report the failure more politely. It also saves a billed dynamic map load every time the television reloads. WHICH PINS SURVIVE IS A LOGISTICS DECISION, NOT A TECHNICAL ONE. A Static Maps URL dies past 8192 characters — a few hundred pins — and a bad day here is seven hundred stops, so something gets dropped. The order is trucks, then stops that still need a phone call, then open freight, then delivered: where the fleet is, is what a room looks up at, and a delivered stop is the only thing on the board that cannot generate another call. THE CAP IS PRINTED ON THE SCREEN (“showing 401 of 640 pins”), because a map quietly showing 400 of 700 reports a lighter morning than the one being worked — the same failure as a flag rail that truncates in silence. Measured on a 640-stop fixture: 7,783 characters, 401 pins, under the limit. THE TOGGLES A PICTURE CANNOT HONOUR ARE NOT OFFERED. Clustering, place labels and route lines are hidden from the TV’s Filters panel rather than left inert, because a switch that moves and changes nothing teaches the person holding the remote that the panel is broken — and they stop trusting the toggles that DO work, which here includes live drivers, the one Chad kept that panel for. Carry-over, hide-terminal, hide-stem-out, unplanned-only and live drivers all still work, because they change the STOP SET rather than the rendering. THE SLEEP, ANSWERED HONESTLY RATHER THAN PAPERED OVER. The wake lock swallowed every outcome — unsupported, refused, released — into one silent catch, so a television going dark at 10am and one holding its lock all day were the same code path and the same screen: a lock whose position cannot be read is not a lock. It reports now, and when it cannot be taken the rail says so and NAMES THE SETTING THAT ACTUALLY FIXES IT (Samsung: Settings › General › System Manager › Time › Sleep Timer, and Eco / Auto Power Off). The Screen Wake Lock API is Chromium 84+ and this set predates it; a web page cannot overrule a television’s power settings, and pretending otherwise would be the same class of lie as the “all clear” this screen printed over a board it had never read. AND THE OLD DIAGNOSTIC STOPPED BLAMING WEBGL, which stopped being true the moment TV mode dropped the vector map — a message naming an already-eliminated cause sends the next person down a road known to be empty. ONE BUG CAUGHT BY OPENING THE PAGE RATHER THAN READING THE DIFF: the refresh constant was declared 110 lines ABOVE the one it referenced, a temporal dead zone that threw at module load and rendered the ENTIRE APP blank — every screen, not just the television. The build compiled it happily. THE WAY BACK IS ONE ENV VAR: VITE_TV_STATIC_MAP=off returns the TV to the live JS map, every side at once, and anything malformed leaves it ON so a typo cannot silently restore the map that could not draw. THE SPEND, STATED: one billed Maps Static API request per refresh on the board’s own 2-minute cadence — ~300/day, ~9,000/month; and “Maps Static API” is a SEPARATE API from “Maps JavaScript API” in the Google console, so if the key lacks it the screen says exactly that instead of showing an empty frame. 16 tests on lib/tv-static-map.js, including the Number(null)-is-0 trap that would have put a phantom pin in the Atlantic and zoomed the whole board out to fit it.'],
   ['1.31.3', 'THE “?” FLAG WAS A SECOND SHADE OF THE UNPLANNED VIOLET, AND IT WAS TELLING DISPATCHERS THE WRONG THING. Chad: “get rid of this flag it doesn’t do anything and its also the color of the unplanned orders so is confusing for dispatcher — i want the flag replaced with a question mark and color stays whatever the icon is from the order.” THE COLLISION IS IN THE CONSTANTS, not in his eyes: FLAG_COLORS.question is #6366f1 and STATUS_META.UNPLANNED.color is #6d28d9. On a 16px dot, on a 700-stop board, those are the same violet — so a SCHEDULED stop someone had flagged “look into this” read as unplanned work still waiting to be routed, and an actually-unplanned stop read as flagged. The pin was answering a question nobody asked with a colour that already meant something else. NOW THE “?” MARKS THE PIN INSTEAD OF COLOURING IT. A question-flagged stop keeps the colour its own order earned — unplanned violet, delivered green, address-off amber, Estes black — and wears a white “?” in the middle. The glyph was already being drawn; what changed is that the hue no longer overrides the order underneath it. THE HUE WAS REACHABLE BY TWO ROUTES and both had to go: the `flagHue` term, and flagColor()’s PIN_TINTS lookup at the END of the same `||` chain — a SCHEDULED stop’s STATUS_META colour is null, so dropping only the first would have landed it back on the same indigo through the back door. That is the Estes-paint failure exactly (v0.97.2 shipped with every right word in the source and the colour still wrong on half the board), so these tests BUILD REAL MARKERS through the shipped stopMarkerIcon and read the colour out of the SVG rather than grepping App.jsx for words. THE REPLACEMENT IS EXACTLY AS WIDE AS THE GLYPH, which is the part worth knowing: where the status already owns the centre (delivered ✓, en-route ➜, exception !), where the pin is a restriction icon, or where a selection/search hit has recoloured it, the tint is the flag’s ONLY channel on that pin and it KEEPS it. A flag that shows nothing at all is worse than one that shows a confusable colour — the first is indistinguishable from an unflagged stop, and silently losing a dispatcher’s mark is not a tidier map, it is a lost note. Those pins are also not the ones Chad was describing: his collision is between two violet DOTS, and a restriction pin is a white disc. SCOPE WAS HIS CALL — the map pin only. The Filters chip, the stop-card picker, the legend row and the stops-table dot all keep the indigo swatch, so the flag still has a colour everywhere a dispatcher SETS or FILTERS by it; a test pins that boundary so nobody later “finishes the job” and takes the swatch out from under the picker. Red, yellow and green are untouched and still colour the pin. 9 new tests, four of which go red against the previous behaviour and five of which stay green — checked both ways rather than assumed. One commit, so `git revert` is the whole way back.'],
   ['1.31.2', 'A WEEK-OLD ORDER WAS IN OUR HISTORY THE WHOLE TIME AND THE SEARCH COULD NOT SEE IT. Chad, typing PRO 7175119 into Search past PROs and being offered a NuVizz call for it: “this order is a week old why is it not in the history? we should be keeping all orders in history it shouldn’t be asking for a nuvizz call here.” He was right, and we WERE keeping it — history_days keeps every stop of every captured day and never prunes. The SEARCH was the problem. The only PRO-searchable structure was pro_index on the per-customer rollup, and that array is a customer’s most recent 20 deliveries (MAX_PROS). Order 21 and older fell out of the index while the full stop record — route, driver, ticket, line items — sat in the warehouse untouched. The warehouse could not answer a bare PRO by itself because it is partitioned by DAY, so resolving a number without its date meant scanning every day; nothing did, so the screen said “nothing in saved history” and offered to spend a vendor call on an order we already owned. TWO MORE WAYS IT MISSED, both fixed here: the lookup only tried the raw token and zero-padded-to-9, so a 10-digit stored PRO was unreachable from a 7-digit search; and it never stripped the board’s segment suffix, so an order stored as 007157687-1 could not be found by typing 7157687. NOW: a new PRO→day pointer index (history_pros) — one tiny document per PRO saying which day it was on, written by the nightly post-seal hooks. A PRO search is at most TWO document reads, covers EVERY order we have ever captured no matter how many deliveries that customer has had since, and the hit rides first so tapping the card opens the order you searched for rather than the customer’s newest. Every padding of a number is one key, the segment suffix is stripped, and a carrier PRO is findable by its digits or its whole string, upper or lower case — while keeping its full digit run, so AVRT-0028093763 can never be read as a sibling of ESTES-0538243875. A first-time PRO costs ONE Firestore op (no read); an attempt and its redelivery both survive rather than the newer capture blind-writing the older day away. The old last-20 scan stays as the fallback, so days not yet backfilled still answer. BACKFILL, which is what makes the past searchable: nuvizz-rebuild-customer-history-background now writes the pointers as well as the rollups — run it a month at a time (?from=&to=), Firestore-only, ZERO NuVizz calls, and safe to repeat. STILL ONE HONEST CASE FOR THE BUTTON: capture runs nightly for the day just ended, so an order created TODAY is not in the warehouse yet and the single deliberate NuVizz lookup is the right answer for it — the screen now says so instead of implying we lost the order. PRO_INDEX=off reverts the read, both writes and the backfill together. 28 new tests, five of them driving the real endpoint against an in-memory Firestore that throws on any non-Firestore fetch — so \u201czero NuVizz calls\u201d is proved, and PRO_INDEX=off reproduces the original miss.'],
   ['1.31.1', 'A MOVED ORDER WAS CARRYING ITS OLD DRIVER ONTO THE NEW LOAD. Chad, on PRO 7175976: “i moved an order from colin 1 to gainesville load — gainesville load did not have anyone assigned to it but when i moved the order it assigned colin to the load.” NOTHING WAS ASSIGNED IN NUVIZZ, and that is worth saying first: assignDriver only ever fires for a driver STAGED on the card (hasDriverId(p.L?.driverId)), and a move stages none — no call went out. What moved was the BOARD ROW. The confirmed-plan stamp (boardWritePlannedFields) writes the row’s new route and, when the Save carries no driver, wrote no driver field at all — so the row kept COLIN while now reading GAINESVILLE, and the client’s own overlay paint did the same thing one line at a time (driverName: e.driverName ?? s.driverName). ONE STALE FIELD NAMES THE WRONG TRUCK EVERYWHERE, because everything reads a load’s driver off its rows: the Loads grid takes the first row that has one (so an unassigned GAINESVILLE read COLIN), and board-flags’ fillRouteDrivers spreads a route’s single driver name onto every flag row — which is the name a miss-window email and a driver text print. A dispatcher phones the wrong driver about freight he is not carrying. THE RULE, NOW PINNED: a driver belongs to the LOAD, not to the order. A planned stamp with no driver CLEARS the row’s driver when the order is demonstrably changing loads, and touches nothing when it is not — a re-sequence on a crewed load keeps its driver, and so does any stamp on the route the order is already on. TWO NAMESPACES ARE NOT A DISAGREEMENT (v1.12.0’s lesson, arriving from the other direction): both write-through callers fall back to a load NUMBER or a hex card key when a card has no resolvable name, while the row holds the human name, so “DAVIS000203388” against “RONALD” decides nothing here either — it would have blanked drivers on routes nobody left. The judgement lives in lib/route-identity (server and client mirror, one test asserts they answer identically), and isHashLikeId / looksLikeLoadNbr MOVE there rather than multiply. The route card now reads its driver from the first row that HAS one (the printed manifest already did), so a just-moved row with no driver can never make a crewed route read “—”. MOVE_CLEARS_DRIVER=off puts the write back byte for byte. Zero NuVizz calls, and zero were spent finding it. 12 new tests, checked against a deliberately reintroduced regression — they go red on it. 4,759 green.'],
@@ -1157,6 +1159,10 @@ const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
 const MOCK_MODE = import.meta.env.VITE_USE_MOCK_NUVIZZ === 'true';
 const MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+// THE WALL DISPLAY DRAWS ITS MAP AS A PICTURE — see lib/tv-static-map.js for why, and for the
+// house-shape switch. Read once at module load, like every other build-time flag here.
+// VITE_TV_STATIC_MAP=off puts the TV back on the live JS map; anything malformed leaves it ON.
+const TV_STATIC_MAP = tvStaticMapEnabled(import.meta.env);
 // Optional vector Map ID. When set, Google renders a VECTOR map which supports
 // interactive 3D tilt + rotation (hold ⌘/Ctrl and drag to spin around a point)
 // and 3D buildings. Unset → raster map (still gets the rotate control + 45°
@@ -1279,6 +1285,17 @@ const STOP_ZOOM = 18;
 // How often the map silently re-reads the Firestore stop index (DB, not NuVizz)
 // so a long-open tab stays current. The background cron scans NuVizz every ~5m.
 const STOPS_REFRESH_MS = 120000; // 2 minutes
+// How often the wall display re-fetches its picture. EVERY REFRESH IS ONE BILLED Maps Static
+// API REQUEST, so this is a SPEND knob and not a smoothness one: it matches the board's own
+// poll above, because a picture redrawn faster than the data behind it changes is money for
+// nothing. ~300 requests over a 4am-2pm day.
+//
+// DECLARED HERE, BELOW ITS SOURCE, AND THAT IS NOT TIDINESS. The first cut of this sat up
+// beside MAPS_KEY, ~110 lines ABOVE STOPS_REFRESH_MS — a temporal dead zone that threw
+// "Cannot access before initialization" at module load and rendered the ENTIRE APP as a blank
+// page, on every screen, not just the television. Found by opening /tv in a browser rather
+// than by reading the diff; the build is perfectly happy to ship it.
+const TV_STATIC_REFRESH_MS = STOPS_REFRESH_MS;
 // When the WALL DISPLAY should stop claiming the board is current. useStops re-reads every
 // STOPS_REFRESH_MS while the tab is visible — and a television is visible by definition, all
 // day — so a gap of several intervals means the silent polls are failing silently, which is
@@ -1776,10 +1793,15 @@ function GridSortTh({ col, sort, onToggle }) {
 }
 
 // Lazy-load Google Maps JS API. Returns google namespace once loaded.
-function useGoogleMaps() {
+// `enabled` exists for ONE caller: the wall display drawing a static image. On that screen the
+// JS map is not merely unused, it is the thing that could not draw — so not fetching the script
+// at all removes the failure mode rather than hiding it, and saves a billed dynamic map load
+// every time the television reloads. Defaults true, so every other caller is untouched.
+function useGoogleMaps(enabled = true) {
   const [google, setGoogle] = useState(null);
   const [error, setError] = useState(null);
   useEffect(() => {
+    if (!enabled) return undefined;
     if (!MAPS_KEY) {
       setError('VITE_GOOGLE_MAPS_API_KEY is not set');
       return;
@@ -1792,7 +1814,7 @@ function useGoogleMaps() {
       if (!cancelled) setError(e.message || String(e));
     });
     return () => { cancelled = true; };
-  }, []);
+  }, [enabled]);
   return { google, error };
 }
 
@@ -6665,7 +6687,10 @@ function CarryoverControl({ value = 0, onChange, boardDate }) {
 // The one thing that stayed from that release is the "Fullscreen TV view" button at the
 // bottom of the panel — see onEnterTv. Chad put it here on purpose: "i want the button for
 // fullscreen under filters as i don't want anymore buttons on the screen."
-function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled, showRoutes, setShowRoutes, boardDate, onEnterTv = null }) {
+// `drawnAsImage` — the wall display renders its map as a static picture, which can show pins
+// and nothing else. The rows that only mean something to a live vector map are hidden there
+// rather than left inert; see the call site for why a dead toggle is worse than a missing one.
+function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled, showRoutes, setShowRoutes, boardDate, onEnterTv = null, drawnAsImage = false }) {
   const set = (key) => (v) => setFilters((prev) => ({ ...prev, [key]: v }));
   // Clustering is off by default now; with icons memoized, unclustered rendering is far
   // cheaper, so only warn on genuinely huge boards rather than nagging every busy day.
@@ -6711,23 +6736,27 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
       {vehicleDisabled && (
         <div className="text-[10px] text-slate-500 italic -mt-1 mb-1 leading-tight">Live drivers only available for today.</div>
       )}
-      <MapFilterToggle
-        label="Show clustered markers"
-        checked={filters.showClustered}
-        onChange={set('showClustered')}
-      />
-      {clusterWarning && (
+      {!drawnAsImage && (
+        <MapFilterToggle
+          label="Show clustered markers"
+          checked={filters.showClustered}
+          onChange={set('showClustered')}
+        />
+      )}
+      {!drawnAsImage && clusterWarning && (
         <div className="text-[10px] text-amber-700 italic mt-1 leading-tight">{clusterWarning}</div>
       )}
       {/* Satellite view moved ONTO the map (beside the Recenter crosshair) — see the
           satBtn control in the map-init effect. It is a look-at-the-picture control, and
           the phone sheet never carried it at all. */}
-      <MapFilterToggle
-        label="Hide place labels"
-        checked={filters.hideLabels}
-        onChange={set('hideLabels')}
-      />
-      {setShowRoutes && (
+      {!drawnAsImage && (
+        <MapFilterToggle
+          label="Hide place labels"
+          checked={filters.hideLabels}
+          onChange={set('hideLabels')}
+        />
+      )}
+      {!drawnAsImage && setShowRoutes && (
         <MapFilterToggle
           label="Show routes"
           checked={showRoutes}
@@ -11749,7 +11778,11 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   const { notes, ready: notesReady } = useCustomerNotes();
   const tractorLocs = useTractorLocations();
   useAutoScanner(stops, notes, notesReady);
-  const { google, error: mapsError } = useGoogleMaps();
+  // THE WALL DISPLAY DOES NOT LOAD THE JS MAP AT ALL when it is drawing a picture. Not an
+  // optimisation: the JS map is the thing that would not draw on that television, so the fix
+  // is to stop asking it to, rather than to keep asking and report the failure more politely.
+  const tvStatic = tvMode && TV_STATIC_MAP;
+  const { google, error: mapsError } = useGoogleMaps(!tvStatic);
   const viewportWidth = useViewportWidth();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
   // The mobile top overlay is ONE flow column now (see the render below), so nothing
@@ -12172,6 +12205,52 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   // this stays one small isolated change and `git revert` is the way back.
   const mapIdForView = tvMode ? undefined : MAP_ID;
   const [tvMapDrew, setTvMapDrew] = useState(false);
+  // ── THE PICTURE ─────────────────────────────────────────────────────────────
+  // A counter, not a timestamp, so the <img> src changes exactly as often as we mean it to.
+  // Every change is a billed request (see TV_STATIC_REFRESH_MS) — a src that moved on every
+  // render would bill on every render.
+  const [tvStaticTick, setTvStaticTick] = useState(0);
+  useEffect(() => {
+    if (!tvStatic) return undefined;
+    const t = setInterval(() => setTvStaticTick((n) => n + 1), TV_STATIC_REFRESH_MS);
+    return () => clearInterval(t);
+  }, [tvStatic]);
+  // The image can fail where the JS map merely sat there: a key without the Maps STATIC API
+  // enabled answers 403, which paints a broken-image glyph and nothing else. Reported, for
+  // the same reason everything else on this screen is.
+  const [tvStaticErr, setTvStaticErr] = useState(false);
+  // WHICH PINS GO ON THE PICTURE, in the order they survive the URL budget (see packMarkers).
+  // The groups mirror what the JS map draws, minus everything that only means something to a
+  // pointer: no clustering, no route polylines, no hover.
+  const tvStaticUrl = useMemo(() => {
+    if (!tvStatic) return null;
+    // Flagged = the rail's own rows, so the dots that stand out red on the wall are EXACTLY
+    // the stops listed beside them. Two different definitions of "flagged" on one screen is
+    // how a room comes to distrust both.
+    const flaggedNbrs = new Set(
+      (boardFlags.rows || [])
+        .filter((r) => !dismissedFlags[r.dismissKey] && (r.tier === 'critical' || r.tier === 'red'))
+        .map((r) => String(r.stopNbr)),
+    );
+    const flagged = []; const open = []; const done = [];
+    for (const st of filteredStops) {
+      if (flaggedNbrs.has(String(st.stopNbr))) flagged.push(st);
+      else if (isFinishedStatus(st.normalizedStatus)) done.push(st);
+      else open.push(st);
+    }
+    return buildTvStaticMapUrl({
+      groups: { driver: showDrivers ? drivers : [], flagged, open, done },
+      // 640x416 is the Static Maps ceiling in the ratio of the map pane beside the flag rail
+      // (~1520x990). scale=2 doubles the pixels without doubling the billed request.
+      width: 640, height: 416, scale: 2, key: MAPS_KEY || '',
+    });
+    // tvStaticTick is the REFRESH: it is in the deps precisely so the URL changes on the timer
+    // and not on every render. eslint cannot see that, hence the disable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tvStatic, filteredStops, drivers, showDrivers, boardFlags, dismissedFlags, tvStaticTick]);
+  // A new picture is a new chance to load — clear the last failure so a transient 500 does not
+  // leave "the map image did not load" on the wall for the rest of the day.
+  useEffect(() => { setTvStaticErr(false); }, [tvStaticUrl?.url]);
   useEffect(() => {
     if (!tvMode || !google || !mapRef.current) return undefined;
     const listener = google.maps.event.addListenerOnce(mapRef.current, 'tilesloaded', () => setTvMapDrew(true));
@@ -12192,16 +12271,37 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   // best-effort by design: it is unsupported on some TV browsers and it is DROPPED by the
   // browser whenever the page is hidden, so it is re-taken on every visibility change rather
   // than requested once at mount and assumed to hold for twelve hours.
+  //
+  // AND IT REPORTS WHETHER IT ACTUALLY GOT ONE. Chad: "tv is going to sleep on me". The first
+  // cut of this swallowed every outcome — unsupported, refused, released — into one silent
+  // catch, so a television going dark at 10am and a television holding its lock all day were
+  // the same code path and produced the same screen. That is the exact "never report an
+  // intent as an outcome" failure this repo keeps writing rules about: a lock whose position
+  // cannot be read is not a lock.
+  //
+  // THE HONEST PART, because it decides what to do about it: the Screen Wake Lock API is
+  // Chromium 84+, and the set this runs on is a 2020 Samsung whose browser predates that. On
+  // a television the sleep timer belongs to the SET, not to a web page — so when the lock is
+  // unavailable the screen says so and names the thing that actually fixes it, instead of
+  // pretending a web app can overrule a TV's power settings.
+  const [tvWakeHeld, setTvWakeHeld] = useState(null);   // null = not tried yet
   useEffect(() => {
     if (!tvMode) return undefined;
     let lock = null;
     let dead = false;
     const take = async () => {
+      if (dead || document.visibilityState !== 'visible') return;
+      if (!navigator.wakeLock?.request) { setTvWakeHeld(false); return; }
       try {
-        if (dead || document.visibilityState !== 'visible') return;
-        if (!navigator.wakeLock?.request) return;
         lock = await navigator.wakeLock.request('screen');
-      } catch { /* unsupported, or refused — the TV's own sleep settings are the fallback */ }
+        if (dead) { try { await lock.release(); } catch { /* ignore */ } return; }
+        setTvWakeHeld(true);
+        // The browser drops the lock on its own (backgrounding, power events). Without this
+        // the flag would still read "held" long after the screen started sleeping again.
+        try { lock.addEventListener('release', () => { if (!dead) setTvWakeHeld(false); }); } catch { /* older impls */ }
+      } catch {
+        setTvWakeHeld(false);
+      }
     };
     take();
     document.addEventListener('visibilitychange', take);
@@ -13342,7 +13442,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     // screen threw it away, so a refused fetch showed as "loading…" for ever and neither the
     // room nor anybody asked about it could tell WHY. It is the difference between a photo of
     // a broken screen and a diagnosis.
-    const mapBlank = !tvMapDrew && (tvClock - tvBootedAt) > 20000;
+    // Only the LIVE map can go blank-without-error; the picture reports its own failure
+    // through onError, so leaving this armed there would accuse a working image.
+    const mapBlank = !tvStatic && !tvMapDrew && (tvClock - tvBootedAt) > 20000;
     return (
       <div className="flex-1 flex flex-col min-h-0 bg-slate-950 text-white">
         {/* ── THE STATUS BAR. Two numbers big enough to read across a room, one verdict in
@@ -13374,7 +13476,38 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         <div className="flex-1 flex min-h-0">
           {/* ── THE MAP ─────────────────────────────────────────────────────── */}
           <div className="flex-1 relative min-w-0">
-            <div ref={mapDiv} className="absolute inset-0" />
+            {/* ── THE MAP: A PICTURE, OR THE LIVE ONE ────────────────────────────────
+                A wall display is the one screen here that cannot be interacted with, so
+                everything the JS map buys over an image is an interaction nobody performs —
+                and the price was a WebGL-capable modern browser on a 2020 television, which
+                is what failed twice. object-contain, not cover: a wall map that silently
+                crops the top of the territory is worse than one with a margin. */}
+            {tvStatic ? (
+              tvStaticUrl ? (
+                <img
+                  src={tvStaticUrl.url}
+                  alt=""
+                  className="absolute inset-0 w-full h-full object-contain bg-slate-900"
+                  onError={() => setTvStaticErr(true)}
+                  onLoad={() => setTvStaticErr(false)}
+                />
+              ) : (
+                // NO PICTURE IS SAID, never left as an empty frame — the same rule as the
+                // flag rail. Which of the two reasons it is matters, so both are named.
+                <div className="absolute inset-0 flex items-center justify-center bg-slate-900 text-center px-8">
+                  <div>
+                    <div className="text-2xl font-bold text-slate-300">
+                      {MAPS_KEY ? 'No stops to plot yet' : 'No map key on this build'}
+                    </div>
+                    <div className="text-base text-slate-500 mt-2">
+                      {MAPS_KEY ? 'the board has no positioned stops for this day' : 'VITE_GOOGLE_MAPS_API_KEY is not set'}
+                    </div>
+                  </div>
+                </div>
+              )
+            ) : (
+              <div ref={mapDiv} className="absolute inset-0" />
+            )}
             {/* FILTERS, ON THE MAP — the one control Chad asked to keep in here: "still want
                 the filters drop down on the map so i can turn live drivers on and off."
                 CARD mode, not bar mode, because in this view there is no app bar to hang a
@@ -13391,8 +13524,24 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                 showRoutes={showRoutes}
                 setShowRoutes={setShowRoutes}
                 boardDate={selectedDate}
+                // A PICTURE CANNOT HONOUR CLUSTERING, PLACE LABELS OR ROUTE LINES, so on the
+                // static wall those rows are not offered. A switch that moves and changes
+                // nothing is the worst control on any screen: it teaches the person holding
+                // the remote that the panel is broken, and they stop trusting the toggles
+                // that DO work — which here includes the one Chad kept this panel for.
+                drawnAsImage={tvStatic}
               />
             </div>
+            {/* THE CAP IS PRINTED. A URL holds a few hundred pins and a bad day holds seven
+                hundred stops, so something gets dropped (trucks and flagged stops survive
+                first — see packMarkers). A map quietly showing 400 of 700 reports a lighter
+                morning than the one being worked, which is the same failure as a flag rail
+                that truncates in silence. */}
+            {tvStatic && tvStaticUrl && tvStaticUrl.shown < tvStaticUrl.total && (
+              <div className="absolute bottom-4 right-4 z-[20] rounded-lg bg-slate-900/85 border border-slate-600 px-3 py-1.5 text-sm font-semibold text-slate-300">
+                showing {tvStaticUrl.shown.toLocaleString()} of {tvStaticUrl.total.toLocaleString()} pins
+              </div>
+            )}
             {/* THE WAY OUT, kept faint. Chad: "i don't want anymore buttons on the screen."
                 Escape does the same job and is the documented exit; this exists so a mouse
                 that wanders onto the display has somewhere to click, and so the mode is not
@@ -13406,14 +13555,20 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                 <Minimize2 size={13} /> Exit
               </button>
             )}
-            {/* WHY THE MAP IS WHITE, when it is. mapsError covers "the Maps script would not
-                load"; mapBlank covers the quieter one — the script loaded, no error was
-                raised, and nothing was ever drawn. On this screen that is almost always a
-                VECTOR map (a cloud mapId) meeting a browser whose WebGL cannot render it,
-                which is why the message names the thing a person can actually check. */}
-            {(mapsError || mapBlank) && (
+            {/* WHY THERE IS NO MAP, when there isn't — and this used to blame WebGL, which
+                stopped being true the moment TV mode dropped the vector map. A diagnostic
+                that names an already-eliminated cause is worse than silence: it sends the
+                next person down a road that is known to be empty.
+                · tvStaticErr — the PICTURE was refused. Overwhelmingly this is a key without
+                  the Maps STATIC API enabled (it is a separate API from Maps JavaScript in
+                  the Google console), so the message says exactly that.
+                · mapsError    — the JS script would not load (live-map path only).
+                · mapBlank     — the script loaded, raised nothing, and drew nothing. */}
+            {(tvStaticErr || mapsError || mapBlank) && (
               <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[22] max-w-[70%] bg-red-900 border border-red-500 text-red-100 text-base font-semibold rounded-lg px-4 py-2 text-center">
-                {mapsError || 'The map did not draw — Google reported no error, so this browser most likely cannot render the vector (WebGL) map.'}
+                {tvStaticErr
+                  ? 'The map image was refused. Most likely the Maps Static API is not enabled on this key — it is a separate API from Maps JavaScript in the Google console.'
+                  : mapsError || 'The map did not draw — Google loaded but painted nothing, and reported no error.'}
               </div>
             )}
           </div>
@@ -13470,6 +13625,17 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+            {/* THE SCREEN IS GOING TO SLEEP, AND THIS IS THE ONLY PLACE THAT CAN SAY SO.
+                Shown only when the wake lock was actually refused or is unsupported — which
+                on this television it is, because the API postdates the set. A web page cannot
+                overrule a TV's power settings, so the line names the setting rather than
+                implying the app has it handled. */}
+            {tvWakeHeld === false && (
+              <div className="shrink-0 px-5 py-2.5 border-t border-amber-800 bg-amber-950 text-sm font-semibold text-amber-200">
+                This screen may sleep — the TV's own sleep timer is the only thing that can stop it
+                <div className="text-xs font-normal text-amber-300/80 mt-1">Samsung: Settings › General › System Manager › Time › Sleep Timer (and Eco / Auto Power Off)</div>
               </div>
             )}
             {/* THE OVERFLOW IS PRINTED. Twelve rows on a thirty-flag morning, with the
