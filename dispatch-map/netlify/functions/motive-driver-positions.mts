@@ -5,17 +5,41 @@
 // drivers" toggle (60s client poll) and by the M4.1 driver day-snapshot
 // sidebar (initial label render).
 //
-// Motive APIs we touch (key candidates per the brief — see HANDOFF.md for
-// the confirmed working combination once tested against live creds):
+// WHY A TRUCK WITH A DRIVER ASSIGNED SAID "(no driver)" — Chad, 2026-09-15: "when trucks are
+// displayed on the map for motive, it's saying no driver assigned, which is not factual. A lot
+// of the times there is a driver assigned."
 //
-//   GET /v1/vehicle_locations       — most recent position per vehicle. In
-//                                     practice each entry already nests a
-//                                     `current_driver` sub-object on this
-//                                     account's tier, so this single call
-//                                     covers truck #, driver, and lat/lng.
-//   GET /v2/driver_vehicle_assignments — used as a fallback enrichment if a
-//                                     vehicle entry has no current_driver
-//                                     attached. Keyed by vehicle id.
+// MOTIVE HAS TWO DRIVER FIELDS ON A VEHICLE, AND THIS FUNCTION READ ONE OF THEM. Checked against
+// developer-docs.gomotive.com, not assumed:
+//
+//   current_driver    — who is LOGGED IN on the vehicle's ELD right now. Carried by
+//                       GET /v1/vehicle_locations (the call below). Motive's own scope for
+//                       that endpoint is named "Vehicle Current Location/Driver" — current.
+//   permanent_driver  — the ADMINISTRATIVE assignment a fleet manager makes in Motive.
+//                       Carried by GET /v1/vehicles, and NOT by any version of
+//                       vehicle_locations (v1 and v2 expose current_driver only; v3
+//                       exposes no driver at all).
+//
+// So a driver assigned to a truck who has not yet logged in on its tablet was, to this
+// function, nobody — and the plate said "(no driver)" over a truck the dispatcher could see
+// had a name on it in Motive. The fix reads BOTH: the logged-in driver wins, the assigned one
+// fills in behind, and the record says which it was (driverSource) so the sidebar can be
+// honest that a driver is assigned but not signed in.
+//
+// TWO SMALLER DEFECTS FOUND ON THE SAME READ, both fixed here:
+//   • A name was composed only when BOTH first_name AND last_name were present, so a driver
+//     with one name on file (Motive documents no full_name field) fell through to nobody.
+//   • The old fallback called GET /v2/driver_vehicle_assignments. That endpoint appears
+//     nowhere in Motive's documentation index, and every error from it was swallowed —
+//     so for as long as it has existed it has contributed nothing. Retired.
+//
+// Motive APIs we touch:
+//   GET /v1/vehicle_locations  — most recent position per vehicle + current_driver (paged).
+//   GET /v1/vehicles           — the fleet + permanent_driver (paged). One extra call per
+//                                cache miss for a fleet under 100 trucks.
+//
+// MOTIVE_PERMANENT_DRIVER=off puts the old logged-in-only behaviour back (default ON; a
+// malformed value leaves it ON — a typo must never silently disable a rule).
 //
 // Auth: X-API-KEY header (env: MOTIVE_API_KEY).
 //
@@ -32,6 +56,9 @@ interface DriverPosition {
   vehicleNumber: string | null;
   driverId: number | string | null;
   driverName: string | null;
+  // 'current' = logged in on the ELD; 'permanent' = assigned by a fleet manager but not
+  // signed in; null = Motive names nobody either way.
+  driverSource: 'current' | 'permanent' | null;
   driverFirstName: string | null;
   driverLastInitial: string | null;
   lat: number | null;
@@ -53,6 +80,20 @@ interface DriverPosition {
 interface CacheEntry { storedAt: number; data: DriverPosition[]; }
 const __cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 60 * 1000;
+
+// Motive documents first_name and last_name and NO full_name. A driver with one name on file
+// is still a driver; requiring both is how "Cher" became "(no driver)".
+export function composeDriverName(d: any): string | null {
+  if (!d) return null;
+  if (typeof d.full_name === 'string' && d.full_name.trim()) return d.full_name.trim();
+  const parts = [d.first_name, d.last_name].map((x) => (typeof x === 'string' ? x.trim() : '')).filter(Boolean);
+  return parts.length ? parts.join(' ') : null;
+}
+
+const OFF_WORDS = new Set(['off', '0', 'false', 'no']);
+export function permanentDriverEnabled(env: Record<string, any> = process.env): boolean {
+  return !OFF_WORDS.has(String(env.MOTIVE_PERMANENT_DRIVER ?? '').trim().toLowerCase());
+}
 
 function firstNameOf(name: string | null): string | null {
   if (!name) return null;
@@ -123,47 +164,47 @@ async function fetchVehicleLocations(key: string): Promise<any[]> {
   }, { perPage: VEHICLES_PER_PAGE });
 }
 
-// Fallback: pull current driver-vehicle assignments to fill in any vehicles
-// that don't have current_driver embedded in /vehicle_locations. Best-effort.
-async function fetchAssignments(key: string): Promise<Map<string | number, any>> {
+// The ADMINISTRATIVE assignment lives on /v1/vehicles as permanent_driver, and nowhere on
+// vehicle_locations. Same paged walker; keyed by vehicle id. Best-effort: a failure here
+// degrades to the logged-in-only read, and is reported on the response rather than swallowed.
+export async function fetchPermanentDrivers(
+  fetchPage: (pageNo: number) => Promise<any>,
+): Promise<Map<string | number, any>> {
   const map = new Map<string | number, any>();
-  try {
-    const url = `${MOTIVE_BASE.replace(/\/v1$/, '/v2')}/driver_vehicle_assignments`;
-    const resp = await fetch(url, {
-      headers: { 'X-API-KEY': key, Accept: 'application/json' },
-    });
-    if (!resp.ok) return map;
-    const data: any = await resp.json();
-    const list = data?.driver_vehicle_assignments || data?.assignments || data?.data || [];
-    for (const entry of list) {
-      const a = entry.driver_vehicle_assignment || entry;
-      const vid = a.vehicle?.id ?? a.vehicle_id;
-      const driver = a.driver || {};
-      if (vid != null) {
-        map.set(vid, {
-          id: driver.id,
-          full_name: driver.full_name || (driver.first_name && driver.last_name ? `${driver.first_name} ${driver.last_name}` : null),
-          first_name: driver.first_name,
-          last_name: driver.last_name,
-        });
-      }
-    }
-  } catch {
-    // Swallow — assignments are a nicety, not a requirement.
+  const entries = await fetchAllVehiclePages(fetchPage, { perPage: VEHICLES_PER_PAGE });
+  for (const entry of entries) {
+    const v = entry?.vehicle || entry || {};
+    const pd = v.permanent_driver;
+    if (v.id != null && pd && typeof pd === 'object' && composeDriverName(pd)) map.set(v.id, pd);
   }
   return map;
 }
 
-export function normalizeEntry(entry: any, assignmentLookup: Map<string | number, any>): DriverPosition {
+async function fetchVehiclesFromMotive(key: string): Promise<Map<string | number, any>> {
+  return fetchPermanentDrivers(async (pageNo) => {
+    const url = `${MOTIVE_BASE}/vehicles?per_page=${VEHICLES_PER_PAGE}&page_no=${pageNo}`;
+    const resp = await fetch(url, { headers: { 'X-API-KEY': key, Accept: 'application/json' } });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw Object.assign(new Error(`Motive HTTP ${resp.status}`), { status: resp.status, body: text.slice(0, 400) });
+    }
+    return resp.json();
+  });
+}
+
+export function normalizeEntry(entry: any, permanentLookup: Map<string | number, any>): DriverPosition {
   const v = entry.vehicle || entry;
   const loc = v.current_location || entry.current_location || {};
   let driver = v.current_driver || v.driver || entry.current_driver || null;
-  if (!driver && v.id != null && assignmentLookup.has(v.id)) {
-    driver = assignmentLookup.get(v.id);
+  let driverSource: 'current' | 'permanent' | null = driver && composeDriverName(driver) ? 'current' : null;
+  if (!driverSource) {
+    // Also honour a permanent_driver riding on the entry itself, for callers that already
+    // merged the two reads, before consulting the lookup.
+    const pd = v.permanent_driver || (v.id != null ? permanentLookup.get(v.id) : null) || null;
+    if (pd && composeDriverName(pd)) { driver = pd; driverSource = 'permanent'; }
+    else driver = null;
   }
-  const driverName: string | null = driver
-    ? (driver.full_name || (driver.first_name && driver.last_name ? `${driver.first_name} ${driver.last_name}` : null))
-    : null;
+  const driverName: string | null = composeDriverName(driver);
   return {
     vehicleId: v.id ?? null,
     // Verbatim but TRIMMED — the live feed carries '0186T ' with a trailing space, and an
@@ -171,6 +212,7 @@ export function normalizeEntry(entry: any, assignmentLookup: Map<string | number
     vehicleNumber: (String(v.number ?? '').trim() || String(v.name ?? '').trim()) || null,
     driverId: driver?.id ?? null,
     driverName,
+    driverSource,
     driverFirstName: driver?.first_name || firstNameOf(driverName),
     driverLastInitial: driver?.last_name ? driver.last_name.charAt(0).toUpperCase() : lastInitialOf(driverName),
     lat: loc.lat != null ? Number(loc.lat) : null,
@@ -225,16 +267,20 @@ export default async (req: Request): Promise<Response> => {
 
   try {
     const rawVehicles = await fetchVehicleLocations(key);
-    // Decide whether we even need the assignment fallback — only if any entry
-    // is missing current_driver.
-    const needsAssignments = rawVehicles.some((entry: any) => {
+    // Only spend the second call when somebody on the board has no logged-in driver.
+    const anyUnattributed = rawVehicles.some((entry: any) => {
       const v = entry.vehicle || entry;
-      return !(v.current_driver || v.driver || entry.current_driver);
+      return !composeDriverName(v.current_driver || v.driver || entry.current_driver);
     });
-    const assignments = needsAssignments ? await fetchAssignments(key) : new Map();
+    let permanent = new Map<string | number, any>();
+    let permanentError: string | null = null;
+    if (anyUnattributed && permanentDriverEnabled()) {
+      try { permanent = await fetchVehiclesFromMotive(key); }
+      catch (e: any) { permanentError = e?.message || String(e); }   // degrade, and SAY so
+    }
 
     const drivers = rawVehicles
-      .map((entry: any) => normalizeEntry(entry, assignments))
+      .map((entry: any) => normalizeEntry(entry, permanent))
       .filter((d: DriverPosition) => d.lat != null && d.lng != null);
 
     __cache.set(cacheKey, { storedAt: Date.now(), data: drivers });
@@ -245,6 +291,7 @@ export default async (req: Request): Promise<Response> => {
       generated: new Date().toISOString(),
       count: drivers.length,
       drivers,
+      ...(permanentError ? { permanentDriverError: permanentError } : {}),
     }), { status: 200, headers: cors });
   } catch (e: any) {
     return new Response(JSON.stringify({
