@@ -80,3 +80,60 @@ test('the detector never fetches the roster itself (metered on cache miss)', () 
   assert.ok(gate > 0 && idx - gate < 1500,
     'rosterRawRows must be populated ONLY by the Routes-panel-gated fetch — the flags detector must never initiate a roster fetch of its own.');
 });
+
+// ── v1.32.0 — THE PANEL DROPS DOWN THE MAP'S RIGHT EDGE, AND PUSHES WHAT IS UNDER IT ──
+//
+// Chad: "i want to take the stops and flag card and move to edge of map so when the flags
+// drop down they come down the right side of map and the buttons that are underneath drop
+// down below the flags drop down." The buttons only move for a FLOW SIBLING, which is the
+// property these pins protect: the geometry itself is measured in a real browser by
+// scripts/verify-routing-topbar.mjs, and these catch the wiring mistakes that put the panel
+// back into a container of its own long before a browser guard gets to run.
+
+test('the desktop Map panel is a flow sibling of the map controls, not a portal onto the app bar', () => {
+  assert.ok(
+    !/desktop-appbar-status-slot/.test(src),
+    'the Map board-status card must not be portalled onto the app bar — a panel hanging from there cannot push Filters, Routes and the launchers down.',
+  );
+  const col = src.indexOf('data-testid="map-right-column"');
+  assert.ok(col > 0, 'the map right-hand control column lost its test id — the browser guard cannot find it.');
+  const card = src.indexOf('data-testid="map-status-card"');
+  const panel = src.indexOf('data-testid="map-flags-panel"');
+  const filters = src.indexOf('<FilterToolbar', col);
+  assert.ok(card > col && panel > card && filters > panel,
+    'the column must read card → flags panel → Filters in source order: that ORDER is what makes the controls move when the panel opens.');
+});
+
+test('the column is bounded by the map — a flag list can never push a control off the screen', () => {
+  // The first cut of v1.32.0 did exactly that: at 1440x900 with Filters open the launchers
+  // landed at y 1057. "Below the flags" is the ask; "off the screen" is a new bug.
+  const col = src.indexOf('data-testid="map-right-column"');
+  const decl = src.slice(Math.max(0, col - 400), col);
+  assert.ok(/max-h-\[calc\(100%-1\.5rem\)\][\s\S]*overflow-y-auto/.test(decl),
+    'the map right-hand column must cap at the map height and scroll past it.');
+  assert.ok(/maxHeightClass="max-h-\[52vh\]"/.test(src),
+    'the map flags panel must carry its own shorter cap — at the shared 80vh default an ordinary board needs the scrollbar.');
+});
+
+test('"what was checked" is a drawer, shut by default — the claim survives as the row itself', () => {
+  assert.ok(/const \[checkedOpen, setCheckedOpen\] = useState\(false\)/.test(src),
+    'the checked/skipped accounting must start COLLAPSED — Chad: "where its not always displaying".');
+  // The hook has to precede the null guard or an unmounting panel changes hook order.
+  // Scoped to BoardFlagsPanel: BoardFlagsChip carries the same early return further up.
+  const panelSrc = src.slice(src.indexOf('function BoardFlagsPanel('));
+  assert.ok(panelSrc.indexOf('const [checkedOpen, setCheckedOpen]') < panelSrc.indexOf('if (!flags) return null;'),
+    'the drawer state must be declared before BoardFlagsPanel\'s early return.');
+  assert.ok(/Checked: \{ck\.stops \?\? 0\} stop/.test(src),
+    'the SHUT row must still state the tally — a quiet panel is a claim, not an absence.');
+  assert.ok(/\{gapLabel \? <span className="text-amber-700 font-medium"> · \{gapLabel\}<\/span> : null\}/.test(src),
+    'anything the sweep could not judge must show on the shut row, in amber — a gap hidden behind a collapsed panel is a gap nobody reads.');
+});
+
+test('the restore-dismissed path stays OUT of the drawer — it is an action, not reference', () => {
+  const drawerEnd = src.indexOf('{skippedBits.length > 0 && <> Not judged:');
+  const restore = src.indexOf('Restore dismissed', drawerEnd);
+  assert.ok(drawerEnd > 0 && restore > drawerEnd, 'the restore link moved or vanished.');
+  const between = src.slice(drawerEnd, restore);
+  assert.ok(/<\/div>\s*\n\s*\)\}/.test(between),
+    'the restore link must sit after the drawer closes — a way back filed behind a shut panel is one nobody finds on the morning they need it.');
+});
