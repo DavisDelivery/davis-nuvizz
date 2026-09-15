@@ -15,6 +15,11 @@ import { getNuvizzRequester } from './nuvizz-request.mts';
 import { getCreds, basicAuthHeader, isAttemptShipment } from './nuvizz-scan.mts';
 import { etDayString } from './firestore.mts';
 import { finishedGuardEnabled } from './finished-guard.mts';
+// isHashLikeId / looksLikeLoadNbr live in lib/route-identity.mts — a leaf module, so
+// firestore.mts can ask the same question without importing this one (which imports it).
+// Re-exported here so every existing caller keeps its import path unchanged.
+import { isHashLikeId, looksLikeLoadNbr } from './route-identity.mts';
+export { isHashLikeId, looksLikeLoadNbr };
 
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
 export const OPENAPI_BASE = NUVIZZ_BASE.replace(/\/v7\/?$/, ''); // → .../deliverit/openapi
@@ -56,16 +61,6 @@ export function buildBody(period: string, statusCsv: string, page: number, pageS
 let __warnedNoShipmentKey = false;
 let __warnedNoDisplaySeq = false;
 
-// True for a bare DB identifier (Mongo ObjectId / long hex / 25+-char token) — i.e. NOT a human
-// name. Used to keep a driverId from ever being shown as a driver name (#254).
-export function isHashLikeId(v: any): boolean {
-  const s = String(v ?? '').trim();
-  if (!s || /\s/.test(s)) return false;                 // human names are short words or have spaces
-  if (/^[0-9a-f]{24}$/i.test(s)) return true;           // Mongo ObjectId
-  if (/^[0-9a-f]{16,}$/i.test(s)) return true;          // long hex token
-  if (/^[A-Za-z0-9_-]{20,}$/.test(s) && /\d/.test(s)) return true; // long id-ish token containing a digit
-  return false;
-}
 // First argument that is a real (non-blank, non-hash) human name; '' if none.
 function firstNonHashName(...vals: any[]): string {
   for (const v of vals) {
@@ -983,16 +978,6 @@ export const BOARD_WRITE_GRACE_MIN = 60;
  * No from-route on the stamp (written before v1.8.0, or a caller that had no route) → never
  * released: absence of the baseline is not evidence, and this must not guess a stop off a route.
  */
-// A NuVizz load NUMBER looks like the company code + zero-padded digits ("DAVIS000198197")
-// or (some tenants) a long bare number — NEVER the internal hex loadId (interspersed hex) and
-// NEVER a short human route name ("SUW"). Distinctive enough to VALIDATE a labelled column and,
-// if the column is mislabelled/absent, to FIND the number anywhere in the row — so "the loads
-// scan produces the number, just grab it" holds regardless of the saved-search column naming.
-export function looksLikeLoadNbr(v: any): boolean {
-  const s = String(v ?? '').trim();
-  return /^[A-Za-z]{2,}\d{5,}$/.test(s) || /^\d{6,}$/.test(s);
-}
-
 export function unplanStampOvertaken(prior: any, fresh: any): boolean {
   if (prior?.board_write_planned !== false) return false;   // not an un-plan stamp — the planned side has its own verify
   if (fresh?.isPlanned !== true) return false;              // the list agrees it is un-planned; nothing to argue about
