@@ -263,3 +263,65 @@ test('a dispatcher-set board date is the row\'s own day: an order deferred onto 
   const garbage = splitByMembership(c, membersOf(TREVOR), { date: TODAY, nowMs: NOW, overrides: { '007177010': 'soon' } });
   assert.deepEqual(garbage.foreign.map((r) => r.stopNbr), ['007177010'], 'an unreadable override is no override');
 });
+
+// ── AN EMPTY LOAD HOLDS NOBODY, SO IT CANNOT SAY WHO IS NOT ON IT ──────────────────────
+//
+// Chad, 2026-09-16: "this order is in nuvizz planned on scott and we are showing it unplanned
+// … RWB is full of bugs from work today."
+//
+// Measured on the LIVE board through nuvizz-stop-explain (Firestore only, zero NuVizz calls):
+// every scan on 2026-09-16 was dropping TEN rows, and the ledger said why in its own words —
+// "not on DAVIS000203794 (CHAD, 0 stops on the 2026-09-16 roster) … its own day is 2026-09-11,
+// so it stays on that day's board and comes off 2026-09-16" — directly under the line "The
+// open-order pool agrees: planned on CHAD, filed under 2026-09-16."
+//
+// A recurring route mints a NEW load every day and mints it EMPTY. On the morning of the 16th,
+// CHAD, BUFORD and ULINE APPT were all Drafts holding 0 stops while the freight still hung off
+// yesterday's instance. Zero is a count, so every name "contradicted" its roster load, the
+// membership read of an empty load returned nothing, and every carried row was evicted at once.
+
+test('A FRESHLY MINTED EMPTY DRAFT EVICTS NOBODY — Chad’s CHAD/BUFORD/ULINE APPT morning', () => {
+  const rows = ['007175187', '007174624', '007173937', '007173362', '007173268'].map((stopNbr, i) => ({
+    stopNbr, isPlanned: true, routeName: 'CHAD', routeSeq: 5 + i, boardDate: '2026-09-11',
+  }));
+  const roster = [{ name: 'CHAD', loadNbr: 'DAVIS000203794', loadId: 'x', status: 'Draft', trips: 0 }];
+  assert.deepEqual(detectNameCollisions(rows, roster), [],
+    'an empty load is not evidence about anybody — it is a load nobody has filled in yet');
+});
+
+test('the case the feature was BUILT for still judges — a REAL count still contradicts', () => {
+  // ESTES: 16 rows on the board against a load the roster says holds 10.
+  const rows = Array.from({ length: 16 }, (_, i) => ({
+    stopNbr: `00717${5000 + i}`, isPlanned: true, routeName: 'ESTES', routeSeq: i + 1,
+    boardDate: i < 10 ? '2026-09-16' : '2026-09-10',
+  }));
+  const found = detectNameCollisions(rows, [{ name: 'ESTES', loadNbr: 'DAVIS000203700', loadId: 'y', status: 'Dispatched', trips: 10 }]);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].trips, 10);
+});
+
+test('a single stop on a one-stop load is still judged — the gate is zero, not "small"', () => {
+  const rows = [
+    { stopNbr: '1', isPlanned: true, routeName: 'SUW', routeSeq: 1, boardDate: '2026-09-16' },
+    { stopNbr: '2', isPlanned: true, routeName: 'SUW', routeSeq: 2, boardDate: '2026-09-10' },
+  ];
+  const found = detectNameCollisions(rows, [{ name: 'SUW', loadNbr: 'DAVIS1', loadId: 'z', status: 'Draft', trips: 1 }]);
+  assert.equal(found.length, 1, 'two rows against a load of one is still a real contradiction');
+});
+
+test('a duplicate sequence number cannot smuggle an empty load past the gate either', () => {
+  // dupSeq is the OTHER way a name earns a read. On an empty load it must not fire, or the
+  // eviction returns by the side door.
+  const rows = [
+    { stopNbr: 'a', isPlanned: true, routeName: 'VICTOR', routeSeq: 3, boardDate: '2026-09-11' },
+    { stopNbr: 'b', isPlanned: true, routeName: 'VICTOR', routeSeq: 3, boardDate: '2026-09-11' },
+  ];
+  assert.deepEqual(detectNameCollisions(rows, [{ name: 'VICTOR', loadNbr: 'DAVIS2', loadId: 'q', status: 'Draft', trips: 0 }]), []);
+});
+
+test('a missing count is still refused, exactly as before', () => {
+  const rows = [{ stopNbr: 'a', isPlanned: true, routeName: 'KOBE', routeSeq: 1, boardDate: '2026-09-10' }];
+  for (const trips of [null, undefined, NaN, -1]) {
+    assert.deepEqual(detectNameCollisions(rows, [{ name: 'KOBE', loadNbr: 'D3', loadId: 'r', status: 'Draft', trips }]), [], String(trips));
+  }
+});
