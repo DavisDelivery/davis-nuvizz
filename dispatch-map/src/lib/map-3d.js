@@ -309,6 +309,36 @@ export const MAP3D_NO_WEBGL =
   'This browser cannot draw a 3D map — it has no working WebGL. The flat map still works.';
 
 /**
+ * THE SHARPER SIGNAL, and the one that actually matches the failure that was WATCHED.
+ *
+ * webglUsable() above only catches a browser with NO WebGL context at all. The preview run
+ * that produced Google's blank "Oops" card had a context — a SOFTWARE one (SwiftShader) —
+ * so that check would have passed it straight through, and saying otherwise would have been
+ * a fix claimed for a bug it does not cover.
+ *
+ * What DID name it, in Google's own words, was the console line "Attempted to load a Vector
+ * Map, but failed. Falling back to Raster." That state is readable: `map.getRenderingType()`
+ * returns RASTER on a map we asked to be VECTOR. A browser that cannot drive the 2D vector
+ * renderer will not drive a 3D one either, so this is the cheapest reliable proof available
+ * before anything is built or billed.
+ *
+ * THE FALSE POSITIVE THIS MUST NOT HAVE: "Hide place labels" DELIBERATELY drops the mapId to
+ * make Google honour a style, which makes the map raster ON PURPOSE (see map-base-options.js).
+ * Reporting a broken browser there would be a confident lie about the dispatcher's machine,
+ * so the check only applies when a vector map was actually asked for. UNINITIALIZED is not a
+ * verdict either — the map simply has not decided yet.
+ */
+export function vectorFellBack({ askedForVector, renderingType } = {}) {
+  if (!askedForVector) return false;
+  const t = String(renderingType ?? '').toUpperCase();
+  return t === 'RASTER';
+}
+
+export const MAP3D_NO_VECTOR =
+  'This browser could not draw the 3D map — it fell back to the flat map, which means its '
+  + 'graphics (WebGL) cannot drive Google’s 3D renderer. The flat map still works.';
+
+/**
  * The sentence printed over a 3D view that is too high to answer the question it was opened
  * to answer. Null when the view is close enough to read doors, so the caller renders nothing.
  */
