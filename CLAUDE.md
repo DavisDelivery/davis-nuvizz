@@ -290,6 +290,40 @@ Project-level guidance for Claude Code in this repository.
   cost of a wrong change here is not a bad screen — it is freight that reads as un-routed
   after it was sent, and a second truck built on top of the first.
 
+## ROLLING THE APP BACK — there is a tool, use it (Chad, Sep 2026)
+
+- Chad, 2026-09-15, after a day of merges broke the routing tab: **"i want to build
+  something where i can roll the app back if this were to happen again. Like i would
+  like to roll the app back to 11:59 pm sept 14th when things were working perfectly."**
+- **The tool is `dispatch-map/scripts/rollback.mjs`.** Do not hand-roll a revert, and do
+  not talk him through `git` — that is the thing this replaced.
+
+      npm run rollback -- --list                       what shipped, when, in plain English
+      npm run rollback -- "2026-09-14 11:59pm"         DRY RUN: the plan, and nothing else
+      npm run rollback -- v1.30.2 --execute --because "routing tab is broken"
+
+- **It reads his clock, not the server's.** Every commit stamp in this repo is +0000 and
+  every sentence he says about one is Eastern. "11:59 pm sept 14th" is 03:59 UTC on the
+  15th; reading it as UTC rolls back to 7:59pm — four hours and four merges early, and
+  nothing in the output would look wrong. `America/New_York` is not negotiable here.
+- **Dry run is the default and `--execute` refuses without `--because`.** His sentence
+  goes in the commit, the changelog row and the workbench-guard approval, so the log six
+  weeks later says why the app went backwards instead of looking like a mistake.
+- **It is a forward commit, never a history rewrite.** One commit on top of main whose
+  TREE is the old tree — verified both directions against the real main tip: the tree is
+  byte-identical to the target's, and `git revert` of that one commit restores today's
+  byte-identically. That is *Ship it so it can be put back*, pointed at the rollback.
+- **CODE ONLY, and say so every time.** Firestore — the board, address overrides,
+  dispatcher notes, receiving hours, suppression flags — is untouched, and anything
+  already sent to NuVizz is still sent. A rollback is not an undo button on the day's
+  freight, and letting him believe it is, is how a second truck gets built on the first.
+- **The fastest path is not this tool.** If the board is broken RIGHT NOW, the Netlify
+  deploy list ("Publish deploy" on the older build) is instant and needs no build. The
+  dry run prints that link. It does NOT change main, so the next merge ships the bad
+  code again — the rollback commit is still needed after it.
+- **Never run `--execute` on Chad's behalf without him asking for that rollback in that
+  request.** Showing him the dry run is always the right first move.
+
 ## Merge it — do not ask (Chad, Aug 2026)
 
 - Chad: **"add to the Claude.md file to merge everything auto."** Open
