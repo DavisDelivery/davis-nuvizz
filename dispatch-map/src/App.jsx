@@ -46,7 +46,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -146,7 +146,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.36.4';
+const APP_VERSION = '1.37.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -200,6 +200,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.37.0', 'A CARD SAYS THE SAVE LANDED, AND SAYS IT UNTIL IT STOPS BEING TRUE. Chad, on a Compare card: “I want a check mark somewhere denoting that the save to nuvizz was successful.” WHAT HE WAS LOOKING AT, read off the code rather than guessed at: on a confirmed save the CARD said nothing at all. The only report was a toast at the top of the workbench — “✓ 1 load(s) saved to NuVizz” — which carries a dismiss ✕ and which the next action overwrites, plus the Send button disappearing once nothing is staged. Five minutes later a card that went to NuVizz and a card nobody had touched were identical on screen, and the only way left to settle it was the NuVizz portal or sending it a second time. NOW: a green ✓ SENT 2:14 PM beside the route name, on both views. IT IS EARNED, NOT ASSUMED, because the two ways to be wrong here are nowhere near symmetrical — a missing tick costs a re-send that no-ops, while a tick on a load NuVizz does not hold is freight that reads as routed and never gets driven, and nobody goes looking for it because the screen already said it was fine. So: the stamp has exactly ONE writer, markSaved, which runs on a CONFIRMED write and nowhere else (Beta returns long before it, a refusal never reaches it, a partial save brings only the keys NuVizz said ok) — pinned by a test that counts its writers — and it is WITHDRAWN the instant the card stops matching what was sent, off the same dirty flag the Send button counts, so one drag, one strike-off or one driver pick takes it away until the next confirmed save puts it back. It is also pruned when a card closes, so a reopened load never wears an hour-old tick. THE GREEN HALF OF v1.33.0 AND DELIBERATELY NOTHING ELSE: no amber NOT SENT chip, no header wording, no map-paint change — those were reverted in v1.36.1 and were not asked for here. The rule is savedMark in lib/routing-select.js and the card renders what it returns; 13 new tests, including the zero-is-not-a-timestamp case (Number(null) is 0 and 0 is finite) and a pin on the single writer. Zero NuVizz calls: no scan, no live read, diagnosed from the source.'],
   ['1.36.4', 'THE PANEL HAS A NAME NOW, AND THE BOUNDARY IS A TEST INSTEAD OF A PARAGRAPH. Chad: “tons of changes were made to RWB today that i didn’t ask for … you made changes to the map and rwb when you were only supposed to be working in this panel. I want you to name this panel so going forward when i ask you to work on it you work on it and nothing else.” THE NAME IS THE BUILD PANEL — steps 1 Select stops, 2 Plan onto, 3 Plan, 4 Engine and the Build button at the end of them; the left column on desktop, the Setup tab on a phone, plus routing-select.js, stop-equipment.js and the server build path behind them. Everything else on that screen is the ROUTE WORKBENCH: the Compare cards, Send/Save, what the map paints, the selection tools, the Routes rail. Two halves that shared one name for weeks, which is precisely how work aimed at one kept landing in the other. The UI still says “Setup” on the gear and the phone tab and is deliberately NOT renamed to match — a label change nobody asked for is the same species of unasked change this exists to stop; the alias is written down instead. AND IT IS ENFORCED, because it was already written down the evening before and it happened again the next morning. scripts/check-rwb-untouched.mjs runs in CI as rwb-boundary and FAILS any PR whose changed lines in App.jsx name the workbench surface — staging, Send/Save, map paint, box/lasso/ninja select, card close guards, the Routes rail — unless a commit on the branch quotes Chad: “RWB-CHANGE: <his words>”, which prints his sentence in the CI log. That token cannot be satisfied by good intentions, only by having his instruction in front of you. VALIDATED AGAINST TEN REAL PRs BEFORE SHIPPING, not asserted: it catches every one that moved the workbench (#909, #912, #932, #945, #946, #950) and passes every one that did not (#941, #942, #943, #948) — and it was tuned by that run, because its first version fired on v1.34.0, whose only hit was the shared routing-select import line. Changelog rows, comments and imports are excluded now: a guard that cries on work it should not care about gets switched off, and then it protects nothing. Proven both ways on this branch — a deliberate unapproved edit to markSaved fails it naming the file, the line and the rule; the same edit with the token passes and echoes the quote. 12 new tests. THE MEASUREMENT, SAID PLAINLY: of the Build-Panel work from 09-11 to 09-15, four PRs reached into the workbench — #909 and #912 one line each (stagePlanOntoLoads, the auto-stage), #932 five (the card chip AND a map-paint rule nobody asked for, reverted the same evening by #946). #942, the Box|Tractor toggle, stayed inside the panel and is the only one of the four still standing. No shipping behaviour changes in this release — it is a rule, a guard and its tests.'],
   ['1.36.3', 'A BOX OVER A SENT ROUTE PICKS UP NONE OF ITS STOPS. Chad, Sep 15, with CHE and MARCUS sent to NuVizz and their stops coming back up in a box-select: \u201cits letting me select stops that are already on routes that have been sent to nuvizz \u2026 whatever gets it back right.\u201d READ OFF THE CODE, NOT REASONED: box, lasso and Add-in-view took every positioned stop inside the shape and skipped only a stop staged on an open Compare card (v0.45.15) or one another device was staging (v0.51.0) \u2014 a stop the board holds PLANNED on a load with no card open wore the muted pin and still rode into the selection, in every commit this repo has. No merge on 09-15 (#922\u2013#948, the revert included) touched addEnclosed, positioned or the box handlers, and the stored board reads 007176785 PLANNED on CHE and 007177009 PLANNED on MARCUS, stamped by the 8:29 and 8:54 PM Sends \u2014 zero NuVizz calls, via the explain endpoint. THE RULE NOW, a tested module read by one thin caller: the three area tools leave every stop the board holds on a load, and the action line names the loads \u2014 \u201cAdded 12 stops \u00b7 skipped 15 already on loads (CHE 9, MARCUS 6)\u201d \u2014 through the same isPlannedStop predicate the muted pin reads, so the map and the box cannot disagree about a stop. Stops on open cards and on another device are skipped exactly as before; a tap on a planned pin still opens its route. NOT changed: Ninja, the stacked-place tap and the Save\u2019s own NuVizz guard. PUT IT BACK: VITE_ROUTING_AREA_SELECT_SKIPS_PLANNED=off on the next build restores the old rule; a malformed value leaves it on.'],
   ['1.36.2', 'THE STEM-OUT TOGGLE IS UNDER FILTERS. Chad, Sep 15, on a 71-mile red line from the depot to stop 1: \u201ci didn\u2019t ask for the stem out to come back \u2026 it should be a filter toggle under filters to hide the stem out.\u201d Read off the code: no PR that day touched the stem line. \u201cHide stem-out line\u201d has lived in the gear since v1.14.0 as a PER-DEVICE setting (routing.hideStem), so a browser where it was never switched on draws the line \u2014 the same shape as the Send button in v1.36.0. The control MOVES to the map\u2019s Filters popover on both views (desktop and phone), beside Unplanned only / Hide place labels / Show routes, and leaves the gear so one setting has one switch. NOT changed: the default (the line draws until the box is ticked) and the setting\u2019s name \u2014 a device that had it hidden keeps it hidden. One commit, one revert.'],
@@ -19348,7 +19349,7 @@ function PreflightBanner({ pre, isMobile }) {
   );
 }
 
-function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
+function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, savedAt = null, isMobile, liveWrite }) {
   // The live-dispatch UI gate is now the gear toggle (prop) rather than the module-level
   // ?write=1/env const. Aliased to the original name so the gate sites below are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -19433,6 +19434,26 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = 
                 not sent
               </span>
             )}
+            {/* THE SAVE LANDED — Chad, 2026-09-16: "I want a check mark somewhere denoting
+                that the save to nuvizz was successful." Until now the card said nothing: the
+                only report was a dismissible toast the next action overwrites, so a card sent
+                five minutes ago and a card nobody had touched looked the same. Green, earned
+                ONLY by a confirmed write (savedAt has one writer — markSaved), and withdrawn
+                the instant the card stops matching what was sent. The rule is savedMark, and
+                it is tested; this renders what it returns and decides nothing itself. */}
+            {(() => {
+              const mk = savedMark({ savedAt, dirty });
+              if (!mk.show) return null;
+              return (
+                <span
+                  data-card-saved={mk.kind}
+                  title={mk.title}
+                  className={`font-bold uppercase text-emerald-800 bg-emerald-100 border border-emerald-300 rounded px-1 shrink-0 ${isMobile ? 'text-[10px]' : 'text-[9px]'}`}
+                >
+                  {mk.label}
+                </span>
+              );
+            })()}
           </button>
           <div className="flex items-center gap-1.5 shrink-0">
             {ninjaMode && (
@@ -19764,6 +19785,10 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
   // order at open, so "dirty" = the staged order/membership differs, or a driver/dispatch is set.
   const [staged, setStaged] = useState({});        // key → { driverId, driverName, dispatch }
   const [baselines, setBaselines] = useState({});  // key → stopNbr[] (order at open / last save)
+  // key → ms of the last CONFIRMED write for that card. The ✓ SENT mark's only evidence
+  // that anything reached NuVizz, written in one place (markSaved) and pruned with the
+  // baseline when a card closes — so a reopened load never wears a tick from an hour ago.
+  const [savedAtByKey, setSavedAtByKey] = useState({});
   const [confirm, setConfirm] = useState(null);
   const [busy, setBusy] = useState(false);
   const [closeGuard, setCloseGuard] = useState(null);
@@ -19783,6 +19808,13 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
     const liveKeys = new Set(wbRoutes.map((r) => r.key));
     // Prune closed routes (so a reopen re-seeds against the FRESH order, not a stale baseline),
     // then seed any newly-opened route's baseline = its order at open.
+    // The ✓ SENT stamp goes on the same rule: a closed card's history must not follow a
+    // reopened one, which is seeded from the board all over again.
+    setSavedAtByKey((prev) => {
+      let next = prev, changed = false;
+      for (const k of Object.keys(prev)) if (!liveKeys.has(k)) { if (!changed) { next = { ...prev }; changed = true; } delete next[k]; }
+      return changed ? next : prev;
+    });
     setBaselines((prev) => {
       let next = prev, changed = false;
       for (const k of Object.keys(prev)) if (!liveKeys.has(k)) { if (!changed) { next = { ...prev }; changed = true; } delete next[k]; }
@@ -19993,11 +20025,19 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
     if (pending.length) await sendPendingCreates(pending);
   };
 
-  const markSaved = (keys) => setBaselines((prev) => {
-    const n = { ...prev };
-    for (const k of keys) { const r = wbRoutes.find((x) => x.key === k); if (r) n[k] = r.order.slice(); }
-    return n;
-  });
+  const markSaved = (keys) => {
+    setBaselines((prev) => {
+      const n = { ...prev };
+      for (const k of keys) { const r = wbRoutes.find((x) => x.key === k); if (r) n[k] = r.order.slice(); }
+      return n;
+    });
+    // THE ONLY PLACE A CARD EARNS ITS ✓. markSaved runs on a CONFIRMED write and nowhere
+    // else — Beta returns long before it, a refusal never reaches it, and a partial save
+    // brings only the keys NuVizz said ok — so the tick cannot report an intent as an
+    // outcome. A wiring test pins that this stays the single writer.
+    const at = Date.now();
+    setSavedAtByKey((prev) => { const n = { ...prev }; for (const k of keys) n[k] = at; return n; });
+  };
 
   // Runs the real write. Called directly by onPanelSave with { loads, clientOpId } now that
   // the confirm popup is gone (falls back to the `confirm` state if ever called without args).
@@ -20427,6 +20467,7 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
             staged={staged[r.key]}
             onStage={(patch) => setStageFor(r.key, patch)}
             dirty={isDirty(r)}
+            savedAt={savedAtByKey[r.key] || null}
             isMobile={isMobile}
             liveWrite={liveWrite}
           />

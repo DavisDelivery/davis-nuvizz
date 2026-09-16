@@ -1012,6 +1012,70 @@ export function sendControlState({ openCards = 0, dirtyCards = 0, liveMode = tru
   return { kind: 'none', tone: 'slate', label: '', title: '', actionable: false };
 }
 
+// ── THE MARK THAT SAYS THE SAVE LANDED (v1.37.0) ────────────────────────────
+//
+// Chad, 2026-09-16, pointing at a Compare card: "I want a check mark somewhere denoting
+// that the save to nuvizz was successful."
+//
+// WHAT HE IS LOOKING AT WHEN HE ASKS THAT, read off the code rather than guessed at. On a
+// confirmed save the card itself says nothing. The report is a TOAST at the top of the
+// workbench — "✓ 1 load(s) saved to NuVizz" — which has a dismiss ✕ on it and which the
+// next action overwrites, plus the Send button disappearing once nothing is staged. Five
+// minutes later a card that went to NuVizz and a card nobody has touched are identical on
+// screen, and the only way left to settle it is to open the load in the NuVizz portal or
+// send it a second time.
+//
+// THIS IS THE GREEN HALF OF v1.33.0 AND DELIBERATELY NOTHING ELSE. That PR also put an
+// amber NOT SENT TO NUVIZZ chip on every card, rewrote the header's wording and changed
+// what the map paints for a staged stop; it was reverted in full (v1.36.1) and the
+// workbench is frozen (CLAUDE.md). What was asked for here is a mark on a SUCCESS, so a
+// success is the only thing this rule can say: there is no amber state, no "nothing to
+// send" state, and nothing outside the card reads it.
+//
+// THE TWO WAYS TO BE WRONG ARE NOWHERE NEAR SYMMETRICAL. A missing tick after a real save
+// costs an annoyance — the dispatcher sends again and the second save is a no-op. A tick
+// on a card NuVizz does not hold is freight that reads as routed and never gets driven,
+// and nobody goes looking for it because the screen already said it was fine. So the tick
+// is earned strictly, on both halves of "successful":
+//
+//   • WHEN IT IS EARNED — `savedAt` is stamped in ONE place, markSaved, which runs on a
+//     CONFIRMED write and nowhere else: Beta returns long before it, and a refused or
+//     partial save never reaches it. A wiring test pins that it has exactly one writer, so
+//     this mark can never report an intent as an outcome.
+//   • WHEN IT IS WITHDRAWN — the moment the card stops matching what was sent. `dirty` is
+//     the same flag the Send button counts, so one drag, one strike-off, one driver pick
+//     takes the tick away until the next confirmed save puts it back. A tick sitting over
+//     unsent changes is the expensive direction, and this is what stops it.
+//
+// A ZERO IS NOT A TIMESTAMP. Number(null) is 0 and 0 is finite — the same shape that once
+// mailed a customer a midnight deadline for a stop with no deadline at all — so the stamp
+// has to be a positive number before this says anything.
+export function fmtClockMs(ms) {
+  const t = Number(ms);
+  if (!Number.isFinite(t) || t <= 0) return '';
+  const d = new Date(t);
+  const ap = d.getHours() >= 12 ? 'PM' : 'AM';
+  const h = d.getHours() % 12 || 12;
+  return `${h}:${String(d.getMinutes()).padStart(2, '0')} ${ap}`;
+}
+
+export function savedMark({ savedAt = null, dirty = false } = {}) {
+  const t = Number(savedAt);
+  if (!Number.isFinite(t) || t <= 0) return { show: false, kind: 'none', label: '', title: '', clock: '' };
+  const clock = fmtClockMs(t);
+  // Saved, then edited: the load in NuVizz is no longer what this card shows, so the mark
+  // goes. It says nothing in its place — an amber "not sent" chip is exactly what was
+  // reverted in v1.36.1, and it was not asked for here.
+  if (dirty) return { show: false, kind: 'stale', label: '', title: '', clock };
+  return {
+    show: true,
+    kind: 'sent',
+    label: `✓ SENT ${clock}`,
+    clock,
+    title: `Sent to NuVizz at ${clock}, and NuVizz confirmed the write — this card matches the load. Change anything on it and the tick goes until you send again.`,
+  };
+}
+
 // ── WHICH TRUCK RUNS THIS LOAD — ONE TAP, AND IT STICKS (v1.34.0) ────────────
 //
 // Chad: "on the loads when we put them in the [selection] panel make a quick button tractor
