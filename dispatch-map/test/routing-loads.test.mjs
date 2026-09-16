@@ -2,7 +2,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  formatDateTime, tsToMillis, loadTruckCount, loadStopCount, loadSummary, buildLoadAutoName,
+  formatDateTime,
+  formatDateTimeShort, tsToMillis, loadTruckCount, loadStopCount, loadSummary, buildLoadAutoName,
 } from '../src/lib/routing-loads.js';
 
 test('formatDateTime renders the standard ET format', () => {
@@ -106,4 +107,56 @@ test('a group that already carries its own loadId resolves even with an empty ro
 test('buildLoadRosterIndex tolerates junk rows without throwing', () => {
   const idx = buildLoadRosterIndex([null, {}, { name: '   ' }, L()], resolveNameOwner);
   assert.ok(resolveLoadIdentity({ name: 'STEVEN' }, idx, looksLikeNbr));
+});
+
+// ── formatDateTimeShort — the rollback panel's sub-line on a 390px phone ─────
+//
+// "undoes 1 release · landed Sep 16, 2026 11:46a" wrapped to two lines, which makes every row
+// taller on the screen where scanning matters most. The year is what does not fit and what
+// nobody needs across twelve versions of a repo that ships several a day.
+
+test('it drops the year within the current year', () => {
+  const now = Date.parse('2026-09-16T18:00:00Z');
+  assert.equal(formatDateTimeShort(Date.parse('2026-09-16T15:46:17Z'), now), 'Sep 16 11:46a');
+  assert.equal(formatDateTimeShort(Date.parse('2026-01-02T05:00:00Z'), now), 'Jan 2 12:00a');
+});
+
+test('it KEEPS the year when the stamp is not from this year', () => {
+  // Dropping it unconditionally would let a version from last December read as if it landed this
+  // week, beside a button that changes production.
+  const now = Date.parse('2026-09-16T18:00:00Z');
+  assert.equal(formatDateTimeShort(Date.parse('2025-12-30T18:05:00Z'), now), 'Dec 30, 2025 1:05p');
+});
+
+test('the year test uses EASTERN years, not UTC ones', () => {
+  // 2027-01-01T02:00Z is still 9pm on Dec 31 2026 in New York. Comparing UTC years would call it
+  // "next year" and print a year the dispatcher would read as wrong.
+  const now = Date.parse('2026-12-31T20:00:00Z');          // Dec 31 2026, 3pm ET
+  assert.equal(formatDateTimeShort(Date.parse('2027-01-01T02:00:00Z'), now), 'Dec 31 9:00p');
+});
+
+test('midnight reads 12:00a, never 24:00', () => {
+  // Under hour12:false some ICU builds render midnight as hour '24' and throw the reading a day
+  // out for one hour a night; rollback.mjs carries an explicit guard for it. hour12 sidesteps it.
+  const now = Date.parse('2026-09-16T18:00:00Z');
+  assert.equal(formatDateTimeShort(Date.parse('2026-09-16T04:00:00Z'), now), 'Sep 16 12:00a');
+  assert.equal(formatDateTimeShort(Date.parse('2026-09-16T16:00:00Z'), now), 'Sep 16 12:00p');
+});
+
+test('it survives the spring-forward hour', () => {
+  const now = Date.parse('2026-03-08T18:00:00Z');
+  assert.equal(formatDateTimeShort(Date.parse('2026-03-08T06:59:00Z'), now), 'Mar 8 1:59a');  // EST
+  assert.equal(formatDateTimeShort(Date.parse('2026-03-08T07:01:00Z'), now), 'Mar 8 3:01a');  // EDT
+});
+
+test('bad input is an empty string, not a fabricated date', () => {
+  for (const bad of [null, undefined, NaN, 'nonsense', {}]) {
+    assert.equal(formatDateTimeShort(bad), '', `${String(bad)} yields ''`);
+  }
+});
+
+test('it agrees with formatDateTime on everything but the year', () => {
+  const t = Date.parse('2026-09-16T15:46:17Z');
+  assert.equal(formatDateTime(t), 'Sep 16, 2026 11:46a');
+  assert.equal(formatDateTimeShort(t, t), 'Sep 16 11:46a');
 });

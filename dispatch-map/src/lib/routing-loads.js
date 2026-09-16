@@ -20,6 +20,38 @@ export function formatDateTime(input) {
   return `${date} ${hour}:${minute}${ap}`;
 }
 
+/**
+ * Epoch ms (or Date) → "Sep 16 11:46a". The same clock as formatDateTime, without the year.
+ *
+ * WHY IT EXISTS. On a 390px phone the rollback panel's sub-line reads "undoes 1 release · landed
+ * Sep 16, 2026 11:46a" and wraps to two lines, which makes every row taller and the list harder
+ * to scan on the screen it matters most. The year is what does not fit and what nobody needs:
+ * the panel shows the last twelve versions and this repo ships several a day.
+ *
+ * THE YEAR COMES BACK WHEN IT IS NOT THIS YEAR. Dropping it unconditionally would let a version
+ * from last December read as if it landed this week — beside a button that changes production.
+ * `now` is a parameter so that rule is testable rather than a thing that only misbehaves in
+ * January.
+ */
+export function formatDateTimeShort(input, now = Date.now()) {
+  if (input == null) return '';
+  const d = input instanceof Date ? input : new Date(Number(input));
+  if (Number.isNaN(d.getTime())) return '';
+  const yearOf = (x) => new Intl.DateTimeFormat('en-US', { timeZone: TZ, year: 'numeric' }).format(x);
+  const sameYear = yearOf(d) === yearOf(new Date(now));
+  const date = new Intl.DateTimeFormat('en-US', {
+    timeZone: TZ, month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }),
+  }).format(d);
+  // hour12 on purpose, exactly as formatDateTime does: under hour12:false some ICU builds render
+  // midnight as hour '24', which throws the reading a day out for one hour a night. rollback.mjs
+  // carries an explicit '24' → '00' guard for that reason; this sidesteps it.
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: TZ, hour: 'numeric', minute: '2-digit', hour12: true }).formatToParts(d);
+  const hour = parts.find((p) => p.type === 'hour')?.value || '';
+  const minute = parts.find((p) => p.type === 'minute')?.value || '00';
+  const ap = (parts.find((p) => p.type === 'dayPeriod')?.value || '').toLowerCase().startsWith('p') ? 'p' : 'a';
+  return `${date} ${hour}:${minute}${ap}`;
+}
+
 // Normalize a Firestore Timestamp / millis / Date / ISO string → epoch ms or null.
 export function tsToMillis(ts) {
   if (ts == null) return null;
