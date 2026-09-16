@@ -10,7 +10,8 @@ import { readFileSync } from 'node:fs';
 import {
   ZONE, zoneOffsetMs, wallToUtc, wallYmd, formatWall, parseTarget, versionOf, versionFromSubject,
   nextVersion, jsQuote, setAppVersion, insertChangelogRow, rollbackRowText, parseLog, splitAt,
-  vendorTouching, SELF_PRESERVE, ensureRollbackScript,
+  vendorTouching, SELF_PRESERVE, ensureRollbackScript, parseDropList, prFromSubject, resolveByPR,
+  splitConflicts, isVersionOnly, resolveVersionConflicts, dropRowText, GENERATED,
 } from '../scripts/rollback.mjs';
 
 const HOUR = 3600000;
@@ -249,4 +250,145 @@ test('a package.json that already has the alias is returned untouched', () => {
 
 test('a package.json with no scripts block answers null instead of being guessed at', () => {
   assert.equal(ensureRollbackScript('{"name":"x"}'), null);
+});
+
+// ── DROPPING A PR, RATHER THAN RETURNING TO A TIME ───────────────────────────
+//
+// Chad: "would it be possible to both roll back to a point in time when I knew everything was
+// okay if I can't identify the PR that caused the problem and also roll back PRs?" Both, because
+// they answer different mornings — and the difference that decides which to reach for is that
+// TIME can never conflict and DROP can.
+
+const SEP = String.fromCharCode(1);
+const logOf = (rows) => rows.map((r) => r.join(SEP)).join('\n');
+
+test('PR numbers are read in every shape a person types them', () => {
+  assert.deepEqual(parseDropList('945'), [945]);
+  assert.deepEqual(parseDropList('945,950'), [945, 950]);
+  assert.deepEqual(parseDropList(' #945 #950 '), [945, 950]);
+  assert.deepEqual(parseDropList('945,945'), [945], 'a repeat is one drop, not two');
+  assert.equal(parseDropList('none of them'), null);
+});
+
+test('the PR number comes off the squashed merge subject', () => {
+  assert.equal(prFromSubject('The Send to NuVizz button was behind a switch (v1.36.0) (#945)'), 945);
+  assert.equal(prFromSubject('One tap says which truck a load runs (#942)'), 942);
+  assert.equal(prFromSubject('A local commit with no PR'), null);
+});
+
+test('PRs are reverted NEWEST first, whatever order they were asked for', () => {
+  // Undoing an older PR before a newer one that built on it maximises the conflicts rather
+  // than minimising them.
+  const commits = parseLog(logOf([
+    ['aaa1', Date.UTC(2026, 8, 15, 21, 40) / 1000, 'Box over a sent route (v1.36.3) (#950)'],
+    ['bbb2', Date.UTC(2026, 8, 15, 20, 26) / 1000, 'Send button gate (v1.36.0) (#945)'],
+    ['ccc3', Date.UTC(2026, 8, 15, 13, 6) / 1000, 'One tap truck (#942)'],
+  ]));
+  const { found, missing } = resolveByPR(commits, [942, 950, 945]);
+  assert.deepEqual(found.map((c) => c.pr), [950, 945, 942]);
+  assert.deepEqual(missing, []);
+});
+
+test('a PR number that is not on main is named, not guessed at', () => {
+  const commits = parseLog(logOf([['aaa1', Date.UTC(2026, 8, 15) / 1000, 'Box (#950)']]));
+  const { found, missing } = resolveByPR(commits, [950, 9999]);
+  assert.deepEqual(found.map((c) => c.pr), [950]);
+  assert.deepEqual(missing, [9999]);
+});
+
+// ── THE TWO KINDS OF CONFLICT ────────────────────────────────────────────────
+//
+// Measured on the three live suspects before this was built: every one conflicts on a plain
+// `git revert`, and the conflicts split into exactly two kinds. #950 is all version lines and
+// comes out automatically; #945 and #942 carry real code conflicts and must not.
+
+const VER_HUNK = [
+  'const x = 1;',
+  '<<<<<<< HEAD',
+  "const APP_VERSION = '1.38.0';",
+  '=======',
+  "const APP_VERSION = '1.36.2';",
+  '>>>>>>> parent of 0c164a9',
+  'const y = 2;',
+].join('\n');
+
+const CODE_HUNK = [
+  '<<<<<<< HEAD',
+  '  if (sendControlState(route)) return null;',
+  '=======',
+  '  return null;',
+  '>>>>>>> parent of 1fc74bd',
+].join('\n');
+
+test("a version-line conflict is mechanical and resolves to main's side", () => {
+  // APP_VERSION and the changelog collide on almost every parallel merge, carry no behaviour,
+  // and this tool rewrites them a few lines later anyway when it bumps the version. Leaving
+  // them for Chad to hand-edit at 6:45am would be the wrong kind of caution.
+  const { text, remaining } = resolveVersionConflicts(VER_HUNK);
+  assert.equal(remaining, 0);
+  assert.match(text, /const APP_VERSION = '1\.38\.0';/);
+  assert.doesNotMatch(text, /1\.36\.2/, "the reverted PR's version is not restored");
+  assert.doesNotMatch(text, /<<<<<<</, 'no markers survive');
+});
+
+test('a REAL code conflict is never resolved — it is counted and left alone', () => {
+  // Picking a side here ships a behaviour change nobody reviewed, wearing a rollback's name,
+  // which is the exact thing this whole feature exists to undo.
+  const { text, remaining } = resolveVersionConflicts(CODE_HUNK);
+  assert.equal(remaining, 1);
+  assert.match(text, /<<<<<<< HEAD/);
+  assert.match(text, /sendControlState/);
+});
+
+test('one line of real code in a hunk disqualifies the whole hunk', () => {
+  // Erring this way on purpose: a hunk wrongly called mechanical is resolved SILENTLY.
+  const mixed = ['<<<<<<< HEAD', "const APP_VERSION = '1.38.0';", 'doSomething();',
+    '=======', "const APP_VERSION = '1.36.2';", '>>>>>>> x'].join('\n');
+  assert.equal(resolveVersionConflicts(mixed).remaining, 1);
+});
+
+test('the changelog prose cannot fake a conflict marker', () => {
+  // App.jsx rows are megabytes of prose containing quotes, brackets and the word HEAD. A regex
+  // over that finds markers that are not there — so this is a parser, not a regex.
+  const prose = "  ['1.20.0', 'The bar said <<<<<<< HEAD which is not a conflict at all.'],";
+  const { text, remaining } = resolveVersionConflicts(prose);
+  assert.equal(remaining, 0);
+  assert.equal(text.trim(), prose.trim());
+});
+
+test('an unterminated conflict is treated as text, not silently eaten', () => {
+  const truncated = '<<<<<<< HEAD\nconst a = 1;\n=======\nconst a = 2;';
+  const { text } = resolveVersionConflicts(truncated);
+  assert.match(text, /const a = 1;/);
+  assert.match(text, /const a = 2;/);
+});
+
+test('splitConflicts finds both sides of a hunk', () => {
+  const parts = splitConflicts(VER_HUNK).filter((p) => p.ours !== null);
+  assert.equal(parts.length, 1);
+  assert.deepEqual(parts[0].ours, ["const APP_VERSION = '1.38.0';"]);
+  assert.deepEqual(parts[0].theirs, ["const APP_VERSION = '1.36.2';"]);
+});
+
+test('version.json is generated, so a conflict in it carries no meaning', () => {
+  assert.ok(GENERATED.includes('dispatch-map/public/version.json'));
+});
+
+test('isVersionOnly accepts a changelog row and rejects code', () => {
+  assert.equal(isVersionOnly({ ours: ["['1.38.0', 'A thing.'],"], theirs: [] }), true);
+  assert.equal(isVersionOnly({ ours: ['return null;'], theirs: [] }), false);
+  assert.equal(isVersionOnly({ ours: [], theirs: [] }), true);
+});
+
+test('the drop row names the PRs and still says CODE ONLY', () => {
+  const row = dropRowText({
+    dropped: [{ pr: 945, version: '1.36.0' }, { pr: 950, version: '1.36.3' }],
+    because: 'the send button broke again', autoResolved: 3,
+  });
+  assert.match(row, /#945 \(v1\.36\.0\), #950 \(v1\.36\.3\)/);
+  assert.match(row, /"the send button broke again"/);
+  assert.match(row, /CODE ONLY/);
+  assert.match(row, /every other fix that shipped since stays in/);
+  assert.match(row, /3 version-line/);
+  assert.ok(!/\n/.test(row), 'one line, like every other changelog row');
 });

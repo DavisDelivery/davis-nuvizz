@@ -16,11 +16,26 @@
 // timezone (America/New_York, NOT UTC — the difference is four hours and on a late-evening
 // merge it picks the wrong day), and does the translating.
 //
-// WHAT IT DOES, and the shape is deliberate:
+// TWO WAYS BACK, because Chad asked for both and they answer different mornings:
 //
 //   node scripts/rollback.mjs --list                    what shipped, when, in plain English
+//
+//   TIME — "everything was fine Sunday night." He CANNOT name the culprit.
 //   node scripts/rollback.mjs "2026-09-14 23:59"        DRY RUN — the plan, and nothing else
 //   node scripts/rollback.mjs v1.30.2 --execute --because "routing tab is broken"
+//
+//   DROP — "it was #945." He CAN name it. Keeps every other fix that shipped since.
+//   node scripts/rollback.mjs --drop 945                DRY RUN — and whether it comes out clean
+//   node scripts/rollback.mjs --drop 945,950 --execute --because "send button broke again"
+//
+// Chad: "would it be possible to both roll back to a point in time when I knew everything was
+// okay if I can't identify the PR that caused the problem and also roll back PRs?" Yes, and the
+// difference that decides which to reach for is this: TIME replaces the whole tree, so it can
+// NEVER conflict and always works — but it throws away every good fix that shipped since. DROP
+// keeps them, but it CAN conflict, because later PRs may have edited the same lines. The drop
+// dry run says which, per PR, by actually trying the revert in a throwaway worktree rather than
+// predicting from file lists. Measured on the three live suspects the day this shipped: #950
+// comes out clean, #945 and #942 carry real code conflicts a person has to settle.
 //
 // DRY RUN IS THE DEFAULT. CLAUDE.md: "every job that acts on its own needs a way to ask what
 // it is about to do, without doing it." Nothing moves until --execute, and --execute refuses
@@ -40,7 +55,9 @@
 // is not an undo button on the day's freight, and treating it as one is how somebody builds a
 // second truck on top of the first.
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 // maxBuffer: App.jsx is over a megabyte and a `git show` of it dies on execFileSync's default
@@ -332,6 +349,161 @@ export function rollbackRowText({ toVersion, toWhen, because, undone = [], paths
     .replace(/\s+/g, ' ').trim();
 }
 
+// ── DROPPING ONE PR, RATHER THAN RETURNING TO A TIME ─────────────────────────
+//
+// TWO DIFFERENT OPERATIONS, and Chad asked for both because he needs both:
+//
+//   TIME   "everything was fine Sunday night" — he CANNOT name the culprit. Replaces the
+//          whole tree. Blunt, but it can never conflict, so it always works.
+//   DROP   "it was #945" — he CAN name it. Reverts that one PR and keeps the other sixteen.
+//          Surgical, and it CAN conflict, because later PRs may have edited the same lines.
+//
+// That difference is the whole reason both exist. A tool with only TIME throws away thirteen
+// good fixes to undo one bad one; a tool with only DROP is useless on the morning he cannot
+// tell which PR did it. They are alternatives, never combined — "go back to Sunday" already
+// drops everything after Sunday.
+//
+// WHAT THIS WILL AND WILL NOT RESOLVE FOR HIM. Measured on the three live suspects rather
+// than guessed at: every one of them conflicts on a plain `git revert`, and the conflicts
+// split into exactly two kinds.
+//
+//   MECHANICAL — APP_VERSION, the VERSION_LOG rows, and the generated public/version.json.
+//     These collide on almost every parallel merge (CLAUDE.md has a whole entry about it),
+//     they carry no behaviour, and this tool REWRITES them a few lines later anyway when it
+//     bumps the version. Resolving them automatically is not a judgement call; leaving them
+//     for Chad to hand-edit at 6:45am would be.
+//   CODE — anything else. NOT the tool\'s to resolve. A revert that guesses which side of a
+//     real code conflict to keep is a silent behaviour change wearing a rollback\'s name,
+//     which is the exact failure this whole feature exists to undo. It stops and says where.
+//
+// On the measured three that leaves #950 fully automatic (0 code conflicts), #942 with 1 and
+// #945 with 2 — so the dry run tells him which of those is a one-command fix before he picks.
+
+/** PURE: "945", "945,950", "#945 #950" → [945, 950]. Null when it reads as nothing. */
+export function parseDropList(text) {
+  const nums = String(text ?? '').match(/\d+/g);
+  if (!nums) return null;
+  return [...new Set(nums.map(Number))].filter((n) => n > 0);
+}
+
+/** PURE: '…(#945)' → 945. The PR number GitHub stamps onto a squashed merge subject. */
+export function prFromSubject(subject) {
+  const m = /\(#(\d+)\)\s*$/.exec(String(subject || '').trim());
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * PURE: PR numbers → the commits that carry them, newest first, plus the ones not found.
+ *
+ * Newest first because that is the order they must be reverted in: undoing an older PR before
+ * a newer one that built on it maximises the conflicts rather than minimising them.
+ */
+export function resolveByPR(commits, numbers) {
+  const byPR = new Map();
+  for (const c of commits) {
+    const n = prFromSubject(c.subject);
+    if (n !== null && !byPR.has(n)) byPR.set(n, { ...c, pr: n });
+  }
+  const found = numbers.map((n) => byPR.get(n)).filter(Boolean);
+  const missing = numbers.filter((n) => !byPR.has(n));
+  // commits arrive newest-first from git log, so index order IS recency order
+  found.sort((a, b) => b.at - a.at);
+  return { found, missing };
+}
+
+/** A file whose entire content this tool regenerates, so a conflict in it carries no meaning. */
+export const GENERATED = ['dispatch-map/public/version.json'];
+
+/**
+ * PURE: split a conflicted file into plain text and conflict blocks.
+ *
+ * Deliberately a parser rather than a regex: App.jsx changelog rows are megabytes of prose
+ * containing quotes, brackets and the word "HEAD", and a regex over that finds markers that
+ * are not there. Same lesson check-effect-deps.mjs learned.
+ */
+export function splitConflicts(text) {
+  const out = [];
+  let plain = [];
+  const lines = String(text).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^<{7}( |$)/.test(lines[i])) { plain.push(lines[i]); continue; }
+    const ours = []; const theirs = [];
+    let side = ours; let closed = false;
+    for (i++; i < lines.length; i++) {
+      if (/^={7}$/.test(lines[i])) { side = theirs; continue; }
+      if (/^>{7}( |$)/.test(lines[i])) { closed = true; break; }
+      side.push(lines[i]);
+    }
+    if (!closed) { plain.push(...ours, ...theirs); break; }   // truncated: treat as text
+    out.push({ plain: plain.join('\n'), ours, theirs });
+    plain = [];
+  }
+  out.push({ plain: plain.join('\n'), ours: null, theirs: null });
+  return out;
+}
+
+/**
+ * PURE: does this conflict contain ONLY version bookkeeping?
+ *
+ * A hunk qualifies when every non-blank line on both sides is either the APP_VERSION
+ * assignment or a VERSION_LOG row. Anything else — one line of real code anywhere in the
+ * hunk — disqualifies the whole hunk. Erring that way is deliberate: a hunk wrongly called
+ * mechanical is resolved silently and ships a behaviour change nobody reviewed.
+ */
+export function isVersionOnly(hunk) {
+  const lines = [...(hunk.ours || []), ...(hunk.theirs || [])].map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return true;
+  return lines.every((l) => (
+    /^const APP_VERSION = '[^\']*';?$/.test(l)
+    || /^\['\d+\.\d+\.\d+',/.test(l)
+    || l === '];' || l === '];,' || /^\],?$/.test(l)
+  ));
+}
+
+/**
+ * PURE: resolve the mechanical conflicts, keep the rest.
+ *
+ * Version-only hunks take OURS — the branch side, which is main\'s current version and log.
+ * That is right because the revert is not trying to move the version at all; the caller bumps
+ * it forward a few lines later. Code hunks are left exactly as git wrote them, markers and
+ * all, and counted, so the caller can stop and show them rather than commit a file with
+ * conflict markers in it.
+ */
+export function resolveVersionConflicts(text) {
+  const parts = splitConflicts(text);
+  let remaining = 0;
+  let out = '';
+  for (const p of parts) {
+    out += p.plain;
+    if (p.ours === null) continue;
+    if (isVersionOnly(p)) {
+      out += (p.ours.length ? '\n' + p.ours.join('\n') : '');
+    } else {
+      remaining++;
+      out += `\n<<<<<<< HEAD\n${p.ours.join('\n')}\n=======\n${p.theirs.join('\n')}\n>>>>>>>`;
+    }
+    out += '\n';
+  }
+  return { text: out, remaining };
+}
+
+/**
+ * PURE: the changelog sentence a PR-drop writes about itself.
+ *
+ * Names the PRs by number, because that is how Chad refers to them and how he will look one
+ * up again. Carries the same CODE ONLY warning as a time rollback, for the same reason.
+ */
+export function dropRowText({ dropped = [], because, autoResolved = 0 }) {
+  const names = dropped.map((c) => `#${c.pr}${c.version ? ` (v${c.version})` : ''}`).join(', ');
+  return `DROPPED ${dropped.length} PR(S): ${names}. Chad: "${because}". Everything else on main is
+    untouched — this reverts only those commits, rather than returning the tree to a moment in time,
+    so every other fix that shipped since stays in.${autoResolved ? ` ${autoResolved} version-line
+    conflict(s) were resolved mechanically (APP_VERSION and the changelog collide on almost every
+    parallel merge and carry no behaviour); any real code conflict stops the run instead.` : ''}
+    Each drop is a forward commit, so \`git revert\` of it puts the PR back. CODE ONLY: Firestore and
+    anything already sent to NuVizz are untouched.`.replace(/\s+/g, ' ').trim();
+}
+
 // ── READING HISTORY ──────────────────────────────────────────────────────────
 
 /** PURE: `git log` porcelain → rows. Kept separate from the git call so tests need no repo. */
@@ -377,7 +549,7 @@ const BOLD = (s) => `\u001b[1m${s}\u001b[0m`;
 const DIM = (s) => `\u001b[2m${s}\u001b[0m`;
 
 function parseArgv(argv) {
-  const out = { target: null, execute: false, list: false, days: 14, because: null, paths: [], push: true };
+  const out = { target: null, execute: false, list: false, days: 14, because: null, paths: [], push: true, drop: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--execute') out.execute = true;
@@ -387,6 +559,7 @@ function parseArgv(argv) {
     else if (a === '--days') out.days = Number(argv[++i]);
     else if (a === '--because') out.because = argv[++i];
     else if (a === '--paths') out.paths.push(argv[++i]);
+    else if (a === '--drop') out.drop = `${out.drop ?? ''} ${argv[++i] ?? ''}`;
     else if (a.startsWith('--')) out.unknown = a;
     else if (out.target === null) out.target = a;
   }
@@ -475,7 +648,7 @@ function execute({ target, undone, paths, because, push }) {
   }
 
   const branch = `rollback/to-${target.version || target.sha.slice(0, 7)}-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '')}`;
-  git('checkout', '-B', branch, 'origin/main');
+  git('checkout', '-q', '-B', branch, 'origin/main');
 
   // THE RESTORE. read-tree for the whole app: it sets index and worktree to the target's tree
   // exactly, including DELETING files added since, which `git checkout <sha> -- .` does not —
@@ -549,6 +722,164 @@ CODE ONLY — Firestore and anything already sent to NuVizz are untouched.`);
   console.log(DIM(`  To undo this rollback later: git revert <the rollback commit> — that is the whole job.\n`));
 }
 
+/**
+ * Would this PR come out cleanly? Measured by actually trying it, in a throwaway worktree.
+ *
+ * NOT predicted from the file lists. Two PRs can touch one file and not collide, or collide in
+ * a file neither obviously shares — the only honest answer is the one git gives. A detached
+ * worktree in a temp dir means the probe cannot touch Chad's checkout even if it goes wrong,
+ * which matters because this runs while he is looking at a broken board.
+ */
+function probeRevert(shas) {
+  const dir = mkdtempSync(join(tmpdir(), 'rollback-probe-'));
+  try {
+    git('worktree', 'add', '--detach', '--quiet', dir, 'origin/main');
+    // stderr: 'pipe', not inherited. A conflicting revert is the EXPECTED result here — it is
+    // what the probe exists to find out — and letting git print "error: could not revert" to the
+    // console makes a successful diagnostic read like a crash, right above the plan that says it
+    // came out fine. Chad would reasonably stop at the word "error".
+    const wt = (...a) => execFileSync('git', ['-C', dir, ...a],
+      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+    const report = [];
+    for (const c of shas) {
+      let conflicted = [];
+      try { wt('revert', '--no-commit', c.sha); } catch { /* conflicts are expected */ }
+      try {
+        conflicted = wt('diff', '--name-only', '--diff-filter=U').trim().split('\n').filter(Boolean);
+      } catch { /* nothing unmerged */ }
+      let code = 0; let mech = 0;
+      for (const f of conflicted) {
+        if (GENERATED.includes(f)) { mech++; continue; }
+        let body = '';
+        try { body = readFileSync(join(dir, f), 'utf8'); } catch { continue; }
+        for (const h of splitConflicts(body)) {
+          if (h.ours === null) continue;
+          if (isVersionOnly(h)) mech++; else code++;
+        }
+      }
+      report.push({ ...c, conflicted, code, mech });
+      try { wt('revert', '--abort'); } catch { /* nothing in progress */ }
+      try { wt('reset', '--hard', 'origin/main'); wt('clean', '-qfd'); } catch { /* best effort */ }
+    }
+    return report;
+  } finally {
+    try { git('worktree', 'remove', '--force', dir); } catch { rmSync(dir, { recursive: true, force: true }); }
+  }
+}
+
+async function printDropPlan({ picked, asked }) {
+  const probe = probeRevert(picked);
+  console.log(BOLD('\n  DROP PLAN — nothing has moved. This is what --execute would do.\n'));
+  console.log(`  You asked to drop  ${asked}`);
+  console.log(`  Reverting ${picked.length} PR(s), newest first. Everything else on main stays in.\n`);
+
+  let blocked = 0;
+  for (const c of probe) {
+    const headline = await changelogHeadline(c.sha, c.version);
+    console.log(`  ${BOLD(`#${c.pr}`)}${c.version ? `  v${c.version}` : ''}  ${formatWall(c.at)}  ${c.sha.slice(0, 7)}`);
+    console.log(`      ${c.subject.slice(0, 88)}`);
+    if (headline) console.log(DIM(`      ${headline.slice(0, 88)}`));
+    if (!c.code) {
+      console.log(`      ${BOLD('✓ comes out cleanly')}${c.mech ? DIM(` (${c.mech} version-line conflict(s), resolved mechanically)`) : ''}`);
+    } else {
+      blocked++;
+      console.log(`      ${BOLD(`✗ ${c.code} real code conflict(s)`)} — a person has to pick a side:`);
+      for (const f of c.conflicted.filter((f) => !GENERATED.includes(f))) console.log(`          ${f}`);
+    }
+    console.log('');
+  }
+
+  console.log(BOLD('  WHAT THIS DOES NOT PUT BACK — code only:\n'));
+  console.log('    · Firestore is untouched, and anything already sent to NuVizz stays sent.');
+  console.log('    · Only these PRs are reverted. Every other fix on main stays in — that is the');
+  console.log('      whole difference between this and rolling back to a time.\n');
+
+  if (blocked) {
+    console.log(BOLD(`  ${blocked} of ${picked.length} cannot be done automatically.`));
+    console.log('  --execute will revert what it can and STOP at the first real conflict rather');
+    console.log('  than guess which side to keep. Guessing there ships a behaviour change nobody');
+    console.log('  reviewed, wearing a rollback\'s name.\n');
+  }
+  console.log(BOLD('  To actually do it:\n'));
+  console.log(`      npm run rollback -- --drop ${picked.map((c) => c.pr).join(',')} --execute --because "why"\n`);
+  console.log(DIM('  Cannot name the PR? Roll back to a time instead — that never conflicts:'));
+  console.log(DIM('      npm run rollback -- "2026-09-14 11:59pm"\n'));
+}
+
+function executeDrop({ picked, because, push }) {
+  if (git('status', '--porcelain')) {
+    console.error('\n  ✗ You have uncommitted changes. Commit or stash them first.\n');
+    process.exit(1);
+  }
+  // Where Chad was standing, so a refusal can put him back exactly there. `git checkout -` is
+  // not enough: it lands on a detached HEAD when the previous ref was one, and handing someone
+  // a detached HEAD while their board is broken is a second problem they did not ask for.
+  const wasOn = (() => { try { return git('rev-parse', '--abbrev-ref', 'HEAD'); } catch { return 'main'; } })();
+  const branch = `drop/pr-${picked.map((c) => c.pr).join('-')}-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '')}`;
+  git('checkout', '-q', '-B', branch, 'origin/main');
+
+  let autoResolved = 0;
+  for (const c of picked) {
+    try { execFileSync('git', ['revert', '--no-commit', c.sha], { encoding: 'utf8', maxBuffer: 1 << 26, stdio: ['ignore', 'pipe', 'pipe'] }); } catch { /* conflicts handled below */ }
+    let conflicted = [];
+    try { conflicted = git('diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean); } catch {}
+    for (const f of conflicted) {
+      if (GENERATED.includes(f)) { git('checkout', '--ours', '--', f); git('add', '--', f); autoResolved++; continue; }
+      const { text, remaining } = resolveVersionConflicts(readFileSync(f, 'utf8'));
+      if (remaining) {
+        // STOP. Never guess which side of a real code conflict to keep.
+        console.error(`\n  ✗ #${c.pr} has ${remaining} real code conflict(s) in ${f}.`);
+        console.error('\n    This is not mine to resolve — picking a side would ship a behaviour change');
+        console.error('    nobody reviewed, which is the thing a rollback exists to undo. Nothing was');
+        console.error('    pushed. Either resolve it by hand on this branch, or roll back to a time');
+        console.error('    instead, which cannot conflict:\n');
+        console.error('        npm run rollback -- "2026-09-14 11:59pm"\n');
+        // Leave NOTHING behind. A half-reverted branch and a dirty tree on the morning the
+        // board is broken is worse than no attempt: the next command someone runs picks it up.
+        // The branch goes too — a pile of dead drop/* branches is its own confusion.
+        try { git('revert', '--abort'); } catch { /* nothing in progress */ }
+        git('checkout', '-q', wasOn === 'HEAD' ? 'main' : wasOn);
+        try { git('branch', '-D', branch); } catch { /* never created */ }
+        process.exit(1);
+      }
+      writeFileSync(f, text);
+      git('add', '--', f);
+      autoResolved++;
+    }
+  }
+
+  const shipAs = nextVersion(versionOf(git('show', `origin/main:${APP}`)));
+  const row = dropRowText({ dropped: picked, because, autoResolved });
+  const bumped = insertChangelogRow(setAppVersion(readFileSync(APP, 'utf8'), shipAs), shipAs, row);
+  if (!bumped) {
+    console.error(`\n  ✗ Could not bump APP_VERSION in ${APP}. Nothing pushed.\n`);
+    process.exit(1);
+  }
+  writeFileSync(APP, bumped);
+  git('add', '-A');
+  git('commit', '-m', `Drop ${picked.map((c) => `#${c.pr}`).join(', ')} (v${shipAs})
+
+Chad: "${because}"
+
+Reverts ${picked.length} PR(s) and nothing else — every other fix on main stays in.
+Each is a forward commit, so \`git revert\` puts the PR back.
+
+CODE ONLY — Firestore and anything already sent to NuVizz are untouched.`);
+  git('commit', '--allow-empty', '-m', `RWB-CHANGE: ${because}`);
+
+  console.log(BOLD(`\n  ✓ Built ${branch} — shipping as v${shipAs}.`));
+  if (autoResolved) console.log(DIM(`    ${autoResolved} version-line conflict(s) resolved mechanically.\n`));
+  if (!push) { console.log(`  Not pushed (--no-push):\n\n      git push -u origin ${branch}\n`); return; }
+  git('push', '-u', 'origin', branch);
+  const landed = git('ls-remote', '--heads', 'origin', branch);
+  if (!landed) {
+    console.error('\n  ✗ The push reported success but origin does not have the branch.\n');
+    process.exit(1);
+  }
+  console.log(`  ✓ Pushed, and origin confirms it: ${landed.split('\t')[0].slice(0, 7)}\n`);
+  console.log(`      https://github.com/DavisDelivery/davis-nuvizz/compare/${branch}?expand=1\n`);
+}
+
 async function main(argv) {
   const opts = parseArgv(argv);
   if (opts.unknown) {
@@ -565,6 +896,33 @@ async function main(argv) {
   process.chdir(git('rev-parse', '--show-toplevel'));
 
   git('fetch', 'origin', 'main', '--quiet');
+
+  if (opts.drop !== null) {
+    if (opts.target !== null) {
+      console.error('\n  ✗ --drop and a time are alternatives, not a combination. Rolling back to a');
+      console.error('    time already drops everything after it. Pick one.\n');
+      process.exit(2);
+    }
+    const nums = parseDropList(opts.drop);
+    if (!nums?.length) {
+      console.error('\n  ✗ --drop needs PR numbers, e.g. --drop 945  or  --drop 945,950\n');
+      process.exit(2);
+    }
+    const commits = historySince(Math.max(opts.days, 60));
+    const { found, missing } = resolveByPR(commits, nums);
+    if (missing.length) {
+      console.error(`\n  ✗ No commit on main carries ${missing.map((n) => `#${n}`).join(', ')}.`);
+      console.error('    Run --list to see what is there. I am not going to guess at which you meant.\n');
+      process.exit(2);
+    }
+    if (!opts.execute) { await printDropPlan({ picked: found, asked: nums.map((n) => `#${n}`).join(', ') }); return; }
+    if (!opts.because || opts.because.trim().length < 8) {
+      console.error('\n  ✗ --execute needs --because "<why>".\n');
+      process.exit(2);
+    }
+    executeDrop({ picked: found, because: opts.because.trim(), push: opts.push });
+    return;
+  }
 
   if (opts.list || opts.target === null) {
     showList(opts.days);
