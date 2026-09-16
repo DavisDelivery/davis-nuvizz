@@ -147,7 +147,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.38.2';
+const APP_VERSION = '1.38.3';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -201,6 +201,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.38.3', 'THE OTHER HALF OF THE ROUTING FILTERS ASK. Chad, 2026-09-16: “i want hide termianl markers and hide stem out added to my routing filters.” The stem-out half landed in v1.36.2; Hide terminal markers never did, so half the request sat unshipped while the dropdown looked finished. It is there now, first in the list. WHAT IT HIDES, and the distinction is the whole reason this one is safe on this screen: terminal markers are the DEPOT rows. Hiding them declutters a 700-stop board without taking a single customer delivery off it. The dispatch Map’s “Hide stem out” hides the FIRST DELIVERY of every load — real freight — which is why Routing’s stem-out control deliberately drives the polyline instead, and why this new toggle removes no freight either. On the screen where loads are BUILT, a filter that quietly takes orders off the board is the one thing these controls must never do. It composes with “Unplanned only” rather than fighting it (terminal rows come off first, then the unplanned filter runs on what is left), it persists per device under routing.mapHideTerminal, it lights the Filters button like every other active filter, and Reset layout clears it. THE ROUTING DROPDOWN NOW READS: Hide terminal markers, Unplanned only, Hide place labels, Show routes, Hide stem-out line.'],
   ['1.38.2', 'AN EMPTY LOAD WAS TAKING TEN ORDERS OFF THE BOARD EVERY SCAN. Chad: “this order is in nuvizz planned on scott and we are showing it unplanned … RWB is full of bugs from work today.” He was right, and the board itself said so — measured through nuvizz-stop-explain, Firestore only, ZERO NuVizz calls. EVERY scan on 2026-09-16 was dropping TEN rows, and the ledger gave its own reason: “not on DAVIS000203794 (CHAD, 0 stops on the 2026-09-16 roster) — the load’s own membership read does not list it … its own day is 2026-09-11, so it stays on that day’s board and comes off 2026-09-16” — printed directly beneath the line “The open-order pool agrees: planned on CHAD, filed under 2026-09-16.” NuVizz’s own open-order list said the freight was planned on CHAD today, and we took it off the board anyway. THE MECHANISM IS THE ORDINARY MORNING, not a corner case. A recurring route mints a NEW load each day and mints it EMPTY: on the 16th, CHAD, BUFORD and ULINE APPT were all Drafts holding 0 stops at 04:15 while the freight still hung off yesterday’s instance. Zero is a count, so it passed the gate; “more rows than the load holds” was true for every name (6 > 0); the membership read of an empty load returned nothing; and every row under the name failed membership at once, each one with a past arrival day evicted. Five CHAD stops, one BUFORD, three ULINE APPT — ten a scan, all day. THE FIX IS THE PRINCIPLE THIS MODULE ALREADY WROTE DOWN one line above, in membershipUsable: an empty read “is a contradiction inside NuVizz’s own feeds, not a verdict — never drop a row on it.” A 0-stop Draft is that same shape and was the one way in. A load holding nobody is not evidence about anybody; it is a load nobody has filled in yet. A name is now judged only when its roster load holds AT LEAST ONE stop. THE FEATURE KEEPS ITS JOB — the ESTES case it was built for (16 rows against a load of 10) still judges, and so does two rows against a load of one: the gate is zero, not “small”. A duplicate sequence number cannot smuggle an empty load past it either, or the eviction returns by the side door. SAID PLAINLY: the scan and the feed were never wrong about Chad’s own order — 007176371 reads PLANNED on SCOTT, stop 7, Scott Hart on both the 15th and the 16th documents, and the client feed returns all ten SCOTT rows totalling 5,759 lb, which is NuVizz’s own figure to the pound. What was wrong was the ten OTHER orders this rule was quietly removing from the same board. NUVIZZ_NAME_COLLISION=off turns the whole rule off without a deploy. 5 new tests, 5,020 green.'],
   ['1.38.1', '“＋ ADD SELECTION” ACCEPTS WHAT IS ALREADY LIT INSTEAD OF ASKING FOR A BOX. Chad, twice: “i don’t want the add selection to prompt me to drag a box i want it to accept what i have already selected”, and then — asked which of two readings he meant — “accept the stops already highlighted on map.” SEARCH THE GRID FOR A CUSTOMER, THE PINS GO BURNT ORANGE, PRESS IT AND THEY ARE IN. Before this the one button under “Add stops in view” armed a box draw: having just found the fourteen stops he wanted and lit them on the map, the dispatcher was asked to go and draw a rectangle round them — a second gesture that can only be LESS accurate than the search that found them, because a rectangle takes whatever else is inside it. WHAT “HIGHLIGHTED” MEANS IS READ OFF THE MAP, NOT GUESSED: useLegendInventory defines it in one line as selected OR a search hit, so the half a button can usefully accept is the search hits minus what is already selected. A status filter is deliberately not highlight — the grid reports it separately, because “search is a burnt-orange highlight, never a hide”. IT READS OFF WHAT THE MAP IS DRAWING, so a matching order with NO GEOCODE — no pin, un-box-selectable, silently dropped by any build — can never ride in on a search hit. AND IT IS THE SAME DOOR, NOT A SECOND RULE: the accepted stops go through addEnclosed exactly as box, lasso and Add-in-view do, so every skip still holds and is still named in the action line — a stop on an open Compare card, one another dispatcher’s device is staging, and (v1.36.3) one already planned onto a load sent to NuVizz. WITH NOTHING LIT IT STILL ARMS THE BOX, through the same beginMode the map rail calls, so Cancel, Esc and the rail’s highlight are unchanged; a button that goes dead when you have not searched is worse than one that offers the old way. THE LABEL SAYS WHICH IT WILL DO before it is pressed — “＋ Add 14 highlighted (search hits)” or “＋ Add selection (drag a box)”. On a phone only the box path drops the Setup sheet; accepting leaves it up, because nothing is tapped on the map and dropping it would hide the tally that just changed. 11 + 5 tests. PUT IT BACK: VITE_ROUTING_ADD_SELECTION_ACCEPTS_HIGHLIGHT=off returns the button to always arming the box — one switch covering the press, the label and the hint, so there is no half-reverted state where it says one thing and does another. No Route Workbench behaviour changes: addEnclosed gains a caller and keeps its rule.'],
   ['1.38.0', 'HOLD CTRL AND SEE WHETHER THE BUILDING HAS A DOCK. Chad, with a screenshot of consumer Google Maps tilted over a produce terminal: \u201cI want exactly what I showed you where i can be on map hold control and see map in 3d view like I showed you so I can see if buildings have docks.\u201d THE OLD CTRL ALREADY TILTED AND THAT WAS THE PROBLEM. A vector map at 67 degrees draws GREY EXTRUDED BLOCKS, and a grey block has no dock doors on it \u2014 so the gesture worked, looked like the feature, and answered nothing. What Chad photographed is Google\u2019s PHOTOREALISTIC 3D, which google.maps.Map cannot render at any tilt, on any base, with any option: it is a different element (Map3DElement, library maps3d) with its own camera and its own drawing classes. So Ctrl no longer tilts the board \u2014 it brings a second map up over the same spot, at the same centre and the same heading, and lets go puts you straight back. The button beside Satellite pins it open for a longer look, AND IT IS WHY THIS EXISTS ON A PHONE AT ALL: a phone has no Ctrl key, and a Ctrl-only feature is a feature that does not exist on mobile, which this repo has shipped twice. THE CEILING IS A LOGISTICS CALL, NOT A MATHS ONE. Matching the board honestly is what the camera maths does, and at whole-metro zoom that means a camera 363 KILOMETRES up \u2014 a photograph of Georgia from orbit, which answers nothing about a dock. The range clamps to 4,000m so a building is always a building; the CENTRE never moves, so this is a floor under usefulness rather than a teleport. Above 1,200m the view says \u201cToo high to read doors\u201d on itself instead of letting the imagery take the blame. HYBRID ALWAYS, deliberately: over an industrial park of near-identical tilt-wall units the street name is how you confirm you are looking at the right building before you judge its doors, so the labels earn their clutter \u2014 and a pin marks the exact spot you came from. THE SPEND, SAID OUT LOUD because this repo counts calls: a 3D map load bills Google\u2019s IMMERSIVE MAPS SKU, a SEPARATE meter from the DYNAMIC MAPS one the board runs on, with HALF the free allowance (5,000/month vs 10,000, then $7.00/1,000 on both). Google\u2019s SKU page is explicit that panning and zooming an existing map are free, so the price is per ELEMENT CREATED \u2014 the element is therefore built ONCE per page session, on the first Ctrl, and every look after that only moves its camera and un-hides the layer. Two hundred peeks in a morning cost one load. Closing HIDES it and never drops it, and a test pins that, because an unmount would quietly buy another one. THE TELEVISION IS EXCLUDED BY CONSTRUCTION: nobody holds Ctrl on a wall, TV mode runs the raster map precisely because that set could not drive WebGL, and a 3D element is WebGL with a bill attached. A KEY WITHOUT 3D MAPS ENABLED SAYS SO on the layer and names the console setting \u2014 without that, Ctrl would do nothing for ever and look exactly like a broken keyboard. THE ROUTE WORKBENCH IS NOT TOUCHED: this is the dispatch Map only. AND THE WAY BACK IS ONE ENV VAR, because this ALTERS a gesture that already worked: VITE_MAP_3D=off restores the old Ctrl+drag tilt on every side at once \u2014 no listener, no button, no element ever created \u2014 and anything malformed leaves it ON, so a typo cannot silently disable it. ONE BUG CAUGHT BY ITS OWN TEST BEFORE IT SHIPPED: the range maths fell into the Number(null)-is-0 trap CLAUDE.md names, and because ZOOM 0 IS A VALID ZOOM a dead map reading back undefined sailed through as \u201czoomed all the way out\u201d and opened a confident 3D view built on an answer the map never gave. AND ONE MORE FOUND BY OPENING THE PAGE RATHER THAN READING THE DIFF, which is this repo\u2019s own lesson: driving the real deploy preview, Ctrl opened the layer correctly, the key answered every request, nothing threw \u2014 and Google drew its own \u201cOops! Something went wrong\u201d card inside it, because that browser\u2019s renderer was SOFTWARE and the ordinary vector map had fallen back to raster in the same run for the same reason. A failure that arrives through a SUCCESSFUL construction cannot be caught, so it is pre-empted: WebGL is checked BEFORE the element is built, a browser that cannot draw one is told so in a sentence naming WebGL instead of a card naming nothing, and it is never billed for a map it cannot show. When the check cannot tell, it lets Google try \u2014 refusing on a false negative is the worse error. 32 new tests.'],
@@ -21137,7 +21138,7 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
 // ON THE MAP, top-right, on both views. It went to the app bar in v1.23.0 alongside the
 // dispatch Map's and came back with it in v1.23.1 — Chad: "move filters back to where it
 // was." See FilterToolbar for why the bar lost that argument."
-function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setShowRoutes, hideLabels, setHideLabels, hideStem = false, setHideStem = null }) {
+function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setShowRoutes, hideLabels, setHideLabels, hideStem = false, setHideStem = null, hideTerminal = false, setHideTerminal = null }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -21150,7 +21151,7 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setSho
   }, [open]);
   // Satellite is no longer in this popover (it lives on the map, in the tool rail), so it no
   // longer counts toward "some filter is on".
-  const anyOn = unplannedOnly || showRoutes || hideLabels || hideStem;
+  const anyOn = unplannedOnly || showRoutes || hideLabels || hideStem || hideTerminal;
   return (
     <div className="absolute top-2 right-2 z-20" ref={ref}>
       <button
@@ -21163,6 +21164,7 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setSho
       </button>
       {open && (
         <div className="absolute right-0 mt-1 w-52 bg-white border border-slate-300 rounded-lg shadow-xl px-3 py-1.5 text-[12px]">
+          {setHideTerminal && <MapFilterToggle label="Hide terminal markers" checked={hideTerminal} onChange={setHideTerminal} />}
           <MapFilterToggle label="Unplanned only" checked={unplannedOnly} onChange={setUnplannedOnly} />
           <MapFilterToggle label="Hide place labels" checked={hideLabels} onChange={setHideLabels} />
           <MapFilterToggle label="Show routes" checked={showRoutes} onChange={setShowRoutes} />
@@ -22010,6 +22012,14 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // (satellite base on, nothing hidden). unplannedOnly filters the rendered stops; satellite swaps
   // the map base; showRoutes overlays each load's delivery-sequence polyline.
   const [routeUnplannedOnly, setRouteUnplannedOnly] = useState(() => { try { return localStorage.getItem('routing.mapUnplannedOnly') === 'on'; } catch { return false; } });
+  // Chad, 2026-09-16: "i want hide termianl markers and hide stem out added to my routing
+  // filters". The stem-out half landed in v1.36.2; this is the other half. Terminal markers are
+  // the DEPOT rows — hiding them declutters the board without taking one customer delivery off
+  // the screen, which is what makes it safe on the screen where loads are BUILT. (The dispatch
+  // Map's "Hide stem out" hides the first delivery of every load; Routing's deliberately does
+  // not, and this one removes no freight either.)
+  const [routeHideTerminal, setRouteHideTerminal] = useState(() => { try { return localStorage.getItem('routing.mapHideTerminal') === 'on'; } catch { return false; } });
+  useEffect(() => { try { localStorage.setItem('routing.mapHideTerminal', routeHideTerminal ? 'on' : 'off'); } catch { /* ignore */ } }, [routeHideTerminal]);
   const [routeSatellite, setRouteSatellite] = useState(() => { try { return localStorage.getItem('routing.mapSatellite') !== 'off'; } catch { return true; } });
   const [routeShowRoutes, setRouteShowRoutes] = useState(() => { try { return localStorage.getItem('routing.mapShowRoutes') === 'on'; } catch { return false; } });
   useEffect(() => { try { localStorage.setItem('routing.mapUnplannedOnly', routeUnplannedOnly ? 'on' : 'off'); } catch { /* ignore */ } }, [routeUnplannedOnly]);
@@ -22027,7 +22037,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   useEffect(() => { try { localStorage.setItem('routing.hideLabels', routeHideLabels ? 'on' : 'off'); } catch { /* ignore */ } }, [routeHideLabels]);
   const resetRoutingLayout = useCallback(() => {
     leftPanel.onDoubleClick(); rightPanel.onDoubleClick();
-    setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true); setRouteHideStem(false); setLeftPanelOn(false); setRightCollapsed(false);
+    setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true); setRouteHideStem(false); setRouteHideTerminal(false); setLeftPanelOn(false); setRightCollapsed(false);
   }, [leftPanel, rightPanel]);
   // Nudge Google Maps to re-render when a side panel resizes (the canvas changed width).
   useEffect(() => {
@@ -22189,11 +22199,14 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // up (open in Compare). A pulled-up route always renders in full on the map regardless of the
   // filter, so its planned stops + polyline stay visible while everything else stays hidden.
   const positioned = useMemo(() => {
-    if (!routeUnplannedOnly) return positionedAll;
-    return positionedAll.filter((s) => s.isUnplanned
+    // Terminal first: it removes the depot rows and never a customer's freight, so it composes
+    // with "Unplanned only" instead of fighting it.
+    const base = routeHideTerminal ? positionedAll.filter((s) => !s.isTerminal) : positionedAll;
+    if (!routeUnplannedOnly) return base;
+    return base.filter((s) => s.isUnplanned
       || (s.routeName != null && openRouteKeys.has(String(s.routeName)))
       || (s.loadNbr != null && openRouteKeys.has(String(s.loadNbr))));
-  }, [positionedAll, routeUnplannedOnly, openRouteKeys]);
+  }, [positionedAll, routeUnplannedOnly, routeHideTerminal, openRouteKeys]);
   // Lookup map for cards / manifest / the Save payload — built from the UNFILTERED set, so a
   // stop staged onto an open card never vanishes from the card rows, printed manifest, or
   // re-sequencing while "Unplanned only" hides it on the MAP (markers use `positioned` below).
@@ -25270,7 +25283,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         {appBarSlot && createPortal(phoneGearEl, appBarSlot)}
         <div className="flex-1 relative min-w-0">
           <div ref={mapDiv} className="absolute inset-0" />
-          <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} hideStem={routeHideStem} setHideStem={setRouteHideStem} />
+          <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} hideStem={routeHideStem} setHideStem={setRouteHideStem} hideTerminal={routeHideTerminal} setHideTerminal={setRouteHideTerminal} />
           {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button),
               with the Board Flags chip stacked above it. */}
           <div className="absolute top-12 right-2 z-[15] max-w-[230px] flex flex-col items-end gap-1">{flagsOverlay()}{statusCard()}</div>
@@ -25487,7 +25500,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       {/* Center: the map canvas */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
-        <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} hideStem={routeHideStem} setHideStem={setRouteHideStem} />
+        <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} hideStem={routeHideStem} setHideStem={setRouteHideStem} hideTerminal={routeHideTerminal} setHideTerminal={setRouteHideTerminal} />
         {/* THE BOARD-STATUS CARD IS NOT ON THE MAP ANY MORE (desktop). It is portalled onto
             the app bar, left of More — see #desktop-appbar-slot for the geometry and why
             that position is the one that keeps its dropdown off Filters and the flags.
