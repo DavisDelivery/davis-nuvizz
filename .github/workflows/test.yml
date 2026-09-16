@@ -38,6 +38,23 @@ jobs:
           node-version: '22'
       - run: node dispatch-map/scripts/check-version-bump.mjs "origin/${{ github.base_ref }}"
 
+  # ── the Route Workbench boundary is a TEST now, not a paragraph ────────────
+  # CLAUDE.md froze the workbench on the evening of 09-15 and a Build-Panel PR reached into
+  # it again the next day. Same argument as version-bump above: written guidance is only as
+  # good as the attention of whoever reads it. A commit carrying "RWB-CHANGE: <Chad's words>"
+  # is the way through — see dispatch-map/scripts/check-rwb-untouched.mjs.
+  rwb-boundary:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node dispatch-map/scripts/check-rwb-untouched.mjs "origin/${{ github.base_ref }}"
+
   unit:
     runs-on: ubuntu-latest
     defaults:
