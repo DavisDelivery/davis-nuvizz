@@ -24074,7 +24074,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // "accept the stops already highlighted on map." The map's own definition of highlighted is
   // one line in useLegendInventory (selected OR a search hit), so the addable half is the
   // burnt-orange search hits. Read off what the map IS DRAWING, so a hit with no geocode —
-  // no pin, un-box-selectable, dropped by any build — can never ride in. Rule + 9 tests in
+  // no pin, un-box-selectable, dropped by any build — can never ride in. Rule + 11 tests in
   // lib/routing-select.js; this is the thin edge.
   const highlightedAddable = useMemo(
     () => (ADD_SELECTION_ACCEPTS_HIGHLIGHT ? highlightedForSelection(drawnStops, { searchMatchIds, selectedIds }) : []),
