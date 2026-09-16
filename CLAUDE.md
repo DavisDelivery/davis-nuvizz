@@ -297,10 +297,29 @@ Project-level guidance for Claude Code in this repository.
   like to roll the app back to 11:59 pm sept 14th when things were working perfectly."**
 - **The tool is `dispatch-map/scripts/rollback.mjs`.** Do not hand-roll a revert, and do
   not talk him through `git` — that is the thing this replaced.
+- **TWO WAYS BACK, and they answer different mornings.** Chad: *"would it be possible to
+  both roll back to a point in time when I knew everything was okay if I can't identify
+  the PR that caused the problem and also roll back PRs?"*
 
       npm run rollback -- --list                       what shipped, when, in plain English
+
+      # TIME — he cannot name the culprit. Replaces the whole tree; can NEVER conflict.
       npm run rollback -- "2026-09-14 11:59pm"         DRY RUN: the plan, and nothing else
       npm run rollback -- v1.30.2 --execute --because "routing tab is broken"
+
+      # DROP — he can name it. Keeps every other fix since; CAN conflict.
+      npm run rollback -- --drop 945                   DRY RUN: and whether it comes out clean
+      npm run rollback -- --drop 945,950 --execute --because "send button broke again"
+
+- **Which one to reach for.** TIME always works but throws away every good fix that
+  shipped since — measured on Sep 15, that was 13 innocent merges to undo bugs living in
+  3. DROP keeps them. Reach for DROP whenever he can name a PR, TIME when he cannot.
+- **A drop that hits a REAL code conflict STOPS.** Version lines and `public/version.json`
+  are resolved mechanically (they collide on nearly every parallel merge and carry no
+  behaviour); anything else is a person's call. Never resolve one to get it through — a
+  guessed side is a behaviour change nobody reviewed wearing a rollback's name, which is
+  the thing the tool exists to undo. The dry run says per PR which kind it will hit,
+  measured by actually trying the revert in a throwaway worktree.
 
 - **It reads his clock, not the server's.** Every commit stamp in this repo is +0000 and
   every sentence he says about one is Eastern. "11:59 pm sept 14th" is 03:59 UTC on the
