@@ -1186,7 +1186,15 @@ export function resolveLoadVehicle({ profiles = [], name = '', picked = null, re
 // PUT IT BACK: VITE_ROUTING_AREA_SELECT_SKIPS_PLANNED=off restores the old rule on the next
 // build (build-time flag — a redeploy either way). House shape: ON unless an explicit
 // off-word; anything malformed leaves it ON, so a typo can never silently reopen the hole.
-export function areaSelectSkipsPlanned(raw) {
+export function areaSelectSkipsPlanned(raw) { return houseSwitchOn(raw); }
+
+/**
+ * THE HOUSE SWITCH SHAPE, one implementation instead of one per flag: default ON, an explicit
+ * off-word turns it off, and ANYTHING MALFORMED LEAVES IT ON. A typo in an env var must never
+ * silently disable a rule — that failure is invisible, and a quiet feature looks exactly like
+ * a working one.
+ */
+export function houseSwitchOn(raw) {
   const v = String(raw ?? '').trim().toLowerCase();
   return !(v === 'off' || v === '0' || v === 'false' || v === 'no');
 }
@@ -1253,4 +1261,40 @@ export function areaSelectMessage(part, total) {
     + (c ? ` · skipped ${c} already on open cards` : '')
     + (p ? ` · skipped ${p} staged on another device` : '')
     + (l ? ` · skipped ${l} already on ${areaSelectLoadsText(part.loads)}` : '');
+}
+
+/**
+ * THE STOPS ALREADY LIT UP ON THE MAP THAT THE SELECTION DOES NOT YET HOLD.
+ *
+ * Chad: "i don't want the add selection to prompt me to drag a box i want it to accept what i
+ * have already selected" → "accept the stops already highlighted on map."
+ *
+ * WHAT "HIGHLIGHTED" IS, from the map's own definition and not from a guess: one line in
+ * useLegendInventory — `selected OR a search hit`. The selected half is already in the
+ * selection, so the half a button can usefully ACCEPT is the burnt-orange search hits, minus
+ * anything already selected. A status filter is deliberately NOT highlight: the grid reports
+ * it separately because "search is a burnt-orange highlight, never a hide".
+ *
+ * FED `drawnStops` — what the map is ACTUALLY drawing, filters and all — rather than the
+ * grid's raw match list, for one reason a dispatcher pays for: a stop with no geocode has no
+ * marker at all, cannot be box-selected, and cannot be routed. Letting one ride in on a search
+ * hit is how an order goes silently missing from a build.
+ *
+ * @param {Array} drawnStops        the stops the map is drawing
+ * @param {Set|null} opts.searchMatchIds  String(stopNbr) of the grid's current search hits
+ * @param {Set|null} opts.selectedIds     String(stopNbr) already in the selection
+ * @returns {Array} the stops to hand to the SAME area-select path box and lasso use
+ */
+export function highlightedForSelection(drawnStops, { searchMatchIds = null, selectedIds = null } = {}) {
+  const has = (set, id) => !!set && typeof set.has === 'function' && set.has(id);
+  if (!searchMatchIds) return [];
+  const out = [];
+  for (const s of drawnStops || []) {
+    if (!s || s.lat == null || s.lng == null) continue;
+    const id = String(s.stopNbr ?? '');
+    if (!has(searchMatchIds, id)) continue;
+    if (has(selectedIds, id)) continue;
+    out.push(s);
+  }
+  return out;
 }

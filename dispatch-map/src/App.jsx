@@ -47,7 +47,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -147,7 +147,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.38.0';
+const APP_VERSION = '1.38.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -201,6 +201,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.38.1', '“＋ ADD SELECTION” ACCEPTS WHAT IS ALREADY LIT INSTEAD OF ASKING FOR A BOX. Chad, twice: “i don’t want the add selection to prompt me to drag a box i want it to accept what i have already selected”, and then — asked which of two readings he meant — “accept the stops already highlighted on map.” SEARCH THE GRID FOR A CUSTOMER, THE PINS GO BURNT ORANGE, PRESS IT AND THEY ARE IN. Before this the one button under “Add stops in view” armed a box draw: having just found the fourteen stops he wanted and lit them on the map, the dispatcher was asked to go and draw a rectangle round them — a second gesture that can only be LESS accurate than the search that found them, because a rectangle takes whatever else is inside it. WHAT “HIGHLIGHTED” MEANS IS READ OFF THE MAP, NOT GUESSED: useLegendInventory defines it in one line as selected OR a search hit, so the half a button can usefully accept is the search hits minus what is already selected. A status filter is deliberately not highlight — the grid reports it separately, because “search is a burnt-orange highlight, never a hide”. IT READS OFF WHAT THE MAP IS DRAWING, so a matching order with NO GEOCODE — no pin, un-box-selectable, silently dropped by any build — can never ride in on a search hit. AND IT IS THE SAME DOOR, NOT A SECOND RULE: the accepted stops go through addEnclosed exactly as box, lasso and Add-in-view do, so every skip still holds and is still named in the action line — a stop on an open Compare card, one another dispatcher’s device is staging, and (v1.36.3) one already planned onto a load sent to NuVizz. WITH NOTHING LIT IT STILL ARMS THE BOX, through the same beginMode the map rail calls, so Cancel, Esc and the rail’s highlight are unchanged; a button that goes dead when you have not searched is worse than one that offers the old way. THE LABEL SAYS WHICH IT WILL DO before it is pressed — “＋ Add 14 highlighted (search hits)” or “＋ Add selection (drag a box)”. On a phone only the box path drops the Setup sheet; accepting leaves it up, because nothing is tapped on the map and dropping it would hide the tally that just changed. 11 + 5 tests. PUT IT BACK: VITE_ROUTING_ADD_SELECTION_ACCEPTS_HIGHLIGHT=off returns the button to always arming the box — one switch covering the press, the label and the hint, so there is no half-reverted state where it says one thing and does another. No Route Workbench behaviour changes: addEnclosed gains a caller and keeps its rule.'],
   ['1.38.0', 'HOLD CTRL AND SEE WHETHER THE BUILDING HAS A DOCK. Chad, with a screenshot of consumer Google Maps tilted over a produce terminal: \u201cI want exactly what I showed you where i can be on map hold control and see map in 3d view like I showed you so I can see if buildings have docks.\u201d THE OLD CTRL ALREADY TILTED AND THAT WAS THE PROBLEM. A vector map at 67 degrees draws GREY EXTRUDED BLOCKS, and a grey block has no dock doors on it \u2014 so the gesture worked, looked like the feature, and answered nothing. What Chad photographed is Google\u2019s PHOTOREALISTIC 3D, which google.maps.Map cannot render at any tilt, on any base, with any option: it is a different element (Map3DElement, library maps3d) with its own camera and its own drawing classes. So Ctrl no longer tilts the board \u2014 it brings a second map up over the same spot, at the same centre and the same heading, and lets go puts you straight back. The button beside Satellite pins it open for a longer look, AND IT IS WHY THIS EXISTS ON A PHONE AT ALL: a phone has no Ctrl key, and a Ctrl-only feature is a feature that does not exist on mobile, which this repo has shipped twice. THE CEILING IS A LOGISTICS CALL, NOT A MATHS ONE. Matching the board honestly is what the camera maths does, and at whole-metro zoom that means a camera 363 KILOMETRES up \u2014 a photograph of Georgia from orbit, which answers nothing about a dock. The range clamps to 4,000m so a building is always a building; the CENTRE never moves, so this is a floor under usefulness rather than a teleport. Above 1,200m the view says \u201cToo high to read doors\u201d on itself instead of letting the imagery take the blame. HYBRID ALWAYS, deliberately: over an industrial park of near-identical tilt-wall units the street name is how you confirm you are looking at the right building before you judge its doors, so the labels earn their clutter \u2014 and a pin marks the exact spot you came from. THE SPEND, SAID OUT LOUD because this repo counts calls: a 3D map load bills Google\u2019s IMMERSIVE MAPS SKU, a SEPARATE meter from the DYNAMIC MAPS one the board runs on, with HALF the free allowance (5,000/month vs 10,000, then $7.00/1,000 on both). Google\u2019s SKU page is explicit that panning and zooming an existing map are free, so the price is per ELEMENT CREATED \u2014 the element is therefore built ONCE per page session, on the first Ctrl, and every look after that only moves its camera and un-hides the layer. Two hundred peeks in a morning cost one load. Closing HIDES it and never drops it, and a test pins that, because an unmount would quietly buy another one. THE TELEVISION IS EXCLUDED BY CONSTRUCTION: nobody holds Ctrl on a wall, TV mode runs the raster map precisely because that set could not drive WebGL, and a 3D element is WebGL with a bill attached. A KEY WITHOUT 3D MAPS ENABLED SAYS SO on the layer and names the console setting \u2014 without that, Ctrl would do nothing for ever and look exactly like a broken keyboard. THE ROUTE WORKBENCH IS NOT TOUCHED: this is the dispatch Map only. AND THE WAY BACK IS ONE ENV VAR, because this ALTERS a gesture that already worked: VITE_MAP_3D=off restores the old Ctrl+drag tilt on every side at once \u2014 no listener, no button, no element ever created \u2014 and anything malformed leaves it ON, so a typo cannot silently disable it. ONE BUG CAUGHT BY ITS OWN TEST BEFORE IT SHIPPED: the range maths fell into the Number(null)-is-0 trap CLAUDE.md names, and because ZOOM 0 IS A VALID ZOOM a dead map reading back undefined sailed through as \u201czoomed all the way out\u201d and opened a confident 3D view built on an answer the map never gave. AND ONE MORE FOUND BY OPENING THE PAGE RATHER THAN READING THE DIFF, which is this repo\u2019s own lesson: driving the real deploy preview, Ctrl opened the layer correctly, the key answered every request, nothing threw \u2014 and Google drew its own \u201cOops! Something went wrong\u201d card inside it, because that browser\u2019s renderer was SOFTWARE and the ordinary vector map had fallen back to raster in the same run for the same reason. A failure that arrives through a SUCCESSFUL construction cannot be caught, so it is pre-empted: WebGL is checked BEFORE the element is built, a browser that cannot draw one is told so in a sentence naming WebGL instead of a card naming nothing, and it is never billed for a map it cannot show. When the check cannot tell, it lets Google try \u2014 refusing on a false negative is the worse error. 32 new tests.'],
   ['1.37.1', 'A STOP SOMEBODY HAS WRITTEN OFF FOR A 53-FOOTER NOW READS RED IN THE SELECTED LIST. Chad: \u201ci want a no tractor trailer stop to highlight red in selection panel.\u201d THE PANEL COULD ONLY SAY YES. It has painted a tractor-friendly row green since v0.46.5, and every other row \u2014 the 600 nobody has looked at and the handful a dispatcher has explicitly marked off-limits \u2014 wore the same nothing. So the one fact on that table a router must not get wrong, \u201csending a 53-footer here is a known mistake\u201d, was invisible unless he opened the stop. RED IS THE STATED NO, NOT THE UNKNOWN, and that line is the whole design: the green rule treats unknown as not-friendly on purpose, so on an ordinary morning most rows are not green, and painting all of those red would put the board\u2019s loudest colour on \u201cno data\u201d \u2014 a warning that fires on everything warns about nothing, and the \u201cDrop N non-tractor\u201d button already covers that set and names its count. A row goes red for a Box-only mark or a CONFIRMED \u201cNo tractor trailer\u201d; the Uline advisory a scanner lifted out of somebody else\u2019s order text stays neutral, exactly as it does not stop the map\u2019s lime paint. ONE RULE, NOT A FOURTH COPY: tractorBlockedSelection delegates to tractorPaintAllowed, the function the pin paints by and the stop panel\u2019s banner is gated on, so the row and the map cannot drift; and because it is the complement of two of tractorFriendlySelection\u2019s own refusal branches, red and green are mutually exclusive BY CONSTRUCTION. A test asserts that over every combination \u2014 \u201ctwo facts, one row\u201d is the shape this panel has got wrong three times (v0.46.8, v0.98.2, v1.1.1). The red hovers within its own colour (red-100 \u2192 red-300) for the reason the green does: a pointer may not eat a fact about the freight. The row\u2019s tooltip names the statement behind the colour, because a colour that cannot say why is half a warning. PUTTING IT BACK IS ONE REVERT \u2014 this ADDS a mark and alters no existing behaviour, and it is one commit. The bottom data grid is deliberately unchanged; say the word and it reads the same red. 9 new tests.'],
   ['1.37.0', 'ROLL THE APP BACK TO A MOMENT IN TIME, IN ONE COMMAND. Chad, after a day of merges: \u201cchanges in the app today caused major bugs with the routing tab that was working perfectly before updates today[,] it introduced at least 10-15 bugs that i\u2019m still working through \u2026 i want to build something where i can roll the app back if this were to happen again. Like i would like to roll the app back to 11:59 pm sept 14th when things were working perfectly.\u201d THE QUESTION IS NEVER \u201cWHICH SHA\u201d. At 6:45am with drivers waiting it is \u201cput it back to Sunday night\u201d, so `npm run rollback -- \u201c2026-09-14 11:59pm\u201d` takes the wall clock and does the translating \u2014 in EASTERN, which is the whole point: every commit stamp in this repo is +0000 and reading Chad\u2019s sentence as UTC lands on 7:59pm, four hours and four merges early, with nothing in the output looking wrong. His exact ask resolves to v1.30.2, 6f7c9d1, 2026-09-14 23:48 EDT, undoing 17 commits. DRY RUN IS THE DEFAULT and nothing moves without --execute --because \u201c<why>\u201d, which lands in the commit, the changelog row and the workbench-guard approval so the log six weeks later says why the app went backwards instead of looking like a mistake. THE PLAN NAMES WHAT IT COSTS before he presses go: all 17 undone commits, and separately the 5 that touch how freight reaches NuVizz \u2014 rolling back past v1.30.3 puts the five-POSTs-per-failed-route-create bug back, and that is his call to make with his eyes open, not the tool\u2019s to make quietly. IT IS A FORWARD COMMIT, NEVER A HISTORY REWRITE: one commit on top of main whose TREE is the old tree. Verified both directions against the real main tip before shipping \u2014 the commit\u2019s tree is byte-identical to the target\u2019s, and `git revert` of that single commit restores today\u2019s tree byte-identically, so undoing a rollback is one command and nobody\u2019s checkout breaks. AND THE LIFEBOAT DOES NOT GET SCUTTLED WITH THE SHIP: a rollback to any date before this tool existed would have DELETED THE TOOL, leaving Chad on the old code with no way to list versions, roll back further or roll forward \u2014 so the script, its test and its npm alias are put back from main after every restore. CODE ONLY, said in the plan and in the row: Firestore (the board, address overrides, dispatcher notes, receiving hours, suppression flags) is untouched and anything already sent to NuVizz is still sent \u2014 a rollback is not an undo button on the day\u2019s freight, and treating it as one is how somebody builds a second truck on top of the first. 26 new tests; the Build Panel and the Route Workbench are not touched.'],
@@ -17954,6 +17955,15 @@ const AREA_SELECT_SKIPS_PLANNED = (() => {
   try { return areaSelectSkipsPlanned(import.meta.env.VITE_ROUTING_AREA_SELECT_SKIPS_PLANNED); } catch { return true; }
 })();
 
+// Does step 1's "＋ Add selection" ACCEPT the stops already highlighted on the map instead of
+// arming a box draw? ON by default (v1.38.1). PUT IT BACK: VITE_ROUTING_ADD_SELECTION_ACCEPTS_HIGHLIGHT=off
+// and the button goes back to always arming the box — one switch covering the press, the label
+// and the hint, so there is no half-reverted state where the button says one thing and does
+// another. Build-time, so it costs a redeploy either way.
+const ADD_SELECTION_ACCEPTS_HIGHLIGHT = (() => {
+  try { return houseSwitchOn(import.meta.env.VITE_ROUTING_ADD_SELECTION_ACCEPTS_HIGHLIGHT); } catch { return true; }
+})();
+
 // Live-write (beta) gate — the routes-panel driver-assign + dispatch UI. UNLIKE the
 // routing beta this defaults OFF (live writes are opt-in): enable with env
 // VITE_NUVIZZ_WRITE_BETA='true', or force per-session with ?write=1 (?write=0 hides it).
@@ -24368,24 +24378,45 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       return next;
     });
   }, [wbRoutes.length, isMobile]);
-  // Arm the BOX draw from step 1 of the Setup panel. Chad: "left panel should have an add
-  // selection button." Box and Lasso have lived ONLY on the map's left-edge rail since
-  // v0.29.59 — two unlabelled 36px icons over a satellite photo — while step 1's own hint
-  // told the dispatcher to go and find them there. The panel's one selection button takes
-  // the WHOLE viewport, so grabbing one dock out of a cluster meant zooming until nothing
-  // else was on screen. Same beginMode the rail calls, so the armed block, its Cancel, Esc
-  // and the rail's own highlight all behave identically — one mode, two doors into it.
-  // PHONE: drop the sheet. The corners are tapped ON the map and the sheet is half the
-  // screen (the same move armNinjaFromPanel makes), and the toast carries the instruction
-  // the dropped sheet just took with it — an armed mode with nothing on screen to explain
-  // it reads as a broken map.
+  // WHAT IS ALREADY LIT ON THE MAP, and not yet in the selection. Chad: "i don't want the add
+  // selection to prompt me to drag a box i want it to accept what i have already selected" →
+  // "accept the stops already highlighted on map." The map's own definition of highlighted is
+  // one line in useLegendInventory (selected OR a search hit), so the addable half is the
+  // burnt-orange search hits. Read off what the map IS DRAWING, so a hit with no geocode —
+  // no pin, un-box-selectable, dropped by any build — can never ride in. Rule + 11 tests in
+  // lib/routing-select.js; this is the thin edge.
+  const highlightedAddable = useMemo(
+    () => (ADD_SELECTION_ACCEPTS_HIGHLIGHT ? highlightedForSelection(drawnStops, { searchMatchIds, selectedIds }) : []),
+    [drawnStops, searchMatchIds, selectedIds],
+  );
+  // Step 1's "Add selection" button. Chad asked for it in v1.19.0 ("left panel should have an
+  // add selection button") because Box and Lasso have lived ONLY on the map's left-edge rail
+  // since v0.29.59 — two unlabelled 36px icons over a satellite photo — while step 1's own
+  // hint told the dispatcher to go and find them there.
+  //
+  // IT ACCEPTS BEFORE IT ASKS. Search the grid for a customer, the pins go burnt orange, press
+  // this and they are in — no box, no second gesture, and the selection is exactly what was on
+  // screen. It hands them to addEnclosed, the SAME path box and lasso use, so every skip still
+  // holds: a stop on an open Compare card, one another dispatcher's device is staging, and one
+  // already planned onto a sent load are all left alone and NAMED in the action line. A second
+  // door into the existing rule, never a second rule.
+  //
+  // WITH NOTHING LIT it falls back to arming the box — same beginMode the rail calls, so the
+  // armed block, its Cancel, Esc and the rail's own highlight behave identically. A button that
+  // goes dead when you have not searched is worse than one that offers the old way.
+  // PHONE, box path only: drop the sheet. The corners are tapped ON the map and the sheet is
+  // half the screen (the same move armNinjaFromPanel makes), and the toast carries the
+  // instruction the dropped sheet just took with it — an armed mode with nothing on screen to
+  // explain it reads as a broken map. The ACCEPT path leaves the sheet up on purpose: there is
+  // nothing to tap, and dropping it would hide the tally that just changed.
   const armSelectionFromPanel = useCallback(() => {
+    if (highlightedAddable.length) { addEnclosed(highlightedAddable); return; }
     beginMode('box');
     if (isMobile) {
       setSheetOpen(false);
       showMapToast('Box select on — tap two corners on the map to add that group. Tap the Box tool (left edge) again to cancel.');
     }
-  }, [beginMode, isMobile, showMapToast]);
+  }, [highlightedAddable, addEnclosed, beginMode, isMobile, showMapToast]);
   // Mobile: whenever a route is opened into the Compare panel — the FIRST one or any later one —
   // jump to the Setup tab (which hosts the Compare workbench + the Ninja toggle) and open the sheet.
   // This used to fire for the first card only (0 → 1). With the sheet collapsed by default and the
@@ -24834,16 +24865,22 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
               <button onClick={addInView} className="flex-1 px-2 py-2 text-xs rounded border-2 font-semibold hover:bg-blue-50 active:bg-blue-100" style={{ borderColor: BRAND, color: BRAND }}>＋ Add stops in view</button>
               <button onClick={clearSelection} className="px-3 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">Clear</button>
             </div>
-            {/* THE DRAW TOOL, IN THE PANEL — the requested "add selection" button. It arms the
-                same box select the map rail arms (armSelectionFromPanel → beginMode('box')), so
-                the amber block below replaces these buttons the instant it is on and Cancel/Esc
-                still end it. Full width on its own row rather than a third chip beside Clear: at
-                the 290px the Setup panel actually runs, three buttons on one line put this one at
-                ~90px and truncate its label. */}
-            <button onClick={armSelectionFromPanel} className="w-full px-2 py-2 text-xs rounded border-2 font-semibold hover:bg-blue-50 active:bg-blue-100 inline-flex items-center justify-center gap-1.5" style={{ borderColor: BRAND, color: BRAND }}>
-              <Square size={13} /> ＋ Add selection <span className="font-normal opacity-70">({isMobile ? 'tap 2 corners' : 'drag a box'})</span>
+            {/* THE REQUESTED "add selection" BUTTON, AND IT SAYS WHAT IT WILL DO BEFORE IT IS
+                PRESSED. With search hits lit on the map it ACCEPTS them (Chad: "accept the stops
+                already highlighted on map"); with nothing lit it arms the same box select the map
+                rail arms, so the amber block below replaces these buttons the instant it is on and
+                Cancel/Esc still end it. A button whose label changes with what it is about to do
+                beats a fixed label that is wrong half the time. Full width on its own row rather
+                than a third chip beside Clear: at the 290px the Setup panel actually runs, three
+                buttons on one line put this one at ~90px and truncate its label. */}
+            <button onClick={armSelectionFromPanel} data-add-selection-mode={highlightedAddable.length ? 'accept' : 'box'} className="w-full px-2 py-2 text-xs rounded border-2 font-semibold hover:bg-blue-50 active:bg-blue-100 inline-flex items-center justify-center gap-1.5" style={{ borderColor: BRAND, color: BRAND }}>
+              <Square size={13} /> {highlightedAddable.length > 0
+                ? <>＋ Add {highlightedAddable.length} highlighted <span className="font-normal opacity-70">(search hits)</span></>
+                : <>＋ Add selection <span className="font-normal opacity-70">({isMobile ? 'tap 2 corners' : 'drag a box'})</span></>}
             </button>
-            <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. <b>Add selection</b> draws a box around a group; the <b>Lasso</b> and <b>Ninja</b> tools are on the map (left edge), or pan/zoom then <b>Add stops in view</b>.</div>
+            <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. {highlightedAddable.length > 0
+              ? <>Search the grid below and the matches light up <b style={{ color: SEARCH_MATCH_COLOR }}>orange</b> on the map — <b>Add {highlightedAddable.length} highlighted</b> takes them all.</>
+              : <><b>Add selection</b> draws a box around a group{ADD_SELECTION_ACCEPTS_HIGHLIGHT ? ', or search the grid below and it takes the highlighted matches instead' : ''}; the <b>Lasso</b> and <b>Ninja</b> tools are on the map (left edge), or pan/zoom then <b>Add stops in view</b>.</>}</div>
           </>
         )}
         {lastAction && <div className="text-[11px] text-slate-500">{lastAction}</div>}
