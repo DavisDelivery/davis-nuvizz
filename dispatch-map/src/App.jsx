@@ -78,7 +78,7 @@ import {
   restrictionConfidence, TRAILER_BLOCKER_KEYS, tractorFriendlySelection,
 } from './lib/map-legend.js';
 import { isEstesOrder, ESTES_FILL, ESTES_RING } from './lib/carrier-mark.js';
-import { eligibilityChanged } from './lib/trailer-block.js';
+import { eligibilityChanged, confirmedBlockerKeys, isTrailerBlockerKey } from './lib/trailer-block.js';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
 import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerChipLabel, latestPeerSaveAt, PRESENCE_HEARTBEAT_MS } from './lib/presence.js';
@@ -146,7 +146,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.36.0';
+const APP_VERSION = '1.36.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -200,6 +200,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.36.1', 'A STOP MARKED NO TRACTOR TRAILER IS RED IN THE SELECTED WINDOW, AND ROUTING’S FILTERS GAINED THE TWO IT NEVER HAD. Chad: “i want a stop marked no tractor trailers to have a red row in the selection window”, and “i want hide termianl markers and hide stem out added to my routing filters”. THE RED ROW CLOSES A CONFLATION, not a missing colour. A row that was not green was WHITE — and white meant BOTH “a person marked this no tractor trailer” and “nobody has ever said”. On the one panel a dispatcher stages a trailer load from, those are opposite instructions wearing the same paint, and the only way to tell them apart was to open the stop. Now: RED where somebody has said a 53-footer cannot serve the stop and we believe them (the eligibility dropdown’s Box truck only, or a CONFIRMED trailer-blocker), AMBER where a scanner lifted it out of ULINE’s own order text and nobody here has confirmed it, white only where nothing is known. PAINTING THE ADVISORY THE SAME RED WOULD TRADE ONE CONFLATION FOR ANOTHER, which is the judgement in this change and lib/trailer-block.js already wrote it down: “on an advisory mark a tractor may well be fine, and a dispatcher who cannot tell the two apart either wastes a trailer slot on a stop that would have taken one, or sends a 53-footer somewhere it physically cannot turn around.” The costs are not symmetrical — refusing a tractor that would have fitted costs one trailer slot; sending one that cannot turn around costs the delivery and the trip back — so red goes on the claim a human stands behind. The row reads the MAP’S rule (restrictionConfidence), not the overnight alert’s stricter one, so a full red disc on the map is a red row here and the half-and-half advisory disc is the amber row: the pin and the row cannot come to disagree about the same stop. A confirmed block OUTRANKS the tractor green (they should never co-occur, but a green row invites a trailer and being wrong that way strands freight); an advisory LOSES to green, because a proven tractor delivery at that address outranks a line of text about one shipment. Hover deepens within the colour rather than washing it to grey — the rule set when an amber hover ate a green row — because a warning that vanishes under the pointer disappears exactly when somebody is about to act on it. AND THE FILTERS: Routing’s dropdown has carried Unplanned only / Hide place labels / Show routes and nothing else since v0.47.0. It now leads with Hide terminal markers (new — the depot rows come off, not one customer delivery) and Hide stem out, which drives THE SAME STATE the gear’s “Hide stem-out line” always has: one switch, two doors, so they can never disagree. That is NuVizz’s meaning of the phrase (#256) — the depot → first-stop LEG stops being drawn and every stop stays on the map — and deliberately NOT the dispatch Map’s version, which hides the first delivery of every load. On the screen where loads are BUILT, taking real freight off the board is the one thing that control must not do. Both persist per device and Reset layout clears them. 9 new tests, 4,935 green.'],
   ['1.36.0', 'THE SEND BUTTON WAS BEHIND A PER-DEVICE SWITCH, AND THE CARD SAYING \u201cNOT SENT\u201d COULD NOT SEE IT. Chad, with a built CHE load open and two orders struck off: \u201cwhere is my save send to nuvizz button? ... i need this fixed in a hurry i have no way to send these loads to nuvizz.\u201d READ OFF THE CODE, NOT GUESSED AT \u2014 four controls were missing from his screenshot and all four share one gate: the Save button, the \ud83d\udd17 RWB engine badge, the \u25cf LIVE / \u25cb Beta switch and the card\u2019s driver row. That gate is `liveWrite`, a PER-DEVICE localStorage flag (\u2018routing.liveWrite\u2019) sitting in the Routing gear as \u201cLive dispatch (assign driver + dispatch)\u201d. It seeds from VITE_NUVIZZ_WRITE_BETA \u2014 which defaults FALSE \u2014 the first time a browser loads the app, then writes its own answer back to localStorage and never asks again. So a new device, a private window, cleared site data or one stray click leaves a dispatcher with a fully working planning screen and NO WAY TO SEND ANYTHING OFF IT, and nothing on screen says why. WHAT MADE IT UNREADABLE was v1.33.0: the card chip added there is not behind that gate, so the two ended up on one screen \u2014 an amber NOT SENT TO NUVIZZ over a header offering nothing to send it with. THE GEAR IS ABOUT THE DRIVER-ASSIGN + DISPATCH ROW (its own comment says so) and now covers that row and nothing else. Sending what is already staged is not an optional extra on this screen, it is the screen\u2019s entire purpose, and the two mistakes are nowhere near symmetrical: a hidden Send blocks the morning outright while looking like a working app, and a Send shown when it \u201cneed not\u201d be still cannot write without \u25cf LIVE mode AND the server\u2019s own NUVIZZ_WRITE_ENABLED \u2014 two gates, both untouched. IT IS ALSO NAMED FOR WHAT IT DOES: \u201cSend to NuVizz (2)\u201d in Live, because that is what the dispatcher went looking for; Beta keeps \u201cSave (2) \u2014 Beta\u201d, since BETA STILL WINS OVER EVERY SEND WORDING (v1.33.0) \u2014 there the button sends nothing at all. THREE THINGS THAT TRAVELLED WITH IT, each the same failure in quieter clothes: the close-confirmation, so a card holding staged changes no longer closes SILENTLY and drops them on the very screen that just called them unsent; the guard modal behind it; and the result toast, which is the Send button\u2019s only report channel \u2014 ungated, a save\u2019s \u201c\u2713 1 load(s) saved\u201d and every \u2717 refusal from NuVizz went nowhere. THE RULE IS A TESTED MODULE, not a condition in JSX: sendControlState in lib/routing-select.js, and the pin that matters walks every card state that reads as not-in-NuVizz and asserts the panel holding that card offers a control that DOES something \u2014 which is exactly the invariant this screen broke. 7 new tests. Zero NuVizz calls: no scan, no live read, diagnosed from the source.'],
   ['1.35.0', 'THE DAY ROW CAN SAY WHAT HAPPENED TO IT, AND THE LEDGER IT READS HAD BEEN RECORDING ALL ALONG. Chad, on \u201c0 to fix of 912 stops \u00b7 Nothing wrong with this day\u2019s addresses\u201d the morning after he had corrected one himself: \u201ci have a history in a drop down for any addresses that were under a day like this one i fixed one and there should be a dropdown for this day that i can see the ones that i fixed and should be in the regular history as well as well as any that were fixed in nuvizz or reconsigned it should be the history of all things.\u201d EVERY ONE OF THOSE WAS ALREADY IN THE LEDGER and none of them could reach that row. An address saved in this app lands as `override`, carrying whether the same edit also reached the ORDER in NuVizz; a Reset lands as `override-reset`; anything the carrier did to us \u2014 a RECONSIGNMENT included, which is the case refresh-stops-core\u2019s own detector re-enriches on \u2014 lands as `scan`. All of them are filed under the BOARD DAY the stop sat on, which is the exact key this queue groups by, so the drawer is a view over a ledger rather than a new record of anything. THE OLD EMPTY STATE WAS THE ACTUAL BUG. \u201cNothing wrong with this day\u2019s addresses\u201d is a true statement about PROBLEMS and was being read as a statement about the DAY \u2014 so a dispatcher who had fixed something and came back to check it stuck was told in plain English there was nothing to see. It now carries the count beside it, and the count is on the CLOSED row too: a drawer labelled only \u201cHistory\u201d is invisible in the one way that matters, because nobody opens it to find out whether anything is inside, and a day with three carrier re-addresses would look exactly like a quiet one. ONE READ FOR THE WHOLE QUEUE SPAN, not one per day header \u2014 three round trips to answer one question, growing the moment somebody widens the window. Firestore-only either way: this endpoint spends zero NuVizz calls and says so on the drawer\u2019s own footer. A SWITCHED-OFF LOG SAYS SO RATHER THAN READING AS A QUIET DAY: with ADDRESS_HISTORY=off the endpoint refuses by design, and answering that with \u201c0 changes\u201d would be a dead feature wearing a working one\u2019s face \u2014 the precise failure that switch\u2019s own comment warns about \u2014 so the row says \u201clog off\u201d, and a failed read says \u201clog unavailable\u201d instead of zero. THE ROWS REUSE THE FULL LOG\u2019S OWN PARTS (AddrSourceChip, AddrKindBadge, AddrWhere, AddrDiff, phone-stacked by the same switch) rather than growing a second definition of what a change looks like \u2014 which is how the drawer and the log would come to disagree about one ledger row. Two views, wired separately: on a phone the control sits on its own line under the date, because a date, a to-fix tally, a stop count and a button on one row at 360px wrap into a ragged block with the thumb target wherever the wrap left it. 4,920 tests green.'],
   ['1.34.0', 'ONE TAP SAYS WHICH TRUCK A LOAD RUNS, AND THE SYSTEM REMEMBERS IT. Chad: “on the loads when we put them in the [selection] panel make a quick button tractor or box truck and have system remember the choice going forward.” WHAT IT REPLACED, AND WHY HE IS RIGHT. Each ticked load row carried a dropdown of every truck profile, defaulted by A REGEX ON THE LOAD’S NAME — /(trailer|trl|53)/. Read that against the names Davis actually runs (ALPHA, ALPHA 2, ATL, SUW, SUW 2) and IT NEVER MATCHES ONCE, so every load defaulted to the box profile every morning and a load that runs a trailer had to be re-picked from a dropdown on every single build. Forget once and the solver plans a 28-skid trailer’s work at a 14-skid box’s ceiling — the same class of failure as the 4/20 split fixed in v1.33.0, arriving from the other direction. A daily correction the system threw away overnight is the cheapest kind of bug to fix and the most expensive to keep. THE ROW IS NOW TWO BUTTONS, Box | Tractor, the same segmented shape as “My loads / Trucks” above it, and the tap does two things: it sets THIS build, and it writes the class to a shared routing_load_vehicles document so it is already lit tomorrow. KEYED ON THE LOAD’S NAME, never on loadId or loadNbr — those are minted fresh for every day’s roster, so a memory keyed on either would forget overnight, which is the exact thing this exists to stop. Shared rather than localStorage, because “does SUW run a tractor” belongs to the operation and not to one browser; the write is FIELD-MASKED (setDoc REPLACES here) and a refusal reports through the permission bar instead of vanishing. AND A FACT NOW BEATS THE REGEX. route-classes.mts has been resolving which truck is on each load — the NuVizz load header first, the MarginIQ driver roster second — and travel-model already hands that map to the browser for the day on screen, keyed by BOTH load number and route name, classing a load from its HEADER even with no stops on it. That is exactly the empty loads this panel fills, it was already paid for, and nothing was reading it: five sources now decide each row, in order — this session’s tap, the remembered class, what NuVizz says is on it today, the old name guess, then the box profile (the smaller truck, so an unknown never over-plans). ZERO NuVizz calls; the same date guard the flag memos use, because a class map from another day is a lie whichever document it came out of. A STANDING PREFERENCE MAY NOT QUIETLY OUT-PLAN THE TRUCK IN THE YARD. “SUW runs a tractor” and “a box is on SUW today” are different claims, and route-classes’ own header says the day that matters is the one where the tractor is in the shop. He asked to be remembered, so the memory wins — but when the two disagree the row says so in one line naming what NuVizz has, and one tap follows it. In FLOW, not pinned: a line that appears per row is exactly the thing that lands on top of something else when it is positioned at a measured offset. THE KEY IS PROVEN INJECTIVE, because two load names collapsing onto one document is a load silently inheriting another load’s truck and nobody would think to look there for it — 20,000 names, zero collisions, and a test pins the pair (“~e” against U+07EE) that the obvious two-pass version of the escape gets wrong. 26 new tests, EIGHT mutations killed, and two of them were my own tests: a lazy regex in the wiring pin borrowed truck_profiles’ own merge flag twenty lines down and passed a blind setDoc, and the first injectivity mutation I wrote was not a bug at all. A class the fleet cannot run comes back as a DISABLED button that says why — an enabled button that does nothing teaches that the control is broken, and this one decides what the truck can carry.'],
@@ -20661,6 +20662,29 @@ function stopTractorFriendly(stop, notes, tractorLocs) {
   });
 }
 
+// IS THIS STOP MARKED "NO TRACTOR TRAILER", AND WHO SAID SO?
+//
+// Chad, 2026-09-16: "i want a stop marked no tractor trailers to have a red row in the
+// selection window." Before this, a row that was not green was white — and white meant BOTH
+// "marked no tractor trailer" and "nobody has ever said". Two opposite instructions wearing
+// one paint, on the panel a dispatcher stages a trailer load from.
+//
+// It answers with the MAP'S rule (restrictionConfidence, through confirmedBlockerKeys), not
+// the overnight alert's stricter one, so the row and the pin cannot come to disagree about the
+// same stop: a full red disc on the map is a red row here, and the half-and-half advisory disc
+// is the amber row. Returns 'confirmed' | 'advisory' | null.
+function stopTrailerBlockTier(stop, notes) {
+  const note = notes?.get?.(stop.matchKey) || null;
+  if (!note) return null;
+  // The dispatcher standing at the eligibility dropdown settles it either way, and 'tractor'
+  // means a person has already answered the question this rule asks.
+  if (note.vehicle_eligibility === 'tractor') return null;
+  if (note.vehicle_eligibility === 'box_only') return 'confirmed';
+  const keys = getRestrictionBadgeKeys(note);
+  if (confirmedBlockerKeys(note, keys, resolveRestrictionKey).length) return 'confirmed';
+  return keys.some((k) => isTrailerBlockerKey(k, resolveRestrictionKey)) ? 'advisory' : null;
+}
+
 function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemove, onRemoveMany, onClearAll, onOpenStop, onClose, isMobile, hoverId, setHoverId, onLocate, sendTargets = [], onSendTo = null }) {
   // Compact window from the naive (zoneless) schedule ISO — parse the clock straight off the
   // string so there's no local-timezone drift. "8:00a", "8:00a–8:00p".
@@ -20688,6 +20712,9 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
       // a button that drops a row a panel painted green is the worst possible version of this
       // feature (Chad, v0.46.8: "4 of these are painted... rows are not highlighted").
       tractorOk: stopTractorFriendly(s, notes, tractorLocs),
+      // 'confirmed' paints the row red, 'advisory' amber, null leaves it alone. See
+      // stopTrailerBlockTier above and ROW_TONE in lib/routing-select.js.
+      blocked: stopTrailerBlockTier(s, notes),
     };
   }), [selectedStops, notes, tractorLocs]);
   const tot = rows.reduce((a, r) => ({ wt: a.wt + r.weight, plt: a.plt + r.pallets, ls: a.ls + r.loose }), { wt: 0, plt: 0, ls: 0 });
@@ -20835,7 +20862,7 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
                   // else. It also keeps the tractor-green row GREEN while it is hovered, which
                   // the single amber fill was overwriting — that green is a real signal about
                   // what can be sent there, and a hover must never eat it.
-                  className={`border-t cursor-pointer ${selectionRowTone({ tractorOk: r.tractorOk, hot: hoverId === r.id })}`}
+                  className={`border-t cursor-pointer ${selectionRowTone({ tractorOk: r.tractorOk, blocked: r.blocked, hot: hoverId === r.id })}`}
                 >
                   <td className="px-1.5 py-1 whitespace-nowrap"><button onClick={(e) => { e.stopPropagation(); onOpenStop && onOpenStop(r.stop); }} className="font-mono text-blue-700 hover:underline">{r.pro}</button></td>
                   <td className="px-1.5 py-1 max-w-[150px] truncate" title={r.location}>{r.location}</td>
@@ -20873,7 +20900,7 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
 // ON THE MAP, top-right, on both views. It went to the app bar in v1.23.0 alongside the
 // dispatch Map's and came back with it in v1.23.1 — Chad: "move filters back to where it
 // was." See FilterToolbar for why the bar lost that argument."
-function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setShowRoutes, hideLabels, setHideLabels }) {
+function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setShowRoutes, hideLabels, setHideLabels, hideTerminal, setHideTerminal, hideStem, setHideStem }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -20886,7 +20913,7 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setSho
   }, [open]);
   // Satellite is no longer in this popover (it lives on the map, in the tool rail), so it no
   // longer counts toward "some filter is on".
-  const anyOn = unplannedOnly || showRoutes || hideLabels;
+  const anyOn = unplannedOnly || showRoutes || hideLabels || hideTerminal || hideStem;
   return (
     <div className="absolute top-2 right-2 z-20" ref={ref}>
       <button
@@ -20899,6 +20926,14 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setSho
       </button>
       {open && (
         <div className="absolute right-0 mt-1 w-52 bg-white border border-slate-300 rounded-lg shadow-xl px-3 py-1.5 text-[12px]">
+          <MapFilterToggle label="Hide terminal markers" checked={hideTerminal} onChange={setHideTerminal} />
+          {/* THE SAME STATE THE GEAR'S "Hide stem-out line" HAS ALWAYS DRIVEN — one switch, two
+              doors, so they can never come to disagree. It is NuVizz's meaning of the phrase
+              (#256): the depot → first-stop LEG stops being drawn and every stop stays on the
+              map. Deliberately NOT the dispatch Map's version, which hides the first delivery
+              of every load: on the screen where loads are BUILT, taking real freight off the
+              board is the one thing this control must not do. */}
+          <MapFilterToggle label="Hide stem out" checked={hideStem} onChange={setHideStem} />
           <MapFilterToggle label="Unplanned only" checked={unplannedOnly} onChange={setUnplannedOnly} />
           <MapFilterToggle label="Hide place labels" checked={hideLabels} onChange={setHideLabels} />
           <MapFilterToggle label="Show routes" checked={showRoutes} onChange={setShowRoutes} />
@@ -21741,6 +21776,12 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // (satellite base on, nothing hidden). unplannedOnly filters the rendered stops; satellite swaps
   // the map base; showRoutes overlays each load's delivery-sequence polyline.
   const [routeUnplannedOnly, setRouteUnplannedOnly] = useState(() => { try { return localStorage.getItem('routing.mapUnplannedOnly') === 'on'; } catch { return false; } });
+  // Chad, 2026-09-16: "i want hide termianl markers and hide stem out added to my routing
+  // filters". The Map has had both for a year; Routing's dropdown carried neither. Terminal
+  // markers are the depot rows — hiding them declutters without taking a single customer
+  // delivery off the screen, which is the whole reason this one is safe on a BUILDING screen.
+  const [routeHideTerminal, setRouteHideTerminal] = useState(() => { try { return localStorage.getItem('routing.mapHideTerminal') === 'on'; } catch { return false; } });
+  useEffect(() => { try { localStorage.setItem('routing.mapHideTerminal', routeHideTerminal ? 'on' : 'off'); } catch { /* ignore */ } }, [routeHideTerminal]);
   const [routeSatellite, setRouteSatellite] = useState(() => { try { return localStorage.getItem('routing.mapSatellite') !== 'off'; } catch { return true; } });
   const [routeShowRoutes, setRouteShowRoutes] = useState(() => { try { return localStorage.getItem('routing.mapShowRoutes') === 'on'; } catch { return false; } });
   useEffect(() => { try { localStorage.setItem('routing.mapUnplannedOnly', routeUnplannedOnly ? 'on' : 'off'); } catch { /* ignore */ } }, [routeUnplannedOnly]);
@@ -21758,7 +21799,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   useEffect(() => { try { localStorage.setItem('routing.hideLabels', routeHideLabels ? 'on' : 'off'); } catch { /* ignore */ } }, [routeHideLabels]);
   const resetRoutingLayout = useCallback(() => {
     leftPanel.onDoubleClick(); rightPanel.onDoubleClick();
-    setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true); setRouteHideStem(false); setLeftPanelOn(false); setRightCollapsed(false);
+    setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true); setRouteHideStem(false); setRouteHideTerminal(false); setLeftPanelOn(false); setRightCollapsed(false);
   }, [leftPanel, rightPanel]);
   // Nudge Google Maps to re-render when a side panel resizes (the canvas changed width).
   useEffect(() => {
@@ -21925,11 +21966,14 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // up (open in Compare). A pulled-up route always renders in full on the map regardless of the
   // filter, so its planned stops + polyline stay visible while everything else stays hidden.
   const positioned = useMemo(() => {
-    if (!routeUnplannedOnly) return positionedAll;
-    return positionedAll.filter((s) => s.isUnplanned
+    // Terminal first: it removes the depot rows, never a customer's freight, so it composes
+    // with "Unplanned only" rather than fighting it.
+    const base = routeHideTerminal ? positionedAll.filter((s) => !s.isTerminal) : positionedAll;
+    if (!routeUnplannedOnly) return base;
+    return base.filter((s) => s.isUnplanned
       || (s.routeName != null && openRouteKeys.has(String(s.routeName)))
       || (s.loadNbr != null && openRouteKeys.has(String(s.loadNbr))));
-  }, [positionedAll, routeUnplannedOnly, openRouteKeys]);
+  }, [positionedAll, routeUnplannedOnly, routeHideTerminal, openRouteKeys]);
   // Lookup map for cards / manifest / the Save payload — built from the UNFILTERED set, so a
   // stop staged onto an open card never vanishes from the card rows, printed manifest, or
   // re-sequencing while "Unplanned only" hides it on the MAP (markers use `positioned` below).
@@ -24999,7 +25043,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         {appBarSlot && createPortal(phoneGearEl, appBarSlot)}
         <div className="flex-1 relative min-w-0">
           <div ref={mapDiv} className="absolute inset-0" />
-          <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
+          <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} hideTerminal={routeHideTerminal} setHideTerminal={setRouteHideTerminal} hideStem={routeHideStem} setHideStem={setRouteHideStem} />
           {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button),
               with the Board Flags chip stacked above it. */}
           <div className="absolute top-12 right-2 z-[15] max-w-[230px] flex flex-col items-end gap-1">{flagsOverlay()}{statusCard()}</div>
@@ -25216,7 +25260,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       {/* Center: the map canvas */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
-        <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
+        <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} hideTerminal={routeHideTerminal} setHideTerminal={setRouteHideTerminal} hideStem={routeHideStem} setHideStem={setRouteHideStem} />
         {/* THE BOARD-STATUS CARD IS NOT ON THE MAP ANY MORE (desktop). It is portalled onto
             the app bar, left of More — see #desktop-appbar-slot for the geometry and why
             that position is the one that keeps its dropdown off Filters and the flags.

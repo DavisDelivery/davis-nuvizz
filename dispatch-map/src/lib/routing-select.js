@@ -761,6 +761,28 @@ export function isPlannedStop(s) {
 // It is a pure function because the rule is worth a test and a className buried in JSX is not
 // reachable from one. The browser guard cannot cover the green case at all: `tractorOk` is
 // computed from customer_notes, which is a Firestore subscription that page.route cannot stub.
+//
+// AND A THIRD FACT, ADDED 2026-09-16. Chad: "i want a stop marked no tractor trailers to have
+// a red row in the selection window."
+//
+//   RED    = somebody has said a 53-footer cannot serve this stop, and we believe them.
+//   AMBER  = a scanner found it in ULINE's own order text and nobody here has confirmed it.
+//
+// WHY TWO AND NOT ONE, which is the whole judgement in this change. Before it, a row that was
+// not green was white — and white meant BOTH "marked no tractor trailer" and "nobody has ever
+// said". Those are opposite instructions to a dispatcher staging a trailer load, and they wore
+// the same paint. Red separates the first from the second.
+//
+// Painting the advisory the SAME red would trade one conflation for another, and lib/trailer-
+// block.js exists to stop exactly that: "on an advisory mark a tractor may well be fine, and a
+// dispatcher who cannot tell the two apart either wastes a trailer slot on a stop that would
+// have taken one, or sends a 53-footer somewhere it physically cannot turn around." The MAP
+// already draws these two differently — a full disc for confirmed, half-and-half for advisory —
+// so the row follows the pin rather than inventing a second opinion about the same stop.
+//
+// The asymmetry in the costs is why amber is not red: refusing a tractor that would have fitted
+// costs a trailer slot on one load; sending one that cannot turn around costs the delivery and
+// the trip back. Red is the louder colour and it goes on the claim a human stands behind.
 export const ROW_TONE = {
   plain: 'hover:bg-slate-50',
   plainHot: 'bg-slate-200',
@@ -769,12 +791,39 @@ export const ROW_TONE = {
   // step to be seen: the neutral row goes from no fill at all to slate-200, so matching that
   // strength inside the greens takes 100 → 300, not 100 → 200.
   tractorHot: 'bg-green-300',
+  // Same shape as the greens — hover deepens WITHIN the colour that carries the meaning, never
+  // washes it out to grey. That rule was set when the amber hover ate a green row (v1.2.x) and
+  // it applies to every row that is saying something.
+  blocked: 'bg-red-100 hover:bg-red-200/70',
+  blockedHot: 'bg-red-300',
+  advisory: 'bg-amber-100 hover:bg-amber-200/70',
+  advisoryHot: 'bg-amber-300',
 };
 
-/** The background classes for one row of the selection panel. */
-export function selectionRowTone({ tractorOk = false, hot = false } = {}) {
+/**
+ * The background classes for one row of the selection panel.
+ *
+ * `blocked` is 'confirmed' | 'advisory' | null — the trailer-blocker tier from
+ * lib/trailer-block.js, NOT a boolean, because the two tiers paint differently on purpose.
+ *
+ * ORDER MATTERS AND IT IS NOT ARBITRARY: a confirmed block outranks the tractor green. The two
+ * should never co-occur (tractorFriendlySelection already refuses to green a stop with a
+ * confirmed blocker) but if a note ever carried both, the safe read is the restriction — a
+ * green row invites a dispatcher to send a trailer, and being wrong that way strands freight.
+ * An ADVISORY, by contrast, loses to green: a proven tractor delivery at that address outranks
+ * a line of Uline text about one shipment.
+ */
+export function selectionRowTone({ tractorOk = false, hot = false, blocked = null } = {}) {
+  if (blocked === 'confirmed') return hot ? ROW_TONE.blockedHot : ROW_TONE.blocked;
   if (tractorOk) return hot ? ROW_TONE.tractorHot : ROW_TONE.tractor;
+  if (blocked === 'advisory') return hot ? ROW_TONE.advisoryHot : ROW_TONE.advisory;
   return hot ? ROW_TONE.plainHot : ROW_TONE.plain;
+}
+
+/** Does this tone carry a trailer-blocker colour (either tier)? The counterpart of
+ *  toneIsGreen, so a test or a caller can ask without re-deriving the rule. */
+export function toneIsBlocked(tone) {
+  return /(^|\s|:)bg-(red|amber)-/.test(String(tone || ''));
 }
 
 /** Does this tone carry the tractor-friendly green? Used by the tests, and by anything that
