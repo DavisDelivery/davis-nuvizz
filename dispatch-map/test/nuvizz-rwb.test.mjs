@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import { rwbEngineBlocked, rwbConfigReady, rwbAddStopsToRoute, rwbSequenceStops } from '../netlify/functions/lib/nuvizz-rwb.mts';
 import { runCommitBoardRwb } from '../netlify/functions/lib/nuvizz-write.mts';
 import { rawStopExecStatus, isExecutedStopStatus } from '../netlify/functions/lib/nuvizz-write-ops.mts';
+import { buildLoadSendRows } from '../netlify/functions/lib/load-history.mts';
 
 const CREDS = { base: 'https://portal.nuvizz.com/deliverit/openapi/v7', companyCode: 'DAVIS', auth: 'Basic xyz' };
 const HEXID = '6a438e9d52ef82bd1ed4516b';
@@ -1235,5 +1236,80 @@ test('runCommitBoardRwb: FAILS LOUDLY when a removal is accepted but never appli
     assert.equal(r.ok, false, 'must NOT report saved when the removal never landed');
     assert.match(String(r.loads[0].error || ''), /KEPT stop B/i);
     assert.match(String(r.loads[0].error || ''), /removal was accepted but the stop never left/i);
+  });
+});
+
+// ── THE SEND HISTORY'S TWO SIDES RIDE A REAL SAVE (v1.37.0) ───────────────────
+//
+// lib/load-history.mts is pure and tested on its own; what CANNOT be tested there is the join
+// it depends on — that the engine actually puts `before` and a VERIFIED `after` on the result.
+// That join is the thing which breaks silently: a history that files a row with both sides
+// null still writes a row, still renders, and answers every question with "not read back".
+// These drive the real RWB engine over the stub portal and assert the contract.
+
+test('SEND HISTORY: a confirmed save carries the load\'s order BEFORE it and the VERIFIED order '
+  + 'after, and the row names both sides of the move', async () => {
+  await withRwb({}, async () => {
+    const loadStops = { value: ['A', 'B'] };
+    const { requester } = makeRequester({ loadStops });
+    const r = await runCommitBoardRwb(requester, {
+      loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, routeName: 'ALPHA', orderedStopNbrs: ['B', 'C'], removeStopNbrs: ['A'] }],
+    }, CREDS);
+    assert.equal(r.ok, true, JSON.stringify(r.loads?.[0]?.error));
+    assert.deepEqual(r.loads[0].before, ['A', 'B'], 'PASS A\'s read of the load');
+    assert.deepEqual(r.loads[0].after, ['B', 'C'], 'and the order PASS 2 just proved against a fresh read');
+
+    const [row] = buildLoadSendRows({
+      at: '2026-09-16T18:14:00.000Z', date: '2026-09-16', op: 'commitBoard', by: 'jrivera', clientOpId: 'op_x',
+      payloadLoads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, routeName: 'ALPHA' }],
+      resultLoads: r.loads,
+    });
+    assert.equal(row.verdict, 'confirmed');
+    assert.equal(row.routeName, 'ALPHA');
+    assert.deepEqual(row.added, ['C']);
+    assert.deepEqual(row.removed, ['A']);
+  });
+});
+
+test('SEND HISTORY: `before` IS CAPTURED ONCE. indexLoad re-runs on every post-save re-read, so '
+  + 'an unguarded capture would diff the after-state against itself and report no change on a '
+  + 'save that plainly moved freight', async () => {
+  await withRwb({}, async () => {
+    // applySave:false is the Jul 9 DAWSONVILLE shape: SUCCESS answered, nothing applied — which
+    // drives the repair round and a second read of the load, the exact path that would clobber
+    // a before-state captured on every index.
+    const loadStops = { value: ['A', 'B', 'C'] };
+    const { requester } = makeRequester({ loadStops, applySave: false });
+    const r = await runCommitBoardRwb(requester, {
+      loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, routeName: 'SCOTT', orderedStopNbrs: ['C', 'A', 'B'] }],
+    }, CREDS);
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.loads[0].before, ['A', 'B', 'C'], 'still the PRE-save order after the re-reads');
+    assert.equal(r.loads[0].after, undefined, 'and no `after` is claimed — the verify never passed');
+  });
+});
+
+test('SEND HISTORY: SCOTT/SHP29379 — a membership-confirmed order failure reads `partial`, not '
+  + 'refused, because a stop DID land and the row has to say so', async () => {
+  await withRwb({}, async () => {
+    const loadStops = { value: ['A', 'B'] };
+    const { requester } = makeRequester({ loadStops, applySave: false });
+    // The new stop is asked for FIRST, so the add lands (membership confirmed) while the
+    // sequence never applies — the exact half-landed shape the false ✗ came from.
+    const r = await runCommitBoardRwb(requester, {
+      loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, routeName: 'SCOTT', orderedStopNbrs: ['SHP29379', 'A', 'B'] }],
+    }, CREDS);
+    assert.equal(r.ok, false, 'the order verdict failed');
+    assert.deepEqual(r.loads[0].observedOrder, ['A', 'B', 'SHP29379'], 'what NuVizz actually holds');
+    assert.deepEqual(r.loads[0].before, ['A', 'B']);
+
+    const [row] = buildLoadSendRows({
+      at: '2026-09-16T18:14:00.000Z', date: '2026-09-16', op: 'commitBoard', clientOpId: 'op_y',
+      payloadLoads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, routeName: 'SCOTT' }],
+      resultLoads: r.loads,
+    });
+    assert.equal(row.verdict, 'partial', 'a stop landed — this is not a clean refusal');
+    assert.deepEqual(row.added, ['SHP29379'], 'and the history names the stop that is now on the truck');
+    assert.match(row.error, /KEPT its own stop order/i, 'while still carrying why it is not clean');
   });
 });

@@ -38,6 +38,7 @@ import { patchBoardPlan, isFirestoreEnabled, etDayString, setBoardDateOverride, 
 import { completionPatch } from './scan-completions.mts';
 import { finishedGuardEnabled } from './finished-guard.mts';
 import { rwbEngineBlocked, rwbConfigReady, rwbAddStopsToRoute, rwbSequenceStops, rwbSequenceRoutes } from './nuvizz-rwb.mts';
+import { deliveryOrderOf } from './load-history.mts';
 
 const hasDriverId = (v: any) => v != null && String(v).trim() !== '' && Number(v) !== 0;
 
@@ -614,7 +615,39 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
 
   // boardSync spreads in ONLY when the cancel write-through ran — a normal save's result stays
   // byte-identical to before (no new key, even an undefined one, for deepEqual consumers).
-  const loads = planned.map((p) => ({ loadNbr: p.result.loadNbr, loadId: p.loadId ?? p.L?.loadId ?? null, ok: p.result.ok, error: p.result.error, steps: p.result.steps, ...(p.result.boardSync ? { boardSync: p.result.boardSync } : {}) }));
+  // WHAT THIS SAVE DID TO EACH LOAD, for the send history (lib/load-history.mts). Both sides
+  // ride the result as read-only fields; nothing about the write changes.
+  //
+  // `before` is the Phase-0 read, which this engine never refreshes.
+  //
+  // `after` IS ONLY SET WHERE IT IS EARNED, and this engine has NO post-save read-back — so the
+  // honest answer is usually "not observed" (null), which the history renders as exactly that
+  // rather than as "nothing changed". The two cases that do earn it:
+  //   • plan.unchanged — a driver/dispatch-only Save. No membership or sequence write was even
+  //     built, so the delivery list provably still reads as it did at Phase 0.
+  //   • a confirmed cancelRoute — every delivery was removed and NuVizz acknowledged it; the
+  //     route holds no deliveries by construction.
+  // Anything else stays null. The RWB engine, which DOES read every saved load back, fills in a
+  // verified `after` of its own below.
+  const afterOf = (p: any): string[] | null => {
+    if (!p.result.ok || !p.hasLoad) return null;
+    if (p.plan?.cancelRoute === true) return [];
+    if (p.plan?.unchanged === true) return Array.isArray(p.beforeNbrs) ? p.beforeNbrs : null;
+    return null;
+  };
+  const loads = planned.map((p) => {
+    const before = p.hasLoad ? (p.beforeNbrs ?? deliveryOrderOf(p.load)) : null;
+    const after = afterOf(p);
+    return {
+      loadNbr: p.result.loadNbr, loadId: p.loadId ?? p.L?.loadId ?? null, ok: p.result.ok,
+      error: p.result.error, steps: p.result.steps,
+      ...(p.result.boardSync ? { boardSync: p.result.boardSync } : {}),
+      // Spread in only when present, for the same reason boardSync is: a normal save's result
+      // stays byte-identical for deepEqual consumers.
+      ...(before ? { before } : {}),
+      ...(after ? { after } : {}),
+    };
+  });
   return { ok: loads.every((l) => l.ok) && orphaned.length === 0, loads, orphaned };
 }
 
@@ -1081,7 +1114,7 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
       arrivals.push({ nbr, stopId: String(gs.stop.stopId), srcLoadNbr: srcNbr && srcNbr !== loadNbrX ? srcNbr : undefined });
     }
     if (err) { result.ok = false; result.error = err; imp.push({ L, loadNbr: loadNbrX, arrivals: [], orderedNbrs, curNbrs: new Set(), result }); continue; }
-    imp.push({ L, loadNbr: loadNbrX, load, createMode, orderedNbrs, arrivals, newAbsent, svcDate, originDonors, curNbrs: new Set(rawByNbr.keys()), result, addReads: missing.length + inlineNbrs.length });
+    imp.push({ L, loadNbr: loadNbrX, load, createMode, orderedNbrs, arrivals, newAbsent, svcDate, originDonors, curNbrs: new Set(rawByNbr.keys()), beforeNbrs: deliveryOrderOf(load), result, addReads: missing.length + inlineNbrs.length });
   }
 
   // ── legacy subset (unchanged engine) ──
@@ -1232,6 +1265,9 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
       // A seed physically planned this stop on this load — surfaced so a failed Save can never
       // read as "nothing happened" and the orders get re-staged elsewhere.
       seededStopNbr: p.result.seededStopNbr || undefined, seededLoadNbr: p.result.seededLoadNbr || undefined,
+      // Send history: the BEFORE side only. This engine builds new loads and has no post-save
+      // order read-back, so an `after` here would be the payload talking, not NuVizz.
+      before: p.beforeNbrs || undefined,
     })),
   ];
   return { ok: loads.every((l: any) => l.ok) && (legacyResult.orphaned || []).length === 0, loads, orphaned: legacyResult.orphaned || [] };
@@ -1518,6 +1554,13 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
 
   // Index a load's current stops: curNbrs = every stopNbr on it; stopIdByNbr = its DO deliveries.
   const indexLoad = (p: any) => {
+    // THE LOAD SEND HISTORY'S "BEFORE", AND IT IS CAPTURED ONCE ON PURPOSE (lib/load-history.mts).
+    // indexLoad re-runs on every post-save re-read (the move fallback, the repair round, the
+    // drained-anchor verify), so an unguarded assignment here would quietly overwrite what the
+    // load held BEFORE the Save with what it holds AFTER it — and a diff of a state against
+    // itself is the confident-and-wrong answer this history exists to stop giving. Costs no
+    // NuVizz call: the read is one the Save makes anyway.
+    if (p.beforeNbrs === undefined) p.beforeNbrs = deliveryOrderOf(p.load);
     p.curNbrs = new Set<string>();
     p.stopIdByNbr = new Map<string, string>();
     for (const s of (p.load?.stops || [])) {
@@ -2327,6 +2370,11 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       ok: e.result.ok, error: e.result.error, steps: e.result.steps,
       calls: e.result.calls || undefined,
       boardSync: e.result.boardSync || undefined,
+      // Send history (lib/load-history.mts): what this drained source held, and — only once the
+      // cancel came back confirmed — that it now holds nothing. A cancel that was REFUSED leaves
+      // `after` undefined, because the load still holds something and we did not read what.
+      before: e.beforeNbrs || undefined,
+      after: e.cancelled === true ? [] : undefined,
     })),
     ...seq.map((p) => ({
       loadNbr: p.result.loadNbr ?? p.loadNbr, loadId: p.load?.loadId ?? p.L?.loadId ?? null,
@@ -2348,6 +2396,19 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       // is answerable from nuvizz-write-log alone.
       finishedRecorded: p.result.finishedRecorded || undefined,
       seededStopNbr: p.result.seededStopNbr || undefined, seededLoadNbr: p.result.seededLoadNbr || undefined,
+      // ── THE SEND HISTORY'S TWO SIDES (lib/load-history.mts) ──────────────────────────────
+      // `before` is PASS A's read of the load, captured once (see indexLoad).
+      //
+      // `after` IS EARNED BY A READ-BACK AND BY NOTHING ELSE. verifyDone is set only at the end
+      // of PASS 2, and a load that reached it with result.ok has had a FRESH read prove both
+      // halves: every ordered stop is on it, nothing removed lingers, and the deliveries' stopSeq
+      // runs in the requested order (rwbOrderMismatch returned null). On that branch the
+      // requested order IS the observed order — which is why it may be recorded as a fact rather
+      // than as an intention. Every other branch leaves it undefined and the history says "not
+      // read back", never "unchanged". A membership-confirmed failure still carries observedOrder
+      // above, and the row builder prefers it.
+      before: p.beforeNbrs || undefined,
+      after: (p.verifyDone === true && p.result.ok === true && Array.isArray(p.orderedNbrs)) ? p.orderedNbrs : undefined,
     })),
   ];
   const orphaned = [...(legacyResult.orphaned || []), ...lateOrphans];
@@ -3201,6 +3262,10 @@ export async function runNewRoute(requester: RequesterLike, payload: any, creds:
     routeName: gotName || null, requestedRouteName: routeName || null, nameMatched: nameOk,
     stopsRequested: nbrs.length, stopsAttached: attachedNbrs.length, allAttached,
     driverApplied, dispatched,
+    // Send history (lib/load-history.mts). A create's BEFORE is genuinely empty — the route did
+    // not exist — and its AFTER is `attachedNbrs`, which step 5 just read back off the created
+    // route rather than echoing what we asked for. Both are facts, so both may be recorded.
+    before: [], after: attachedNbrs.map(String),
     // Echoes for the short-lived first-order client (a stale tab): its card-seeding reads these.
     ...(seedLegacy ? { seedStopNbr: seedLegacy, seedAttached: allAttached } : {}),
     ...(warnings.length ? { warning: warnings.join(' ') } : {}),

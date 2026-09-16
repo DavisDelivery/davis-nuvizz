@@ -33,7 +33,8 @@ import { requireUser } from './lib/require-user.mts';
 import { runOp, resolveWriteCreds, loadImportBlocked } from './lib/nuvizz-write.mts';
 import { rwbEngineBlocked } from './lib/nuvizz-rwb.mts';
 import { getNuvizzRequester, setCallTrigger, resolveDailyCeiling, NuvizzCircuitOpenError } from './lib/nuvizz-request.mts';
-import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
+import { isFirestoreEnabled, getDoc, etDayString, recordLoadSends } from './lib/firestore.mts';
+import { buildLoadSendRows, loadHistoryEnabled, type LoadSendOp } from './lib/load-history.mts';
 import { getOpRecord, putOpRecord, priorShortCircuits, recordCreatedOrder, recordAssignment } from './lib/write-registries.mts';
 import { outboundAllowed, outboundRefusal } from './lib/mirror-guard.mts';
 
@@ -203,8 +204,47 @@ function previewBodyFor(op: WriteOp, payload: any): any {
   }
 }
 
-async function journal(op: WriteOp, payload: any, result: any, tenant: string, clientOpId: string | null, createdBy: string | null): Promise<void> {
+// WHICH OPS CHANGE A LOAD. The send history is about the ROUTE — what is on it, who drives
+// it, whether it went out. The single-stop ops (addStopNote / setStopDate / setStopContact /
+// setStopAddress) change an ORDER and already have their own logs (the address history, the
+// write ledger); filing them here would bury the four rows a dispatcher is looking for under
+// four hundred they are not, which is the same failure as an alert nobody reads.
+const LOAD_SEND_OPS = new Set<string>(['commitBoard', 'commitLoad', 'commitImport', 'newRoute']);
+
+async function journal(op: WriteOp, payload: any, result: any, tenant: string, clientOpId: string | null, createdBy: string | null, by: string | null = null): Promise<void> {
   const date = String(payload?.date || etDayString());
+  // ── THE LOAD SEND HISTORY (lib/load-history.mts) ───────────────────────────────────────
+  // Every Save that touches a load files one row per load: when, who, what it held before,
+  // what it holds now, and the verdict the SERVER observed. Firestore-only, zero NuVizz
+  // calls — both sides of the diff were already read by the Save itself.
+  //
+  // BEST-EFFORT AND AWAITED-BUT-NEVER-THROWN, like every other journal here: NuVizz has
+  // already acted by the time this runs, so a history write that could fail a Save would be
+  // strictly worse than no history. LOAD_HISTORY=off stops the write, the read and the
+  // endpoint together.
+  if (LOAD_SEND_OPS.has(op) && loadHistoryEnabled()) {
+    try {
+      const rows = buildLoadSendRows({
+        at: new Date().toISOString(),
+        date,
+        op: op as LoadSendOp,
+        // WHO, NEVER INVENTED: the signed-in username when the caller proved one, else the
+        // client's own createdBy, else nothing. `legacy` is the pre-login principal and is not
+        // a person, so it never lands in the record as one.
+        by,
+        clientOpId,
+        // commitBoard sends { loads: [...] }; newRoute sends ONE route as the payload itself,
+        // and a pending create carries no loadNbr yet — its routeName is the only identity
+        // it has, and dropping it would file the create under a blank name.
+        payloadLoads: Array.isArray(payload?.loads) ? payload.loads
+          : (payload?.loadNbr || payload?.loadId || payload?.routeName ? [payload] : []),
+        // newRoute answers with a single load, not a `loads` list.
+        resultLoads: Array.isArray(result?.loads) ? result.loads
+          : (result && (result.loadNbr != null || result.loadId != null) ? [result] : []),
+      });
+      if (rows.length) await recordLoadSends(tenant, date, rows);
+    } catch { /* the history never fails a Save */ }
+  }
   try {
     if (op === 'createStop' && result?.ok) {
       await recordCreatedOrder({ tenant, stopNbr: result.entityNbr, stopId: result.entityId, loadNbr: payload?.loadNbr ?? null, status: 'succeeded', createdBy, createdAt: new Date().toISOString(), clientOpId, nuvizzResponse: result });
@@ -317,7 +357,10 @@ export default async (req: Request): Promise<Response> => {
 
   // 7) Journal (best-effort) + idempotency ledger.
   if (MUTATING_OPS.has(op)) {
-    await journal(op, payload, result, tenant, clientOpId, createdBy);
+    // The signed-in username is the honest answer to "who sent this"; the legacy principal
+    // (AUTH_REQUIRED off, no token) is not a person and must not be recorded as one.
+    const actor = gate.user?.authenticated ? (gate.user.username || null) : null;
+    await journal(op, payload, result, tenant, clientOpId, createdBy, actor || createdBy);
     if (clientOpId) await putOpRecord({ clientOpId, op, status: result?.ok ? 'succeeded' : 'failed', result, tenant, at: new Date().toISOString() });
   }
 

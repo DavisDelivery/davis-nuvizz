@@ -1588,6 +1588,68 @@ export async function readAddressChanges(tenant: string, dateStr: string): Promi
   } catch { return []; }
 }
 
+// ── The load send history (v1.37.0) ──────────────────────────────────────────
+//
+// Chad: "we have a new sent to nuvizz tab that records time we sent the loads to nuvizz can
+// we design a history of those changes and what changed and everytime a load was updated so
+// changes can be tracked".
+//
+// ONE DOCUMENT PER TENANT-DAY, same shape and same reason as the address log above: the
+// question this answers is "what happened to the board on this day", and a document per day
+// answers it in one get. It is filed against the BOARD day the load belongs to, never the
+// day the row was written — an 11pm Save is building tomorrow's board, and filing it under
+// today is how a whole evening's work goes missing (the Sep 5 roster bug).
+//
+// WHY NOT nuvizz_write_ops. That ledger exists and stays exactly as it is: it is keyed by
+// clientOpId alone and holds the whole forensic trail of a Save, which is what an incident
+// needs. It cannot answer "every change to ALPHA this week" — nuvizz-write-log lists the
+// entire collection and filters in memory, there is no load index and no board day, and a row
+// grows to the size of a write trail. This is the per-day, per-load index that question needs,
+// and it is small: the classified row, nothing raw.
+//
+// The cap is a bad day with room to spare. Davis runs ~30 loads; a Save touches one to four
+// cards and a busy morning is a few dozen Saves, so 600 rows is roughly ten of the worst days
+// anyone has had on one document.
+const LOAD_SEND_MAX = 600;
+const loadSendPath = (tenant: string, dateStr: string) => `${OPS_COLLECTION}/load_sends__${tenantKey(tenant)}__${dateStr}`;
+
+/** Append rows to the day's send history (newest first). BEST-EFFORT BY DESIGN: a history
+ *  that can fail a Save is worse than no history, so every failure swallows and reports
+ *  false — the Save has already reached NuVizz by the time this runs. */
+export async function recordLoadSends(tenant: string, dateStr: string, rows: any[]): Promise<boolean> {
+  if (!isFirestoreEnabled() || !Array.isArray(rows) || !rows.length) return false;
+  try {
+    const prior = await readLoadSends(tenant, dateStr);
+    // DE-DUPE ON REPLAY, keyed on "THIS LOAD, IN THIS SAVE" — and deliberately NOT on the
+    // timestamp. nuvizz-write already returns a repeated Save straight off the idempotency
+    // ledger (priorShortCircuits) without reaching the journal at all, so the case left over is
+    // the platform re-invoking a function whose response never made it back: same clientOpId,
+    // same loads, a NEW instant. Putting `at` in the key would make that the one thing this
+    // cannot catch, and one move would read as two on the screen somebody opened to count them.
+    const key = (r: any) => `${r?.clientOpId}|${r?.loadNbr}`;
+    const seen = new Set(prior.map(key));
+    const fresh = rows.filter((r) => !seen.has(key(r)));
+    if (!fresh.length) return false;
+    const next = [...fresh, ...prior].slice(0, LOAD_SEND_MAX);
+    await setDoc(loadSendPath(tenant, dateStr), {
+      tenant: tenantKey(tenant), date: dateStr, updated_at: new Date().toISOString(),
+      count: next.length, rowsJson: JSON.stringify(next),
+    } as any);
+    return true;
+  } catch { return false; }
+}
+
+/** The day's send history, newest first; [] when none was written or the read fails. */
+export async function readLoadSends(tenant: string, dateStr: string): Promise<any[]> {
+  if (!isFirestoreEnabled()) return [];
+  try {
+    const doc = await getDoc(loadSendPath(tenant, dateStr));
+    if (!doc) return [];
+    const arr = JSON.parse(doc.rowsJson || '[]');
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+
 // ── The last refused scan, where the BOARD's own poll can see it ─────────────
 //
 // THE FAILURE THIS EXISTS TO PREVENT. A dispatcher presses "Scan now" at 5am on a signed-out

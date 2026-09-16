@@ -152,6 +152,7 @@ const SCREENS = [
   { key: 'comms', label: 'Customer emails', nav: /customer emails/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },
+  { key: 'sendhistory', label: 'Send history', nav: /send history/i, inMore: true },
   { key: 'diagnostics', label: 'Diagnostics', nav: /diagnostics/i },
   // Both open as overlays rather than swapping `tab`, which is why they were missed.
   { key: 'messages', label: 'Messages', nav: /^messages/i },

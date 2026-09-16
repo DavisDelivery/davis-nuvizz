@@ -146,7 +146,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.36.1';
+const APP_VERSION = '1.37.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -200,6 +200,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.37.0', 'SEND HISTORY — EVERY TIME A LOAD WENT TO NUVIZZ, WHAT CHANGED ON IT, AND WHETHER NUVIZZ TOOK IT. Chad: “we have a new sent to nuvizz tab that records time we sent the loads to nuvizz can we design a history of those changes and what changed and everytime a load was updated so changes can be tracked and then we design a ui for it to interact with it.” FIRST, THE CORRECTION, READ OFF THE CODE RATHER THAN ASSUMED: that tab is not there any more. The per-card SENT TO NUVIZZ 2:14 PM chip was reverted the previous night with the whole of #932 (v1.36.1) — cardSendState, savedAtByKey and fmtClockMs are gone from App.jsx, and the card chip is back to its pre-#932 “not sent” on a pending NEW route only. AND EVEN WHILE IT EXISTED IT RECORDED NOTHING DURABLE: savedAtByKey was React state keyed by card and pruned the moment the card closed, so a reload erased every trace that a load had ever been sent. What it showed was a label, not a record. WHAT DOES SURVIVE is the write ledger (nuvizz_write_ops, one row per Save), and it has three gaps that make it unable to answer “what changed on ALPHA today”: it is keyed by clientOpId alone, so nuvizz-write-log walks the whole collection and filters in memory with no load index and no board day; the per-load result carried no BEFORE list, because the load’s own stop order is read in Phase 0 of every commit and thrown away; and it has no UI at all, only curl. THE DIFF IS FREE, AND THAT IS THE WHOLE DESIGN. Both sides were already in hand inside the commit engines, paid for by calls the Save makes anyway — `before` is PASS A’s read of the load, captured ONCE (indexLoad re-runs on every post-save re-read, and an unguarded capture would diff the after-state against itself and report no change on a Save that plainly moved freight; a test drives the real engine through the repair round to prove it does not). `after` IS EARNED BY A READ-BACK AND BY NOTHING ELSE: only a load that reached the end of PASS 2 with result.ok has had a fresh read prove membership AND sequence, so on that branch the requested order IS the observed order. Every other branch leaves it null and the screen says “the load was not read back, so what it holds now is unknown” — never “no change”, which is the v1.29.0 banner failure exactly. ZERO NuVizz calls, on the write and on the read. A REFUSED SEND IS A ROW, because “nothing happened at 2:14” and “we tried at 2:14 and NuVizz refused” are different facts and the second is the one somebody has to act on. There is a third verdict between them, and it is the expensive one: PART LANDED, a Save that reported a failure while a read-back shows the load DID move — the SCOTT/SHP29379 shape, freight physically on the route under a red ✗, which used to be invisible and invites a double-plan. THE SCREEN is More → Send history, a phone view and a desktop view built separately: a table on a laptop because comparing eight sends down a column is the job, one card per send in a single flow column on a phone because six columns do not fit across 360px. Search by LOAD (the route NAME, which is the identity that survives NuVizz re-minting loadNbr every night) or by ORDER, zero-padding and all, matching BOTH sides — “what happened to 007175992” is usually asked about a stop that was REMOVED. Verdict pills carry the whole window’s counts, not the filtered list’s, and a window with sends nobody read back says so in amber. THE ROUTING WORKBENCH IS NOT TOUCHED. Not markSaved, not the card chips, not paint, not selection — the freeze added in v1.36.1 holds, and the one thing that would need it (making the card chip open that load’s history) is a proposal in the handover, not in this diff. LOAD_HISTORY=off puts it back — one env var covering the write, the read and the endpoint together. 40 new tests, including the real RWB engine driven end to end for both sides of the diff and the endpoint driven against an in-memory Firestore that THROWS on any vendor fetch, which is how “zero NuVizz calls” is proved rather than asserted.'],
   ['1.36.1', 'v1.33.0 (#932) IS REVERTED \u2014 the \u201cNOT SENT TO NUVIZZ\u201d chip and everything that shipped with it. Chad, Sep 15, 8:30 PM, with CHE sent to NuVizz and its stops coming back up in a box-select: \u201cyou have majorly screwed something up messing with things i didn\u2019t ask to be messed with \u2026 WE just need to roll back one of the pr\u2019s that made these changes go back to before the changes.\u201d Of the thirteen merges that day, #932 is the only one whose diff touches the Routing map\u2019s paint or selection path (routePaintSource / planStaged / effectiveRouteInfo); every other PR has zero hits there. This puts back, byte for byte, everything #932 changed: the per-card NOT SENT / SENT / NOTHING TO SEND chip, the header\u2019s \u201cAll sent / Nothing to send\u201d text, the rule that closing the last staged card paints nothing instead of the build\u2019s plan, AND part (3) of the same PR \u2014 the truck skid/weight class floors in the build, the result-panel substitution notes and the Trucks-mode profile editor\u2019s draft/Save \u2014 because the ask was the whole PR, not the parts. KEPT: v1.36.0\u2019s Send to NuVizz button, the RWB badge and the LIVE/Beta switch stay outside the per-device gear (Chad asked for that button by name); with nothing staged the header shows no control, exactly as before v1.33.0. What the board itself said before this was decided, zero NuVizz calls: 007176785 is PLANNED on CHE seq 12 on the 09-16 day document, stamped by the 8:29 PM save (boardSync patched 17/17) \u2014 the Send worked; NuVizz\u2019s own un-planned snapshot from the 8:25 PM scan still lists it un-planned, which is the pool the Last-7-days window reads. NEW RULE IN CLAUDE.md: no change to the Routing workbench\u2019s send / stage / paint / selection behaviour without explicit per-request permission from Chad.'],
   ['1.36.0', 'THE SEND BUTTON WAS BEHIND A PER-DEVICE SWITCH, AND THE CARD SAYING \u201cNOT SENT\u201d COULD NOT SEE IT. Chad, with a built CHE load open and two orders struck off: \u201cwhere is my save send to nuvizz button? ... i need this fixed in a hurry i have no way to send these loads to nuvizz.\u201d READ OFF THE CODE, NOT GUESSED AT \u2014 four controls were missing from his screenshot and all four share one gate: the Save button, the \ud83d\udd17 RWB engine badge, the \u25cf LIVE / \u25cb Beta switch and the card\u2019s driver row. That gate is `liveWrite`, a PER-DEVICE localStorage flag (\u2018routing.liveWrite\u2019) sitting in the Routing gear as \u201cLive dispatch (assign driver + dispatch)\u201d. It seeds from VITE_NUVIZZ_WRITE_BETA \u2014 which defaults FALSE \u2014 the first time a browser loads the app, then writes its own answer back to localStorage and never asks again. So a new device, a private window, cleared site data or one stray click leaves a dispatcher with a fully working planning screen and NO WAY TO SEND ANYTHING OFF IT, and nothing on screen says why. WHAT MADE IT UNREADABLE was v1.33.0: the card chip added there is not behind that gate, so the two ended up on one screen \u2014 an amber NOT SENT TO NUVIZZ over a header offering nothing to send it with. THE GEAR IS ABOUT THE DRIVER-ASSIGN + DISPATCH ROW (its own comment says so) and now covers that row and nothing else. Sending what is already staged is not an optional extra on this screen, it is the screen\u2019s entire purpose, and the two mistakes are nowhere near symmetrical: a hidden Send blocks the morning outright while looking like a working app, and a Send shown when it \u201cneed not\u201d be still cannot write without \u25cf LIVE mode AND the server\u2019s own NUVIZZ_WRITE_ENABLED \u2014 two gates, both untouched. IT IS ALSO NAMED FOR WHAT IT DOES: \u201cSend to NuVizz (2)\u201d in Live, because that is what the dispatcher went looking for; Beta keeps \u201cSave (2) \u2014 Beta\u201d, since BETA STILL WINS OVER EVERY SEND WORDING (v1.33.0) \u2014 there the button sends nothing at all. THREE THINGS THAT TRAVELLED WITH IT, each the same failure in quieter clothes: the close-confirmation, so a card holding staged changes no longer closes SILENTLY and drops them on the very screen that just called them unsent; the guard modal behind it; and the result toast, which is the Send button\u2019s only report channel \u2014 ungated, a save\u2019s \u201c\u2713 1 load(s) saved\u201d and every \u2717 refusal from NuVizz went nowhere. THE RULE IS A TESTED MODULE, not a condition in JSX: sendControlState in lib/routing-select.js, and the pin that matters walks every card state that reads as not-in-NuVizz and asserts the panel holding that card offers a control that DOES something \u2014 which is exactly the invariant this screen broke. 7 new tests. Zero NuVizz calls: no scan, no live read, diagnosed from the source.'],
   ['1.35.0', 'THE DAY ROW CAN SAY WHAT HAPPENED TO IT, AND THE LEDGER IT READS HAD BEEN RECORDING ALL ALONG. Chad, on \u201c0 to fix of 912 stops \u00b7 Nothing wrong with this day\u2019s addresses\u201d the morning after he had corrected one himself: \u201ci have a history in a drop down for any addresses that were under a day like this one i fixed one and there should be a dropdown for this day that i can see the ones that i fixed and should be in the regular history as well as well as any that were fixed in nuvizz or reconsigned it should be the history of all things.\u201d EVERY ONE OF THOSE WAS ALREADY IN THE LEDGER and none of them could reach that row. An address saved in this app lands as `override`, carrying whether the same edit also reached the ORDER in NuVizz; a Reset lands as `override-reset`; anything the carrier did to us \u2014 a RECONSIGNMENT included, which is the case refresh-stops-core\u2019s own detector re-enriches on \u2014 lands as `scan`. All of them are filed under the BOARD DAY the stop sat on, which is the exact key this queue groups by, so the drawer is a view over a ledger rather than a new record of anything. THE OLD EMPTY STATE WAS THE ACTUAL BUG. \u201cNothing wrong with this day\u2019s addresses\u201d is a true statement about PROBLEMS and was being read as a statement about the DAY \u2014 so a dispatcher who had fixed something and came back to check it stuck was told in plain English there was nothing to see. It now carries the count beside it, and the count is on the CLOSED row too: a drawer labelled only \u201cHistory\u201d is invisible in the one way that matters, because nobody opens it to find out whether anything is inside, and a day with three carrier re-addresses would look exactly like a quiet one. ONE READ FOR THE WHOLE QUEUE SPAN, not one per day header \u2014 three round trips to answer one question, growing the moment somebody widens the window. Firestore-only either way: this endpoint spends zero NuVizz calls and says so on the drawer\u2019s own footer. A SWITCHED-OFF LOG SAYS SO RATHER THAN READING AS A QUIET DAY: with ADDRESS_HISTORY=off the endpoint refuses by design, and answering that with \u201c0 changes\u201d would be a dead feature wearing a working one\u2019s face \u2014 the precise failure that switch\u2019s own comment warns about \u2014 so the row says \u201clog off\u201d, and a failed read says \u201clog unavailable\u201d instead of zero. THE ROWS REUSE THE FULL LOG\u2019S OWN PARTS (AddrSourceChip, AddrKindBadge, AddrWhere, AddrDiff, phone-stacked by the same switch) rather than growing a second definition of what a change looks like \u2014 which is how the drawer and the log would come to disagree about one ledger row. Two views, wired separately: on a phone the control sits on its own line under the date, because a date, a to-fix tally, a stop count and a button on one row at 360px wrap into a ragged block with the thumb target wherever the wrap left it. 4,920 tests green.'],
@@ -10334,6 +10335,13 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                   {/* BOTH NAVIGATIONS OR NEITHER. A badge on the laptop and not the phone is
                       the v0.54.50 shape — dispatch runs on a phone. */}
                   {addrBadge > 0 && <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{addrBadge > 99 ? '99+' : addrBadge}</span>}
+                </button>
+                <button
+                  className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+                  onClick={() => onSelectMenu('sendhistory')}
+                  role="menuitem"
+                >
+                  <Send size={12} /> Send history
                 </button>
                 {/* UAT only — and here BECAUSE of the note above: dispatch runs on a phone,
                     and a screen added to one navigation and not the other is a screen that
@@ -27573,7 +27581,7 @@ function Shell() {
     // named here or the phone menu silently opens the map instead — which is what
     // happened to Manifest check in v0.54.48: the desktop nav had it, the chip
     // menu did not, and there was no way to reach it from a phone at all.
-    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'uatbench'];
+    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'sendhistory', 'uatbench'];
     setTab(next === 'diagnostics' ? 'diag' : KNOWN.includes(next) ? next : 'map');
   };
 
@@ -27714,6 +27722,7 @@ function Shell() {
                 { id: 'comms', label: 'Customer emails', hint: 'Delivery-complete email program', icon: <Mail size={14} /> },
                 { id: 'flaghistory', label: 'Flag history', hint: 'Every flag, and what happened to it', icon: <Flag size={14} /> },
                 { id: 'addrhistory', label: 'Address history', hint: addrBadge > 0 ? `${addrBadge} address${addrBadge === 1 ? '' : 'es'} to fix — wrong door, wrong pin, or no pin at all` : 'Every address that changed, and who changed it', icon: <MapPinned size={14} />, badge: addrBadge },
+                { id: 'sendhistory', label: 'Send history', hint: 'Every load sent to NuVizz, and what changed on it', icon: <Send size={14} /> },
                 { id: 'diag', label: 'Diagnostics', hint: 'Scan health, API calls, schedule', icon: <Activity size={14} /> },
                 { id: 'debug', label: 'Debug this view', hint: 'Bundle what you are looking at', icon: <Bug size={14} /> },
                 // UAT ONLY, keyed on the HOSTNAME — the one fact about a deploy nobody can
@@ -27744,7 +27753,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : tab === 'sendhistory' ? <LoadHistoryScreen /> : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} sendDenied={smsGate.reason} />}
@@ -32021,6 +32030,354 @@ function AddressHistoryListMobile({ rows }) {
           <div className="text-xs"><AddrDiff row={r} stacked /></div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── THE LOAD SEND HISTORY ────────────────────────────────────────────────────
+//
+// Chad, 2026-09-16: "we have a new sent to nuvizz tab that records time we sent the loads to
+// nuvizz can we design a history of those changes and what changed and everytime a load was
+// updated so changes can be tracked and then we design a ui for it to interact with it."
+//
+// WHAT A DISPATCHER DOES WITH THIS, which is the test every row here has to pass. It is opened
+// in the middle of an argument: a driver has a stop that should not be on his manifest, a
+// customer says they were promised today, a load reads un-routed on a board where it was sent
+// an hour ago. The question is always the same shape — WHAT DID WE DO TO THIS LOAD, AND WHEN —
+// and until now the only answer lived in a chip on a Compare card that died when the card
+// closed. So every row leads with the two facts that settle it: what changed, and whether
+// NuVizz took it.
+//
+// THE VERDICT IS THE LOUDEST THING ON THE ROW, deliberately. A confirmed send is a receipt and
+// wants no attention; a refused or half-landed one is work somebody has to do, and burying it
+// in a column of timestamps is the same failure as an alert nobody reads.
+//
+// ZERO NUVIZZ CALLS. It reads our own day documents (load-history.mts, which says so on its
+// first line), so it is safe to leave open and free to refresh.
+const SEND_HISTORY_FIND = [
+  { id: 'load', label: 'Load', placeholder: 'Find one load — e.g. ALPHA, CHE, SUW 2' },
+  { id: 'stop', label: 'Order', placeholder: 'Find one order — e.g. 007175992' },
+];
+
+const sendTime = (iso) => {
+  const t = Date.parse(String(iso || ''));
+  if (!Number.isFinite(t)) return '';
+  return new Date(t).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+};
+
+// The one human line for a row, mirroring lib/load-history.mts's changeLabel. Duplicated here
+// rather than imported because that module is server-side TypeScript; the WORDING is pinned by
+// test/load-history.test.mjs on the server side and by the screen test on this one, and both
+// say the same thing about the same row.
+function sendChangeParts(r) {
+  const parts = [];
+  if (r.cancelled) parts.push('route cancelled');
+  else if (r.created) parts.push('route created');
+  if (r.added?.length) parts.push(`+${r.added.length} stop${r.added.length === 1 ? '' : 's'}`);
+  if (r.removed?.length) parts.push(`−${r.removed.length} stop${r.removed.length === 1 ? '' : 's'}`);
+  if (r.resequenced) parts.push('resequenced');
+  if (r.driverSet) parts.push(`driver → ${r.driverSet}`);
+  if (r.dispatched) parts.push('dispatched');
+  return parts;
+}
+
+const SEND_VERDICTS = {
+  confirmed: { label: 'Confirmed', tone: 'text-emerald-800 bg-emerald-100 border-emerald-300', title: 'NuVizz took it and the load was read back to prove it — membership and sequence both.' },
+  partial: { label: 'Part landed', tone: 'text-amber-800 bg-amber-100 border-amber-300', title: 'The Save reported a failure, but a read-back shows the load DID move. Check it in the portal before re-sending, or you may double-plan.' },
+  refused: { label: 'Refused', tone: 'text-red-800 bg-red-100 border-red-300', title: 'The write failed and nothing we read says the load moved.' },
+};
+
+function SendVerdictBadge({ verdict }) {
+  const v = SEND_VERDICTS[verdict] || SEND_VERDICTS.refused;
+  return (
+    <span className={`text-[10px] font-bold uppercase border rounded px-1.5 py-0.5 whitespace-nowrap ${v.tone}`} title={v.title}>
+      {v.label}
+    </span>
+  );
+}
+
+// WHAT CHANGED, and — when nothing did — WHY THAT IS NOT NECESSARILY GOOD NEWS.
+//
+// `after === null` means the load was never read back. A history that printed a reassuring
+// "no change" there would be telling the dispatcher the opposite of what the server observed,
+// which is the v1.29.0 banner failure exactly. It says what it does not know.
+function SendChange({ row, stacked = false }) {
+  const parts = sendChangeParts(row);
+  if (!parts.length) {
+    // A REFUSAL ALREADY SAYS THIS, TWICE — the red badge and NuVizz's own complaint on the line
+    // below. Adding "the load was not read back, so what it holds now is unknown" over the top
+    // of them read, on the built screen, as a third competing account of one event: seen in the
+    // desktop shot of this release before it shipped. The honesty is not lost, because a refused
+    // row never claims anything landed in the first place.
+    if (row.verdict === 'refused' && row.error) return null;
+    const why = row.after == null
+      ? 'Sent — the load was not read back, so what it holds now is unknown. Open it in the portal to be sure.'
+      : row.before == null
+        ? 'Sent — what the load held before this was not captured, so no comparison is possible.'
+        : 'No change to the load — the Save matched what NuVizz already held.';
+    return <span className={`text-[11px] ${row.after == null ? 'text-amber-700' : 'text-slate-500'}`}>{why}</span>;
+  }
+  return (
+    <div className={stacked ? 'space-y-1' : 'flex flex-wrap items-center gap-x-2 gap-y-1'}>
+      <div className="text-xs font-semibold text-slate-800">{parts.join(' · ')}</div>
+      {!!(row.added?.length || row.removed?.length) && (
+        <div className="text-[11px] font-mono text-slate-500 break-all">
+          {row.added?.length ? <span className="text-emerald-700">+{row.added.join(' +')}</span> : null}
+          {row.added?.length && row.removed?.length ? ' ' : null}
+          {row.removed?.length ? <span className="text-red-700">−{row.removed.join(' −')}</span> : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The stop counts either side of the send. Kept to numbers in the row, because a twenty-stop
+// load's full order is not something to read sideways — the full list opens on demand.
+function SendCounts({ row }) {
+  const b = Array.isArray(row.before) ? row.before.length : null;
+  const a = Array.isArray(row.after) ? row.after.length : null;
+  return (
+    <span className="text-[11px] text-slate-500 whitespace-nowrap tabular-nums">
+      {b == null ? '—' : b} → {a == null ? <span className="text-amber-700" title="never read back">?</span> : a}
+    </span>
+  );
+}
+
+function SendOrderDetail({ row }) {
+  const [open, setOpen] = React.useState(false);
+  if (!Array.isArray(row.before) && !Array.isArray(row.after)) return null;
+  return (
+    <div className="mt-1">
+      <button onClick={() => setOpen((v) => !v)} className="text-[11px] text-slate-500 underline hover:text-slate-800 min-h-[28px]">
+        {open ? 'Hide the stop order' : 'Show the stop order'}
+      </button>
+      {open && (
+        <div className="mt-1 grid gap-1 text-[11px] font-mono text-slate-600">
+          <div className="break-all"><span className="font-sans font-semibold text-slate-500">before </span>{Array.isArray(row.before) ? (row.before.join(' → ') || '(empty)') : 'not captured'}</div>
+          <div className="break-all"><span className="font-sans font-semibold text-slate-500">after </span>{Array.isArray(row.after) ? (row.after.join(' → ') || '(empty)') : 'not read back'}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// DESKTOP. A table, because comparing eight sends down a column is the whole job on a 1920px
+// board and a stack of cards makes that scrolling.
+function LoadHistoryTable({ rows }) {
+  return (
+    <div className="rounded-xl border bg-white overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="bg-slate-50 text-slate-500">
+            <tr className="text-left">
+              <th className="px-3 py-2 font-semibold whitespace-nowrap">Sent</th>
+              <th className="px-3 py-2 font-semibold whitespace-nowrap">Load</th>
+              <th className="px-3 py-2 font-semibold">What changed</th>
+              <th className="px-3 py-2 font-semibold whitespace-nowrap">Stops</th>
+              <th className="px-3 py-2 font-semibold whitespace-nowrap">Result</th>
+              <th className="px-3 py-2 font-semibold whitespace-nowrap">Who</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={`${r.clientOpId}-${r.loadNbr}-${r.at}-${i}`} className="border-t align-top hover:bg-slate-50">
+                <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{sendTime(r.at)}</td>
+                <td className="px-3 py-2">
+                  <div className="font-semibold text-slate-800 whitespace-nowrap">{r.routeName || r.loadNbr || '—'}</div>
+                  {r.routeName && r.loadNbr && <div className="text-[10px] font-mono text-slate-400 max-w-[150px] truncate" title={r.loadNbr}>{r.loadNbr}</div>}
+                </td>
+                <td className="px-3 py-2 min-w-[300px]">
+                  <SendChange row={r} />
+                  {r.error && <div className="text-[11px] text-red-700 mt-1 break-words max-w-[420px]">{r.error}</div>}
+                  <SendOrderDetail row={r} />
+                </td>
+                <td className="px-3 py-2"><SendCounts row={r} /></td>
+                <td className="px-3 py-2"><SendVerdictBadge verdict={r.verdict} /></td>
+                <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{r.by || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// PHONE. Not the table with smaller text — six columns do not fit across 360px and a
+// sideways-scrolling table is not something anybody reads standing in a yard. One card per
+// send, everything in ONE FLOW COLUMN so a long error message pushes what is below it DOWN
+// instead of over it (CLAUDE.md, *Mobile and desktop are TWO VIEWS*).
+function LoadHistoryListMobile({ rows }) {
+  return (
+    <div className="space-y-2">
+      {rows.map((r, i) => (
+        <div key={`${r.clientOpId}-${r.loadNbr}-${r.at}-${i}`} className="rounded-xl border bg-white p-3 space-y-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <SendVerdictBadge verdict={r.verdict} />
+            <SendCounts row={r} />
+            <span className="ml-auto text-[11px] text-slate-400 whitespace-nowrap">{sendTime(r.at)}</span>
+          </div>
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-slate-800 break-words">{r.routeName || r.loadNbr || '—'}</div>
+            {r.by && <div className="text-[11px] text-slate-500">sent by {r.by}</div>}
+          </div>
+          <SendChange row={r} stacked />
+          {r.error && <div className="text-[11px] text-red-700 break-words">{r.error}</div>}
+          <SendOrderDetail row={r} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LoadHistoryScreen() {
+  const viewportWidth = useViewportWidth();
+  const isMobile = viewportWidth < MOBILE_BREAKPOINT;
+  const today = todayInET();
+  const [sel, setSel] = React.useState({ kind: 'days', days: 7 });
+  // SAME HORIZON AS THE ENDPOINT, resolved by the same module — a header describing one window
+  // over rows from another is the exact failure history-range.js exists to prevent. It reaches
+  // FORWARD because an 11pm Save files against tomorrow's board day.
+  const range = React.useMemo(() => resolveRange(sel, today, QUEUE_DAYS_AHEAD), [sel, today]);
+  const [findKind, setFindKind] = React.useState('load');
+  const [findQ, setFindQ] = React.useState('');
+  const [verdict, setVerdict] = React.useState(null);      // null = every result
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [err, setErr] = React.useState(null);
+
+  // The find box is a SEARCH, not a filter of what is already on screen: a load somebody sent
+  // three weeks ago must still be findable, so typing one widens the read to the cap.
+  const searching = findQ.trim().length > 0;
+  const qs = React.useMemo(() => {
+    const p = new URLSearchParams();
+    if (searching) { p.set(findKind, findQ.trim()); p.set('days', String(MAX_RANGE_DAYS)); }
+    else { p.set('from', range.from || today); p.set('to', range.to || today); }
+    if (verdict) p.set('verdict', verdict);
+    return p.toString();
+  }, [searching, findKind, findQ, range.from, range.to, today, verdict]);
+
+  const load = React.useCallback(async () => {
+    setLoading(true); setErr(null);
+    try {
+      const r = await apiFetch(`/.netlify/functions/load-history?${qs}`);
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'read failed');
+      setData(j);
+    } catch (e) { setErr(String(e.message || e)); } finally { setLoading(false); }
+  }, [qs]);
+  React.useEffect(() => { load(); }, [load]);
+
+  const rows = data?.rows || [];
+  const sum = data?.summary || { rows: 0, confirmed: 0, partial: 0, refused: 0, loads: 0, stopsAdded: 0, stopsRemoved: 0, unobserved: 0 };
+  const find = SEND_HISTORY_FIND.find((f) => f.id === findKind) || SEND_HISTORY_FIND[0];
+
+  // The verdict pills carry the WHOLE window's counts, not the filtered list's — a breakdown
+  // that zeroes itself the moment somebody presses one is a breakdown that vanishes exactly
+  // when it starts being used.
+  const pills = [
+    { id: null, label: 'All', n: sum.rows },
+    { id: 'confirmed', label: 'Confirmed', n: sum.confirmed },
+    { id: 'partial', label: 'Part landed', n: sum.partial },
+    { id: 'refused', label: 'Refused', n: sum.refused },
+  ];
+
+  return (
+    <div className="flex-1 overflow-y-auto bg-slate-50">
+      <div className={`${SCREEN_DASH} p-4 sm:p-6 space-y-4`}>
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="min-w-0">
+            {/* THE LITERAL "Send history" STAYS IN THE BODY — the layout guards prove the screen
+                opened with document.body.innerText, so a rename reads as "could not be opened". */}
+            <h1 className="text-xl font-bold text-slate-900">Send history</h1>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Every time a load was sent to NuVizz — when, by whom, what changed on it, and whether NuVizz took it.
+            </p>
+          </div>
+          <button onClick={load} className="rounded-lg border px-3 py-1.5 text-xs font-semibold bg-white hover:bg-slate-50 min-h-[40px]">Refresh</button>
+        </div>
+
+        {/* THE QUESTION THAT STARTED THIS, as the first control on the screen — and it is two
+            questions, because "what happened to CHE" and "where did 007175992 go" are both
+            asked and they need different filters. One box, an explicit switch, no guessing at
+            which the typed text meant. */}
+        <div className="rounded-xl border bg-white p-2 space-y-2">
+          <div className="flex rounded-lg border border-slate-300 overflow-hidden w-fit">
+            {SEND_HISTORY_FIND.map((f) => (
+              <button
+                key={f.id}
+                onClick={() => setFindKind(f.id)}
+                /* 40px, not 36 — the mobile layout guard measures every reachable control and
+                   a 36px segment is a mis-tap at a dock. It matches the range pills beside it. */
+                className={`px-3 min-h-[40px] text-xs font-semibold ${findKind === f.id ? 'text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                style={findKind === f.id ? { background: BRAND } : undefined}
+              >{f.label}</button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <Search size={14} className="text-slate-400 shrink-0 ml-1" />
+            <input
+              value={findQ}
+              onChange={(e) => setFindQ(e.target.value)}
+              placeholder={find.placeholder}
+              aria-label={findKind === 'load' ? 'Find a load by name or number' : 'Find an order by number'}
+              className="flex-1 min-w-0 text-sm min-h-[40px] px-1 focus:outline-none"
+            />
+            {findQ && <button onClick={() => setFindQ('')} className="text-xs text-slate-500 hover:text-slate-800 px-2 min-h-[40px]">Clear</button>}
+          </div>
+        </div>
+
+        {searching
+          ? <div className="text-[11px] text-slate-500">Searching the last {MAX_RANGE_DAYS} days for {findQ.trim()} — the date range is ignored while something is typed here.</div>
+          : (isMobile
+            ? <HistoryRangeBarMobile sel={sel} setSel={setSel} range={range} today={today} />
+            : <HistoryRangeBarDesktop sel={sel} setSel={setSel} range={range} today={today} />)}
+        <RangeClampNote range={range} today={today} />
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          {pills.map((p) => (
+            <button
+              key={p.id || 'all'}
+              onClick={() => setVerdict(p.id)}
+              className={`rounded-lg border px-3 min-h-[40px] text-xs font-semibold ${verdict === p.id ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+            >{p.label} ({p.n})</button>
+          ))}
+        </div>
+
+        {!loading && !err && sum.rows > 0 && (
+          <div className="text-[11px] text-slate-500">
+            {sum.rows} send{sum.rows === 1 ? '' : 's'} across {sum.loads} load{sum.loads === 1 ? '' : 's'} · {sum.stopsAdded} stop{sum.stopsAdded === 1 ? '' : 's'} added, {sum.stopsRemoved} removed
+            {/* THE HONESTY COUNTER. A window where a third of the sends were never read back is
+                a different window from one where all of them were, and the screen has to say so
+                rather than letting them look alike. */}
+            {sum.unobserved > 0 && <span className="text-amber-700"> · {sum.unobserved} never read back</span>}
+          </div>
+        )}
+
+        {err && <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3">{err}</div>}
+        {loading && <div className="text-xs text-slate-500">Loading…</div>}
+
+        {!loading && !err && !rows.length && (
+          <div className="rounded-xl border bg-white p-6 text-center">
+            <div className="text-sm font-semibold text-slate-700">Nothing was sent to NuVizz{searching ? ` for ${findQ.trim()}` : ' in this window'}.</div>
+            {/* AN EMPTY SCREEN HAS TWO CAUSES AND THEY ARE NOT THE SAME FACT. "Nobody sent
+                anything" and "this started recording on the day it shipped" look identical, and
+                four rounds went by once on exactly that ambiguity (the roster bug, Sep 5). */}
+            <div className="text-xs text-slate-500 mt-1">
+              A send is recorded the moment it lands, so a quiet window means no load was sent — or that the window reaches back before this history started recording.
+            </div>
+          </div>
+        )}
+
+        {!loading && !err && !!rows.length && (
+          isMobile ? <LoadHistoryListMobile rows={rows} /> : <LoadHistoryTable rows={rows} />
+        )}
+
+        <div className="text-[11px] text-slate-400">
+          Read straight from our own ledger. Zero NuVizz calls — this screen never spends a vendor call.
+          {data?.truncated ? ' Showing the first 1,000 rows; narrow the range to see the rest.' : ''}
+        </div>
+      </div>
     </div>
   );
 }

@@ -232,7 +232,12 @@ test('cancel write-through: the CLASSIC direct entry (RWB env-blocked) stamps th
       assert.ok(d.board_write_at, n);
     }
     assert.deepEqual(r.loads[0].boardSync, { patched: 6, rescued: 0, missing: 0 });
-    assert.deepEqual(Object.keys(r.loads[0]), ['loadNbr', 'loadId', 'ok', 'error', 'steps', 'boardSync']);
+    // `before`/`after` are the send history's two sides (lib/load-history.mts), added as
+    // read-only fields on the result. A CONFIRMED cancel earns its after: every delivery was
+    // removed and NuVizz acknowledged it, so the route holds none.
+    assert.deepEqual(Object.keys(r.loads[0]), ['loadNbr', 'loadId', 'ok', 'error', 'steps', 'boardSync', 'before', 'after']);
+    assert.deepEqual(r.loads[0].before, HELD, 'the six deliveries it held, in visit order');
+    assert.deepEqual(r.loads[0].after, [], 'and none afterwards — that is what a cancel IS');
   } finally { fs.restore(); }
 });
 
@@ -313,7 +318,12 @@ test('regression: a normal (non-cancel) classic save touches the board ZERO time
     assert.equal(r.ok, true, JSON.stringify(r.loads?.[0]?.error));
     assert.equal(fs.log.sets.length, 0, 'classic reorders leave board stamping to the client belt, exactly as before');
     assert.equal(fs.log.gets.length, 0, 'not even a read');
-    assert.deepEqual(Object.keys(r.loads[0]), ['loadNbr', 'loadId', 'ok', 'error', 'steps'], 'byte-identical result-load shape (no boardSync key at all)');
+    assert.ok(!('boardSync' in r.loads[0]), 'no boardSync key at all — not even an undefined one');
+    assert.deepEqual(Object.keys(r.loads[0]), ['loadNbr', 'loadId', 'ok', 'error', 'steps', 'before'], 'result-load shape: the send history\'s `before` and nothing else new');
+    // AND NO `after`. This engine has no post-save read-back, so claiming the reorder landed
+    // would be reporting an intent as an outcome — the history says "not read back" instead.
+    assert.equal(r.loads[0].after, undefined);
+    assert.deepEqual(r.loads[0].before, ['THG', 'HAEWA'], 'what the load held before the reorder');
   } finally { fs.restore(); }
 });
 
