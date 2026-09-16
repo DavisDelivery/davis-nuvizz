@@ -330,3 +330,12 @@ test('the raster check is wired to the REAL asked-for-vector rule, not a guess',
   assert.ok(/vectorFellBack\(\{\s*askedForVector:\s*usesMapId\(mapIdForView,\s*mapFilters\.hideLabels\)/.test(src),
     'it must reuse usesMapId — the same function map-base-options decides the base with');
 });
+
+test('THE "ZOOM IN" HINT IS NOT SHOWN BESIDE AN ERROR — it is wrong advice, not just clutter', async () => {
+  // Watched on the deploy preview: "Too high to read doors — zoom the board in" came up
+  // next to "this browser cannot draw the 3D map". Zooming cannot fix a browser, and
+  // following the hint teaches a dispatcher the feature is broken in a way they can fix.
+  const src = await readFile(APP, 'utf8');
+  assert.ok(/\{!error && hint && <span/.test(src),
+    'the hint must be suppressed while an error is on the layer');
+});

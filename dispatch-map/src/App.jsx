@@ -11892,7 +11892,12 @@ function Map3DLayer({ layerRef, on, pinned, hint, error, onClose }) {
           are holding the key that opened it — so the button only appears when pinned. */}
       <div className="absolute top-0 left-0 right-0 z-[2] flex items-center gap-2 px-3 py-2 bg-gradient-to-b from-black/70 to-transparent pointer-events-none">
         <span className="text-[11px] font-semibold tracking-wide text-white/90 uppercase">3D view</span>
-        {hint && <span className="text-[11px] text-amber-300 truncate">{hint}</span>}
+        {/* NOT ALONGSIDE AN ERROR, and this is a wrong instruction rather than mere clutter:
+            "zoom the board in, then hold Ctrl again" is useless advice to somebody whose
+            browser cannot draw a 3D map at all, and following it teaches them the feature is
+            broken in a way they can fix. Caught by looking at the rendered layer on the
+            deploy preview, where both lines came up together. */}
+        {!error && hint && <span className="text-[11px] text-amber-300 truncate">{hint}</span>}
         <span className="flex-1" />
         {pinned && (
           <button
