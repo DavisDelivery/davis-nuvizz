@@ -209,6 +209,35 @@ Project-level guidance for Claude Code in this repository.
 - Report honestly. If a test fails, say so with the output; if a part
   is unfinished, name it. "Done" means verified.
 
+## The Routing workbench is FROZEN — no change without explicit permission (Chad, Sep 2026)
+
+- Chad, Sep 15, 8:30 PM, with a load sent to NuVizz and its stops coming back up in a
+  box-select: **"you have majorly screwed something up messing with things i didn't ask to
+  be messed with … we need to make sure that route workbench processes can't be changed
+  without explicit permission."**
+- **What is frozen** — every process on the Routing screen's Compare workbench and the map
+  it drives: how a stop is STAGED onto a card and released from one; what SEND / Save writes
+  and stamps; what the map PAINTS for a planned, staged or sent stop (numbered pin, muted
+  pin, polyline, nothing); what box / lasso / ninja SELECT picks up and skips; what a card's
+  header counts and chips say; and every guard around closing a card.
+- **What "explicit permission" means**: Chad names the change, in that request. A related
+  complaint is not permission to redesign the thing he complained about. "It's hard to know
+  when something is pushed to NuVizz" is a request for a signal, not a licence to change what
+  closing a card does to the map — and that is exactly how v1.33.0 (#932) shipped a paint
+  rule nobody asked for beside the chip somebody did, and got reverted the same evening.
+- **What to do instead when a fix seems to need one of these to change**: build the fix that
+  does not touch them, and put the workbench change in the reply as a proposal — one sentence
+  on what would change, one on what the dispatcher would see differently — and STOP. If he
+  says yes, it ships behind its own named env switch (see *Ship it so it can be put back*),
+  in its own PR, with the switch named in the handover.
+- **Adjacent is not exempt.** A PR whose subject is trucks, chips or drivers that ALSO edits
+  `effectiveRouteInfo`, `addEnclosed`, `positioned`, `drawnStops`, `plannedMuted`,
+  `syncBoardAfterSave`, `onPanelSave`, `markSaved` or the card's stat line is a workbench
+  change and needs the permission whatever its title says.
+- **Why this rule is this strict**: a dispatcher's morning runs through this screen, and the
+  cost of a wrong change here is not a bad screen — it is freight that reads as un-routed
+  after it was sent, and a second truck built on top of the first.
+
 ## Merge it — do not ask (Chad, Aug 2026)
 
 - Chad: **"add to the Claude.md file to merge everything auto."** Open
