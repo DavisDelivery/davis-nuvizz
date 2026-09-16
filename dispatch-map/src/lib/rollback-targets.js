@@ -17,6 +17,7 @@
 // THIS BUNDLE knows — which is why the panel labels the current row from APP_VERSION rather than
 // claiming to know what production serves.
 import { headlineFromEntry } from './build-update.js';
+import { VERSION_DATES } from './version-dates.js';
 
 /** PURE: ascending numeric compare, so 1.36.10 sorts above 1.36.9 rather than below it. */
 export function compareVersions(a, b) {
@@ -38,11 +39,15 @@ export function compareVersions(a, b) {
  * offering "roll back to v1.31.0" while showing the wrong cost beside it would be the same bug
  * with a button attached, so the order is computed, not assumed.
  *
+ * `landedAt` is the generated version -> ISO map (scripts/emit-version-dates.mjs). It is a
+ * parameter rather than a bare import so the tests can drive it, and it is LAST so the existing
+ * positional `rollbackTargets(log, current, 3)` calls keep working.
+ *
  * `undoes` counts releases strictly NEWER than the row — which is exactly what a rollback to it
  * would remove. The current row is 0, and rows above current are 0 too: you cannot roll back to
  * something you are not yet running, and the panel refuses to offer them rather than pretending.
  */
-export function rollbackTargets(versionLog, currentVersion, limit = 12) {
+export function rollbackTargets(versionLog, currentVersion, limit = 12, landedAt = VERSION_DATES) {
   if (!Array.isArray(versionLog)) return [];
   const rows = versionLog
     .filter((r) => Array.isArray(r) && /^\d+\.\d+\.\d+$/.test(String(r[0])))
@@ -58,6 +63,10 @@ export function rollbackTargets(versionLog, currentVersion, limit = 12) {
     out.push({
       version: r.version,
       headline: headlineFromEntry(r.note) || null,
+      // WHEN IT LANDED — null is a real answer, not a gap to paper over. v1.40.0 has a changelog
+      // row but never existed as a running APP_VERSION (one commit moved the line 1.39.0 → 1.41.0),
+      // so no source can date it. The row prints no date rather than borrowing a neighbour's.
+      at: landedAt?.[r.version] || null,
       undoes: ahead ? 0 : Math.max(0, i - rows.findIndex((x) => x.version === currentVersion)),
       current,
       selectable: !current && !ahead,

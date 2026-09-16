@@ -177,6 +177,12 @@ const PROBES = {
     ['Alert recipients', /alert recipients/i, /Alert recipients/i],
     ['Data quality', /data quality/i, /Unmatched Stops Today/i],
     ['API calls', /api calls/i, /NuVizz API Calls/i],
+    // ADDED v1.43.0. 'This device' shipped in v1.42.0 with NO probe, so the guard never opened it
+    // at 390px and its green run proved nothing about that section — exactly the blind spot this
+    // block was written to close, reopened by the next screen to land. 'Roll back' is added in the
+    // same edit so the new one cannot repeat it.
+    ['This device', /this device/i, /Settings this browser remembers/i],
+    ['Roll back', /roll back/i, /This is code only/i],
   ].map(([name, chip, proof]) => ({
     name: `${name} tab`,
     open: async (page) => {

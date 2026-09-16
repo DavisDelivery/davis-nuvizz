@@ -149,7 +149,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.42.0';
+const APP_VERSION = '1.43.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -203,6 +203,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.43.0', 'ROLL BACK IS A DIAGNOSTICS SECTION NOW, AND EVERY VERSION SAYS WHEN IT LANDED. Chad: \u201cput the roll back app under the diagnostics tab on mobile as well \u2026 i want date and times those prs merged.\u201d TWO DOORS, ONE FORM: the list, the reason box, the eight-character rule and the POST are split into RollbackBody and shared, so the footer\u2019s \u27f2 modal and the new Diagnostics section cannot drift apart \u2014 only the modal chrome (Escape, the backdrop, the \u00d7) stays behind. The app-bar chip entry STAYS: it is the emergency door, reachable from any screen without navigating, and Diagnostics is the one you find by looking. AND EVERY ROW NOW CARRIES THE DATE IT LANDED, in Eastern, because that is the axis he actually thinks in \u2014 \u201croll the app back to 11:59 pm sept 14th\u201d was never answerable from a list of version numbers. The stamp is read off the commit that MOVED APP_VERSION (`git log -L` on that one line), so it is when the version landed on main, not when somebody typed it and not the build time \u2014 reusing version.json\u2019s build stamp would have put a plausible wrong time beside a button that changes production. THE GENERATOR MERGES AND NEVER FAILS A DEPLOY: nothing in this repo says whether the Netlify build image has git, whether .git is present, or how deep the clone is (the only depth statement anywhere is fetch-depth:0 in GitHub Actions, which governs CI not deploys, and vite.config.js reads COMMIT_REF from env rather than shelling out) \u2014 so the map is COMMITTED, the generator only ever adds to it, and a git-less build keeps what it had instead of overwriting it with a stub. It never exits non-zero, deliberately unlike emit-version-json: a cosmetic date must not be why a deploy dies on the morning somebody is rolling back. A VERSION CAN HAVE NO DATE AND THAT IS THE HONEST ANSWER \u2014 v1.40.0 has a changelog row but never existed as a running APP_VERSION (one commit moved the line 1.39.0 \u2192 1.41.0 while its subject said v1.40.0), so its row prints nothing rather than borrowing a neighbour\u2019s time; when a version shipped twice, the FIRST landing wins, because the second is a later accident. AND A HOLE I MADE LAST RELEASE IS CLOSED: v1.42.0 shipped \u201cThis device\u201d with NO entry in PROBES.diagnostics, so the mobile guard never opened it at 390px and its green run proved nothing about that section \u2014 exactly the blind spot that block exists to close, reopened by the next screen to land. Both it and Roll back have probes now. Roll back is also the ONE Diagnostics section that is not remembered: every other is a place you return to, this is a place you visit once on a bad morning, and letting it become the permanent landing page of Diagnostics is the opposite of the discreteness the footer button was built for. 11 new tests. The Build Panel and the Route Workbench are not touched.'],
   ['1.42.0', 'THE SWITCHES THIS BROWSER REMEMBERS ARE ON A SCREEN NOW, WITH WHAT EACH ONE DOES. Chad: \u201ca settings profile or a settings button that we have all those switches in with a UI that explains what they do.\u201d MEASURED FIRST, and the number is the argument: the app stores 22 per-device settings in localStorage and FOUR of them carry a label anywhere a dispatcher can read. The other eighteen change the board silently \u2014 which is not hypothetical, it is the same failure twice in one week. v1.36.0: \u201cwhere is my save send to nuvizz button? \u2026 i have no way to send these loads to nuvizz\u201d \u2014 four controls gone, all four gated on routing.liveWrite, a per-device flag that seeds OFF; nothing was broken and nothing said so. v1.36.2: \u201ci didn\u2019t ask for the stem out to come back\u201d \u2014 no PR that day touched the stem line, routing.hideStem had simply never been switched on for that browser. Both cost a morning hunting a code bug that was a hidden switch. DIAGNOSTICS \u2192 THIS DEVICE now lists the ten switches that change behaviour, each with what it does in plain English AND \u2014 the point of the whole screen \u2014 what the board looks like when it is not where you expect. A banner across the top answers the question behind both incidents in one line: \u201cN settings are not at the default on this device\u201d, naming them, or \u201ceverything is at its default, whatever you are chasing is not a switch\u201d, which is just as useful because it rules the screen out. DEFAULTS ARE READ OFF THE REAL INITIALISERS, not assumed: compareLive and mapSatellite default ON (their initialisers compare against \u2018off\u2019), the rest default OFF, and a test derives each one from App.jsx so the screen cannot drift into lying about which device is the odd one out \u2014 that test caught its own first derivation rule being wrong, keyed on the operator instead of the literal, which had called a correct registry entry a mismatch. LAYOUT MEMORY IS EXCLUDED on purpose (panel widths, which tab was open): a dispatcher scrolling past \u201cremembered panel width\u201d to reach \u201cLive dispatch\u201d is a dispatcher who stops reading the list. IT WRITES localStorage AND NOTHING ELSE \u2014 RoutingSection is mounted by a ternary on tab, so leaving Diagnostics unmounts it and coming back re-runs every initialiser, which means the write is already in force without a shared store, without a storage listener, and without touching one line of Route Workbench code. Reset all puts every switch back to what a fresh browser would use. One section entry drives the desktop rail and the phone chip row, so it exists on both views rather than the one. 17 new tests. The Build Panel and the Route Workbench are not touched.'],
   ['1.41.0', 'THE ROLLBACK BUTTON IS IN THE FOOTER, BESIDE THE VERSION. Chad: \u201clet\u2019s put the button for this ui discretely by the version in the footer.\u201d DISCRETE IS THE SPEC, not a style preference: this button asks for production code to be changed, so it should be findable by someone looking for it and invisible to someone who is not \u2014 a prominent ROLL BACK on a dispatch board is an invitation to press it before anyone has read what it costs, which is the failure this whole feature exists to prevent wearing the fix\u2019s clothes. It is a muted \u27f2 next to the version, the same grey as the rest of the footer until hovered. THE FOOTER IS THE RIGHT PLACE because that version is already what he checks to answer \u201cis this the build that just deployed\u201d, so it is where his eye goes the moment he suspects a deploy broke something. A PHONE HAS NO FOOTER, so the phone gets its own entry in the app-bar chip menu \u2014 the chip IS the version surface at that width. Two views, as the rule requires; a screen added to one navigation and not the other is a screen that does not exist on a phone, and this repo has shipped that twice. THE PANEL COSTS NO NETWORK CALL to tell him what shipped: every version and its note are already compiled into the running bundle, so it lists the last twelve releases with the first sentence of each and, beside every row, HOW MANY RELEASES GOING BACK THERE WOULD UNDO \u2014 the number he actually decides on. Sorted by version rather than trusted: the array has drifted before (v0.56.4, when the deploy watchdog read the wrong live version twice in one afternoon) and a panel pricing rows off a drifted order would be that bug with a button attached. A version NEWER than the running build is shown but never selectable, because this tab can be behind the site and \u201crolling back\u201d to it would be a roll FORWARD wearing the wrong word. IT DOES NOT PUSH, and that is the security design rather than a shortcut: a Netlify function cannot host a repo and git, so a one-tap path would have to rewrite main through the GitHub API \u2014 a browser-reachable endpoint that commits code, with no dry run in between. debug-capture.mts drew this line first (\u201cnothing here ever pushes to main or deploys\u201d) and rollback-request.mts stays on the same side of it: it files a rollback REQUEST as a GitHub issue carrying the dry-run command FIRST and the executing one second, an agent opens the PR, CI checks it, auto-merge lands it. A reason of at least eight characters is required before the button enables \u2014 the same rule --because enforces, because a rollback with no stated reason is indistinguishable from a mistake six weeks later. Gated at role:dispatcher; with ROLLBACK_GH_TOKEN unset the endpoint answers 503 and the panel degrades to read-only, which is the honest failure since the list still tells him what a rollback would cost. CODE ONLY is on screen BEFORE he presses anything, not in the confirmation after, because the dangerous misreading \u2014 that this undoes the day\u2019s freight \u2014 is the one that would make him press it. 13 new tests. The Build Panel and the Route Workbench are not touched.'],
   ['1.40.0', 'TWO WAYS BACK NOW: TO A MOMENT IN TIME, OR ONE PR AT A TIME. Chad: \u201cwould it be possible to both roll back to a point in time when I knew everything was okay if i can\u2019t identify the PR that caused the problem and also roll back PRs?\u201d Both, because they answer different mornings. TIME (`--list`, `\u201c2026-09-14 11:59pm\u201d`) replaces the whole tree, so it can NEVER conflict and always works \u2014 but it throws away every good fix that shipped since. Measured on Sep 15: rolling back to Sunday night undoes 17 merges, and only 3 of them ever touched the Route Workbench, so thirteen innocent fixes go with them \u2014 the five-POSTs-at-NuVizz fix, two loads wearing one name, moved orders carrying the wrong driver, the dock-lunch-hours misparse. DROP (`--drop 945`, `--drop 945,950`) reverts named PRs and keeps everything else, which is the right tool whenever he can name one. THE HONEST PART IS WHAT IT WILL NOT DO. Every one of the three live suspects conflicts on a plain `git revert`, and the conflicts split in two: version lines (APP_VERSION, the changelog rows, the generated public/version.json) collide on nearly every parallel merge, carry no behaviour, and get rewritten by the bump a few lines later \u2014 those resolve MECHANICALLY. Anything else is a person\u2019s call and the run STOPS, because a guessed side is a behaviour change nobody reviewed wearing a rollback\u2019s name, which is the exact thing this tool exists to undo. The dry run says which kind each PR will hit by ACTUALLY TRYING the revert in a throwaway worktree rather than predicting from file lists \u2014 two PRs can touch one file and not collide, and only git knows. On the measured three: #950 comes out clean (2 version-line conflicts, resolved), #945 has 2 real conflicts and #942 has 1. A refusal leaves NOTHING behind \u2014 verified end to end: revert aborted, working tree clean, no conflict markers, the dead drop/ branch deleted, and him back on the branch he started on rather than a detached HEAD. Found by running it: the probe leaked git\u2019s \u201cerror: could not revert\u201d to the console, so a successful diagnostic read like a crash directly above the plan saying it came out fine. CODE ONLY, unchanged: Firestore and anything already sent to NuVizz are untouched. 16 new tests, 42 in the file. No UI yet \u2014 it is still a terminal command, which is the next question on the table. The Build Panel and the Route Workbench are not touched.'],
@@ -16630,6 +16631,7 @@ const DIAG_SECTIONS = [
   { id: 'alerts', label: 'Alert recipients', icon: <Mail size={14} />, hint: 'Who gets texted and who gets emailed when a stop is going to miss.' },
   { id: 'quality', label: 'Data quality', icon: <ClipboardList size={14} />, hint: 'M3 stubs — unmatched stops, stale customers, addr2 migration.' },
   { id: 'switches', label: 'This device', icon: <SlidersHorizontal size={14} />, hint: 'The settings this browser remembers, what each one does, and which are not at their default.' },
+  { id: 'rollback', label: 'Roll back', icon: <RotateCcw size={14} />, hint: 'Every version this build knows, when it landed, and what going back to it would undo.' },
 ];
 
 
@@ -16803,7 +16805,14 @@ function DiagnosticsScreen({ stops, notes, ops, lastLoadScanAt, lastUnplannedSca
   });
   const pick = useCallback((id) => {
     setSection(id);
-    try { localStorage.setItem(DIAG_TAB_KEY, id); } catch { /* private window, cleared storage */ }
+    // 'rollback' IS DELIBERATELY NOT REMEMBERED. Every other section is a place you go back to;
+    // this one is a place you visit once on a bad morning. Remembering it would make Diagnostics
+    // open on "Roll back the app" forever after a single visit — which is the opposite of the
+    // discreteness the footer button was built for, and nobody would connect the two.
+    try {
+      if (id === 'rollback') localStorage.removeItem(DIAG_TAB_KEY);
+      else localStorage.setItem(DIAG_TAB_KEY, id);
+    } catch { /* private window, cleared storage */ }
   }, []);
   const active = DIAG_SECTIONS.find((x) => x.id === section) || DIAG_SECTIONS[0];
 
@@ -16824,6 +16833,11 @@ function DiagnosticsScreen({ stops, notes, ops, lastLoadScanAt, lastUnplannedSca
     schedule: <SchedulePanel onScanNow={scanNow} scanning={scanning} scanDenied={scanGate.reason} onSaved={onRefresh} />,
     alerts: <AlertRecipientsPanel />,
     switches: <DeviceSwitchesPanel />,
+    // SAME COMPONENT as the footer's ⟲ modal, inline. Chad: "Put the roll back app under the
+    // diagnostics tab on mobile as well." A phone has no footer, so before this the only door
+    // was the app-bar chip menu; the chip stays (it is the emergency one, reachable from any
+    // screen without navigating) and this is the one you find by looking.
+    rollback: <Panel title="Roll back the app"><RollbackBody variant="section" /></Panel>,
     quality: (
       <div className="space-y-4 sm:space-y-6">
         <div className="text-[11px] text-slate-400">M3, in progress — these three are stubs.</div>
@@ -16877,8 +16891,10 @@ function DiagnosticsScreen({ stops, notes, ops, lastLoadScanAt, lastUnplannedSca
       {/* TWO VIEWS, and this is the screen where the difference is the whole point. A rail down
           the left is what Chad asked for and what a dispatch monitor has room for; at 390px it
           would eat a third of the width and leave the panels in a gutter. The phone gets the
-          same five choices as a chip row that scrolls sideways INSIDE ITS OWN CONTAINER, so the
-          page body never does. Same state, same memory, two layouts — not one layout patched. */}
+          same choices as a chip row that scrolls sideways INSIDE ITS OWN CONTAINER, so the page
+          body never does. Same state, same memory, two layouts — not one layout patched.
+          (It said "five" until v1.43.0; it is seven now, and a count in a comment is a thing that
+          goes stale silently — hence no number.) */}
       {isPhone ? (
         <div className="mb-4 -mx-3 px-3 overflow-x-auto">
           <div className="flex gap-2 w-max" role="tablist" aria-label="Diagnostics sections">
@@ -28216,19 +28232,25 @@ const onTvUrl = () => { try { return isTvPath(window.location.pathname); } catch
 // issue (rollback-request.mts), which a coding agent picks up and turns into a PR that CI checks
 // and auto-merge lands. The dry run still happens, in the PR, where it can be read. A one-tap
 // path straight to production would be a new way to ship a change nobody reviewed.
-function RollbackPanel({ onClose }) {
+// THE ROLLBACK FORM ITSELF, so the modal and the Diagnostics section are the SAME code.
+//
+// Chad: "Put the roll back app under the diagnostics tab on mobile as well."
+//
+// WHY A SPLIT RATHER THAN A SECOND COMPONENT. The list, the reason box, the eight-character rule
+// and the POST are the parts that must never disagree between two doors — a second copy is two
+// places to fix the day the endpoint changes. Only the modal CHROME differs, so only the chrome
+// stays behind in RollbackPanel: the Escape handler (it closes something, which an inline section
+// does not have), the fixed/backdrop/role="dialog" shell and the × header.
+//
+// `variant` exists for one reason: the modal is a `flex flex-col` column whose footer is
+// `shrink-0` outside a `flex-1 overflow-y-auto` child. A Diagnostics section has no such column —
+// it grows with the page — so the scroll clamp and the pinned footer are modal-only.
+function RollbackBody({ variant = 'modal' }) {
   const targets = useMemo(() => rollbackTargets(VERSION_LOG, APP_VERSION, 12), []);
   const [picked, setPicked] = useState(null);
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);      // {ok, issueUrl} | {ok:false, error}
-
-  useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
   // The same rule the CLI enforces with --because: a rollback with no stated reason is
   // indistinguishable from a mistake six weeks later, and this one lands in an issue title.
   const canSend = picked && reason.trim().length >= 8 && !busy;
@@ -28258,7 +28280,122 @@ function RollbackPanel({ onClose }) {
       setResult({ ok: false, error: String(e?.message || e) });
     } finally { setBusy(false); }
   };
+  const scroller = variant === 'modal'
+    ? 'flex-1 min-h-0 overflow-y-auto px-3 py-2'
+    : 'px-3 py-2';
 
+  return (
+    <>
+      <div className={scroller}>
+        <div className="text-[11px] text-slate-500 pb-2">
+          Running <span className="font-bold text-slate-700">v{APP_VERSION}</span> · build {BUILD_SHORT}.
+          Pick the last version you know was good.
+        </div>
+
+        {result?.ok ? (
+          <div className="rounded border border-emerald-200 bg-emerald-50 p-3 text-[12px] text-emerald-900">
+            <div className="font-bold">Rollback requested — issue #{result.issueNumber}.</div>
+            <div className="pt-1">
+              A PR will be opened against <b>v{picked.version}</b> and checked by CI before it can land.
+              Nothing has changed yet.
+            </div>
+            <a href={result.issueUrl} target="_blank" rel="noopener noreferrer" className="inline-block pt-2 underline font-semibold">Open the issue →</a>
+          </div>
+        ) : (
+          <ul className="divide-y border rounded">
+            {targets.map((t) => (
+              <li key={t.version}>
+                <button
+                  type="button"
+                  disabled={!t.selectable}
+                  onClick={() => setPicked(t)}
+                  className={`w-full text-left px-2 py-2 min-h-[44px] text-[12px] flex gap-2 items-start
+                    ${t.current ? 'bg-emerald-50' : t.selectable ? 'hover:bg-slate-50' : 'opacity-50'}
+                    ${picked?.version === t.version ? 'ring-2 ring-inset ring-sky-400' : ''}`}
+                >
+                  <span className="font-bold tabular-nums shrink-0" style={{ color: t.current ? '#16a34a' : '#334155' }}>v{t.version}</span>
+                  <span className="min-w-0">
+                    <span className="text-slate-600 line-clamp-2">{t.headline || '—'}</span>
+                    <span className="block text-[10px] text-slate-400 pt-0.5">
+                      {t.current ? 'running now' : `undoes ${t.undoes} release${t.undoes === 1 ? '' : 's'}`}
+                      {/* WHEN IT LANDED, in Chad's clock — the axis he actually thinks in ("roll
+                            the app back to 11:59 pm sept 14th"). formatDateTime is the house
+                            America/New_York formatter (lib/routing-loads.js) and tsToMillis is
+                            MANDATORY: handed a bare ISO string formatDateTime returns '' silently,
+                            so the dates would just vanish and look like data we never had.
+                          A version with no date prints nothing rather than a borrowed time. */}
+                      {t.at ? ` · landed ${formatDateTime(tsToMillis(t.at))}` : ''}
+                    </span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {picked && !result?.ok && (
+          <div className="pt-3">
+            <label className="block text-[11px] font-semibold text-slate-600 pb-1">
+              Why? (goes in the request, the commit and the changelog)
+            </label>
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              rows={2}
+              placeholder="e.g. box select is grabbing stops already sent to NuVizz"
+              className="w-full border rounded px-2 py-1.5 text-[12px]"
+            />
+            {reason.trim().length > 0 && reason.trim().length < 8 && (
+              <div className="text-[10px] text-amber-600 pt-0.5">A few more words — this is what the log will say six weeks from now.</div>
+            )}
+          </div>
+        )}
+
+        {result && !result.ok && (
+          <div className="mt-2 rounded border border-red-200 bg-red-50 p-2 text-[11px] text-red-800">
+            {result.error}
+            <div className="pt-1 text-red-700">
+              Nothing was requested. From a terminal: <code className="font-mono">npm run rollback -- v{picked?.version}</code>
+            </div>
+          </div>
+        )}
+
+        {/* The standing warning. It is on screen BEFORE he presses anything, not in the
+            confirmation afterwards, because the dangerous misreading — that this undoes the
+            day's freight — is the one that would make him press it. */}
+        <div className="mt-3 rounded bg-slate-50 border border-slate-200 p-2 text-[10px] text-slate-500 leading-snug">
+          <b className="text-slate-600">This is code only.</b> The board, address overrides, dispatcher
+          notes, receiving hours and suppression flags are untouched, and anything already sent to
+          NuVizz is still sent. A rollback is not an undo button on the day&rsquo;s freight.
+        </div>
+      </div>
+
+      {!result?.ok && (
+        <div className="border-t px-3 py-2 shrink-0 flex items-center justify-between gap-2">
+          <span className="text-[10px] text-slate-400 min-w-0 truncate">
+            {picked ? `Back to v${picked.version} · undoes ${picked.undoes}` : 'Pick a version'}
+          </span>
+          <button
+            type="button"
+            onClick={send}
+            disabled={!canSend}
+            className={`px-3 py-1.5 min-h-[44px] rounded text-[12px] font-semibold shrink-0
+              ${canSend ? 'bg-slate-800 text-white hover:bg-slate-900' : 'bg-slate-200 text-slate-400'}`}
+          >
+            {busy ? 'Requesting…' : 'Request rollback'}
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+function RollbackPanel({ onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
   return (
     <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label="Roll back the app">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
@@ -28267,102 +28404,9 @@ function RollbackPanel({ onClose }) {
           <div className="font-bold text-slate-800 inline-flex items-center gap-2">
             <RotateCcw size={15} /> Roll back the app
           </div>
-          <button onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-slate-700 text-2xl leading-none px-1">×</button>
+          <button onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-slate-700 text-2xl leading-none px-1">&times;</button>
         </div>
-
-        <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2">
-          <div className="text-[11px] text-slate-500 pb-2">
-            Running <span className="font-bold text-slate-700">v{APP_VERSION}</span> · build {BUILD_SHORT}.
-            Pick the last version you know was good.
-          </div>
-
-          {result?.ok ? (
-            <div className="rounded border border-emerald-200 bg-emerald-50 p-3 text-[12px] text-emerald-900">
-              <div className="font-bold">Rollback requested — issue #{result.issueNumber}.</div>
-              <div className="pt-1">
-                A PR will be opened against <b>v{picked.version}</b> and checked by CI before it can land.
-                Nothing has changed yet.
-              </div>
-              <a href={result.issueUrl} target="_blank" rel="noopener noreferrer" className="inline-block pt-2 underline font-semibold">Open the issue →</a>
-            </div>
-          ) : (
-            <ul className="divide-y border rounded">
-              {targets.map((t) => (
-                <li key={t.version}>
-                  <button
-                    type="button"
-                    disabled={!t.selectable}
-                    onClick={() => setPicked(t)}
-                    className={`w-full text-left px-2 py-2 min-h-[44px] text-[12px] flex gap-2 items-start
-                      ${t.current ? 'bg-emerald-50' : t.selectable ? 'hover:bg-slate-50' : 'opacity-50'}
-                      ${picked?.version === t.version ? 'ring-2 ring-inset ring-sky-400' : ''}`}
-                  >
-                    <span className="font-bold tabular-nums shrink-0" style={{ color: t.current ? '#16a34a' : '#334155' }}>v{t.version}</span>
-                    <span className="min-w-0">
-                      <span className="text-slate-600 line-clamp-2">{t.headline || '—'}</span>
-                      <span className="block text-[10px] text-slate-400 pt-0.5">
-                        {t.current ? 'running now' : `undoes ${t.undoes} release${t.undoes === 1 ? '' : 's'}`}
-                      </span>
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          {picked && !result?.ok && (
-            <div className="pt-3">
-              <label className="block text-[11px] font-semibold text-slate-600 pb-1">
-                Why? (goes in the request, the commit and the changelog)
-              </label>
-              <textarea
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                rows={2}
-                placeholder="e.g. box select is grabbing stops already sent to NuVizz"
-                className="w-full border rounded px-2 py-1.5 text-[12px]"
-              />
-              {reason.trim().length > 0 && reason.trim().length < 8 && (
-                <div className="text-[10px] text-amber-600 pt-0.5">A few more words — this is what the log will say six weeks from now.</div>
-              )}
-            </div>
-          )}
-
-          {result && !result.ok && (
-            <div className="mt-2 rounded border border-red-200 bg-red-50 p-2 text-[11px] text-red-800">
-              {result.error}
-              <div className="pt-1 text-red-700">
-                Nothing was requested. From a terminal: <code className="font-mono">npm run rollback -- v{picked?.version}</code>
-              </div>
-            </div>
-          )}
-
-          {/* The standing warning. It is on screen BEFORE he presses anything, not in the
-              confirmation afterwards, because the dangerous misreading — that this undoes the
-              day's freight — is the one that would make him press it. */}
-          <div className="mt-3 rounded bg-slate-50 border border-slate-200 p-2 text-[10px] text-slate-500 leading-snug">
-            <b className="text-slate-600">This is code only.</b> The board, address overrides, dispatcher
-            notes, receiving hours and suppression flags are untouched, and anything already sent to
-            NuVizz is still sent. A rollback is not an undo button on the day&rsquo;s freight.
-          </div>
-        </div>
-
-        {!result?.ok && (
-          <div className="border-t px-3 py-2 shrink-0 flex items-center justify-between gap-2">
-            <span className="text-[10px] text-slate-400 min-w-0 truncate">
-              {picked ? `Back to v${picked.version} · undoes ${picked.undoes}` : 'Pick a version'}
-            </span>
-            <button
-              type="button"
-              onClick={send}
-              disabled={!canSend}
-              className={`px-3 py-1.5 min-h-[44px] rounded text-[12px] font-semibold shrink-0
-                ${canSend ? 'bg-slate-800 text-white hover:bg-slate-900' : 'bg-slate-200 text-slate-400'}`}
-            >
-              {busy ? 'Requesting…' : 'Request rollback'}
-            </button>
-          </div>
-        )}
+        <RollbackBody variant="modal" />
       </div>
     </div>
   );
