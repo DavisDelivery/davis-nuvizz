@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "prebuild": "node scripts/emit-version-json.mjs",
+    "prebuild": "node scripts/emit-version-json.mjs && node scripts/emit-version-dates.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "test": "node --test \"test/**/*.test.mjs\"",
