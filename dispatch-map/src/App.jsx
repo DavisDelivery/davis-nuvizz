@@ -46,7 +46,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, cardSendState, routePaintSource, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, cardSendState, sendControlState, routePaintSource, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -146,7 +146,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.35.0';
+const APP_VERSION = '1.36.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -200,6 +200,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.36.0', 'THE SEND BUTTON WAS BEHIND A PER-DEVICE SWITCH, AND THE CARD SAYING \u201cNOT SENT\u201d COULD NOT SEE IT. Chad, with a built CHE load open and two orders struck off: \u201cwhere is my save send to nuvizz button? ... i need this fixed in a hurry i have no way to send these loads to nuvizz.\u201d READ OFF THE CODE, NOT GUESSED AT \u2014 four controls were missing from his screenshot and all four share one gate: the Save button, the \ud83d\udd17 RWB engine badge, the \u25cf LIVE / \u25cb Beta switch and the card\u2019s driver row. That gate is `liveWrite`, a PER-DEVICE localStorage flag (\u2018routing.liveWrite\u2019) sitting in the Routing gear as \u201cLive dispatch (assign driver + dispatch)\u201d. It seeds from VITE_NUVIZZ_WRITE_BETA \u2014 which defaults FALSE \u2014 the first time a browser loads the app, then writes its own answer back to localStorage and never asks again. So a new device, a private window, cleared site data or one stray click leaves a dispatcher with a fully working planning screen and NO WAY TO SEND ANYTHING OFF IT, and nothing on screen says why. WHAT MADE IT UNREADABLE was v1.33.0: the card chip added there is not behind that gate, so the two ended up on one screen \u2014 an amber NOT SENT TO NUVIZZ over a header offering nothing to send it with. THE GEAR IS ABOUT THE DRIVER-ASSIGN + DISPATCH ROW (its own comment says so) and now covers that row and nothing else. Sending what is already staged is not an optional extra on this screen, it is the screen\u2019s entire purpose, and the two mistakes are nowhere near symmetrical: a hidden Send blocks the morning outright while looking like a working app, and a Send shown when it \u201cneed not\u201d be still cannot write without \u25cf LIVE mode AND the server\u2019s own NUVIZZ_WRITE_ENABLED \u2014 two gates, both untouched. IT IS ALSO NAMED FOR WHAT IT DOES: \u201cSend to NuVizz (2)\u201d in Live, because that is what the dispatcher went looking for; Beta keeps \u201cSave (2) \u2014 Beta\u201d, since BETA STILL WINS OVER EVERY SEND WORDING (v1.33.0) \u2014 there the button sends nothing at all. THREE THINGS THAT TRAVELLED WITH IT, each the same failure in quieter clothes: the close-confirmation, so a card holding staged changes no longer closes SILENTLY and drops them on the very screen that just called them unsent; the guard modal behind it; and the result toast, which is the Send button\u2019s only report channel \u2014 ungated, a save\u2019s \u201c\u2713 1 load(s) saved\u201d and every \u2717 refusal from NuVizz went nowhere. THE RULE IS A TESTED MODULE, not a condition in JSX: sendControlState in lib/routing-select.js, and the pin that matters walks every card state that reads as not-in-NuVizz and asserts the panel holding that card offers a control that DOES something \u2014 which is exactly the invariant this screen broke. 7 new tests. Zero NuVizz calls: no scan, no live read, diagnosed from the source.'],
   ['1.35.0', 'THE DAY ROW CAN SAY WHAT HAPPENED TO IT, AND THE LEDGER IT READS HAD BEEN RECORDING ALL ALONG. Chad, on \u201c0 to fix of 912 stops \u00b7 Nothing wrong with this day\u2019s addresses\u201d the morning after he had corrected one himself: \u201ci have a history in a drop down for any addresses that were under a day like this one i fixed one and there should be a dropdown for this day that i can see the ones that i fixed and should be in the regular history as well as well as any that were fixed in nuvizz or reconsigned it should be the history of all things.\u201d EVERY ONE OF THOSE WAS ALREADY IN THE LEDGER and none of them could reach that row. An address saved in this app lands as `override`, carrying whether the same edit also reached the ORDER in NuVizz; a Reset lands as `override-reset`; anything the carrier did to us \u2014 a RECONSIGNMENT included, which is the case refresh-stops-core\u2019s own detector re-enriches on \u2014 lands as `scan`. All of them are filed under the BOARD DAY the stop sat on, which is the exact key this queue groups by, so the drawer is a view over a ledger rather than a new record of anything. THE OLD EMPTY STATE WAS THE ACTUAL BUG. \u201cNothing wrong with this day\u2019s addresses\u201d is a true statement about PROBLEMS and was being read as a statement about the DAY \u2014 so a dispatcher who had fixed something and came back to check it stuck was told in plain English there was nothing to see. It now carries the count beside it, and the count is on the CLOSED row too: a drawer labelled only \u201cHistory\u201d is invisible in the one way that matters, because nobody opens it to find out whether anything is inside, and a day with three carrier re-addresses would look exactly like a quiet one. ONE READ FOR THE WHOLE QUEUE SPAN, not one per day header \u2014 three round trips to answer one question, growing the moment somebody widens the window. Firestore-only either way: this endpoint spends zero NuVizz calls and says so on the drawer\u2019s own footer. A SWITCHED-OFF LOG SAYS SO RATHER THAN READING AS A QUIET DAY: with ADDRESS_HISTORY=off the endpoint refuses by design, and answering that with \u201c0 changes\u201d would be a dead feature wearing a working one\u2019s face \u2014 the precise failure that switch\u2019s own comment warns about \u2014 so the row says \u201clog off\u201d, and a failed read says \u201clog unavailable\u201d instead of zero. THE ROWS REUSE THE FULL LOG\u2019S OWN PARTS (AddrSourceChip, AddrKindBadge, AddrWhere, AddrDiff, phone-stacked by the same switch) rather than growing a second definition of what a change looks like \u2014 which is how the drawer and the log would come to disagree about one ledger row. Two views, wired separately: on a phone the control sits on its own line under the date, because a date, a to-fix tally, a stop count and a button on one row at 360px wrap into a ragged block with the thumb target wherever the wrap left it. 4,920 tests green.'],
   ['1.34.0', 'ONE TAP SAYS WHICH TRUCK A LOAD RUNS, AND THE SYSTEM REMEMBERS IT. Chad: “on the loads when we put them in the [selection] panel make a quick button tractor or box truck and have system remember the choice going forward.” WHAT IT REPLACED, AND WHY HE IS RIGHT. Each ticked load row carried a dropdown of every truck profile, defaulted by A REGEX ON THE LOAD’S NAME — /(trailer|trl|53)/. Read that against the names Davis actually runs (ALPHA, ALPHA 2, ATL, SUW, SUW 2) and IT NEVER MATCHES ONCE, so every load defaulted to the box profile every morning and a load that runs a trailer had to be re-picked from a dropdown on every single build. Forget once and the solver plans a 28-skid trailer’s work at a 14-skid box’s ceiling — the same class of failure as the 4/20 split fixed in v1.33.0, arriving from the other direction. A daily correction the system threw away overnight is the cheapest kind of bug to fix and the most expensive to keep. THE ROW IS NOW TWO BUTTONS, Box | Tractor, the same segmented shape as “My loads / Trucks” above it, and the tap does two things: it sets THIS build, and it writes the class to a shared routing_load_vehicles document so it is already lit tomorrow. KEYED ON THE LOAD’S NAME, never on loadId or loadNbr — those are minted fresh for every day’s roster, so a memory keyed on either would forget overnight, which is the exact thing this exists to stop. Shared rather than localStorage, because “does SUW run a tractor” belongs to the operation and not to one browser; the write is FIELD-MASKED (setDoc REPLACES here) and a refusal reports through the permission bar instead of vanishing. AND A FACT NOW BEATS THE REGEX. route-classes.mts has been resolving which truck is on each load — the NuVizz load header first, the MarginIQ driver roster second — and travel-model already hands that map to the browser for the day on screen, keyed by BOTH load number and route name, classing a load from its HEADER even with no stops on it. That is exactly the empty loads this panel fills, it was already paid for, and nothing was reading it: five sources now decide each row, in order — this session’s tap, the remembered class, what NuVizz says is on it today, the old name guess, then the box profile (the smaller truck, so an unknown never over-plans). ZERO NuVizz calls; the same date guard the flag memos use, because a class map from another day is a lie whichever document it came out of. A STANDING PREFERENCE MAY NOT QUIETLY OUT-PLAN THE TRUCK IN THE YARD. “SUW runs a tractor” and “a box is on SUW today” are different claims, and route-classes’ own header says the day that matters is the one where the tractor is in the shop. He asked to be remembered, so the memory wins — but when the two disagree the row says so in one line naming what NuVizz has, and one tap follows it. In FLOW, not pinned: a line that appears per row is exactly the thing that lands on top of something else when it is positioned at a measured offset. THE KEY IS PROVEN INJECTIVE, because two load names collapsing onto one document is a load silently inheriting another load’s truck and nobody would think to look there for it — 20,000 names, zero collisions, and a test pins the pair (“~e” against U+07EE) that the obvious two-pass version of the escape gets wrong. 26 new tests, EIGHT mutations killed, and two of them were my own tests: a lazy regex in the wiring pin borrowed truck_profiles’ own merge flag twenty lines down and passed a blind setDoc, and the first injectivity mutation I wrote was not a bug at all. A class the fleet cannot run comes back as a DISABLED button that says why — an enabled button that does nothing teaches that the control is broken, and this one decides what the truck can carry.'],
   ['1.33.1', 'A TRUCK WITH A DRIVER ASSIGNED SAID “(no driver)”, AND THE MOTIVE DOCS SAY WHY. Chad: “when trucks are displayed on the map for motive, it’s saying no driver assigned, which is not factual. A lot of the times there is a driver assigned … go back through the motive API instructions, make sure we haven’t done something wrong.” WE HAD, AND IT IS IN THEIR DOCUMENTATION RATHER THAN A GUESS. A Motive vehicle carries TWO driver fields: current_driver, who is LOGGED IN on the truck’s ELD right now, and permanent_driver, the ADMINISTRATIVE assignment a fleet manager makes. GET /v1/vehicle_locations — the one call this layer made — carries current_driver only; Motive’s own scope for it is literally named “Vehicle Current Location/Driver”. permanent_driver lives on GET /v1/vehicles and on no version of vehicle_locations at all (v1 and v2 expose the logged-in driver, v3 exposes nobody). So a driver assigned to a truck who had not yet signed in on its tablet was, to us, nobody — and the plate said “(no driver)” over a truck Chad could see had a name on it in Motive. NOW IT READS BOTH: the signed-in driver wins, the assigned one fills in behind, and the record says which it was (driverSource), so the driver sidebar reads “Truck 7750 · Chris Head · assigned” when he is assigned but not yet signed in — which is exactly the state a dispatcher rings a driver about. TWO SMALLER DEFECTS ON THE SAME READ, both fixed: a name was only composed when BOTH first and last name were present (Motive documents no full_name), so a one-name driver fell through to nobody; and the old fallback called GET /v2/driver_vehicle_assignments, an endpoint that appears NOWHERE in Motive’s documentation index, with every error swallowed — it has contributed nothing for as long as it has existed, and HANDOFF.md had said in as many words that the field shapes were “assumed” and “still need live verification”. Retired. COST: one extra Motive call per 60-second cache miss, and only when at least one truck on the board has nobody signed in. A failed vehicles read degrades to the old logged-in-only behaviour and is REPORTED on the response (permanentDriverError) rather than hidden. NOT A PERMISSIONS PROBLEM, checked: Motive API keys are organisation-scoped, and the docs make no claim that nested driver fields are gated. MOTIVE_PERMANENT_DRIVER=off puts the old behaviour back; default ON, and a malformed value leaves it ON. 9 new tests, 4,888 green.'],
@@ -20332,10 +20333,12 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
     }
   };
 
-  // Gate on LIVE_WRITE_FLAG: with the feature off, a dirty card must close normally (the guard
-  // modal is flag-gated, so without this an order-edited card would set unrenderable state = stuck).
-  const guardedClose = (key) => { const r = wbRoutes.find((x) => x.key === key); if (LIVE_WRITE_FLAG && r && isDirty(r)) setCloseGuard({ kind: 'one', key }); else onClose(key); };
-  const guardedCloseAll = () => { if (LIVE_WRITE_FLAG && dirtyRoutes.length) setCloseGuard({ kind: 'all' }); else onCloseAll(); };
+  // NOT gated on LIVE_WRITE_FLAG any more (v1.36.0). It was, and the modal below with it —
+  // so with the gear off a card carrying staged changes closed silently and dropped them,
+  // on the same screen that had just told the dispatcher they were NOT SENT TO NUVIZZ. The
+  // warning belongs with the send button: both are about work that has not reached NuVizz.
+  const guardedClose = (key) => { const r = wbRoutes.find((x) => x.key === key); if (r && isDirty(r)) setCloseGuard({ kind: 'one', key }); else onClose(key); };
+  const guardedCloseAll = () => { if (dirtyRoutes.length) setCloseGuard({ kind: 'all' }); else onCloseAll(); };
   const doClose = () => { if (closeGuard?.kind === 'all') onCloseAll(); else if (closeGuard?.key) onClose(closeGuard.key); setCloseGuard(null); };
 
   return (
@@ -20362,47 +20365,67 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
           ))}
           {/* Ninja is armed from the on-map tool (left edge), not here — the dispatcher asked to drop
               the redundant header button. The active-state banner below still shows when it's on. */}
-          {LIVE_WRITE_FLAG && dirtyRoutes.length > 0 && (
-            <button
-              onClick={onPanelSave}
-              disabled={busy || !!saveGate.reason}
-              title={saveGate.reason || (liveMode ? 'Save all staged changes to NuVizz' : 'Save (Beta — preview only, nothing sent)')}
-              className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded disabled:opacity-60 ${liveMode ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
-            >
-              <Save size={12} /> {busy ? '…' : `Save (${dirtyRoutes.length})`}
-            </button>
-          )}
-          {/* THE ABSENCE OF A BUTTON IS NOT A MESSAGE. With nothing staged, the Save button
-              above simply does not render — which is how "everything is in NuVizz" and "you
-              have not done anything yet" came to look identical. This says which. */}
-          {LIVE_WRITE_FLAG && dirtyRoutes.length === 0 && wbRoutes.length > 0 && (
-            <span
-              title={wbRoutes.some((r) => savedAtByKey[r.key])
-                ? 'Every staged change on these cards has been written to NuVizz and verified.'
-                : 'Nothing is staged on these cards — they match the loads as NuVizz holds them.'}
-              className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border ${wbRoutes.some((r) => savedAtByKey[r.key]) ? 'border-emerald-600 bg-emerald-50 text-emerald-800' : 'border-slate-300 bg-white text-slate-500'}`}
-            >
-              {wbRoutes.some((r) => savedAtByKey[r.key]) ? '✓ All sent to NuVizz' : 'Nothing to send'}
-            </span>
-          )}
+          {/* THE SEND CONTROL IS NEVER HIDDEN (v1.36.0). Chad, Sep 15, on a card reading
+              NOT SENT TO NUVIZZ with no button anywhere on the screen: "where is my save
+              send to nuvizz button? ... i have no way to send these loads to nuvizz."
+              This whole group used to be gated on LIVE_WRITE_FLAG — the per-device
+              'routing.liveWrite' gear — which seeds OFF from VITE_NUVIZZ_WRITE_BETA and
+              persists, so a new device or cleared site data took the Save button, the
+              engine badge and the LIVE switch with it while the cards still said "not
+              sent". The gear keeps the driver-assign + dispatch row (LiveDispatchBar) and
+              nothing else: sending what is already staged is this screen's whole purpose,
+              and a shown button still cannot write without ● LIVE and the server's
+              NUVIZZ_WRITE_ENABLED. The words come from sendControlState, which is tested. */}
+          {(() => {
+            const sc = sendControlState({
+              openCards: wbRoutes.length,
+              dirtyCards: dirtyRoutes.length,
+              anySaved: wbRoutes.some((r) => savedAtByKey[r.key]),
+              liveMode,
+            });
+            if (sc.kind === 'none') return null;
+            if (!sc.actionable) {
+              /* THE ABSENCE OF A BUTTON IS NOT A MESSAGE — with nothing staged, say which
+                 kind of nothing instead of rendering no control at all (v1.33.0). */
+              return (
+                <span
+                  data-wb-send={sc.kind}
+                  title={sc.title}
+                  className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border ${sc.tone === 'green' ? 'border-emerald-600 bg-emerald-50 text-emerald-800' : 'border-slate-300 bg-white text-slate-500'}`}
+                >
+                  {sc.label}
+                </span>
+              );
+            }
+            return (
+              <button
+                data-wb-send={sc.kind}
+                onClick={onPanelSave}
+                disabled={busy || !!saveGate.reason}
+                title={saveGate.reason || sc.title}
+                className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded disabled:opacity-60 ${sc.tone === 'red' ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+              >
+                <Send size={12} /> {busy ? 'Sending…' : sc.label}
+              </button>
+            );
+          })()}
           {/* Engine indicator, not a picker — RWB is the only Save engine now (see the pin above). */}
-          {LIVE_WRITE_FLAG && (
-            <span
-              title="RWB engine — Save sets each load's stop order via the NuVizz Route Workbench portal: 2 SYNCHRONOUS calls per load (preview + save), no async wait, and it references stops BY ID ONLY so freight/address data can't be blanked or cloned. This is the only Save engine; Classic and Import were retired."
-              className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded border border-teal-600 bg-teal-600 text-white"
-            >
-              🔗 RWB
-            </span>
-          )}
-          {LIVE_WRITE_FLAG && (
-            <button
-              onClick={() => setLiveMode((v) => !v)}
-              title={liveMode ? 'LIVE — Save sends writes to NuVizz. Click for Beta (preview only).' : 'BETA — Save only previews (nothing sent). Click to go Live.'}
-              className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded border ${liveMode ? 'border-red-600 bg-red-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}
-            >
-              {liveMode ? '● LIVE' : '○ Beta'}
-            </button>
-          )}
+          <span
+            title="RWB engine — Send sets each load's stop order via the NuVizz Route Workbench portal: 2 SYNCHRONOUS calls per load (preview + save), no async wait, and it references stops BY ID ONLY so freight/address data can't be blanked or cloned. This is the only Save engine; Classic and Import were retired."
+            className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded border border-teal-600 bg-teal-600 text-white"
+          >
+            🔗 RWB
+          </span>
+          {/* Rides with the send button, ALWAYS: this switch decides whether that button
+              writes NuVizz or only simulates, so hiding it left the dispatcher unable to
+              tell — or change — which of the two they were about to do. */}
+          <button
+            onClick={() => setLiveMode((v) => !v)}
+            title={liveMode ? 'LIVE — Send writes to NuVizz. Click for Beta (preview only).' : 'BETA — Save only previews (nothing sent). Click to go Live.'}
+            className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded border ${liveMode ? 'border-red-600 bg-red-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}
+          >
+            {liveMode ? '● LIVE' : '○ Beta'}
+          </button>
           <button onClick={guardedCloseAll} className="text-[11px] text-slate-500 hover:text-slate-800 underline">Back to Setup</button>
         </div>
       </div>
@@ -20417,7 +20440,8 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
           {onDismissNotice && <button onClick={onDismissNotice} className="text-slate-400 hover:text-slate-700 shrink-0" aria-label="Dismiss"><X size={12} /></button>}
         </div>
       )}
-      {LIVE_WRITE_FLAG && toast && (
+      {/* The Send button's only report channel — ungated with it (v1.36.0). */}
+      {toast && (
         <div className="px-2 py-1 text-[11px] bg-slate-800 text-white shrink-0 flex items-start justify-between gap-2">
           {/* Wrap, never truncate: a Save refusal must be readable in full (which stop, which load holds it, what to do). */}
           <span className="whitespace-pre-wrap break-words min-w-0">{toast}</span>
@@ -20519,7 +20543,7 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
           </div>
         </div>
       )}
-      {LIVE_WRITE_FLAG && closeGuard && (
+      {closeGuard && (
         <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) setCloseGuard(null); }}>
           <div className="bg-white rounded-lg shadow-xl w-full max-w-sm">
             <div className="px-4 py-3 border-b font-semibold text-slate-800 flex items-center gap-2"><AlertTriangle size={16} className="text-amber-500" /> Unsaved changes</div>

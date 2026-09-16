@@ -1002,6 +1002,46 @@ export function cardSendState({ dirty = false, pendingCreate = false, savedAt = 
   return { kind: 'unsent', tone: 'amber', label: 'Not sent to NuVizz', title: 'This card has staged changes that are not in NuVizz yet. Close it and they are dropped.' };
 }
 
+// ── THE PANEL'S SEND CONTROL, AND WHY IT IS NEVER HIDDEN (v1.36.0) ──────────
+//
+// Chad, Sep 15, looking at a Compare card reading NOT SENT TO NUVIZZ on a screen with
+// nothing to send it with: "where is my save send to nuvizz button? ... i have no way
+// to send these loads to nuvizz."
+//
+// READ OFF THE CODE, NOT GUESSED AT. Every send control in the Compare header — the Save
+// button, the RWB engine badge and the ● LIVE / ○ Beta switch — was gated on `liveWrite`:
+// a PER-DEVICE localStorage toggle ('routing.liveWrite') that lives in the Routing gear
+// labelled "Live dispatch (assign driver + dispatch)". It seeds from VITE_NUVIZZ_WRITE_BETA
+// (default false) the first time a browser loads the app, then persists its own answer. So
+// a new device, cleared site data, a private window or one stray click leaves the dispatcher
+// with a fully working planning screen and NO WAY TO SEND ANYTHING OFF IT. The card chip
+// added in v1.33.0 is not gated on that toggle, which is how the two came to share a screen:
+// a card announcing it is unsent, above a header offering nothing to send it with.
+//
+// THE GEAR IS ABOUT THE DRIVER-ASSIGN + DISPATCH ROW — its own comment says so, and that
+// row stays behind it. Sending what is already staged is not an optional extra on this
+// screen, it is the screen's whole purpose, and the two mistakes are nowhere near
+// symmetrical: a hidden Save blocks the morning outright and looks like a working app,
+// while a Save that is shown when it "need not" be still cannot write without LIVE mode AND
+// the server's own NUVIZZ_WRITE_ENABLED. So this renders whenever a card is open, always.
+//
+// BETA STILL WINS OVER EVERY SEND WORDING (the v1.33.0 rule): in Beta the button must never
+// say "Send to NuVizz", because in Beta it sends nothing at all.
+export function sendControlState({ openCards = 0, dirtyCards = 0, anySaved = false, liveMode = true } = {}) {
+  const open = Number(openCards) || 0;
+  const dirty = Number(dirtyCards) || 0;
+  if (open <= 0) return { kind: 'none', tone: 'slate', label: '', title: '', actionable: false };
+  if (dirty > 0) {
+    return liveMode
+      ? { kind: 'send', tone: 'red', label: `Send to NuVizz (${dirty})`, actionable: true, title: `Send the staged changes on ${dirty} card(s) to NuVizz now.` }
+      : { kind: 'beta', tone: 'blue', label: `Save (${dirty}) — Beta`, actionable: true, title: 'The workbench is in Beta: Save only simulates and NOTHING is sent. Switch to ● LIVE to write NuVizz.' };
+  }
+  if (anySaved) {
+    return { kind: 'sent', tone: 'green', label: '\u2713 All sent to NuVizz', actionable: false, title: 'Every staged change on these cards has been written to NuVizz and verified.' };
+  }
+  return { kind: 'clean', tone: 'slate', label: 'Nothing to send', actionable: false, title: 'Nothing is staged on these cards — they match the loads as NuVizz holds them.' };
+}
+
 // WHICH PLAN THE MAP PAINTS AS ROUTES — and the reason this is a rule and not an expression.
 //
 // It was `wbRoutesColored.length ? wbRouteInfo : routeInfo`: open cards win, otherwise the
