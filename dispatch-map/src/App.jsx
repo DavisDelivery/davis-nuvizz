@@ -47,7 +47,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -202,6 +202,7 @@ function loadDisplayName(...vals) {
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
   ['1.39.0', 'THE WALL DISPLAY DRAWS THE BOARD’S OWN PINS NOW, AND THE PICTURE FILLS THE WHOLE FRAME. Chad, on a photograph of the office television: “map doesn’t look like it should i want the thing to be identical with all the same icons”, and “i don’t liek the black space on either end of the map we aren’t using the full frame there are black bars on either side of the map on tv with just blank space before the needs a call table starts.” GOOGLE DRAWS THE ROADS; THIS APP DRAWS THE FREIGHT. The first cut asked Google to draw the stops too, with markers= in the URL, which is the obvious way and is wrong on this screen three separate times. It is NOT THE SAME BOARD — Static Maps draws teardrops in a handful of colours, while this app’s pins carry the whole morning on them: the AM/PM window, the ✓, the ➜, the restriction clock, the no-tractor truck, the Estes yellow ring, the co-located count, the “?” flag. A room reading two different maps of one day is worse than a room reading one. It COULD NOT FIT THE DAY — a Static Maps URL dies past 8192 characters, about 400 pins, so a 700-stop morning lost freight off the wall and had to print “showing 401 of 640 pins” to stay honest about it. And it BILLED FOR THE WRONG THING — with the pins in the URL every pin that moved bought a new image. So the picture is now a BASEMAP and every stop is the very same stopMarkerIcon artwork the desktop board paints, positioned over it by Web Mercator maths in lib/tv-static-map.js. Nothing is dropped and the cap chip is gone with the cap. THE ONLY THING IN THE WAY WAS SIX `new google.maps.Size` AND SIX `new google.maps.Point` — numbers, not behaviour — on a screen where the Maps script is deliberately never loaded. PLAIN_GEOMETRY is that stand-in, and the icon cache is NAMESPACED against it by identity, because press Exit on the wall and the real JS map loads into the same page reading the same cache: without that, the second screen gets Size and Point objects that are not google.maps types, and it fails as one screen quietly not drawing a week later. THE BLACK BARS WERE A GUESS RENDERED IN BLACK. The URL asked for a fixed 640x416 because a COMMENT in this file said the pane was “~1520x990” — a number estimated once, months before the television it was estimating, and object-contain turned the difference into dead space down both sides. Measured at 1920x1080 the old code paints 1509 of 1520 pixels across. The pane is READ now, with a ResizeObserver, and the image requested in its exact ratio, so there is nothing left to letterbox and no object-fit doing it — which is also what makes the per-cent pin positions exact. THE SPEND WENT DOWN, NOT UP, and that is worth saying because this repo counts calls: the URL now holds a centre, a zoom and a size and nothing else, so the picture is re-bought when the CAMERA moves rather than every two minutes — the 2-minute timer is deleted. The camera is held still by snapping the fit bounds outward onto a ~2.2 km grid, because the trucks are in the fit and a driver rolling thirty feet would otherwise shift the centre in the fourth decimal and buy another image on every poll. ~300 requests a day becomes a handful. MEASURED IN A REAL BROWSER, NOT REASONED ABOUT: scripts/verify-tv-map.mjs drives /tv at 1920x1080 and checks that the picture PAINTS the full pane (the element box is not the painted box — the first draft of this guard measured the wrong one and passed with the bug deliberately reinstated), that all 240 fixture stops draw, that the pins are this app’s SVGs and not Google teardrops, and that every pin and truck lands where an INDEPENDENT Mercator derivation — written the other way round from the module’s — puts it. Proven to fail on a restored letterbox, a dropped anchor offset and a mirrored projection. ONE BUG CAUGHT BY ITS OWN TEST: the bounds snap fell into IEEE arithmetic — 34.02/0.02 is 1701.0000000000002, so a bare Math.ceil moved a box that was ALREADY on the grid, which every snapped box is, and the camera would have flapped between two cells buying a picture each time. AND THE SCREEN ASKS WHY INSTEAD OF GUESSING. Chad, twice: “the static api key thing is back.” It answered that with one sentence — “Most likely the Maps Static API is not enabled on this key” — for EVERY failure, because an <img> onError carries no status and no reason: a 403, a 500, a timeout, a dropped connection and a picture the browser could not decode all fire identically. Naming one cause for a family of failures is a guess in a diagnosis’s clothes, and this file already had the comment saying so. MEASURED WHILE WRITING THIS, from the deployed bundle’s own key: that request answers HTTP 200 · image/png, with and without the site’s Referer — so “the API is off” was never established, and I cannot tell from here what the television saw. THE FREE DIAGNOSTIC WAS THERE ALL ALONG: Google refuses a staticmap with HTTP 403, content-type text/plain, a human sentence, and access-control-allow-origin: * — so the page fetches the SAME url once, after one has already failed, and prints the real reason plus Google’s own words verbatim. A referrer refusal now sends you to the key’s restrictions rather than to an API that is already on; a 429 says Google is rate-limiting and nothing is wrong; a dead network says check the television’s network and does NOT mention the console, which is the worst possible wrong answer on a wall display; and “Google returned the picture when this page asked again” names the one case the old message was most wrong about. Driven for real in the guard against Google’s actual 403 body, and proven to fail on the old wording. NOT CHANGED: VITE_TV_STATIC_MAP=off still returns the whole wall to the live JS map, anything malformed still leaves it on, and the flag rail, status bar, Filters panel and wake-lock reporting are untouched. The dispatch Map and the Route Workbench are not touched at all. 31 + 3 tests.'],
+  ['1.38.4', 'A CARD SAYS WHETHER THE SAVE LANDED — AND SAYS IT UNTIL IT STOPS BEING TRUE. Chad, on a Compare card: “I want a check mark somewhere denoting that the save to nuvizz was successful”, then “what about a card that says did not save after I did send it? … this is just a chip to tell us if it did or did not successfully save after it was sent to NuVizz.” WHAT HE WAS LOOKING AT, read off the code rather than guessed at: on a confirmed save AND on a refused one, the CARD said nothing at all. Both reports were a toast at the top of the workbench — “✓ 1 load(s) saved to NuVizz” or “✗ CHE: …” — which carries a dismiss ✕ and which the next action overwrites. Five minutes later a load that went to NuVizz, a load NuVizz REFUSED and a load nobody had touched were identical on screen, and the only way to tell them apart was the portal or sending again. NOW ONE CHIP, TWO VERDICTS, beside the route name on both views: green ✓ SENT 2:14 PM, red ✗ DID NOT SAVE 2:20 PM. BOTH ARE EARNED, NEVER ASSUMED — each stamp has exactly ONE writer, markSaved and markSaveFailed, and each runs only where the write’s own RESULT has been read back: Beta returns long before either, an attempt reaches neither, and a partial save stamps only the keys NuVizz answered for. Tests count both writers. THE TWO HALVES BEHAVE DIFFERENTLY ON PURPOSE: the ✓ is WITHDRAWN the instant the card stops matching what was sent (the same dirty flag the Send button counts), because it claims “this card matches the load” and an edit breaks that; the ✗ SURVIVES an edit, because it claims “NuVizz refused this” and tweaking the card does not make that untrue — only a confirmed save clears it, and the later stamp wins, so fix-and-resend goes green on its own. A TIE GOES TO THE ✗: a ✗ on a load that did save costs one idempotent re-send, while a ✓ on a load that did not is freight that reads as routed and never gets driven. ALL THREE WAYS A SEND CAN BE REFUSED REACH THE CARD, including the one that would otherwise leave every card blank — a whole call that fails returns no per-load results, so nothing names a card; those keys are stamped from the payload, minus any that did save. Verified off the SERVER that this is complete for the live engine: runCommitBoardRwb never returns `pending` (only runImportLoad / runCommitBoardImport do, and Import is retired), so every RWB result is ok or a refusal. THIS IS THE GREEN HALF OF v1.33.0 PLUS THE ASK, AND NOTHING ELSE — no amber NOT SENT chip on cards nobody sent (that one shouted at work in progress and is exactly what was reverted in v1.36.1), no header wording, no map-paint change; tests assert cardSendState and routePaintSource stay gone and the pendingCreate “not sent” chip is untouched. CONFIRMED AT CHAD’S REQUEST BEFORE MERGE, function by function against main: onPanelSave, buildBoardPayload, onPanelConfirm’s write call, sendPendingCreates’ write call, the close guards, the Send button and the LIVE/Beta switch all hash IDENTICAL; routing-select.js has ZERO deleted lines; the new state is read in exactly one place, the chip. Nothing about what is written to NuVizz, or when, changed. 22 new tests, 4,982 green.'],
   ['1.38.3', 'THE OTHER HALF OF THE ROUTING FILTERS ASK. Chad, 2026-09-16: “i want hide termianl markers and hide stem out added to my routing filters.” The stem-out half landed in v1.36.2; Hide terminal markers never did, so half the request sat unshipped while the dropdown looked finished. It is there now, first in the list. WHAT IT HIDES, and the distinction is the whole reason this one is safe on this screen: terminal markers are the DEPOT rows. Hiding them declutters a 700-stop board without taking a single customer delivery off it. The dispatch Map’s “Hide stem out” hides the FIRST DELIVERY of every load — real freight — which is why Routing’s stem-out control deliberately drives the polyline instead, and why this new toggle removes no freight either. On the screen where loads are BUILT, a filter that quietly takes orders off the board is the one thing these controls must never do. It composes with “Unplanned only” rather than fighting it (terminal rows come off first, then the unplanned filter runs on what is left), it persists per device under routing.mapHideTerminal, it lights the Filters button like every other active filter, and Reset layout clears it. THE ROUTING DROPDOWN NOW READS: Hide terminal markers, Unplanned only, Hide place labels, Show routes, Hide stem-out line.'],
   ['1.38.2', 'AN EMPTY LOAD WAS TAKING TEN ORDERS OFF THE BOARD EVERY SCAN. Chad: “this order is in nuvizz planned on scott and we are showing it unplanned … RWB is full of bugs from work today.” He was right, and the board itself said so — measured through nuvizz-stop-explain, Firestore only, ZERO NuVizz calls. EVERY scan on 2026-09-16 was dropping TEN rows, and the ledger gave its own reason: “not on DAVIS000203794 (CHAD, 0 stops on the 2026-09-16 roster) — the load’s own membership read does not list it … its own day is 2026-09-11, so it stays on that day’s board and comes off 2026-09-16” — printed directly beneath the line “The open-order pool agrees: planned on CHAD, filed under 2026-09-16.” NuVizz’s own open-order list said the freight was planned on CHAD today, and we took it off the board anyway. THE MECHANISM IS THE ORDINARY MORNING, not a corner case. A recurring route mints a NEW load each day and mints it EMPTY: on the 16th, CHAD, BUFORD and ULINE APPT were all Drafts holding 0 stops at 04:15 while the freight still hung off yesterday’s instance. Zero is a count, so it passed the gate; “more rows than the load holds” was true for every name (6 > 0); the membership read of an empty load returned nothing; and every row under the name failed membership at once, each one with a past arrival day evicted. Five CHAD stops, one BUFORD, three ULINE APPT — ten a scan, all day. THE FIX IS THE PRINCIPLE THIS MODULE ALREADY WROTE DOWN one line above, in membershipUsable: an empty read “is a contradiction inside NuVizz’s own feeds, not a verdict — never drop a row on it.” A 0-stop Draft is that same shape and was the one way in. A load holding nobody is not evidence about anybody; it is a load nobody has filled in yet. A name is now judged only when its roster load holds AT LEAST ONE stop. THE FEATURE KEEPS ITS JOB — the ESTES case it was built for (16 rows against a load of 10) still judges, and so does two rows against a load of one: the gate is zero, not “small”. A duplicate sequence number cannot smuggle an empty load past it either, or the eviction returns by the side door. SAID PLAINLY: the scan and the feed were never wrong about Chad’s own order — 007176371 reads PLANNED on SCOTT, stop 7, Scott Hart on both the 15th and the 16th documents, and the client feed returns all ten SCOTT rows totalling 5,759 lb, which is NuVizz’s own figure to the pound. What was wrong was the ten OTHER orders this rule was quietly removing from the same board. NUVIZZ_NAME_COLLISION=off turns the whole rule off without a deploy. 5 new tests, 5,020 green.'],
   ['1.38.1', '“＋ ADD SELECTION” ACCEPTS WHAT IS ALREADY LIT INSTEAD OF ASKING FOR A BOX. Chad, twice: “i don’t want the add selection to prompt me to drag a box i want it to accept what i have already selected”, and then — asked which of two readings he meant — “accept the stops already highlighted on map.” SEARCH THE GRID FOR A CUSTOMER, THE PINS GO BURNT ORANGE, PRESS IT AND THEY ARE IN. Before this the one button under “Add stops in view” armed a box draw: having just found the fourteen stops he wanted and lit them on the map, the dispatcher was asked to go and draw a rectangle round them — a second gesture that can only be LESS accurate than the search that found them, because a rectangle takes whatever else is inside it. WHAT “HIGHLIGHTED” MEANS IS READ OFF THE MAP, NOT GUESSED: useLegendInventory defines it in one line as selected OR a search hit, so the half a button can usefully accept is the search hits minus what is already selected. A status filter is deliberately not highlight — the grid reports it separately, because “search is a burnt-orange highlight, never a hide”. IT READS OFF WHAT THE MAP IS DRAWING, so a matching order with NO GEOCODE — no pin, un-box-selectable, silently dropped by any build — can never ride in on a search hit. AND IT IS THE SAME DOOR, NOT A SECOND RULE: the accepted stops go through addEnclosed exactly as box, lasso and Add-in-view do, so every skip still holds and is still named in the action line — a stop on an open Compare card, one another dispatcher’s device is staging, and (v1.36.3) one already planned onto a load sent to NuVizz. WITH NOTHING LIT IT STILL ARMS THE BOX, through the same beginMode the map rail calls, so Cancel, Esc and the rail’s highlight are unchanged; a button that goes dead when you have not searched is worse than one that offers the old way. THE LABEL SAYS WHICH IT WILL DO before it is pressed — “＋ Add 14 highlighted (search hits)” or “＋ Add selection (drag a box)”. On a phone only the box path drops the Setup sheet; accepting leaves it up, because nothing is tapped on the map and dropping it would hide the tally that just changed. 11 + 5 tests. PUT IT BACK: VITE_ROUTING_ADD_SELECTION_ACCEPTS_HIGHLIGHT=off returns the button to always arming the box — one switch covering the press, the label and the hint, so there is no half-reverted state where it says one thing and does another. No Route Workbench behaviour changes: addEnclosed gains a caller and keeps its rule.'],
@@ -19846,7 +19847,7 @@ function PreflightBanner({ pre, isMobile }) {
   );
 }
 
-function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
+function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, savedAt = null, failedAt = null, isMobile, liveWrite }) {
   // The live-dispatch UI gate is now the gear toggle (prop) rather than the module-level
   // ?write=1/env const. Aliased to the original name so the gate sites below are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -19939,6 +19940,37 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = 
                 <NinjaIcon size={13} /> {isActive ? 'target' : 'set'}
               </label>
             )}
+            {/* THE SAVE LANDED, OR DID NOT — Chad, 2026-09-16: "I want a check mark somewhere
+                denoting that the save to nuvizz was successful", then "what about a card that
+                says did not save after I did send it?", then "can you make those flags to just
+                the left of the x". So it lives HERE: last thing before the ✕, on every card.
+                Until now the card said nothing either way — the only report was a dismissible
+                toast the next action overwrites, so a load NuVizz took, a load it REFUSED and a
+                load nobody touched all looked the same five minutes later.
+
+                Being in this group rather than in the collapse button also means clicking the
+                chip no longer collapses the card, which it did while it sat beside the name.
+
+                Green is earned ONLY by a confirmed write (markSaved) and red ONLY by a refusal
+                read back off the write's own result (markSaveFailed) — one writer each. The
+                rule is savedMark, which is tested; this renders what it returns, picks no
+                verdict of its own, and nothing else on the screen reads it. */}
+            {(() => {
+              const mk = savedMark({ savedAt, failedAt, dirty });
+              if (!mk.show) return null;
+              const tone = mk.kind === 'failed'
+                ? 'text-rose-800 bg-rose-100 border-rose-300'
+                : 'text-emerald-800 bg-emerald-100 border-emerald-300';
+              return (
+                <span
+                  data-card-saved={mk.kind}
+                  title={mk.title}
+                  className={`font-bold uppercase border rounded px-1 shrink-0 whitespace-nowrap ${tone} ${isMobile ? 'text-[10px]' : 'text-[9px]'}`}
+                >
+                  {mk.label}
+                </span>
+              );
+            })()}
             {/* The 44px min-WIDTH rule only fires on a button whose one child is an svg; this × is a
                 text glyph, so on a phone it was 44px tall and ~11px wide. Square it up on touch. */}
             <button onClick={onClose} className={`text-slate-400 hover:text-red-600 leading-none text-lg ${isMobile ? 'w-11 inline-flex items-center justify-center' : ''}`} aria-label={`Close route ${route.name || loadDisplayName(route.key) || ''}`}>×</button>
@@ -20262,6 +20294,13 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
   // order at open, so "dirty" = the staged order/membership differs, or a driver/dispatch is set.
   const [staged, setStaged] = useState({});        // key → { driverId, driverName, dispatch }
   const [baselines, setBaselines] = useState({});  // key → stopNbr[] (order at open / last save)
+  // key → ms of the last CONFIRMED write for that card. The ✓ SENT mark's only evidence
+  // that anything reached NuVizz, written in one place (markSaved) and pruned with the
+  // baseline when a card closes — so a reopened load never wears a tick from an hour ago.
+  const [savedAtByKey, setSavedAtByKey] = useState({});
+  // key → ms of the last REFUSED send for that card (markSaveFailed). Its mirror: written
+  // only where a refusal is actually read back, never on an attempt.
+  const [failedAtByKey, setFailedAtByKey] = useState({});
   const [confirm, setConfirm] = useState(null);
   const [busy, setBusy] = useState(false);
   const [closeGuard, setCloseGuard] = useState(null);
@@ -20281,6 +20320,18 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
     const liveKeys = new Set(wbRoutes.map((r) => r.key));
     // Prune closed routes (so a reopen re-seeds against the FRESH order, not a stale baseline),
     // then seed any newly-opened route's baseline = its order at open.
+    // The ✓ SENT stamp goes on the same rule: a closed card's history must not follow a
+    // reopened one, which is seeded from the board all over again.
+    setSavedAtByKey((prev) => {
+      let next = prev, changed = false;
+      for (const k of Object.keys(prev)) if (!liveKeys.has(k)) { if (!changed) { next = { ...prev }; changed = true; } delete next[k]; }
+      return changed ? next : prev;
+    });
+    setFailedAtByKey((prev) => {
+      let next = prev, changed = false;
+      for (const k of Object.keys(prev)) if (!liveKeys.has(k)) { if (!changed) { next = { ...prev }; changed = true; } delete next[k]; }
+      return changed ? next : prev;
+    });
     setBaselines((prev) => {
       let next = prev, changed = false;
       for (const k of Object.keys(prev)) if (!liveKeys.has(k)) { if (!changed) { next = { ...prev }; changed = true; } delete next[k]; }
@@ -20443,6 +20494,7 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
         // clips, naming where the untruncated text lives. Sep 10: the screen showed 300
         // characters of XML preamble with no indication anything followed it.
         showToast(`✗ ${name}: ${clipForToast(res?.error || rr.error || 'create failed')}`);
+        markSaveFailed([r.key]);   // the card says it too, after the toast is gone (v1.37.1)
         continue;
       }
       // Flip the card to its verified identity (same key), clean its dirty state, and belt-sync
@@ -20491,11 +20543,29 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
     if (pending.length) await sendPendingCreates(pending);
   };
 
-  const markSaved = (keys) => setBaselines((prev) => {
-    const n = { ...prev };
-    for (const k of keys) { const r = wbRoutes.find((x) => x.key === k); if (r) n[k] = r.order.slice(); }
-    return n;
-  });
+  const markSaved = (keys) => {
+    setBaselines((prev) => {
+      const n = { ...prev };
+      for (const k of keys) { const r = wbRoutes.find((x) => x.key === k); if (r) n[k] = r.order.slice(); }
+      return n;
+    });
+    // THE ONLY PLACE A CARD EARNS ITS ✓. markSaved runs on a CONFIRMED write and nowhere
+    // else — Beta returns long before it, a refusal never reaches it, and a partial save
+    // brings only the keys NuVizz said ok — so the tick cannot report an intent as an
+    // outcome. A wiring test pins that this stays the single writer.
+    const at = Date.now();
+    setSavedAtByKey((prev) => { const n = { ...prev }; for (const k of keys) n[k] = at; return n; });
+  };
+
+  // THE MIRROR, AND THE ONLY PLACE A CARD EARNS ITS ✗. Chad: "what about a card that says
+  // did not save after I did send it?" Called ONLY where a refusal has actually been read
+  // back off the write's own result — never on an attempt, never on a Beta run, never on a
+  // card nobody sent. A later markSaved outranks it by timestamp (savedMark decides), so a
+  // fixed-and-resent card goes green without anything having to remember to clear this.
+  const markSaveFailed = (keys) => {
+    const at = Date.now();
+    setFailedAtByKey((prev) => { const n = { ...prev }; for (const k of keys) if (k) n[k] = at; return n; });
+  };
 
   // Runs the real write. Called directly by onPanelSave with { loads, clientOpId } now that
   // the confirm popup is gone (falls back to the `confirm` state if ever called without args).
@@ -20661,9 +20731,19 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
         return nm && nm !== String(k) ? `${nm} (${k})` : String(k);
       };
       showToast(`✗ ${failed.map((l) => `${cardName(l)}: ${l.error || (l.steps || []).filter((s) => !s.ok).map((s) => s.error).join('; ')}`).join(' | ') || res.error || 'write failed'}${orphanMsg}`);
+      // …and the card keeps saying so after that toast is gone (v1.37.1). Same array the
+      // toast names, so the chip and the message can never disagree about which card failed.
+      markSaveFailed(failed.map(keyOf).filter(Boolean));
     } else if (!pendings.length) {
       if (res.ok) showToast(fired || cancelled ? `✓ ${fired} load(s) saved to NuVizz${cancelMsg}${noopMsg}${callsMsg}.${orphanMsg}${syncMsg}${finishedMsg}` : `Nothing to send — no changes actually fired.${orphanMsg}`);
-      else showToast(`✗ ${res.error || 'write failed'}${orphanMsg}`);
+      else {
+        showToast(`✗ ${res.error || 'write failed'}${orphanMsg}`);
+        // THE WHOLE CALL FAILED — no per-load results came back, so nothing above named a
+        // card. Every card in this payload that was not confirmed is a refusal, and without
+        // this the one failure mode with NO per-card detail would be the one that left the
+        // cards blank. okKeys is excluded so a partial success is never overwritten.
+        markSaveFailed(loads.map((l) => l.__key ?? l.routeName ?? l.loadNbr ?? l.loadId).filter((k) => k && !okKeys.includes(k)));
+      }
     }
     if (pendings.length) verifyPendingImports(pendings, loads, keyOf);
   };
@@ -20925,6 +21005,8 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
             staged={staged[r.key]}
             onStage={(patch) => setStageFor(r.key, patch)}
             dirty={isDirty(r)}
+            savedAt={savedAtByKey[r.key] || null}
+            failedAt={failedAtByKey[r.key] || null}
             isMobile={isMobile}
             liveWrite={liveWrite}
           />
