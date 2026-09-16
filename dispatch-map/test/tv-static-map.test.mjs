@@ -9,7 +9,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   tvStaticMapEnabled, boundsOf, snapBounds, tvImageSize, fitView,
-  projectToPixel, projectToPercent, buildTvStaticMapUrl,
+  projectToPixel, projectToPercent, buildTvStaticMapUrl, tvImageFailure,
   TV_IMAGE_MAX, TV_PIN_PAD_PX, TV_BOUNDS_SNAP_DEG,
 } from '../src/lib/tv-static-map.js';
 
@@ -293,4 +293,57 @@ test('A SEVEN-HUNDRED-STOP DAY COSTS THE URL NOTHING — no pin is ever dropped 
 test('the snap default is the one the header quotes', () => {
   assert.equal(TV_BOUNDS_SNAP_DEG, 0.02);
   assert.equal(TV_IMAGE_MAX, 640);
+});
+
+// ── why the picture did not draw ───────────────────────────────────────────
+// Chad, twice: "the static api key thing is back." The screen used to answer that with one
+// sentence for every possible failure, because an <img> onError carries no reason at all.
+test('THE API-NOT-ENABLED CASE STILL GETS ITS ANSWER, and names the console setting', () => {
+  const why = tvImageFailure({ status: 403, text: 'The Google Maps Platform server rejected your request. This API project is not authorized to use this API. Please ensure that this API is activated' });
+  assert.match(why.headline, /Maps Static API is not enabled/);
+  assert.match(why.headline, /SEPARATE API/);
+  assert.match(why.detail, /not authorized to use this API/, 'Google\'s own sentence is carried through');
+});
+
+test('A REFERRER REFUSAL IS NOT AN API REFUSAL — different console page, different fix', () => {
+  // The old message would have sent somebody to enable an API that was already on.
+  const why = tvImageFailure({ status: 403, text: 'API keys with referer restrictions cannot be used with this API.' });
+  assert.match(why.headline, /refused THIS PAGE/);
+  assert.doesNotMatch(why.headline, /not enabled/);
+});
+
+test('an invalid key is named as an invalid key', () => {
+  const why = tvImageFailure({ status: 403, text: 'The Google Maps Platform server rejected your request. The provided API key is invalid.' });
+  assert.match(why.headline, /rejected the key itself/);
+});
+
+test('A RATE LIMIT AND A GOOGLE OUTAGE ARE NOT SOMEBODY\'S MISTAKE, and say so', () => {
+  assert.match(tvImageFailure({ status: 429, text: '' }).headline, /rate-limiting/);
+  assert.match(tvImageFailure({ status: 429, text: '' }).headline, /nothing is wrong with the key/);
+  assert.match(tvImageFailure({ status: 503, text: '' }).headline, /their end/);
+});
+
+test('A DEAD NETWORK IS NOT A DEAD KEY — the worst possible wrong answer on a television', () => {
+  // Telling somebody to go and edit a Google console because the set's wifi dropped sends
+  // them to the one place that cannot be the problem.
+  const why = tvImageFailure({ network: true, text: 'Failed to fetch' });
+  assert.match(why.headline, /could not reach Google/);
+  assert.match(why.headline, /network/);
+  assert.doesNotMatch(why.headline, /console/);
+  // and a probe with no status at all is the same case, never a confident 403 story
+  assert.match(tvImageFailure({}).headline, /could not reach Google/);
+  assert.match(tvImageFailure({ status: 'x' }).headline, /could not reach Google/);
+});
+
+test('THE CONFUSING ONE IS NAMED PRECISELY: Google answered fine, the browser could not draw it', () => {
+  // This is the case Chad's television is most likely to produce, and the one the old
+  // message was most wrong about.
+  const why = tvImageFailure({ status: 200, text: '' });
+  assert.match(why.headline, /key and the API are fine/);
+  assert.match(why.headline, /this browser that could not draw/);
+});
+
+test('an unrecognised status is reported as itself, not as a story about it', () => {
+  const why = tvImageFailure({ status: 418, text: '' });
+  assert.match(why.headline, /HTTP 418/);
 });

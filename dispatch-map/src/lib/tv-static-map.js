@@ -318,3 +318,59 @@ export function buildTvStaticMapUrl({
     center: view.center,
   };
 }
+
+/**
+ * PURE. WHY THE PICTURE DID NOT DRAW, IN WORDS, FROM GOOGLE'S OWN ANSWER.
+ *
+ * Chad, twice now: "the static api key thing is back." That message was a GUESS wearing a
+ * diagnosis's clothes. An <img> onError carries no status and no reason — it fires the same
+ * way for a 403, a 500, a timeout, a dropped connection and a picture the browser simply
+ * could not decode — and the screen answered every one of them with "Most likely the Maps
+ * Static API is not enabled on this key." Overwhelmingly-likely is not measured, and a
+ * diagnostic that names one cause for a family of failures sends the next person down a road
+ * that may well be empty. This repo has a rule about that, and I wrote the comment.
+ *
+ * The free diagnostic was there the whole time: Google answers a refused staticmap with
+ * HTTP 403, `content-type: text/plain`, a human sentence, and `access-control-allow-origin: *`
+ * — so the page can fetch the very same URL and READ WHY. That costs one request, only after
+ * one has already failed, and it turns "something is wrong" into the console setting to change.
+ *
+ * GOOGLE'S OWN SENTENCE IS ALWAYS CARRIED THROUGH when there is one. The gloss is ours; the
+ * truth is theirs.
+ *
+ * @param {{status?: number|null, text?: string, network?: boolean}} probe
+ * @returns {{headline: string, detail: string}}
+ */
+export function tvImageFailure(probe = {}) {
+  const status = Number(probe.status);
+  const said = String(probe.text || '').replace(/\s+/g, ' ').trim().slice(0, 220);
+  const has = (re) => re.test(said);
+  const out = (headline) => ({ headline, detail: said });
+  if (probe.network || !Number.isFinite(status)) {
+    // The probe itself could not reach Google. On a television that is usually the set's own
+    // network, not the key — and telling somebody to go and edit a Google console because
+    // their wifi dropped is the worst possible answer.
+    return { headline: 'The map image did not load, and this screen could not reach Google to ask why. Check the television’s network before anything else.', detail: said };
+  }
+  if (status === 403) {
+    if (has(/not authorized|not activated|has not been used|disabled/i)) {
+      return out('The Maps Static API is not enabled on this key. It is a SEPARATE API from Maps JavaScript in the Google console — enable "Maps Static API" on the same project.');
+    }
+    if (has(/referer|referrer|IP address|restriction/i)) {
+      return out('The key refused THIS PAGE, not the API. Its HTTP-referrer restriction in the Google console does not cover this site.');
+    }
+    if (has(/invalid|expired|deleted/i)) {
+      return out('Google rejected the key itself. VITE_GOOGLE_MAPS_API_KEY on this build is not a key Google will accept.');
+    }
+    return out('Google refused the map image (403).');
+  }
+  if (status === 429) return out('Google is rate-limiting the map image (429). This clears on its own; nothing is wrong with the key.');
+  if (status === 402 || has(/billing/i)) return out('Billing is not enabled on the Google project behind this key.');
+  if (status >= 500) return out(`Google's own servers failed on the map image (${status}). This is their end and usually clears on its own.`);
+  if (status >= 200 && status < 300) {
+    // The most confusing case, and the one worth naming precisely: the request SUCCEEDED when
+    // this page asked again, so nothing is wrong at Google. The browser could not draw it.
+    return out('Google returned the picture when this page asked again — so the key and the API are fine, and it is this browser that could not draw the image.');
+  }
+  return out(`The map image was refused (HTTP ${status}).`);
+}

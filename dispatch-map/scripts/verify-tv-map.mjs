@@ -131,10 +131,17 @@ const pngOf = (w, h) => {
   ]);
 };
 const staticReqs = [];
+// Flipped for the second phase: Google's REAL refusal, byte for byte — 403, text/plain, and
+// the sentence it actually sends, confirmed against the live API while this was written.
+let refuse = false;
+const GOOGLE_403 = 'The Google Maps Platform server rejected your request. This API project is not authorized to use this API. Please ensure that this API is activated in the Google Cloud Console.';
 await page.route(/maps\.googleapis\.com/, async (route) => {
   const url = route.request().url();
   if (url.includes('/maps/api/staticmap')) {
     staticReqs.push(url);
+    if (refuse) {
+      return route.fulfill({ status: 403, contentType: 'text/plain; charset=UTF-8', headers: { 'access-control-allow-origin': '*' }, body: GOOGLE_403 });
+    }
     const q = new URL(url).searchParams;
     const [w, h] = String(q.get('size') || '640x416').split('x').map(Number);
     const scale = Number(q.get('scale')) || 1;
@@ -324,6 +331,32 @@ if (!shot.url) {
     const off2 = Math.hypot(t.x - (shot.pane.x + ix * kx), t.y - (shot.pane.y + iy * ky));
     if (off2 > 1.5) bad(`truck ${t.key} is ${off2.toFixed(1)}px from where this picture puts it`);
   }
+}
+
+// ── 8. AND WHEN GOOGLE SAYS NO ────────────────────────────────────────────
+// Chad, twice: "the static api key thing is back." The screen used to answer EVERY failure
+// with one guess about the Maps Static API, because an <img> onError carries no reason. It
+// asks now — Google refuses with a readable body and a CORS header — so this drives a real
+// refusal and reads what the wall ends up saying.
+console.log('\nWHEN GOOGLE REFUSES THE PICTURE');
+refuse = true;
+await page.reload({ waitUntil: 'domcontentloaded' });
+await page.waitForTimeout(3000);
+const failed = await page.evaluate(() => {
+  // The OUTERMOST match — the banner itself. Taking the last match takes the innermost div,
+  // which is the headline alone, and then Google's own sentence (a sibling) never counts.
+  const el = [...document.querySelectorAll('div')].filter((d) => /Maps Static API|could not reach Google|map image was refused|rejected the key/i.test(d.textContent || ''));
+  return el.length ? (el[0].textContent || '').replace(/\s+/g, ' ').trim() : null;
+});
+if (!failed) {
+  bad('the picture was refused and the wall said NOTHING — an empty frame is the failure this screen exists not to have');
+} else {
+  if (/Maps Static API is not enabled/.test(failed)) ok('a 403 names the Maps Static API and the console setting that fixes it');
+  else bad(`a 403 produced the wrong diagnosis: "${failed.slice(0, 120)}"`);
+  if (/not authorized to use this API/.test(failed)) ok('and it quotes Google\'s own sentence, which is what somebody will paste into a search box');
+  else bad('Google\'s own words did not reach the screen — the gloss is ours, the truth is theirs');
+  if (!/Most likely/.test(failed)) ok('nothing on the wall says "most likely" any more');
+  else bad('the guess is back: the banner still hedges instead of reporting what Google said');
 }
 
 await browser.close();
