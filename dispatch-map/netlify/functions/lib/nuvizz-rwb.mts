@@ -293,6 +293,35 @@ export async function rwbAddStopsToRoute(requester: RwbRequesterLike, routePlanI
   return { ok: r.ok, message: r.ok ? `Added ${ids.length} stop(s) per-stop (batch fell back).` : r.message, calls: 1 + r.calls, steps, mode: 'validate-fallback' };
 }
 
+// describeRwbBody — a SHORT, safe description of a portal body that wasn't the shape we
+// needed, for the error text and the Diagnostics step. The body used to be dropped on the
+// floor: "fetchUpdatedJson returned no route preview" said the preview was missing and
+// nothing at all about WHAT came back instead, so an identical sentence covered an empty
+// array, a deliverit error envelope answered 200, and an HTML page — three different
+// problems with three different fixes, and no way to tell them apart after the fact. Costs
+// ZERO NuVizz calls: the body is already in hand at the call site.
+export function describeRwbBody(body: any): string {
+  if (body == null) return 'empty body';
+  if (Array.isArray(body)) return body.length ? `array of ${body.length}, first entry keys: ${Object.keys(body[0] ?? {}).slice(0, 8).join(', ') || '(none)'}` : 'empty array';
+  if (typeof body === 'string') {
+    const t = body.replace(/\s+/g, ' ').trim();
+    if (!t) return 'empty body';
+    const kind = /^<(!doctype|html)/i.test(t) ? 'HTML page' : 'non-JSON text';
+    return `${kind}, ${body.length} chars: "${t.slice(0, 160)}${t.length > 160 ? '…' : ''}"`;
+  }
+  if (typeof body === 'object') {
+    const bits: string[] = [];
+    if ((body as any).responseCode != null) bits.push(`responseCode ${(body as any).responseCode}`);
+    if ((body as any).success != null) bits.push(`success ${(body as any).success}`);
+    const msg = (body as any).message ?? (body as any).errorMessage;
+    if (msg != null && String(msg).trim()) bits.push(`message "${String(msg).replace(/\s+/g, ' ').trim().slice(0, 120)}"`);
+    const keys = Object.keys(body as any).slice(0, 8);
+    bits.push(`keys: ${keys.join(', ') || '(none)'}`);
+    return `JSON object — ${bits.join(', ')}`;
+  }
+  return `${typeof body}`;
+}
+
 const MONTHS: Record<string, string> = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };
 
 // GMT offset (e.g. 'GMT-04:00') for a given calendar DATE in `timeZone`, computed from the
@@ -404,12 +433,20 @@ async function rwbPreviewRoute(
   const stoplist = legs.map(({ id, leg }) => id + leg).join(',');
   const fujForm = { originLat: String(origin.lat), originLng: String(origin.lng), originOption: '02', stoplist, routePlanId, returnToDepot: 'NEVER', computeLatestEta: 'true' };
   const fr = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/routePlan/fetchUpdatedJson', fujForm);
-  steps.push({ op: 'fetchUpdatedJson', routePlanId, ok: fr.ok, status: fr.status, error: fr.error || null });
+  const fujStep: any = { op: 'fetchUpdatedJson', routePlanId, stops: ids.length, legs: legs.length, ok: fr.ok, status: fr.status, error: fr.error || null };
+  steps.push(fujStep);
   if (!fr.ok) return { ok: false, message: fr.error || `fetchUpdatedJson failed (status ${fr.status})` };
   let d: any = fr.body;
   if (typeof d === 'string') { try { d = JSON.parse(d); } catch { /* keep */ } }
   const o = Array.isArray(d) ? d[0] : d;
-  if (!o || !Array.isArray(o.etaStopVOList)) return { ok: false, message: 'fetchUpdatedJson returned no route preview' };
+  if (!o || !Array.isArray(o.etaStopVOList)) {
+    // The portal answered 2xx but sent no preview. SAY WHAT IT SENT — see describeRwbBody:
+    // the old message named only what was missing, which is the one thing that is the same
+    // in every version of this failure.
+    const diag = describeRwbBody(fr.body);
+    fujStep.ok = false; fujStep.preview = 'none'; fujStep.bodyDiag = diag;
+    return { ok: false, message: `fetchUpdatedJson returned no route preview (HTTP ${fr.status} — ${diag})` };
+  }
   const routeTz = (o.etaStopVOList[0] && o.etaStopVOList[0].timeZone) || 'America/New_York';
   const win = routeWindow(o.schStartTime && o.schStartTime.dttm, routeTz);
   // Preview rows by leg id — the portal populates each _DO save row from its OWN preview row
