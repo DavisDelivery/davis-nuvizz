@@ -19,7 +19,7 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2 } from 'lucide-react';
+  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
   query, orderBy, limit, updateDoc, deleteDoc,
@@ -59,6 +59,7 @@ import { ChangePasswordScreen, ResetPasswordScreen } from './components/Password
 // ONE place a session token gets onto a request (see lib/api.js). Every call to our own
 // functions goes through apiFetch; nothing else may build an Authorization header.
 import { apiFetch } from './lib/api.js';
+import { rollbackTargets, rollbackRequestBody } from './lib/rollback-targets.js';
 import { reportDenied, deniedSurfaces, subscribeDenied } from './lib/permission-denied.js';
 import { serverLoginEnabled, ensureFirebaseSession, dropFirebaseSession, signOut as endSession, currentResetLink, scrubResetLink, fetchMe } from './lib/auth-client.js';
 import { getSession, setSession, subscribeSession, onAuthEvent, clearSession } from './lib/session.js';
@@ -147,7 +148,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.39.0';
+const APP_VERSION = '1.40.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -201,6 +202,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.40.0', 'THE ROLLBACK BUTTON IS IN THE FOOTER, BESIDE THE VERSION. Chad: \u201clet\u2019s put the button for this ui discretely by the version in the footer.\u201d DISCRETE IS THE SPEC, not a style preference: this button asks for production code to be changed, so it should be findable by someone looking for it and invisible to someone who is not \u2014 a prominent ROLL BACK on a dispatch board is an invitation to press it before anyone has read what it costs, which is the failure this whole feature exists to prevent wearing the fix\u2019s clothes. It is a muted \u27f2 next to the version, the same grey as the rest of the footer until hovered. THE FOOTER IS THE RIGHT PLACE because that version is already what he checks to answer \u201cis this the build that just deployed\u201d, so it is where his eye goes the moment he suspects a deploy broke something. A PHONE HAS NO FOOTER, so the phone gets its own entry in the app-bar chip menu \u2014 the chip IS the version surface at that width. Two views, as the rule requires; a screen added to one navigation and not the other is a screen that does not exist on a phone, and this repo has shipped that twice. THE PANEL COSTS NO NETWORK CALL to tell him what shipped: every version and its note are already compiled into the running bundle, so it lists the last twelve releases with the first sentence of each and, beside every row, HOW MANY RELEASES GOING BACK THERE WOULD UNDO \u2014 the number he actually decides on. Sorted by version rather than trusted: the array has drifted before (v0.56.4, when the deploy watchdog read the wrong live version twice in one afternoon) and a panel pricing rows off a drifted order would be that bug with a button attached. A version NEWER than the running build is shown but never selectable, because this tab can be behind the site and \u201crolling back\u201d to it would be a roll FORWARD wearing the wrong word. IT DOES NOT PUSH, and that is the security design rather than a shortcut: a Netlify function cannot host a repo and git, so a one-tap path would have to rewrite main through the GitHub API \u2014 a browser-reachable endpoint that commits code, with no dry run in between. debug-capture.mts drew this line first (\u201cnothing here ever pushes to main or deploys\u201d) and rollback-request.mts stays on the same side of it: it files a rollback REQUEST as a GitHub issue carrying the dry-run command FIRST and the executing one second, an agent opens the PR, CI checks it, auto-merge lands it. A reason of at least eight characters is required before the button enables \u2014 the same rule --because enforces, because a rollback with no stated reason is indistinguishable from a mistake six weeks later. Gated at role:dispatcher; with ROLLBACK_GH_TOKEN unset the endpoint answers 503 and the panel degrades to read-only, which is the honest failure since the list still tells him what a rollback would cost. CODE ONLY is on screen BEFORE he presses anything, not in the confirmation after, because the dangerous misreading \u2014 that this undoes the day\u2019s freight \u2014 is the one that would make him press it. 13 new tests. The Build Panel and the Route Workbench are not touched.'],
   ['1.39.0', 'TWO WAYS BACK NOW: TO A MOMENT IN TIME, OR ONE PR AT A TIME. Chad: \u201cwould it be possible to both roll back to a point in time when I knew everything was okay if i can\u2019t identify the PR that caused the problem and also roll back PRs?\u201d Both, because they answer different mornings. TIME (`--list`, `\u201c2026-09-14 11:59pm\u201d`) replaces the whole tree, so it can NEVER conflict and always works \u2014 but it throws away every good fix that shipped since. Measured on Sep 15: rolling back to Sunday night undoes 17 merges, and only 3 of them ever touched the Route Workbench, so thirteen innocent fixes go with them \u2014 the five-POSTs-at-NuVizz fix, two loads wearing one name, moved orders carrying the wrong driver, the dock-lunch-hours misparse. DROP (`--drop 945`, `--drop 945,950`) reverts named PRs and keeps everything else, which is the right tool whenever he can name one. THE HONEST PART IS WHAT IT WILL NOT DO. Every one of the three live suspects conflicts on a plain `git revert`, and the conflicts split in two: version lines (APP_VERSION, the changelog rows, the generated public/version.json) collide on nearly every parallel merge, carry no behaviour, and get rewritten by the bump a few lines later \u2014 those resolve MECHANICALLY. Anything else is a person\u2019s call and the run STOPS, because a guessed side is a behaviour change nobody reviewed wearing a rollback\u2019s name, which is the exact thing this tool exists to undo. The dry run says which kind each PR will hit by ACTUALLY TRYING the revert in a throwaway worktree rather than predicting from file lists \u2014 two PRs can touch one file and not collide, and only git knows. On the measured three: #950 comes out clean (2 version-line conflicts, resolved), #945 has 2 real conflicts and #942 has 1. A refusal leaves NOTHING behind \u2014 verified end to end: revert aborted, working tree clean, no conflict markers, the dead drop/ branch deleted, and him back on the branch he started on rather than a detached HEAD. Found by running it: the probe leaked git\u2019s \u201cerror: could not revert\u201d to the console, so a successful diagnostic read like a crash directly above the plan saying it came out fine. CODE ONLY, unchanged: Firestore and anything already sent to NuVizz are untouched. 16 new tests, 42 in the file. No UI yet \u2014 it is still a terminal command, which is the next question on the table. The Build Panel and the Route Workbench are not touched.'],
   ['1.38.0', 'HOLD CTRL AND SEE WHETHER THE BUILDING HAS A DOCK. Chad, with a screenshot of consumer Google Maps tilted over a produce terminal: \u201cI want exactly what I showed you where i can be on map hold control and see map in 3d view like I showed you so I can see if buildings have docks.\u201d THE OLD CTRL ALREADY TILTED AND THAT WAS THE PROBLEM. A vector map at 67 degrees draws GREY EXTRUDED BLOCKS, and a grey block has no dock doors on it \u2014 so the gesture worked, looked like the feature, and answered nothing. What Chad photographed is Google\u2019s PHOTOREALISTIC 3D, which google.maps.Map cannot render at any tilt, on any base, with any option: it is a different element (Map3DElement, library maps3d) with its own camera and its own drawing classes. So Ctrl no longer tilts the board \u2014 it brings a second map up over the same spot, at the same centre and the same heading, and lets go puts you straight back. The button beside Satellite pins it open for a longer look, AND IT IS WHY THIS EXISTS ON A PHONE AT ALL: a phone has no Ctrl key, and a Ctrl-only feature is a feature that does not exist on mobile, which this repo has shipped twice. THE CEILING IS A LOGISTICS CALL, NOT A MATHS ONE. Matching the board honestly is what the camera maths does, and at whole-metro zoom that means a camera 363 KILOMETRES up \u2014 a photograph of Georgia from orbit, which answers nothing about a dock. The range clamps to 4,000m so a building is always a building; the CENTRE never moves, so this is a floor under usefulness rather than a teleport. Above 1,200m the view says \u201cToo high to read doors\u201d on itself instead of letting the imagery take the blame. HYBRID ALWAYS, deliberately: over an industrial park of near-identical tilt-wall units the street name is how you confirm you are looking at the right building before you judge its doors, so the labels earn their clutter \u2014 and a pin marks the exact spot you came from. THE SPEND, SAID OUT LOUD because this repo counts calls: a 3D map load bills Google\u2019s IMMERSIVE MAPS SKU, a SEPARATE meter from the DYNAMIC MAPS one the board runs on, with HALF the free allowance (5,000/month vs 10,000, then $7.00/1,000 on both). Google\u2019s SKU page is explicit that panning and zooming an existing map are free, so the price is per ELEMENT CREATED \u2014 the element is therefore built ONCE per page session, on the first Ctrl, and every look after that only moves its camera and un-hides the layer. Two hundred peeks in a morning cost one load. Closing HIDES it and never drops it, and a test pins that, because an unmount would quietly buy another one. THE TELEVISION IS EXCLUDED BY CONSTRUCTION: nobody holds Ctrl on a wall, TV mode runs the raster map precisely because that set could not drive WebGL, and a 3D element is WebGL with a bill attached. A KEY WITHOUT 3D MAPS ENABLED SAYS SO on the layer and names the console setting \u2014 without that, Ctrl would do nothing for ever and look exactly like a broken keyboard. THE ROUTE WORKBENCH IS NOT TOUCHED: this is the dispatch Map only. AND THE WAY BACK IS ONE ENV VAR, because this ALTERS a gesture that already worked: VITE_MAP_3D=off restores the old Ctrl+drag tilt on every side at once \u2014 no listener, no button, no element ever created \u2014 and anything malformed leaves it ON, so a typo cannot silently disable it. ONE BUG CAUGHT BY ITS OWN TEST BEFORE IT SHIPPED: the range maths fell into the Number(null)-is-0 trap CLAUDE.md names, and because ZOOM 0 IS A VALID ZOOM a dead map reading back undefined sailed through as \u201czoomed all the way out\u201d and opened a confident 3D view built on an answer the map never gave. AND ONE MORE FOUND BY OPENING THE PAGE RATHER THAN READING THE DIFF, which is this repo\u2019s own lesson: driving the real deploy preview, Ctrl opened the layer correctly, the key answered every request, nothing threw \u2014 and Google drew its own \u201cOops! Something went wrong\u201d card inside it, because that browser\u2019s renderer was SOFTWARE and the ordinary vector map had fallen back to raster in the same run for the same reason. A failure that arrives through a SUCCESSFUL construction cannot be caught, so it is pre-empted: WebGL is checked BEFORE the element is built, a browser that cannot draw one is told so in a sentence naming WebGL instead of a card naming nothing, and it is never billed for a map it cannot show. When the check cannot tell, it lets Google try \u2014 refusing on a false negative is the worse error. 32 new tests.'],
   ['1.37.1', 'A STOP SOMEBODY HAS WRITTEN OFF FOR A 53-FOOTER NOW READS RED IN THE SELECTED LIST. Chad: \u201ci want a no tractor trailer stop to highlight red in selection panel.\u201d THE PANEL COULD ONLY SAY YES. It has painted a tractor-friendly row green since v0.46.5, and every other row \u2014 the 600 nobody has looked at and the handful a dispatcher has explicitly marked off-limits \u2014 wore the same nothing. So the one fact on that table a router must not get wrong, \u201csending a 53-footer here is a known mistake\u201d, was invisible unless he opened the stop. RED IS THE STATED NO, NOT THE UNKNOWN, and that line is the whole design: the green rule treats unknown as not-friendly on purpose, so on an ordinary morning most rows are not green, and painting all of those red would put the board\u2019s loudest colour on \u201cno data\u201d \u2014 a warning that fires on everything warns about nothing, and the \u201cDrop N non-tractor\u201d button already covers that set and names its count. A row goes red for a Box-only mark or a CONFIRMED \u201cNo tractor trailer\u201d; the Uline advisory a scanner lifted out of somebody else\u2019s order text stays neutral, exactly as it does not stop the map\u2019s lime paint. ONE RULE, NOT A FOURTH COPY: tractorBlockedSelection delegates to tractorPaintAllowed, the function the pin paints by and the stop panel\u2019s banner is gated on, so the row and the map cannot drift; and because it is the complement of two of tractorFriendlySelection\u2019s own refusal branches, red and green are mutually exclusive BY CONSTRUCTION. A test asserts that over every combination \u2014 \u201ctwo facts, one row\u201d is the shape this panel has got wrong three times (v0.46.8, v0.98.2, v1.1.1). The red hovers within its own colour (red-100 \u2192 red-300) for the reason the green does: a pointer may not eat a fact about the freight. The row\u2019s tooltip names the statement behind the colour, because a colour that cannot say why is half a warning. PUTTING IT BACK IS ONE REVERT \u2014 this ADDS a mark and alters no existing behaviour, and it is one commit. The bottom data grid is deliberately unchanged; say the word and it reads the same red. 9 new tests.'],
@@ -10339,6 +10341,15 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                   role="menuitem"
                 >
                   <Flag size={12} /> Flag history
+                </button>
+                {/* The phone's version surface IS this chip, so "by the version in the footer"
+                    lands here on a phone — there is no footer at this width. */}
+                <button
+                  className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+                  onClick={() => onSelectMenu('rollback')}
+                  role="menuitem"
+                >
+                  <RotateCcw size={12} /> Roll back the app
                 </button>
                 <button
                   className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
@@ -27706,6 +27717,179 @@ function PresenceChip({ presence, compact = false }) {
 // address bar, so the rule itself stays runnable in a test with no browser.
 const onTvUrl = () => { try { return isTvPath(window.location.pathname); } catch { return false; } };
 
+
+// ── ROLL BACK THE APP, FROM THE FOOTER ───────────────────────────────────────
+//
+// Chad: "Let's put the button for this ui discretely by the version in the footer."
+//
+// DISCRETE IS THE SPEC, not a style preference. This button asks for production code to be
+// changed; it should be findable by someone who is looking for it and invisible to someone who
+// is not. A prominent "ROLL BACK" on a dispatch board is an invitation to press it on a bad
+// morning before anybody has read what it costs — which is the failure mode this whole feature
+// exists to prevent, wearing the fix's clothes.
+//
+// WHY THE FOOTER IS RIGHT. The footer version is already what he checks to answer "is this the
+// build that just deployed" (CLAUDE.md has a section on it), so it is where his eye goes the
+// moment he suspects a deploy broke something. On a phone there IS no footer — the version lives
+// on the app-bar chip — so the phone gets its own entry in that chip's menu. Two views, as the
+// rule requires, rather than one responsive compromise.
+//
+// IT DOES NOT ROLL ANYTHING BACK BY ITSELF, and says so. It files a rollback REQUEST as a GitHub
+// issue (rollback-request.mts), which a coding agent picks up and turns into a PR that CI checks
+// and auto-merge lands. The dry run still happens, in the PR, where it can be read. A one-tap
+// path straight to production would be a new way to ship a change nobody reviewed.
+function RollbackPanel({ onClose }) {
+  const targets = useMemo(() => rollbackTargets(VERSION_LOG, APP_VERSION, 12), []);
+  const [picked, setPicked] = useState(null);
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);      // {ok, issueUrl} | {ok:false, error}
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  // The same rule the CLI enforces with --because: a rollback with no stated reason is
+  // indistinguishable from a mistake six weeks later, and this one lands in an issue title.
+  const canSend = picked && reason.trim().length >= 8 && !busy;
+
+  const send = async () => {
+    if (!canSend) return;
+    setBusy(true); setResult(null);
+    try {
+      const resp = await apiFetch('/.netlify/functions/rollback-request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          schema: 'dispatch-map.rollback-request/v1',
+          version: picked.version,
+          reason: reason.trim(),
+          markdown: rollbackRequestBody({
+            version: picked.version, undoes: picked.undoes, reason: reason.trim(),
+            appVersion: APP_VERSION, buildCommit: BUILD_SHORT, at: new Date().toISOString(),
+          }),
+        }),
+      });
+      const j = await resp.json().catch(() => ({}));
+      // Never report an intent as an outcome: only an issue URL counts as filed.
+      setResult(j?.ok && j?.issueUrl ? { ok: true, issueUrl: j.issueUrl, issueNumber: j.issueNumber }
+        : { ok: false, error: j?.error || `Request failed (${resp.status})` });
+    } catch (e) {
+      setResult({ ok: false, error: String(e?.message || e) });
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label="Roll back the app">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative bg-white rounded-lg shadow-xl w-full max-w-md max-h-[85dvh] flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+        <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
+          <div className="font-bold text-slate-800 inline-flex items-center gap-2">
+            <RotateCcw size={15} /> Roll back the app
+          </div>
+          <button onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-slate-700 text-2xl leading-none px-1">×</button>
+        </div>
+
+        <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2">
+          <div className="text-[11px] text-slate-500 pb-2">
+            Running <span className="font-bold text-slate-700">v{APP_VERSION}</span> · build {BUILD_SHORT}.
+            Pick the last version you know was good.
+          </div>
+
+          {result?.ok ? (
+            <div className="rounded border border-emerald-200 bg-emerald-50 p-3 text-[12px] text-emerald-900">
+              <div className="font-bold">Rollback requested — issue #{result.issueNumber}.</div>
+              <div className="pt-1">
+                A PR will be opened against <b>v{picked.version}</b> and checked by CI before it can land.
+                Nothing has changed yet.
+              </div>
+              <a href={result.issueUrl} target="_blank" rel="noopener noreferrer" className="inline-block pt-2 underline font-semibold">Open the issue →</a>
+            </div>
+          ) : (
+            <ul className="divide-y border rounded">
+              {targets.map((t) => (
+                <li key={t.version}>
+                  <button
+                    type="button"
+                    disabled={!t.selectable}
+                    onClick={() => setPicked(t)}
+                    className={`w-full text-left px-2 py-2 min-h-[44px] text-[12px] flex gap-2 items-start
+                      ${t.current ? 'bg-emerald-50' : t.selectable ? 'hover:bg-slate-50' : 'opacity-50'}
+                      ${picked?.version === t.version ? 'ring-2 ring-inset ring-sky-400' : ''}`}
+                  >
+                    <span className="font-bold tabular-nums shrink-0" style={{ color: t.current ? '#16a34a' : '#334155' }}>v{t.version}</span>
+                    <span className="min-w-0">
+                      <span className="text-slate-600 line-clamp-2">{t.headline || '—'}</span>
+                      <span className="block text-[10px] text-slate-400 pt-0.5">
+                        {t.current ? 'running now' : `undoes ${t.undoes} release${t.undoes === 1 ? '' : 's'}`}
+                      </span>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {picked && !result?.ok && (
+            <div className="pt-3">
+              <label className="block text-[11px] font-semibold text-slate-600 pb-1">
+                Why? (goes in the request, the commit and the changelog)
+              </label>
+              <textarea
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                rows={2}
+                placeholder="e.g. box select is grabbing stops already sent to NuVizz"
+                className="w-full border rounded px-2 py-1.5 text-[12px]"
+              />
+              {reason.trim().length > 0 && reason.trim().length < 8 && (
+                <div className="text-[10px] text-amber-600 pt-0.5">A few more words — this is what the log will say six weeks from now.</div>
+              )}
+            </div>
+          )}
+
+          {result && !result.ok && (
+            <div className="mt-2 rounded border border-red-200 bg-red-50 p-2 text-[11px] text-red-800">
+              {result.error}
+              <div className="pt-1 text-red-700">
+                Nothing was requested. From a terminal: <code className="font-mono">npm run rollback -- v{picked?.version}</code>
+              </div>
+            </div>
+          )}
+
+          {/* The standing warning. It is on screen BEFORE he presses anything, not in the
+              confirmation afterwards, because the dangerous misreading — that this undoes the
+              day's freight — is the one that would make him press it. */}
+          <div className="mt-3 rounded bg-slate-50 border border-slate-200 p-2 text-[10px] text-slate-500 leading-snug">
+            <b className="text-slate-600">This is code only.</b> The board, address overrides, dispatcher
+            notes, receiving hours and suppression flags are untouched, and anything already sent to
+            NuVizz is still sent. A rollback is not an undo button on the day&rsquo;s freight.
+          </div>
+        </div>
+
+        {!result?.ok && (
+          <div className="border-t px-3 py-2 shrink-0 flex items-center justify-between gap-2">
+            <span className="text-[10px] text-slate-400 min-w-0 truncate">
+              {picked ? `Back to v${picked.version} · undoes ${picked.undoes}` : 'Pick a version'}
+            </span>
+            <button
+              type="button"
+              onClick={send}
+              disabled={!canSend}
+              className={`px-3 py-1.5 min-h-[44px] rounded text-[12px] font-semibold shrink-0
+                ${canSend ? 'bg-slate-800 text-white hover:bg-slate-900' : 'bg-slate-200 text-slate-400'}`}
+            >
+              {busy ? 'Requesting…' : 'Request rollback'}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Shell() {
   // Google sends the browser back to "/" after the Gmail consent screen, with
   // the outcome in the query string (see gmail-auth.mts). Land on the Manifest
@@ -27753,6 +27937,8 @@ function Shell() {
   // builder here; the chip menu / nav entry opens the sheet, which posts it.
   const debugCaptureRef = useRef(null);
   const [debugOpen, setDebugOpen] = useState(false);
+  // The footer's discrete rollback affordance (and the phone chip menu's entry for it).
+  const [rollbackOpen, setRollbackOpen] = useState(false);
   const viewportWidth = useViewportWidth();
   const { h: viewportHeight, w: visibleWidth, x: viewportLeft, y: viewportTop } = useViewportSize();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
@@ -27888,6 +28074,7 @@ function Shell() {
   const onSelectMenu = (next) => {
     setChipMenuOpen(false);
     if (next === 'debug') { setDebugOpen(true); return; }
+    if (next === 'rollback') { setRollbackOpen(true); return; }
     if (next === 'messages') { openMessages(); return; }
     // NOTE the default: anything unrecognised lands on 'map'. A new screen must be
     // named here or the phone menu silently opens the map instead — which is what
@@ -28072,6 +28259,9 @@ function Shell() {
       {/* "Debug this view" — reachable from any tab; captures the active screen. */}
       <DebugCaptureSheet open={debugOpen} onClose={() => setDebugOpen(false)} captureRef={debugCaptureRef} />
 
+      {/* Roll back the app — opened from the footer's ⟲ (desktop) or the phone chip menu. */}
+      {rollbackOpen && <RollbackPanel onClose={() => setRollbackOpen(false)} />}
+
       {/* Footer is desktop/tablet only on mobile; the in-map version chip
           and the top-bar chip cover the same info on small screens. */}
       {!isMobile && (
@@ -28079,7 +28269,21 @@ function Shell() {
           {/* "· installed app" / "· browser tab": the one line that says which way the PDF
               viewer will behave on THIS device. The fix for the dead end turns on that
               predicate, and a switch whose position cannot be read is not a switch. */}
-          <div>Dispatch Map v{APP_VERSION} · {BUILD_COMMIT}{BUILD_TIME ? ` · built ${BUILD_TIME.slice(5, 16).replace('T', ' ')}Z` : ''} · {describePwaMode()}</div>
+          <div className="inline-flex items-center gap-1.5">
+            <span>Dispatch Map v{APP_VERSION} · {BUILD_COMMIT}{BUILD_TIME ? ` · built ${BUILD_TIME.slice(5, 16).replace('T', ' ')}Z` : ''} · {describePwaMode()}</span>
+            {/* DISCRETE, beside the version, exactly where Chad asked for it. Same muted grey as
+                the rest of the footer until hovered — findable by someone looking for it, not an
+                invitation to anyone who is not. */}
+            <button
+              type="button"
+              onClick={() => setRollbackOpen(true)}
+              title={`Roll back from v${APP_VERSION}`}
+              aria-label="Roll back the app"
+              className="text-slate-300 hover:text-slate-600 leading-none p-0.5 -m-0.5 rounded"
+            >
+              <RotateCcw size={11} />
+            </button>
+          </div>
           <div className="hidden sm:block">© Davis Delivery Service</div>
         </footer>
       )}
