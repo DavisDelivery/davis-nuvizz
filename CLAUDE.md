@@ -209,6 +209,58 @@ Project-level guidance for Claude Code in this repository.
 - Report honestly. If a test fails, say so with the output; if a part
   is unfinished, name it. "Done" means verified.
 
+## THE BUILD PANEL — the panel has a name now (Chad, Sep 2026)
+
+- Chad, 2026-09-16: **"Tons of changes were made to RWB today that i didn't ask for … you made
+  changes to the map and rwb when you were only supposed to be working in this panel. I want
+  you to name this panel so going forward when i ask you to work on it you work on it and
+  nothing else as you introduced major bugs to route work bench."**
+- **The name is THE BUILD PANEL.** When Chad says *the panel*, *the build panel*, or *this
+  panel*, he means this and only this. The screen it lives on has two halves and they now have
+  two names, because for weeks they shared one and that is how work aimed at one landed in the
+  other:
+
+  | | |
+  | --- | --- |
+  | **the Build Panel** | steps **1 · Select stops**, **2 · Plan onto**, **3 · Plan**, **4 · Engine**, and the Build button at the end of them |
+  | **the Route Workbench (RWB)** | the Compare cards, Send / Save, the map's paint, the selection tools, the Routes rail |
+
+- **Where the Build Panel is, exactly.** Desktop: the left column — `controlsContent` in
+  `RoutingScreen` (`dispatch-map/src/App.jsx`), shown/hidden by the gear's *Setup panel (left
+  controls)* (`routing.leftPanel`). Phone: the bottom sheet's **Setup** tab
+  (`data-sheet-tab="setup"`), which renders the same `controlsContent`. Its rules live in
+  `src/lib/routing-select.js` and `src/lib/stop-equipment.js`; the build it fires runs through
+  `netlify/functions/routing-build-background.mts` and `netlify/functions/lib/routing-*.mts`.
+  **All of that is the Build Panel and all of it is fair game.**
+- **THE UI STILL SAYS "SETUP"** — the gear toggle and the phone tab. That is the one alias, it
+  is written down here on purpose, and it is not to be quietly renamed to match: a label change
+  nobody asked for is the exact species of unasked change this rule exists to stop.
+- **Everything else on that screen is the Route Workbench and is FROZEN** — see the section
+  below, which is unchanged and still governs. This section only gives the two halves names so
+  an instruction can land on one of them.
+- **THE BOUNDARY IS A TEST NOW, NOT A PARAGRAPH.** It was already written down the evening
+  before and it happened again anyway, so `dispatch-map/scripts/check-rwb-untouched.mjs` runs
+  in CI (`rwb-boundary`) and FAILS any PR whose changed lines in `App.jsx` name the workbench
+  surface — staging, Send/Save, map paint, the selection tools, card close guards, the Routes
+  rail. It is deliberately narrow: changelog rows, comments and the shared `import` line are
+  excluded, because a guard that cries on work it should not care about gets switched off and
+  then it protects nothing. Validated against ten real PRs before it shipped — it catches every
+  one that moved the workbench (#909, #912, #932, #945, #946, #950) and passes every one that
+  did not (#941, #942, #943, #948).
+- **The way through it is to quote him.** A commit on the branch carrying
+
+      RWB-CHANGE: <what he actually asked for, in his words>
+
+  lets the PR pass and prints his sentence in the CI log. That is the mechanical form of
+  "Chad names the change, in that request" — it cannot be satisfied by good intentions, only
+  by having his words in front of you. `git commit --allow-empty -m "RWB-CHANGE: …"` is enough.
+- **What this cost, so the next session does not relearn it.** Measured off the diffs, not
+  remembered: the Build-Panel work of 09-11 → 09-15 reached into the workbench four times —
+  #909 and #912 one line each (`stagePlanOntoLoads`, the auto-stage), #932 five lines (the card
+  chip *and* a map-paint rule nobody asked for). #932 was reverted the same evening by #946,
+  and it took the whole of Chad's Monday evening with it. #942, the Box|Tractor toggle, is the
+  one that stayed inside the panel — and it is the only one of the four that survived.
+
 ## The Routing workbench is FROZEN — no change without explicit permission (Chad, Sep 2026)
 
 - Chad, Sep 15, 8:30 PM, with a load sent to NuVizz and its stops coming back up in a
