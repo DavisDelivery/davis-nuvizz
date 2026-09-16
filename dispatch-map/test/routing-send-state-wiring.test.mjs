@@ -51,12 +51,33 @@ test('THE SEND BUTTON IS NOT BEHIND THE PER-DEVICE GEAR — Sep 15, "i have no w
 // savedMark is pure and passes its own tests whether or not App.jsx calls it — and the
 // half that CANNOT be unit-tested is the one that matters here: what stamps savedAt.
 
-test('the card builds its ✓ from the rule, and is told when the save landed', () => {
+test('the card builds its chip from the rule, and is told both outcomes', () => {
   assert.ok(/import \{[^}]*\bsavedMark\b[^}]*\} from '\.\/lib\/routing-select\.js';/.test(code), 'savedMark is not imported');
-  assert.ok(/const mk = savedMark\(\{ savedAt, dirty \}\);/.test(code), 'the card does not build its mark from the rule');
+  assert.ok(/const mk = savedMark\(\{ savedAt, failedAt, dirty \}\);/.test(code), 'the card does not build its mark from the rule');
   assert.ok(/if \(!mk\.show\) return null;/.test(code), 'the card renders a mark the rule says to withhold');
   assert.ok(/savedAt=\{savedAtByKey\[r\.key\] \|\| null\}/.test(code), 'the card is not told when it was saved');
-  assert.ok(/staged, onStage, dirty, savedAt = null, isMobile, liveWrite \}\) \{/.test(code), 'the card no longer takes savedAt');
+  assert.ok(/failedAt=\{failedAtByKey\[r\.key\] \|\| null\}/.test(code), 'the card is not told when a send was refused');
+  assert.ok(/staged, onStage, dirty, savedAt = null, failedAt = null, isMobile, liveWrite \}\) \{/.test(code), 'the card no longer takes both stamps');
+  // The tone follows the rule's verdict — the JSX must not decide red vs green for itself.
+  assert.ok(/mk\.kind === 'failed'/.test(code), 'the chip does not take its tone from the rule');
+});
+
+test('ONLY AN OBSERVED REFUSAL STAMPS failedAt — markSaveFailed is its one writer', () => {
+  const m = /const markSaveFailed = \(keys\) => \{([\s\S]*?)\n  \};/.exec(code);
+  assert.ok(m, 'markSaveFailed is gone');
+  assert.ok(/setFailedAtByKey\(/.test(m[1]), 'markSaveFailed does not record the refusal');
+  const writers = (code.match(/setFailedAtByKey\(/g) || []).length;
+  assert.equal(writers, 2, `expected one write in markSaveFailed + one prune, found ${writers}`);
+});
+
+test('EVERY WAY A SEND CAN BE REFUSED REACHES THE CARD — incl. the one with no per-load detail', () => {
+  // Three observation points, and the third is the one that would otherwise leave the cards
+  // blank: a whole call that failed returns no per-load results, so nothing names a card.
+  assert.ok(/markSaveFailed\(failed\.map\(keyOf\)\.filter\(Boolean\)\);/.test(code), 'per-load refusals do not reach the card');
+  assert.ok(/markSaveFailed\(loads\.map\(\(l\) => l\.__key \?\? l\.routeName \?\? l\.loadNbr \?\? l\.loadId\)\.filter\(\(k\) => k && !okKeys\.includes\(k\)\)\);/.test(code), 'a whole-call failure leaves every card blank');
+  assert.ok(/markSaveFailed\(\[r\.key\]\);/.test(code), 'a refused route CREATE does not reach the card');
+  // …and never on an attempt: the stamp may only appear where a result has been read back.
+  assert.ok(!/markSaveFailed\([\s\S]{0,80}?dirtyRoutes/.test(code), 'a refusal is being stamped from the attempt, not the result');
 });
 
 test('ONLY A CONFIRMED WRITE STAMPS savedAt — markSaved is its one writer', () => {

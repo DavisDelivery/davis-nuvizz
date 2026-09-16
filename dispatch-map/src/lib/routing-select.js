@@ -1025,12 +1025,18 @@ export function sendControlState({ openCards = 0, dirtyCards = 0, liveMode = tru
 // screen, and the only way left to settle it is to open the load in the NuVizz portal or
 // send it a second time.
 //
-// THIS IS THE GREEN HALF OF v1.33.0 AND DELIBERATELY NOTHING ELSE. That PR also put an
-// amber NOT SENT TO NUVIZZ chip on every card, rewrote the header's wording and changed
-// what the map paints for a staged stop; it was reverted in full (v1.36.1) and the
-// workbench is frozen (CLAUDE.md). What was asked for here is a mark on a SUCCESS, so a
-// success is the only thing this rule can say: there is no amber state, no "nothing to
-// send" state, and nothing outside the card reads it.
+// AND THE OTHER HALF, ASKED FOR THE SAME DAY. Chad: "what about a card that says did not
+// save after I did send it? … this is just a chip to tell us if it did or did not
+// successfully save after it was sent to NuVizz." So the rule has exactly two things to
+// say, and BOTH are about a send that actually happened.
+//
+// THAT IS THE LINE BETWEEN THIS AND THE CHIP THAT WAS REVERTED. v1.33.0's amber NOT SENT
+// TO NUVIZZ fired on any card carrying staged changes — including one nobody had ever
+// tried to send — so it shouted at work in progress. This ✗ is only ever earned by a send
+// that was MADE and REFUSED. A card nobody has sent still says nothing at all, and neither
+// the header wording nor the map paint of that PR comes back with it.
+//
+// Nothing outside the card reads either stamp.
 //
 // THE TWO WAYS TO BE WRONG ARE NOWHERE NEAR SYMMETRICAL. A missing tick after a real save
 // costs an annoyance — the dispatcher sends again and the second save is a no-op. A tick
@@ -1059,10 +1065,32 @@ export function fmtClockMs(ms) {
   return `${h}:${String(d.getMinutes()).padStart(2, '0')} ${ap}`;
 }
 
-export function savedMark({ savedAt = null, dirty = false } = {}) {
-  const t = Number(savedAt);
-  if (!Number.isFinite(t) || t <= 0) return { show: false, kind: 'none', label: '', title: '', clock: '' };
-  const clock = fmtClockMs(t);
+// A stamp is only a stamp if it is a positive number. Number(null) is 0 and 0 is finite.
+const stampOf = (v) => { const t = Number(v); return Number.isFinite(t) && t > 0 ? t : 0; };
+
+export function savedMark({ savedAt = null, failedAt = null, dirty = false } = {}) {
+  const ok = stampOf(savedAt);
+  const bad = stampOf(failedAt);
+
+  // THE MOST RECENT OBSERVED OUTCOME WINS, and a TIE GOES TO THE ✗. Both stamps are written
+  // only where the result is read, so the later one is the later truth. On the knife edge the
+  // safe answer flips compared with the tick above: a ✗ on a load that did save costs one
+  // re-send, which is idempotent; a ✓ on a load that did not is freight nobody drives.
+  if (bad && (!ok || bad >= ok)) {
+    const clock = fmtClockMs(bad);
+    return {
+      show: true,
+      kind: 'failed',
+      label: `✗ DID NOT SAVE ${clock}`,
+      clock,
+      // It does NOT go away when you edit the card: the load is still not in NuVizz, and that
+      // stays true however much the card is changed. Only a confirmed save clears it.
+      title: `Sent at ${clock} and NuVizz REFUSED it — this load is NOT in NuVizz. The toast carried NuVizz's own reason. Fix it and send again; this stays until a save is confirmed.`,
+    };
+  }
+
+  if (!ok) return { show: false, kind: 'none', label: '', title: '', clock: '' };
+  const clock = fmtClockMs(ok);
   // Saved, then edited: the load in NuVizz is no longer what this card shows, so the mark
   // goes. It says nothing in its place — an amber "not sent" chip is exactly what was
   // reverted in v1.36.1, and it was not asked for here.

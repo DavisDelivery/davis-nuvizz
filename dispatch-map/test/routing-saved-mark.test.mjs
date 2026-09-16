@@ -84,3 +84,58 @@ test('the clock is the dispatcher’s, 12-hour with a padded minute', () => {
 test('a malformed stamp formats to nothing rather than "Invalid Date"', () => {
   for (const v of [null, undefined, 0, -1, NaN, 'soon', {}]) assert.equal(fmtClockMs(v), '');
 });
+
+// ── THE OTHER HALF: "what about a card that says did not save after I did send it?" ──
+
+test('A SEND NUVIZZ REFUSED PUTS ✗ DID NOT SAVE ON THE CARD', () => {
+  const mk = savedMark({ failedAt: at(14, 20) });
+  assert.equal(mk.show, true);
+  assert.equal(mk.kind, 'failed');
+  assert.match(mk.label, /^✗ /);
+  assert.match(mk.label, /DID NOT SAVE/);
+  assert.match(mk.label, /2:20 PM/);
+  assert.match(mk.title, /NOT in NuVizz/);
+});
+
+test('THE ✗ SURVIVES AN EDIT — the load is still not in NuVizz however much the card changes', () => {
+  // Opposite of the tick on purpose. The tick claims "this card matches the load", which an
+  // edit breaks. The ✗ claims "NuVizz refused this", which an edit does not make untrue —
+  // and a dispatcher who tweaks a refused card must not lose the only sign it never went.
+  const mk = savedMark({ failedAt: at(14, 20), dirty: true });
+  assert.equal(mk.show, true);
+  assert.equal(mk.kind, 'failed');
+});
+
+test('FIX IT AND SEND AGAIN AND THE CARD GOES GREEN — the later outcome is the true one', () => {
+  const mk = savedMark({ failedAt: at(14, 20), savedAt: at(14, 26) });
+  assert.equal(mk.kind, 'sent');
+  assert.match(mk.label, /2:26 PM/);
+});
+
+test('…and a card that saved, was edited and then REFUSED says so', () => {
+  const mk = savedMark({ savedAt: at(9, 3), failedAt: at(9, 41) });
+  assert.equal(mk.kind, 'failed');
+  assert.match(mk.label, /9:41 AM/);
+});
+
+test('A TIE GOES TO THE ✗ — the cheap mistake is the re-send, not the un-driven load', () => {
+  // A ✗ on a load that did save costs one idempotent re-send. A ✓ on a load that did not is
+  // freight that reads as routed and never gets driven. On the knife edge, take the first.
+  const t = at(11, 0);
+  assert.equal(savedMark({ savedAt: t, failedAt: t }).kind, 'failed');
+});
+
+test('a card nobody sent is never marked FAILED — that was the reverted chip, not this one', () => {
+  // v1.33.0's amber NOT SENT fired on any card carrying staged changes, including one nobody
+  // had tried to send. This one needs a refusal that was actually read back.
+  for (const c of [{ dirty: true }, {}, { savedAt: null, failedAt: null, dirty: true }]) {
+    assert.equal(savedMark(c).show, false, `${JSON.stringify(c)} must stay silent`);
+  }
+});
+
+test('a malformed failure stamp claims nothing', () => {
+  for (const v of [0, -1, NaN, null, undefined, '', 'no']) {
+    assert.equal(savedMark({ failedAt: v }).show, false, `failedAt=${String(v)}`);
+  }
+  assert.equal(savedMark({ failedAt: '0', savedAt: at(7, 30) }).kind, 'sent');
+});
