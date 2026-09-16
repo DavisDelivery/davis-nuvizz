@@ -45,3 +45,87 @@ test('THE SEND BUTTON IS NOT BEHIND THE PER-DEVICE GEAR — Sep 15, "i have no w
   // …and the gear still covers what it is actually for.
   assert.ok(/\{LIVE_WRITE_FLAG && !route\.collapsed && \(\s*\n\s*<LiveDispatchBar/.test(code), 'the driver-assign + dispatch row left the gear');
 });
+
+// ── THE ✓ THAT SAYS THE SAVE LANDED (v1.37.0) ───────────────────────────────
+// Chad: "I want a check mark somewhere denoting that the save to nuvizz was successful."
+// savedMark is pure and passes its own tests whether or not App.jsx calls it — and the
+// half that CANNOT be unit-tested is the one that matters here: what stamps savedAt.
+
+test('the card builds its chip from the rule, and is told both outcomes', () => {
+  assert.ok(/import \{[^}]*\bsavedMark\b[^}]*\} from '\.\/lib\/routing-select\.js';/.test(code), 'savedMark is not imported');
+  assert.ok(/const mk = savedMark\(\{ savedAt, failedAt, dirty \}\);/.test(code), 'the card does not build its mark from the rule');
+  assert.ok(/if \(!mk\.show\) return null;/.test(code), 'the card renders a mark the rule says to withhold');
+  assert.ok(/savedAt=\{savedAtByKey\[r\.key\] \|\| null\}/.test(code), 'the card is not told when it was saved');
+  assert.ok(/failedAt=\{failedAtByKey\[r\.key\] \|\| null\}/.test(code), 'the card is not told when a send was refused');
+  assert.ok(/staged, onStage, dirty, savedAt = null, failedAt = null, isMobile, liveWrite \}\) \{/.test(code), 'the card no longer takes both stamps');
+  // The tone follows the rule's verdict — the JSX must not decide red vs green for itself.
+  assert.ok(/mk\.kind === 'failed'/.test(code), 'the chip does not take its tone from the rule');
+});
+
+test('ONLY AN OBSERVED REFUSAL STAMPS failedAt — markSaveFailed is its one writer', () => {
+  const m = /const markSaveFailed = \(keys\) => \{([\s\S]*?)\n  \};/.exec(code);
+  assert.ok(m, 'markSaveFailed is gone');
+  assert.ok(/setFailedAtByKey\(/.test(m[1]), 'markSaveFailed does not record the refusal');
+  const writers = (code.match(/setFailedAtByKey\(/g) || []).length;
+  assert.equal(writers, 2, `expected one write in markSaveFailed + one prune, found ${writers}`);
+});
+
+test('EVERY WAY A SEND CAN BE REFUSED REACHES THE CARD — incl. the one with no per-load detail', () => {
+  // Three observation points, and the third is the one that would otherwise leave the cards
+  // blank: a whole call that failed returns no per-load results, so nothing names a card.
+  assert.ok(/markSaveFailed\(failed\.map\(keyOf\)\.filter\(Boolean\)\);/.test(code), 'per-load refusals do not reach the card');
+  assert.ok(/markSaveFailed\(loads\.map\(\(l\) => l\.__key \?\? l\.routeName \?\? l\.loadNbr \?\? l\.loadId\)\.filter\(\(k\) => k && !okKeys\.includes\(k\)\)\);/.test(code), 'a whole-call failure leaves every card blank');
+  assert.ok(/markSaveFailed\(\[r\.key\]\);/.test(code), 'a refused route CREATE does not reach the card');
+  // …and never on an attempt: the stamp may only appear where a result has been read back.
+  assert.ok(!/markSaveFailed\([\s\S]{0,80}?dirtyRoutes/.test(code), 'a refusal is being stamped from the attempt, not the result');
+});
+
+test('ONLY A CONFIRMED WRITE STAMPS savedAt — markSaved is its one writer', () => {
+  // The whole guarantee behind the tick. markSaved runs on a confirmed write and nowhere
+  // else; any other setter would let an intent read as an outcome, which is the one
+  // failure mode this mark must never have.
+  const m = /const markSaved = \(keys\) => \{([\s\S]*?)\n  \};/.exec(code);
+  assert.ok(m, 'markSaved is no longer the save hook');
+  assert.ok(/setSavedAtByKey\(/.test(m[1]), 'markSaved no longer records when the write landed');
+  const writers = (code.match(/setSavedAtByKey\(/g) || []).length;
+  assert.equal(writers, 2, `expected one write in markSaved + one prune, found ${writers}`);
+});
+
+test('a closed card’s tick does not follow a reopened load', () => {
+  // Pruned on the baseline's own rule: a reopened card is seeded from the board again, so
+  // an hour-old stamp would have it claiming a save that describes a different card.
+  assert.ok(/setSavedAtByKey\(\(prev\) => \{[\s\S]*?if \(!liveKeys\.has\(k\)\)/.test(code), 'the stamp is not pruned when a card closes');
+});
+
+test('THE REVERTED v1.33.0 CHIP DOES NOT COME BACK WITH IT', () => {
+  // Chad asked for a mark on a SUCCESS. The amber NOT SENT TO NUVIZZ chip on every card,
+  // the header's "All sent / Nothing to send" wording and the map-paint rule were reverted
+  // in v1.36.1 and are not part of this. The pendingCreate chip stays exactly as it was —
+  // verify-loads-tab identifies a pending card by the words "not sent" in this header.
+  assert.ok(/\{route\.pendingCreate && \(\s*\n\s*<span[^>]*>\s*\n\s*not sent/.test(code), 'the pre-v1.33.0 pendingCreate chip was changed');
+  assert.ok(!/cardSendState/.test(code), 'the reverted per-card chip rule is back');
+  assert.ok(!/routePaintSource|planStaged/.test(code), 'the reverted map-paint rule is back');
+  assert.equal((code.match(/savedMark\(/g) || []).length, 1, 'savedMark is read somewhere other than the card');
+});
+
+test('THE CHIP SITS JUST LEFT OF THE ✕ — Chad: "can you make those flags to just the left of the x"', () => {
+  // Position is the ask, so position is pinned. Two things are asserted, and the second one
+  // is behaviour, not decoration: while the chip lived beside the route name it was INSIDE
+  // the collapse button, so clicking it collapsed the card.
+  const collapseBtn = /<button onClick=\{onCollapse\}[\s\S]*?<\/button>/.exec(code);
+  assert.ok(collapseBtn, 'the collapse button is gone');
+  assert.ok(!/data-card-saved/.test(collapseBtn[0]), 'the chip is back inside the collapse button — clicking it would collapse the card');
+
+  // `onClick={onClose}` appears on other components too, so anchor on the CARD's own ✕,
+  // which names the route in its aria-label. Matching the wrong one made this pass/fail on
+  // where that other component happens to sit in the file.
+  const chipAt = code.indexOf('data-card-saved');
+  const closeAt = code.indexOf('aria-label={`Close route');
+  assert.ok(chipAt > 0 && closeAt > 0, 'chip or the card\u2019s close button not found');
+  assert.ok(chipAt < closeAt, 'the chip is no longer before the ✕');
+  // Nothing but the close button's own comment may sit between them. Measure up to the ✕'s
+  // opening tag, not its aria-label, or the ✕ counts itself as an intruder.
+  const closeTagAt = code.lastIndexOf('<button', closeAt);
+  const between = code.slice(code.indexOf('})()}', chipAt) + 5, closeTagAt);
+  assert.ok(!/<(button|label|input|select|span)\b/.test(between), `a control crept in between the chip and the ✕: ${between.trim().slice(0, 120)}`);
+});

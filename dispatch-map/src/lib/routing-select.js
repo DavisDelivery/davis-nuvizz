@@ -1038,6 +1038,98 @@ export function sendControlState({ openCards = 0, dirtyCards = 0, liveMode = tru
   return { kind: 'none', tone: 'slate', label: '', title: '', actionable: false };
 }
 
+// ── THE MARK THAT SAYS THE SAVE LANDED (v1.37.0) ────────────────────────────
+//
+// Chad, 2026-09-16, pointing at a Compare card: "I want a check mark somewhere denoting
+// that the save to nuvizz was successful."
+//
+// WHAT HE IS LOOKING AT WHEN HE ASKS THAT, read off the code rather than guessed at. On a
+// confirmed save the card itself says nothing. The report is a TOAST at the top of the
+// workbench — "✓ 1 load(s) saved to NuVizz" — which has a dismiss ✕ on it and which the
+// next action overwrites, plus the Send button disappearing once nothing is staged. Five
+// minutes later a card that went to NuVizz and a card nobody has touched are identical on
+// screen, and the only way left to settle it is to open the load in the NuVizz portal or
+// send it a second time.
+//
+// AND THE OTHER HALF, ASKED FOR THE SAME DAY. Chad: "what about a card that says did not
+// save after I did send it? … this is just a chip to tell us if it did or did not
+// successfully save after it was sent to NuVizz." So the rule has exactly two things to
+// say, and BOTH are about a send that actually happened.
+//
+// THAT IS THE LINE BETWEEN THIS AND THE CHIP THAT WAS REVERTED. v1.33.0's amber NOT SENT
+// TO NUVIZZ fired on any card carrying staged changes — including one nobody had ever
+// tried to send — so it shouted at work in progress. This ✗ is only ever earned by a send
+// that was MADE and REFUSED. A card nobody has sent still says nothing at all, and neither
+// the header wording nor the map paint of that PR comes back with it.
+//
+// Nothing outside the card reads either stamp.
+//
+// THE TWO WAYS TO BE WRONG ARE NOWHERE NEAR SYMMETRICAL. A missing tick after a real save
+// costs an annoyance — the dispatcher sends again and the second save is a no-op. A tick
+// on a card NuVizz does not hold is freight that reads as routed and never gets driven,
+// and nobody goes looking for it because the screen already said it was fine. So the tick
+// is earned strictly, on both halves of "successful":
+//
+//   • WHEN IT IS EARNED — `savedAt` is stamped in ONE place, markSaved, which runs on a
+//     CONFIRMED write and nowhere else: Beta returns long before it, and a refused or
+//     partial save never reaches it. A wiring test pins that it has exactly one writer, so
+//     this mark can never report an intent as an outcome.
+//   • WHEN IT IS WITHDRAWN — the moment the card stops matching what was sent. `dirty` is
+//     the same flag the Send button counts, so one drag, one strike-off, one driver pick
+//     takes the tick away until the next confirmed save puts it back. A tick sitting over
+//     unsent changes is the expensive direction, and this is what stops it.
+//
+// A ZERO IS NOT A TIMESTAMP. Number(null) is 0 and 0 is finite — the same shape that once
+// mailed a customer a midnight deadline for a stop with no deadline at all — so the stamp
+// has to be a positive number before this says anything.
+export function fmtClockMs(ms) {
+  const t = Number(ms);
+  if (!Number.isFinite(t) || t <= 0) return '';
+  const d = new Date(t);
+  const ap = d.getHours() >= 12 ? 'PM' : 'AM';
+  const h = d.getHours() % 12 || 12;
+  return `${h}:${String(d.getMinutes()).padStart(2, '0')} ${ap}`;
+}
+
+// A stamp is only a stamp if it is a positive number. Number(null) is 0 and 0 is finite.
+const stampOf = (v) => { const t = Number(v); return Number.isFinite(t) && t > 0 ? t : 0; };
+
+export function savedMark({ savedAt = null, failedAt = null, dirty = false } = {}) {
+  const ok = stampOf(savedAt);
+  const bad = stampOf(failedAt);
+
+  // THE MOST RECENT OBSERVED OUTCOME WINS, and a TIE GOES TO THE ✗. Both stamps are written
+  // only where the result is read, so the later one is the later truth. On the knife edge the
+  // safe answer flips compared with the tick above: a ✗ on a load that did save costs one
+  // re-send, which is idempotent; a ✓ on a load that did not is freight nobody drives.
+  if (bad && (!ok || bad >= ok)) {
+    const clock = fmtClockMs(bad);
+    return {
+      show: true,
+      kind: 'failed',
+      label: `✗ DID NOT SAVE ${clock}`,
+      clock,
+      // It does NOT go away when you edit the card: the load is still not in NuVizz, and that
+      // stays true however much the card is changed. Only a confirmed save clears it.
+      title: `Sent at ${clock} and NuVizz REFUSED it — this load is NOT in NuVizz. The toast carried NuVizz's own reason. Fix it and send again; this stays until a save is confirmed.`,
+    };
+  }
+
+  if (!ok) return { show: false, kind: 'none', label: '', title: '', clock: '' };
+  const clock = fmtClockMs(ok);
+  // Saved, then edited: the load in NuVizz is no longer what this card shows, so the mark
+  // goes. It says nothing in its place — an amber "not sent" chip is exactly what was
+  // reverted in v1.36.1, and it was not asked for here.
+  if (dirty) return { show: false, kind: 'stale', label: '', title: '', clock };
+  return {
+    show: true,
+    kind: 'sent',
+    label: `✓ SENT ${clock}`,
+    clock,
+    title: `Sent to NuVizz at ${clock}, and NuVizz confirmed the write — this card matches the load. Change anything on it and the tick goes until you send again.`,
+  };
+}
+
 // ── WHICH TRUCK RUNS THIS LOAD — ONE TAP, AND IT STICKS (v1.34.0) ────────────
 //
 // Chad: "on the loads when we put them in the [selection] panel make a quick button tractor
@@ -1186,7 +1278,15 @@ export function resolveLoadVehicle({ profiles = [], name = '', picked = null, re
 // PUT IT BACK: VITE_ROUTING_AREA_SELECT_SKIPS_PLANNED=off restores the old rule on the next
 // build (build-time flag — a redeploy either way). House shape: ON unless an explicit
 // off-word; anything malformed leaves it ON, so a typo can never silently reopen the hole.
-export function areaSelectSkipsPlanned(raw) {
+export function areaSelectSkipsPlanned(raw) { return houseSwitchOn(raw); }
+
+/**
+ * THE HOUSE SWITCH SHAPE, one implementation instead of one per flag: default ON, an explicit
+ * off-word turns it off, and ANYTHING MALFORMED LEAVES IT ON. A typo in an env var must never
+ * silently disable a rule — that failure is invisible, and a quiet feature looks exactly like
+ * a working one.
+ */
+export function houseSwitchOn(raw) {
   const v = String(raw ?? '').trim().toLowerCase();
   return !(v === 'off' || v === '0' || v === 'false' || v === 'no');
 }
@@ -1253,4 +1353,40 @@ export function areaSelectMessage(part, total) {
     + (c ? ` · skipped ${c} already on open cards` : '')
     + (p ? ` · skipped ${p} staged on another device` : '')
     + (l ? ` · skipped ${l} already on ${areaSelectLoadsText(part.loads)}` : '');
+}
+
+/**
+ * THE STOPS ALREADY LIT UP ON THE MAP THAT THE SELECTION DOES NOT YET HOLD.
+ *
+ * Chad: "i don't want the add selection to prompt me to drag a box i want it to accept what i
+ * have already selected" → "accept the stops already highlighted on map."
+ *
+ * WHAT "HIGHLIGHTED" IS, from the map's own definition and not from a guess: one line in
+ * useLegendInventory — `selected OR a search hit`. The selected half is already in the
+ * selection, so the half a button can usefully ACCEPT is the burnt-orange search hits, minus
+ * anything already selected. A status filter is deliberately NOT highlight: the grid reports
+ * it separately because "search is a burnt-orange highlight, never a hide".
+ *
+ * FED `drawnStops` — what the map is ACTUALLY drawing, filters and all — rather than the
+ * grid's raw match list, for one reason a dispatcher pays for: a stop with no geocode has no
+ * marker at all, cannot be box-selected, and cannot be routed. Letting one ride in on a search
+ * hit is how an order goes silently missing from a build.
+ *
+ * @param {Array} drawnStops        the stops the map is drawing
+ * @param {Set|null} opts.searchMatchIds  String(stopNbr) of the grid's current search hits
+ * @param {Set|null} opts.selectedIds     String(stopNbr) already in the selection
+ * @returns {Array} the stops to hand to the SAME area-select path box and lasso use
+ */
+export function highlightedForSelection(drawnStops, { searchMatchIds = null, selectedIds = null } = {}) {
+  const has = (set, id) => !!set && typeof set.has === 'function' && set.has(id);
+  if (!searchMatchIds) return [];
+  const out = [];
+  for (const s of drawnStops || []) {
+    if (!s || s.lat == null || s.lng == null) continue;
+    const id = String(s.stopNbr ?? '');
+    if (!has(searchMatchIds, id)) continue;
+    if (has(selectedIds, id)) continue;
+    out.push(s);
+  }
+  return out;
 }

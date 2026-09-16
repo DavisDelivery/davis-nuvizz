@@ -47,7 +47,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -65,7 +65,7 @@ import { serverLoginEnabled, ensureFirebaseSession, dropFirebaseSession, signOut
 import { getSession, setSession, subscribeSession, onAuthEvent, clearSession } from './lib/session.js';
 import { formatCompletionPct } from './lib/completion-pct.js';
 import { isTvPath, tvRailRows, tvVerdict, tvFeedState, TV_RAIL_LIMIT } from './lib/tv-mode.js';
-import { tvStaticMapEnabled, buildTvStaticMapUrl } from './lib/tv-static-map.js';
+import { tvStaticMapEnabled, buildTvStaticMapUrl, projectToPercent, tvImageFailure } from './lib/tv-static-map.js';
 import { driverLabelLines, driverFixStale } from './lib/driver-label.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress, addressReachedNuvizz } from './lib/nuvizzWrite.js';
@@ -148,7 +148,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.40.0';
+const APP_VERSION = '1.41.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -202,8 +202,13 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.40.0', 'THE ROLLBACK BUTTON IS IN THE FOOTER, BESIDE THE VERSION. Chad: \u201clet\u2019s put the button for this ui discretely by the version in the footer.\u201d DISCRETE IS THE SPEC, not a style preference: this button asks for production code to be changed, so it should be findable by someone looking for it and invisible to someone who is not \u2014 a prominent ROLL BACK on a dispatch board is an invitation to press it before anyone has read what it costs, which is the failure this whole feature exists to prevent wearing the fix\u2019s clothes. It is a muted \u27f2 next to the version, the same grey as the rest of the footer until hovered. THE FOOTER IS THE RIGHT PLACE because that version is already what he checks to answer \u201cis this the build that just deployed\u201d, so it is where his eye goes the moment he suspects a deploy broke something. A PHONE HAS NO FOOTER, so the phone gets its own entry in the app-bar chip menu \u2014 the chip IS the version surface at that width. Two views, as the rule requires; a screen added to one navigation and not the other is a screen that does not exist on a phone, and this repo has shipped that twice. THE PANEL COSTS NO NETWORK CALL to tell him what shipped: every version and its note are already compiled into the running bundle, so it lists the last twelve releases with the first sentence of each and, beside every row, HOW MANY RELEASES GOING BACK THERE WOULD UNDO \u2014 the number he actually decides on. Sorted by version rather than trusted: the array has drifted before (v0.56.4, when the deploy watchdog read the wrong live version twice in one afternoon) and a panel pricing rows off a drifted order would be that bug with a button attached. A version NEWER than the running build is shown but never selectable, because this tab can be behind the site and \u201crolling back\u201d to it would be a roll FORWARD wearing the wrong word. IT DOES NOT PUSH, and that is the security design rather than a shortcut: a Netlify function cannot host a repo and git, so a one-tap path would have to rewrite main through the GitHub API \u2014 a browser-reachable endpoint that commits code, with no dry run in between. debug-capture.mts drew this line first (\u201cnothing here ever pushes to main or deploys\u201d) and rollback-request.mts stays on the same side of it: it files a rollback REQUEST as a GitHub issue carrying the dry-run command FIRST and the executing one second, an agent opens the PR, CI checks it, auto-merge lands it. A reason of at least eight characters is required before the button enables \u2014 the same rule --because enforces, because a rollback with no stated reason is indistinguishable from a mistake six weeks later. Gated at role:dispatcher; with ROLLBACK_GH_TOKEN unset the endpoint answers 503 and the panel degrades to read-only, which is the honest failure since the list still tells him what a rollback would cost. CODE ONLY is on screen BEFORE he presses anything, not in the confirmation after, because the dangerous misreading \u2014 that this undoes the day\u2019s freight \u2014 is the one that would make him press it. 13 new tests. The Build Panel and the Route Workbench are not touched.'],
-  ['1.39.0', 'TWO WAYS BACK NOW: TO A MOMENT IN TIME, OR ONE PR AT A TIME. Chad: \u201cwould it be possible to both roll back to a point in time when I knew everything was okay if i can\u2019t identify the PR that caused the problem and also roll back PRs?\u201d Both, because they answer different mornings. TIME (`--list`, `\u201c2026-09-14 11:59pm\u201d`) replaces the whole tree, so it can NEVER conflict and always works \u2014 but it throws away every good fix that shipped since. Measured on Sep 15: rolling back to Sunday night undoes 17 merges, and only 3 of them ever touched the Route Workbench, so thirteen innocent fixes go with them \u2014 the five-POSTs-at-NuVizz fix, two loads wearing one name, moved orders carrying the wrong driver, the dock-lunch-hours misparse. DROP (`--drop 945`, `--drop 945,950`) reverts named PRs and keeps everything else, which is the right tool whenever he can name one. THE HONEST PART IS WHAT IT WILL NOT DO. Every one of the three live suspects conflicts on a plain `git revert`, and the conflicts split in two: version lines (APP_VERSION, the changelog rows, the generated public/version.json) collide on nearly every parallel merge, carry no behaviour, and get rewritten by the bump a few lines later \u2014 those resolve MECHANICALLY. Anything else is a person\u2019s call and the run STOPS, because a guessed side is a behaviour change nobody reviewed wearing a rollback\u2019s name, which is the exact thing this tool exists to undo. The dry run says which kind each PR will hit by ACTUALLY TRYING the revert in a throwaway worktree rather than predicting from file lists \u2014 two PRs can touch one file and not collide, and only git knows. On the measured three: #950 comes out clean (2 version-line conflicts, resolved), #945 has 2 real conflicts and #942 has 1. A refusal leaves NOTHING behind \u2014 verified end to end: revert aborted, working tree clean, no conflict markers, the dead drop/ branch deleted, and him back on the branch he started on rather than a detached HEAD. Found by running it: the probe leaked git\u2019s \u201cerror: could not revert\u201d to the console, so a successful diagnostic read like a crash directly above the plan saying it came out fine. CODE ONLY, unchanged: Firestore and anything already sent to NuVizz are untouched. 16 new tests, 42 in the file. No UI yet \u2014 it is still a terminal command, which is the next question on the table. The Build Panel and the Route Workbench are not touched.'],
+  ['1.41.0', 'THE ROLLBACK BUTTON IS IN THE FOOTER, BESIDE THE VERSION. Chad: \u201clet\u2019s put the button for this ui discretely by the version in the footer.\u201d DISCRETE IS THE SPEC, not a style preference: this button asks for production code to be changed, so it should be findable by someone looking for it and invisible to someone who is not \u2014 a prominent ROLL BACK on a dispatch board is an invitation to press it before anyone has read what it costs, which is the failure this whole feature exists to prevent wearing the fix\u2019s clothes. It is a muted \u27f2 next to the version, the same grey as the rest of the footer until hovered. THE FOOTER IS THE RIGHT PLACE because that version is already what he checks to answer \u201cis this the build that just deployed\u201d, so it is where his eye goes the moment he suspects a deploy broke something. A PHONE HAS NO FOOTER, so the phone gets its own entry in the app-bar chip menu \u2014 the chip IS the version surface at that width. Two views, as the rule requires; a screen added to one navigation and not the other is a screen that does not exist on a phone, and this repo has shipped that twice. THE PANEL COSTS NO NETWORK CALL to tell him what shipped: every version and its note are already compiled into the running bundle, so it lists the last twelve releases with the first sentence of each and, beside every row, HOW MANY RELEASES GOING BACK THERE WOULD UNDO \u2014 the number he actually decides on. Sorted by version rather than trusted: the array has drifted before (v0.56.4, when the deploy watchdog read the wrong live version twice in one afternoon) and a panel pricing rows off a drifted order would be that bug with a button attached. A version NEWER than the running build is shown but never selectable, because this tab can be behind the site and \u201crolling back\u201d to it would be a roll FORWARD wearing the wrong word. IT DOES NOT PUSH, and that is the security design rather than a shortcut: a Netlify function cannot host a repo and git, so a one-tap path would have to rewrite main through the GitHub API \u2014 a browser-reachable endpoint that commits code, with no dry run in between. debug-capture.mts drew this line first (\u201cnothing here ever pushes to main or deploys\u201d) and rollback-request.mts stays on the same side of it: it files a rollback REQUEST as a GitHub issue carrying the dry-run command FIRST and the executing one second, an agent opens the PR, CI checks it, auto-merge lands it. A reason of at least eight characters is required before the button enables \u2014 the same rule --because enforces, because a rollback with no stated reason is indistinguishable from a mistake six weeks later. Gated at role:dispatcher; with ROLLBACK_GH_TOKEN unset the endpoint answers 503 and the panel degrades to read-only, which is the honest failure since the list still tells him what a rollback would cost. CODE ONLY is on screen BEFORE he presses anything, not in the confirmation after, because the dangerous misreading \u2014 that this undoes the day\u2019s freight \u2014 is the one that would make him press it. 13 new tests. The Build Panel and the Route Workbench are not touched.'],
+  ['1.40.0', 'TWO WAYS BACK NOW: TO A MOMENT IN TIME, OR ONE PR AT A TIME. Chad: \u201cwould it be possible to both roll back to a point in time when I knew everything was okay if i can\u2019t identify the PR that caused the problem and also roll back PRs?\u201d Both, because they answer different mornings. TIME (`--list`, `\u201c2026-09-14 11:59pm\u201d`) replaces the whole tree, so it can NEVER conflict and always works \u2014 but it throws away every good fix that shipped since. Measured on Sep 15: rolling back to Sunday night undoes 17 merges, and only 3 of them ever touched the Route Workbench, so thirteen innocent fixes go with them \u2014 the five-POSTs-at-NuVizz fix, two loads wearing one name, moved orders carrying the wrong driver, the dock-lunch-hours misparse. DROP (`--drop 945`, `--drop 945,950`) reverts named PRs and keeps everything else, which is the right tool whenever he can name one. THE HONEST PART IS WHAT IT WILL NOT DO. Every one of the three live suspects conflicts on a plain `git revert`, and the conflicts split in two: version lines (APP_VERSION, the changelog rows, the generated public/version.json) collide on nearly every parallel merge, carry no behaviour, and get rewritten by the bump a few lines later \u2014 those resolve MECHANICALLY. Anything else is a person\u2019s call and the run STOPS, because a guessed side is a behaviour change nobody reviewed wearing a rollback\u2019s name, which is the exact thing this tool exists to undo. The dry run says which kind each PR will hit by ACTUALLY TRYING the revert in a throwaway worktree rather than predicting from file lists \u2014 two PRs can touch one file and not collide, and only git knows. On the measured three: #950 comes out clean (2 version-line conflicts, resolved), #945 has 2 real conflicts and #942 has 1. A refusal leaves NOTHING behind \u2014 verified end to end: revert aborted, working tree clean, no conflict markers, the dead drop/ branch deleted, and him back on the branch he started on rather than a detached HEAD. Found by running it: the probe leaked git\u2019s \u201cerror: could not revert\u201d to the console, so a successful diagnostic read like a crash directly above the plan saying it came out fine. CODE ONLY, unchanged: Firestore and anything already sent to NuVizz are untouched. 16 new tests, 42 in the file. No UI yet \u2014 it is still a terminal command, which is the next question on the table. The Build Panel and the Route Workbench are not touched.'],
+  ['1.39.0', 'THE WALL DISPLAY DRAWS THE BOARD’S OWN PINS NOW, AND THE PICTURE FILLS THE WHOLE FRAME. Chad, on a photograph of the office television: “map doesn’t look like it should i want the thing to be identical with all the same icons”, and “i don’t liek the black space on either end of the map we aren’t using the full frame there are black bars on either side of the map on tv with just blank space before the needs a call table starts.” GOOGLE DRAWS THE ROADS; THIS APP DRAWS THE FREIGHT. The first cut asked Google to draw the stops too, with markers= in the URL, which is the obvious way and is wrong on this screen three separate times. It is NOT THE SAME BOARD — Static Maps draws teardrops in a handful of colours, while this app’s pins carry the whole morning on them: the AM/PM window, the ✓, the ➜, the restriction clock, the no-tractor truck, the Estes yellow ring, the co-located count, the “?” flag. A room reading two different maps of one day is worse than a room reading one. It COULD NOT FIT THE DAY — a Static Maps URL dies past 8192 characters, about 400 pins, so a 700-stop morning lost freight off the wall and had to print “showing 401 of 640 pins” to stay honest about it. And it BILLED FOR THE WRONG THING — with the pins in the URL every pin that moved bought a new image. So the picture is now a BASEMAP and every stop is the very same stopMarkerIcon artwork the desktop board paints, positioned over it by Web Mercator maths in lib/tv-static-map.js. Nothing is dropped and the cap chip is gone with the cap. THE ONLY THING IN THE WAY WAS SIX `new google.maps.Size` AND SIX `new google.maps.Point` — numbers, not behaviour — on a screen where the Maps script is deliberately never loaded. PLAIN_GEOMETRY is that stand-in, and the icon cache is NAMESPACED against it by identity, because press Exit on the wall and the real JS map loads into the same page reading the same cache: without that, the second screen gets Size and Point objects that are not google.maps types, and it fails as one screen quietly not drawing a week later. THE BLACK BARS WERE A GUESS RENDERED IN BLACK. The URL asked for a fixed 640x416 because a COMMENT in this file said the pane was “~1520x990” — a number estimated once, months before the television it was estimating, and object-contain turned the difference into dead space down both sides. Measured at 1920x1080 the old code paints 1509 of 1520 pixels across. The pane is READ now, with a ResizeObserver, and the image requested in its exact ratio, so there is nothing left to letterbox and no object-fit doing it — which is also what makes the per-cent pin positions exact. THE SPEND WENT DOWN, NOT UP, and that is worth saying because this repo counts calls: the URL now holds a centre, a zoom and a size and nothing else, so the picture is re-bought when the CAMERA moves rather than every two minutes — the 2-minute timer is deleted. The camera is held still by snapping the fit bounds outward onto a ~2.2 km grid, because the trucks are in the fit and a driver rolling thirty feet would otherwise shift the centre in the fourth decimal and buy another image on every poll. ~300 requests a day becomes a handful. MEASURED IN A REAL BROWSER, NOT REASONED ABOUT: scripts/verify-tv-map.mjs drives /tv at 1920x1080 and checks that the picture PAINTS the full pane (the element box is not the painted box — the first draft of this guard measured the wrong one and passed with the bug deliberately reinstated), that all 240 fixture stops draw, that the pins are this app’s SVGs and not Google teardrops, and that every pin and truck lands where an INDEPENDENT Mercator derivation — written the other way round from the module’s — puts it. Proven to fail on a restored letterbox, a dropped anchor offset and a mirrored projection. ONE BUG CAUGHT BY ITS OWN TEST: the bounds snap fell into IEEE arithmetic — 34.02/0.02 is 1701.0000000000002, so a bare Math.ceil moved a box that was ALREADY on the grid, which every snapped box is, and the camera would have flapped between two cells buying a picture each time. AND THE SCREEN ASKS WHY INSTEAD OF GUESSING. Chad, twice: “the static api key thing is back.” It answered that with one sentence — “Most likely the Maps Static API is not enabled on this key” — for EVERY failure, because an <img> onError carries no status and no reason: a 403, a 500, a timeout, a dropped connection and a picture the browser could not decode all fire identically. Naming one cause for a family of failures is a guess in a diagnosis’s clothes, and this file already had the comment saying so. MEASURED WHILE WRITING THIS, from the deployed bundle’s own key: that request answers HTTP 200 · image/png, with and without the site’s Referer — so “the API is off” was never established, and I cannot tell from here what the television saw. THE FREE DIAGNOSTIC WAS THERE ALL ALONG: Google refuses a staticmap with HTTP 403, content-type text/plain, a human sentence, and access-control-allow-origin: * — so the page fetches the SAME url once, after one has already failed, and prints the real reason plus Google’s own words verbatim. A referrer refusal now sends you to the key’s restrictions rather than to an API that is already on; a 429 says Google is rate-limiting and nothing is wrong; a dead network says check the television’s network and does NOT mention the console, which is the worst possible wrong answer on a wall display; and “Google returned the picture when this page asked again” names the one case the old message was most wrong about. Driven for real in the guard against Google’s actual 403 body, and proven to fail on the old wording. NOT CHANGED: VITE_TV_STATIC_MAP=off still returns the whole wall to the live JS map, anything malformed still leaves it on, and the flag rail, status bar, Filters panel and wake-lock reporting are untouched. The dispatch Map and the Route Workbench are not touched at all. 31 + 3 tests.'],
+  ['1.38.4', 'A CARD SAYS WHETHER THE SAVE LANDED — AND SAYS IT UNTIL IT STOPS BEING TRUE. Chad, on a Compare card: “I want a check mark somewhere denoting that the save to nuvizz was successful”, then “what about a card that says did not save after I did send it? … this is just a chip to tell us if it did or did not successfully save after it was sent to NuVizz.” WHAT HE WAS LOOKING AT, read off the code rather than guessed at: on a confirmed save AND on a refused one, the CARD said nothing at all. Both reports were a toast at the top of the workbench — “✓ 1 load(s) saved to NuVizz” or “✗ CHE: …” — which carries a dismiss ✕ and which the next action overwrites. Five minutes later a load that went to NuVizz, a load NuVizz REFUSED and a load nobody had touched were identical on screen, and the only way to tell them apart was the portal or sending again. NOW ONE CHIP, TWO VERDICTS, beside the route name on both views: green ✓ SENT 2:14 PM, red ✗ DID NOT SAVE 2:20 PM. BOTH ARE EARNED, NEVER ASSUMED — each stamp has exactly ONE writer, markSaved and markSaveFailed, and each runs only where the write’s own RESULT has been read back: Beta returns long before either, an attempt reaches neither, and a partial save stamps only the keys NuVizz answered for. Tests count both writers. THE TWO HALVES BEHAVE DIFFERENTLY ON PURPOSE: the ✓ is WITHDRAWN the instant the card stops matching what was sent (the same dirty flag the Send button counts), because it claims “this card matches the load” and an edit breaks that; the ✗ SURVIVES an edit, because it claims “NuVizz refused this” and tweaking the card does not make that untrue — only a confirmed save clears it, and the later stamp wins, so fix-and-resend goes green on its own. A TIE GOES TO THE ✗: a ✗ on a load that did save costs one idempotent re-send, while a ✓ on a load that did not is freight that reads as routed and never gets driven. ALL THREE WAYS A SEND CAN BE REFUSED REACH THE CARD, including the one that would otherwise leave every card blank — a whole call that fails returns no per-load results, so nothing names a card; those keys are stamped from the payload, minus any that did save. Verified off the SERVER that this is complete for the live engine: runCommitBoardRwb never returns `pending` (only runImportLoad / runCommitBoardImport do, and Import is retired), so every RWB result is ok or a refusal. THIS IS THE GREEN HALF OF v1.33.0 PLUS THE ASK, AND NOTHING ELSE — no amber NOT SENT chip on cards nobody sent (that one shouted at work in progress and is exactly what was reverted in v1.36.1), no header wording, no map-paint change; tests assert cardSendState and routePaintSource stay gone and the pendingCreate “not sent” chip is untouched. CONFIRMED AT CHAD’S REQUEST BEFORE MERGE, function by function against main: onPanelSave, buildBoardPayload, onPanelConfirm’s write call, sendPendingCreates’ write call, the close guards, the Send button and the LIVE/Beta switch all hash IDENTICAL; routing-select.js has ZERO deleted lines; the new state is read in exactly one place, the chip. Nothing about what is written to NuVizz, or when, changed. 22 new tests, 4,982 green.'],
+  ['1.38.3', 'THE OTHER HALF OF THE ROUTING FILTERS ASK. Chad, 2026-09-16: “i want hide termianl markers and hide stem out added to my routing filters.” The stem-out half landed in v1.36.2; Hide terminal markers never did, so half the request sat unshipped while the dropdown looked finished. It is there now, first in the list. WHAT IT HIDES, and the distinction is the whole reason this one is safe on this screen: terminal markers are the DEPOT rows. Hiding them declutters a 700-stop board without taking a single customer delivery off it. The dispatch Map’s “Hide stem out” hides the FIRST DELIVERY of every load — real freight — which is why Routing’s stem-out control deliberately drives the polyline instead, and why this new toggle removes no freight either. On the screen where loads are BUILT, a filter that quietly takes orders off the board is the one thing these controls must never do. It composes with “Unplanned only” rather than fighting it (terminal rows come off first, then the unplanned filter runs on what is left), it persists per device under routing.mapHideTerminal, it lights the Filters button like every other active filter, and Reset layout clears it. THE ROUTING DROPDOWN NOW READS: Hide terminal markers, Unplanned only, Hide place labels, Show routes, Hide stem-out line.'],
+  ['1.38.2', 'AN EMPTY LOAD WAS TAKING TEN ORDERS OFF THE BOARD EVERY SCAN. Chad: “this order is in nuvizz planned on scott and we are showing it unplanned … RWB is full of bugs from work today.” He was right, and the board itself said so — measured through nuvizz-stop-explain, Firestore only, ZERO NuVizz calls. EVERY scan on 2026-09-16 was dropping TEN rows, and the ledger gave its own reason: “not on DAVIS000203794 (CHAD, 0 stops on the 2026-09-16 roster) — the load’s own membership read does not list it … its own day is 2026-09-11, so it stays on that day’s board and comes off 2026-09-16” — printed directly beneath the line “The open-order pool agrees: planned on CHAD, filed under 2026-09-16.” NuVizz’s own open-order list said the freight was planned on CHAD today, and we took it off the board anyway. THE MECHANISM IS THE ORDINARY MORNING, not a corner case. A recurring route mints a NEW load each day and mints it EMPTY: on the 16th, CHAD, BUFORD and ULINE APPT were all Drafts holding 0 stops at 04:15 while the freight still hung off yesterday’s instance. Zero is a count, so it passed the gate; “more rows than the load holds” was true for every name (6 > 0); the membership read of an empty load returned nothing; and every row under the name failed membership at once, each one with a past arrival day evicted. Five CHAD stops, one BUFORD, three ULINE APPT — ten a scan, all day. THE FIX IS THE PRINCIPLE THIS MODULE ALREADY WROTE DOWN one line above, in membershipUsable: an empty read “is a contradiction inside NuVizz’s own feeds, not a verdict — never drop a row on it.” A 0-stop Draft is that same shape and was the one way in. A load holding nobody is not evidence about anybody; it is a load nobody has filled in yet. A name is now judged only when its roster load holds AT LEAST ONE stop. THE FEATURE KEEPS ITS JOB — the ESTES case it was built for (16 rows against a load of 10) still judges, and so does two rows against a load of one: the gate is zero, not “small”. A duplicate sequence number cannot smuggle an empty load past it either, or the eviction returns by the side door. SAID PLAINLY: the scan and the feed were never wrong about Chad’s own order — 007176371 reads PLANNED on SCOTT, stop 7, Scott Hart on both the 15th and the 16th documents, and the client feed returns all ten SCOTT rows totalling 5,759 lb, which is NuVizz’s own figure to the pound. What was wrong was the ten OTHER orders this rule was quietly removing from the same board. NUVIZZ_NAME_COLLISION=off turns the whole rule off without a deploy. 5 new tests, 5,020 green.'],
+  ['1.38.1', '“＋ ADD SELECTION” ACCEPTS WHAT IS ALREADY LIT INSTEAD OF ASKING FOR A BOX. Chad, twice: “i don’t want the add selection to prompt me to drag a box i want it to accept what i have already selected”, and then — asked which of two readings he meant — “accept the stops already highlighted on map.” SEARCH THE GRID FOR A CUSTOMER, THE PINS GO BURNT ORANGE, PRESS IT AND THEY ARE IN. Before this the one button under “Add stops in view” armed a box draw: having just found the fourteen stops he wanted and lit them on the map, the dispatcher was asked to go and draw a rectangle round them — a second gesture that can only be LESS accurate than the search that found them, because a rectangle takes whatever else is inside it. WHAT “HIGHLIGHTED” MEANS IS READ OFF THE MAP, NOT GUESSED: useLegendInventory defines it in one line as selected OR a search hit, so the half a button can usefully accept is the search hits minus what is already selected. A status filter is deliberately not highlight — the grid reports it separately, because “search is a burnt-orange highlight, never a hide”. IT READS OFF WHAT THE MAP IS DRAWING, so a matching order with NO GEOCODE — no pin, un-box-selectable, silently dropped by any build — can never ride in on a search hit. AND IT IS THE SAME DOOR, NOT A SECOND RULE: the accepted stops go through addEnclosed exactly as box, lasso and Add-in-view do, so every skip still holds and is still named in the action line — a stop on an open Compare card, one another dispatcher’s device is staging, and (v1.36.3) one already planned onto a load sent to NuVizz. WITH NOTHING LIT IT STILL ARMS THE BOX, through the same beginMode the map rail calls, so Cancel, Esc and the rail’s highlight are unchanged; a button that goes dead when you have not searched is worse than one that offers the old way. THE LABEL SAYS WHICH IT WILL DO before it is pressed — “＋ Add 14 highlighted (search hits)” or “＋ Add selection (drag a box)”. On a phone only the box path drops the Setup sheet; accepting leaves it up, because nothing is tapped on the map and dropping it would hide the tally that just changed. 11 + 5 tests. PUT IT BACK: VITE_ROUTING_ADD_SELECTION_ACCEPTS_HIGHLIGHT=off returns the button to always arming the box — one switch covering the press, the label and the hint, so there is no half-reverted state where it says one thing and does another. No Route Workbench behaviour changes: addEnclosed gains a caller and keeps its rule.'],
   ['1.38.0', 'HOLD CTRL AND SEE WHETHER THE BUILDING HAS A DOCK. Chad, with a screenshot of consumer Google Maps tilted over a produce terminal: \u201cI want exactly what I showed you where i can be on map hold control and see map in 3d view like I showed you so I can see if buildings have docks.\u201d THE OLD CTRL ALREADY TILTED AND THAT WAS THE PROBLEM. A vector map at 67 degrees draws GREY EXTRUDED BLOCKS, and a grey block has no dock doors on it \u2014 so the gesture worked, looked like the feature, and answered nothing. What Chad photographed is Google\u2019s PHOTOREALISTIC 3D, which google.maps.Map cannot render at any tilt, on any base, with any option: it is a different element (Map3DElement, library maps3d) with its own camera and its own drawing classes. So Ctrl no longer tilts the board \u2014 it brings a second map up over the same spot, at the same centre and the same heading, and lets go puts you straight back. The button beside Satellite pins it open for a longer look, AND IT IS WHY THIS EXISTS ON A PHONE AT ALL: a phone has no Ctrl key, and a Ctrl-only feature is a feature that does not exist on mobile, which this repo has shipped twice. THE CEILING IS A LOGISTICS CALL, NOT A MATHS ONE. Matching the board honestly is what the camera maths does, and at whole-metro zoom that means a camera 363 KILOMETRES up \u2014 a photograph of Georgia from orbit, which answers nothing about a dock. The range clamps to 4,000m so a building is always a building; the CENTRE never moves, so this is a floor under usefulness rather than a teleport. Above 1,200m the view says \u201cToo high to read doors\u201d on itself instead of letting the imagery take the blame. HYBRID ALWAYS, deliberately: over an industrial park of near-identical tilt-wall units the street name is how you confirm you are looking at the right building before you judge its doors, so the labels earn their clutter \u2014 and a pin marks the exact spot you came from. THE SPEND, SAID OUT LOUD because this repo counts calls: a 3D map load bills Google\u2019s IMMERSIVE MAPS SKU, a SEPARATE meter from the DYNAMIC MAPS one the board runs on, with HALF the free allowance (5,000/month vs 10,000, then $7.00/1,000 on both). Google\u2019s SKU page is explicit that panning and zooming an existing map are free, so the price is per ELEMENT CREATED \u2014 the element is therefore built ONCE per page session, on the first Ctrl, and every look after that only moves its camera and un-hides the layer. Two hundred peeks in a morning cost one load. Closing HIDES it and never drops it, and a test pins that, because an unmount would quietly buy another one. THE TELEVISION IS EXCLUDED BY CONSTRUCTION: nobody holds Ctrl on a wall, TV mode runs the raster map precisely because that set could not drive WebGL, and a 3D element is WebGL with a bill attached. A KEY WITHOUT 3D MAPS ENABLED SAYS SO on the layer and names the console setting \u2014 without that, Ctrl would do nothing for ever and look exactly like a broken keyboard. THE ROUTE WORKBENCH IS NOT TOUCHED: this is the dispatch Map only. AND THE WAY BACK IS ONE ENV VAR, because this ALTERS a gesture that already worked: VITE_MAP_3D=off restores the old Ctrl+drag tilt on every side at once \u2014 no listener, no button, no element ever created \u2014 and anything malformed leaves it ON, so a typo cannot silently disable it. ONE BUG CAUGHT BY ITS OWN TEST BEFORE IT SHIPPED: the range maths fell into the Number(null)-is-0 trap CLAUDE.md names, and because ZOOM 0 IS A VALID ZOOM a dead map reading back undefined sailed through as \u201czoomed all the way out\u201d and opened a confident 3D view built on an answer the map never gave. AND ONE MORE FOUND BY OPENING THE PAGE RATHER THAN READING THE DIFF, which is this repo\u2019s own lesson: driving the real deploy preview, Ctrl opened the layer correctly, the key answered every request, nothing threw \u2014 and Google drew its own \u201cOops! Something went wrong\u201d card inside it, because that browser\u2019s renderer was SOFTWARE and the ordinary vector map had fallen back to raster in the same run for the same reason. A failure that arrives through a SUCCESSFUL construction cannot be caught, so it is pre-empted: WebGL is checked BEFORE the element is built, a browser that cannot draw one is told so in a sentence naming WebGL instead of a card naming nothing, and it is never billed for a map it cannot show. When the check cannot tell, it lets Google try \u2014 refusing on a false negative is the worse error. 32 new tests.'],
   ['1.37.1', 'A STOP SOMEBODY HAS WRITTEN OFF FOR A 53-FOOTER NOW READS RED IN THE SELECTED LIST. Chad: \u201ci want a no tractor trailer stop to highlight red in selection panel.\u201d THE PANEL COULD ONLY SAY YES. It has painted a tractor-friendly row green since v0.46.5, and every other row \u2014 the 600 nobody has looked at and the handful a dispatcher has explicitly marked off-limits \u2014 wore the same nothing. So the one fact on that table a router must not get wrong, \u201csending a 53-footer here is a known mistake\u201d, was invisible unless he opened the stop. RED IS THE STATED NO, NOT THE UNKNOWN, and that line is the whole design: the green rule treats unknown as not-friendly on purpose, so on an ordinary morning most rows are not green, and painting all of those red would put the board\u2019s loudest colour on \u201cno data\u201d \u2014 a warning that fires on everything warns about nothing, and the \u201cDrop N non-tractor\u201d button already covers that set and names its count. A row goes red for a Box-only mark or a CONFIRMED \u201cNo tractor trailer\u201d; the Uline advisory a scanner lifted out of somebody else\u2019s order text stays neutral, exactly as it does not stop the map\u2019s lime paint. ONE RULE, NOT A FOURTH COPY: tractorBlockedSelection delegates to tractorPaintAllowed, the function the pin paints by and the stop panel\u2019s banner is gated on, so the row and the map cannot drift; and because it is the complement of two of tractorFriendlySelection\u2019s own refusal branches, red and green are mutually exclusive BY CONSTRUCTION. A test asserts that over every combination \u2014 \u201ctwo facts, one row\u201d is the shape this panel has got wrong three times (v0.46.8, v0.98.2, v1.1.1). The red hovers within its own colour (red-100 \u2192 red-300) for the reason the green does: a pointer may not eat a fact about the freight. The row\u2019s tooltip names the statement behind the colour, because a colour that cannot say why is half a warning. PUTTING IT BACK IS ONE REVERT \u2014 this ADDS a mark and alters no existing behaviour, and it is one commit. The bottom data grid is deliberately unchanged; say the word and it reads the same red. 9 new tests.'],
   ['1.37.0', 'ROLL THE APP BACK TO A MOMENT IN TIME, IN ONE COMMAND. Chad, after a day of merges: \u201cchanges in the app today caused major bugs with the routing tab that was working perfectly before updates today[,] it introduced at least 10-15 bugs that i\u2019m still working through \u2026 i want to build something where i can roll the app back if this were to happen again. Like i would like to roll the app back to 11:59 pm sept 14th when things were working perfectly.\u201d THE QUESTION IS NEVER \u201cWHICH SHA\u201d. At 6:45am with drivers waiting it is \u201cput it back to Sunday night\u201d, so `npm run rollback -- \u201c2026-09-14 11:59pm\u201d` takes the wall clock and does the translating \u2014 in EASTERN, which is the whole point: every commit stamp in this repo is +0000 and reading Chad\u2019s sentence as UTC lands on 7:59pm, four hours and four merges early, with nothing in the output looking wrong. His exact ask resolves to v1.30.2, 6f7c9d1, 2026-09-14 23:48 EDT, undoing 17 commits. DRY RUN IS THE DEFAULT and nothing moves without --execute --because \u201c<why>\u201d, which lands in the commit, the changelog row and the workbench-guard approval so the log six weeks later says why the app went backwards instead of looking like a mistake. THE PLAN NAMES WHAT IT COSTS before he presses go: all 17 undone commits, and separately the 5 that touch how freight reaches NuVizz \u2014 rolling back past v1.30.3 puts the five-POSTs-per-failed-route-create bug back, and that is his call to make with his eyes open, not the tool\u2019s to make quietly. IT IS A FORWARD COMMIT, NEVER A HISTORY REWRITE: one commit on top of main whose TREE is the old tree. Verified both directions against the real main tip before shipping \u2014 the commit\u2019s tree is byte-identical to the target\u2019s, and `git revert` of that single commit restores today\u2019s tree byte-identically, so undoing a rollback is one command and nobody\u2019s checkout breaks. AND THE LIFEBOAT DOES NOT GET SCUTTLED WITH THE SHIP: a rollback to any date before this tool existed would have DELETED THE TOOL, leaving Chad on the old code with no way to list versions, roll back further or roll forward \u2014 so the script, its test and its npm alias are put back from main after every restore. CODE ONLY, said in the plan and in the row: Firestore (the board, address overrides, dispatcher notes, receiving hours, suppression flags) is untouched and anything already sent to NuVizz is still sent \u2014 a rollback is not an undo button on the day\u2019s freight, and treating it as one is how somebody builds a second truck on top of the first. 26 new tests; the Build Panel and the Route Workbench are not touched.'],
@@ -1309,17 +1314,14 @@ const STOP_ZOOM = 18;
 // How often the map silently re-reads the Firestore stop index (DB, not NuVizz)
 // so a long-open tab stays current. The background cron scans NuVizz every ~5m.
 const STOPS_REFRESH_MS = 120000; // 2 minutes
-// How often the wall display re-fetches its picture. EVERY REFRESH IS ONE BILLED Maps Static
-// API REQUEST, so this is a SPEND knob and not a smoothness one: it matches the board's own
-// poll above, because a picture redrawn faster than the data behind it changes is money for
-// nothing. ~300 requests over a 4am-2pm day.
+// THE WALL DISPLAY HAS NO REFRESH TIMER OF ITS OWN ANY MORE, and that is the point.
 //
-// DECLARED HERE, BELOW ITS SOURCE, AND THAT IS NOT TIDINESS. The first cut of this sat up
-// beside MAPS_KEY, ~110 lines ABOVE STOPS_REFRESH_MS — a temporal dead zone that threw
-// "Cannot access before initialization" at module load and rendered the ENTIRE APP as a blank
-// page, on every screen, not just the television. Found by opening /tv in a browser rather
-// than by reading the diff; the build is perfectly happy to ship it.
-const TV_STATIC_REFRESH_MS = STOPS_REFRESH_MS;
+// There was one here — TV_STATIC_REFRESH_MS — from when the picture carried the pins: every
+// pin that moved meant a new URL, so the image had to be re-bought on a clock. Now Google
+// draws the ROADS and this app draws the FREIGHT over them (see lib/tv-static-map.js), so
+// the URL holds a centre, a zoom and a size and nothing else. Roads do not move. The picture
+// is re-fetched when the CAMERA moves, which the bounds snap keeps to a handful of times a
+// day, while the pins re-render on the board's own 2-minute poll above at no cost at all.
 // When the WALL DISPLAY should stop claiming the board is current. useStops re-reads every
 // STOPS_REFRESH_MS while the tab is visible — and a television is visible by definition, all
 // day — so a gap of several intervals means the silent polls are failing silently, which is
@@ -3724,6 +3726,27 @@ function buildLocCounts(stops) {
 // runaway backstop, never hit in practice).
 const __stopIconCache = new Map();
 
+// THE WALL DISPLAY'S STAND-IN FOR THE MAPS API, and it is two constructors wide.
+//
+// Chad, on the television: "i want the thing to be identical with all the same icons." The
+// only thing standing between that and a screen with no Maps JS on it is this function's use
+// of google.maps.Size and google.maps.Point — six of each, for numbers. The SVG itself never
+// touches Google at all. So the TV hands in this instead and gets the same artwork, at the
+// same sizes, with the same anchors, on a page where the Maps script is never loaded.
+//
+// WHY IT IS A NAMED SINGLETON rather than an object literal at the call site: the icon cache
+// above is keyed on the stop's appearance, and these Size/Point objects are NOT google.maps
+// ones. Handed to a real Marker they would be a foreign type in a field the API expects its
+// own class in — the kind of failure that shows up as one screen quietly not drawing, a week
+// later, after somebody presses Exit on the wall display and the JS map loads into the same
+// page. Identity here lets the cache key keep the two sets apart (see cacheKey below).
+const PLAIN_GEOMETRY = {
+  maps: {
+    Size: function Size(width, height) { this.width = width; this.height = height; },
+    Point: function Point(x, y) { this.x = x; this.y = y; },
+  },
+};
+
 function stopMarkerIcon(google, s, note, opts = {}) {
   //   opts.tractorDelivered — a tractor driver has completed a delivery at this
   //   location (tractor_locations): full repaint to lime green + white border,
@@ -3834,7 +3857,14 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // The Estes paint is derived from the stop NUMBER, which never changes for a stop — but the
     // key must still carry it, or an Estes order and a plain one sharing every other input would
     // share one cached icon and the second to render would wear the first one's paint.
-    + '\x1f' + (estes ? 'E' : '');
+    + '\x1f' + (estes ? 'E' : '')
+    // WHOSE Size AND Point THESE ARE. The wall display builds this same artwork with
+    // PLAIN_GEOMETRY, because the Maps script is never loaded there — so the scaledSize and
+    // anchor it gets back are plain objects, not google.maps ones. The URL string is identical
+    // either way, but the objects are not interchangeable, and one Exit from the TV puts a real
+    // JS map in the same page reading the same cache. Namespacing them costs one field and
+    // removes the whole class of "that screen stopped drawing and nothing said why".
+    + '\x1f' + (google === PLAIN_GEOMETRY ? 'plain' : '');
   const cached = __stopIconCache.get(cacheKey);
   if (cached) return cached;
 
@@ -12388,51 +12418,144 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   const mapIdForView = tvMode ? undefined : MAP_ID;
   const [tvMapDrew, setTvMapDrew] = useState(false);
   // ── THE PICTURE ─────────────────────────────────────────────────────────────
-  // A counter, not a timestamp, so the <img> src changes exactly as often as we mean it to.
-  // Every change is a billed request (see TV_STATIC_REFRESH_MS) — a src that moved on every
-  // render would bill on every render.
-  const [tvStaticTick, setTvStaticTick] = useState(0);
-  useEffect(() => {
-    if (!tvStatic) return undefined;
-    const t = setInterval(() => setTvStaticTick((n) => n + 1), TV_STATIC_REFRESH_MS);
-    return () => clearInterval(t);
-  }, [tvStatic]);
-  // The image can fail where the JS map merely sat there: a key without the Maps STATIC API
-  // enabled answers 403, which paints a broken-image glyph and nothing else. Reported, for
-  // the same reason everything else on this screen is.
-  const [tvStaticErr, setTvStaticErr] = useState(false);
-  // WHICH PINS GO ON THE PICTURE, in the order they survive the URL budget (see packMarkers).
-  // The groups mirror what the JS map draws, minus everything that only means something to a
-  // pointer: no clustering, no route polylines, no hover.
-  const tvStaticUrl = useMemo(() => {
-    if (!tvStatic) return null;
-    // Flagged = the rail's own rows, so the dots that stand out red on the wall are EXACTLY
-    // the stops listed beside them. Two different definitions of "flagged" on one screen is
-    // how a room comes to distrust both.
-    const flaggedNbrs = new Set(
-      (boardFlags.rows || [])
-        .filter((r) => !dismissedFlags[r.dismissKey] && (r.tier === 'critical' || r.tier === 'red'))
-        .map((r) => String(r.stopNbr)),
-    );
-    const flagged = []; const open = []; const done = [];
-    for (const st of filteredStops) {
-      if (flaggedNbrs.has(String(st.stopNbr))) flagged.push(st);
-      else if (isFinishedStatus(st.normalizedStatus)) done.push(st);
-      else open.push(st);
+  // WHY THE PICTURE DID NOT DRAW, ASKED RATHER THAN ASSUMED.
+  //
+  // Chad, twice: "the static api key thing is back." The screen answered that with "Most
+  // likely the Maps Static API is not enabled on this key" — for EVERY failure, because an
+  // <img> onError carries no status and no reason. It fires identically for a 403, a 500, a
+  // timeout, a dropped connection and a picture the browser could not decode, and naming one
+  // cause for all of them is a guess in a diagnosis's clothes. (Measured while writing this:
+  // the deployed key answers that request HTTP 200 · image/png, with and without the site's
+  // own Referer — so whatever the television saw, "the API is off" was not established.)
+  //
+  // The free diagnostic was there all along: Google refuses a staticmap with HTTP 403,
+  // content-type text/plain, a human sentence and access-control-allow-origin: *, so this
+  // page can fetch the SAME url and read the reason. One request, only ever after one has
+  // already failed, and it turns "something is wrong" into the console setting to change.
+  // null = the picture is fine; an object = it failed, with whatever Google then said.
+  const [tvStaticErr, setTvStaticErr] = useState(null);
+  const tvProbedRef = useRef(null);
+  const probeTvImage = useCallback(async (url) => {
+    // Once per URL. A television left up for twelve hours must not re-probe a dead image on
+    // every re-render — that is how a diagnostic becomes the outage.
+    if (!url || tvProbedRef.current === url) return;
+    tvProbedRef.current = url;
+    setTvStaticErr({ status: null, text: '', pending: true });
+    try {
+      const r = await fetch(url, { cache: 'no-store' });
+      let text = '';
+      try { text = (await r.text()).slice(0, 300); } catch { /* an image body is not text */ }
+      setTvStaticErr({ status: r.status, text });
+    } catch (e) {
+      setTvStaticErr({ network: true, text: String(e?.message || e || '') });
     }
+  }, []);
+  // THE PANE IS MEASURED, NOT GUESSED, and that is the whole of the black-bar fix.
+  //
+  // Chad: "i don't liek the black space on either end of the map we aren't using the full
+  // frame there are black bars on either side of the map." The old URL asked for a fixed
+  // 640x416 because a COMMENT in this file said the pane was "~1520x990" — a number somebody
+  // (me) estimated once, months before the television it was estimating. Whatever the set's
+  // browser actually reports, the difference between the two came out of object-contain as
+  // dead space down both sides. So the picture is now requested in the pane's own measured
+  // ratio, which makes letterboxing impossible instead of merely unlikely.
+  //
+  // NULL UNTIL MEASURED, deliberately: asking for a picture in a guessed shape and then
+  // asking again in the right one is TWO billed requests and a visible jump, on every load.
+  const tvPaneRef = useRef(null);
+  const [tvPane, setTvPane] = useState(null);
+  useLayoutEffect(() => {
+    if (!tvStatic) return undefined;
+    const el = tvPaneRef.current;
+    if (!el) return undefined;
+    const read = () => {
+      const w = el.clientWidth; const h = el.clientHeight;
+      if (!w || !h) return;
+      // Only accept a CHANGE. A ResizeObserver firing with the same numbers must not mint a
+      // new state object: that re-runs the memo below and, if its result differed by a pixel,
+      // would buy another picture for nothing.
+      setTvPane((prev) => (prev && prev.w === w && prev.h === h ? prev : { w, h }));
+    };
+    read();
+    if (typeof ResizeObserver === 'function') {
+      const ro = new ResizeObserver(read);
+      ro.observe(el);
+      return () => ro.disconnect();
+    }
+    // A television browser old enough to lack ResizeObserver still gets a correct frame; it
+    // just learns about a resize from the window instead, which on a wall never happens.
+    window.addEventListener('resize', read);
+    return () => window.removeEventListener('resize', read);
+  }, [tvStatic]);
+  // THE BASEMAP, AND THE CAMERA ITS PINS MUST BE PLACED WITH. One memo, one view: the picture
+  // and the overlay cannot come to disagree about where north is, because they are handed the
+  // same object (see buildTvStaticMapUrl).
+  //
+  // The drivers are in the fit and the stops are not filtered out of it: everything that will
+  // be drawn is framed, or something ends up off the edge of the wall with nothing saying so.
+  const tvStaticUrl = useMemo(() => {
+    if (!tvStatic || !tvPane) return null;
     return buildTvStaticMapUrl({
-      groups: { driver: showDrivers ? drivers : [], flagged, open, done },
-      // 640x416 is the Static Maps ceiling in the ratio of the map pane beside the flag rail
-      // (~1520x990). scale=2 doubles the pixels without doubling the billed request.
-      width: 640, height: 416, scale: 2, key: MAPS_KEY || '',
+      points: [...filteredStops, ...(showDrivers ? drivers : [])],
+      paneWidth: tvPane.w,
+      paneHeight: tvPane.h,
+      // scale=2 doubles the pixels Google returns without changing the extent or the price.
+      scale: 2,
+      key: MAPS_KEY || '',
     });
-    // tvStaticTick is the REFRESH: it is in the deps precisely so the URL changes on the timer
-    // and not on every render. eslint cannot see that, hence the disable.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tvStatic, filteredStops, drivers, showDrivers, boardFlags, dismissedFlags, tvStaticTick]);
+  }, [tvStatic, tvPane, filteredStops, drivers, showDrivers]);
   // A new picture is a new chance to load — clear the last failure so a transient 500 does not
   // leave "the map image did not load" on the wall for the rest of the day.
-  useEffect(() => { setTvStaticErr(false); }, [tvStaticUrl?.url]);
+  useEffect(() => { setTvStaticErr(null); tvProbedRef.current = null; }, [tvStaticUrl?.url]);
+  // ── THE FREIGHT, DRAWN BY THIS APP RATHER THAN BY GOOGLE ───────────────────
+  // Chad: "i want the thing to be identical with all the same icons." These are the icons —
+  // the very same stopMarkerIcon artwork the desktop board paints, built through
+  // PLAIN_GEOMETRY because the Maps script is never loaded on this screen, and placed over
+  // the basemap by the projection in lib/tv-static-map.js.
+  //
+  // NOTHING IS DROPPED. The old picture carried its pins in the URL and a Static Maps URL
+  // dies past 8192 characters, so a 700-stop day lost freight off the wall and printed
+  // "showing 401 of 640 pins" to stay honest about it. A DOM overlay has no such ceiling.
+  //
+  // NORTH FIRST, so southern pins paint on top of northern ones. That is Google's own default
+  // stacking on the live board, and matching it is the difference between "the same map" and
+  // "the same map with the overlaps resolved the other way round".
+  const tvPins = useMemo(() => {
+    if (!tvStatic || !tvStaticUrl) return [];
+    const selectedDayKey = weekdayKeyFromDate(selectedDate);
+    const positioned = filteredStops.filter((s) => s.lat != null && s.lng != null);
+    const locCounts = buildLocCounts(positioned);
+    const out = [];
+    for (const s of positioned) {
+      const at = projectToPercent(s, tvStaticUrl.view);
+      if (!at) continue;
+      out.push({
+        key: s.stopNbr,
+        lat: s.lat,
+        at,
+        icon: stopMarkerIcon(PLAIN_GEOMETRY, s, notes.get(s.matchKey), {
+          selectedDayKey,
+          sameLocCount: locCounts.get(stopLocKey(s)) || 1,
+          tractorDelivered: tractorLocs.has(s.matchKey),
+        }),
+      });
+    }
+    out.sort((a, b) => b.lat - a.lat);
+    return out;
+  }, [tvStatic, tvStaticUrl, filteredStops, notes, tractorLocs, selectedDate]);
+  // THE TRUCKS, same artwork and same size as the live board — and the same name plate, which
+  // is what a room actually reads a truck by. They ride above the freight, as they do there.
+  const tvTrucks = useMemo(() => {
+    if (!tvStatic || !tvStaticUrl || !showDrivers) return [];
+    const now = Date.now();
+    const out = [];
+    for (const d of drivers) {
+      const at = projectToPercent(d, tvStaticUrl.view);
+      if (!at) continue;
+      out.push({ key: d.vehicleNumber || d.driverId || `${d.lat},${d.lng}`, at, ...driverLabelLines(d, now) });
+    }
+    return out;
+  }, [tvStatic, tvStaticUrl, drivers, showDrivers]);
   useEffect(() => {
     if (!tvMode || !google || !mapRef.current) return undefined;
     const listener = google.maps.event.addListenerOnce(mapRef.current, 'tilesloaded', () => setTvMapDrew(true));
@@ -13829,32 +13952,112 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
 
         <div className="flex-1 flex min-h-0">
           {/* ── THE MAP ─────────────────────────────────────────────────────── */}
-          <div className="flex-1 relative min-w-0">
+          <div ref={tvStatic ? tvPaneRef : null} className="flex-1 relative min-w-0 overflow-hidden">
             {/* ── THE MAP: A PICTURE, OR THE LIVE ONE ────────────────────────────────
                 A wall display is the one screen here that cannot be interacted with, so
                 everything the JS map buys over an image is an interaction nobody performs —
                 and the price was a WebGL-capable modern browser on a 2020 television, which
-                is what failed twice. object-contain, not cover: a wall map that silently
-                crops the top of the territory is worse than one with a margin. */}
+                is what failed twice.
+
+                GOOGLE DRAWS THE ROADS; THIS APP DRAWS THE FREIGHT over them, one absolutely
+                positioned pin per stop, from the same stopMarkerIcon the desktop board uses.
+                Chad: "i want the thing to be identical with all the same icons."
+
+                AND THE PICTURE FILLS THE FRAME. It used to be object-contain over a fixed
+                640x416 asked for on the strength of a guessed pane ratio, which is where the
+                black bars down both sides came from. The image is now requested in the pane's
+                MEASURED ratio, so there is nothing left to letterbox and no object-fit to do
+                it with — which is also what makes the per-cent pin positions exact, since the
+                picture and the pane are then the same rectangle. */}
             {tvStatic ? (
               tvStaticUrl ? (
-                <img
-                  src={tvStaticUrl.url}
-                  alt=""
-                  className="absolute inset-0 w-full h-full object-contain bg-slate-900"
-                  onError={() => setTvStaticErr(true)}
-                  onLoad={() => setTvStaticErr(false)}
-                />
+                <>
+                  <img
+                    src={tvStaticUrl.url}
+                    alt=""
+                    className="absolute inset-0 w-full h-full bg-slate-900"
+                    onError={() => probeTvImage(tvStaticUrl.url)}
+                    onLoad={() => setTvStaticErr(null)}
+                  />
+                  {/* THE PINS. pointer-events-none throughout: there is no pointer on a wall,
+                      and a stray mouse must not be able to sit on top of the Filters panel. */}
+                  <div className="absolute inset-0 pointer-events-none">
+                    {tvPins.map((p) => (
+                      <img
+                        key={p.key}
+                        // NAMED SO A GUARD CAN CHECK IT. Every stop's position on this wall is
+                        // arithmetic nobody can eyeball — a projection wrong by a few pixels
+                        // still looks exactly like a working map, which is the worst failure
+                        // available here. scripts/verify-tv-map.mjs re-derives each of these
+                        // from the picture's own URL and compares.
+                        data-tv-pin={p.key}
+                        src={p.icon.url}
+                        alt=""
+                        className="absolute"
+                        style={{
+                          left: `${p.at.left}%`,
+                          top: `${p.at.top}%`,
+                          width: p.icon.scaledSize.width,
+                          height: p.icon.scaledSize.height,
+                          // The anchor is the point of the pin that sits ON the building —
+                          // the same offset the JS map applies. Without it every stop on the
+                          // wall is half an icon north-west of where it actually is.
+                          marginLeft: -p.icon.anchor.x,
+                          marginTop: -p.icon.anchor.y,
+                        }}
+                      />
+                    ))}
+                    {tvTrucks.map((t) => (
+                      <div key={t.key} data-tv-truck={t.key} className="absolute" style={{ left: `${t.at.left}%`, top: `${t.at.top}%`, opacity: t.stale ? 0.55 : 1 }}>
+                        <img
+                          src={truckSvg(DRIVER_TINT)}
+                          alt=""
+                          className="absolute"
+                          style={{
+                            width: DRIVER_MARKER_PX,
+                            height: DRIVER_MARKER_PX,
+                            marginLeft: -DRIVER_MARKER_PX / 2,
+                            marginTop: -DRIVER_MARKER_PX / 2,
+                          }}
+                        />
+                        {/* The name plate, in the live board's own dimensions — Chad asked for
+                            the status words off and the type down, and that work is in
+                            lib/driver-label.js; this only places what it returns. */}
+                        {showDriverLabels && (
+                          <div
+                            className="absolute whitespace-nowrap text-center rounded"
+                            style={{
+                              transform: `translate(-50%, ${DRIVER_LABEL_OFFSET_PX}px)`,
+                              background: 'rgba(255,255,255,0.85)',
+                              border: '1px solid rgba(0,0,0,0.1)',
+                              padding: '1px 5px',
+                              fontSize: 10,
+                              lineHeight: 1.25,
+                              boxShadow: '0 1px 2px rgba(0,0,0,0.08)',
+                            }}
+                          >
+                            <div style={{ color: '#1e5b92', fontWeight: 600 }}>{t.line1}</div>
+                            {t.line2 && <div style={{ color: '#555', fontSize: 9 }}>{t.line2}</div>}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </>
               ) : (
                 // NO PICTURE IS SAID, never left as an empty frame — the same rule as the
-                // flag rail. Which of the two reasons it is matters, so both are named.
+                // flag rail. Which of the three reasons it is matters, so all three are named:
+                // a key that is not on this build, a board with nothing positioned on it, and
+                // the one-frame gap before the pane has been measured.
                 <div className="absolute inset-0 flex items-center justify-center bg-slate-900 text-center px-8">
                   <div>
                     <div className="text-2xl font-bold text-slate-300">
-                      {MAPS_KEY ? 'No stops to plot yet' : 'No map key on this build'}
+                      {!MAPS_KEY ? 'No map key on this build' : !tvPane ? 'Sizing the map…' : 'No stops to plot yet'}
                     </div>
                     <div className="text-base text-slate-500 mt-2">
-                      {MAPS_KEY ? 'the board has no positioned stops for this day' : 'VITE_GOOGLE_MAPS_API_KEY is not set'}
+                      {!MAPS_KEY ? 'VITE_GOOGLE_MAPS_API_KEY is not set'
+                        : !tvPane ? 'measuring the screen so the picture fits it exactly'
+                          : 'the board has no positioned stops for this day'}
                     </div>
                   </div>
                 </div>
@@ -13886,16 +14089,11 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                 drawnAsImage={tvStatic}
               />
             </div>
-            {/* THE CAP IS PRINTED. A URL holds a few hundred pins and a bad day holds seven
-                hundred stops, so something gets dropped (trucks and flagged stops survive
-                first — see packMarkers). A map quietly showing 400 of 700 reports a lighter
-                morning than the one being worked, which is the same failure as a flag rail
-                that truncates in silence. */}
-            {tvStatic && tvStaticUrl && tvStaticUrl.shown < tvStaticUrl.total && (
-              <div className="absolute bottom-4 right-4 z-[20] rounded-lg bg-slate-900/85 border border-slate-600 px-3 py-1.5 text-sm font-semibold text-slate-300">
-                showing {tvStaticUrl.shown.toLocaleString()} of {tvStaticUrl.total.toLocaleString()} pins
-              </div>
-            )}
+            {/* THERE IS NO PIN CAP TO PRINT ANY MORE. This corner used to carry "showing 401
+                of 640 pins", because the pins rode in the URL and a Static Maps URL dies past
+                8192 characters — so a 700-stop day genuinely lost freight off the wall and the
+                chip existed to stay honest about it. The overlay has no such ceiling and drops
+                nothing, so the chip is gone rather than left saying a reassuring nothing. */}
             {/* THE WAY OUT, kept faint. Chad: "i don't want anymore buttons on the screen."
                 Escape does the same job and is the documented exit; this exists so a mouse
                 that wanders onto the display has somewhere to click, and so the mode is not
@@ -13920,9 +14118,22 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                 · mapBlank     — the script loaded, raised nothing, and drew nothing. */}
             {(tvStaticErr || mapsError || mapBlank) && (
               <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[22] max-w-[70%] bg-red-900 border border-red-500 text-red-100 text-base font-semibold rounded-lg px-4 py-2 text-center">
-                {tvStaticErr
-                  ? 'The map image was refused. Most likely the Maps Static API is not enabled on this key — it is a separate API from Maps JavaScript in the Google console.'
-                  : mapsError || 'The map did not draw — Google loaded but painted nothing, and reported no error.'}
+                {tvStaticErr ? (
+                  tvStaticErr.pending
+                    ? 'The map image did not load — asking Google why…'
+                    : (() => {
+                      const why = tvImageFailure(tvStaticErr);
+                      return (
+                        <>
+                          <div>{why.headline}</div>
+                          {/* GOOGLE'S OWN WORDS, verbatim and quieter than the gloss above
+                              them. Whoever fixes this is going to paste that sentence into a
+                              search box, so it must be the sentence Google actually sent. */}
+                          {why.detail && <div className="text-sm font-normal text-red-200 mt-1">Google said: “{why.detail}”</div>}
+                        </>
+                      );
+                    })()
+                ) : (mapsError || 'The map did not draw — Google loaded but painted nothing, and reported no error.')}
               </div>
             )}
           </div>
@@ -17966,6 +18177,15 @@ const AREA_SELECT_SKIPS_PLANNED = (() => {
   try { return areaSelectSkipsPlanned(import.meta.env.VITE_ROUTING_AREA_SELECT_SKIPS_PLANNED); } catch { return true; }
 })();
 
+// Does step 1's "＋ Add selection" ACCEPT the stops already highlighted on the map instead of
+// arming a box draw? ON by default (v1.38.1). PUT IT BACK: VITE_ROUTING_ADD_SELECTION_ACCEPTS_HIGHLIGHT=off
+// and the button goes back to always arming the box — one switch covering the press, the label
+// and the hint, so there is no half-reverted state where the button says one thing and does
+// another. Build-time, so it costs a redeploy either way.
+const ADD_SELECTION_ACCEPTS_HIGHLIGHT = (() => {
+  try { return houseSwitchOn(import.meta.env.VITE_ROUTING_ADD_SELECTION_ACCEPTS_HIGHLIGHT); } catch { return true; }
+})();
+
 // Live-write (beta) gate — the routes-panel driver-assign + dispatch UI. UNLIKE the
 // routing beta this defaults OFF (live writes are opt-in): enable with env
 // VITE_NUVIZZ_WRITE_BETA='true', or force per-session with ?write=1 (?write=0 hides it).
@@ -19639,7 +19859,7 @@ function PreflightBanner({ pre, isMobile }) {
   );
 }
 
-function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
+function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = null, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, roadMatrixOn = false, onToggleRoadMatrix = null, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, savedAt = null, failedAt = null, isMobile, liveWrite }) {
   // The live-dispatch UI gate is now the gear toggle (prop) rather than the module-level
   // ?write=1/env const. Aliased to the original name so the gate sites below are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -19732,6 +19952,37 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = 
                 <NinjaIcon size={13} /> {isActive ? 'target' : 'set'}
               </label>
             )}
+            {/* THE SAVE LANDED, OR DID NOT — Chad, 2026-09-16: "I want a check mark somewhere
+                denoting that the save to nuvizz was successful", then "what about a card that
+                says did not save after I did send it?", then "can you make those flags to just
+                the left of the x". So it lives HERE: last thing before the ✕, on every card.
+                Until now the card said nothing either way — the only report was a dismissible
+                toast the next action overwrites, so a load NuVizz took, a load it REFUSED and a
+                load nobody touched all looked the same five minutes later.
+
+                Being in this group rather than in the collapse button also means clicking the
+                chip no longer collapses the card, which it did while it sat beside the name.
+
+                Green is earned ONLY by a confirmed write (markSaved) and red ONLY by a refusal
+                read back off the write's own result (markSaveFailed) — one writer each. The
+                rule is savedMark, which is tested; this renders what it returns, picks no
+                verdict of its own, and nothing else on the screen reads it. */}
+            {(() => {
+              const mk = savedMark({ savedAt, failedAt, dirty });
+              if (!mk.show) return null;
+              const tone = mk.kind === 'failed'
+                ? 'text-rose-800 bg-rose-100 border-rose-300'
+                : 'text-emerald-800 bg-emerald-100 border-emerald-300';
+              return (
+                <span
+                  data-card-saved={mk.kind}
+                  title={mk.title}
+                  className={`font-bold uppercase border rounded px-1 shrink-0 whitespace-nowrap ${tone} ${isMobile ? 'text-[10px]' : 'text-[9px]'}`}
+                >
+                  {mk.label}
+                </span>
+              );
+            })()}
             {/* The 44px min-WIDTH rule only fires on a button whose one child is an svg; this × is a
                 text glyph, so on a phone it was 44px tall and ~11px wide. Square it up on touch. */}
             <button onClick={onClose} className={`text-slate-400 hover:text-red-600 leading-none text-lg ${isMobile ? 'w-11 inline-flex items-center justify-center' : ''}`} aria-label={`Close route ${route.name || loadDisplayName(route.key) || ''}`}>×</button>
@@ -20055,6 +20306,13 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
   // order at open, so "dirty" = the staged order/membership differs, or a driver/dispatch is set.
   const [staged, setStaged] = useState({});        // key → { driverId, driverName, dispatch }
   const [baselines, setBaselines] = useState({});  // key → stopNbr[] (order at open / last save)
+  // key → ms of the last CONFIRMED write for that card. The ✓ SENT mark's only evidence
+  // that anything reached NuVizz, written in one place (markSaved) and pruned with the
+  // baseline when a card closes — so a reopened load never wears a tick from an hour ago.
+  const [savedAtByKey, setSavedAtByKey] = useState({});
+  // key → ms of the last REFUSED send for that card (markSaveFailed). Its mirror: written
+  // only where a refusal is actually read back, never on an attempt.
+  const [failedAtByKey, setFailedAtByKey] = useState({});
   const [confirm, setConfirm] = useState(null);
   const [busy, setBusy] = useState(false);
   const [closeGuard, setCloseGuard] = useState(null);
@@ -20074,6 +20332,18 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
     const liveKeys = new Set(wbRoutes.map((r) => r.key));
     // Prune closed routes (so a reopen re-seeds against the FRESH order, not a stale baseline),
     // then seed any newly-opened route's baseline = its order at open.
+    // The ✓ SENT stamp goes on the same rule: a closed card's history must not follow a
+    // reopened one, which is seeded from the board all over again.
+    setSavedAtByKey((prev) => {
+      let next = prev, changed = false;
+      for (const k of Object.keys(prev)) if (!liveKeys.has(k)) { if (!changed) { next = { ...prev }; changed = true; } delete next[k]; }
+      return changed ? next : prev;
+    });
+    setFailedAtByKey((prev) => {
+      let next = prev, changed = false;
+      for (const k of Object.keys(prev)) if (!liveKeys.has(k)) { if (!changed) { next = { ...prev }; changed = true; } delete next[k]; }
+      return changed ? next : prev;
+    });
     setBaselines((prev) => {
       let next = prev, changed = false;
       for (const k of Object.keys(prev)) if (!liveKeys.has(k)) { if (!changed) { next = { ...prev }; changed = true; } delete next[k]; }
@@ -20236,6 +20506,7 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
         // clips, naming where the untruncated text lives. Sep 10: the screen showed 300
         // characters of XML preamble with no indication anything followed it.
         showToast(`✗ ${name}: ${clipForToast(res?.error || rr.error || 'create failed')}`);
+        markSaveFailed([r.key]);   // the card says it too, after the toast is gone (v1.37.1)
         continue;
       }
       // Flip the card to its verified identity (same key), clean its dirty state, and belt-sync
@@ -20284,11 +20555,29 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
     if (pending.length) await sendPendingCreates(pending);
   };
 
-  const markSaved = (keys) => setBaselines((prev) => {
-    const n = { ...prev };
-    for (const k of keys) { const r = wbRoutes.find((x) => x.key === k); if (r) n[k] = r.order.slice(); }
-    return n;
-  });
+  const markSaved = (keys) => {
+    setBaselines((prev) => {
+      const n = { ...prev };
+      for (const k of keys) { const r = wbRoutes.find((x) => x.key === k); if (r) n[k] = r.order.slice(); }
+      return n;
+    });
+    // THE ONLY PLACE A CARD EARNS ITS ✓. markSaved runs on a CONFIRMED write and nowhere
+    // else — Beta returns long before it, a refusal never reaches it, and a partial save
+    // brings only the keys NuVizz said ok — so the tick cannot report an intent as an
+    // outcome. A wiring test pins that this stays the single writer.
+    const at = Date.now();
+    setSavedAtByKey((prev) => { const n = { ...prev }; for (const k of keys) n[k] = at; return n; });
+  };
+
+  // THE MIRROR, AND THE ONLY PLACE A CARD EARNS ITS ✗. Chad: "what about a card that says
+  // did not save after I did send it?" Called ONLY where a refusal has actually been read
+  // back off the write's own result — never on an attempt, never on a Beta run, never on a
+  // card nobody sent. A later markSaved outranks it by timestamp (savedMark decides), so a
+  // fixed-and-resent card goes green without anything having to remember to clear this.
+  const markSaveFailed = (keys) => {
+    const at = Date.now();
+    setFailedAtByKey((prev) => { const n = { ...prev }; for (const k of keys) if (k) n[k] = at; return n; });
+  };
 
   // Runs the real write. Called directly by onPanelSave with { loads, clientOpId } now that
   // the confirm popup is gone (falls back to the `confirm` state if ever called without args).
@@ -20454,9 +20743,19 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
         return nm && nm !== String(k) ? `${nm} (${k})` : String(k);
       };
       showToast(`✗ ${failed.map((l) => `${cardName(l)}: ${l.error || (l.steps || []).filter((s) => !s.ok).map((s) => s.error).join('; ')}`).join(' | ') || res.error || 'write failed'}${orphanMsg}`);
+      // …and the card keeps saying so after that toast is gone (v1.37.1). Same array the
+      // toast names, so the chip and the message can never disagree about which card failed.
+      markSaveFailed(failed.map(keyOf).filter(Boolean));
     } else if (!pendings.length) {
       if (res.ok) showToast(fired || cancelled ? `✓ ${fired} load(s) saved to NuVizz${cancelMsg}${noopMsg}${callsMsg}.${orphanMsg}${syncMsg}${finishedMsg}` : `Nothing to send — no changes actually fired.${orphanMsg}`);
-      else showToast(`✗ ${res.error || 'write failed'}${orphanMsg}`);
+      else {
+        showToast(`✗ ${res.error || 'write failed'}${orphanMsg}`);
+        // THE WHOLE CALL FAILED — no per-load results came back, so nothing above named a
+        // card. Every card in this payload that was not confirmed is a refusal, and without
+        // this the one failure mode with NO per-card detail would be the one that left the
+        // cards blank. okKeys is excluded so a partial success is never overwritten.
+        markSaveFailed(loads.map((l) => l.__key ?? l.routeName ?? l.loadNbr ?? l.loadId).filter((k) => k && !okKeys.includes(k)));
+      }
     }
     if (pendings.length) verifyPendingImports(pendings, loads, keyOf);
   };
@@ -20718,6 +21017,8 @@ function RoutingWorkbench({ wbRoutes, preflightByKey = null, notes = null, dayKe
             staged={staged[r.key]}
             onStage={(patch) => setStageFor(r.key, patch)}
             dirty={isDirty(r)}
+            savedAt={savedAtByKey[r.key] || null}
+            failedAt={failedAtByKey[r.key] || null}
             isMobile={isMobile}
             liveWrite={liveWrite}
           />
@@ -21138,7 +21439,7 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
 // ON THE MAP, top-right, on both views. It went to the app bar in v1.23.0 alongside the
 // dispatch Map's and came back with it in v1.23.1 — Chad: "move filters back to where it
 // was." See FilterToolbar for why the bar lost that argument."
-function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setShowRoutes, hideLabels, setHideLabels, hideStem = false, setHideStem = null }) {
+function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setShowRoutes, hideLabels, setHideLabels, hideStem = false, setHideStem = null, hideTerminal = false, setHideTerminal = null }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -21151,7 +21452,7 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setSho
   }, [open]);
   // Satellite is no longer in this popover (it lives on the map, in the tool rail), so it no
   // longer counts toward "some filter is on".
-  const anyOn = unplannedOnly || showRoutes || hideLabels || hideStem;
+  const anyOn = unplannedOnly || showRoutes || hideLabels || hideStem || hideTerminal;
   return (
     <div className="absolute top-2 right-2 z-20" ref={ref}>
       <button
@@ -21164,6 +21465,7 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setSho
       </button>
       {open && (
         <div className="absolute right-0 mt-1 w-52 bg-white border border-slate-300 rounded-lg shadow-xl px-3 py-1.5 text-[12px]">
+          {setHideTerminal && <MapFilterToggle label="Hide terminal markers" checked={hideTerminal} onChange={setHideTerminal} />}
           <MapFilterToggle label="Unplanned only" checked={unplannedOnly} onChange={setUnplannedOnly} />
           <MapFilterToggle label="Hide place labels" checked={hideLabels} onChange={setHideLabels} />
           <MapFilterToggle label="Show routes" checked={showRoutes} onChange={setShowRoutes} />
@@ -22011,6 +22313,14 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // (satellite base on, nothing hidden). unplannedOnly filters the rendered stops; satellite swaps
   // the map base; showRoutes overlays each load's delivery-sequence polyline.
   const [routeUnplannedOnly, setRouteUnplannedOnly] = useState(() => { try { return localStorage.getItem('routing.mapUnplannedOnly') === 'on'; } catch { return false; } });
+  // Chad, 2026-09-16: "i want hide termianl markers and hide stem out added to my routing
+  // filters". The stem-out half landed in v1.36.2; this is the other half. Terminal markers are
+  // the DEPOT rows — hiding them declutters the board without taking one customer delivery off
+  // the screen, which is what makes it safe on the screen where loads are BUILT. (The dispatch
+  // Map's "Hide stem out" hides the first delivery of every load; Routing's deliberately does
+  // not, and this one removes no freight either.)
+  const [routeHideTerminal, setRouteHideTerminal] = useState(() => { try { return localStorage.getItem('routing.mapHideTerminal') === 'on'; } catch { return false; } });
+  useEffect(() => { try { localStorage.setItem('routing.mapHideTerminal', routeHideTerminal ? 'on' : 'off'); } catch { /* ignore */ } }, [routeHideTerminal]);
   const [routeSatellite, setRouteSatellite] = useState(() => { try { return localStorage.getItem('routing.mapSatellite') !== 'off'; } catch { return true; } });
   const [routeShowRoutes, setRouteShowRoutes] = useState(() => { try { return localStorage.getItem('routing.mapShowRoutes') === 'on'; } catch { return false; } });
   useEffect(() => { try { localStorage.setItem('routing.mapUnplannedOnly', routeUnplannedOnly ? 'on' : 'off'); } catch { /* ignore */ } }, [routeUnplannedOnly]);
@@ -22028,7 +22338,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   useEffect(() => { try { localStorage.setItem('routing.hideLabels', routeHideLabels ? 'on' : 'off'); } catch { /* ignore */ } }, [routeHideLabels]);
   const resetRoutingLayout = useCallback(() => {
     leftPanel.onDoubleClick(); rightPanel.onDoubleClick();
-    setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true); setRouteHideStem(false); setLeftPanelOn(false); setRightCollapsed(false);
+    setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true); setRouteHideStem(false); setRouteHideTerminal(false); setLeftPanelOn(false); setRightCollapsed(false);
   }, [leftPanel, rightPanel]);
   // Nudge Google Maps to re-render when a side panel resizes (the canvas changed width).
   useEffect(() => {
@@ -22190,11 +22500,14 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // up (open in Compare). A pulled-up route always renders in full on the map regardless of the
   // filter, so its planned stops + polyline stay visible while everything else stays hidden.
   const positioned = useMemo(() => {
-    if (!routeUnplannedOnly) return positionedAll;
-    return positionedAll.filter((s) => s.isUnplanned
+    // Terminal first: it removes the depot rows and never a customer's freight, so it composes
+    // with "Unplanned only" instead of fighting it.
+    const base = routeHideTerminal ? positionedAll.filter((s) => !s.isTerminal) : positionedAll;
+    if (!routeUnplannedOnly) return base;
+    return base.filter((s) => s.isUnplanned
       || (s.routeName != null && openRouteKeys.has(String(s.routeName)))
       || (s.loadNbr != null && openRouteKeys.has(String(s.loadNbr))));
-  }, [positionedAll, routeUnplannedOnly, openRouteKeys]);
+  }, [positionedAll, routeUnplannedOnly, routeHideTerminal, openRouteKeys]);
   // Lookup map for cards / manifest / the Save payload — built from the UNFILTERED set, so a
   // stop staged onto an open card never vanishes from the card rows, printed manifest, or
   // re-sequencing while "Unplanned only" hides it on the MAP (markers use `positioned` below).
@@ -24380,24 +24693,45 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       return next;
     });
   }, [wbRoutes.length, isMobile]);
-  // Arm the BOX draw from step 1 of the Setup panel. Chad: "left panel should have an add
-  // selection button." Box and Lasso have lived ONLY on the map's left-edge rail since
-  // v0.29.59 — two unlabelled 36px icons over a satellite photo — while step 1's own hint
-  // told the dispatcher to go and find them there. The panel's one selection button takes
-  // the WHOLE viewport, so grabbing one dock out of a cluster meant zooming until nothing
-  // else was on screen. Same beginMode the rail calls, so the armed block, its Cancel, Esc
-  // and the rail's own highlight all behave identically — one mode, two doors into it.
-  // PHONE: drop the sheet. The corners are tapped ON the map and the sheet is half the
-  // screen (the same move armNinjaFromPanel makes), and the toast carries the instruction
-  // the dropped sheet just took with it — an armed mode with nothing on screen to explain
-  // it reads as a broken map.
+  // WHAT IS ALREADY LIT ON THE MAP, and not yet in the selection. Chad: "i don't want the add
+  // selection to prompt me to drag a box i want it to accept what i have already selected" →
+  // "accept the stops already highlighted on map." The map's own definition of highlighted is
+  // one line in useLegendInventory (selected OR a search hit), so the addable half is the
+  // burnt-orange search hits. Read off what the map IS DRAWING, so a hit with no geocode —
+  // no pin, un-box-selectable, dropped by any build — can never ride in. Rule + 11 tests in
+  // lib/routing-select.js; this is the thin edge.
+  const highlightedAddable = useMemo(
+    () => (ADD_SELECTION_ACCEPTS_HIGHLIGHT ? highlightedForSelection(drawnStops, { searchMatchIds, selectedIds }) : []),
+    [drawnStops, searchMatchIds, selectedIds],
+  );
+  // Step 1's "Add selection" button. Chad asked for it in v1.19.0 ("left panel should have an
+  // add selection button") because Box and Lasso have lived ONLY on the map's left-edge rail
+  // since v0.29.59 — two unlabelled 36px icons over a satellite photo — while step 1's own
+  // hint told the dispatcher to go and find them there.
+  //
+  // IT ACCEPTS BEFORE IT ASKS. Search the grid for a customer, the pins go burnt orange, press
+  // this and they are in — no box, no second gesture, and the selection is exactly what was on
+  // screen. It hands them to addEnclosed, the SAME path box and lasso use, so every skip still
+  // holds: a stop on an open Compare card, one another dispatcher's device is staging, and one
+  // already planned onto a sent load are all left alone and NAMED in the action line. A second
+  // door into the existing rule, never a second rule.
+  //
+  // WITH NOTHING LIT it falls back to arming the box — same beginMode the rail calls, so the
+  // armed block, its Cancel, Esc and the rail's own highlight behave identically. A button that
+  // goes dead when you have not searched is worse than one that offers the old way.
+  // PHONE, box path only: drop the sheet. The corners are tapped ON the map and the sheet is
+  // half the screen (the same move armNinjaFromPanel makes), and the toast carries the
+  // instruction the dropped sheet just took with it — an armed mode with nothing on screen to
+  // explain it reads as a broken map. The ACCEPT path leaves the sheet up on purpose: there is
+  // nothing to tap, and dropping it would hide the tally that just changed.
   const armSelectionFromPanel = useCallback(() => {
+    if (highlightedAddable.length) { addEnclosed(highlightedAddable); return; }
     beginMode('box');
     if (isMobile) {
       setSheetOpen(false);
       showMapToast('Box select on — tap two corners on the map to add that group. Tap the Box tool (left edge) again to cancel.');
     }
-  }, [beginMode, isMobile, showMapToast]);
+  }, [highlightedAddable, addEnclosed, beginMode, isMobile, showMapToast]);
   // Mobile: whenever a route is opened into the Compare panel — the FIRST one or any later one —
   // jump to the Setup tab (which hosts the Compare workbench + the Ninja toggle) and open the sheet.
   // This used to fire for the first card only (0 → 1). With the sheet collapsed by default and the
@@ -24846,16 +25180,22 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
               <button onClick={addInView} className="flex-1 px-2 py-2 text-xs rounded border-2 font-semibold hover:bg-blue-50 active:bg-blue-100" style={{ borderColor: BRAND, color: BRAND }}>＋ Add stops in view</button>
               <button onClick={clearSelection} className="px-3 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">Clear</button>
             </div>
-            {/* THE DRAW TOOL, IN THE PANEL — the requested "add selection" button. It arms the
-                same box select the map rail arms (armSelectionFromPanel → beginMode('box')), so
-                the amber block below replaces these buttons the instant it is on and Cancel/Esc
-                still end it. Full width on its own row rather than a third chip beside Clear: at
-                the 290px the Setup panel actually runs, three buttons on one line put this one at
-                ~90px and truncate its label. */}
-            <button onClick={armSelectionFromPanel} className="w-full px-2 py-2 text-xs rounded border-2 font-semibold hover:bg-blue-50 active:bg-blue-100 inline-flex items-center justify-center gap-1.5" style={{ borderColor: BRAND, color: BRAND }}>
-              <Square size={13} /> ＋ Add selection <span className="font-normal opacity-70">({isMobile ? 'tap 2 corners' : 'drag a box'})</span>
+            {/* THE REQUESTED "add selection" BUTTON, AND IT SAYS WHAT IT WILL DO BEFORE IT IS
+                PRESSED. With search hits lit on the map it ACCEPTS them (Chad: "accept the stops
+                already highlighted on map"); with nothing lit it arms the same box select the map
+                rail arms, so the amber block below replaces these buttons the instant it is on and
+                Cancel/Esc still end it. A button whose label changes with what it is about to do
+                beats a fixed label that is wrong half the time. Full width on its own row rather
+                than a third chip beside Clear: at the 290px the Setup panel actually runs, three
+                buttons on one line put this one at ~90px and truncate its label. */}
+            <button onClick={armSelectionFromPanel} data-add-selection-mode={highlightedAddable.length ? 'accept' : 'box'} className="w-full px-2 py-2 text-xs rounded border-2 font-semibold hover:bg-blue-50 active:bg-blue-100 inline-flex items-center justify-center gap-1.5" style={{ borderColor: BRAND, color: BRAND }}>
+              <Square size={13} /> {highlightedAddable.length > 0
+                ? <>＋ Add {highlightedAddable.length} highlighted <span className="font-normal opacity-70">(search hits)</span></>
+                : <>＋ Add selection <span className="font-normal opacity-70">({isMobile ? 'tap 2 corners' : 'drag a box'})</span></>}
             </button>
-            <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. <b>Add selection</b> draws a box around a group; the <b>Lasso</b> and <b>Ninja</b> tools are on the map (left edge), or pan/zoom then <b>Add stops in view</b>.</div>
+            <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. {highlightedAddable.length > 0
+              ? <>Search the grid below and the matches light up <b style={{ color: SEARCH_MATCH_COLOR }}>orange</b> on the map — <b>Add {highlightedAddable.length} highlighted</b> takes them all.</>
+              : <><b>Add selection</b> draws a box around a group{ADD_SELECTION_ACCEPTS_HIGHLIGHT ? ', or search the grid below and it takes the highlighted matches instead' : ''}; the <b>Lasso</b> and <b>Ninja</b> tools are on the map (left edge), or pan/zoom then <b>Add stops in view</b>.</>}</div>
           </>
         )}
         {lastAction && <div className="text-[11px] text-slate-500">{lastAction}</div>}
@@ -25244,7 +25584,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         {appBarSlot && createPortal(phoneGearEl, appBarSlot)}
         <div className="flex-1 relative min-w-0">
           <div ref={mapDiv} className="absolute inset-0" />
-          <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} hideStem={routeHideStem} setHideStem={setRouteHideStem} />
+          <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} hideStem={routeHideStem} setHideStem={setRouteHideStem} hideTerminal={routeHideTerminal} setHideTerminal={setRouteHideTerminal} />
           {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button),
               with the Board Flags chip stacked above it. */}
           <div className="absolute top-12 right-2 z-[15] max-w-[230px] flex flex-col items-end gap-1">{flagsOverlay()}{statusCard()}</div>
@@ -25461,7 +25801,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       {/* Center: the map canvas */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
-        <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} hideStem={routeHideStem} setHideStem={setRouteHideStem} />
+        <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} hideStem={routeHideStem} setHideStem={setRouteHideStem} hideTerminal={routeHideTerminal} setHideTerminal={setRouteHideTerminal} />
         {/* THE BOARD-STATUS CARD IS NOT ON THE MAP ANY MORE (desktop). It is portalled onto
             the app bar, left of More — see #desktop-appbar-slot for the geometry and why
             that position is the one that keeps its dropdown off Filters and the flags.
