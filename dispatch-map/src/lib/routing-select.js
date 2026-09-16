@@ -972,35 +972,6 @@ export function profileDraftCheck(draft, saved) {
   return { dirty, valid: problems.length === 0, problems, normalized };
 }
 
-// ── WHAT IS IN NUVIZZ, AND WHAT IS STILL ONLY ON THIS SCREEN (v1.31.0) ───────
-// Chad: "it's hard to know when something is pushed to nuvizz — and if i don't push to
-// nuvizz, when i close the routes out of the compare panel it should just let them go and
-// not act like those stops are on the route."
-
-// The chip on a Compare card's header. Until now the ONLY thing on an existing load's card
-// that said anything about NuVizz was the Save button in the workbench header — which only
-// renders while something is dirty, so "saved" was expressed by a button DISAPPEARING, and a
-// toast you may have dismissed. A card that has been sent and a card that was never touched
-// looked identical. `savedAt` is set only where markSaved runs: a CONFIRMED write.
-//
-// Beta mode wins over every not-sent wording, because in Beta the Save button is live, blue
-// and labelled "Save (2)" and sends nothing at all — the most expensive thing on this screen
-// to misread.
-export function cardSendState({ dirty = false, pendingCreate = false, savedAt = null, liveMode = true } = {}) {
-  if (!dirty && savedAt) {
-    return { kind: 'sent', tone: 'green', label: 'Sent to NuVizz', title: 'Every staged change on this card was written to NuVizz and verified.' };
-  }
-  if (!dirty && !pendingCreate) {
-    return { kind: 'clean', tone: 'slate', label: 'Nothing to send', title: 'This card matches the load as NuVizz holds it — there is nothing staged to send.' };
-  }
-  if (!liveMode) {
-    return { kind: 'beta', tone: 'slate', label: 'Beta — Save sends nothing', title: 'The workbench is in Beta: Save only simulates. Switch to ● LIVE to write NuVizz.' };
-  }
-  if (pendingCreate) {
-    return { kind: 'new', tone: 'amber', label: 'Not created in NuVizz', title: 'This route exists only on this screen — Save creates it in NuVizz with its stops.' };
-  }
-  return { kind: 'unsent', tone: 'amber', label: 'Not sent to NuVizz', title: 'This card has staged changes that are not in NuVizz yet. Close it and they are dropped.' };
-}
 
 // ── THE PANEL'S SEND CONTROL, AND WHY IT IS NEVER HIDDEN (v1.36.0) ──────────
 //
@@ -1027,7 +998,7 @@ export function cardSendState({ dirty = false, pendingCreate = false, savedAt = 
 //
 // BETA STILL WINS OVER EVERY SEND WORDING (the v1.33.0 rule): in Beta the button must never
 // say "Send to NuVizz", because in Beta it sends nothing at all.
-export function sendControlState({ openCards = 0, dirtyCards = 0, anySaved = false, liveMode = true } = {}) {
+export function sendControlState({ openCards = 0, dirtyCards = 0, liveMode = true } = {}) {
   const open = Number(openCards) || 0;
   const dirty = Number(dirtyCards) || 0;
   if (open <= 0) return { kind: 'none', tone: 'slate', label: '', title: '', actionable: false };
@@ -1036,29 +1007,9 @@ export function sendControlState({ openCards = 0, dirtyCards = 0, anySaved = fal
       ? { kind: 'send', tone: 'red', label: `Send to NuVizz (${dirty})`, actionable: true, title: `Send the staged changes on ${dirty} card(s) to NuVizz now.` }
       : { kind: 'beta', tone: 'blue', label: `Save (${dirty}) — Beta`, actionable: true, title: 'The workbench is in Beta: Save only simulates and NOTHING is sent. Switch to ● LIVE to write NuVizz.' };
   }
-  if (anySaved) {
-    return { kind: 'sent', tone: 'green', label: '\u2713 All sent to NuVizz', actionable: false, title: 'Every staged change on these cards has been written to NuVizz and verified.' };
-  }
-  return { kind: 'clean', tone: 'slate', label: 'Nothing to send', actionable: false, title: 'Nothing is staged on these cards — they match the loads as NuVizz holds them.' };
-}
-
-// WHICH PLAN THE MAP PAINTS AS ROUTES — and the reason this is a rule and not an expression.
-//
-// It was `wbRoutesColored.length ? wbRouteInfo : routeInfo`: open cards win, otherwise the
-// BUILD's own plan paints. That was right while a finished build sat in the result panel
-// until somebody pressed "Stage onto Compare cards". Since v1.19.0 a build STAGES ITSELF, so
-// the normal path is build → cards → close the cards, and closing the last one fell straight
-// through to the engine plan: the same stops came back numbered, route-coloured and joined by
-// a polyline, on a board where nothing had been sent to NuVizz. Closing a card is the
-// dispatcher saying "not this" — the stops have to go back to looking like work to do.
-//
-// So once a plan HAS been staged, the cards are the working set and nothing else paints:
-// closing them all releases the stops. A plan never staged still paints, which is what makes
-// the engine result visible on the map before it is staged. The way back is the result
-// panel's own "Stage onto Compare cards again →".
-export function routePaintSource({ openCards = 0, planStaged = false } = {}) {
-  if (Number(openCards) > 0) return 'cards';
-  return planStaged ? 'none' : 'plan';
+  // Nothing staged → nothing rendered, exactly as the header behaved before v1.33.0
+  // (whose "All sent / Nothing to send" text was reverted in v1.36.1).
+  return { kind: 'none', tone: 'slate', label: '', title: '', actionable: false };
 }
 
 // ── WHICH TRUCK RUNS THIS LOAD — ONE TAP, AND IT STICKS (v1.34.0) ────────────
