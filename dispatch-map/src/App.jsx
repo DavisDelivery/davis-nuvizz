@@ -146,7 +146,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.36.1';
+const APP_VERSION = '1.36.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -200,6 +200,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.36.2', 'THE STEM-OUT TOGGLE IS UNDER FILTERS. Chad, Sep 15, on a 71-mile red line from the depot to stop 1: \u201ci didn\u2019t ask for the stem out to come back \u2026 it should be a filter toggle under filters to hide the stem out.\u201d Read off the code: no PR that day touched the stem line. \u201cHide stem-out line\u201d has lived in the gear since v1.14.0 as a PER-DEVICE setting (routing.hideStem), so a browser where it was never switched on draws the line \u2014 the same shape as the Send button in v1.36.0. The control MOVES to the map\u2019s Filters popover on both views (desktop and phone), beside Unplanned only / Hide place labels / Show routes, and leaves the gear so one setting has one switch. NOT changed: the default (the line draws until the box is ticked) and the setting\u2019s name \u2014 a device that had it hidden keeps it hidden. One commit, one revert.'],
   ['1.36.1', 'v1.33.0 (#932) IS REVERTED \u2014 the \u201cNOT SENT TO NUVIZZ\u201d chip and everything that shipped with it. Chad, Sep 15, 8:30 PM, with CHE sent to NuVizz and its stops coming back up in a box-select: \u201cyou have majorly screwed something up messing with things i didn\u2019t ask to be messed with \u2026 WE just need to roll back one of the pr\u2019s that made these changes go back to before the changes.\u201d Of the thirteen merges that day, #932 is the only one whose diff touches the Routing map\u2019s paint or selection path (routePaintSource / planStaged / effectiveRouteInfo); every other PR has zero hits there. This puts back, byte for byte, everything #932 changed: the per-card NOT SENT / SENT / NOTHING TO SEND chip, the header\u2019s \u201cAll sent / Nothing to send\u201d text, the rule that closing the last staged card paints nothing instead of the build\u2019s plan, AND part (3) of the same PR \u2014 the truck skid/weight class floors in the build, the result-panel substitution notes and the Trucks-mode profile editor\u2019s draft/Save \u2014 because the ask was the whole PR, not the parts. KEPT: v1.36.0\u2019s Send to NuVizz button, the RWB badge and the LIVE/Beta switch stay outside the per-device gear (Chad asked for that button by name); with nothing staged the header shows no control, exactly as before v1.33.0. What the board itself said before this was decided, zero NuVizz calls: 007176785 is PLANNED on CHE seq 12 on the 09-16 day document, stamped by the 8:29 PM save (boardSync patched 17/17) \u2014 the Send worked; NuVizz\u2019s own un-planned snapshot from the 8:25 PM scan still lists it un-planned, which is the pool the Last-7-days window reads. NEW RULE IN CLAUDE.md: no change to the Routing workbench\u2019s send / stage / paint / selection behaviour without explicit per-request permission from Chad.'],
   ['1.36.0', 'THE SEND BUTTON WAS BEHIND A PER-DEVICE SWITCH, AND THE CARD SAYING \u201cNOT SENT\u201d COULD NOT SEE IT. Chad, with a built CHE load open and two orders struck off: \u201cwhere is my save send to nuvizz button? ... i need this fixed in a hurry i have no way to send these loads to nuvizz.\u201d READ OFF THE CODE, NOT GUESSED AT \u2014 four controls were missing from his screenshot and all four share one gate: the Save button, the \ud83d\udd17 RWB engine badge, the \u25cf LIVE / \u25cb Beta switch and the card\u2019s driver row. That gate is `liveWrite`, a PER-DEVICE localStorage flag (\u2018routing.liveWrite\u2019) sitting in the Routing gear as \u201cLive dispatch (assign driver + dispatch)\u201d. It seeds from VITE_NUVIZZ_WRITE_BETA \u2014 which defaults FALSE \u2014 the first time a browser loads the app, then writes its own answer back to localStorage and never asks again. So a new device, a private window, cleared site data or one stray click leaves a dispatcher with a fully working planning screen and NO WAY TO SEND ANYTHING OFF IT, and nothing on screen says why. WHAT MADE IT UNREADABLE was v1.33.0: the card chip added there is not behind that gate, so the two ended up on one screen \u2014 an amber NOT SENT TO NUVIZZ over a header offering nothing to send it with. THE GEAR IS ABOUT THE DRIVER-ASSIGN + DISPATCH ROW (its own comment says so) and now covers that row and nothing else. Sending what is already staged is not an optional extra on this screen, it is the screen\u2019s entire purpose, and the two mistakes are nowhere near symmetrical: a hidden Send blocks the morning outright while looking like a working app, and a Send shown when it \u201cneed not\u201d be still cannot write without \u25cf LIVE mode AND the server\u2019s own NUVIZZ_WRITE_ENABLED \u2014 two gates, both untouched. IT IS ALSO NAMED FOR WHAT IT DOES: \u201cSend to NuVizz (2)\u201d in Live, because that is what the dispatcher went looking for; Beta keeps \u201cSave (2) \u2014 Beta\u201d, since BETA STILL WINS OVER EVERY SEND WORDING (v1.33.0) \u2014 there the button sends nothing at all. THREE THINGS THAT TRAVELLED WITH IT, each the same failure in quieter clothes: the close-confirmation, so a card holding staged changes no longer closes SILENTLY and drops them on the very screen that just called them unsent; the guard modal behind it; and the result toast, which is the Send button\u2019s only report channel \u2014 ungated, a save\u2019s \u201c\u2713 1 load(s) saved\u201d and every \u2717 refusal from NuVizz went nowhere. THE RULE IS A TESTED MODULE, not a condition in JSX: sendControlState in lib/routing-select.js, and the pin that matters walks every card state that reads as not-in-NuVizz and asserts the panel holding that card offers a control that DOES something \u2014 which is exactly the invariant this screen broke. 7 new tests. Zero NuVizz calls: no scan, no live read, diagnosed from the source.'],
   ['1.35.0', 'THE DAY ROW CAN SAY WHAT HAPPENED TO IT, AND THE LEDGER IT READS HAD BEEN RECORDING ALL ALONG. Chad, on \u201c0 to fix of 912 stops \u00b7 Nothing wrong with this day\u2019s addresses\u201d the morning after he had corrected one himself: \u201ci have a history in a drop down for any addresses that were under a day like this one i fixed one and there should be a dropdown for this day that i can see the ones that i fixed and should be in the regular history as well as well as any that were fixed in nuvizz or reconsigned it should be the history of all things.\u201d EVERY ONE OF THOSE WAS ALREADY IN THE LEDGER and none of them could reach that row. An address saved in this app lands as `override`, carrying whether the same edit also reached the ORDER in NuVizz; a Reset lands as `override-reset`; anything the carrier did to us \u2014 a RECONSIGNMENT included, which is the case refresh-stops-core\u2019s own detector re-enriches on \u2014 lands as `scan`. All of them are filed under the BOARD DAY the stop sat on, which is the exact key this queue groups by, so the drawer is a view over a ledger rather than a new record of anything. THE OLD EMPTY STATE WAS THE ACTUAL BUG. \u201cNothing wrong with this day\u2019s addresses\u201d is a true statement about PROBLEMS and was being read as a statement about the DAY \u2014 so a dispatcher who had fixed something and came back to check it stuck was told in plain English there was nothing to see. It now carries the count beside it, and the count is on the CLOSED row too: a drawer labelled only \u201cHistory\u201d is invisible in the one way that matters, because nobody opens it to find out whether anything is inside, and a day with three carrier re-addresses would look exactly like a quiet one. ONE READ FOR THE WHOLE QUEUE SPAN, not one per day header \u2014 three round trips to answer one question, growing the moment somebody widens the window. Firestore-only either way: this endpoint spends zero NuVizz calls and says so on the drawer\u2019s own footer. A SWITCHED-OFF LOG SAYS SO RATHER THAN READING AS A QUIET DAY: with ADDRESS_HISTORY=off the endpoint refuses by design, and answering that with \u201c0 changes\u201d would be a dead feature wearing a working one\u2019s face \u2014 the precise failure that switch\u2019s own comment warns about \u2014 so the row says \u201clog off\u201d, and a failed read says \u201clog unavailable\u201d instead of zero. THE ROWS REUSE THE FULL LOG\u2019S OWN PARTS (AddrSourceChip, AddrKindBadge, AddrWhere, AddrDiff, phone-stacked by the same switch) rather than growing a second definition of what a change looks like \u2014 which is how the drawer and the log would come to disagree about one ledger row. Two views, wired separately: on a phone the control sits on its own line under the date, because a date, a to-fix tally, a stop count and a button on one row at 360px wrap into a ragged block with the thumb target wherever the wrap left it. 4,920 tests green.'],
@@ -20807,7 +20808,7 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
 // ON THE MAP, top-right, on both views. It went to the app bar in v1.23.0 alongside the
 // dispatch Map's and came back with it in v1.23.1 — Chad: "move filters back to where it
 // was." See FilterToolbar for why the bar lost that argument."
-function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setShowRoutes, hideLabels, setHideLabels }) {
+function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setShowRoutes, hideLabels, setHideLabels, hideStem = false, setHideStem = null }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -20820,7 +20821,7 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setSho
   }, [open]);
   // Satellite is no longer in this popover (it lives on the map, in the tool rail), so it no
   // longer counts toward "some filter is on".
-  const anyOn = unplannedOnly || showRoutes || hideLabels;
+  const anyOn = unplannedOnly || showRoutes || hideLabels || hideStem;
   return (
     <div className="absolute top-2 right-2 z-20" ref={ref}>
       <button
@@ -20836,6 +20837,11 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setSho
           <MapFilterToggle label="Unplanned only" checked={unplannedOnly} onChange={setUnplannedOnly} />
           <MapFilterToggle label="Hide place labels" checked={hideLabels} onChange={setHideLabels} />
           <MapFilterToggle label="Show routes" checked={showRoutes} onChange={setShowRoutes} />
+          {/* MOVED HERE FROM THE GEAR (v1.36.2). Chad, Sep 15, on a 71-mile red line from the
+              depot to stop 1: "i didn't ask for the stem out to come back … it should be a
+              filter toggle under filters to hide the stem out." Same per-device setting
+              (routing.hideStem) — only the control moved, the default did not. */}
+          {setHideStem && <MapFilterToggle label="Hide stem-out line" checked={hideStem} onChange={setHideStem} />}
         </div>
       )}
     </div>
@@ -24418,16 +24424,16 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   const leftPanelToggle = { key: 'leftPanel', label: 'Setup panel (left controls)', on: leftPanelOn, setOn: setLeftPanelVisible };
   const selPanelToggle = { key: 'selPanel', label: 'Floating selected-stops panel', on: selPanelOpen, setOn: setSelPanelOpen };
   const bottomGridToggle = { key: 'bottomGrid', label: 'Bottom data grid', on: bottomGridOn, setOn: setBottomGridOn };
-  const hideStemToggle = { key: 'hideStem', label: 'Hide stem-out line (depot → first stop)', on: routeHideStem, setOn: setRouteHideStem };
+  // The stem-out toggle lives under the map's Filters now (v1.36.2, RoutingMapFilters), not here.
   const liveWriteToggle = { key: 'liveWrite', label: 'Live dispatch (assign driver + dispatch)', on: liveWrite, setOn: setLiveWrite };
-  const leftGearPanels = [leftPanelToggle, selPanelToggle, bottomGridToggle, hideStemToggle, liveWriteToggle];
-  const bottomGearPanels = [leftPanelToggle, selPanelToggle, hideStemToggle, liveWriteToggle];
+  const leftGearPanels = [leftPanelToggle, selPanelToggle, bottomGridToggle, liveWriteToggle];
+  const bottomGearPanels = [leftPanelToggle, selPanelToggle, liveWriteToggle];
   // PHONE gear (the board row's — the only gear on a phone). Only switches that change something on
   // a phone: no "Setup panel" (the phone has no left panel; leftPanelOn's one phone effect was
   // gating the grid's date copy, now gone) and no "Floating selected-stops panel" (desktop-only
   // since issue #232). The grid toggle IS here: a grid switched off must be switchable back on from
   // something that still exists, and on a phone this gear is that something.
-  const phoneGearPanels = [bottomGridToggle, hideStemToggle, liveWriteToggle];
+  const phoneGearPanels = [bottomGridToggle, liveWriteToggle];
   // The settings gear (+ a compact date picker when the Setup panel is hidden) for the bottom
   // data-grid header — keeps date selection and every panel toggle reachable with the left panel off.
   // PHONE: null. On a phone the board-date picker and the settings gear have exactly ONE home — the
@@ -24913,7 +24919,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         {appBarSlot && createPortal(phoneGearEl, appBarSlot)}
         <div className="flex-1 relative min-w-0">
           <div ref={mapDiv} className="absolute inset-0" />
-          <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
+          <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} hideStem={routeHideStem} setHideStem={setRouteHideStem} />
           {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button),
               with the Board Flags chip stacked above it. */}
           <div className="absolute top-12 right-2 z-[15] max-w-[230px] flex flex-col items-end gap-1">{flagsOverlay()}{statusCard()}</div>
@@ -25130,7 +25136,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       {/* Center: the map canvas */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
-        <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
+        <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} hideStem={routeHideStem} setHideStem={setRouteHideStem} />
         {/* THE BOARD-STATUS CARD IS NOT ON THE MAP ANY MORE (desktop). It is portalled onto
             the app bar, left of More — see #desktop-appbar-slot for the geometry and why
             that position is the one that keeps its dropdown off Filters and the flags.
