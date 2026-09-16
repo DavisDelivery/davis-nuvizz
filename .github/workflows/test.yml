@@ -251,3 +251,17 @@ jobs:
           VITE_GOOGLE_MAPS_API_KEY: ci-test-key
           VITE_GOOGLE_MAP_ID: ci-test-map-id
       - run: npm run verify:hide-labels
+      # THE WALL DISPLAY. Chad: "map doesn't look like it should i want the thing to be
+      # identical with all the same icons", and "there are black bars on either side of the
+      # map." Both are geometry claims about a screen nobody in CI can look at, and the unit
+      # tests can only pin the arithmetic — not that the app feeds it the pane it actually
+      # has, that no stylesheet is letterboxing the picture, or that a Maps-API anchor
+      # survives the trip into a CSS margin. So /tv is driven at 1920x1080 with a stubbed
+      # board: the picture must PAINT the full pane (the element box is not the painted box,
+      # and measuring the wrong one is how the first draft of this guard passed with the bug
+      # reinstated), every stop must draw a pin, and every pin must land where an independent
+      # Mercator derivation — written the other way round from the module's — puts it.
+      # Rides the keyed build above; TV mode drops the mapId itself.
+      - run: npm run verify:tv-map
+        env:
+          SMOKE_PORT: '8811'
