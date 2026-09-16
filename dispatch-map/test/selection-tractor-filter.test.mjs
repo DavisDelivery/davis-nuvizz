@@ -26,6 +26,22 @@ test('the green highlight and the drop button read the SAME rule', () => {
     'the button must drop exactly the complement of the green rows.');
 });
 
+test('the RED row reads the shared rule, and the button still drops the not-green set', () => {
+  // Chad: "i want a no tractor trailer stop to highlight red in selection panel." Two ways this
+  // fails silently. (1) A private copy of the blocked rule in the panel drifts from the map —
+  // the same three-copies shape v0.76.4 was spent undoing. (2) `blocked` gets wired to
+  // !tractorOk, which would paint every unmarked stop red and make the colour meaningless, and
+  // would also put red on rows the Drop button is there to handle.
+  assert.ok(/blocked: stopTractorBlocked\(s, notes\),/.test(src),
+    'the red flag must come from the shared helper, not an inline copy or !tractorOk.');
+  assert.ok(/^function stopTractorBlocked\(stop, notes\) \{[\s\S]{0,400}?return tractorBlockedSelection\(\{/m.test(src),
+    'the helper must feed tractorBlockedSelection — the rule the tests execute.');
+  assert.ok(/selectionRowTone\(\{ tractorOk: r\.tractorOk, blocked: r\.blocked, hot: hoverId === r\.id \}\)/.test(src),
+    'the row must hand the tone function both facts and the hover.');
+  assert.ok(/const nonTractorIds = useMemo\(\(\) => rows\.filter\(\(r\) => !r\.tractorOk\)\.map\(\(r\) => r\.id\), \[rows\]\);/.test(src),
+    'the Drop button is unchanged — it still drops everything that is not green, red or not.');
+});
+
 test('the button names its count — a one-click destructive control gets one warning', () => {
   assert.ok(/Drop \{nonTractorIds\.length\} non-tractor/.test(src),
     'dropping nine of eleven is a different action from dropping one; the label is the warning.');

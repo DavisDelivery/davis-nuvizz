@@ -20,6 +20,7 @@ import {
   restrictionConfidence,
   confirmedBlockerKeys,
   tractorFriendlySelection,
+  tractorBlockedSelection,
   isTrailerBlockerKey,
 } from '../src/lib/map-legend.js';
 import { readFileSync } from 'node:fs';
@@ -624,4 +625,64 @@ test('UNKNOWN is not friendly — the button drops it, which is the cautious dir
   // the button's whole job is to leave a list a tractor can actually run.
   assert.equal(tractorFriendlySelection({}), false);
   assert.equal(tractorFriendlySelection(), false, 'no argument at all must not crash into true');
+});
+
+// ── THE RED ROW: "SOMEBODY HERE SAID NO" ────────────────────────────────────
+//
+// Chad, 2026-09-16: "i want a no tractor trailer stop to highlight red in selection panel."
+//
+// Red is the STATED no and nothing else. The panel's green rule counts unknown as not-friendly
+// on purpose, so "not green" is most of a 700-stop morning — a red on that set would be the
+// board's loudest colour worn by "no data", and it would stop being read.
+
+const CONFIRMED_NTT = { equipment_restrictions: ['no_tractor_trailer'], manual_overrides: { equipment_restrictions: true } };
+const SCANNED_ULINE = { equipment_restrictions: ['uline_straight_truck'], auto_sources: { uline_straight_truck: ['orderInstructions'] } };
+
+test('a Box-only mark paints the row red — the dispatcher chose it from a dropdown', () => {
+  assert.equal(tractorBlockedSelection({ eligibility: 'box_only' }), true);
+});
+
+test('a CONFIRMED "No tractor trailer" paints it red; the Uline advisory does not', () => {
+  // The same split the map already draws (restrictionConfidence): a person who ticked the box
+  // is a fact, and a scanner reading another company's order text is a question. Colouring the
+  // question red would send a dispatcher hunting a restriction nobody has ever confirmed.
+  assert.equal(tractorBlockedSelection({
+    drawnKeys: ['no_tractor_trailer'], note: CONFIRMED_NTT, resolve: null,
+  }), true);
+  assert.equal(tractorBlockedSelection({
+    drawnKeys: ['uline_straight_truck'], note: SCANNED_ULINE, resolve: null,
+  }), false, 'an unchecked advisory is not a statement');
+});
+
+test('UNKNOWN is never red — a stop nobody has marked is not an accusation', () => {
+  assert.equal(tractorBlockedSelection({}), false);
+  assert.equal(tractorBlockedSelection(), false, 'no argument at all must not crash into red');
+  assert.equal(tractorBlockedSelection({ drawnKeys: ['liftgate_required'], note: { equipment_restrictions: ['liftgate_required'] } }), false,
+    'a restriction that is not about trailer size says nothing about trailers');
+});
+
+test('RED AND GREEN CAN NEVER BOTH BE TRUE OF ONE STOP', () => {
+  // "Two facts, one row" is the shape this panel has got wrong three times (v0.46.8, v0.98.2,
+  // v1.1.1), so the exclusion is asserted over the whole input space rather than eyeballed.
+  const eligibilities = [null, 'tractor', 'box_only'];
+  const keySets = [[], ['no_tractor_trailer'], ['uline_straight_truck'], ['no_53ft'], ['liftgate_required'], ['no_tractor_trailer', 'liftgate_required']];
+  const notes = [null, CONFIRMED_NTT, SCANNED_ULINE, { equipment_restrictions: ['no_tractor_trailer'], auto_sources: { no_tractor_trailer: ['addressLine2'] } }];
+  let blockedSeen = 0;
+  for (const eligibility of eligibilities) {
+    for (const drawnKeys of keySets) {
+      for (const note of notes) {
+        for (const friendlyBadge of [false, true]) {
+          for (const tractorSeen of [false, true]) {
+            const args = { eligibility, drawnKeys, note, friendlyBadge, tractorSeen, resolve: null };
+            const blocked = tractorBlockedSelection(args);
+            if (!blocked) continue;
+            blockedSeen++;
+            assert.equal(tractorFriendlySelection(args), false,
+              `RED ON A GREEN ROW: ${JSON.stringify({ eligibility, drawnKeys, note })}`);
+          }
+        }
+      }
+    }
+  }
+  assert.ok(blockedSeen > 0, 'the matrix must actually reach the blocked case, or it proves nothing');
 });

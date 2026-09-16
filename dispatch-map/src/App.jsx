@@ -75,7 +75,7 @@ import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS, QUE
 import {
   drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
   legendIsEmpty, pinTintKind, visibleIconKeys, tractorPaintAllowed,
-  restrictionConfidence, TRAILER_BLOCKER_KEYS, tractorFriendlySelection,
+  restrictionConfidence, TRAILER_BLOCKER_KEYS, tractorFriendlySelection, tractorBlockedSelection,
 } from './lib/map-legend.js';
 import { isEstesOrder, ESTES_FILL, ESTES_RING } from './lib/carrier-mark.js';
 import { eligibilityChanged } from './lib/trailer-block.js';
@@ -146,7 +146,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.37.0';
+const APP_VERSION = '1.37.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -200,6 +200,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.37.1', 'A STOP SOMEBODY HAS WRITTEN OFF FOR A 53-FOOTER NOW READS RED IN THE SELECTED LIST. Chad: \u201ci want a no tractor trailer stop to highlight red in selection panel.\u201d THE PANEL COULD ONLY SAY YES. It has painted a tractor-friendly row green since v0.46.5, and every other row \u2014 the 600 nobody has looked at and the handful a dispatcher has explicitly marked off-limits \u2014 wore the same nothing. So the one fact on that table a router must not get wrong, \u201csending a 53-footer here is a known mistake\u201d, was invisible unless he opened the stop. RED IS THE STATED NO, NOT THE UNKNOWN, and that line is the whole design: the green rule treats unknown as not-friendly on purpose, so on an ordinary morning most rows are not green, and painting all of those red would put the board\u2019s loudest colour on \u201cno data\u201d \u2014 a warning that fires on everything warns about nothing, and the \u201cDrop N non-tractor\u201d button already covers that set and names its count. A row goes red for a Box-only mark or a CONFIRMED \u201cNo tractor trailer\u201d; the Uline advisory a scanner lifted out of somebody else\u2019s order text stays neutral, exactly as it does not stop the map\u2019s lime paint. ONE RULE, NOT A FOURTH COPY: tractorBlockedSelection delegates to tractorPaintAllowed, the function the pin paints by and the stop panel\u2019s banner is gated on, so the row and the map cannot drift; and because it is the complement of two of tractorFriendlySelection\u2019s own refusal branches, red and green are mutually exclusive BY CONSTRUCTION. A test asserts that over every combination \u2014 \u201ctwo facts, one row\u201d is the shape this panel has got wrong three times (v0.46.8, v0.98.2, v1.1.1). The red hovers within its own colour (red-100 \u2192 red-300) for the reason the green does: a pointer may not eat a fact about the freight. The row\u2019s tooltip names the statement behind the colour, because a colour that cannot say why is half a warning. PUTTING IT BACK IS ONE REVERT \u2014 this ADDS a mark and alters no existing behaviour, and it is one commit. The bottom data grid is deliberately unchanged; say the word and it reads the same red. 9 new tests.'],
   ['1.37.0', 'ROLL THE APP BACK TO A MOMENT IN TIME, IN ONE COMMAND. Chad, after a day of merges: \u201cchanges in the app today caused major bugs with the routing tab that was working perfectly before updates today[,] it introduced at least 10-15 bugs that i\u2019m still working through \u2026 i want to build something where i can roll the app back if this were to happen again. Like i would like to roll the app back to 11:59 pm sept 14th when things were working perfectly.\u201d THE QUESTION IS NEVER \u201cWHICH SHA\u201d. At 6:45am with drivers waiting it is \u201cput it back to Sunday night\u201d, so `npm run rollback -- \u201c2026-09-14 11:59pm\u201d` takes the wall clock and does the translating \u2014 in EASTERN, which is the whole point: every commit stamp in this repo is +0000 and reading Chad\u2019s sentence as UTC lands on 7:59pm, four hours and four merges early, with nothing in the output looking wrong. His exact ask resolves to v1.30.2, 6f7c9d1, 2026-09-14 23:48 EDT, undoing 17 commits. DRY RUN IS THE DEFAULT and nothing moves without --execute --because \u201c<why>\u201d, which lands in the commit, the changelog row and the workbench-guard approval so the log six weeks later says why the app went backwards instead of looking like a mistake. THE PLAN NAMES WHAT IT COSTS before he presses go: all 17 undone commits, and separately the 5 that touch how freight reaches NuVizz \u2014 rolling back past v1.30.3 puts the five-POSTs-per-failed-route-create bug back, and that is his call to make with his eyes open, not the tool\u2019s to make quietly. IT IS A FORWARD COMMIT, NEVER A HISTORY REWRITE: one commit on top of main whose TREE is the old tree. Verified both directions against the real main tip before shipping \u2014 the commit\u2019s tree is byte-identical to the target\u2019s, and `git revert` of that single commit restores today\u2019s tree byte-identically, so undoing a rollback is one command and nobody\u2019s checkout breaks. AND THE LIFEBOAT DOES NOT GET SCUTTLED WITH THE SHIP: a rollback to any date before this tool existed would have DELETED THE TOOL, leaving Chad on the old code with no way to list versions, roll back further or roll forward \u2014 so the script, its test and its npm alias are put back from main after every restore. CODE ONLY, said in the plan and in the row: Firestore (the board, address overrides, dispatcher notes, receiving hours, suppression flags) is untouched and anything already sent to NuVizz is still sent \u2014 a rollback is not an undo button on the day\u2019s freight, and treating it as one is how somebody builds a second truck on top of the first. 26 new tests; the Build Panel and the Route Workbench are not touched.'],
   ['1.36.4', 'THE PANEL HAS A NAME NOW, AND THE BOUNDARY IS A TEST INSTEAD OF A PARAGRAPH. Chad: “tons of changes were made to RWB today that i didn’t ask for … you made changes to the map and rwb when you were only supposed to be working in this panel. I want you to name this panel so going forward when i ask you to work on it you work on it and nothing else.” THE NAME IS THE BUILD PANEL — steps 1 Select stops, 2 Plan onto, 3 Plan, 4 Engine and the Build button at the end of them; the left column on desktop, the Setup tab on a phone, plus routing-select.js, stop-equipment.js and the server build path behind them. Everything else on that screen is the ROUTE WORKBENCH: the Compare cards, Send/Save, what the map paints, the selection tools, the Routes rail. Two halves that shared one name for weeks, which is precisely how work aimed at one kept landing in the other. The UI still says “Setup” on the gear and the phone tab and is deliberately NOT renamed to match — a label change nobody asked for is the same species of unasked change this exists to stop; the alias is written down instead. AND IT IS ENFORCED, because it was already written down the evening before and it happened again the next morning. scripts/check-rwb-untouched.mjs runs in CI as rwb-boundary and FAILS any PR whose changed lines in App.jsx name the workbench surface — staging, Send/Save, map paint, box/lasso/ninja select, card close guards, the Routes rail — unless a commit on the branch quotes Chad: “RWB-CHANGE: <his words>”, which prints his sentence in the CI log. That token cannot be satisfied by good intentions, only by having his instruction in front of you. VALIDATED AGAINST TEN REAL PRs BEFORE SHIPPING, not asserted: it catches every one that moved the workbench (#909, #912, #932, #945, #946, #950) and passes every one that did not (#941, #942, #943, #948) — and it was tuned by that run, because its first version fired on v1.34.0, whose only hit was the shared routing-select import line. Changelog rows, comments and imports are excluded now: a guard that cries on work it should not care about gets switched off, and then it protects nothing. Proven both ways on this branch — a deliberate unapproved edit to markSaved fails it naming the file, the line and the rule; the same edit with the token passes and echoes the quote. 12 new tests. THE MEASUREMENT, SAID PLAINLY: of the Build-Panel work from 09-11 to 09-15, four PRs reached into the workbench — #909 and #912 one line each (stagePlanOntoLoads, the auto-stage), #932 five (the card chip AND a map-paint rule nobody asked for, reverted the same evening by #946). #942, the Box|Tractor toggle, stayed inside the panel and is the only one of the four still standing. No shipping behaviour changes in this release — it is a rule, a guard and its tests.'],
   ['1.36.3', 'A BOX OVER A SENT ROUTE PICKS UP NONE OF ITS STOPS. Chad, Sep 15, with CHE and MARCUS sent to NuVizz and their stops coming back up in a box-select: \u201cits letting me select stops that are already on routes that have been sent to nuvizz \u2026 whatever gets it back right.\u201d READ OFF THE CODE, NOT REASONED: box, lasso and Add-in-view took every positioned stop inside the shape and skipped only a stop staged on an open Compare card (v0.45.15) or one another device was staging (v0.51.0) \u2014 a stop the board holds PLANNED on a load with no card open wore the muted pin and still rode into the selection, in every commit this repo has. No merge on 09-15 (#922\u2013#948, the revert included) touched addEnclosed, positioned or the box handlers, and the stored board reads 007176785 PLANNED on CHE and 007177009 PLANNED on MARCUS, stamped by the 8:29 and 8:54 PM Sends \u2014 zero NuVizz calls, via the explain endpoint. THE RULE NOW, a tested module read by one thin caller: the three area tools leave every stop the board holds on a load, and the action line names the loads \u2014 \u201cAdded 12 stops \u00b7 skipped 15 already on loads (CHE 9, MARCUS 6)\u201d \u2014 through the same isPlannedStop predicate the muted pin reads, so the map and the box cannot disagree about a stop. Stops on open cards and on another device are skipped exactly as before; a tap on a planned pin still opens its route. NOT changed: Ninja, the stacked-place tap and the Save\u2019s own NuVizz guard. PUT IT BACK: VITE_ROUTING_AREA_SELECT_SKIPS_PLANNED=off on the next build restores the old rule; a malformed value leaves it on.'],
@@ -20606,6 +20607,27 @@ function stopTractorFriendly(stop, notes, tractorLocs) {
   });
 }
 
+// HAS SOMEBODY HERE SAID NO TRACTOR TRAILER TO THIS STOP — the red row (v1.37.1).
+//
+// Chad: "i want a no tractor trailer stop to highlight red in selection panel." Red is the
+// STATED no — a Box-only mark or a confirmed "No tractor trailer" — and nothing else; the
+// rule is tractorBlockedSelection (lib/map-legend.js), which is the map's own paint rule
+// under a name, so the row and the pin cannot disagree about a stop.
+//
+// IT IS FED THE SAME KEYS AS THE GREEN ABOVE, deliberately, and that is the invariant worth
+// stating: red must never land on a row this panel has painted green, which is the same
+// failure as the button dropping one (v0.46.8). Both read getRestrictionBadgeKeys(note), so
+// where the two rules disagree with the MAP — a stop marked tractor-OK that still carries a
+// confirmed blocker, which the map's drawnRestrictionKeys filters out and this does not —
+// they disagree together, in the cautious direction, and the panel stays self-consistent.
+function stopTractorBlocked(stop, notes) {
+  const note = notes?.get?.(stop.matchKey) || null;
+  return tractorBlockedSelection({
+    eligibility: note?.vehicle_eligibility ?? null,
+    drawnKeys: getRestrictionBadgeKeys(note), note, resolve: resolveRestrictionKey,
+  });
+}
+
 function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemove, onRemoveMany, onClearAll, onOpenStop, onClose, isMobile, hoverId, setHoverId, onLocate, sendTargets = [], onSendTo = null }) {
   // Compact window from the naive (zoneless) schedule ISO — parse the clock straight off the
   // string so there's no local-timezone drift. "8:00a", "8:00a–8:00p".
@@ -20633,6 +20655,10 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
       // a button that drops a row a panel painted green is the worst possible version of this
       // feature (Chad, v0.46.8: "4 of these are painted... rows are not highlighted").
       tractorOk: stopTractorFriendly(s, notes, tractorLocs),
+      // AND THE OTHER DIRECTION, which the panel could not say before: somebody has marked
+      // this stop off-limits to a 53-footer. Not the complement of tractorOk — the unknown
+      // rows sit between the two and stay neutral.
+      blocked: stopTractorBlocked(s, notes),
     };
   }), [selectedStops, notes, tractorLocs]);
   const tot = rows.reduce((a, r) => ({ wt: a.wt + r.weight, plt: a.plt + r.pallets, ls: a.ls + r.loose }), { wt: 0, plt: 0, ls: 0 });
@@ -20771,7 +20797,12 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
                   onMouseEnter={() => setHoverId && setHoverId(r.id)}
                   onMouseLeave={() => setHoverId && setHoverId((h) => (h === r.id ? null : h))}
                   onClick={() => onLocate && onLocate(r.stop, isMobile ? 0 : panelW / 2)}
-                  title="Show this stop on the map"
+                  // A COLOUR THAT CANNOT SAY WHY IS HALF A WARNING. The red row names the
+                  // statement behind it here, in the tooltip the row already had, rather than
+                  // adding a chip to a table that is 420px wide by default.
+                  title={r.blocked
+                    ? 'NO TRACTOR TRAILER — somebody here marked this stop box-only or ticked "No tractor trailer". Click to show it on the map.'
+                    : 'Show this stop on the map'}
                   // NEUTRAL, NOT YELLOW. Chad: "I don't like the highlight yellow when i'm over
                   // a row." Amber was picked to echo the marker's selection colour and that was
                   // the wrong reason — amber on this board means CAUTION (a contested ZIP, a
@@ -20780,7 +20811,7 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
                   // else. It also keeps the tractor-green row GREEN while it is hovered, which
                   // the single amber fill was overwriting — that green is a real signal about
                   // what can be sent there, and a hover must never eat it.
-                  className={`border-t cursor-pointer ${selectionRowTone({ tractorOk: r.tractorOk, hot: hoverId === r.id })}`}
+                  className={`border-t cursor-pointer ${selectionRowTone({ tractorOk: r.tractorOk, blocked: r.blocked, hot: hoverId === r.id })}`}
                 >
                   <td className="px-1.5 py-1 whitespace-nowrap"><button onClick={(e) => { e.stopPropagation(); onOpenStop && onOpenStop(r.stop); }} className="font-mono text-blue-700 hover:underline">{r.pro}</button></td>
                   <td className="px-1.5 py-1 max-w-[150px] truncate" title={r.location}>{r.location}</td>
