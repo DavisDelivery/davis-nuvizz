@@ -297,3 +297,45 @@ test('the check runs BEFORE the element is constructed, not after', async () => 
   const build = open.indexOf('importLibrary');
   assert.ok(gl > -1 && build > -1 && gl < build, 'the WebGL check must precede the library load');
 });
+
+// ── THE FAILURE THAT WAS ACTUALLY WATCHED ────────────────────────────────────
+// webglUsable() only catches a browser with NO context. The preview run that produced
+// Google's blank "Oops" had a SOFTWARE context (SwiftShader) and sailed through it. What
+// named the failure was Google's own 2D verdict: a map asked to be VECTOR reporting RASTER.
+test('a vector map that fell back to raster has already failed this browser once — do not build a 3D one', async () => {
+  const { vectorFellBack, MAP3D_NO_VECTOR } = await import('../src/lib/map-3d.js');
+  assert.equal(vectorFellBack({ askedForVector: true, renderingType: 'RASTER' }), true);
+  assert.equal(vectorFellBack({ askedForVector: true, renderingType: 'raster' }), true);
+  assert.match(MAP3D_NO_VECTOR, /WebGL/);
+  assert.match(MAP3D_NO_VECTOR, /flat map still works/i);
+});
+
+test('a working vector map is not a complaint, and UNINITIALIZED is not a verdict', async () => {
+  const { vectorFellBack } = await import('../src/lib/map-3d.js');
+  assert.equal(vectorFellBack({ askedForVector: true, renderingType: 'VECTOR' }), false);
+  assert.equal(vectorFellBack({ askedForVector: true, renderingType: 'UNINITIALIZED' }), false);
+  assert.equal(vectorFellBack({ askedForVector: true, renderingType: null }), false);
+  assert.equal(vectorFellBack({}), false);
+});
+
+test('HIDE PLACE LABELS MAKES IT RASTER ON PURPOSE — blaming the machine there would be a confident lie', async () => {
+  const { vectorFellBack } = await import('../src/lib/map-3d.js');
+  // The toggle drops the mapId deliberately (see map-base-options.js). Raster is the
+  // intended state, not a broken browser, and the dispatcher must not be told otherwise.
+  assert.equal(vectorFellBack({ askedForVector: false, renderingType: 'RASTER' }), false);
+});
+
+test('the raster check is wired to the REAL asked-for-vector rule, not a guess', async () => {
+  const src = await readFile(APP, 'utf8');
+  assert.ok(/vectorFellBack\(\{\s*askedForVector:\s*usesMapId\(mapIdForView,\s*mapFilters\.hideLabels\)/.test(src),
+    'it must reuse usesMapId — the same function map-base-options decides the base with');
+});
+
+test('THE "ZOOM IN" HINT IS NOT SHOWN BESIDE AN ERROR — it is wrong advice, not just clutter', async () => {
+  // Watched on the deploy preview: "Too high to read doors — zoom the board in" came up
+  // next to "this browser cannot draw the 3D map". Zooming cannot fix a browser, and
+  // following the hint teaches a dispatcher the feature is broken in a way they can fix.
+  const src = await readFile(APP, 'utf8');
+  assert.ok(/\{!error && hint && <span/.test(src),
+    'the hint must be suppressed while an error is on the layer');
+});
