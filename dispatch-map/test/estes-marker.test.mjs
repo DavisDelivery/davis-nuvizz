@@ -182,7 +182,11 @@ test('the icon cache cannot hand an Estes order a plain stop’s pin — same in
 test('the rule is read off the stop number and computed once, and the cache key carries it', () => {
   assert.match(STOP_MARKER_ICON, /const estes = isEstesOrder\(s\?\.stopNbr\);/);
   assert.equal((STOP_MARKER_ICON.match(/isEstesOrder\(/g) || []).length, 1, 'computed once — a second call site is how this drifts');
-  assert.match(STOP_MARKER_ICON, /\+ '\\x1f' \+ \(estes \? 'E' : ''\);/);
+  // The FIELD, not its position: the key grew a namespace field after this one when the wall
+  // display started building the same artwork without google.maps (see PLAIN_GEOMETRY). What
+  // matters is that the Estes bit is IN the key, which is what stops two otherwise-identical
+  // stops sharing one pin.
+  assert.match(STOP_MARKER_ICON, /\+ '\\x1f' \+ \(estes \? 'E' : ''\)/);
   assert.match(STOP_MARKER_ICON, /const estesFill = estes && \(statusKind === 'UNPLANNED' \|\| statusKind === 'SCHEDULED'\) \? ESTES_FILL : null;/,
     'the resting-state rule lives in ONE place, not repeated per branch');
 });

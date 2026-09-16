@@ -87,6 +87,11 @@ export async function loadMarkerPipeline() {
  * because somebody added a name in the wrong place.
  */
 const ICON_NEEDED = [
+  // PLAIN_GEOMETRY is the wall display's two-class stand-in for google.maps, and
+  // stopMarkerIcon's cache key compares against it BY IDENTITY so a TV-built icon can never
+  // be handed to a real Marker. Lifted with the rest: leave it out and every test in here
+  // dies on "PLAIN_GEOMETRY is not defined" at the last line of the key.
+  'PLAIN_GEOMETRY',
   'stopMarkerIcon', '__stopIconCache',
   'getRestrictionBadgeKeys', 'resolveRestrictionKey', 'classifyStopStatus',
   'execArrivalTs', 'execDeliveredTs', 'hasReceivingHours',
@@ -127,12 +132,19 @@ export async function loadStopMarkerIcon() {
     .map((d) => d.src)
     .join('\n\n');
   const names = Object.keys(injected);
+  // BOTH OUT OF ONE EVALUATION, and that is load-bearing rather than tidy: stopMarkerIcon's
+  // cache key compares `google` against PLAIN_GEOMETRY BY IDENTITY, so a second build would
+  // hand back a different object and the namespace would never match.
   // eslint-disable-next-line no-new-func
-  const build = new Function(...names, `${body}\nreturn stopMarkerIcon;`);
-  const stopMarkerIcon = build(...names.map((k) => injected[k]));
+  const build = new Function(...names, `${body}\nreturn { stopMarkerIcon, PLAIN_GEOMETRY };`);
+  const built = build(...names.map((k) => injected[k]));
   // The icon cache is keyed by the visual inputs; a test that changes App.jsx between runs in
   // one process would otherwise read a stale icon. Hand callers a fresh-cache wrapper.
-  cachedIcon = (stop, note, opts = {}) => stopMarkerIcon(googleStub, stop, note, opts);
+  cachedIcon = (stop, note, opts = {}) => built.stopMarkerIcon(googleStub, stop, note, opts);
+  // The raw function and the wall display's stand-in geometry, so a test can build a pin the
+  // way the TELEVISION does — with no google.maps in the page at all — and compare.
+  cachedIcon.raw = built.stopMarkerIcon;
+  cachedIcon.plainGeometry = built.PLAIN_GEOMETRY;
   return cachedIcon;
 }
 

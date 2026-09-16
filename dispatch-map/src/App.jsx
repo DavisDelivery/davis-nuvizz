@@ -64,7 +64,7 @@ import { serverLoginEnabled, ensureFirebaseSession, dropFirebaseSession, signOut
 import { getSession, setSession, subscribeSession, onAuthEvent, clearSession } from './lib/session.js';
 import { formatCompletionPct } from './lib/completion-pct.js';
 import { isTvPath, tvRailRows, tvVerdict, tvFeedState, TV_RAIL_LIMIT } from './lib/tv-mode.js';
-import { tvStaticMapEnabled, buildTvStaticMapUrl } from './lib/tv-static-map.js';
+import { tvStaticMapEnabled, buildTvStaticMapUrl, projectToPercent } from './lib/tv-static-map.js';
 import { driverLabelLines, driverFixStale } from './lib/driver-label.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress, addressReachedNuvizz } from './lib/nuvizzWrite.js';
@@ -147,7 +147,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.38.3';
+const APP_VERSION = '1.39.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -201,6 +201,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.39.0', 'THE WALL DISPLAY DRAWS THE BOARD’S OWN PINS NOW, AND THE PICTURE FILLS THE WHOLE FRAME. Chad, on a photograph of the office television: “map doesn’t look like it should i want the thing to be identical with all the same icons”, and “i don’t liek the black space on either end of the map we aren’t using the full frame there are black bars on either side of the map on tv with just blank space before the needs a call table starts.” GOOGLE DRAWS THE ROADS; THIS APP DRAWS THE FREIGHT. The first cut asked Google to draw the stops too, with markers= in the URL, which is the obvious way and is wrong on this screen three separate times. It is NOT THE SAME BOARD — Static Maps draws teardrops in a handful of colours, while this app’s pins carry the whole morning on them: the AM/PM window, the ✓, the ➜, the restriction clock, the no-tractor truck, the Estes yellow ring, the co-located count, the “?” flag. A room reading two different maps of one day is worse than a room reading one. It COULD NOT FIT THE DAY — a Static Maps URL dies past 8192 characters, about 400 pins, so a 700-stop morning lost freight off the wall and had to print “showing 401 of 640 pins” to stay honest about it. And it BILLED FOR THE WRONG THING — with the pins in the URL every pin that moved bought a new image. So the picture is now a BASEMAP and every stop is the very same stopMarkerIcon artwork the desktop board paints, positioned over it by Web Mercator maths in lib/tv-static-map.js. Nothing is dropped and the cap chip is gone with the cap. THE ONLY THING IN THE WAY WAS SIX `new google.maps.Size` AND SIX `new google.maps.Point` — numbers, not behaviour — on a screen where the Maps script is deliberately never loaded. PLAIN_GEOMETRY is that stand-in, and the icon cache is NAMESPACED against it by identity, because press Exit on the wall and the real JS map loads into the same page reading the same cache: without that, the second screen gets Size and Point objects that are not google.maps types, and it fails as one screen quietly not drawing a week later. THE BLACK BARS WERE A GUESS RENDERED IN BLACK. The URL asked for a fixed 640x416 because a COMMENT in this file said the pane was “~1520x990” — a number estimated once, months before the television it was estimating, and object-contain turned the difference into dead space down both sides. Measured at 1920x1080 the old code paints 1509 of 1520 pixels across. The pane is READ now, with a ResizeObserver, and the image requested in its exact ratio, so there is nothing left to letterbox and no object-fit doing it — which is also what makes the per-cent pin positions exact. THE SPEND WENT DOWN, NOT UP, and that is worth saying because this repo counts calls: the URL now holds a centre, a zoom and a size and nothing else, so the picture is re-bought when the CAMERA moves rather than every two minutes — the 2-minute timer is deleted. The camera is held still by snapping the fit bounds outward onto a ~2.2 km grid, because the trucks are in the fit and a driver rolling thirty feet would otherwise shift the centre in the fourth decimal and buy another image on every poll. ~300 requests a day becomes a handful. MEASURED IN A REAL BROWSER, NOT REASONED ABOUT: scripts/verify-tv-map.mjs drives /tv at 1920x1080 and checks that the picture PAINTS the full pane (the element box is not the painted box — the first draft of this guard measured the wrong one and passed with the bug deliberately reinstated), that all 240 fixture stops draw, that the pins are this app’s SVGs and not Google teardrops, and that every pin and truck lands where an INDEPENDENT Mercator derivation — written the other way round from the module’s — puts it. Proven to fail on a restored letterbox, a dropped anchor offset and a mirrored projection. ONE BUG CAUGHT BY ITS OWN TEST: the bounds snap fell into IEEE arithmetic — 34.02/0.02 is 1701.0000000000002, so a bare Math.ceil moved a box that was ALREADY on the grid, which every snapped box is, and the camera would have flapped between two cells buying a picture each time. NOT CHANGED: VITE_TV_STATIC_MAP=off still returns the whole wall to the live JS map, anything malformed still leaves it on, and the flag rail, status bar, Filters panel and wake-lock reporting are untouched. The dispatch Map and the Route Workbench are not touched at all. 31 + 3 tests.'],
   ['1.38.3', 'THE OTHER HALF OF THE ROUTING FILTERS ASK. Chad, 2026-09-16: “i want hide termianl markers and hide stem out added to my routing filters.” The stem-out half landed in v1.36.2; Hide terminal markers never did, so half the request sat unshipped while the dropdown looked finished. It is there now, first in the list. WHAT IT HIDES, and the distinction is the whole reason this one is safe on this screen: terminal markers are the DEPOT rows. Hiding them declutters a 700-stop board without taking a single customer delivery off it. The dispatch Map’s “Hide stem out” hides the FIRST DELIVERY of every load — real freight — which is why Routing’s stem-out control deliberately drives the polyline instead, and why this new toggle removes no freight either. On the screen where loads are BUILT, a filter that quietly takes orders off the board is the one thing these controls must never do. It composes with “Unplanned only” rather than fighting it (terminal rows come off first, then the unplanned filter runs on what is left), it persists per device under routing.mapHideTerminal, it lights the Filters button like every other active filter, and Reset layout clears it. THE ROUTING DROPDOWN NOW READS: Hide terminal markers, Unplanned only, Hide place labels, Show routes, Hide stem-out line.'],
   ['1.38.2', 'AN EMPTY LOAD WAS TAKING TEN ORDERS OFF THE BOARD EVERY SCAN. Chad: “this order is in nuvizz planned on scott and we are showing it unplanned … RWB is full of bugs from work today.” He was right, and the board itself said so — measured through nuvizz-stop-explain, Firestore only, ZERO NuVizz calls. EVERY scan on 2026-09-16 was dropping TEN rows, and the ledger gave its own reason: “not on DAVIS000203794 (CHAD, 0 stops on the 2026-09-16 roster) — the load’s own membership read does not list it … its own day is 2026-09-11, so it stays on that day’s board and comes off 2026-09-16” — printed directly beneath the line “The open-order pool agrees: planned on CHAD, filed under 2026-09-16.” NuVizz’s own open-order list said the freight was planned on CHAD today, and we took it off the board anyway. THE MECHANISM IS THE ORDINARY MORNING, not a corner case. A recurring route mints a NEW load each day and mints it EMPTY: on the 16th, CHAD, BUFORD and ULINE APPT were all Drafts holding 0 stops at 04:15 while the freight still hung off yesterday’s instance. Zero is a count, so it passed the gate; “more rows than the load holds” was true for every name (6 > 0); the membership read of an empty load returned nothing; and every row under the name failed membership at once, each one with a past arrival day evicted. Five CHAD stops, one BUFORD, three ULINE APPT — ten a scan, all day. THE FIX IS THE PRINCIPLE THIS MODULE ALREADY WROTE DOWN one line above, in membershipUsable: an empty read “is a contradiction inside NuVizz’s own feeds, not a verdict — never drop a row on it.” A 0-stop Draft is that same shape and was the one way in. A load holding nobody is not evidence about anybody; it is a load nobody has filled in yet. A name is now judged only when its roster load holds AT LEAST ONE stop. THE FEATURE KEEPS ITS JOB — the ESTES case it was built for (16 rows against a load of 10) still judges, and so does two rows against a load of one: the gate is zero, not “small”. A duplicate sequence number cannot smuggle an empty load past it either, or the eviction returns by the side door. SAID PLAINLY: the scan and the feed were never wrong about Chad’s own order — 007176371 reads PLANNED on SCOTT, stop 7, Scott Hart on both the 15th and the 16th documents, and the client feed returns all ten SCOTT rows totalling 5,759 lb, which is NuVizz’s own figure to the pound. What was wrong was the ten OTHER orders this rule was quietly removing from the same board. NUVIZZ_NAME_COLLISION=off turns the whole rule off without a deploy. 5 new tests, 5,020 green.'],
   ['1.38.1', '“＋ ADD SELECTION” ACCEPTS WHAT IS ALREADY LIT INSTEAD OF ASKING FOR A BOX. Chad, twice: “i don’t want the add selection to prompt me to drag a box i want it to accept what i have already selected”, and then — asked which of two readings he meant — “accept the stops already highlighted on map.” SEARCH THE GRID FOR A CUSTOMER, THE PINS GO BURNT ORANGE, PRESS IT AND THEY ARE IN. Before this the one button under “Add stops in view” armed a box draw: having just found the fourteen stops he wanted and lit them on the map, the dispatcher was asked to go and draw a rectangle round them — a second gesture that can only be LESS accurate than the search that found them, because a rectangle takes whatever else is inside it. WHAT “HIGHLIGHTED” MEANS IS READ OFF THE MAP, NOT GUESSED: useLegendInventory defines it in one line as selected OR a search hit, so the half a button can usefully accept is the search hits minus what is already selected. A status filter is deliberately not highlight — the grid reports it separately, because “search is a burnt-orange highlight, never a hide”. IT READS OFF WHAT THE MAP IS DRAWING, so a matching order with NO GEOCODE — no pin, un-box-selectable, silently dropped by any build — can never ride in on a search hit. AND IT IS THE SAME DOOR, NOT A SECOND RULE: the accepted stops go through addEnclosed exactly as box, lasso and Add-in-view do, so every skip still holds and is still named in the action line — a stop on an open Compare card, one another dispatcher’s device is staging, and (v1.36.3) one already planned onto a load sent to NuVizz. WITH NOTHING LIT IT STILL ARMS THE BOX, through the same beginMode the map rail calls, so Cancel, Esc and the rail’s highlight are unchanged; a button that goes dead when you have not searched is worse than one that offers the old way. THE LABEL SAYS WHICH IT WILL DO before it is pressed — “＋ Add 14 highlighted (search hits)” or “＋ Add selection (drag a box)”. On a phone only the box path drops the Setup sheet; accepting leaves it up, because nothing is tapped on the map and dropping it would hide the tally that just changed. 11 + 5 tests. PUT IT BACK: VITE_ROUTING_ADD_SELECTION_ACCEPTS_HIGHLIGHT=off returns the button to always arming the box — one switch covering the press, the label and the hint, so there is no half-reverted state where it says one thing and does another. No Route Workbench behaviour changes: addEnclosed gains a caller and keeps its rule.'],
@@ -1309,17 +1310,14 @@ const STOP_ZOOM = 18;
 // How often the map silently re-reads the Firestore stop index (DB, not NuVizz)
 // so a long-open tab stays current. The background cron scans NuVizz every ~5m.
 const STOPS_REFRESH_MS = 120000; // 2 minutes
-// How often the wall display re-fetches its picture. EVERY REFRESH IS ONE BILLED Maps Static
-// API REQUEST, so this is a SPEND knob and not a smoothness one: it matches the board's own
-// poll above, because a picture redrawn faster than the data behind it changes is money for
-// nothing. ~300 requests over a 4am-2pm day.
+// THE WALL DISPLAY HAS NO REFRESH TIMER OF ITS OWN ANY MORE, and that is the point.
 //
-// DECLARED HERE, BELOW ITS SOURCE, AND THAT IS NOT TIDINESS. The first cut of this sat up
-// beside MAPS_KEY, ~110 lines ABOVE STOPS_REFRESH_MS — a temporal dead zone that threw
-// "Cannot access before initialization" at module load and rendered the ENTIRE APP as a blank
-// page, on every screen, not just the television. Found by opening /tv in a browser rather
-// than by reading the diff; the build is perfectly happy to ship it.
-const TV_STATIC_REFRESH_MS = STOPS_REFRESH_MS;
+// There was one here — TV_STATIC_REFRESH_MS — from when the picture carried the pins: every
+// pin that moved meant a new URL, so the image had to be re-bought on a clock. Now Google
+// draws the ROADS and this app draws the FREIGHT over them (see lib/tv-static-map.js), so
+// the URL holds a centre, a zoom and a size and nothing else. Roads do not move. The picture
+// is re-fetched when the CAMERA moves, which the bounds snap keeps to a handful of times a
+// day, while the pins re-render on the board's own 2-minute poll above at no cost at all.
 // When the WALL DISPLAY should stop claiming the board is current. useStops re-reads every
 // STOPS_REFRESH_MS while the tab is visible — and a television is visible by definition, all
 // day — so a gap of several intervals means the silent polls are failing silently, which is
@@ -3724,6 +3722,27 @@ function buildLocCounts(stops) {
 // runaway backstop, never hit in practice).
 const __stopIconCache = new Map();
 
+// THE WALL DISPLAY'S STAND-IN FOR THE MAPS API, and it is two constructors wide.
+//
+// Chad, on the television: "i want the thing to be identical with all the same icons." The
+// only thing standing between that and a screen with no Maps JS on it is this function's use
+// of google.maps.Size and google.maps.Point — six of each, for numbers. The SVG itself never
+// touches Google at all. So the TV hands in this instead and gets the same artwork, at the
+// same sizes, with the same anchors, on a page where the Maps script is never loaded.
+//
+// WHY IT IS A NAMED SINGLETON rather than an object literal at the call site: the icon cache
+// above is keyed on the stop's appearance, and these Size/Point objects are NOT google.maps
+// ones. Handed to a real Marker they would be a foreign type in a field the API expects its
+// own class in — the kind of failure that shows up as one screen quietly not drawing, a week
+// later, after somebody presses Exit on the wall display and the JS map loads into the same
+// page. Identity here lets the cache key keep the two sets apart (see cacheKey below).
+const PLAIN_GEOMETRY = {
+  maps: {
+    Size: function Size(width, height) { this.width = width; this.height = height; },
+    Point: function Point(x, y) { this.x = x; this.y = y; },
+  },
+};
+
 function stopMarkerIcon(google, s, note, opts = {}) {
   //   opts.tractorDelivered — a tractor driver has completed a delivery at this
   //   location (tractor_locations): full repaint to lime green + white border,
@@ -3834,7 +3853,14 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // The Estes paint is derived from the stop NUMBER, which never changes for a stop — but the
     // key must still carry it, or an Estes order and a plain one sharing every other input would
     // share one cached icon and the second to render would wear the first one's paint.
-    + '\x1f' + (estes ? 'E' : '');
+    + '\x1f' + (estes ? 'E' : '')
+    // WHOSE Size AND Point THESE ARE. The wall display builds this same artwork with
+    // PLAIN_GEOMETRY, because the Maps script is never loaded there — so the scaledSize and
+    // anchor it gets back are plain objects, not google.maps ones. The URL string is identical
+    // either way, but the objects are not interchangeable, and one Exit from the TV puts a real
+    // JS map in the same page reading the same cache. Namespacing them costs one field and
+    // removes the whole class of "that screen stopped drawing and nothing said why".
+    + '\x1f' + (google === PLAIN_GEOMETRY ? 'plain' : '');
   const cached = __stopIconCache.get(cacheKey);
   if (cached) return cached;
 
@@ -12379,51 +12405,116 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   const mapIdForView = tvMode ? undefined : MAP_ID;
   const [tvMapDrew, setTvMapDrew] = useState(false);
   // ── THE PICTURE ─────────────────────────────────────────────────────────────
-  // A counter, not a timestamp, so the <img> src changes exactly as often as we mean it to.
-  // Every change is a billed request (see TV_STATIC_REFRESH_MS) — a src that moved on every
-  // render would bill on every render.
-  const [tvStaticTick, setTvStaticTick] = useState(0);
-  useEffect(() => {
-    if (!tvStatic) return undefined;
-    const t = setInterval(() => setTvStaticTick((n) => n + 1), TV_STATIC_REFRESH_MS);
-    return () => clearInterval(t);
-  }, [tvStatic]);
   // The image can fail where the JS map merely sat there: a key without the Maps STATIC API
   // enabled answers 403, which paints a broken-image glyph and nothing else. Reported, for
   // the same reason everything else on this screen is.
   const [tvStaticErr, setTvStaticErr] = useState(false);
-  // WHICH PINS GO ON THE PICTURE, in the order they survive the URL budget (see packMarkers).
-  // The groups mirror what the JS map draws, minus everything that only means something to a
-  // pointer: no clustering, no route polylines, no hover.
-  const tvStaticUrl = useMemo(() => {
-    if (!tvStatic) return null;
-    // Flagged = the rail's own rows, so the dots that stand out red on the wall are EXACTLY
-    // the stops listed beside them. Two different definitions of "flagged" on one screen is
-    // how a room comes to distrust both.
-    const flaggedNbrs = new Set(
-      (boardFlags.rows || [])
-        .filter((r) => !dismissedFlags[r.dismissKey] && (r.tier === 'critical' || r.tier === 'red'))
-        .map((r) => String(r.stopNbr)),
-    );
-    const flagged = []; const open = []; const done = [];
-    for (const st of filteredStops) {
-      if (flaggedNbrs.has(String(st.stopNbr))) flagged.push(st);
-      else if (isFinishedStatus(st.normalizedStatus)) done.push(st);
-      else open.push(st);
+  // THE PANE IS MEASURED, NOT GUESSED, and that is the whole of the black-bar fix.
+  //
+  // Chad: "i don't liek the black space on either end of the map we aren't using the full
+  // frame there are black bars on either side of the map." The old URL asked for a fixed
+  // 640x416 because a COMMENT in this file said the pane was "~1520x990" — a number somebody
+  // (me) estimated once, months before the television it was estimating. Whatever the set's
+  // browser actually reports, the difference between the two came out of object-contain as
+  // dead space down both sides. So the picture is now requested in the pane's own measured
+  // ratio, which makes letterboxing impossible instead of merely unlikely.
+  //
+  // NULL UNTIL MEASURED, deliberately: asking for a picture in a guessed shape and then
+  // asking again in the right one is TWO billed requests and a visible jump, on every load.
+  const tvPaneRef = useRef(null);
+  const [tvPane, setTvPane] = useState(null);
+  useLayoutEffect(() => {
+    if (!tvStatic) return undefined;
+    const el = tvPaneRef.current;
+    if (!el) return undefined;
+    const read = () => {
+      const w = el.clientWidth; const h = el.clientHeight;
+      if (!w || !h) return;
+      // Only accept a CHANGE. A ResizeObserver firing with the same numbers must not mint a
+      // new state object: that re-runs the memo below and, if its result differed by a pixel,
+      // would buy another picture for nothing.
+      setTvPane((prev) => (prev && prev.w === w && prev.h === h ? prev : { w, h }));
+    };
+    read();
+    if (typeof ResizeObserver === 'function') {
+      const ro = new ResizeObserver(read);
+      ro.observe(el);
+      return () => ro.disconnect();
     }
+    // A television browser old enough to lack ResizeObserver still gets a correct frame; it
+    // just learns about a resize from the window instead, which on a wall never happens.
+    window.addEventListener('resize', read);
+    return () => window.removeEventListener('resize', read);
+  }, [tvStatic]);
+  // THE BASEMAP, AND THE CAMERA ITS PINS MUST BE PLACED WITH. One memo, one view: the picture
+  // and the overlay cannot come to disagree about where north is, because they are handed the
+  // same object (see buildTvStaticMapUrl).
+  //
+  // The drivers are in the fit and the stops are not filtered out of it: everything that will
+  // be drawn is framed, or something ends up off the edge of the wall with nothing saying so.
+  const tvStaticUrl = useMemo(() => {
+    if (!tvStatic || !tvPane) return null;
     return buildTvStaticMapUrl({
-      groups: { driver: showDrivers ? drivers : [], flagged, open, done },
-      // 640x416 is the Static Maps ceiling in the ratio of the map pane beside the flag rail
-      // (~1520x990). scale=2 doubles the pixels without doubling the billed request.
-      width: 640, height: 416, scale: 2, key: MAPS_KEY || '',
+      points: [...filteredStops, ...(showDrivers ? drivers : [])],
+      paneWidth: tvPane.w,
+      paneHeight: tvPane.h,
+      // scale=2 doubles the pixels Google returns without changing the extent or the price.
+      scale: 2,
+      key: MAPS_KEY || '',
     });
-    // tvStaticTick is the REFRESH: it is in the deps precisely so the URL changes on the timer
-    // and not on every render. eslint cannot see that, hence the disable.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tvStatic, filteredStops, drivers, showDrivers, boardFlags, dismissedFlags, tvStaticTick]);
+  }, [tvStatic, tvPane, filteredStops, drivers, showDrivers]);
   // A new picture is a new chance to load — clear the last failure so a transient 500 does not
   // leave "the map image did not load" on the wall for the rest of the day.
   useEffect(() => { setTvStaticErr(false); }, [tvStaticUrl?.url]);
+  // ── THE FREIGHT, DRAWN BY THIS APP RATHER THAN BY GOOGLE ───────────────────
+  // Chad: "i want the thing to be identical with all the same icons." These are the icons —
+  // the very same stopMarkerIcon artwork the desktop board paints, built through
+  // PLAIN_GEOMETRY because the Maps script is never loaded on this screen, and placed over
+  // the basemap by the projection in lib/tv-static-map.js.
+  //
+  // NOTHING IS DROPPED. The old picture carried its pins in the URL and a Static Maps URL
+  // dies past 8192 characters, so a 700-stop day lost freight off the wall and printed
+  // "showing 401 of 640 pins" to stay honest about it. A DOM overlay has no such ceiling.
+  //
+  // NORTH FIRST, so southern pins paint on top of northern ones. That is Google's own default
+  // stacking on the live board, and matching it is the difference between "the same map" and
+  // "the same map with the overlaps resolved the other way round".
+  const tvPins = useMemo(() => {
+    if (!tvStatic || !tvStaticUrl) return [];
+    const selectedDayKey = weekdayKeyFromDate(selectedDate);
+    const positioned = filteredStops.filter((s) => s.lat != null && s.lng != null);
+    const locCounts = buildLocCounts(positioned);
+    const out = [];
+    for (const s of positioned) {
+      const at = projectToPercent(s, tvStaticUrl.view);
+      if (!at) continue;
+      out.push({
+        key: s.stopNbr,
+        lat: s.lat,
+        at,
+        icon: stopMarkerIcon(PLAIN_GEOMETRY, s, notes.get(s.matchKey), {
+          selectedDayKey,
+          sameLocCount: locCounts.get(stopLocKey(s)) || 1,
+          tractorDelivered: tractorLocs.has(s.matchKey),
+        }),
+      });
+    }
+    out.sort((a, b) => b.lat - a.lat);
+    return out;
+  }, [tvStatic, tvStaticUrl, filteredStops, notes, tractorLocs, selectedDate]);
+  // THE TRUCKS, same artwork and same size as the live board — and the same name plate, which
+  // is what a room actually reads a truck by. They ride above the freight, as they do there.
+  const tvTrucks = useMemo(() => {
+    if (!tvStatic || !tvStaticUrl || !showDrivers) return [];
+    const now = Date.now();
+    const out = [];
+    for (const d of drivers) {
+      const at = projectToPercent(d, tvStaticUrl.view);
+      if (!at) continue;
+      out.push({ key: d.vehicleNumber || d.driverId || `${d.lat},${d.lng}`, at, ...driverLabelLines(d, now) });
+    }
+    return out;
+  }, [tvStatic, tvStaticUrl, drivers, showDrivers]);
   useEffect(() => {
     if (!tvMode || !google || !mapRef.current) return undefined;
     const listener = google.maps.event.addListenerOnce(mapRef.current, 'tilesloaded', () => setTvMapDrew(true));
@@ -13820,32 +13911,112 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
 
         <div className="flex-1 flex min-h-0">
           {/* ── THE MAP ─────────────────────────────────────────────────────── */}
-          <div className="flex-1 relative min-w-0">
+          <div ref={tvStatic ? tvPaneRef : null} className="flex-1 relative min-w-0 overflow-hidden">
             {/* ── THE MAP: A PICTURE, OR THE LIVE ONE ────────────────────────────────
                 A wall display is the one screen here that cannot be interacted with, so
                 everything the JS map buys over an image is an interaction nobody performs —
                 and the price was a WebGL-capable modern browser on a 2020 television, which
-                is what failed twice. object-contain, not cover: a wall map that silently
-                crops the top of the territory is worse than one with a margin. */}
+                is what failed twice.
+
+                GOOGLE DRAWS THE ROADS; THIS APP DRAWS THE FREIGHT over them, one absolutely
+                positioned pin per stop, from the same stopMarkerIcon the desktop board uses.
+                Chad: "i want the thing to be identical with all the same icons."
+
+                AND THE PICTURE FILLS THE FRAME. It used to be object-contain over a fixed
+                640x416 asked for on the strength of a guessed pane ratio, which is where the
+                black bars down both sides came from. The image is now requested in the pane's
+                MEASURED ratio, so there is nothing left to letterbox and no object-fit to do
+                it with — which is also what makes the per-cent pin positions exact, since the
+                picture and the pane are then the same rectangle. */}
             {tvStatic ? (
               tvStaticUrl ? (
-                <img
-                  src={tvStaticUrl.url}
-                  alt=""
-                  className="absolute inset-0 w-full h-full object-contain bg-slate-900"
-                  onError={() => setTvStaticErr(true)}
-                  onLoad={() => setTvStaticErr(false)}
-                />
+                <>
+                  <img
+                    src={tvStaticUrl.url}
+                    alt=""
+                    className="absolute inset-0 w-full h-full bg-slate-900"
+                    onError={() => setTvStaticErr(true)}
+                    onLoad={() => setTvStaticErr(false)}
+                  />
+                  {/* THE PINS. pointer-events-none throughout: there is no pointer on a wall,
+                      and a stray mouse must not be able to sit on top of the Filters panel. */}
+                  <div className="absolute inset-0 pointer-events-none">
+                    {tvPins.map((p) => (
+                      <img
+                        key={p.key}
+                        // NAMED SO A GUARD CAN CHECK IT. Every stop's position on this wall is
+                        // arithmetic nobody can eyeball — a projection wrong by a few pixels
+                        // still looks exactly like a working map, which is the worst failure
+                        // available here. scripts/verify-tv-map.mjs re-derives each of these
+                        // from the picture's own URL and compares.
+                        data-tv-pin={p.key}
+                        src={p.icon.url}
+                        alt=""
+                        className="absolute"
+                        style={{
+                          left: `${p.at.left}%`,
+                          top: `${p.at.top}%`,
+                          width: p.icon.scaledSize.width,
+                          height: p.icon.scaledSize.height,
+                          // The anchor is the point of the pin that sits ON the building —
+                          // the same offset the JS map applies. Without it every stop on the
+                          // wall is half an icon north-west of where it actually is.
+                          marginLeft: -p.icon.anchor.x,
+                          marginTop: -p.icon.anchor.y,
+                        }}
+                      />
+                    ))}
+                    {tvTrucks.map((t) => (
+                      <div key={t.key} data-tv-truck={t.key} className="absolute" style={{ left: `${t.at.left}%`, top: `${t.at.top}%`, opacity: t.stale ? 0.55 : 1 }}>
+                        <img
+                          src={truckSvg(DRIVER_TINT)}
+                          alt=""
+                          className="absolute"
+                          style={{
+                            width: DRIVER_MARKER_PX,
+                            height: DRIVER_MARKER_PX,
+                            marginLeft: -DRIVER_MARKER_PX / 2,
+                            marginTop: -DRIVER_MARKER_PX / 2,
+                          }}
+                        />
+                        {/* The name plate, in the live board's own dimensions — Chad asked for
+                            the status words off and the type down, and that work is in
+                            lib/driver-label.js; this only places what it returns. */}
+                        {showDriverLabels && (
+                          <div
+                            className="absolute whitespace-nowrap text-center rounded"
+                            style={{
+                              transform: `translate(-50%, ${DRIVER_LABEL_OFFSET_PX}px)`,
+                              background: 'rgba(255,255,255,0.85)',
+                              border: '1px solid rgba(0,0,0,0.1)',
+                              padding: '1px 5px',
+                              fontSize: 10,
+                              lineHeight: 1.25,
+                              boxShadow: '0 1px 2px rgba(0,0,0,0.08)',
+                            }}
+                          >
+                            <div style={{ color: '#1e5b92', fontWeight: 600 }}>{t.line1}</div>
+                            {t.line2 && <div style={{ color: '#555', fontSize: 9 }}>{t.line2}</div>}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </>
               ) : (
                 // NO PICTURE IS SAID, never left as an empty frame — the same rule as the
-                // flag rail. Which of the two reasons it is matters, so both are named.
+                // flag rail. Which of the three reasons it is matters, so all three are named:
+                // a key that is not on this build, a board with nothing positioned on it, and
+                // the one-frame gap before the pane has been measured.
                 <div className="absolute inset-0 flex items-center justify-center bg-slate-900 text-center px-8">
                   <div>
                     <div className="text-2xl font-bold text-slate-300">
-                      {MAPS_KEY ? 'No stops to plot yet' : 'No map key on this build'}
+                      {!MAPS_KEY ? 'No map key on this build' : !tvPane ? 'Sizing the map…' : 'No stops to plot yet'}
                     </div>
                     <div className="text-base text-slate-500 mt-2">
-                      {MAPS_KEY ? 'the board has no positioned stops for this day' : 'VITE_GOOGLE_MAPS_API_KEY is not set'}
+                      {!MAPS_KEY ? 'VITE_GOOGLE_MAPS_API_KEY is not set'
+                        : !tvPane ? 'measuring the screen so the picture fits it exactly'
+                          : 'the board has no positioned stops for this day'}
                     </div>
                   </div>
                 </div>
@@ -13877,16 +14048,11 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                 drawnAsImage={tvStatic}
               />
             </div>
-            {/* THE CAP IS PRINTED. A URL holds a few hundred pins and a bad day holds seven
-                hundred stops, so something gets dropped (trucks and flagged stops survive
-                first — see packMarkers). A map quietly showing 400 of 700 reports a lighter
-                morning than the one being worked, which is the same failure as a flag rail
-                that truncates in silence. */}
-            {tvStatic && tvStaticUrl && tvStaticUrl.shown < tvStaticUrl.total && (
-              <div className="absolute bottom-4 right-4 z-[20] rounded-lg bg-slate-900/85 border border-slate-600 px-3 py-1.5 text-sm font-semibold text-slate-300">
-                showing {tvStaticUrl.shown.toLocaleString()} of {tvStaticUrl.total.toLocaleString()} pins
-              </div>
-            )}
+            {/* THERE IS NO PIN CAP TO PRINT ANY MORE. This corner used to carry "showing 401
+                of 640 pins", because the pins rode in the URL and a Static Maps URL dies past
+                8192 characters — so a 700-stop day genuinely lost freight off the wall and the
+                chip existed to stay honest about it. The overlay has no such ceiling and drops
+                nothing, so the chip is gone rather than left saying a reassuring nothing. */}
             {/* THE WAY OUT, kept faint. Chad: "i don't want anymore buttons on the screen."
                 Escape does the same job and is the documented exit; this exists so a mouse
                 that wanders onto the display has somewhere to click, and so the mode is not
