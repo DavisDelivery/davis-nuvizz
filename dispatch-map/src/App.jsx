@@ -19435,13 +19435,29 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = 
                 not sent
               </span>
             )}
-            {/* THE SAVE LANDED — Chad, 2026-09-16: "I want a check mark somewhere denoting
-                that the save to nuvizz was successful." Until now the card said nothing: the
-                only report was a dismissible toast the next action overwrites, so a card sent
-                five minutes ago and a card nobody had touched looked the same. Green, earned
-                ONLY by a confirmed write (savedAt has one writer — markSaved), and withdrawn
-                the instant the card stops matching what was sent. The rule is savedMark, and
-                it is tested; this renders what it returns and decides nothing itself. */}
+          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {ninjaMode && (
+              <label className={`flex items-center gap-1 text-[10px] font-semibold cursor-pointer ${isActive ? 'text-amber-700' : 'text-slate-400'}`} title="Ninja clicks add to this route">
+                <input type="radio" name="wb-active-route" checked={isActive} onChange={onSetActive} />
+                <NinjaIcon size={13} /> {isActive ? 'target' : 'set'}
+              </label>
+            )}
+            {/* THE SAVE LANDED, OR DID NOT — Chad, 2026-09-16: "I want a check mark somewhere
+                denoting that the save to nuvizz was successful", then "what about a card that
+                says did not save after I did send it?", then "can you make those flags to just
+                the left of the x". So it lives HERE: last thing before the ✕, on every card.
+                Until now the card said nothing either way — the only report was a dismissible
+                toast the next action overwrites, so a load NuVizz took, a load it REFUSED and a
+                load nobody touched all looked the same five minutes later.
+
+                Being in this group rather than in the collapse button also means clicking the
+                chip no longer collapses the card, which it did while it sat beside the name.
+
+                Green is earned ONLY by a confirmed write (markSaved) and red ONLY by a refusal
+                read back off the write's own result (markSaveFailed) — one writer each. The
+                rule is savedMark, which is tested; this renders what it returns, picks no
+                verdict of its own, and nothing else on the screen reads it. */}
             {(() => {
               const mk = savedMark({ savedAt, failedAt, dirty });
               if (!mk.show) return null;
@@ -19452,20 +19468,12 @@ function RoutingWorkbenchCard({ route, preflight = null, notes = null, dayKey = 
                 <span
                   data-card-saved={mk.kind}
                   title={mk.title}
-                  className={`font-bold uppercase border rounded px-1 shrink-0 ${tone} ${isMobile ? 'text-[10px]' : 'text-[9px]'}`}
+                  className={`font-bold uppercase border rounded px-1 shrink-0 whitespace-nowrap ${tone} ${isMobile ? 'text-[10px]' : 'text-[9px]'}`}
                 >
                   {mk.label}
                 </span>
               );
             })()}
-          </button>
-          <div className="flex items-center gap-1.5 shrink-0">
-            {ninjaMode && (
-              <label className={`flex items-center gap-1 text-[10px] font-semibold cursor-pointer ${isActive ? 'text-amber-700' : 'text-slate-400'}`} title="Ninja clicks add to this route">
-                <input type="radio" name="wb-active-route" checked={isActive} onChange={onSetActive} />
-                <NinjaIcon size={13} /> {isActive ? 'target' : 'set'}
-              </label>
-            )}
             {/* The 44px min-WIDTH rule only fires on a button whose one child is an svg; this × is a
                 text glyph, so on a phone it was 44px tall and ~11px wide. Square it up on touch. */}
             <button onClick={onClose} className={`text-slate-400 hover:text-red-600 leading-none text-lg ${isMobile ? 'w-11 inline-flex items-center justify-center' : ''}`} aria-label={`Close route ${route.name || loadDisplayName(route.key) || ''}`}>×</button>

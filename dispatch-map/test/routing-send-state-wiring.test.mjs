@@ -107,3 +107,25 @@ test('THE REVERTED v1.33.0 CHIP DOES NOT COME BACK WITH IT', () => {
   assert.ok(!/routePaintSource|planStaged/.test(code), 'the reverted map-paint rule is back');
   assert.equal((code.match(/savedMark\(/g) || []).length, 1, 'savedMark is read somewhere other than the card');
 });
+
+test('THE CHIP SITS JUST LEFT OF THE ✕ — Chad: "can you make those flags to just the left of the x"', () => {
+  // Position is the ask, so position is pinned. Two things are asserted, and the second one
+  // is behaviour, not decoration: while the chip lived beside the route name it was INSIDE
+  // the collapse button, so clicking it collapsed the card.
+  const collapseBtn = /<button onClick=\{onCollapse\}[\s\S]*?<\/button>/.exec(code);
+  assert.ok(collapseBtn, 'the collapse button is gone');
+  assert.ok(!/data-card-saved/.test(collapseBtn[0]), 'the chip is back inside the collapse button — clicking it would collapse the card');
+
+  // `onClick={onClose}` appears on other components too, so anchor on the CARD's own ✕,
+  // which names the route in its aria-label. Matching the wrong one made this pass/fail on
+  // where that other component happens to sit in the file.
+  const chipAt = code.indexOf('data-card-saved');
+  const closeAt = code.indexOf('aria-label={`Close route');
+  assert.ok(chipAt > 0 && closeAt > 0, 'chip or the card\u2019s close button not found');
+  assert.ok(chipAt < closeAt, 'the chip is no longer before the ✕');
+  // Nothing but the close button's own comment may sit between them. Measure up to the ✕'s
+  // opening tag, not its aria-label, or the ✕ counts itself as an intruder.
+  const closeTagAt = code.lastIndexOf('<button', closeAt);
+  const between = code.slice(code.indexOf('})()}', chipAt) + 5, closeTagAt);
+  assert.ok(!/<(button|label|input|select|span)\b/.test(between), `a control crept in between the chip and the ✕: ${between.trim().slice(0, 120)}`);
+});
