@@ -10,7 +10,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { rwbEngineBlocked, rwbConfigReady, rwbAddStopsToRoute, rwbSequenceStops } from '../netlify/functions/lib/nuvizz-rwb.mts';
+import { rwbEngineBlocked, rwbConfigReady, rwbAddStopsToRoute, rwbSequenceStops, describeRwbBody } from '../netlify/functions/lib/nuvizz-rwb.mts';
 import { runCommitBoardRwb } from '../netlify/functions/lib/nuvizz-write.mts';
 import { rawStopExecStatus, isExecutedStopStatus } from '../netlify/functions/lib/nuvizz-write-ops.mts';
 
@@ -38,7 +38,7 @@ async function withRwb(over, fn) {
 // set the load's stops to exactly the entry's trip order, like the real portal — so the
 // post-save membership+ORDER verify sees the save. Pass applySave:false to simulate the
 // Jul 9 DAWSONVILLE portal behavior: SUCCESS answered, nothing applied.
-function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loadStops, stopHolders = {}, applySave = true, seqless = false, stopTypes = {}, stopSeqs = {}, stopAddrs = {}, idAlias = {}, stopExecStatuses = {} } = {}) {
+function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loadStops, stopHolders = {}, applySave = true, seqless = false, stopTypes = {}, stopSeqs = {}, stopAddrs = {}, idAlias = {}, stopExecStatuses = {}, fujBody = null, fujStatus = 200 } = {}) {
   const calls = [];
   const stopDoc = (n) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: stopTypes[n] || 'DO', to: { seq: 1 } } });
   const loadJson = () => ({ Load: {
@@ -74,6 +74,9 @@ function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loa
           return J({ responseCode: 200, message: 'SUCCESS', stops: [] });
         }
         if (url.includes('fetchUpdatedJson')) {
+          // fujBody lets a test serve a 2xx that ISN'T a preview (the live Sep 16 failure):
+          // a string body rides through as text, anything else as JSON.
+          if (fujBody != null) return typeof fujBody === 'string' ? T(fujBody, fujStatus) : J(fujBody, fujStatus);
           return J([{ etaStopVOList: [{ timeZone: 'America/New_York' }], distance: 10, duration: 20, schStartTime: { dttm: 'Jul 2, 2026' } }]);
         }
         if (url.includes('resequenceRoute')) return J({ responseCode: 200, message: 'SUCCESS' });
@@ -138,6 +141,46 @@ test('rwbSequenceStops: 2-call happy path returns ok with 2 calls', async () => 
     assert.ok(calls.some((c) => c.url.includes('fetchUpdatedJson')));
     assert.ok(calls.some((c) => c.url.includes('saveComparedRouteData')));
   });
+});
+
+// ── the preview that came back empty (Sep 16) ────────────────────────────────
+// A 2xx with no etaStopVOList used to produce ONE sentence — "fetchUpdatedJson returned no
+// route preview" — for three unrelated portal answers, and the body was dropped, so the
+// Diagnostics step recorded a clean 200 and nothing else. Each shape must now NAME itself in
+// the message the dispatcher reads, and the save must still abort with nothing written.
+for (const [label, fujBody, expect] of [
+  ['an empty array', [], /empty array/],
+  ['an error envelope answered 200', { responseCode: 500, message: 'Route plan not found' }, /responseCode 500[\s\S]*Route plan not found/],
+  ['an HTML page', '<!DOCTYPE html><html><body>Session expired</body></html>', /HTML page[\s\S]*Session expired/],
+  ['a JSON object with the wrong keys', { totalDistance: 12 }, /keys: totalDistance/],
+]) {
+  test(`rwbSequenceStops: a preview that is ${label} names what came back, and writes nothing`, async () => {
+    await withRwb({}, async () => {
+      const { requester, calls } = makeRequester({ fujBody });
+      const r = await rwbSequenceStops(requester, HEXID, ['id-A', 'id-B'], { lat: 34, lng: -83 });
+      assert.equal(r.ok, false);
+      assert.match(r.message, /no route preview/);
+      assert.match(r.message, /HTTP 200/);
+      assert.match(r.message, expect);
+      // The abort happens BEFORE the one declarative save — nothing was written.
+      assert.equal(calls.filter((c) => c.url.includes('saveComparedRouteData')).length, 0);
+      // …and the Diagnostics step says the preview failed rather than showing a clean 200.
+      const step = r.steps.find((x) => x.op === 'fetchUpdatedJson');
+      assert.equal(step.ok, false);
+      assert.equal(step.preview, 'none');
+      assert.match(step.bodyDiag, expect);
+      assert.equal(step.stops, 2);
+    });
+  });
+}
+
+test('describeRwbBody: a long HTML body is clipped, and a null body says so', () => {
+  assert.equal(describeRwbBody(null), 'empty body');
+  assert.equal(describeRwbBody(''), 'empty body');
+  const long = describeRwbBody('<html>' + 'x'.repeat(5000) + '</html>');
+  assert.match(long, /HTML page, 5013 chars/);
+  assert.ok(long.length < 260, `diag stays toast-sized (was ${long.length})`);
+  assert.match(describeRwbBody([{ etaStopVOList: [] , distance: 1 }]), /array of 1, first entry keys: etaStopVOList, distance/);
 });
 
 test('rwbSequenceStops: portal calls carry browser-identity headers matching the HAR', async () => {
