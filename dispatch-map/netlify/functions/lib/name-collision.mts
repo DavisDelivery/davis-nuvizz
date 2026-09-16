@@ -101,7 +101,8 @@ export function ownDayOf(row: any): string | null {
 /**
  * PURE. Which route names on this board contradict the day's roster.
  *
- * A name is judged only when the roster carries EXACTLY ONE load by it (two same-named loads on
+ * A name is judged only when the roster carries EXACTLY ONE load by it, that load holds at
+ * least one stop (an empty Draft cannot say who is not on it — see the gate below), (two same-named loads on
  * one day is the §S case: neither may speak for the other, and the board's own ambiguity rules
  * already handle it) and that load reports a stop count. The contradiction is either more rows
  * than the load holds, or two rows claiming one sequence number.
@@ -134,7 +135,36 @@ export function detectNameCollisions(rows: any[], rosterLoads: RosterLoadLite[] 
     const loadNbr = String(l.loadNbr ?? '').trim();
     // `trips` is a NUMBER or null (normalizeLoads) — and null is "no count", never zero.
     const trips = typeof l.trips === 'number' && Number.isFinite(l.trips) ? l.trips : null;
-    if (!loadNbr || trips == null || trips < 0) continue;              // nothing to read, or no count to contradict
+    // AN EMPTY LOAD HOLDS NOBODY, SO IT CANNOT SAY WHO IS NOT ON IT (v1.38.1).
+    //
+    // Chad, 2026-09-16: "this order is in nuvizz planned on scott and we are showing it
+    // unplanned … RWB is full of bugs from work today." Measured on the live board through
+    // nuvizz-stop-explain (Firestore only, zero NuVizz calls): EVERY scan on 2026-09-16 was
+    // dropping TEN rows, and the ledger said why in its own words —
+    //
+    //   "not on DAVIS000203794 (CHAD, 0 stops on the 2026-09-16 roster) — the load's own
+    //    membership read does not list it … its own day is 2026-09-11, so it stays on that
+    //    day's board and comes off 2026-09-16"
+    //
+    // …while the line above it read "The open-order pool agrees: planned on CHAD, filed under
+    // 2026-09-16." NuVizz's own open-order list said the freight was planned on CHAD today, and
+    // we took it off the board anyway.
+    //
+    // THE MECHANISM, and it is the ordinary morning rather than a corner. A recurring route
+    // mints a NEW load each day, and it is minted EMPTY — the 16th's CHAD, BUFORD and ULINE
+    // APPT were all Drafts with 0 stops at 04:15 while the freight still hung off yesterday's
+    // instance. Zero passed the `trips < 0` gate, `grp.length > trips` was true for every name
+    // (6 > 0), the membership read of an empty load returned nothing, and membershipUsable
+    // treats an empty read as USABLE when trips is 0 — so every row under the name failed
+    // membership at once and each one with a past own-day was evicted.
+    //
+    // This module already states the principle one line up in membershipUsable: an empty read
+    // "is a contradiction inside NuVizz's own feeds, not a verdict — never drop a row on it."
+    // A 0-stop Draft is that same shape and was the one way in. There is nothing to contradict:
+    // a load that holds nobody is not evidence about anybody, it is a load nobody has filled in
+    // yet. Require a REAL count, and the feature keeps doing the job it was built for — the
+    // ESTES case (16 rows against a load of 10) still judges, because 10 is a real count.
+    if (!loadNbr || trips == null || trips <= 0) continue;             // nothing to read, or an empty load that cannot speak
     const seqs = new Map<number, number>();
     for (const r of grp) {
       const s = typeof r.routeSeq === 'number' && Number.isFinite(r.routeSeq) ? r.routeSeq : null;

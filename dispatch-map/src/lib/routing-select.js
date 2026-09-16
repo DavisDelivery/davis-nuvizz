@@ -744,11 +744,16 @@ export function isPlannedStop(s) {
 
 // ── THE SELECTION ROW'S BACKGROUND ──────────────────────────────────────────
 //
-// Two facts share one row and they must not overwrite each other:
+// Three facts share one row and they must not overwrite each other:
 //
 //   GREEN  = a tractor trailer can be sent to this stop. It is a fact about the freight, it
 //            drives the "Drop N non-tractor" button beside it, and a dispatcher reads it to
 //            decide what equipment goes out.
+//   RED    = somebody here has said a 53-footer CANNOT serve this stop — a Box-only mark or a
+//            confirmed "No tractor trailer" (tractorBlockedSelection, the map's own rule).
+//            Chad, 2026-09-16: "i want a no tractor trailer stop to highlight red in selection
+//            panel." It is NOT the whole not-green set: unknown stays neutral, because a red
+//            that fires on "nobody has checked" is a red a dispatcher learns to read past.
 //   HOVER  = the pointer (or the MAP, through the shared hoverId) is on this row right now.
 //            It is transient and says nothing about the stop.
 //
@@ -769,10 +774,25 @@ export const ROW_TONE = {
   // step to be seen: the neutral row goes from no fill at all to slate-200, so matching that
   // strength inside the greens takes 100 → 300, not 100 → 200.
   tractorHot: 'bg-green-300',
+  // The red hovers WITHIN its own colour for the same reason the green does (v0.98.3): the
+  // fill is carrying a fact about the freight, and a pointer must never eat it. Same 100 → 300
+  // step, so the highlight is as visible on a blocked row as on any other.
+  blocked: 'bg-red-100 hover:bg-red-200/70',
+  blockedHot: 'bg-red-300',
 };
 
-/** The background classes for one row of the selection panel. */
-export function selectionRowTone({ tractorOk = false, hot = false } = {}) {
+/**
+ * The background classes for one row of the selection panel.
+ *
+ * BLOCKED IS TESTED FIRST, and it is not a tie-break that can ever be reached in practice:
+ * tractorBlockedSelection is the complement of two of tractorFriendlySelection's own refusal
+ * branches, so a blocked row is never also tractorOk. It is ordered this way because if the
+ * two callers ever DID disagree, the safe row is the one that says a trailer cannot come here
+ * — telling a dispatcher a 53-footer fits at a dock somebody wrote off costs a driver his
+ * morning and the customer the delivery, and the other mistake costs a trailer slot.
+ */
+export function selectionRowTone({ tractorOk = false, blocked = false, hot = false } = {}) {
+  if (blocked) return hot ? ROW_TONE.blockedHot : ROW_TONE.blocked;
   if (tractorOk) return hot ? ROW_TONE.tractorHot : ROW_TONE.tractor;
   return hot ? ROW_TONE.plainHot : ROW_TONE.plain;
 }
@@ -781,6 +801,12 @@ export function selectionRowTone({ tractorOk = false, hot = false } = {}) {
  *  needs to ask "is this row still saying a trailer fits" without re-deriving the rule. */
 export function toneIsGreen(tone) {
   return /(^|\s|:)bg-green-/.test(String(tone || ''));
+}
+
+/** Does this tone carry the "a person said no tractor trailer" red? Same shape as
+ *  toneIsGreen, and the pair is what the tests assert can never both be true of one row. */
+export function toneIsRed(tone) {
+  return /(^|\s|:)bg-red-/.test(String(tone || ''));
 }
 
 // THE BOTTOM DATA GRID'S ROW, RANKED. Chad (v1.3.0): "I want this bottom panel to highlight
@@ -1252,7 +1278,15 @@ export function resolveLoadVehicle({ profiles = [], name = '', picked = null, re
 // PUT IT BACK: VITE_ROUTING_AREA_SELECT_SKIPS_PLANNED=off restores the old rule on the next
 // build (build-time flag — a redeploy either way). House shape: ON unless an explicit
 // off-word; anything malformed leaves it ON, so a typo can never silently reopen the hole.
-export function areaSelectSkipsPlanned(raw) {
+export function areaSelectSkipsPlanned(raw) { return houseSwitchOn(raw); }
+
+/**
+ * THE HOUSE SWITCH SHAPE, one implementation instead of one per flag: default ON, an explicit
+ * off-word turns it off, and ANYTHING MALFORMED LEAVES IT ON. A typo in an env var must never
+ * silently disable a rule — that failure is invisible, and a quiet feature looks exactly like
+ * a working one.
+ */
+export function houseSwitchOn(raw) {
   const v = String(raw ?? '').trim().toLowerCase();
   return !(v === 'off' || v === '0' || v === 'false' || v === 'no');
 }
@@ -1319,4 +1353,40 @@ export function areaSelectMessage(part, total) {
     + (c ? ` · skipped ${c} already on open cards` : '')
     + (p ? ` · skipped ${p} staged on another device` : '')
     + (l ? ` · skipped ${l} already on ${areaSelectLoadsText(part.loads)}` : '');
+}
+
+/**
+ * THE STOPS ALREADY LIT UP ON THE MAP THAT THE SELECTION DOES NOT YET HOLD.
+ *
+ * Chad: "i don't want the add selection to prompt me to drag a box i want it to accept what i
+ * have already selected" → "accept the stops already highlighted on map."
+ *
+ * WHAT "HIGHLIGHTED" IS, from the map's own definition and not from a guess: one line in
+ * useLegendInventory — `selected OR a search hit`. The selected half is already in the
+ * selection, so the half a button can usefully ACCEPT is the burnt-orange search hits, minus
+ * anything already selected. A status filter is deliberately NOT highlight: the grid reports
+ * it separately because "search is a burnt-orange highlight, never a hide".
+ *
+ * FED `drawnStops` — what the map is ACTUALLY drawing, filters and all — rather than the
+ * grid's raw match list, for one reason a dispatcher pays for: a stop with no geocode has no
+ * marker at all, cannot be box-selected, and cannot be routed. Letting one ride in on a search
+ * hit is how an order goes silently missing from a build.
+ *
+ * @param {Array} drawnStops        the stops the map is drawing
+ * @param {Set|null} opts.searchMatchIds  String(stopNbr) of the grid's current search hits
+ * @param {Set|null} opts.selectedIds     String(stopNbr) already in the selection
+ * @returns {Array} the stops to hand to the SAME area-select path box and lasso use
+ */
+export function highlightedForSelection(drawnStops, { searchMatchIds = null, selectedIds = null } = {}) {
+  const has = (set, id) => !!set && typeof set.has === 'function' && set.has(id);
+  if (!searchMatchIds) return [];
+  const out = [];
+  for (const s of drawnStops || []) {
+    if (!s || s.lat == null || s.lng == null) continue;
+    const id = String(s.stopNbr ?? '');
+    if (!has(searchMatchIds, id)) continue;
+    if (has(selectedIds, id)) continue;
+    out.push(s);
+  }
+  return out;
 }

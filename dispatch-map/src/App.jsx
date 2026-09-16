@@ -40,13 +40,14 @@ import { manifestIssues, manifestHeadline, manifestProvenance, manifestFreshness
 import { noteFreshness } from './lib/stop-notes-freshness.js';
 import { stopHandlingFlags, itemHandlingFlags, stopNeedsTractor, tallyHandlingFlags, HANDLING_FLAGS } from './lib/handling-flags.js';
 import { mapBaseOptions, mapLiveOptions, mapIdKey, keepView } from './lib/map-base-options.js';
+import { map3dEnabled, cameraFor2dView, map3dHint, shouldEnter3dOnKey, shouldExit3dOnKey, paint3dControl, webglUsable, MAP3D_BUTTON_CSS, MAP3D_NO_WEBGL } from './lib/map-3d.js';
 import { stopTimelineModel } from './lib/stop-timeline.js';
 import { diffRouteStyle, DIFF_ORIGINAL_COLOR, groupDispatchTrips } from './lib/diff-route-style.js';
 import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, savedMark, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -75,7 +76,7 @@ import { resolveRange, rangeLabel, paramsForRange, shortDay, MAX_RANGE_DAYS, QUE
 import {
   drawnRestrictionKeys, buildLegendInventory, emptyLegendInventory, presentIconKeys,
   legendIsEmpty, pinTintKind, visibleIconKeys, tractorPaintAllowed,
-  restrictionConfidence, TRAILER_BLOCKER_KEYS, tractorFriendlySelection,
+  restrictionConfidence, TRAILER_BLOCKER_KEYS, tractorFriendlySelection, tractorBlockedSelection,
 } from './lib/map-legend.js';
 import { isEstesOrder, ESTES_FILL, ESTES_RING } from './lib/carrier-mark.js';
 import { eligibilityChanged } from './lib/trailer-block.js';
@@ -146,7 +147,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.37.1';
+const APP_VERSION = '1.38.4';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -200,7 +201,12 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['1.37.1', 'A CARD SAYS WHETHER THE SAVE LANDED — AND SAYS IT UNTIL IT STOPS BEING TRUE. Chad, on a Compare card: “I want a check mark somewhere denoting that the save to nuvizz was successful”, then “what about a card that says did not save after I did send it? … this is just a chip to tell us if it did or did not successfully save after it was sent to NuVizz.” WHAT HE WAS LOOKING AT, read off the code rather than guessed at: on a confirmed save AND on a refused one, the CARD said nothing at all. Both reports were a toast at the top of the workbench — “✓ 1 load(s) saved to NuVizz” or “✗ CHE: …” — which carries a dismiss ✕ and which the next action overwrites. Five minutes later a load that went to NuVizz, a load NuVizz REFUSED and a load nobody had touched were identical on screen, and the only way to tell them apart was the portal or sending again. NOW ONE CHIP, TWO VERDICTS, beside the route name on both views: green ✓ SENT 2:14 PM, red ✗ DID NOT SAVE 2:20 PM. BOTH ARE EARNED, NEVER ASSUMED — each stamp has exactly ONE writer, markSaved and markSaveFailed, and each runs only where the write’s own RESULT has been read back: Beta returns long before either, an attempt reaches neither, and a partial save stamps only the keys NuVizz answered for. Tests count both writers. THE TWO HALVES BEHAVE DIFFERENTLY ON PURPOSE: the ✓ is WITHDRAWN the instant the card stops matching what was sent (the same dirty flag the Send button counts), because it claims “this card matches the load” and an edit breaks that; the ✗ SURVIVES an edit, because it claims “NuVizz refused this” and tweaking the card does not make that untrue — only a confirmed save clears it, and the later stamp wins, so fix-and-resend goes green on its own. A TIE GOES TO THE ✗: a ✗ on a load that did save costs one idempotent re-send, while a ✓ on a load that did not is freight that reads as routed and never gets driven. ALL THREE WAYS A SEND CAN BE REFUSED REACH THE CARD, including the one that would otherwise leave every card blank — a whole call that fails returns no per-load results, so nothing names a card; those keys are stamped from the payload, minus any that did save. Verified off the SERVER that this is complete for the live engine: runCommitBoardRwb never returns `pending` (only runImportLoad / runCommitBoardImport do, and Import is retired), so every RWB result is ok or a refusal. THIS IS THE GREEN HALF OF v1.33.0 PLUS THE ASK, AND NOTHING ELSE — no amber NOT SENT chip on cards nobody sent (that one shouted at work in progress and is exactly what was reverted in v1.36.1), no header wording, no map-paint change; tests assert cardSendState and routePaintSource stay gone and the pendingCreate “not sent” chip is untouched. CONFIRMED AT CHAD’S REQUEST BEFORE MERGE, function by function against main: onPanelSave, buildBoardPayload, onPanelConfirm’s write call, sendPendingCreates’ write call, the close guards, the Send button and the LIVE/Beta switch all hash IDENTICAL; routing-select.js has ZERO deleted lines; the new state is read in exactly one place, the chip. Nothing about what is written to NuVizz, or when, changed. 22 new tests, 4,982 green.'],
+  ['1.38.4', 'A CARD SAYS WHETHER THE SAVE LANDED — AND SAYS IT UNTIL IT STOPS BEING TRUE. Chad, on a Compare card: “I want a check mark somewhere denoting that the save to nuvizz was successful”, then “what about a card that says did not save after I did send it? … this is just a chip to tell us if it did or did not successfully save after it was sent to NuVizz.” WHAT HE WAS LOOKING AT, read off the code rather than guessed at: on a confirmed save AND on a refused one, the CARD said nothing at all. Both reports were a toast at the top of the workbench — “✓ 1 load(s) saved to NuVizz” or “✗ CHE: …” — which carries a dismiss ✕ and which the next action overwrites. Five minutes later a load that went to NuVizz, a load NuVizz REFUSED and a load nobody had touched were identical on screen, and the only way to tell them apart was the portal or sending again. NOW ONE CHIP, TWO VERDICTS, beside the route name on both views: green ✓ SENT 2:14 PM, red ✗ DID NOT SAVE 2:20 PM. BOTH ARE EARNED, NEVER ASSUMED — each stamp has exactly ONE writer, markSaved and markSaveFailed, and each runs only where the write’s own RESULT has been read back: Beta returns long before either, an attempt reaches neither, and a partial save stamps only the keys NuVizz answered for. Tests count both writers. THE TWO HALVES BEHAVE DIFFERENTLY ON PURPOSE: the ✓ is WITHDRAWN the instant the card stops matching what was sent (the same dirty flag the Send button counts), because it claims “this card matches the load” and an edit breaks that; the ✗ SURVIVES an edit, because it claims “NuVizz refused this” and tweaking the card does not make that untrue — only a confirmed save clears it, and the later stamp wins, so fix-and-resend goes green on its own. A TIE GOES TO THE ✗: a ✗ on a load that did save costs one idempotent re-send, while a ✓ on a load that did not is freight that reads as routed and never gets driven. ALL THREE WAYS A SEND CAN BE REFUSED REACH THE CARD, including the one that would otherwise leave every card blank — a whole call that fails returns no per-load results, so nothing names a card; those keys are stamped from the payload, minus any that did save. Verified off the SERVER that this is complete for the live engine: runCommitBoardRwb never returns `pending` (only runImportLoad / runCommitBoardImport do, and Import is retired), so every RWB result is ok or a refusal. THIS IS THE GREEN HALF OF v1.33.0 PLUS THE ASK, AND NOTHING ELSE — no amber NOT SENT chip on cards nobody sent (that one shouted at work in progress and is exactly what was reverted in v1.36.1), no header wording, no map-paint change; tests assert cardSendState and routePaintSource stay gone and the pendingCreate “not sent” chip is untouched. CONFIRMED AT CHAD’S REQUEST BEFORE MERGE, function by function against main: onPanelSave, buildBoardPayload, onPanelConfirm’s write call, sendPendingCreates’ write call, the close guards, the Send button and the LIVE/Beta switch all hash IDENTICAL; routing-select.js has ZERO deleted lines; the new state is read in exactly one place, the chip. Nothing about what is written to NuVizz, or when, changed. 22 new tests, 4,982 green.'],
+  ['1.38.3', 'THE OTHER HALF OF THE ROUTING FILTERS ASK. Chad, 2026-09-16: “i want hide termianl markers and hide stem out added to my routing filters.” The stem-out half landed in v1.36.2; Hide terminal markers never did, so half the request sat unshipped while the dropdown looked finished. It is there now, first in the list. WHAT IT HIDES, and the distinction is the whole reason this one is safe on this screen: terminal markers are the DEPOT rows. Hiding them declutters a 700-stop board without taking a single customer delivery off it. The dispatch Map’s “Hide stem out” hides the FIRST DELIVERY of every load — real freight — which is why Routing’s stem-out control deliberately drives the polyline instead, and why this new toggle removes no freight either. On the screen where loads are BUILT, a filter that quietly takes orders off the board is the one thing these controls must never do. It composes with “Unplanned only” rather than fighting it (terminal rows come off first, then the unplanned filter runs on what is left), it persists per device under routing.mapHideTerminal, it lights the Filters button like every other active filter, and Reset layout clears it. THE ROUTING DROPDOWN NOW READS: Hide terminal markers, Unplanned only, Hide place labels, Show routes, Hide stem-out line.'],
+  ['1.38.2', 'AN EMPTY LOAD WAS TAKING TEN ORDERS OFF THE BOARD EVERY SCAN. Chad: “this order is in nuvizz planned on scott and we are showing it unplanned … RWB is full of bugs from work today.” He was right, and the board itself said so — measured through nuvizz-stop-explain, Firestore only, ZERO NuVizz calls. EVERY scan on 2026-09-16 was dropping TEN rows, and the ledger gave its own reason: “not on DAVIS000203794 (CHAD, 0 stops on the 2026-09-16 roster) — the load’s own membership read does not list it … its own day is 2026-09-11, so it stays on that day’s board and comes off 2026-09-16” — printed directly beneath the line “The open-order pool agrees: planned on CHAD, filed under 2026-09-16.” NuVizz’s own open-order list said the freight was planned on CHAD today, and we took it off the board anyway. THE MECHANISM IS THE ORDINARY MORNING, not a corner case. A recurring route mints a NEW load each day and mints it EMPTY: on the 16th, CHAD, BUFORD and ULINE APPT were all Drafts holding 0 stops at 04:15 while the freight still hung off yesterday’s instance. Zero is a count, so it passed the gate; “more rows than the load holds” was true for every name (6 > 0); the membership read of an empty load returned nothing; and every row under the name failed membership at once, each one with a past arrival day evicted. Five CHAD stops, one BUFORD, three ULINE APPT — ten a scan, all day. THE FIX IS THE PRINCIPLE THIS MODULE ALREADY WROTE DOWN one line above, in membershipUsable: an empty read “is a contradiction inside NuVizz’s own feeds, not a verdict — never drop a row on it.” A 0-stop Draft is that same shape and was the one way in. A load holding nobody is not evidence about anybody; it is a load nobody has filled in yet. A name is now judged only when its roster load holds AT LEAST ONE stop. THE FEATURE KEEPS ITS JOB — the ESTES case it was built for (16 rows against a load of 10) still judges, and so does two rows against a load of one: the gate is zero, not “small”. A duplicate sequence number cannot smuggle an empty load past it either, or the eviction returns by the side door. SAID PLAINLY: the scan and the feed were never wrong about Chad’s own order — 007176371 reads PLANNED on SCOTT, stop 7, Scott Hart on both the 15th and the 16th documents, and the client feed returns all ten SCOTT rows totalling 5,759 lb, which is NuVizz’s own figure to the pound. What was wrong was the ten OTHER orders this rule was quietly removing from the same board. NUVIZZ_NAME_COLLISION=off turns the whole rule off without a deploy. 5 new tests, 5,020 green.'],
+  ['1.38.1', '“＋ ADD SELECTION” ACCEPTS WHAT IS ALREADY LIT INSTEAD OF ASKING FOR A BOX. Chad, twice: “i don’t want the add selection to prompt me to drag a box i want it to accept what i have already selected”, and then — asked which of two readings he meant — “accept the stops already highlighted on map.” SEARCH THE GRID FOR A CUSTOMER, THE PINS GO BURNT ORANGE, PRESS IT AND THEY ARE IN. Before this the one button under “Add stops in view” armed a box draw: having just found the fourteen stops he wanted and lit them on the map, the dispatcher was asked to go and draw a rectangle round them — a second gesture that can only be LESS accurate than the search that found them, because a rectangle takes whatever else is inside it. WHAT “HIGHLIGHTED” MEANS IS READ OFF THE MAP, NOT GUESSED: useLegendInventory defines it in one line as selected OR a search hit, so the half a button can usefully accept is the search hits minus what is already selected. A status filter is deliberately not highlight — the grid reports it separately, because “search is a burnt-orange highlight, never a hide”. IT READS OFF WHAT THE MAP IS DRAWING, so a matching order with NO GEOCODE — no pin, un-box-selectable, silently dropped by any build — can never ride in on a search hit. AND IT IS THE SAME DOOR, NOT A SECOND RULE: the accepted stops go through addEnclosed exactly as box, lasso and Add-in-view do, so every skip still holds and is still named in the action line — a stop on an open Compare card, one another dispatcher’s device is staging, and (v1.36.3) one already planned onto a load sent to NuVizz. WITH NOTHING LIT IT STILL ARMS THE BOX, through the same beginMode the map rail calls, so Cancel, Esc and the rail’s highlight are unchanged; a button that goes dead when you have not searched is worse than one that offers the old way. THE LABEL SAYS WHICH IT WILL DO before it is pressed — “＋ Add 14 highlighted (search hits)” or “＋ Add selection (drag a box)”. On a phone only the box path drops the Setup sheet; accepting leaves it up, because nothing is tapped on the map and dropping it would hide the tally that just changed. 11 + 5 tests. PUT IT BACK: VITE_ROUTING_ADD_SELECTION_ACCEPTS_HIGHLIGHT=off returns the button to always arming the box — one switch covering the press, the label and the hint, so there is no half-reverted state where it says one thing and does another. No Route Workbench behaviour changes: addEnclosed gains a caller and keeps its rule.'],
+  ['1.38.0', 'HOLD CTRL AND SEE WHETHER THE BUILDING HAS A DOCK. Chad, with a screenshot of consumer Google Maps tilted over a produce terminal: \u201cI want exactly what I showed you where i can be on map hold control and see map in 3d view like I showed you so I can see if buildings have docks.\u201d THE OLD CTRL ALREADY TILTED AND THAT WAS THE PROBLEM. A vector map at 67 degrees draws GREY EXTRUDED BLOCKS, and a grey block has no dock doors on it \u2014 so the gesture worked, looked like the feature, and answered nothing. What Chad photographed is Google\u2019s PHOTOREALISTIC 3D, which google.maps.Map cannot render at any tilt, on any base, with any option: it is a different element (Map3DElement, library maps3d) with its own camera and its own drawing classes. So Ctrl no longer tilts the board \u2014 it brings a second map up over the same spot, at the same centre and the same heading, and lets go puts you straight back. The button beside Satellite pins it open for a longer look, AND IT IS WHY THIS EXISTS ON A PHONE AT ALL: a phone has no Ctrl key, and a Ctrl-only feature is a feature that does not exist on mobile, which this repo has shipped twice. THE CEILING IS A LOGISTICS CALL, NOT A MATHS ONE. Matching the board honestly is what the camera maths does, and at whole-metro zoom that means a camera 363 KILOMETRES up \u2014 a photograph of Georgia from orbit, which answers nothing about a dock. The range clamps to 4,000m so a building is always a building; the CENTRE never moves, so this is a floor under usefulness rather than a teleport. Above 1,200m the view says \u201cToo high to read doors\u201d on itself instead of letting the imagery take the blame. HYBRID ALWAYS, deliberately: over an industrial park of near-identical tilt-wall units the street name is how you confirm you are looking at the right building before you judge its doors, so the labels earn their clutter \u2014 and a pin marks the exact spot you came from. THE SPEND, SAID OUT LOUD because this repo counts calls: a 3D map load bills Google\u2019s IMMERSIVE MAPS SKU, a SEPARATE meter from the DYNAMIC MAPS one the board runs on, with HALF the free allowance (5,000/month vs 10,000, then $7.00/1,000 on both). Google\u2019s SKU page is explicit that panning and zooming an existing map are free, so the price is per ELEMENT CREATED \u2014 the element is therefore built ONCE per page session, on the first Ctrl, and every look after that only moves its camera and un-hides the layer. Two hundred peeks in a morning cost one load. Closing HIDES it and never drops it, and a test pins that, because an unmount would quietly buy another one. THE TELEVISION IS EXCLUDED BY CONSTRUCTION: nobody holds Ctrl on a wall, TV mode runs the raster map precisely because that set could not drive WebGL, and a 3D element is WebGL with a bill attached. A KEY WITHOUT 3D MAPS ENABLED SAYS SO on the layer and names the console setting \u2014 without that, Ctrl would do nothing for ever and look exactly like a broken keyboard. THE ROUTE WORKBENCH IS NOT TOUCHED: this is the dispatch Map only. AND THE WAY BACK IS ONE ENV VAR, because this ALTERS a gesture that already worked: VITE_MAP_3D=off restores the old Ctrl+drag tilt on every side at once \u2014 no listener, no button, no element ever created \u2014 and anything malformed leaves it ON, so a typo cannot silently disable it. ONE BUG CAUGHT BY ITS OWN TEST BEFORE IT SHIPPED: the range maths fell into the Number(null)-is-0 trap CLAUDE.md names, and because ZOOM 0 IS A VALID ZOOM a dead map reading back undefined sailed through as \u201czoomed all the way out\u201d and opened a confident 3D view built on an answer the map never gave. AND ONE MORE FOUND BY OPENING THE PAGE RATHER THAN READING THE DIFF, which is this repo\u2019s own lesson: driving the real deploy preview, Ctrl opened the layer correctly, the key answered every request, nothing threw \u2014 and Google drew its own \u201cOops! Something went wrong\u201d card inside it, because that browser\u2019s renderer was SOFTWARE and the ordinary vector map had fallen back to raster in the same run for the same reason. A failure that arrives through a SUCCESSFUL construction cannot be caught, so it is pre-empted: WebGL is checked BEFORE the element is built, a browser that cannot draw one is told so in a sentence naming WebGL instead of a card naming nothing, and it is never billed for a map it cannot show. When the check cannot tell, it lets Google try \u2014 refusing on a false negative is the worse error. 32 new tests.'],
+  ['1.37.1', 'A STOP SOMEBODY HAS WRITTEN OFF FOR A 53-FOOTER NOW READS RED IN THE SELECTED LIST. Chad: \u201ci want a no tractor trailer stop to highlight red in selection panel.\u201d THE PANEL COULD ONLY SAY YES. It has painted a tractor-friendly row green since v0.46.5, and every other row \u2014 the 600 nobody has looked at and the handful a dispatcher has explicitly marked off-limits \u2014 wore the same nothing. So the one fact on that table a router must not get wrong, \u201csending a 53-footer here is a known mistake\u201d, was invisible unless he opened the stop. RED IS THE STATED NO, NOT THE UNKNOWN, and that line is the whole design: the green rule treats unknown as not-friendly on purpose, so on an ordinary morning most rows are not green, and painting all of those red would put the board\u2019s loudest colour on \u201cno data\u201d \u2014 a warning that fires on everything warns about nothing, and the \u201cDrop N non-tractor\u201d button already covers that set and names its count. A row goes red for a Box-only mark or a CONFIRMED \u201cNo tractor trailer\u201d; the Uline advisory a scanner lifted out of somebody else\u2019s order text stays neutral, exactly as it does not stop the map\u2019s lime paint. ONE RULE, NOT A FOURTH COPY: tractorBlockedSelection delegates to tractorPaintAllowed, the function the pin paints by and the stop panel\u2019s banner is gated on, so the row and the map cannot drift; and because it is the complement of two of tractorFriendlySelection\u2019s own refusal branches, red and green are mutually exclusive BY CONSTRUCTION. A test asserts that over every combination \u2014 \u201ctwo facts, one row\u201d is the shape this panel has got wrong three times (v0.46.8, v0.98.2, v1.1.1). The red hovers within its own colour (red-100 \u2192 red-300) for the reason the green does: a pointer may not eat a fact about the freight. The row\u2019s tooltip names the statement behind the colour, because a colour that cannot say why is half a warning. PUTTING IT BACK IS ONE REVERT \u2014 this ADDS a mark and alters no existing behaviour, and it is one commit. The bottom data grid is deliberately unchanged; say the word and it reads the same red. 9 new tests.'],
   ['1.37.0', 'ROLL THE APP BACK TO A MOMENT IN TIME, IN ONE COMMAND. Chad, after a day of merges: \u201cchanges in the app today caused major bugs with the routing tab that was working perfectly before updates today[,] it introduced at least 10-15 bugs that i\u2019m still working through \u2026 i want to build something where i can roll the app back if this were to happen again. Like i would like to roll the app back to 11:59 pm sept 14th when things were working perfectly.\u201d THE QUESTION IS NEVER \u201cWHICH SHA\u201d. At 6:45am with drivers waiting it is \u201cput it back to Sunday night\u201d, so `npm run rollback -- \u201c2026-09-14 11:59pm\u201d` takes the wall clock and does the translating \u2014 in EASTERN, which is the whole point: every commit stamp in this repo is +0000 and reading Chad\u2019s sentence as UTC lands on 7:59pm, four hours and four merges early, with nothing in the output looking wrong. His exact ask resolves to v1.30.2, 6f7c9d1, 2026-09-14 23:48 EDT, undoing 17 commits. DRY RUN IS THE DEFAULT and nothing moves without --execute --because \u201c<why>\u201d, which lands in the commit, the changelog row and the workbench-guard approval so the log six weeks later says why the app went backwards instead of looking like a mistake. THE PLAN NAMES WHAT IT COSTS before he presses go: all 17 undone commits, and separately the 5 that touch how freight reaches NuVizz \u2014 rolling back past v1.30.3 puts the five-POSTs-per-failed-route-create bug back, and that is his call to make with his eyes open, not the tool\u2019s to make quietly. IT IS A FORWARD COMMIT, NEVER A HISTORY REWRITE: one commit on top of main whose TREE is the old tree. Verified both directions against the real main tip before shipping \u2014 the commit\u2019s tree is byte-identical to the target\u2019s, and `git revert` of that single commit restores today\u2019s tree byte-identically, so undoing a rollback is one command and nobody\u2019s checkout breaks. AND THE LIFEBOAT DOES NOT GET SCUTTLED WITH THE SHIP: a rollback to any date before this tool existed would have DELETED THE TOOL, leaving Chad on the old code with no way to list versions, roll back further or roll forward \u2014 so the script, its test and its npm alias are put back from main after every restore. CODE ONLY, said in the plan and in the row: Firestore (the board, address overrides, dispatcher notes, receiving hours, suppression flags) is untouched and anything already sent to NuVizz is still sent \u2014 a rollback is not an undo button on the day\u2019s freight, and treating it as one is how somebody builds a second truck on top of the first. 26 new tests; the Build Panel and the Route Workbench are not touched.'],
   ['1.36.4', 'THE PANEL HAS A NAME NOW, AND THE BOUNDARY IS A TEST INSTEAD OF A PARAGRAPH. Chad: “tons of changes were made to RWB today that i didn’t ask for … you made changes to the map and rwb when you were only supposed to be working in this panel. I want you to name this panel so going forward when i ask you to work on it you work on it and nothing else.” THE NAME IS THE BUILD PANEL — steps 1 Select stops, 2 Plan onto, 3 Plan, 4 Engine and the Build button at the end of them; the left column on desktop, the Setup tab on a phone, plus routing-select.js, stop-equipment.js and the server build path behind them. Everything else on that screen is the ROUTE WORKBENCH: the Compare cards, Send/Save, what the map paints, the selection tools, the Routes rail. Two halves that shared one name for weeks, which is precisely how work aimed at one kept landing in the other. The UI still says “Setup” on the gear and the phone tab and is deliberately NOT renamed to match — a label change nobody asked for is the same species of unasked change this exists to stop; the alias is written down instead. AND IT IS ENFORCED, because it was already written down the evening before and it happened again the next morning. scripts/check-rwb-untouched.mjs runs in CI as rwb-boundary and FAILS any PR whose changed lines in App.jsx name the workbench surface — staging, Send/Save, map paint, box/lasso/ninja select, card close guards, the Routes rail — unless a commit on the branch quotes Chad: “RWB-CHANGE: <his words>”, which prints his sentence in the CI log. That token cannot be satisfied by good intentions, only by having his instruction in front of you. VALIDATED AGAINST TEN REAL PRs BEFORE SHIPPING, not asserted: it catches every one that moved the workbench (#909, #912, #932, #945, #946, #950) and passes every one that did not (#941, #942, #943, #948) — and it was tuned by that run, because its first version fired on v1.34.0, whose only hit was the shared routing-select import line. Changelog rows, comments and imports are excluded now: a guard that cries on work it should not care about gets switched off, and then it protects nothing. Proven both ways on this branch — a deliberate unapproved edit to markSaved fails it naming the file, the line and the rule; the same edit with the token passes and echoes the quote. 12 new tests. THE MEASUREMENT, SAID PLAINLY: of the Build-Panel work from 09-11 to 09-15, four PRs reached into the workbench — #909 and #912 one line each (stagePlanOntoLoads, the auto-stage), #932 five (the card chip AND a map-paint rule nobody asked for, reverted the same evening by #946). #942, the Box|Tractor toggle, stayed inside the panel and is the only one of the four still standing. No shipping behaviour changes in this release — it is a rule, a guard and its tests.'],
   ['1.36.3', 'A BOX OVER A SENT ROUTE PICKS UP NONE OF ITS STOPS. Chad, Sep 15, with CHE and MARCUS sent to NuVizz and their stops coming back up in a box-select: \u201cits letting me select stops that are already on routes that have been sent to nuvizz \u2026 whatever gets it back right.\u201d READ OFF THE CODE, NOT REASONED: box, lasso and Add-in-view took every positioned stop inside the shape and skipped only a stop staged on an open Compare card (v0.45.15) or one another device was staging (v0.51.0) \u2014 a stop the board holds PLANNED on a load with no card open wore the muted pin and still rode into the selection, in every commit this repo has. No merge on 09-15 (#922\u2013#948, the revert included) touched addEnclosed, positioned or the box handlers, and the stored board reads 007176785 PLANNED on CHE and 007177009 PLANNED on MARCUS, stamped by the 8:29 and 8:54 PM Sends \u2014 zero NuVizz calls, via the explain endpoint. THE RULE NOW, a tested module read by one thin caller: the three area tools leave every stop the board holds on a load, and the action line names the loads \u2014 \u201cAdded 12 stops \u00b7 skipped 15 already on loads (CHE 9, MARCUS 6)\u201d \u2014 through the same isPlannedStop predicate the muted pin reads, so the map and the box cannot disagree about a stop. Stops on open cards and on another device are skipped exactly as before; a tap on a planned pin still opens its route. NOT changed: Ninja, the stacked-place tap and the Save\u2019s own NuVizz guard. PUT IT BACK: VITE_ROUTING_AREA_SELECT_SKIPS_PLANNED=off on the next build restores the old rule; a malformed value leaves it on.'],
@@ -1181,6 +1187,13 @@ const TV_STATIC_MAP = tvStaticMapEnabled(import.meta.env);
 // aerial in Satellite where Google has imagery). Create one in Google Cloud
 // Console → Maps → Map Management (rendering: Vector, tilt + rotation enabled).
 const MAP_ID = import.meta.env.VITE_GOOGLE_MAP_ID || undefined;
+// HOLD CTRL AND SEE THE BUILDING. Chad: "I want exactly what I showed you where I can be on
+// map hold control and see map in 3d view … so I can see if buildings have docks." The
+// vector map's own Ctrl+drag tilt draws GREY BLOCKS, not photographs, and a grey block has no
+// dock doors on it — so Ctrl now brings up Google's photorealistic 3D over the same spot.
+// See lib/map-3d.js for the whole argument, the camera maths and the spend.
+// VITE_MAP_3D=off puts the old Ctrl+drag tilt back; anything malformed leaves it ON.
+const MAP_3D_ON = map3dEnabled(import.meta.env);
 
 // M4.1 localStorage keys + sizing constants for the resizable left panel.
 const LS_PANEL_WIDTH = 'dispatchMap.leftPanelWidth';
@@ -11809,6 +11822,67 @@ function DebugCaptureSheet({ open, onClose, captureRef }) {
   );
 }
 
+/**
+ * THE 3D LAYER — Google's photorealistic map, over the spot the board was looking at.
+ *
+ * ALWAYS MOUNTED, ONLY HIDDEN. The Map3DElement lives inside this div and is built once per
+ * page session; unmounting the container would destroy it and the next Ctrl would BUY
+ * ANOTHER ONE (the Immersive Maps SKU bills per element created). `display` is the switch,
+ * not the mount.
+ *
+ * data-overlay-layer: this surface EXISTS to cover the map, so the mobile overlap guard is
+ * told it is deliberate rather than being weakened to let it through.
+ *
+ * ONE COMPONENT, BOTH VIEWS — deliberately, and it is not the "make one screen work for
+ * both" shortcut CLAUDE.md forbids. There is no layout to get wrong here: it is a full-bleed
+ * photograph with one strip of chrome. What differs between phone and desktop is how it is
+ * ENTERED (a thumb on the button; a finger on Ctrl), and those are genuinely two paths.
+ */
+function Map3DLayer({ layerRef, on, pinned, hint, error, onClose }) {
+  return (
+    <div
+      ref={layerRef}
+      data-overlay-layer
+      aria-hidden={on ? 'false' : 'true'}
+      className="absolute inset-0 z-[11] bg-slate-900"
+      style={{ display: on ? 'block' : 'none' }}
+    >
+      {/* The strip says what you are looking at and how to leave. A peek needs no exit — you
+          are holding the key that opened it — so the button only appears when pinned. */}
+      <div className="absolute top-0 left-0 right-0 z-[2] flex items-center gap-2 px-3 py-2 bg-gradient-to-b from-black/70 to-transparent pointer-events-none">
+        <span className="text-[11px] font-semibold tracking-wide text-white/90 uppercase">3D view</span>
+        {hint && <span className="text-[11px] text-amber-300 truncate">{hint}</span>}
+        <span className="flex-1" />
+        {pinned && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="pointer-events-auto rounded bg-white/90 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-white"
+            style={{ minHeight: 32 }}
+          >
+            Back to the map
+          </button>
+        )}
+      </div>
+      {/* A KEY WITHOUT 3D MAPS ENABLED FAILS SILENTLY OTHERWISE — the gesture would simply do
+          nothing, for ever, and look exactly like a broken keyboard. Name it, and name the
+          console setting that fixes it. */}
+      {error && (
+        <div className="absolute inset-0 flex items-center justify-center px-8 text-center">
+          <div>
+            <div className="text-base font-semibold text-slate-200">Google would not open the 3D map</div>
+            <div className="mt-2 text-sm text-slate-400">{error}</div>
+            <div className="mt-2 text-xs text-slate-500">
+              3D Maps is its own product on the key (Immersive Maps SKU). Check it is enabled for
+              this project in the Google Cloud console.
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = null, tvMode = false, onExitTv = null, onEnterTv = null }) {
   // M5 — selectedDate drives every fetch. Defaults to today (ET) and is NOT
   // persisted: every page load resets to today (brief P2.2).
@@ -12140,6 +12214,33 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   // handler and its paint both have to reach current state through refs.
   const satelliteBtnRef = useRef(null);
   const satelliteToggleRef = useRef(null);
+  // ── HOLD CTRL AND SEE THE BUILDING ──────────────────────────────────────────
+  // Google will not render photorealistic 3D inside a google.maps.Map at any tilt, so this
+  // is a SECOND map element laid over the first, pointed at the same spot. The rules (the
+  // camera maths, the switch, which keys count) live in lib/map-3d.js, pure and tested;
+  // what is left here is the element, the DOM and the listener.
+  //
+  // NOT ON THE TELEVISION. Nobody holds Ctrl on a wall, TV mode deliberately runs the raster
+  // map because the set could not drive WebGL at all (v1.31.4), and a 3D element is WebGL
+  // with a bill attached. Excluded by construction rather than by remembering.
+  const map3dAvailable = MAP_3D_ON && !tvMode;
+  const map3dDiv = useRef(null);
+  const map3dElRef = useRef(null);      // the ONE Map3DElement — see below on the spend
+  const map3dMarkerRef = useRef(null);  // the pin on the building you were looking at
+  const map3dBtnRef = useRef(null);     // the on-map button (the mobile half of this feature)
+  const map3dToggleRef = useRef(null);  // latest toggle fn, for that once-created button
+  const map3dBusyRef = useRef(false);   // a held key must not start a second library load
+  // "Am I pinned?" read through a ref by the key listener, so that listener is bound ONCE
+  // and never torn down on a state change — a rebuild mid-hold drops the keyup that closes
+  // the peek, and the view stays up over a board nobody realises they cannot see.
+  const map3dPinnedRef = useRef(false);
+  const [map3dOn, setMap3dOn] = useState(false);
+  const [map3dPinned, setMap3dPinned] = useState(false);  // button = stays; Ctrl = peek
+  const [map3dCamera, setMap3dCamera] = useState(null);   // drives the too-high hint
+  // A KEY THAT IS NOT PERMITTED MUST SAY SO. 3D Maps bills the Immersive Maps SKU and can be
+  // disabled on the key independently of everything else this app uses — in which case Ctrl
+  // would do nothing at all, forever, with no way to tell that from "the gesture is broken".
+  const [map3dError, setMap3dError] = useState(null);
   const clustererRef = useRef(null);
   const markersRef = useRef([]);
   const driverMarkersRef = useRef([]);
@@ -12931,6 +13032,20 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     satBtn.addEventListener('click', () => satelliteToggleRef.current && satelliteToggleRef.current());
     satelliteBtnRef.current = satBtn;
     mapRef.current.controls[google.maps.ControlPosition.RIGHT_BOTTOM].push(satBtn);
+    // THE 3D BUTTON — and it exists because a phone has no Ctrl key. A Ctrl-only feature is
+    // a feature that does not exist on mobile, which this repo has shipped twice; it also
+    // gives the gesture somewhere to be discovered, since nothing on a map announces "hold
+    // Ctrl". Same 40px Google chrome as the two controls it stacks with. Not built at all
+    // when the switch is off or on the television, so the revert takes the button with it.
+    if (map3dAvailable) {
+      const btn3d = document.createElement('button');
+      btn3d.type = 'button';
+      btn3d.style.cssText = MAP3D_BUTTON_CSS;
+      btn3d.addEventListener('click', () => map3dToggleRef.current && map3dToggleRef.current());
+      map3dBtnRef.current = btn3d;
+      paint3dControl(btn3d, false);
+      mapRef.current.controls[google.maps.ControlPosition.RIGHT_BOTTOM].push(btn3d);
+    }
     // Custom "Recenter on stops" control (the crosshair). A ref holds the latest
     // fit function so the once-created button always recenters the current board.
     const recenterBtn = document.createElement('button');
@@ -12980,6 +13095,164 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   useEffect(() => {
     paintSatelliteControl(satelliteBtnRef.current, mapFilters.satellite);
   }, [mapFilters.satellite, mapReady]);
+
+  // ── OPEN THE 3D VIEW ON WHAT THE BOARD IS LOOKING AT ────────────────────────
+  //
+  // THE SPEND, AND WHY THIS FUNCTION IS SHAPED THE WAY IT IS. A 3D map load bills Google's
+  // IMMERSIVE MAPS SKU — a SEPARATE meter from the DYNAMIC MAPS one the board runs on, with
+  // HALF the monthly free allowance (5,000 vs 10,000, then $7.00/1,000 on both). Google's
+  // SKU page is explicit that panning and zooming an existing map cost nothing, so the price
+  // is per ELEMENT CREATED. The element is therefore built ONCE per page session, on the
+  // first Ctrl, and every look after that only moves its camera and un-hides it. A dispatcher
+  // who peeks two hundred times in a morning costs one load, not two hundred.
+  const open3d = useCallback(async (pinned) => {
+    if (!map3dAvailable || !google || !mapRef.current || !map3dDiv.current) return;
+    // WHAT THE 2D MAP IS SHOWING, READ FROM THE MAP ITSELF rather than from state — state
+    // lags a pan, and landing one gesture behind is landing on the wrong building.
+    const view = keepView(mapRef.current, null, null);
+    let heading = 0;
+    try { heading = mapRef.current.getHeading?.() ?? 0; } catch { heading = 0; }
+    // MEASURE THE 2D MAP, NEVER THE 3D LAYER — and this one would have shipped as "Ctrl does
+    // nothing". The layer is display:none until it opens, and a hidden element's clientHeight
+    // is 0; a zero height makes the range maths refuse (correctly), so the FIRST press would
+    // have computed no camera and opened nothing, for ever. The map div beside it is the same
+    // box and is always visible. Found by reading the change back asking how it fails
+    // silently, which is the only way this one gets found before a dispatcher finds it.
+    const heightPx = mapDiv.current?.clientHeight || map3dDiv.current.clientHeight || window.innerHeight || 0;
+    const cam = cameraFor2dView({
+      center: view.center, zoom: view.zoom, heading, heightPx,
+      satellite: mapFilters.satellite,
+    });
+    // A CAMERA FLOWN TO A MADE-UP DEFAULT IS WORSE THAN A GESTURE THAT DID NOTHING, because
+    // the dispatcher would believe the picture. Declining to open is the honest outcome.
+    if (!cam) return;
+    setMap3dCamera(cam);
+    if (map3dBusyRef.current) return;
+
+    if (!map3dElRef.current) {
+      // BEFORE ANYTHING IS BUILT OR BILLED. A browser with no usable WebGL gets Google's own
+      // blank "Oops" card inside the layer — no failed request, no exception, nothing for the
+      // catch below to report — which is the white rectangle this repo has already had to
+      // turn into a sentence twice. Named here instead, and a browser that cannot show a 3D
+      // map never buys one.
+      if (!webglUsable()) {
+        setMap3dError(MAP3D_NO_WEBGL);
+        setMap3dPinned(true);
+        setMap3dOn(true);
+        return;
+      }
+      map3dBusyRef.current = true;
+      try {
+        const lib = await google.maps.importLibrary('maps3d');
+        // Guard the race: two quick Ctrl presses must not both construct (two elements =
+        // two billed loads, and two WebGL canvases stacked on the board).
+        if (!map3dElRef.current) {
+          const el = new lib.Map3DElement({
+            center: cam.center, range: cam.range, tilt: cam.tilt, heading: cam.heading, mode: cam.mode,
+          });
+          el.style.width = '100%';
+          el.style.height = '100%';
+          map3dElRef.current = el;
+          if (map3dDiv.current) map3dDiv.current.appendChild(el);
+          // THE PIN IS NOT DECORATION. At 300m over an industrial park of near-identical
+          // tilt-wall units, "which of these roofs is the stop" is the question standing
+          // between the dispatcher and the answer they came for. Guarded on its own, so a
+          // marker class this channel does not carry costs the imagery rather than replacing
+          // it with an error.
+          try {
+            if (lib.Marker3DElement) {
+              const pin = new lib.Marker3DElement({ position: cam.center, altitudeMode: 'CLAMP_TO_GROUND' });
+              map3dMarkerRef.current = pin;
+              el.appendChild(pin);
+            }
+          } catch { /* imagery without a pin still answers most of the question */ }
+        }
+        setMap3dError(null);
+      } catch (e) {
+        // NEVER REPORT AN INTENT AS AN OUTCOME. A key without 3D Maps enabled fails exactly
+        // here, and without this the gesture would silently do nothing for ever — which is
+        // indistinguishable from a broken keyboard.
+        setMap3dError(e?.message ? String(e.message) : 'Google refused the 3D map');
+        map3dBusyRef.current = false;
+        // AND THE MESSAGE HAS TO BE ON SCREEN LONG ENOUGH TO READ. Returning here without
+        // opening left the refusal written onto a layer that was still display:none — the
+        // error existed and nobody could ever see it, which is the exact failure the error
+        // was added to prevent. It opens, and it opens PINNED: a peek would vanish the
+        // instant Chad let go of the key he is holding to read it.
+        setMap3dPinned(true);
+        setMap3dOn(true);
+        return;
+      }
+      map3dBusyRef.current = false;
+    } else {
+      // The re-use path: move the camera, cost nothing.
+      const el = map3dElRef.current;
+      // RE-ATTACH IF THE CONTAINER MOVED UNDER IT. Phone and desktop are different render
+      // trees, so dragging a window across the breakpoint with 3D open destroys the div the
+      // element was appended to and builds a fresh empty one. Without this the element is
+      // orphaned: the camera still moves, nothing is on screen, and it looks like the
+      // imagery failed. appendChild moves a node that already has a parent, so this is a
+      // no-op in the ordinary case.
+      try {
+        if (map3dDiv.current && el.parentNode !== map3dDiv.current) map3dDiv.current.appendChild(el);
+      } catch { /* an element that refuses to move is still better than none */ }
+      try {
+        el.center = cam.center; el.range = cam.range; el.tilt = cam.tilt;
+        el.heading = cam.heading; el.mode = cam.mode;
+        if (map3dMarkerRef.current) map3dMarkerRef.current.position = cam.center;
+      } catch { /* a camera that refuses to move still shows the last good view */ }
+    }
+    setMap3dPinned(!!pinned);
+    setMap3dOn(true);
+  }, [map3dAvailable, google, mapFilters.satellite, mapReady]);
+
+  // Closing keeps the element — that is the whole cost design. Only the layer is hidden.
+  const close3d = useCallback(() => {
+    setMap3dOn(false);
+    setMap3dPinned(false);
+  }, []);
+
+  // ── THE GESTURE CHAD ASKED FOR ──────────────────────────────────────────────
+  // Hold Ctrl (or ⌘) → peek; let go → straight back to the board. The button below is the
+  // pinned version, and the mobile half, since a phone has no Ctrl key.
+  useEffect(() => {
+    if (!map3dAvailable) return undefined;
+    const inField = () => {
+      const a = document.activeElement;
+      if (!a) return false;
+      const tag = String(a.tagName || '').toLowerCase();
+      return tag === 'input' || tag === 'textarea' || tag === 'select' || a.isContentEditable === true;
+    };
+    const onDown = (ev) => { if (shouldEnter3dOnKey(ev, { inTextField: inField() })) open3d(false); };
+    const onUp = (ev) => {
+      // A PINNED VIEW IGNORES THE KEY. Someone who pressed the button and then happens to
+      // touch Ctrl has not asked to be thrown back to the flat map.
+      if (!map3dPinnedRef.current && shouldExit3dOnKey(ev)) close3d();
+    };
+    // The browser stops sending keyup when the window loses focus mid-hold (⌘-Tab away with
+    // Ctrl down). Without this the peek would still be up on return, over a board the
+    // dispatcher thinks they are looking at.
+    const onBlur = () => { if (!map3dPinnedRef.current) close3d(); };
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('keyup', onUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keyup', onUp);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, [map3dAvailable, open3d, close3d]);
+
+  useEffect(() => { map3dPinnedRef.current = map3dPinned; }, [map3dPinned]);
+
+  // Keep the on-map 3D button pointed at live state and painted to match — same shape as the
+  // satellite control it stacks beside, for the same reason: it is created once by Google.
+  useEffect(() => {
+    map3dToggleRef.current = () => { if (map3dOn) close3d(); else open3d(true); };
+  }, [map3dOn, open3d, close3d]);
+  useEffect(() => {
+    paint3dControl(map3dBtnRef.current, map3dOn);
+  }, [map3dOn, mapReady]);
 
   // Keep the Recenter button's action pointed at the current board: fit to all
   // currently-shown stops (or fall back to the default center when none).
@@ -13753,6 +14026,10 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         {smsTargets && <SmsComposeModal title={smsTargets.title} recipients={smsTargets.recipients} initialText={smsTargets.initialText} onClose={() => setSmsTargets(null)} />}
         <div className="flex-1 relative min-w-0 overflow-hidden">
         <div ref={mapDiv} className="absolute inset-0" />
+        {/* PHONE: the 3D layer is entered by the on-map button — there is no Ctrl key here. */}
+        {map3dAvailable && (
+          <Map3DLayer layerRef={map3dDiv} on={map3dOn} pinned={map3dPinned} hint={map3dHint(map3dCamera)} error={map3dError} onClose={close3d} />
+        )}
         {/* Box/lasso multi-select: capture overlay (while a tool is armed) + the
             tool controls (kept above the overlay so you can switch/cancel). */}
         {selectMode && (
@@ -14291,6 +14568,10 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
       {/* Map */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
+        {/* DESKTOP: hold Ctrl to peek, or press the on-map 3D button to pin it open. */}
+        {map3dAvailable && (
+          <Map3DLayer layerRef={map3dDiv} on={map3dOn} pinned={map3dPinned} hint={map3dHint(map3dCamera)} error={map3dError} onClose={close3d} />
+        )}
         {/* Box/lasso multi-select: capture overlay + tool controls (above it). */}
         {selectMode && (
           <SelectionOverlay
@@ -17677,6 +17958,15 @@ const AREA_SELECT_SKIPS_PLANNED = (() => {
   try { return areaSelectSkipsPlanned(import.meta.env.VITE_ROUTING_AREA_SELECT_SKIPS_PLANNED); } catch { return true; }
 })();
 
+// Does step 1's "＋ Add selection" ACCEPT the stops already highlighted on the map instead of
+// arming a box draw? ON by default (v1.38.1). PUT IT BACK: VITE_ROUTING_ADD_SELECTION_ACCEPTS_HIGHLIGHT=off
+// and the button goes back to always arming the box — one switch covering the press, the label
+// and the hint, so there is no half-reverted state where the button says one thing and does
+// another. Build-time, so it costs a redeploy either way.
+const ADD_SELECTION_ACCEPTS_HIGHLIGHT = (() => {
+  try { return houseSwitchOn(import.meta.env.VITE_ROUTING_ADD_SELECTION_ACCEPTS_HIGHLIGHT); } catch { return true; }
+})();
+
 // Live-write (beta) gate — the routes-panel driver-assign + dispatch UI. UNLIKE the
 // routing beta this defaults OFF (live writes are opt-in): enable with env
 // VITE_NUVIZZ_WRITE_BETA='true', or force per-session with ?write=1 (?write=0 hides it).
@@ -20688,6 +20978,27 @@ function stopTractorFriendly(stop, notes, tractorLocs) {
   });
 }
 
+// HAS SOMEBODY HERE SAID NO TRACTOR TRAILER TO THIS STOP — the red row (v1.37.1).
+//
+// Chad: "i want a no tractor trailer stop to highlight red in selection panel." Red is the
+// STATED no — a Box-only mark or a confirmed "No tractor trailer" — and nothing else; the
+// rule is tractorBlockedSelection (lib/map-legend.js), which is the map's own paint rule
+// under a name, so the row and the pin cannot disagree about a stop.
+//
+// IT IS FED THE SAME KEYS AS THE GREEN ABOVE, deliberately, and that is the invariant worth
+// stating: red must never land on a row this panel has painted green, which is the same
+// failure as the button dropping one (v0.46.8). Both read getRestrictionBadgeKeys(note), so
+// where the two rules disagree with the MAP — a stop marked tractor-OK that still carries a
+// confirmed blocker, which the map's drawnRestrictionKeys filters out and this does not —
+// they disagree together, in the cautious direction, and the panel stays self-consistent.
+function stopTractorBlocked(stop, notes) {
+  const note = notes?.get?.(stop.matchKey) || null;
+  return tractorBlockedSelection({
+    eligibility: note?.vehicle_eligibility ?? null,
+    drawnKeys: getRestrictionBadgeKeys(note), note, resolve: resolveRestrictionKey,
+  });
+}
+
 function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemove, onRemoveMany, onClearAll, onOpenStop, onClose, isMobile, hoverId, setHoverId, onLocate, sendTargets = [], onSendTo = null }) {
   // Compact window from the naive (zoneless) schedule ISO — parse the clock straight off the
   // string so there's no local-timezone drift. "8:00a", "8:00a–8:00p".
@@ -20715,6 +21026,10 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
       // a button that drops a row a panel painted green is the worst possible version of this
       // feature (Chad, v0.46.8: "4 of these are painted... rows are not highlighted").
       tractorOk: stopTractorFriendly(s, notes, tractorLocs),
+      // AND THE OTHER DIRECTION, which the panel could not say before: somebody has marked
+      // this stop off-limits to a 53-footer. Not the complement of tractorOk — the unknown
+      // rows sit between the two and stay neutral.
+      blocked: stopTractorBlocked(s, notes),
     };
   }), [selectedStops, notes, tractorLocs]);
   const tot = rows.reduce((a, r) => ({ wt: a.wt + r.weight, plt: a.plt + r.pallets, ls: a.ls + r.loose }), { wt: 0, plt: 0, ls: 0 });
@@ -20853,7 +21168,12 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
                   onMouseEnter={() => setHoverId && setHoverId(r.id)}
                   onMouseLeave={() => setHoverId && setHoverId((h) => (h === r.id ? null : h))}
                   onClick={() => onLocate && onLocate(r.stop, isMobile ? 0 : panelW / 2)}
-                  title="Show this stop on the map"
+                  // A COLOUR THAT CANNOT SAY WHY IS HALF A WARNING. The red row names the
+                  // statement behind it here, in the tooltip the row already had, rather than
+                  // adding a chip to a table that is 420px wide by default.
+                  title={r.blocked
+                    ? 'NO TRACTOR TRAILER — somebody here marked this stop box-only or ticked "No tractor trailer". Click to show it on the map.'
+                    : 'Show this stop on the map'}
                   // NEUTRAL, NOT YELLOW. Chad: "I don't like the highlight yellow when i'm over
                   // a row." Amber was picked to echo the marker's selection colour and that was
                   // the wrong reason — amber on this board means CAUTION (a contested ZIP, a
@@ -20862,7 +21182,7 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
                   // else. It also keeps the tractor-green row GREEN while it is hovered, which
                   // the single amber fill was overwriting — that green is a real signal about
                   // what can be sent there, and a hover must never eat it.
-                  className={`border-t cursor-pointer ${selectionRowTone({ tractorOk: r.tractorOk, hot: hoverId === r.id })}`}
+                  className={`border-t cursor-pointer ${selectionRowTone({ tractorOk: r.tractorOk, blocked: r.blocked, hot: hoverId === r.id })}`}
                 >
                   <td className="px-1.5 py-1 whitespace-nowrap"><button onClick={(e) => { e.stopPropagation(); onOpenStop && onOpenStop(r.stop); }} className="font-mono text-blue-700 hover:underline">{r.pro}</button></td>
                   <td className="px-1.5 py-1 max-w-[150px] truncate" title={r.location}>{r.location}</td>
@@ -20900,7 +21220,7 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemov
 // ON THE MAP, top-right, on both views. It went to the app bar in v1.23.0 alongside the
 // dispatch Map's and came back with it in v1.23.1 — Chad: "move filters back to where it
 // was." See FilterToolbar for why the bar lost that argument."
-function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setShowRoutes, hideLabels, setHideLabels, hideStem = false, setHideStem = null }) {
+function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setShowRoutes, hideLabels, setHideLabels, hideStem = false, setHideStem = null, hideTerminal = false, setHideTerminal = null }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -20913,7 +21233,7 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setSho
   }, [open]);
   // Satellite is no longer in this popover (it lives on the map, in the tool rail), so it no
   // longer counts toward "some filter is on".
-  const anyOn = unplannedOnly || showRoutes || hideLabels || hideStem;
+  const anyOn = unplannedOnly || showRoutes || hideLabels || hideStem || hideTerminal;
   return (
     <div className="absolute top-2 right-2 z-20" ref={ref}>
       <button
@@ -20926,6 +21246,7 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setSho
       </button>
       {open && (
         <div className="absolute right-0 mt-1 w-52 bg-white border border-slate-300 rounded-lg shadow-xl px-3 py-1.5 text-[12px]">
+          {setHideTerminal && <MapFilterToggle label="Hide terminal markers" checked={hideTerminal} onChange={setHideTerminal} />}
           <MapFilterToggle label="Unplanned only" checked={unplannedOnly} onChange={setUnplannedOnly} />
           <MapFilterToggle label="Hide place labels" checked={hideLabels} onChange={setHideLabels} />
           <MapFilterToggle label="Show routes" checked={showRoutes} onChange={setShowRoutes} />
@@ -21773,6 +22094,14 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // (satellite base on, nothing hidden). unplannedOnly filters the rendered stops; satellite swaps
   // the map base; showRoutes overlays each load's delivery-sequence polyline.
   const [routeUnplannedOnly, setRouteUnplannedOnly] = useState(() => { try { return localStorage.getItem('routing.mapUnplannedOnly') === 'on'; } catch { return false; } });
+  // Chad, 2026-09-16: "i want hide termianl markers and hide stem out added to my routing
+  // filters". The stem-out half landed in v1.36.2; this is the other half. Terminal markers are
+  // the DEPOT rows — hiding them declutters the board without taking one customer delivery off
+  // the screen, which is what makes it safe on the screen where loads are BUILT. (The dispatch
+  // Map's "Hide stem out" hides the first delivery of every load; Routing's deliberately does
+  // not, and this one removes no freight either.)
+  const [routeHideTerminal, setRouteHideTerminal] = useState(() => { try { return localStorage.getItem('routing.mapHideTerminal') === 'on'; } catch { return false; } });
+  useEffect(() => { try { localStorage.setItem('routing.mapHideTerminal', routeHideTerminal ? 'on' : 'off'); } catch { /* ignore */ } }, [routeHideTerminal]);
   const [routeSatellite, setRouteSatellite] = useState(() => { try { return localStorage.getItem('routing.mapSatellite') !== 'off'; } catch { return true; } });
   const [routeShowRoutes, setRouteShowRoutes] = useState(() => { try { return localStorage.getItem('routing.mapShowRoutes') === 'on'; } catch { return false; } });
   useEffect(() => { try { localStorage.setItem('routing.mapUnplannedOnly', routeUnplannedOnly ? 'on' : 'off'); } catch { /* ignore */ } }, [routeUnplannedOnly]);
@@ -21790,7 +22119,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   useEffect(() => { try { localStorage.setItem('routing.hideLabels', routeHideLabels ? 'on' : 'off'); } catch { /* ignore */ } }, [routeHideLabels]);
   const resetRoutingLayout = useCallback(() => {
     leftPanel.onDoubleClick(); rightPanel.onDoubleClick();
-    setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true); setRouteHideStem(false); setLeftPanelOn(false); setRightCollapsed(false);
+    setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true); setRouteHideStem(false); setRouteHideTerminal(false); setLeftPanelOn(false); setRightCollapsed(false);
   }, [leftPanel, rightPanel]);
   // Nudge Google Maps to re-render when a side panel resizes (the canvas changed width).
   useEffect(() => {
@@ -21952,11 +22281,14 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   // up (open in Compare). A pulled-up route always renders in full on the map regardless of the
   // filter, so its planned stops + polyline stay visible while everything else stays hidden.
   const positioned = useMemo(() => {
-    if (!routeUnplannedOnly) return positionedAll;
-    return positionedAll.filter((s) => s.isUnplanned
+    // Terminal first: it removes the depot rows and never a customer's freight, so it composes
+    // with "Unplanned only" instead of fighting it.
+    const base = routeHideTerminal ? positionedAll.filter((s) => !s.isTerminal) : positionedAll;
+    if (!routeUnplannedOnly) return base;
+    return base.filter((s) => s.isUnplanned
       || (s.routeName != null && openRouteKeys.has(String(s.routeName)))
       || (s.loadNbr != null && openRouteKeys.has(String(s.loadNbr))));
-  }, [positionedAll, routeUnplannedOnly, openRouteKeys]);
+  }, [positionedAll, routeUnplannedOnly, routeHideTerminal, openRouteKeys]);
   // Lookup map for cards / manifest / the Save payload — built from the UNFILTERED set, so a
   // stop staged onto an open card never vanishes from the card rows, printed manifest, or
   // re-sequencing while "Unplanned only" hides it on the MAP (markers use `positioned` below).
@@ -24142,24 +24474,45 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       return next;
     });
   }, [wbRoutes.length, isMobile]);
-  // Arm the BOX draw from step 1 of the Setup panel. Chad: "left panel should have an add
-  // selection button." Box and Lasso have lived ONLY on the map's left-edge rail since
-  // v0.29.59 — two unlabelled 36px icons over a satellite photo — while step 1's own hint
-  // told the dispatcher to go and find them there. The panel's one selection button takes
-  // the WHOLE viewport, so grabbing one dock out of a cluster meant zooming until nothing
-  // else was on screen. Same beginMode the rail calls, so the armed block, its Cancel, Esc
-  // and the rail's own highlight all behave identically — one mode, two doors into it.
-  // PHONE: drop the sheet. The corners are tapped ON the map and the sheet is half the
-  // screen (the same move armNinjaFromPanel makes), and the toast carries the instruction
-  // the dropped sheet just took with it — an armed mode with nothing on screen to explain
-  // it reads as a broken map.
+  // WHAT IS ALREADY LIT ON THE MAP, and not yet in the selection. Chad: "i don't want the add
+  // selection to prompt me to drag a box i want it to accept what i have already selected" →
+  // "accept the stops already highlighted on map." The map's own definition of highlighted is
+  // one line in useLegendInventory (selected OR a search hit), so the addable half is the
+  // burnt-orange search hits. Read off what the map IS DRAWING, so a hit with no geocode —
+  // no pin, un-box-selectable, dropped by any build — can never ride in. Rule + 11 tests in
+  // lib/routing-select.js; this is the thin edge.
+  const highlightedAddable = useMemo(
+    () => (ADD_SELECTION_ACCEPTS_HIGHLIGHT ? highlightedForSelection(drawnStops, { searchMatchIds, selectedIds }) : []),
+    [drawnStops, searchMatchIds, selectedIds],
+  );
+  // Step 1's "Add selection" button. Chad asked for it in v1.19.0 ("left panel should have an
+  // add selection button") because Box and Lasso have lived ONLY on the map's left-edge rail
+  // since v0.29.59 — two unlabelled 36px icons over a satellite photo — while step 1's own
+  // hint told the dispatcher to go and find them there.
+  //
+  // IT ACCEPTS BEFORE IT ASKS. Search the grid for a customer, the pins go burnt orange, press
+  // this and they are in — no box, no second gesture, and the selection is exactly what was on
+  // screen. It hands them to addEnclosed, the SAME path box and lasso use, so every skip still
+  // holds: a stop on an open Compare card, one another dispatcher's device is staging, and one
+  // already planned onto a sent load are all left alone and NAMED in the action line. A second
+  // door into the existing rule, never a second rule.
+  //
+  // WITH NOTHING LIT it falls back to arming the box — same beginMode the rail calls, so the
+  // armed block, its Cancel, Esc and the rail's own highlight behave identically. A button that
+  // goes dead when you have not searched is worse than one that offers the old way.
+  // PHONE, box path only: drop the sheet. The corners are tapped ON the map and the sheet is
+  // half the screen (the same move armNinjaFromPanel makes), and the toast carries the
+  // instruction the dropped sheet just took with it — an armed mode with nothing on screen to
+  // explain it reads as a broken map. The ACCEPT path leaves the sheet up on purpose: there is
+  // nothing to tap, and dropping it would hide the tally that just changed.
   const armSelectionFromPanel = useCallback(() => {
+    if (highlightedAddable.length) { addEnclosed(highlightedAddable); return; }
     beginMode('box');
     if (isMobile) {
       setSheetOpen(false);
       showMapToast('Box select on — tap two corners on the map to add that group. Tap the Box tool (left edge) again to cancel.');
     }
-  }, [beginMode, isMobile, showMapToast]);
+  }, [highlightedAddable, addEnclosed, beginMode, isMobile, showMapToast]);
   // Mobile: whenever a route is opened into the Compare panel — the FIRST one or any later one —
   // jump to the Setup tab (which hosts the Compare workbench + the Ninja toggle) and open the sheet.
   // This used to fire for the first card only (0 → 1). With the sheet collapsed by default and the
@@ -24608,16 +24961,22 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
               <button onClick={addInView} className="flex-1 px-2 py-2 text-xs rounded border-2 font-semibold hover:bg-blue-50 active:bg-blue-100" style={{ borderColor: BRAND, color: BRAND }}>＋ Add stops in view</button>
               <button onClick={clearSelection} className="px-3 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">Clear</button>
             </div>
-            {/* THE DRAW TOOL, IN THE PANEL — the requested "add selection" button. It arms the
-                same box select the map rail arms (armSelectionFromPanel → beginMode('box')), so
-                the amber block below replaces these buttons the instant it is on and Cancel/Esc
-                still end it. Full width on its own row rather than a third chip beside Clear: at
-                the 290px the Setup panel actually runs, three buttons on one line put this one at
-                ~90px and truncate its label. */}
-            <button onClick={armSelectionFromPanel} className="w-full px-2 py-2 text-xs rounded border-2 font-semibold hover:bg-blue-50 active:bg-blue-100 inline-flex items-center justify-center gap-1.5" style={{ borderColor: BRAND, color: BRAND }}>
-              <Square size={13} /> ＋ Add selection <span className="font-normal opacity-70">({isMobile ? 'tap 2 corners' : 'drag a box'})</span>
+            {/* THE REQUESTED "add selection" BUTTON, AND IT SAYS WHAT IT WILL DO BEFORE IT IS
+                PRESSED. With search hits lit on the map it ACCEPTS them (Chad: "accept the stops
+                already highlighted on map"); with nothing lit it arms the same box select the map
+                rail arms, so the amber block below replaces these buttons the instant it is on and
+                Cancel/Esc still end it. A button whose label changes with what it is about to do
+                beats a fixed label that is wrong half the time. Full width on its own row rather
+                than a third chip beside Clear: at the 290px the Setup panel actually runs, three
+                buttons on one line put this one at ~90px and truncate its label. */}
+            <button onClick={armSelectionFromPanel} data-add-selection-mode={highlightedAddable.length ? 'accept' : 'box'} className="w-full px-2 py-2 text-xs rounded border-2 font-semibold hover:bg-blue-50 active:bg-blue-100 inline-flex items-center justify-center gap-1.5" style={{ borderColor: BRAND, color: BRAND }}>
+              <Square size={13} /> {highlightedAddable.length > 0
+                ? <>＋ Add {highlightedAddable.length} highlighted <span className="font-normal opacity-70">(search hits)</span></>
+                : <>＋ Add selection <span className="font-normal opacity-70">({isMobile ? 'tap 2 corners' : 'drag a box'})</span></>}
             </button>
-            <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. <b>Add selection</b> draws a box around a group; the <b>Lasso</b> and <b>Ninja</b> tools are on the map (left edge), or pan/zoom then <b>Add stops in view</b>.</div>
+            <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. {highlightedAddable.length > 0
+              ? <>Search the grid below and the matches light up <b style={{ color: SEARCH_MATCH_COLOR }}>orange</b> on the map — <b>Add {highlightedAddable.length} highlighted</b> takes them all.</>
+              : <><b>Add selection</b> draws a box around a group{ADD_SELECTION_ACCEPTS_HIGHLIGHT ? ', or search the grid below and it takes the highlighted matches instead' : ''}; the <b>Lasso</b> and <b>Ninja</b> tools are on the map (left edge), or pan/zoom then <b>Add stops in view</b>.</>}</div>
           </>
         )}
         {lastAction && <div className="text-[11px] text-slate-500">{lastAction}</div>}
@@ -25006,7 +25365,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         {appBarSlot && createPortal(phoneGearEl, appBarSlot)}
         <div className="flex-1 relative min-w-0">
           <div ref={mapDiv} className="absolute inset-0" />
-          <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} hideStem={routeHideStem} setHideStem={setRouteHideStem} />
+          <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} hideStem={routeHideStem} setHideStem={setRouteHideStem} hideTerminal={routeHideTerminal} setHideTerminal={setRouteHideTerminal} />
           {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button),
               with the Board Flags chip stacked above it. */}
           <div className="absolute top-12 right-2 z-[15] max-w-[230px] flex flex-col items-end gap-1">{flagsOverlay()}{statusCard()}</div>
@@ -25223,7 +25582,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       {/* Center: the map canvas */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
-        <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} hideStem={routeHideStem} setHideStem={setRouteHideStem} />
+        <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} hideStem={routeHideStem} setHideStem={setRouteHideStem} hideTerminal={routeHideTerminal} setHideTerminal={setRouteHideTerminal} />
         {/* THE BOARD-STATUS CARD IS NOT ON THE MAP ANY MORE (desktop). It is portalled onto
             the app bar, left of More — see #desktop-appbar-slot for the geometry and why
             that position is the one that keeps its dropdown off Filters and the flags.
