@@ -136,5 +136,13 @@ test('addEnclosed reads areaSelectPartition with the switch, and box / lasso / A
 
 test('the switch is the named env var, read through the house-shape parser, and defaults ON on any error', () => {
   assert.ok(/const AREA_SELECT_SKIPS_PLANNED = \(\(\) => \{\n\s*try \{ return areaSelectSkipsPlanned\(import\.meta\.env\.VITE_ROUTING_AREA_SELECT_SKIPS_PLANNED\); \} catch \{ return true; \}/.test(code), 'VITE_ROUTING_AREA_SELECT_SKIPS_PLANNED is not read through areaSelectSkipsPlanned with an ON fallback');
-  assert.ok(/areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned \} from '\.\/lib\/routing-select\.js'/.test(code), 'the three rule functions are not imported from the tested module');
+  // Pinned as MEMBERSHIP, not as the tail of the line: the three names must come from the
+  // tested module, but a later import added beside them is not a broken rule. The first shape
+  // of this failed on v1.36.5, which appended highlightedForSelection to the same statement.
+  const imp = /import \{([^}]*)\} from '\.\/lib\/routing-select\.js'/.exec(code);
+  assert.ok(imp, 'nothing imports lib/routing-select.js any more');
+  const imported = imp[1].split(',').map((n) => n.trim());
+  for (const fn of ['areaSelectPartition', 'areaSelectMessage', 'areaSelectSkipsPlanned']) {
+    assert.ok(imported.includes(fn), `${fn} is not imported from the tested module`);
+  }
 });

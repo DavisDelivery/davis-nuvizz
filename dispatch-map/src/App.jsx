@@ -46,7 +46,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned, highlightedForSelection, houseSwitchOn } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -146,7 +146,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.36.4';
+const APP_VERSION = '1.36.5';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -200,6 +200,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.36.5', '“＋ ADD SELECTION” ACCEPTS WHAT IS ALREADY LIT INSTEAD OF ASKING FOR A BOX. Chad, twice: “i don’t want the add selection to prompt me to drag a box i want it to accept what i have already selected”, and then — asked which of two readings he meant — “accept the stops already highlighted on map.” SEARCH THE GRID FOR A CUSTOMER, THE PINS GO BURNT ORANGE, PRESS IT AND THEY ARE IN. Before this the one button under “Add stops in view” armed a box draw: having just found the fourteen stops he wanted and lit them on the map, the dispatcher was asked to go and draw a rectangle round them — a second gesture that can only be LESS accurate than the search that found them, because a rectangle takes whatever else is inside it. WHAT “HIGHLIGHTED” MEANS IS READ OFF THE MAP, NOT GUESSED: useLegendInventory defines it in one line as selected OR a search hit, so the half a button can usefully accept is the search hits minus what is already selected. A status filter is deliberately not highlight — the grid reports it separately, because “search is a burnt-orange highlight, never a hide”. IT READS OFF WHAT THE MAP IS DRAWING, so a matching order with NO GEOCODE — no pin, un-box-selectable, silently dropped by any build — can never ride in on a search hit. AND IT IS THE SAME DOOR, NOT A SECOND RULE: the accepted stops go through addEnclosed exactly as box, lasso and Add-in-view do, so every skip still holds and is still named in the action line — a stop on an open Compare card, one another dispatcher’s device is staging, and (v1.36.3) one already planned onto a load sent to NuVizz. WITH NOTHING LIT IT STILL ARMS THE BOX, through the same beginMode the map rail calls, so Cancel, Esc and the rail’s highlight are unchanged; a button that goes dead when you have not searched is worse than one that offers the old way. THE LABEL SAYS WHICH IT WILL DO before it is pressed — “＋ Add 14 highlighted (search hits)” or “＋ Add selection (drag a box)”. On a phone only the box path drops the Setup sheet; accepting leaves it up, because nothing is tapped on the map and dropping it would hide the tally that just changed. 11 + 5 tests. PUT IT BACK: VITE_ROUTING_ADD_SELECTION_ACCEPTS_HIGHLIGHT=off returns the button to always arming the box — one switch covering the press, the label and the hint, so there is no half-reverted state where it says one thing and does another. No Route Workbench behaviour changes: addEnclosed gains a caller and keeps its rule.'],
   ['1.36.4', 'THE PANEL HAS A NAME NOW, AND THE BOUNDARY IS A TEST INSTEAD OF A PARAGRAPH. Chad: “tons of changes were made to RWB today that i didn’t ask for … you made changes to the map and rwb when you were only supposed to be working in this panel. I want you to name this panel so going forward when i ask you to work on it you work on it and nothing else.” THE NAME IS THE BUILD PANEL — steps 1 Select stops, 2 Plan onto, 3 Plan, 4 Engine and the Build button at the end of them; the left column on desktop, the Setup tab on a phone, plus routing-select.js, stop-equipment.js and the server build path behind them. Everything else on that screen is the ROUTE WORKBENCH: the Compare cards, Send/Save, what the map paints, the selection tools, the Routes rail. Two halves that shared one name for weeks, which is precisely how work aimed at one kept landing in the other. The UI still says “Setup” on the gear and the phone tab and is deliberately NOT renamed to match — a label change nobody asked for is the same species of unasked change this exists to stop; the alias is written down instead. AND IT IS ENFORCED, because it was already written down the evening before and it happened again the next morning. scripts/check-rwb-untouched.mjs runs in CI as rwb-boundary and FAILS any PR whose changed lines in App.jsx name the workbench surface — staging, Send/Save, map paint, box/lasso/ninja select, card close guards, the Routes rail — unless a commit on the branch quotes Chad: “RWB-CHANGE: <his words>”, which prints his sentence in the CI log. That token cannot be satisfied by good intentions, only by having his instruction in front of you. VALIDATED AGAINST TEN REAL PRs BEFORE SHIPPING, not asserted: it catches every one that moved the workbench (#909, #912, #932, #945, #946, #950) and passes every one that did not (#941, #942, #943, #948) — and it was tuned by that run, because its first version fired on v1.34.0, whose only hit was the shared routing-select import line. Changelog rows, comments and imports are excluded now: a guard that cries on work it should not care about gets switched off, and then it protects nothing. Proven both ways on this branch — a deliberate unapproved edit to markSaved fails it naming the file, the line and the rule; the same edit with the token passes and echoes the quote. 12 new tests. THE MEASUREMENT, SAID PLAINLY: of the Build-Panel work from 09-11 to 09-15, four PRs reached into the workbench — #909 and #912 one line each (stagePlanOntoLoads, the auto-stage), #932 five (the card chip AND a map-paint rule nobody asked for, reverted the same evening by #946). #942, the Box|Tractor toggle, stayed inside the panel and is the only one of the four still standing. No shipping behaviour changes in this release — it is a rule, a guard and its tests.'],
   ['1.36.3', 'A BOX OVER A SENT ROUTE PICKS UP NONE OF ITS STOPS. Chad, Sep 15, with CHE and MARCUS sent to NuVizz and their stops coming back up in a box-select: \u201cits letting me select stops that are already on routes that have been sent to nuvizz \u2026 whatever gets it back right.\u201d READ OFF THE CODE, NOT REASONED: box, lasso and Add-in-view took every positioned stop inside the shape and skipped only a stop staged on an open Compare card (v0.45.15) or one another device was staging (v0.51.0) \u2014 a stop the board holds PLANNED on a load with no card open wore the muted pin and still rode into the selection, in every commit this repo has. No merge on 09-15 (#922\u2013#948, the revert included) touched addEnclosed, positioned or the box handlers, and the stored board reads 007176785 PLANNED on CHE and 007177009 PLANNED on MARCUS, stamped by the 8:29 and 8:54 PM Sends \u2014 zero NuVizz calls, via the explain endpoint. THE RULE NOW, a tested module read by one thin caller: the three area tools leave every stop the board holds on a load, and the action line names the loads \u2014 \u201cAdded 12 stops \u00b7 skipped 15 already on loads (CHE 9, MARCUS 6)\u201d \u2014 through the same isPlannedStop predicate the muted pin reads, so the map and the box cannot disagree about a stop. Stops on open cards and on another device are skipped exactly as before; a tap on a planned pin still opens its route. NOT changed: Ninja, the stacked-place tap and the Save\u2019s own NuVizz guard. PUT IT BACK: VITE_ROUTING_AREA_SELECT_SKIPS_PLANNED=off on the next build restores the old rule; a malformed value leaves it on.'],
   ['1.36.2', 'THE STEM-OUT TOGGLE IS UNDER FILTERS. Chad, Sep 15, on a 71-mile red line from the depot to stop 1: \u201ci didn\u2019t ask for the stem out to come back \u2026 it should be a filter toggle under filters to hide the stem out.\u201d Read off the code: no PR that day touched the stem line. \u201cHide stem-out line\u201d has lived in the gear since v1.14.0 as a PER-DEVICE setting (routing.hideStem), so a browser where it was never switched on draws the line \u2014 the same shape as the Send button in v1.36.0. The control MOVES to the map\u2019s Filters popover on both views (desktop and phone), beside Unplanned only / Hide place labels / Show routes, and leaves the gear so one setting has one switch. NOT changed: the default (the line draws until the box is ticked) and the setting\u2019s name \u2014 a device that had it hidden keeps it hidden. One commit, one revert.'],
@@ -17675,6 +17676,15 @@ const AREA_SELECT_SKIPS_PLANNED = (() => {
   try { return areaSelectSkipsPlanned(import.meta.env.VITE_ROUTING_AREA_SELECT_SKIPS_PLANNED); } catch { return true; }
 })();
 
+// Does step 1's "＋ Add selection" ACCEPT the stops already highlighted on the map instead of
+// arming a box draw? ON by default (v1.36.5). PUT IT BACK: VITE_ROUTING_ADD_SELECTION_ACCEPTS_HIGHLIGHT=off
+// and the button goes back to always arming the box — one switch covering the press, the label
+// and the hint, so there is no half-reverted state where the button says one thing and does
+// another. Build-time, so it costs a redeploy either way.
+const ADD_SELECTION_ACCEPTS_HIGHLIGHT = (() => {
+  try { return houseSwitchOn(import.meta.env.VITE_ROUTING_ADD_SELECTION_ACCEPTS_HIGHLIGHT); } catch { return true; }
+})();
+
 // Live-write (beta) gate — the routes-panel driver-assign + dispatch UI. UNLIKE the
 // routing beta this defaults OFF (live writes are opt-in): enable with env
 // VITE_NUVIZZ_WRITE_BETA='true', or force per-session with ?write=1 (?write=0 hides it).
@@ -24059,24 +24069,45 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       return next;
     });
   }, [wbRoutes.length, isMobile]);
-  // Arm the BOX draw from step 1 of the Setup panel. Chad: "left panel should have an add
-  // selection button." Box and Lasso have lived ONLY on the map's left-edge rail since
-  // v0.29.59 — two unlabelled 36px icons over a satellite photo — while step 1's own hint
-  // told the dispatcher to go and find them there. The panel's one selection button takes
-  // the WHOLE viewport, so grabbing one dock out of a cluster meant zooming until nothing
-  // else was on screen. Same beginMode the rail calls, so the armed block, its Cancel, Esc
-  // and the rail's own highlight all behave identically — one mode, two doors into it.
-  // PHONE: drop the sheet. The corners are tapped ON the map and the sheet is half the
-  // screen (the same move armNinjaFromPanel makes), and the toast carries the instruction
-  // the dropped sheet just took with it — an armed mode with nothing on screen to explain
-  // it reads as a broken map.
+  // WHAT IS ALREADY LIT ON THE MAP, and not yet in the selection. Chad: "i don't want the add
+  // selection to prompt me to drag a box i want it to accept what i have already selected" →
+  // "accept the stops already highlighted on map." The map's own definition of highlighted is
+  // one line in useLegendInventory (selected OR a search hit), so the addable half is the
+  // burnt-orange search hits. Read off what the map IS DRAWING, so a hit with no geocode —
+  // no pin, un-box-selectable, dropped by any build — can never ride in. Rule + 9 tests in
+  // lib/routing-select.js; this is the thin edge.
+  const highlightedAddable = useMemo(
+    () => (ADD_SELECTION_ACCEPTS_HIGHLIGHT ? highlightedForSelection(drawnStops, { searchMatchIds, selectedIds }) : []),
+    [drawnStops, searchMatchIds, selectedIds],
+  );
+  // Step 1's "Add selection" button. Chad asked for it in v1.19.0 ("left panel should have an
+  // add selection button") because Box and Lasso have lived ONLY on the map's left-edge rail
+  // since v0.29.59 — two unlabelled 36px icons over a satellite photo — while step 1's own
+  // hint told the dispatcher to go and find them there.
+  //
+  // IT ACCEPTS BEFORE IT ASKS. Search the grid for a customer, the pins go burnt orange, press
+  // this and they are in — no box, no second gesture, and the selection is exactly what was on
+  // screen. It hands them to addEnclosed, the SAME path box and lasso use, so every skip still
+  // holds: a stop on an open Compare card, one another dispatcher's device is staging, and one
+  // already planned onto a sent load are all left alone and NAMED in the action line. A second
+  // door into the existing rule, never a second rule.
+  //
+  // WITH NOTHING LIT it falls back to arming the box — same beginMode the rail calls, so the
+  // armed block, its Cancel, Esc and the rail's own highlight behave identically. A button that
+  // goes dead when you have not searched is worse than one that offers the old way.
+  // PHONE, box path only: drop the sheet. The corners are tapped ON the map and the sheet is
+  // half the screen (the same move armNinjaFromPanel makes), and the toast carries the
+  // instruction the dropped sheet just took with it — an armed mode with nothing on screen to
+  // explain it reads as a broken map. The ACCEPT path leaves the sheet up on purpose: there is
+  // nothing to tap, and dropping it would hide the tally that just changed.
   const armSelectionFromPanel = useCallback(() => {
+    if (highlightedAddable.length) { addEnclosed(highlightedAddable); return; }
     beginMode('box');
     if (isMobile) {
       setSheetOpen(false);
       showMapToast('Box select on — tap two corners on the map to add that group. Tap the Box tool (left edge) again to cancel.');
     }
-  }, [beginMode, isMobile, showMapToast]);
+  }, [highlightedAddable, addEnclosed, beginMode, isMobile, showMapToast]);
   // Mobile: whenever a route is opened into the Compare panel — the FIRST one or any later one —
   // jump to the Setup tab (which hosts the Compare workbench + the Ninja toggle) and open the sheet.
   // This used to fire for the first card only (0 → 1). With the sheet collapsed by default and the
@@ -24525,16 +24556,22 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
               <button onClick={addInView} className="flex-1 px-2 py-2 text-xs rounded border-2 font-semibold hover:bg-blue-50 active:bg-blue-100" style={{ borderColor: BRAND, color: BRAND }}>＋ Add stops in view</button>
               <button onClick={clearSelection} className="px-3 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">Clear</button>
             </div>
-            {/* THE DRAW TOOL, IN THE PANEL — the requested "add selection" button. It arms the
-                same box select the map rail arms (armSelectionFromPanel → beginMode('box')), so
-                the amber block below replaces these buttons the instant it is on and Cancel/Esc
-                still end it. Full width on its own row rather than a third chip beside Clear: at
-                the 290px the Setup panel actually runs, three buttons on one line put this one at
-                ~90px and truncate its label. */}
-            <button onClick={armSelectionFromPanel} className="w-full px-2 py-2 text-xs rounded border-2 font-semibold hover:bg-blue-50 active:bg-blue-100 inline-flex items-center justify-center gap-1.5" style={{ borderColor: BRAND, color: BRAND }}>
-              <Square size={13} /> ＋ Add selection <span className="font-normal opacity-70">({isMobile ? 'tap 2 corners' : 'drag a box'})</span>
+            {/* THE REQUESTED "add selection" BUTTON, AND IT SAYS WHAT IT WILL DO BEFORE IT IS
+                PRESSED. With search hits lit on the map it ACCEPTS them (Chad: "accept the stops
+                already highlighted on map"); with nothing lit it arms the same box select the map
+                rail arms, so the amber block below replaces these buttons the instant it is on and
+                Cancel/Esc still end it. A button whose label changes with what it is about to do
+                beats a fixed label that is wrong half the time. Full width on its own row rather
+                than a third chip beside Clear: at the 290px the Setup panel actually runs, three
+                buttons on one line put this one at ~90px and truncate its label. */}
+            <button onClick={armSelectionFromPanel} data-add-selection-mode={highlightedAddable.length ? 'accept' : 'box'} className="w-full px-2 py-2 text-xs rounded border-2 font-semibold hover:bg-blue-50 active:bg-blue-100 inline-flex items-center justify-center gap-1.5" style={{ borderColor: BRAND, color: BRAND }}>
+              <Square size={13} /> {highlightedAddable.length > 0
+                ? <>＋ Add {highlightedAddable.length} highlighted <span className="font-normal opacity-70">(search hits)</span></>
+                : <>＋ Add selection <span className="font-normal opacity-70">({isMobile ? 'tap 2 corners' : 'drag a box'})</span></>}
             </button>
-            <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. <b>Add selection</b> draws a box around a group; the <b>Lasso</b> and <b>Ninja</b> tools are on the map (left edge), or pan/zoom then <b>Add stops in view</b>.</div>
+            <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. {highlightedAddable.length > 0
+              ? <>Search the grid below and the matches light up <b style={{ color: SEARCH_MATCH_COLOR }}>orange</b> on the map — <b>Add {highlightedAddable.length} highlighted</b> takes them all.</>
+              : <><b>Add selection</b> draws a box around a group{ADD_SELECTION_ACCEPTS_HIGHLIGHT ? ', or search the grid below and it takes the highlighted matches instead' : ''}; the <b>Lasso</b> and <b>Ninja</b> tools are on the map (left edge), or pan/zoom then <b>Add stops in view</b>.</>}</div>
           </>
         )}
         {lastAction && <div className="text-[11px] text-slate-500">{lastAction}</div>}
