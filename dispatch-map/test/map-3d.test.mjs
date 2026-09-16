@@ -264,3 +264,36 @@ test('BOTH VIEWS GET IT — a Ctrl-only feature is a feature that does not exist
       'the layer must toggle display, not mount/unmount');
   });
 });
+
+// ── THE BROWSER ITSELF ───────────────────────────────────────────────────────
+// Added after WATCHING this happen on the real deploy preview: Ctrl opened the layer, the
+// key answered every request, nothing threw, and Google rendered its own "Oops! Something
+// went wrong" card inside it because the renderer was software (SwiftShader). A failure that
+// arrives through a SUCCESSFUL construction cannot be caught; it has to be pre-empted.
+test('a browser with no WebGL is told so, and is never billed for an element it cannot draw', async () => {
+  const { webglUsable, MAP3D_NO_WEBGL } = await import('../src/lib/map-3d.js');
+  const noGl = { document: { createElement: () => ({ getContext: () => null }) } };
+  assert.equal(webglUsable(noGl), false);
+  assert.match(MAP3D_NO_WEBGL, /WebGL/);
+  assert.match(MAP3D_NO_WEBGL, /flat map still works/i, 'and says what still does work');
+});
+
+test('a browser WITH WebGL opens normally', async () => {
+  const { webglUsable } = await import('../src/lib/map-3d.js');
+  assert.equal(webglUsable({ document: { createElement: () => ({ getContext: (k) => (k === 'webgl2' ? {} : null) }) } }), true);
+});
+
+test('WHEN IT CANNOT TELL, IT LETS GOOGLE TRY — refusing on a false negative is the worse error', async () => {
+  const { webglUsable } = await import('../src/lib/map-3d.js');
+  assert.equal(webglUsable(undefined), true);
+  assert.equal(webglUsable({}), true);
+  assert.equal(webglUsable({ document: { createElement: () => { throw new Error('nope'); } } }), true);
+});
+
+test('the check runs BEFORE the element is constructed, not after', async () => {
+  const src = await readFile(APP, 'utf8');
+  const open = src.slice(src.indexOf('if (!map3dElRef.current) {'));
+  const gl = open.indexOf('webglUsable()');
+  const build = open.indexOf('importLibrary');
+  assert.ok(gl > -1 && build > -1 && gl < build, 'the WebGL check must precede the library load');
+});

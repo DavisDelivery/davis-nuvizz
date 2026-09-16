@@ -272,6 +272,43 @@ export function shouldExit3dOnKey(ev = {}) {
 }
 
 /**
+ * CAN THIS BROWSER DRIVE A 3D MAP AT ALL?
+ *
+ * WHY THIS EXISTS, AND IT IS NOT HYPOTHETICAL — it was watched happening. Driving the real
+ * deploy preview in a headless browser, Ctrl opened the layer correctly and Google rendered
+ * its own "Oops! Something went wrong" card inside it, with NO failed request and NO
+ * exception for the catch below to report: the key answered everything, and the renderer was
+ * software (SwiftShader). The ordinary vector map fell back to raster in the same run for the
+ * same reason.
+ *
+ * That failure arrives THROUGH a successful importLibrary and a successful construction, so
+ * the error path cannot see it — and what the dispatcher gets is a generic card that blames
+ * nothing and suggests nothing. This repo has been here twice already: a WebGL-less browser
+ * painting silence is exactly the white rectangle v1.31.4 had to turn into a sentence.
+ *
+ * So the check happens BEFORE the element is built, which also means a browser that cannot
+ * show it is never billed for one. Returns true when it cannot tell — refusing to open on a
+ * false negative would be worse than letting Google try.
+ */
+export function webglUsable(win = typeof window !== 'undefined' ? window : undefined) {
+  try {
+    const doc = win && win.document;
+    if (!doc || typeof doc.createElement !== 'function') return true; // cannot tell — let it try
+    const c = doc.createElement('canvas');
+    if (!c || typeof c.getContext !== 'function') return true;
+    const gl = c.getContext('webgl2') || c.getContext('webgl') || c.getContext('experimental-webgl');
+    return !!gl;
+  } catch {
+    return true; // cannot tell — let Google try rather than refusing on a guess
+  }
+}
+
+/** What to say when the browser itself is the reason. Names the cause, because "Oops" names
+ *  nothing and sends the next person looking in the wrong place. */
+export const MAP3D_NO_WEBGL =
+  'This browser cannot draw a 3D map — it has no working WebGL. The flat map still works.';
+
+/**
  * The sentence printed over a 3D view that is too high to answer the question it was opened
  * to answer. Null when the view is close enough to read doors, so the caller renders nothing.
  */
