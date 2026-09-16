@@ -138,7 +138,7 @@ test('the switch is the named env var, read through the house-shape parser, and 
   assert.ok(/const AREA_SELECT_SKIPS_PLANNED = \(\(\) => \{\n\s*try \{ return areaSelectSkipsPlanned\(import\.meta\.env\.VITE_ROUTING_AREA_SELECT_SKIPS_PLANNED\); \} catch \{ return true; \}/.test(code), 'VITE_ROUTING_AREA_SELECT_SKIPS_PLANNED is not read through areaSelectSkipsPlanned with an ON fallback');
   // Pinned as MEMBERSHIP, not as the tail of the line: the three names must come from the
   // tested module, but a later import added beside them is not a broken rule. The first shape
-  // of this failed on v1.36.5, which appended highlightedForSelection to the same statement.
+  // of this failed on v1.38.1, which appended highlightedForSelection to the same statement.
   const imp = /import \{([^}]*)\} from '\.\/lib\/routing-select\.js'/.exec(code);
   assert.ok(imp, 'nothing imports lib/routing-select.js any more');
   const imported = imp[1].split(',').map((n) => n.trim());

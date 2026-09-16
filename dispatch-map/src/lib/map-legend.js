@@ -248,3 +248,37 @@ export function tractorFriendlySelection({
   }
   return eligibility === 'tractor' || !!friendlyBadge || !!tractorSeen;
 }
+
+// ── THE RED ROW IN THE SELECTION PANEL ───────────────────────────────────────
+//
+// Chad, 2026-09-16: "i want a no tractor trailer stop to highlight red in selection panel."
+//
+// RED SAYS SOMEBODY SAID NO. IT DOES NOT SAY "WE HAVE NOT CHECKED", and that line is the
+// whole design. The panel's green rule treats UNKNOWN as not-friendly on purpose — it is the
+// cautious side for a button whose job is to leave a list a tractor can run — so on an
+// ordinary morning most rows are not green. Painting all of those red would put the board's
+// loudest colour on "no data", a dispatcher would learn to read past it within a week, and
+// the row that actually matters — the dock a person has been to and written off — would be
+// wearing the same fill as the 600 nobody has looked at. A warning that fires on everything
+// warns about nothing. The "Drop N non-tractor" button already covers the not-green set, and
+// it names its count; red is for the stop where sending a 53-footer is a known mistake.
+//
+// SO THE RULE IS THE MAP'S OWN, NOT A FOURTH PRIVATE COPY. tractorPaintAllowed is the
+// function the pin paints by and the stop panel's banner is gated on (v1.1.1) — it returns
+// false in exactly two cases, and both of them are a human statement: a Box-only mark from
+// the eligibility dropdown, or a CONFIRMED trailer blocker in the Equipment restrictions
+// list. An ADVISORY blocker — the Uline flag a scanner lifted out of somebody else's order
+// text — is a question nobody has answered, so it does not go red, exactly as it does not
+// stop the lime paint. Delegating rather than restating is the point: this reads as a rule
+// with a name, and it cannot drift from the map because there is nothing here to drift.
+//
+// AND IT CANNOT COLLIDE WITH THE GREEN. tractorFriendlySelection's two refusal branches are
+// these same two conditions, so a row this calls blocked is a row that function has already
+// refused: red and green are mutually exclusive by construction, not by inspection. A test
+// asserts that over every combination, because "two facts, one row" is the shape that has
+// been got wrong three times on this panel (v0.46.8, v0.98.2, v1.1.1).
+export function tractorBlockedSelection({
+  eligibility = null, drawnKeys = null, note = null, resolve = null,
+} = {}) {
+  return !tractorPaintAllowed(eligibility, drawnKeys, note, resolve);
+}
