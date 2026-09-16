@@ -1136,3 +1136,95 @@ export function resolveLoadVehicle({ profiles = [], name = '', picked = null, re
     conflict: runnable(assigned) && assigned !== hit.cls,
   };
 }
+
+// ── AREA SELECT: WHAT A BOX, LASSO OR "ADD IN VIEW" MAY PICK UP (v1.36.3) ───────────
+//
+// Chad, Sep 15, with CHE and MARCUS sent to NuVizz and their stops coming back up in a
+// box-select: "its letting me select stops that are already on routes that have been sent to
+// nuvizz". Read off the code: the three area tools took EVERY positioned stop inside the
+// shape and skipped only a stop staged on an open Compare card (v0.45.15) or one another
+// device was staging (v0.51.0). A stop the board holds PLANNED on a load with no card open
+// was never on that list — it wears the muted slate pin and still rode into the selection.
+//
+// THE LOGISTICS READING. A box is how the next truck gets built. Freight that is already on
+// CHE must not be picked up into the selection for MARCUS: the best case is a Save refused by
+// NuVizz's own guard, the worst is a second truck built on top of the first. The other
+// mistake — a stop the board wrongly holds planned that the box now leaves behind — costs a
+// tap: the pin opens its route and says which load has it. Those costs are not close.
+//
+// THE RULE, tested here and read by one caller (addEnclosed in App.jsx, thin): staged on an
+// open card → skipped as before; staged on another device → skipped as before; PLANNED on a
+// load (isPlannedStop — the pin's own predicate, so the map and the box cannot disagree) →
+// skipped, and the action line NAMES the loads so the dispatcher can see what was left out.
+//
+// PUT IT BACK: VITE_ROUTING_AREA_SELECT_SKIPS_PLANNED=off restores the old rule on the next
+// build (build-time flag — a redeploy either way). House shape: ON unless an explicit
+// off-word; anything malformed leaves it ON, so a typo can never silently reopen the hole.
+export function areaSelectSkipsPlanned(raw) {
+  const v = String(raw ?? '').trim().toLowerCase();
+  return !(v === 'off' || v === '0' || v === 'false' || v === 'no');
+}
+
+/**
+ * Split the stops inside a box / lasso / viewport into what the selection may take and
+ * what it must leave, with the reason for each.
+ *
+ * @param {Array} stops     every positioned stop inside the shape
+ * @param {object} opts
+ * @param {Map|Set} opts.staged   stopNbr → card key for every stop on an open Compare card
+ * @param {Map|Set} opts.claims   stopNbr → name for every stop another device is staging
+ * @param {boolean} opts.skipPlanned  the switch above (default true)
+ * @returns {{ take: Array, onCards: Array, onPeer: Array, onLoads: Array, loads: Map }}
+ *          loads = load name → how many of the skipped planned stops it holds
+ */
+export function areaSelectPartition(stops, { staged = null, claims = null, skipPlanned = true } = {}) {
+  const take = [], onCards = [], onPeer = [], onLoads = [];
+  const loads = new Map();
+  for (const s of stops || []) {
+    if (!s) continue;
+    const id = String(s.stopNbr ?? '');
+    // Order matters for the MESSAGE, not the outcome: a stop on an open card is also a
+    // planned stop, and "already on open cards — use Ninja to move it" is the actionable line.
+    if (staged && typeof staged.has === 'function' && staged.has(id)) { onCards.push(s); continue; }
+    if (claims && typeof claims.has === 'function' && claims.has(id)) { onPeer.push(s); continue; }
+    if (skipPlanned && isPlannedStop(s)) {
+      onLoads.push(s);
+      const name = String(s.routeName || s.loadNbr || '').trim() || 'a load';
+      loads.set(name, (loads.get(name) || 0) + 1);
+      continue;
+    }
+    take.push(s);
+  }
+  return { take, onCards, onPeer, onLoads, loads };
+}
+
+// "CHE" for one load, "loads (CHE 9, MARCUS 4)" for several — biggest first, three named,
+// the rest counted, so a 700-stop board cannot turn the action line into a paragraph.
+export function areaSelectLoadsText(loads) {
+  const rows = [...(loads instanceof Map ? loads.entries() : [])].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])));
+  if (!rows.length) return 'loads';
+  if (rows.length === 1) return rows[0][0];
+  const shown = rows.slice(0, 3).map(([name, n]) => `${name} ${n}`);
+  const more = rows.length - shown.length;
+  return `loads (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`;
+}
+
+/** The one line the status card shows after an area select. `total` = stops inside the shape. */
+export function areaSelectMessage(part, total) {
+  const n = Number(total) || 0;
+  const pl = (k) => (k === 1 ? '' : 's');
+  const c = part?.onCards?.length || 0, p = part?.onPeer?.length || 0, l = part?.onLoads?.length || 0;
+  const k = part?.take?.length || 0;
+  if (!k) {
+    const reasons = [];
+    if (c) reasons.push('already on open Compare cards');
+    if (p) reasons.push('being staged on another device');
+    if (l) reasons.push(`already on ${areaSelectLoadsText(part.loads)}`);
+    if (!reasons.length) return 'No stops in that area';
+    return `All ${n} stop${pl(n)} ${n === 1 ? 'is' : 'are'} ${reasons.join(' or ')}`;
+  }
+  return `Added ${k} stop${pl(k)}`
+    + (c ? ` · skipped ${c} already on open cards` : '')
+    + (p ? ` · skipped ${p} staged on another device` : '')
+    + (l ? ` · skipped ${l} already on ${areaSelectLoadsText(part.loads)}` : '');
+}

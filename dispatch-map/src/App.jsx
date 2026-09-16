@@ -46,7 +46,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { shownAddress, vendorAddress, logAddressOverride } from './lib/address-log.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, resequenceOnMatrix, fmtTime12, isPlannedStop, selectionRowTone, gridRowTone, mapPinClickActions, DEFAULT_SERVICE_SEC, selectionTally, strategyChoices, effectiveStrategy, tractorInPlay, planCopyLabels, aiAssistStatus, profileDraftCheck, PROFILE_NUMERIC_FIELDS, sendControlState, resolveLoadVehicle, loadVehicleChoices, loadVehicleKey, areaSelectPartition, areaSelectMessage, areaSelectSkipsPlanned } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild, isNewerVersion } from './lib/build-update.js';
 import { gateState, resolveGateMode, roleGateReason } from './lib/auth-gate.js';
 // authEnabled() only — the Firebase email/password sign-in in that module is RETIRED (see
@@ -146,7 +146,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.36.2';
+const APP_VERSION = '1.36.3';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -200,6 +200,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.36.3', 'A BOX OVER A SENT ROUTE PICKS UP NONE OF ITS STOPS. Chad, Sep 15, with CHE and MARCUS sent to NuVizz and their stops coming back up in a box-select: \u201cits letting me select stops that are already on routes that have been sent to nuvizz \u2026 whatever gets it back right.\u201d READ OFF THE CODE, NOT REASONED: box, lasso and Add-in-view took every positioned stop inside the shape and skipped only a stop staged on an open Compare card (v0.45.15) or one another device was staging (v0.51.0) \u2014 a stop the board holds PLANNED on a load with no card open wore the muted pin and still rode into the selection, in every commit this repo has. No merge on 09-15 (#922\u2013#948, the revert included) touched addEnclosed, positioned or the box handlers, and the stored board reads 007176785 PLANNED on CHE and 007177009 PLANNED on MARCUS, stamped by the 8:29 and 8:54 PM Sends \u2014 zero NuVizz calls, via the explain endpoint. THE RULE NOW, a tested module read by one thin caller: the three area tools leave every stop the board holds on a load, and the action line names the loads \u2014 \u201cAdded 12 stops \u00b7 skipped 15 already on loads (CHE 9, MARCUS 6)\u201d \u2014 through the same isPlannedStop predicate the muted pin reads, so the map and the box cannot disagree about a stop. Stops on open cards and on another device are skipped exactly as before; a tap on a planned pin still opens its route. NOT changed: Ninja, the stacked-place tap and the Save\u2019s own NuVizz guard. PUT IT BACK: VITE_ROUTING_AREA_SELECT_SKIPS_PLANNED=off on the next build restores the old rule; a malformed value leaves it on.'],
   ['1.36.2', 'THE STEM-OUT TOGGLE IS UNDER FILTERS. Chad, Sep 15, on a 71-mile red line from the depot to stop 1: \u201ci didn\u2019t ask for the stem out to come back \u2026 it should be a filter toggle under filters to hide the stem out.\u201d Read off the code: no PR that day touched the stem line. \u201cHide stem-out line\u201d has lived in the gear since v1.14.0 as a PER-DEVICE setting (routing.hideStem), so a browser where it was never switched on draws the line \u2014 the same shape as the Send button in v1.36.0. The control MOVES to the map\u2019s Filters popover on both views (desktop and phone), beside Unplanned only / Hide place labels / Show routes, and leaves the gear so one setting has one switch. NOT changed: the default (the line draws until the box is ticked) and the setting\u2019s name \u2014 a device that had it hidden keeps it hidden. One commit, one revert.'],
   ['1.36.1', 'v1.33.0 (#932) IS REVERTED \u2014 the \u201cNOT SENT TO NUVIZZ\u201d chip and everything that shipped with it. Chad, Sep 15, 8:30 PM, with CHE sent to NuVizz and its stops coming back up in a box-select: \u201cyou have majorly screwed something up messing with things i didn\u2019t ask to be messed with \u2026 WE just need to roll back one of the pr\u2019s that made these changes go back to before the changes.\u201d Of the thirteen merges that day, #932 is the only one whose diff touches the Routing map\u2019s paint or selection path (routePaintSource / planStaged / effectiveRouteInfo); every other PR has zero hits there. This puts back, byte for byte, everything #932 changed: the per-card NOT SENT / SENT / NOTHING TO SEND chip, the header\u2019s \u201cAll sent / Nothing to send\u201d text, the rule that closing the last staged card paints nothing instead of the build\u2019s plan, AND part (3) of the same PR \u2014 the truck skid/weight class floors in the build, the result-panel substitution notes and the Trucks-mode profile editor\u2019s draft/Save \u2014 because the ask was the whole PR, not the parts. KEPT: v1.36.0\u2019s Send to NuVizz button, the RWB badge and the LIVE/Beta switch stay outside the per-device gear (Chad asked for that button by name); with nothing staged the header shows no control, exactly as before v1.33.0. What the board itself said before this was decided, zero NuVizz calls: 007176785 is PLANNED on CHE seq 12 on the 09-16 day document, stamped by the 8:29 PM save (boardSync patched 17/17) \u2014 the Send worked; NuVizz\u2019s own un-planned snapshot from the 8:25 PM scan still lists it un-planned, which is the pool the Last-7-days window reads. NEW RULE IN CLAUDE.md: no change to the Routing workbench\u2019s send / stage / paint / selection behaviour without explicit per-request permission from Chad.'],
   ['1.36.0', 'THE SEND BUTTON WAS BEHIND A PER-DEVICE SWITCH, AND THE CARD SAYING \u201cNOT SENT\u201d COULD NOT SEE IT. Chad, with a built CHE load open and two orders struck off: \u201cwhere is my save send to nuvizz button? ... i need this fixed in a hurry i have no way to send these loads to nuvizz.\u201d READ OFF THE CODE, NOT GUESSED AT \u2014 four controls were missing from his screenshot and all four share one gate: the Save button, the \ud83d\udd17 RWB engine badge, the \u25cf LIVE / \u25cb Beta switch and the card\u2019s driver row. That gate is `liveWrite`, a PER-DEVICE localStorage flag (\u2018routing.liveWrite\u2019) sitting in the Routing gear as \u201cLive dispatch (assign driver + dispatch)\u201d. It seeds from VITE_NUVIZZ_WRITE_BETA \u2014 which defaults FALSE \u2014 the first time a browser loads the app, then writes its own answer back to localStorage and never asks again. So a new device, a private window, cleared site data or one stray click leaves a dispatcher with a fully working planning screen and NO WAY TO SEND ANYTHING OFF IT, and nothing on screen says why. WHAT MADE IT UNREADABLE was v1.33.0: the card chip added there is not behind that gate, so the two ended up on one screen \u2014 an amber NOT SENT TO NUVIZZ over a header offering nothing to send it with. THE GEAR IS ABOUT THE DRIVER-ASSIGN + DISPATCH ROW (its own comment says so) and now covers that row and nothing else. Sending what is already staged is not an optional extra on this screen, it is the screen\u2019s entire purpose, and the two mistakes are nowhere near symmetrical: a hidden Send blocks the morning outright while looking like a working app, and a Send shown when it \u201cneed not\u201d be still cannot write without \u25cf LIVE mode AND the server\u2019s own NUVIZZ_WRITE_ENABLED \u2014 two gates, both untouched. IT IS ALSO NAMED FOR WHAT IT DOES: \u201cSend to NuVizz (2)\u201d in Live, because that is what the dispatcher went looking for; Beta keeps \u201cSave (2) \u2014 Beta\u201d, since BETA STILL WINS OVER EVERY SEND WORDING (v1.33.0) \u2014 there the button sends nothing at all. THREE THINGS THAT TRAVELLED WITH IT, each the same failure in quieter clothes: the close-confirmation, so a card holding staged changes no longer closes SILENTLY and drops them on the very screen that just called them unsent; the guard modal behind it; and the result toast, which is the Send button\u2019s only report channel \u2014 ungated, a save\u2019s \u201c\u2713 1 load(s) saved\u201d and every \u2717 refusal from NuVizz went nowhere. THE RULE IS A TESTED MODULE, not a condition in JSX: sendControlState in lib/routing-select.js, and the pin that matters walks every card state that reads as not-in-NuVizz and asserts the panel holding that card offers a control that DOES something \u2014 which is exactly the invariant this screen broke. 7 new tests. Zero NuVizz calls: no scan, no live read, diagnosed from the source.'],
@@ -17666,6 +17667,13 @@ const ROUTING_FLAG = (() => {
   return true;
 })();
 
+// Do the Routing map's area tools (box / lasso / Add in view) leave stops the board already
+// holds on a load? ON by default (v1.36.3). VITE_ROUTING_AREA_SELECT_SKIPS_PLANNED=off puts
+// the old rule back on the next build; anything malformed leaves it ON (areaSelectSkipsPlanned).
+const AREA_SELECT_SKIPS_PLANNED = (() => {
+  try { return areaSelectSkipsPlanned(import.meta.env.VITE_ROUTING_AREA_SELECT_SKIPS_PLANNED); } catch { return true; }
+})();
+
 // Live-write (beta) gate — the routes-panel driver-assign + dispatch UI. UNLIKE the
 // routing beta this defaults OFF (live writes are opt-in): enable with env
 // VITE_NUVIZZ_WRITE_BETA='true', or force per-session with ?write=1 (?write=0 hides it).
@@ -23173,22 +23181,17 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   }, [clearTemp]);
   const addEnclosed = useCallback((arr) => {
     if (!arr.length) { setLastAction('No stops in that area'); return; }
-    // Skip stops already staged on an open Compare card (see wbStagedRef) — a box/lasso over
-    // an area with an open route must not re-grab its stops onto the selection. Same for
-    // stops the OTHER dispatcher's device is staging (peerClaimsRef, presence layer).
-    const staged = wbStagedRef.current;
-    const claims = peerClaimsRef.current;
-    const take = arr.filter((s) => !staged.has(String(s.stopNbr)) && !claims.has(String(s.stopNbr)));
-    const skippedLocal = arr.filter((s) => staged.has(String(s.stopNbr))).length;
-    const skippedPeer = arr.length - take.length - skippedLocal;
-    if (!take.length) {
-      setLastAction(skippedPeer && !skippedLocal
-        ? `All ${arr.length} stop${arr.length === 1 ? ' is' : 's are'} being staged on another device`
-        : `All ${arr.length} stop${arr.length === 1 ? ' is' : 's are'} already on open Compare cards${skippedPeer ? ' or staged on another device' : ''}`);
-      return;
+    // THE RULE LIVES IN lib/routing-select.js (areaSelectPartition) — this is the thin edge.
+    // Skipped: stops staged on an open Compare card (wbStagedRef — a box over an open route
+    // must not re-grab its stops), stops the OTHER dispatcher's device is staging
+    // (peerClaimsRef, presence layer), and — v1.36.3, Chad: "its letting me select stops that
+    // are already on routes that have been sent to nuvizz" — every stop the board holds
+    // PLANNED on a load, whether or not its card is open. The action line names the loads.
+    const part = areaSelectPartition(arr, { staged: wbStagedRef.current, claims: peerClaimsRef.current, skipPlanned: AREA_SELECT_SKIPS_PLANNED });
+    if (part.take.length) {
+      setSelectedIds((prev) => { const n = new Set(prev); for (const s of part.take) n.add(String(s.stopNbr)); return n; });
     }
-    setSelectedIds((prev) => { const n = new Set(prev); for (const s of take) n.add(String(s.stopNbr)); return n; });
-    setLastAction(`Added ${take.length} stop${take.length === 1 ? '' : 's'}${skippedLocal ? ` · skipped ${skippedLocal} already on open cards` : ''}${skippedPeer ? ` · skipped ${skippedPeer} staged on another device` : ''}`);
+    setLastAction(areaSelectMessage(part, arr.length));
   }, []);
 
   // ── Pin relocation + address edit handlers (ported from MapScreen 6826-6909) ──
