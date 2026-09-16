@@ -19,7 +19,7 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw } from 'lucide-react';
+  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink, Share2, ShieldAlert, LogIn, ClipboardList, Globe, Beaker, Tv, Minimize2, RotateCcw, SlidersHorizontal } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
   query, orderBy, limit, updateDoc, deleteDoc,
@@ -60,6 +60,7 @@ import { ChangePasswordScreen, ResetPasswordScreen } from './components/Password
 // functions goes through apiFetch; nothing else may build an Authorization header.
 import { apiFetch } from './lib/api.js';
 import { rollbackTargets, rollbackRequestBody } from './lib/rollback-targets.js';
+import { DEVICE_SWITCHES, switchReport, encodeValue, describeValue } from './lib/device-switches.js';
 import { reportDenied, deniedSurfaces, subscribeDenied } from './lib/permission-denied.js';
 import { serverLoginEnabled, ensureFirebaseSession, dropFirebaseSession, signOut as endSession, currentResetLink, scrubResetLink, fetchMe } from './lib/auth-client.js';
 import { getSession, setSession, subscribeSession, onAuthEvent, clearSession } from './lib/session.js';
@@ -148,7 +149,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.41.0';
+const APP_VERSION = '1.42.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -202,6 +203,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.42.0', 'THE SWITCHES THIS BROWSER REMEMBERS ARE ON A SCREEN NOW, WITH WHAT EACH ONE DOES. Chad: \u201ca settings profile or a settings button that we have all those switches in with a UI that explains what they do.\u201d MEASURED FIRST, and the number is the argument: the app stores 22 per-device settings in localStorage and FOUR of them carry a label anywhere a dispatcher can read. The other eighteen change the board silently \u2014 which is not hypothetical, it is the same failure twice in one week. v1.36.0: \u201cwhere is my save send to nuvizz button? \u2026 i have no way to send these loads to nuvizz\u201d \u2014 four controls gone, all four gated on routing.liveWrite, a per-device flag that seeds OFF; nothing was broken and nothing said so. v1.36.2: \u201ci didn\u2019t ask for the stem out to come back\u201d \u2014 no PR that day touched the stem line, routing.hideStem had simply never been switched on for that browser. Both cost a morning hunting a code bug that was a hidden switch. DIAGNOSTICS \u2192 THIS DEVICE now lists the ten switches that change behaviour, each with what it does in plain English AND \u2014 the point of the whole screen \u2014 what the board looks like when it is not where you expect. A banner across the top answers the question behind both incidents in one line: \u201cN settings are not at the default on this device\u201d, naming them, or \u201ceverything is at its default, whatever you are chasing is not a switch\u201d, which is just as useful because it rules the screen out. DEFAULTS ARE READ OFF THE REAL INITIALISERS, not assumed: compareLive and mapSatellite default ON (their initialisers compare against \u2018off\u2019), the rest default OFF, and a test derives each one from App.jsx so the screen cannot drift into lying about which device is the odd one out \u2014 that test caught its own first derivation rule being wrong, keyed on the operator instead of the literal, which had called a correct registry entry a mismatch. LAYOUT MEMORY IS EXCLUDED on purpose (panel widths, which tab was open): a dispatcher scrolling past \u201cremembered panel width\u201d to reach \u201cLive dispatch\u201d is a dispatcher who stops reading the list. IT WRITES localStorage AND NOTHING ELSE \u2014 RoutingSection is mounted by a ternary on tab, so leaving Diagnostics unmounts it and coming back re-runs every initialiser, which means the write is already in force without a shared store, without a storage listener, and without touching one line of Route Workbench code. Reset all puts every switch back to what a fresh browser would use. One section entry drives the desktop rail and the phone chip row, so it exists on both views rather than the one. 17 new tests. The Build Panel and the Route Workbench are not touched.'],
   ['1.41.0', 'THE ROLLBACK BUTTON IS IN THE FOOTER, BESIDE THE VERSION. Chad: \u201clet\u2019s put the button for this ui discretely by the version in the footer.\u201d DISCRETE IS THE SPEC, not a style preference: this button asks for production code to be changed, so it should be findable by someone looking for it and invisible to someone who is not \u2014 a prominent ROLL BACK on a dispatch board is an invitation to press it before anyone has read what it costs, which is the failure this whole feature exists to prevent wearing the fix\u2019s clothes. It is a muted \u27f2 next to the version, the same grey as the rest of the footer until hovered. THE FOOTER IS THE RIGHT PLACE because that version is already what he checks to answer \u201cis this the build that just deployed\u201d, so it is where his eye goes the moment he suspects a deploy broke something. A PHONE HAS NO FOOTER, so the phone gets its own entry in the app-bar chip menu \u2014 the chip IS the version surface at that width. Two views, as the rule requires; a screen added to one navigation and not the other is a screen that does not exist on a phone, and this repo has shipped that twice. THE PANEL COSTS NO NETWORK CALL to tell him what shipped: every version and its note are already compiled into the running bundle, so it lists the last twelve releases with the first sentence of each and, beside every row, HOW MANY RELEASES GOING BACK THERE WOULD UNDO \u2014 the number he actually decides on. Sorted by version rather than trusted: the array has drifted before (v0.56.4, when the deploy watchdog read the wrong live version twice in one afternoon) and a panel pricing rows off a drifted order would be that bug with a button attached. A version NEWER than the running build is shown but never selectable, because this tab can be behind the site and \u201crolling back\u201d to it would be a roll FORWARD wearing the wrong word. IT DOES NOT PUSH, and that is the security design rather than a shortcut: a Netlify function cannot host a repo and git, so a one-tap path would have to rewrite main through the GitHub API \u2014 a browser-reachable endpoint that commits code, with no dry run in between. debug-capture.mts drew this line first (\u201cnothing here ever pushes to main or deploys\u201d) and rollback-request.mts stays on the same side of it: it files a rollback REQUEST as a GitHub issue carrying the dry-run command FIRST and the executing one second, an agent opens the PR, CI checks it, auto-merge lands it. A reason of at least eight characters is required before the button enables \u2014 the same rule --because enforces, because a rollback with no stated reason is indistinguishable from a mistake six weeks later. Gated at role:dispatcher; with ROLLBACK_GH_TOKEN unset the endpoint answers 503 and the panel degrades to read-only, which is the honest failure since the list still tells him what a rollback would cost. CODE ONLY is on screen BEFORE he presses anything, not in the confirmation after, because the dangerous misreading \u2014 that this undoes the day\u2019s freight \u2014 is the one that would make him press it. 13 new tests. The Build Panel and the Route Workbench are not touched.'],
   ['1.40.0', 'TWO WAYS BACK NOW: TO A MOMENT IN TIME, OR ONE PR AT A TIME. Chad: \u201cwould it be possible to both roll back to a point in time when I knew everything was okay if i can\u2019t identify the PR that caused the problem and also roll back PRs?\u201d Both, because they answer different mornings. TIME (`--list`, `\u201c2026-09-14 11:59pm\u201d`) replaces the whole tree, so it can NEVER conflict and always works \u2014 but it throws away every good fix that shipped since. Measured on Sep 15: rolling back to Sunday night undoes 17 merges, and only 3 of them ever touched the Route Workbench, so thirteen innocent fixes go with them \u2014 the five-POSTs-at-NuVizz fix, two loads wearing one name, moved orders carrying the wrong driver, the dock-lunch-hours misparse. DROP (`--drop 945`, `--drop 945,950`) reverts named PRs and keeps everything else, which is the right tool whenever he can name one. THE HONEST PART IS WHAT IT WILL NOT DO. Every one of the three live suspects conflicts on a plain `git revert`, and the conflicts split in two: version lines (APP_VERSION, the changelog rows, the generated public/version.json) collide on nearly every parallel merge, carry no behaviour, and get rewritten by the bump a few lines later \u2014 those resolve MECHANICALLY. Anything else is a person\u2019s call and the run STOPS, because a guessed side is a behaviour change nobody reviewed wearing a rollback\u2019s name, which is the exact thing this tool exists to undo. The dry run says which kind each PR will hit by ACTUALLY TRYING the revert in a throwaway worktree rather than predicting from file lists \u2014 two PRs can touch one file and not collide, and only git knows. On the measured three: #950 comes out clean (2 version-line conflicts, resolved), #945 has 2 real conflicts and #942 has 1. A refusal leaves NOTHING behind \u2014 verified end to end: revert aborted, working tree clean, no conflict markers, the dead drop/ branch deleted, and him back on the branch he started on rather than a detached HEAD. Found by running it: the probe leaked git\u2019s \u201cerror: could not revert\u201d to the console, so a successful diagnostic read like a crash directly above the plan saying it came out fine. CODE ONLY, unchanged: Firestore and anything already sent to NuVizz are untouched. 16 new tests, 42 in the file. No UI yet \u2014 it is still a terminal command, which is the next question on the table. The Build Panel and the Route Workbench are not touched.'],
   ['1.39.0', 'THE WALL DISPLAY DRAWS THE BOARD’S OWN PINS NOW, AND THE PICTURE FILLS THE WHOLE FRAME. Chad, on a photograph of the office television: “map doesn’t look like it should i want the thing to be identical with all the same icons”, and “i don’t liek the black space on either end of the map we aren’t using the full frame there are black bars on either side of the map on tv with just blank space before the needs a call table starts.” GOOGLE DRAWS THE ROADS; THIS APP DRAWS THE FREIGHT. The first cut asked Google to draw the stops too, with markers= in the URL, which is the obvious way and is wrong on this screen three separate times. It is NOT THE SAME BOARD — Static Maps draws teardrops in a handful of colours, while this app’s pins carry the whole morning on them: the AM/PM window, the ✓, the ➜, the restriction clock, the no-tractor truck, the Estes yellow ring, the co-located count, the “?” flag. A room reading two different maps of one day is worse than a room reading one. It COULD NOT FIT THE DAY — a Static Maps URL dies past 8192 characters, about 400 pins, so a 700-stop morning lost freight off the wall and had to print “showing 401 of 640 pins” to stay honest about it. And it BILLED FOR THE WRONG THING — with the pins in the URL every pin that moved bought a new image. So the picture is now a BASEMAP and every stop is the very same stopMarkerIcon artwork the desktop board paints, positioned over it by Web Mercator maths in lib/tv-static-map.js. Nothing is dropped and the cap chip is gone with the cap. THE ONLY THING IN THE WAY WAS SIX `new google.maps.Size` AND SIX `new google.maps.Point` — numbers, not behaviour — on a screen where the Maps script is deliberately never loaded. PLAIN_GEOMETRY is that stand-in, and the icon cache is NAMESPACED against it by identity, because press Exit on the wall and the real JS map loads into the same page reading the same cache: without that, the second screen gets Size and Point objects that are not google.maps types, and it fails as one screen quietly not drawing a week later. THE BLACK BARS WERE A GUESS RENDERED IN BLACK. The URL asked for a fixed 640x416 because a COMMENT in this file said the pane was “~1520x990” — a number estimated once, months before the television it was estimating, and object-contain turned the difference into dead space down both sides. Measured at 1920x1080 the old code paints 1509 of 1520 pixels across. The pane is READ now, with a ResizeObserver, and the image requested in its exact ratio, so there is nothing left to letterbox and no object-fit doing it — which is also what makes the per-cent pin positions exact. THE SPEND WENT DOWN, NOT UP, and that is worth saying because this repo counts calls: the URL now holds a centre, a zoom and a size and nothing else, so the picture is re-bought when the CAMERA moves rather than every two minutes — the 2-minute timer is deleted. The camera is held still by snapping the fit bounds outward onto a ~2.2 km grid, because the trucks are in the fit and a driver rolling thirty feet would otherwise shift the centre in the fourth decimal and buy another image on every poll. ~300 requests a day becomes a handful. MEASURED IN A REAL BROWSER, NOT REASONED ABOUT: scripts/verify-tv-map.mjs drives /tv at 1920x1080 and checks that the picture PAINTS the full pane (the element box is not the painted box — the first draft of this guard measured the wrong one and passed with the bug deliberately reinstated), that all 240 fixture stops draw, that the pins are this app’s SVGs and not Google teardrops, and that every pin and truck lands where an INDEPENDENT Mercator derivation — written the other way round from the module’s — puts it. Proven to fail on a restored letterbox, a dropped anchor offset and a mirrored projection. ONE BUG CAUGHT BY ITS OWN TEST: the bounds snap fell into IEEE arithmetic — 34.02/0.02 is 1701.0000000000002, so a bare Math.ceil moved a box that was ALREADY on the grid, which every snapped box is, and the camera would have flapped between two cells buying a picture each time. AND THE SCREEN ASKS WHY INSTEAD OF GUESSING. Chad, twice: “the static api key thing is back.” It answered that with one sentence — “Most likely the Maps Static API is not enabled on this key” — for EVERY failure, because an <img> onError carries no status and no reason: a 403, a 500, a timeout, a dropped connection and a picture the browser could not decode all fire identically. Naming one cause for a family of failures is a guess in a diagnosis’s clothes, and this file already had the comment saying so. MEASURED WHILE WRITING THIS, from the deployed bundle’s own key: that request answers HTTP 200 · image/png, with and without the site’s Referer — so “the API is off” was never established, and I cannot tell from here what the television saw. THE FREE DIAGNOSTIC WAS THERE ALL ALONG: Google refuses a staticmap with HTTP 403, content-type text/plain, a human sentence, and access-control-allow-origin: * — so the page fetches the SAME url once, after one has already failed, and prints the real reason plus Google’s own words verbatim. A referrer refusal now sends you to the key’s restrictions rather than to an API that is already on; a 429 says Google is rate-limiting and nothing is wrong; a dead network says check the television’s network and does NOT mention the console, which is the worst possible wrong answer on a wall display; and “Google returned the picture when this page asked again” names the one case the old message was most wrong about. Driven for real in the guard against Google’s actual 403 body, and proven to fail on the old wording. NOT CHANGED: VITE_TV_STATIC_MAP=off still returns the whole wall to the live JS map, anything malformed still leaves it on, and the flag rail, status bar, Filters panel and wake-lock reporting are untouched. The dispatch Map and the Route Workbench are not touched at all. 31 + 3 tests.'],
@@ -16627,7 +16629,142 @@ const DIAG_SECTIONS = [
   { id: 'schedule', label: 'Scan schedule', icon: <Clock size={14} />, hint: 'When the scanner runs and what it may spend. Live — no deploy.' },
   { id: 'alerts', label: 'Alert recipients', icon: <Mail size={14} />, hint: 'Who gets texted and who gets emailed when a stop is going to miss.' },
   { id: 'quality', label: 'Data quality', icon: <ClipboardList size={14} />, hint: 'M3 stubs — unmatched stops, stale customers, addr2 migration.' },
+  { id: 'switches', label: 'This device', icon: <SlidersHorizontal size={14} />, hint: 'The settings this browser remembers, what each one does, and which are not at their default.' },
 ];
+
+
+// ── THIS DEVICE: the per-device switches, and what a wrong one looks like ────
+//
+// Chad: "a settings profile or a settings button that we have all those switches in with a UI
+// that explains what they do."
+//
+// WHY IT IS A SCREEN AND NOT A MENU. Twenty-two settings live in this browser and four carry a
+// label anywhere. The other eighteen change the board silently — which cost a morning twice in
+// one week (v1.36.0's missing Send button, v1.36.2's stem line), both times hunting a code bug
+// that was a hidden switch. A menu row cannot carry the sentence that would have ended either
+// hunt in seconds, so this is a full section in Diagnostics with the explanation beside each row.
+//
+// IT WRITES localStorage AND NOTHING ELSE. RoutingSection is mounted by a ternary on `tab`
+// (App.jsx), so leaving Diagnostics UNMOUNTS it and coming back re-runs every one of its
+// `useState(() => localStorage.getItem(...))` initialisers. Writing the key here is therefore
+// already in force by the time the Routing screen is on screen again — no workbench code is
+// touched, no shared store, no new way for a switch to disagree with itself.
+//
+// THE BANNER IS THE FEATURE. "N settings on this device are not at their default" is the answer
+// to "is this browser the odd one out?", which is the question behind every incident above.
+function DeviceSwitchesPanel() {
+  // A tick to re-read after a write. localStorage is not reactive and the values are the truth,
+  // so the screen re-derives from storage rather than keeping a second copy that can drift.
+  const [tick, setTick] = useState(0);
+  const report = useMemo(() => {
+    try { return switchReport(window.localStorage); }
+    catch { return { rows: [], offDefault: [] }; }
+  }, [tick]);
+
+  const write = (sw, value) => {
+    try { window.localStorage.setItem(sw.key, encodeValue(sw, value)); } catch { /* private mode */ }
+    setTick((t) => t + 1);
+  };
+  const resetAll = () => {
+    for (const sw of DEVICE_SWITCHES) {
+      try { window.localStorage.removeItem(sw.key); } catch { /* private mode */ }
+    }
+    setTick((t) => t + 1);
+  };
+
+  const off = report.offDefault;
+
+  return (
+    <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+      <div className="px-4 py-3 border-b border-slate-200">
+        <h3 className="font-bold text-slate-900">Settings this browser remembers</h3>
+        <p className="text-[13px] text-slate-600 mt-1">
+          These live on <b>this device only</b>. They are not shared with other dispatchers, they do
+          not touch the board, and nothing here spends a NuVizz call. Changes apply next time you
+          open the Routing screen.
+        </p>
+      </div>
+
+      {/* The banner. A dispatcher who cannot find a control comes here and this is the line that
+          answers it — or rules this screen out, which is just as useful. */}
+      <div className={`px-4 py-2.5 text-[13px] border-b ${off.length
+        ? 'bg-amber-50 border-amber-200 text-amber-900'
+        : 'bg-emerald-50 border-emerald-200 text-emerald-900'}`}>
+        {off.length ? (
+          <>
+            <b>{off.length} setting{off.length === 1 ? ' is' : 's are'} not at the default on this device</b>
+            {' — '}{off.map((r) => r.label).join(', ')}.
+            {' '}If something on the Routing screen looks wrong, check these first.
+          </>
+        ) : (
+          <><b>Every setting on this device is at its default.</b> Whatever you are chasing is not a switch.</>
+        )}
+      </div>
+
+      <ul className="divide-y divide-slate-100">
+        {report.rows.map((r) => (
+          <li key={r.key} className={`px-4 py-3 ${r.def ? '' : 'bg-amber-50/40'}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="font-semibold text-slate-800 text-[14px]">
+                  {r.label}
+                  {!r.def && <span className="ml-2 text-[10px] font-bold uppercase tracking-wide text-amber-700">not default</span>}
+                </div>
+                <div className="text-[13px] text-slate-600 mt-0.5">{r.does}</div>
+                <div className="text-[12px] text-slate-500 mt-1"><b className="text-slate-600">If it looks wrong:</b> {r.symptom}</div>
+                <div className="text-[10px] text-slate-400 mt-1 font-mono">{r.key} · default {describeValue(r, r.dflt)}</div>
+              </div>
+
+              <div className="shrink-0">
+                {r.kind === 'toggle' ? (
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={r.value}
+                    aria-label={r.label}
+                    onClick={() => write(r, !r.value)}
+                    className={`tap-target relative w-[52px] h-[30px] rounded-full transition-colors ${r.value ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                  >
+                    <span className={`absolute top-[3px] left-[3px] w-[24px] h-[24px] rounded-full bg-white shadow transition-transform ${r.value ? 'translate-x-[22px]' : ''}`} />
+                  </button>
+                ) : (
+                  <div className="inline-flex rounded border border-slate-200 overflow-hidden" role="group" aria-label={r.label}>
+                    {r.values.map((v) => (
+                      <button
+                        key={v}
+                        type="button"
+                        onClick={() => write(r, v)}
+                        aria-pressed={r.value === v}
+                        className={`tap-target px-2.5 py-1.5 text-[12px] font-semibold ${r.value === v ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                      >
+                        {v}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </li>
+        ))}
+      </ul>
+
+      <div className="px-4 py-3 border-t border-slate-200 flex items-center justify-between gap-3">
+        <span className="text-[12px] text-slate-500">
+          Reset puts every switch above back to the default a fresh browser would use.
+        </span>
+        <button
+          type="button"
+          onClick={resetAll}
+          disabled={!off.length}
+          className={`tap-target px-3 py-1.5 rounded text-[12px] font-semibold shrink-0 ${off.length
+            ? 'bg-slate-800 text-white hover:bg-slate-900' : 'bg-slate-100 text-slate-400'}`}
+        >
+          Reset all to defaults
+        </button>
+      </div>
+    </section>
+  );
+}
 
 function DiagnosticsScreen({ stops, notes, ops, lastLoadScanAt, lastUnplannedScanAt, onRefresh, refreshing }) {
   const [scanning, setScanning] = useState(false);
@@ -16686,6 +16823,7 @@ function DiagnosticsScreen({ stops, notes, ops, lastLoadScanAt, lastUnplannedSca
     capture: <CaptureHealthPanel />,
     schedule: <SchedulePanel onScanNow={scanNow} scanning={scanning} scanDenied={scanGate.reason} onSaved={onRefresh} />,
     alerts: <AlertRecipientsPanel />,
+    switches: <DeviceSwitchesPanel />,
     quality: (
       <div className="space-y-4 sm:space-y-6">
         <div className="text-[11px] text-slate-400">M3, in progress — these three are stubs.</div>
