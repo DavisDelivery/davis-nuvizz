@@ -149,7 +149,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.43.4';
+const APP_VERSION = '1.44.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -203,6 +203,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.44.0', 'THE WALL CAN DRAW THE REAL MAP NOW, ON ONE TICK, AND UNTICK IT IF THE SET CANNOT. Chad, on the static picture after the frame was tightened: “Don’t like this either. Think it looks bad with the city zoomed like they are.” HE IS RIGHT, AND HIS TWO COMPLAINTS PULL IN OPPOSITE DIRECTIONS — which is the thing worth writing down rather than arguing about. The Maps Static API will not return a picture wider than 640 logical pixels, and this wall stretches it across about 1520. Google draws its roads and town names sized for the picture it was ASKED for, so a tighter frame means a smaller picture means bigger labels and less road detail. Measured on his own board: fullscreen asks for 545px and stretches it 2.79x; WINDOWED, which is what his photograph shows, asks for 339px and stretches it 4.48x. No arithmetic reconciles “no wasted space” with “don’t blow the labels up” on that API — the ceiling is the ceiling. A 2x2 MOSAIC WAS BUILT AND RENDERED BEFORE BEING REJECTED, not reasoned about: four 545x352 tiles one zoom step in, stitched with a 0.06% overlap that closed the hairline seams. It looks correct — normal labels, full detail — and it is NOT SHIPPABLE, because each tile carries its own Google logo and “Map data ©2026” and those land in the MIDDLE of the map. Cropping them is a straight violation of Google’s terms, so the picture stays one picture. THE LIVE MAP HAS NO CEILING: it draws at the pane’s own resolution, fits exactly instead of in whole zoom steps, carries one attribution, and costs no Static request at all. The only reason the wall is not on it is that this television could not draw it — which was real and was diagnosed on this set. What has changed is that the same browser now renders 796 SVG pins, the driver plates and the whole overlay, so it is worth ONE PRESS to find out. SO IT IS A TICK ON THE SCREEN, NOT AN ENV VAR, and that shape is the whole point: an env var is a deploy, and a wall that comes up white at 4am cannot wait for one. “Live map (sharper labels)” sits in the Filters panel the television already has open for live drivers, remembers itself PER DEVICE (so only that set changes), and unticking it puts the picture straight back with nobody on the phone. DEFAULT OFF — the shipped behaviour does not move. ONE FLAG DRIVES EVERY SIDE: the picture, the pin overlay, and whether the Maps script is loaded at all. There is no half-state where the wall asks for a picture it no longer draws. And the blank-map diagnostic that was previously dead on the static path now guards the live one — if Google loads and paints nothing, the wall says so after 20 seconds instead of sitting there white. THE CORNER READOUT REPORTS IN BOTH MODES (“… · LIVE MAP · WINDOWED”). A readout that went dark the moment somebody ticked the box would go dark at exactly the moment “what is this thing running?” gets asked. AND THE PANE IS NOW MEASURED IN BOTH MODES: the first cut wired that measurement to the static path only, so live mode printed “0×0” — caught by driving both modes in a browser rather than reading the diff, one release after a changelog row about diagnostics printing wrong numbers. STILL TRUE AND UNCHANGED: VITE_TV_STATIC_MAP=off, the desktop Map, the Route Workbench, and every pin the wall draws.'],
   ['1.43.4', 'THE WALL SAYS WHAT IT IS RUNNING, BECAUSE A PHOTOGRAPH OF IT COULD NOT. Chad sent a photo of the office television whose framing matched NOTHING reproducible here: every viewport driven in a real browser — 1920x1080 fullscreen, and 1920x900 / 800 / 700 with the browser’s chrome eating the top — filled 89-93% of the height, and his screen was showing roughly half that. SO THE HONEST ANSWER WAS “I CANNOT TELL FROM HERE”, AND THE FIX FOR THAT IS NOT A BETTER GUESS. Two rounds went into reading an angled photograph of a television. CLAUDE.md is blunt about it: build the free diagnostic FIRST. A wall display is the one screen in the building nobody can ask a question of — it has no footer, so “which build is that?”, the single fact that decides whether a cached bundle explains the picture, could not be answered without walking over to it. ONE LINE IN THE CORNER NOW ANSWERS IT FROM A PHOTOGRAPH: “v1.43.4 · 1520×981 · 545×352 z8 · 93%h 65%w · full” — the build, the measured pane, the image actually requested, the zoom, how much of the frame the DRAWN pins occupy, and whether the thing is really fullscreen. The fill is measured off the pins on screen rather than off the bounds they were fitted from, because the question it answers is “is this wall wasting half its screen” and only the drawn pins can answer that. FULLSCREEN IS IN THERE FOR A REASON: the whole layout assumes it, which is why the control lives in the Filters panel, and a television showing a tab strip and an address bar has a much shorter, much wider map pane than this screen was designed around. Measured: the width the freight occupies falls 65% → 52% → 45% → 38% as the chrome grows. From the far side of a room nobody can tell, so it says the word. DELIBERATELY THE QUIETEST THING ON THE WALL — 11px at a quarter opacity, in the corner Google’s own credit already owns. Chad asked for no more furniture on this screen and he was right; this earns its pixels by being the line that ends an argument. THE GUARD HOLDS IT THERE: verify-tv-map.mjs fails if the readout disappears, if it prints an image size the URL did not ask for, or if it stops saying whether the screen is fullscreen — a diagnostic that quietly drifts from the truth is worse than none, and one that quietly vanishes puts the next photograph right back where this one started. NOT A FIX FOR THE PHOTO, AND NOT PRETENDING TO BE: nothing here changes what the map draws. It makes the next photograph answerable in one glance. ONE COMMIT — `git revert` removes the line.'],
   ['1.43.3', 'THE WALL MAP SITS TIGHT ON THE FREIGHT NOW — THE DEAD BAND ABOVE AND BELOW THE STOPS IS GONE. Chad, with a screenshot of the framing he wanted: “i showed the exact frame of picture i wanted showing there is a bunch of wasted space above where my stops end and below them.” MEASURED ON THE LIVE BOARD BEFORE TOUCHING ANYTHING, at 1920x1080: the pins filled 79% of the height and 55% of the width, leaving 102px of dead map above them and 104px below. AND THE FRAME HE DREW TURNED OUT TO CROP NOTHING — read off its landmarks it is lat 33.15..34.95, lng -85.15..-82.80, while the day’s 796 stops span 33.35..34.83 and -84.99..-83.04. Every stop is inside it. He was not asking for freight to come off the wall, he was asking the frame to stop being loose, so nothing here drops a pin. THE CAUSE WAS A FLOORED ZOOM. A ZOOM STEP IS A FACTOR OF TWO, so flooring one throws away up to HALF the frame; that board wanted 8.25 and got 8, which is 16% of the height. The obvious repair is to ask Google for 8.25 — AND IT DOES NOT REFUSE ONE. Tested against the live API: a fractional zoom is read as ZOOM 0 and it returns a perfectly valid picture of the ENTIRE PLANET, three times over, with nothing anywhere saying why. A wall showing the world instead of Georgia is exactly the silent failure this screen keeps being rewritten to avoid, so the zoom stays a whole number and the leftover fraction of a step comes off the requested SIZE instead — coverage is width/(256·2^zoom), so a smaller picture at the same zoom covers proportionally less ground. scale=4 was the other idea and it is silently downgraded to scale=2 on this key; also tested, not assumed. THE PRICE, SAID PLAINLY: the requested image is now between 320 and 640 px wide instead of always 640, so the picture is stretched a little further across the pane — on Chad’s board 1.19x becomes about 1.41x. That is the cost of the frame being tight and it is the right trade on a screen read from across a room. THE RESULT, measured in a real browser on the real bundle: 98% of the height, up from 79%. THE WIDTH STAYS AT ABOUT 65% AND THAT IS GEOMETRY, NOT A BUG — the day’s freight is a 1.09-shaped cloud and the map pane beside the 400px flag rail is 1.55-shaped, so filling the width would mean cutting the top and bottom off the territory. The only lever on that is the rail’s width, and that is a layout call, not a fix. TWO THINGS THE GUARD ITSELF GOT WRONG FIRST, both caught by running it rather than reading it: its dead-space figures measured from the viewport origin instead of the pane’s, so the status bar counted as wasted map and “dead below” came out NEGATIVE; and its fixture happened to sit a hair above a whole zoom step, so the bug was worth only 5 points against a 3-point threshold — a check that could barely fail. The fixture is spread on purpose now: a floored zoom costs it a third of the frame, and the check reads 66% broken against 99% fixed. Rounding goes OUTWARD (ceil on the width, height derived from it) for the same reason snapBounds does — rounding the other way pushed the outermost stop a fraction of a pixel into the keep-out margin, which is invisible and the wrong direction. 4 new tests, and the fill assertion the old suite was missing: it only ever checked that nothing fell OUT of the frame, which a map zoomed far too far out passes perfectly. ONE COMMIT, so `git revert` is the whole way back; VITE_TV_STATIC_MAP=off still returns the wall to the live JS map.'],
   ['1.43.2', '\u201cROLL BACK THE APP\u201d SITS UNDER DIAGNOSTICS IN THE PHONE MENU NOW. Chad, with the menu open on his phone: \u201cclearly the roll back is not inside the diagnostics tab nor even below it on the drop down so nothing you said is correct.\u201d HE IS RIGHT ON THE SECOND HALF AND I SHOULD NOT HAVE CALLED IT DONE. The item shipped between Flag history and Address history, which reads as unrelated to Diagnostics; it is directly below Diagnostics now, which is where he looked. THE FIRST HALF IS MORE MY FAULT THAN THE ORDERING. The Diagnostics section really is in the shipped v1.43.1 bundle and really does render \u2014 verified by driving the deployed assets, not by reading the source \u2014 but it is the SEVENTH chip in a row that scrolls sideways, and measured at 390px only TWO of the seven are on screen: \u201cRoll back\u201d starts at x=899 on a 390-wide phone, 509px off the right edge. Present in the DOM and invisible to a person are not the same thing, and I reported the first as if it were the second. The one-tap menu row is therefore the real mobile door and the Diagnostics section is the one you find once you are already in there. Nothing else moved: the section, the footer \u27f2, the panel and the dates are unchanged. The Build Panel and the Route Workbench are not touched.'],
@@ -1212,6 +1213,11 @@ const LS_PANEL_WIDTH = 'dispatchMap.leftPanelWidth';
 // reload; the active sort is always named on screen, so nothing is hidden by persisting it.
 const LS_MOBILE_STOP_SORT = 'dispatchMap.mobileStopSort';
 const LS_DRIVER_LABELS = 'dispatchMap.driverLabelsVisible';
+// WHICH MAP THE WALL DRAWS, remembered PER DEVICE — so the office television can be on the
+// live map while nobody else's browser changes at all. Default false = the static picture,
+// which is the shipped behaviour and stays the shipped behaviour: this switch exists to let
+// that set answer a question it is the only machine that can answer, not to move the default.
+const LS_TV_LIVE_MAP = 'dispatchMap.tvLiveMap';
 const LS_SEARCH_HISTORY = 'dispatchMap.searchHistory';
 const LS_LEGEND_EXPANDED = 'dispatchMap.legendExpanded';
 // Road-distance re-sequencing is OPT-IN and per browser: it spends Google matrix money, so it
@@ -6808,7 +6814,7 @@ function CarryoverControl({ value = 0, onChange, boardDate }) {
 // `drawnAsImage` — the wall display renders its map as a static picture, which can show pins
 // and nothing else. The rows that only mean something to a live vector map are hidden there
 // rather than left inert; see the call site for why a dead toggle is worse than a missing one.
-function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled, showRoutes, setShowRoutes, boardDate, onEnterTv = null, drawnAsImage = false }) {
+function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled, showRoutes, setShowRoutes, boardDate, onEnterTv = null, drawnAsImage = false, tvLiveMap = null, setTvLiveMap = null }) {
   const set = (key) => (v) => setFilters((prev) => ({ ...prev, [key]: v }));
   // Clustering is off by default now; with icons memoized, unclustered rendering is far
   // cheaper, so only warn on genuinely huge boards rather than nagging every busy day.
@@ -6880,6 +6886,37 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
           checked={showRoutes}
           onChange={setShowRoutes}
         />
+      )}
+      {/* THE WALL'S MAP, AS A PICTURE OR AS THE REAL THING — and it is a switch on the
+          SCREEN rather than an env var because that is the only shape that can answer the
+          question. Chad, on the static picture: "Think it looks bad with the city zoomed
+          like they are." He is right, and the cause is a hard ceiling: the Maps Static API
+          will not return a picture wider than 640px, and this wall stretches it across
+          ~1520px. Google draws its roads and town names sized for the picture it was asked
+          for, so the tighter the frame gets the smaller that picture gets and the bigger the
+          labels come out — his two complaints pull in OPPOSITE directions and no amount of
+          arithmetic reconciles them on that API.
+          The live map has no such ceiling: it draws at the pane's own resolution, fits
+          exactly instead of in whole zoom steps, and costs no Static request.
+          IT IS OFF BY DEFAULT AND IT STAYS OFF BY DEFAULT. The picture exists because this
+          television could not draw the JS map — that was real, it was diagnosed on this set,
+          and a wall that comes up white at 4am is worse than one with big labels. What has
+          changed is that the same browser now renders 796 SVG pins and the whole overlay, so
+          it is worth ONE PRESS to find out — and a press is the point: if it comes up white
+          he unticks it and the picture is back, with no deploy and nobody on the phone. */}
+      {setTvLiveMap && (
+        <MapFilterToggle
+          label="Live map (sharper labels)"
+          checked={!!tvLiveMap}
+          onChange={setTvLiveMap}
+        />
+      )}
+      {setTvLiveMap && (
+        <div className="text-[10px] text-slate-500 italic -mt-1 mb-1 leading-tight">
+          {tvLiveMap
+            ? 'Drawing the real map. If it comes up blank, untick this.'
+            : 'Static picture. Google caps it at 640px, so labels look oversized.'}
+        </div>
       )}
       {/* THE WALL-DISPLAY DOOR, AND IT IS IN HERE ON PURPOSE. Chad: "i want the button for
           fullscreen under filters as i don't want anymore buttons on the screen." He is
@@ -11978,7 +12015,13 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   // THE WALL DISPLAY DOES NOT LOAD THE JS MAP AT ALL when it is drawing a picture. Not an
   // optimisation: the JS map is the thing that would not draw on that television, so the fix
   // is to stop asking it to, rather than to keep asking and report the failure more politely.
-  const tvStatic = tvMode && TV_STATIC_MAP;
+  // THE WALL'S MAP MODE. Per device, remembered, and it drives EVERY side at once — the
+  // picture, the pin overlay, and whether the Maps script is loaded at all (useGoogleMaps
+  // below reads tvStatic). One flag, so there is no half-state where the wall is asking for
+  // a picture it no longer draws.
+  const [tvLiveMap, setTvLiveMap] = useState(() => safeReadJSON(LS_TV_LIVE_MAP, false) === true);
+  useEffect(() => { safeWriteJSON(LS_TV_LIVE_MAP, tvLiveMap); }, [tvLiveMap]);
+  const tvStatic = tvMode && TV_STATIC_MAP && !tvLiveMap;
   const { google, error: mapsError } = useGoogleMaps(!tvStatic);
   const viewportWidth = useViewportWidth();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
@@ -12476,7 +12519,10 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   const tvPaneRef = useRef(null);
   const [tvPane, setTvPane] = useState(null);
   useLayoutEffect(() => {
-    if (!tvStatic) return undefined;
+    // tvMode, not tvStatic: the readout prints this number in BOTH map modes, and a readout
+    // that says "0×0" because the thing it measures was only wired for one of them is the
+    // exact failure the readout exists to stop. Measuring a pane costs nothing.
+    if (!tvMode) return undefined;
     const el = tvPaneRef.current;
     if (!el) return undefined;
     const read = () => {
@@ -12497,7 +12543,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     // just learns about a resize from the window instead, which on a wall never happens.
     window.addEventListener('resize', read);
     return () => window.removeEventListener('resize', read);
-  }, [tvStatic]);
+  }, [tvMode]);
   // THE BASEMAP, AND THE CAMERA ITS PINS MUST BE PLACED WITH. One memo, one view: the picture
   // and the overlay cannot come to disagree about where north is, because they are handed the
   // same object (see buildTvStaticMapUrl).
@@ -13989,7 +14035,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
 
         <div className="flex-1 flex min-h-0">
           {/* ── THE MAP ─────────────────────────────────────────────────────── */}
-          <div ref={tvStatic ? tvPaneRef : null} className="flex-1 relative min-w-0 overflow-hidden">
+          <div ref={tvMode ? tvPaneRef : null} className="flex-1 relative min-w-0 overflow-hidden">
             {/* ── THE MAP: A PICTURE, OR THE LIVE ONE ────────────────────────────────
                 A wall display is the one screen here that cannot be interacted with, so
                 everything the JS map buys over an image is an interaction nobody performs —
@@ -14124,6 +14170,10 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                 // the remote that the panel is broken, and they stop trusting the toggles
                 // that DO work — which here includes the one Chad kept this panel for.
                 drawnAsImage={tvStatic}
+                // Only the wall gets this row: it is a control for one television, and a
+                // "live map" tick on a dispatcher's desktop map would be meaningless there.
+                tvLiveMap={tvLiveMap}
+                setTvLiveMap={setTvLiveMap}
               />
             </div>
             {/* THERE IS NO PIN CAP TO PRINT ANY MORE. This corner used to carry "showing 401
@@ -14147,11 +14197,20 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                 corner the Google credit already owns. Chad asked for no more furniture on this
                 screen and he is right — this earns its pixels by being the line that ends an
                 argument, and it is one revert away if it annoys him. */}
-            {tvStatic && tvStaticUrl && (
+            {/* IT REPORTS IN BOTH MODES. A readout that only exists on the static picture
+                would go dark the moment somebody ticks the live map — which is precisely the
+                moment the question "what is this thing running?" gets asked. */}
+            {tvMode && (tvStaticUrl || !tvStatic) && (
               <div className="absolute bottom-1 right-2 z-[20] text-[11px] leading-tight font-mono text-slate-400 opacity-25 text-right pointer-events-none select-none">
                 v{APP_VERSION} · {Math.round(tvPane?.w || 0)}×{Math.round(tvPane?.h || 0)}
-                {' '}· {tvStaticUrl.width}×{tvStaticUrl.height} z{tvStaticUrl.zoom}
-                {' '}· {tvFill ? `${tvFill.h}%h ${tvFill.w}%w` : '—'}
+                {tvStatic && tvStaticUrl ? (
+                  <>
+                    {' '}· {tvStaticUrl.width}×{tvStaticUrl.height} z{tvStaticUrl.zoom}
+                    {' '}· {tvFill ? `${tvFill.h}%h ${tvFill.w}%w` : '—'}
+                  </>
+                ) : (
+                  <>{' '}· LIVE MAP</>
+                )}
                 {' '}· {tvIsFullscreen ? 'full' : 'WINDOWED'}
               </div>
             )}
