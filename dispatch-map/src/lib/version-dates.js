@@ -7,6 +7,8 @@
 // A version missing from this map renders with no date, which is the honest answer. v1.40.0 is
 // the standing example — it has a changelog row but never existed as a running APP_VERSION.
 export const VERSION_DATES = {
+  '1.44.0': '2026-09-17T10:38:22.000Z',
+  '1.43.2': '2026-09-17T01:58:23.000Z',
   '1.43.1': '2026-09-16T20:13:56.000Z',
   '1.43.0': '2026-09-16T16:35:05.000Z',
   '1.42.0': '2026-09-16T15:46:17.000Z',
