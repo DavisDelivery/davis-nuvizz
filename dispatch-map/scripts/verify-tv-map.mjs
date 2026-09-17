@@ -227,6 +227,13 @@ const shot = await page.evaluate(() => {
     }),
     // The failure banner, if the picture was refused.
     banner: [...document.querySelectorAll('div')].some((d) => /map image was refused/i.test(d.textContent || '')),
+    // The corner readout — what this screen is actually running. It exists because a
+    // photograph of the wall could not answer "which build is that?", and a readout that
+    // quietly disappears puts us straight back there.
+    readout: (() => {
+      const el = [...document.querySelectorAll('div')].filter((d) => /^v\d+\.\d+\.\d+ · /.test((d.textContent || '').trim()));
+      return el.length ? el[el.length - 1].textContent.replace(/\s+/g, ' ').trim() : null;
+    })(),
   };
 });
 
@@ -354,6 +361,15 @@ if (!shot.url) {
   else bad(`/tv asked for the Maps JS API ${jsReqs.length}× — that is the script that could not draw on the television`);
 
   if (shot.banner) bad('the "map image was refused" banner is showing over a picture that loaded');
+
+  // ── 6b. CAN THE WALL SAY WHAT IT IS RUNNING? ─────────────────────────────
+  if (!shot.readout) {
+    bad('the corner readout is gone — a photograph of this screen can no longer say which build it is');
+  } else {
+    ok(`the wall states its own build and frame: "${shot.readout}"`);
+    if (!shot.readout.includes(`${iw}×${ih}`)) bad(`the readout says a different image size than the URL asked for: "${shot.readout}" vs ${iw}x${ih}`);
+    if (!/WINDOWED|full/.test(shot.readout)) bad('the readout does not say whether the wall is fullscreen');
+  }
 
   // ── 7. THE TRUCKS ────────────────────────────────────────────────────────
   // What a room looks up at first. They ride the same projection, carry the same 20px truck
