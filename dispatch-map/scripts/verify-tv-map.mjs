@@ -32,6 +32,9 @@ import { readFile, stat } from 'node:fs/promises';
 import { join, extname, resolve } from 'node:path';
 import { chromium } from 'playwright-core';
 import { deflateSync } from 'node:zlib';
+// The keep-out margin only — a THRESHOLD, not the logic under test. The projection below is
+// re-derived independently on purpose; a hardcoded 30 here would just drift from the module.
+import { TV_PIN_PAD_PX } from '../src/lib/tv-static-map.js';
 
 const DIST = resolve(process.argv[2] || 'dist');
 const PORT = Number(process.env.SMOKE_PORT) || 8796;
@@ -64,8 +67,12 @@ const stop = (n, lat, lng, extra = {}) => ({
 // is the same size cannot catch an anchor applied in the wrong units.
 const BOARD = Array.from({ length: 240 }, (_, i) => stop(
   i + 1,
-  33.62 + (i % 16) * 0.055,
-  -84.62 + Math.floor(i / 16) * 0.075,
+  // SPREAD ON PURPOSE. The step sizes put the board's ideal zoom near the MIDDLE of a step,
+  // so flooring it costs about a third of the frame and the fill check above has real room
+  // either side. A board that happens to sit just above a whole step makes that check almost
+  // unfalsifiable — which is what the first version of this fixture did.
+  33.62 + (i % 16) * 0.0777,
+  -84.62 + Math.floor(i / 16) * 0.106,
   i % 7 === 0 ? { normalizedStatus: 'DELIVERED', status: '60' }
     : i % 5 === 0 ? { stopType: 'PU' } : {},
 ));
@@ -298,6 +305,42 @@ if (!shot.url) {
   // 1.5px covers sub-pixel rounding in two independently-rounded percentage layouts.
   if (worst <= 1.5) ok(`every pin lands where the picture's own centre/zoom put it (worst ${worst.toFixed(2)}px)`);
   else bad(`PINS ARE IN THE WRONG PLACE: stop ${worstStop} is ${worst.toFixed(1)}px from where this picture puts it`);
+
+  // ── 5b. DOES THE BOARD FILL THE FRAME? ───────────────────────────────────
+  // Chad, on the wall: "there is a bunch of wasted space above where my stops end and below
+  // them." Measured on the live board before the fix: the pins used 79% of the height and 55%
+  // of the width, because the fit wanted zoom 8.25 and a whole-number zoom gave it 8 — and a
+  // zoom step is a factor of TWO, so flooring one can throw away half the screen.
+  //
+  // Check 5 above cannot see this: a map zoomed far too far out passes "every pin is where the
+  // picture puts it" perfectly. This is the assertion that was missing.
+  let pn = Infinity; let ps = -Infinity; let pw = Infinity; let pe = -Infinity;
+  for (const p of shot.pins) { pn = Math.min(pn, p.ay); ps = Math.max(ps, p.ay); pw = Math.min(pw, p.ax); pe = Math.max(pe, p.ax); }
+  const availW = shot.pane.w - 2 * TV_PIN_PAD_PX;
+  const availH = shot.pane.h - 2 * TV_PIN_PAD_PX;
+  const fillW = (pe - pw) / availW;
+  const fillH = (ps - pn) / availH;
+  // RELATIVE TO THE PANE'S OWN ORIGIN. These rects are viewport-absolute and the pane starts
+  // below the status bar, so measuring "dead above" from zero counts the status bar as wasted
+  // map and "dead below" against a HEIGHT rather than a bottom edge comes out negative. The
+  // fill fractions are differences and were right either way; the numbers printed beside them
+  // were not, and a guard that prints a wrong number is how a wrong number becomes a fact.
+  const deadTop = Math.round(pn - shot.pane.y);
+  const deadBottom = Math.round((shot.pane.y + shot.pane.h) - ps);
+  // 0.90, and the fixture is spread so a floored zoom costs it about a THIRD of the frame —
+  // the first cut used a board whose ideal zoom sat a hair above a whole step, so the bug was
+  // worth only 5 points and the threshold had one point of headroom. The snap (see
+  // TV_BOUNDS_SNAP_DEG) deliberately pads the box outward by up to 0.02 degrees a side, so
+  // 100% is not reachable and must not be demanded.
+  // ONE of the two, whichever the board's own shape makes limiting — demanding both would be
+  // demanding a day's freight shaped like a television.
+  if (Math.max(fillW, fillH) > 0.90) {
+    ok(`the board fills the frame — ${(fillH * 100).toFixed(0)}% of the height, ${(fillW * 100).toFixed(0)}% of the width (${deadTop}px above the pins, ${deadBottom}px below)`);
+  } else {
+    bad(`WASTED FRAME: the pins fill only ${(fillH * 100).toFixed(0)}% of the height and ${(fillW * 100).toFixed(0)}% of the width — ${deadTop}px dead above them, ${deadBottom}px below`);
+  }
+  if (!Number.isInteger(zoom)) bad(`zoom=${zoom} is not an integer — Google reads a fractional zoom as ZOOM 0 and returns the whole planet`);
+  else ok(`zoom ${zoom} is a whole step and the frame shrank to ${iw}x${ih} to absorb the remainder`);
 
   // ── 6. THE BILL ──────────────────────────────────────────────────────────
   const staticOnly = staticReqs.filter((u) => u.includes('/maps/api/staticmap'));

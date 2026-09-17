@@ -217,9 +217,41 @@ export function fitView(points, { width = 640, height = 416, maxZoom = 12, minZo
   const latFraction = (latRad(b.north) - latRad(b.south)) / Math.PI;
   const lngDiff = b.east - b.west;
   const lngFraction = (lngDiff < 0 ? lngDiff + 360 : lngDiff) / 360;
-  const zoomFor = (px, fraction) => (fraction <= 0 ? maxZoom : Math.floor(Math.log(px / TILE / fraction) / Math.LN2));
-  const z = Math.min(zoomFor(usableH, latFraction), zoomFor(usableW, lngFraction), maxZoom);
-  return { center, zoom: Math.max(minZoom, Number.isFinite(z) ? z : minZoom), width, height };
+  // THE ZOOM THE BOARD ACTUALLY WANTS, AS A FRACTION — and then the leftover fraction of a
+  // zoom step comes off the IMAGE SIZE rather than being thrown away.
+  //
+  // Chad, on the wall: "there is a bunch of wasted space above where my stops end and below
+  // them." Measured on the live board at 1920x1080 before this: the pins used 79% of the
+  // height and 55% of the width, leaving ~102px of dead map above them and ~104px below.
+  //
+  // A ZOOM STEP IS A FACTOR OF TWO, so flooring one throws away up to HALF the frame, and on
+  // that board it threw away 16% of it — the fit wanted 8.25 and got 8. The obvious repair is
+  // to ask Google for 8.25. IT DOES NOT ERROR ON THAT: tested against the live API, a
+  // fractional zoom is read as ZOOM 0 and it returns a perfectly valid picture of the entire
+  // planet, three times over. A wall showing the whole world, with nothing anywhere saying
+  // why, is the exact failure mode this file keeps being written about — so the zoom stays an
+  // integer and the SIZE absorbs the remainder instead.
+  //
+  // Coverage is width / (256 * 2^zoom), so asking for a smaller image at the same integer zoom
+  // covers proportionally less ground. `shrink` is in [1, 2), which puts the requested width
+  // between 320 and 640: the picture is then stretched a little further across the pane (on
+  // Chad's board 1.19x becomes about 1.41x), which is the price of the frame being tight. The
+  // alternative was scale=4, and that is silently downgraded to scale=2 on this key — also
+  // tested, not assumed.
+  const zoomFor = (px, fraction) => (fraction <= 0 ? maxZoom : Math.log(px / TILE / fraction) / Math.LN2);
+  const exact = Math.min(zoomFor(usableH, latFraction), zoomFor(usableW, lngFraction), maxZoom);
+  const want = Math.max(minZoom, Number.isFinite(exact) ? exact : minZoom);
+  const zoom = Math.floor(want);
+  const shrink = Math.pow(2, want - zoom);
+  //
+  // CEIL, NOT ROUND, on the width: rounding DOWN asks for a picture covering slightly less
+  // ground than the fit wanted, which pushes the outermost stop a fraction of a pixel into the
+  // keep-out margin. Sub-pixel and invisible — and the wrong direction, which is how things
+  // drift. The same reasoning as snapBounds rounding outward. The height is then derived from
+  // the rounded width so the frame keeps the caller's aspect ratio exactly, because that ratio
+  // is what stops the picture being letterboxed and that is the louder failure of the two.
+  const w = Math.max(1, Math.ceil(width / shrink));
+  return { center, zoom, width: w, height: Math.max(1, Math.round(w * (height / width))) };
 }
 
 /**
@@ -302,18 +334,23 @@ export function buildTvStaticMapUrl({
     width: size.width, height: size.height, maxZoom, padPx: padPx * shrink, snapDeg,
   });
   if (!view) return null;
+  // THE SIZE COMES OFF THE VIEW, NOT OFF tvImageSize. fitView shrinks the frame to absorb the
+  // fraction of a zoom step that Google will not take, so `size` is only the STARTING shape —
+  // the pane's ratio and the 640 ceiling. Using it here instead would ask Google for a
+  // different rectangle than the one the pins are projected through, and every stop on the
+  // wall would be in the wrong place on a screen that still looked like a working map.
   const base = [
     `center=${view.center.lat.toFixed(4)},${view.center.lng.toFixed(4)}`,
     `zoom=${view.zoom}`,
-    `size=${size.width}x${size.height}`,
+    `size=${view.width}x${view.height}`,
     `scale=${scale}`,
     'maptype=roadmap',
   ];
   return {
     url: `https://maps.googleapis.com/maps/api/staticmap?${base.join('&')}&key=${encodeURIComponent(key)}`,
     view,
-    width: size.width,
-    height: size.height,
+    width: view.width,
+    height: view.height,
     zoom: view.zoom,
     center: view.center,
   };
