@@ -112,27 +112,53 @@ test('the summary ignores a trailing undated row rather than claiming it has no 
   assert.equal(s.oldestVersion, '1.0.0');      // the row shown, dated or not
 });
 
-test('REGRESSION: on this repo’s real dates, twelve rows does not cover 24 hours', () => {
-  // This is the complaint, pinned against the committed map. If anyone reinstates a row cap,
-  // this fails and says why.
+test('REGRESSION: a row count is not a time window — the same twelve rows drift', () => {
+  // THIS TEST REPLACED ONE THAT WAS WRONG IN THE WAY IT WAS WARNING ABOUT. The first version
+  // asserted "twelve rows covers less than 24 hours on the committed dates", which is a fact about
+  // the DEPLOY CADENCE, not about this code — and it went red within the hour, when the commit
+  // adding it moved the anchor and twelve rows became 30.3h. A test that passes or fails on how
+  // often somebody shipped yesterday pins nothing.
+  //
+  // What is actually true, and stays true: a fixed row count buys a DIFFERENT amount of history
+  // depending on when you look, and a window does not.
   const dated = Object.entries(VERSION_DATES)
     .map(([version, at]) => ({ version, at, t: Date.parse(at) }))
     .sort((a, b) => b.t - a.t);
-  const now = dated[0].t;
-  const twelve = (now - dated[11].t) / HOUR;
-  assert.ok(twelve < 24, `twelve rows covered ${twelve.toFixed(1)}h — if this is now >24h the cap may look safe again, but it is still the wrong unit`);
-  const shown = windowRows(dated, { hours: 48, now });
-  assert.ok(shown.length > 12, `48h must be more than the old cap, got ${shown.length}`);
-  // THE CONTRACT IS THE BOUNDARY, NOT A DEPTH. Every row shown is inside the window and the first
-  // row left out is outside it. How far back the OLDEST one happens to sit is a fact about when
-  // releases landed, not about this function: on the committed map 48h reaches 45.2h back because
-  // the next release before that is 50.9h back. Asserting ">= 47h" instead would be asserting the
-  // deploy cadence, and would go red on a quiet Sunday with nothing wrong.
-  assert.ok((now - Date.parse(shown[shown.length - 1].at)) / HOUR <= 48);
-  const firstOut = dated[shown.length];
-  assert.ok(firstOut && (now - firstOut.t) / HOUR > 48, 'the first excluded row must be outside the window');
-  // and it reaches far deeper than the twelve-row cap it replaces
-  assert.ok((now - Date.parse(shown[shown.length - 1].at)) / HOUR > twelve * 2);
+  assert.ok(dated.length > 12, 'need more than twelve dated versions to measure this at all');
+
+  const twelfth = dated[11].t;
+  const atRelease = (dated[0].t - twelfth) / HOUR;
+  const aDayLater = (dated[0].t + 24 * HOUR - twelfth) / HOUR;
+  assert.ok(aDayLater > atRelease, 'the same twelve rows must mean more history a day later');
+  assert.ok(Math.abs(aDayLater - atRelease - 24) < 0.01);
+
+  // Whereas the window is anchored to the clock at every cadence: nothing outside it is offered.
+  for (const now of [dated[0].t, dated[0].t + 24 * HOUR, dated[0].t + 72 * HOUR]) {
+    for (const r of windowRows(dated, { hours: 48, now, minRows: 0 })) {
+      assert.ok(now - r.t <= 48 * HOUR, `${r.version} is outside the 48h window`);
+    }
+  }
+});
+
+test('REGRESSION: on the night he complained, twelve rows did not reach 24 hours back', () => {
+  // The complaint itself, pinned to stamps that are fixed history and cannot drift. He was
+  // running v1.43.2 and the twelfth row in that build was v1.38.0.
+  const running = VERSION_DATES['1.43.2'];
+  const twelfthRow = VERSION_DATES['1.38.0'];
+  assert.ok(running && twelfthRow, 'both stamps are committed history and should still be here');
+  const covered = (Date.parse(running) - Date.parse(twelfthRow)) / HOUR;
+  assert.ok(covered < 24, `it covered ${covered.toFixed(1)}h — he asked for 24-48`);
+
+  // And 48h, measured from that same moment, reaches past it.
+  const dated = Object.entries(VERSION_DATES)
+    .map(([version, at]) => ({ version, at, t: Date.parse(at) }))
+    .sort((a, b) => b.t - a.t)
+    .filter((r) => r.t <= Date.parse(running));
+  const shown = windowRows(dated, { hours: 48, now: Date.parse(running) });
+  assert.ok(shown.length > 12, `48h from that moment must beat twelve rows, got ${shown.length}`);
+  const reach = (Date.parse(running) - shown[shown.length - 1].t) / HOUR;
+  assert.ok(reach > covered, `48h reached ${reach.toFixed(1)}h vs the cap's ${covered.toFixed(1)}h`);
+  assert.ok(reach <= 48);
 });
 
 test('the panel builds the whole log when asked, so the window is the only thing limiting it', () => {
