@@ -196,10 +196,10 @@ test('ONE ELEMENT PER SESSION, NOT ONE PER LOOK — the Immersive Maps SKU bills
     // Guarded BOTH before the await and again after it: the library load is async, so two
     // quick Ctrl presses can both reach the constructor otherwise — two elements, two bills,
     // two WebGL canvases stacked on the board.
-    const guards = src.match(/if\s*\(\s*!\s*map3dElRef\.current\s*\)/g) || [];
+    const guards = src.match(/if\s*\(\s*!\s*elRef\.current\s*\)/g) || [];
     assert.ok(guards.length >= 2, `the construction must be guarded on both sides of the await, found ${guards.length}`);
     // And the close path must NOT destroy it — hiding is the whole cost design.
-    assert.ok(!/map3dElRef\.current\s*=\s*null/.test(src),
+    assert.ok(!/elRef\.current\s*=\s*null/.test(src),
       'closing must hide the layer, never drop the element (the next open would re-bill)');
   });
 });
@@ -238,16 +238,20 @@ test('A REFUSED KEY IS READ, NOT JUST RECORDED — the error opens the layer, an
     // Writing the refusal onto a layer that stays display:none is an error nobody can see,
     // which is the exact failure the error exists to prevent. And a PEEK would vanish the
     // moment Chad let go of the key he is holding in order to read it.
-    const block = src.slice(src.indexOf('setMap3dError(e?.message'));
-    const upto = block.slice(0, block.indexOf('return;'));
-    assert.ok(/setMap3dOn\(true\)/.test(upto), 'the error path must open the layer');
-    assert.ok(/setMap3dPinned\(true\)/.test(upto), 'and pin it, so releasing Ctrl does not hide the message');
+    // Anchored on the 3D refusal message itself: "setError(e?.message" also appears in the
+    // debug-capture component 150 lines earlier, and anchoring there silently measured the
+    // wrong function. A window that can land on the wrong code proves nothing.
+    const at = src.indexOf("'Google refused the 3D map'");
+    assert.ok(at > -1, 'the 3D refusal path must exist');
+    const upto = src.slice(at, src.indexOf('return;', at));
+    assert.ok(/setOn\(true\)/.test(upto), 'the error path must open the layer');
+    assert.ok(/setPinned\(true\)/.test(upto), 'and pin it, so releasing Ctrl does not hide the message');
   });
 });
 
 test('CROSSING THE PHONE/DESKTOP BREAKPOINT RE-ATTACHES THE ELEMENT — an orphan looks like failed imagery', () => {
   return readFile(APP, 'utf8').then((src) => {
-    assert.ok(/el\.parentNode\s*!==\s*map3dDiv\.current\s*\)\s*map3dDiv\.current\.appendChild\(el\)/.test(src),
+    assert.ok(/el\.parentNode\s*!==\s*layerRef\.current\s*\)\s*layerRef\.current\.appendChild\(el\)/.test(src),
       'the re-use path must re-attach when the container was rebuilt under it');
   });
 });
@@ -292,7 +296,7 @@ test('WHEN IT CANNOT TELL, IT LETS GOOGLE TRY — refusing on a false negative i
 
 test('the check runs BEFORE the element is constructed, not after', async () => {
   const src = await readFile(APP, 'utf8');
-  const open = src.slice(src.indexOf('if (!map3dElRef.current) {'));
+  const open = src.slice(src.indexOf('if (!elRef.current) {'));
   const gl = open.indexOf('webglUsable()');
   const build = open.indexOf('importLibrary');
   assert.ok(gl > -1 && build > -1 && gl < build, 'the WebGL check must precede the library load');
@@ -325,10 +329,50 @@ test('HIDE PLACE LABELS MAKES IT RASTER ON PURPOSE — blaming the machine there
   assert.equal(vectorFellBack({ askedForVector: false, renderingType: 'RASTER' }), false);
 });
 
-test('the raster check is wired to the REAL asked-for-vector rule, not a guess', async () => {
+test('the raster check is wired to the REAL asked-for-vector rule on BOTH screens, not a guess', async () => {
   const src = await readFile(APP, 'utf8');
-  assert.ok(/vectorFellBack\(\{\s*askedForVector:\s*usesMapId\(mapIdForView,\s*mapFilters\.hideLabels\)/.test(src),
-    'it must reuse usesMapId — the same function map-base-options decides the base with');
+  // The hook takes askedForVector from its caller, so the honesty of the check lives at the
+  // two call sites. Each must hand it usesMapId() — the same function map-base-options
+  // decides the base with — so neither screen can claim a broken browser on a map that is
+  // raster ON PURPOSE because "Hide place labels" is on.
+  assert.ok(/askedForVector:\s*usesMapId\(mapIdForView,\s*mapFilters\.hideLabels\)/.test(src),
+    'the dispatch Map must pass usesMapId');
+  assert.ok(/askedForVector:\s*usesMapId\(MAP_ID,\s*routeHideLabels\)/.test(src),
+    'Routing must pass usesMapId too');
+  assert.ok(/vectorFellBack\(\{\s*askedForVector,\s*renderingType\s*\}\)/.test(src),
+    'and the hook must consult it');
+});
+
+test('ROUTING GETS IT TOO — Chad asked for it there, and one hook serves both so they cannot drift', async () => {
+  const src = await readFile(APP, 'utf8');
+  const hookCalls = src.match(/=\s*useMap3dPeek\(\{/g) || [];   // calls, not the definition
+  assert.equal(hookCalls.length, 2, `expected the dispatch Map and Routing, found ${hookCalls.length}`);
+  // Four layers: mobile + desktop on each screen. The television deliberately gets none.
+  const layers = src.match(/<Map3DLayer\b/g) || [];
+  assert.equal(layers.length, 4, `expected two views on each of two screens, found ${layers.length}`);
+});
+
+test('THE LAYER SITS ABOVE THE BOARD FURNITURE — at z-11 the data grid ate the drags', async () => {
+  const src = await readFile(APP, 'utf8');
+  // Chad: "i cant pan around the building". The layer was the LOWEST overlay on the map: the
+  // bottom data grid (z-12), filters, status pill and flag rail (z-15/16/20/22) all drew on
+  // top of it and swallowed pointer events. The highest in-map overlay is 30; real modals are
+  // `fixed` at 60+, so anything in between is correct and 40 is what it uses.
+  const m = src.match(/data-overlay-layer[\s\S]{0,900}?className="absolute inset-0 z-\[(\d+)\] bg-slate-900"/);
+  assert.ok(m, 'the 3D layer must declare an explicit z-index');
+  const z = Number(m[1]);
+  assert.ok(z > 30, `the layer must clear every in-map overlay (max 30), got ${z}`);
+  assert.ok(z < 60, `and stay below the modal band (60+), got ${z}`);
+});
+
+test('TOUCHING THE VIEW PINS IT — holding Ctrl to keep it open made a plain drag impossible', async () => {
+  const src = await readFile(APP, 'utf8');
+  // Ctrl is itself a modifier the 3D map reads, so panning needs the key released -- which
+  // closed the peek. The gesture that opened it made the gesture that uses it impossible.
+  assert.ok(/onPointerDownCapture=\{onInteract\}/.test(src), 'a pointer on the layer must pin it');
+  assert.ok(/const pinOnInteract = useCallback\(\(\) => \{ setPinned\(true\); \}/.test(src),
+    'and pinning must be what that does');
+  assert.ok(/ev\.key === 'Escape'/.test(src), 'Escape must leave, now that a view can outlive its key');
 });
 
 test('THE "ZOOM IN" HINT IS NOT SHOWN BESIDE AN ERROR — it is wrong advice, not just clutter', async () => {
