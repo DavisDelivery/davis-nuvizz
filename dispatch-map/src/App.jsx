@@ -149,7 +149,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.43.3';
+const APP_VERSION = '1.43.4';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -203,6 +203,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.43.4', 'THE WALL SAYS WHAT IT IS RUNNING, BECAUSE A PHOTOGRAPH OF IT COULD NOT. Chad sent a photo of the office television whose framing matched NOTHING reproducible here: every viewport driven in a real browser — 1920x1080 fullscreen, and 1920x900 / 800 / 700 with the browser’s chrome eating the top — filled 89-93% of the height, and his screen was showing roughly half that. SO THE HONEST ANSWER WAS “I CANNOT TELL FROM HERE”, AND THE FIX FOR THAT IS NOT A BETTER GUESS. Two rounds went into reading an angled photograph of a television. CLAUDE.md is blunt about it: build the free diagnostic FIRST. A wall display is the one screen in the building nobody can ask a question of — it has no footer, so “which build is that?”, the single fact that decides whether a cached bundle explains the picture, could not be answered without walking over to it. ONE LINE IN THE CORNER NOW ANSWERS IT FROM A PHOTOGRAPH: “v1.43.4 · 1520×981 · 545×352 z8 · 93%h 65%w · full” — the build, the measured pane, the image actually requested, the zoom, how much of the frame the DRAWN pins occupy, and whether the thing is really fullscreen. The fill is measured off the pins on screen rather than off the bounds they were fitted from, because the question it answers is “is this wall wasting half its screen” and only the drawn pins can answer that. FULLSCREEN IS IN THERE FOR A REASON: the whole layout assumes it, which is why the control lives in the Filters panel, and a television showing a tab strip and an address bar has a much shorter, much wider map pane than this screen was designed around. Measured: the width the freight occupies falls 65% → 52% → 45% → 38% as the chrome grows. From the far side of a room nobody can tell, so it says the word. DELIBERATELY THE QUIETEST THING ON THE WALL — 11px at a quarter opacity, in the corner Google’s own credit already owns. Chad asked for no more furniture on this screen and he was right; this earns its pixels by being the line that ends an argument. THE GUARD HOLDS IT THERE: verify-tv-map.mjs fails if the readout disappears, if it prints an image size the URL did not ask for, or if it stops saying whether the screen is fullscreen — a diagnostic that quietly drifts from the truth is worse than none, and one that quietly vanishes puts the next photograph right back where this one started. NOT A FIX FOR THE PHOTO, AND NOT PRETENDING TO BE: nothing here changes what the map draws. It makes the next photograph answerable in one glance. ONE COMMIT — `git revert` removes the line.'],
   ['1.43.3', 'THE WALL MAP SITS TIGHT ON THE FREIGHT NOW — THE DEAD BAND ABOVE AND BELOW THE STOPS IS GONE. Chad, with a screenshot of the framing he wanted: “i showed the exact frame of picture i wanted showing there is a bunch of wasted space above where my stops end and below them.” MEASURED ON THE LIVE BOARD BEFORE TOUCHING ANYTHING, at 1920x1080: the pins filled 79% of the height and 55% of the width, leaving 102px of dead map above them and 104px below. AND THE FRAME HE DREW TURNED OUT TO CROP NOTHING — read off its landmarks it is lat 33.15..34.95, lng -85.15..-82.80, while the day’s 796 stops span 33.35..34.83 and -84.99..-83.04. Every stop is inside it. He was not asking for freight to come off the wall, he was asking the frame to stop being loose, so nothing here drops a pin. THE CAUSE WAS A FLOORED ZOOM. A ZOOM STEP IS A FACTOR OF TWO, so flooring one throws away up to HALF the frame; that board wanted 8.25 and got 8, which is 16% of the height. The obvious repair is to ask Google for 8.25 — AND IT DOES NOT REFUSE ONE. Tested against the live API: a fractional zoom is read as ZOOM 0 and it returns a perfectly valid picture of the ENTIRE PLANET, three times over, with nothing anywhere saying why. A wall showing the world instead of Georgia is exactly the silent failure this screen keeps being rewritten to avoid, so the zoom stays a whole number and the leftover fraction of a step comes off the requested SIZE instead — coverage is width/(256·2^zoom), so a smaller picture at the same zoom covers proportionally less ground. scale=4 was the other idea and it is silently downgraded to scale=2 on this key; also tested, not assumed. THE PRICE, SAID PLAINLY: the requested image is now between 320 and 640 px wide instead of always 640, so the picture is stretched a little further across the pane — on Chad’s board 1.19x becomes about 1.41x. That is the cost of the frame being tight and it is the right trade on a screen read from across a room. THE RESULT, measured in a real browser on the real bundle: 98% of the height, up from 79%. THE WIDTH STAYS AT ABOUT 65% AND THAT IS GEOMETRY, NOT A BUG — the day’s freight is a 1.09-shaped cloud and the map pane beside the 400px flag rail is 1.55-shaped, so filling the width would mean cutting the top and bottom off the territory. The only lever on that is the rail’s width, and that is a layout call, not a fix. TWO THINGS THE GUARD ITSELF GOT WRONG FIRST, both caught by running it rather than reading it: its dead-space figures measured from the viewport origin instead of the pane’s, so the status bar counted as wasted map and “dead below” came out NEGATIVE; and its fixture happened to sit a hair above a whole zoom step, so the bug was worth only 5 points against a 3-point threshold — a check that could barely fail. The fixture is spread on purpose now: a floored zoom costs it a third of the frame, and the check reads 66% broken against 99% fixed. Rounding goes OUTWARD (ceil on the width, height derived from it) for the same reason snapBounds does — rounding the other way pushed the outermost stop a fraction of a pixel into the keep-out margin, which is invisible and the wrong direction. 4 new tests, and the fill assertion the old suite was missing: it only ever checked that nothing fell OUT of the frame, which a map zoomed far too far out passes perfectly. ONE COMMIT, so `git revert` is the whole way back; VITE_TV_STATIC_MAP=off still returns the wall to the live JS map.'],
   ['1.43.2', '\u201cROLL BACK THE APP\u201d SITS UNDER DIAGNOSTICS IN THE PHONE MENU NOW. Chad, with the menu open on his phone: \u201cclearly the roll back is not inside the diagnostics tab nor even below it on the drop down so nothing you said is correct.\u201d HE IS RIGHT ON THE SECOND HALF AND I SHOULD NOT HAVE CALLED IT DONE. The item shipped between Flag history and Address history, which reads as unrelated to Diagnostics; it is directly below Diagnostics now, which is where he looked. THE FIRST HALF IS MORE MY FAULT THAN THE ORDERING. The Diagnostics section really is in the shipped v1.43.1 bundle and really does render \u2014 verified by driving the deployed assets, not by reading the source \u2014 but it is the SEVENTH chip in a row that scrolls sideways, and measured at 390px only TWO of the seven are on screen: \u201cRoll back\u201d starts at x=899 on a 390-wide phone, 509px off the right edge. Present in the DOM and invisible to a person are not the same thing, and I reported the first as if it were the second. The one-tap menu row is therefore the real mobile door and the Diagnostics section is the one you find once you are already in there. Nothing else moved: the section, the footer \u27f2, the panel and the dates are unchanged. The Build Panel and the Route Workbench are not touched.'],
   ['1.43.1', 'THE LANDED DATE FITS ON ONE LINE ON A PHONE. Chad: \u201cthe phone line-wrap \u2014 undoes 1 release \u00b7 landed Sep 16, 2026 11:46a runs to two lines. Dropping the year fits it on one.\u201d MEASURED, not eyeballed: at 390px the twelve-row list was 991px tall and is 841px now \u2014 150px, about 15% less scrolling on the screen where scanning matters most. The year was the part that did not fit and the part nobody needed: the panel shows the last twelve versions and this repo ships several a day. BUT THE YEAR COMES BACK WHEN IT IS NOT THIS YEAR. Dropping it unconditionally would let a version from last December read as if it landed this week, beside a button that changes production \u2014 so formatDateTimeShort keeps it whenever the stamp\u2019s year differs from today\u2019s, and `now` is a parameter so that rule is tested rather than a thing that only misbehaves in January. IT LIVES BESIDE ITS TWIN in lib/routing-loads.js rather than being a new formatter somewhere else, and it carries formatDateTime\u2019s hour12 for the same documented reason: under hour12:false some ICU builds render midnight as hour \u201824\u2019, which throws the reading a day out for one hour a night \u2014 rollback.mjs carries an explicit guard for exactly that. THE YEAR COMPARISON IS IN EASTERN, not UTC: 2027-01-01T02:00Z is still 9pm on Dec 31 in New York, and comparing UTC years would print a year the dispatcher would read as wrong. 7 new tests covering the year boundary, midnight both ways, the spring-forward hour and malformed input. The Build Panel and the Route Workbench are not touched.'],
@@ -12553,6 +12554,32 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     out.sort((a, b) => b.lat - a.lat);
     return out;
   }, [tvStatic, tvStaticUrl, filteredStops, notes, tractorLocs, selectedDate]);
+  // HOW MUCH OF THE FRAME THE FREIGHT ACTUALLY OCCUPIES, for the corner readout above.
+  // Measured off the pins that were DRAWN rather than off the bounds they were fitted from:
+  // the question this answers is "is the wall wasting half its screen", and only the drawn
+  // pins can answer that. Cheap — it is a min/max over a list already built.
+  const tvFill = useMemo(() => {
+    if (!tvPins.length) return null;
+    let n = Infinity; let s = -Infinity; let w = Infinity; let e = -Infinity;
+    for (const p of tvPins) {
+      if (p.at.top < n) n = p.at.top; if (p.at.top > s) s = p.at.top;
+      if (p.at.left < w) w = p.at.left; if (p.at.left > e) e = p.at.left;
+    }
+    return { h: Math.round(s - n), w: Math.round(e - w) };
+  }, [tvPins]);
+  // AND WHETHER THE WALL IS ACTUALLY FULLSCREEN. The whole layout assumes it is — that is why
+  // the fullscreen control lives in the Filters panel — and a television showing the browser's
+  // tab strip and address bar has a much shorter, much wider map pane than this screen was
+  // designed around, which costs it a lot of width. Worth one word in the corner, because from
+  // the far side of a room nobody can tell.
+  const [tvIsFullscreen, setTvIsFullscreen] = useState(false);
+  useEffect(() => {
+    if (!tvStatic) return undefined;
+    const read = () => { try { setTvIsFullscreen(!!document.fullscreenElement); } catch { setTvIsFullscreen(false); } };
+    read();
+    document.addEventListener('fullscreenchange', read);
+    return () => document.removeEventListener('fullscreenchange', read);
+  }, [tvStatic]);
   // THE TRUCKS, same artwork and same size as the live board — and the same name plate, which
   // is what a room actually reads a truck by. They ride above the freight, as they do there.
   const tvTrucks = useMemo(() => {
@@ -14103,7 +14130,31 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                 of 640 pins", because the pins rode in the URL and a Static Maps URL dies past
                 8192 characters — so a 700-stop day genuinely lost freight off the wall and the
                 chip existed to stay honest about it. The overlay has no such ceiling and drops
-                nothing, so the chip is gone rather than left saying a reassuring nothing. */}
+                nothing, so the chip is gone rather than left saying a reassuring nothing.
+
+                WHAT THIS CORNER CARRIES INSTEAD: WHAT THE SCREEN IS ACTUALLY RUNNING.
+                Chad sent a photograph of the television whose framing did not match ANY
+                viewport that could be reproduced here — every simulated size filled 89-93% of
+                the height and his was showing about half that. Two rounds went into reading a
+                photograph of an angled screen, and CLAUDE.md is blunt about that being the
+                wrong move: build the free diagnostic FIRST.
+                A wall display is the one screen nobody can ask a question of. It has no
+                footer, so "which build is that?" — the single fact that decides whether a
+                cached bundle explains the picture — was unanswerable without walking over to
+                it. Now one photograph answers it, and the pane, the requested image, the zoom,
+                the fill and whether it is actually fullscreen come with it.
+                DELIBERATELY THE QUIETEST THING ON THE WALL: 11px at a quarter opacity in the
+                corner the Google credit already owns. Chad asked for no more furniture on this
+                screen and he is right — this earns its pixels by being the line that ends an
+                argument, and it is one revert away if it annoys him. */}
+            {tvStatic && tvStaticUrl && (
+              <div className="absolute bottom-1 right-2 z-[20] text-[11px] leading-tight font-mono text-slate-400 opacity-25 text-right pointer-events-none select-none">
+                v{APP_VERSION} · {Math.round(tvPane?.w || 0)}×{Math.round(tvPane?.h || 0)}
+                {' '}· {tvStaticUrl.width}×{tvStaticUrl.height} z{tvStaticUrl.zoom}
+                {' '}· {tvFill ? `${tvFill.h}%h ${tvFill.w}%w` : '—'}
+                {' '}· {tvIsFullscreen ? 'full' : 'WINDOWED'}
+              </div>
+            )}
             {/* THE WAY OUT, kept faint. Chad: "i don't want anymore buttons on the screen."
                 Escape does the same job and is the documented exit; this exists so a mouse
                 that wanders onto the display has somewhere to click, and so the mode is not
