@@ -54,6 +54,10 @@ export function rollbackTargets(versionLog, currentVersion, limit = 12, landedAt
     .map(([version, note]) => ({ version, note }));
   rows.sort((a, b) => compareVersions(b.version, a.version));
 
+  // HOISTED OUT OF THE LOOP. It was a findIndex per row, which was invisible at 12 rows and is
+  // 775 x 775 string compares now that the panel builds the whole log and windows it afterwards.
+  const currentAt = rows.findIndex((x) => x.version === currentVersion);
+
   const out = [];
   for (const [i, r] of rows.entries()) {
     const current = r.version === currentVersion;
@@ -67,13 +71,107 @@ export function rollbackTargets(versionLog, currentVersion, limit = 12, landedAt
       // row but never existed as a running APP_VERSION (one commit moved the line 1.39.0 → 1.41.0),
       // so no source can date it. The row prints no date rather than borrowing a neighbour's.
       at: landedAt?.[r.version] || null,
-      undoes: ahead ? 0 : Math.max(0, i - rows.findIndex((x) => x.version === currentVersion)),
+      undoes: ahead ? 0 : Math.max(0, i - currentAt),
       current,
       selectable: !current && !ahead,
     });
     if (out.length >= limit) break;
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// HOW FAR BACK THE PANEL LOOKS.
+//
+// Chad, with the shipped panel open: "this is not enough history to roll back what if i need to
+// roll back 24-48 hrs".
+//
+// HE IS RIGHT AND THE ROW COUNT WAS THE WRONG PRIMITIVE. Measured on the committed dates:
+// twelve rows is 17.5 HOURS in this repo, so the panel could not reach either number he named.
+// It is not a number that was too small — it is the wrong unit. This repo ships several versions
+// a day on a busy day and none on a quiet one, so ANY fixed row count means a different amount
+// of history every week, and the week it is smallest is a bad week, which is the week he opens
+// this panel. He asks in hours ("roll the app back to 11:59 pm sept 14th"), so it answers in
+// hours.
+//
+// TODAY'S NUMBERS, so the next session does not re-measure: 24h = 18 rows, 48h = 37 rows,
+// 7 days = 60 rows (every version this build has a date for), All = 775.
+// ---------------------------------------------------------------------------
+
+/**
+ * The ranges the panel offers. 48h is the default because the two mistakes are not symmetrical:
+ * a window too SHORT costs him the feature on the morning he needs it — the exact failure he
+ * just hit — and a window too LONG costs him a scroll. So it errs long.
+ *
+ * `All` exists so there is no ceiling at all any more, which is the actual complaint. Rows past
+ * the dated range print no date (see `at` above), which is honest but hard to reason about, so it
+ * is the last option rather than the default.
+ */
+export const ROLLBACK_RANGES = [
+  { id: '24h', label: '24h', hours: 24 },
+  { id: '48h', label: '48h', hours: 48 },
+  { id: '7d', label: '7 days', hours: 24 * 7 },
+  { id: 'all', label: 'All', hours: Infinity },
+];
+
+export const DEFAULT_ROLLBACK_RANGE = '48h';
+
+/** PURE: the hours behind a range id, falling back to the 48h default for anything unknown. */
+export function rangeHours(id) {
+  const hit = ROLLBACK_RANGES.find((r) => r.id === id);
+  return hit ? hit.hours : ROLLBACK_RANGES.find((r) => r.id === DEFAULT_ROLLBACK_RANGE).hours;
+}
+
+/**
+ * PURE: the slice of `targets` that falls inside `hours` of `now`, newest first.
+ *
+ * MEASURED FROM NOW, NOT FROM THE NEWEST RELEASE. "the last 48 hours" is a statement about his
+ * clock, not about the deploy cadence. That matters on a quiet Sunday: if nothing shipped for
+ * three days a from-newest reading would still hand back a full window, quietly redefining the
+ * words on the button.
+ *
+ * WHICH IS WHY `minRows` EXISTS. With the window measured from now, a quiet stretch makes it
+ * genuinely empty — and a rollback panel offering nothing to roll back to is broken, not
+ * truthful. The floor is the old cap: whatever the window says, the last `minRows` are always
+ * offered.
+ *
+ * AN UNDATED ROW RIDES ITS NEIGHBOURS. Versions sort newest-first and land in that order, so a
+ * row with no date that sits ABOVE the oldest in-window row is itself in-window and is kept.
+ * One below it is older than the boundary and is not. That is why this takes the LAST in-window
+ * index rather than filtering row by row — filtering would punch holes in the list wherever a
+ * date is missing, and a gap in a rollback list reads as "that version does not exist".
+ */
+export function windowRows(targets, { hours = 48, minRows = 12, now = Date.now() } = {}) {
+  if (!Array.isArray(targets) || targets.length === 0) return [];
+  if (!Number.isFinite(hours)) return targets;                     // 'All' — no ceiling
+  const cutoff = now - hours * 3600 * 1000;
+  let last = -1;
+  for (const [i, t] of targets.entries()) {
+    const at = t?.at ? Date.parse(t.at) : NaN;
+    if (Number.isFinite(at) && at >= cutoff) last = i;
+  }
+  return targets.slice(0, Math.max(minRows, last + 1));
+}
+
+/**
+ * PURE: the one-line summary under the range chips — how many versions are on screen and how far
+ * back they reach.
+ *
+ * It exists because the chips alone cannot answer the only question he is really asking: DOES
+ * THIS LIST REACH THE MORNING THAT WORKED? A chip reading "48h" is a promise about the window;
+ * `oldestAt` is the fact about the list, and when a missing date or the minRows floor makes those
+ * two disagree, the fact is the one on screen.
+ */
+export function windowSummary(shown, { total = 0 } = {}) {
+  const n = Array.isArray(shown) ? shown.length : 0;
+  const dated = (Array.isArray(shown) ? shown : []).filter((t) => t?.at);
+  return {
+    count: n,
+    total,
+    oldestAt: dated.length ? dated[dated.length - 1].at : null,
+    oldestVersion: n ? shown[n - 1].version : null,
+    all: n > 0 && n >= total,
+  };
 }
 
 /**
