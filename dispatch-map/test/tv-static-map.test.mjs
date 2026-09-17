@@ -230,12 +230,49 @@ test('EVERY STOP ON THE BOARD LANDS INSIDE THE FRAME, clear of the edge', () => 
   // off the picture or sliced by its edge.
   const out = buildTvStaticMapUrl({ points: BOARD, key: 'K', ...PANE });
   const padImage = TV_PIN_PAD_PX * (out.width / PANE.paneWidth);
+  // 1px of tolerance on an 8.5px margin. The claim here is "no stop is sliced by the edge of
+  // the frame", and integer image dimensions cannot express the fit to better than half a
+  // pixel — which is under 2px on the pane. A real regression moves a pin by tens of pixels.
   for (const s of BOARD) {
     const at = projectToPixel(s, out.view);
     assert.ok(at, 'a board stop failed to project');
-    assert.ok(at.x >= padImage - 1e-6 && at.x <= out.width - padImage + 1e-6, `x ${at.x} is in the margin`);
-    assert.ok(at.y >= padImage - 1e-6 && at.y <= out.height - padImage + 1e-6, `y ${at.y} is in the margin`);
+    assert.ok(at.x >= padImage - 1 && at.x <= out.width - padImage + 1, `x ${at.x} is in the margin`);
+    assert.ok(at.y >= padImage - 1 && at.y <= out.height - padImage + 1, `y ${at.y} is in the margin`);
   }
+});
+
+test('AND THE BOARD FILLS THE FRAME — a floored zoom throws away up to half the screen', () => {
+  // THE BUG THIS EXISTS FOR, in Chad's words: "there is a bunch of wasted space above where my
+  // stops end and below them." Measured on the live wall at 1920x1080, the pins used 79% of the
+  // height and 55% of the width, because the fit wanted zoom 8.25 and a whole-number zoom gave
+  // it 8 — a zoom step is a factor of two, so flooring one can waste HALF the frame.
+  //
+  // The test the old suite was missing: it checked that nothing fell OUT of the frame, which a
+  // map zoomed far too far out passes perfectly.
+  const out = buildTvStaticMapUrl({ points: BOARD, key: 'K', ...PANE });
+  let n = Infinity; let s2 = -Infinity; let w = Infinity; let e = -Infinity;
+  for (const p of BOARD) {
+    const at = projectToPixel(p, out.view);
+    n = Math.min(n, at.y); s2 = Math.max(s2, at.y);
+    w = Math.min(w, at.x); e = Math.max(e, at.x);
+  }
+  const padImage = TV_PIN_PAD_PX * (out.width / PANE.paneWidth);
+  const usedH = (s2 - n) / (out.height - 2 * padImage);
+  const usedW = (e - w) / (out.width - 2 * padImage);
+  // ONE of the two must be filled — whichever the board's own shape makes the limiting one.
+  // Demanding both would be demanding a board shaped like the television.
+  assert.ok(Math.max(usedH, usedW) > 0.98, `the board fills only ${(usedH * 100).toFixed(0)}% of the height and ${(usedW * 100).toFixed(0)}% of the width`);
+  assert.ok(usedH <= 1.02 && usedW <= 1.02, 'the board overflows the frame');
+});
+
+test('THE PICTURE SHRINKS INSTEAD OF THE ZOOM DROPPING A WHOLE STEP', () => {
+  // Google will not take a fractional zoom — tested against the live API, it reads one as ZOOM
+  // ZERO and returns a valid picture of the entire planet. So the leftover fraction of a step
+  // comes off the requested SIZE, which is [320, 640] wide rather than always 640.
+  const out = buildTvStaticMapUrl({ points: BOARD, key: 'K', ...PANE });
+  assert.ok(Number.isInteger(out.zoom), `zoom ${out.zoom} is not an integer — Google reads that as the whole world`);
+  assert.ok(out.width > TV_IMAGE_MAX / 2 && out.width <= TV_IMAGE_MAX, `width ${out.width} is outside (320, 640]`);
+  assert.match(out.url, new RegExp(`size=${out.width}x${out.height}(&|$)`), 'the URL asks for a different rectangle than the pins are projected through');
 });
 
 test('per-cent placement survives a resize the way pixel placement does not', () => {
@@ -254,7 +291,10 @@ test('A PIN OFF THE PICTURE IS NOT RENDERED AT ALL', () => {
 test('the URL carries the view and the measured size — and NO markers', () => {
   const out = buildTvStaticMapUrl({ points: BOARD, key: 'TESTKEY', ...PANE });
   assert.match(out.url, /^https:\/\/maps\.googleapis\.com\/maps\/api\/staticmap\?/);
-  assert.match(out.url, /size=640x416/);
+  // The SHAPE, not a literal size: the frame shrinks to absorb the fraction of a zoom step
+  // Google will not take, so pinning 640x416 pinned the bug rather than the rule.
+  const want = PANE.paneWidth / PANE.paneHeight;
+  assert.ok(Math.abs(out.width / out.height - want) / want < 0.005, `${out.width}x${out.height} is not the pane's shape`);
   assert.match(out.url, /scale=2/);
   assert.match(out.url, /maptype=roadmap/);
   assert.match(out.url, /key=TESTKEY$/);
