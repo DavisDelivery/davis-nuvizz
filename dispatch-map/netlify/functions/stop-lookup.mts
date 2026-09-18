@@ -58,15 +58,21 @@
 // it. Inert until AUTH_REQUIRED=true.
 
 import {
-  isFirestoreEnabled, getDoc, listDocs, etDayString, readStopDoc, readAddressChanges,
+  isFirestoreEnabled, getDoc, listDocs, etDayString, readStopDoc, readStops, readAddressChanges,
 } from './lib/firestore.mts';
-import { getStop as getSealedStop } from './lib/history-store.mts';
+import { getStop as getSealedStop, listStops as listSealedStops } from './lib/history-store.mts';
 import { lookupProDays, proIndexEnabled } from './lib/history-pro-index.mts';
 import { getCustomerByMatchKey, queryCustomersByName } from './lib/history-customers.mts';
 import { selectAddressChanges } from './lib/address-history.mts';
+import { CUSTOMER_STOP_FIELDS } from './lib/board-fields.mts';
+import { stopCustomerKey } from './lib/customer-key.mts';
 import { selectWriteRows } from './nuvizz-stop-explain.mts';
 import { requireUser } from './lib/require-user.mts';
-import { buildStopDossier, classifyQuery, stopIdVariants, notesSummary, isDayId } from '../../src/lib/stop-lookup.js';
+import { resolveRange, selectionFromParams } from '../../src/lib/history-range.js';
+import {
+  buildStopDossier, buildCustomerView, classifyQuery, stopIdVariants, notesSummary, isDayId,
+  customerNameKey, nameMatchesQuery,
+} from '../../src/lib/stop-lookup.js';
 
 const TENANT = 'davis';
 const DEFAULT_DAYS_BACK = 14;   // the Map's carry-over reach — the window stop-explain walks
@@ -78,6 +84,23 @@ const RECENT_SEAL_DAYS = 4;
 const WRITES_MAX = 12;
 const ADDRESS_MAX = 40;
 const NAME_RESULTS = 25;
+
+/**
+ * THE CUSTOMER WINDOW'S OWN CEILING, and why it is not history-range's 60.
+ *
+ * Every other screen that uses resolveRange reads ONE document per day (a day's flag rows, a
+ * day's address log), so sixty days is sixty gets. This reads a whole BOARD per day — ~700
+ * stop documents, twice over (live and sealed), to keep the handful that match one customer.
+ * Sixty days would be ~84,000 document reads to answer "did we deliver to them last month",
+ * and it would sit there while a customer waits on the phone.
+ *
+ * Fourteen is the Map's own carry-over reach, so it is the span the rest of the app already
+ * treats as "recent", and it covers the question this screen was built for several times
+ * over. Older than that is what the per-customer rollup below is for: one small document,
+ * free, with the driver on every row.
+ */
+const CUSTOMER_MAX_DAYS = 14;
+const CUSTOMER_DEFAULT_DAYS = 7;
 
 const addDays = (d: string, n: number) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
 const uniqDays = (days: string[]) => [...new Set(days.filter(isDayId))].sort().reverse();
@@ -139,18 +162,181 @@ export default async (req: Request): Promise<Response> => {
   const nameRaw = String(url.searchParams.get('name') ?? '').trim();
   const today = etDayString();
 
-  // ── NAME SEARCH — the door in, when all the rep has is who called ──────────
+  // ── CUSTOMER MODE — "how many deliveries for EARTHLY ALTERNATIVE today?" ───
   //
-  // Not a second feature: a customer rings about "that delivery last week" and quotes a
-  // business name, never a PRO. This hands back the customers and their recent PROs so the
-  // next tap is a stop lookup. One indexed Firestore query, ZERO NuVizz calls, reusing the
-  // rollup the mobile customer search already reads.
+  // Chad, 2026-09-18: "I wanted to see how many deliveries we had for earthly alternative
+  // today and couldn't. Wanted to see all the different ones and drivers who delivered them."
+  //
+  // THE FIRST BUILD ANSWERED THIS WITH THE ROLLUP AND COULD NOT HAVE BEEN RIGHT. history_
+  // customers is built from SEALED history, and today is not sealed until tonight — so the
+  // one day he asked about is the one day that document structurally cannot contain. It would
+  // have said "no deliveries" about a customer we had been to three times that morning.
+  //
+  // So this sweeps the LIVE BOARD, day by day over a bounded window, and keeps the stops whose
+  // business name matches. Board rows carry no customerMatchKey (routing-cleanup-core.mts says
+  // so outright), so the match is on the NAME, normalised by the same rule the match key uses.
+  // The sealed warehouse is swept alongside it for the same days: the seal is the record that
+  // cannot change again, and a past day with only a board copy is a day the capture missed —
+  // both facts belong on the row rather than being flattened away.
   if (!stopRaw && nameRaw) {
-    const r = await tryRead(() => queryCustomersByName(nameRaw, NAME_RESULTS), [] as any[]);
+    const sel = selectionFromParams((k: string) => url.searchParams.get(k));
+    // The screen and this endpoint resolve the identical selection through the identical
+    // module, so the header can never describe one window over rows from another.
+    const asked = resolveRange(sel.kind === 'days' && !url.searchParams.get('days')
+      ? { kind: 'days', days: CUSTOMER_DEFAULT_DAYS } : sel, today, 0);
+    // …and then this screen's OWN ceiling is applied on top, because a day here is a whole
+    // board rather than one document. Named in the response so the header says it was clamped
+    // rather than quietly showing a shorter window than the one that was asked for.
+    const span = Math.max(1, Math.round((Date.parse(`${asked.to}T12:00:00Z`) - Date.parse(`${asked.from}T12:00:00Z`)) / 86400000) + 1);
+    const clampedDays = Math.min(span, CUSTOMER_MAX_DAYS);
+    const from = clampedDays === span ? asked.from : addDays(asked.to, -(clampedDays - 1));
+    const window = { from, to: asked.to, days: clampedDays, kind: asked.kind, clamped: clampedDays !== span ? `${span} days asked, ${CUSTOMER_MAX_DAYS} is this screen's ceiling` : (asked.clamped || null) };
+    const days = uniqDays(Array.from({ length: clampedDays }, (_, i) => addDays(window.to, -i)));
+
+    // ── the sweep: the live board and the sealed warehouse, in parallel ──────
+    const [boardSweep, sealedSweep] = await Promise.all([
+      tryRead(async () => {
+        const per = await Promise.all(days.map(async (date) => {
+          const { stops } = await readStops(TENANT, date, { mask: CUSTOMER_STOP_FIELDS });
+          return (stops || []).filter((st: any) => nameMatchesQuery(st?.businessName, nameRaw)).map((stop: any) => ({ date, source: 'board', stop }));
+        }));
+        return per.flat();
+      }, [] as any[]),
+      tryRead(async () => {
+        const per = await Promise.all(days.map(async (date) => {
+          const stops = await listSealedStops(TENANT, date, { mask: CUSTOMER_STOP_FIELDS });
+          return (stops || []).filter((st: any) => nameMatchesQuery(st?.businessName, nameRaw)).map((stop: any) => ({ date, source: 'sealed', stop }));
+        }));
+        return per.flat();
+      }, [] as any[]),
+    ]);
+    const swept = [...boardSweep.value, ...sealedSweep.value];
+
+    // ── WHICH CUSTOMER DID THEY MEAN? ────────────────────────────────────────
+    //
+    // "earthly" can match more than one business, and a screen that silently picks one and
+    // reports its count as the answer is worse than one that asks. Distinct NAMES are offered;
+    // distinct ADDRESSES are not, because one customer with two docks is still one customer to
+    // the rep on the phone and the view lists their locations underneath.
+    const byName = new Map<string, { name: string; nameKey: string; stops: number; today: number; lastDate: string | null; source: string }>();
+    const note = (name: string, date: string, source: string) => {
+      const key = customerNameKey(name);
+      if (!key) return;
+      const cur = byName.get(key) || { name, nameKey: key, stops: 0, today: 0, lastDate: null as string | null, source };
+      if (date) { cur.stops += 1; if (date === today) cur.today += 1; if (!cur.lastDate || date > cur.lastDate) cur.lastDate = date; }
+      byName.set(key, cur);
+    };
+    for (const r of swept) note(String(r.stop?.businessName ?? ''), r.date, 'board');
+
+    // The rollup is consulted too — a customer with no stop in the window still has to be
+    // FINDABLE, or "we have not been there recently" reads identically to "no such customer".
+    const rollupR = await tryRead(() => queryCustomersByName(nameRaw, NAME_RESULTS), [] as any[]);
+    for (const c of rollupR.value) {
+      const key = customerNameKey(c?.name);
+      if (!key) continue;
+      if (!byName.has(key)) byName.set(key, { name: c.name, nameKey: key, stops: 0, today: 0, lastDate: c?.pros?.[0]?.date ?? null, source: 'rollup' });
+    }
+
+    const matches = [...byName.values()].sort((a, b) => b.today - a.today || b.stops - a.stops || String(b.lastDate ?? '').localeCompare(String(a.lastDate ?? '')));
+    const wantKey = String(url.searchParams.get('nameKey') || '').trim();
+    // Both sweeps have to have worked for a name list to mean anything.
+    const sweepComplete = boardSweep.read === true && sealedSweep.read === true;
+
+    // ── WHICH CUSTOMER, AND WHEN TO ASK ──────────────────────────────────────
+    //
+    // The chooser appears ONLY when two or more distinct businesses genuinely matched. Every
+    // other case builds a view:
+    //
+    //   • one match, or one pinned          → that customer
+    //   • NO match                          → a view for the name as typed, with zero stops.
+    //     "We have not been to EARTHLY ALTERNATIVE this week" and "no such customer" are
+    //     different answers and the ledger underneath is what tells them apart; an empty
+    //     chooser says neither.
+    //   • a sweep FAILED                    → likewise a view, so the failure is on screen.
+    //     This is the case the first cut got wrong: a 500 on the board read emptied `matches`,
+    //     the chooser came back with nothing in it, and the screen said "no customer matches"
+    //     about a customer we deliver to every week. A rep repeats that to the person on the
+    //     phone. A read that broke must never render as a customer that does not exist.
+    const chosen = wantKey
+      ? matches.find((m) => m.nameKey === wantKey) || { name: nameRaw, nameKey: wantKey, stops: 0, today: 0, lastDate: null, source: 'typed' }
+      : matches.length === 1
+        ? matches[0]
+        : matches.length === 0
+          ? { name: nameRaw, nameKey: customerNameKey(nameRaw), stops: 0, today: 0, lastDate: null, source: 'typed' }
+          : null;
+
+    if (!chosen) {
+      return J({
+        ok: true, nuvizzCalls: 0, mode: 'customer-choose', query: nameRaw, today, window,
+        matches, complete: sweepComplete,
+        errors: Object.fromEntries(Object.entries({
+          board: boardSweep.error, sealed: sealedSweep.error, rollup: rollupR.error,
+        }).filter(([, v]) => v)),
+        note: 'Firestore only — nothing here spent a NuVizz call.',
+      });
+    }
+
+    const mine = swept.filter((r) => customerNameKey(String(r.stop?.businessName ?? '')) === chosen.nameKey);
+
+    // ── the customer's own documents, joined by the DERIVED key ──────────────
+    //
+    // stopCustomerKey derives name+addr+city+zip rather than trusting a stored field, because
+    // the board does not carry one — customer-key.mts exists because an alert once read 778
+    // board rows with matchKey null on every one and reported a clean day.
+    const keys = [...new Set(mine.map((r) => stopCustomerKey(r.stop)).filter(Boolean) as string[])].slice(0, 6);
+    const [rollupsR, notesR] = await Promise.all([
+      tryRead(async () => {
+        const got = await Promise.all(keys.map((k) => getCustomerByMatchKey(TENANT, k).catch(() => null)));
+        const fromKeys = got.filter(Boolean) as any[];
+        // A customer whose only stops are in the window has no key from the sweep — fall back
+        // to the rollup's own name match so their older deliveries still show.
+        const byName2 = rollupR.value.filter((c: any) => customerNameKey(c?.name) === chosen.nameKey);
+        const seenK = new Set(fromKeys.map((c) => c.matchKey));
+        return [...fromKeys, ...byName2.filter((c: any) => !seenK.has(c.matchKey))];
+      }, [] as any[]),
+      tryRead(async () => {
+        const got = await Promise.all(keys.map((k) => getDoc(`customer_notes/${k}`).catch(() => null)));
+        // One note per dock; the first that carries anything is the one worth showing beside a
+        // customer-wide answer, and its key rides along so the screen can say which dock.
+        const hit = got.map((doc, i) => ({ key: keys[i], doc })).find((x) => x.doc && Object.keys(x.doc).length);
+        return hit ? { ...hit.doc, _key: hit.key } : null;
+      }, null as any),
+    ]);
+
+    // Older than the window: the rollup's most recent deliveries, with the driver on each.
+    // Free (one small document per dock) and the honest answer to "when were you here before".
+    const recent = rollupsR.value
+      .flatMap((c: any) => (c?.pros || []).map((p: any) => ({ pro: p.pro, date: p.date, driver: p.driver ?? null, location: c.addr1 ?? null })))
+      .filter((p: any) => p.pro && p.date && !(p.date >= window.from && p.date <= window.to))
+      .sort((a: any, b: any) => String(b.date).localeCompare(String(a.date)))
+      .slice(0, 40);
+
+    const view = buildCustomerView({
+      query: nameRaw, name: chosen.name, today, window,
+      stops: mine, recent, notes: notesR.value, matches,
+      sources: [
+        { key: 'board', label: "Today's board", where: 'nuvizz_stop_index/…/stops', note: `${days.length} day${days.length === 1 ? '' : 's'} swept, ${window.from} → ${window.to}`,
+          looked: boardSweep.read, count: boardSweep.value.length, found: boardSweep.read && boardSweep.value.length > 0, state: boardSweep.read ? (boardSweep.value.length ? 'found' : 'empty') : 'unread' },
+        { key: 'sealed', label: 'Sealed history', where: 'history_days/…/stops', note: 'the same days, from the immutable nightly capture',
+          looked: sealedSweep.read, count: sealedSweep.value.length, found: sealedSweep.read && sealedSweep.value.length > 0, state: sealedSweep.read ? (sealedSweep.value.length ? 'found' : 'empty') : 'unread' },
+        { key: 'customer', label: 'Customer rollup', where: 'history_customers', note: 'deliveries older than the window, with their drivers',
+          looked: rollupsR.read, count: recent.length, found: rollupsR.read && recent.length > 0, state: rollupsR.read ? (recent.length ? 'found' : 'empty') : 'unread' },
+        { key: 'notes', label: 'Dispatcher notes', where: 'customer_notes', note: keys.length ? `joined on ${keys.length} derived customer key${keys.length === 1 ? '' : 's'}` : 'no stop to derive a customer key from',
+          looked: keys.length ? notesR.read : 'skipped', count: notesR.value ? 1 : 0, found: !!notesR.value, state: !keys.length ? 'skipped' : notesR.read ? (notesR.value ? 'found' : 'empty') : 'unread' },
+      ],
+    });
+
     return J({
-      ok: r.read, nuvizzCalls: 0, mode: 'name', query: nameRaw, today,
-      customers: r.value, ...(r.error ? { error: r.error } : {}),
-    }, r.read ? 200 : 500);
+      ok: true, nuvizzCalls: 0, mode: 'customer', query: nameRaw, today, window,
+      // `complete` is what licenses the screen to say "we were not there" rather than "we
+      // could not finish looking" — the same distinction the per-order view draws, and for
+      // the same reason: only one of the two is a fact a rep may pass on to a customer.
+      view: { ...view, complete: sweepComplete, notes: notesSummary(notesR.value) },
+      errors: Object.fromEntries(Object.entries({
+        board: boardSweep.error, sealed: sealedSweep.error, customer: rollupsR.error, notes: notesR.error, rollup: rollupR.error,
+      }).filter(([, v]) => v)),
+      note: 'Firestore only — nothing here spent a NuVizz call.',
+    });
   }
 
   if (!stopRaw) return J({ ok: false, error: 'pass ?stop=<PRO or stop number> or ?name=<customer>' }, 400);

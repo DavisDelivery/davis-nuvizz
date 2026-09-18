@@ -81,8 +81,12 @@ export async function appendCapture(tenant: string, date: string, version: numbe
 }
 
 // ── subcollection reads (used for verify-by-readback) ────────────────────────
-export async function listStops(tenant: string, date: string): Promise<any[]> {
-  return listDocs(`${dayPath(tenant, date)}/stops`);
+/** A sealed day's stops. `mask` is ADDITIVE and optional — existing callers (verify-by-
+ *  readback, the reference miner) still get the whole record. The customer day view passes
+ *  one because it sweeps a whole day to keep six rows, and the unmasked record carries the
+ *  raw NuVizz object: ~5KB × 700 stops × every day in the window, to read a driver name. */
+export async function listStops(tenant: string, date: string, opts?: { mask?: string[] }): Promise<any[]> {
+  return listDocs(`${dayPath(tenant, date)}/stops`, opts?.mask?.length ? { mask: opts.mask } : undefined);
 }
 // PURE: the ordered doc-id candidates to try for a stop/pro number. The stop doc id is
 // histDocId(stopNbr); numeric ids are stored as-is, but a padded/unpadded mismatch is

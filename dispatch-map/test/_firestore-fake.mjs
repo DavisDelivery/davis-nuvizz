@@ -48,7 +48,7 @@ const decDoc = (fields) => Object.fromEntries(Object.entries(fields || {}).map((
 export function installFirestoreFake(seed = {}, onOther) {
   installServiceAccountEnv();
   const store = new Map(Object.entries(seed));
-  const log = { gets: [], lists: [], listMasks: [], sets: [], deletes: [], commits: [], other: [] };
+  const log = { gets: [], lists: [], listMasks: [], sets: [], deletes: [], commits: [], queries: [], other: [] };
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (input, init = {}) => {
     const url = String(input?.url ?? input);
@@ -57,6 +57,53 @@ export function installFirestoreFake(seed = {}, onOther) {
       return new Response(JSON.stringify({ access_token: 'tok', expires_in: 3600 }), { status: 200 });
     }
     if (url.includes('firestore.googleapis.com')) {
+      // ── runQuery, natively — ONLY when the caller supplied no onOther ──────────
+      //
+      // runQuery IS a Firestore call, but this fake used to hand it to onOther, which means
+      // it landed in `log.other` — the list a dozen tests assert is EMPTY to prove no vendor
+      // call was made. So any endpoint that reads the customer rollup could not make that
+      // proof, and the zero-NuVizz-calls claim it prints on screen was untestable.
+      //
+      // Guarded on `!onOther` so every existing test keeps its exact behaviour: the ones that
+      // pass their own query handler (pro-search-covers-all-history) still get it, and the
+      // ones that pass nothing now get a working query instead of a throw.
+      //
+      // Deliberately only the two filter shapes this repo actually issues (history-customers
+      // .mts): ARRAY_CONTAINS on a single field, and the AND'd name_lower range the 1-char
+      // prefix fallback uses. Anything else returns nothing rather than pretending.
+      if (url.includes(':runQuery') && !onOther) {
+        const q = JSON.parse(String(init.body || '{}')).structuredQuery || {};
+        log.queries.push(q);
+        const coll = q.from?.[0]?.collectionId || '';
+        const rows = [...store.entries()]
+          .filter(([k]) => k.startsWith(`${coll}/`) && k.slice(coll.length + 1).split('/').length === 1)
+          .filter(([, v]) => {
+            const f = q.where?.fieldFilter;
+            if (f) {
+              const field = v?.[f.field.fieldPath];
+              if (f.op === 'ARRAY_CONTAINS') return Array.isArray(field) && field.includes(f.value.stringValue);
+              if (f.op === 'EQUAL') return field === decVal(f.value);
+              return false;
+            }
+            const c = q.where?.compositeFilter;
+            if (c) {
+              return (c.filters || []).every((sub) => {
+                const ff = sub.fieldFilter;
+                if (!ff) return false;
+                const field = v?.[ff.field.fieldPath];
+                const val = decVal(ff.value);
+                if (ff.op === 'GREATER_THAN_OR_EQUAL') return String(field ?? '') >= String(val);
+                if (ff.op === 'LESS_THAN') return String(field ?? '') < String(val);
+                if (ff.op === 'EQUAL') return field === val;
+                return false;
+              });
+            }
+            return true;
+          })
+          .slice(0, Number(q.limit) || 1000)
+          .map(([k, v]) => ({ document: encDoc(k, v) }));
+        return new Response(JSON.stringify(rows), { status: 200 });
+      }
       if (url.includes('/documents:commit')) {
         const body = JSON.parse(String(init.body));
         log.commits.push(body);

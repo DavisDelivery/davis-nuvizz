@@ -22,6 +22,7 @@
 // fails. That is not a hypothetical — it is what the desktop guard has always done.
 import { chromium } from 'playwright-core';
 import { STOP_LOOKUP_DOSSIER } from './lib/stop-lookup-fixture.mjs';
+import { CUSTOMER_VIEW } from './lib/customer-view-fixture.mjs';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
@@ -65,8 +66,14 @@ const PROBES = {
   // A lookup's whole answer is behind one submit, so at rest this guard would measure a search
   // box and nothing else. Same reasoning as the phone guard's probe of this screen.
   stoplookup: [
+    { name: 'a customer looked up', open: async (page) => {
+      const box = page.getByLabel(/find a customer by name/i).first();
+      if (!(await box.isVisible().catch(() => false))) return false;
+      await box.fill('earthly alternative');
+      return openByName(page, /^look up$/i);
+    } },
     { name: 'a stop looked up', open: async (page) => {
-      const box = page.getByLabel(/find a stop by pro/i).first();
+      const box = page.getByLabel(/find a customer by name/i).first();
       if (!(await box.isVisible().catch(() => false))) return false;
       await box.fill('007174397');
       return openByName(page, /^look up$/i);
@@ -160,7 +167,10 @@ for (const dev of TABLETS) {
     // NOTE the name: anything containing 'address-history' is swallowed by the stub above.
     // STOP LOOKUP — the same fixture the phone guard drives, so a screen measured against
     // hostile data on one device is not measured against tidy data on the other.
-    if (u.includes('stop-lookup')) return J(STOP_LOOKUP_DOSSIER);
+    // STOP LOOKUP serves TWO modes off one URL and the stub picks the same way the
+    // endpoint does — by whether a name or a stop was asked for. Stubbing only one of
+    // them would leave the guard measuring a screen the app never renders.
+    if (u.includes('stop-lookup')) return J(u.includes('name=') ? CUSTOMER_VIEW : STOP_LOOKUP_DOSSIER);
     if (u.includes('address-queue')) return J({
       ok: true, tenant: 'davis', nuvizzCalls: 0, notesLoaded: 412,
       dates: ['2026-09-14', '2026-09-15', '2026-09-16'],

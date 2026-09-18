@@ -153,7 +153,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.45.0';
+const APP_VERSION = '1.46.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -207,6 +207,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.46.0', 'THE SCREEN NOW ANSWERS THE QUESTION THAT PROMPTED IT: HOW MANY DELIVERIES DID WE HAVE FOR THIS CUSTOMER TODAY, AND WHO RAN THEM. Chad, on v1.45.0: “I wanted to see how many deliveries we had for earthly alternative today and couldn’t. Wanted to see all the different ones and drivers who delivered them … want customer service to be able to use this as well.” HE WAS RIGHT AND THE FIRST BUILD COULD NOT HAVE BEEN: typing a name searched history_customers, a rollup assembled from SEALED history — so TODAY, the one day he asked about, is the one day that document structurally cannot contain. It would have answered “no deliveries” about a customer we had been to three times that morning, which is worse than answering nothing. SO THE CUSTOMER VIEW IS BUILT ON THE LIVE BOARD. It sweeps the board day by day over the window, plus the sealed warehouse for the same days, and keeps the stops whose business name matches. The join is BY NAME because board rows carry no customerMatchKey at all (routing-cleanup-core says so outright, and customer-key.mts exists because an alert once read 778 board rows with matchKey null on every one and called it a clean day) — normalised by the same rule the match key uses, so a dock cannot group one way for counting and another way for its notes. WHAT A REP SEES, in the order the questions come down the phone: four big numbers (stops today, delivered, still out, came back), then who drove them — and the driver tally shows CARRIED and DELIVERED separately, because a man who had four and delivered two did not deliver four and that sentence gets repeated to a customer. Then the receiving hours and the no-tractor flag ABOVE the rows, not below, because nobody scrolls past six stops to find out what they should not have promised. Then every stop, by day, with the delivery minute, the route, the dock and the freight; the PRO on each row opens that order’s whole history. ONE CUSTOMER IS OFTEN SEVERAL DOCKS and the database keys them separately — grouping by key would split the answer in half and show neither total, so this groups by NAME and lists the locations underneath. Two real businesses matching what was typed gets a chooser with today’s count beside each, never a silent pick. FOUR THINGS IT REFUSES TO GET WRONG. A stop in both the seal and the board is counted ONCE (both sweeps cover the same days; double-counting would report six visits where there were three). A multi-order stop is one stop and three deliveries, and says both. A window that does not include today says so rather than printing a “0 today” headline. And A FAILED READ IS NEVER A ZERO — the first cut of this had a 500 on the board sweep empty the match list, so the screen said “no customer matches” about a customer we deliver to weekly; it now returns the view with the failure on it and refuses to call the count complete. Bounded at 14 days because a day here is a whole board read twice, not one document — sixty would be ~84,000 reads with somebody waiting on the phone; older than that is the rollup, free, with the driver on every row. Also found and fixed on the way in: exporting the name half of the match key had quietly CHANGED it (“ACME LLC” → acme__ rather than acme___), which would have detached every receiving-hours note, address override and opt-out for any customer whose name ends in LLC — three parity tests caught it. 33 new tests, 5,215 in the suite. The Build Panel and the Route Workbench are not touched.'],
   ['1.45.0', 'STOP LOOKUP \u2014 EVERY ORDER WE HOLD, ANSWERABLE IN ONE TAP, FOR NOTHING. Chad: “i want to develop a stops screen under more where i can look up any stop and it’s history we have in firestore.” THE CALL THIS IS FOR: a customer on the phone asking about one order — when were you here, who had it, did it deliver, why does it still say scheduled, did somebody change my address. That answer lived in FOUR places and one of them was a curl command: the stop card only knows today’s board, the customer search only knows a customer’s last twenty PROs, the address log only knows addresses, and nuvizz-stop-explain has gathered a stop’s whole board story for free since v1.4.0 with no door in the app at all. So the rep does the one thing that always works and SPENDS A NUVIZZ CALL on an order sitting in our own Firestore — the exact complaint that built the PRO index (“this order is a week old why is it not in the history”). This screen spends ZERO, and says so on the page. ONE BOX takes a PRO in every spelling that exists — bare 7174397 finds the zero-padded 007174397 NuVizz stores, a segmented 007157687-1 finds its order, AVRT-0170416694 keeps its whole digit run so it can never be read as a sibling of ESTES-0538243875 — or a business name, which comes back as customers whose PROs are each one more tap. Every day we hold is one row: sealed history AND the live board together, what happened in a word a dispatcher uses, the route, the driver, the arrival and delivery minute, the freight, the address AS OF THAT DAY, and which documents the row was built from. TWO THINGS IT REFUSES TO GET WRONG. An old day with a later day behind it reads ROLLED, not “open” — otherwise a stop that failed Monday and delivered Tuesday tells a rep the freight is still out. And on an ATTEMPT day the driver shown is the MORNING driver from the 8:30 freeze, with the evening one named separately, because by evening the stop is on whoever it was re-planned onto and blaming them for a delivery they never had is worse than saying nothing. THE PART THAT MATTERS MOST IS THE EMPTY ANSWER. “Nothing on file” and “the read failed” render as the same blank screen, and only one of them is a reason to go and spend a call — that ambiguity is what took the roster bug four rounds to diagnose. So every lookup returns a LEDGER of the nine collections it read, what each held, and the window it covered; a read that throws is marked NOT READ with its reason, never folded into “nothing”; and the ledger opens itself exactly when it is the answer. Bounded on purpose: the PRO index’s days plus the last four nights, a 14-back/3-ahead board window, and attempts and morning-plan documents only for days that actually answered — so the cost is flat in how long a customer has been trading. 42 new tests, including one that reads the REQUEST URL rather than the test fake’s decoded log, because asserting on the decoder would have “found” a path traversal that never goes on the wire. Desktop gets a table, the phone gets cards; both navigations, per the v0.54.50 rule. The Build Panel and the Route Workbench are not touched.'],
   ['1.44.0', 'THE WALL CAN DRAW THE REAL MAP NOW, ON ONE TICK, AND UNTICK IT IF THE SET CANNOT. Chad, on the static picture after the frame was tightened: “Don’t like this either. Think it looks bad with the city zoomed like they are.” HE IS RIGHT, AND HIS TWO COMPLAINTS PULL IN OPPOSITE DIRECTIONS — which is the thing worth writing down rather than arguing about. The Maps Static API will not return a picture wider than 640 logical pixels, and this wall stretches it across about 1520. Google draws its roads and town names sized for the picture it was ASKED for, so a tighter frame means a smaller picture means bigger labels and less road detail. Measured on his own board: fullscreen asks for 545px and stretches it 2.79x; WINDOWED, which is what his photograph shows, asks for 339px and stretches it 4.48x. No arithmetic reconciles “no wasted space” with “don’t blow the labels up” on that API — the ceiling is the ceiling. A 2x2 MOSAIC WAS BUILT AND RENDERED BEFORE BEING REJECTED, not reasoned about: four 545x352 tiles one zoom step in, stitched with a 0.06% overlap that closed the hairline seams. It looks correct — normal labels, full detail — and it is NOT SHIPPABLE, because each tile carries its own Google logo and “Map data ©2026” and those land in the MIDDLE of the map. Cropping them is a straight violation of Google’s terms, so the picture stays one picture. THE LIVE MAP HAS NO CEILING: it draws at the pane’s own resolution, fits exactly instead of in whole zoom steps, carries one attribution, and costs no Static request at all. The only reason the wall is not on it is that this television could not draw it — which was real and was diagnosed on this set. What has changed is that the same browser now renders 796 SVG pins, the driver plates and the whole overlay, so it is worth ONE PRESS to find out. SO IT IS A TICK ON THE SCREEN, NOT AN ENV VAR, and that shape is the whole point: an env var is a deploy, and a wall that comes up white at 4am cannot wait for one. “Live map (sharper labels)” sits in the Filters panel the television already has open for live drivers, remembers itself PER DEVICE (so only that set changes), and unticking it puts the picture straight back with nobody on the phone. DEFAULT OFF — the shipped behaviour does not move. ONE FLAG DRIVES EVERY SIDE: the picture, the pin overlay, and whether the Maps script is loaded at all. There is no half-state where the wall asks for a picture it no longer draws. And the blank-map diagnostic that was previously dead on the static path now guards the live one — if Google loads and paints nothing, the wall says so after 20 seconds instead of sitting there white. THE CORNER READOUT REPORTS IN BOTH MODES (“… · LIVE MAP · WINDOWED”). A readout that went dark the moment somebody ticked the box would go dark at exactly the moment “what is this thing running?” gets asked. AND THE PANE IS NOW MEASURED IN BOTH MODES: the first cut wired that measurement to the static path only, so live mode printed “0×0” — caught by driving both modes in a browser rather than reading the diff, one release after a changelog row about diagnostics printing wrong numbers. STILL TRUE AND UNCHANGED: VITE_TV_STATIC_MAP=off, the desktop Map, the Route Workbench, and every pin the wall draws.'],
   ['1.43.4', 'THE WALL SAYS WHAT IT IS RUNNING, BECAUSE A PHOTOGRAPH OF IT COULD NOT. Chad sent a photo of the office television whose framing matched NOTHING reproducible here: every viewport driven in a real browser — 1920x1080 fullscreen, and 1920x900 / 800 / 700 with the browser’s chrome eating the top — filled 89-93% of the height, and his screen was showing roughly half that. SO THE HONEST ANSWER WAS “I CANNOT TELL FROM HERE”, AND THE FIX FOR THAT IS NOT A BETTER GUESS. Two rounds went into reading an angled photograph of a television. CLAUDE.md is blunt about it: build the free diagnostic FIRST. A wall display is the one screen in the building nobody can ask a question of — it has no footer, so “which build is that?”, the single fact that decides whether a cached bundle explains the picture, could not be answered without walking over to it. ONE LINE IN THE CORNER NOW ANSWERS IT FROM A PHOTOGRAPH: “v1.43.4 · 1520×981 · 545×352 z8 · 93%h 65%w · full” — the build, the measured pane, the image actually requested, the zoom, how much of the frame the DRAWN pins occupy, and whether the thing is really fullscreen. The fill is measured off the pins on screen rather than off the bounds they were fitted from, because the question it answers is “is this wall wasting half its screen” and only the drawn pins can answer that. FULLSCREEN IS IN THERE FOR A REASON: the whole layout assumes it, which is why the control lives in the Filters panel, and a television showing a tab strip and an address bar has a much shorter, much wider map pane than this screen was designed around. Measured: the width the freight occupies falls 65% → 52% → 45% → 38% as the chrome grows. From the far side of a room nobody can tell, so it says the word. DELIBERATELY THE QUIETEST THING ON THE WALL — 11px at a quarter opacity, in the corner Google’s own credit already owns. Chad asked for no more furniture on this screen and he was right; this earns its pixels by being the line that ends an argument. THE GUARD HOLDS IT THERE: verify-tv-map.mjs fails if the readout disappears, if it prints an image size the URL did not ask for, or if it stops saying whether the screen is fullscreen — a diagnostic that quietly drifts from the truth is worse than none, and one that quietly vanishes puts the next photograph right back where this one started. NOT A FIX FOR THE PHOTO, AND NOT PRETENDING TO BE: nothing here changes what the map draws. It makes the next photograph answerable in one glance. ONE COMMIT — `git revert` removes the line.'],
@@ -33573,42 +33574,366 @@ function StopSourceLedger({ sources, errors, open, onToggle }) {
   );
 }
 
-/** The name door: the rep has a business name and no PRO. */
-function StopNameResults({ customers, onPick }) {
-  if (!customers?.length) return null;
+// ── THE CUSTOMER VIEW — built for the person answering the phone ────────────
+//
+// Chad, 2026-09-18: "I wanted to see how many deliveries we had for earthly alternative today
+// and couldn't … Want customer service to be able to use this as well so needs to be well
+// developed and formatted like a really well designed ui."
+//
+// WHAT "WELL DESIGNED" MEANS ON THIS PARTICULAR SCREEN, and it is not a style opinion: a rep
+// reads this WHILE a customer is talking. So the order on the page is the order the questions
+// come in, and the most-asked one is a number big enough to read without leaning in:
+//
+//   1. did you come today, and how many          → the stat tiles, today first
+//   2. who was the driver                        → named on every row AND tallied at the top
+//   3. what happened to the ones that didn't     → one coloured word per row
+//   4. when exactly                              → the delivery minute, not "today"
+//   5. anything I must not promise               → the note flags, above the rows, not below
+//
+// EVERY NUMBER ON THIS SCREEN IS A SENTENCE SOMEBODY REPEATS TO A CUSTOMER. That is why the
+// stat tiles say what window they are counting, why `delivered` is never the same figure as
+// `stops`, and why the driver tally shows carried and delivered separately — a driver who had
+// four of these and delivered two did not deliver four.
+
+/** One big number. Big because it is read aloud off a screen somebody is not looking at. */
+function CustStat({ n, label, sub, tone = 'slate', dim }) {
+  const tones = {
+    slate: 'bg-white border-slate-200 text-slate-900',
+    green: 'bg-green-50 border-green-200 text-green-900',
+    blue: 'bg-blue-50 border-blue-200 text-blue-900',
+    amber: 'bg-amber-50 border-amber-200 text-amber-900',
+    red: 'bg-red-50 border-red-200 text-red-900',
+  };
   return (
-    <div className="space-y-2">
-      {customers.map((c) => (
-        <div key={c.matchKey || c.name} className="rounded-xl border bg-white p-3 space-y-2">
-          <div className="min-w-0">
-            <div className="font-semibold text-slate-800 break-words">{c.name}</div>
-            <div className="text-[11px] text-slate-500 break-words">{[c.addr1, c.city, c.state, c.zip].filter(Boolean).join(', ')}</div>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {(c.pros || []).slice(0, 12).map((p) => (
-              <button key={`${p.pro}-${p.date}`} onClick={() => onPick(p.pro)}
-                className="rounded-lg border px-2 min-h-[40px] text-[11px] bg-white hover:bg-slate-50 text-left">
-                <span className="font-mono font-semibold text-slate-800">{p.pro}</span>
-                <span className="text-slate-500"> · {formatDateForDisplay(p.date)}</span>
-              </button>
-            ))}
-            {!(c.pros || []).length && <span className="text-[11px] text-slate-400">no PROs on the rollup for this customer</span>}
-          </div>
-        </div>
+    <div className={`rounded-xl border px-3 py-2 min-w-0 ${tones[tone] || tones.slate} ${dim ? 'opacity-60' : ''}`}>
+      <div className="text-2xl sm:text-3xl font-bold leading-none tabular-nums">{n}</div>
+      <div className="text-[11px] font-semibold uppercase tracking-wide mt-1 leading-tight break-words">{label}</div>
+      {sub && <div className="text-[10px] opacity-70 leading-tight break-words">{sub}</div>}
+    </div>
+  );
+}
+
+/** WHO RAN IT. Carried and delivered are separate on purpose — see driverTally. */
+function CustomerDriverChips({ drivers, label }) {
+  if (!drivers?.length) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+      <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500 shrink-0">{label}</span>
+      {drivers.map((d) => (
+        <span key={d.driver}
+          title={d.delivered === d.stops
+            ? `${d.driver} delivered all ${d.stops}`
+            : `${d.driver} had ${d.stops} and delivered ${d.delivered} — the rest did not close out`}
+          className="inline-flex items-baseline gap-1 rounded-lg border bg-white px-2 py-1 text-[11px] max-w-full">
+          <span className="font-semibold text-slate-800 break-words">{d.driver}</span>
+          <span className={`font-bold tabular-nums ${d.delivered === d.stops ? 'text-green-700' : 'text-amber-700'}`}>
+            {d.delivered === d.stops ? d.delivered : `${d.delivered}/${d.stops}`}
+          </span>
+        </span>
       ))}
     </div>
   );
 }
 
+const custFreight = (r) => [
+  r.pieces != null ? `${r.pieces} pc` : null,
+  r.pallets != null ? `${r.pallets} plt` : null,
+  r.weight != null ? `${r.weight.toLocaleString()} lb` : null,
+].filter(Boolean).join(' · ');
+
+const custAddr = (a) => (a ? [a.addr1, a.addr2].filter(Boolean).join(' · ') : '');
+const custCity = (a) => (a ? [a.city, a.state, a.zip].filter(Boolean).join(', ') : '');
+
+/** The day's headline — the sentence a rep reads before the rows. */
+function CustomerDayHeading({ day, today, stacked }) {
+  const c = day.counts;
+  const bits = [
+    c.delivered ? `${c.delivered} delivered` : null,
+    c.open ? `${c.open} still out` : null,
+    c.attempted ? `${c.attempted} came back` : null,
+    c.exceptions ? `${c.exceptions} could not deliver` : null,
+    c.unfinished ? `${c.unfinished} never closed out` : null,
+  ].filter(Boolean);
+  return (
+    <div className={`flex ${stacked ? 'flex-col gap-0.5' : 'items-baseline justify-between gap-3'} px-1`}>
+      <div className="flex items-baseline gap-2 min-w-0">
+        <h2 className="text-sm font-bold text-slate-800">{formatDateLong(day.date)}</h2>
+        {day.date === today && <span className="text-[10px] font-bold uppercase tracking-wide text-blue-700 bg-blue-100 rounded px-1.5 py-0.5">Today</span>}
+      </div>
+      <div className="text-xs text-slate-600 min-w-0 break-words">
+        <span className="font-semibold text-slate-800">{c.stops} stop{c.stops === 1 ? '' : 's'}</span>
+        {c.orders !== c.stops && <span className="text-slate-500"> · {c.orders} orders</span>}
+        {bits.length ? <span className="text-slate-500"> · {bits.join(' · ')}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+/** DESKTOP: a table. A rep comparing six stops on one day reads down a column. */
+function CustomerDayTable({ day, today, onPro }) {
+  return (
+    <div className="space-y-1.5">
+      <CustomerDayHeading day={day} today={today} />
+      <div className="rounded-xl border bg-white overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
+            <tr>
+              <th className="text-left font-semibold px-3 py-2">Status</th>
+              <th className="text-left font-semibold px-3 py-2">Order</th>
+              <th className="text-left font-semibold px-3 py-2">Driver</th>
+              <th className="text-left font-semibold px-3 py-2">Route</th>
+              <th className="text-left font-semibold px-3 py-2">Delivered</th>
+              <th className="hidden lg:table-cell text-left font-semibold px-3 py-2">Freight</th>
+              <th className="text-left font-semibold px-3 py-2">Where</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {day.rows.map((r) => (
+              <tr key={r.key} className="align-top hover:bg-slate-50">
+                <td className="px-3 py-2"><StopOutcomeChip outcome={r.outcome} /></td>
+                <td className="px-3 py-2">
+                  {/* THE PRO IS THE DRILL-DOWN. A rep reading a row out loud is one tap from
+                      that order's whole story, which is the other half of this screen. */}
+                  <button onClick={() => onPro(r.pro)} title="Open this order's full history"
+                    className="font-mono text-xs font-semibold text-blue-800 hover:underline break-all text-left">{r.pro}</button>
+                  {r.proCount > 1 && <div className="text-[10px] text-slate-500">{r.proCount} orders on this stop</div>}
+                  {r.refs.po && <div className="text-[10px] text-slate-400 break-words">PO {r.refs.po}</div>}
+                </td>
+                <td className="px-3 py-2 text-slate-700 break-words">{r.driver || <span className="text-slate-400">not assigned</span>}</td>
+                <td className="px-3 py-2 text-slate-700 break-words">{r.route || <span className="text-slate-400">un-planned</span>}
+                  {r.seq != null && <span className="text-[11px] text-slate-400 whitespace-nowrap"> · stop {r.seq}</span>}</td>
+                <td className="px-3 py-2 text-[11px] whitespace-nowrap">
+                  {r.deliveredAt
+                    ? <span className="font-semibold text-slate-800">{stopWhen(r.deliveredAt)}</span>
+                    : r.arrivedAt ? <span className="text-slate-600">arrived {stopWhen(r.arrivedAt)}</span>
+                      : r.etaAt ? <span className="text-slate-400">ETA {stopWhen(r.etaAt)}</span>
+                        : <span className="text-slate-400">—</span>}
+                  {r.pod > 0 && <div className="text-green-700">{r.pod} POD</div>}
+                </td>
+                <td className="hidden lg:table-cell px-3 py-2 text-[11px] text-slate-600 break-words">{custFreight(r) || <span className="text-slate-400">—</span>}</td>
+                <td className="px-3 py-2 text-[11px] text-slate-600 min-w-0">
+                  <div className="break-words">{custAddr(r.address) || <span className="text-slate-400">—</span>}</div>
+                  <div className="text-slate-400 break-words">{custCity(r.address)}</div>
+                  <div className="lg:hidden text-slate-500 break-words">{custFreight(r)}</div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/** PHONE: cards. Same seven facts, stacked, at a size somebody reads one-handed. */
+function CustomerDayCards({ day, today, onPro }) {
+  return (
+    <div className="space-y-1.5">
+      <CustomerDayHeading day={day} today={today} stacked />
+      <div className="space-y-2">
+        {day.rows.map((r) => (
+          <div key={r.key} className="rounded-xl border bg-white p-3 space-y-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <StopOutcomeChip outcome={r.outcome} />
+              {r.deliveredAt && <span className="text-xs font-bold text-slate-800">{stopWhen(r.deliveredAt)}</span>}
+              {!r.deliveredAt && r.arrivedAt && <span className="text-xs text-slate-600">arrived {stopWhen(r.arrivedAt)}</span>}
+              {!r.deliveredAt && !r.arrivedAt && r.etaAt && <span className="text-xs text-slate-400">ETA {stopWhen(r.etaAt)}</span>}
+              <button onClick={() => onPro(r.pro)} title="Open this order's full history"
+                className="ml-auto font-mono text-xs font-semibold text-blue-800 hover:underline break-all min-h-[40px] px-1">{r.pro}</button>
+            </div>
+            <div className="text-xs text-slate-700 break-words">
+              {r.driver || 'not assigned'}{r.route ? ` · ${r.route}` : ''}{r.seq != null ? ` · stop ${r.seq}` : ''}
+            </div>
+            {(custFreight(r) || r.proCount > 1) && (
+              <div className="text-[11px] text-slate-500 break-words">
+                {custFreight(r)}{r.proCount > 1 ? `${custFreight(r) ? ' · ' : ''}${r.proCount} orders` : ''}{r.pod > 0 ? ` · ${r.pod} POD` : ''}
+              </div>
+            )}
+            <div className="text-[11px] text-slate-500 break-words">
+              {custAddr(r.address)}<span className="text-slate-400"> {custCity(r.address)}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** The window chooser. Its presets stop at 14 because THE ENDPOINT stops at 14 — a 60-day
+ *  pill that silently returns a fortnight is the header-says-one-thing failure history-range
+ *  .js was written to prevent, arriving from the UI side. */
+const CUSTOMER_PRESETS = [
+  { key: 'today', label: 'Today', short: 'Today', sel: { kind: 'today' } },
+  { key: 'd7', label: 'Last 7 days', short: '7d', sel: { kind: 'days', days: 7 } },
+  { key: 'd14', label: 'Last 14 days', short: '14d', sel: { kind: 'days', days: 14 } },
+];
+
+function CustomerRangeBar({ sel, setSel, range, today, stacked }) {
+  return (
+    <div className={stacked ? 'rounded-xl border bg-white p-2 space-y-2' : 'flex flex-wrap items-center gap-1.5'}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {CUSTOMER_PRESETS.map((p) => (
+          <button key={p.key} onClick={() => setSel(p.sel)}
+            className={`${RANGE_PILL(presetIsOn(p, range, today))}${stacked ? ' flex-1' : ''}`}>
+            {stacked ? p.short : p.label}
+          </button>
+        ))}
+      </div>
+      <div className={`flex flex-wrap items-center gap-1.5 ${stacked ? '' : 'ml-1'}`}>
+        {!stacked && <span className="w-px h-6 bg-slate-200" />}
+        <input type="date" aria-label="From date" value={range.from || ''} max={today}
+          onChange={(e) => e.target.value && setSel({ kind: 'range', from: e.target.value, to: range.to })}
+          className={RANGE_FIELD} />
+        <span className="text-[11px] text-slate-400">to</span>
+        <input type="date" aria-label="To date" value={range.to || ''} max={today}
+          onChange={(e) => e.target.value && setSel({ kind: 'range', from: range.from, to: e.target.value })}
+          className={RANGE_FIELD} />
+      </div>
+    </div>
+  );
+}
+
+/** Two or more real businesses matched what was typed. Counts included, because the sweep
+ *  that produced them has already been paid for and an uninformed choice is a wasted one. */
+function CustomerChooser({ matches, query, onPick, incomplete }) {
+  return (
+    <div className="space-y-2">
+      <div className="rounded-xl border bg-white p-3">
+        <div className="text-sm font-semibold text-slate-800">{matches.length} businesses match &ldquo;{query}&rdquo;.</div>
+        <div className="text-xs text-slate-500 mt-0.5">Pick the one you mean. The counts are for the window below.</div>
+      </div>
+      {incomplete && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-800">
+          One of the reads did not finish, so this list may be missing a customer. See &ldquo;where we looked&rdquo; after you pick one.
+        </div>
+      )}
+      <div className="space-y-2">
+        {matches.map((m) => (
+          <button key={m.nameKey} onClick={() => onPick(m)}
+            className="w-full text-left rounded-xl border bg-white p-3 hover:bg-slate-50 hover:border-slate-300 flex items-center gap-3 min-h-[56px]">
+            <div className="min-w-0 flex-1">
+              <div className="font-semibold text-slate-800 break-words">{m.name}</div>
+              <div className="text-[11px] text-slate-500">
+                {m.stops ? `${m.stops} stop${m.stops === 1 ? '' : 's'} in this window` : 'nothing in this window'}
+                {m.lastDate ? ` · last ${formatDateForDisplay(m.lastDate)}` : ''}
+              </div>
+            </div>
+            {m.today > 0 && (
+              <span className="shrink-0 rounded-lg bg-blue-100 text-blue-900 px-2 py-1 text-xs font-bold whitespace-nowrap">{m.today} today</span>
+            )}
+            <ChevronRight size={16} className="shrink-0 text-slate-400" />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** This customer's docks. Only when there is more than one — otherwise the address is already
+ *  in the header and on every row, and a card repeating it is noise. */
+function CustomerLocations({ locations }) {
+  if (!locations || locations.length < 2) return null;
+  return (
+    <div className="rounded-xl border bg-white p-3 space-y-2">
+      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">
+        {locations.length} locations in this window
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {locations.map((l) => (
+          <div key={l.key} className="rounded-lg border bg-slate-50 p-2 min-w-0">
+            <div className="text-xs font-semibold text-slate-800 break-words">{custAddr(l.address) || '(no address on file)'}</div>
+            <div className="text-[11px] text-slate-500 break-words">{custCity(l.address)}</div>
+            <div className="text-[11px] text-slate-600 mt-0.5">
+              <span className="font-semibold">{l.stops}</span> stop{l.stops === 1 ? '' : 's'} · {l.delivered} delivered
+              {l.lastDate ? ` · last ${formatDateForDisplay(l.lastDate)}` : ''}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Older than the window. From the rollup — free, and with the driver on each row, which is
+ *  the half of "who delivered them" that a fourteen-day sweep cannot reach. */
+function CustomerRecent({ recent, onPro, window: win }) {
+  if (!recent?.length) return null;
+  return (
+    <div className="rounded-xl border bg-white p-3 space-y-2">
+      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Before {formatDateForDisplay(win?.from)}</div>
+      <div className="flex flex-wrap gap-1.5">
+        {recent.map((p) => (
+          <button key={`${p.pro}-${p.date}`} onClick={() => onPro(p.pro)}
+            className="rounded-lg border px-2 py-1 min-h-[40px] text-[11px] bg-white hover:bg-slate-50 text-left max-w-full">
+            <span className="font-mono font-semibold text-slate-800">{p.pro}</span>
+            <span className="text-slate-500"> · {formatDateForDisplay(p.date)}{p.driver ? ` · ${p.driver}` : ''}</span>
+          </button>
+        ))}
+      </div>
+      <div className="text-[11px] text-slate-400">
+        From our per-customer rollup — the twenty most recent per location, built from sealed history. Older ones are still findable by their PRO.
+      </div>
+    </div>
+  );
+}
+
+/** The header: who, where, and the numbers the call is about. */
+function CustomerHeader({ v, today, stacked }) {
+  // THE TILES COUNT TODAY WHEN TODAY IS IN THE WINDOW, and the window otherwise — and they
+  // SAY WHICH. A "0 delivered" headline over a window that does not include today is a lie by
+  // omission, and it is the sort a rep repeats down the phone.
+  const useToday = v.hasToday;
+  const c = useToday ? v.todayCounts : v.totals;
+  const scope = useToday ? 'today' : 'in this window';
+  return (
+    <div className="rounded-xl border bg-white p-3 sm:p-4 space-y-3">
+      <div className={`flex ${stacked ? 'flex-col gap-1' : 'items-start justify-between gap-4'}`}>
+        <div className="min-w-0">
+          <h2 className="text-lg sm:text-xl font-bold text-slate-900 break-words">{v.name}</h2>
+          <div className="text-xs text-slate-500 break-words">
+            {v.locations.length === 1
+              ? `${custAddr(v.locations[0].address)}${custCity(v.locations[0].address) ? ` · ${custCity(v.locations[0].address)}` : ''}`
+              : v.locations.length > 1 ? `${v.locations.length} locations` : 'no stop in this window to take an address from'}
+          </div>
+        </div>
+        <div className={`text-[11px] text-slate-500 ${stacked ? '' : 'text-right shrink-0'}`}>
+          {v.window?.from === v.window?.to
+            ? formatDateLong(v.window?.from)
+            : `${formatDateForDisplay(v.window?.from)} → ${formatDateForDisplay(v.window?.to)}`}
+          <div>{v.totals.stops} stop{v.totals.stops === 1 ? '' : 's'} in the window</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <CustStat n={c.stops} label={`Stops ${scope}`} sub={c.orders !== c.stops ? `${c.orders} orders` : null} tone={c.stops ? 'blue' : 'slate'} dim={!c.stops} />
+        <CustStat n={c.delivered} label="Delivered" tone={c.delivered ? 'green' : 'slate'} dim={!c.delivered} />
+        <CustStat n={c.open} label="Still out" tone={c.open ? 'blue' : 'slate'} dim={!c.open} />
+        <CustStat n={c.attempted + c.exceptions} label="Came back" sub={c.exceptions ? `${c.exceptions} could not deliver` : null}
+          tone={c.attempted + c.exceptions ? 'amber' : 'slate'} dim={!(c.attempted + c.exceptions)} />
+      </div>
+
+      {!useToday && (
+        <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
+          This window does not include today — these are the numbers for {formatDateForDisplay(v.window?.from)} to {formatDateForDisplay(v.window?.to)}.
+        </div>
+      )}
+
+      <CustomerDriverChips drivers={useToday ? (v.days.find((d) => d.isToday)?.drivers || []) : v.drivers} label={useToday ? 'Drivers today' : 'Drivers'} />
+    </div>
+  );
+}
+
 const STOP_LOOKUP_LAST = 'dd_stop_lookup_last';
+const STOP_LOOKUP_RANGE = 'dd_stop_lookup_range';
 
 function StopLookupScreen() {
   const viewportWidth = useViewportWidth();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
-  // The BOX is remembered, the SEARCH is not. Coming back to the same order is the common
-  // case, so the number should still be there — but re-running a ~200-read lookup on every
-  // screen open, for a screen somebody may have opened to type something else, is not a
-  // convenience, it is a cost nobody asked for.
+  const today = todayInET();
+  // The BOX is remembered, the SEARCH is not. Coming back to the same order or customer is
+  // the common case, so the text should still be there — but re-running a whole-board sweep
+  // on every screen open, for a screen somebody may have opened to type something else, is
+  // not a convenience, it is a cost nobody asked for.
   const [q, setQ] = useState(() => {
     try { return localStorage.getItem(STOP_LOOKUP_LAST) || ''; } catch { return ''; }
   });
@@ -33616,27 +33941,75 @@ function StopLookupScreen() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
   const [ledgerOpen, setLedgerOpen] = useState(false);
+  // THE WINDOW BELONGS TO THE CUSTOMER VIEW, and it is remembered per device: a rep who works
+  // "today" all day should not reset it every lookup. Default `today`, because that is the
+  // question this screen was built for.
+  const [sel, setSel] = useState(() => {
+    try { const raw = localStorage.getItem(STOP_LOOKUP_RANGE); if (raw) { const p = JSON.parse(raw); if (p && p.kind) return p; } } catch { /* private mode */ }
+    return { kind: 'today' };
+  });
+  const range = useMemo(() => resolveRange(sel, today, 0), [sel, today]);
+  // Which of several matching businesses the rep picked, so a re-read (a window change) keeps
+  // showing the same one instead of dropping back to the chooser.
+  const [nameKey, setNameKey] = useState(null);
 
-  const run = useCallback(async (raw) => {
+  const run = useCallback(async (raw, opts = {}) => {
     const term = String(raw ?? '').trim();
     if (!term) return;
     setLoading(true); setErr(null);
     try { localStorage.setItem(STOP_LOOKUP_LAST, term); } catch { /* private mode — a remembered box is a convenience, never a requirement */ }
     try {
-      // The endpoint decides stop-vs-name with the same rule the screen would, so the box
-      // stays one box: `classifyQuery` lives in src/lib/stop-lookup.js and BOTH sides read it.
-      const param = classifyQuery(term).kind === 'name' ? `name=${encodeURIComponent(term)}` : `stop=${encodeURIComponent(term)}`;
-      const r = await apiFetch(`/.netlify/functions/stop-lookup?${param}`);
+      // ONE RULE decides stop-vs-customer, and both sides read it from src/lib/stop-lookup.js,
+      // so the box stays one box and the client can never classify a string one way while the
+      // server classifies it the other.
+      const isName = classifyQuery(term).kind === 'name';
+      const p = new URLSearchParams();
+      if (isName) {
+        p.set('name', term);
+        // The screen and the endpoint resolve the SAME selection through the SAME module, so
+        // the header can never describe one window over rows from another.
+        if (opts.range) { p.set('from', opts.range.from); p.set('to', opts.range.to); }
+        if (opts.nameKey) p.set('nameKey', opts.nameKey);
+      } else {
+        p.set('stop', term);
+      }
+      const r = await apiFetch(`/.netlify/functions/stop-lookup?${p.toString()}`);
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'lookup failed');
       setData(j);
-      // The ledger opens itself exactly when it is the answer: nothing was found, or a read
-      // failed. On a populated screen it stays out of the way.
-      setLedgerOpen(j.mode === 'stop' && (!j.dossier?.found || Object.keys(j.errors || {}).some((k) => k !== 'notes' && k !== 'customer' && k !== 'pros')));
+      if (j.mode === 'customer-choose') setNameKey(null);
+      // The ledger opens itself exactly when it IS the answer — nothing was found, or a read
+      // failed. On a populated screen it stays folded away.
+      const stopBlank = j.mode === 'stop' && (!j.dossier?.found || j.dossier?.complete === false);
+      const custBlank = j.mode === 'customer' && (j.view?.complete === false || j.view?.totals?.stops === 0);
+      setLedgerOpen(!!(stopBlank || custBlank));
     } catch (e) { setErr(String(e.message || e)); setData(null); } finally { setLoading(false); }
   }, []);
 
-  const pick = useCallback((pro) => { setQ(String(pro)); run(pro); }, [run]);
+  /** Search whatever is in the box, with the current window and pinned customer. */
+  const submit = useCallback((term, over = {}) => {
+    const t = String(term ?? '').trim();
+    if (!t) return;
+    run(t, { range: over.range ?? range, nameKey: over.nameKey !== undefined ? over.nameKey : nameKey });
+  }, [run, range, nameKey]);
+
+  /** A PRO tapped anywhere on this screen opens that order — the drill-down from a customer
+   *  row into the per-order story, which is the other half of what this screen is. */
+  const pick = useCallback((pro) => { setQ(String(pro)); setNameKey(null); run(pro); }, [run]);
+
+  /** The rep picked one of several matching businesses. */
+  const pickCustomer = useCallback((m) => {
+    setNameKey(m.nameKey);
+    run(q, { range, nameKey: m.nameKey });
+  }, [run, q, range]);
+
+  /** A new window on a customer already on screen: re-read, keep the customer. */
+  const changeRange = useCallback((nextSel) => {
+    setSel(nextSel);
+    try { localStorage.setItem(STOP_LOOKUP_RANGE, JSON.stringify(nextSel)); } catch { /* a remembered window is a convenience */ }
+    const nextRange = resolveRange(nextSel, today, 0);
+    if (data?.mode === 'customer' || data?.mode === 'customer-choose') run(data.query, { range: nextRange, nameKey });
+  }, [run, data, nameKey, today]);
 
   const d = data?.mode === 'stop' ? data.dossier : null;
 
@@ -33650,22 +34023,23 @@ function StopLookupScreen() {
           <div className="min-w-0">
             <h1 className="text-xl font-bold text-slate-900">Stop lookup</h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              Every stop we have ever captured — type a PRO, a stop number or a customer name.
+              A <span className="font-semibold text-slate-600">customer name</span> for their deliveries and who ran them, or a
+              {' '}<span className="font-semibold text-slate-600">PRO</span> for one order&rsquo;s whole history.
             </p>
           </div>
           <span className="text-[11px] font-semibold text-green-800 bg-green-50 border border-green-200 rounded-lg px-2 py-1 whitespace-nowrap">0 NuVizz calls</span>
         </div>
 
         <form
-          onSubmit={(e) => { e.preventDefault(); run(q); }}
+          onSubmit={(e) => { e.preventDefault(); setNameKey(null); submit(q, { nameKey: null }); }}
           className="rounded-xl border bg-white p-2 flex items-center gap-2"
         >
           <Search size={14} className="text-slate-400 shrink-0 ml-1" />
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="007174397, AVRT-0170416694, or LED ENERGY PLUS"
-            aria-label="Find a stop by PRO, stop number or customer name"
+            placeholder="EARTHLY ALTERNATIVE, or 007174397"
+            aria-label="Find a customer by name, or a stop by PRO or stop number"
             // DESKTOP ONLY. This screen is a search box and nothing else, so on a laptop the
             // cursor belongs in it. On a phone autoFocus throws the keyboard up over half the
             // screen the moment the tab opens — and this app already fights iOS's visual
@@ -33684,29 +34058,106 @@ function StopLookupScreen() {
         {err && <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3 break-words">{err}</div>}
 
         {!data && !loading && !err && (
-          <div className="rounded-xl border bg-white p-4 sm:p-6 space-y-2">
-            <div className="text-sm font-semibold text-slate-800">What this screen can answer, without spending a vendor call</div>
-            <ul className="text-xs text-slate-600 space-y-1 list-disc pl-5">
-              <li>Every day we hold this order — the sealed nightly history and today&rsquo;s live board.</li>
-              <li>Who had it, what route it ran on, what happened, and the minute it delivered.</li>
-              <li>Whether the freight came back, and who had it that morning rather than that evening.</li>
-              <li>Every time its address moved, what it moved from and to, and whether that was NuVizz or us.</li>
-              <li>What we sent NuVizz about it, and whether the write took.</li>
-            </ul>
-            <div className="text-[11px] text-slate-400">
-              A bare PRO finds the zero-padded one NuVizz stores, and a segmented stop number finds its order.
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <div className="rounded-xl border bg-white p-4 sm:p-6 space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="rounded-lg bg-blue-100 text-blue-800 p-1.5"><Search size={14} /></span>
+                <div className="text-sm font-semibold text-slate-800">Type a customer name</div>
+              </div>
+              <ul className="text-xs text-slate-600 space-y-1 list-disc pl-5">
+                <li>How many deliveries they had <span className="font-semibold">today</span> — delivered, still out, came back.</li>
+                <li>Which driver ran each one, and how many each of them closed out.</li>
+                <li>The minute each delivered, the route it was on and which of their docks it went to.</li>
+                <li>Their receiving hours and dispatcher notes, before you promise anything.</li>
+              </ul>
+            </div>
+            <div className="rounded-xl border bg-white p-4 sm:p-6 space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="rounded-lg bg-slate-200 text-slate-700 p-1.5"><Package size={14} /></span>
+                <div className="text-sm font-semibold text-slate-800">Type a PRO</div>
+              </div>
+              <ul className="text-xs text-slate-600 space-y-1 list-disc pl-5">
+                <li>Every day we hold that order — the sealed nightly history and today&rsquo;s live board.</li>
+                <li>Whether the freight came back, and who had it that morning rather than that evening.</li>
+                <li>Every time its address moved, and whether that was NuVizz or us.</li>
+                <li>What we sent NuVizz about it, and whether the write took.</li>
+              </ul>
+              <div className="text-[11px] text-slate-400">
+                A bare PRO finds the zero-padded one NuVizz stores, and a segmented stop number finds its order.
+              </div>
             </div>
           </div>
         )}
 
-        {data?.mode === 'name' && (
-          data.customers?.length
-            ? <StopNameResults customers={data.customers} onPick={pick} />
-            : <div className="rounded-xl border bg-white p-6 text-center">
-              <div className="text-sm font-semibold text-slate-700">No customer matches &ldquo;{data.query}&rdquo;.</div>
-              <div className="text-xs text-slate-500 mt-1">The name search reads our per-customer rollup, which is built from sealed history — a customer we have never delivered to is not in it.</div>
-            </div>
+        {data?.mode === 'customer-choose' && (
+          <CustomerChooser matches={data.matches} query={data.query} onPick={pickCustomer} incomplete={data.complete === false} />
         )}
+
+        {data?.mode === 'customer' && (() => {
+          const v = data.view;
+          return (
+            <div className="space-y-4">
+              {/* THE WINDOW SITS ABOVE THE NUMBERS IT PRODUCES, so a rep changing it can see
+                  the counts move. Below them it reads as a filter on a result rather than as
+                  the question being asked. */}
+              {/* THE LIT PILL COMES FROM THE SERVER'S WINDOW, not from the client's selection.
+                  They are normally the same and the one time they are not is the one that
+                  matters: this screen's ceiling is 14 days, so asking for a wider range gets
+                  a clamped one back. Lighting the pill the rep PRESSED would then label a
+                  fortnight of rows as a month — the header-says-one-thing-numbers-say-another
+                  failure history-range.js exists to prevent, arriving from the UI side. */}
+              <CustomerRangeBar sel={sel} setSel={changeRange} range={data.window || range} today={today} stacked={isMobile} />
+              {data.window?.clamped && (
+                <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
+                  Showing {data.window.from} → {data.window.to}. {data.window.clamped}.
+                </div>
+              )}
+
+              {v.complete === false && (
+                <div className="rounded-xl border border-red-200 bg-red-50 p-3 sm:p-4">
+                  <div className="text-sm font-semibold text-red-900">We could not finish looking for &ldquo;{v.query}&rdquo;.</div>
+                  {/* A COUNT FROM A BROKEN READ IS THE WORST OUTPUT THIS SCREEN CAN PRODUCE.
+                      "Zero deliveries today" is a sentence a rep says out loud to a customer,
+                      and a failed board read renders as exactly that unless something says so. */}
+                  <div className="text-xs text-red-800 mt-1">
+                    One of the reads did not finish, so the numbers below may be short. Do not read them out as a count —
+                    open &ldquo;where we looked&rdquo; at the bottom to see which read failed, then try again.
+                  </div>
+                </div>
+              )}
+
+              <CustomerHeader v={v} today={today} stacked={isMobile} />
+
+              {/* ABOVE THE ROWS, NOT BELOW THEM. Receiving hours and a no-tractor flag are
+                  things a rep must know BEFORE they promise a redelivery, and nobody scrolls
+                  past six stops to find out what they should not have said. */}
+              <StopNotesCard notes={v.notes} />
+
+              <CustomerLocations locations={v.locations} />
+
+              {v.days.length > 0
+                ? <div className="space-y-4">
+                  {v.days.map((day) => (isMobile
+                    ? <CustomerDayCards key={day.date} day={day} today={today} onPro={pick} />
+                    : <CustomerDayTable key={day.date} day={day} today={today} onPro={pick} />))}
+                </div>
+                : v.complete !== false && (
+                  <div className="rounded-xl border bg-white p-6 text-center">
+                    <div className="text-sm font-semibold text-slate-700">
+                      No stop for {v.name} {v.window?.from === v.window?.to ? `on ${formatDateLong(v.window?.from)}` : 'in this window'}.
+                    </div>
+                    <div className="text-xs text-slate-500 mt-1">
+                      Every source was read and came back empty — so this is not a failed lookup, we were genuinely not there.
+                      {v.recent?.length ? ' Their earlier deliveries are below.' : ' Widen the window, or check the spelling.'}
+                    </div>
+                  </div>
+                )}
+
+              <CustomerRecent recent={v.recent} onPro={pick} window={data.window} />
+              <StopSourceLedger sources={v.sources} errors={data.errors} open={ledgerOpen} onToggle={() => setLedgerOpen((x) => !x)} />
+            </div>
+          );
+        })()}
 
         {d && (<>
           {d.found

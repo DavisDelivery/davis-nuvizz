@@ -32,6 +32,7 @@ import { readFile } from 'node:fs/promises';
 import { join, extname, resolve } from 'node:path';
 import { chromium } from 'playwright-core';
 import { STOP_LOOKUP_DOSSIER } from './lib/stop-lookup-fixture.mjs';
+import { CUSTOMER_VIEW } from './lib/customer-view-fixture.mjs';
 
 import { MEASURE } from './lib/layout-measure.mjs';
 
@@ -331,13 +332,28 @@ const PROBES = {
   ],
   stoplookup: [
     {
+      // THE CUSTOMER VIEW IS THE PATH THIS SCREEN WAS BUILT FOR, and it is the busiest layout
+      // in the app outside the board: four stat tiles, a wrapping driver row, a notes card
+      // with three flags, two location cards and three day tables of seven columns each.
+      // Every one of those only exists after a lookup runs.
+      name: 'a customer looked up',
+      open: async (page) => {
+        const box = page.getByLabel(/find a customer by name/i).first();
+        if (!(await box.isVisible().catch(() => false))) return false;
+        await box.fill('earthly alternative');
+        await page.getByRole('button', { name: /^look up$/i }).first().click();
+        await page.waitForTimeout(900);
+        return page.getByText(/STOPS TODAY/i).first().isVisible().catch(() => false);
+      },
+    },
+    {
       // AT REST THIS SCREEN IS A SEARCH BOX AND A CARD, which is not the layout anybody uses
       // it in. Everything that could collide — the day cards, the address diff, the notes
       // flags, the tappable PRO chips and the ledger rows — exists only after a lookup runs.
       // A guard that measured only the resting state would prove nothing about this screen.
       name: 'a stop looked up',
       open: async (page) => {
-        const box = page.getByLabel(/find a stop by pro/i).first();
+        const box = page.getByLabel(/find a customer by name/i).first();
         if (!(await box.isVisible().catch(() => false))) return false;
         await box.fill('007174397');
         await page.getByRole('button', { name: /^look up$/i }).first().click();
@@ -350,7 +366,7 @@ const PROBES = {
       // when opened — the one surface on this screen that grows downward under a thumb.
       name: 'where-we-looked open',
       open: async (page) => {
-        const box = page.getByLabel(/find a stop by pro/i).first();
+        const box = page.getByLabel(/find a customer by name/i).first();
         if (!(await box.isVisible().catch(() => false))) return false;
         await box.fill('007174397');
         await page.getByRole('button', { name: /^look up$/i }).first().click();
@@ -603,7 +619,10 @@ function stubRoutes(page, emailHtml) {
     // guard also drives (scripts/lib/stop-lookup-fixture.mjs), so the two cannot drift.
     // NOTE the name: it contains neither 'roster' nor 'drivers', but the catch-all at the
     // bottom would swallow it into an empty screen, and an empty screen cannot overflow.
-    if (u.includes('stop-lookup')) return R(STOP_LOOKUP_DOSSIER);
+    // STOP LOOKUP serves TWO modes off one URL and the stub picks the same way the
+    // endpoint does — by whether a name or a stop was asked for. Stubbing only one of
+    // them would leave the guard measuring a screen the app never renders.
+    if (u.includes('stop-lookup')) return R(u.includes('name=') ? CUSTOMER_VIEW : STOP_LOOKUP_DOSSIER);
     if (u.includes('roster') || u.includes('drivers')) return R({
       ok: true, drivers: [{ name: 'FRANK OKINE', id: '1' }], roster: [],
       at: '2026-09-10T12:00:00Z', count: 3,
