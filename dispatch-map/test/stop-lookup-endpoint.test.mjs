@@ -243,26 +243,33 @@ function installFakeWithQuery(seed) {
   return fake;
 }
 
-test('a business name search FINDS the customer, and costs zero NuVizz calls', async () => {
-  // The door in when all the rep has is who called. It must return the customer AND their
-  // PROs, because the next tap is a stop lookup on one of them.
-  const key = 'led_energy_plus__5965_peachtree__norcross__30071';
+test('THE NAME DOOR NOW OPENS THE CUSTOMER VIEW, and older deliveries still arrive with it', async () => {
+  // ?name= used to return a bare list of customers and their PROs. It returns the CUSTOMER
+  // VIEW now (see stop-lookup-customer.test.mjs for what that view is and why), because
+  // "how many deliveries did we have for them today" was the question being asked and a list
+  // of PROs from sealed history structurally cannot answer it.
+  //
+  // What the rollup is still for is the half OUTSIDE the window: this customer has no stop in
+  // the last seven days, so their rollup deliveries — with the driver on each — are what the
+  // screen shows, and the view must carry them.
+  const key = 'earthly_alternative__4200_wendell_dr_sw__atlanta__30336';
   const fake = installFakeWithQuery({
     [`history_customers/${T}__${key}`]: {
-      match_key: key, tenant: T, name: 'LED ENERGY PLUS', name_lower: 'led energy plus',
-      name_tokens: ['le', 'led', 'en', 'ene', 'ener', 'energ', 'energy', 'pl', 'plu', 'plus'],
-      addr1: '5965 PEACHTREE CORS E STE B3', city: 'NORCROSS', state: 'GA', zip: '30071',
-      pros: [{ pro: '007174397', date: '2026-09-15', driver: 'ENOCK AKYEA' }], last_date: '2026-09-15',
+      match_key: key, tenant: T, name: 'EARTHLY ALTERNATIVE', name_lower: 'earthly alternative',
+      name_tokens: ['ea', 'ear', 'eart', 'earth', 'earthl', 'earthly', 'al', 'alt', 'alte', 'alter', 'altern', 'alterna', 'alternat', 'alternati', 'alternativ', 'alternative'],
+      addr1: '4200 WENDELL DR SW', city: 'ATLANTA', state: 'GA', zip: '30336',
+      pros: [{ pro: '007100077', date: '2026-07-14', driver: 'FRANK OKINE' }], last_date: '2026-07-14',
     },
   });
   try {
-    const body = await call('name=led%20energy');
+    const body = await call('name=earthly%20alternative&days=7');
     assert.equal(body.ok, true);
-    assert.equal(body.mode, 'name');
+    assert.equal(body.mode, 'customer');
     assert.equal(body.nuvizzCalls, 0);
-    assert.equal(body.customers.length, 1);
-    assert.equal(body.customers[0].name, 'LED ENERGY PLUS');
-    assert.equal(body.customers[0].pros[0].pro, '007174397');
+    assert.equal(body.view.name, 'EARTHLY ALTERNATIVE');
+    assert.equal(body.view.totals.stops, 0, 'nothing in the window');
+    assert.equal(body.view.recent.length, 1, 'but their older deliveries are still here');
+    assert.equal(body.view.recent[0].driver, 'FRANK OKINE', 'with the driver, which is what was asked for');
     assert.equal(fake.log.other.filter((o) => !o.url.includes(':runQuery')).length, 0, 'nothing but Firestore was called');
   } finally { fake.restore(); }
 });

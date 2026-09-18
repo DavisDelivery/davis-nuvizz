@@ -48,13 +48,52 @@ test('the heading stays the literal the layout guards navigate by', () => {
   assert.match(APP, /<h1 className="text-xl font-bold text-slate-900">Stop lookup<\/h1>/);
 });
 
-test('ONE RULE decides PRO-vs-name, and the client reads it from the shared module', () => {
+test('ONE RULE decides customer-vs-PRO, and the client reads it from the shared module', () => {
   // The box is one box. If the screen classified the query itself, a string the client called
   // a name and the server called a PRO would search the wrong index and answer "nothing" —
   // the confidently-wrong empty answer this whole feature exists to stop producing.
   assert.match(APP, /import \{ classifyQuery \} from '\.\/lib\/stop-lookup\.js'/);
-  assert.match(APP, /classifyQuery\(term\)\.kind === 'name' \? `name=/);
+  assert.match(APP, /const isName = classifyQuery\(term\)\.kind === 'name';/);
   assert.match(FN, /from '\.\.\/\.\.\/src\/lib\/stop-lookup\.js'/);
+});
+
+test('ONE MODULE resolves the window, on both sides', () => {
+  // The screen resolves a selection to decide what to print at the top; the endpoint resolves
+  // the same selection to decide which boards to sweep. Two copies of that rule is a header
+  // describing one window over rows from another — history-range.js says so in its own header.
+  assert.match(APP, /resolveRange\(sel, today, 0\)/, 'the screen resolves through the shared module');
+  assert.match(FN, /from '\.\.\/\.\.\/src\/lib\/history-range\.js'/, 'and so does the endpoint');
+  assert.match(FN, /selectionFromParams/);
+});
+
+test("THE LIT RANGE PILL COMES FROM THE SERVER'S WINDOW, not the client's selection", () => {
+  // This screen's ceiling is 14 days, so asking wider gets a clamped window back. Lighting
+  // the pill the rep PRESSED would label a fortnight of rows as a month.
+  assert.match(APP, /range=\{data\.window \|\| range\}/);
+});
+
+test('THE CUSTOMER WINDOW HAS ITS OWN CEILING, because a day here is a whole board', () => {
+  // Every other screen using resolveRange reads ONE document per day. This reads a board per
+  // day, twice. The shared 60-day cap would be ~84,000 document reads with a customer waiting.
+  assert.match(FN, /const CUSTOMER_MAX_DAYS = 14;/);
+  // …and the screen must not offer a preset the endpoint will silently clamp.
+  const presets = /const CUSTOMER_PRESETS = \[([\s\S]*?)\];/.exec(APP);
+  assert.ok(presets, 'the customer view has its own preset row');
+  assert.ok(!/days: (30|60)/.test(presets[1]), 'no preset may exceed the endpoint ceiling');
+});
+
+test('THE BOARD SWEEP IS MASKED — it must not ship a whole board to find six rows', () => {
+  assert.match(FN, /CUSTOMER_STOP_FIELDS/);
+  const fields = readFileSync(new URL('../netlify/functions/lib/board-fields.mts', import.meta.url), 'utf8');
+  const block = /export const CUSTOMER_STOP_FIELDS = \[([\s\S]*?)\];/.exec(fields);
+  assert.ok(block, 'the mask exists');
+  assert.ok(!/'raw'/.test(block[1]), 'the whole raw NuVizz object must never be swept');
+  assert.ok(!/allComments|stopDetails/.test(block[1]), 'nor the comment and line-item blobs');
+  // The address is load-bearing, not furniture: board rows carry no customerMatchKey, so
+  // name+addr+city+zip is the only way to reach a customer_notes document at all.
+  for (const f of ['businessName', 'addr1', 'city', 'zip', 'driverName', 'deliveredDTTM']) {
+    assert.ok(block[1].includes(`'${f}'`), `${f} is needed by the customer view`);
+  }
 });
 
 test('THE ENDPOINT PROMISES ZERO NUVIZZ CALLS AND IMPORTS NOTHING THAT COULD SPEND ONE', () => {
@@ -87,11 +126,20 @@ test('both layout guards and the tablet guard know the screen exists', () => {
   }
 });
 
-test('the phone and tablet guards drive the SAME fixture, so they cannot drift apart', () => {
+test('the phone and tablet guards drive the SAME fixtures, so they cannot drift apart', () => {
   for (const f of ['verify-mobile-layout.mjs', 'verify-tablet-layout.mjs']) {
     const src = readFileSync(new URL(`../scripts/${f}`, import.meta.url), 'utf8');
     assert.match(src, /import \{ STOP_LOOKUP_DOSSIER \} from '\.\/lib\/stop-lookup-fixture\.mjs'/, f);
-    assert.match(src, /u\.includes\('stop-lookup'\)/, `${f} must stub the endpoint`);
+    assert.match(src, /import \{ CUSTOMER_VIEW \} from '\.\/lib\/customer-view-fixture\.mjs'/, f);
+    // BOTH modes, or the guard measures a screen the app never renders.
+    assert.match(src, /u\.includes\('name='\) \? CUSTOMER_VIEW : STOP_LOOKUP_DOSSIER/, `${f} must stub both modes`);
+  }
+});
+
+test('the guards actually OPEN the customer view — it is the default path now', () => {
+  for (const f of ['verify-mobile-layout.mjs', 'verify-tablet-layout.mjs']) {
+    const src = readFileSync(new URL(`../scripts/${f}`, import.meta.url), 'utf8');
+    assert.match(src, /a customer looked up/, `${f} must probe the customer view`);
   }
 });
 

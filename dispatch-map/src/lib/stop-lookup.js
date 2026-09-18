@@ -362,3 +362,243 @@ export function notesSummary(notes) {
 /** Exported for the endpoint's own guard and for tests — a day id it can safely path with. */
 export const isDayId = (d) => DAY_RE.test(s(d));
 export { TERMINAL as TERMINAL_STATUSES };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THE CUSTOMER VIEW — "how many deliveries did we have for EARTHLY ALTERNATIVE
+// today, and who delivered them?"
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Chad, 2026-09-18: "I wanted to see how many deliveries we had for earthly alternative
+// today and couldn't. Wanted to see all the different ones and drivers who delivered them."
+//
+// WHY THE FIRST CUT COULD NOT ANSWER IT. The PRO lookup above is a per-ORDER screen, and the
+// name search behind it read history_customers — a rollup built from SEALED history. Today is
+// not sealed until tonight, so the one day he asked about was the one day that rollup
+// structurally cannot contain. It would have answered "0 deliveries" for a customer we had
+// been at three times that morning, which is worse than answering nothing at all.
+//
+// SO THE CUSTOMER VIEW IS BUILT ON THE LIVE BOARD, not the rollup. The board day documents
+// carry every stop of every day the scan has written, delivered or not, with the driver, the
+// route, the times and the freight already on them.
+//
+// ── THE JOIN IS BY NAME, AND IT HAS TO BE ────────────────────────────────────
+//
+// Board rows carry NO customerMatchKey — routing-cleanup-core.mts says so in as many words,
+// and customer-key.mts exists because an alert once read a whole board with `matchKey` null
+// on all 778 rows and reported a clean day. So "is this stop EARTHLY ALTERNATIVE" is answered
+// from the name text, normalised by the SAME rule the match key uses (normNameOf) so a
+// location cannot group one way for counting and another way for its notes.
+//
+// ── ONE CUSTOMER IS OFTEN SEVERAL DOCKS ──────────────────────────────────────
+//
+// A customer service rep thinks in NAMES ("did Earthly Alternative get their freight"); the
+// database thinks in match keys, which are name + street + city + zip — so one customer with
+// two warehouses is two keys. Grouping by key alone would split the answer in half and show
+// neither total. This groups by NAME and lists the locations underneath, with each stop's own
+// address on its row, so both questions are answerable off one screen.
+
+import { normNameOf } from './matchKey.js';
+
+/**
+ * PURE: the grouping key for a customer NAME — for counting and grouping only, NEVER for a
+ * document path. normNameOf is byte-identical to the name half of the match key (see the note
+ * on it); this additionally drops the underscore a stripped suffix leaves behind, so "EARTHLY
+ * ALTERNATIVE LLC" and "Earthly Alternative" are one customer on screen rather than two rows
+ * with the same name and half the deliveries each.
+ */
+export function customerNameKey(name) {
+  return normNameOf(name).replace(/^_+|_+$/g, '');
+}
+
+/**
+ * PURE: does this business name match what was typed?
+ *
+ * Every word typed must appear as the START of a word in the name, in any order. That is the
+ * same shape as the rollup's stored search tokens (history-customers.nameSearchTokens keeps
+ * every prefix of every word), so the board sweep and the rollup query agree about what
+ * matches — two different answers to "is this Earthly Alternative", on one screen, is how a
+ * count comes out wrong.
+ *
+ *   "earthly"          → EARTHLY ALTERNATIVE ✓   EARTHLY ALTERNATIVE LLC ✓
+ *   "earthly alt"      → EARTHLY ALTERNATIVE ✓
+ *   "alternative"      → EARTHLY ALTERNATIVE ✓   (word order does not matter)
+ *   "earthy"           → EARTHLY ALTERNATIVE ✗   (a prefix, not a fuzzy match)
+ */
+export function nameMatchesQuery(name, query) {
+  const words = customerNameKey(query).split('_').filter(Boolean);
+  if (!words.length) return false;
+  const hay = customerNameKey(name).split('_').filter(Boolean);
+  if (!hay.length) return false;
+  return words.every((w) => hay.some((h) => h.startsWith(w)));
+}
+
+/** The freight on one row, in the words that are on the paperwork. */
+const pieceCount = (s) => numOrNull(s?.cartons) ?? numOrNull(s?.volume);
+
+/**
+ * PURE: one board or sealed stop → one row of the customer view.
+ *
+ * `source` is 'board' or 'sealed' and rides on the row rather than being folded away: a past
+ * day showing only a board copy is a day the nightly capture missed, and a dispatcher quoting
+ * a delivery time down the phone should be able to see which kind of record they are quoting.
+ */
+export function buildCustomerStopRow(stop, { date, today, source = 'board' } = {}) {
+  const st = stop || {};
+  const status = s(st.normalizedStatus) || null;
+  const isAttempt = st.isAttempt === true || /^ATT/i.test(s(st.shipmentNbr));
+  return {
+    key: `${date}|${s(st.stopNbr) || s(st.pro)}`,
+    date: s(date),
+    source,
+    stopNbr: s(st.stopNbr) || null,
+    pro: s(st.pro) || s(st.primaryPro) || s(st.stopNbr) || null,
+    // A stop can carry several PROs (a multi-order drop); the count is what a rep needs to
+    // say "that was three orders on one stop" rather than under-reporting the freight.
+    proCount: Array.isArray(st.pros) && st.pros.length ? st.pros.length : (numOrNull(st.proCount) || 1),
+    status,
+    outcome: dayOutcome({ status, isAttempt, date: s(date), today: s(today), laterDay: false }),
+    isAttempt,
+    route: s(st.routeName) || s(st.loadNbr) || null,
+    seq: numOrNull(st.loadStopSeq ?? st.routeSeq),
+    driver: s(st.driverName) || s(st.driverUserName) || null,
+    planned: st.isPlanned === true,
+    deliveredAt: s(st.deliveredDTTM) || null,
+    arrivedAt: s(st.arrivalDTTM) || s(st.raw?.stopExecutionInfo?.to?.arrivalDTTM) || null,
+    etaAt: s(st.plannedEtaDTTM) || null,
+    windowFrom: s(st.scheduledFrom) || null,
+    windowTo: s(st.scheduledTo) || null,
+    address: addressOf(st),
+    name: s(st.businessName) || null,
+    pieces: pieceCount(st),
+    pallets: numOrNull(st.pallets),
+    weight: numOrNull(st.weight),
+    pod: Array.isArray(st.podDocs) ? st.podDocs.length : 0,
+    refs: {
+      po: s(st.poRef) || null, custRef: s(st.custRef) || null,
+      bol: s(st.bol) || null, orderNbr: s(st.orderNbr) || null,
+    },
+  };
+}
+
+/** PURE: the counts a rep reads out loud, off any set of rows. */
+export function summarizeStopRows(rows) {
+  const r = rows || [];
+  return {
+    stops: r.length,
+    orders: r.reduce((n, x) => n + (x.proCount || 1), 0),
+    delivered: r.filter((x) => x.outcome === 'delivered').length,
+    attempted: r.filter((x) => x.outcome === 'attempted').length,
+    exceptions: r.filter((x) => x.outcome === 'exception' || x.outcome === 'cancelled').length,
+    open: r.filter((x) => x.outcome === 'open').length,
+    unfinished: r.filter((x) => x.outcome === 'unfinished' || x.outcome === 'rolled').length,
+    pieces: r.reduce((n, x) => n + (x.pieces || 0), 0),
+    weight: r.reduce((n, x) => n + (x.weight || 0), 0),
+  };
+}
+
+/**
+ * PURE: who ran this customer's freight over the window — the half of the question the first
+ * build answered least well ("and drivers who delivered them").
+ *
+ * DELIVERED IS COUNTED SEPARATELY FROM CARRIED, because they are different claims. A driver
+ * who had four of these stops and delivered two did not deliver four, and a screen that says
+ * he did is the sort of thing that gets repeated to a customer.
+ */
+export function driverTally(rows) {
+  const by = new Map();
+  for (const r of rows || []) {
+    const name = s(r?.driver);
+    if (!name) continue;
+    const cur = by.get(name) || { driver: name, stops: 0, delivered: 0 };
+    cur.stops += 1;
+    if (r.outcome === 'delivered') cur.delivered += 1;
+    by.set(name, cur);
+  }
+  return [...by.values()].sort((a, b) => b.delivered - a.delivered || b.stops - a.stops || a.driver.localeCompare(b.driver));
+}
+
+/**
+ * PURE: every document gathered for one customer over one window → the screen's answer.
+ *
+ * `facts.stops` is [{ date, source, stop }] from the endpoint — every board and sealed stop
+ * whose name matched. THE MERGE: one physical stop can appear twice on a day (the sealed
+ * record and the live board copy), and counting it twice would tell a rep we were there six
+ * times when we were there three. Keyed on day + stop number, sealed winning, exactly as
+ * mergeDay does for the per-order view and for the same reason.
+ */
+export function buildCustomerView(facts = {}) {
+  const today = s(facts.today);
+  const rows = [];
+  const seen = new Map();
+  for (const r of facts.stops || []) {
+    const date = s(r?.date);
+    if (!DAY_RE.test(date) || !r?.stop) continue;
+    const row = buildCustomerStopRow(r.stop, { date, today, source: r.source === 'sealed' ? 'sealed' : 'board' });
+    const k = `${date}|${row.stopNbr || row.pro || Math.random()}`;
+    const prev = seen.get(k);
+    // The sealed record wins; a board copy still ADDS its sources so the row can say it
+    // exists in both places rather than looking like it was only ever live.
+    if (prev) {
+      if (row.source === 'sealed' && prev.source !== 'sealed') Object.assign(prev, row, { alsoOnBoard: true });
+      else prev.alsoSealed = prev.alsoSealed || row.source === 'sealed';
+      continue;
+    }
+    seen.set(k, row);
+    rows.push(row);
+  }
+
+  // Newest day first; within a day, the running order — which is how a rep reads a route.
+  rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)
+    || ((a.seq ?? 9999) - (b.seq ?? 9999))
+    || String(a.pro).localeCompare(String(b.pro)));
+
+  const byDay = new Map();
+  for (const r of rows) {
+    if (!byDay.has(r.date)) byDay.set(r.date, []);
+    byDay.get(r.date).push(r);
+  }
+  const days = [...byDay.entries()].map(([date, list]) => ({
+    date,
+    isToday: date === today,
+    rows: list,
+    counts: summarizeStopRows(list),
+    drivers: driverTally(list),
+  }));
+
+  // THE LOCATIONS, off the stops themselves rather than off the rollup: a dock we delivered to
+  // for the first time this morning has no rollup document yet, and leaving it out of the
+  // location list would hide the very stops the count is made of.
+  const locs = new Map();
+  for (const r of rows) {
+    const key = [r.address?.addr1, r.address?.city, r.address?.zip].filter(Boolean).join('|').toLowerCase() || '(no address)';
+    const cur = locs.get(key) || { key, name: r.name, address: r.address, stops: 0, delivered: 0, lastDate: null };
+    cur.stops += 1;
+    if (r.outcome === 'delivered') cur.delivered += 1;
+    if (!cur.lastDate || r.date > cur.lastDate) cur.lastDate = r.date;
+    locs.set(key, cur);
+  }
+
+  const totals = summarizeStopRows(rows);
+  const todayRows = rows.filter((r) => r.date === today);
+
+  return {
+    query: s(facts.query),
+    name: s(facts.name) || (rows.find((r) => r.name)?.name ?? s(facts.query)),
+    nameKey: customerNameKey(s(facts.name) || rows.find((r) => r.name)?.name || s(facts.query)),
+    window: facts.window || null,
+    today,
+    totals,
+    // Broken out because it is the question that was actually asked, and a rep should not
+    // have to find today among a fortnight of days to answer "did we come today".
+    todayCounts: summarizeStopRows(todayRows),
+    hasToday: !!facts.window && s(facts.window.from) <= today && s(facts.window.to) >= today,
+    drivers: driverTally(rows),
+    days,
+    locations: [...locs.values()].sort((a, b) => b.stops - a.stops),
+    rows,
+    recent: facts.recent || [],
+    notes: facts.notes || null,
+    matches: facts.matches || [],
+    sources: facts.sources || [],
+  };
+}

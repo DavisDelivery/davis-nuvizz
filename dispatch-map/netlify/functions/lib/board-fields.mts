@@ -68,3 +68,32 @@ export const QUEUE_STOP_FIELDS = [
 export const QUEUE_NOTE_FIELDS = [
   'match_key', 'address_override', 'address_override_at', 'location_override', 'location_override_at',
 ];
+
+/**
+ * THE CUSTOMER VIEW'S PROJECTION — what "how many deliveries for this customer today, and
+ * who delivered them" actually needs off a board day.
+ *
+ * Narrower than LEAN on purpose, and the reason is the read shape: this sweeps a WHOLE day's
+ * stops (~700 docs) for every day in the window and keeps the handful that match one name.
+ * LEAN carries `raw` slices, stopDetails, allComments and the comms/geometry fields, none of
+ * which a customer day view reads — and this file's own header records what a fat board
+ * payload cost once. Serving them here would ship a multi-megabyte board per day to answer a
+ * question about six stops.
+ *
+ * `raw.stopExecutionInfo` earns its place alone: `arrivalDTTM` is not always populated on the
+ * stop itself and the execution block is where the app's own accessor falls back to (see
+ * execArrivalTs in App.jsx). "Arrived at" missing in silence, on the screen whose job is
+ * telling a customer when we were there, is the failure worth one nested field.
+ *
+ * The address fields are not optional furniture either: board rows carry NO customerMatchKey
+ * (routing-cleanup-core.mts says so), so name + addr1 + city + zip is how a stop is joined to
+ * its customer_notes document at all.
+ */
+export const CUSTOMER_STOP_FIELDS = [
+  'addr1', 'addr2', 'arrivalDTTM', 'bol', 'boardDate', 'businessName', 'cartons', 'city',
+  'custRef', 'deliveredDTTM', 'driverName', 'driverUserName', 'isAttempt', 'isPlanned',
+  'loadNbr', 'loadStopSeq', 'normalizedStatus', 'orderNbr', 'pallets', 'plannedEtaDTTM',
+  'poRef', 'podDocs', 'primaryPro', 'pro', 'proCount', 'pros', 'requestedDate', 'routeName',
+  'routeSeq', 'scheduledDate', 'scheduledFrom', 'scheduledTo', 'shipmentNbr', 'state',
+  'status', 'stopNbr', 'volume', 'weight', 'zip', 'raw.stopExecutionInfo',
+];

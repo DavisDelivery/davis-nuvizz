@@ -103,13 +103,40 @@ export function placeKeyOfStop(s) {
   return normalizePlaceKey(s?.addr1, s?.zip) || s?.matchKey || String(s?.stopNbr ?? '');
 }
 
-export function normalizeMatchKey(businessName, addressLine1, city, zip) {
-  const normName = safe(businessName)
+/**
+ * THE NAME HALF OF THE KEY, on its own.
+ *
+ * Exported for the same reason normStreetOf above was: a second copy of these rules is how
+ * two readers come to disagree about what "the same customer" means. The Stop lookup screen
+ * groups a day's board by CUSTOMER NAME — the board carries no customerMatchKey at all
+ * (routing-cleanup-core says so in as many words), so "is this EARTHLY ALTERNATIVE" has to be
+ * answered from the name text, and it must be answered the same way the match key answers it
+ * or a location would group one way for notes and another way for counting.
+ *
+ * BYTE-IDENTICAL TO WHAT normalizeMatchKey ALWAYS DID, and that is not a style note. The
+ * first cut of this also stripped the leading/trailing underscores a removed suffix leaves
+ * behind ("ACME LLC" → "acme_"), which reads like tidying and CHANGES THE MATCH KEY:
+ * `acme___100_peachtree...` became `acme__100_peachtree...`. customer_notes is stored under
+ * that key, so every receiving-hours note, address override, pin and opt-out for a customer
+ * whose name ends in LLC/INC/CORP would have detached from its customer in silence. Three
+ * parity tests caught it (match-key-parity, place-key, seal-paint-hardening) — they exist
+ * because the client and the server each have to build this key and must never disagree.
+ *
+ * So the trailing underscore STAYS here. Grouping a screen by customer wants it gone, and
+ * that is a different question with a different answer: customerNameKey in
+ * src/lib/stop-lookup.js trims it, and never touches this.
+ */
+export function normNameOf(businessName) {
+  return safe(businessName)
     .toLowerCase()
     .replace(NAME_SUFFIXES, '')
     .replace(/[^\w\s]/g, '')
     .replace(/\s+/g, '_')
     .trim();
+}
+
+export function normalizeMatchKey(businessName, addressLine1, city, zip) {
+  const normName = normNameOf(businessName);
 
   const normStreet = normStreetOf(addressLine1);
 
