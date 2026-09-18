@@ -31,6 +31,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname, resolve } from 'node:path';
 import { chromium } from 'playwright-core';
+import { STOP_LOOKUP_DOSSIER } from './lib/stop-lookup-fixture.mjs';
 
 import { MEASURE } from './lib/layout-measure.mjs';
 
@@ -150,6 +151,7 @@ const SCREENS = [
           }
     }) } },
   { key: 'comms', label: 'Customer emails', nav: /customer emails/i, inMore: true },
+  { key: 'stoplookup', label: 'Stop lookup', nav: /stop lookup/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },
   { key: 'diagnostics', label: 'Diagnostics', nav: /diagnostics/i },
@@ -324,6 +326,40 @@ const PROBES = {
         await box.fill('007174397');
         await page.waitForTimeout(900);
         return page.getByRole('button', { name: /^clear$/i }).first().isVisible().catch(() => false);
+      },
+    },
+  ],
+  stoplookup: [
+    {
+      // AT REST THIS SCREEN IS A SEARCH BOX AND A CARD, which is not the layout anybody uses
+      // it in. Everything that could collide — the day cards, the address diff, the notes
+      // flags, the tappable PRO chips and the ledger rows — exists only after a lookup runs.
+      // A guard that measured only the resting state would prove nothing about this screen.
+      name: 'a stop looked up',
+      open: async (page) => {
+        const box = page.getByLabel(/find a stop by pro/i).first();
+        if (!(await box.isVisible().catch(() => false))) return false;
+        await box.fill('007174397');
+        await page.getByRole('button', { name: /^look up$/i }).first().click();
+        await page.waitForTimeout(900);
+        return page.getByText(/TITAN ELECTRIC COMPANIES/i).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      // The ledger is collapsed on a populated answer and is nine rows of two-column text
+      // when opened — the one surface on this screen that grows downward under a thumb.
+      name: 'where-we-looked open',
+      open: async (page) => {
+        const box = page.getByLabel(/find a stop by pro/i).first();
+        if (!(await box.isVisible().catch(() => false))) return false;
+        await box.fill('007174397');
+        await page.getByRole('button', { name: /^look up$/i }).first().click();
+        await page.waitForTimeout(900);
+        const t = page.getByRole('button', { name: /where we looked/i }).first();
+        if (!(await t.isVisible().catch(() => false))) return false;
+        await t.click();
+        await page.waitForTimeout(350);
+        return page.getByText(/history_pros/i).first().isVisible().catch(() => false);
       },
     },
   ],
@@ -563,6 +599,11 @@ function stubRoutes(page, emailHtml) {
     // the phone rendered zero rows and the guard could not see them — and a sixth populated
     // column in a 390px row is the classic scrollWidth > innerWidth trigger. One shell is left
     // unstaffed, because that row renders differently and is the one worth measuring.
+    // STOP LOOKUP — one order's whole Firestore footprint, from the fixture the tablet
+    // guard also drives (scripts/lib/stop-lookup-fixture.mjs), so the two cannot drift.
+    // NOTE the name: it contains neither 'roster' nor 'drivers', but the catch-all at the
+    // bottom would swallow it into an empty screen, and an empty screen cannot overflow.
+    if (u.includes('stop-lookup')) return R(STOP_LOOKUP_DOSSIER);
     if (u.includes('roster') || u.includes('drivers')) return R({
       ok: true, drivers: [{ name: 'FRANK OKINE', id: '1' }], roster: [],
       at: '2026-09-10T12:00:00Z', count: 3,

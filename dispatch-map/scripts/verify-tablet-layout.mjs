@@ -21,6 +21,7 @@
 // without it exercises the MOUSE layout at iPad width and passes while the actual device
 // fails. That is not a hypothetical — it is what the desktop guard has always done.
 import { chromium } from 'playwright-core';
+import { STOP_LOOKUP_DOSSIER } from './lib/stop-lookup-fixture.mjs';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
@@ -47,6 +48,7 @@ const SCREENS = [
   { key: 'quote', label: 'Quote', nav: /quote/i },
   { key: 'manifest', label: 'Manifest check', nav: /manifest check/i, inMore: true },
   { key: 'comms', label: 'Customer emails', nav: /customer emails/i, inMore: true },
+  { key: 'stoplookup', label: 'Stop lookup', nav: /stop lookup/i, inMore: true },
   { key: 'flaghistory', label: 'Flag history', nav: /flag history/i, inMore: true },
   { key: 'addrhistory', label: 'Address history', nav: /address history/i, inMore: true },
   { key: 'diagnostics', label: 'Diagnostics', nav: /diagnostics/i, inMore: true },
@@ -60,6 +62,16 @@ const PROBES = {
   // The queue's sub-tabs at iPad width: a segmented bar on a 1024px tablet and a chip row on a
   // 768px one, with a six-input editor opening under whichever is showing. Nothing measured any
   // sub-view of this screen before — PROBES listed only routing and map.
+  // A lookup's whole answer is behind one submit, so at rest this guard would measure a search
+  // box and nothing else. Same reasoning as the phone guard's probe of this screen.
+  stoplookup: [
+    { name: 'a stop looked up', open: async (page) => {
+      const box = page.getByLabel(/find a stop by pro/i).first();
+      if (!(await box.isVisible().catch(() => false))) return false;
+      await box.fill('007174397');
+      return openByName(page, /^look up$/i);
+    } },
+  ],
   addrhistory: [
     { name: 'Problem queue — row editor open', open: async (page) => {
       const tab = page.getByRole('tab', { name: /problem addresses/i }).first();
@@ -146,6 +158,9 @@ for (const dev of TABLETS) {
     // renders); and a delivered row (also excluded, different line). The checkbox column, the
     // per-row buttons and the group-push bar are where a collision would live.
     // NOTE the name: anything containing 'address-history' is swallowed by the stub above.
+    // STOP LOOKUP — the same fixture the phone guard drives, so a screen measured against
+    // hostile data on one device is not measured against tidy data on the other.
+    if (u.includes('stop-lookup')) return J(STOP_LOOKUP_DOSSIER);
     if (u.includes('address-queue')) return J({
       ok: true, tenant: 'davis', nuvizzCalls: 0, notesLoaded: 412,
       dates: ['2026-09-14', '2026-09-15', '2026-09-16'],

@@ -60,6 +60,10 @@ import { ChangePasswordScreen, ResetPasswordScreen } from './components/Password
 // functions goes through apiFetch; nothing else may build an Authorization header.
 import { apiFetch } from './lib/api.js';
 import { rollbackTargets, rollbackRequestBody } from './lib/rollback-targets.js';
+// ONE rule decides whether a typed box is a PRO or a customer name, and the screen and the
+// endpoint (netlify/functions/stop-lookup.mts) both read it from here — so the box can never
+// be classified one way by the client and the other way by the server.
+import { classifyQuery } from './lib/stop-lookup.js';
 import { DEVICE_SWITCHES, switchReport, encodeValue, describeValue } from './lib/device-switches.js';
 import { reportDenied, deniedSurfaces, subscribeDenied } from './lib/permission-denied.js';
 import { serverLoginEnabled, ensureFirebaseSession, dropFirebaseSession, signOut as endSession, currentResetLink, scrubResetLink, fetchMe } from './lib/auth-client.js';
@@ -149,7 +153,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.44.0';
+const APP_VERSION = '1.45.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -203,6 +207,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.45.0', 'STOP LOOKUP \u2014 EVERY ORDER WE HOLD, ANSWERABLE IN ONE TAP, FOR NOTHING. Chad: “i want to develop a stops screen under more where i can look up any stop and it’s history we have in firestore.” THE CALL THIS IS FOR: a customer on the phone asking about one order — when were you here, who had it, did it deliver, why does it still say scheduled, did somebody change my address. That answer lived in FOUR places and one of them was a curl command: the stop card only knows today’s board, the customer search only knows a customer’s last twenty PROs, the address log only knows addresses, and nuvizz-stop-explain has gathered a stop’s whole board story for free since v1.4.0 with no door in the app at all. So the rep does the one thing that always works and SPENDS A NUVIZZ CALL on an order sitting in our own Firestore — the exact complaint that built the PRO index (“this order is a week old why is it not in the history”). This screen spends ZERO, and says so on the page. ONE BOX takes a PRO in every spelling that exists — bare 7174397 finds the zero-padded 007174397 NuVizz stores, a segmented 007157687-1 finds its order, AVRT-0170416694 keeps its whole digit run so it can never be read as a sibling of ESTES-0538243875 — or a business name, which comes back as customers whose PROs are each one more tap. Every day we hold is one row: sealed history AND the live board together, what happened in a word a dispatcher uses, the route, the driver, the arrival and delivery minute, the freight, the address AS OF THAT DAY, and which documents the row was built from. TWO THINGS IT REFUSES TO GET WRONG. An old day with a later day behind it reads ROLLED, not “open” — otherwise a stop that failed Monday and delivered Tuesday tells a rep the freight is still out. And on an ATTEMPT day the driver shown is the MORNING driver from the 8:30 freeze, with the evening one named separately, because by evening the stop is on whoever it was re-planned onto and blaming them for a delivery they never had is worse than saying nothing. THE PART THAT MATTERS MOST IS THE EMPTY ANSWER. “Nothing on file” and “the read failed” render as the same blank screen, and only one of them is a reason to go and spend a call — that ambiguity is what took the roster bug four rounds to diagnose. So every lookup returns a LEDGER of the nine collections it read, what each held, and the window it covered; a read that throws is marked NOT READ with its reason, never folded into “nothing”; and the ledger opens itself exactly when it is the answer. Bounded on purpose: the PRO index’s days plus the last four nights, a 14-back/3-ahead board window, and attempts and morning-plan documents only for days that actually answered — so the cost is flat in how long a customer has been trading. 42 new tests, including one that reads the REQUEST URL rather than the test fake’s decoded log, because asserting on the decoder would have “found” a path traversal that never goes on the wire. Desktop gets a table, the phone gets cards; both navigations, per the v0.54.50 rule. The Build Panel and the Route Workbench are not touched.'],
   ['1.44.0', 'THE WALL CAN DRAW THE REAL MAP NOW, ON ONE TICK, AND UNTICK IT IF THE SET CANNOT. Chad, on the static picture after the frame was tightened: “Don’t like this either. Think it looks bad with the city zoomed like they are.” HE IS RIGHT, AND HIS TWO COMPLAINTS PULL IN OPPOSITE DIRECTIONS — which is the thing worth writing down rather than arguing about. The Maps Static API will not return a picture wider than 640 logical pixels, and this wall stretches it across about 1520. Google draws its roads and town names sized for the picture it was ASKED for, so a tighter frame means a smaller picture means bigger labels and less road detail. Measured on his own board: fullscreen asks for 545px and stretches it 2.79x; WINDOWED, which is what his photograph shows, asks for 339px and stretches it 4.48x. No arithmetic reconciles “no wasted space” with “don’t blow the labels up” on that API — the ceiling is the ceiling. A 2x2 MOSAIC WAS BUILT AND RENDERED BEFORE BEING REJECTED, not reasoned about: four 545x352 tiles one zoom step in, stitched with a 0.06% overlap that closed the hairline seams. It looks correct — normal labels, full detail — and it is NOT SHIPPABLE, because each tile carries its own Google logo and “Map data ©2026” and those land in the MIDDLE of the map. Cropping them is a straight violation of Google’s terms, so the picture stays one picture. THE LIVE MAP HAS NO CEILING: it draws at the pane’s own resolution, fits exactly instead of in whole zoom steps, carries one attribution, and costs no Static request at all. The only reason the wall is not on it is that this television could not draw it — which was real and was diagnosed on this set. What has changed is that the same browser now renders 796 SVG pins, the driver plates and the whole overlay, so it is worth ONE PRESS to find out. SO IT IS A TICK ON THE SCREEN, NOT AN ENV VAR, and that shape is the whole point: an env var is a deploy, and a wall that comes up white at 4am cannot wait for one. “Live map (sharper labels)” sits in the Filters panel the television already has open for live drivers, remembers itself PER DEVICE (so only that set changes), and unticking it puts the picture straight back with nobody on the phone. DEFAULT OFF — the shipped behaviour does not move. ONE FLAG DRIVES EVERY SIDE: the picture, the pin overlay, and whether the Maps script is loaded at all. There is no half-state where the wall asks for a picture it no longer draws. And the blank-map diagnostic that was previously dead on the static path now guards the live one — if Google loads and paints nothing, the wall says so after 20 seconds instead of sitting there white. THE CORNER READOUT REPORTS IN BOTH MODES (“… · LIVE MAP · WINDOWED”). A readout that went dark the moment somebody ticked the box would go dark at exactly the moment “what is this thing running?” gets asked. AND THE PANE IS NOW MEASURED IN BOTH MODES: the first cut wired that measurement to the static path only, so live mode printed “0×0” — caught by driving both modes in a browser rather than reading the diff, one release after a changelog row about diagnostics printing wrong numbers. STILL TRUE AND UNCHANGED: VITE_TV_STATIC_MAP=off, the desktop Map, the Route Workbench, and every pin the wall draws.'],
   ['1.43.4', 'THE WALL SAYS WHAT IT IS RUNNING, BECAUSE A PHOTOGRAPH OF IT COULD NOT. Chad sent a photo of the office television whose framing matched NOTHING reproducible here: every viewport driven in a real browser — 1920x1080 fullscreen, and 1920x900 / 800 / 700 with the browser’s chrome eating the top — filled 89-93% of the height, and his screen was showing roughly half that. SO THE HONEST ANSWER WAS “I CANNOT TELL FROM HERE”, AND THE FIX FOR THAT IS NOT A BETTER GUESS. Two rounds went into reading an angled photograph of a television. CLAUDE.md is blunt about it: build the free diagnostic FIRST. A wall display is the one screen in the building nobody can ask a question of — it has no footer, so “which build is that?”, the single fact that decides whether a cached bundle explains the picture, could not be answered without walking over to it. ONE LINE IN THE CORNER NOW ANSWERS IT FROM A PHOTOGRAPH: “v1.43.4 · 1520×981 · 545×352 z8 · 93%h 65%w · full” — the build, the measured pane, the image actually requested, the zoom, how much of the frame the DRAWN pins occupy, and whether the thing is really fullscreen. The fill is measured off the pins on screen rather than off the bounds they were fitted from, because the question it answers is “is this wall wasting half its screen” and only the drawn pins can answer that. FULLSCREEN IS IN THERE FOR A REASON: the whole layout assumes it, which is why the control lives in the Filters panel, and a television showing a tab strip and an address bar has a much shorter, much wider map pane than this screen was designed around. Measured: the width the freight occupies falls 65% → 52% → 45% → 38% as the chrome grows. From the far side of a room nobody can tell, so it says the word. DELIBERATELY THE QUIETEST THING ON THE WALL — 11px at a quarter opacity, in the corner Google’s own credit already owns. Chad asked for no more furniture on this screen and he was right; this earns its pixels by being the line that ends an argument. THE GUARD HOLDS IT THERE: verify-tv-map.mjs fails if the readout disappears, if it prints an image size the URL did not ask for, or if it stops saying whether the screen is fullscreen — a diagnostic that quietly drifts from the truth is worse than none, and one that quietly vanishes puts the next photograph right back where this one started. NOT A FIX FOR THE PHOTO, AND NOT PRETENDING TO BE: nothing here changes what the map draws. It makes the next photograph answerable in one glance. ONE COMMIT — `git revert` removes the line.'],
   ['1.43.3', 'THE WALL MAP SITS TIGHT ON THE FREIGHT NOW — THE DEAD BAND ABOVE AND BELOW THE STOPS IS GONE. Chad, with a screenshot of the framing he wanted: “i showed the exact frame of picture i wanted showing there is a bunch of wasted space above where my stops end and below them.” MEASURED ON THE LIVE BOARD BEFORE TOUCHING ANYTHING, at 1920x1080: the pins filled 79% of the height and 55% of the width, leaving 102px of dead map above them and 104px below. AND THE FRAME HE DREW TURNED OUT TO CROP NOTHING — read off its landmarks it is lat 33.15..34.95, lng -85.15..-82.80, while the day’s 796 stops span 33.35..34.83 and -84.99..-83.04. Every stop is inside it. He was not asking for freight to come off the wall, he was asking the frame to stop being loose, so nothing here drops a pin. THE CAUSE WAS A FLOORED ZOOM. A ZOOM STEP IS A FACTOR OF TWO, so flooring one throws away up to HALF the frame; that board wanted 8.25 and got 8, which is 16% of the height. The obvious repair is to ask Google for 8.25 — AND IT DOES NOT REFUSE ONE. Tested against the live API: a fractional zoom is read as ZOOM 0 and it returns a perfectly valid picture of the ENTIRE PLANET, three times over, with nothing anywhere saying why. A wall showing the world instead of Georgia is exactly the silent failure this screen keeps being rewritten to avoid, so the zoom stays a whole number and the leftover fraction of a step comes off the requested SIZE instead — coverage is width/(256·2^zoom), so a smaller picture at the same zoom covers proportionally less ground. scale=4 was the other idea and it is silently downgraded to scale=2 on this key; also tested, not assumed. THE PRICE, SAID PLAINLY: the requested image is now between 320 and 640 px wide instead of always 640, so the picture is stretched a little further across the pane — on Chad’s board 1.19x becomes about 1.41x. That is the cost of the frame being tight and it is the right trade on a screen read from across a room. THE RESULT, measured in a real browser on the real bundle: 98% of the height, up from 79%. THE WIDTH STAYS AT ABOUT 65% AND THAT IS GEOMETRY, NOT A BUG — the day’s freight is a 1.09-shaped cloud and the map pane beside the 400px flag rail is 1.55-shaped, so filling the width would mean cutting the top and bottom off the territory. The only lever on that is the rail’s width, and that is a layout call, not a fix. TWO THINGS THE GUARD ITSELF GOT WRONG FIRST, both caught by running it rather than reading it: its dead-space figures measured from the viewport origin instead of the pane’s, so the status bar counted as wasted map and “dead below” came out NEGATIVE; and its fixture happened to sit a hair above a whole zoom step, so the bug was worth only 5 points against a 3-point threshold — a check that could barely fail. The fixture is spread on purpose now: a floored zoom costs it a third of the frame, and the check reads 66% broken against 99% fixed. Rounding goes OUTWARD (ceil on the width, height derived from it) for the same reason snapBounds does — rounding the other way pushed the outermost stop a fraction of a pixel into the keep-out margin, which is invisible and the wrong direction. 4 new tests, and the fill assertion the old suite was missing: it only ever checked that nothing fell OUT of the frame, which a map zoomed far too far out passes perfectly. ONE COMMIT, so `git revert` is the whole way back; VITE_TV_STATIC_MAP=off still returns the wall to the live JS map.'],
@@ -10409,6 +10414,16 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                     invisible on a phone, because the desktop nav row and this chip menu
                     are built separately. Dispatch runs on a phone. Anything added to the
                     desktop MoreMenu belongs here too. */}
+                {/* Stop lookup is the one on this list most likely to be opened ON a phone —
+                    it is the screen you reach for with a customer talking, and the person
+                    taking that call is not always at a desk. Same order as the desktop menu. */}
+                <button
+                  className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+                  onClick={() => onSelectMenu('stoplookup')}
+                  role="menuitem"
+                >
+                  <Search size={12} /> Stop lookup
+                </button>
                 <button
                   className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
                   onClick={() => onSelectMenu('flaghistory')}
@@ -28719,7 +28734,7 @@ function Shell() {
     // named here or the phone menu silently opens the map instead — which is what
     // happened to Manifest check in v0.54.48: the desktop nav had it, the chip
     // menu did not, and there was no way to reach it from a phone at all.
-    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'uatbench'];
+    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms', 'flaghistory', 'addrhistory', 'stoplookup', 'uatbench'];
     setTab(next === 'diagnostics' ? 'diag' : KNOWN.includes(next) ? next : 'map');
   };
 
@@ -28858,6 +28873,11 @@ function Shell() {
               items={[
                 { id: 'manifest', label: 'Manifest check', hint: 'Uline nightly vs the scan', icon: <FileCheck size={14} />, badge: moreBadge },
                 { id: 'comms', label: 'Customer emails', hint: 'Delivery-complete email program', icon: <Mail size={14} /> },
+                // FIRST OF THE THREE HISTORY SCREENS, because it is the one a customer's
+                // phone call sends you to: the other two are LOGS you browse, this answers
+                // about ONE order. No badge, ever — nothing here is a problem waiting to be
+                // noticed, it is a question waiting to be asked.
+                { id: 'stoplookup', label: 'Stop lookup', hint: 'Everything we hold about one order — 0 NuVizz calls', icon: <Search size={14} /> },
                 { id: 'flaghistory', label: 'Flag history', hint: 'Every flag, and what happened to it', icon: <Flag size={14} /> },
                 { id: 'addrhistory', label: 'Address history', hint: addrBadge > 0 ? `${addrBadge} address${addrBadge === 1 ? '' : 'es'} to fix — wrong door, wrong pin, or no pin at all` : 'Every address that changed, and who changed it', icon: <MapPinned size={14} />, badge: addrBadge },
                 { id: 'diag', label: 'Diagnostics', hint: 'Scan health, API calls, schedule', icon: <Activity size={14} /> },
@@ -28890,7 +28910,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} onEnterTv={enterTv} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : tab === 'flaghistory' ? <FlagHistoryScreen /> : tab === 'addrhistory' ? <AddressHistoryScreen /> : tab === 'stoplookup' ? <StopLookupScreen /> : (tab === 'uatbench' && BENCH_ON) ? <UatBench /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} sendDenied={smsGate.reason} />}
@@ -33184,6 +33204,554 @@ function AddressHistoryListMobile({ rows }) {
           <div className="text-xs"><AddrDiff row={r} stacked /></div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── STOP LOOKUP — "look up any stop and its history we have in firestore" ────
+//
+// Chad, 2026-09-18: "i want to develop a stops screen under more where i can look up any
+// stop and it's history we have in firestore." He called it a stops screen; the menu calls
+// it Stop lookup, so it cannot be confused with the two LOGS that sit beside it (Address
+// history and Flag history list everything that moved — this answers about ONE order).
+//
+// THE QUESTION IT ANSWERS IN ONE TAP: type a PRO, get every day we hold for that order —
+// sealed history and today's board, who had it, what it did, every time its address moved,
+// and what we sent NuVizz about it. Before this that answer lived in four places and one of
+// them was a curl command: nuvizz-stop-explain has gathered a stop's whole board story for
+// free since v1.4.0 and has never had a door in the app.
+//
+// AND IT SPENDS NOTHING. The alternative today is a NuVizz call on an order already sitting
+// in our own Firestore — the exact complaint that produced the PRO index (Chad, 2026-09-15:
+// "this order is a week old why is it not in the history ... it shouldn't be asking for a
+// nuvizz call here"). The endpoint is Firestore-only and says so on the page.
+//
+// NO SEARCH-AS-YOU-TYPE, DELIBERATELY. One lookup reads the sealed warehouse, a fortnight of
+// board days, the attempts and plan documents and the write journal. Firing that per
+// keystroke would be ~200 Firestore reads per character for a screen nobody is done typing
+// into. Enter, or the button.
+
+/** What happened that day, in the word a dispatcher would use — and the colour that word
+ *  earns. `attempted` and `rolled` are amber rather than red on purpose: the freight is not
+ *  lost, it is coming back, and a screen that shouts at every roll stops being read. */
+const STOP_OUTCOMES = {
+  delivered: { label: 'Delivered', cls: 'bg-green-100 text-green-800 border-green-200', hint: 'Signed for and closed out' },
+  attempted: { label: 'Attempted', cls: 'bg-amber-100 text-amber-800 border-amber-200', hint: 'The freight came back — a redelivery was raised' },
+  exception: { label: 'Exception', cls: 'bg-red-100 text-red-800 border-red-200', hint: 'Closed unable to deliver' },
+  cancelled: { label: 'Cancelled', cls: 'bg-slate-200 text-slate-700 border-slate-300', hint: 'Pulled off the board' },
+  rolled: { label: 'Rolled', cls: 'bg-amber-100 text-amber-800 border-amber-200', hint: 'Did not finish this day and ran again later' },
+  unfinished: { label: 'Never finished', cls: 'bg-red-100 text-red-800 border-red-200', hint: 'A past day that never reached a terminal status, and no later day exists' },
+  open: { label: 'Open', cls: 'bg-blue-100 text-blue-800 border-blue-200', hint: 'On the board and not done yet' },
+};
+
+function StopOutcomeChip({ outcome }) {
+  const o = STOP_OUTCOMES[outcome] || { label: outcome || '—', cls: 'bg-slate-100 text-slate-600 border-slate-200', hint: '' };
+  return <span title={o.hint} className={`inline-block px-1.5 py-0.5 rounded border text-[10px] font-bold uppercase tracking-wide whitespace-nowrap ${o.cls}`}>{o.label}</span>;
+}
+
+/** WHICH DOCUMENTS THIS ROW WAS BUILT FROM. Not decoration: "sealed" is a fact that cannot
+ *  change again, "board" is a live copy that can, and a day showing only `board` on a past
+ *  date is a day the nightly capture missed. A dispatcher quoting a date down the phone
+ *  should be able to see which of those they are quoting. */
+const STOP_SOURCE_CHIP = {
+  sealed: { label: 'sealed', hint: 'The immutable end-of-night record — this cannot change again' },
+  board: { label: 'board', hint: "The live board copy, as of that day's last scan" },
+  plan: { label: 'plan', hint: 'The 8:30am routed freeze — who had it when the board froze' },
+  attempt: { label: 'attempt', hint: 'A redelivery marker was detected that evening' },
+};
+function StopSourceChips({ sources }) {
+  return (
+    <span className="inline-flex flex-wrap gap-1">
+      {(sources || []).map((s) => (
+        <span key={s} title={STOP_SOURCE_CHIP[s]?.hint || s}
+          className="inline-block px-1 py-0.5 rounded bg-slate-100 text-slate-500 text-[10px] font-mono">{STOP_SOURCE_CHIP[s]?.label || s}</span>
+      ))}
+    </span>
+  );
+}
+
+const stopWhen = (iso) => {
+  if (!iso) return '';
+  // The sealed record stores a local wall-clock string ("2026-09-15T14:19") with no zone.
+  // Date.parse would read that as UTC and print 10:19 — four hours early, on a screen whose
+  // entire job is telling somebody when we were there. Read the clock off the string.
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(iso));
+  if (m && !/[Zz]|[+-]\d{2}:?\d{2}$/.test(String(iso))) {
+    const h = Number(m[4]);
+    return `${((h + 11) % 12) + 1}:${m[5]}${h < 12 ? 'am' : 'pm'}`;
+  }
+  const t = Date.parse(String(iso));
+  if (!Number.isFinite(t)) return '';
+  return new Date(t).toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' });
+};
+
+/** The raw NuVizz status, but ONLY when it says something the outcome chip does not.
+ *  "DELIVERED" printed under a DELIVERED chip is the same fact twice and it pushed the row
+ *  taller for nothing; "SCHEDULED" under ATTEMPTED is exactly what a dispatcher needs to see,
+ *  because it says the board never closed the stop out. */
+function stopExtraStatus(row) {
+  const st = String(row?.status || '').trim().toUpperCase();
+  if (!st) return null;
+  const said = String(STOP_OUTCOMES[row?.outcome]?.label || '').toUpperCase();
+  return st === said ? null : st;
+}
+
+const stopFreight = (r) => [
+  r.pieces != null ? `${r.pieces} pc` : null,
+  r.pallets != null ? `${r.pallets} plt` : null,
+  r.weight != null ? `${r.weight} lb` : null,
+].filter(Boolean).join(' · ');
+
+/** DESKTOP: a table, because a dispatcher on a 1920px monitor comparing four days wants the
+ *  dates, drivers and times in columns they can run an eye down.
+ *
+ *  AND IT SHEDS COLUMNS ON THE WAY DOWN, because "desktop" reaches an iPad. The app serves
+ *  this layout to anything 768px and wider, and eight columns do not fit an 820px tablet —
+ *  verify-tablet-layout.mjs caught the eighth ("From") cut clean off the right edge inside
+ *  the card's own overflow-hidden, which is content a dispatcher cannot reach at all.
+ *
+ *  The order they go in is what it costs to lose them, not what is easiest to drop:
+ *    • FROM (the provenance chips) below xl — it says which documents built the row, which
+ *      is a question about the data rather than about the freight. It folds under the
+ *      outcome chip instead, so it is never actually gone.
+ *    • FREIGHT below lg — pieces and weight are on the paperwork in front of whoever is
+ *      asking. It folds under the address.
+ *  The six that stay are the six that answer the phone call: which day, what happened, whose
+ *  truck, when, and where we went. */
+function StopDayTable({ days }) {
+  return (
+    <div className="rounded-xl border bg-white overflow-hidden">
+      {/* AUTO layout, not table-fixed. The first cut set each column a percentage by hand,
+          which left "Address that day" about 6% and wrapped a real Peachtree Corners address
+          over six lines — four days that should read at a glance became a page of scrolling.
+          Shedding the two columns above is what prevents the overflow; the widths were never
+          doing that job, only making the surviving columns worse. */}
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
+          <tr>
+            <th className="text-left font-semibold px-3 py-2">Day</th>
+            <th className="text-left font-semibold px-3 py-2">What happened</th>
+            <th className="text-left font-semibold px-3 py-2">Route</th>
+            <th className="text-left font-semibold px-3 py-2">Driver</th>
+            <th className="text-left font-semibold px-3 py-2">Times</th>
+            <th className="hidden lg:table-cell text-left font-semibold px-3 py-2">Freight</th>
+            <th className="text-left font-semibold px-3 py-2">Address that day</th>
+            <th className="hidden xl:table-cell text-left font-semibold px-3 py-2">From</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y">
+          {days.map((r) => (
+            <tr key={r.date} className="align-top">
+              <td className="px-3 py-2 font-semibold text-slate-800 break-words">{formatDateForDisplay(r.date)}</td>
+              <td className="px-3 py-2"><StopOutcomeChip outcome={r.outcome} />
+                {stopExtraStatus(r) && <div className="text-[11px] text-slate-400 mt-0.5 font-mono break-words">{stopExtraStatus(r)}</div>}
+                {/* The provenance chips, folded in where the From column would have been. */}
+                <div className="xl:hidden mt-1"><StopSourceChips sources={r.sources} /></div></td>
+              <td className="px-3 py-2 text-slate-700 break-words">{r.route || <span className="text-slate-400">un-planned</span>}
+                {r.seq != null && <span className="text-[11px] text-slate-400"> · stop {r.seq}</span>}</td>
+              <td className="px-3 py-2 text-slate-700 break-words">{r.driver || <span className="text-slate-400">—</span>}
+                {r.currentDriver && r.currentDriver !== r.driver && (
+                  <div className="text-[11px] text-amber-700 break-words" title="Who the stop was moved onto afterwards — never who attempted it">then {r.currentDriver}</div>
+                )}</td>
+              <td className="px-3 py-2 text-[11px] text-slate-600 break-words">
+                {r.arrivedAt && <div>arrived {stopWhen(r.arrivedAt)}</div>}
+                {r.deliveredAt && <div className="font-semibold text-slate-800">delivered {stopWhen(r.deliveredAt)}</div>}
+                {!r.arrivedAt && !r.deliveredAt && <span className="text-slate-400">—</span>}
+              </td>
+              <td className="hidden lg:table-cell px-3 py-2 text-[11px] text-slate-600 break-words">{stopFreight(r) || <span className="text-slate-400">—</span>}
+                {r.pod > 0 && <div className="text-[11px] text-green-700">{r.pod} POD</div>}</td>
+              <td className="px-3 py-2 text-[11px] text-slate-600 min-w-0">
+                {r.address ? (<><div className="break-words">{[r.address.addr1, r.address.addr2].filter(Boolean).join(' · ')}</div>
+                  <div className="text-slate-400 break-words">{[r.address.city, r.address.state, r.address.zip].filter(Boolean).join(', ')}</div></>)
+                  : <span className="text-slate-400">—</span>}
+                {/* Freight, folded in where its column would have been. */}
+                {stopFreight(r) && <div className="lg:hidden text-slate-500 break-words">{stopFreight(r)}{r.pod > 0 ? ` · ${r.pod} POD` : ''}</div>}
+              </td>
+              <td className="hidden xl:table-cell px-3 py-2"><StopSourceChips sources={r.sources} /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** PHONE: cards. The same eight facts, stacked — a table at 360px is a sideways scroll, and
+ *  this screen gets opened one-handed with a customer talking. */
+function StopDayListMobile({ days }) {
+  return (
+    <div className="space-y-2">
+      {days.map((r) => (
+        <div key={r.date} className="rounded-xl border bg-white p-3 space-y-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <StopOutcomeChip outcome={r.outcome} />
+            <span className="text-xs font-semibold text-slate-800">{formatDateForDisplay(r.date)}</span>
+            <span className="ml-auto"><StopSourceChips sources={r.sources} /></span>
+          </div>
+          <div className="text-xs text-slate-700 break-words">
+            {r.route || 'un-planned'}{r.seq != null ? ` · stop ${r.seq}` : ''}{r.driver ? ` · ${r.driver}` : ''}
+          </div>
+          {r.currentDriver && r.currentDriver !== r.driver && (
+            <div className="text-[11px] text-amber-700 break-words">moved onto {r.currentDriver} afterwards</div>
+          )}
+          {(r.arrivedAt || r.deliveredAt) && (
+            <div className="text-[11px] text-slate-600">
+              {r.arrivedAt ? `arrived ${stopWhen(r.arrivedAt)}` : ''}{r.arrivedAt && r.deliveredAt ? ' · ' : ''}
+              {r.deliveredAt ? <span className="font-semibold text-slate-800">delivered {stopWhen(r.deliveredAt)}</span> : ''}
+            </div>
+          )}
+          {stopFreight(r) && <div className="text-[11px] text-slate-500">{stopFreight(r)}{r.pod > 0 ? ` · ${r.pod} POD` : ''}</div>}
+          {r.address && (
+            <div className="text-[11px] text-slate-500 break-words">
+              {[r.address.addr1, r.address.addr2].filter(Boolean).join(' · ')}
+              <span className="text-slate-400"> {[r.address.city, r.address.state, r.address.zip].filter(Boolean).join(', ')}</span>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** The header: who this is, and the one-line answer to "how often are we here". */
+function StopIdentityCard({ d, stacked }) {
+  const id = d.identity || {};
+  const refs = [
+    id.refs?.po ? ['PO', id.refs.po] : null,
+    id.refs?.custRef ? ['Cust #', id.refs.custRef] : null,
+    id.refs?.bol ? ['BOL', id.refs.bol] : null,
+    id.refs?.orderNbr ? ['Order', id.refs.orderNbr] : null,
+    id.refs?.shipmentNbr && id.refs.shipmentNbr !== id.refs.stopNbr ? ['Shipment', id.refs.shipmentNbr] : null,
+  ].filter(Boolean);
+  return (
+    <div className="rounded-xl border bg-white p-3 sm:p-4 space-y-2">
+      <div className={`flex ${stacked ? 'flex-col gap-1' : 'items-start justify-between gap-4'}`}>
+        <div className="min-w-0">
+          <div className="font-mono text-sm font-bold text-slate-900 break-all">{id.pro || d.query}</div>
+          <div className="text-base font-semibold text-slate-800 break-words">{id.name || <span className="text-slate-400 font-normal">no business name on any record we hold</span>}</div>
+          {id.address && (
+            <div className="text-xs text-slate-500 break-words">
+              {[id.address.addr1, id.address.addr2].filter(Boolean).join(' · ')}
+              {' '}{[id.address.city, id.address.state, id.address.zip].filter(Boolean).join(', ')}
+            </div>
+          )}
+          {/* WHICH DAY THE HEADER IS AS OF. An address that moved makes "the address" a
+              question rather than a fact, and the day list below already shows both. */}
+          {id.asOf && <div className="text-[11px] text-slate-400">as of {formatDateForDisplay(id.asOf)}</div>}
+        </div>
+        <div className={`text-xs text-slate-600 ${stacked ? '' : 'text-right shrink-0'}`}>
+          <div className="font-semibold text-slate-800">{d.counts.days} day{d.counts.days === 1 ? '' : 's'} on file</div>
+          <div>{d.counts.delivered} delivered · {d.counts.attempts} attempt{d.counts.attempts === 1 ? '' : 's'}{d.counts.exceptions ? ` · ${d.counts.exceptions} exception` : ''}</div>
+          {d.firstSeen && <div className="text-[11px] text-slate-400">{d.firstSeen === d.lastSeen ? formatDateForDisplay(d.firstSeen) : `${formatDateForDisplay(d.firstSeen)} → ${formatDateForDisplay(d.lastSeen)}`}</div>}
+        </div>
+      </div>
+      {!!refs.length && (
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-500 border-t pt-2">
+          {refs.map(([k, v]) => <span key={k} className="break-all"><span className="uppercase tracking-wide text-slate-400">{k}</span> <span className="font-mono text-slate-700">{v}</span></span>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The dispatcher note, the receiving hours and the flags that change what you may promise. */
+function StopNotesCard({ notes }) {
+  if (!notes) return null;
+  const has = notes.text || notes.flags.length || notes.contacts.length || notes.hours || notes.customerNbr;
+  if (!has) return null;
+  return (
+    <div className="rounded-xl border bg-white p-3 space-y-2">
+      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Dispatcher notes for this customer</div>
+      {!!notes.flags.length && (
+        <div className="flex flex-wrap gap-1.5">
+          {notes.flags.map((f) => (
+            <span key={f.key} className={`inline-block px-1.5 py-0.5 rounded border text-[10px] font-bold uppercase tracking-wide ${
+              f.tone === 'amber' ? 'bg-amber-100 text-amber-800 border-amber-200'
+                : f.tone === 'blue' ? 'bg-blue-100 text-blue-800 border-blue-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>{f.label}</span>
+          ))}
+        </div>
+      )}
+      {notes.text && <div className="text-sm text-slate-700 whitespace-pre-wrap break-words">{notes.text}</div>}
+      {notes.customerNbr && <div className="text-[11px] text-slate-500">Customer # <span className="font-mono text-slate-700">{notes.customerNbr}</span></div>}
+      {!!notes.contacts.length && (
+        <div className="text-[11px] text-slate-600 space-y-0.5">
+          {notes.contacts.map((c, i) => (
+            <div key={`${c.phone || c.email}-${i}`} className="break-words">{[c.name, c.phone, c.email].filter(Boolean).join(' · ')}</div>
+          ))}
+        </div>
+      )}
+      {notes.updatedAt && <div className="text-[11px] text-slate-400">saved {addrTime(notes.updatedAt)}{notes.updatedBy ? ` by ${notes.updatedBy}` : ''}</div>}
+    </div>
+  );
+}
+
+/** The rest of this customer's deliveries, each a one-tap lookup of its own. */
+function StopCustomerCard({ customer, currentPro, onPick }) {
+  const pros = (customer?.pros || []).filter((p) => p && p.pro && String(p.pro) !== String(currentPro || ''));
+  if (!pros.length) return null;
+  return (
+    <div className="rounded-xl border bg-white p-3 space-y-2">
+      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Other deliveries to {customer.name || 'this customer'}</div>
+      <div className="flex flex-wrap gap-1.5">
+        {pros.map((p) => (
+          <button key={`${p.pro}-${p.date}`} onClick={() => onPick(p.pro)}
+            className="rounded-lg border px-2 min-h-[40px] text-[11px] bg-white hover:bg-slate-50 text-left">
+            <span className="font-mono font-semibold text-slate-800">{p.pro}</span>
+            <span className="text-slate-500"> · {formatDateForDisplay(p.date)}{p.driver ? ` · ${p.driver}` : ''}</span>
+          </button>
+        ))}
+      </div>
+      <div className="text-[11px] text-slate-400">From our own per-customer rollup — the twenty most recent. Older ones are still findable by their PRO.</div>
+    </div>
+  );
+}
+
+/** What WE sent NuVizz about this order. The answer to "did that save actually go?" */
+function StopWritesCard({ writes }) {
+  if (!writes?.length) return null;
+  return (
+    <div className="rounded-xl border bg-white p-3 space-y-1.5">
+      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">What we sent NuVizz about this order</div>
+      {writes.map((w, i) => (
+        <div key={`${w.at}-${i}`} className="text-[11px] flex flex-wrap items-baseline gap-x-2 border-b last:border-b-0 pb-1 last:pb-0">
+          <span className="text-slate-400 whitespace-nowrap">{addrTime(w.at)}</span>
+          <span className="font-mono font-semibold text-slate-700">{w.op}</span>
+          <span className={`font-semibold ${String(w.status).toLowerCase() === 'ok' ? 'text-green-700' : 'text-red-700'}`}>{w.status}</span>
+          <span className="text-slate-600 break-words min-w-0">{w.summary}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** THE LEDGER — every collection that was read, and what it held.
+ *
+ *  ALWAYS on the page, and OPEN by default when nothing was found. "Nothing on file" and
+ *  "the read failed" render as the same blank screen otherwise, and only one of them is a
+ *  reason to go and spend a NuVizz call. It is the same argument as the dry run in CLAUDE.md:
+ *  a job that acts on its own needs a way to say what it just did. */
+const STOP_LEDGER_DOT = { found: 'bg-green-500', empty: 'bg-slate-300', skipped: 'bg-slate-200', unread: 'bg-red-500' };
+const STOP_LEDGER_TEXT = { found: 'text-green-700', empty: 'text-slate-400', skipped: 'text-slate-300', unread: 'text-red-700' };
+
+function StopSourceLedger({ sources, errors, open, onToggle }) {
+  const unread = (sources || []).filter((s) => s.state === 'unread').length;
+  return (
+    <div className="rounded-xl border bg-white">
+      <button onClick={onToggle} aria-expanded={open}
+        className="w-full text-left px-3 min-h-[44px] flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-500 hover:bg-slate-50 rounded-xl">
+        Where we looked
+        <span className="font-normal normal-case tracking-normal text-slate-400">
+          {sources.filter((s) => s.found).length} of {sources.length} held something{unread ? ` · ${unread} could not be read` : ''}
+        </span>
+        <ChevronDown size={13} className={`ml-auto shrink-0 ${open ? 'rotate-180' : ''} transition-transform`} />
+      </button>
+      {open && (
+        <div className="px-3 pb-3 space-y-1">
+          {sources.map((s) => (
+            <div key={s.key} className="text-[11px] flex flex-wrap items-baseline gap-x-2 border-b last:border-b-0 py-1">
+              {/* THREE STATES, NOT TWO. A source that FAILED is red; a source there was nothing
+                  to look it up BY — the customer rollup and the note, keyed by a customer we
+                  only learn from the stop itself — is grey and says n/a. Painting those red
+                  made every genuine miss look like a broken screen. */}
+              <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${STOP_LEDGER_DOT[s.state] || 'bg-slate-300'}`} />
+              <span className="font-semibold text-slate-700">{s.label}</span>
+              <span className="font-mono text-slate-400 break-all">{s.where}</span>
+              <span className={`ml-auto whitespace-nowrap font-semibold ${STOP_LEDGER_TEXT[s.state] || 'text-slate-400'}`}>
+                {s.state === 'unread' ? 'NOT READ' : s.state === 'skipped' ? 'n/a' : s.found ? `${s.count}` : 'nothing'}
+              </span>
+              {(s.note || errors?.[s.key]) && (
+                <div className="w-full text-slate-400 break-words">{errors?.[s.key] ? `${errors[s.key]}` : s.note}</div>
+              )}
+            </div>
+          ))}
+          <div className="text-[11px] text-slate-400 pt-1">
+            Read straight from our own Firestore. Zero NuVizz calls — this screen never spends a vendor call.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The name door: the rep has a business name and no PRO. */
+function StopNameResults({ customers, onPick }) {
+  if (!customers?.length) return null;
+  return (
+    <div className="space-y-2">
+      {customers.map((c) => (
+        <div key={c.matchKey || c.name} className="rounded-xl border bg-white p-3 space-y-2">
+          <div className="min-w-0">
+            <div className="font-semibold text-slate-800 break-words">{c.name}</div>
+            <div className="text-[11px] text-slate-500 break-words">{[c.addr1, c.city, c.state, c.zip].filter(Boolean).join(', ')}</div>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {(c.pros || []).slice(0, 12).map((p) => (
+              <button key={`${p.pro}-${p.date}`} onClick={() => onPick(p.pro)}
+                className="rounded-lg border px-2 min-h-[40px] text-[11px] bg-white hover:bg-slate-50 text-left">
+                <span className="font-mono font-semibold text-slate-800">{p.pro}</span>
+                <span className="text-slate-500"> · {formatDateForDisplay(p.date)}</span>
+              </button>
+            ))}
+            {!(c.pros || []).length && <span className="text-[11px] text-slate-400">no PROs on the rollup for this customer</span>}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const STOP_LOOKUP_LAST = 'dd_stop_lookup_last';
+
+function StopLookupScreen() {
+  const viewportWidth = useViewportWidth();
+  const isMobile = viewportWidth < MOBILE_BREAKPOINT;
+  // The BOX is remembered, the SEARCH is not. Coming back to the same order is the common
+  // case, so the number should still be there — but re-running a ~200-read lookup on every
+  // screen open, for a screen somebody may have opened to type something else, is not a
+  // convenience, it is a cost nobody asked for.
+  const [q, setQ] = useState(() => {
+    try { return localStorage.getItem(STOP_LOOKUP_LAST) || ''; } catch { return ''; }
+  });
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+  const [ledgerOpen, setLedgerOpen] = useState(false);
+
+  const run = useCallback(async (raw) => {
+    const term = String(raw ?? '').trim();
+    if (!term) return;
+    setLoading(true); setErr(null);
+    try { localStorage.setItem(STOP_LOOKUP_LAST, term); } catch { /* private mode — a remembered box is a convenience, never a requirement */ }
+    try {
+      // The endpoint decides stop-vs-name with the same rule the screen would, so the box
+      // stays one box: `classifyQuery` lives in src/lib/stop-lookup.js and BOTH sides read it.
+      const param = classifyQuery(term).kind === 'name' ? `name=${encodeURIComponent(term)}` : `stop=${encodeURIComponent(term)}`;
+      const r = await apiFetch(`/.netlify/functions/stop-lookup?${param}`);
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'lookup failed');
+      setData(j);
+      // The ledger opens itself exactly when it is the answer: nothing was found, or a read
+      // failed. On a populated screen it stays out of the way.
+      setLedgerOpen(j.mode === 'stop' && (!j.dossier?.found || Object.keys(j.errors || {}).some((k) => k !== 'notes' && k !== 'customer' && k !== 'pros')));
+    } catch (e) { setErr(String(e.message || e)); setData(null); } finally { setLoading(false); }
+  }, []);
+
+  const pick = useCallback((pro) => { setQ(String(pro)); run(pro); }, [run]);
+
+  const d = data?.mode === 'stop' ? data.dossier : null;
+
+  return (
+    <div className="flex-1 overflow-y-auto bg-slate-50">
+      <div className={`${SCREEN_DASH} p-4 sm:p-6 space-y-4`}>
+        {/* THE LITERAL "Stop lookup" STAYS IN THE BODY. verify-desktop-layout.mjs proves the
+            screen arrived with document.body.innerText.includes('Stop lookup') — rename it
+            and a screen that opened perfectly fails as "could not be opened". */}
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="min-w-0">
+            <h1 className="text-xl font-bold text-slate-900">Stop lookup</h1>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Every stop we have ever captured — type a PRO, a stop number or a customer name.
+            </p>
+          </div>
+          <span className="text-[11px] font-semibold text-green-800 bg-green-50 border border-green-200 rounded-lg px-2 py-1 whitespace-nowrap">0 NuVizz calls</span>
+        </div>
+
+        <form
+          onSubmit={(e) => { e.preventDefault(); run(q); }}
+          className="rounded-xl border bg-white p-2 flex items-center gap-2"
+        >
+          <Search size={14} className="text-slate-400 shrink-0 ml-1" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="007174397, AVRT-0170416694, or LED ENERGY PLUS"
+            aria-label="Find a stop by PRO, stop number or customer name"
+            // DESKTOP ONLY. This screen is a search box and nothing else, so on a laptop the
+            // cursor belongs in it. On a phone autoFocus throws the keyboard up over half the
+            // screen the moment the tab opens — and this app already fights iOS's visual
+            // viewport for the shell's own position (see the `position: fixed` block in Shell).
+            // Two views, two answers.
+            autoFocus={!isMobile}
+            className="flex-1 min-w-0 text-sm min-h-[40px] px-1 focus:outline-none"
+          />
+          {q && <button type="button" onClick={() => { setQ(''); setData(null); setErr(null); }} className="text-xs text-slate-500 hover:text-slate-800 px-2 min-h-[40px]">Clear</button>}
+          <button type="submit" disabled={!q.trim() || loading}
+            className="rounded-lg border px-3 min-h-[40px] text-xs font-semibold bg-slate-900 text-white disabled:opacity-40 whitespace-nowrap">
+            {loading ? 'Looking…' : 'Look up'}
+          </button>
+        </form>
+
+        {err && <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3 break-words">{err}</div>}
+
+        {!data && !loading && !err && (
+          <div className="rounded-xl border bg-white p-4 sm:p-6 space-y-2">
+            <div className="text-sm font-semibold text-slate-800">What this screen can answer, without spending a vendor call</div>
+            <ul className="text-xs text-slate-600 space-y-1 list-disc pl-5">
+              <li>Every day we hold this order — the sealed nightly history and today&rsquo;s live board.</li>
+              <li>Who had it, what route it ran on, what happened, and the minute it delivered.</li>
+              <li>Whether the freight came back, and who had it that morning rather than that evening.</li>
+              <li>Every time its address moved, what it moved from and to, and whether that was NuVizz or us.</li>
+              <li>What we sent NuVizz about it, and whether the write took.</li>
+            </ul>
+            <div className="text-[11px] text-slate-400">
+              A bare PRO finds the zero-padded one NuVizz stores, and a segmented stop number finds its order.
+            </div>
+          </div>
+        )}
+
+        {data?.mode === 'name' && (
+          data.customers?.length
+            ? <StopNameResults customers={data.customers} onPick={pick} />
+            : <div className="rounded-xl border bg-white p-6 text-center">
+              <div className="text-sm font-semibold text-slate-700">No customer matches &ldquo;{data.query}&rdquo;.</div>
+              <div className="text-xs text-slate-500 mt-1">The name search reads our per-customer rollup, which is built from sealed history — a customer we have never delivered to is not in it.</div>
+            </div>
+        )}
+
+        {d && (<>
+          {d.found
+            ? <StopIdentityCard d={d} stacked={isMobile} />
+            : (
+              // TWO DIFFERENT SENTENCES, AND GETTING THIS WRONG IS THE BUG THIS SCREEN EXISTS TO
+              // PREVENT. The first cut printed "every source was read and came back empty" over a
+              // ledger three inches below saying three of them had NOT been read — the screen
+              // contradicting itself about the one fact that decides whether to go and spend a
+              // vendor call. `complete` is false the moment a source that could have LOCATED the
+              // order failed, and then this refuses to call the order new.
+              <div className={`rounded-xl border p-4 sm:p-6 ${d.complete ? 'border-amber-200 bg-amber-50' : 'border-red-200 bg-red-50'}`}>
+                <div className={`text-sm font-semibold ${d.complete ? 'text-amber-900' : 'text-red-900'}`}>
+                  {d.complete ? <>Nothing on file for &ldquo;{d.query}&rdquo;.</> : <>We could not finish looking for &ldquo;{d.query}&rdquo;.</>}
+                </div>
+                <div className={`text-xs mt-1 ${d.complete ? 'text-amber-800' : 'text-red-800'}`}>
+                  {d.complete
+                    ? 'Every source that could have found it was read and came back empty — so this is not a failed lookup, it is an order we have genuinely never captured. That is the one case where asking NuVizz itself is the right next move.'
+                    : `${(d.unreadSources || []).join(' and ')} could not be read, so “nothing found” is not an answer we can stand behind yet. Try again before treating this as an order we have never seen.`}
+                </div>
+                <div className={`text-[11px] mt-1 ${d.complete ? 'text-amber-700' : 'text-red-700'}`}>Board window {data.window?.from} → {data.window?.to}. Tried as {data.candidates?.join(', ')}.</div>
+              </div>
+            )}
+
+          {!!d.days.length && (isMobile ? <StopDayListMobile days={d.days} /> : <StopDayTable days={d.days} />)}
+
+          {!!d.addressChanges.length && (
+            <div className="space-y-2">
+              <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Every time this address moved</div>
+              {/* THE CARD LIST AT EVERY WIDTH, deliberately, and not the Address history TABLE.
+                  That table is built for a 700-stop day where columns are the whole point; here
+                  there are usually one or two rows, and a two-row table earns none of its
+                  chrome — it just runs its own columns off the right edge of an iPad, which is
+                  what it did on the first cut of this screen. Same rows, same components, the
+                  shape that suits a per-order page. */}
+              <AddressHistoryListMobile rows={d.addressChanges} />
+            </div>
+          )}
+
+          <StopNotesCard notes={d.notes} />
+          <StopCustomerCard customer={d.customer} currentPro={d.identity?.pro} onPick={pick} />
+          <StopWritesCard writes={d.writes} />
+          <StopSourceLedger sources={d.sources} errors={data.errors} open={ledgerOpen} onToggle={() => setLedgerOpen((v) => !v)} />
+        </>)}
+      </div>
     </div>
   );
 }

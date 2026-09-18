@@ -48,6 +48,14 @@
   # stop, and the DEFAULT would kill a slow list with an HTML 502 the client cannot parse.
   [functions."nuvizz-stop-explain"]
     timeout = 26
+  # "Everything we hold about this stop" — the Stop lookup screen under More. Same shape and
+  # same reason as the explainer above: Firestore only, ZERO NuVizz calls, but it reads the
+  # sealed warehouse over the PRO index's days, the live board across a 18-day window, the
+  # attempts and morning-plan documents for the days that answered, and the write journal.
+  # On the 10s DEFAULT a slow list would be killed and return an HTML 502 the client cannot
+  # parse ("Unexpected token '<'") — the same failure the explorer and the write path hit.
+  [functions."stop-lookup"]
+    timeout = 26
   # The two LIVE-BOARD engine endpoints (driver drafts and end-of-night cleanup).
   # Both are Firestore-only — ZERO NuVizz calls — but a dispatcher is waiting on a
   # real assignment solve over a whole unplanned pool. On the 10s DEFAULT a busy
