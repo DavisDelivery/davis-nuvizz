@@ -396,3 +396,24 @@ test('a customer we genuinely have not been to reports COMPLETE, so the rep can 
     assert.equal(body.view.name, 'earthly alternative', 'the name as typed, so the screen can say who it looked for');
   } finally { fake.restore(); }
 });
+
+test('ONE CLOCK DECIDES WHICH DAY IS TODAY — the server one that counted the stats', async () => {
+  // Caught in a screenshot of this very screen: the header said "4 stops today" while the
+  // TODAY chip sat on a different day. The stat tiles count against the SERVER's ET today;
+  // if the day chip compared against the BROWSER's clock they can disagree — reachable at
+  // 8pm ET, when a UTC browser has ticked over and the board has not, or on a bad clock.
+  const src = await import('node:fs').then((fs) => fs.readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8'));
+  assert.match(src, /\{day\.isToday && <span/, 'the chip must read the server-computed flag');
+  assert.ok(!/CustomerDayHeading\({ day, today/.test(src), 'and must not take a client clock at all');
+  // …and buildCustomerView is where that flag is set, off the `today` the endpoint passed.
+  const v = buildCustomerView({
+    query: 'earthly', name: 'EARTHLY ALTERNATIVE', today: '2026-09-18',
+    window: { from: '2026-09-17', to: '2026-09-18', days: 2 },
+    stops: [
+      { date: '2026-09-18', source: 'board', stop: ea({ stopNbr: 'A' }) },
+      { date: '2026-09-17', source: 'board', stop: ea({ stopNbr: 'B' }) },
+    ],
+  });
+  assert.deepEqual(v.days.map((d) => [d.date, d.isToday]), [['2026-09-18', true], ['2026-09-17', false]]);
+  assert.equal(v.todayCounts.stops, 1, 'and the tiles count the same day the chip marks');
+});
