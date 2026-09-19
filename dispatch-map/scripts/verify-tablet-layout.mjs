@@ -121,7 +121,17 @@ const PROBES = {
       if (await tab.isVisible().catch(() => false)) { await tab.click(); await page.waitForTimeout(300); }
       return openByName(page, /^correct$/i);
     } },
-    { name: 'Carrier-changed section', open: async (page) => openByName(page, /nuvizz changed it/i) },
+    // "NuVizz changed it" is a TAB (role=tab), not a button — the phone guard has always opened
+    // it as one. This probe asked for a button by that name, got nothing, and was silently
+    // skipped on every tablet from the day it was written; the loud-failure rule above is what
+    // finally said so. Opened the way the phone opens it, and PROVEN open before measuring.
+    { name: 'Carrier-changed section', open: async (page) => {
+      const tab = page.getByRole('tab', { name: /nuvizz changed it/i }).first();
+      if (!(await tab.isVisible().catch(() => false))) return false;
+      await tab.click().catch(() => {});
+      await page.waitForTimeout(400);
+      return page.getByRole('tab', { name: /nuvizz changed it/i, selected: true }).first().isVisible().catch(() => false);
+    } },
   ],
 };
 
