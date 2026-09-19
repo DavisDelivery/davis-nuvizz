@@ -5,7 +5,8 @@
 //
 //   GET ?stop=007174397          one order's whole Firestore footprint
 //   GET ?stop=AVRT-0170416694    carrier PROs, segmented PROs and bare PROs all resolve
-//   GET ?name=LED ENERGY         customers whose name matches, each with their recent PROs
+//   GET ?name=LED ENERGY         that customer's deliveries over a window, with drivers
+//   GET ?name=…&year=2026        a YEAR of that customer, counted nightly rather than swept
 //   GET ?stop=…&days=30          widen the board window (default 14 back / 3 ahead, max 60)
 //   → { ok, nuvizzCalls: 0, dossier, window, errors, … }
 //
@@ -70,8 +71,8 @@ import { selectWriteRows } from './nuvizz-stop-explain.mts';
 import { requireUser } from './lib/require-user.mts';
 import { resolveRange, selectionFromParams } from '../../src/lib/history-range.js';
 import {
-  buildStopDossier, buildCustomerView, classifyQuery, stopIdVariants, notesSummary, isDayId,
-  customerNameKey, nameMatchesQuery,
+  buildStopDossier, buildCustomerView, buildCustomerYear, classifyQuery, stopIdVariants,
+  notesSummary, isDayId, customerNameKey, nameMatchesQuery,
 } from '../../src/lib/stop-lookup.js';
 
 const TENANT = 'davis';
@@ -178,6 +179,74 @@ export default async (req: Request): Promise<Response> => {
   // The sealed warehouse is swept alongside it for the same days: the seal is the record that
   // cannot change again, and a past day with only a board copy is a day the capture missed —
   // both facts belong on the row rather than being flattened away.
+  // ── ?year=2026 — A YEAR WITHOUT READING A YEAR OF BOARDS ───────────────────
+  //
+  // Chad, 2026-09-19: "I want there to be a this year button in the date ranges."
+  //
+  // The window path below sweeps a whole board per day, twice — ~1,400 document reads per day
+  // of window. A year of that is ~510,000 reads: it would not finish inside this function's 26
+  // seconds, and nobody holds a phone that long. A button that times out is worse than no
+  // button, so the year is READ rather than swept.
+  //
+  // lib/history-customers.mts counts four numbers per month into the per-customer rollup as
+  // the nightly post-seal hook passes over each sealed day. This costs ONE DOCUMENT per dock,
+  // and it makes NO board reads at all — which is why it is handled before the sweep is even
+  // set up rather than as a wider case of it.
+  //
+  // THE MONTHS IT HAS NOT COUNTED ARE REPORTED AS UNCOUNTED, NEVER AS ZERO. A rollup written
+  // before the tally shipped has no months at all, and that is indistinguishable from a
+  // customer we never delivered to unless the answer says so. Backfill with
+  // nuvizz-rebuild-customer-history-background (?from=&to=), a month at a time.
+  if (!stopRaw && nameRaw && url.searchParams.get('year')) {
+    const year = String(url.searchParams.get('year') || '').trim();
+    if (!/^\d{4}$/.test(year)) return J({ ok: false, error: 'year must be YYYY' }, 400);
+
+    const matchedR = await tryRead(() => queryCustomersByName(nameRaw, NAME_RESULTS), [] as any[]);
+    const wantKey = String(url.searchParams.get('nameKey') || '').trim();
+    const mine = matchedR.value.filter((c: any) => {
+      const k = customerNameKey(c?.name);
+      return k && (wantKey ? k === wantKey : true);
+    });
+    // Distinct businesses, so the chooser rule matches the window path's exactly.
+    const names = [...new Set(mine.map((c: any) => customerNameKey(c?.name)).filter(Boolean))];
+    if (!wantKey && names.length > 1) {
+      return J({
+        ok: true, nuvizzCalls: 0, mode: 'customer-choose', query: nameRaw, today, year,
+        complete: matchedR.read,
+        matches: names.map((k) => {
+          const first = mine.find((c: any) => customerNameKey(c?.name) === k);
+          return { name: first?.name || nameRaw, nameKey: k, stops: 0, today: 0, lastDate: first?.lastDate ?? null, source: 'rollup' };
+        }),
+        note: 'Firestore only — nothing here spent a NuVizz call.',
+      });
+    }
+
+    const chosenName = mine[0]?.name || nameRaw;
+    const view = buildCustomerYear({ year, today, customers: mine });
+    return J({
+      ok: true, nuvizzCalls: 0, mode: 'customer-year', query: nameRaw, today, year,
+      name: chosenName, nameKey: customerNameKey(chosenName),
+      view,
+      sources: [
+        { key: 'customer', label: 'Customer rollup', where: 'history_customers',
+          note: `${mine.length} location document${mine.length === 1 ? '' : 's'} — the year is counted nightly, not swept`,
+          looked: matchedR.read, count: mine.length, found: matchedR.read && mine.length > 0,
+          state: matchedR.read ? (mine.length ? 'found' : 'empty') : 'unread' },
+        // NAMED, not omitted. The year deliberately reads NO board or warehouse day — that is
+        // the whole design — and a ledger that simply left them out would look like an
+        // oversight rather than a decision.
+        { key: 'board', label: "Today's board", where: 'nuvizz_stop_index/…/stops',
+          note: 'not read for a year — that is ~510,000 documents; pick Today / 7 / 14 days for stop-by-stop detail',
+          looked: 'skipped', count: 0, found: false, state: 'skipped' },
+        { key: 'sealed', label: 'Sealed history', where: 'history_days/…/stops',
+          note: 'not read for a year, for the same reason — its counts are folded into the rollup nightly instead',
+          looked: 'skipped', count: 0, found: false, state: 'skipped' },
+      ],
+      errors: Object.fromEntries(Object.entries({ customer: matchedR.error }).filter(([, v]) => v)),
+      note: 'Firestore only — nothing here spent a NuVizz call.',
+    });
+  }
+
   if (!stopRaw && nameRaw) {
     const sel = selectionFromParams((k: string) => url.searchParams.get(k));
     // The screen and this endpoint resolve the identical selection through the identical

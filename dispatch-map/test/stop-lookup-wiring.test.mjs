@@ -147,3 +147,31 @@ test('the version log has a row for the version the footer will show', () => {
   const v = /const APP_VERSION = '([^']+)'/.exec(APP)[1];
   assert.ok(APP.includes(`['${v}', '`), `VERSION_LOG needs a row for v${v}`);
 });
+
+test('THIS YEAR IS A MODE, NOT A WIDER WINDOW', () => {
+  // The whole point. A year cannot be a range this screen resolves — that would be ~510,000
+  // document reads and a timeout. The endpoint answers it from the nightly tally instead, and
+  // the client must ask for it as `year=`, never as a from/to.
+  assert.match(APP, /const \[yearOn, setYearOn\] = useState\(false\)/, 'the year is its own state');
+  assert.match(APP, /p\.set\('year', String\(opts\.year\)\)/, 'and its own parameter');
+  assert.match(FN, /mode: 'customer-year'/, 'served by its own branch');
+  // And that branch must never sweep a day. Pinned structurally: the year returns before the
+  // window path's readStops/listSealedStops are ever set up.
+  const year = FN.slice(FN.indexOf("url.searchParams.get('year')"), FN.indexOf("if (!stopRaw && nameRaw) {"));
+  assert.ok(!/readStops\(|listSealedStops\(/.test(year), 'the year branch reads no board or warehouse day');
+});
+
+test('the year names the day sources it SKIPPED, rather than omitting them', () => {
+  // A ledger that simply left them out would read as an oversight. The year deliberately does
+  // not read them, and says so with the number that makes the decision obvious.
+  assert.match(FN, /not read for a year — that is ~510,000 documents/);
+});
+
+test('the guards drive all THREE modes off one URL, the way the endpoint does', () => {
+  for (const f of ['verify-mobile-layout.mjs', 'verify-tablet-layout.mjs']) {
+    const src = readFileSync(new URL(`../scripts/${f}`, import.meta.url), 'utf8');
+    assert.match(src, /import \{ CUSTOMER_YEAR \} from '\.\/lib\/customer-year-fixture\.mjs'/, f);
+    assert.match(src, /u\.includes\('year='\) \? CUSTOMER_YEAR/, `${f} must stub the year mode`);
+    assert.match(src, /a customer year/, `${f} must probe it`);
+  }
+});
