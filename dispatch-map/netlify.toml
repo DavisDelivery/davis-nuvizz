@@ -56,6 +56,12 @@
   # parse ("Unexpected token '<'") — the same failure the explorer and the write path hit.
   [functions."stop-lookup"]
     timeout = 26
+  # The promoted call beside it: ONE /stop/info through the shared requester (its own per-
+  # attempt deadline and retries) plus a warehouse create and a pointer write. The requester's
+  # retry-with-backoff alone can pass 10s on a slow vendor day, and a 502 here would read as
+  # "NuVizz has nothing" — the one answer this endpoint must never give by accident.
+  [functions."stop-lookup-promote"]
+    timeout = 26
   # The two LIVE-BOARD engine endpoints (driver drafts and end-of-night cleanup).
   # Both are Firestore-only — ZERO NuVizz calls — but a dispatcher is waiting on a
   # real assignment solve over a whole unplanned pool. On the 10s DEFAULT a busy

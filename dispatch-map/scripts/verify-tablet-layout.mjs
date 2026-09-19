@@ -21,7 +21,7 @@
 // without it exercises the MOUSE layout at iPad width and passes while the actual device
 // fails. That is not a hypothetical — it is what the desktop guard has always done.
 import { chromium } from 'playwright-core';
-import { STOP_LOOKUP_DOSSIER } from './lib/stop-lookup-fixture.mjs';
+import { STOP_LOOKUP_DOSSIER, STOP_LOOKUP_NOTFOUND } from './lib/stop-lookup-fixture.mjs';
 import { CUSTOMER_VIEW, ORDER_DETAIL } from './lib/customer-view-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
 import { createServer } from 'node:http';
@@ -88,6 +88,14 @@ const PROBES = {
       if (!(await openByName(page, /^look up$/i))) return false;
       await page.waitForTimeout(500);
       return openByName(page, /^(all of )?20\d\d$/i);
+    } },
+    { name: 'nothing on file, NuVizz offered', open: async (page) => {
+      const box = page.getByLabel(/find a customer by name/i).first();
+      if (!(await box.isVisible().catch(() => false))) return false;
+      await box.fill('000000000');
+      if (!(await openByName(page, /^look up$/i))) return false;
+      await page.waitForTimeout(500);
+      return page.getByRole('button', { name: /ask nuvizz for this order/i }).first().isVisible().catch(() => false);
     } },
     { name: 'a stop looked up', open: async (page) => {
       const box = page.getByLabel(/find a customer by name/i).first();
@@ -190,7 +198,9 @@ for (const dev of TABLETS) {
     if (u.includes('stop-lookup')) return J(
       // THREE modes off one URL, and the stub picks the same way the endpoint does. Stubbing
       // only some of them leaves the guard measuring a screen the app never renders.
-      u.includes('detail=') ? ORDER_DETAIL : u.includes('year=') ? CUSTOMER_YEAR : u.includes('name=') ? CUSTOMER_VIEW : STOP_LOOKUP_DOSSIER);
+      u.includes('detail=') ? ORDER_DETAIL : u.includes('year=') ? CUSTOMER_YEAR : u.includes('name=') ? CUSTOMER_VIEW
+        // THE MISS, keyed on the one number the probe asks for (same rule as the phone guard).
+        : u.includes('stop=000000000') ? STOP_LOOKUP_NOTFOUND : STOP_LOOKUP_DOSSIER);
     if (u.includes('address-queue')) return J({
       ok: true, tenant: 'davis', nuvizzCalls: 0, notesLoaded: 412,
       dates: ['2026-09-14', '2026-09-15', '2026-09-16'],

@@ -129,13 +129,13 @@ test('both layout guards and the tablet guard know the screen exists', () => {
 test('the phone and tablet guards drive the SAME fixtures, so they cannot drift apart', () => {
   for (const f of ['verify-mobile-layout.mjs', 'verify-tablet-layout.mjs']) {
     const src = readFileSync(new URL(`../scripts/${f}`, import.meta.url), 'utf8');
-    assert.match(src, /import \{ STOP_LOOKUP_DOSSIER \} from '\.\/lib\/stop-lookup-fixture\.mjs'/, f);
+    assert.match(src, /import \{ STOP_LOOKUP_DOSSIER, STOP_LOOKUP_NOTFOUND \} from '\.\/lib\/stop-lookup-fixture\.mjs'/, f);
     assert.match(src, /import \{ CUSTOMER_VIEW, ORDER_DETAIL \} from '\.\/lib\/customer-view-fixture\.mjs'/, f);
     // EVERY mode, or the guard measures a screen the app never renders. The stub must pick
     // the same way the endpoint branches do — detail, then year, then name, then stop.
     assert.match(src, /u\.includes\('detail='\) \? ORDER_DETAIL/, `${f} must stub the order drawer`);
     assert.match(src, /u\.includes\('year='\) \? CUSTOMER_YEAR/, `${f} must stub the year`);
-    assert.match(src, /u\.includes\('name='\) \? CUSTOMER_VIEW : STOP_LOOKUP_DOSSIER/, `${f} must stub the window and the stop`);
+    assert.match(src, /u\.includes\('name='\) \? CUSTOMER_VIEW[\s\S]{0,400}u\.includes\('stop=000000000'\) \? STOP_LOOKUP_NOTFOUND : STOP_LOOKUP_DOSSIER/, `${f} must stub the window, the miss and the stop`);
   }
 });
 
@@ -177,4 +177,72 @@ test('the guards drive all THREE modes off one URL, the way the endpoint does', 
     assert.match(src, /u\.includes\('year='\) \? CUSTOMER_YEAR/, `${f} must stub the year mode`);
     assert.match(src, /a customer year/, `${f} must probe it`);
   }
+});
+
+// ── THE PROMOTED CALL (v1.49.0) ───────────────────────────────────────────────
+
+const PROMOTE_FN = readFileSync(new URL('../netlify/functions/stop-lookup-promote.mts', import.meta.url), 'utf8');
+
+test('THE ONE DOOR THAT SPENDS IS ITS OWN FILE, gated at dispatcher, and it is the only stop-lookup file that imports the vendor', () => {
+  // stop-lookup.mts keeps its structural zero-call promise (the test above); this file is the
+  // exception, and it must be the ONLY one. A second importer would be a second door.
+  assert.match(PROMOTE_FN, /requireUser\(req, \{ role: 'dispatcher' \}\)/, 'a metered vendor call is a dispatcher act, like nuvizz-pro-lookup');
+  assert.match(PROMOTE_FN, /import \{ lookupStopByPro \} from '\.\/lib\/nuvizz-scan\.mts'/, 'it spends through the shared, counted, breaker-guarded lookup');
+  assert.match(PROMOTE_FN, /setCallTrigger\('on-demand'\)/, 'and the call is attributed as on-demand in the counter');
+  assert.match(TOML, /\[functions\."stop-lookup-promote"\]\s*\n\s*timeout = 26/, 'same headroom as its sibling');
+});
+
+test('the promote endpoint NEVER spends on an order we hold — the PRO index is consulted before the wire', () => {
+  const idx = PROMOTE_FN.indexOf('lookupProDays(TENANT, stopRaw)');
+  const wire = PROMOTE_FN.indexOf('lookupStopByPro(stopRaw)');
+  assert.ok(idx > 0 && wire > idx, 'the index read must come before the vendor call');
+  assert.match(PROMOTE_FN, /reason: 'on-file'/, 'and a hit is answered as "on file", not spent');
+});
+
+test('a promoted PAST order is FILED with createDocIfAbsent (never over a sealed record) and pointed at', () => {
+  assert.match(PROMOTE_FN, /createDocIfAbsent\(path, record\)/, 'atomic create — a sealed record always wins');
+  assert.match(PROMOTE_FN, /updateProIndexForDay\(TENANT, day!, \[record\]\)/, 'the pointer is what makes it findable outside the board window');
+  assert.doesNotMatch(PROMOTE_FN, /upsertStops|writeStops\(/, 'no blind day-level writer — this can only fill a hole');
+});
+
+test('the zero-call endpoint says whether the button MAY show, without importing anything that can spend', () => {
+  assert.match(FN, /promote: promoteAvailability\(\{/, 'every ?stop= answer carries the availability judgement');
+  assert.match(FN, /promote: \{ available: false, reason: 'name'/, 'and a customer miss says a NAME cannot be promoted');
+  assert.match(FN, /import \{ isMirrorDeploy \} from '\.\/lib\/mirror-guard\.mts'/, 'the mirror guard is env-only and allowed');
+});
+
+test('THE BUTTON SAYS ITS PRICE, is offered only after a COMPLETE miss, and calls the promote endpoint', () => {
+  assert.match(APP, /Ask NuVizz for this order — 1 call/, 'the price is on the button');
+  const card = APP.slice(APP.indexOf('Nothing on file for &ldquo;'), APP.indexOf('Ask NuVizz for this order — 1 call'));
+  assert.match(card, /d\.complete && \(/, 'the button lives inside the complete-miss branch of the not-found card');
+  assert.match(APP, /stop-lookup-promote\?stop=\$\{encodeURIComponent\(term\)\}/, 'and it calls the one door that spends');
+  assert.match(APP, /data\.promote\?\.available \? \(/, 'no button where the site would refuse');
+});
+
+test('a NuVizz answer is LABELLED as one, on the screen and in the drawer, and the header chip counts it', () => {
+  assert.match(APP, /Answered by NuVizz — 1 call, on request\./, 'the banner over a promoted order');
+  assert.match(APP, /Straight from NuVizz — one call, asked for just now\./, 'the drawer says which kind of record it is');
+  assert.match(APP, /data\?\.nuvizzCalls === 1[\s\S]{0,200}1 NuVizz call — on request/, 'the chip reads the answer, not a slogan');
+});
+
+test('a customer miss prints the honest sentence — a name cannot be promoted', () => {
+  assert.match(APP, /data\.promote\?\.text && <div[^>]*>\{data\.promote\.text\}<\/div>/);
+});
+
+test('every new search clears the last NuVizz sentence — one order\'s answer must not hang over the next', () => {
+  assert.match(APP, /setLoading\(true\); setErr\(null\); setPromoteMsg\(null\);/);
+});
+
+test('the phone and tablet guards drive THE MISS — the state that carries the button', () => {
+  for (const f of ['verify-mobile-layout.mjs', 'verify-tablet-layout.mjs']) {
+    const src = readFileSync(new URL(`../scripts/${f}`, import.meta.url), 'utf8');
+    assert.match(src, /nothing on file, NuVizz offered/, `${f} must probe the miss`);
+    assert.match(src, /ask nuvizz for this order/i, `${f} must find the button`);
+  }
+});
+
+test('the Diagnostics seal strip prints the backfill record — running, stalled, failed or finished', () => {
+  const strip = APP.slice(APP.indexOf('Customer tally backfill:'), APP.indexOf('Customer tally backfill:') + 2500);
+  for (const word of ['STALLED', 'running —', 'failed after', 'finished ']) assert.match(strip, new RegExp(word), `the strip must say "${word}"`);
+  assert.match(strip, /b\.stops/, 'and it prints the stop count from the record, not a hope');
 });
