@@ -79,17 +79,25 @@ const PROBES = {
       await box.fill('earthly alternative');
       if (!(await openByName(page, /^look up$/i))) return false;
       await page.waitForTimeout(500);
-      return openByName(page, /^007180002$/);
+      if (!(await openByName(page, /^007180002$/))) return false;
+      await page.waitForTimeout(500);
+      // EVERY PROBE PROVES ITS STATE. A probe that only proves it clicked something measures
+      // whatever happened to be on screen and calls it by the state's name.
+      return page.getByText(/proof of delivery/i).first().isVisible().catch(() => false);
     } },
     { name: 'a customer year', open: async (page) => {
+      await closeOrderDrawer(page);
       const box = page.getByLabel(/find a customer by name/i).first();
       if (!(await box.isVisible().catch(() => false))) return false;
       await box.fill('earthly alternative');
       if (!(await openByName(page, /^look up$/i))) return false;
       await page.waitForTimeout(500);
-      return openByName(page, /^(all of )?20\d\d$/i);
+      if (!(await openByName(page, /^(all of )?20\d\d$/i))) return false;
+      await page.waitForTimeout(500);
+      return page.getByText(/month by month/i).first().isVisible().catch(() => false);
     } },
     { name: 'nothing on file, NuVizz offered', open: async (page) => {
+      await closeOrderDrawer(page);
       const box = page.getByLabel(/find a customer by name/i).first();
       if (!(await box.isVisible().catch(() => false))) return false;
       await box.fill('000000000');
@@ -98,10 +106,13 @@ const PROBES = {
       return page.getByRole('button', { name: /ask nuvizz for this order/i }).first().isVisible().catch(() => false);
     } },
     { name: 'a stop looked up', open: async (page) => {
+      await closeOrderDrawer(page);
       const box = page.getByLabel(/find a customer by name/i).first();
       if (!(await box.isVisible().catch(() => false))) return false;
       await box.fill('007174397');
-      return openByName(page, /^look up$/i);
+      if (!(await openByName(page, /^look up$/i))) return false;
+      await page.waitForTimeout(500);
+      return page.getByText(/every time this address moved/i).first().isVisible().catch(() => false);
     } },
   ],
   addrhistory: [
@@ -120,6 +131,24 @@ async function openByName(page, re) {
   await btn.click().catch(() => {});
   await page.waitForTimeout(400);
   return true;
+}
+
+/**
+ * THE ORDER DRAWER SURVIVES RE-READS BY DESIGN — StopLookupScreen keeps it open over whatever
+ * is read underneath it, so a rep asking about three orders does not lose the customer. For
+ * this guard that means every Stop lookup probe that runs AFTER "an order opened" inherits an
+ * open drawer, and a click aimed at the search bar's "Look up" (under the drawer on a
+ * landscape iPad) is intercepted and swallowed by Playwright's own actionability check —
+ * openByName still returns true, the probe's follow-up check finds nothing, and the state is
+ * SKIPPED. That is precisely how "nothing on file, NuVizz offered" went unmeasured on all
+ * four tablets in the v1.49.0 pass while the run reported green. Close it first, by the
+ * backdrop's own accessible name.
+ */
+async function closeOrderDrawer(page) {
+  const backdrop = page.getByRole('button', { name: /^close order detail$/i }).first();
+  if (!(await backdrop.isVisible().catch(() => false))) return;
+  await backdrop.click().catch(() => {});
+  await page.waitForTimeout(300);
 }
 
 const srv = createServer(async (req, res) => {
@@ -303,7 +332,19 @@ for (const dev of TABLETS) {
     }
     const states = [{ name: '', open: null }, ...(PROBES[screen.key] || [])];
     for (const st of states) {
-      if (st.open && !(await st.open(page))) continue;
+      // A PROBE THAT CANNOT OPEN ITS STATE IS A FAILURE, NOT A SKIP — the phone guard has said
+      // so since it was written, and this one silently `continue`d. The difference is the
+      // whole story of the v1.49.0 pass: four tablets, one state each never measured, and a
+      // green tick over the gap. A guard is only as good as its reach.
+      if (st.open) {
+        let opened = false;
+        try { opened = await st.open(page); } catch { opened = false; }
+        if (!opened) {
+          failures += 1;
+          console.log(`  \x1b[31m✗\x1b[0m ${screen.label} → ${st.name} — the probe could not open it; this guard is only as good as its reach`);
+          continue;
+        }
+      }
       const r = await page.evaluate(MEASURE);
       const problems = [];
       for (const [k, label] of [['offscreen', 'off-screen'], ['clipped', 'clipped'], ['overlap', 'overlapping'], ['small', 'under the 44px touch floor'], ['dead', 'unreachable']]) {
