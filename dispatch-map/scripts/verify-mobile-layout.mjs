@@ -33,6 +33,7 @@ import { join, extname, resolve } from 'node:path';
 import { chromium } from 'playwright-core';
 import { STOP_LOOKUP_DOSSIER } from './lib/stop-lookup-fixture.mjs';
 import { CUSTOMER_VIEW } from './lib/customer-view-fixture.mjs';
+import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
 
 import { MEASURE } from './lib/layout-measure.mjs';
 
@@ -332,6 +333,24 @@ const PROBES = {
   ],
   stoplookup: [
     {
+      // THE YEAR is a nine-row bar chart with right-hand figures, a wrapping driver row and a
+      // dashed "not counted yet" row — none of which exist until a lookup runs and the year
+      // button is pressed, so a resting sweep proves nothing about any of it.
+      name: 'a customer year',
+      open: async (page) => {
+        const box = page.getByLabel(/find a customer by name/i).first();
+        if (!(await box.isVisible().catch(() => false))) return false;
+        await box.fill('earthly alternative');
+        await page.getByRole('button', { name: /^look up$/i }).first().click();
+        await page.waitForTimeout(900);
+        const yr = page.getByRole('button', { name: /^(all of )?20\d\d$/i }).first();
+        if (!(await yr.isVisible().catch(() => false))) return false;
+        await yr.click();
+        await page.waitForTimeout(900);
+        return page.getByText(/month by month/i).first().isVisible().catch(() => false);
+      },
+    },
+    {
       // THE CUSTOMER VIEW IS THE PATH THIS SCREEN WAS BUILT FOR, and it is the busiest layout
       // in the app outside the board: four stat tiles, a wrapping driver row, a notes card
       // with three flags, two location cards and three day tables of seven columns each.
@@ -622,7 +641,10 @@ function stubRoutes(page, emailHtml) {
     // STOP LOOKUP serves TWO modes off one URL and the stub picks the same way the
     // endpoint does — by whether a name or a stop was asked for. Stubbing only one of
     // them would leave the guard measuring a screen the app never renders.
-    if (u.includes('stop-lookup')) return R(u.includes('name=') ? CUSTOMER_VIEW : STOP_LOOKUP_DOSSIER);
+    if (u.includes('stop-lookup')) return R(
+      // THREE modes off one URL, and the stub picks the same way the endpoint does. Stubbing
+      // only some of them leaves the guard measuring a screen the app never renders.
+      u.includes('year=') ? CUSTOMER_YEAR : u.includes('name=') ? CUSTOMER_VIEW : STOP_LOOKUP_DOSSIER);
     if (u.includes('roster') || u.includes('drivers')) return R({
       ok: true, drivers: [{ name: 'FRANK OKINE', id: '1' }], roster: [],
       at: '2026-09-10T12:00:00Z', count: 3,

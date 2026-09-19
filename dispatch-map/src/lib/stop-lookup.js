@@ -602,3 +602,123 @@ export function buildCustomerView(facts = {}) {
     sources: facts.sources || [],
   };
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THIS YEAR — a year of a customer, without reading a year of boards
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Chad, 2026-09-19: "I want there to be a this year button in the date ranges."
+//
+// WHY THIS IS NOT JUST A WIDER WINDOW. The day view above answers a range by sweeping a WHOLE
+// BOARD per day, twice over, and keeping the stops that match one name — about 1,400 document
+// reads per day of window. A year is ~510,000 reads: it does not finish inside the function's
+// 26 seconds, and nobody holds a phone that long. Widening the existing window to a year would
+// have produced a button that times out, which is worse than no button.
+//
+// So the year is READ, not swept. lib/history-customers.mts counts four numbers per month
+// into the per-customer rollup as the nightly hook passes over each sealed day, and this turns
+// that into an answer for the cost of ONE DOCUMENT per dock.
+//
+// WHAT THE YEAR CAN AND CANNOT SAY, stated on the screen rather than implied:
+//   • It CAN say how many stops and deliveries, month by month, and which drivers ran them.
+//   • It CANNOT list the stops. The per-stop detail lives in the day documents, which is the
+//     thing that costs half a million reads — so the screen sends you to Today / 7 / 14 days
+//     for rows, and says so.
+//   • And it will NOT report a month the tally never counted. `monthsFrom` is the earliest day
+//     counted; months before it are UNCOUNTED, not zero. An un-backfilled month and a month we
+//     did not deliver in are the same zero otherwise, and "no deliveries this year" is a
+//     sentence a rep says out loud to a customer.
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** PURE: the months of `year` up to and including `today`'s month — a year in progress has no
+ *  December, and printing one as "0 stops" would read as a month we did no work in. */
+export function monthsOfYear(year, today) {
+  const y = String(year);
+  const end = s(today).slice(0, 4) === y ? Number(s(today).slice(5, 7)) : 12;
+  return Array.from({ length: Math.max(0, Math.min(12, end)) }, (_, i) => `${y}-${String(i + 1).padStart(2, '0')}`);
+}
+
+/** PURE: "Sep" from "2026-09". */
+export const monthLabel = (m) => MONTH_NAMES[Number(s(m).slice(5, 7)) - 1] || s(m);
+
+/**
+ * PURE: a customer's rollup documents → the year answer.
+ *
+ * `facts.customers` is one shaped rollup per dock (getCustomerByMatchKey's output), each with
+ * `months`, `drivers` and `monthsFrom`. They are SUMMED across docks, because a rep asking
+ * about a customer means the company, not one of its warehouses — the same rule the day view
+ * groups by.
+ */
+export function buildCustomerYear(facts = {}) {
+  const year = s(facts.year) || s(facts.today).slice(0, 4);
+  const today = s(facts.today);
+  const docs = (facts.customers || []).filter(Boolean);
+
+  // The earliest day ANY dock has counted. A month before it is uncounted for the customer as
+  // a whole, because at least one dock has no figure to contribute.
+  const froms = docs.map((c) => s(c.monthsFrom)).filter(Boolean);
+  const monthsFrom = froms.length === docs.length && froms.length ? froms.reduce((a, b) => (a > b ? a : b)) : null;
+  // No dock has ever been counted → the tally is ABSENT. Not zero.
+  const counted = docs.some((c) => c.months && Object.keys(c.months).length > 0);
+
+  const months = monthsOfYear(year, today).map((m) => {
+    const bucket = { month: m, label: monthLabel(m), stops: 0, delivered: 0, attempted: 0, exceptions: 0 };
+    let any = false;
+    for (const c of docs) {
+      const b = c.months?.[m];
+      if (!b) continue;
+      any = true;
+      bucket.stops += b.stops || 0;
+      bucket.delivered += b.delivered || 0;
+      bucket.attempted += b.attempted || 0;
+      bucket.exceptions += b.exceptions || 0;
+    }
+    // A month BEFORE the tally started is uncounted; a month at or after it with no bucket is
+    // a real zero — we were genuinely not there. The screen draws those two differently.
+    const uncounted = !any && (!monthsFrom || m < s(monthsFrom).slice(0, 7));
+    return { ...bucket, uncounted };
+  });
+
+  const totals = months.filter((m) => !m.uncounted).reduce((t, m) => ({
+    stops: t.stops + m.stops,
+    delivered: t.delivered + m.delivered,
+    attempted: t.attempted + m.attempted,
+    exceptions: t.exceptions + m.exceptions,
+  }), { stops: 0, delivered: 0, attempted: 0, exceptions: 0 });
+
+  // The driver tally is whole-history on the rollup, not per-year — so it is labelled that way
+  // rather than being silently presented as this year's. Summed across docks.
+  const byDriver = new Map();
+  for (const c of docs) {
+    for (const [driver, v] of Object.entries(c.drivers || {})) {
+      const cur = byDriver.get(driver) || { driver, stops: 0, delivered: 0 };
+      cur.stops += v?.stops || 0;
+      cur.delivered += v?.delivered || 0;
+      byDriver.set(driver, cur);
+    }
+  }
+
+  const busiest = months.filter((m) => !m.uncounted && m.stops > 0)
+    .reduce((a, m) => (!a || m.stops > a.stops ? m : a), null);
+
+  return {
+    year,
+    counted,
+    monthsFrom,
+    // TRUE only when the tally covers the whole year on screen. The screen says "counted since
+    // <date>" rather than letting a partial year read as a full one.
+    wholeYear: counted && !!monthsFrom && s(monthsFrom) <= `${year}-01-01`,
+    uncountedMonths: months.filter((m) => m.uncounted).length,
+    months,
+    totals,
+    busiest,
+    drivers: [...byDriver.values()].sort((a, b) => b.delivered - a.delivered || b.stops - a.stops || a.driver.localeCompare(b.driver)),
+    locations: docs.map((c) => ({
+      matchKey: c.matchKey || null,
+      address: addressOf(c),
+      lastDate: s(c.lastDate) || null,
+      stops: Object.values(c.months || {}).reduce((n, b) => n + (b?.stops || 0), 0),
+    })).sort((a, b) => b.stops - a.stops),
+  };
+}

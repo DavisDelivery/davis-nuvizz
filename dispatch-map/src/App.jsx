@@ -153,7 +153,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.46.1';
+const APP_VERSION = '1.47.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -207,6 +207,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.47.0', 'THIS YEAR, ON STOP LOOKUP — AND IT IS COUNTED NIGHTLY, NOT SWEPT. Chad: “i want there to be a this year button in the date ranges.” THE BUTTON COULD NOT BE A WIDER WINDOW. The customer view answers a range by reading a WHOLE BOARD per day, twice over (the live index and the sealed warehouse), keeping the handful of stops that match one name — about 1,400 documents per day of window. A year is ~510,000 reads: it does not finish inside the function’s 26 seconds, and nobody holds a phone that long. A button that times out is worse than no button, so the year is PAID FOR ONCE, AT WRITE TIME: the nightly post-seal hook already visits every customer of every sealed day, and counting four numbers per month while it is there turns “how much have we done for them this year” into ONE DOCUMENT READ per dock. THE RE-RUN HAZARD, caught by its own test before it shipped: the month buckets carry the DAYS they have counted, so the backfill can be re-run over a range (which its own header says is safe) without doubling anything — but the first cut’s DRIVER tally was blindly additive, so a re-run left the month totals right and doubled the driver totals. Two halves of one screen disagreeing about the same freight is worse than both being wrong, because the half that is right makes the other look credible. One day-set rule governs both now. AND THE PART THAT MATTERS MOST: A MONTH NOT COUNTED IS NEVER A ZERO. A rollup written before this shipped has no months at all, which is indistinguishable from a customer we never delivered to — and “no deliveries this year” is a sentence a rep says out loud. So the document records the earliest day it has counted, months before it draw as a dashed “not counted yet” row rather than an empty bar, they contribute nothing to the total instead of zero, and where there is no tally at all the four stat tiles show a DASH. That last one was caught in a screenshot: the banner correctly said we had no count and four big zeros sat directly underneath it. The screen also says what it is NOT — a count, not a stop list — and links back to the fourteen-day window for order numbers and delivery times. Backfill the past with nuvizz-rebuild-customer-history-background (?from=&to=), a month at a time; until then the year says so plainly and the day windows are unaffected. 25 new tests, 5,245 in the suite. The Build Panel and the Route Workbench are not touched.'],
   ['1.46.1', 'ONE CLOCK DECIDES WHICH DAY IS “TODAY” ON STOP LOOKUP. Found in a screenshot taken to show Chad the new customer view: the header read “4 STOPS TODAY” while the TODAY chip sat on a different day in the list right underneath it. The app was not wrong about the date — it was 8pm in Georgia, so Eastern was still the 18th while UTC had ticked over to the 19th. THE FAULT WAS THAT TWO THINGS ON ONE SCREEN ASKED TWO DIFFERENT CLOCKS: the stat tiles are counted against the SERVER’s ET today (etDayString), and the day chip was comparing against the BROWSER’s. They agree almost always, which is exactly what makes it worth removing rather than tolerating — it is reachable every single evening, and on any machine whose clock is off, and it renders as the header contradicting the rows a rep is about to read down the phone. buildCustomerView already stamps isToday on every day off the same `today` it counted with; the chip reads that now and the day components take no clock at all. Same argument as the range pill reading the server’s window rather than the client’s selection, which is two floors of this screen built on one rule: whatever produced the numbers decides what they are labelled. One new test, pinning both halves — the source cannot take a client clock, and the flag the chip reads is set from the value the tiles are counted from. The Build Panel and the Route Workbench are not touched.'],
   ['1.46.0', 'THE SCREEN NOW ANSWERS THE QUESTION THAT PROMPTED IT: HOW MANY DELIVERIES DID WE HAVE FOR THIS CUSTOMER TODAY, AND WHO RAN THEM. Chad, on v1.45.0: “I wanted to see how many deliveries we had for earthly alternative today and couldn’t. Wanted to see all the different ones and drivers who delivered them … want customer service to be able to use this as well.” HE WAS RIGHT AND THE FIRST BUILD COULD NOT HAVE BEEN: typing a name searched history_customers, a rollup assembled from SEALED history — so TODAY, the one day he asked about, is the one day that document structurally cannot contain. It would have answered “no deliveries” about a customer we had been to three times that morning, which is worse than answering nothing. SO THE CUSTOMER VIEW IS BUILT ON THE LIVE BOARD. It sweeps the board day by day over the window, plus the sealed warehouse for the same days, and keeps the stops whose business name matches. The join is BY NAME because board rows carry no customerMatchKey at all (routing-cleanup-core says so outright, and customer-key.mts exists because an alert once read 778 board rows with matchKey null on every one and called it a clean day) — normalised by the same rule the match key uses, so a dock cannot group one way for counting and another way for its notes. WHAT A REP SEES, in the order the questions come down the phone: four big numbers (stops today, delivered, still out, came back), then who drove them — and the driver tally shows CARRIED and DELIVERED separately, because a man who had four and delivered two did not deliver four and that sentence gets repeated to a customer. Then the receiving hours and the no-tractor flag ABOVE the rows, not below, because nobody scrolls past six stops to find out what they should not have promised. Then every stop, by day, with the delivery minute, the route, the dock and the freight; the PRO on each row opens that order’s whole history. ONE CUSTOMER IS OFTEN SEVERAL DOCKS and the database keys them separately — grouping by key would split the answer in half and show neither total, so this groups by NAME and lists the locations underneath. Two real businesses matching what was typed gets a chooser with today’s count beside each, never a silent pick. FOUR THINGS IT REFUSES TO GET WRONG. A stop in both the seal and the board is counted ONCE (both sweeps cover the same days; double-counting would report six visits where there were three). A multi-order stop is one stop and three deliveries, and says both. A window that does not include today says so rather than printing a “0 today” headline. And A FAILED READ IS NEVER A ZERO — the first cut of this had a 500 on the board sweep empty the match list, so the screen said “no customer matches” about a customer we deliver to weekly; it now returns the view with the failure on it and refuses to call the count complete. Bounded at 14 days because a day here is a whole board read twice, not one document — sixty would be ~84,000 reads with somebody waiting on the phone; older than that is the rollup, free, with the driver on every row. Also found and fixed on the way in: exporting the name half of the match key had quietly CHANGED it (“ACME LLC” → acme__ rather than acme___), which would have detached every receiving-hours note, address override and opt-out for any customer whose name ends in LLC — three parity tests caught it. 33 new tests, 5,215 in the suite. The Build Panel and the Route Workbench are not touched.'],
   ['1.45.0', 'STOP LOOKUP \u2014 EVERY ORDER WE HOLD, ANSWERABLE IN ONE TAP, FOR NOTHING. Chad: “i want to develop a stops screen under more where i can look up any stop and it’s history we have in firestore.” THE CALL THIS IS FOR: a customer on the phone asking about one order — when were you here, who had it, did it deliver, why does it still say scheduled, did somebody change my address. That answer lived in FOUR places and one of them was a curl command: the stop card only knows today’s board, the customer search only knows a customer’s last twenty PROs, the address log only knows addresses, and nuvizz-stop-explain has gathered a stop’s whole board story for free since v1.4.0 with no door in the app at all. So the rep does the one thing that always works and SPENDS A NUVIZZ CALL on an order sitting in our own Firestore — the exact complaint that built the PRO index (“this order is a week old why is it not in the history”). This screen spends ZERO, and says so on the page. ONE BOX takes a PRO in every spelling that exists — bare 7174397 finds the zero-padded 007174397 NuVizz stores, a segmented 007157687-1 finds its order, AVRT-0170416694 keeps its whole digit run so it can never be read as a sibling of ESTES-0538243875 — or a business name, which comes back as customers whose PROs are each one more tap. Every day we hold is one row: sealed history AND the live board together, what happened in a word a dispatcher uses, the route, the driver, the arrival and delivery minute, the freight, the address AS OF THAT DAY, and which documents the row was built from. TWO THINGS IT REFUSES TO GET WRONG. An old day with a later day behind it reads ROLLED, not “open” — otherwise a stop that failed Monday and delivered Tuesday tells a rep the freight is still out. And on an ATTEMPT day the driver shown is the MORNING driver from the 8:30 freeze, with the evening one named separately, because by evening the stop is on whoever it was re-planned onto and blaming them for a delivery they never had is worse than saying nothing. THE PART THAT MATTERS MOST IS THE EMPTY ANSWER. “Nothing on file” and “the read failed” render as the same blank screen, and only one of them is a reason to go and spend a call — that ambiguity is what took the roster bug four rounds to diagnose. So every lookup returns a LEDGER of the nine collections it read, what each held, and the window it covered; a read that throws is marked NOT READ with its reason, never folded into “nothing”; and the ledger opens itself exactly when it is the answer. Bounded on purpose: the PRO index’s days plus the last four nights, a 14-back/3-ahead board window, and attempts and morning-plan documents only for days that actually answered — so the cost is flat in how long a customer has been trading. 42 new tests, including one that reads the REQUEST URL rather than the test fake’s decoded log, because asserting on the decoder would have “found” a path traversal that never goes on the wire. Desktop gets a table, the phone gets cards; both navigations, per the v0.54.50 rule. The Build Panel and the Route Workbench are not touched.'],
@@ -33597,7 +33598,7 @@ function StopSourceLedger({ sources, errors, open, onToggle }) {
 // four of these and delivered two did not deliver four.
 
 /** One big number. Big because it is read aloud off a screen somebody is not looking at. */
-function CustStat({ n, label, sub, tone = 'slate', dim }) {
+function CustStat({ n, label, sub, tone = 'slate', dim, blank }) {
   const tones = {
     slate: 'bg-white border-slate-200 text-slate-900',
     green: 'bg-green-50 border-green-200 text-green-900',
@@ -33607,7 +33608,12 @@ function CustStat({ n, label, sub, tone = 'slate', dim }) {
   };
   return (
     <div className={`rounded-xl border px-3 py-2 min-w-0 ${tones[tone] || tones.slate} ${dim ? 'opacity-60' : ''}`}>
-      <div className="text-2xl sm:text-3xl font-bold leading-none tabular-nums">{n}</div>
+      {/* A DASH, NOT A ZERO, when there is no figure. "We have not counted this" and "we were
+          not there" are different answers, and a rep skimming four big zeros under a banner
+          explaining that we have no count will read the zeros. Caught in a screenshot of this
+          exact state — the banner was right and the tiles under it were contradicting it. */}
+      <div className={`text-2xl sm:text-3xl font-bold leading-none tabular-nums ${blank ? 'text-slate-300' : ''}`}
+        title={blank ? 'No figure — this has not been counted yet' : undefined}>{blank ? '—' : n}</div>
       <div className="text-[11px] font-semibold uppercase tracking-wide mt-1 leading-tight break-words">{label}</div>
       {sub && <div className="text-[10px] opacity-70 leading-tight break-words">{sub}</div>}
     </div>
@@ -33777,16 +33783,33 @@ const CUSTOMER_PRESETS = [
   { key: 'd14', label: 'Last 14 days', short: '14d', sel: { kind: 'days', days: 14 } },
 ];
 
-function CustomerRangeBar({ sel, setSel, range, today, stacked }) {
+/** THIS YEAR IS A DIFFERENT QUESTION, AND THE BUTTON SAYS SO BY SITTING APART.
+ *
+ *  The three presets above return a list of stops. This one returns COUNTS — because a year of
+ *  stop rows is ~510,000 document reads (a whole board per day, twice) and would time out with
+ *  a customer on the phone. Mixing it into the same row would promise the same kind of answer
+ *  and deliver a different one; a divider and its own label is the cheapest honest signal. */
+function CustomerYearButton({ on, onClick, year }) {
+  return (
+    <button onClick={onClick} className={RANGE_PILL(on)} title="How much we have done for this customer this year — counts by month, not a stop list">
+      {year ? `${year}` : 'This year'}
+    </button>
+  );
+}
+
+function CustomerRangeBar({ sel, setSel, range, today, stacked, yearOn, onYear }) {
+  const year = String(today || '').slice(0, 4);
   return (
     <div className={stacked ? 'rounded-xl border bg-white p-2 space-y-2' : 'flex flex-wrap items-center gap-1.5'}>
       <div className="flex flex-wrap items-center gap-1.5">
         {CUSTOMER_PRESETS.map((p) => (
           <button key={p.key} onClick={() => setSel(p.sel)}
-            className={`${RANGE_PILL(presetIsOn(p, range, today))}${stacked ? ' flex-1' : ''}`}>
+            className={`${RANGE_PILL(!yearOn && presetIsOn(p, range, today))}${stacked ? ' flex-1' : ''}`}>
             {stacked ? p.short : p.label}
           </button>
         ))}
+        {!stacked && <span className="w-px h-6 bg-slate-200 mx-0.5" />}
+        <CustomerYearButton on={yearOn} onClick={onYear} year={stacked ? year : `All of ${year}`} />
       </div>
       <div className={`flex flex-wrap items-center gap-1.5 ${stacked ? '' : 'ml-1'}`}>
         {!stacked && <span className="w-px h-6 bg-slate-200" />}
@@ -33886,6 +33909,152 @@ function CustomerRecent({ recent, onPro, window: win }) {
   );
 }
 
+/** THE YEAR — counts, not rows, and the screen never pretends otherwise.
+ *
+ *  A month the tally has not counted is drawn DIFFERENTLY from a month we did no work in,
+ *  because they are different facts and only one of them is something to tell a customer.
+ *  See buildCustomerYear for why an un-backfilled month must never render as a zero. */
+function CustomerYearMonths({ months, stacked }) {
+  const peak = Math.max(1, ...months.filter((m) => !m.uncounted).map((m) => m.stops));
+  return (
+    <div className="rounded-xl border bg-white p-3 space-y-2">
+      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Month by month</div>
+      <div className="space-y-1">
+        {months.map((m) => (
+          <div key={m.month} className="flex items-center gap-2 min-w-0">
+            <span className="w-8 shrink-0 text-[11px] font-semibold text-slate-600">{m.label}</span>
+            {m.uncounted ? (
+              <>
+                {/* A DASHED EMPTY BAR, not a zero-length one. "We have not counted this month"
+                    and "we were not there" must not look alike. */}
+                <span className="flex-1 h-5 rounded border border-dashed border-slate-200 bg-slate-50 min-w-0" />
+                <span className="shrink-0 text-[11px] text-slate-400 italic w-28 text-right">not counted yet</span>
+              </>
+            ) : (
+              <>
+                <span className="flex-1 h-5 rounded bg-slate-100 relative min-w-0 overflow-hidden">
+                  <span className="absolute inset-y-0 left-0 bg-green-500/70 rounded"
+                    style={{ width: `${Math.round((m.delivered / peak) * 100)}%` }} />
+                  <span className="absolute inset-y-0 bg-amber-400/70"
+                    style={{ left: `${Math.round((m.delivered / peak) * 100)}%`, width: `${Math.round(((m.stops - m.delivered) / peak) * 100)}%` }} />
+                </span>
+                <span className="shrink-0 text-[11px] w-28 text-right tabular-nums">
+                  <span className="font-bold text-slate-800">{m.stops}</span>
+                  <span className="text-slate-500"> stop{m.stops === 1 ? '' : 's'}</span>
+                  {m.delivered !== m.stops && <span className="text-green-700"> · {m.delivered} del</span>}
+                </span>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="text-[11px] text-slate-400">
+        Green is delivered; amber is everything that did not close out. Bars are scaled to the busiest month.
+      </div>
+    </div>
+  );
+}
+
+function CustomerYearScreen({ data, today, stacked, onBack }) {
+  const v = data.view;
+  const t = v.totals;
+  return (
+    <div className="space-y-4">
+      {/* THE HONESTY BANNER COMES FIRST, because everything under it is a number somebody
+          repeats to a customer. Three states, and they are genuinely different answers. */}
+      {!v.counted ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 sm:p-4">
+          <div className="text-sm font-semibold text-amber-900">We have no yearly tally for {data.name} yet.</div>
+          <div className="text-xs text-amber-800 mt-1">
+            This is <span className="font-semibold">not</span> a customer we never delivered to — it is a customer whose months have
+            never been counted. The count is built nightly from sealed history and only starts from the day it was switched on;
+            everything before that has to be backfilled once.
+          </div>
+          <div className="text-[11px] text-amber-700 mt-1">
+            Until then, use Today / 7 days / 14 days above — those read the board directly and are always current.
+          </div>
+        </div>
+      ) : !v.wholeYear ? (
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <div className="text-xs text-slate-700">
+            Counted from <span className="font-semibold">{formatDateLong(v.monthsFrom)}</span>.
+            {v.uncountedMonths > 0 && <> The {v.uncountedMonths} month{v.uncountedMonths === 1 ? '' : 's'} before that {v.uncountedMonths === 1 ? 'is' : 'are'} shown as
+              {' '}<span className="italic">not counted yet</span> rather than as zero — we do not know what they held.</>}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="rounded-xl border bg-white p-3 sm:p-4 space-y-3">
+        <div className={`flex ${stacked ? 'flex-col gap-1' : 'items-start justify-between gap-4'}`}>
+          <div className="min-w-0">
+            <h2 className="text-lg sm:text-xl font-bold text-slate-900 break-words">{data.name}</h2>
+            <div className="text-xs text-slate-500">
+              {v.locations.length === 1 ? custAddr(v.locations[0].address) || 'one location' : `${v.locations.length} locations`}
+            </div>
+          </div>
+          <div className={`text-[11px] text-slate-500 ${stacked ? '' : 'text-right shrink-0'}`}>
+            All of {v.year}
+            {v.busiest && <div>busiest month: {v.busiest.label} ({v.busiest.stops})</div>}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <CustStat n={t.stops} blank={!v.counted} label={`Stops in ${v.year}`} tone={t.stops ? 'blue' : 'slate'} dim={!t.stops} />
+          <CustStat n={t.delivered} blank={!v.counted} label="Delivered" tone={t.delivered ? 'green' : 'slate'} dim={!t.delivered} />
+          <CustStat n={t.attempted} blank={!v.counted} label="Came back" tone={t.attempted ? 'amber' : 'slate'} dim={!t.attempted} />
+          <CustStat n={t.exceptions} blank={!v.counted} label="Could not deliver" tone={t.exceptions ? 'red' : 'slate'} dim={!t.exceptions} />
+        </div>
+
+        {/* THE DRIVER TALLY HERE IS ALL-TIME, NOT THIS YEAR, and it says so rather than
+            letting a year heading imply otherwise. The rollup keeps one running tally per
+            customer; slicing it by year would mean a per-year map on every customer document
+            to answer a question nobody has asked yet. */}
+        {!!v.drivers.length && (
+          <div className="space-y-1.5 border-t pt-2">
+            <CustomerDriverChips drivers={v.drivers.slice(0, 12)} label="Drivers, all time" />
+            <div className="text-[11px] text-slate-400">
+              Counted over everything the tally holds, not just {v.year} — the number after each name is delivered out of carried.
+            </div>
+          </div>
+        )}
+      </div>
+
+      {v.counted && <CustomerYearMonths months={v.months} stacked={stacked} />}
+
+      {/* SAYING WHAT THIS SCREEN IS NOT is part of the answer. A rep who needs a stop number
+          should be sent to the window that has one rather than scrolling for it. */}
+      <div className="rounded-xl border bg-white p-3">
+        <div className="text-xs text-slate-600">
+          This is a count, not a stop list. For order numbers, drivers, delivery times and addresses,
+          pick <button onClick={onBack} className="font-semibold text-blue-800 hover:underline">Last 14 days</button> or a
+          shorter window — the per-stop detail lives in the day records, and reading a whole year of those is about half a
+          million documents.
+        </div>
+      </div>
+
+      {v.locations.length > 1 && (
+        <div className="rounded-xl border bg-white p-3 space-y-2">
+          <div className="text-xs font-bold uppercase tracking-wide text-slate-500">{v.locations.length} locations</div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {v.locations.map((l) => (
+              <div key={l.matchKey || l.lastDate} className="rounded-lg border bg-slate-50 p-2 min-w-0">
+                <div className="text-xs font-semibold text-slate-800 break-words">{custAddr(l.address) || '(no address on file)'}</div>
+                <div className="text-[11px] text-slate-500 break-words">{custCity(l.address)}</div>
+                <div className="text-[11px] text-slate-600 mt-0.5">
+                  {v.counted
+                    ? <><span className="font-semibold">{l.stops}</span> stop{l.stops === 1 ? '' : 's'} counted</>
+                    : <span className="text-slate-400 italic">not counted yet</span>}
+                  {l.lastDate ? ` · last ${formatDateForDisplay(l.lastDate)}` : ''}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** The header: who, where, and the numbers the call is about. */
 function CustomerHeader({ v, today, stacked }) {
   // THE TILES COUNT TODAY WHEN TODAY IS IN THE WINDOW, and the window otherwise — and they
@@ -33961,6 +34130,10 @@ function StopLookupScreen() {
   // Which of several matching businesses the rep picked, so a re-read (a window change) keeps
   // showing the same one instead of dropping back to the chooser.
   const [nameKey, setNameKey] = useState(null);
+  // THIS YEAR IS A MODE, NOT A WINDOW — it asks a different endpoint branch that reads counts
+  // rather than sweeping days (see buildCustomerYear). Kept out of `sel` so the two cannot be
+  // confused for one another: a year is not a range this screen could ever resolve.
+  const [yearOn, setYearOn] = useState(false);
 
   const run = useCallback(async (raw, opts = {}) => {
     const term = String(raw ?? '').trim();
@@ -33975,9 +34148,15 @@ function StopLookupScreen() {
       const p = new URLSearchParams();
       if (isName) {
         p.set('name', term);
-        // The screen and the endpoint resolve the SAME selection through the SAME module, so
-        // the header can never describe one window over rows from another.
-        if (opts.range) { p.set('from', opts.range.from); p.set('to', opts.range.to); }
+        if (opts.year) {
+          // A year asks for counts and reads no day documents at all; sending a window too
+          // would imply the endpoint might sweep one.
+          p.set('year', String(opts.year));
+        } else if (opts.range) {
+          // The screen and the endpoint resolve the SAME selection through the SAME module, so
+          // the header can never describe one window over rows from another.
+          p.set('from', opts.range.from); p.set('to', opts.range.to);
+        }
         if (opts.nameKey) p.set('nameKey', opts.nameKey);
       } else {
         p.set('stop', term);
@@ -33991,7 +34170,10 @@ function StopLookupScreen() {
       // failed. On a populated screen it stays folded away.
       const stopBlank = j.mode === 'stop' && (!j.dossier?.found || j.dossier?.complete === false);
       const custBlank = j.mode === 'customer' && (j.view?.complete === false || j.view?.totals?.stops === 0);
-      setLedgerOpen(!!(stopBlank || custBlank));
+      // A year with no tally opens the ledger too — the answer is WHY it is empty, and the
+      // ledger is where the year says which sources it deliberately did not read.
+      const yearBlank = j.mode === 'customer-year' && !j.view?.counted;
+      setLedgerOpen(!!(stopBlank || custBlank || yearBlank));
     } catch (e) { setErr(String(e.message || e)); setData(null); } finally { setLoading(false); }
   }, []);
 
@@ -33999,25 +34181,45 @@ function StopLookupScreen() {
   const submit = useCallback((term, over = {}) => {
     const t = String(term ?? '').trim();
     if (!t) return;
-    run(t, { range: over.range ?? range, nameKey: over.nameKey !== undefined ? over.nameKey : nameKey });
-  }, [run, range, nameKey]);
+    const wantYear = over.year !== undefined ? over.year : (yearOn ? today.slice(0, 4) : null);
+    run(t, {
+      range: over.range ?? range,
+      nameKey: over.nameKey !== undefined ? over.nameKey : nameKey,
+      year: wantYear,
+    });
+  }, [run, range, nameKey, yearOn, today]);
 
   /** A PRO tapped anywhere on this screen opens that order — the drill-down from a customer
    *  row into the per-order story, which is the other half of what this screen is. */
-  const pick = useCallback((pro) => { setQ(String(pro)); setNameKey(null); run(pro); }, [run]);
+  const pick = useCallback((pro) => { setQ(String(pro)); setNameKey(null); setYearOn(false); run(pro); }, [run]);
 
   /** The rep picked one of several matching businesses. */
   const pickCustomer = useCallback((m) => {
     setNameKey(m.nameKey);
-    run(q, { range, nameKey: m.nameKey });
-  }, [run, q, range]);
+    run(q, { range, nameKey: m.nameKey, year: yearOn ? today.slice(0, 4) : null });
+  }, [run, q, range, yearOn, today]);
 
   /** A new window on a customer already on screen: re-read, keep the customer. */
   const changeRange = useCallback((nextSel) => {
     setSel(nextSel);
+    setYearOn(false);
     try { localStorage.setItem(STOP_LOOKUP_RANGE, JSON.stringify(nextSel)); } catch { /* a remembered window is a convenience */ }
     const nextRange = resolveRange(nextSel, today, 0);
-    if (data?.mode === 'customer' || data?.mode === 'customer-choose') run(data.query, { range: nextRange, nameKey });
+    if (data?.mode?.startsWith('customer')) run(data.query, { range: nextRange, nameKey, year: null });
+  }, [run, data, nameKey, today]);
+
+  /** Switch to the year. A MODE CHANGE, not a window change — see the comment on `yearOn`. */
+  const showYear = useCallback(() => {
+    setYearOn(true);
+    if (data?.mode?.startsWith('customer')) run(data.query, { nameKey, year: today.slice(0, 4) });
+  }, [run, data, nameKey, today]);
+
+  /** Back out of the year to the last real window. */
+  const leaveYear = useCallback(() => {
+    setYearOn(false);
+    const nextSel = { kind: 'days', days: 14 };
+    setSel(nextSel);
+    if (data?.mode?.startsWith('customer')) run(data.query, { range: resolveRange(nextSel, today, 0), nameKey, year: null });
   }, [run, data, nameKey, today]);
 
   const d = data?.mode === 'stop' ? data.dossier : null;
@@ -34040,7 +34242,7 @@ function StopLookupScreen() {
         </div>
 
         <form
-          onSubmit={(e) => { e.preventDefault(); setNameKey(null); submit(q, { nameKey: null }); }}
+          onSubmit={(e) => { e.preventDefault(); setNameKey(null); setYearOn(false); submit(q, { nameKey: null, year: null }); }}
           className="rounded-xl border bg-white p-2 flex items-center gap-2"
         >
           <Search size={14} className="text-slate-400 shrink-0 ml-1" />
@@ -34099,7 +34301,20 @@ function StopLookupScreen() {
         )}
 
         {data?.mode === 'customer-choose' && (
-          <CustomerChooser matches={data.matches} query={data.query} onPick={pickCustomer} incomplete={data.complete === false} />
+          <div className="space-y-4">
+            <CustomerRangeBar sel={sel} setSel={changeRange} range={data.window || range} today={today} stacked={isMobile}
+              yearOn={!!data.year} onYear={showYear} />
+            <CustomerChooser matches={data.matches} query={data.query} onPick={pickCustomer} incomplete={data.complete === false} />
+          </div>
+        )}
+
+        {data?.mode === 'customer-year' && (
+          <div className="space-y-4">
+            <CustomerRangeBar sel={sel} setSel={changeRange} range={range} today={today} stacked={isMobile}
+              yearOn onYear={showYear} />
+            <CustomerYearScreen data={data} today={today} stacked={isMobile} onBack={leaveYear} />
+            <StopSourceLedger sources={data.sources} errors={data.errors} open={ledgerOpen} onToggle={() => setLedgerOpen((x) => !x)} />
+          </div>
         )}
 
         {data?.mode === 'customer' && (() => {
@@ -34115,7 +34330,8 @@ function StopLookupScreen() {
                   a clamped one back. Lighting the pill the rep PRESSED would then label a
                   fortnight of rows as a month — the header-says-one-thing-numbers-say-another
                   failure history-range.js exists to prevent, arriving from the UI side. */}
-              <CustomerRangeBar sel={sel} setSel={changeRange} range={data.window || range} today={today} stacked={isMobile} />
+              <CustomerRangeBar sel={sel} setSel={changeRange} range={data.window || range} today={today} stacked={isMobile}
+                yearOn={false} onYear={showYear} />
               {data.window?.clamped && (
                 <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
                   Showing {data.window.from} → {data.window.to}. {data.window.clamped}.

@@ -131,6 +131,129 @@ export function mergeProEntries(
     .slice(0, max);
 }
 
+
+// ── THE MONTHLY TALLY — how "This year" is answerable at all ─────────────────
+//
+// Chad, 2026-09-19: "I want there to be a this year button in the date ranges."
+//
+// WHY IT CANNOT BE A SWEEP. The Stop lookup customer view answers a window by reading a
+// WHOLE BOARD per day, twice over (the live index and the sealed warehouse), and keeping the
+// handful of stops that match one name. That is ~1,400 document reads per day of window. A
+// year is ~510,000 reads: it would not finish inside the function's 26 seconds, and nobody
+// waits that long with a customer on the phone.
+//
+// So the year is PAID FOR ONCE, AT WRITE TIME. This rollup is already visited for every
+// customer of every sealed day by the nightly post-seal hook; counting four numbers per month
+// while it is there costs nothing and turns "how much have we done for them this year" into
+// ONE document read.
+//
+// WHAT IS COUNTED, and why these four. `stops` is visits, `delivered` is the ones that closed
+// out — never the same number, and a screen that conflates them tells a customer we delivered
+// freight that came back. `attempted` and `exceptions` are the two ways it did not, kept apart
+// because one is a redelivery and the other is a refusal.
+//
+// AND THE HONEST PART: `months_from`. A tally that has not been backfilled is INDISTINGUISHABLE
+// from a customer we never delivered to, and "0 deliveries this year" is a sentence a rep says
+// out loud. So the document records the earliest day the tally has actually counted, and the
+// screen refuses to report a total for any month before it. Backfill with
+// nuvizz-rebuild-customer-history-background (?from=&to=), a month at a time.
+
+/** PURE: the YYYY-MM a day belongs to. */
+export const monthOf = (date: string): string => String(date || '').slice(0, 7);
+
+/** PURE: an empty month bucket. Exported so a reader can tell "counted, zero" from "absent". */
+export const emptyMonth = () => ({ stops: 0, delivered: 0, attempted: 0, exceptions: 0 });
+
+/**
+ * PURE: which bucket one sealed stop falls in. The warehouse record is the end-of-night
+ * truth, so its normalizedStatus is final — unlike a live board row, which can still move.
+ */
+export function tallyBucket(s: any): 'delivered' | 'attempted' | 'exceptions' | null {
+  const st = String(s?.normalizedStatus ?? '').toUpperCase();
+  if (st === 'DELIVERED') return 'delivered';
+  if (st === 'EXCEPTION' || st === 'CANCELLED') return 'exceptions';
+  // The ATT marker lands on the SHIPMENT number, never on stopNbr (lib/nuvizz-scan.mts
+  // isAttemptShipment) — so this is the same signal the attempts feature keys on.
+  if (s?.isAttempt === true || /^ATT/i.test(String(s?.shipmentNbr ?? ''))) return 'attempted';
+  return null;
+}
+
+/**
+ * PURE: merge stored month buckets with a day's. ADDITIVE, and that is the whole hazard:
+ * re-running a day would double-count it. The nightly hook runs a day once, but the backfill
+ * is documented as "safely re-runnable" and overlapping ranges are expected — so each month
+ * carries the set of DAYS it has counted, and a day already counted is skipped rather than
+ * added again. Idempotent, which is what makes a re-run cost time and nothing else.
+ */
+export function mergeMonthTallies(existing: any, incoming: any): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [m, v] of Object.entries(existing || {})) {
+    const b: any = v || {};
+    out[m] = { ...emptyMonth(), ...b, days: Array.isArray(b.days) ? [...b.days] : [] };
+  }
+  for (const [m, v] of Object.entries(incoming || {})) {
+    const inc: any = v || {};
+    const cur = out[m] || { ...emptyMonth(), days: [] as string[] };
+    for (const day of (inc.days || [])) {
+      if (cur.days.includes(day)) continue;          // already counted — a re-run is a no-op
+      cur.days.push(day);
+      const d: any = inc.byDay?.[day] || {};
+      cur.stops += d.stops || 0;
+      cur.delivered += d.delivered || 0;
+      cur.attempted += d.attempted || 0;
+      cur.exceptions += d.exceptions || 0;
+    }
+    cur.days.sort();
+    out[m] = cur;
+  }
+  return out;
+}
+
+/** PURE: every day any month bucket has already counted. ONE day set governs both tallies —
+ *  see mergeDriverTallies for what happened when only the months had one. */
+export function countedDaysOf(months: any): Set<string> {
+  const out = new Set<string>();
+  for (const b of Object.values(months || {})) for (const d of ((b as any)?.days || [])) out.add(String(d));
+  return out;
+}
+
+/**
+ * PURE: merge a day-keyed driver tally into the stored one, SKIPPING days already counted.
+ *
+ * THE BUG THIS SHAPE EXISTS TO PREVENT, caught by its own test before it shipped: the first
+ * cut took a flat {driver: {stops, delivered}} and added it unconditionally. The months were
+ * idempotent (they carry the days they counted) and this was not — so re-running the backfill
+ * over a day left the month totals correct and DOUBLED the driver totals. Two halves of one
+ * screen disagreeing about the same freight is worse than both being wrong, because the one
+ * that is right makes the other look credible.
+ *
+ * So the day set is the single rule, and it lives on the months: this is only ever asked to
+ * add a day the months accepted.
+ */
+export function mergeDriverTallies(existing: any, incomingByDay: any, counted: Set<string> = new Set(), max = 40): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [d, v] of Object.entries(existing || {})) {
+    const b: any = v || {};
+    out[d] = { stops: b.stops || 0, delivered: b.delivered || 0 };
+  }
+  for (const [day, byDriver] of Object.entries(incomingByDay || {})) {
+    if (counted.has(String(day))) continue;          // already counted — a re-run is a no-op
+    for (const [driver, v] of Object.entries((byDriver as any) || {})) {
+      const b: any = v || {};
+      const cur = out[driver] || { stops: 0, delivered: 0 };
+      cur.stops += b.stops || 0;
+      cur.delivered += b.delivered || 0;
+      out[driver] = cur;
+    }
+  }
+  // Bounded: a customer served by every driver we have is still a small map, but the document
+  // must not grow without limit over years of turnover. Busiest kept.
+  const kept = Object.entries(out)
+    .sort((a, b) => b[1].stops - a[1].stops || a[0].localeCompare(b[0]))
+    .slice(0, max);
+  return Object.fromEntries(kept);
+}
+
 // PURE: collapse one day's warehouse stop records into per-customer day rollups
 // (this day only — caller merges with the stored rollup). Picks the latest
 // identity (name/address) seen and gathers the day's {pro,date} entries.
@@ -143,7 +266,7 @@ export function buildRollupsFromStops(stops: any[]): Map<string, any> {
     const date = String(s?.date || '');
     let cur = out.get(mk);
     if (!cur) {
-      cur = { match_key: mk, name: '', addr1: null, city: null, state: null, zip: null, last_date: '', pros: [] as any[] };
+      cur = { match_key: mk, name: '', addr1: null, city: null, state: null, zip: null, last_date: '', pros: [] as any[], months: {} as any, driversByDay: {} as any };
       out.set(mk, cur);
     }
     // Latest identity within the day (all same date here, last write wins).
@@ -159,6 +282,32 @@ export function buildRollupsFromStops(stops: any[]): Map<string, any> {
     // driver (driverName, human-readable; driverUserName is the stable id fallback).
     // Unplanned/no-driver stops store null — the UI shows a dash.
     if (s?.pro) cur.pros.push({ pro: String(s.pro), date, driver: s?.driverName ?? s?.driverUserName ?? null });
+
+    // ── the day's contribution to the monthly tally ───────────────────────────
+    //
+    // Counted per DAY inside the month bucket, because the merge upstream needs to know which
+    // days it has already added — the backfill is re-runnable by design and an additive
+    // counter with no day set would double a month every time somebody re-ran a range.
+    if (date) {
+      const m = monthOf(date);
+      cur.months ||= {};
+      const bucket = (cur.months[m] ||= { days: [] as string[], byDay: {} as Record<string, any> });
+      if (!bucket.days.includes(date)) { bucket.days.push(date); bucket.byDay[date] = { ...emptyMonth() }; }
+      const d = bucket.byDay[date];
+      d.stops += 1;
+      const b = tallyBucket(s);
+      if (b) d[b] += 1;
+
+      // BY DAY, exactly as the months are, so one day-set rule governs both.
+      const driver = String(s?.driverName ?? s?.driverUserName ?? '').trim();
+      if (driver) {
+        cur.driversByDay ||= {};
+        const dayMap = (cur.driversByDay[date] ||= {});
+        const dt = (dayMap[driver] ||= { stops: 0, delivered: 0 });
+        dt.stops += 1;
+        if (b === 'delivered') dt.delivered += 1;
+      }
+    }
   }
   // Collapse same-day duplicate pros up front.
   for (const cur of out.values()) cur.pros = mergeProEntries([], cur.pros);
@@ -181,6 +330,20 @@ export async function updateCustomerRollupsForDay(
       const mk = day.match_key;
       const existing = await getDoc(rollupPath(tenant, mk));
       const mergedPros = mergeProEntries(existing?.pros || [], day.pros);
+      // MERGED, NEVER REPLACED. setDoc below rewrites the whole document, so anything not
+      // carried forward here is deleted — CLAUDE.md's "never blind-write a document you do
+      // not own", arriving from the inside: this writer DOES own the document, and a field
+      // it forgets to re-state is a year of counts gone on the next nightly run.
+      // The days the STORED tally has already counted, read BEFORE the months are merged —
+      // that set is what makes both halves skip a re-run identically.
+      const alreadyCounted = countedDaysOf(existing?.months);
+      const mergedMonths = mergeMonthTallies(existing?.months, day.months);
+      const mergedDrivers = mergeDriverTallies(existing?.drivers, day.driversByDay, alreadyCounted);
+      // The earliest day the tally has actually counted. A screen must never report a total
+      // for a month before this — an un-backfilled month and a month we did not deliver in
+      // are the same zero otherwise, and "0 deliveries this year" gets said to a customer.
+      const countedDays = Object.values(mergedMonths).flatMap((b: any) => b.days || []);
+      const monthsFrom = countedDays.length ? countedDays.reduce((a, b) => (a < b ? a : b)) : null;
       // Newer identity wins; otherwise keep what's stored.
       const useDayIdentity = !existing || (day.last_date || '') >= (existing.last_date || '');
       const name = (useDayIdentity ? day.name : existing.name) || existing?.name || day.name || '';
@@ -196,6 +359,9 @@ export async function updateCustomerRollupsForDay(
         zip: (useDayIdentity ? day.zip : existing.zip) ?? existing?.zip ?? null,
         pros: mergedPros,
         pro_index: mergedPros.map((p) => p.pro),
+        months: mergedMonths,
+        drivers: mergedDrivers,
+        months_from: monthsFrom,
         last_date: mergedPros[0]?.date || day.last_date || existing?.last_date || null,
         updated_at: new Date().toISOString(),
       };
@@ -217,6 +383,12 @@ function shapeCustomer(doc: any): any {
     state: doc.state || null,
     zip: doc.zip || null,
     pros: Array.isArray(doc.pros) ? doc.pros : [],
+    // The year answer. `monthsFrom` is null on a rollup written before this shipped, which is
+    // the signal the reader needs: the counts are ABSENT, not zero.
+    months: doc.months && typeof doc.months === 'object' ? doc.months : null,
+    drivers: doc.drivers && typeof doc.drivers === 'object' ? doc.drivers : null,
+    monthsFrom: doc.months_from || null,
+    lastDate: doc.last_date || null,
   };
 }
 
