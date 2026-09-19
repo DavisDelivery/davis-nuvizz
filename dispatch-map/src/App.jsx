@@ -153,7 +153,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.48.0';
+const APP_VERSION = '1.49.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -207,6 +207,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.49.0', 'THE BACKFILL LEAVES A RECORD, AND A PRO WE DO NOT HOLD CAN BE ASKED OF NUVIZZ — ONCE, ON REQUEST, FOR ONE CALL. Chad: “I want you to backfill everything in firestore and if it’s a specific customer pro or date range that is not in the firestore data allow a prompted nuvizz call.” THE BACKFILL FIRST, because the “This year” button was dead on every customer until it ran. The warehouse holds 2026-06-04 → 2026-09-18 (82 days, 79 sealed, 3 no-board) and the month tally only started on the 18th — the real Earthly Alternative rollup had a July PRO in its list and only September in its months. The job that fills that in already existed, costs ZERO NuVizz calls, and had NO RECORD OF ITSELF: it is a background function, the platform throws its response away, and “did it finish?” was answerable only by opening the Firebase console. Now every run writes nuvizz_ops/customer_history_backfill before its first day and after every day (a heartbeat), history-capture-health serves it, and the Diagnostics seal strip prints it — running, STALLED, failed or finished, with the stop and customer counts off the record. AND IT REFUSES TO RUN BESIDE ITSELF: the rollup is read-merge-write per customer, so two chunks side by side erase each other’s month, silently, on the run meant to fill it in. A second run is turned away and says so on the live run’s document; a run that stops heartbeating for twenty minutes is reported stalled and lets go of the lock, because every write is idempotent and a re-run costs time and nothing else. THE PROMPTED CALL, SECOND — his word (the first cut said “promoted”; Chad: “Prompted nuvizz call”), and read it carefully: a rep looked, Firestore had nothing, and the REP IS PROMPTED to ask NuVizz — one /stop/info, priced on the button, only ever spent by the person who pressed it. Offered only after a COMPLETE miss (every source that could have located the order was read and was empty — an unfinished look gets no button, because spending a vendor call before finishing the free one is the exact waste this screen exists to stop). It never spends on an order we hold: the PRO index is read first, and a hit is answered “already on file — 0 calls”, which is precisely the mistake the mobile button made on the 15th. It honours every switch that already governs vendor traffic — the mirror guard, the scans kill switch, the ceiling and the breaker through the shared requester — plus its own STOP_LOOKUP_PROMPTED_CALL (default on; off/0/false/no puts it back; a typo leaves it on), and the button never shows where the site would refuse. A PAST order NuVizz answers for is FILED in the warehouse under its delivery day with a PRO-index pointer, so the next rep pays nothing; created atomically, so a sealed record is never overwritten; stamped prompted / prompted_at / prompted_by, so nothing on it pretends to be a capture. Today’s and future orders are shown and NOT filed — the board scan owns those days, and a row written beside it by hand is a row the flags and the ETA engine were never given. The answer opens the drawer over itself, the banner says “answered by NuVizz — 1 call”, the header chip counts it, and the call count is what HAPPENED: a refusal before the wire reports 0. AND TWO THINGS IT CANNOT DO, SAID ON THE SCREEN RATHER THAN BUILT AS BUTTONS THAT CANNOT WORK: NuVizz has no endpoint that takes a customer NAME (every list-style endpoint demands a per-record id — verified live in May), so an empty customer says exactly that and points at the PRO; and the only date gaps NuVizz’s cheap list pull can reach (±60 days) are already fully sealed, so a “date range” prompting would have nothing to fetch. IT IS ITS OWN FUNCTION, stop-lookup-prompted, on purpose: stop-lookup.mts keeps its structural promise of importing nothing that can spend a call, and a test holds that line — the header’s “0 NuVizz calls” stays a proof, not a comment. 28 new tests. The Build Panel and the Route Workbench are not touched.'],
   ['1.48.0', 'YOU CAN CLICK AN ORDER NOW, AND IT OPENS OVER THE CUSTOMER INSTEAD OF LOSING THEM. Chad: “Completely failed me on the ask. I said build something customer service could use. You can’t click on the order. You can’t get any details on each order or the customer.” He was right on all four counts and every one of them is fixed and pinned. ONE: the first cut DID have a clickable PRO and it was worse than none — it ran a NEW SEARCH, overwrote the box, replaced the customer’s whole answer with that one order’s history, and left no way back but retyping the name. A rep asked about three of a customer’s six orders had to search the customer three times. It opens a DRAWER now, over the list, which keeps its place, its window and its scroll; a right-hand drawer on a desktop where the list stays visible beside it, a full-height sheet on a phone where 576px of drawer on a 390px screen would be neither. TWO: THE DETAIL IS ACTUALLY THERE. The customer sweep reads a MASKED stop because it touches a whole board per day — the line items, the delivery instructions, the comment trail and the on-order contact are deliberately not in it, which is right for a sweep and the wrong place to stop. Opening one order now does a SEPARATE targeted read, one stop, one day, UNMASKED, one or two documents, paid only when somebody actually clicks: the full timeline (window, ETA, arrived, delivered), driver and route and load, pieces and pallets and weight AND the line items with NuVizz’s own oversize flag, every reference number a customer quotes, THE PROOF OF DELIVERY documents, what the driver was told, the comment trail newest first, and the contact on the order — phone numbers as tel: links, because a rep taps them. THREE: THE YEAR IS NO LONGER A DEAD END — it lists the orders it holds, each one opening the same drawer. FOUR: RECEIVING HOURS WERE BEING FETCHED AND NEVER SHOWN. `notes.hours` was read, used to decide whether the customer card appeared AT ALL, and then never rendered — so a customer whose only note was their receiving hours got an EMPTY card, and the one fact that decides what a rep may promise was on every lookup and on no screen. It is first in the customer card now and repeated at the top of every order drawer, under “before you promise anything”, formatted by ai-search.js’s own hoursSummary so this screen and the chat assistant can never disagree about a customer’s hours. AND THE BUG THE SCREENSHOT CAUGHT: the drawer was wired but the rows called onPro(r.pro) while the opener needs (stop, date) — so the button hovered, looked live, and did nothing. The test now asserts every onPro call passes both. 16 new tests, 5,261 in the suite, the drawer probed on phone and tablet. The Build Panel and the Route Workbench are not touched.'],
   ['1.47.0', 'THIS YEAR, ON STOP LOOKUP — AND IT IS COUNTED NIGHTLY, NOT SWEPT. Chad: “i want there to be a this year button in the date ranges.” THE BUTTON COULD NOT BE A WIDER WINDOW. The customer view answers a range by reading a WHOLE BOARD per day, twice over (the live index and the sealed warehouse), keeping the handful of stops that match one name — about 1,400 documents per day of window. A year is ~510,000 reads: it does not finish inside the function’s 26 seconds, and nobody holds a phone that long. A button that times out is worse than no button, so the year is PAID FOR ONCE, AT WRITE TIME: the nightly post-seal hook already visits every customer of every sealed day, and counting four numbers per month while it is there turns “how much have we done for them this year” into ONE DOCUMENT READ per dock. THE RE-RUN HAZARD, caught by its own test before it shipped: the month buckets carry the DAYS they have counted, so the backfill can be re-run over a range (which its own header says is safe) without doubling anything — but the first cut’s DRIVER tally was blindly additive, so a re-run left the month totals right and doubled the driver totals. Two halves of one screen disagreeing about the same freight is worse than both being wrong, because the half that is right makes the other look credible. One day-set rule governs both now. AND THE PART THAT MATTERS MOST: A MONTH NOT COUNTED IS NEVER A ZERO. A rollup written before this shipped has no months at all, which is indistinguishable from a customer we never delivered to — and “no deliveries this year” is a sentence a rep says out loud. So the document records the earliest day it has counted, months before it draw as a dashed “not counted yet” row rather than an empty bar, they contribute nothing to the total instead of zero, and where there is no tally at all the four stat tiles show a DASH. That last one was caught in a screenshot: the banner correctly said we had no count and four big zeros sat directly underneath it. The screen also says what it is NOT — a count, not a stop list — and links back to the fourteen-day window for order numbers and delivery times. Backfill the past with nuvizz-rebuild-customer-history-background (?from=&to=), a month at a time; until then the year says so plainly and the day windows are unaffected. 25 new tests, 5,245 in the suite. The Build Panel and the Route Workbench are not touched.'],
   ['1.46.1', 'ONE CLOCK DECIDES WHICH DAY IS “TODAY” ON STOP LOOKUP. Found in a screenshot taken to show Chad the new customer view: the header read “4 STOPS TODAY” while the TODAY chip sat on a different day in the list right underneath it. The app was not wrong about the date — it was 8pm in Georgia, so Eastern was still the 18th while UTC had ticked over to the 19th. THE FAULT WAS THAT TWO THINGS ON ONE SCREEN ASKED TWO DIFFERENT CLOCKS: the stat tiles are counted against the SERVER’s ET today (etDayString), and the day chip was comparing against the BROWSER’s. They agree almost always, which is exactly what makes it worth removing rather than tolerating — it is reachable every single evening, and on any machine whose clock is off, and it renders as the header contradicting the rows a rep is about to read down the phone. buildCustomerView already stamps isToday on every day off the same `today` it counted with; the chip reads that now and the day components take no clock at all. Same argument as the range pill reading the server’s window rather than the client’s selection, which is two floors of this screen built on one rule: whatever produced the numbers decides what they are labelled. One new test, pinning both halves — the source cannot take a client clock, and the flag the chip reads is set from the value the tiles are counted from. The Build Panel and the Route Workbench are not touched.'],
@@ -17214,6 +17215,30 @@ function CaptureHealthPanel() {
             </div>
           ) : null}
 
+          {/* THE CUSTOMER-TALLY BACKFILL, whenever one has run. The platform discards that
+              background job's response, so this line IS its report: running, stalled, failed or
+              finished, with the count — never "started" dressed up as "done". */}
+          {data.backfill?.started_at ? (() => {
+            const b = data.backfill;
+            const span = `${engineDateFmt(b.from)} → ${engineDateFmt(b.to)}`;
+            const when = (iso) => { try { const d = new Date(iso); return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); } catch { return '—'; } };
+            const tone = b.stalled || b.error ? 'border-red-200 bg-red-50 text-red-900' : b.running ? 'border-blue-200 bg-blue-50 text-blue-900' : 'border-green-200 bg-green-50 text-green-900';
+            return (
+              <div className={`text-[11px] border rounded px-2 py-1.5 ${tone}`}>
+                <span className="font-semibold">Customer tally backfill:</span>{' '}
+                {b.stalled
+                  ? `STALLED — stopped moving after ${b.done} of ${b.total} days (${span}); last heartbeat ${when(b.updated_at)}. It can be run again; every write is idempotent.`
+                  : b.running
+                    ? `running — ${b.done} of ${b.total} days (${span}), started ${when(b.started_at)}`
+                    : b.error
+                      ? `failed after ${b.done} of ${b.total} days (${span}) — ${b.error}`
+                      : `finished ${when(b.finished_at)} — ${b.total} day${b.total === 1 ? '' : 's'} (${span}), ${Number(b.stops || 0).toLocaleString()} stops into ${Number(b.customers || 0).toLocaleString()} customer records`}
+                {b.failed_days?.length ? ` · ${b.failed_days.length} day${b.failed_days.length === 1 ? '' : 's'} errored: ${b.failed_days.slice(0, 5).map(engineDateFmt).join(', ')}` : ''}
+                {b.last_refused ? ` · a second run (${engineDateFmt(b.last_refused.from)} → ${engineDateFmt(b.last_refused.to)}) was turned away at ${when(b.last_refused.at)} because this one was live` : ''}
+              </div>
+            );
+          })() : null}
+
           {/* one cell per day — a compact heatmap strip */}
           <div className="flex flex-wrap gap-1" role="img" aria-label="Capture seal state per day">
             {days.map((d) => {
@@ -33634,7 +33659,7 @@ function StopSourceLedger({ sources, errors, open, onToggle }) {
             </div>
           ))}
           <div className="text-[11px] text-slate-400 pt-1">
-            Read straight from our own Firestore. Zero NuVizz calls — this screen never spends a vendor call.
+            Read straight from our own Firestore. Zero NuVizz calls — nothing here is spent unless a rep presses &ldquo;Ask NuVizz&rdquo; on a complete miss, and that button says its price.
           </div>
         </div>
       )}
@@ -33844,7 +33869,9 @@ function OrderDetailBody({ data, onOpenHistory }) {
               to know which one they are quoting. */}
           {d.source === 'sealed'
             ? 'From the sealed nightly record — this cannot change again.'
-            : "From today's live board — still moving until tonight's capture seals it."}
+            : d.source === 'nuvizz'
+              ? 'Straight from NuVizz — one call, asked for just now.'
+              : "From today's live board — still moving until tonight's capture seals it."}
         </div>
         <button onClick={onOpenHistory}
           className="w-full rounded-lg border px-3 min-h-[44px] text-xs font-semibold bg-white hover:bg-slate-50">
@@ -34505,11 +34532,17 @@ function StopLookupScreen() {
   const [detailData, setDetailData] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailErr, setDetailErr] = useState(null);
+  // THE PROMPTED CALL. Its own two pieces of state so a vendor answer can never be mistaken
+  // for a Firestore one: `promptMsg` is the last thing NuVizz (or the switch in front of it)
+  // said, and it is cleared by every new search — a sentence about one order must not hang
+  // over the next.
+  const [asking, setAsking] = useState(false);
+  const [promptMsg, setPromptMsg] = useState(null);
 
   const run = useCallback(async (raw, opts = {}) => {
     const term = String(raw ?? '').trim();
     if (!term) return;
-    setLoading(true); setErr(null);
+    setLoading(true); setErr(null); setPromptMsg(null);
     try { localStorage.setItem(STOP_LOOKUP_LAST, term); } catch { /* private mode — a remembered box is a convenience, never a requirement */ }
     try {
       // ONE RULE decides stop-vs-customer, and both sides read it from src/lib/stop-lookup.js,
@@ -34585,6 +34618,34 @@ function StopLookupScreen() {
 
   const closeOrder = useCallback(() => { setDetail(null); setDetailData(null); setDetailErr(null); }, []);
 
+  /**
+   * ASK NUVIZZ — the one thing on this screen that spends a call, and only a person can do it.
+   *
+   * Chad: "if it's a specific customer pro or date range that is not in the firestore data
+   * allow a prompted nuvizz call." Offered only after a COMPLETE miss (every source that could
+   * have located the order was read and was empty), priced on the button, and answered with
+   * the whole order — the drawer opens over the answer, because the rep asked one question and
+   * should not have to search again. The endpoint refuses on its own if the order was on file
+   * after all, if the site's switches say no, or if the breaker is open, and says which.
+   */
+  const askNuvizz = useCallback(async () => {
+    const term = String(data?.dossier?.query || data?.query || '').trim();
+    if (!term || asking) return;
+    setAsking(true); setPromptMsg(null);
+    try {
+      const r = await apiFetch(`/.netlify/functions/stop-lookup-prompted?stop=${encodeURIComponent(term)}`, { cache: 'no-store' });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'NuVizz could not be asked');
+      if (j.prompted?.ok && j.dossier) {
+        setData(j); setLedgerOpen(false); setPromptMsg(j.prompted);
+        if (j.detail) { setDetail({ stopNbr: j.detail.stopNbr, date: j.detail.date }); setDetailData(j.detail); setDetailErr(null); setDetailLoading(false); }
+      } else {
+        setPromptMsg(j.prompted || { attempted: true, ok: false, reason: 'error', text: 'No answer came back.' });
+      }
+    } catch (e) { setPromptMsg({ attempted: true, ok: false, reason: 'error', text: String(e.message || e) }); }
+    finally { setAsking(false); }
+  }, [data, asking]);
+
   /** "Open this order's full history" — the one case where leaving the customer IS the ask,
    *  so it is a button somebody presses rather than what a row click does to them. */
   const pick = useCallback((pro) => {
@@ -34637,7 +34698,11 @@ function StopLookupScreen() {
               {' '}<span className="font-semibold text-slate-600">PRO</span> for one order&rsquo;s whole history.
             </p>
           </div>
-          <span className="text-[11px] font-semibold text-green-800 bg-green-50 border border-green-200 rounded-lg px-2 py-1 whitespace-nowrap">0 NuVizz calls</span>
+          {/* THE PRICE OF WHAT IS ON SCREEN, read off the answer — not a slogan. Every Firestore
+              answer says 0; the one prompted answer says 1 and says it was asked for. */}
+          {data?.nuvizzCalls === 1
+            ? <span className="text-[11px] font-semibold text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1 whitespace-nowrap">1 NuVizz call — on request</span>
+            : <span className="text-[11px] font-semibold text-green-800 bg-green-50 border border-green-200 rounded-lg px-2 py-1 whitespace-nowrap">0 NuVizz calls</span>}
         </div>
 
         <form
@@ -34773,6 +34838,9 @@ function StopLookupScreen() {
                       Every source was read and came back empty — so this is not a failed lookup, we were genuinely not there.
                       {v.recent?.length ? ' Their earlier deliveries are below.' : ' Widen the window, or check the spelling.'}
                     </div>
+                    {/* A NAME CANNOT BE PROMPTED — NuVizz has no endpoint that takes one — and the
+                        screen says so rather than offering a button that cannot work. */}
+                    {data.promptedCall?.text && <div className="text-[11px] text-slate-400 mt-2">{data.promptedCall.text}</div>}
                   </div>
                 )}
 
@@ -34792,6 +34860,13 @@ function StopLookupScreen() {
             onClose={closeOrder} onOpenHistory={() => pick(detailData?.stop?.pro || detail.stopNbr)} />)}
 
         {d && (<>
+          {/* ANSWERED BY NUVIZZ, and it says so above the order — a rep must know this row was
+              bought with a call a minute ago and whether it was filed for the next one. */}
+          {d.found && data.prompted?.ok && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+              <span className="font-semibold">Answered by NuVizz — 1 call, on request.</span> {data.prompted.text}
+            </div>
+          )}
           {d.found
             ? <StopIdentityCard d={d} stacked={isMobile} />
             : (
@@ -34811,6 +34886,46 @@ function StopLookupScreen() {
                     : `${(d.unreadSources || []).join(' and ')} could not be read, so “nothing found” is not an answer we can stand behind yet. Try again before treating this as an order we have never seen.`}
                 </div>
                 <div className={`text-[11px] mt-1 ${d.complete ? 'text-amber-700' : 'text-red-700'}`}>Board window {data.window?.from} → {data.window?.to}. Tried as {data.candidates?.join(', ')}.</div>
+
+                {/* THE PROMPTED CALL, offered HERE and nowhere else: after a complete miss, priced
+                    on the button, one tap. An incomplete miss gets no button — spending a vendor
+                    call before finishing the free look is the exact waste this screen exists to
+                    stop. A site whose switches say no gets the reason instead of a dead button. */}
+                {d.complete && (
+                  <div className="mt-3 space-y-1.5">
+                    {promptMsg?.attempted ? (
+                      <div className={`text-xs ${promptMsg.ok ? 'text-green-800' : promptMsg.reason === 'not_found' ? 'text-amber-900' : 'text-red-800'}`}>
+                        <span className="font-semibold">
+                          {promptMsg.ok ? 'NuVizz answered.' : promptMsg.reason === 'not_found' ? 'NuVizz has nothing either.' : 'Could not ask NuVizz.'}
+                        </span> {promptMsg.text}
+                      </div>
+                    ) : promptMsg ? (
+                      <div className="text-xs text-slate-700">{promptMsg.text}</div>
+                    ) : data.promptedCall?.available ? (
+                      <button type="button" onClick={askNuvizz} disabled={asking}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400 bg-white px-3 min-h-[44px] text-sm font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-60">
+                        <Search size={14} className={asking ? 'animate-pulse' : ''} />
+                        {asking ? 'Asking NuVizz…' : 'Ask NuVizz for this order — 1 call'}
+                      </button>
+                    ) : data.promptedCall ? (
+                      <div className="text-[11px] text-slate-500">{data.promptedCall.text}</div>
+                    ) : null}
+                    {/* A transient failure may be retried — a "no such order" may not: asking twice
+                        cannot change that answer and would only spend a second call. */}
+                    {promptMsg?.attempted && !promptMsg.ok && promptMsg.reason === 'error' && (
+                      <button type="button" onClick={askNuvizz} disabled={asking}
+                        className="rounded-lg border border-slate-300 bg-white px-3 min-h-[44px] text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60">
+                        {asking ? 'Asking NuVizz…' : 'Try NuVizz again — 1 call'}
+                      </button>
+                    )}
+                    {promptMsg?.reason === 'on-file' && (
+                      <button type="button" onClick={() => submit(d.query)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 min-h-[44px] text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                        Look it up again — 0 calls
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 

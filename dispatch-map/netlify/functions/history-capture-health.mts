@@ -7,7 +7,11 @@
 //        → trailing-21-day capture health, PLUS a `coverage` block: the oldest and
 //          newest day the warehouse holds, and the oldest day the per-customer
 //          rollup was built from (the floor under the stop card's "Recent
-//          deliveries here", which has no date cutoff of its own).
+//          deliveries here", which has no date cutoff of its own), PLUS a
+//          `backfill` block: the customer-history backfill's progress record
+//          (running / stalled / finished, days done, stops rolled up) — the only
+//          place that background job's outcome can be read, since the platform
+//          discards its response. One more getDoc; null when it has never run.
 //          CHEAP: one manifest list + one failures list, NO stop scans — the
 //          coverage block is summarised from the list the strip already fetched.
 //          Classifies each date as
@@ -21,9 +25,10 @@
 //          day's stops (an explicit stop scan, not part of the cheap strip) and
 //          reports the eligibility breakdown + the miner's skip reasons. This is
 //          the Phase-4 tool for the 2026-07-03 zero-mine question.
-import { isFirestoreEnabled, listDocs } from './lib/firestore.mts';
+import { isFirestoreEnabled, listDocs, getDoc } from './lib/firestore.mts';
 import { HISTORY_COLLECTION, listStops } from './lib/history-store.mts';
 import { listCaptureFailures, classifyCaptureDay, summarizeCoverage } from './lib/history-seal.mts';
+import { BACKFILL_PROGRESS_PATH, shapeBackfill } from './lib/customer-history-backfill.mts';
 import { loadKeyForStop, extractReferenceRoutes } from './lib/routing-reference.mts';
 import { loadEngineConfig } from './lib/routing-engine-config.mts';
 import { requireUser } from './lib/require-user.mts';
@@ -148,8 +153,11 @@ async function captureHealth(): Promise<any> {
   // NuVizz call. See summarizeCoverage for why rollup_from (not first_date) is the
   // number that bounds the stop card's "Recent deliveries here".
   const coverage = summarizeCoverage(manifests, TENANT);
+  // Never allowed to take the strip down: a malformed or unreadable progress doc reads as
+  // "no backfill on record", which is the honest degradation for a diagnostic sub-block.
+  const backfill = shapeBackfill(await getDoc(BACKFILL_PROGRESS_PATH).catch(() => null));
 
-  return { ok: true, tenant: TENANT, window: { from, to: anchor, days: WINDOW_DAYS }, coverage, summary, days };
+  return { ok: true, tenant: TENANT, window: { from, to: anchor, days: WINDOW_DAYS }, coverage, backfill, summary, days };
 }
 
 export default async (req: Request): Promise<Response> => {

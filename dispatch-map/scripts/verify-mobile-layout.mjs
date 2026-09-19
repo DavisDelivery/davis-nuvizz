@@ -31,7 +31,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname, resolve } from 'node:path';
 import { chromium } from 'playwright-core';
-import { STOP_LOOKUP_DOSSIER } from './lib/stop-lookup-fixture.mjs';
+import { STOP_LOOKUP_DOSSIER, STOP_LOOKUP_NOTFOUND } from './lib/stop-lookup-fixture.mjs';
 import { CUSTOMER_VIEW, ORDER_DETAIL } from './lib/customer-view-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
 
@@ -370,6 +370,20 @@ const PROBES = {
       },
     },
     {
+      // THE MISS: an amber card, three sentences, a 44px "Ask NuVizz" button and the ledger
+      // folded OPEN underneath — the one state on this screen where a rep decides to spend a
+      // vendor call, and a state no other probe renders.
+      name: 'nothing on file, NuVizz offered',
+      open: async (page) => {
+        const box = page.getByLabel(/find a customer by name/i).first();
+        if (!(await box.isVisible().catch(() => false))) return false;
+        await box.fill('000000000');
+        await page.getByRole('button', { name: /^look up$/i }).first().click();
+        await page.waitForTimeout(900);
+        return page.getByRole('button', { name: /ask nuvizz for this order/i }).first().isVisible().catch(() => false);
+      },
+    },
+    {
       // THE CUSTOMER VIEW IS THE PATH THIS SCREEN WAS BUILT FOR, and it is the busiest layout
       // in the app outside the board: four stat tiles, a wrapping driver row, a notes card
       // with three flags, two location cards and three day tables of seven columns each.
@@ -663,7 +677,10 @@ function stubRoutes(page, emailHtml) {
     if (u.includes('stop-lookup')) return R(
       // THREE modes off one URL, and the stub picks the same way the endpoint does. Stubbing
       // only some of them leaves the guard measuring a screen the app never renders.
-      u.includes('detail=') ? ORDER_DETAIL : u.includes('year=') ? CUSTOMER_YEAR : u.includes('name=') ? CUSTOMER_VIEW : STOP_LOOKUP_DOSSIER);
+      u.includes('detail=') ? ORDER_DETAIL : u.includes('year=') ? CUSTOMER_YEAR : u.includes('name=') ? CUSTOMER_VIEW
+        // THE MISS, keyed on the one number the probe asks for — the card that carries the
+        // prompted-call button, the state a rep is looking at when they decide to spend it.
+        : u.includes('stop=000000000') ? STOP_LOOKUP_NOTFOUND : STOP_LOOKUP_DOSSIER);
     if (u.includes('roster') || u.includes('drivers')) return R({
       ok: true, drivers: [{ name: 'FRANK OKINE', id: '1' }], roster: [],
       at: '2026-09-10T12:00:00Z', count: 3,

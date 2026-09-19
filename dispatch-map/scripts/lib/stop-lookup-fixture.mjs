@@ -99,3 +99,39 @@ export const STOP_LOOKUP_DOSSIER = {
     },
     note: 'Firestore only — nothing here spent a NuVizz call.',
 };
+
+// THE MISS — the same screen with nothing found, which is the state that carries the one
+// button on this screen that can spend a NuVizz call. An empty card cannot overflow, but a
+// card with a 44px button, three sentences and the folded-open ledger under it can, and it
+// is the state a rep is looking at when they decide to spend the call. The guards ask for
+// PRO 000000000 to get it; the stub keys on that number the way the endpoint keys on a miss.
+const NOTFOUND_SOURCES = [
+  ['pros', 'PRO index', 'history_pros', 'which days this order was captured on'],
+  ['sealed', 'Sealed history', 'history_days/…/stops', '18 days (2026-09-04 → 2026-09-21) — the PRO index had no day for this order, so the whole window was swept'],
+  ['board', "Today's board", 'nuvizz_stop_index/…/stops', '2026-09-04 → 2026-09-21'],
+  ['attempts', 'Attempts', 'attempts/…/items', 'a redelivery marker on one of these days'],
+  ['plans', 'Morning plan', 'att_plan/…/stops', 'who had it when the board froze at 8:30'],
+  ['address', 'Address changes', 'nuvizz_ops/addr_changes__…', '2026-09-04 → 2026-09-21'],
+  ['writes', 'What we sent NuVizz', 'nuvizz_write_ops', 'saves and board syncs naming this order'],
+].map(([key, label, where, note]) => ({ key, label, where, note, looked: true, skipped: false, count: 0, found: false, state: 'empty' }));
+
+export const STOP_LOOKUP_NOTFOUND = {
+    ok: true, nuvizzCalls: 0, mode: 'stop', kind: 'stop', today: '2026-09-18',
+    candidates: ['000000000', '0'], proIndex: true,
+    window: { from: '2026-09-04', to: '2026-09-21', daysBack: 14, daysAhead: 3, pointerDays: [], sealedDays: [], eventDays: [] },
+    errors: {},
+    dossier: {
+      query: '000000000', kind: 'stop', found: false, complete: true, unreadSources: [],
+      identity: { query: '000000000', pro: '000000000', stopNbr: null, name: null, address: null, matchKey: null, refs: null, asOf: null },
+      counts: { days: 0, delivered: 0, attempts: 0, exceptions: 0, sealed: 0, onBoard: 0 },
+      firstSeen: null, lastSeen: null, latest: null,
+      days: [], addressChanges: [], writes: [], notes: null, customer: null,
+      sources: [
+        ...NOTFOUND_SOURCES,
+        { key: 'customer', label: 'Customer rollup', where: 'history_customers', note: "this customer's other deliveries", looked: false, skipped: true, count: 0, found: false, state: 'skipped' },
+        { key: 'notes', label: 'Dispatcher notes', where: 'customer_notes', note: 'notes, receiving hours, contacts, overrides', looked: false, skipped: true, count: 0, found: false, state: 'skipped' },
+      ],
+    },
+    promptedCall: { available: true, reason: null, text: 'Ask NuVizz for this order — 1 call.' },
+    note: 'Firestore only — nothing here spent a NuVizz call.',
+};

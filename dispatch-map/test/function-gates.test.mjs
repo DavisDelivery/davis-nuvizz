@@ -53,6 +53,9 @@ const VIEWER_SET = [
 const DISPATCHER_SET = [
   'ai-search', 'anthropic-routing', 'debug-capture', 'manifest-email-check', 'manifest-upload',
   'nuvizz-board-reconcile', 'nuvizz-pro-lookup', 'nuvizz-stop-events', 'nuvizz-stop-explorer',
+  // The prompted call on Stop lookup: one metered /stop/info, written into history — the same
+  // act nuvizz-pro-lookup performs, gated at the same role.
+  'stop-lookup-prompted',
 ];
 const ADMIN_SET = ['routing-engine-tuning'];
 
