@@ -720,5 +720,169 @@ export function buildCustomerYear(facts = {}) {
       lastDate: s(c.lastDate) || null,
       stops: Object.values(c.months || {}).reduce((n, b) => n + (b?.stops || 0), 0),
     })).sort((a, b) => b.stops - a.stops),
+    // THE ORDERS THEMSELVES, so the year is not a dead end.
+    //
+    // Chad: "You can't click on the order." The first cut of the year showed counts and
+    // nothing else — a rep who got there and then needed an order number had to go back and
+    // pick a different window to find one. These are the rollup's own PROs, already in the
+    // documents this view reads, each carrying its day and its driver: free, and enough to
+    // open any of them. Capped per dock by MAX_PROS upstream, which is why the screen says
+    // plainly that it is the most recent rather than all of them.
+    orders: docs
+      .flatMap((c) => (c.pros || []).map((p) => ({
+        pro: s(p?.pro), date: s(p?.date), driver: s(p?.driver) || null,
+        location: s(c.addr1) || null,
+      })))
+      .filter((p) => p.pro && p.date && p.date.slice(0, 4) === year)
+      .sort((a, b) => b.date.localeCompare(a.date) || a.pro.localeCompare(b.pro)),
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ONE ORDER, EVERYTHING ON IT — what a rep needs once they have found it
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Chad, on the first cut of the customer view: "You can't click on the order. You can't get
+// any details on each order or the customer."
+//
+// WHAT THE FIRST CUT GOT WRONG, precisely. The customer sweep reads a MASKED stop, because it
+// touches a whole board per day and has to stay lean — so the line items, the delivery
+// instructions, the comment trail and the on-order contact are deliberately NOT in it. That
+// is the right call for a sweep and the wrong place to stop: a rep who has found the order
+// then has nothing to tell the customer beyond a status word and a time.
+//
+// So the detail is a SEPARATE targeted read of the one stop, unmasked, and this turns that
+// record into the answers to the questions actually asked on the phone:
+//
+//   "where is it"            → the timeline: window, ETA, arrived, delivered
+//   "who brought it"         → driver, route, stop sequence, load
+//   "what was on it"         → pieces, pallets, weight, AND the line items
+//   "prove you delivered it" → the POD documents
+//   "what does my PO say"    → every reference number the order carries
+//   "why was it refused"     → the delivery instructions and the comment trail
+//   "who do I call"          → the contact ON THE ORDER, not just the customer note
+
+/** Best-effort read of an execution timestamp — the field is on the stop on most days and in
+ *  the raw execution block on others, which is exactly why App.jsx has its own accessor for
+ *  it. Missing in silence on a screen whose job is saying when we were there is the failure
+ *  worth probing two places for. */
+function execTime(stop, key) {
+  const exec = stop?.raw?.stopExecutionInfo || {};
+  return s(stop?.[key]) || s(exec?.to?.[key]) || s(exec?.[key]) || null;
+}
+
+/** PURE: one line item, in the words on the paperwork. */
+function lineItem(d) {
+  const id = d?.productIdentifier;
+  return {
+    product: s(d?.product) || null,
+    sku: typeof id === 'string' ? id : (s(id?.value) || s(id?.id) || null),
+    qty: numOrNull(d?.quantity ?? d?.qty ?? d?.pieces),
+    weight: numOrNull(d?.weight),
+    length: numOrNull(d?.length ?? d?.criticalDimension),
+    // NuVizz's own oversize flag — a rep telling a customer "it needs a liftgate" is reading
+    // this, so it is surfaced rather than folded into a piece count.
+    oversize: s(d?.productCategory).toUpperCase() === 'L',
+  };
+}
+
+/** PURE: the comment trail, newest first, with who said it and when. */
+function comments(stop) {
+  const raw = Array.isArray(stop?.allComments) ? stop.allComments : [];
+  return raw
+    .map((c) => ({
+      text: s(c?.comment ?? c?.text ?? c?.note),
+      by: s(c?.userName ?? c?.author ?? c?.createdBy) || null,
+      at: s(c?.createdTime ?? c?.commentDTTM ?? c?.at) || null,
+      kind: s(c?.commentType ?? c?.type) || null,
+    }))
+    .filter((c) => c.text)
+    .sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
+}
+
+/**
+ * PURE: one stop record → the order detail a rep reads down the phone.
+ *
+ * `source` is 'sealed' or 'board' and rides on the answer rather than being flattened away:
+ * the seal cannot change again, while a board copy is live and a delivery time read off it
+ * may still move. A rep quoting a time should be able to see which kind they are quoting.
+ */
+export function buildOrderDetail(stop, { date, today, source = 'sealed' } = {}) {
+  const st = stop || {};
+  const status = s(st.normalizedStatus) || null;
+  const isAttempt = st.isAttempt === true || /^ATT/i.test(s(st.shipmentNbr));
+  const pros = Array.isArray(st.pros) && st.pros.length
+    ? st.pros.map((p) => s(typeof p === 'string' ? p : (p?.pro ?? p))).filter(Boolean)
+    : [s(st.pro) || s(st.primaryPro) || s(st.stopNbr)].filter(Boolean);
+
+  const delivered = s(st.deliveredDTTM) || execTime(st, 'deliveredDTTM');
+  const arrived = s(st.arrivalDTTM) || execTime(st, 'arrivalDTTM');
+
+  return {
+    date: s(date),
+    source,
+    stopNbr: s(st.stopNbr) || null,
+    pro: s(st.pro) || s(st.primaryPro) || s(st.stopNbr) || null,
+    pros,
+    name: s(st.businessName) || null,
+    address: addressOf(st),
+    status,
+    outcome: dayOutcome({ status, isAttempt, date: s(date), today: s(today), laterDay: false }),
+    rawStatus: s(st.status) || null,
+
+    // ── when ────────────────────────────────────────────────────────────────
+    // Every stamp the record holds, in the order they happen, so a rep can say where it is
+    // rather than only whether it is done.
+    timeline: [
+      { key: 'scheduled', label: 'Delivery window', at: null,
+        text: [s(st.scheduledFrom), s(st.scheduledTo)].filter(Boolean).join(' – ') || null },
+      { key: 'eta', label: 'Planned ETA', at: s(st.plannedEtaDTTM) || null },
+      { key: 'arrived', label: 'Driver arrived', at: arrived || null },
+      { key: 'delivered', label: 'Delivered', at: delivered || null },
+    ].filter((r) => r.at || r.text),
+    deliveredAt: delivered || null,
+    arrivedAt: arrived || null,
+
+    // ── who ─────────────────────────────────────────────────────────────────
+    driver: s(st.driverName) || s(st.driverUserName) || null,
+    driverUserName: s(st.driverUserName) || null,
+    route: s(st.routeName) || null,
+    loadNbr: s(st.loadNbr) || null,
+    seq: numOrNull(st.loadStopSeq ?? st.routeSeq),
+    planned: st.isPlanned === true,
+
+    // ── what ────────────────────────────────────────────────────────────────
+    pieces: numOrNull(st.cartons) ?? numOrNull(st.volume),
+    pallets: numOrNull(st.pallets),
+    weight: numOrNull(st.weight),
+    itemsSummary: s(st.itemsSummary) || null,
+    lines: (Array.isArray(st.stopDetails) ? st.stopDetails : []).map(lineItem).filter((l) => l.product || l.sku || l.qty),
+
+    // ── the numbers a customer quotes ───────────────────────────────────────
+    refs: [
+      ['PO', s(st.poRef)], ['BOL', s(st.bol)], ['Customer ref', s(st.custRef)],
+      ['Order', s(st.orderNbr)], ['Shipment', s(st.shipmentNbr)],
+      ['Warehouse', s(st.warehouse)], ['Terms', s(st.terms)], ['Account', s(st.customerAccount)],
+    ].filter(([, v]) => v).map(([k, v]) => ({ label: k, value: v })),
+
+    // ── proof ───────────────────────────────────────────────────────────────
+    // THE CUSTOMER-SERVICE ARTEFACT. "Prove you delivered it" is the call this screen exists
+    // for, and the record carries the document metadata even though the bytes live elsewhere.
+    pod: (Array.isArray(st.podDocs) ? st.podDocs : []).map((d) => ({
+      name: s(d?.documentName) || null,
+      ext: s(d?.extension) || null,
+      at: s(d?.createdTime) || null,
+    })),
+
+    // ── what the driver was told, and what came back ────────────────────────
+    instructions: s(st.orderInstructions) || s(st.signalSources?.orderInstructions) || null,
+    comments: comments(st),
+
+    // ── who to call about THIS order ────────────────────────────────────────
+    contact: st.contact && (st.contact.name || st.contact.phone || st.contact.email)
+      ? { name: s(st.contact.name) || null, phone: s(st.contact.phone) || null, email: s(st.contact.email) || null }
+      : null,
+    matchKey: s(st.customerMatchKey) || null,
+    capturedAt: s(st.captured_at) || null,
   };
 }

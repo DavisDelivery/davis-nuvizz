@@ -87,7 +87,7 @@ import {
 import { isEstesOrder, ESTES_FILL, ESTES_RING } from './lib/carrier-mark.js';
 import { eligibilityChanged } from './lib/trailer-block.js';
 import { applyScannerResults } from './lib/customer-notes-writer';
-import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
+import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops, hoursSummary } from './lib/ai-search.js';
 import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerChipLabel, latestPeerSaveAt, PRESENCE_HEARTBEAT_MS } from './lib/presence.js';
 import { cancelsIn, cancelSummary } from './lib/cancel-guard.js';
 import { validateNewRoute, resolveRouteOrigin, originLine, newRouteSeed, newRouteSeedNote } from './lib/route-create.js';
@@ -153,7 +153,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.47.0';
+const APP_VERSION = '1.48.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -207,6 +207,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.48.0', 'YOU CAN CLICK AN ORDER NOW, AND IT OPENS OVER THE CUSTOMER INSTEAD OF LOSING THEM. Chad: “Completely failed me on the ask. I said build something customer service could use. You can’t click on the order. You can’t get any details on each order or the customer.” He was right on all four counts and every one of them is fixed and pinned. ONE: the first cut DID have a clickable PRO and it was worse than none — it ran a NEW SEARCH, overwrote the box, replaced the customer’s whole answer with that one order’s history, and left no way back but retyping the name. A rep asked about three of a customer’s six orders had to search the customer three times. It opens a DRAWER now, over the list, which keeps its place, its window and its scroll; a right-hand drawer on a desktop where the list stays visible beside it, a full-height sheet on a phone where 576px of drawer on a 390px screen would be neither. TWO: THE DETAIL IS ACTUALLY THERE. The customer sweep reads a MASKED stop because it touches a whole board per day — the line items, the delivery instructions, the comment trail and the on-order contact are deliberately not in it, which is right for a sweep and the wrong place to stop. Opening one order now does a SEPARATE targeted read, one stop, one day, UNMASKED, one or two documents, paid only when somebody actually clicks: the full timeline (window, ETA, arrived, delivered), driver and route and load, pieces and pallets and weight AND the line items with NuVizz’s own oversize flag, every reference number a customer quotes, THE PROOF OF DELIVERY documents, what the driver was told, the comment trail newest first, and the contact on the order — phone numbers as tel: links, because a rep taps them. THREE: THE YEAR IS NO LONGER A DEAD END — it lists the orders it holds, each one opening the same drawer. FOUR: RECEIVING HOURS WERE BEING FETCHED AND NEVER SHOWN. `notes.hours` was read, used to decide whether the customer card appeared AT ALL, and then never rendered — so a customer whose only note was their receiving hours got an EMPTY card, and the one fact that decides what a rep may promise was on every lookup and on no screen. It is first in the customer card now and repeated at the top of every order drawer, under “before you promise anything”, formatted by ai-search.js’s own hoursSummary so this screen and the chat assistant can never disagree about a customer’s hours. AND THE BUG THE SCREENSHOT CAUGHT: the drawer was wired but the rows called onPro(r.pro) while the opener needs (stop, date) — so the button hovered, looked live, and did nothing. The test now asserts every onPro call passes both. 16 new tests, 5,261 in the suite, the drawer probed on phone and tablet. The Build Panel and the Route Workbench are not touched.'],
   ['1.47.0', 'THIS YEAR, ON STOP LOOKUP — AND IT IS COUNTED NIGHTLY, NOT SWEPT. Chad: “i want there to be a this year button in the date ranges.” THE BUTTON COULD NOT BE A WIDER WINDOW. The customer view answers a range by reading a WHOLE BOARD per day, twice over (the live index and the sealed warehouse), keeping the handful of stops that match one name — about 1,400 documents per day of window. A year is ~510,000 reads: it does not finish inside the function’s 26 seconds, and nobody holds a phone that long. A button that times out is worse than no button, so the year is PAID FOR ONCE, AT WRITE TIME: the nightly post-seal hook already visits every customer of every sealed day, and counting four numbers per month while it is there turns “how much have we done for them this year” into ONE DOCUMENT READ per dock. THE RE-RUN HAZARD, caught by its own test before it shipped: the month buckets carry the DAYS they have counted, so the backfill can be re-run over a range (which its own header says is safe) without doubling anything — but the first cut’s DRIVER tally was blindly additive, so a re-run left the month totals right and doubled the driver totals. Two halves of one screen disagreeing about the same freight is worse than both being wrong, because the half that is right makes the other look credible. One day-set rule governs both now. AND THE PART THAT MATTERS MOST: A MONTH NOT COUNTED IS NEVER A ZERO. A rollup written before this shipped has no months at all, which is indistinguishable from a customer we never delivered to — and “no deliveries this year” is a sentence a rep says out loud. So the document records the earliest day it has counted, months before it draw as a dashed “not counted yet” row rather than an empty bar, they contribute nothing to the total instead of zero, and where there is no tally at all the four stat tiles show a DASH. That last one was caught in a screenshot: the banner correctly said we had no count and four big zeros sat directly underneath it. The screen also says what it is NOT — a count, not a stop list — and links back to the fourteen-day window for order numbers and delivery times. Backfill the past with nuvizz-rebuild-customer-history-background (?from=&to=), a month at a time; until then the year says so plainly and the day windows are unaffected. 25 new tests, 5,245 in the suite. The Build Panel and the Route Workbench are not touched.'],
   ['1.46.1', 'ONE CLOCK DECIDES WHICH DAY IS “TODAY” ON STOP LOOKUP. Found in a screenshot taken to show Chad the new customer view: the header read “4 STOPS TODAY” while the TODAY chip sat on a different day in the list right underneath it. The app was not wrong about the date — it was 8pm in Georgia, so Eastern was still the 18th while UTC had ticked over to the 19th. THE FAULT WAS THAT TWO THINGS ON ONE SCREEN ASKED TWO DIFFERENT CLOCKS: the stat tiles are counted against the SERVER’s ET today (etDayString), and the day chip was comparing against the BROWSER’s. They agree almost always, which is exactly what makes it worth removing rather than tolerating — it is reachable every single evening, and on any machine whose clock is off, and it renders as the header contradicting the rows a rep is about to read down the phone. buildCustomerView already stamps isToday on every day off the same `today` it counted with; the chip reads that now and the day components take no clock at all. Same argument as the range pill reading the server’s window rather than the client’s selection, which is two floors of this screen built on one rule: whatever produced the numbers decides what they are labelled. One new test, pinning both halves — the source cannot take a client clock, and the flag the chip reads is set from the value the tiles are counted from. The Build Panel and the Route Workbench are not touched.'],
   ['1.46.0', 'THE SCREEN NOW ANSWERS THE QUESTION THAT PROMPTED IT: HOW MANY DELIVERIES DID WE HAVE FOR THIS CUSTOMER TODAY, AND WHO RAN THEM. Chad, on v1.45.0: “I wanted to see how many deliveries we had for earthly alternative today and couldn’t. Wanted to see all the different ones and drivers who delivered them … want customer service to be able to use this as well.” HE WAS RIGHT AND THE FIRST BUILD COULD NOT HAVE BEEN: typing a name searched history_customers, a rollup assembled from SEALED history — so TODAY, the one day he asked about, is the one day that document structurally cannot contain. It would have answered “no deliveries” about a customer we had been to three times that morning, which is worse than answering nothing. SO THE CUSTOMER VIEW IS BUILT ON THE LIVE BOARD. It sweeps the board day by day over the window, plus the sealed warehouse for the same days, and keeps the stops whose business name matches. The join is BY NAME because board rows carry no customerMatchKey at all (routing-cleanup-core says so outright, and customer-key.mts exists because an alert once read 778 board rows with matchKey null on every one and called it a clean day) — normalised by the same rule the match key uses, so a dock cannot group one way for counting and another way for its notes. WHAT A REP SEES, in the order the questions come down the phone: four big numbers (stops today, delivered, still out, came back), then who drove them — and the driver tally shows CARRIED and DELIVERED separately, because a man who had four and delivered two did not deliver four and that sentence gets repeated to a customer. Then the receiving hours and the no-tractor flag ABOVE the rows, not below, because nobody scrolls past six stops to find out what they should not have promised. Then every stop, by day, with the delivery minute, the route, the dock and the freight; the PRO on each row opens that order’s whole history. ONE CUSTOMER IS OFTEN SEVERAL DOCKS and the database keys them separately — grouping by key would split the answer in half and show neither total, so this groups by NAME and lists the locations underneath. Two real businesses matching what was typed gets a chooser with today’s count beside each, never a silent pick. FOUR THINGS IT REFUSES TO GET WRONG. A stop in both the seal and the board is counted ONCE (both sweeps cover the same days; double-counting would report six visits where there were three). A multi-order stop is one stop and three deliveries, and says both. A window that does not include today says so rather than printing a “0 today” headline. And A FAILED READ IS NEVER A ZERO — the first cut of this had a 500 on the board sweep empty the match list, so the screen said “no customer matches” about a customer we deliver to weekly; it now returns the view with the failure on it and refuses to call the count complete. Bounded at 14 days because a day here is a whole board read twice, not one document — sixty would be ~84,000 reads with somebody waiting on the phone; older than that is the rollup, free, with the driver on every row. Also found and fixed on the way in: exporting the name half of the match key had quietly CHANGED it (“ACME LLC” → acme__ rather than acme___), which would have detached every receiving-hours note, address override and opt-out for any customer whose name ends in LLC — three parity tests caught it. 33 new tests, 5,215 in the suite. The Build Panel and the Route Workbench are not touched.'],
@@ -33321,7 +33322,7 @@ const stopFreight = (r) => [
  *      asking. It folds under the address.
  *  The six that stay are the six that answer the phone call: which day, what happened, whose
  *  truck, when, and where we went. */
-function StopDayTable({ days }) {
+function StopDayTable({ days, onOpen }) {
   return (
     <div className="rounded-xl border bg-white overflow-hidden">
       {/* AUTO layout, not table-fixed. The first cut set each column a percentage by hand,
@@ -33345,7 +33346,14 @@ function StopDayTable({ days }) {
         <tbody className="divide-y">
           {days.map((r) => (
             <tr key={r.date} className="align-top">
-              <td className="px-3 py-2 font-semibold text-slate-800 break-words">{formatDateForDisplay(r.date)}</td>
+              <td className="px-3 py-2 font-semibold break-words">
+                {/* THE DAY IS THE HANDLE HERE, because on a per-order screen every row is the
+                    same order and it is the DAY that picks which record you want to read. */}
+                <button onClick={() => onOpen?.(r.refs.stopNbr || r.pro, r.date)}
+                  className="text-blue-800 hover:underline text-left" title="Open this day's record">
+                  {formatDateForDisplay(r.date)}
+                </button>
+              </td>
               <td className="px-3 py-2"><StopOutcomeChip outcome={r.outcome} />
                 {stopExtraStatus(r) && <div className="text-[11px] text-slate-400 mt-0.5 font-mono break-words">{stopExtraStatus(r)}</div>}
                 {/* The provenance chips, folded in where the From column would have been. */}
@@ -33381,14 +33389,17 @@ function StopDayTable({ days }) {
 
 /** PHONE: cards. The same eight facts, stacked — a table at 360px is a sideways scroll, and
  *  this screen gets opened one-handed with a customer talking. */
-function StopDayListMobile({ days }) {
+function StopDayListMobile({ days, onOpen }) {
   return (
     <div className="space-y-2">
       {days.map((r) => (
         <div key={r.date} className="rounded-xl border bg-white p-3 space-y-1.5">
           <div className="flex flex-wrap items-center gap-1.5">
             <StopOutcomeChip outcome={r.outcome} />
-            <span className="text-xs font-semibold text-slate-800">{formatDateForDisplay(r.date)}</span>
+            <button onClick={() => onOpen?.(r.refs.stopNbr || r.pro, r.date)}
+              className="text-xs font-semibold text-blue-800 hover:underline min-h-[40px] text-left">
+              {formatDateForDisplay(r.date)}
+            </button>
             <span className="ml-auto"><StopSourceChips sources={r.sources} /></span>
           </div>
           <div className="text-xs text-slate-700 break-words">
@@ -33457,33 +33468,88 @@ function StopIdentityCard({ d, stacked }) {
   );
 }
 
-/** The dispatcher note, the receiving hours and the flags that change what you may promise. */
-function StopNotesCard({ notes }) {
+/**
+ * THE CUSTOMER — everything a rep needs to act, not just a note.
+ *
+ * Chad: "You can't get any details on each order or the customer."
+ *
+ * The first cut printed the note text, a flag row and a contact line, and it had a real bug
+ * inside it: `notes.hours` was read, used to decide whether the card should appear AT ALL, and
+ * then never rendered. So a customer whose ONLY note was their receiving hours got an empty
+ * card, and the single most important fact a rep can know before promising a redelivery — what
+ * time the dock shuts — was fetched on every lookup and shown on none of them.
+ *
+ * RECEIVING HOURS ARE FIRST NOW, and formatted by ai-search.js's hoursSummary rather than a
+ * second copy of that rule, so the chat assistant and this screen can never disagree about
+ * what a customer's hours are.
+ *
+ * Phone numbers are `tel:` links. A rep on a phone taps them.
+ */
+function StopNotesCard({ notes, locations }) {
   if (!notes) return null;
-  const has = notes.text || notes.flags.length || notes.contacts.length || notes.hours || notes.customerNbr;
+  const hours = notes.hours ? hoursSummary({ receiving_hours: notes.hours }) : '';
+  const has = notes.text || notes.flags.length || notes.contacts.length || hours || notes.customerNbr || (locations || []).length;
   if (!has) return null;
   return (
     <div className="rounded-xl border bg-white p-3 space-y-2">
-      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Dispatcher notes for this customer</div>
-      {!!notes.flags.length && (
-        <div className="flex flex-wrap gap-1.5">
-          {notes.flags.map((f) => (
-            <span key={f.key} className={`inline-block px-1.5 py-0.5 rounded border text-[10px] font-bold uppercase tracking-wide ${
-              f.tone === 'amber' ? 'bg-amber-100 text-amber-800 border-amber-200'
-                : f.tone === 'blue' ? 'bg-blue-100 text-blue-800 border-blue-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>{f.label}</span>
-          ))}
+      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">This customer</div>
+
+      {/* THE TWO THINGS THAT CHANGE WHAT YOU MAY PROMISE, ABOVE EVERYTHING ELSE. */}
+      {(hours || !!notes.flags.length) && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-2 space-y-1.5">
+          {hours && (
+            <div className="text-sm text-amber-900 break-words">
+              <span className="font-bold uppercase tracking-wide text-[10px] text-amber-700">Receiving hours</span>
+              <div className="font-semibold">{hours}</div>
+            </div>
+          )}
+          {!!notes.flags.length && (
+            <div className="flex flex-wrap gap-1.5">
+              {notes.flags.map((f) => (
+                <span key={f.key} className={`inline-block px-1.5 py-0.5 rounded border text-[10px] font-bold uppercase tracking-wide ${
+                  f.tone === 'amber' ? 'bg-white text-amber-900 border-amber-300'
+                    : f.tone === 'blue' ? 'bg-blue-100 text-blue-800 border-blue-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>{f.label}</span>
+              ))}
+            </div>
+          )}
         </div>
       )}
+
       {notes.text && <div className="text-sm text-slate-700 whitespace-pre-wrap break-words">{notes.text}</div>}
-      {notes.customerNbr && <div className="text-[11px] text-slate-500">Customer # <span className="font-mono text-slate-700">{notes.customerNbr}</span></div>}
+
+      {/* TAPPABLE. A rep reading this on a phone is about to ring one of these numbers. */}
       {!!notes.contacts.length && (
-        <div className="text-[11px] text-slate-600 space-y-0.5">
+        <div className="space-y-1">
+          <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Contacts</div>
           {notes.contacts.map((c, i) => (
-            <div key={`${c.phone || c.email}-${i}`} className="break-words">{[c.name, c.phone, c.email].filter(Boolean).join(' · ')}</div>
+            <div key={`${c.phone || c.email}-${i}`} className="text-sm text-slate-700 break-words">
+              {c.name && <span className="font-semibold">{c.name}</span>}
+              {c.phone && <> · <a href={`tel:${c.phone}`} className="text-blue-800 font-semibold hover:underline">{c.phone}</a></>}
+              {c.email && <> · <a href={`mailto:${c.email}`} className="text-blue-800 hover:underline break-all">{c.email}</a></>}
+            </div>
           ))}
         </div>
       )}
-      {notes.updatedAt && <div className="text-[11px] text-slate-400">saved {addrTime(notes.updatedAt)}{notes.updatedBy ? ` by ${notes.updatedBy}` : ''}</div>}
+
+      {/* EVERY DOCK, WITH ITS OWN ADDRESS. A rep asked "which one did it go to" should not
+          have to infer it from the rows. */}
+      {!!(locations || []).length && (
+        <div className="space-y-1">
+          <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+            {locations.length === 1 ? 'Address' : `${locations.length} addresses`}
+          </div>
+          {locations.map((l) => (
+            <div key={l.key} className="text-[11px] text-slate-600 break-words">
+              {custAddr(l.address)}<span className="text-slate-400"> {custCity(l.address)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-x-3 text-[11px] text-slate-400 border-t pt-1.5">
+        {notes.customerNbr && <span>Customer # <span className="font-mono text-slate-600">{notes.customerNbr}</span></span>}
+        {notes.updatedAt && <span>note saved {addrTime(notes.updatedAt)}{notes.updatedBy ? ` by ${notes.updatedBy}` : ''}</span>}
+      </div>
     </div>
   );
 }
@@ -33574,6 +33640,286 @@ function StopSourceLedger({ sources, errors, open, onToggle }) {
       )}
     </div>
   );
+}
+
+// ── THE ORDER DRAWER — click an order, keep the customer ────────────────────
+//
+// Chad: "You can't click on the order. You can't get any details on each order or the
+// customer."
+//
+// THE FIRST CUT DID HAVE A CLICKABLE PRO, AND IT WAS WORSE THAN NOT HAVING ONE. It ran a new
+// search: the box was overwritten, the customer's whole answer was replaced by that one
+// order's history, and getting back meant retyping the customer name. A rep with somebody on
+// the phone asking about three of their six orders had to search the customer three times.
+//
+// So this OPENS OVER the customer and closes back onto it. The list underneath keeps its
+// place, its window and its scroll. That is the difference between a lookup tool and
+// something a customer-service desk can actually work in.
+//
+// One surface, two shapes: a right-hand drawer on a desktop (the list stays visible beside
+// it, which is the point) and a full-height sheet on a phone (a 340px drawer on a 390px
+// screen is neither). Two views, per the house rule.
+
+const detailTone = {
+  delivered: 'bg-green-50 border-green-200',
+  attempted: 'bg-amber-50 border-amber-200',
+  exception: 'bg-red-50 border-red-200',
+  cancelled: 'bg-slate-100 border-slate-300',
+  open: 'bg-blue-50 border-blue-200',
+  rolled: 'bg-amber-50 border-amber-200',
+  unfinished: 'bg-red-50 border-red-200',
+};
+
+/** A labelled fact. The label is small and grey, the fact is not — a rep scans for the fact. */
+function DetailRow({ label, children, mono }) {
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 py-1 border-b last:border-b-0 min-w-0">
+      <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400 w-28 shrink-0">{label}</span>
+      <span className={`text-sm text-slate-800 min-w-0 break-words ${mono ? 'font-mono text-xs' : ''}`}>{children}</span>
+    </div>
+  );
+}
+
+function DetailSection({ title, children, note }) {
+  return (
+    <div className="space-y-1">
+      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">{title}</div>
+      <div className="rounded-xl border bg-white px-3 py-1">{children}</div>
+      {note && <div className="text-[11px] text-slate-400">{note}</div>}
+    </div>
+  );
+}
+
+/** The body of the drawer. Shared by both shapes, because the CONTENT is the same question —
+ *  only the container differs between a desktop and a phone. */
+function OrderDetailBody({ data, onOpenHistory }) {
+  const d = data?.stop;
+  if (!d) return null;
+  const note = data.note;
+  const hours = note?.hours ? hoursSummary({ receiving_hours: note.hours }) : '';
+  return (
+    <div className="space-y-3">
+      {/* WHAT HAPPENED, BIG, AT THE TOP. It is the first thing asked and the first thing said. */}
+      <div className={`rounded-xl border p-3 ${detailTone[d.outcome] || 'bg-slate-50 border-slate-200'}`}>
+        <div className="flex flex-wrap items-center gap-2">
+          <StopOutcomeChip outcome={d.outcome} />
+          {d.deliveredAt && <span className="text-lg font-bold text-slate-900">{stopWhen(d.deliveredAt)}</span>}
+          {!d.deliveredAt && d.arrivedAt && <span className="text-sm font-semibold text-slate-700">arrived {stopWhen(d.arrivedAt)}</span>}
+          <span className="text-xs text-slate-600 ml-auto">{formatDateLong(d.date)}</span>
+        </div>
+        <div className="text-sm font-semibold text-slate-800 mt-1 break-words">{d.name}</div>
+        {d.address && (
+          <div className="text-xs text-slate-600 break-words">
+            {custAddr(d.address)} <span className="text-slate-500">{custCity(d.address)}</span>
+          </div>
+        )}
+      </div>
+
+      {/* THE CUSTOMER'S OWN RULES, ABOVE THE ORDER DETAIL. Receiving hours and a no-tractor
+          flag change what a rep may promise, and they must be read BEFORE the promise, not
+          scrolled to afterwards. These were being fetched and never shown at all. */}
+      {(hours || note?.flags?.length || note?.text) && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 space-y-1.5">
+          <div className="text-xs font-bold uppercase tracking-wide text-amber-800">Before you promise anything</div>
+          {hours && (
+            <div className="text-sm text-amber-900 break-words">
+              <span className="font-semibold">Receiving hours:</span> {hours}
+            </div>
+          )}
+          {!!note?.flags?.length && (
+            <div className="flex flex-wrap gap-1.5">
+              {note.flags.map((f) => (
+                <span key={f.key} className="inline-block px-1.5 py-0.5 rounded border border-amber-300 bg-white text-[10px] font-bold uppercase tracking-wide text-amber-900">{f.label}</span>
+              ))}
+            </div>
+          )}
+          {note?.text && <div className="text-xs text-amber-900 whitespace-pre-wrap break-words">{note.text}</div>}
+        </div>
+      )}
+
+      <DetailSection title="When">
+        {d.timeline.map((t) => (
+          <DetailRow key={t.key} label={t.label}>
+            {t.at ? stopWhen(t.at) : t.text}
+          </DetailRow>
+        ))}
+        {!d.timeline.length && <DetailRow label="Nothing yet">no times recorded on this order</DetailRow>}
+      </DetailSection>
+
+      <DetailSection title="Who ran it">
+        <DetailRow label="Driver">{d.driver || <span className="text-slate-400">not assigned</span>}</DetailRow>
+        <DetailRow label="Route">{d.route || <span className="text-slate-400">un-planned</span>}{d.seq != null ? ` · stop ${d.seq}` : ''}</DetailRow>
+        {d.loadNbr && <DetailRow label="Load" mono>{d.loadNbr}</DetailRow>}
+      </DetailSection>
+
+      <DetailSection title="What was on it">
+        <DetailRow label="Freight">
+          {[d.pieces != null ? `${d.pieces} pc` : null, d.pallets != null ? `${d.pallets} plt` : null,
+            d.weight != null ? `${d.weight.toLocaleString()} lb` : null].filter(Boolean).join(' · ') || <span className="text-slate-400">not recorded</span>}
+        </DetailRow>
+        {d.itemsSummary && <DetailRow label="Summary">{d.itemsSummary}</DetailRow>}
+        {d.pros.length > 1 && <DetailRow label="Orders here" mono>{d.pros.join(' · ')}</DetailRow>}
+      </DetailSection>
+
+      {!!d.lines.length && (
+        <DetailSection title={`Line items (${d.lines.length})`}>
+          {d.lines.map((l, i) => (
+            <div key={`${l.sku || l.product}-${i}`} className="py-1 border-b last:border-b-0 text-sm min-w-0">
+              <div className="font-semibold text-slate-800 break-words">
+                {l.product || l.sku || 'item'}
+                {/* NuVizz's own oversize flag. A rep saying "that one needs a liftgate" is
+                    reading this, so it is a word rather than a folded-in piece count. */}
+                {l.oversize && <span className="ml-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-800 bg-amber-100 rounded px-1 py-0.5">oversize</span>}
+              </div>
+              <div className="text-[11px] text-slate-500 break-words">
+                {[l.sku && l.product ? l.sku : null, l.qty != null ? `${l.qty} qty` : null,
+                  l.weight != null ? `${l.weight.toLocaleString()} lb` : null,
+                  l.length != null ? `${l.length}"` : null].filter(Boolean).join(' · ')}
+              </div>
+            </div>
+          ))}
+        </DetailSection>
+      )}
+
+      {!!d.refs.length && (
+        <DetailSection title="Reference numbers" note="What the customer is most likely quoting at you.">
+          {d.refs.map((r) => <DetailRow key={r.label} label={r.label} mono>{r.value}</DetailRow>)}
+        </DetailSection>
+      )}
+
+      <DetailSection
+        title="Proof of delivery"
+        note={d.pod.length ? 'Captured by the driver. The images live on NuVizz — this is the record that they exist.' : null}
+      >
+        {d.pod.length
+          ? d.pod.map((p, i) => (
+            <DetailRow key={`${p.name}-${i}`} label={p.ext ? p.ext.toUpperCase() : 'Document'}>
+              {p.name || 'unnamed'}{p.at ? <span className="text-slate-500"> · {addrTime(p.at)}</span> : null}
+            </DetailRow>
+          ))
+          : <DetailRow label="None on file">
+            <span className="text-slate-500">
+              {d.outcome === 'delivered' ? 'delivered, but no POD document was captured' : 'not delivered yet'}
+            </span>
+          </DetailRow>}
+      </DetailSection>
+
+      {(d.instructions || d.comments.length) && (
+        <DetailSection title="Instructions and notes on the order">
+          {d.instructions && <DetailRow label="Instructions">{d.instructions}</DetailRow>}
+          {d.comments.map((c, i) => (
+            <div key={`${c.at}-${i}`} className="py-1 border-b last:border-b-0 min-w-0">
+              <div className="text-sm text-slate-800 whitespace-pre-wrap break-words">{c.text}</div>
+              <div className="text-[11px] text-slate-400">
+                {[c.by, c.at ? addrTime(c.at) : null, c.kind].filter(Boolean).join(' · ')}
+              </div>
+            </div>
+          ))}
+        </DetailSection>
+      )}
+
+      {(d.contact || note?.contacts?.length) && (
+        <DetailSection title="Who to call" note="Tap a number to dial it.">
+          {d.contact && (
+            <DetailRow label="On this order">
+              {[d.contact.name, d.contact.phone ? <a key="p" href={`tel:${d.contact.phone}`} className="text-blue-800 font-semibold hover:underline">{d.contact.phone}</a> : null,
+                d.contact.email ? <a key="e" href={`mailto:${d.contact.email}`} className="text-blue-800 hover:underline break-all">{d.contact.email}</a> : null]
+                .filter(Boolean).map((x, i) => <span key={i}>{i ? ' · ' : ''}{x}</span>)}
+            </DetailRow>
+          )}
+          {(note?.contacts || []).map((c, i) => (
+            <DetailRow key={`${c.phone || c.email}-${i}`} label={i === 0 ? 'On the customer' : ''}>
+              {[c.name, c.phone ? <a key="p" href={`tel:${c.phone}`} className="text-blue-800 font-semibold hover:underline">{c.phone}</a> : null,
+                c.email ? <a key="e" href={`mailto:${c.email}`} className="text-blue-800 hover:underline break-all">{c.email}</a> : null]
+                .filter(Boolean).map((x, j) => <span key={j}>{j ? ' · ' : ''}{x}</span>)}
+            </DetailRow>
+          ))}
+        </DetailSection>
+      )}
+
+      <div className="rounded-xl border bg-slate-50 p-3 space-y-2">
+        <div className="text-[11px] text-slate-500">
+          {/* WHICH KIND OF RECORD THIS IS. The seal cannot change again; a board copy is live
+              and a delivery time read off it may still move. A rep quoting a time is entitled
+              to know which one they are quoting. */}
+          {d.source === 'sealed'
+            ? 'From the sealed nightly record — this cannot change again.'
+            : "From today's live board — still moving until tonight's capture seals it."}
+        </div>
+        <button onClick={onOpenHistory}
+          className="w-full rounded-lg border px-3 min-h-[44px] text-xs font-semibold bg-white hover:bg-slate-50">
+          Open this order&rsquo;s full history &rarr;
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** DESKTOP: a right-hand drawer. The customer's list stays visible beside it, which is the
+ *  whole reason this is not a navigation. */
+function OrderDetailDrawer({ open, loading, err, data, onClose, onOpenHistory }) {
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end" data-overlay-layer="order-detail">
+      <button aria-label="Close order detail" onClick={onClose} className="flex-1 bg-slate-900/20 cursor-default" />
+      <div className="w-full max-w-xl bg-slate-50 h-full overflow-y-auto shadow-2xl border-l" role="dialog" aria-label="Order detail">
+        <div className="sticky top-0 z-10 bg-white border-b px-4 py-3 flex items-center gap-3">
+          <div className="min-w-0">
+            <div className="font-mono text-sm font-bold text-slate-900 break-all">{data?.stop?.pro || data?.stopNbr}</div>
+            <div className="text-[11px] text-slate-500">Order detail</div>
+          </div>
+          <button onClick={onClose} className="ml-auto rounded-lg border px-3 min-h-[40px] text-xs font-semibold bg-white hover:bg-slate-50">Close</button>
+        </div>
+        <div className="p-4">
+          <OrderDetailInner loading={loading} err={err} data={data} onOpenHistory={onOpenHistory} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** PHONE: a full-height sheet. A 576px drawer on a 390px screen is neither one thing nor the
+ *  other, so the phone gets the whole screen and a big Back button. */
+function OrderDetailSheet({ open, loading, err, data, onClose, onOpenHistory }) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-40 bg-slate-50 overflow-y-auto" role="dialog" aria-label="Order detail" data-overlay-layer="order-detail">
+      <div className="sticky top-0 z-10 bg-white border-b px-3 py-2 flex items-center gap-2">
+        <button onClick={onClose} className="rounded-lg border px-3 min-h-[44px] text-xs font-semibold bg-white inline-flex items-center gap-1">
+          <ArrowLeft size={14} /> Back
+        </button>
+        <div className="min-w-0">
+          <div className="font-mono text-sm font-bold text-slate-900 break-all">{data?.stop?.pro || data?.stopNbr}</div>
+        </div>
+      </div>
+      <div className="p-3">
+        <OrderDetailInner loading={loading} err={err} data={data} onOpenHistory={onOpenHistory} />
+      </div>
+    </div>
+  );
+}
+
+function OrderDetailInner({ loading, err, data, onOpenHistory }) {
+  if (loading) return <div className="text-sm text-slate-500">Loading the order…</div>;
+  if (err) return <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3 break-words">{err}</div>;
+  if (data && !data.stop) {
+    return (
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+        <div className="text-sm font-semibold text-amber-900">We hold no record of {data.stopNbr} on {formatDateLong(data.date)}.</div>
+        <div className="text-xs text-amber-800 mt-1">
+          The row came from a day summary, so the detail document should exist — this is worth reporting rather than
+          retrying. Its full history may still have it.
+        </div>
+      </div>
+    );
+  }
+  return <OrderDetailBody data={data} onOpenHistory={onOpenHistory} />;
 }
 
 // ── THE CUSTOMER VIEW — built for the person answering the phone ────────────
@@ -33709,7 +34055,7 @@ function CustomerDayTable({ day, onPro }) {
                 <td className="px-3 py-2">
                   {/* THE PRO IS THE DRILL-DOWN. A rep reading a row out loud is one tap from
                       that order's whole story, which is the other half of this screen. */}
-                  <button onClick={() => onPro(r.pro)} title="Open this order's full history"
+                  <button onClick={() => onPro(r.refs?.stopNbr || r.pro, r.date)} title="Open this order — its detail, POD, line items and contact"
                     className="font-mono text-xs font-semibold text-blue-800 hover:underline break-all text-left">{r.pro}</button>
                   {r.proCount > 1 && <div className="text-[10px] text-slate-500">{r.proCount} orders on this stop</div>}
                   {r.refs.po && <div className="text-[10px] text-slate-400 break-words">PO {r.refs.po}</div>}
@@ -33753,7 +34099,7 @@ function CustomerDayCards({ day, onPro }) {
               {r.deliveredAt && <span className="text-xs font-bold text-slate-800">{stopWhen(r.deliveredAt)}</span>}
               {!r.deliveredAt && r.arrivedAt && <span className="text-xs text-slate-600">arrived {stopWhen(r.arrivedAt)}</span>}
               {!r.deliveredAt && !r.arrivedAt && r.etaAt && <span className="text-xs text-slate-400">ETA {stopWhen(r.etaAt)}</span>}
-              <button onClick={() => onPro(r.pro)} title="Open this order's full history"
+              <button onClick={() => onPro(r.refs?.stopNbr || r.pro, r.date)} title="Open this order — its detail, POD, line items and contact"
                 className="ml-auto font-mono text-xs font-semibold text-blue-800 hover:underline break-all min-h-[40px] px-1">{r.pro}</button>
             </div>
             <div className="text-xs text-slate-700 break-words">
@@ -33861,31 +34207,6 @@ function CustomerChooser({ matches, query, onPick, incomplete }) {
   );
 }
 
-/** This customer's docks. Only when there is more than one — otherwise the address is already
- *  in the header and on every row, and a card repeating it is noise. */
-function CustomerLocations({ locations }) {
-  if (!locations || locations.length < 2) return null;
-  return (
-    <div className="rounded-xl border bg-white p-3 space-y-2">
-      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">
-        {locations.length} locations in this window
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        {locations.map((l) => (
-          <div key={l.key} className="rounded-lg border bg-slate-50 p-2 min-w-0">
-            <div className="text-xs font-semibold text-slate-800 break-words">{custAddr(l.address) || '(no address on file)'}</div>
-            <div className="text-[11px] text-slate-500 break-words">{custCity(l.address)}</div>
-            <div className="text-[11px] text-slate-600 mt-0.5">
-              <span className="font-semibold">{l.stops}</span> stop{l.stops === 1 ? '' : 's'} · {l.delivered} delivered
-              {l.lastDate ? ` · last ${formatDateForDisplay(l.lastDate)}` : ''}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 /** Older than the window. From the rollup — free, and with the driver on each row, which is
  *  the half of "who delivered them" that a fourteen-day sweep cannot reach. */
 function CustomerRecent({ recent, onPro, window: win }) {
@@ -33895,7 +34216,7 @@ function CustomerRecent({ recent, onPro, window: win }) {
       <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Before {formatDateForDisplay(win?.from)}</div>
       <div className="flex flex-wrap gap-1.5">
         {recent.map((p) => (
-          <button key={`${p.pro}-${p.date}`} onClick={() => onPro(p.pro)}
+          <button key={`${p.pro}-${p.date}`} onClick={() => onPro(p.pro, p.date)}
             className="rounded-lg border px-2 py-1 min-h-[40px] text-[11px] bg-white hover:bg-slate-50 text-left max-w-full">
             <span className="font-mono font-semibold text-slate-800">{p.pro}</span>
             <span className="text-slate-500"> · {formatDateForDisplay(p.date)}{p.driver ? ` · ${p.driver}` : ''}</span>
@@ -33955,7 +34276,7 @@ function CustomerYearMonths({ months, stacked }) {
   );
 }
 
-function CustomerYearScreen({ data, today, stacked, onBack }) {
+function CustomerYearScreen({ data, today, stacked, onBack, onOrder, ordersShown, onMoreOrders }) {
   const v = data.view;
   const t = v.totals;
   return (
@@ -34021,16 +34342,55 @@ function CustomerYearScreen({ data, today, stacked, onBack }) {
 
       {v.counted && <CustomerYearMonths months={v.months} stacked={stacked} />}
 
-      {/* SAYING WHAT THIS SCREEN IS NOT is part of the answer. A rep who needs a stop number
-          should be sent to the window that has one rather than scrolling for it. */}
-      <div className="rounded-xl border bg-white p-3">
-        <div className="text-xs text-slate-600">
-          This is a count, not a stop list. For order numbers, drivers, delivery times and addresses,
-          pick <button onClick={onBack} className="font-semibold text-blue-800 hover:underline">Last 14 days</button> or a
-          shorter window — the per-stop detail lives in the day records, and reading a whole year of those is about half a
-          million documents.
+      {/* THE ORDERS, so the year is not a dead end.
+          The first cut stopped at the counts, and a rep who got here and then needed an order
+          number had to go back and choose a different window to find one. Every row opens the
+          same drawer the day view does. */}
+      {!!v.orders?.length && (
+        <div className="rounded-xl border bg-white p-3 space-y-2">
+          <div className="flex flex-wrap items-baseline gap-2">
+            <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Orders in {v.year}</div>
+            <div className="text-[11px] text-slate-400">
+              {v.orders.length} on file · tap one to open it
+            </div>
+          </div>
+          <div className="divide-y">
+            {v.orders.slice(0, ordersShown).map((o) => (
+              <button key={`${o.pro}-${o.date}`} onClick={() => onOrder(o.pro, o.date)}
+                className="w-full text-left py-1.5 min-h-[44px] flex flex-wrap items-baseline gap-x-2 hover:bg-slate-50 rounded px-1">
+                <span className="font-mono text-xs font-semibold text-blue-800">{o.pro}</span>
+                <span className="text-xs text-slate-600">{formatDateForDisplay(o.date)}</span>
+                {o.driver && <span className="text-xs text-slate-500 break-words">{o.driver}</span>}
+                {o.location && <span className="text-[11px] text-slate-400 ml-auto break-words">{o.location}</span>}
+              </button>
+            ))}
+          </div>
+          {v.orders.length > ordersShown && (
+            <button onClick={onMoreOrders} className="w-full rounded-lg border px-3 min-h-[40px] text-xs font-semibold bg-white hover:bg-slate-50">
+              Show {Math.min(50, v.orders.length - ordersShown)} more
+            </button>
+          )}
+          {/* WHY IT MAY NOT BE ALL OF THEM. The rollup keeps a customer's most recent PROs per
+              dock, not every order they have ever had — so this list can be shorter than the
+              count above it, and saying so is cheaper than letting a rep believe otherwise. */}
+          <div className="text-[11px] text-slate-400">
+            These are the most recent orders on file per location, so on a busy customer there can be fewer here than the
+            count above. For every stop of a given day, pick <button onClick={onBack} className="font-semibold text-blue-800 hover:underline">Last 14 days</button> or a shorter window.
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* SAYING WHAT THIS SCREEN IS NOT is part of the answer. */}
+      {!v.orders?.length && (
+        <div className="rounded-xl border bg-white p-3">
+          <div className="text-xs text-slate-600">
+            This is a count, not a stop list. For order numbers, drivers, delivery times and addresses,
+            pick <button onClick={onBack} className="font-semibold text-blue-800 hover:underline">Last 14 days</button> or a
+            shorter window — the per-stop detail lives in the day records, and reading a whole year of those is about half a
+            million documents.
+          </div>
+        </div>
+      )}
 
       {v.locations.length > 1 && (
         <div className="rounded-xl border bg-white p-3 space-y-2">
@@ -34134,6 +34494,17 @@ function StopLookupScreen() {
   // rather than sweeping days (see buildCustomerYear). Kept out of `sel` so the two cannot be
   // confused for one another: a year is not a range this screen could ever resolve.
   const [yearOn, setYearOn] = useState(false);
+  // THE ORDER DRAWER. Its own state, deliberately separate from `data`: opening an order must
+  // not disturb the customer answer underneath it. The first cut ran a new search instead,
+  // which overwrote the box and lost the customer — a rep asking about three of a customer's
+  // six orders had to search the customer three times.
+  // How many of the year's orders are listed. Starts short because the year is read for its
+  // COUNTS; a rep who wants the list asks for more.
+  const [yearOrdersShown, setYearOrdersShown] = useState(20);
+  const [detail, setDetail] = useState(null);       // { stopNbr, date } | null
+  const [detailData, setDetailData] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailErr, setDetailErr] = useState(null);
 
   const run = useCallback(async (raw, opts = {}) => {
     const term = String(raw ?? '').trim();
@@ -34189,9 +34560,37 @@ function StopLookupScreen() {
     });
   }, [run, range, nameKey, yearOn, today]);
 
-  /** A PRO tapped anywhere on this screen opens that order — the drill-down from a customer
-   *  row into the per-order story, which is the other half of what this screen is. */
-  const pick = useCallback((pro) => { setQ(String(pro)); setNameKey(null); setYearOn(false); run(pro); }, [run]);
+  /**
+   * AN ORDER TAPPED ANYWHERE ON THIS SCREEN OPENS THE DRAWER, over the customer.
+   *
+   * This used to run a whole new search — setQ, setNameKey(null), run(pro) — which replaced
+   * the customer's answer with that one order's history and left no way back but retyping the
+   * name. Chad: "You can't click on the order. You can't get any details on each order."
+   * Clicking was the lesser half of that; losing the customer was the part that made the
+   * screen unusable at a service desk.
+   */
+  const openOrder = useCallback(async (stopNbr, date) => {
+    const id = String(stopNbr ?? '').trim();
+    const day = String(date ?? '').trim();
+    if (!id || !day) return;
+    setDetail({ stopNbr: id, date: day });
+    setDetailLoading(true); setDetailErr(null); setDetailData(null);
+    try {
+      const r = await apiFetch(`/.netlify/functions/stop-lookup?detail=${encodeURIComponent(id)}&date=${encodeURIComponent(day)}`);
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'could not load the order');
+      setDetailData(j);
+    } catch (e) { setDetailErr(String(e.message || e)); } finally { setDetailLoading(false); }
+  }, []);
+
+  const closeOrder = useCallback(() => { setDetail(null); setDetailData(null); setDetailErr(null); }, []);
+
+  /** "Open this order's full history" — the one case where leaving the customer IS the ask,
+   *  so it is a button somebody presses rather than what a row click does to them. */
+  const pick = useCallback((pro) => {
+    closeOrder();
+    setQ(String(pro)); setNameKey(null); setYearOn(false); run(pro);
+  }, [run, closeOrder]);
 
   /** The rep picked one of several matching businesses. */
   const pickCustomer = useCallback((m) => {
@@ -34312,7 +34711,8 @@ function StopLookupScreen() {
           <div className="space-y-4">
             <CustomerRangeBar sel={sel} setSel={changeRange} range={range} today={today} stacked={isMobile}
               yearOn onYear={showYear} />
-            <CustomerYearScreen data={data} today={today} stacked={isMobile} onBack={leaveYear} />
+            <CustomerYearScreen data={data} today={today} stacked={isMobile} onBack={leaveYear}
+              onOrder={openOrder} ordersShown={yearOrdersShown} onMoreOrders={() => setYearOrdersShown((n) => n + 50)} />
             <StopSourceLedger sources={data.sources} errors={data.errors} open={ledgerOpen} onToggle={() => setLedgerOpen((x) => !x)} />
           </div>
         )}
@@ -34356,15 +34756,13 @@ function StopLookupScreen() {
               {/* ABOVE THE ROWS, NOT BELOW THEM. Receiving hours and a no-tractor flag are
                   things a rep must know BEFORE they promise a redelivery, and nobody scrolls
                   past six stops to find out what they should not have said. */}
-              <StopNotesCard notes={v.notes} />
-
-              <CustomerLocations locations={v.locations} />
+              <StopNotesCard notes={v.notes} locations={v.locations} />
 
               {v.days.length > 0
                 ? <div className="space-y-4">
                   {v.days.map((day) => (isMobile
-                    ? <CustomerDayCards key={day.date} day={day} onPro={pick} />
-                    : <CustomerDayTable key={day.date} day={day} onPro={pick} />))}
+                    ? <CustomerDayCards key={day.date} day={day} onPro={openOrder} />
+                    : <CustomerDayTable key={day.date} day={day} onPro={openOrder} />))}
                 </div>
                 : v.complete !== false && (
                   <div className="rounded-xl border bg-white p-6 text-center">
@@ -34378,11 +34776,20 @@ function StopLookupScreen() {
                   </div>
                 )}
 
-              <CustomerRecent recent={v.recent} onPro={pick} window={data.window} />
+                  <CustomerRecent recent={v.recent} onPro={openOrder} window={data.window} />
               <StopSourceLedger sources={v.sources} errors={data.errors} open={ledgerOpen} onToggle={() => setLedgerOpen((x) => !x)} />
             </div>
           );
         })()}
+
+        {/* THE DRAWER RENDERS ONCE, OUTSIDE EVERY MODE BRANCH, because it opens OVER whatever
+            is on screen — the day list, the year, or an order's own history. Putting it inside
+            a branch would unmount it the moment the thing underneath re-read. */}
+        {detail && (isMobile
+          ? <OrderDetailSheet open loading={detailLoading} err={detailErr} data={detailData}
+            onClose={closeOrder} onOpenHistory={() => pick(detailData?.stop?.pro || detail.stopNbr)} />
+          : <OrderDetailDrawer open loading={detailLoading} err={detailErr} data={detailData}
+            onClose={closeOrder} onOpenHistory={() => pick(detailData?.stop?.pro || detail.stopNbr)} />)}
 
         {d && (<>
           {d.found
@@ -34407,7 +34814,9 @@ function StopLookupScreen() {
               </div>
             )}
 
-          {!!d.days.length && (isMobile ? <StopDayListMobile days={d.days} /> : <StopDayTable days={d.days} />)}
+          {!!d.days.length && (isMobile
+            ? <StopDayListMobile days={d.days} onOpen={openOrder} />
+            : <StopDayTable days={d.days} onOpen={openOrder} />)}
 
           {!!d.addressChanges.length && (
             <div className="space-y-2">

@@ -103,7 +103,7 @@ export const CUSTOMER_VIEW = {
     ],
     notes: {
       text: 'Inside delivery to DOCK 4 at the REAR of building C — the front lobby will refuse it. Receiving closes at 2pm sharp, no exceptions, and they will not take a tractor into the yard.',
-      hours: null, customerNbr: 'EARTH-4471', updatedAt: '2026-09-16T15:20:00Z', updatedBy: 'dispatch', override: null,
+      hours: { mon: { open: '07:00', close: '14:00' }, tue: { open: '07:00', close: '14:00' }, wed: { open: '07:00', close: '14:00' }, thu: { open: '07:00', close: '14:00' }, fri: { open: '07:00', close: '12:00' } }, customerNbr: 'EARTH-4471', updatedAt: '2026-09-16T15:20:00Z', updatedBy: 'dispatch', override: null,
       flags: [
         { key: 'no_tractor', label: 'No tractor — box truck only', tone: 'amber' },
         { key: 'notify_cs', label: 'Notify customer service', tone: 'amber' },
@@ -120,4 +120,57 @@ export const CUSTOMER_VIEW = {
     ],
   },
   note: 'Firestore only — nothing here spent a NuVizz call.',
+};
+
+/** The ORDER DRAWER's response. Seeded with the widest real shape: two PROs on one stop, two
+ *  line items (one oversize), six reference numbers, two POD documents, a multi-line
+ *  instruction, two comments and two contacts — the drawer's longest possible column. */
+export const ORDER_DETAIL = {
+  ok: true, nuvizzCalls: 0, mode: 'detail', date: '2026-09-18', stopNbr: '007180002',
+  source: 'sealed', complete: true, errors: {},
+  matchKey: 'earthly|1100|atlanta',
+  stop: {
+    date: '2026-09-18', source: 'sealed', stopNbr: '007180002', pro: '007180002',
+    pros: ['007180002', '007180003', '007180004'],
+    name: 'EARTHLY ALTERNATIVE DISTRIBUTION SOUTHEAST',
+    address: { addr1: '1100 NORTHSIDE DRIVE NW SUITE 210', addr2: 'DOCK 4 REAR', city: 'ATLANTA', state: 'GA', zip: '30318' },
+    status: 'DELIVERED', outcome: 'delivered', rawStatus: '90',
+    timeline: [
+      { key: 'scheduled', label: 'Delivery window', at: null, text: '08:00 – 14:00' },
+      { key: 'eta', label: 'Planned ETA', at: '2026-09-18T12:40' },
+      { key: 'arrived', label: 'Driver arrived', at: '2026-09-18T13:29' },
+      { key: 'delivered', label: 'Delivered', at: '2026-09-18T13:44' },
+    ],
+    deliveredAt: '2026-09-18T13:44', arrivedAt: '2026-09-18T13:29',
+    driver: 'ROBERT MENSAH-ADDAI', driverUserName: 'ROBERT', route: 'ATLANTA SOUTHWEST 3',
+    loadNbr: 'DAVIS000203801', seq: 9, planned: true,
+    pieces: 14, pallets: 2, weight: 3180, itemsSummary: '14 cartons · 2 pallets of LED panels and drivers',
+    lines: [
+      { product: 'LED PANEL 2X4 5000K DIMMABLE', sku: 'LP-24-50-DIM', qty: 8, weight: 2100, length: 96, oversize: true },
+      { product: 'DRIVER BOX 100W', sku: 'DB-100', qty: 6, weight: 1080, length: null, oversize: false },
+    ],
+    refs: [
+      { label: 'PO', value: '99120-REV-C' }, { label: 'BOL', value: 'BOL-3319' },
+      { label: 'Customer ref', value: 'CR-7741' }, { label: 'Order', value: 'L-551202' },
+      { label: 'Warehouse', value: 'G6' }, { label: 'Terms', value: 'PREPAID' },
+    ],
+    pod: [
+      { name: 'signature-007180002.jpg', ext: 'jpg', at: '2026-09-18T17:44:00Z' },
+      { name: 'freight-on-dock.jpg', ext: 'jpg', at: '2026-09-18T17:45:00Z' },
+    ],
+    instructions: 'Inside delivery to DOCK 4 at the REAR of building C — the front lobby will refuse it. Receiving closes at 2pm sharp and they will not take a tractor into the yard.',
+    comments: [
+      { text: 'Customer called asking for an ETA — told them early afternoon and gave the driver name.', by: 'CS', at: '2026-09-18T15:02:00Z', kind: 'CS' },
+      { text: 'Gate code is 4412, the guard shack will not have it on file.', by: 'DISPATCH', at: '2026-09-18T12:10:00Z', kind: 'DISPATCH' },
+    ],
+    contact: { name: 'RAY WHITTINGTON-BOYD', phone: '7705551212', email: 'receiving@earthlyalternative.example.com' },
+    matchKey: 'earthly|1100|atlanta', capturedAt: '2026-09-19T04:10:00Z',
+  },
+  note: {
+    text: 'Inside delivery to DOCK 4 at the REAR of building C — the front lobby will refuse it.',
+    hours: { mon: { open: '07:00', close: '14:00' }, fri: { open: '07:00', close: '12:00' } },
+    customerNbr: 'EARTH-4471', updatedAt: '2026-09-16T15:20:00Z', updatedBy: 'dispatch', override: null,
+    flags: [{ key: 'no_tractor', label: 'No tractor — box truck only', tone: 'amber' }],
+    contacts: [{ name: 'RAY WHITTINGTON-BOYD', phone: '7705551212', email: 'receiving@earthlyalternative.example.com' }],
+  },
 };

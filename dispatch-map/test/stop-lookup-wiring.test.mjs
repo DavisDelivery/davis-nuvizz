@@ -130,9 +130,12 @@ test('the phone and tablet guards drive the SAME fixtures, so they cannot drift 
   for (const f of ['verify-mobile-layout.mjs', 'verify-tablet-layout.mjs']) {
     const src = readFileSync(new URL(`../scripts/${f}`, import.meta.url), 'utf8');
     assert.match(src, /import \{ STOP_LOOKUP_DOSSIER \} from '\.\/lib\/stop-lookup-fixture\.mjs'/, f);
-    assert.match(src, /import \{ CUSTOMER_VIEW \} from '\.\/lib\/customer-view-fixture\.mjs'/, f);
-    // BOTH modes, or the guard measures a screen the app never renders.
-    assert.match(src, /u\.includes\('name='\) \? CUSTOMER_VIEW : STOP_LOOKUP_DOSSIER/, `${f} must stub both modes`);
+    assert.match(src, /import \{ CUSTOMER_VIEW, ORDER_DETAIL \} from '\.\/lib\/customer-view-fixture\.mjs'/, f);
+    // EVERY mode, or the guard measures a screen the app never renders. The stub must pick
+    // the same way the endpoint branches do — detail, then year, then name, then stop.
+    assert.match(src, /u\.includes\('detail='\) \? ORDER_DETAIL/, `${f} must stub the order drawer`);
+    assert.match(src, /u\.includes\('year='\) \? CUSTOMER_YEAR/, `${f} must stub the year`);
+    assert.match(src, /u\.includes\('name='\) \? CUSTOMER_VIEW : STOP_LOOKUP_DOSSIER/, `${f} must stub the window and the stop`);
   }
 });
 

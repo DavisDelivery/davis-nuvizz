@@ -22,7 +22,7 @@
 // fails. That is not a hypothetical — it is what the desktop guard has always done.
 import { chromium } from 'playwright-core';
 import { STOP_LOOKUP_DOSSIER } from './lib/stop-lookup-fixture.mjs';
-import { CUSTOMER_VIEW } from './lib/customer-view-fixture.mjs';
+import { CUSTOMER_VIEW, ORDER_DETAIL } from './lib/customer-view-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -72,6 +72,14 @@ const PROBES = {
       if (!(await box.isVisible().catch(() => false))) return false;
       await box.fill('earthly alternative');
       return openByName(page, /^look up$/i);
+    } },
+    { name: 'an order opened', open: async (page) => {
+      const box = page.getByLabel(/find a customer by name/i).first();
+      if (!(await box.isVisible().catch(() => false))) return false;
+      await box.fill('earthly alternative');
+      if (!(await openByName(page, /^look up$/i))) return false;
+      await page.waitForTimeout(500);
+      return openByName(page, /^007180002$/);
     } },
     { name: 'a customer year', open: async (page) => {
       const box = page.getByLabel(/find a customer by name/i).first();
@@ -182,7 +190,7 @@ for (const dev of TABLETS) {
     if (u.includes('stop-lookup')) return J(
       // THREE modes off one URL, and the stub picks the same way the endpoint does. Stubbing
       // only some of them leaves the guard measuring a screen the app never renders.
-      u.includes('year=') ? CUSTOMER_YEAR : u.includes('name=') ? CUSTOMER_VIEW : STOP_LOOKUP_DOSSIER);
+      u.includes('detail=') ? ORDER_DETAIL : u.includes('year=') ? CUSTOMER_YEAR : u.includes('name=') ? CUSTOMER_VIEW : STOP_LOOKUP_DOSSIER);
     if (u.includes('address-queue')) return J({
       ok: true, tenant: 'davis', nuvizzCalls: 0, notesLoaded: 412,
       dates: ['2026-09-14', '2026-09-15', '2026-09-16'],
