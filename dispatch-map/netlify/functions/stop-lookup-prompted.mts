@@ -1,19 +1,19 @@
-// stop-lookup-promote.mts — THE ONE DOOR ON THE STOP LOOKUP SCREEN THAT SPENDS A NUVIZZ CALL.
+// stop-lookup-prompted.mts — THE ONE DOOR ON THE STOP LOOKUP SCREEN THAT SPENDS A NUVIZZ CALL.
 //
 // Chad, 2026-09-19: "if it's a specific customer pro or date range that is not in the
-// firestore data allow a promoted nuvizz call."
+// firestore data allow a prompted nuvizz call."
 //
 //   GET ?stop=<PRO or stop number>   → ONE /stop/info call, on request, after Firestore missed
-//   → { ok, nuvizzCalls: 0|1, mode: 'stop', promote, promoted: { attempted, ok, reason, text,
+//   → { ok, nuvizzCalls: 0|1, mode: 'stop', promptedCall, prompted: { attempted, ok, reason, text,
 //        day, stored }, dossier, detail, … }
 //
 // A SEPARATE FUNCTION, ON PURPOSE. stop-lookup.mts makes a structural promise — it imports
 // nothing that can call the vendor, and a test enforces that on its import list — and this
-// screen prints "0 NuVizz calls" in its header off that promise. Putting the promoted call
+// screen prints "0 NuVizz calls" in its header off that promise. Putting the prompted call
 // inside that file would have turned a proof into a comment. This file is the exception, it
 // is the only exception, and it is small enough to read in one sitting.
 //
-// WHAT "PROMOTED" MEANS HERE, and every rule is pure and pinned in src/lib/stop-lookup.js:
+// WHAT "PROMPTED" MEANS HERE, and every rule is pure and pinned in src/lib/stop-lookup.js:
 //   • A person asked. The screen offers the button only after a COMPLETE Firestore miss —
 //     every source that could have located the order was read and was empty — and the
 //     button says the price. Nothing here runs on its own.
@@ -23,12 +23,12 @@
 //     button offering to spend a call on an order sitting in our own warehouse.
 //   • It honours every switch that already governs vendor traffic: the mirror guard, the
 //     scans kill switch, the daily ceiling and the breaker (via the shared requester inside
-//     lookupStopByPro), plus its own STOP_LOOKUP_PROMOTE (default on; off/0/false/no turns
+//     lookupStopByPro), plus its own STOP_LOOKUP_PROMPTED_CALL (default on; off/0/false/no turns
 //     it off; anything malformed leaves it on).
 //   • A PAST order NuVizz answers for is FILED, so the next rep pays nothing: created in
 //     the warehouse under its delivery day (createDocIfAbsent — never over a sealed record),
 //     with a PRO-index pointer so ?stop= finds it outside the board window. Provenance is on
-//     the record (promoted / promoted_at / promoted_by). Today's and future orders are shown
+//     the record (prompted / prompted_at / prompted_by). Today's and future orders are shown
 //     and NOT filed — the board scan owns those days.
 //   • The call count in the answer is what happened, not what was intended: a refusal
 //     before the wire (breaker open, scans off) reports nuvizzCalls: 0.
@@ -47,7 +47,7 @@ import { setCallTrigger } from './lib/nuvizz-request.mts';
 import { requireUser } from './lib/require-user.mts';
 import {
   buildStopDossier, buildOrderDetail, notesSummary, classifyQuery, stopIdVariants,
-  promoteAvailability, promotedRecordDay, promotedStoreDecision, promotedRecord, promoteOutcome, promotedSource,
+  promptedCallAvailability, promptedRecordDay, promptedStoreDecision, promptedRecord, promptedOutcome, promptedSource,
 } from '../../src/lib/stop-lookup.js';
 
 const TENANT = 'davis';
@@ -68,15 +68,15 @@ export default async (req: Request): Promise<Response> => {
   const today = etDayString();
   const kind = classifyQuery(stopRaw).kind;
   const ids = stopIdVariants(stopRaw);
-  const promote = promoteAvailability({
-    promoteSwitch: process.env.STOP_LOOKUP_PROMOTE,
+  const promptedCall = promptedCallAvailability({
+    promptedSwitch: process.env.STOP_LOOKUP_PROMPTED_CALL,
     scansSwitch: process.env.NUVIZZ_SCANS_ENABLED,
     mirror: isMirrorDeploy(),
   });
-  const base = { ok: true, mode: 'stop', kind, today, query: stopRaw, candidates: ids, promote, proIndex: proIndexEnabled() };
+  const base = { ok: true, mode: 'stop', kind, today, query: stopRaw, candidates: ids, promptedCall, proIndex: proIndexEnabled() };
 
-  if (!promote.available) {
-    return J({ ...base, nuvizzCalls: 0, promoted: { attempted: false, ok: false, reason: promote.reason, text: promote.text } });
+  if (!promptedCall.available) {
+    return J({ ...base, nuvizzCalls: 0, prompted: { attempted: false, ok: false, reason: promptedCall.reason, text: promptedCall.text } });
   }
 
   // NEVER SPEND ON AN ORDER WE ALREADY HOLD. Two reads at most, and the whole point.
@@ -86,7 +86,7 @@ export default async (req: Request): Promise<Response> => {
       const dates = [...new Set(days.map((d: any) => String(d?.date || '')).filter(Boolean))].sort().reverse();
       return J({
         ...base, nuvizzCalls: 0,
-        promoted: {
+        prompted: {
           attempted: false, ok: false, reason: 'on-file', days: dates,
           text: `This order is already on file (${dates.join(', ')}) — no call was spent. Look it up again and it will show.`,
         },
@@ -97,26 +97,26 @@ export default async (req: Request): Promise<Response> => {
   setCallTrigger('on-demand');
   let res: any;
   try { res = await lookupStopByPro(stopRaw); } catch (e: any) { res = { ok: false, reason: e?.message || 'error' }; }
-  const outcome = promoteOutcome(res);
+  const outcome = promptedOutcome(res);
   const nuvizzCalls = outcome.spent ? 1 : 0;
 
   if (!outcome.ok) {
     return J({
       ...base, nuvizzCalls,
-      promoted: { attempted: true, ok: false, reason: outcome.reason, text: outcome.text, vendorReason: res?.reason ?? null },
+      prompted: { attempted: true, ok: false, reason: outcome.reason, text: outcome.text, vendorReason: res?.reason ?? null },
       note: nuvizzCalls ? 'ONE NuVizz call, spent on request.' : 'No NuVizz call was spent.',
     });
   }
 
   const stop = res.stop;
   const stopNbr = String(stop?.stopNbr || stopRaw);
-  const day = promotedRecordDay(stop);
-  const decision = promotedStoreDecision({ day, today });
+  const day = promptedRecordDay(stop);
+  const decision = promptedStoreDecision({ day, today });
   const matchKey = stopCustomerKey(stop);
   const at = new Date().toISOString();
   // Displayed under its own day when it has one, under today when it does not — the record
   // itself says which (date null) so nothing downstream mistakes "today" for a fact.
-  const record = promotedRecord(stop, { day, at, by: gate.user?.username ?? null, matchKey });
+  const record = promptedRecord(stop, { day, at, by: gate.user?.username ?? null, matchKey });
   const shownDay = day || today;
 
   let stored: any = null;
@@ -156,13 +156,13 @@ export default async (req: Request): Promise<Response> => {
   return J({
     ...base, nuvizzCalls,
     window: null,
-    dossier: { ...dossier, found: true, sources: [promotedSource({ day }), ...dossier.sources], notes: notesSummary(notes) },
+    dossier: { ...dossier, found: true, sources: [promptedSource({ day }), ...dossier.sources], notes: notesSummary(notes) },
     detail: {
       ok: true, mode: 'detail', date: shownDay, stopNbr, source: 'nuvizz', complete: true, errors: {},
       stop: buildOrderDetail(record, { date: shownDay, today, source: 'nuvizz' }),
       note: notesSummary(notes), matchKey,
     },
-    promoted: {
+    prompted: {
       attempted: true, ok: true, reason: 'found', day, decision: decision.reason, stored,
       text: `${outcome.text} ${stored && stored.ok === false ? `Filing it failed (${stored.error}) — shown here, but the next lookup will cost another call.` : decision.text}`,
     },

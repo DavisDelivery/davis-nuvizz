@@ -325,20 +325,24 @@ export function buildStopDossier(facts = {}) {
   };
 }
 
-// ── THE PROMOTED CALL — the one door on this screen that can spend a NuVizz call ────────
+// ── THE PROMPTED CALL — the one door on this screen that can spend a NuVizz call ────────
 //
 // Chad, 2026-09-19: "if it's a specific customer pro or date range that is not in the
-// firestore data allow a promoted nuvizz call." Promoted, as in: a rep looked, Firestore had
-// nothing, and the rep DECIDES to ask NuVizz — one /stop/info call, priced on the button,
-// never automatic. Every rule about it lives here, pure, so the endpoint and the screen
-// cannot disagree about when the button may show or what its answer means.
+// firestore data allow a prompted nuvizz call." — and, when the first cut called it
+// "promoted": "Prompted nuvizz call." His word, so it is the word everywhere: the endpoint,
+// the switch, the record fields. PROMPTED, as in: a rep looked, Firestore had nothing, and
+// the rep is PROMPTED to ask NuVizz — one /stop/info call, priced on the button, and only
+// ever spent by the person who pressed it. Every rule about it lives here, pure, so the
+// endpoint and the screen cannot disagree about when the prompt may show or what its answer
+// means.
 //
 // WHAT IT CANNOT DO, said here because the screen says it too: NuVizz has no endpoint that
 // takes a customer NAME (every list-style endpoint demands a per-record id — lib/nuvizz-scan
-// .mts has the live verification), so a customer with nothing on file cannot be promoted;
-// only a PRO can. And the only date gaps NuVizz's cheap list pull can reach (±60 days) are
-// already fully sealed in the warehouse, so a "date range" promotion would have nothing to
-// fetch. A PRO is the one thing this can ask about, so a PRO is the one thing it offers.
+// .mts has the live verification), so a customer with nothing on file cannot be asked of
+// NuVizz; only a PRO can. And the only date gaps NuVizz's cheap list pull can reach (±60
+// days) are already fully sealed in the warehouse, so a "date range" prompt would have
+// nothing to fetch. A PRO is the one thing this can ask about, so a PRO is the one thing it
+// offers.
 
 /**
  * PURE: the house-shape switch. Default ON; the explicit off-words turn it off; anything
@@ -349,7 +353,7 @@ export function switchOn(value) {
 }
 
 /**
- * PURE: may THIS deployment spend a promoted call at all — and if not, the one sentence a
+ * PURE: may THIS deployment spend a prompted call at all — and if not, the one sentence a
  * rep reads instead of a button. The screen never shows a button that would fail for a
  * configuration reason; the endpoint refuses on the same rule before it spends anything.
  *
@@ -358,9 +362,9 @@ export function switchOn(value) {
  * imported so stop-lookup.mts keeps its structural promise of importing nothing that can
  * spend a call (test/stop-lookup-wiring.test.mjs); a test pins the two readings agree.
  */
-export function promoteAvailability({ promoteSwitch, scansSwitch, mirror } = {}) {
+export function promptedCallAvailability({ promptedSwitch, scansSwitch, mirror } = {}) {
   if (mirror) return { available: false, reason: 'mirror', text: 'This is a mirror site — it never calls NuVizz.' };
-  if (!switchOn(promoteSwitch)) return { available: false, reason: 'switch', text: 'Promoted NuVizz lookups are switched off here (STOP_LOOKUP_PROMOTE=off).' };
+  if (!switchOn(promptedSwitch)) return { available: false, reason: 'switch', text: 'Prompted NuVizz lookups are switched off here (STOP_LOOKUP_PROMPTED_CALL=off).' };
   if (s(scansSwitch).toLowerCase() === 'false') return { available: false, reason: 'scans', text: 'NuVizz calls are switched off on this site (NUVIZZ_SCANS_ENABLED=false).' };
   return { available: true, reason: null, text: 'Ask NuVizz for this order — 1 call.' };
 }
@@ -370,7 +374,7 @@ export function promoteAvailability({ promoteSwitch, scansSwitch, mirror } = {})
  * Actual before planned: the day it was delivered, else arrived, else the planned ETA, else
  * the window. A record filed under the wrong day is a record the next lookup cannot find.
  */
-export function promotedRecordDay(stop) {
+export function promptedRecordDay(stop) {
   for (const f of ['deliveredDTTM', 'arrivalDTTM', 'plannedEtaDTTM', 'scheduledFrom', 'scheduledTo']) {
     const d = s(stop?.[f]).slice(0, 10);
     if (DAY_RE.test(d)) return d;
@@ -389,7 +393,7 @@ export function promotedRecordDay(stop) {
  * were never given. An order with no day at all is shown and not filed — it cannot be found
  * again under a day it does not have.
  */
-export function promotedStoreDecision({ day, today } = {}) {
+export function promptedStoreDecision({ day, today } = {}) {
   const d = s(day), t = s(today);
   if (!DAY_RE.test(d)) return { store: false, reason: 'no-day', text: 'NuVizz gave no delivery day for it, so it is shown here but not filed.' };
   if (!DAY_RE.test(t) || d >= t) return { store: false, reason: 'live', text: `It is on NuVizz for ${d} — the board scan owns that day, so nothing was filed by hand.` };
@@ -402,15 +406,15 @@ export function promotedStoreDecision({ day, today } = {}) {
  * bought with a call, by a person, on a day the seal missed it. Nothing on it pretends to
  * be a capture.
  */
-export function promotedRecord(stop, { day, at, by, matchKey } = {}) {
+export function promptedRecord(stop, { day, at, by, matchKey } = {}) {
   return {
     ...(stop || {}),
     date: s(day) || null,
     customerMatchKey: s(matchKey) || s(stop?.customerMatchKey) || null,
-    promoted: true,
-    promoted_at: s(at) || null,
-    promoted_by: s(by) || null,
-    promoted_from: 'stop-lookup',
+    prompted: true,
+    prompted_at: s(at) || null,
+    prompted_by: s(by) || null,
+    prompted_from: 'stop-lookup',
   };
 }
 
@@ -420,7 +424,7 @@ export function promotedRecord(stop, { day, at, by, matchKey } = {}) {
  * breaker open, nothing to ask), so the screen's call count stays an observation, not a
  * charge assumed.
  */
-export function promoteOutcome(res) {
+export function promptedOutcome(res) {
   if (res?.ok) return { ok: true, spent: true, reason: 'found', text: 'NuVizz has this order.' };
   const r = s(res?.reason);
   if (r === 'scans_disabled') return { ok: false, spent: false, reason: 'scans', text: 'NuVizz calls are switched off on this site — nothing was spent.' };
@@ -431,7 +435,7 @@ export function promoteOutcome(res) {
 }
 
 /** PURE: the ledger row for the source this answer came from — one call, on request. */
-export function promotedSource({ day } = {}) {
+export function promptedSource({ day } = {}) {
   return {
     key: 'nuvizz', label: 'NuVizz, asked just now', where: '/stop/info', looked: true, skipped: false,
     note: day ? `one call, on request — filed under ${day}` : 'one call, on request — no delivery day on it',

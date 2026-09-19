@@ -679,7 +679,7 @@ function stubRoutes(page, emailHtml) {
       // only some of them leaves the guard measuring a screen the app never renders.
       u.includes('detail=') ? ORDER_DETAIL : u.includes('year=') ? CUSTOMER_YEAR : u.includes('name=') ? CUSTOMER_VIEW
         // THE MISS, keyed on the one number the probe asks for — the card that carries the
-        // promoted-call button, the state a rep is looking at when they decide to spend it.
+        // prompted-call button, the state a rep is looking at when they decide to spend it.
         : u.includes('stop=000000000') ? STOP_LOOKUP_NOTFOUND : STOP_LOOKUP_DOSSIER);
     if (u.includes('roster') || u.includes('drivers')) return R({
       ok: true, drivers: [{ name: 'FRANK OKINE', id: '1' }], roster: [],

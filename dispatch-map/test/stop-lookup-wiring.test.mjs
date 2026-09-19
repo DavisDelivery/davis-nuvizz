@@ -179,58 +179,58 @@ test('the guards drive all THREE modes off one URL, the way the endpoint does', 
   }
 });
 
-// ── THE PROMOTED CALL (v1.49.0) ───────────────────────────────────────────────
+// ── THE PROMPTED CALL (v1.49.0) ───────────────────────────────────────────────
 
-const PROMOTE_FN = readFileSync(new URL('../netlify/functions/stop-lookup-promote.mts', import.meta.url), 'utf8');
+const PROMPTED_FN = readFileSync(new URL('../netlify/functions/stop-lookup-prompted.mts', import.meta.url), 'utf8');
 
 test('THE ONE DOOR THAT SPENDS IS ITS OWN FILE, gated at dispatcher, and it is the only stop-lookup file that imports the vendor', () => {
   // stop-lookup.mts keeps its structural zero-call promise (the test above); this file is the
   // exception, and it must be the ONLY one. A second importer would be a second door.
-  assert.match(PROMOTE_FN, /requireUser\(req, \{ role: 'dispatcher' \}\)/, 'a metered vendor call is a dispatcher act, like nuvizz-pro-lookup');
-  assert.match(PROMOTE_FN, /import \{ lookupStopByPro \} from '\.\/lib\/nuvizz-scan\.mts'/, 'it spends through the shared, counted, breaker-guarded lookup');
-  assert.match(PROMOTE_FN, /setCallTrigger\('on-demand'\)/, 'and the call is attributed as on-demand in the counter');
-  assert.match(TOML, /\[functions\."stop-lookup-promote"\]\s*\n\s*timeout = 26/, 'same headroom as its sibling');
+  assert.match(PROMPTED_FN, /requireUser\(req, \{ role: 'dispatcher' \}\)/, 'a metered vendor call is a dispatcher act, like nuvizz-pro-lookup');
+  assert.match(PROMPTED_FN, /import \{ lookupStopByPro \} from '\.\/lib\/nuvizz-scan\.mts'/, 'it spends through the shared, counted, breaker-guarded lookup');
+  assert.match(PROMPTED_FN, /setCallTrigger\('on-demand'\)/, 'and the call is attributed as on-demand in the counter');
+  assert.match(TOML, /\[functions\."stop-lookup-prompted"\]\s*\n\s*timeout = 26/, 'same headroom as its sibling');
 });
 
-test('the promote endpoint NEVER spends on an order we hold — the PRO index is consulted before the wire', () => {
-  const idx = PROMOTE_FN.indexOf('lookupProDays(TENANT, stopRaw)');
-  const wire = PROMOTE_FN.indexOf('lookupStopByPro(stopRaw)');
+test('the prompted call endpoint NEVER spends on an order we hold — the PRO index is consulted before the wire', () => {
+  const idx = PROMPTED_FN.indexOf('lookupProDays(TENANT, stopRaw)');
+  const wire = PROMPTED_FN.indexOf('lookupStopByPro(stopRaw)');
   assert.ok(idx > 0 && wire > idx, 'the index read must come before the vendor call');
-  assert.match(PROMOTE_FN, /reason: 'on-file'/, 'and a hit is answered as "on file", not spent');
+  assert.match(PROMPTED_FN, /reason: 'on-file'/, 'and a hit is answered as "on file", not spent');
 });
 
-test('a promoted PAST order is FILED with createDocIfAbsent (never over a sealed record) and pointed at', () => {
-  assert.match(PROMOTE_FN, /createDocIfAbsent\(path, record\)/, 'atomic create — a sealed record always wins');
-  assert.match(PROMOTE_FN, /updateProIndexForDay\(TENANT, day!, \[record\]\)/, 'the pointer is what makes it findable outside the board window');
-  assert.doesNotMatch(PROMOTE_FN, /upsertStops|writeStops\(/, 'no blind day-level writer — this can only fill a hole');
+test('a prompted PAST order is FILED with createDocIfAbsent (never over a sealed record) and pointed at', () => {
+  assert.match(PROMPTED_FN, /createDocIfAbsent\(path, record\)/, 'atomic create — a sealed record always wins');
+  assert.match(PROMPTED_FN, /updateProIndexForDay\(TENANT, day!, \[record\]\)/, 'the pointer is what makes it findable outside the board window');
+  assert.doesNotMatch(PROMPTED_FN, /upsertStops|writeStops\(/, 'no blind day-level writer — this can only fill a hole');
 });
 
 test('the zero-call endpoint says whether the button MAY show, without importing anything that can spend', () => {
-  assert.match(FN, /promote: promoteAvailability\(\{/, 'every ?stop= answer carries the availability judgement');
-  assert.match(FN, /promote: \{ available: false, reason: 'name'/, 'and a customer miss says a NAME cannot be promoted');
+  assert.match(FN, /promptedCall: promptedCallAvailability\(\{/, 'every ?stop= answer carries the availability judgement');
+  assert.match(FN, /promptedCall: \{ available: false, reason: 'name'/, 'and a customer miss says a NAME cannot be prompted');
   assert.match(FN, /import \{ isMirrorDeploy \} from '\.\/lib\/mirror-guard\.mts'/, 'the mirror guard is env-only and allowed');
 });
 
-test('THE BUTTON SAYS ITS PRICE, is offered only after a COMPLETE miss, and calls the promote endpoint', () => {
+test('THE BUTTON SAYS ITS PRICE, is offered only after a COMPLETE miss, and calls the prompted call endpoint', () => {
   assert.match(APP, /Ask NuVizz for this order — 1 call/, 'the price is on the button');
   const card = APP.slice(APP.indexOf('Nothing on file for &ldquo;'), APP.indexOf('Ask NuVizz for this order — 1 call'));
   assert.match(card, /d\.complete && \(/, 'the button lives inside the complete-miss branch of the not-found card');
-  assert.match(APP, /stop-lookup-promote\?stop=\$\{encodeURIComponent\(term\)\}/, 'and it calls the one door that spends');
-  assert.match(APP, /data\.promote\?\.available \? \(/, 'no button where the site would refuse');
+  assert.match(APP, /stop-lookup-prompted\?stop=\$\{encodeURIComponent\(term\)\}/, 'and it calls the one door that spends');
+  assert.match(APP, /data\.promptedCall\?\.available \? \(/, 'no button where the site would refuse');
 });
 
 test('a NuVizz answer is LABELLED as one, on the screen and in the drawer, and the header chip counts it', () => {
-  assert.match(APP, /Answered by NuVizz — 1 call, on request\./, 'the banner over a promoted order');
+  assert.match(APP, /Answered by NuVizz — 1 call, on request\./, 'the banner over a prompted order');
   assert.match(APP, /Straight from NuVizz — one call, asked for just now\./, 'the drawer says which kind of record it is');
   assert.match(APP, /data\?\.nuvizzCalls === 1[\s\S]{0,200}1 NuVizz call — on request/, 'the chip reads the answer, not a slogan');
 });
 
-test('a customer miss prints the honest sentence — a name cannot be promoted', () => {
-  assert.match(APP, /data\.promote\?\.text && <div[^>]*>\{data\.promote\.text\}<\/div>/);
+test('a customer miss prints the honest sentence — a name cannot be prompted', () => {
+  assert.match(APP, /data\.promptedCall\?\.text && <div[^>]*>\{data\.promptedCall\.text\}<\/div>/);
 });
 
 test('every new search clears the last NuVizz sentence — one order\'s answer must not hang over the next', () => {
-  assert.match(APP, /setLoading\(true\); setErr\(null\); setPromoteMsg\(null\);/);
+  assert.match(APP, /setLoading\(true\); setErr\(null\); setPromptMsg\(null\);/);
 });
 
 test('the phone and tablet guards drive THE MISS — the state that carries the button', () => {

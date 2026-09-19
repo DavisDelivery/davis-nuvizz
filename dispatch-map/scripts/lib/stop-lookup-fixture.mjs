@@ -132,6 +132,6 @@ export const STOP_LOOKUP_NOTFOUND = {
         { key: 'notes', label: 'Dispatcher notes', where: 'customer_notes', note: 'notes, receiving hours, contacts, overrides', looked: false, skipped: true, count: 0, found: false, state: 'skipped' },
       ],
     },
-    promote: { available: true, reason: null, text: 'Ask NuVizz for this order — 1 call.' },
+    promptedCall: { available: true, reason: null, text: 'Ask NuVizz for this order — 1 call.' },
     note: 'Firestore only — nothing here spent a NuVizz call.',
 };

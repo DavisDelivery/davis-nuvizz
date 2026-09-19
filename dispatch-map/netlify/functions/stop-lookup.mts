@@ -74,7 +74,7 @@ import { requireUser } from './lib/require-user.mts';
 import { resolveRange, selectionFromParams } from '../../src/lib/history-range.js';
 import {
   buildStopDossier, buildCustomerView, buildCustomerYear, buildOrderDetail, classifyQuery,
-  stopIdVariants, notesSummary, isDayId, customerNameKey, nameMatchesQuery, promoteAvailability,
+  stopIdVariants, notesSummary, isDayId, customerNameKey, nameMatchesQuery, promptedCallAvailability,
 } from '../../src/lib/stop-lookup.js';
 
 const TENANT = 'davis';
@@ -464,11 +464,11 @@ export default async (req: Request): Promise<Response> => {
         board: boardSweep.error, sealed: sealedSweep.error, customer: rollupsR.error, notes: notesR.error, rollup: rollupR.error,
       }).filter(([, v]) => v)),
       note: 'Firestore only — nothing here spent a NuVizz call.',
-      // A NAME CANNOT BE PROMOTED. NuVizz has no endpoint that takes a customer name — every
+      // A NAME CANNOT BE PROMPTED. NuVizz has no endpoint that takes a customer name — every
       // list-style endpoint demands a per-record id (lib/nuvizz-scan.mts, verified live) — so
       // the screen says that outright on an empty customer instead of offering a button that
-      // cannot work. A PRO can be promoted; that is the sentence the empty state points at.
-      promote: { available: false, reason: 'name', text: 'NuVizz cannot be searched by customer name — if you have a PRO or stop number, look that up and the screen can ask NuVizz for it.' },
+      // cannot work. A PRO can be prompted; that is the sentence the empty state points at.
+      promptedCall: { available: false, reason: 'name', text: 'NuVizz cannot be searched by customer name — if you have a PRO or stop number, look that up and the screen can ask NuVizz for it.' },
     });
   }
 
@@ -602,12 +602,12 @@ export default async (req: Request): Promise<Response> => {
     proIndex: indexOn,
     window: { from: boardFrom, to: boardTo, daysBack, daysAhead: DAYS_AHEAD, pointerDays, sealedDays, eventDays },
     dossier: { ...dossier, notes: notesSummary(notesR.value) },
-    // WHETHER THE SCREEN MAY OFFER THE PROMOTED CALL (stop-lookup-promote.mts) after a complete
+    // WHETHER THE SCREEN MAY OFFER THE PROMPTED CALL (stop-lookup-prompted.mts) after a complete
     // miss — judged here, off the same env this deployment would refuse on, so the button never
     // shows where it would fail for a configuration reason. Reading env is not calling anyone:
     // this file still imports nothing that can spend a call.
-    promote: promoteAvailability({
-      promoteSwitch: process.env.STOP_LOOKUP_PROMOTE, scansSwitch: process.env.NUVIZZ_SCANS_ENABLED, mirror: isMirrorDeploy(),
+    promptedCall: promptedCallAvailability({
+      promptedSwitch: process.env.STOP_LOOKUP_PROMPTED_CALL, scansSwitch: process.env.NUVIZZ_SCANS_ENABLED, mirror: isMirrorDeploy(),
     }),
     // A read that FAILED is named, never folded into "nothing found". The screen prints these
     // beside the source ledger so an empty answer can always be told from a broken one.
