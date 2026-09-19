@@ -32,7 +32,7 @@ import { readFile } from 'node:fs/promises';
 import { join, extname, resolve } from 'node:path';
 import { chromium } from 'playwright-core';
 import { STOP_LOOKUP_DOSSIER } from './lib/stop-lookup-fixture.mjs';
-import { CUSTOMER_VIEW } from './lib/customer-view-fixture.mjs';
+import { CUSTOMER_VIEW, ORDER_DETAIL } from './lib/customer-view-fixture.mjs';
 import { CUSTOMER_YEAR } from './lib/customer-year-fixture.mjs';
 
 import { MEASURE } from './lib/layout-measure.mjs';
@@ -332,6 +332,25 @@ const PROBES = {
     },
   ],
   stoplookup: [
+    {
+      // THE ORDER DRAWER is the deepest surface on this screen and the one Chad said was
+      // missing outright: a full-cover sheet carrying a timeline, line items, six reference
+      // rows, POD documents, a multi-line instruction, comments and tappable contacts. None
+      // of it exists until a row is clicked.
+      name: 'an order opened',
+      open: async (page) => {
+        const box = page.getByLabel(/find a customer by name/i).first();
+        if (!(await box.isVisible().catch(() => false))) return false;
+        await box.fill('earthly alternative');
+        await page.getByRole('button', { name: /^look up$/i }).first().click();
+        await page.waitForTimeout(900);
+        const order = page.getByRole('button', { name: /^007180002$/ }).first();
+        if (!(await order.isVisible().catch(() => false))) return false;
+        await order.click();
+        await page.waitForTimeout(900);
+        return page.getByText(/proof of delivery/i).first().isVisible().catch(() => false);
+      },
+    },
     {
       // THE YEAR is a nine-row bar chart with right-hand figures, a wrapping driver row and a
       // dashed "not counted yet" row — none of which exist until a lookup runs and the year
@@ -644,7 +663,7 @@ function stubRoutes(page, emailHtml) {
     if (u.includes('stop-lookup')) return R(
       // THREE modes off one URL, and the stub picks the same way the endpoint does. Stubbing
       // only some of them leaves the guard measuring a screen the app never renders.
-      u.includes('year=') ? CUSTOMER_YEAR : u.includes('name=') ? CUSTOMER_VIEW : STOP_LOOKUP_DOSSIER);
+      u.includes('detail=') ? ORDER_DETAIL : u.includes('year=') ? CUSTOMER_YEAR : u.includes('name=') ? CUSTOMER_VIEW : STOP_LOOKUP_DOSSIER);
     if (u.includes('roster') || u.includes('drivers')) return R({
       ok: true, drivers: [{ name: 'FRANK OKINE', id: '1' }], roster: [],
       at: '2026-09-10T12:00:00Z', count: 3,

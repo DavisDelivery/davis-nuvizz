@@ -7,6 +7,7 @@
 //   GET ?stop=AVRT-0170416694    carrier PROs, segmented PROs and bare PROs all resolve
 //   GET ?name=LED ENERGY         that customer's deliveries over a window, with drivers
 //   GET ?name=…&year=2026        a YEAR of that customer, counted nightly rather than swept
+//   GET ?detail=…&date=…         ONE order, unmasked — line items, POD, instructions, contact
 //   GET ?stop=…&days=30          widen the board window (default 14 back / 3 ahead, max 60)
 //   → { ok, nuvizzCalls: 0, dossier, window, errors, … }
 //
@@ -71,8 +72,8 @@ import { selectWriteRows } from './nuvizz-stop-explain.mts';
 import { requireUser } from './lib/require-user.mts';
 import { resolveRange, selectionFromParams } from '../../src/lib/history-range.js';
 import {
-  buildStopDossier, buildCustomerView, buildCustomerYear, classifyQuery, stopIdVariants,
-  notesSummary, isDayId, customerNameKey, nameMatchesQuery,
+  buildStopDossier, buildCustomerView, buildCustomerYear, buildOrderDetail, classifyQuery,
+  stopIdVariants, notesSummary, isDayId, customerNameKey, nameMatchesQuery,
 } from '../../src/lib/stop-lookup.js';
 
 const TENANT = 'davis';
@@ -179,6 +180,63 @@ export default async (req: Request): Promise<Response> => {
   // The sealed warehouse is swept alongside it for the same days: the seal is the record that
   // cannot change again, and a past day with only a board copy is a day the capture missed —
   // both facts belong on the row rather than being flattened away.
+  // ── ?detail=<stop>&date=<day> — ONE ORDER, EVERYTHING ON IT ───────────────
+  //
+  // Chad, on the first cut of this screen: "You can't click on the order. You can't get any
+  // details on each order or the customer."
+  //
+  // He was right, and the shape of the miss matters. The customer sweep reads a MASKED stop
+  // (CUSTOMER_STOP_FIELDS) because it touches a whole board per day and must stay lean — so
+  // the line items, the delivery instructions, the comment trail and the on-order contact are
+  // deliberately not in it. Those are exactly what a rep needs once they have found the order.
+  //
+  // So detail is a SEPARATE, TARGETED read: one stop, one day, UNMASKED. One or two document
+  // reads, paid only when somebody actually opens an order. Widening the sweep's mask instead
+  // would have put a megabyte of line items and comment threads on every customer lookup to
+  // serve the one row somebody eventually clicks.
+  //
+  // Sealed first, board second, and the answer says which — the seal cannot change again,
+  // while a board copy is live and a delivery time read off it may still move.
+  if (!stopRaw && url.searchParams.get('detail')) {
+    const want = String(url.searchParams.get('detail') || '').trim();
+    const day = String(url.searchParams.get('date') || '').trim();
+    if (!want) return J({ ok: false, error: 'pass ?detail=<stop number>' }, 400);
+    if (!isDayId(day)) return J({ ok: false, error: 'date must be YYYY-MM-DD' }, 400);
+    const ids = stopIdVariants(want);
+
+    const sealedR = await tryRead(() => firstHit(ids, (id) => getSealedStop(TENANT, day, id)), null as any);
+    const boardR = sealedR.value
+      ? { value: null as any, read: true, error: null }
+      : await tryRead(() => firstHit(ids, (id) => readStopDoc(TENANT, day, id)), null as any);
+    const stop = sealedR.value || boardR.value;
+
+    if (!stop) {
+      return J({
+        ok: true, nuvizzCalls: 0, mode: 'detail', date: day, stopNbr: want, stop: null,
+        source: null, complete: sealedR.read && boardR.read,
+        error: sealedR.error || boardR.error || null,
+        note: 'Firestore only — nothing here spent a NuVizz call.',
+      });
+    }
+
+    // The customer's own note, joined by the DERIVED key — the board carries none, and this
+    // is what puts receiving hours and the dock instructions beside the order.
+    const key = stopCustomerKey(stop);
+    const noteR = key ? await tryRead(() => getDoc(`customer_notes/${key}`), null as any)
+      : { value: null as any, read: 'skipped' as const, error: 'no customer key on this record' };
+
+    return J({
+      ok: true, nuvizzCalls: 0, mode: 'detail', date: day, stopNbr: want,
+      source: sealedR.value ? 'sealed' : 'board',
+      stop: buildOrderDetail(stop, { date: day, today, source: sealedR.value ? 'sealed' : 'board' }),
+      note: notesSummary(noteR.value),
+      matchKey: key,
+      complete: sealedR.read && boardR.read,
+      errors: Object.fromEntries(Object.entries({ sealed: sealedR.error, board: boardR.error, notes: noteR.error }).filter(([, v]) => v)),
+      noteText: 'Firestore only — nothing here spent a NuVizz call.',
+    });
+  }
+
   // ── ?year=2026 — A YEAR WITHOUT READING A YEAR OF BOARDS ───────────────────
   //
   // Chad, 2026-09-19: "I want there to be a this year button in the date ranges."

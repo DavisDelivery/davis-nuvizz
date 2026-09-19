@@ -26,6 +26,12 @@ export const CUSTOMER_YEAR = {
       { driver: 'FRANK OKINE', stops: 19, delivered: 19 },
       { driver: 'SIRDEDRICK SHEATS', stops: 7, delivered: 5 },
     ],
+    orders: [
+      { pro: '007180002', date: '2026-09-18', driver: 'ROBERT MENSAH-ADDAI', location: '4200 WENDELL DR SW BUILDING C' },
+      { pro: '007179001', date: '2026-09-17', driver: 'SIRDEDRICK SHEATS', location: '4200 WENDELL DR SW BUILDING C' },
+      { pro: '007177001', date: '2026-09-15', driver: 'FRANK OKINE', location: '1100 NORTHSIDE DRIVE NW SUITE 210' },
+      { pro: '007170412', date: '2026-08-28', driver: 'ANDERSON FRIMPONG', location: '4200 WENDELL DR SW BUILDING C' },
+    ],
     locations: [
       { matchKey: 'a', address: { addr1: '4200 WENDELL DR SW', addr2: 'DOCK 4', city: 'ATLANTA', state: 'GA', zip: '30336' }, lastDate: '2026-09-18', stops: 82 },
       { matchKey: 'b', address: { addr1: '1100 NORTHSIDE DR NW', addr2: null, city: 'ATLANTA', state: 'GA', zip: '30318' }, lastDate: '2026-09-18', stops: 18 },
