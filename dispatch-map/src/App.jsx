@@ -33644,8 +33644,16 @@ const custFreight = (r) => [
 const custAddr = (a) => (a ? [a.addr1, a.addr2].filter(Boolean).join(' · ') : '');
 const custCity = (a) => (a ? [a.city, a.state, a.zip].filter(Boolean).join(', ') : '');
 
-/** The day's headline — the sentence a rep reads before the rows. */
-function CustomerDayHeading({ day, today, stacked }) {
+/** The day's headline — the sentence a rep reads before the rows.
+ *
+ *  `day.isToday` COMES FROM THE SERVER, and that is the point. The stat tiles above are
+ *  counted against the server's ET today (etDayString); if this chip compared against the
+ *  BROWSER's clock instead, the two could disagree — and they visibly did in the first
+ *  screenshot of this screen, which showed "4 stops today" in the header with the TODAY chip
+ *  on a different day. Anything reachable there is reachable at 8pm ET, when the browser has
+ *  ticked over to tomorrow in UTC and the board has not, or on a machine whose clock is off.
+ *  One clock decides, and it is the one that produced the numbers. */
+function CustomerDayHeading({ day, stacked }) {
   const c = day.counts;
   const bits = [
     c.delivered ? `${c.delivered} delivered` : null,
@@ -33658,7 +33666,7 @@ function CustomerDayHeading({ day, today, stacked }) {
     <div className={`flex ${stacked ? 'flex-col gap-0.5' : 'items-baseline justify-between gap-3'} px-1`}>
       <div className="flex items-baseline gap-2 min-w-0">
         <h2 className="text-sm font-bold text-slate-800">{formatDateLong(day.date)}</h2>
-        {day.date === today && <span className="text-[10px] font-bold uppercase tracking-wide text-blue-700 bg-blue-100 rounded px-1.5 py-0.5">Today</span>}
+        {day.isToday && <span className="text-[10px] font-bold uppercase tracking-wide text-blue-700 bg-blue-100 rounded px-1.5 py-0.5">Today</span>}
       </div>
       <div className="text-xs text-slate-600 min-w-0 break-words">
         <span className="font-semibold text-slate-800">{c.stops} stop{c.stops === 1 ? '' : 's'}</span>
@@ -33670,10 +33678,10 @@ function CustomerDayHeading({ day, today, stacked }) {
 }
 
 /** DESKTOP: a table. A rep comparing six stops on one day reads down a column. */
-function CustomerDayTable({ day, today, onPro }) {
+function CustomerDayTable({ day, onPro }) {
   return (
     <div className="space-y-1.5">
-      <CustomerDayHeading day={day} today={today} />
+      <CustomerDayHeading day={day} />
       <div className="rounded-xl border bg-white overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
@@ -33726,10 +33734,10 @@ function CustomerDayTable({ day, today, onPro }) {
 }
 
 /** PHONE: cards. Same seven facts, stacked, at a size somebody reads one-handed. */
-function CustomerDayCards({ day, today, onPro }) {
+function CustomerDayCards({ day, onPro }) {
   return (
     <div className="space-y-1.5">
-      <CustomerDayHeading day={day} today={today} stacked />
+      <CustomerDayHeading day={day} stacked />
       <div className="space-y-2">
         {day.rows.map((r) => (
           <div key={r.key} className="rounded-xl border bg-white p-3 space-y-1.5">
@@ -34138,8 +34146,8 @@ function StopLookupScreen() {
               {v.days.length > 0
                 ? <div className="space-y-4">
                   {v.days.map((day) => (isMobile
-                    ? <CustomerDayCards key={day.date} day={day} today={today} onPro={pick} />
-                    : <CustomerDayTable key={day.date} day={day} today={today} onPro={pick} />))}
+                    ? <CustomerDayCards key={day.date} day={day} onPro={pick} />
+                    : <CustomerDayTable key={day.date} day={day} onPro={pick} />))}
                 </div>
                 : v.complete !== false && (
                   <div className="rounded-xl border bg-white p-6 text-center">
