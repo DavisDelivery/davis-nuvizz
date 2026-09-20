@@ -12,7 +12,7 @@ export const CUSTOMER_YEAR = {
   ok: true, nuvizzCalls: 0, mode: 'customer-year', query: 'earthly alternative', today: '2026-09-18', year: '2026',
   name: 'EARTHLY ALTERNATIVE', nameKey: 'earthly_alternative', errors: {},
   view: {
-    year: '2026', counted: true, monthsFrom: '2026-02-09', wholeYear: false, uncountedMonths: 1,
+    year: '2026', counted: true, monthsFrom: '2026-02-09', countedThrough: '2026-09-18', wholeYear: false, uncountedMonths: 1, uncountedAfter: 0,
     months: [
       mon('01', 0, 0, 0, 0, true),
       mon('02', 9, 9), mon('03', 14, 13, 1), mon('04', 11, 10, 0, 1), mon('05', 17, 16, 1),
