@@ -64,7 +64,7 @@ import {
 } from './lib/firestore.mts';
 import { getStop as getSealedStop, listStops as listSealedStops } from './lib/history-store.mts';
 import { lookupProDays, proIndexEnabled } from './lib/history-pro-index.mts';
-import { getCustomerByMatchKey, queryCustomersByName } from './lib/history-customers.mts';
+import { getCustomerByMatchKey, queryCustomersByName, readTallyRange } from './lib/history-customers.mts';
 import { selectAddressChanges } from './lib/address-history.mts';
 import { CUSTOMER_STOP_FIELDS } from './lib/board-fields.mts';
 import { stopCustomerKey } from './lib/customer-key.mts';
@@ -281,7 +281,12 @@ export default async (req: Request): Promise<Response> => {
     }
 
     const chosenName = mine[0]?.name || nameRaw;
-    const view = buildCustomerYear({ year, today, customers: mine });
+    // THE TALLY'S OWN RANGE — one document, the first and last sealed day the month count has
+    // been run over for everyone. It is what lets a month with no bucket be called a real zero
+    // (lib/history-customers.mts, TALLY_RANGE_PATH); without it the year falls back to the
+    // per-dock floor, which can only ever say "since this customer's first delivery".
+    const tallyR = await tryRead(() => readTallyRange(), null as any);
+    const view = buildCustomerYear({ year, today, customers: mine, tally: tallyR.value });
     return J({
       ok: true, nuvizzCalls: 0, mode: 'customer-year', query: nameRaw, today, year,
       name: chosenName, nameKey: customerNameKey(chosenName),
@@ -291,6 +296,10 @@ export default async (req: Request): Promise<Response> => {
           note: `${mine.length} location document${mine.length === 1 ? '' : 's'} — the year is counted nightly, not swept`,
           looked: matchedR.read, count: mine.length, found: matchedR.read && mine.length > 0,
           state: matchedR.read ? (mine.length ? 'found' : 'empty') : 'unread' },
+        { key: 'tally', label: 'Tally range', where: 'nuvizz_ops/customer_history_tally',
+          note: tallyR.value ? `counted for everyone from ${tallyR.value.monthsFrom}${tallyR.value.countedThrough ? ` through ${tallyR.value.countedThrough}` : ''}` : 'no range on file — the floor falls back to this customer\'s first counted day',
+          looked: tallyR.read, count: tallyR.value ? 1 : 0, found: !!tallyR.value,
+          state: tallyR.read ? (tallyR.value ? 'found' : 'empty') : 'unread' },
         // NAMED, not omitted. The year deliberately reads NO board or warehouse day — that is
         // the whole design — and a ledger that simply left them out would look like an
         // oversight rather than a decision.
@@ -301,7 +310,7 @@ export default async (req: Request): Promise<Response> => {
           note: 'not read for a year, for the same reason — its counts are folded into the rollup nightly instead',
           looked: 'skipped', count: 0, found: false, state: 'skipped' },
       ],
-      errors: Object.fromEntries(Object.entries({ customer: matchedR.error }).filter(([, v]) => v)),
+      errors: Object.fromEntries(Object.entries({ customer: matchedR.error, tally: tallyR.error }).filter(([, v]) => v)),
       note: 'Firestore only — nothing here spent a NuVizz call.',
     });
   }

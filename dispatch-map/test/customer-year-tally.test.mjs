@@ -315,3 +315,137 @@ test('AN ABSENT TALLY RENDERS AS A DASH, NEVER AS A ZERO', async () => {
   assert.match(src, /\? <><span className="font-semibold">\{l\.stops\}<\/span> stop\{l\.stops === 1 \? '' : 's'\} counted<\/>/,
     'the per-location count is gated the same way');
 });
+
+// ── THE TALLY'S OWN RANGE (v1.49.2) — "counted, and zero" needs a global fact ─────────────
+//
+// After the 2026-09-19 backfill the real Earthly Alternative rollup read monthsFrom
+// 2026-07-24 (their first captured delivery) and the year screen said June was "not counted
+// yet — we do not know what it held". June 4–30 HAD been counted for everyone; Earthly simply
+// had nothing in it. A per-customer monthsFrom is the first day that customer HAD stops, so it
+// can never say "counted, and zero". The writer now keeps ONE global range, and the year rule
+// prefers it. These pin the merge, the stamp, the rule, and the endpoint reading it.
+
+import {
+  TALLY_RANGE_PATH, mergeTallyRange, readTallyRange, stampTallyRange,
+} from '../netlify/functions/lib/history-customers.mts';
+import { buildCustomerYear } from '../src/lib/stop-lookup.js';
+
+test('mergeTallyRange: min/max, order-free, and a malformed date changes nothing', () => {
+  assert.deepEqual(mergeTallyRange(null, '2026-09-18'), { months_from: '2026-09-18', counted_through: '2026-09-18' });
+  const a = mergeTallyRange({ months_from: '2026-09-01', counted_through: '2026-09-18' }, '2026-06-04');
+  assert.deepEqual(a, { months_from: '2026-06-04', counted_through: '2026-09-18' }, 'a backfill running newest-first still lands on the right floor');
+  const b = mergeTallyRange(a, '2026-09-19');
+  assert.deepEqual(b, { months_from: '2026-06-04', counted_through: '2026-09-19' });
+  assert.deepEqual(mergeTallyRange(b, 'garbage'), b);
+  assert.deepEqual(mergeTallyRange({ months_from: 'x', counted_through: null }, '2026-07-01'), { months_from: '2026-07-01', counted_through: '2026-07-01' }, 'a corrupt stored value is replaced, not propagated');
+});
+
+test('THE WRITER STAMPS THE RANGE once per day, field-masked, and re-running a day leaves it unchanged', async () => {
+  const fake = installFirestoreFake({});
+  try {
+    const { updateCustomerRollupsForDay } = await import('../netlify/functions/lib/history-customers.mts');
+    await updateCustomerRollupsForDay('davis', '2026-09-18', [seal({ pro: 'B' })]);
+    await updateCustomerRollupsForDay('davis', '2026-06-04', [seal({ pro: 'A', date: '2026-06-04' })]);
+    const doc = fake.store.get(TALLY_RANGE_PATH);
+    assert.equal(doc.months_from, '2026-06-04');
+    assert.equal(doc.counted_through, '2026-09-18');
+    const patches = (fake.log.patches || []).filter((p) => p.path === TALLY_RANGE_PATH);
+    assert.ok(patches.length >= 2, 'written with a field mask, never a blind replace');
+    assert.ok(patches.every((p) => p.mask.every((k) => ['months_from', 'counted_through', 'updated_at'].includes(k))), 'only its own fields');
+    const before = patches.length;
+    await updateCustomerRollupsForDay('davis', '2026-08-04', [seal({ pro: 'C', date: '2026-08-04' })]);
+    assert.equal((fake.log.patches || []).filter((p) => p.path === TALLY_RANGE_PATH).length, before, 'a day inside the range writes nothing');
+    assert.deepEqual(await readTallyRange(), { monthsFrom: '2026-06-04', countedThrough: '2026-09-18' });
+  } finally { fake.restore(); }
+});
+
+test('stampTallyRange never throws — a range write that fails must not fail the day it records', async () => {
+  const r = await stampTallyRange('2026-09-18', { getDoc: async () => { throw new Error('down'); }, updateDocFields: async () => { throw new Error('down'); } });
+  assert.equal(r, null);
+  assert.equal(await stampTallyRange('nope'), null);
+});
+
+test('readTallyRange: absent or corrupt → null, never a guessed floor', async () => {
+  assert.equal(await readTallyRange({ getDoc: async () => null }), null);
+  assert.equal(await readTallyRange({ getDoc: async () => ({ months_from: 'soon' }) }), null);
+  assert.deepEqual(await readTallyRange({ getDoc: async () => ({ months_from: '2026-06-04', counted_through: 'x' }) }), { monthsFrom: '2026-06-04', countedThrough: null });
+});
+
+test('THE EARTHLY CASE: with the global range, June is a REAL ZERO and the floor is June 4 — not July 24', () => {
+  const v = buildCustomerYear({
+    year: '2026', today: '2026-09-19',
+    customers: [{ monthsFrom: '2026-07-24', months: { '2026-07': { stops: 1, delivered: 1 }, '2026-09': { stops: 1, delivered: 1 } }, drivers: {} }],
+    tally: { monthsFrom: '2026-06-04', countedThrough: '2026-09-18' },
+  });
+  const by = Object.fromEntries(v.months.map((m) => [m.month, m]));
+  assert.equal(v.counted, true);
+  assert.equal(v.monthsFrom, '2026-06-04', 'the floor is the day counting started for everyone');
+  assert.equal(v.countedThrough, '2026-09-18');
+  assert.equal(by['2026-05'].uncounted, true, 'before the warehouse: unknown');
+  assert.equal(by['2026-06'].uncounted, false, 'June was counted — they were not there');
+  assert.equal(by['2026-06'].stops, 0);
+  assert.equal(by['2026-08'].uncounted, false);
+  assert.equal(by['2026-09'].stops, 1);
+  assert.equal(v.uncountedMonths, 5, 'Jan–May');
+  assert.equal(v.uncountedAfter, 0);
+  assert.equal(v.wholeYear, false);
+  assert.equal(v.totals.stops, 2);
+});
+
+test('with the global range a customer with NO months is "zero since the floor", not "no tally yet"', () => {
+  const v = buildCustomerYear({ year: '2026', today: '2026-09-19', customers: [{ monthsFrom: null, months: null, drivers: null }], tally: { monthsFrom: '2026-06-04', countedThrough: '2026-09-18' } });
+  assert.equal(v.counted, true);
+  assert.equal(v.totals.stops, 0);
+  assert.equal(v.months.find((m) => m.month === '2026-07').uncounted, false);
+  assert.equal(v.months.find((m) => m.month === '2026-03').uncounted, true);
+});
+
+test('MONTHS THE NIGHTLY HAS NOT REACHED ARE UNCOUNTED, NOT ZERO — and counted separately from "before we started"', () => {
+  const v = buildCustomerYear({ year: '2026', today: '2026-09-19', customers: [{ monthsFrom: '2026-07-24', months: { '2026-07': { stops: 1, delivered: 1 } }, drivers: {} }], tally: { monthsFrom: '2026-06-04', countedThrough: '2026-08-31' } });
+  const by = Object.fromEntries(v.months.map((m) => [m.month, m]));
+  assert.equal(by['2026-09'].uncounted, true, 'September is past the last counted day');
+  assert.equal(by['2026-08'].uncounted, false, 'August is inside the range: a real zero');
+  assert.equal(v.uncountedAfter, 1);
+  assert.equal(v.uncountedMonths, 6, 'Jan–May plus September');
+  assert.equal(v.wholeYear, false);
+});
+
+test('wholeYear needs the range to cover the last month on screen, not just to start before January', () => {
+  const docs = [{ monthsFrom: '2026-02-01', months: { '2026-02': { stops: 3, delivered: 3 } }, drivers: {} }];
+  assert.equal(buildCustomerYear({ year: '2026', today: '2026-09-19', customers: docs, tally: { monthsFrom: '2025-11-04', countedThrough: '2026-09-18' } }).wholeYear, true);
+  assert.equal(buildCustomerYear({ year: '2026', today: '2026-09-19', customers: docs, tally: { monthsFrom: '2025-11-04', countedThrough: '2026-08-31' } }).wholeYear, false);
+  assert.equal(buildCustomerYear({ year: '2026', today: '2026-09-19', customers: docs, tally: { monthsFrom: '2026-01-15', countedThrough: '2026-09-18' } }).wholeYear, false, 'started mid-January');
+});
+
+test('with NO range on file the per-dock rule still applies, unchanged — its caution is the right caution', () => {
+  const v = buildCustomerYear({ year: '2026', today: '2026-09-19', customers: [{ monthsFrom: '2026-07-24', months: { '2026-07': { stops: 1, delivered: 1 } }, drivers: {} }] });
+  assert.equal(v.monthsFrom, '2026-07-24');
+  assert.equal(v.countedThrough, null);
+  assert.equal(v.months.find((m) => m.month === '2026-06').uncounted, true);
+  assert.equal(v.uncountedAfter, 0);
+});
+
+test('THE YEAR ENDPOINT READS THE RANGE and the answer carries the global floor and names the source', async () => {
+  const fake = installFirestoreFake({
+    [`history_customers/davis__${MK}`]: {
+      match_key: MK, tenant: 'davis', name: 'EARTHLY ALTERNATIVE', name_lower: 'earthly alternative', name_tokens: ['earthly', 'alternative', 'e', 'ea', 'ear', 'eart', 'earth', 'earthl', 'earthly', 'a', 'al', 'alt', 'alte', 'alter', 'altern', 'alterna', 'alternat', 'alternati', 'alternativ', 'alternative'],
+      addr1: '4200 WENDELL DR SW', city: 'ATLANTA', state: 'GA', zip: '30336', pros: [{ pro: '007152060', date: '2026-07-24', driver: 'Olamide Kazeem' }], pro_index: ['007152060'],
+      months: { '2026-07': { stops: 1, delivered: 1, attempted: 0, exceptions: 0, days: ['2026-07-24'] } }, drivers: {}, months_from: '2026-07-24', last_date: '2026-07-24',
+    },
+    [TALLY_RANGE_PATH]: { months_from: '2026-06-04', counted_through: '2026-09-18', updated_at: '2026-09-20T00:04:47Z' },
+  });
+  try {
+    const handler = (await import('../netlify/functions/stop-lookup.mts')).default;
+    const body = await (await handler(new Request('https://x.netlify.app/.netlify/functions/stop-lookup?name=earthly&year=2026'))).json();
+    assert.equal(body.ok, true);
+    assert.equal(body.mode, 'customer-year');
+    assert.equal(body.nuvizzCalls, 0);
+    assert.equal(body.view.monthsFrom, '2026-06-04');
+    assert.equal(body.view.countedThrough, '2026-09-18');
+    assert.equal(body.view.months.find((m) => m.month === '2026-06').uncounted, false, 'June is a zero on the wire, not a gap');
+    const src = body.sources.find((r) => r.key === 'tally');
+    assert.equal(src.state, 'found');
+    assert.match(src.note, /from 2026-06-04 through 2026-09-18/);
+    assert.equal(fake.log.other.length, 0, 'ZERO NuVizz calls');
+  } finally { fake.restore(); }
+});

@@ -773,12 +773,28 @@ export function buildCustomerYear(facts = {}) {
   const today = s(facts.today);
   const docs = (facts.customers || []).filter(Boolean);
 
+  // THE GLOBAL RANGE WINS, when there is one. `facts.tally` is the first and last sealed day the
+  // month tally has been run over FOR EVERYONE (nuvizz_ops/customer_history_tally, stamped by
+  // the writer both the nightly hook and the backfill call). Inside it, a month with no bucket
+  // is a real zero — we were genuinely not there. The per-dock monthsFrom below can never say
+  // that: it is the first day the dock HAD stops, so after the 2026-09-19 backfill the real
+  // Earthly Alternative read "counted from Jul 24 — June not counted yet" when June had been
+  // counted in full and simply held nothing for them. Only with no global range on file does
+  // the per-dock rule apply, and then its caution is the right caution.
+  const tally = DAY_RE.test(s(facts.tally?.monthsFrom))
+    ? { from: s(facts.tally.monthsFrom), through: DAY_RE.test(s(facts.tally?.countedThrough)) ? s(facts.tally.countedThrough) : null }
+    : null;
+
   // The earliest day ANY dock has counted. A month before it is uncounted for the customer as
   // a whole, because at least one dock has no figure to contribute.
   const froms = docs.map((c) => s(c.monthsFrom)).filter(Boolean);
-  const monthsFrom = froms.length === docs.length && froms.length ? froms.reduce((a, b) => (a > b ? a : b)) : null;
-  // No dock has ever been counted → the tally is ABSENT. Not zero.
-  const counted = docs.some((c) => c.months && Object.keys(c.months).length > 0);
+  const dockFrom = froms.length === docs.length && froms.length ? froms.reduce((a, b) => (a > b ? a : b)) : null;
+  const monthsFrom = tally ? tally.from : dockFrom;
+  // With a global range the tally EXISTS whatever this customer holds — zero stops since the
+  // floor is an answer, not an absence. Without one: no dock ever counted → ABSENT, not zero.
+  const counted = tally ? true : docs.some((c) => c.months && Object.keys(c.months).length > 0);
+  const fromMonth = monthsFrom ? s(monthsFrom).slice(0, 7) : null;
+  const throughMonth = tally?.through ? tally.through.slice(0, 7) : null;
 
   const months = monthsOfYear(year, today).map((m) => {
     const bucket = { month: m, label: monthLabel(m), stops: 0, delivered: 0, attempted: 0, exceptions: 0 };
@@ -792,9 +808,11 @@ export function buildCustomerYear(facts = {}) {
       bucket.attempted += b.attempted || 0;
       bucket.exceptions += b.exceptions || 0;
     }
-    // A month BEFORE the tally started is uncounted; a month at or after it with no bucket is
-    // a real zero — we were genuinely not there. The screen draws those two differently.
-    const uncounted = !any && (!monthsFrom || m < s(monthsFrom).slice(0, 7));
+    // A month BEFORE the tally started is uncounted, and so is one AFTER the last day it has
+    // reached (a nightly that stopped running must not turn into a run of zeros); a month
+    // inside the range with no bucket is a real zero — we were genuinely not there. The
+    // screen draws those two differently.
+    const uncounted = !any && (!fromMonth || m < fromMonth || (!!throughMonth && m > throughMonth));
     return { ...bucket, uncounted };
   });
 
@@ -820,14 +838,22 @@ export function buildCustomerYear(facts = {}) {
   const busiest = months.filter((m) => !m.uncounted && m.stops > 0)
     .reduce((a, m) => (!a || m.stops > a.stops ? m : a), null);
 
+  const lastMonthOnScreen = months.length ? months[months.length - 1].month : null;
   return {
     year,
     counted,
     monthsFrom,
-    // TRUE only when the tally covers the whole year on screen. The screen says "counted since
-    // <date>" rather than letting a partial year read as a full one.
-    wholeYear: counted && !!monthsFrom && s(monthsFrom) <= `${year}-01-01`,
+    // The last day the tally has reached, when a global range is on file; null otherwise.
+    countedThrough: tally?.through || null,
+    // TRUE only when the tally covers the whole year on screen — from before January and, when
+    // a global range says how far it has reached, through the last month shown. The screen
+    // says "counted from <date>" rather than letting a partial year read as a full one.
+    wholeYear: counted && !!monthsFrom && s(monthsFrom) <= `${year}-01-01`
+      && (!throughMonth || !lastMonthOnScreen || throughMonth >= lastMonthOnScreen),
     uncountedMonths: months.filter((m) => m.uncounted).length,
+    // Of those, the ones AFTER the floor — months the nightly count has not reached yet. They
+    // get their own sentence, because "before we started" and "not run yet" are different news.
+    uncountedAfter: months.filter((m) => m.uncounted && !!fromMonth && m.month > fromMonth).length,
     months,
     totals,
     busiest,

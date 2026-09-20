@@ -18,7 +18,7 @@
 //       pro_index: [pro, …]  (the pro strings, for ARRAY_CONTAINS lookup),
 //       last_date, updated_at }
 
-import { getDoc, setDoc, runQuery } from './firestore.mts';
+import { getDoc, setDoc, runQuery, updateDocFields } from './firestore.mts';
 import { histDocId } from './history-store.mts';
 
 export const CUSTOMERS_COLLECTION = 'history_customers';
@@ -317,8 +317,72 @@ export function buildRollupsFromStops(stops: any[]): Map<string, any> {
 // Read existing rollup → merge this day → write. Bounded concurrency. Returns
 // how many customer docs were touched. `stops` are warehouse stop records (with
 // customerMatchKey / pro / date / businessName / addr fields).
+// ── THE TALLY'S OWN RANGE — the one fact the per-customer documents cannot hold ──────────
+//
+// After the 2026-09-19 backfill, the real Earthly Alternative rollup read months_from
+// 2026-07-24 — their first captured delivery — and the year screen therefore said "June is not
+// counted yet; we do not know what it held". We DID know: June 4–30 had been counted for every
+// customer, and Earthly simply had no stops in it. A per-customer months_from is "the first day
+// this customer HAD stops"; it can never express "counted, and zero", because this writer only
+// touches the customers a day actually contained. So the floor has to be GLOBAL: the first and
+// last sealed day the month tally has been run over, for everyone, kept here by the one
+// function both the nightly hook and the backfill call. A month at or after months_from and at
+// or before counted_through with no bucket is a real zero; outside that range it is unknown.
+//
+// Interior gaps (a sealed day whose rollup hook failed) are not representable here and are not
+// meant to be — history-capture-health's `rollup_gaps` already names them, and a re-run heals
+// them. Min/max merges are idempotent and order-free, so the backfill running newest-first
+// lands on the same document a chronological run would.
+export const TALLY_RANGE_PATH = 'nuvizz_ops/customer_history_tally';
+const DAY_ID = /^\d{4}-\d{2}-\d{2}$/;
+
+/** PURE: the stored range after one more counted day. Malformed input changes nothing. */
+export function mergeTallyRange(existing: any, date: string): { months_from: string | null; counted_through: string | null } {
+  const from = DAY_ID.test(String(existing?.months_from ?? '')) ? String(existing.months_from) : null;
+  const through = DAY_ID.test(String(existing?.counted_through ?? '')) ? String(existing.counted_through) : null;
+  const d = String(date ?? '');
+  if (!DAY_ID.test(d)) return { months_from: from, counted_through: through };
+  return {
+    months_from: !from || d < from ? d : from,
+    counted_through: !through || d > through ? d : through,
+  };
+}
+
+/** The range as a reader wants it, or null when the tally has never been run. */
+export async function readTallyRange(
+  io: { getDoc: (p: string) => Promise<any | null> } = { getDoc },
+): Promise<{ monthsFrom: string; countedThrough: string | null } | null> {
+  const doc = await io.getDoc(TALLY_RANGE_PATH);
+  const from = String(doc?.months_from ?? '');
+  if (!DAY_ID.test(from)) return null;
+  const through = String(doc?.counted_through ?? '');
+  return { monthsFrom: from, countedThrough: DAY_ID.test(through) ? through : null };
+}
+
+/**
+ * Widen the stored range to include `date`. Field-masked, so nothing else on the document is
+ * touched; best-effort, so a failure here can never fail the day it is recording — the day's
+ * counts are already written, and a range one day short heals on the next run.
+ */
+export async function stampTallyRange(
+  date: string,
+  io: { getDoc: (p: string) => Promise<any | null>; updateDocFields: (p: string, d: any) => Promise<boolean> } = { getDoc, updateDocFields },
+): Promise<{ months_from: string | null; counted_through: string | null } | null> {
+  if (!DAY_ID.test(String(date ?? ''))) return null;
+  try {
+    const existing = await io.getDoc(TALLY_RANGE_PATH).catch(() => null);
+    const next = mergeTallyRange(existing, date);
+    if (existing && existing.months_from === next.months_from && existing.counted_through === next.counted_through) return next;
+    await io.updateDocFields(TALLY_RANGE_PATH, { ...next, updated_at: new Date().toISOString() });
+    return next;
+  } catch (e: any) {
+    console.error('history-customers: tally range stamp failed', e?.message);
+    return null;
+  }
+}
+
 export async function updateCustomerRollupsForDay(
-  tenant: string, _date: string, stops: any[], conc = 8,
+  tenant: string, date: string, stops: any[], conc = 8,
 ): Promise<{ customers: number; written: number }> {
   const dayMap = buildRollupsFromStops(stops);
   const entries = [...dayMap.values()];
@@ -370,6 +434,10 @@ export async function updateCustomerRollupsForDay(
     }
   };
   await Promise.all(Array.from({ length: Math.min(conc, entries.length || 1) }, worker));
+  // The day is counted for EVERYONE now — including the customers it held no stops for. That
+  // is the fact the per-customer documents cannot carry (see TALLY_RANGE_PATH), stamped once
+  // per day, after the day's writes have landed.
+  await stampTallyRange(date);
   return { customers: entries.length, written };
 }
 

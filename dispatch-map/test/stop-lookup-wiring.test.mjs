@@ -246,3 +246,11 @@ test('the Diagnostics seal strip prints the backfill record — running, stalled
   for (const word of ['STALLED', 'running —', 'failed after', 'finished ']) assert.match(strip, new RegExp(word), `the strip must say "${word}"`);
   assert.match(strip, /b\.stops/, 'and it prints the stop count from the record, not a hope');
 });
+
+test('THE YEAR BANNER SEPARATES "before we started" FROM "the nightly has not reached it" (v1.49.2)', () => {
+  const banner = APP.slice(APP.indexOf('Counted from <span className="font-semibold">{formatDateLong(v.monthsFrom)}'), APP.indexOf('Counted from <span className="font-semibold">{formatDateLong(v.monthsFrom)}') + 1400);
+  assert.match(banner, /v\.countedThrough && <> through/, 'says how far the count has reached');
+  assert.match(banner, /we have no records from before then/, 'before the floor: no records');
+  assert.match(banner, /the nightly count has not reached/, 'after the last counted day: not run yet');
+  assert.match(banner, /v\.uncountedAfter/, 'and the two are counted separately');
+});
