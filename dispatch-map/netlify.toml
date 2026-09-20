@@ -73,6 +73,11 @@
     timeout = 26
   [functions."routing-cleanup"]
     timeout = 26
+  # The UAT mirror's read-back: ?explain=1 lists every stop of up to 14 sealed days on BOTH
+  # databases (production read-only, the mirror) and the static collections twice. Read-only;
+  # the copy itself runs in uat-mirror-refresh-background under the 15-minute cap.
+  [functions."uat-mirror-refresh"]
+    timeout = 26
   [functions."motive-driver-positions"]
     timeout = 10
   # "Check email now" on the Manifest check tab: one poll of every configured
