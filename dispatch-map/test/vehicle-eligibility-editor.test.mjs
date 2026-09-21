@@ -29,6 +29,13 @@ import {
 } from '../src/lib/trailer-block.js';
 
 const APP = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+// THE CODE, WITHOUT THE CHANGELOG. VERSION_LOG is 800 lines of prose at the top of the file
+// and a row that QUOTES a guard counts as a copy of it — v1.53.0's row names
+// `...(eligibilityChanged(draft, existing)` in so many words, and the count below read 4
+// saves where there are 3. A test that a changelog entry can break is a test that gets its
+// number edited rather than its cause fixed, which is how a real fourth unguarded save would
+// slip past it.
+const CODE = APP.slice(APP.indexOf('\n];\n', APP.indexOf('const VERSION_LOG = [')));
 
 // ── The rule: taking the mark off actually lets a trailer serve the stop ──────
 test('clearing a box-only mark unblocks the 53-footer at that location', () => {
@@ -119,11 +126,17 @@ test('the vehicle picker is inside StopNotesEditor, which BOTH stop panels rende
   assert.equal([...APP.matchAll(/<MobileStopDetailDrawer\b/g)].length, 1, 'one phone drawer');
 });
 
-test('both note-save paths stamp vehicle provenance, and neither does it unconditionally', () => {
-  // The save is duplicated (Map screen + Routing screen). Half-fixing this pair is the
-  // exact bug shape the Routing save's own comment warns about.
-  const guarded = [...APP.matchAll(/\.\.\.\(eligibilityChanged\(draft, existing\)/g)];
-  assert.equal(guarded.length, 2, 'both saves must stamp, and both must go through eligibilityChanged');
-  const stamps = [...APP.matchAll(/vehicle_eligibility_at: serverTimestamp\(\)/g)];
-  assert.equal(stamps.length, 3, 'two guarded note saves + the Routing brush that has always stamped');
+test('EVERY note-save path stamps vehicle provenance, and none does it unconditionally', () => {
+  // The save is duplicated — Map screen, Routing screen, and since v1.53.0 the Stop lookup
+  // screen. Half-fixing the set is the exact bug shape the Routing save's own comment warns
+  // about, and this count is the thing that says so: the Stop lookup copy shipped UNGUARDED
+  // in draft precisely because it used its own variable names and this number did not move.
+  // That is why all three write `...(eligibilityChanged(draft, existing)` verbatim.
+  const guarded = [...CODE.matchAll(/\.\.\.\(eligibilityChanged\(draft, existing\)/g)];
+  assert.equal(guarded.length, 3, 'every save must stamp, and all of them through eligibilityChanged');
+  const stamps = [...CODE.matchAll(/vehicle_eligibility_at: serverTimestamp\(\)/g)];
+  assert.equal(stamps.length, 4, 'three guarded note saves + the Routing brush that has always stamped');
+  // The shared editor is why this matters at all: it carries the three-state vehicle picker,
+  // so ANY screen that mounts it can move a hard capacity block.
+  assert.match(APP.slice(APP.indexOf('function StopNotesEditor')), /vehicle_eligibility: o\.value/);
 });

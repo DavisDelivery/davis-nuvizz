@@ -114,6 +114,24 @@ const PROBES = {
       await page.waitForTimeout(500);
       return page.getByText(/every time this address moved/i).first().isVisible().catch(() => false);
     } },
+    // THE CUSTOMER EDITOR OPEN (v1.53.0). The tallest single form in the app after the Map's
+    // stop card: seven receiving-hour rows of two time inputs each, a flag block, a contacts
+    // list and a Save/Cancel bar — dropped INLINE under a card that already has two docks
+    // listed above it. Nothing of it exists until Edit is pressed, and the button it is
+    // pressed from only exists because the fixture carries two docks. Last in the list so no
+    // later probe inherits an open form and measures a thousand extra pixels.
+    { name: 'editing a customer dock', open: async (page) => {
+      await closeOrderDrawer(page);
+      const box = page.getByLabel(/find a customer by name/i).first();
+      if (!(await box.isVisible().catch(() => false))) return false;
+      await box.fill('earthly alternative');
+      if (!(await openByName(page, /^look up$/i))) return false;
+      await page.waitForTimeout(500);
+      if (!(await openByName(page, /^edit$/i))) return false;
+      await page.waitForTimeout(500);
+      // PROVES ITS STATE, like every probe here: the panel names the dock it is editing.
+      return page.getByText(/editing this dock/i).first().isVisible().catch(() => false);
+    } },
   ],
   addrhistory: [
     { name: 'Problem queue — row editor open', open: async (page) => {
@@ -152,7 +170,7 @@ async function openByName(page, re) {
  * nothing, and the state was SKIPPED — which is how "nothing on file, NuVizz offered" went
  * unmeasured on all four tablets in the v1.49.0 pass while the run reported green.
  *
- * Since v1.51.0 the panel is INLINE and covers nothing, so it can no longer swallow a click.
+ * Since v1.52.0 the panel is INLINE and covers nothing, so it can no longer swallow a click.
  * It is still closed between probes, for a different and still-good reason: an expanded panel
  * left open under the previous probe's row is a thousand extra pixels in every later
  * measurement, and a guard should measure the state it names and not the one before it.
