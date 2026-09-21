@@ -170,9 +170,54 @@ export function isTrailerBlockerKey(key, resolve) {
 // address-line mark is Davis-typed but scanner-DETECTED, so it sits exactly on the line he
 // drew — and widening who gets woken at 9pm is his call, not a side effect of an icon fix.
 //
+// HE MADE THE CALL ON 2026-09-21, and the paragraph above is now the OFF position of a switch
+// rather than the rule. Chad, on ADVANCED COLOR IMAGING riding TERRANCE (a tractor) with a
+// hard "No tractor trailer" on the card and no text sent: "It should fire on anything that has
+// this restriction on it as well as the no tractor trailer in address 2."
+//
+// WHAT WAS ACTUALLY MEASURED BEFORE IT SHIPPED, because "widen the alert" is the shape of
+// change that turns a phone into a nuisance and gets the whole feature muted. Four real boards
+// (09-16, 09-17, 09-18, 09-21), 863 dock-days, 763 distinct docks that rode a tractor route,
+// every stored note read out of Firestore — ZERO NuVizz calls:
+//
+//   texts under the OLD rule .......... 0, 0, 0, 0
+//   texts under THIS rule ............. 0, 0, 0, 1   (ADVANCED COLOR IMAGING on TERRANCE)
+//
+// The old rule's reach was not small, it was EMPTY. Of the five docks in the whole set
+// carrying any trailer blocker, four are `uline_straight_truck` off orderInstructions and one
+// is the Address 2 mark; not one had a ticked list or a box_only paint, so there was no note
+// anywhere on four days' boards that the alert could fire on. It was protecting nothing.
+//
+// PRESENCE BLOCKS, and that is the whole rule: the restriction being ON the customer is the
+// statement. ADVISORY_ONLY_KEYS still stands one line down, so Uline's straight-truck read out
+// of somebody else's order text stays excluded exactly as he scoped it in v0.82.0 — measured,
+// not assumed: all four Uline marks in the set keep their own key and none of them fires.
+//
+// THE ONE CASE THIS DELIBERATELY WIDENS PAST restrictionConfidence: a legacy v0.2.0 doc
+// carrying `no_tractor_trailer` sourced only from orderInstructions reads 'advisory' there but
+// fires here, because "anything that has this restriction" is what he asked for. Measured
+// count of those across the 763 docks: ZERO, so nothing changes under him today.
+//
+// TRAILER_ALERT_ANY_RESTRICTION=off restores the dispatcher-owned rule below, on every side at
+// once — the flag panel, the map's R7 card and the 9pm text all read this one function.
+export function trailerAlertAnyRestriction(env) {
+  let raw = env;
+  if (!raw) {
+    const bag = {};
+    try { Object.assign(bag, import.meta.env ?? {}); } catch { /* not a Vite bundle */ }
+    try { Object.assign(bag, typeof process !== 'undefined' ? process.env ?? {} : {}); } catch { /* not Node */ }
+    raw = bag;
+  }
+  const v = String(raw.TRAILER_ALERT_ANY_RESTRICTION ?? raw.VITE_TRAILER_ALERT_ANY_RESTRICTION ?? '')
+    .trim().toLowerCase();
+  // House shape: default ON, an explicit off-word turns it off, anything malformed leaves it
+  // ON — a typo in an env var must never silently re-silence a safety alert.
+  return !['off', '0', 'false', 'no'].includes(v);
+}
+
 // So the alert keeps the ORIGINAL rule, written out here rather than left implicit: a person
 // ticked the restriction list, or the flag has no scanner trail at all (unknown → a person
-// put it there). One line switches the alert onto restrictionConfidence if he wants it.
+// put it there). This is what TRAILER_ALERT_ANY_RESTRICTION=off goes back to.
 export function dispatcherOwnsRestriction(note, key) {
   if (note?.manual_overrides?.equipment_restrictions === true) return true;
   if (ADVISORY_ONLY_KEYS.has(key)) return false;
@@ -184,9 +229,15 @@ export function dispatcherOwnsRestriction(note, key) {
 /** The trailer-blockers on this note a DISPATCHER HERE has taken ownership of — the strict
  *  set behind the overnight text. Same shape and same alias handling as confirmedBlockerKeys
  *  below; only the confidence test differs. */
-export function dispatcherOwnedBlockerKeys(note, drawnKeys, resolve) {
+export function dispatcherOwnedBlockerKeys(note, drawnKeys, resolve, env) {
+  // PRESENCE BLOCKS while the switch is on (see trailerAlertAnyRestriction above): the mark
+  // being on the customer IS the statement, whoever typed it. ADVISORY_ONLY_KEYS is still
+  // consulted, so Uline's straight-truck advisory never reaches the alert on either setting.
+  const owns = trailerAlertAnyRestriction(env)
+    ? (n, k) => !ADVISORY_ONLY_KEYS.has(k)
+    : dispatcherOwnsRestriction;
   return (drawnKeys || []).filter(
-    (k) => isTrailerBlockerKey(k, resolve) && dispatcherOwnsRestriction(note, k),
+    (k) => isTrailerBlockerKey(k, resolve) && owns(note, k),
   );
 }
 
@@ -230,12 +281,13 @@ export function confirmedBlockerKeys(note, drawnKeys, resolve) {
  * Returns { blocked, keys, via } — `via` is 'eligibility' | 'restriction' | null, so a
  * message can say WHICH statement it is quoting rather than asserting a generic one.
  */
-export function dispatcherTrailerBlock(note, resolve = null) {
+export function dispatcherTrailerBlock(note, resolve = null, env = undefined) {
   const none = { blocked: false, keys: [], via: null };
   if (!note) return none;
   if (note.vehicle_eligibility === 'tractor') return none;   // the dispatcher's own "it fits"
-  // STRICT on purpose — see dispatcherOwnsRestriction. This is the alert's set, not the map's.
-  const keys = dispatcherOwnedBlockerKeys(note, note.equipment_restrictions || [], resolve);
+  // Presence blocks by default; TRAILER_ALERT_ANY_RESTRICTION=off narrows it back to the
+  // dispatcher-owned set. Either way this is the ALERT's question, not the map's.
+  const keys = dispatcherOwnedBlockerKeys(note, note.equipment_restrictions || [], resolve, env);
   if (note.vehicle_eligibility === 'box_only') return { blocked: true, keys, via: 'eligibility' };
   return keys.length ? { blocked: true, keys, via: 'restriction' } : none;
 }
