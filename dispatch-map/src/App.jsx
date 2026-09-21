@@ -153,7 +153,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.51.0';
+const APP_VERSION = '1.52.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -207,6 +207,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.52.0', 'THE ORDER DROPS BELOW ITS OWN ROW NOW — IT DOES NOT BUNCH EVERYTHING TO THE RIGHT. Chad, looking at the customer view with an order open: “if we are using this as a customer service bunching everything to the right is no good this screen should act like a drawer and drop below the row using the same spacing.” WHAT THE DRAWER WAS DOING WRONG, in the terms of the job rather than of taste: a rep on the phone is reading a customer’s day — six rows, statuses, drivers, times — and taps one order to answer “which one, and what was on it”. The right-hand drawer then covered the right half of THAT TABLE and dimmed the rest, so the list the question was about went away at the moment it was needed; and the answer arrived in a 576px column that turned eight sections into a nine-hundred-pixel scroll, with the reference number the customer is reading out somewhere near the bottom of it. It was a modal wearing a drawer’s name. NOW IT OPENS IN THE FLOW, under the row it belongs to, at the table’s own spacing: on the desktop it is a second table row spanning every column, on a phone a card under its card. Every other row stays exactly where it was, the row above stays on screen as the label for what is below it, the tapped row is tinted so it is obvious which order the panel belongs to, and nothing is dimmed or covered. TAPPING THE SAME ORDER AGAIN CLOSES IT — inline, the row IS the control, and an expanded panel whose only way out is a button four hundred pixels down the page is how an accordion becomes a trap. Escape still closes it, and a panel that opens off the bottom of the screen scrolls just far enough to be seen (`block: nearest`) rather than yanking the page around one that was already visible. AND THE WIDTH IS NOT JUST ROOM, IT IS FEWER QUESTIONS: with the full width of the list instead of a sliver of it, the sections lay out in columns — “when · who ran it · what was on it”, the answer to most of the call, now reads on ONE LINE with nothing scrolled, then line items · references · POD, then instructions · who to call. Same facts, 1,102px instead of roughly twice that. The phone keeps the single column, because a column at 390px is a column of one. THE PHONE ALSO LOSES ITS FULL-COVER SHEET, and that is a gain rather than a casualty: the sheet REPLACED the list, so a rep checking three of a customer’s orders left the customer and came back three times. One panel component serves both views now — what differs is the column count inside it, not the container, because “below the row, at the row’s own spacing” is already the right answer at 390px and at 1600px. Every list on the screen got it: the customer’s days (table and cards), an order’s own day-by-day history, the “before this window” chips, and the year’s order list. Six tests rewritten, mobile/tablet/desktop guards green.'],
   ['1.51.0', 'A CANCELLED STOP IS NOT FREIGHT, AND COMES OFF THE BOARD BY ITSELF. Chad, with a NuVizz row in front of him: “This stop is what is making the map messed up its been canceled and shouldn’t be on my map anymore so handle that and it should self heal.” HE FOUND IT AND HE WAS RIGHT. THE ROW, READ OFF HIS OWN BOARD, one of 642 on 2026-09-21: GRENZEBACH131732373 — addr1 “5”, city “0.00”, state “CUBIC FEET”, zip “POUNDS”, lat 38.7946, lng -106.53484. NuVizz had written the shipment’s UNITS into the address fields; the geocoder did what a geocoder does with “5, 5, 0.00, Cubic Feet Pounds” and landed in CENTRAL COLORADO. The wall frames every stop on the board, so one row 1,200 miles away stretched the camera from the Rockies to Georgia — and the midpoint of Colorado and Atlanta is KANSAS, which is exactly where his photograph was centred. MEASURED: the board’s diagonal goes from 2,185 km to 243 km when that single row comes off. IT HAD BEEN CANCELLED THE EVENING BEFORE, at 21:00:55, by a named person, with NuVizz’s own cancellation record attached — and the board was still carrying it the next morning. WHY IT SURVIVED: nuvizz-scan classifies a stop with a cancelDTTM as EXCEPTION, alongside “unable to deliver”, a refusal, a damaged pallet. Same word, two completely different mornings. An EXCEPTION is still freight and still somebody’s job — a phone call, a re-delivery, a conversation with the customer. A CANCELLED stop is not freight at all: no destination, no driver, nothing anybody can do. Leaving it on the board is not clutter, it is a row a dispatcher can select, route, count and call about. THE SIGNAL IS NUVIZZ’S OWN RECORD AND NOTHING SOFTER — raw.stopExecutionInfo.cancellation, a real cancelDTTM or an explicit CANCELLED reason code. NOT free text: this very row also reads “Cancelled” in orderInstructions and in a comment, and a board that drops stops on a word in a comment field will one day drop a real delivery. An empty cancellation:{} is not a cancellation either — NuVizz ships that shape on ordinary stops, and treating “the key exists” as the signal would empty the whole board. Both are pinned by tests, against the REAL row rather than an invented one (the cancellation sits under `raw`, which is the one thing here that was easy to get wrong). IT SELF-HEALS BECAUSE IT RUNS AT SERVE TIME, not at scan time: rows already written to Firestore stop appearing on the very next 2-minute poll — no scan, no NuVizz call, nobody pressing anything. It is applied AFTER carry-over and BEFORE every count, so a cancelled row is gone from the board, the tally, the grid and the wall alike rather than hidden on one screen while the others still carry it. The feed reports what came off (cancelledDropped) because the first question when a stop is missing is “did we drop it?”. AND IT CORRECTS v1.50.1, which claimed to explain that photograph and did not — see the ⚠ on that row. I reproduced a different mechanism that also widens a map and presented it as the cause. That release is still worth having (a wall map nobody can knock out of frame), but it was not the answer; this is. PUT IT BACK: BOARD_DROP_CANCELLED=off returns cancelled stops to the board — server-side, so it is an env change and a restart rather than a redeploy. Anything malformed leaves it ON. 13 new tests.'],
   ['1.50.1', 'THE WALL’S LIVE MAP CANNOT BE KNOCKED OUT OF FRAME, AND PUTS ITSELF BACK. ⚠ CORRECTION, MADE IN v1.51.0 AND LEFT HERE RATHER THAN QUIETLY EDITED AWAY: this row originally claimed to EXPLAIN Chad’s photograph of the television showing the whole United States. IT DID NOT. The real cause was a CANCELLED stop geocoded to central Colorado, found by Chad and proven off the board in v1.51.0 — dropping it takes the board’s diagonal from 2,185 km to 243. I reproduced a DIFFERENT mechanism that also widens a map, and presented it as the cause; that is the “plausible story that fits the symptom” CLAUDE.md names as the most dangerous output this system produces. WHAT THIS RELEASE ACTUALLY DID, and it is still worth having: a wall display has a MOUSE POINTER on it, and v1.44.0 handed it an INTERACTIVE map. Read off the code, not guessed: the Map screen builds with gestureHandling ‘greedy’ — a bare mouse wheel zooms, no modifier needed — plus drag, double-click zoom, keyboard, and six on-map controls (zoom, Street View pegman, rotate, Recenter, Satellite, 3D). And it has NO initial fit and NO re-fit, by design: it cold-starts at BUFORD zoom 10 and then stays exactly where anything puts it, because a dispatcher pans and zooms it all morning and an app that kept yanking the view back would be unusable. On a desk that is correct. On a wall it means one stray scroll from a pointer resting on the glass puts the board in Kansas until somebody walks over. THAT IS PRECISELY THE PROPERTY THE STATIC PICTURE WAS CHOSEN FOR — “a wall display is the one screen in the building that cannot be interacted with” — and turning the live map on for its typography handed it straight back. My error, not the television’s. SO ON THE TELEVISION THE MAP IS INERT: no pan, no zoom, no wheel, no double-click, no tilt, no heading, no keyboard, and not one piece of furniture. Google’s pan/tilt pad needed its OWN option (cameraControl) — rotateControl:false does not remove it, and it sat there as the last control on the wall after everything else had gone, found by listing every button with a non-zero box on the RENDERED page rather than by trusting “I turned the controls off”, which is an intent and not an outcome. AND IT FRAMES ITSELF, which is the other half: nobody steers a wall, so if nothing fits it, nothing ever does. It fits the board on load and re-fits when the board’s SNAPPED bounds move — the very same ~2.2km grid the static picture uses, so a truck creeping along cannot re-fit the camera on every driver poll and leave the wall gently drifting all day. A flat 40px pad, deliberately not fitPad(): fitPad reserves room for the desktop bottom grid, which this screen does not have, and a padding bigger than the map makes fitBounds zoom OUT — the exact symptom being fixed. PROVEN BY DOING IT, with main as the control: same board, same viewport, pointer parked on the map, six wheel clicks and a drag. On main the four controls are all present and THE MAP MOVES. On this build the furniture is gone and THE MAP DOES NOT MOVE. The first version of that test reported “did not move” against a bundle built with no Maps key, i.e. no map at all — it refuses to report a result with zero tiles now, because a test that passes on an empty screen is worse than no test. NOT CHANGED: the dispatch Map on a desk keeps every gesture and every control, the static picture is untouched and still the default, and unticking “Live map” still puts it back. 5,336 green.'],
   ['1.50.0', 'THE UAT MIRROR CAN NOW LOAD PRODUCTION’S DAYS FROM FIRESTORE — ZERO NUVIZZ CALLS, NOTHING ON THE ROUTING TAB TOUCHED. Chad: “I want to use firestore to load up all our stops so I can test there without doing anything in nuvizz or nuvizz uat. I want to see how the routes it builds see if I like them or not from day to day. We can do this all without a single nuvizz call just using our uat and firestore data.” The mirror deploy never scans (settled 09-03), so its own database held nothing an engine could plan from, and the only way to put freight on the UAT board was the bench, which CREATES orders in the UAT tenant at a call each. Now a scheduled job on the mirror (uat-mirror-refresh-background, 06:45 UTC, after production’s 06:00 capture has sealed yesterday) copies production’s Firestore into the mirror’s named database: the live board for today and the next three days with raw intact (the Map popups read it), each day’s load roster with the driver NuVizz already had on every load, the trailing 90 sealed days lean (routes, drivers, stops without the vendor payload), the miss ledger, and the static collections the miners and the engine read (customer notes, employees, truck profiles, travel calibration, departures, tractor paint, engine config). Then it re-runs THE SAME post-seal miners the nightly runs over every copied day, oldest first, so the mirror’s learned collections are rebuilt from the copy rather than guessed. Every write goes through the deploy’s own database; production is read through a new reader (lib/prod-mirror-read.mts) that HAS NO WRITER, addresses databases/(default) from one hard-coded constant, and refuses off a mirror — all three asserted against the source text, the way the bench’s catalogue reader already is. ZERO vendor calls is structural, not a promise: no file in the feature imports a nuvizz module, and a test fails if one ever does. On production the same cron fires and exits 403 in the first line, before the URL is parsed. IT IS INSPECTABLE: GET uat-mirror-refresh?status=1 is the progress document (what was copied, what the miners did, where a run that hit the 12-minute budget stopped — a second POST resumes there without redoing a day), and ?explain=1 puts production’s counts beside the mirror’s per date and writes nothing. A half-copied day never reads as sealed, because the manifest is written last. UAT_PROD_MIRROR=off puts the mirror back to reading only its own database (default on; only an off-word turns it off; a typo leaves it on). WHAT IS NOT VERIFIED YET: this has run only against fakes — 26 tests pin the rules, none of them has seen real data. The first 06:45 UTC run, or one manual POST, plus ?status=1 will say what the UAT board actually shows; until then it shows what it showed. No screen changed, nothing on the Routing tab or the workbench moved, no production document was written or will be.'],
@@ -33414,7 +33415,7 @@ const stopFreight = (r) => [
  *      asking. It folds under the address.
  *  The six that stay are the six that answer the phone call: which day, what happened, whose
  *  truck, when, and where we went. */
-function StopDayTable({ days, onOpen }) {
+function StopDayTable({ days, onOpen, renderDetail }) {
   return (
     <div className="rounded-xl border bg-white overflow-hidden">
       {/* AUTO layout, not table-fixed. The first cut set each column a percentage by hand,
@@ -33436,13 +33437,15 @@ function StopDayTable({ days, onOpen }) {
           </tr>
         </thead>
         <tbody className="divide-y">
-          {days.map((r) => (
-            <tr key={r.date} className="align-top">
+          {days.flatMap((r) => {
+            const panel = renderDetail?.(r.refs.stopNbr || r.pro, r.date);
+            return [(
+            <tr key={r.date} className={`align-top ${panel ? 'bg-blue-50' : ''}`}>
               <td className="px-3 py-2 font-semibold break-words">
                 {/* THE DAY IS THE HANDLE HERE, because on a per-order screen every row is the
                     same order and it is the DAY that picks which record you want to read. */}
-                <button onClick={() => onOpen?.(r.refs.stopNbr || r.pro, r.date)}
-                  className="text-blue-800 hover:underline text-left" title="Open this day's record">
+                <button onClick={() => onOpen?.(r.refs.stopNbr || r.pro, r.date)} aria-expanded={!!panel}
+                  className="text-blue-800 hover:underline text-left" title={panel ? "Close this day's record" : "Open this day's record"}>
                   {formatDateForDisplay(r.date)}
                 </button>
               </td>
@@ -33472,7 +33475,12 @@ function StopDayTable({ days, onOpen }) {
               </td>
               <td className="hidden xl:table-cell px-3 py-2"><StopSourceChips sources={r.sources} /></td>
             </tr>
-          ))}
+            ), panel ? (
+              <tr key={`${r.date}:detail`}>
+                <td colSpan={8} className="p-0 bg-slate-50"><div className="px-3 py-3">{panel}</div></td>
+              </tr>
+            ) : null];
+          })}
         </tbody>
       </table>
     </div>
@@ -33481,14 +33489,16 @@ function StopDayTable({ days, onOpen }) {
 
 /** PHONE: cards. The same eight facts, stacked — a table at 360px is a sideways scroll, and
  *  this screen gets opened one-handed with a customer talking. */
-function StopDayListMobile({ days, onOpen }) {
+function StopDayListMobile({ days, onOpen, renderDetail }) {
   return (
     <div className="space-y-2">
-      {days.map((r) => (
-        <div key={r.date} className="rounded-xl border bg-white p-3 space-y-1.5">
+      {days.flatMap((r) => {
+        const panel = renderDetail?.(r.refs.stopNbr || r.pro, r.date);
+        return [(
+        <div key={r.date} className={`rounded-xl border bg-white p-3 space-y-1.5 ${panel ? 'border-blue-300' : ''}`}>
           <div className="flex flex-wrap items-center gap-1.5">
             <StopOutcomeChip outcome={r.outcome} />
-            <button onClick={() => onOpen?.(r.refs.stopNbr || r.pro, r.date)}
+            <button onClick={() => onOpen?.(r.refs.stopNbr || r.pro, r.date)} aria-expanded={!!panel}
               className="text-xs font-semibold text-blue-800 hover:underline min-h-[40px] text-left">
               {formatDateForDisplay(r.date)}
             </button>
@@ -33514,7 +33524,8 @@ function StopDayListMobile({ days, onOpen }) {
             </div>
           )}
         </div>
-      ))}
+        ), panel ? <div key={`${r.date}:detail`}>{panel}</div> : null];
+      })}
     </div>
   );
 }
@@ -33782,9 +33793,10 @@ function DetailSection({ title, children, note }) {
   );
 }
 
-/** The body of the drawer. Shared by both shapes, because the CONTENT is the same question —
- *  only the container differs between a desktop and a phone. */
-function OrderDetailBody({ data, onOpenHistory }) {
+/** The body of the panel. Shared by both shapes, because the CONTENT is the same question —
+ *  only the SHAPE differs: given real width the sections sit side by side, and on a phone they
+ *  stack. See OrderDetailPanel for why there is width to use at all now. */
+function OrderDetailBody({ data, onOpenHistory, wide }) {
   const d = data?.stop;
   if (!d) return null;
   const note = data.note;
@@ -33829,6 +33841,13 @@ function OrderDetailBody({ data, onOpenHistory }) {
         </div>
       )}
 
+      {/* THE MIDDLE SECTIONS GO IN COLUMNS WHEN THERE IS ROOM, and that is the whole point of
+          dropping below the row rather than beside it. In a 576px drawer these eight blocks
+          were one 900px scroll and a rep hunted for the reference number; across the table's
+          own width, "when · who ran it · what was on it" — the answer to most of the call —
+          reads on one line with nothing scrolled. The phone keeps the stack, because a column
+          at 390px is a column of one. */}
+      <div className={wide ? 'grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 items-start' : 'space-y-3'}>
       <DetailSection title="When">
         {d.timeline.map((t) => (
           <DetailRow key={t.key} label={t.label}>
@@ -33929,6 +33948,8 @@ function OrderDetailBody({ data, onOpenHistory }) {
         </DetailSection>
       )}
 
+      </div>
+
       <div className="rounded-xl border bg-slate-50 p-3 space-y-2">
         <div className="text-[11px] text-slate-500">
           {/* WHICH KIND OF RECORD THIS IS. The seal cannot change again; a board copy is live
@@ -33949,57 +33970,60 @@ function OrderDetailBody({ data, onOpenHistory }) {
   );
 }
 
-/** DESKTOP: a right-hand drawer. The customer's list stays visible beside it, which is the
- *  whole reason this is not a navigation. */
-function OrderDetailDrawer({ open, loading, err, data, onClose, onOpenHistory }) {
+/** THE ORDER DROPS BELOW ITS OWN ROW. IT DOES NOT SIT BESIDE THE LIST.
+ *
+ * Chad, 2026-09-21, looking at the customer view with a drawer open: "if we are using this as
+ * a customer service bunching everything to the right is no good this screen should act like a
+ * drawer and drop below the row using the same spacing."
+ *
+ * WHAT WAS WRONG WITH THE DRAWER, in the terms of the job. A rep on the phone is reading a
+ * customer's day — six rows, statuses, drivers, times — and taps one order to answer "which
+ * one, and what was on it". The right-hand drawer then covered the right half of that table
+ * and dimmed the rest, so the list the question was ABOUT went away at the moment it was
+ * needed, and the answer arrived in a 576px column that made eight sections into a 900px
+ * scroll. It was a modal wearing a drawer's name.
+ *
+ * INLINE FIXES BOTH AT ONCE. The panel opens in the flow, under the row it belongs to, at the
+ * table's own spacing: every other row stays exactly where it was, the row above stays on
+ * screen as the label for what is below it, and nothing is dimmed. And because it is now the
+ * full width of the list rather than a sliver of it, OrderDetailBody lays its sections out in
+ * columns — the same facts, roughly a third of the scrolling.
+ *
+ * ONE COMPONENT FOR BOTH VIEWS, deliberately, and it is not the "make one screen work for
+ * both" shortcut CLAUDE.md forbids: what differs between a phone and a desktop here is the
+ * COLUMN COUNT INSIDE the panel (`wide`), not the container, because "below the row, at the
+ * row's own spacing" is already the right answer at 390px and at 1600px. The phone loses its
+ * full-cover sheet with this, and that is a gain: the sheet replaced the list, so a rep
+ * checking three of a customer's orders left and re-entered it three times.
+ */
+function OrderDetailPanel({ loading, err, data, stacked, onClose, onOpenHistory }) {
+  const ref = useRef(null);
   useEffect(() => {
-    if (!open) return undefined;
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
-  if (!open) return null;
+  }, [onClose]);
+  // `nearest` scrolls ONLY when the panel opened off-screen — tapping the last row of a long
+  // day should not leave a rep looking at blank space, and tapping one mid-screen should not
+  // yank the page out from under them.
+  useEffect(() => { try { ref.current?.scrollIntoView({ block: 'nearest' }); } catch { /* older browsers */ } }, []);
   return (
-    <div className="fixed inset-0 z-40 flex justify-end" data-overlay-layer="order-detail">
-      <button aria-label="Close order detail" onClick={onClose} className="flex-1 bg-slate-900/20 cursor-default" />
-      <div className="w-full max-w-xl bg-slate-50 h-full overflow-y-auto shadow-2xl border-l" role="dialog" aria-label="Order detail">
-        <div className="sticky top-0 z-10 bg-white border-b px-4 py-3 flex items-center gap-3">
-          <div className="min-w-0">
-            <div className="font-mono text-sm font-bold text-slate-900 break-all">{data?.stop?.pro || data?.stopNbr}</div>
-            <div className="text-[11px] text-slate-500">Order detail</div>
-          </div>
-          <button onClick={onClose} className="ml-auto rounded-lg border px-3 min-h-[40px] text-xs font-semibold bg-white hover:bg-slate-50">Close</button>
-        </div>
-        <div className="p-4">
-          <OrderDetailInner loading={loading} err={err} data={data} onOpenHistory={onOpenHistory} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** PHONE: a full-height sheet. A 576px drawer on a 390px screen is neither one thing nor the
- *  other, so the phone gets the whole screen and a big Back button. */
-function OrderDetailSheet({ open, loading, err, data, onClose, onOpenHistory }) {
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-40 bg-slate-50 overflow-y-auto" role="dialog" aria-label="Order detail" data-overlay-layer="order-detail">
-      <div className="sticky top-0 z-10 bg-white border-b px-3 py-2 flex items-center gap-2">
-        <button onClick={onClose} className="rounded-lg border px-3 min-h-[44px] text-xs font-semibold bg-white inline-flex items-center gap-1">
-          <ArrowLeft size={14} /> Back
-        </button>
+    <div ref={ref} role="region" aria-label="Order detail"
+      className="rounded-xl border border-blue-200 bg-white p-3 sm:p-4 space-y-3 shadow-sm">
+      <div className="flex items-center gap-3 flex-wrap">
         <div className="min-w-0">
           <div className="font-mono text-sm font-bold text-slate-900 break-all">{data?.stop?.pro || data?.stopNbr}</div>
+          <div className="text-[11px] text-slate-500">Order detail</div>
         </div>
+        <button onClick={onClose} aria-label="Close order detail"
+          className="ml-auto rounded-lg border px-3 min-h-[44px] text-xs font-semibold bg-white hover:bg-slate-50">Close</button>
       </div>
-      <div className="p-3">
-        <OrderDetailInner loading={loading} err={err} data={data} onOpenHistory={onOpenHistory} />
-      </div>
+      <OrderDetailInner loading={loading} err={err} data={data} wide={!stacked} onOpenHistory={onOpenHistory} />
     </div>
   );
 }
 
-function OrderDetailInner({ loading, err, data, onOpenHistory }) {
+function OrderDetailInner({ loading, err, data, onOpenHistory, wide }) {
   if (loading) return <div className="text-sm text-slate-500">Loading the order…</div>;
   if (err) return <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-3 break-words">{err}</div>;
   if (data && !data.stop) {
@@ -34013,7 +34037,7 @@ function OrderDetailInner({ loading, err, data, onOpenHistory }) {
       </div>
     );
   }
-  return <OrderDetailBody data={data} onOpenHistory={onOpenHistory} />;
+  return <OrderDetailBody data={data} onOpenHistory={onOpenHistory} wide={wide} />;
 }
 
 // ── THE CUSTOMER VIEW — built for the person answering the phone ────────────
@@ -34125,7 +34149,7 @@ function CustomerDayHeading({ day, stacked }) {
 }
 
 /** DESKTOP: a table. A rep comparing six stops on one day reads down a column. */
-function CustomerDayTable({ day, onPro }) {
+function CustomerDayTable({ day, onPro, renderDetail }) {
   return (
     <div className="space-y-1.5">
       <CustomerDayHeading day={day} />
@@ -34143,13 +34167,20 @@ function CustomerDayTable({ day, onPro }) {
             </tr>
           </thead>
           <tbody className="divide-y">
-            {day.rows.map((r) => (
-              <tr key={r.key} className="align-top hover:bg-slate-50">
+            {/* flatMap, not map: the open order's panel is a SECOND ROW right under its own,
+                spanning every column, so it lands at the table's own spacing and nothing else
+                on the page moves sideways. A `key` on each element is what lets React keep the
+                rows straight when the panel moves from one order to another. */}
+            {day.rows.flatMap((r) => {
+              const panel = renderDetail?.(r.refs?.stopNbr || r.pro, r.date);
+              return [(
+              <tr key={r.key} className={`align-top ${panel ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
                 <td className="px-3 py-2"><StopOutcomeChip outcome={r.outcome} /></td>
                 <td className="px-3 py-2">
                   {/* THE PRO IS THE DRILL-DOWN. A rep reading a row out loud is one tap from
                       that order's whole story, which is the other half of this screen. */}
-                  <button onClick={() => onPro(r.refs?.stopNbr || r.pro, r.date)} title="Open this order — its detail, POD, line items and contact"
+                  <button onClick={() => onPro(r.refs?.stopNbr || r.pro, r.date)} aria-expanded={!!panel}
+                    title={panel ? 'Close this order' : 'Open this order — its detail, POD, line items and contact'}
                     className="font-mono text-xs font-semibold text-blue-800 hover:underline break-all text-left">{r.pro}</button>
                   {r.proCount > 1 && <div className="text-[10px] text-slate-500">{r.proCount} orders on this stop</div>}
                   {r.refs.po && <div className="text-[10px] text-slate-400 break-words">PO {r.refs.po}</div>}
@@ -34172,7 +34203,14 @@ function CustomerDayTable({ day, onPro }) {
                   <div className="lg:hidden text-slate-500 break-words">{custFreight(r)}</div>
                 </td>
               </tr>
-            ))}
+              ), panel ? (
+                <tr key={`${r.key}:detail`}>
+                  <td colSpan={7} className="p-0 bg-slate-50">
+                    <div className="px-3 py-3">{panel}</div>
+                  </td>
+                </tr>
+              ) : null];
+            })}
           </tbody>
         </table>
       </div>
@@ -34181,19 +34219,22 @@ function CustomerDayTable({ day, onPro }) {
 }
 
 /** PHONE: cards. Same seven facts, stacked, at a size somebody reads one-handed. */
-function CustomerDayCards({ day, onPro }) {
+function CustomerDayCards({ day, onPro, renderDetail }) {
   return (
     <div className="space-y-1.5">
       <CustomerDayHeading day={day} stacked />
       <div className="space-y-2">
-        {day.rows.map((r) => (
-          <div key={r.key} className="rounded-xl border bg-white p-3 space-y-1.5">
+        {day.rows.flatMap((r) => {
+          const panel = renderDetail?.(r.refs?.stopNbr || r.pro, r.date);
+          return [(
+          <div key={r.key} className={`rounded-xl border bg-white p-3 space-y-1.5 ${panel ? 'border-blue-300' : ''}`}>
             <div className="flex flex-wrap items-center gap-1.5">
               <StopOutcomeChip outcome={r.outcome} />
               {r.deliveredAt && <span className="text-xs font-bold text-slate-800">{stopWhen(r.deliveredAt)}</span>}
               {!r.deliveredAt && r.arrivedAt && <span className="text-xs text-slate-600">arrived {stopWhen(r.arrivedAt)}</span>}
               {!r.deliveredAt && !r.arrivedAt && r.etaAt && <span className="text-xs text-slate-400">ETA {stopWhen(r.etaAt)}</span>}
-              <button onClick={() => onPro(r.refs?.stopNbr || r.pro, r.date)} title="Open this order — its detail, POD, line items and contact"
+              <button onClick={() => onPro(r.refs?.stopNbr || r.pro, r.date)} aria-expanded={!!panel}
+                title={panel ? 'Close this order' : 'Open this order — its detail, POD, line items and contact'}
                 className="ml-auto font-mono text-xs font-semibold text-blue-800 hover:underline break-all min-h-[40px] px-1">{r.pro}</button>
             </div>
             <div className="text-xs text-slate-700 break-words">
@@ -34208,7 +34249,8 @@ function CustomerDayCards({ day, onPro }) {
               {custAddr(r.address)}<span className="text-slate-400"> {custCity(r.address)}</span>
             </div>
           </div>
-        ))}
+          ), panel ? <div key={`${r.key}:detail`}>{panel}</div> : null];
+        })}
       </div>
     </div>
   );
@@ -34303,20 +34345,26 @@ function CustomerChooser({ matches, query, onPick, incomplete }) {
 
 /** Older than the window. From the rollup — free, and with the driver on each row, which is
  *  the half of "who delivered them" that a fourteen-day sweep cannot reach. */
-function CustomerRecent({ recent, onPro, window: win }) {
+function CustomerRecent({ recent, onPro, window: win, renderDetail }) {
   if (!recent?.length) return null;
+  // THESE ARE CHIPS THAT WRAP, NOT ROWS. Dropping a panel between two of them would reflow the
+  // cloud and move every chip after it; under the cloud is the same promise — it opens below
+  // what you tapped, and nothing above it moves.
+  const openPanel = recent.map((p) => renderDetail?.(p.pro, p.date)).find(Boolean) || null;
   return (
     <div className="rounded-xl border bg-white p-3 space-y-2">
       <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Before {formatDateForDisplay(win?.from)}</div>
       <div className="flex flex-wrap gap-1.5">
         {recent.map((p) => (
           <button key={`${p.pro}-${p.date}`} onClick={() => onPro(p.pro, p.date)}
-            className="rounded-lg border px-2 py-1 min-h-[40px] text-[11px] bg-white hover:bg-slate-50 text-left max-w-full">
+            aria-expanded={!!renderDetail?.(p.pro, p.date)}
+            className={`rounded-lg border px-2 py-1 min-h-[40px] text-[11px] text-left max-w-full ${renderDetail?.(p.pro, p.date) ? 'border-blue-300 bg-blue-50' : 'bg-white hover:bg-slate-50'}`}>
             <span className="font-mono font-semibold text-slate-800">{p.pro}</span>
             <span className="text-slate-500"> · {formatDateForDisplay(p.date)}{p.driver ? ` · ${p.driver}` : ''}</span>
           </button>
         ))}
       </div>
+      {openPanel}
       <div className="text-[11px] text-slate-400">
         From our per-customer rollup — the twenty most recent per location, built from sealed history. Older ones are still findable by their PRO.
       </div>
@@ -34370,7 +34418,7 @@ function CustomerYearMonths({ months, stacked }) {
   );
 }
 
-function CustomerYearScreen({ data, today, stacked, onBack, onOrder, ordersShown, onMoreOrders }) {
+function CustomerYearScreen({ data, today, stacked, onBack, onOrder, ordersShown, onMoreOrders, renderDetail }) {
   const v = data.view;
   const t = v.totals;
   return (
@@ -34454,15 +34502,18 @@ function CustomerYearScreen({ data, today, stacked, onBack, onOrder, ordersShown
             </div>
           </div>
           <div className="divide-y">
-            {v.orders.slice(0, ordersShown).map((o) => (
-              <button key={`${o.pro}-${o.date}`} onClick={() => onOrder(o.pro, o.date)}
-                className="w-full text-left py-1.5 min-h-[44px] flex flex-wrap items-baseline gap-x-2 hover:bg-slate-50 rounded px-1">
+            {v.orders.slice(0, ordersShown).flatMap((o) => {
+              const panel = renderDetail?.(o.pro, o.date);
+              return [(
+              <button key={`${o.pro}-${o.date}`} onClick={() => onOrder(o.pro, o.date)} aria-expanded={!!panel}
+                className={`w-full text-left py-1.5 min-h-[44px] flex flex-wrap items-baseline gap-x-2 rounded px-1 ${panel ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
                 <span className="font-mono text-xs font-semibold text-blue-800">{o.pro}</span>
                 <span className="text-xs text-slate-600">{formatDateForDisplay(o.date)}</span>
                 {o.driver && <span className="text-xs text-slate-500 break-words">{o.driver}</span>}
                 {o.location && <span className="text-[11px] text-slate-400 ml-auto break-words">{o.location}</span>}
               </button>
-            ))}
+              ), panel ? <div key={`${o.pro}-${o.date}:detail`} className="py-2">{panel}</div> : null];
+            })}
           </div>
           {v.orders.length > ordersShown && (
             <button onClick={onMoreOrders} className="w-full rounded-lg border px-3 min-h-[40px] text-xs font-semibold bg-white hover:bg-slate-50">
@@ -34665,8 +34716,10 @@ function StopLookupScreen() {
     });
   }, [run, range, nameKey, yearOn, today]);
 
+  const closeOrder = useCallback(() => { setDetail(null); setDetailData(null); setDetailErr(null); }, []);
+
   /**
-   * AN ORDER TAPPED ANYWHERE ON THIS SCREEN OPENS THE DRAWER, over the customer.
+   * AN ORDER TAPPED ANYWHERE ON THIS SCREEN OPENS UNDER ITS OWN ROW.
    *
    * This used to run a whole new search — setQ, setNameKey(null), run(pro) — which replaced
    * the customer's answer with that one order's history and left no way back but retyping the
@@ -34678,6 +34731,10 @@ function StopLookupScreen() {
     const id = String(stopNbr ?? '').trim();
     const day = String(date ?? '').trim();
     if (!id || !day) return;
+    // TAPPING THE OPEN ONE AGAIN CLOSES IT. Inline, the row IS the control — an expanded panel
+    // with no way back but a Close button four hundred pixels down the page is how an
+    // accordion becomes a trap.
+    if (detail && detail.stopNbr === id && detail.date === day) { closeOrder(); return; }
     setDetail({ stopNbr: id, date: day });
     setDetailLoading(true); setDetailErr(null); setDetailData(null);
     try {
@@ -34686,9 +34743,29 @@ function StopLookupScreen() {
       if (!j.ok) throw new Error(j.error || 'could not load the order');
       setDetailData(j);
     } catch (e) { setDetailErr(String(e.message || e)); } finally { setDetailLoading(false); }
-  }, []);
+  }, [detail, closeOrder]);
 
-  const closeOrder = useCallback(() => { setDetail(null); setDetailData(null); setDetailErr(null); }, []);
+  /** "Open this order's full history" — the one case where leaving the customer IS the ask,
+   *  so it is a button somebody presses rather than what a row click does to them. */
+  const pick = useCallback((pro) => {
+    closeOrder();
+    setQ(String(pro)); setNameKey(null); setYearOn(false); run(pro);
+  }, [run, closeOrder]);
+
+  /**
+   * THE PANEL ITSELF, rendered by whichever list holds the open row — see OrderDetailPanel for
+   * why it is not a drawer any more. Every list calls this for every row and gets null for all
+   * but one, which keeps "which row is open" in ONE place: a list cannot draw a panel under a
+   * row the screen does not think is open, and cannot fail to draw one under the row it does.
+   */
+  const renderOrderPanel = useCallback((stopNbr, date) => {
+    if (!detail) return null;
+    if (detail.stopNbr !== String(stopNbr ?? '').trim() || detail.date !== String(date ?? '').trim()) return null;
+    return (
+      <OrderDetailPanel loading={detailLoading} err={detailErr} data={detailData} stacked={isMobile}
+        onClose={closeOrder} onOpenHistory={() => pick(detailData?.stop?.pro || detail.stopNbr)} />
+    );
+  }, [detail, detailLoading, detailErr, detailData, isMobile, closeOrder, pick]);
 
   /**
    * ASK NUVIZZ — the one thing on this screen that spends a call, and only a person can do it.
@@ -34717,13 +34794,6 @@ function StopLookupScreen() {
     } catch (e) { setPromptMsg({ attempted: true, ok: false, reason: 'error', text: String(e.message || e) }); }
     finally { setAsking(false); }
   }, [data, asking]);
-
-  /** "Open this order's full history" — the one case where leaving the customer IS the ask,
-   *  so it is a button somebody presses rather than what a row click does to them. */
-  const pick = useCallback((pro) => {
-    closeOrder();
-    setQ(String(pro)); setNameKey(null); setYearOn(false); run(pro);
-  }, [run, closeOrder]);
 
   /** The rep picked one of several matching businesses. */
   const pickCustomer = useCallback((m) => {
@@ -34849,7 +34919,8 @@ function StopLookupScreen() {
             <CustomerRangeBar sel={sel} setSel={changeRange} range={range} today={today} stacked={isMobile}
               yearOn onYear={showYear} />
             <CustomerYearScreen data={data} today={today} stacked={isMobile} onBack={leaveYear}
-              onOrder={openOrder} ordersShown={yearOrdersShown} onMoreOrders={() => setYearOrdersShown((n) => n + 50)} />
+              onOrder={openOrder} ordersShown={yearOrdersShown} onMoreOrders={() => setYearOrdersShown((n) => n + 50)}
+              renderDetail={renderOrderPanel} />
             <StopSourceLedger sources={data.sources} errors={data.errors} open={ledgerOpen} onToggle={() => setLedgerOpen((x) => !x)} />
           </div>
         )}
@@ -34898,8 +34969,8 @@ function StopLookupScreen() {
               {v.days.length > 0
                 ? <div className="space-y-4">
                   {v.days.map((day) => (isMobile
-                    ? <CustomerDayCards key={day.date} day={day} onPro={openOrder} />
-                    : <CustomerDayTable key={day.date} day={day} onPro={openOrder} />))}
+                    ? <CustomerDayCards key={day.date} day={day} onPro={openOrder} renderDetail={renderOrderPanel} />
+                    : <CustomerDayTable key={day.date} day={day} onPro={openOrder} renderDetail={renderOrderPanel} />))}
                 </div>
                 : v.complete !== false && (
                   <div className="rounded-xl border bg-white p-6 text-center">
@@ -34916,20 +34987,11 @@ function StopLookupScreen() {
                   </div>
                 )}
 
-                  <CustomerRecent recent={v.recent} onPro={openOrder} window={data.window} />
+                  <CustomerRecent recent={v.recent} onPro={openOrder} window={data.window} renderDetail={renderOrderPanel} />
               <StopSourceLedger sources={v.sources} errors={data.errors} open={ledgerOpen} onToggle={() => setLedgerOpen((x) => !x)} />
             </div>
           );
         })()}
-
-        {/* THE DRAWER RENDERS ONCE, OUTSIDE EVERY MODE BRANCH, because it opens OVER whatever
-            is on screen — the day list, the year, or an order's own history. Putting it inside
-            a branch would unmount it the moment the thing underneath re-read. */}
-        {detail && (isMobile
-          ? <OrderDetailSheet open loading={detailLoading} err={detailErr} data={detailData}
-            onClose={closeOrder} onOpenHistory={() => pick(detailData?.stop?.pro || detail.stopNbr)} />
-          : <OrderDetailDrawer open loading={detailLoading} err={detailErr} data={detailData}
-            onClose={closeOrder} onOpenHistory={() => pick(detailData?.stop?.pro || detail.stopNbr)} />)}
 
         {d && (<>
           {/* ANSWERED BY NUVIZZ, and it says so above the order — a rep must know this row was
@@ -35002,8 +35064,8 @@ function StopLookupScreen() {
             )}
 
           {!!d.days.length && (isMobile
-            ? <StopDayListMobile days={d.days} onOpen={openOrder} />
-            : <StopDayTable days={d.days} onOpen={openOrder} />)}
+            ? <StopDayListMobile days={d.days} onOpen={openOrder} renderDetail={renderOrderPanel} />
+            : <StopDayTable days={d.days} onOpen={openOrder} renderDetail={renderOrderPanel} />)}
 
           {!!d.addressChanges.length && (
             <div className="space-y-2">

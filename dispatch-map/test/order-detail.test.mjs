@@ -172,7 +172,7 @@ test('AN ORDER CLICK OPENS THE DRAWER AND DOES NOT RE-SEARCH', () => {
   // one order's history and left no way back but retyping the name. A rep asking about three
   // of a customer's six orders had to search the customer three times.
   assert.match(APP, /const openOrder = useCallback\(async \(stopNbr, date\)/, 'the opener exists');
-  const opener = APP.slice(APP.indexOf('const openOrder = useCallback'), APP.indexOf('const closeOrder = useCallback'));
+  const opener = APP.slice(APP.indexOf('const openOrder = useCallback'), APP.indexOf("const pick = useCallback((pro) =>"));
   assert.ok(!/setQ\(/.test(opener), 'opening an order must not touch the search box');
   assert.ok(!/\brun\(/.test(opener), 'and must not re-run the customer search');
   assert.match(opener, /stop-lookup\?detail=/, 'it reads the one order instead');
@@ -191,19 +191,73 @@ test('AN ORDER CLICK OPENS THE DRAWER AND DOES NOT RE-SEARCH', () => {
   assert.match(APP, /onPro\(p\.pro, p\.date\)/, 'and so does the older-deliveries list');
 });
 
-test('the drawer renders OUTSIDE every mode branch, so a re-read cannot unmount it', () => {
-  const idx = APP.indexOf('THE DRAWER RENDERS ONCE, OUTSIDE EVERY MODE BRANCH');
-  assert.ok(idx > 0, 'the drawer is rendered once');
-  assert.ok(idx < APP.indexOf("{d && (<>"), 'before the per-order branch, not inside a mode');
+// ── THE ORDER OPENS UNDER ITS OWN ROW (v1.51.0) ──────────────────────────────
+//
+// Chad: "if we are using this as a customer service bunching everything to the right is no
+// good this screen should act like a drawer and drop below the row using the same spacing."
+// The drawer covered the very table a rep was reading. These pin that it cannot come back.
+
+test('THERE IS NO OVERLAY ANY MORE — nothing on this screen covers or dims the list', () => {
+  assert.ok(!/function OrderDetailDrawer\(/.test(APP), 'the right-hand drawer is gone');
+  assert.ok(!/function OrderDetailSheet\(/.test(APP), "and so is the phone's full-cover sheet");
+  assert.match(APP, /function OrderDetailPanel\(/, 'one inline panel serves both views');
+  // The overlap guard's opt-out marked a surface as DELIBERATELY covering the page. An inline
+  // panel is in the flow and covers nothing, so claiming the exemption would switch off a real
+  // check on this screen.
+  assert.ok(!/data-overlay-layer="order-detail"/.test(APP), 'the panel claims no overlay layer');
+  assert.ok(!/fixed inset-0[^>]*order-detail/.test(APP), 'and is not fixed-positioned');
 });
 
-test('phone and desktop get DIFFERENT containers — a 576px drawer on a 390px screen is neither', () => {
-  assert.match(APP, /function OrderDetailDrawer\(/);
-  assert.match(APP, /function OrderDetailSheet\(/);
-  assert.match(APP, /isMobile\s*\n?\s*\? <OrderDetailSheet/);
-  // Both declare themselves to the overlap guard, which is how a deliberate full-cover
-  // surface is distinguished from two controls colliding.
-  assert.equal((APP.match(/data-overlay-layer="order-detail"/g) || []).length, 2);
+test('EVERY LIST DRAWS THE PANEL ITSELF, from one shared decision about which row is open', () => {
+  // One place decides; the lists only ask. A list cannot draw a panel under a row the screen
+  // does not think is open, nor fail to draw one under the row it does.
+  assert.match(APP, /const renderOrderPanel = useCallback\(\(stopNbr, date\) => \{/);
+  const fn = APP.slice(APP.indexOf('const renderOrderPanel = useCallback'), APP.indexOf('const renderOrderPanel = useCallback') + 900);
+  assert.match(fn, /if \(!detail\) return null;/);
+  assert.match(fn, /detail\.stopNbr !== String\(stopNbr/, 'matched on BOTH the order and its day');
+  assert.match(fn, /detail\.date !== String\(date/);
+  assert.match(fn, /<OrderDetailPanel/);
+  for (const list of ['CustomerDayTable', 'CustomerDayCards', 'StopDayTable', 'StopDayListMobile', 'CustomerRecent', 'CustomerYearScreen']) {
+    // Bounded look-ahead rather than [^>]*: `onMoreOrders={() => …}` carries a '>' of its own,
+    // and a character class that trips over an arrow function is a test that fails on syntax.
+    assert.match(APP, new RegExp(`<${list}[\\s\\S]{0,400}?renderDetail=\\{renderOrderPanel\\}`), `${list} must be given the panel renderer`);
+  }
+});
+
+test('IN A TABLE IT IS A ROW SPANNING EVERY COLUMN — "the same spacing", literally', () => {
+  // A panel in one cell would sit under one column and shove the others sideways; the point of
+  // dropping below the row is that nothing beside it moves.
+  const cust = APP.slice(APP.indexOf('function CustomerDayTable'), APP.indexOf('function CustomerDayCards'));
+  assert.match(cust, /<td colSpan=\{7\}/, 'the customer table has 7 columns');
+  assert.match(cust, /day\.rows\.flatMap\(/, 'the detail row is a sibling of its own row, not a child');
+  const stop = APP.slice(APP.indexOf('function StopDayTable'), APP.indexOf('function StopDayListMobile'));
+  assert.match(stop, /<td colSpan=\{8\}/, "the order's own history table has 8");
+  assert.match(stop, /days\.flatMap\(/);
+});
+
+test('TAPPING THE OPEN ORDER AGAIN CLOSES IT, and the row says whether it is open', () => {
+  const opener = APP.slice(APP.indexOf('const openOrder = useCallback'), APP.indexOf("const pick = useCallback((pro) =>"));
+  assert.match(opener, /if \(detail && detail\.stopNbr === id && detail\.date === day\) \{ closeOrder\(\); return; \}/,
+    'the same order twice is a toggle, not a re-fetch');
+  // Four row kinds carry the state, so a rep always knows which row the panel belongs to.
+  assert.ok((APP.match(/aria-expanded=\{!!panel\}/g) || []).length >= 4, 'every row kind reports its state');
+});
+
+test('the panel still closes on Escape, and only scrolls when it opened off-screen', () => {
+  const panel = APP.slice(APP.indexOf('function OrderDetailPanel'), APP.indexOf('function OrderDetailInner'));
+  assert.match(panel, /e\.key === 'Escape'/);
+  assert.match(panel, /scrollIntoView\(\{ block: 'nearest' \}\)/, 'nearest — never yank a visible panel into view');
+  assert.match(panel, /aria-label="Close order detail"/);
+});
+
+test('THE WIDTH IS USED: the sections go to columns when there is room, and stack on a phone', () => {
+  const body = APP.slice(APP.indexOf('function OrderDetailBody'), APP.indexOf('function OrderDetailPanel'));
+  assert.match(body, /function OrderDetailBody\(\{ data, onOpenHistory, wide \}\)/);
+  assert.match(body, /wide \? 'grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 items-start' : 'space-y-3'/);
+  // `wide` is the DESKTOP question, so it is driven off the same flag the rest of the screen
+  // splits on — not off a media query the tests cannot see.
+  assert.match(APP, /stacked=\{isMobile\}/);
+  assert.match(APP, /wide=\{!stacked\}/);
 });
 
 // ── 2. THE YEAR IS NOT A DEAD END ────────────────────────────────────────────
@@ -244,8 +298,8 @@ test('RECEIVING HOURS ARE RENDERED, not just used to decide the card exists', ()
   assert.match(APP, /buildTrimmedStops, hoursSummary \} from '\.\/lib\/ai-search\.js'/);
 });
 
-test('the order drawer repeats the hours and flags, because that is where a promise is made', () => {
-  const body = APP.slice(APP.indexOf('function OrderDetailBody'), APP.indexOf('function OrderDetailDrawer'));
+test('the order panel repeats the hours and flags, because that is where a promise is made', () => {
+  const body = APP.slice(APP.indexOf('function OrderDetailBody'), APP.indexOf('function OrderDetailPanel'));
   assert.match(body, /Before you promise anything/);
   assert.match(body, /Receiving hours/);
   assert.match(body, /Proof of delivery/);
@@ -253,12 +307,12 @@ test('the order drawer repeats the hours and flags, because that is where a prom
   assert.match(body, /Who to call/);
 });
 
-test('every layout guard drives the drawer, with the widest real order shape', () => {
+test('every layout guard drives the open order, with the widest real order shape', () => {
   for (const f of ['verify-mobile-layout.mjs', 'verify-tablet-layout.mjs']) {
     const src = readFileSync(new URL(`../scripts/${f}`, import.meta.url), 'utf8');
     assert.match(src, /ORDER_DETAIL/, `${f} must stub the detail read`);
     assert.match(src, /u\.includes\('detail='\) \? ORDER_DETAIL/, `${f} picks it the way the endpoint does`);
-    assert.match(src, /an order opened/, `${f} must probe the drawer`);
+    assert.match(src, /an order opened/, `${f} must probe the open order`);
   }
 });
 
