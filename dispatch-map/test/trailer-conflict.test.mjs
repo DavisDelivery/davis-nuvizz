@@ -74,14 +74,21 @@ test('THE ULINE ADVISORY DOES NOT FLAG — this is the exclusion Chad asked for 
   assert.ok(TRAILER_BLOCKER_KEYS.has('uline_straight_truck'), 'still a blocker on the map — just not a human');
 });
 
-test('a scanner-found no_tractor_trailer is advisory too — nobody confirmed it', () => {
-  const out = run([stop()], {
-    acme: {
-      equipment_restrictions: ['no_tractor_trailer'],
-      auto_sources: { no_tractor_trailer: [{ source: 'addr2', text: 'NO TRACTOR TRAILERS' }] },
-    },
-  });
-  assert.deepEqual(trailerRows(out), []);
+test('A SCANNER-FOUND no_tractor_trailer NOW FLAGS — Chad, 2026-09-21', () => {
+  // This test used to assert the opposite, and the assertion was correct until he changed the
+  // rule: "It should fire on anything that has this restriction on it as well as the no
+  // tractor trailer in address 2." ADVANCED COLOR IMAGING rode TERRANCE, a tractor, wearing
+  // exactly this note, and nothing texted. Address 2 is a field Davis types into NuVizz — the
+  // mark is only "automatic" in the sense that READING it was.
+  const note = {
+    equipment_restrictions: ['no_tractor_trailer'],
+    auto_sources: { no_tractor_trailer: [{ source: 'addr2', text: 'NO TRACTOR TRAILERS' }] },
+  };
+  const rows = trailerRows(run([stop()], { acme: note }));
+  assert.equal(rows.length, 1, 'the stop Chad found by eye is the stop this now texts about');
+  assert.equal(rows[0].blockedVia, 'restriction');
+  // And the whole change reverts on one word, on every side at once.
+  assert.equal(dispatcherTrailerBlock(note, null, { TRAILER_ALERT_ANY_RESTRICTION: 'off' }).blocked, false);
 });
 
 test('the Routing box-only paint flags — a dropdown only a dispatcher can reach', () => {
@@ -431,17 +438,26 @@ test('a covered route is never listed as unknown, and a driverless one is listed
 // dispatcher. Not the Uline advisory ones that we pick up automatically just the dispatcher
 // hardcoded ones." Widening who gets woken at 9pm is his call, so these pin that the icon fix
 // did not quietly make it for him.
-import { dispatcherOwnsRestriction, dispatcherOwnedBlockerKeys } from '../src/lib/trailer-block.js';
+import { dispatcherOwnsRestriction, dispatcherOwnedBlockerKeys, trailerAlertAnyRestriction } from '../src/lib/trailer-block.js';
 import { restrictionConfidence } from '../src/lib/map-legend.js';
 
-test('an Address 2 mark is CONFIRMED for the map and NOT dispatcher-owned for the text', () => {
+// CHAD MADE THAT CALL ON 2026-09-21. ADVANCED COLOR IMAGING rode TERRANCE — a tractor — with
+// a hard "No tractor trailer" on the card, and no text was sent: "It should fire on anything
+// that has this restriction on it as well as the no tractor trailer in address 2."
+// So the Address 2 case now fires, and TRAILER_ALERT_ANY_RESTRICTION=off is the way back.
+const OFF = { TRAILER_ALERT_ANY_RESTRICTION: 'off' };
+
+test('THE STOP THAT WENT UNTEXTED: an Address 2 mark now fires, and off puts it back', () => {
+  // The note exactly as Firestore holds it for ADVANCED COLOR IMAGING, read 2026-09-21.
   const note = { equipment_restrictions: ['no_tractor_trailer'], auto_sources: { no_tractor_trailer: ['addressLine2'] } };
   assert.equal(restrictionConfidence(note, 'no_tractor_trailer'), 'confirmed', 'the disc fills solid');
   assert.equal(dispatcherOwnsRestriction(note, 'no_tractor_trailer'), false, 'nobody here ticked the list');
-  assert.equal(dispatcherTrailerBlock(note).blocked, false, 'so the 9pm text stays where Chad scoped it');
+  assert.equal(dispatcherTrailerBlock(note).blocked, true, 'and it texts anyway now — Chad 2026-09-21');
+  assert.equal(dispatcherTrailerBlock(note).via, 'restriction');
+  assert.equal(dispatcherTrailerBlock(note, null, OFF).blocked, false, 'off restores the old scoping');
 });
 
-test('ticking the list turns the text on, as it always did', () => {
+test('ticking the list turns the text on, on either setting', () => {
   const note = {
     equipment_restrictions: ['no_tractor_trailer'],
     auto_sources: { no_tractor_trailer: ['addressLine2'] },
@@ -449,19 +465,49 @@ test('ticking the list turns the text on, as it always did', () => {
   };
   assert.equal(dispatcherOwnsRestriction(note, 'no_tractor_trailer'), true);
   assert.equal(dispatcherTrailerBlock(note).blocked, true);
+  assert.equal(dispatcherTrailerBlock(note, null, OFF).blocked, true, 'the narrow rule always took this one');
 });
 
 test('a hand-added blocker with no scanner trail still texts — unknown means a person put it there', () => {
   const note = { equipment_restrictions: ['no_53ft'] };
   assert.deepEqual(dispatcherOwnedBlockerKeys(note, note.equipment_restrictions), ['no_53ft']);
   assert.equal(dispatcherTrailerBlock(note).blocked, true);
+  assert.equal(dispatcherTrailerBlock(note, null, OFF).blocked, true);
 });
 
-test('Uline never texts, on either rule', () => {
+test('ULINE NEVER TEXTS, on either setting — the one exclusion Chad kept', () => {
   const note = { equipment_restrictions: ['uline_straight_truck'], auto_sources: { uline_straight_truck: ['orderInstructions'] } };
   assert.equal(dispatcherOwnsRestriction(note, 'uline_straight_truck'), false);
   assert.equal(restrictionConfidence(note, 'uline_straight_truck'), 'advisory');
-  assert.equal(dispatcherTrailerBlock(note).blocked, false);
+  assert.equal(dispatcherTrailerBlock(note).blocked, false, 'widening must not reach somebody else’s order text');
+  assert.equal(dispatcherTrailerBlock(note, null, OFF).blocked, false);
+  // All four Uline marks measured across 763 real docks keep their own key, so this is the
+  // whole of what the widening excludes — checked on the data, not assumed.
+  assert.deepEqual(dispatcherOwnedBlockerKeys(note, note.equipment_restrictions), []);
+});
+
+test('a dispatcher’s own “a 53 DOES fit” still beats the restriction, on either setting', () => {
+  const note = {
+    vehicle_eligibility: 'tractor',
+    equipment_restrictions: ['no_tractor_trailer'],
+    auto_sources: { no_tractor_trailer: ['addressLine2'] },
+  };
+  assert.equal(dispatcherTrailerBlock(note).blocked, false, 'never tell a dispatcher off for answering the question');
+  assert.equal(dispatcherTrailerBlock(note, null, OFF).blocked, false);
+});
+
+test('the switch is house shape: default on, off-words off, MALFORMED LEAVES IT ON', () => {
+  const addr2 = { equipment_restrictions: ['no_tractor_trailer'], auto_sources: { no_tractor_trailer: ['addressLine2'] } };
+  assert.equal(trailerAlertAnyRestriction({}), true, 'unset = on');
+  for (const v of ['off', 'OFF', '0', 'false', 'no', ' Off ']) {
+    assert.equal(trailerAlertAnyRestriction({ TRAILER_ALERT_ANY_RESTRICTION: v }), false, `${v} turns it off`);
+  }
+  for (const v of ['offf', 'nope', 'true', 'yes', '1', 'banana']) {
+    assert.equal(trailerAlertAnyRestriction({ TRAILER_ALERT_ANY_RESTRICTION: v }), true, `${v} must NOT silence the alert`);
+  }
+  // The client half of the same switch — a VITE_ build flag, so both sides revert together.
+  assert.equal(trailerAlertAnyRestriction({ VITE_TRAILER_ALERT_ANY_RESTRICTION: 'off' }), false);
+  assert.equal(dispatcherTrailerBlock(addr2, null, { VITE_TRAILER_ALERT_ANY_RESTRICTION: 'off' }).blocked, false);
 });
 
 // ── ONE DOCK, ONE CARD ──────────────────────────────────────────────────────
