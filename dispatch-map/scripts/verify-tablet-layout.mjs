@@ -144,20 +144,23 @@ async function openByName(page, re) {
 }
 
 /**
- * THE ORDER DRAWER SURVIVES RE-READS BY DESIGN — StopLookupScreen keeps it open over whatever
- * is read underneath it, so a rep asking about three orders does not lose the customer. For
- * this guard that means every Stop lookup probe that runs AFTER "an order opened" inherits an
- * open drawer, and a click aimed at the search bar's "Look up" (under the drawer on a
- * landscape iPad) is intercepted and swallowed by Playwright's own actionability check —
- * openByName still returns true, the probe's follow-up check finds nothing, and the state is
- * SKIPPED. That is precisely how "nothing on file, NuVizz offered" went unmeasured on all
- * four tablets in the v1.49.0 pass while the run reported green. Close it first, by the
- * backdrop's own accessible name.
+ * THE OPEN ORDER SURVIVES RE-READS BY DESIGN — StopLookupScreen keeps it open under its row so
+ * a rep asking about three orders does not lose the customer. Every Stop lookup probe that
+ * runs AFTER "an order opened" therefore inherits one, and while it was a right-hand DRAWER it
+ * covered the search bar on a landscape iPad: the click aimed at "Look up" was swallowed by
+ * Playwright's actionability check, openByName still returned true, the follow-up check found
+ * nothing, and the state was SKIPPED — which is how "nothing on file, NuVizz offered" went
+ * unmeasured on all four tablets in the v1.49.0 pass while the run reported green.
+ *
+ * Since v1.51.0 the panel is INLINE and covers nothing, so it can no longer swallow a click.
+ * It is still closed between probes, for a different and still-good reason: an expanded panel
+ * left open under the previous probe's row is a thousand extra pixels in every later
+ * measurement, and a guard should measure the state it names and not the one before it.
  */
 async function closeOrderDrawer(page) {
-  const backdrop = page.getByRole('button', { name: /^close order detail$/i }).first();
-  if (!(await backdrop.isVisible().catch(() => false))) return;
-  await backdrop.click().catch(() => {});
+  const close = page.getByRole('button', { name: /^close order detail$/i }).first();
+  if (!(await close.isVisible().catch(() => false))) return;
+  await close.click().catch(() => {});
   await page.waitForTimeout(300);
 }
 
