@@ -13,6 +13,10 @@
 // tappable PROs, the write journal and the source ledger. An empty screen cannot overflow,
 // so a thin stub would make this guard pass by rendering nothing.
 export const STOP_LOOKUP_DOSSIER = {
+    // The derived customer key the SERVER resolved — what an order's own page edits against.
+    // Same value as identity.matchKey below, because the screen prefers the top-level one and
+    // a fixture where the two disagree would hide a wiring bug rather than expose one.
+    matchKey: 'titan|3190|norcross',
     ok: true, nuvizzCalls: 0, mode: 'stop', kind: 'stop', today: '2026-09-18',
     candidates: ['007174397', '7174397'], proIndex: true,
     window: { from: '2026-09-04', to: '2026-09-21', daysBack: 14, daysAhead: 3, pointerDays: ['2026-09-15'] },
@@ -116,6 +120,9 @@ const NOTFOUND_SOURCES = [
 ].map(([key, label, where, note]) => ({ key, label, where, note, looked: true, skipped: false, count: 0, found: false, state: 'empty' }));
 
 export const STOP_LOOKUP_NOTFOUND = {
+    // Nothing was found, so there is no dock to edit — null, never '' (a falsy string would
+    // ride out as a document id, and `customer_notes/` is a collection, not a document).
+    matchKey: null,
     ok: true, nuvizzCalls: 0, mode: 'stop', kind: 'stop', today: '2026-09-18',
     candidates: ['000000000', '0'], proIndex: true,
     window: { from: '2026-09-04', to: '2026-09-21', daysBack: 14, daysAhead: 3, pointerDays: [], sealedDays: [], eventDays: [] },

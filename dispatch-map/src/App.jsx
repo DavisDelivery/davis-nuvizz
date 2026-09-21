@@ -63,7 +63,7 @@ import { rollbackTargets, rollbackRequestBody } from './lib/rollback-targets.js'
 // ONE rule decides whether a typed box is a PRO or a customer name, and the screen and the
 // endpoint (netlify/functions/stop-lookup.mts) both read it from here — so the box can never
 // be classified one way by the client and the other way by the server.
-import { classifyQuery } from './lib/stop-lookup.js';
+import { classifyQuery, notesSummary } from './lib/stop-lookup.js';
 import { DEVICE_SWITCHES, switchReport, encodeValue, describeValue } from './lib/device-switches.js';
 import { reportDenied, deniedSurfaces, subscribeDenied } from './lib/permission-denied.js';
 import { serverLoginEnabled, ensureFirebaseSession, dropFirebaseSession, signOut as endSession, currentResetLink, scrubResetLink, fetchMe } from './lib/auth-client.js';
@@ -153,7 +153,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.52.0';
+const APP_VERSION = '1.53.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -207,6 +207,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.53.0', 'THE CUSTOMER’S DETAILS ARE EDITABLE FROM THE SCREEN THE CALL IS ON — PER DOCK, AND WITHOUT OVERWRITING A FIELD THE FORM NEVER SHOWS. Chad: “make it where i can edit the details abbout this customer.” THE CASE FOR IT BEING HERE: a rep is on the phone when the customer says “we close at noon on Fridays now”, “use the back dock”, “call Maria not Ray”. Until now the only editor lived on the Map’s stop card — find a stop for that customer, open it, press Edit — which is three screens away with somebody talking, so in practice it did not get written down and the next driver arrived on the old hours. IT IS THE MAP’S OWN EDITOR, NOT A SECOND ONE: StopNotesEditor is imported as-is, so the fields, the validation and the document shape are identical wherever a dispatcher types them — a second editor over the same document is two things that drift, and one of them then writes the hours the flag engine reads. PER DOCK, NOT PER CUSTOMER, and this is the logistics half rather than the engineering half: receiving hours, the dock instruction and the no-tractor mark are properties of an ADDRESS. Earthly Alternative has two. One “Edit this customer” button would let a rep put the Northside hours on the Wendell Drive dock, which is a truck at a door that shut two hours earlier — so the endpoint now returns the DOCKS it swept, each with the exact customer_notes document id derived server-side (a board row carries no customerMatchKey at all, see lib/customer-key.mts, so a browser re-deriving it would disagree and write a note nothing ever reads again), the card lists them with an Edit apiece, and the panel names the dock in full above the fields. Marked, too, is WHICH dock the note on screen came from. THE WRITE IS FIELD-MASKED — setDoc(…, { merge: true }) — because this document also carries the pin override, the comms opt-out, the address override and pro_history, none of which this form shows; CLAUDE.md, in as many words: never blind-write a document you do not own. IT READS BACK BEFORE IT SAYS SAVED, and repaints the card from what Firestore actually returned through the same notesSummary the endpoint uses — a write that resolved is not the same as a document that changed, and reporting an intent as an outcome is the failure this repo has already shipped twice. It also opens on a FRESH read rather than the copy the lookup fetched minutes ago, so a colleague’s edit in between is not silently undone. AND THE CARD NO LONGER HIDES ITSELF WHEN THERE IS NOTHING ON FILE: it returned null the moment there was no note, so the customer a rep most needed to write receiving hours for — the one we have never written any for — was the exact customer with no way to. Dispatcher-gated like the Map’s copy of the same save; a build with no database opens the form and refuses Save in words instead of failing silently. Inline under the card it edits, covering nothing, the same rule as the order panel. AND THE VEHICLE MARK LEAVES A TRACE, WHICH IT DID NOT IN DRAFT: the shared editor carries the three-state vehicle picker, so a save from here can set or clear a HARD capacity block — routing-build forces the stop onto a box, dispatcherTrailerBlock raises the trailer conflict, for every future stop at that address. This copy of the save shipped in draft WITHOUT the provenance stamp the other two carry, and what caught it was v0.99.3’s own count of guarded saves failing to move, because this one had spelled the guard with different variable names. All three now write `...(eligibilityChanged(draft, existing)` verbatim and the count is 3 — the stamp still only lands when the save actually MOVED the mark, so a rep saving Friday’s receiving hours does not restamp a decision somebody made last month. 24 new tests, five of them the endpoint run for real against the Firestore fake, and a probe on each layout guard that drives the form open.'],
   ['1.52.0', 'THE ORDER DROPS BELOW ITS OWN ROW NOW — IT DOES NOT BUNCH EVERYTHING TO THE RIGHT. Chad, looking at the customer view with an order open: “if we are using this as a customer service bunching everything to the right is no good this screen should act like a drawer and drop below the row using the same spacing.” WHAT THE DRAWER WAS DOING WRONG, in the terms of the job rather than of taste: a rep on the phone is reading a customer’s day — six rows, statuses, drivers, times — and taps one order to answer “which one, and what was on it”. The right-hand drawer then covered the right half of THAT TABLE and dimmed the rest, so the list the question was about went away at the moment it was needed; and the answer arrived in a 576px column that turned eight sections into a nine-hundred-pixel scroll, with the reference number the customer is reading out somewhere near the bottom of it. It was a modal wearing a drawer’s name. NOW IT OPENS IN THE FLOW, under the row it belongs to, at the table’s own spacing: on the desktop it is a second table row spanning every column, on a phone a card under its card. Every other row stays exactly where it was, the row above stays on screen as the label for what is below it, the tapped row is tinted so it is obvious which order the panel belongs to, and nothing is dimmed or covered. TAPPING THE SAME ORDER AGAIN CLOSES IT — inline, the row IS the control, and an expanded panel whose only way out is a button four hundred pixels down the page is how an accordion becomes a trap. Escape still closes it, and a panel that opens off the bottom of the screen scrolls just far enough to be seen (`block: nearest`) rather than yanking the page around one that was already visible. AND THE WIDTH IS NOT JUST ROOM, IT IS FEWER QUESTIONS: with the full width of the list instead of a sliver of it, the sections lay out in columns — “when · who ran it · what was on it”, the answer to most of the call, now reads on ONE LINE with nothing scrolled, then line items · references · POD, then instructions · who to call. Same facts, 1,102px instead of roughly twice that. The phone keeps the single column, because a column at 390px is a column of one. THE PHONE ALSO LOSES ITS FULL-COVER SHEET, and that is a gain rather than a casualty: the sheet REPLACED the list, so a rep checking three of a customer’s orders left the customer and came back three times. One panel component serves both views now — what differs is the column count inside it, not the container, because “below the row, at the row’s own spacing” is already the right answer at 390px and at 1600px. Every list on the screen got it: the customer’s days (table and cards), an order’s own day-by-day history, the “before this window” chips, and the year’s order list. Six tests rewritten, mobile/tablet/desktop guards green.'],
   ['1.51.0', 'A CANCELLED STOP IS NOT FREIGHT, AND COMES OFF THE BOARD BY ITSELF. Chad, with a NuVizz row in front of him: “This stop is what is making the map messed up its been canceled and shouldn’t be on my map anymore so handle that and it should self heal.” HE FOUND IT AND HE WAS RIGHT. THE ROW, READ OFF HIS OWN BOARD, one of 642 on 2026-09-21: GRENZEBACH131732373 — addr1 “5”, city “0.00”, state “CUBIC FEET”, zip “POUNDS”, lat 38.7946, lng -106.53484. NuVizz had written the shipment’s UNITS into the address fields; the geocoder did what a geocoder does with “5, 5, 0.00, Cubic Feet Pounds” and landed in CENTRAL COLORADO. The wall frames every stop on the board, so one row 1,200 miles away stretched the camera from the Rockies to Georgia — and the midpoint of Colorado and Atlanta is KANSAS, which is exactly where his photograph was centred. MEASURED: the board’s diagonal goes from 2,185 km to 243 km when that single row comes off. IT HAD BEEN CANCELLED THE EVENING BEFORE, at 21:00:55, by a named person, with NuVizz’s own cancellation record attached — and the board was still carrying it the next morning. WHY IT SURVIVED: nuvizz-scan classifies a stop with a cancelDTTM as EXCEPTION, alongside “unable to deliver”, a refusal, a damaged pallet. Same word, two completely different mornings. An EXCEPTION is still freight and still somebody’s job — a phone call, a re-delivery, a conversation with the customer. A CANCELLED stop is not freight at all: no destination, no driver, nothing anybody can do. Leaving it on the board is not clutter, it is a row a dispatcher can select, route, count and call about. THE SIGNAL IS NUVIZZ’S OWN RECORD AND NOTHING SOFTER — raw.stopExecutionInfo.cancellation, a real cancelDTTM or an explicit CANCELLED reason code. NOT free text: this very row also reads “Cancelled” in orderInstructions and in a comment, and a board that drops stops on a word in a comment field will one day drop a real delivery. An empty cancellation:{} is not a cancellation either — NuVizz ships that shape on ordinary stops, and treating “the key exists” as the signal would empty the whole board. Both are pinned by tests, against the REAL row rather than an invented one (the cancellation sits under `raw`, which is the one thing here that was easy to get wrong). IT SELF-HEALS BECAUSE IT RUNS AT SERVE TIME, not at scan time: rows already written to Firestore stop appearing on the very next 2-minute poll — no scan, no NuVizz call, nobody pressing anything. It is applied AFTER carry-over and BEFORE every count, so a cancelled row is gone from the board, the tally, the grid and the wall alike rather than hidden on one screen while the others still carry it. The feed reports what came off (cancelledDropped) because the first question when a stop is missing is “did we drop it?”. AND IT CORRECTS v1.50.1, which claimed to explain that photograph and did not — see the ⚠ on that row. I reproduced a different mechanism that also widens a map and presented it as the cause. That release is still worth having (a wall map nobody can knock out of frame), but it was not the answer; this is. PUT IT BACK: BOARD_DROP_CANCELLED=off returns cancelled stops to the board — server-side, so it is an env change and a restart rather than a redeploy. Anything malformed leaves it ON. 13 new tests.'],
   ['1.50.1', 'THE WALL’S LIVE MAP CANNOT BE KNOCKED OUT OF FRAME, AND PUTS ITSELF BACK. ⚠ CORRECTION, MADE IN v1.51.0 AND LEFT HERE RATHER THAN QUIETLY EDITED AWAY: this row originally claimed to EXPLAIN Chad’s photograph of the television showing the whole United States. IT DID NOT. The real cause was a CANCELLED stop geocoded to central Colorado, found by Chad and proven off the board in v1.51.0 — dropping it takes the board’s diagonal from 2,185 km to 243. I reproduced a DIFFERENT mechanism that also widens a map, and presented it as the cause; that is the “plausible story that fits the symptom” CLAUDE.md names as the most dangerous output this system produces. WHAT THIS RELEASE ACTUALLY DID, and it is still worth having: a wall display has a MOUSE POINTER on it, and v1.44.0 handed it an INTERACTIVE map. Read off the code, not guessed: the Map screen builds with gestureHandling ‘greedy’ — a bare mouse wheel zooms, no modifier needed — plus drag, double-click zoom, keyboard, and six on-map controls (zoom, Street View pegman, rotate, Recenter, Satellite, 3D). And it has NO initial fit and NO re-fit, by design: it cold-starts at BUFORD zoom 10 and then stays exactly where anything puts it, because a dispatcher pans and zooms it all morning and an app that kept yanking the view back would be unusable. On a desk that is correct. On a wall it means one stray scroll from a pointer resting on the glass puts the board in Kansas until somebody walks over. THAT IS PRECISELY THE PROPERTY THE STATIC PICTURE WAS CHOSEN FOR — “a wall display is the one screen in the building that cannot be interacted with” — and turning the live map on for its typography handed it straight back. My error, not the television’s. SO ON THE TELEVISION THE MAP IS INERT: no pan, no zoom, no wheel, no double-click, no tilt, no heading, no keyboard, and not one piece of furniture. Google’s pan/tilt pad needed its OWN option (cameraControl) — rotateControl:false does not remove it, and it sat there as the last control on the wall after everything else had gone, found by listing every button with a non-zero box on the RENDERED page rather than by trusting “I turned the controls off”, which is an intent and not an outcome. AND IT FRAMES ITSELF, which is the other half: nobody steers a wall, so if nothing fits it, nothing ever does. It fits the board on load and re-fits when the board’s SNAPPED bounds move — the very same ~2.2km grid the static picture uses, so a truck creeping along cannot re-fit the camera on every driver poll and leave the wall gently drifting all day. A flat 40px pad, deliberately not fitPad(): fitPad reserves room for the desktop bottom grid, which this screen does not have, and a padding bigger than the map makes fitBounds zoom OUT — the exact symptom being fixed. PROVEN BY DOING IT, with main as the control: same board, same viewport, pointer parked on the map, six wheel clicks and a drag. On main the four controls are all present and THE MAP MOVES. On this build the furniture is gone and THE MAP DOES NOT MOVE. The first version of that test reported “did not move” against a bundle built with no Maps key, i.e. no map at all — it refuses to report a result with zero tiles now, because a test that passes on an empty screen is worse than no test. NOT CHANGED: the dispatch Map on a desk keeps every gesture and every control, the static picture is untouched and still the default, and unticking “Live map” still puts it back. 5,336 green.'],
@@ -33588,17 +33589,36 @@ function StopIdentityCard({ d, stacked }) {
  *
  * Phone numbers are `tel:` links. A rep on a phone taps them.
  */
-function StopNotesCard({ notes, locations }) {
-  if (!notes) return null;
-  const hours = notes.hours ? hoursSummary({ receiving_hours: notes.hours }) : '';
-  const has = notes.text || notes.flags.length || notes.contacts.length || hours || notes.customerNbr || (locations || []).length;
-  if (!has) return null;
+function StopNotesCard({ notes, locations, docks, noteKey, onEdit, editReason }) {
+  const hours = notes?.hours ? hoursSummary({ receiving_hours: notes.hours }) : '';
+  const dockList = docks || [];
+  const has = notes?.text || notes?.flags?.length || notes?.contacts?.length || hours || notes?.customerNbr || (locations || []).length;
+  // THE CUSTOMER WITH NOTHING ON FILE IS THE ONE THIS CARD MATTERS MOST TO. It used to return
+  // null the moment there was no note, so the customer a rep most needed to write receiving
+  // hours for — the one we have never written any for — was the one with no way to.
+  if (!has && !(onEdit && dockList.length)) return null;
   return (
     <div className="rounded-xl border bg-white p-3 space-y-2">
-      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">This customer</div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="text-xs font-bold uppercase tracking-wide text-slate-500">This customer</div>
+        {/* EDIT IS HERE, BESIDE WHAT IT EDITS. A rep is on the phone when the customer says
+            "we close at noon on Fridays now" — the alternative is four screens away on the
+            Map, which in practice means it never gets written down and the next driver
+            arrives on the old hours. Per DOCK, because hours are per address. */}
+        {onEdit && dockList.length > 0 && (
+          dockList.length === 1
+            ? <button onClick={() => onEdit(dockList[0])}
+              className="ml-auto rounded-lg border px-2.5 min-h-[44px] text-xs font-semibold text-blue-800 bg-white hover:bg-blue-50">
+              {has ? 'Edit' : 'Add details'}
+            </button>
+            : <span className="ml-auto text-[11px] text-slate-400">{dockList.length} docks — edit one below</span>
+        )}
+        {!onEdit && editReason && <span className="ml-auto text-[11px] text-slate-400">{editReason}</span>}
+      </div>
+      {!has && <div className="text-xs text-slate-500">Nothing on file for this customer yet — receiving hours, the dock instruction and who to call all live here.</div>}
 
       {/* THE TWO THINGS THAT CHANGE WHAT YOU MAY PROMISE, ABOVE EVERYTHING ELSE. */}
-      {(hours || !!notes.flags.length) && (
+      {(hours || !!notes?.flags?.length) && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-2 space-y-1.5">
           {hours && (
             <div className="text-sm text-amber-900 break-words">
@@ -33606,7 +33626,7 @@ function StopNotesCard({ notes, locations }) {
               <div className="font-semibold">{hours}</div>
             </div>
           )}
-          {!!notes.flags.length && (
+          {!!notes?.flags?.length && (
             <div className="flex flex-wrap gap-1.5">
               {notes.flags.map((f) => (
                 <span key={f.key} className={`inline-block px-1.5 py-0.5 rounded border text-[10px] font-bold uppercase tracking-wide ${
@@ -33618,10 +33638,10 @@ function StopNotesCard({ notes, locations }) {
         </div>
       )}
 
-      {notes.text && <div className="text-sm text-slate-700 whitespace-pre-wrap break-words">{notes.text}</div>}
+      {notes?.text && <div className="text-sm text-slate-700 whitespace-pre-wrap break-words">{notes.text}</div>}
 
       {/* TAPPABLE. A rep reading this on a phone is about to ring one of these numbers. */}
-      {!!notes.contacts.length && (
+      {!!notes?.contacts?.length && (
         <div className="space-y-1">
           <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Contacts</div>
           {notes.contacts.map((c, i) => (
@@ -33636,7 +33656,37 @@ function StopNotesCard({ notes, locations }) {
 
       {/* EVERY DOCK, WITH ITS OWN ADDRESS. A rep asked "which one did it go to" should not
           have to infer it from the rows. */}
-      {!!(locations || []).length && (
+      {/* MORE THAN ONE DOCK: EACH ONE IS EDITED SEPARATELY, and the list says which of them the
+          note above actually came from. Receiving hours are per address — one Edit button for
+          "the customer" would write one dock's hours over another's, which is a truck at a
+          door that shut two hours earlier. */}
+      {onEdit && dockList.length > 1 ? (
+        <div className="space-y-1">
+          <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{dockList.length} docks — each has its own hours and instructions</div>
+          {dockList.map((dk) => (
+            <div key={dk.key} className="flex items-start gap-2 flex-wrap border-t pt-1.5 first:border-t-0 first:pt-0">
+              <div className="text-[11px] text-slate-600 break-words min-w-0 flex-1">
+                {[dk.addr1, dk.addr2].filter(Boolean).join(' · ')}
+                <span className="text-slate-400"> {[dk.city, dk.state, dk.zip].filter(Boolean).join(', ')}</span>
+                {dk.key === noteKey && <span className="ml-1 text-[10px] font-semibold text-amber-700">· the note above</span>}
+              </div>
+              <button onClick={() => onEdit(dk)}
+                className="rounded-lg border px-2.5 min-h-[44px] text-xs font-semibold text-blue-800 bg-white hover:bg-blue-50 shrink-0">Edit</button>
+            </div>
+          ))}
+          {/* THE DOCK LIST IS CAPPED AND THE ADDRESS LIST IS NOT. `keys` stops at six to
+              bound the Firestore reads, so a customer with more docks than that in the window
+              has addresses here with no Edit row — and this branch replaces the address list,
+              so without this line those addresses would simply vanish from the card. A rep
+              told "2 docks" about a customer with eight would repeat it to the person on the
+              phone. Say the number; do not quietly show a shorter list. */}
+          {(locations || []).length > dockList.length && (
+            <div className="text-[11px] text-slate-500 border-t pt-1.5">
+              {locations.length - dockList.length} more address{locations.length - dockList.length === 1 ? '' : 'es'} in this window — editable from a stop on the Map.
+            </div>
+          )}
+        </div>
+      ) : !!(locations || []).length && (
         <div className="space-y-1">
           <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
             {locations.length === 1 ? 'Address' : `${locations.length} addresses`}
@@ -33650,9 +33700,87 @@ function StopNotesCard({ notes, locations }) {
       )}
 
       <div className="flex flex-wrap gap-x-3 text-[11px] text-slate-400 border-t pt-1.5">
-        {notes.customerNbr && <span>Customer # <span className="font-mono text-slate-600">{notes.customerNbr}</span></span>}
-        {notes.updatedAt && <span>note saved {addrTime(notes.updatedAt)}{notes.updatedBy ? ` by ${notes.updatedBy}` : ''}</span>}
+        {notes?.customerNbr && <span>Customer # <span className="font-mono text-slate-600">{notes.customerNbr}</span></span>}
+        {notes?.updatedAt && <span>note saved {addrTime(notes.updatedAt)}{notes.updatedBy ? ` by ${notes.updatedBy}` : ''}</span>}
       </div>
+    </div>
+  );
+}
+
+/** EDITING THE CUSTOMER, FROM THE SCREEN THE CALL IS ON.
+ *
+ * Chad, 2026-09-21: "make it where i can edit the details abbout this customer."
+ *
+ * THE CASE FOR IT BEING HERE and not a link to the Map: a rep is on the phone when the
+ * customer says "we close at noon on Fridays now", "use the back dock", "call Maria not Ray".
+ * Until now the only editor lived on the Map's stop card — find a stop for that customer,
+ * open it, press Edit — which is three screens away with somebody talking, so in practice it
+ * did not get written down and the next driver arrived on the old hours.
+ *
+ * IT IS THE MAP'S OWN EDITOR, NOT A SECOND ONE. StopNotesEditor is imported as-is, so the
+ * fields, the validation and the shape written are identical wherever a dispatcher types
+ * them; a second editor over the same document is two things that drift and one of them then
+ * writes hours the flag engine reads. The save is the same merge write too — `{ merge: true }`
+ * so a field this screen does not show (the pin override, the comms opt-out, pro_history)
+ * cannot be erased by saving from here. CLAUDE.md: never blind-write a document you do not
+ * own.
+ *
+ * INLINE, like everything else on this screen since v1.52.0 — it opens under the card it
+ * edits and covers nothing.
+ */
+function CustomerNotesEditPanel({ dock, draft, setDraft, loading, saving, err, onSave, onCancel, canSave = true }) {
+  const ref = useRef(null);
+  useEffect(() => { try { ref.current?.scrollIntoView({ block: 'nearest' }); } catch { /* older browsers */ } }, []);
+  const where = [[dock?.addr1, dock?.addr2].filter(Boolean).join(' · '), [dock?.city, dock?.state, dock?.zip].filter(Boolean).join(', ')].filter(Boolean).join(' — ');
+  return (
+    <div ref={ref} role="region" aria-label="Edit customer details"
+      className="rounded-xl border border-blue-200 bg-white p-3 sm:p-4 space-y-3 shadow-sm">
+      <div className="flex items-start gap-3 flex-wrap">
+        <div className="min-w-0">
+          <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Editing this dock</div>
+          {/* WHICH DOCK, IN FULL, ABOVE THE FIELDS. Hours are per address; a rep who thinks
+              they are editing "the customer" will set the wrong door's closing time. */}
+          <div className="text-sm font-semibold text-slate-800 break-words">{dock?.name || 'this customer'}</div>
+          {where && <div className="text-[11px] text-slate-500 break-words">{where}</div>}
+        </div>
+        <button onClick={onCancel} disabled={saving}
+          className="ml-auto rounded-lg border px-3 min-h-[44px] text-xs font-semibold bg-white hover:bg-slate-50 disabled:opacity-50">Cancel</button>
+      </div>
+
+      {loading
+        ? <div className="text-sm text-slate-500">Reading what is on file…</div>
+        : (
+          <>
+            {/* THE SAME EDITOR THE MAP USES. `drivers` is empty here on purpose — the barred-
+                driver list is chosen off the board's own roster, which this screen does not
+                load; everything else is identical.
+
+                CAPPED, NOT STRETCHED. This panel is as wide as the list it drops into — 1,552px
+                on a dispatcher's monitor — and the editor is a stack of single controls built
+                for the Map's ~400px sidebar. Given the whole width it renders a 700-pixel time
+                box to hold "08:00", which is SCREEN_FORM's rule in this file arriving from the
+                other direction: "a 1600px text field and a 200-character line read worse than
+                the narrow version, not better". A form wants a column, so it gets one. */}
+            <div className="w-full max-w-2xl"><StopNotesEditor draft={draft} setDraft={(patch) => setDraft((d) => ({ ...d, ...patch }))} compact drivers={[]} /></div>
+            {err && <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-2 break-words">{err}</div>}
+            {!canSave && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 text-amber-900 text-xs p-2">
+                This build has no database connection, so nothing typed here can be saved. The fields are live so the
+                layout can be checked; the real editor is the same one on a configured deploy.
+              </div>
+            )}
+            <div className="flex items-center gap-2 flex-wrap border-t pt-2">
+              <button onClick={onSave} disabled={saving || !canSave}
+                className="rounded-lg px-4 min-h-[44px] text-sm font-semibold text-white disabled:opacity-60"
+                style={{ background: BRAND }}>{saving ? 'Saving…' : 'Save'}</button>
+              <button onClick={onCancel} disabled={saving}
+                className="rounded-lg border px-3 min-h-[44px] text-xs font-semibold bg-white hover:bg-slate-50 disabled:opacity-50">Cancel</button>
+              <span className="text-[11px] text-slate-400">
+                Saved against this dock only, and read back before it says saved.
+              </span>
+            </div>
+          </>
+        )}
     </div>
   );
 }
@@ -34661,11 +34789,26 @@ function StopLookupScreen() {
   // over the next.
   const [asking, setAsking] = useState(false);
   const [promptMsg, setPromptMsg] = useState(null);
+  // ── EDITING THIS CUSTOMER ────────────────────────────────────────────────────
+  // Gated at dispatcher, exactly like the Map's copy of this save: these fields drive the
+  // flag engine and the alert texts, so a wrong receiving hour is louder than a missing one.
+  const notesGate = useRoleGate('dispatcher');
+  const [editDock, setEditDock] = useState(null);   // { key, name, addr1, … } | null
+  const [editDraft, setEditDraft] = useState(null);
+  // The stored document AS IT STOOD WHEN THE FORM OPENED. Kept only so the save can tell
+  // whether THIS edit moved the vehicle mark — see eligibilityChanged in the save below.
+  const [editWas, setEditWas] = useState(null);
+  const [editLoading, setEditLoading] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editErr, setEditErr] = useState(null);
 
   const run = useCallback(async (raw, opts = {}) => {
     const term = String(raw ?? '').trim();
     if (!term) return;
     setLoading(true); setErr(null); setPromptMsg(null);
+    // An open editor belongs to the customer that WAS on screen. Carrying it across a new
+    // search is how a dock's hours get typed onto somebody else's dock.
+    setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null);
     try { localStorage.setItem(STOP_LOOKUP_LAST, term); } catch { /* private mode — a remembered box is a convenience, never a requirement */ }
     try {
       // ONE RULE decides stop-vs-customer, and both sides read it from src/lib/stop-lookup.js,
@@ -34794,6 +34937,118 @@ function StopLookupScreen() {
     } catch (e) { setPromptMsg({ attempted: true, ok: false, reason: 'error', text: String(e.message || e) }); }
     finally { setAsking(false); }
   }, [data, asking]);
+
+  /**
+   * OPEN THE EDITOR ON ONE DOCK — reading the document FRESH, not the copy the lookup fetched.
+   *
+   * The card's note came back with the rest of the answer, possibly minutes ago. Seeding a
+   * form from that and then saving would hand back whatever was on screen at read time, so a
+   * second person's edit in between is silently undone. One getDoc at the moment Edit is
+   * pressed is the cheapest way to narrow that, and the merge write below is what keeps the
+   * fields this form never shows safe regardless.
+   */
+  const openEdit = useCallback(async (dock) => {
+    if (!dock?.key) return;
+    if (notesGate.reason) { setEditErr(notesGate.reason); return; }
+    setEditDock(dock); setEditErr(null); setEditDraft(null); setEditLoading(true);
+    // `base` first, always. It is emptyNote's shape — seven days of { open, close } strings —
+    // and it is what keeps every <input type="time"> CONTROLLED on a customer who has never
+    // had an hour written. A form seeded from a partial document loses that on the first
+    // keystroke and React starts warning about a controlled input becoming uncontrolled.
+    const base = emptyNote({
+      businessName: dock.name || '', matchKey: dock.key,
+      addr1: dock.addr1, city: dock.city, state: dock.state, zip: dock.zip,
+    });
+    try {
+      // NO DATABASE IN THIS BUILD (no Firebase env — preview builds and the layout guards):
+      // the form still opens, because its LAYOUT is worth measuring and needs nothing from
+      // Firestore, but Save is refused and the panel says why. firebase.js makes `db` null on
+      // purpose for exactly this: "a visible dead control is the safe direction".
+      if (!db) { setEditDraft(base); setEditWas(null); return; }
+      const snap = await getDoc(doc(db, 'customer_notes', dock.key));
+      // The stored document wins field by field; `base` only fills what has never been set.
+      setEditDraft(snap.exists() ? { ...base, ...snap.data() } : base);
+      setEditWas(snap.exists() ? snap.data() : null);
+    } catch (e) {
+      reportDenied('customer_notes', e);
+      setEditErr(`Could not read this customer's note: ${e.message || e}`);
+      setEditDraft(null); setEditWas(null);
+    } finally { setEditLoading(false); }
+  }, [notesGate.reason]);
+
+  const cancelEdit = useCallback(() => {
+    setEditDock(null); setEditDraft(null); setEditWas(null); setEditErr(null); setEditSaving(false);
+  }, []);
+
+  /**
+   * SAVE, THEN READ IT BACK BEFORE SAYING SO.
+   *
+   * `{ merge: true }` is not a style choice: this document carries the pin override, the
+   * comms opt-out, the address override and pro_history — none of which this form shows — and
+   * a whole-document write from here would take them with it. CLAUDE.md, in as many words:
+   * never blind-write a document you do not own.
+   *
+   * The read-back is the other half. A write that resolved is not the same as a document that
+   * changed, and this screen has no other way to know — so the card is repainted from what
+   * Firestore actually returned, through the SAME notesSummary the endpoint uses, rather than
+   * from the draft we hoped we wrote.
+   */
+  const saveEdit = useCallback(async () => {
+    if (!editDock?.key || !editDraft) return;
+    if (notesGate.reason) { setEditErr(notesGate.reason); return; }
+    setEditSaving(true); setEditErr(null);
+    try {
+      if (!db) throw new Error('Firestore is not configured in this build.');
+      const key = editDock.key;
+      const ref = doc(db, 'customer_notes', key);
+      // Named `draft` / `existing` to match the two saves this is now the third of. That is
+      // not cosmetic: vehicle-eligibility-editor.test.mjs COUNTS the guarded saves by this
+      // exact shape, and the whole point of that count is that a new copy of this write
+      // cannot appear unguarded — which is precisely what this one did until the count
+      // failed to move. `existing` is the document as it stood when the form opened, read
+      // fresh at that moment, so it is a truer comparison than the Map's cached copy.
+      const draft = editDraft;
+      const existing = editWas;
+      await setDoc(ref, {
+        ...draft,
+        match_key: key,
+        raw_name: draft.raw_name || editDock.name || '',
+        raw_address: draft.raw_address || [editDock.addr1, editDock.city, editDock.state, editDock.zip].filter(Boolean).join(', '),
+        // PROVENANCE FOR THE VEHICLE MARK, AND ONLY WHEN THIS SAVE MOVED IT. The shared
+        // editor carries the three-state vehicle picker, so a save from here can set or
+        // clear a HARD capacity block — routing-build forces the stop onto a box and
+        // dispatcherTrailerBlock raises the trailer conflict. `vehicle_eligibility_at` says
+        // when that decision was made, so a rep saving Friday's receiving hours must not
+        // restamp a mark somebody painted last month: a stamp that tracks unrelated edits
+        // is worse than no stamp, because it looks authoritative.
+        ...(eligibilityChanged(draft, existing)
+          ? { vehicle_eligibility_at: serverTimestamp(), vehicle_eligibility_by: 'dispatcher' }
+          : {}),
+        last_updated: serverTimestamp(),
+        updated_by: NOTES_UPDATED_BY,
+      }, { merge: true });
+      const fresh = await getDoc(ref);
+      if (!fresh.exists()) throw new Error('the write reported success but the document is not there');
+      const summary = notesSummary(fresh.data());
+      // REPAINT WHICHEVER CARD IS ON SCREEN. The note hangs off `view` in customer mode and
+      // off `dossier` in stop mode, and this save is reachable from BOTH — patching only the
+      // first left an order's page showing the pre-save note after a save it had just called
+      // successful, which is the same "intent reported as an outcome" the read-back above
+      // exists to prevent, arriving one line later.
+      setData((cur) => {
+        if (!cur) return cur;
+        if (cur.view) return { ...cur, noteKey: key, view: { ...cur.view, notes: summary } };
+        if (cur.dossier) return { ...cur, dossier: { ...cur.dossier, notes: summary } };
+        return cur;
+      });
+      setEditDock(null); setEditDraft(null); setEditWas(null);
+    } catch (e) {
+      // 'write' — a refused WRITE and a refused READ are different sentences in the
+      // permission banner, and a dispatcher told "read denied" goes looking in the wrong place.
+      reportDenied('customer_notes', e, 'write');
+      setEditErr(`Not saved: ${e.message || e}`);
+    } finally { setEditSaving(false); }
+  }, [editDock, editDraft, editWas, notesGate.reason]);
 
   /** The rep picked one of several matching businesses. */
   const pickCustomer = useCallback((m) => {
@@ -34964,7 +35219,14 @@ function StopLookupScreen() {
               {/* ABOVE THE ROWS, NOT BELOW THEM. Receiving hours and a no-tractor flag are
                   things a rep must know BEFORE they promise a redelivery, and nobody scrolls
                   past six stops to find out what they should not have said. */}
-              <StopNotesCard notes={v.notes} locations={v.locations} />
+              <StopNotesCard notes={v.notes} locations={v.locations} docks={data.docks} noteKey={data.noteKey}
+                onEdit={notesGate.reason ? null : openEdit} editReason={notesGate.reason} />
+              {/* THE EDITOR OPENS UNDER THE CARD IT EDITS — inline, covering nothing, the same
+                  rule as the order panel. */}
+              {editDock && (
+                <CustomerNotesEditPanel dock={editDock} draft={editDraft} setDraft={setEditDraft} canSave={!!db}
+                  loading={editLoading} saving={editSaving} err={editErr} onSave={saveEdit} onCancel={cancelEdit} />
+              )}
 
               {v.days.length > 0
                 ? <div className="space-y-4">
@@ -35080,7 +35342,20 @@ function StopLookupScreen() {
             </div>
           )}
 
-          <StopNotesCard notes={d.notes} />
+          {/* THE SAME EDIT FROM AN ORDER'S OWN PAGE. One dock — the one this order went to —
+              and its key is the one the SERVER derived off the record, never re-derived here:
+              two derivations that disagree write a note nothing ever reads again. */}
+          <StopNotesCard notes={d.notes} docks={data.matchKey || d.identity?.matchKey
+            ? [{ key: data.matchKey || d.identity.matchKey, name: d.identity?.name || null,
+              addr1: d.identity?.address?.addr1 || null, addr2: d.identity?.address?.addr2 || null,
+              city: d.identity?.address?.city || null, state: d.identity?.address?.state || null, zip: d.identity?.address?.zip || null }]
+            : []}
+            noteKey={data.matchKey || d.identity?.matchKey || null}
+            onEdit={notesGate.reason ? null : openEdit} editReason={notesGate.reason} />
+          {editDock && (
+            <CustomerNotesEditPanel dock={editDock} draft={editDraft} setDraft={setEditDraft} canSave={!!db}
+              loading={editLoading} saving={editSaving} err={editErr} onSave={saveEdit} onCancel={cancelEdit} />
+          )}
           <StopCustomerCard customer={d.customer} currentPro={d.identity?.pro} onPick={pick} />
           <StopWritesCard writes={d.writes} />
           <StopSourceLedger sources={d.sources} errors={data.errors} open={ledgerOpen} onToggle={() => setLedgerOpen((v) => !v)} />

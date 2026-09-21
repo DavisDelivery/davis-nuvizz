@@ -319,5 +319,7 @@ test('every layout guard drives the open order, with the widest real order shape
 test('the customer card shows every dock, so "which one did it go to" is answerable', () => {
   const card = APP.slice(APP.indexOf('function StopNotesCard'), APP.indexOf('function CustomerRecent'));
   assert.match(card, /addresses`/, 'the addresses are listed');
-  assert.match(APP, /<StopNotesCard notes=\{v\.notes\} locations=\{v\.locations\} \/>/);
+  // Both props, on the customer view's own instance. Bounded so it still pins the two that
+  // matter while v1.53.0's docks/noteKey/onEdit ride along beside them.
+  assert.match(APP, /<StopNotesCard notes=\{v\.notes\} locations=\{v\.locations\}[\s\S]{0,300}?\/>/);
 });

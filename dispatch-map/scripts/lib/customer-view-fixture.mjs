@@ -75,6 +75,19 @@ const tally = (rows) => {
 };
 
 export const CUSTOMER_VIEW = {
+  // THE DOCKS — the exact customer_notes document id per address, which is what Edit writes
+  // against. TWO of them on purpose: the multi-dock branch is the one that puts a button and
+  // a wrapping address on one line, and it is the branch that can collide at 360px.
+  docks: [
+    { key: 'earthly_alternative_distribution_southeast__4200_wendell_dr_sw_building_c__atlanta__30336',
+      name: 'EARTHLY ALTERNATIVE DISTRIBUTION SOUTHEAST', addr1: '4200 WENDELL DR SW BUILDING C', addr2: 'DOCK 4 REAR',
+      city: 'ATLANTA', state: 'GA', zip: '30336' },
+    { key: 'earthly_alternative_distribution_southeast__1100_northside_drive_nw_suite_210__atlanta__30318',
+      name: 'EARTHLY ALTERNATIVE DISTRIBUTION SOUTHEAST', addr1: '1100 NORTHSIDE DRIVE NW SUITE 210', addr2: null,
+      city: 'ATLANTA', state: 'GA', zip: '30318' },
+  ],
+  // …and which of them the note on screen actually came from, so the card can mark it.
+  noteKey: 'earthly_alternative_distribution_southeast__4200_wendell_dr_sw_building_c__atlanta__30336',
   ok: true, nuvizzCalls: 0, mode: 'customer', query: 'earthly alternative', today: '2026-09-18',
   window: { from: '2026-09-12', to: '2026-09-18', days: 7, kind: 'days', clamped: null },
   errors: {},

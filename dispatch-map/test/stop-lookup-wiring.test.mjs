@@ -52,7 +52,9 @@ test('ONE RULE decides customer-vs-PRO, and the client reads it from the shared 
   // The box is one box. If the screen classified the query itself, a string the client called
   // a name and the server called a PRO would search the wrong index and answer "nothing" —
   // the confidently-wrong empty answer this whole feature exists to stop producing.
-  assert.match(APP, /import \{ classifyQuery \} from '\.\/lib\/stop-lookup\.js'/);
+  // The named import, whatever else rides in the same braces — v1.53.0 added notesSummary so
+  // the editor repaints the card through the SAME summariser the endpoint uses.
+  assert.match(APP, /import \{[^}]*\bclassifyQuery\b[^}]*\} from '\.\/lib\/stop-lookup\.js'/);
   assert.match(APP, /const isName = classifyQuery\(term\)\.kind === 'name';/);
   assert.match(FN, /from '\.\.\/\.\.\/src\/lib\/stop-lookup\.js'/);
 });

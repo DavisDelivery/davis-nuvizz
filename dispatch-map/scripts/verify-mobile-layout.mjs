@@ -333,6 +333,28 @@ const PROBES = {
   ],
   stoplookup: [
     {
+      // THE CUSTOMER EDITOR OPEN (v1.53.0). The tallest single form on a phone after the Map's
+      // stop card: seven receiving-hour rows of two time inputs each, a flag block, a contacts
+      // list and a Save/Cancel bar — dropped INLINE under a card that already lists two docks.
+      // None of it exists until Edit is pressed, and the button is only there because the
+      // fixture carries two docks. This is the state that decides whether a rep can write down
+      // "they close at noon on Fridays now" while the customer is still on the line.
+      name: 'editing a customer dock',
+      open: async (page) => {
+        const box = page.getByLabel(/find a customer by name/i).first();
+        if (!(await box.isVisible().catch(() => false))) return false;
+        await box.fill('earthly alternative');
+        await page.getByRole('button', { name: /^look up$/i }).first().click();
+        await page.waitForTimeout(900);
+        const edit = page.getByRole('button', { name: /^edit$/i }).first();
+        if (!(await edit.isVisible().catch(() => false))) return false;
+        await edit.click();
+        await page.waitForTimeout(600);
+        // PROVES ITS STATE: the panel names the dock it is editing, above the fields.
+        return page.getByText(/editing this dock/i).first().isVisible().catch(() => false);
+      },
+    },
+    {
       // THE ORDER DRAWER is the deepest surface on this screen and the one Chad said was
       // missing outright: a full-cover sheet carrying a timeline, line items, six reference
       // rows, POD documents, a multi-line instruction, comments and tappable contacts. None

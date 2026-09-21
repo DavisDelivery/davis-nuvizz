@@ -555,15 +555,20 @@ test('AND THE HANDLERS REFUSE TOO — a disabled button is not a lock', () => {
   assert.match(byName('components/MessagesPanel.jsx'), /if \(!text \|\| !active \|\| sendDenied\) return;/, 'the SMS send');
 });
 
-test('BOTH COPIES OF THE NOTES SAVE ARE GATED — there are two, in two components', () => {
-  // The Map screen and the Routing screen each carry their OWN customer_notes save
-  // (handleSave / saveStopNote) feeding their own pair of panels. Gating one and not the
-  // other leaves half the app quietly losing the receiving hours a customer just gave a
+test('EVERY COPY OF THE NOTES SAVE IS GATED — there are three, in three components', () => {
+  // The Map screen, the Routing screen and (since v1.53.0) the Stop lookup screen each carry
+  // their OWN customer_notes save feeding their own panels. Gating one and not the others
+  // leaves part of the app quietly losing the receiving hours a customer just gave a
   // dispatcher on the phone — the same duplication that made the location-override pair its
-  // own test above.
+  // own test above. A FOURTH copy appearing with no gate must break this count, which is the
+  // only reason it is a count and not three separate matches.
   assert.match(APP, /if \(notesGate\.reason\) \{ setSaveError\(notesGate\.reason\); return; \}/, 'the Map save');
   assert.match(APP, /if \(notesGate\.reason\) \{ setSaveNoteError\(notesGate\.reason\); return; \}/, 'the Routing save');
-  assert.equal((APP.match(/const notesGate = useRoleGate\('dispatcher'\);/g) || []).length, 2,
+  // Stop lookup gates BOTH doors — opening the editor and saving it — because a rep who may
+  // not write should be told at the button, not after typing seven rows of receiving hours.
+  assert.equal((APP.match(/if \(notesGate\.reason\) \{ setEditErr\(notesGate\.reason\); return; \}/g) || []).length, 2,
+    'the Stop lookup open AND save');
+  assert.equal((APP.slice(APP.indexOf('\n];\n', APP.indexOf('const VERSION_LOG = ['))).match(/const notesGate = useRoleGate\('dispatcher'\);/g) || []).length, 3,
     'one gate per component that owns a notes save');
   // Four panels reach those two saves: Map desktop sidebar, Map phone drawer, and the Routing
   // screen's own desktop and phone panels (which pass it through to the shared sidebar).

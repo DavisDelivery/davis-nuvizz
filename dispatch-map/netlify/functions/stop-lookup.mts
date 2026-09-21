@@ -421,6 +421,28 @@ export default async (req: Request): Promise<Response> => {
     // the board does not carry one — customer-key.mts exists because an alert once read 778
     // board rows with matchKey null on every one and reported a clean day.
     const keys = [...new Set(mine.map((r) => stopCustomerKey(r.stop)).filter(Boolean) as string[])].slice(0, 6);
+
+    // ── THE DOCKS, WITH THE EXACT DOCUMENT ID EACH ONE'S NOTE LIVES AT ────────
+    //
+    // A customer is not one thing to edit. Receiving hours, the dock instruction and the
+    // no-tractor mark are all per-ADDRESS — Earthly Alternative has two, and writing the
+    // Northside hours onto the Wendell Drive dock would send a truck to a door that shut two
+    // hours earlier. So the screen never edits "the customer": it edits one dock, named, and
+    // it uses the key DERIVED here rather than one the browser re-derives, because the board
+    // carries no customerMatchKey (customer-key.mts exists for that reason) and two
+    // derivations that disagree would write a note nothing ever reads again.
+    const dockByKey = new Map<string, any>();
+    for (const r of mine) {
+      const k = stopCustomerKey(r.stop);
+      if (!k || dockByKey.has(k)) continue;
+      dockByKey.set(k, {
+        key: k,
+        name: r.stop?.businessName ?? null,
+        addr1: r.stop?.addr1 ?? null, addr2: r.stop?.addr2 ?? null,
+        city: r.stop?.city ?? null, state: r.stop?.state ?? null, zip: r.stop?.zip ?? null,
+      });
+    }
+    const docks = keys.map((k) => dockByKey.get(k)).filter(Boolean);
     const [rollupsR, notesR] = await Promise.all([
       tryRead(async () => {
         const got = await Promise.all(keys.map((k) => getCustomerByMatchKey(TENANT, k).catch(() => null)));
@@ -469,6 +491,10 @@ export default async (req: Request): Promise<Response> => {
       // could not finish looking" — the same distinction the per-order view draws, and for
       // the same reason: only one of the two is a fact a rep may pass on to a customer.
       view: { ...view, complete: sweepComplete, notes: notesSummary(notesR.value) },
+      // The docks a rep may edit, and which one the note above came from. Both are document
+      // ids, not display text — see the comment on dockByKey.
+      docks,
+      noteKey: (notesR.value as any)?._key ?? null,
       errors: Object.fromEntries(Object.entries({
         board: boardSweep.error, sealed: sealedSweep.error, customer: rollupsR.error, notes: notesR.error, rollup: rollupR.error,
       }).filter(([, v]) => v)),
@@ -611,6 +637,11 @@ export default async (req: Request): Promise<Response> => {
     proIndex: indexOn,
     window: { from: boardFrom, to: boardTo, daysBack, daysAhead: DAYS_AHEAD, pointerDays, sealedDays, eventDays },
     dossier: { ...dossier, notes: notesSummary(notesR.value) },
+    // THE DERIVED CUSTOMER KEY, so an order's own page can edit that customer's dock. It is
+    // resolved above off whichever record actually carried one — a BOARD row carries no
+    // customerMatchKey at all (see lib/customer-key.mts), so a screen re-deriving it from the
+    // row would have nothing to derive from on exactly the orders that are still live.
+    matchKey: matchKey || null,
     // WHETHER THE SCREEN MAY OFFER THE PROMPTED CALL (stop-lookup-prompted.mts) after a complete
     // miss — judged here, off the same env this deployment would refuse on, so the button never
     // shows where it would fail for a configuration reason. Reading env is not calling anyone:
