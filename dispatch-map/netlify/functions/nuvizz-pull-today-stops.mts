@@ -29,6 +29,7 @@ import { poolUsable, POOL_LIVE_FIELDS, WINDOW_WRITE_GRACE_MS, type ActivePool } 
 import { summarizeScanMetrics } from './lib/scan-metrics.mts';
 import { filterFinishedPriorDay, unplanStampOvertaken } from './lib/nuvizz-list.mts';
 import { LEAN_STOP_FIELDS } from './lib/board-fields.mts';
+import { dropCancelledEnabled, dropCancelledStops } from '../../src/lib/stop-cancelled.js';
 import { breakerMode, reportedDailyCeiling, circuitStillBinding } from './lib/nuvizz-request.mts';
 import { requireUser } from './lib/require-user.mts';
 
@@ -368,6 +369,23 @@ export default async (req: Request): Promise<Response> => {
       try { carryoverCount = await mergeCarryover(stops, date, carryDays, { stats: carryover }, stopMask, lastUnplannedScanAt); } catch { /* keep base stops */ }
     }
 
+    // ── A CANCELLED STOP IS NOT FREIGHT ────────────────────────────────────────
+    // Chad: "This stop is what is making the map messed up its been canceled and shouldn't be
+    // on my map anymore so handle that and it should self heal."
+    //
+    // AFTER carry-over and BEFORE every count below, so a cancelled row is gone from the
+    // board, the tally, the grid and the wall alike — not hidden on one screen while the
+    // others still carry it.
+    //
+    // AT SERVE TIME, WHICH IS WHAT "SELF HEAL" MEANS. Filtering in the scanner would only
+    // clean rows written AFTER the change; this one drops rows already sitting in Firestore
+    // on the very next 2-minute poll, with no scan, no NuVizz call and nobody pressing
+    // anything. Same reasoning as the prior-day guard twenty lines above.
+    //
+    // The rule and the switch (BOARD_DROP_CANCELLED=off) live in lib/stop-cancelled.js.
+    const { stops: liveStops, dropped: cancelledOff } = dropCancelledStops(stops, dropCancelledEnabled(process.env));
+    stops = liveStops;
+
     const unplannedCount = stops.filter((s) => s.isUnplanned).length;
 
     // THE SCAN THAT WAS REFUSED, SO THE BUTTON CAN STOP SAYING IT RAN.
@@ -490,6 +508,12 @@ export default async (req: Request): Promise<Response> => {
       ok: true,
       date,
       source,
+      // WHAT CAME OFF THE BOARD, AND WHY — see lib/stop-cancelled.js. Printed rather than
+      // swallowed: the first question when a stop is missing is "did we drop it?", and a
+      // rule that removes rows from a dispatcher's board has to be able to answer that
+      // without a redeploy. 0 on an ordinary day.
+      cancelledDropped: cancelledOff.length,
+      cancelledStops: cancelledOff.slice(0, 25),
       generated: new Date().toISOString(),
       lastScannedAt,
       lastLoadScanAt,
