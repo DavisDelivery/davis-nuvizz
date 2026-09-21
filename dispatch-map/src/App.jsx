@@ -70,7 +70,7 @@ import { serverLoginEnabled, ensureFirebaseSession, dropFirebaseSession, signOut
 import { getSession, setSession, subscribeSession, onAuthEvent, clearSession } from './lib/session.js';
 import { formatCompletionPct } from './lib/completion-pct.js';
 import { isTvPath, tvRailRows, tvVerdict, tvFeedState, TV_RAIL_LIMIT } from './lib/tv-mode.js';
-import { tvStaticMapEnabled, buildTvStaticMapUrl, projectToPercent, tvImageFailure } from './lib/tv-static-map.js';
+import { tvStaticMapEnabled, buildTvStaticMapUrl, projectToPercent, tvImageFailure, boundsOf, snapBounds } from './lib/tv-static-map.js';
 import { driverLabelLines, driverFixStale } from './lib/driver-label.js';
 import { formatDateTime, formatDateTimeShort, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact, setStopAddress, addressReachedNuvizz } from './lib/nuvizzWrite.js';
@@ -153,7 +153,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.50.0';
+const APP_VERSION = '1.50.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -207,6 +207,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.50.1', 'THE WALL’S LIVE MAP CANNOT BE KNOCKED OUT OF FRAME, AND PUTS ITSELF BACK. Chad, with a photograph of the office television showing the whole UNITED STATES — Denver to Cincinnati, Ciudad Juárez to Illinois — and his 644 stops as a speck over Atlanta: “What’s happening here?” WHAT HAPPENED IS THAT A WALL DISPLAY HAS A MOUSE POINTER ON IT, and v1.44.0 handed it an INTERACTIVE map. Read off the code, not guessed: the Map screen builds with gestureHandling ‘greedy’ — a bare mouse wheel zooms, no modifier needed — plus drag, double-click zoom, keyboard, and six on-map controls (zoom, Street View pegman, rotate, Recenter, Satellite, 3D). And it has NO initial fit and NO re-fit, by design: it cold-starts at BUFORD zoom 10 and then stays exactly where anything puts it, because a dispatcher pans and zooms it all morning and an app that kept yanking the view back would be unusable. On a desk that is correct. On a wall it means one stray scroll from a pointer resting on the glass puts the board in Kansas until somebody walks over. THAT IS PRECISELY THE PROPERTY THE STATIC PICTURE WAS CHOSEN FOR — “a wall display is the one screen in the building that cannot be interacted with” — and turning the live map on for its typography handed it straight back. My error, not the television’s. SO ON THE TELEVISION THE MAP IS INERT: no pan, no zoom, no wheel, no double-click, no tilt, no heading, no keyboard, and not one piece of furniture. Google’s pan/tilt pad needed its OWN option (cameraControl) — rotateControl:false does not remove it, and it sat there as the last control on the wall after everything else had gone, found by listing every button with a non-zero box on the RENDERED page rather than by trusting “I turned the controls off”, which is an intent and not an outcome. AND IT FRAMES ITSELF, which is the other half: nobody steers a wall, so if nothing fits it, nothing ever does. It fits the board on load and re-fits when the board’s SNAPPED bounds move — the very same ~2.2km grid the static picture uses, so a truck creeping along cannot re-fit the camera on every driver poll and leave the wall gently drifting all day. A flat 40px pad, deliberately not fitPad(): fitPad reserves room for the desktop bottom grid, which this screen does not have, and a padding bigger than the map makes fitBounds zoom OUT — the exact symptom being fixed. PROVEN BY DOING IT, with main as the control: same board, same viewport, pointer parked on the map, six wheel clicks and a drag. On main the four controls are all present and THE MAP MOVES. On this build the furniture is gone and THE MAP DOES NOT MOVE. The first version of that test reported “did not move” against a bundle built with no Maps key, i.e. no map at all — it refuses to report a result with zero tiles now, because a test that passes on an empty screen is worse than no test. NOT CHANGED: the dispatch Map on a desk keeps every gesture and every control, the static picture is untouched and still the default, and unticking “Live map” still puts it back. 5,336 green.'],
   ['1.50.0', 'THE UAT MIRROR CAN NOW LOAD PRODUCTION’S DAYS FROM FIRESTORE — ZERO NUVIZZ CALLS, NOTHING ON THE ROUTING TAB TOUCHED. Chad: “I want to use firestore to load up all our stops so I can test there without doing anything in nuvizz or nuvizz uat. I want to see how the routes it builds see if I like them or not from day to day. We can do this all without a single nuvizz call just using our uat and firestore data.” The mirror deploy never scans (settled 09-03), so its own database held nothing an engine could plan from, and the only way to put freight on the UAT board was the bench, which CREATES orders in the UAT tenant at a call each. Now a scheduled job on the mirror (uat-mirror-refresh-background, 06:45 UTC, after production’s 06:00 capture has sealed yesterday) copies production’s Firestore into the mirror’s named database: the live board for today and the next three days with raw intact (the Map popups read it), each day’s load roster with the driver NuVizz already had on every load, the trailing 90 sealed days lean (routes, drivers, stops without the vendor payload), the miss ledger, and the static collections the miners and the engine read (customer notes, employees, truck profiles, travel calibration, departures, tractor paint, engine config). Then it re-runs THE SAME post-seal miners the nightly runs over every copied day, oldest first, so the mirror’s learned collections are rebuilt from the copy rather than guessed. Every write goes through the deploy’s own database; production is read through a new reader (lib/prod-mirror-read.mts) that HAS NO WRITER, addresses databases/(default) from one hard-coded constant, and refuses off a mirror — all three asserted against the source text, the way the bench’s catalogue reader already is. ZERO vendor calls is structural, not a promise: no file in the feature imports a nuvizz module, and a test fails if one ever does. On production the same cron fires and exits 403 in the first line, before the URL is parsed. IT IS INSPECTABLE: GET uat-mirror-refresh?status=1 is the progress document (what was copied, what the miners did, where a run that hit the 12-minute budget stopped — a second POST resumes there without redoing a day), and ?explain=1 puts production’s counts beside the mirror’s per date and writes nothing. A half-copied day never reads as sealed, because the manifest is written last. UAT_PROD_MIRROR=off puts the mirror back to reading only its own database (default on; only an off-word turns it off; a typo leaves it on). WHAT IS NOT VERIFIED YET: this has run only against fakes — 26 tests pin the rules, none of them has seen real data. The first 06:45 UTC run, or one manual POST, plus ?status=1 will say what the UAT board actually shows; until then it shows what it showed. No screen changed, nothing on the Routing tab or the workbench moved, no production document was written or will be.'],
   ['1.49.2', 'THE YEAR VIEW NOW KNOWS THE DIFFERENCE BETWEEN “WE WERE NOT THERE” AND “WE DO NOT KNOW” — FOR EVERY MONTH. Found on the real Earthly Alternative rollup the moment the backfill finished: their months_from read 2026-07-24, their first captured delivery, so the screen said “counted from Jul 24 — the months before are not counted yet; we do not know what they held.” We DID know. June 4–30 had just been counted for every customer, and Earthly simply had no stops in it; the honest reading of June is ZERO, and the honest reading of January to May is “no records” — the warehouse begins on June 4. THE CAUSE IS STRUCTURAL, not a typo: a per-customer months_from is the first day that customer HAD stops, because the nightly writer only touches the customers a day actually contained. It can never say “counted, and zero.” Only a GLOBAL fact can — so the writer both the nightly hook and the backfill call now keeps one: nuvizz_ops/customer_history_tally, the first and last sealed day the month count has been run over, for everyone (a field-masked min/max stamp, idempotent and order-free, so a backfill running newest-first lands on the same floor a chronological run would). The year rule prefers it: inside the range a month with no bucket is a real zero; before it, unknown; and — the new case — AFTER the last day the count reached, unknown too, so a nightly that stops running turns into a sentence (“the N months after Sep 18 are not counted yet — the nightly count has not reached them”) and never into a run of zeros. A customer with no months at all now reads “0 stops since Jun 4” rather than “no tally yet”, because that IS the tally. With no range on file the old per-dock caution still applies, unchanged. The ledger names the range as its own source. 10 new tests, including the Earthly case verbatim.'],
   ['1.49.1', 'THE TABLET GUARD WAS SKIPPING A STATE AND CALLING THE RUN GREEN. Found reading the v1.49.0 guard log line by line rather than its last line: the phone guard measured “nothing on file, NuVizz offered” on both phones, the tablet guard measured it on none of four iPads, and both reported ✓. THE CAUSE IS A FEATURE: the order drawer stays open across re-reads by design (a rep asking about three orders must not lose the customer), so every Stop lookup probe that ran after “an order opened” inherited an open drawer, its “Look up” click landed on the drawer and was swallowed, and the probe returned false — which the tablet guard treated as a SKIP (`continue`) where the phone guard has always treated it as a failure. Four tablets, one state each never measured, and a green tick over the gap. Three fixes, all in the guard, none in the app: probes that follow the drawer close it first, by the backdrop’s own accessible name; every Stop lookup probe now PROVES its state is on screen (the drawer’s proof-of-delivery section, the year’s month-by-month chart, the miss’s button, the stop’s address history) instead of proving only that it clicked something; and a probe that cannot open its state is a red line in the log and a failed run, exactly as on the phone. The app is unchanged — this bump exists so the footer says the deploy happened.'],
@@ -13253,6 +13254,39 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
       tiltInteractionEnabled: true,
       headingInteractionEnabled: true,
       gestureHandling: 'greedy',
+      // ── THE WALL GETS A MAP NOBODY CAN KNOCK ────────────────────────────────
+      // Chad, on a photograph of the office television showing the whole United States with
+      // his 644 stops as a speck over Atlanta: "What's happening here?"
+      //
+      // WHAT HAPPENED IS THAT A WALL DISPLAY HAS A MOUSE POINTER ON IT. This map is built
+      // with gestureHandling 'greedy', which zooms on a bare wheel with no modifier, and it
+      // has no initial fit and no re-fit — it cold-starts at BUFORD zoom 10 and then stays
+      // wherever anything moves it, for the rest of the day. One stray scroll from a pointer
+      // resting on the glass and the board is in Kansas until somebody walks over.
+      //
+      // That is EXACTLY the property the static picture was chosen for: "a wall display is
+      // the one screen in the building that cannot be interacted with." Turning the live map
+      // on for its typography handed that back, and this puts it right: on the television the
+      // map does not pan, does not zoom, does not tilt, takes no keyboard, and carries none
+      // of the furniture (zoom, pegman, rotate, Recenter, Satellite, 3D) that a dispatcher
+      // needs and a wall cannot use. The fit effect below is then the ONLY thing that moves
+      // this camera, which is what makes the frame hold.
+      ...(tvMode ? {
+        gestureHandling: 'none',
+        draggable: false,
+        disableDoubleClickZoom: true,
+        scrollwheel: false,
+        zoomControl: false,
+        streetViewControl: false,
+        rotateControl: false,
+        // Google's newer pan/tilt pad is its OWN option — rotateControl:false does not remove
+        // it, and it sat there as the last piece of furniture on the wall after everything
+        // else had gone. Found by listing every button with a non-zero box on the rendered
+        // page, because "I turned the controls off" is an intent and the DOM is the outcome.
+        cameraControl: false,
+        tiltInteractionEnabled: false,
+        headingInteractionEnabled: false,
+      } : {}),
     });
     labelOverlayClassRef.current = makeDriverLabelOverlayClass(google);
     // SATELLITE, ON THE MAP — not three taps deep in a sheet. Chad: "Want satellite view
@@ -13268,7 +13302,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     satBtn.style.cssText = SATELLITE_BUTTON_CSS;
     satBtn.addEventListener('click', () => satelliteToggleRef.current && satelliteToggleRef.current());
     satelliteBtnRef.current = satBtn;
-    mapRef.current.controls[google.maps.ControlPosition.RIGHT_BOTTOM].push(satBtn);
+    // Not on the wall — see the tvMode options above.
+    if (!tvMode) mapRef.current.controls[google.maps.ControlPosition.RIGHT_BOTTOM].push(satBtn);
     // THE 3D BUTTON — and it exists because a phone has no Ctrl key. A Ctrl-only feature is
     // a feature that does not exist on mobile, which this repo has shipped twice; it also
     // gives the gesture somewhere to be discovered, since nothing on a map announces "hold
@@ -13281,7 +13316,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
       btn3d.addEventListener('click', () => map3dToggleRef.current && map3dToggleRef.current());
       map3dBtnRef.current = btn3d;
       paint3dControl(btn3d, false);
-      mapRef.current.controls[google.maps.ControlPosition.RIGHT_BOTTOM].push(btn3d);
+      // Not on the wall — see the tvMode options above.
+      if (!tvMode) mapRef.current.controls[google.maps.ControlPosition.RIGHT_BOTTOM].push(btn3d);
     }
     // Custom "Recenter on stops" control (the crosshair). A ref holds the latest
     // fit function so the once-created button always recenters the current board.
@@ -13292,7 +13328,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     recenterBtn.style.cssText = 'background:#fff;border:none;border-radius:2px;box-shadow:0 1px 4px rgba(0,0,0,0.3);width:40px;height:40px;margin:0 10px 10px 0;cursor:pointer;display:flex;align-items:center;justify-content:center;';
     recenterBtn.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#5f6368" stroke-width="2"><circle cx="12" cy="12" r="6"/><line x1="12" y1="1" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="1" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="23" y2="12"/><circle cx="12" cy="12" r="1.5" fill="#5f6368" stroke="none"/></svg>';
     recenterBtn.addEventListener('click', () => recenterRef.current && recenterRef.current());
-    mapRef.current.controls[google.maps.ControlPosition.RIGHT_BOTTOM].push(recenterBtn);
+    // Not on the wall — see the tvMode options above.
+    if (!tvMode) mapRef.current.controls[google.maps.ControlPosition.RIGHT_BOTTOM].push(recenterBtn);
     // Box/lasso projection: an invisible OverlayView exposes the live
     // pixel<->LatLng projection. Created HERE (not a separate [google] effect)
     // so it runs AFTER mapRef is set — otherwise it no-ops and selection breaks.
@@ -13503,6 +13540,32 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
       mapRef.current.fitBounds(b, fitPad());
     };
   }, [google, filteredStops, fitPad, mapReady]);
+
+  // ── THE WALL'S LIVE MAP FRAMES ITSELF, AND KEEPS FRAMING ITSELF ────────────
+  //
+  // The desktop map has no initial fit and no re-fit on purpose: a dispatcher pans and zooms
+  // it all morning and an app that kept yanking the view back would be unusable. A wall has
+  // the opposite need — nobody is steering it, so if nothing frames it, nothing ever does.
+  // Chad's television came up showing the whole United States with the day's freight as a
+  // speck over Atlanta, and it would have stayed that way until somebody walked over.
+  //
+  // THE SAME SNAPPED BOUNDS THE PICTURE USES, deliberately: snapBounds rounds the box out
+  // onto a ~2.2km grid, so a truck creeping along cannot re-fit the camera every driver poll
+  // and leave the wall gently drifting all day. The KEY is the dep, not the point list —
+  // filteredStops is a new array every refresh and would otherwise re-fit on a timer.
+  const tvFitKey = useMemo(() => {
+    if (!tvMode || tvStatic) return null;
+    const b = snapBounds(boundsOf([...filteredStops, ...(showDrivers ? drivers : [])]));
+    return b ? `${b.south},${b.west},${b.north},${b.east}` : null;
+  }, [tvMode, tvStatic, filteredStops, drivers, showDrivers]);
+  useEffect(() => {
+    if (!tvFitKey || !google || !mapRef.current) return;
+    const [s2, w2, n2, e2] = tvFitKey.split(',').map(Number);
+    const b = new google.maps.LatLngBounds({ lat: s2, lng: w2 }, { lat: n2, lng: e2 });
+    // A flat 40, not fitPad(): fitPad reserves room for the desktop bottom grid, which this
+    // screen does not have — and a padding bigger than the map makes fitBounds zoom OUT.
+    mapRef.current.fitBounds(b, 40);
+  }, [tvFitKey, google, mapReady]);
 
   // M4.4 — satellite/roadmap toggle. 'hybrid' = satellite imagery + road labels,
   // which is most useful for spotting docks/yards while keeping street names.
