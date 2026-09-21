@@ -15065,7 +15065,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             80vh default so the ORDINARY board — Filters collapsed, which is its default —
             never reaches the scrollbar at all. */}
         {!isMobile && (
-          {/* overflow-x-hidden IS LOad-BEARING, and the reason is a CSS rule this repo has
+          /* overflow-x-hidden IS LOAD-BEARING, and the reason is a CSS rule this repo has
               already paid for twice (v0.54.77, v0.28.3): you cannot scroll one axis only.
               With overflow-y:auto and overflow-x left visible, the x axis COMPUTES to auto —
               so this column grew its own horizontal scrollbar. Chad, on the Map: "I don't
@@ -15082,7 +15082,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
               first built. Nothing in here is absolutely positioned outside the box, so
               clipping x paints nothing away: the status card's `absolute right-full` dropdown
               lives behind an early `if (barMode)` return and belongs to the Routing bar, not
-              to this column, which renders the pill. */}
+              to this column, which renders the pill. */
           <div className={'absolute top-3 right-3 max-h-[calc(100%-1.5rem)] overflow-y-auto overflow-x-hidden overscroll-contain flex flex-col items-end gap-2 ' + (flagsPanelOpen ? 'z-[71]' : 'z-[6]')} data-testid="map-right-column">
             <div className="pointer-events-auto flex-shrink-0" data-testid="map-status-card">
               <StopsStatusCard
