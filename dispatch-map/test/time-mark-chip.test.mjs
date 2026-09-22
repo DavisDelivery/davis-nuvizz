@@ -18,8 +18,24 @@ const typed = (open, close) => ({
 
 // ── the silence ──────────────────────────────────────────────────────────────
 
-test('an ordinary 7a-4p dock gets NO chip — the row stays clean', () => {
-  assert.equal(timeMarkChip(typed('7:00', '16:00'), 'fri'), null);
+// REWRITTEN 2026-09-22, and whose call it was is recorded rather than quietly absorbed.
+// This used to assert that an ordinary 7a-4p dock got NO chip even when a dispatcher had
+// typed it. Chad, looking at AMERICAS VALUE CHANNEL wearing a chip and INTUITIVE SURGICAL
+// ("Set by a dispatcher", 8:00a-3:30p) wearing nothing: "if we have put the hours in they
+// should be flagging in the compare panel like americas value channel." The silence it
+// pinned was right for the MAP and wrong for a Compare row, so the rule moved and the test
+// moved with it — see compare-typed-hours-chip.test.mjs for the full case.
+test('an ordinary 7a-4p dock a dispatcher TYPED now says so on the row', () => {
+  const chip = timeMarkChip(typed('7:00', '16:00'), 'fri');
+  assert.ok(chip, 'hours we put in must reach the Compare row');
+  assert.equal(chip.kind, 'hours_on_file');
+  assert.equal(chip.text, '7:00a–4:00p');
+});
+
+test('the same ordinary window PARSED is still silence — the map rule is unchanged', () => {
+  // This is the half of the original assertion that still holds, and it is the half that
+  // protects the map: nothing here widens what a pin can wear.
+  assert.equal(timeMarkChip({ receiving_hours: { fri: { open: '7:00', close: '16:00' } } }, 'fri'), null);
 });
 
 test('no note, no day, and free-text hours all yield nothing rather than a guess', () => {

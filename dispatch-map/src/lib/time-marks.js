@@ -176,6 +176,16 @@ export function timeMarkForDay(note, dayKey) {
   return classifyTimeMark(openMin, closeMin);
 }
 
+/** The chip kind for a dispatcher-typed window the map rule calls ordinary. It is NOT in
+ *  TIME_MARK_KEYS on purpose: no pin ever wears it, only a Compare row. */
+export const HOURS_ON_FILE_KEY = 'hours_on_file';
+
+/** Did a human at this company take ownership of these hours? The same field board-flags
+ *  reads for its 'typed' provenance, so the card and the flag can never disagree about it. */
+export function hoursTypedByDispatcher(note) {
+  return note?.manual_overrides?.receiving_hours === true;
+}
+
 // ── THE ROW-SIZED MARK ───────────────────────────────────────────────────────
 //
 // Chad, looking at a Compare card: "i think there is enough space there to fit our clock
@@ -201,9 +211,38 @@ export function timeMarkForDay(note, dayKey) {
 export function timeMarkChip(note, dayKey) {
   const { openMin, closeMin } = dayWindowMinutes(note, dayKey);
   const kind = classifyTimeMark(openMin, closeMin);
-  if (!kind) return null;
   const o = Number.isFinite(openMin) ? openMin : null;
   const c = Number.isFinite(closeMin) ? closeMin : null;
+  // HOURS A DISPATCHER TYPED ARE ALWAYS WORTH A ROW, however ordinary they look.
+  //
+  // Chad, 2026-09-22, with AMERICAS VALUE CHANNEL (11:00a-4:00p) wearing a chip on NOR 2 and
+  // INTUITIVE SURGICAL (8:00a-3:30p, "Set by a dispatcher") wearing nothing: "if we have put
+  // the hours in they should be flagging in the compare panel like americas value channel."
+  //
+  // Run through the classifier, those two are: hours_narrow_window and null. AVC opens past
+  // the 9:00a dial and shuts inside the 5:00p one, so it is a pinched day; Intuitive Surgical
+  // misses every dial — its 3:30p close is later than the 3:00p early-close pivot and its
+  // 8:00a open is earlier than the 9:00a one — so the rule calls it an ordinary working day
+  // and says nothing.
+  //
+  // THAT IS THE RIGHT ANSWER FOR THE MAP AND THE WRONG ONE HERE, and the two surfaces are
+  // allowed to differ because they are doing different jobs. On the map the question is
+  // "which of 700 pins constrains the day", and v0.65 cut 116 clock icons down to the ones
+  // worth looking at precisely because noise there is expensive. On a Compare card the
+  // question is "what do I need to know about each of these fourteen stops while I sequence
+  // them", and a window somebody at this company took the trouble to type is exactly that.
+  // The map is untouched: this branch lives in the chip and classifyTimeMark is unchanged.
+  //
+  // TYPED ONLY, not parsed. manual_overrides.receiving_hours is a human taking ownership of
+  // the field — the same provenance board-flags calls 'typed' and already weights as red on
+  // any predicted overrun. Parsed hours are a different confidence and a much bigger
+  // population, and widening to them is a decision for Chad, not a detail to slip in here.
+  if (!kind) {
+    if (!hoursTypedByDispatcher(note) || (o == null && c == null)) return null;
+    const both = o != null && c != null;
+    const text = both ? `${fmtMin(o)}–${fmtMin(c)}` : (c != null ? `closes ${fmtMin(c)}` : `opens ${fmtMin(o)}`);
+    return { kind: HOURS_ON_FILE_KEY, text, openMin: o, closeMin: c, title: `Receiving ${text} — set by a dispatcher` };
+  }
   // WHICH EDGE THE MARK IS ABOUT DECIDES WHICH CLOCK THE ROW PRINTS. classifyTimeMark's
   // precedence guarantees the edge it chose is the one that exists — a shuts-early or
   // early-close mark cannot be reached without a close, opens-late cannot be reached
