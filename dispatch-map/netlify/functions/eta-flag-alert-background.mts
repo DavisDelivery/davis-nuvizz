@@ -41,11 +41,18 @@ import { emailEnabled, sendEmail } from './lib/email.mts';
 // lib/stacker-alert.mts for why this is not bolted onto selectAlertable.
 import { runStackerAlert } from './lib/stacker-alert.mts';
 import { gateScheduledOverride } from './lib/background-gate.mts';
+import { sweepDue, LEGACY_STEP_MIN } from './lib/flag-sweep-cadence.mts';
+import { earlyCloseOpt } from './lib/flag-policy.mts';
 
 const TENANT = 'davis';
 const DEPOT = { name: 'Buford Terminal', lat: 34.147791, lng: -83.960911 };
 
-export const config = { schedule: '*/20 11-23 * * 1-5' };
+// EVERY FIVE MINUTES, weekdays, 11:00-23:59 UTC = 7:00a-7:59p EDT. It was */20 until
+// 2026-09-22; Chad: "RUN THE FLAG SWEEPS RIGHT AFTER OUR SCANS SO THEY ARE MUCH MORE CURRENT
+// NOT ONCE PER HOUR AS THE FLAG SWEEPS ARE FREE AND COST NOTHING WITH NUVIZZ." Same */5 tick
+// the scanner fires on. FLAG_SWEEP_EVERY_TICK=off puts it back on twenty minutes without a
+// redeploy — see lib/flag-sweep-cadence.mts.
+export const config = { schedule: '*/5 11-23 * * 1-5' };
 
 /** ET wall-clock minutes past midnight — the same clock the board's own nowMin uses. */
 function etNowMin(): number {
@@ -86,6 +93,13 @@ export default async (req: Request): Promise<Response> => {
     const nowMin = url.searchParams.get('now')
       ? Number(url.searchParams.get('now'))
       : (date === etDayString() ? etNowMin() : null);
+    // THE CRON IS NOW THE SCANNER'S FIVE-MINUTE TICK. Only the SCHEDULED fire is ever stood
+    // down by the off-switch: a hand-driven ?dry / ?date / ?now run is somebody asking a
+    // question, and answering "not this minute" to a person at a keyboard would be absurd.
+    const handDriven = dry || url.searchParams.has('date') || url.searchParams.has('now');
+    if (!handDriven && !sweepDue(etNowMin(), LEGACY_STEP_MIN.day)) {
+      return J({ ok: true, note: 'stood down — FLAG_SWEEP_EVERY_TICK=off, 20-minute cadence' });
+    }
 
     const { stops: rawStops } = await readStops(TENANT, date);
     // THE LIVE STOP INDEX DOES NOT CARRY matchKey. computeBoardFlags looks its receiving
@@ -187,6 +201,10 @@ export default async (req: Request): Promise<Response> => {
       travel: { legs, routeClasses, ...calOpts },
       ...(departByRoute ? { departByRoute } : {}),
       ...(tierFloorByStop ? { tierFloorByStop } : {}),
+      // THE EARLY-CLOSE FLOOR — a red at 30 minutes past a close of 11:00a or earlier, see
+      // earlyCloseRed in board-flags.js. `undefined` means the shipped policy; FLAG_EARLY_CLOSE
+      // =off passes null and the rule is out of this sweep entirely (lib/flag-policy.mts).
+      earlyClose: earlyCloseOpt(),
     });
 
     const first = computeBoardFlags({

@@ -63,6 +63,8 @@ import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mt
 import { mergeSweep, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
 import { auditRows } from './lib/flag-rows.mts';
 import { smsEnabled, sendSms } from './lib/sms.mts';
+import { sweepDue, LEGACY_STEP_MIN } from './lib/flag-sweep-cadence.mts';
+import { earlyCloseOpt } from './lib/flag-policy.mts';
 import { smsRecipients, eveningTargetDate, smsText, smsClaimPath, selectTextable } from './lib/flag-sms.mts';
 // Only to report WHERE the list came from — the list itself is resolved by smsRecipients.
 import { resolveChannel, channelSpec, recipientsFor } from './lib/alert-recipients.mts';
@@ -92,6 +94,12 @@ export default async (req: Request): Promise<Response> => {
 
   try {
     const etMin = etNowMin();
+    // THE CRON IS NOW THE SCANNER'S OWN FIVE-MINUTE TICK, not hourly — see
+    // lib/flag-sweep-cadence.mts for why, and for FLAG_SWEEP_EVERY_TICK=off, which stands the
+    // extra fires down and puts this sweep back on the hour without a redeploy.
+    if (!sweepDue(etMin, LEGACY_STEP_MIN.evening)) {
+      return J({ ok: true, note: 'stood down — FLAG_SWEEP_EVERY_TICK=off, hourly cadence', etMin });
+    }
     const etToday = etDayString();
     const target = eveningTargetDate(etToday, etMin);
     if (!target) return J({ ok: true, note: 'daytime — the 7:00a-7:40p sweep owns this window', etMin });
@@ -183,6 +191,10 @@ export default async (req: Request): Promise<Response> => {
       travel: { legs, ...calOpts, ...(routeClasses ? { routeClasses } : {}) },
       ...(departByRoute ? { departByRoute } : {}),
       ...(tierFloorByStop ? { tierFloorByStop } : {}),
+      // THE EARLY-CLOSE FLOOR — a red at 30 minutes past a close of 11:00a or earlier, see
+      // earlyCloseRed in board-flags.js. `undefined` means the shipped policy; FLAG_EARLY_CLOSE
+      // =off passes null and the rule is out of this sweep entirely (lib/flag-policy.mts).
+      earlyClose: earlyCloseOpt(),
     });
     const first = computeBoardFlags({ stops, notes, servedDate: date, dayKey: weekdayKey(date), opts: engineOpts({}) });
     let legInfo = { legs: {} as Record<string, number> };
@@ -332,9 +344,15 @@ export default async (req: Request): Promise<Response> => {
   }
 };
 
-// Hourly through the routing evening and overnight: 00:00-11:00 UTC = 8:00p-7:00a EDT
-// (7:00p-6:00a EST). The ET-side rules are the authority, not the cron: a fire that
-// lands at 7:00a ET stands down (the day sweep owns it), and Zach's number is dropped
-// the minute the 6:00a cutoff passes — recipient logic is minute-accurate. Netlify cron
-// fires only on published production deploys.
-export const config = { schedule: '0 0-11 * * *' };
+// EVERY FIVE MINUTES through the routing evening and overnight: 00:00-11:59 UTC =
+// 8:00p-7:59a EDT (7:00p-6:59a EST). It was hourly until 2026-09-22; Chad: "RUN THE FLAG
+// SWEEPS RIGHT AFTER OUR SCANS SO THEY ARE MUCH MORE CURRENT NOT ONCE PER HOUR AS THE FLAG
+// SWEEPS ARE FREE AND COST NOTHING WITH NUVIZZ." This is the same */5 tick the scanner fires
+// on, so a load built at 4:47a is judged at 4:50a instead of 5:00a — see
+// lib/flag-sweep-cadence.mts for the cost argument and the way back.
+//
+// The ET-side rules are still the authority, not the cron: a fire that lands at 7:00a ET
+// stands down (the day sweep owns it), and Zach's number is dropped the minute the 6:00a
+// cutoff passes — recipient logic is minute-accurate. Netlify cron fires only on published
+// production deploys.
+export const config = { schedule: '*/5 0-11 * * *' };

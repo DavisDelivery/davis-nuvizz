@@ -307,24 +307,48 @@ test('THE COLLAPSE CARRIES R7 FORWARD — routeKey and the count survive the cap
   assert.ok(picked.every((r) => Array.isArray(r.blockers)), 'and the mark the text quotes');
 });
 
+// THE CAPS ARE READ, NEVER RETYPED. These tests were written against 8/4/4 and broke on the
+// day Chad moved them to 24/8/8 — not because the reservation arithmetic was wrong, but
+// because the fixtures had the old numbers baked in as literals. A cap test that has to be
+// edited every time a cap moves is a test that will eventually be edited to go green.
+const TRAILERS_OFFERED = TRAILER_SMS_CAP + 2;                        // more than the reservation
+const HOURS_OFFERED = SMS_PER_SWEEP_CAP + 2;                         // enough to hit the total
+
 test('neither kind of news can silence the other at the per-sweep cap', () => {
-  const trailers = Array.from({ length: 6 }, (_, i) => tRow({ stopNbr: `T${i}`, routeKey: `R${i}`, routeConflicts: 6 - i }));
-  const hours = Array.from({ length: 10 }, (_, i) => hRow({ stopNbr: `H${i}`, lateBy: i }));
+  const trailers = Array.from({ length: TRAILERS_OFFERED }, (_, i) => tRow({
+    stopNbr: `T${i}`, routeKey: `R${i}`, routeConflicts: TRAILERS_OFFERED - i,
+  }));
+  const hours = Array.from({ length: HOURS_OFFERED }, (_, i) => hRow({ stopNbr: `H${i}`, lateBy: i }));
   const picked = selectTextable([...trailers, ...hours]);
-  assert.equal(picked.length, SMS_PER_SWEEP_CAP);
+  assert.equal(picked.length, SMS_PER_SWEEP_CAP, 'the cap must actually bite for this to mean anything');
   assert.equal(picked.filter((r) => r.rule === 'trailer_conflict').length, TRAILER_SMS_CAP);
   assert.equal(picked.filter((r) => r.rule === 'hours_risk').length, SMS_PER_SWEEP_CAP - TRAILER_SMS_CAP);
-  assert.deepEqual(picked.filter((r) => r.rule === 'hours_risk').map((r) => r.lateBy), [9, 8, 7, 6], 'hours still worst-first');
+  // Worst-first survives the cap: the highest lateBy values, in order, and no arbitrary drop.
+  const takenHours = SMS_PER_SWEEP_CAP - TRAILER_SMS_CAP;
+  assert.deepEqual(
+    picked.filter((r) => r.rule === 'hours_risk').map((r) => r.lateBy),
+    Array.from({ length: takenHours }, (_, i) => HOURS_OFFERED - 1 - i),
+    'hours still worst-first',
+  );
 });
 
-test('an unused reservation backfills — a quiet trailer night still texts eight hours rows', () => {
-  const hours = Array.from({ length: 10 }, (_, i) => hRow({ stopNbr: `H${i}`, lateBy: i }));
+test('an unused reservation backfills — a quiet trailer night still texts the full cap of hours rows', () => {
+  const hours = Array.from({ length: HOURS_OFFERED }, (_, i) => hRow({ stopNbr: `H${i}`, lateBy: i }));
   assert.equal(selectTextable(hours).length, SMS_PER_SWEEP_CAP);
   // And the reverse: one late stop does not cost the trailer rows their extra room.
-  const trailers = Array.from({ length: 6 }, (_, i) => tRow({ stopNbr: `T${i}`, routeKey: `R${i}` }));
+  const trailers = Array.from({ length: TRAILERS_OFFERED }, (_, i) => tRow({ stopNbr: `T${i}`, routeKey: `R${i}` }));
   const picked = selectTextable([...trailers, hRow()]);
-  assert.equal(picked.filter((r) => r.rule === 'trailer_conflict').length, 6);
+  assert.equal(picked.filter((r) => r.rule === 'trailer_conflict').length, TRAILERS_OFFERED);
   assert.equal(picked.filter((r) => r.rule === 'hours_risk').length, 1);
+});
+
+test('THE CAPS CHAD ASKED FOR, pinned by value so a silent edit cannot lower them', () => {
+  // Chad, 2026-09-22: "BUMP UP TO 24 PER SWEEP TRAILER AND BOX CAP TO 8 EACH."
+  assert.equal(SMS_PER_SWEEP_CAP, 24);
+  assert.equal(TRAILER_SMS_CAP, 8);
+  // The two reservations must fit inside the total with room left for hours rows, or a bad
+  // trailer night silences every late stop — the failure the reservation exists to prevent.
+  assert.ok(TRAILER_SMS_CAP * 2 < SMS_PER_SWEEP_CAP, 'reservations must leave room for hours');
 });
 
 test('the text names the route first, quotes the mark, and counts the rest of the load', () => {

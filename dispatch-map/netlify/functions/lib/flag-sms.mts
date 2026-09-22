@@ -56,16 +56,30 @@ import { recipientsFor } from './alert-recipients.mts';
 
 export const NIGHT_CUTOFF_MIN = 6 * 60;    // 6:00a ET — the router is done routing
 export const EVENING_START_HOUR = 19;      // ET hour from which a sweep aims at TOMORROW
-export const SMS_PER_SWEEP_CAP = 8;        // worst-first; the rest wait for the next pass
+export const SMS_PER_SWEEP_CAP = 24;       // worst-first; the rest wait for the next pass
+// WHY 24 AND NOT 8. Chad, 2026-09-22: "BUMP UP TO 24 PER SWEEP TRAILER AND BOX CAP TO 8
+// EACH." The 8 was sized for an HOURLY sweep, where a deferred row waited a full hour for
+// its next chance — so a low cap was a real silence and the number had to be conservative
+// about how much trouble one night could hold. That is no longer the shape: the sweeps now
+// run on the scan's own five-minute tick (see the cron on both background functions), and a
+// row the cap defers is texted five minutes later rather than sixty.
+//
+// THE TOTAL IS NOT WHAT THIS BOUNDS, and it is worth being exact about that because a cap
+// reads like a budget. One message per subject per board day is enforced by the claim
+// ratchet (createDocIfAbsent), not here — so the number of texts a night can produce is the
+// number of distinct red/critical subjects on the board, whatever this is set to. This caps
+// only how fast that queue DRAINS, which is to say how many phones buzz at once. At 24 on a
+// five-minute tick the queue effectively never backs up, which is the point: the 5:00a
+// clump Chad asked about was a hourly sweep's backlog arriving in one breath.
 // The slice of that cap trailer conflicts may take. Not a budget for how much trouble is
 // allowed — a reservation, so neither kind of news can silence the other on the night both
 // go wrong. Unused budget on either side backfills the other, so a quiet trailer night
 // still texts eight hours rows, exactly as it did before this existed.
-export const TRAILER_SMS_CAP = 4;
+export const TRAILER_SMS_CAP = 8;
 // The same reservation for the mirror rule (R4b, freight that needs a tractor riding a box).
 // Measured across five real boards before it shipped: 0,0,0,0,1 conflicts a night, so this is
 // headroom against a bad day rather than a budget anybody expects to spend.
-export const BOX_SMS_CAP = 4;
+export const BOX_SMS_CAP = 8;
 export const CLAIM_COLLECTION = 'eta_flag_sms';
 
 /**
