@@ -325,6 +325,62 @@ export function modelErrorMinutes({ anchored, hops }) {
  * problem whether the 11:00 came from a dispatcher or from Uline's order text — and refusing
  * to escalate it because of where the text came from is the exact defect being fixed.
  */
+// ── THE EARLY-CLOSE FLOOR: A DOCK THAT SHUTS BEFORE LUNCH HAS NO AFTERNOON ───
+//
+// Chad, 2026-09-22: "i want it to flag at 30 mins late for anything that closes at 11 am or
+// before." It followed a night the system got exactly right on its own terms and exactly
+// wrong on his: AWC INC closes at 11:00, the overnight projection put the truck there at
+// 12:17p — 77 minutes past — and the row came back AMBER, because an unanchored estimate
+// carries a measured 90-minute error band and 77 does not clear it. Nobody was texted. The
+// engine was not broken; the policy was.
+//
+// THE LOGISTICS ARGUMENT, WHICH IS THE ONE THAT DECIDES THIS. Lateness is not symmetrical
+// across the day. Thirty minutes late to a dock that shuts at 5pm is usually nothing — there
+// is afternoon left to spend, and the driver can often still make it. Thirty minutes late to
+// a dock that shuts at 11am is a redelivery, because the only moment anybody could have
+// fixed it was hours before the truck was anywhere near the door: at 2am, while the route
+// could still be rebuilt. By the time the model is CONFIDENT about an 11am close it is
+// 10:30 and the answer is a phone call to a customer, not a plan.
+//
+// So the cost of the two mistakes is not equal here, and the threshold belongs where the
+// cheaper mistake is: an extra 2am text about a dock that turns out fine costs one
+// interruption; a silent 11am miss costs a refused delivery, a redelivery, and the customer
+// call that follows. Chad has said which one he wants to pay.
+//
+// WHAT THIS DOES *NOT* DO, deliberately: it does not touch MODEL_ERROR_MIN. That 90 is not a
+// policy dial — it is a measurement over 39 sealed days and 24,238 stops of how wrong an
+// unanchored projection actually is, and editing it to force a tier would make every other
+// number computed from it a lie. `critical` therefore keeps its meaning ("this misses even
+// allowing for the model being as wrong as it usually is") and still needs the full band
+// twice over. What moves is one thing only: whether an early-close overrun reaches a person.
+//
+// ASSUMED hours are excluded for the reason they are excluded everywhere else — the 5pm
+// house guess for a dock nobody has recorded is not a deadline, and it cannot close at 11am
+// anyway, so this is belt and braces rather than a real exclusion.
+export const EARLY_CLOSE_POLICY = {
+  /** Closes at or before this ET minute count are the "no afternoon" population. 11:00. */
+  closeAtOrBeforeMin: 11 * 60,
+  /** Minutes past that close which earn a red — and therefore a text. */
+  redAtMin: 30,
+};
+
+/**
+ * PURE. Is this an early-close overrun that has earned a red on Chad's floor?
+ *
+ * `policy` null/false turns the whole rule off and restores the pre-2026-09-22 behaviour,
+ * which is what FLAG_EARLY_CLOSE=off does on the sweeps. Anything malformed falls back to
+ * the shipped policy rather than to silence: a typo in an env var must never quietly
+ * re-silence a safety alert (CLAUDE.md, "Ship it so it can be put back").
+ */
+export function earlyCloseRed({ closeMin, lateBy, hoursTier }, policy = EARLY_CLOSE_POLICY) {
+  if (!policy) return false;
+  if (hoursTier === 'assumed') return false;
+  const at = Number.isFinite(policy.closeAtOrBeforeMin) ? policy.closeAtOrBeforeMin : EARLY_CLOSE_POLICY.closeAtOrBeforeMin;
+  const red = Number.isFinite(policy.redAtMin) ? policy.redAtMin : EARLY_CLOSE_POLICY.redAtMin;
+  if (!Number.isFinite(closeMin) || closeMin > at) return false;
+  return Number.isFinite(lateBy) && lateBy >= red;
+}
+
 export function severityTier({ lateBy, errorMin, hoursTier }) {
   if (hoursTier === 'assumed') return 'amber';
   if (lateBy > errorMin * 2) return 'critical';
@@ -621,6 +677,14 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // or a lookup fn. Absent entirely, every row is judged on this sweep alone — the shipped
   // behaviour. See tierFloorLookup for why a flag may promote but never demote.
   const tierFloor = tierFloorLookup(opts.tierFloorByStop);
+  // THE EARLY-CLOSE FLOOR (see earlyCloseRed). Absent = the shipped policy; an explicit null
+  // or false turns it off, which is the FLAG_EARLY_CLOSE=off path on the sweeps. A malformed
+  // object keeps its shipped fields, so a half-typed override cannot silence the rule.
+  const earlyClose = opts.earlyClose === null || opts.earlyClose === false
+    ? null
+    : (opts.earlyClose && typeof opts.earlyClose === 'object'
+      ? { ...EARLY_CLOSE_POLICY, ...opts.earlyClose }
+      : EARLY_CLOSE_POLICY);
   // Service precedence: an explicit caller override, then the nightly-measured dwell,
   // then the shipped constant. Calibration refining the dwell must not need a deploy.
   const serviceSec = Number.isFinite(opts.serviceSec) ? opts.serviceSec
@@ -1336,7 +1400,12 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         if (w && clockMin > w.closeMin) {
           const lateBy = Math.round(clockMin - w.closeMin);
           const errorMin = modelErrorMinutes({ anchored, hops: hopsSinceAnchor });
-          const computedTier = severityTier({ lateBy, errorMin, hoursTier: w.tier });
+          const modelTier = severityTier({ lateBy, errorMin, hoursTier: w.tier });
+          // A dock with no afternoon left gets a red at 30 minutes whatever the model's
+          // confidence — see earlyCloseRed for why the threshold moves and the band does not.
+          // worstOfTiers, never an assignment: this is a FLOOR, so a critical stays critical.
+          const earlyRed = earlyCloseRed({ closeMin: w.closeMin, lateBy, hoursTier: w.tier }, earlyClose);
+          const computedTier = earlyRed ? worstOfTiers(modelTier, 'red') : modelTier;
           // THE RATCHET (see tierFloorLookup). A row that has already been red today cannot
           // slide back to advisory while we still predict it past the close — the only exit
           // is the estimate clearing the window, and then there is no row here at all.
@@ -1359,6 +1428,9 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
             // Provenance for the ratchet, so the alert path and the history never have to
             // infer it: what the model said on its own, and whether it was held above that.
             computedTier, tierHeld,
+            // Why this reached red when the model alone would not have: the early-close floor.
+            // Recorded, never re-derived, so the card, the text and the history agree.
+            ...(earlyRed && modelTier !== computedTier ? { earlyClose: true, modelTier } : {}),
             detail: `Stop ${seqOf(s)} on ${k} — estimated arrival ~${fmtMin(clockMin)} vs close ${fmtMin(w.closeMin)} (${lateBy} min late); ${anchorNote}.${w.tier === 'assumed' ? ' No hours on file — assumed a 5pm close; set the real hours on the stop card.' : ''}${tierHeld ? ` Flagged earlier today — stays ${tier} while the estimate is past the close.` : ''}`,
             scope: 'occurrence', servedDate, fingerprint: `hours|${servedDate}|${k}|${s.stopNbr}|${w.closeMin}`,
           });

@@ -25,6 +25,7 @@ import { isFirestoreEnabled, readStops, getDoc, listDocs, etDayString, readAlert
 // module-load env copy would answer a question nobody asked.
 import { resolveChannel, channelSpec } from './lib/alert-recipients.mts';
 import { computeBoardFlags, isFinishedStop, dayReceivingWindow, parseClockMin } from '../../src/lib/board-flags.js';
+import { earlyCloseOpt } from './lib/flag-policy.mts';
 import { legSecondsMap, travelLegsPath, readTravelCalibration, readRouteClasses } from './lib/travel-store.mts';
 import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mts';
 import { flagHistoryPath } from './lib/flag-history.mts';
@@ -355,6 +356,16 @@ export default async (req: Request): Promise<Response> => {
     // the floor to critical on a measurement; this is how the next measurement gets taken.
     const floorParam = url.searchParams.get('floor');
     const minTier = floorParam != null ? normalizeMinTier(floorParam) : ALERT_MIN_TIER;
+    // `?earlyClose=off` rehearses the board WITHOUT the early-close floor — the 30-minute red
+    // for docks shutting at 11:00a or earlier (earlyCloseRed in board-flags.js). Same reason
+    // as the two above: the cost of a policy must be answerable on a real board before anyone
+    // commits to it, and after it ships this is how "what is this floor costing us" is asked.
+    // Absent = whatever the sweeps run (FLAG_EARLY_CLOSE), so a plain call always mirrors
+    // production rather than quietly rehearsing something else.
+    const ecParam = url.searchParams.get('earlyClose');
+    const earlyClose = ecParam == null
+      ? earlyCloseOpt()
+      : (['off', '0', 'false', 'no'].includes(ecParam.trim().toLowerCase()) ? null : undefined);
 
     const { stops: rawStops } = await readStops(TENANT, date);
     // THE LIVE STOP INDEX DOES NOT CARRY matchKey. computeBoardFlags looks its receiving
@@ -403,6 +414,7 @@ export default async (req: Request): Promise<Response> => {
         depot: DEPOT, ...(nowMin != null ? { nowMin } : {}),
         ...(departByRoute ? { departByRoute } : {}),
         ...(tierFloorByStop ? { tierFloorByStop } : {}),
+        earlyClose,
         travel: {
           legs: legSecondsMap(legDoc), routeClasses,
           ...(cal ? {
@@ -519,6 +531,21 @@ export default async (req: Request): Promise<Response> => {
       ccRejected: ccResolved.source === 'saved' ? ccResolved.savedRejected.map((r: any) => r.value) : ALERT_CC_REJECTED,
       dailyCap: DAILY_ALERT_CAP,
       counts: { critical: flags.criticalCount ?? 0, red: flags.redCount ?? 0, amber: flags.amberCount ?? 0 },
+      // WHICH ROWS THE EARLY-CLOSE FLOOR IS CARRYING, by name, on this board. A policy that
+      // cannot be counted cannot be argued about — and this is the list Chad reads to decide
+      // whether 30 minutes is the right number or the wrong one.
+      earlyClose: {
+        effective: earlyClose === null ? 'off' : 'on',
+        configured: earlyCloseOpt() === null ? 'off' : 'on',
+        rehearsed: ecParam != null,
+        promoted: (flags.rows || [])
+          .filter((r: any) => r?.rule === 'hours_risk' && r?.earlyClose === true)
+          .map((r: any) => ({
+            stopNbr: r.stopNbr, customer: r.customer ?? null, route: r.routeKey ?? r.routeName ?? null,
+            close: r.closeMin != null ? clock(r.closeMin) : null, lateBy: r.lateBy ?? null,
+            was: r.modelTier ?? null, now: r.tier,
+          })),
+      },
       // Every urgent row, and for each one WHY it would or would not be emailed right now.
       urgent: urgent.map((r: any) => explainRow(r, alertableSet, nowMin, gateMin, minTier)),
       // Board-flags R7. Listed because it is on the board and in the overnight texts, and a

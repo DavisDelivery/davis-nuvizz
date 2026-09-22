@@ -121,7 +121,7 @@ test('a collapsed batch of a NON-alerting rule stays silent — this did not wid
 // flag history recorded nothing, so the worst day of the week was invisible to the record
 // the whole justification was measured from. The overnight texts had the cliff too.
 import { mergeSweep } from '../netlify/functions/lib/flag-history.mts';
-import { selectTextable } from '../netlify/functions/lib/flag-sms.mts';
+import { selectTextable, SMS_PER_SWEEP_CAP } from '../netlify/functions/lib/flag-sms.mts';
 import { flattenForConsumers } from '../netlify/functions/lib/flag-rows.mts';
 
 // FROM THE REAL ENGINE, NOT A FIXTURE. The first version of this test hand-built the
@@ -158,7 +158,15 @@ test('flag history records the stops behind a collapsed row, not zero of them', 
 });
 
 test('the overnight texts see them too', () => {
-  assert.equal(selectTextable(collapsedBatch(13)).length, 8, 'capped at 8 per sweep, not silenced to 0');
+  // The point of this test is that a COLLAPSED summary row is expanded back into its stops
+  // before the cap is applied — it used to select nothing at all. The number is whatever the
+  // per-sweep cap allows, read rather than retyped: it was 8 until Chad raised it to 24.
+  const n = 13;
+  assert.equal(
+    selectTextable(collapsedBatch(n)).length,
+    Math.min(n, SMS_PER_SWEEP_CAP),
+    'the collapse must be seen through, not silenced to 0',
+  );
 });
 
 test('a summary row that carried NO constituents is still not a stop, everywhere', () => {
