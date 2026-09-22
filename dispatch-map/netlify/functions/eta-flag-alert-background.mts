@@ -35,7 +35,11 @@ import { resolveChannel, channelSpec } from './lib/alert-recipients.mts';
 import { mergeSweep, scoreRowsLive, flagHistoryPath, FLAG_HISTORY_VERSION } from './lib/flag-history.mts';
 import { arrivalAnchor, isFinishedStop } from '../../src/lib/board-flags.js';
 import { auditRows } from './lib/flag-rows.mts';
-import { emailEnabled } from './lib/email.mts';
+import { emailEnabled, sendEmail } from './lib/email.mts';
+// Freight that needs a tractor, mailed once per order the day it lands. Its own module
+// because the flag email above is built around a CLOCK and a stacker has no close - see
+// lib/stacker-alert.mts for why this is not bolted onto selectAlertable.
+import { runStackerAlert } from './lib/stacker-alert.mts';
 import { gateScheduledOverride } from './lib/background-gate.mts';
 
 const TENANT = 'davis';
@@ -360,11 +364,19 @@ export default async (req: Request): Promise<Response> => {
       exists: async (path: string) => !!(await getDoc(path)),
     }, recipients);
     const { emailedStops, ...counts } = result;
+    // FREIGHT THAT NEEDS A TRACTOR, on the same board this sweep already holds. Chad: "I want
+    // those to fire an email the moment one of those hits our system so that we can address it
+    // hopefully the day before we have to deliver it." Claimed per order, so the 20-minute
+    // cadence mails it once and never again; measured at 0.8 orders a board across five real
+    // days, so this is about one email a day. STACKER_ALERT=off turns it off everywhere.
+    const stacker = emailEnabled()
+      ? await runStackerAlert(stops, date, TENANT, { createDocIfAbsent, send: sendEmail, to: recipients, at: new Date().toISOString() })
+      : { enabled: false, found: 0, claimed: 0, sent: 0, failed: 0, orders: [] as string[] };
     // `to` stays the addressee and `recipients` is everyone the message reached, because a
     // run log that collapses the two cannot answer "was Chad on this one" after the fact —
     // which is the question that started this. ccRejected names the ALERT_CC entries that
     // were refused, so a typo shows up here rather than as a person who never gets mail.
-    return J({ ...base, recorded: await writeHistory(emailedStops), ...counts, to: ALERT_TO, recipients, ccStore, ccRejected: ccRefused });
+    return J({ ...base, recorded: await writeHistory(emailedStops), ...counts, stacker, to: ALERT_TO, recipients, ccStore, ccRejected: ccRefused });
   } catch (e: any) {
     return J({ ok: false, error: String(e?.message || e) }, 500);
   }

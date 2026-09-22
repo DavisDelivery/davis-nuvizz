@@ -62,6 +62,10 @@ export const SMS_PER_SWEEP_CAP = 8;        // worst-first; the rest wait for the
 // go wrong. Unused budget on either side backfills the other, so a quiet trailer night
 // still texts eight hours rows, exactly as it did before this existed.
 export const TRAILER_SMS_CAP = 4;
+// The same reservation for the mirror rule (R4b, freight that needs a tractor riding a box).
+// Measured across five real boards before it shipped: 0,0,0,0,1 conflicts a night, so this is
+// headroom against a bad day rather than a budget anybody expects to spend.
+export const BOX_SMS_CAP = 4;
 export const CLAIM_COLLECTION = 'eta_flag_sms';
 
 /**
@@ -149,6 +153,7 @@ const fmtMin = (m: any): string => {
  */
 export function smsText(row: any, boardDate: string): string {
   if (String(row?.rule) === 'trailer_conflict') return trailerSmsText(row, boardDate);
+  if (String(row?.rule) === 'box_truck_conflict') return boxTruckSmsText(row, boardDate);
   const cust = String(row?.customer || row?.stopNbr || 'stop');
   const route = String(row?.routeName || '').trim();
   const late = Number.isFinite(row?.lateBy) ? ` (~${row.lateBy}m past close)` : '';
@@ -162,7 +167,7 @@ export function smsText(row: any, boardDate: string): string {
   // hyphen they are 1.00, and 1.06 WITH the driver name added. The name is effectively free
   // and the channel got cheaper. Nothing else in the corpus needs UCS-2: zero customer names
   // and zero route names across 21 days carry a non-GSM-7 character.
-  return `DDS flag ${boardDate}: ${cust}${route ? ` on ${route}` : ''}${driverClause(row)} - ${eta}${late}. Auto-alert, reply to Davis dispatch.`;
+  return `DDS flag ${boardDate}: ${cust}${proClause(row)}${route ? ` on ${route}` : ''}${driverClause(row)} - ${eta}${late}. Auto-alert, reply to Davis dispatch.`;
 }
 
 /**
@@ -190,7 +195,60 @@ function trailerSmsText(row: any, boardDate: string): string {
   const more = others > 0 ? ` +${others} more stop${others === 1 ? '' : 's'} on this route.` : '';
   // Same hyphen, same reason as smsText — this one measured 3.59 segments and lands at 2.00,
   // with the driver clause costing nothing at all.
-  return `DDS no-trailer ${boardDate}: ${route || 'a load'}${driverClause(row)} runs a tractor-trailer - ${cust} is ${said}.${more} Move it or swap the truck. Auto-alert, reply to Davis dispatch.`;
+  return `DDS no-trailer ${boardDate}: ${route || 'a load'}${driverClause(row)} runs a tractor-trailer - ${cust}${proClause(row)} is ${said}.${more} Move it or swap the truck. Auto-alert, reply to Davis dispatch.`;
+}
+
+/**
+ * PURE. The box-truck text. THE MIRROR OF THE ONE ABOVE, AND THE OTHER DIRECTION OF THE SAME
+ * MISTAKE.
+ *
+ * Chad, 2026-09-22, on the wall display showing WEST RIDGE riding MICHAEL FRYE with a
+ * hydraulic stacker on it: "I want it to fire a text to the dispatchers at night when they're
+ * planning these loads if they've put one on a box truck."
+ *
+ * R7 is a DOCK that cannot take a 53-footer; this is FREIGHT that cannot come off a box. The
+ * fix is the same shape — change the truck or move the stop — so the sentence is the same
+ * shape, and it leads with the ROUTE for the same reason: the load is what gets changed.
+ *
+ * IT NAMES THE MACHINE. "carries hydraulic stacker" is what a router goes and looks at;
+ * "handling flag" is what they scroll past. The words come from HANDLING_FLAGS' own label via
+ * the rule, so the text, the card and the map badge cannot drift apart.
+ *
+ * WHY A STACKER IS NOT A JUDGEMENT CALL, said once here because the text has no room for it:
+ * a stacker rolls off a dock or a trailer deck on its own castors. Every box truck in this
+ * fleet has a liftgate instead of a dock, and a top-heavy machine on a gate platform is how
+ * one gets tipped. The cheap mistake is swapping a truck; the expensive one is a refused
+ * delivery with a damaged machine on it.
+ *
+ * GSM-7 ONLY, same bill as the two above: hyphens, never an em dash.
+ */
+function boxTruckSmsText(row: any, boardDate: string): string {
+  const route = String(row?.routeName || row?.routeKey || '').trim();
+  const cust = String(row?.customer || row?.stopNbr || 'a stop');
+  const why = Array.isArray(row?.handling) && row.handling.length
+    ? row.handling.join(', ')
+    : 'freight that needs a tractor trailer';
+  const others = Math.max(0, (Number(row?.routeConflicts) || 1) - 1);
+  const more = others > 0 ? ` +${others} more stop${others === 1 ? '' : 's'} on this route.` : '';
+  return `DDS box-truck ${boardDate}: ${route || 'a load'}${driverClause(row)} runs a box truck - ${cust}${proClause(row)} carries ${why}.${more} Move it to a tractor trailer, or confirm the machine comes off a liftgate. Auto-alert, reply to Davis dispatch.`;
+}
+
+/**
+ * PURE. The order number, for a dispatcher who has to go and type it into NuVizz.
+ *
+ * Chad: "on these messages, I would like the pro number to be up there." A text that named
+ * the customer and the route still left the one thing you act on - the order - to be looked
+ * up on another screen.
+ *
+ * SILENT WHEN IT WOULD ONLY REPEAT ITSELF. The PRO and the stop number are the same string on
+ * nearly every delivery (all 834 rows of the 2026-09-22 board), so printing both would spend
+ * characters on a duplicate; it prints only when the row actually carries one. GSM-7 safe.
+ */
+export function proClause(row: any): string {
+  const pro = String(row?.pro ?? '').trim();
+  if (!pro) return '';
+  const extra = Array.isArray(row?.pros) && row.pros.length > 1 ? ` +${row.pros.length - 1}` : '';
+  return ` (PRO ${pro}${extra})`;
 }
 
 /**
@@ -212,6 +270,15 @@ export function smsClaimPath(tenant: string, date: string, stopNbr: string, rule
   if (String(rule) === 'trailer_conflict') {
     const safe = String(stopNbr).replace(/[^A-Za-z0-9_.-]/g, '_') || '_';
     return `${CLAIM_COLLECTION}/${tenant}__${date}__route_${safe}__trailer`;
+  }
+  // A BOX-TRUCK CONFLICT CLAIMS THE ROUTE TOO, and for the identical reason: the message is
+  // sent once per load per board day, so keyed on the stop it would nag - fix one of three
+  // stacker stops and the next sweep texts about the second. Its own `__box` suffix keeps it
+  // a separate claim from the trailer one, because a load can be wrong in both directions at
+  // once and those are two messages with two different fixes.
+  if (String(rule) === 'box_truck_conflict') {
+    const safe = String(stopNbr).replace(/[^A-Za-z0-9_.-]/g, '_') || '_';
+    return `${CLAIM_COLLECTION}/${tenant}__${date}__route_${safe}__box`;
   }
   return `${CLAIM_COLLECTION}/${tenant}__${date}__${String(stopNbr)}`;
 }
@@ -246,7 +313,7 @@ export function smsClaimPath(tenant: string, date: string, stopNbr: string, rule
  * badly-trucked route silences every late one — and both failures are invisible, because a
  * capped list looks exactly like a quiet one.
  */
-export function selectTextable(rows: any[], cap = SMS_PER_SWEEP_CAP, trailerCap = TRAILER_SMS_CAP): any[] {
+export function selectTextable(rows: any[], cap = SMS_PER_SWEEP_CAP, trailerCap = TRAILER_SMS_CAP, boxCap = BOX_SMS_CAP): any[] {
   // Same un-collapse as the email path: on a capped board this selector saw one summary row
   // with no stopNbr and texted nobody, on exactly the night the board was worst.
   const flat = flattenForConsumers(rows);
@@ -276,12 +343,38 @@ export function selectTextable(rows: any[], cap = SMS_PER_SWEEP_CAP, trailerCap 
   trailer.sort((a: any, b: any) => (worst(b?.routeConflicts) - worst(a?.routeConflicts))
     || String(a?.routeKey || a?.routeName || '').localeCompare(String(b?.routeKey || b?.routeName || '')));
 
+  // THE OTHER DIRECTION OF THE SAME MISTAKE, selected exactly like the one above. Chad,
+  // 2026-09-22: "I want it to fire a text to the dispatchers at night when they're planning
+  // these loads if they've put one on a box truck." R4b (`box_truck_conflict`) is freight
+  // that cannot come off a liftgate riding a box; R7 is a dock that cannot take a trailer.
+  // Same grain (one per route), same certainty (two recorded facts in contradiction, no
+  // clock to wait for), so the same shape.
+  const box: any[] = [];
+  const seenBoxRoute = new Set<string>();
+  for (const r of flat) {
+    if (r?.rule !== 'box_truck_conflict' || !textable(r)) continue;
+    const k = String(r?.routeKey || r?.routeName || '').trim();
+    if (!k || seenBoxRoute.has(k)) continue;
+    seenBoxRoute.add(k);
+    box.push(r);
+  }
+  box.sort((a: any, b: any) => (worst(b?.routeConflicts) - worst(a?.routeConflicts))
+    || String(a?.routeKey || a?.routeName || '').localeCompare(String(b?.routeKey || b?.routeName || '')));
+
+  // THREE KINDS OF NEWS, TWO RESERVATIONS, ONE CAP. Each certain kind holds a reservation so
+  // a bad night of one cannot silence the other two, and whatever either does not use
+  // backfills the hours rows — so a quiet night still texts the full eight, exactly as it did
+  // before any of this existed. Measured before shipping: across five real boards
+  // (09-16/17/18/21/22) box-truck conflicts ran 0,0,0,0,1 - the reservation is a guard
+  // against a bad day, not a budget anyone is expected to spend.
   const total = Math.max(0, cap);
-  const reserved = Math.min(trailer.length, Math.max(0, trailerCap));
-  const takeHours = Math.max(0, Math.min(hours.length, total - reserved));
+  const reservedTrailer = Math.min(trailer.length, Math.max(0, trailerCap));
+  const reservedBox = Math.min(box.length, Math.max(0, boxCap));
+  const takeHours = Math.max(0, Math.min(hours.length, total - reservedTrailer - reservedBox));
   const takeTrailer = Math.max(0, Math.min(trailer.length, total - takeHours));
-  // Trailer first in the returned order: it is the certain one, and on a night the sender
-  // dies half way through the list, the message that survives should be the one whose
-  // failure mode is a truck that physically cannot make the delivery.
-  return [...trailer.slice(0, takeTrailer), ...hours.slice(0, takeHours)];
+  const takeBox = Math.max(0, Math.min(box.length, total - takeHours - takeTrailer));
+  // The certain ones first in the returned order, for the reason the trailer comment gives:
+  // if the sender dies half way down the list, the messages that survive should be the ones
+  // whose failure mode is a truck that physically cannot make the delivery.
+  return [...trailer.slice(0, takeTrailer), ...box.slice(0, takeBox), ...hours.slice(0, takeHours)];
 }

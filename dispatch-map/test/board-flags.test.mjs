@@ -154,7 +154,8 @@ test('a stop sequenced past a TYPED close flags red, labelled as an estimate', (
 // SEVERITY IS SLACK, NOT PROVENANCE (v0.55.4). This test used to assert that auto-detected
 // hours CAP at amber however late the truck was. That rule is what produced a board header
 // reading "0 red - 6 advisory" while carrying a stop predicted 155 minutes past its close.
-// A big overrun now escalates whatever the source of the hours; the caveat text stays.
+// A big overrun now escalates whatever the source of the hours. (The caveat text itself was
+// removed from the card on 2026-09-22 at Chad's request - see the assertion below.)
 test('scanner-guessed hours still SAY they are guessed — but a big miss escalates anyway', () => {
   // ETA at FAR CO is ~9:27 under the tiered curve (the 49-mile leg rides at ~47 mph now,
   // not a flat 30) — a 7:00 close puts the overrun in the red band past the 90-min bars.
@@ -165,7 +166,14 @@ test('scanner-guessed hours still SAY they are guessed — but a big miss escala
   assert.equal(r.tier, 'red', 'the overrun clears the unanchored error band');
   assert.equal(r.errorMin, 90, 'nothing has reported in, so the wide unanchored band applies');
   assert.ok(r.lateBy > r.errorMin && r.lateBy <= r.errorMin * 2, `lateBy ${r.lateBy} sits in the red band`);
-  assert.ok(/auto-detected/.test(r.detail), 'the provenance caveat survives — it just no longer sets the tier');
+  // THE CAVEAT IS GONE FROM THE CARD, AND THAT IS CHAD'S CALL, 2026-09-22: "you can remove
+  // the text saying that the hours were auto detected, verify to save space." The provenance
+  // is NOT lost — the panel footer still says amber rows use auto-detected hours, and the stop
+  // card has carried a dispatcher-set / auto-detected / source-not-recorded line since v1.23.1,
+  // WITH the text the parser read. What went is one repeated sentence on a wall display read
+  // across a room. The tier assertion above is the part that mattered and it is untouched.
+  assert.ok(!/auto-detected/.test(r.detail), 'the caveat no longer rides every hours card');
+  assert.match(r.detail, /estimated arrival/, 'the facts a dispatcher acts on are still there');
 });
 
 test('a small overrun on guessed hours stays AMBER — inside the error bars, the model cannot tell', () => {

@@ -405,7 +405,11 @@ test('END TO END: the real engine feeds the real selector feeds the real text', 
     // whole message to UCS-2 (70 chars a segment instead of 160). Measured across 15 nights of
     // real rows, that one character was costing 2.55 segments on every hours text and 3.59 on
     // every trailer text. See the note in flag-sms.mts.
-    `DDS no-trailer ${DATE}: BEN runs a tractor-trailer - ACME is marked No tractor trailer by dispatch. +1 more stop on this route. Move it or swap the truck. Auto-alert, reply to Davis dispatch.`,
+    //
+    // THE PRO RIDES IT SINCE 2026-09-22. Chad: "on these messages, I would like the pro number
+    // to be up there." It is GSM-7 and it is what the reader types next; the length assertion
+    // below is what stops it quietly buying a third segment.
+    `DDS no-trailer ${DATE}: BEN runs a tractor-trailer - ACME (PRO A1) is marked No tractor trailer by dispatch. +1 more stop on this route. Move it or swap the truck. Auto-alert, reply to Davis dispatch.`,
   );
   assert.ok(text.length < 320, `two SMS segments at most: ${text.length} chars`);
 });

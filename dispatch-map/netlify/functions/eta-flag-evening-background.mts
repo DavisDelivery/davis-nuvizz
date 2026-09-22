@@ -65,7 +65,15 @@ import { auditRows } from './lib/flag-rows.mts';
 import { smsEnabled, sendSms } from './lib/sms.mts';
 import { smsRecipients, eveningTargetDate, smsText, smsClaimPath, selectTextable } from './lib/flag-sms.mts';
 // Only to report WHERE the list came from — the list itself is resolved by smsRecipients.
-import { resolveChannel, channelSpec } from './lib/alert-recipients.mts';
+import { resolveChannel, channelSpec, recipientsFor } from './lib/alert-recipients.mts';
+// THIS PATH NOW EMAILS TOO, and the header above says it does not - so it is said here as
+// well. That sentence was about the FLAG rows: the hours history column must not claim an
+// email this sweep never sent, and it still does not (emailedStops stays empty below).
+// A stacker order is different news on its own claim ledger, and this is the only sweep that
+// ever sees TOMORROW's board - which is exactly the "day before" Chad asked to hear about.
+import { emailEnabled, sendEmail } from './lib/email.mts';
+import { runStackerAlert } from './lib/stacker-alert.mts';
+import { ALERT_TO } from './lib/flag-alert.mts';
 import { readRouteClassesFor } from './lib/route-classes.mts';
 
 const TENANT = 'davis';
@@ -305,7 +313,20 @@ export default async (req: Request): Promise<Response> => {
       } catch (e: any) { console.warn('evening flag history write failed:', e?.message); }
     }
     try { await setDoc(`nuvizz_ops/flag_evening_status__${date}`, status); } catch { /* status is best-effort */ }
-    return J({ ok: true, ...status });
+    // FREIGHT THAT NEEDS A TRACTOR, on the board the routers are building RIGHT NOW. On an
+    // 8pm-11pm fire that board is TOMORROW's, so this is the pass that gives Chad the warning
+    // a day early; the claim is shared with the day sweep, so whichever sees an order first
+    // sends the one email and the other stays quiet.
+    const mailTo = recipientsFor('alertCc', storedRecipients);
+    const stacker = emailEnabled()
+      ? await runStackerAlert(stops, date, TENANT, {
+        createDocIfAbsent, send: sendEmail,
+        to: mailTo.length ? [ALERT_TO, ...mailTo] : ALERT_TO,
+        at: status.at,
+      })
+      : { enabled: false, found: 0, claimed: 0, sent: 0, failed: 0, orders: [] as string[] };
+
+    return J({ ok: true, ...status, stacker });
   } catch (err: any) {
     return J({ ok: false, error: String(err?.message || err) }, 500);
   }
