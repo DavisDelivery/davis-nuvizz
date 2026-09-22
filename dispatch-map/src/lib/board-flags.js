@@ -1359,7 +1359,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
             // Provenance for the ratchet, so the alert path and the history never have to
             // infer it: what the model said on its own, and whether it was held above that.
             computedTier, tierHeld,
-            detail: `Stop ${seqOf(s)} on ${k} — estimated arrival ~${fmtMin(clockMin)} vs close ${fmtMin(w.closeMin)} (${lateBy} min late); ${anchorNote}.${w.tier === 'auto' ? ' Hours auto-detected — verify.' : ''}${w.tier === 'assumed' ? ' No hours on file — assumed a 5pm close; set the real hours on the stop card.' : ''}${tierHeld ? ` Flagged earlier today — stays ${tier} while the estimate is past the close.` : ''}`,
+            detail: `Stop ${seqOf(s)} on ${k} — estimated arrival ~${fmtMin(clockMin)} vs close ${fmtMin(w.closeMin)} (${lateBy} min late); ${anchorNote}.${w.tier === 'assumed' ? ' No hours on file — assumed a 5pm close; set the real hours on the stop card.' : ''}${tierHeld ? ` Flagged earlier today — stays ${tier} while the estimate is past the close.` : ''}`,
             scope: 'occurrence', servedDate, fingerprint: `hours|${servedDate}|${k}|${s.stopNbr}|${w.closeMin}`,
           });
           rows.push(hoursRow);
@@ -1809,6 +1809,21 @@ function row(tier, rule, s, extra) {
   const r = {
     tier, rule,
     stopNbr: s?.stopNbr ?? null,
+    // THE PRO, ON EVERY FLAG ROW. Chad, reading the wall display: "on these messages, I would
+    // like the pro number to be up there." A card named the customer, the route and the driver
+    // and never the order — so the first thing anybody does with a flag, look the order up in
+    // NuVizz, needed a second screen to find the number to type.
+    //
+    // IT IS RESOLVED, NOT ASSUMED EQUAL TO stopNbr. On the 2026-09-22 board all 834 rows have
+    // stopNbr === primaryPro, which is exactly the coincidence that would make a shortcut here
+    // look correct forever — until a PICKUP, whose stop number is an RA-series string
+    // (RA60109098), printed an RA number under the word PRO. primaryPro first, the order's own
+    // pro second, the stop number only as a floor.
+    pro: s?.primaryPro ?? s?.pro ?? s?.stopNbr ?? null,
+    // One dock can carry several orders, and a card that names one of them is quietly wrong
+    // about what has to move. Only carried when there IS more than one — an array of length
+    // one on every row is noise every consumer then has to special-case.
+    ...(Array.isArray(s?.pros) && s.pros.length > 1 ? { pros: s.pros.map(String) } : {}),
     matchKey: s?.matchKey ?? null,
     routeName: s ? (s.routeName || s.loadNbr || null) : null,
     // WHO IS DRIVING IT. Chad, on a receiving-hours card: "Need to show route and driver

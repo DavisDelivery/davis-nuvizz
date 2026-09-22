@@ -153,7 +153,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.54.1';
+const APP_VERSION = '1.55.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -207,6 +207,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.55.0', 'A HYDRAULIC STACKER NOW EMAILS THE DAY IT LANDS, TEXTS THE NIGHT IT GOES ON THE WRONG TRUCK, AND EVERY FLAG CARD CARRIES ITS PRO. Chad, 2026-09-22, photographing the wall display with WEST RIDGE riding MICHAEL FRYE: \u201cI want those to fire an email the moment one of those hits our system so that we can address it hopefully the day before we have to deliver it\u201d; \u201cfire a text to the dispatchers at night when they\u2019re planning these loads if they\u2019ve put one on a box truck\u201d; \u201cI would like the pro number to be up there\u201d; and remove the auto-detected caveat to save space. FOUR ASKS, THREE OF THEM ONE FEATURE. THE FREIGHT FACT AND THE TRUCK MISTAKE ARE TWO DIFFERENT MESSAGES, which is the whole design. board-flags R4b only fires when a stacker is ALREADY riding a box, because it needs a route with a known truck class - so it can say nothing at all about an order nobody has planned yet, which is exactly the order worth hearing about while the fix is still free. The EMAIL therefore asks a smaller question with no truck in it (does this order carry freight that needs a tractor?) and fires per order, once, the first time it appears on any board; the TEXT is R4b, per route, at 9pm, when the mistake has actually been made. MEASURED BEFORE SHIPPING, because an email-per-order is the shape that turns into a filter rule if it is wrong: across five real boards (09-16/17/18/21/22, 4,008 stops) stacker orders ran 2,0,1,0,1 - 0.8 a board, about one email a day - and of those four exactly ONE was on a box route, so three of the four would never have been mentioned under R4b alone. The night text is quieter still at one per five days. CLAIMED ONCE PER ORDER PER BOARD DAY on the same createDocIfAbsent ratchet the flag email and the SMS already use, shared by BOTH sweeps - so the 20-minute day pass cannot send 39 times, and the evening pass, the only one that ever sees TOMORROW\u2019s board, cannot duplicate it. A failed send does NOT un-claim: a flaky provider must not become an inbox nobody reads. THE PRO IS RESOLVED, NEVER ASSUMED EQUAL TO THE STOP NUMBER, and a mutation check is why: on the 09-22 board all 834 rows have stopNbr === primaryPro, so the first version of that test passed even with the resolution replaced by `s.stopNbr` outright. A PICKUP is where they diverge - NuVizz numbers those RA60109098 - and an RA number printed under the word PRO is a number nobody can look up. It now rides the flag row itself, so the panel, the wall display, both texts and the email all read one field. THE AUTO-DETECTED CAVEAT IS GONE FROM THE HOURS CARD and the provenance is not: the panel footer still says amber rows use auto-detected hours, and the stop card has carried the full dispatcher-set / auto-detected / source-not-recorded line WITH the parsed text since v1.23.1. 22 new tests, mutation-checked three ways (drop the rule from the selector, let the claim be re-won, assume the PRO - each goes red on exactly the tests that claim to guard it). Two existing tests pinned the old behaviour and were REWRITTEN rather than weakened, each recording whose call moved the rule. 5,401 green. STACKER_ALERT=off turns the email off; the text rides the existing flag-SMS switches.'],
   ['1.54.1', 'THE MAP\u2019S RIGHT-HAND MENU GREW ITS OWN SCROLLBAR, AND THAT BAR WAS ALSO WHAT MADE IT MOVE. Chad, on the Map: \u201cI don\u2019t want this menu to move it should be fixed as i don\u2019t want to see this bar.\u201d The column holding the stops pill, Filters, Routes and the launchers was overflow-y-auto with the x axis left visible \u2014 and CSS does not let you scroll one axis only: with overflow-y:auto, overflow-x COMPUTES to auto. This repo has paid for that exact rule twice (v0.54.77, where it clipped the More dropdown, and v0.28.3). THE BAR WAS NOT COSMETIC AND IT WAS NOT IDLE. FilterToolbar is a FIXED 240px child, so the moment the column is tall enough to want a vertical scrollbar that bar takes ~15px of WIDTH, 240 no longer fits the content box, a horizontal scrollbar opens, and it eats ~15px of HEIGHT back off the cap \u2014 which is the shift he was watching. Hiding the axis that was never meant to scroll breaks the loop at its start. THE VERTICAL SCROLL STAYS ON PURPOSE: it is the ceiling that stops an open flag list pushing Filters, Routes and the launchers off the bottom of the screen, the exact defect the layout guard caught at 1440x900 when this column was built. CLIPPING x PAINTS NOTHING AWAY, checked rather than assumed \u2014 the only absolutely-positioned thing in this family is the status card\u2019s `absolute right-full` dropdown, which sits behind an early `if (barMode)` return and belongs to the Routing app bar, not to this column, which renders the pill; FilterToolbar and BoardFlagsPanel are entirely in flow. Guards on a fresh build: classes, desktop, tablet, mobile and routing-topbar all green, the last of which asserts the Map\u2019s flag panel still pushes its column down. Desktop only (!isMobile) \u2014 the phone has its own flow column and is untouched. One commit, so git revert is the whole way back.'],
   ['1.54.0', 'THE NO-TRACTOR-TRAILER TEXT HAD NEVER FIRED ON ANYTHING. Chad, on ADVANCED COLOR IMAGING sitting at stop 5 of TERRANCE \u2014 a tractor \u2014 with a hard \u201cNo tractor trailer\u201d on its card: \u201cWhy did this not send a text to the dispatcher that they put a no tractor trailer stop on a tractor trailer?\u201d BOTH GATES THAT SHOULD HAVE FIRED DID. TERRANCE is one of the day\u2019s 14 tractor routes (travel-model routeClasses), and the restriction is on file. It died on a third: dispatcherOwnsRestriction returns false for ANY mark carrying a scanner trail, and this one\u2019s trail is addressLine2 \u2014 so dispatcherTrailerBlock returned blocked:false and the 6am sweep recorded trailerConflicts:0, texted:[]. THE MAP AND THE PHONE DISAGREED ABOUT THE SAME MARK: restrictionConfidence calls that note CONFIRMED and refuses the tractor paint, because Address 2 is a field DAVIS TYPES INTO NUVIZZ \u2014 the mark is only \u201cautomatic\u201d in the sense that READING it was. Chad had already won that argument once for the paint (LOS RODRIGUEZ, v0.96.0); the alert was left on the old rule with a comment saying one line would switch it. PRESENCE BLOCKS NOW: \u201cIt should fire on anything that has this restriction on it as well as the no tractor trailer in address 2.\u201d MEASURED BEFORE SHIPPING, because widening an alert is how a phone becomes a nuisance and the whole feature gets muted \u2014 four real boards (09-16/17/18/21), 863 dock-days, 763 distinct docks that rode a tractor route, every stored note read from Firestore, ZERO NuVizz calls: texts under the old rule 0,0,0,0; under this one 0,0,0,1. The one is ADVANCED COLOR IMAGING on TERRANCE \u2014 the stop he found by eye. THE OLD RULE\u2019S REACH WAS NOT SMALL, IT WAS EMPTY: of five docks in the whole set carrying any trailer blocker, four are uline_straight_truck off orderInstructions and one is the Address 2 mark; not one had a ticked list or a box_only paint, so there was nothing on four days of boards it could fire on. It was protecting nothing. ULINE STAYS EXCLUDED, which is the exclusion he scoped by name in v0.82.0 \u2014 ADVISORY_ONLY_KEYS is still consulted and all four Uline marks keep their own key, checked on the data rather than assumed. The router is untouched: routing-build-background does not call this function. 9 tests, including both switch positions, the real stored note, and that a dispatcher\u2019s own \u201ca 53 DOES fit\u201d still wins. 5,022 green. TRAILER_ALERT_ANY_RESTRICTION=off puts it back on every side at once \u2014 panel, card and text all read the one function; malformed leaves it ON, because a typo must never silently re-silence a safety alert.'],
   ['1.53.0', 'THE CUSTOMER’S DETAILS ARE EDITABLE FROM THE SCREEN THE CALL IS ON — PER DOCK, AND WITHOUT OVERWRITING A FIELD THE FORM NEVER SHOWS. Chad: “make it where i can edit the details abbout this customer.” THE CASE FOR IT BEING HERE: a rep is on the phone when the customer says “we close at noon on Fridays now”, “use the back dock”, “call Maria not Ray”. Until now the only editor lived on the Map’s stop card — find a stop for that customer, open it, press Edit — which is three screens away with somebody talking, so in practice it did not get written down and the next driver arrived on the old hours. IT IS THE MAP’S OWN EDITOR, NOT A SECOND ONE: StopNotesEditor is imported as-is, so the fields, the validation and the document shape are identical wherever a dispatcher types them — a second editor over the same document is two things that drift, and one of them then writes the hours the flag engine reads. PER DOCK, NOT PER CUSTOMER, and this is the logistics half rather than the engineering half: receiving hours, the dock instruction and the no-tractor mark are properties of an ADDRESS. Earthly Alternative has two. One “Edit this customer” button would let a rep put the Northside hours on the Wendell Drive dock, which is a truck at a door that shut two hours earlier — so the endpoint now returns the DOCKS it swept, each with the exact customer_notes document id derived server-side (a board row carries no customerMatchKey at all, see lib/customer-key.mts, so a browser re-deriving it would disagree and write a note nothing ever reads again), the card lists them with an Edit apiece, and the panel names the dock in full above the fields. Marked, too, is WHICH dock the note on screen came from. THE WRITE IS FIELD-MASKED — setDoc(…, { merge: true }) — because this document also carries the pin override, the comms opt-out, the address override and pro_history, none of which this form shows; CLAUDE.md, in as many words: never blind-write a document you do not own. IT READS BACK BEFORE IT SAYS SAVED, and repaints the card from what Firestore actually returned through the same notesSummary the endpoint uses — a write that resolved is not the same as a document that changed, and reporting an intent as an outcome is the failure this repo has already shipped twice. It also opens on a FRESH read rather than the copy the lookup fetched minutes ago, so a colleague’s edit in between is not silently undone. AND THE CARD NO LONGER HIDES ITSELF WHEN THERE IS NOTHING ON FILE: it returned null the moment there was no note, so the customer a rep most needed to write receiving hours for — the one we have never written any for — was the exact customer with no way to. Dispatcher-gated like the Map’s copy of the same save; a build with no database opens the form and refuses Save in words instead of failing silently. Inline under the card it edits, covering nothing, the same rule as the order panel. AND THE VEHICLE MARK LEAVES A TRACE, WHICH IT DID NOT IN DRAFT: the shared editor carries the three-state vehicle picker, so a save from here can set or clear a HARD capacity block — routing-build forces the stop onto a box, dispatcherTrailerBlock raises the trailer conflict, for every future stop at that address. This copy of the save shipped in draft WITHOUT the provenance stamp the other two carry, and what caught it was v0.99.3’s own count of guarded saves failing to move, because this one had spelled the guard with different variable names. All three now write `...(eligibilityChanged(draft, existing)` verbatim and the count is 3 — the stamp still only lands when the save actually MOVED the mark, so a rep saving Friday’s receiving hours does not restamp a decision somebody made last month. 24 new tests, five of them the endpoint run for real against the Firestore fake, and a probe on each layout guard that drives the form open.'],
@@ -4721,15 +4722,37 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
                   prose on purpose: it is the line being scanned down a list of twenty cards.
                   "No driver" is printed rather than left blank, because an unassigned load at
                   10am IS the finding. */}
-              {r.routeName && (
+              {/* THE ORDER NUMBER, on the line a dispatcher is already scanning. Chad, reading
+                  the wall display: "on these messages, I would like the pro number to be up
+                  there." The card named the customer, the route and the driver and never the
+                  order — so the first thing anybody does with a flag, look it up in NuVizz,
+                  needed a second screen to find the number to type. It sits with route and
+                  driver because those three are one fact: which order, on which truck, with
+                  whom. Mono so a 9-digit number reads as a number rather than as prose, and
+                  "+N" when one dock carries several orders, because a card that names one of
+                  them is quietly wrong about how much has to move. */}
+              {(r.routeName || r.pro) && (
                 <div className="text-[11px] text-slate-700 font-medium leading-snug mt-0.5">
-                  <span className="text-slate-800">{r.routeName}</span>
-                  <span className="text-slate-400"> · </span>
-                  {r.driverName
-                    ? <span>{r.driverName}</span>
-                    : r.routeDriverCount > 1
-                      ? <span className="text-slate-600">{r.routeDriverCount} drivers</span>
-                      : <span className="text-amber-700">No driver</span>}
+                  {r.pro && (
+                    <>
+                      <span className="font-mono text-slate-800">PRO {r.pro}</span>
+                      {Array.isArray(r.pros) && r.pros.length > 1 && (
+                        <span className="text-slate-500"> +{r.pros.length - 1}</span>
+                      )}
+                      {r.routeName && <span className="text-slate-400"> · </span>}
+                    </>
+                  )}
+                  {r.routeName && (
+                    <>
+                      <span className="text-slate-800">{r.routeName}</span>
+                      <span className="text-slate-400"> · </span>
+                      {r.driverName
+                        ? <span>{r.driverName}</span>
+                        : r.routeDriverCount > 1
+                          ? <span className="text-slate-600">{r.routeDriverCount} drivers</span>
+                          : <span className="text-amber-700">No driver</span>}
+                    </>
+                  )}
                 </div>
               )}
               <div className="text-[11px] text-slate-600 leading-snug mt-0.5">{r.detail}</div>
@@ -14392,10 +14415,21 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                     <div className="min-w-0 flex-1">
                       <div className="text-lg font-bold text-slate-100 leading-snug truncate">{r.title}</div>
                       <div className="text-base text-slate-300 leading-snug">{r.detail}</div>
-                      {r.routeName && (
+                      {/* THE PRO ON THE WALL. Chad photographed this panel asking for it: the
+                          office reads these across a room and then has to go and find the
+                          order number somewhere else. Brighter than the route line because a
+                          number read at ten feet needs the contrast, and it leads the line
+                          for the same reason — it is what gets typed next. */}
+                      {(r.routeName || r.pro) && (
                         <div className="text-sm text-slate-500 mt-0.5 truncate">
+                          {r.pro && (
+                            <span className="font-mono text-slate-300">
+                              PRO {r.pro}{Array.isArray(r.pros) && r.pros.length > 1 ? ` +${r.pros.length - 1}` : ''}
+                            </span>
+                          )}
+                          {r.pro && r.routeName ? ' · ' : ''}
                           {r.routeName}
-                          {r.driverName ? ` · ${r.driverName}` : r.routeDriverCount > 1 ? ` · ${r.routeDriverCount} drivers` : ''}
+                          {r.routeName && (r.driverName ? ` · ${r.driverName}` : r.routeDriverCount > 1 ? ` · ${r.routeDriverCount} drivers` : '')}
                         </div>
                       )}
                     </div>
