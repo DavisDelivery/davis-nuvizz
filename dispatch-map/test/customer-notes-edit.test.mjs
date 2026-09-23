@@ -23,6 +23,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { installFirestoreFake } from './_firestore-fake.mjs';
+import { notesSummary, whenIso } from '../src/lib/stop-lookup.js';
 
 const APP = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 // THE CODE, WITHOUT THE 800 LINES OF CHANGELOG ABOVE IT. Every COUNT below runs against this
@@ -261,8 +262,10 @@ test('A BUILD WITH NO DATABASE REFUSES SAVE IN WORDS, rather than failing silent
   // guards). The comment there is "a visible dead control is the safe direction".
   assert.match(OPEN, /if \(!db\) \{ setEditDraft\(base\); setEditWas\(null\); return; \}/);
   assert.match(SAVE, /if \(!db\) throw new Error\('Firestore is not configured in this build\.'\);/);
-  assert.match(PANEL, /\{!canSave && \(/);
+  assert.match(PANEL, /const notice = !canSave && \(/);
   assert.match(PANEL, /disabled=\{saving \|\| !canSave\}/);
+  // …and the notice travels with the actions: the foot of the form below xl, the rail at xl.
+  assert.equal((PANEL.match(/\{notice\}/g) || []).length, 2);
   assert.match(APP, /canSave=\{!!db\}/);
 });
 
@@ -292,7 +295,65 @@ test('THE CARD NO LONGER HIDES ITSELF WHEN THERE IS NOTHING ON FILE', () => {
   // It returned null the moment there was no note. The customer we have never written
   // receiving hours for was the one customer with no way to add them.
   assert.match(CARD, /if \(!has && !\(onEdit && dockList\.length\)\) return null;/);
-  assert.match(CARD, /\{has \? 'Edit' : 'Add details'\}/);
+  assert.match(CARD, /\{hasNote \? 'Edit' : 'Add details'\}/);
+});
+
+test('THE EMPTY STATE KEYS OFF THE NOTE, NOT THE ADDRESS LIST — v1.53.0 got this wrong and nothing caught it', () => {
+  // The address list is drawn from the STOPS, and in customer mode there are always stops.
+  // Folding it into the has-anything test meant "Nothing on file yet" and "Add details" were
+  // dead code from the day they shipped: two docks and no note rendered a bare card and an
+  // "Edit" that implied something was there. Found by rendering it and looking, not by a test
+  // — so here is the test.
+  assert.match(CARD, /const hasNote = !!\(notes\?\.text \|\| notes\?\.flags\?\.length \|\| notes\?\.contacts\?\.length \|\| hours \|\| notes\?\.customerNbr\);/);
+  assert.match(CARD, /const has = hasNote \|\| \(locations \|\| \[\]\)\.length;/);
+  assert.match(CARD, /\{!hasNote && <div className="text-xs text-slate-500">Nothing on file/);
+  // The grey "2 docks — edit one below" sat 1,400px from the title on a monitor; the dock
+  // list's own heading says it, so the header says nothing for the multi-dock case.
+  assert.doesNotMatch(CARD, /edit one below/);
+});
+
+test('"NOTE SAVED …" RENDERS ON A REAL DOCUMENT — last_updated, in every shape it arrives in', () => {
+  // Every writer of customer_notes writes `last_updated`; notesSummary read `updated_at`, so
+  // the footer had never rendered on production data, and the fixture's `updatedAt` hid it in
+  // every screenshot. The read-back after a save hands back a client-SDK Timestamp, the
+  // endpoint's REST decoder hands back an ISO string; both have to become one ISO string.
+  const iso = '2026-09-16T15:20:00.000Z';
+  assert.equal(notesSummary({ last_updated: '2026-09-16T15:20:00Z' }).updatedAt, '2026-09-16T15:20:00Z', 'REST: an ISO string passes through');
+  assert.equal(notesSummary({ last_updated: { toDate: () => new Date(iso) } }).updatedAt, iso, 'client SDK: a Timestamp');
+  assert.equal(notesSummary({ last_updated: { seconds: Date.parse(iso) / 1000 } }).updatedAt, iso, 'a bare { seconds } map');
+  assert.equal(notesSummary({ last_updated: { _seconds: Date.parse(iso) / 1000 } }).updatedAt, iso, 'the underscored spelling');
+  assert.equal(notesSummary({ last_updated: new Date(iso) }).updatedAt, iso, 'a Date');
+  // last_updated WINS — it is the field the writers write; the others are legacy spellings.
+  assert.equal(notesSummary({ last_updated: '2026-09-16T15:20:00Z', updatedAt: '2020-01-01T00:00:00Z' }).updatedAt, '2026-09-16T15:20:00Z');
+  assert.equal(notesSummary({ updatedAt: '2020-01-01T00:00:00Z' }).updatedAt, '2020-01-01T00:00:00Z', 'the fixture spelling still works');
+  // MALFORMED IS NULL, NEVER "Invalid Date" ON A CARD.
+  for (const bad of [undefined, null, '', 'yesterday-ish', {}, { seconds: 'x' }, { seconds: 0 }, new Date(NaN), 42, { toDate: () => 'nope' }]) {
+    assert.equal(whenIso(bad), null, `whenIso(${JSON.stringify(bad)}) must be null`);
+  }
+  assert.equal(notesSummary({ last_updated: 'yesterday-ish' }).updatedAt, null);
+  assert.equal(notesSummary({}).updatedAt, null);
+});
+
+test('THE ACTIONS RENDER ONCE PER BREAKPOINT — the foot of the form below xl, a sticky rail at xl', () => {
+  // v1.53.0 on a 1600px monitor: a 672px form in the left corner of a 1,552px box, 880px of
+  // white, Cancel 880px from the fields, Save 1,300px down a 1,000px screen. The width is a
+  // rail now, and Save/Cancel exist exactly once at any given width.
+  assert.match(PANEL, /const actions = \(/);
+  assert.equal((PANEL.match(/\{actions\}/g) || []).length, 2, 'foot of the form + the rail');
+  assert.match(PANEL, /<div className="xl:hidden space-y-3 border-t pt-3 max-w-2xl">/, 'the foot hides at xl');
+  assert.match(PANEL, /<aside className="hidden xl:block xl:sticky xl:top-4/, 'the rail shows only at xl, and sticks');
+  assert.match(PANEL, /className="xl:hidden shrink-0 rounded-lg border px-3 min-h-\[44px\]/, 'the title-line Cancel hides at xl too');
+  assert.match(PANEL, /xl:grid xl:grid-cols-\[minmax\(0,42rem\)_minmax\(16rem,22rem\)\]/, 'the form column stays capped at 42rem');
+  // A rep's sentence, not an engineer's.
+  assert.match(PANEL, /Applies to this address only\./);
+  assert.doesNotMatch(PANEL, /read back before it says saved/);
+});
+
+test('ON A MONITOR THE EDIT BUTTON SITS BESIDE THE ADDRESS IT EDITS, and an email is not split at its first letter', () => {
+  assert.match(CARD, /text-\[11px\] text-slate-600 break-words min-w-0 flex-1 xl:flex-none xl:max-w-2xl/);
+  // break-all rendered "r / eceiving@…" on a phone; break-words moves the whole address down.
+  assert.match(CARD, /mailto:\$\{c\.email\}`\} className="text-blue-800 hover:underline break-words"/);
+  assert.doesNotMatch(CARD, /break-all/);
 });
 
 test('MORE THAN ONE DOCK IS EDITED ONE AT A TIME, and the note says which dock it is about', () => {

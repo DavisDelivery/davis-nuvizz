@@ -454,6 +454,27 @@ export function promptedSource({ day } = {}) {
  * real days two inches up, from the warehouse, and printing edit dates beside them is the
  * exact failure that module exists to stop.
  */
+/**
+ * A stored timestamp as an ISO string, whatever shape it arrived in — or null. The endpoint's
+ * REST decoder hands back an ISO string; the browser's Firestore SDK hands back a Timestamp
+ * with toDate(); a document read some other way may carry { seconds } or { _seconds }.
+ * Anything else — a number that is not a time, a string Date cannot parse, an empty object —
+ * is null rather than "Invalid Date" on a card.
+ */
+export function whenIso(v) {
+  if (v === null || v === undefined || v === '') return null;
+  try {
+    if (typeof v === 'string') { const t = Date.parse(v); return Number.isFinite(t) ? v : null; }
+    if (v instanceof Date) return Number.isFinite(v.getTime()) ? v.toISOString() : null;
+    if (typeof v === 'object') {
+      if (typeof v.toDate === 'function') { const d = v.toDate(); return d instanceof Date && Number.isFinite(d.getTime()) ? d.toISOString() : null; }
+      const secs = Number(v.seconds ?? v._seconds);
+      if (Number.isFinite(secs) && secs > 0) return new Date(secs * 1000).toISOString();
+    }
+  } catch { /* a malformed stamp is a null, never a throw on a card */ }
+  return null;
+}
+
 export function notesSummary(notes) {
   if (!notes || typeof notes !== 'object') return null;
   const flags = [];
@@ -469,7 +490,13 @@ export function notesSummary(notes) {
     text: s(notes.notes) || s(notes.note) || null,
     hours: notes.receiving_hours || notes.hours || null,
     customerNbr: s(notes.customer_nbr) || s(notes.customerNbr) || null,
-    updatedAt: s(notes.updated_at) || s(notes.updatedAt) || null,
+    // `last_updated` FIRST — it is the field every writer of customer_notes actually writes
+    // (the Map, Routing, the address fixer, Stop lookup). `updated_at` was read here for weeks
+    // and nothing ever wrote it, so "note saved …" never rendered on a real document; the
+    // fixture carried `updatedAt` and hid that. whenIso takes the three shapes the value
+    // arrives in: an ISO string off the REST decoder, a Timestamp off the client SDK after a
+    // save, and a bare { seconds } map.
+    updatedAt: whenIso(notes.last_updated) || whenIso(notes.updated_at) || whenIso(notes.updatedAt) || null,
     updatedBy: s(notes.updated_by) || s(notes.updatedBy) || null,
     override: notes.address_override || null,
     flags,
