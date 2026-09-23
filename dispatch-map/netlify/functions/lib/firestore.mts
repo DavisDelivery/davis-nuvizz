@@ -135,10 +135,15 @@ export async function getAccessToken(): Promise<string> {
   return __token.access_token;
 }
 
+// integerValue is an int64 carried as a decimal string. A JS integer at or past 2^63 has no
+// int64 form — String(1e19) is out of range and String(1e21) is "1e+21", not an integer at all
+// — so it goes as the double it already is (reads back as the same JS number). Every integer
+// inside int64 is encoded exactly as before; only values that could never be written change.
+const INT64_LIMIT = 2 ** 63;
 function toFirestoreValue(v: any): any {
   if (v === null || v === undefined) return { nullValue: null };
   if (typeof v === 'boolean') return { booleanValue: v };
-  if (typeof v === 'number') return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
+  if (typeof v === 'number') return Number.isInteger(v) && Math.abs(v) < INT64_LIMIT ? { integerValue: String(v) } : { doubleValue: v };
   if (typeof v === 'string') return { stringValue: v };
   if (Array.isArray(v)) return { arrayValue: { values: v.map(toFirestoreValue) } };
   if (typeof v === 'object') {
@@ -380,6 +385,206 @@ export async function runQuery(structuredQuery: any): Promise<any[]> {
     if (obj) out.push({ _id: parts[parts.length - 1], ...obj });
   }
   return out;
+}
+
+// ── Aggregation reads: VERIFY A WRITE BY COUNTING WHAT LANDED ────────────────
+//
+// ORCHESTRATION.md: "Firestore writes are verified by direct aggregation reads, never by
+// counters." A counter the writer bumps says what the writer MEANT to do; a count the
+// database computes says what is actually there. The two disagree exactly when something
+// went wrong — a commit that failed half-way, a doc id that collided with another, a batch
+// that landed twice — which is the only time the check matters.
+//
+// documents:runAggregationQuery with COUNT (and optional SUM over numeric fields) is one
+// round-trip that reads index entries, not documents, so counting 8,680 location docs costs
+// a fraction of listing them. Filters are single-field EQUAL only, ANDed: every equality
+// field is served by Firestore's automatic single-field indexes, so no composite index has
+// to exist for this to work on a fresh collection.
+//
+// Additive (Sep 2026, Shiplify trial import). Nothing else in this file calls it.
+
+const AGG_FIELD_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * PURE. The documents:runAggregationQuery body for "how many docs in `collectionId` match
+ * every `equals` pair, and what do `sumFields` add up to across them". Exported so a test
+ * can pin the shape (alias names, AND composition, value encoding) without a network.
+ *
+ * Field names are restricted to plain identifiers: a dotted or back-ticked path is a nested
+ * field in Firestore's grammar, and a verification that silently counted a different field
+ * would be worse than one that refused to run.
+ */
+export function buildAggregationQueryBody(collectionId: string, equals: Record<string, any> = {}, sumFields: string[] = []): any {
+  const coll = String(collectionId || '');
+  if (!coll || /[/\\?#]/.test(coll)) throw new Error(`aggregation: bad collection id ${JSON.stringify(collectionId)}`);
+  const eqKeys = Object.keys(equals || {});
+  for (const k of [...eqKeys, ...sumFields]) {
+    if (!AGG_FIELD_RE.test(k)) throw new Error(`aggregation: field ${JSON.stringify(k)} must be a plain identifier`);
+  }
+  const filters = eqKeys.map((k) => {
+    const v = equals[k];
+    if (v === undefined || (typeof v === 'object' && v !== null)) throw new Error(`aggregation: ${k} must be a scalar to filter on`);
+    return { fieldFilter: { field: { fieldPath: k }, op: 'EQUAL', value: toFirestoreValue(v) } };
+  });
+  const structuredQuery: any = { from: [{ collectionId: coll }] };
+  if (filters.length === 1) structuredQuery.where = filters[0];
+  else if (filters.length > 1) structuredQuery.where = { compositeFilter: { op: 'AND', filters } };
+  const aggregations: any[] = [{ alias: 'n_docs', count: {} }];
+  sumFields.forEach((f, i) => aggregations.push({ alias: `sum_${i}`, sum: { field: { fieldPath: f } } }));
+  return { structuredAggregationQuery: { structuredQuery, aggregations } };
+}
+
+/**
+ * PURE. The response of runAggregationQuery → { count, sums }. A missing or non-numeric
+ * aggregate is NaN, NEVER 0: `Number(null)` is 0, and a verification that reads "no answer"
+ * as "zero documents" would pass an empty collection against an expected zero and fail
+ * nothing else — the check must be impossible to satisfy by not running.
+ */
+export function parseAggregationResponse(rows: any, sumFields: string[] = []): { count: number; sums: Record<string, number> } {
+  const list = Array.isArray(rows) ? rows : [rows];
+  const hit = list.find((r: any) => r && r.result && r.result.aggregateFields);
+  if (!hit) throw new Error('aggregation: response carried no aggregateFields');
+  const f = hit.result.aggregateFields;
+  const num = (v: any): number => {
+    if (!v || typeof v !== 'object') return NaN;
+    if ('integerValue' in v) { const n = Number(v.integerValue); return Number.isFinite(n) ? n : NaN; }
+    if ('doubleValue' in v) { const n = Number(v.doubleValue); return Number.isFinite(n) ? n : NaN; }
+    return NaN;
+  };
+  const sums: Record<string, number> = {};
+  sumFields.forEach((name, i) => { sums[name] = num(f[`sum_${i}`]); });
+  return { count: num(f.n_docs), sums };
+}
+
+/**
+ * COUNT (and optional SUM) over a ROOT collection filtered by single-field equalities. One
+ * round-trip. Throws on any transport or shape failure — a verification that cannot run must
+ * say so, not report a number.
+ */
+export async function aggregateByEquals(
+  collectionId: string, equals: Record<string, any> = {}, sumFields: string[] = [],
+): Promise<{ count: number; sums: Record<string, number> }> {
+  const body = buildAggregationQueryBody(collectionId, equals, sumFields);
+  const token = await getAccessToken();
+  const sa = loadServiceAccount();
+  const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents:runAggregationQuery`;
+  const resp = await fsFetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw new Error(`runAggregationQuery ${collectionId} failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
+  return parseAggregationResponse(await resp.json(), sumFields);
+}
+
+// ── Batched WHOLE-DOCUMENT writes ────────────────────────────────────────────
+//
+// For documents a single writer OWNS OUTRIGHT (the Shiplify importer's location and index
+// docs), a whole-document replace is the correct write: the doc must be exactly what this
+// run derived, with no field left over from an earlier shape. For anything another writer
+// also touches, use updateDocFields — see its header for what a blind write took with it.
+//
+// documents:commit takes up to 500 writes and is atomic PER COMMIT (all of one commit land
+// or none do), never across commits — so a caller that needs "all or nothing" across more
+// than one commit has to verify afterwards (aggregateByEquals above) rather than assume.
+
+export const COMMIT_MAX_WRITES = 500;
+// Firestore caps an API request at 10 MiB; stay well under it so a batch of fat index
+// chunks never becomes a 400 the caller has to diagnose.
+export const COMMIT_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
+ * PURE. `items` → the documents:commit bodies that write them, in order, each at most
+ * `maxWrites` writes and (by encoded size) at most `maxBytes`. A single item bigger than
+ * `maxBytes` rides alone rather than being dropped — Firestore will then refuse it loudly,
+ * which is the right outcome for a document over the size cap. Every path goes through
+ * assertSafePath, so a bad id throws here, before any network, naming the path.
+ */
+export function buildBatchWriteBodies(
+  dbName: string,
+  items: Array<{ path: string; data: any }>,
+  opts: { maxWrites?: number; maxBytes?: number } = {},
+): any[] {
+  const maxWrites = Math.max(1, Math.min(COMMIT_MAX_WRITES, Math.trunc(Number(opts.maxWrites) || COMMIT_MAX_WRITES)));
+  const maxBytes = Math.max(1, Number(opts.maxBytes) || COMMIT_MAX_BYTES);
+  const bodies: any[] = [];
+  let writes: any[] = [];
+  let bytes = 0;
+  for (const it of items || []) {
+    assertSafePath(it?.path);
+    const w = { update: { name: `${dbName}/documents/${it.path}`, fields: objectToFields(it.data || {}) } };
+    const size = JSON.stringify(w).length + 1;
+    if (writes.length && (writes.length >= maxWrites || bytes + size > maxBytes)) {
+      bodies.push({ writes });
+      writes = [];
+      bytes = 0;
+    }
+    writes.push(w);
+    bytes += size;
+  }
+  if (writes.length) bodies.push({ writes });
+  return bodies;
+}
+
+/**
+ * Write `items` as whole documents, 500 per commit. Returns how many commits ran and how
+ * many writes Firestore acknowledged (writeResults) — an acknowledgement, not a count of
+ * what is stored; verify with aggregateByEquals. Throws on the first failed commit, naming
+ * how many earlier commits had already landed, because those are NOT rolled back.
+ *
+ * `single: true` — the caller needs ALL-OR-NOTHING (the Shiplify index: a head over chunks of
+ * another build is an index no reader can load). If the items need more than one commit this
+ * throws BEFORE anything is sent, so the caller never publishes half.
+ */
+export async function batchWriteDocs(
+  items: Array<{ path: string; data: any }>,
+  opts: { maxWrites?: number; maxBytes?: number; single?: boolean } = {},
+): Promise<{ commits: number; acknowledged: number }> {
+  if (!items || !items.length) return { commits: 0, acknowledged: 0 };
+  const sa = loadServiceAccount();
+  const db = `projects/${sa.project_id}/databases/${firestoreDatabase()}`;
+  const bodies = buildBatchWriteBodies(db, items, opts);
+  if (opts.single && bodies.length > 1) {
+    throw new Error(`batchWriteDocs: ${items.length} writes need ${bodies.length} commits and the caller asked for ONE atomic commit — nothing was written`);
+  }
+  let commits = 0;
+  let acknowledged = 0;
+  for (const body of bodies) {
+    const token = await getAccessToken();
+    const resp = await fsFetch(`${FIRESTORE_BASE}/${db}/documents:commit`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      throw new Error(`batchWriteDocs commit ${commits + 1}/${bodies.length} failed after ${commits} landed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
+    }
+    const out: any = await resp.json().catch(() => ({}));
+    acknowledged += Array.isArray(out?.writeResults) ? out.writeResults.length : 0;
+    commits += 1;
+  }
+  return { commits, acknowledged };
+}
+
+/**
+ * getDoc, but only the named top-level fields come back (documents.get mask.fieldPaths).
+ * For "compare one small field on a document that may be a megabyte" — the Shiplify raw
+ * chunk replay check reads content_hash without pulling a thousand rows back over the wire.
+ * null when the document is absent, exactly like getDoc.
+ */
+export async function getDocMasked(path: string, fields: string[]): Promise<any | null> {
+  assertSafePath(path);
+  const token = await getAccessToken();
+  const sa = loadServiceAccount();
+  const url = new URL(`${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${path}`);
+  for (const f of fields || []) url.searchParams.append('mask.fieldPaths', f);
+  const resp = await fsFetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+  if (resp.status === 404) return null;
+  if (!resp.ok) throw new Error(`getDocMasked ${path} failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
+  const body: any = await resp.json();
+  // A masked get of an existing doc whose masked fields are all absent comes back with no
+  // `fields` at all; that is "exists, fields empty", not "absent".
+  return docToObject(body) || (body && body.name ? {} : null);
 }
 
 // List top-level collection ids (or sub-collections under `docPath` if given).

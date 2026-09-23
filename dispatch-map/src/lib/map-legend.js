@@ -141,6 +141,12 @@ export function emptyLegendInventory() {
     iconCounts: {},             // restriction key → count of stops drawing it
     shapes: { single: 0, multi: 0, overflow: 0 },
     hiddenByPin: 0,             // stops whose icons a pin took over (DNS / route pin / muted)
+    // The Shiplify trial (lib/place-mark.js). The hollow lime pins, and the place marks by kind
+    // — a place mark rides every marker a stop can draw (centre, corner badge, muted slate,
+    // cluster badge), so every stop that has one is a stop the Legend row can account for.
+    shiplifyDock: 0,
+    shiplifyForklift: 0,
+    placeMarks: { residential: 0, school: 0, church: 0, government: 0 },
   };
 }
 
@@ -172,6 +178,12 @@ export function buildLegendInventory(entries) {
     // point of the change: an identity that shows up only when nothing else needed the space
     // is not an identity.
     if (e.pickup) inv.pickups += 1;
+    // Counted BEFORE the hidden gate, like the PU mark: a place mark rides the DNS ✕, the route
+    // pin and the muted ring too. The pin kinds are stopShiplifyMarks' own answer, which already
+    // refuses every stop a pin or a colour takes over.
+    if (e.placeMark && e.placeMark in inv.placeMarks) inv.placeMarks[e.placeMark] += 1;
+    if (e.shiplifyPin === 'dock') inv.shiplifyDock += 1;
+    else if (e.shiplifyPin === 'forklift') inv.shiplifyForklift += 1;
     if (e.hidden) { inv.hiddenByPin += 1; continue; }
     if (!icons.length) continue;
     inv.withIcons += 1;

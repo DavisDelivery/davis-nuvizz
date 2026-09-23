@@ -61,11 +61,14 @@ export async function loadMarkerPipeline() {
   if (cached) return cached;
   const { TIME_MARK_KEYS } = await import('../../src/lib/time-marks.js');
   const { visibleIconKeys } = await import('../../src/lib/map-legend.js');
+  // The place-mark artwork (lib/place-glyphs.js) — the cluster draws its badge from it.
+  const glyphs = await import('../../src/lib/place-glyphs.js');
   const lines = readFileSync(APP_PATH, 'utf8').split('\n');
   const body = NEEDED.map((n) => declarationSource(lines, n)).join('\n\n');
+  const glyphNames = Object.keys(glyphs);
   // eslint-disable-next-line no-new-func
-  const build = new Function('TIME_MARK_KEYS', 'visibleIconKeys', `${body}\nreturn { ${NEEDED.join(', ')} };`);
-  cached = build(TIME_MARK_KEYS, visibleIconKeys);
+  const build = new Function('TIME_MARK_KEYS', 'visibleIconKeys', ...glyphNames, `${body}\nreturn { ${NEEDED.join(', ')} };`);
+  cached = build(TIME_MARK_KEYS, visibleIconKeys, ...glyphNames.map((k) => glyphs[k]));
   return cached;
 }
 
@@ -93,6 +96,12 @@ const ICON_NEEDED = [
   // dies on "PLAIN_GEOMETRY is not defined" at the last line of the key.
   'PLAIN_GEOMETRY',
   'stopMarkerIcon', '__stopIconCache',
+  // The Shiplify trial and the Building type: the one decision the marker and the Legend share.
+  'stopShiplifyMarks',
+  // The PU corner badge. Missing from this list until the Shiplify work, so any pickup built
+  // through this helper died on "pickupBadgeSvg is not defined" — the tests passed only because
+  // none of them built one.
+  'pickupBadgeSvg',
   'getRestrictionBadgeKeys', 'resolveRestrictionKey', 'classifyStopStatus',
   'execArrivalTs', 'execDeliveredTs', 'hasReceivingHours',
   'STATUS_META', 'FLAG_COLORS', 'PIN_TINTS', 'flagColor', 'noteWithoutQuestionFlag',
@@ -122,6 +131,8 @@ export async function loadStopMarkerIcon() {
     import('../../src/lib/time-marks.js'),
     import('../../src/lib/carrier-mark.js'),
     import('../../src/lib/address-fix.js'),
+    import('../../src/lib/place-mark.js'),
+    import('../../src/lib/place-glyphs.js'),
   ]);
   const injected = {};
   for (const m of mods) for (const [k, v] of Object.entries(m)) if (!ICON_NEEDED.includes(k)) injected[k] = v;
@@ -151,15 +162,19 @@ export async function loadStopMarkerIcon() {
 /** The plain-disc builders — what the status pins, the numbered route pins and the unplanned
  * dots are drawn with (no restriction glyphs). Self-contained, so they load without the icon
  * set; the Estes ring tests build real discs through these and read the SVG back. */
-const DISC_NEEDED = ['readableTextColor', 'countBadgeSvg', 'unplannedDotSvg', 'circleMarkerSvg'];
+const DISC_NEEDED = ['readableTextColor', 'pickupBadgeSvg', 'countBadgeSvg', 'unplannedDotSvg', 'circleMarkerSvg'];
 let cachedDisc = null;
 export async function loadDiscPipeline() {
   if (cachedDisc) return cachedDisc;
   const lines = readFileSync(APP_PATH, 'utf8').split('\n');
   const body = DISC_NEEDED.map((n) => declarationSource(lines, n)).join('\n\n');
+  // The place-mark and forklift artwork the discs compose (lib/place-glyphs.js), injected from
+  // the real module.
+  const glyphs = await import('../../src/lib/place-glyphs.js');
+  const names = Object.keys(glyphs);
   // eslint-disable-next-line no-new-func
-  const build = new Function(`${body}\nreturn { ${DISC_NEEDED.join(', ')} };`);
-  cachedDisc = build();
+  const build = new Function(...names, `${body}\nreturn { ${DISC_NEEDED.join(', ')} };`);
+  cachedDisc = build(...names.map((k) => glyphs[k]));
   return cachedDisc;
 }
 

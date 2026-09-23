@@ -51,6 +51,8 @@ export async function loadStopMarkerPipeline() {
     ...await lib('carrier-mark.js'),
     ...await lib('address-fix.js'),
     ...await lib('time-restrictions.js'),
+    ...await lib('place-mark.js'),
+    ...await lib('place-glyphs.js'),
   };
 
   // stopMarkerIcon only ever constructs Size and Point off the google namespace.
@@ -74,6 +76,15 @@ export async function loadStopMarkerPipeline() {
     [{}, null, { seq: 3, inRoute: true }],
     [{}, null, { plannedMuted: true }],
     [{}, null, { matched: true }],
+    [{}, null, { searchMatched: true }],
+    [{}, null, { tractorDelivered: true }],
+    // The Shiplify trial and the Building type: a place mark in every form, and both pins.
+    [{}, { building_type: 'school' }, {}],
+    [{}, { building_type: 'church' }, { seq: 2, inRoute: true }],
+    [{}, { building_type: 'government' }, { plannedMuted: true }],
+    [{}, { building_type: 'residential', equipment_restrictions: ['liftgate_required'] }, {}],
+    [{ isPlanned: false }, null, { shiplifyOn: true, shiplifyRec: { dock_access: 'yes' } }],
+    [{}, null, { shiplifyOn: true, shiplifyRec: { dock_access: 'no', forklift: 'yes' } }],
   ];
   // BOTH stop types through EVERY branch. Deliveries are not incidental here: a delivery takes
   // renderers a pickup never reaches (the 16px resting dot, the muted ring), and resolving the

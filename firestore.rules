@@ -469,6 +469,10 @@ service cloud.firestore {
     //   read getDocs over the collection
     // match /tractor_locations/{doc}       { allow read: if canRead(); allow write: if false; }
     //
+    // The Shiplify trial's compact index — written only by shiplify-import-background.
+    //   read getDoc on the head and each chunk (useShiplifyData)
+    // match /shiplify_index/{doc}          { allow read: if canRead(); allow write: if false; }
+    //
     // Customer→driver history behind the "habit" line on a stop.
     //   read getDoc on one customer key
     // match /routing_customer_drivers/{doc} { allow read: if canRead(); allow write: if false; }

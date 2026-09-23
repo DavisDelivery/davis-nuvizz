@@ -620,3 +620,436 @@ test('order within a dock is deterministic — the dismiss key must not move und
   assert.deepEqual(a[0].stopNbrs, b[0].stopNbrs);
   assert.equal(a[0].dismissKey, b[0].dismissKey);
 });
+
+// ── R7b: A SCHOOL, A CHURCH OR A COURTHOUSE ON A TRACTOR ─────────────────────
+//
+// A school car line at 3pm, a church lot and a courthouse are not places a 53' trailer turns
+// around in. A dispatcher can now say what kind of place a customer is (Building type on the
+// customer's notes), and Chad is trialling Shiplify's location data, which says it too. A stop
+// wearing school, church or government counts as NO TRACTOR TRAILER — but it is not an
+// equipment restriction: no icon, nothing written into equipment_restrictions, and it never
+// texts, emails or reaches flag history. It is a card on the board for the router to look at.
+//
+// The failure it prevents is R7's: a driver who cannot turn into the lot leaves with the
+// pallets still on the trailer. The failure it must NOT cause is crying wolf at a school a
+// tractor serves every week — hence the lifts, and hence "not loaded" never reading as "not seen".
+import { resolvePlaceMark, tractorSeenAt, tractorPlaceKeys, placeNoTractorReason } from '../src/lib/place-mark.js';
+import { normalizeMatchKey } from '../src/lib/matchKey.js';
+import { drawnRestrictionKeys } from '../src/lib/map-legend.js';
+import { selectAlertable } from '../netlify/functions/lib/flag-alert.mts';
+import { mergeSweep } from '../netlify/functions/lib/flag-history.mts';
+import { flattenForConsumers } from '../netlify/functions/lib/flag-rows.mts';
+import { readPlaceLift, placeRunFields, PLACE_LIFT_READ_CAP } from '../netlify/functions/lib/place-lift.mts';
+import { tractorLocPath } from '../netlify/functions/lib/tractor-flags.mts';
+import { heldReason } from '../netlify/functions/eta-flag-check.mts';
+
+const runP = (stops, notesObj = {}, placeMarks = undefined, routeClasses = { 'TRACTOR 2': 'tractor', 'BOX 1': 'box' }) =>
+  computeBoardFlags({
+    stops, notes: new Map(Object.entries(notesObj)), rosterRows: [],
+    servedDate: DATE, dayKey: 'tue',
+    opts: {
+      depot: DEPOT, departMin: 8 * 60,
+      travel: { legs: {}, ...(routeClasses ? { routeClasses } : {}) },
+      ...(placeMarks !== undefined ? { placeMarks } : {}),
+    },
+  });
+const placeRows = (out) => out.rows.filter((r) => r.rule === 'place_trailer_conflict');
+const shiplifyRec = (types, over = {}) => ({ match_key: 'acme', place_key: '', location_types: types, tariff_items: [], ...over });
+// The caller shape the board uses: its switch, its per-stop Shiplify lookup, and its tractor map.
+const withShiplify = (rec, over = {}) => ({ shiplifyOn: true, shiplifyOf: () => rec, tractorSeenOf: () => false, tractorKnown: true, ...over });
+
+test('A SCHOOL ON A TRACTOR-TRAILER ROUTE FLAGS RED, with its own reason and the dispatcher named', () => {
+  const out = runP([stop({ businessName: 'LINCOLN ELEMENTARY' })], { acme: { building_type: 'school' } });
+  const rows = placeRows(out);
+  assert.equal(rows.length, 1);
+  const r = rows[0];
+  assert.equal(r.tier, 'red');
+  assert.equal(r.placeMark, 'school');
+  assert.equal(r.placeSource, 'dispatcher');
+  assert.equal(r.routeClass, 'tractor');
+  assert.equal(r.routeKey, 'TRACTOR 2');
+  assert.equal(r.scope, 'occurrence');
+  assert.equal(r.title, 'School on a tractor-trailer — LINCOLN ELEMENTARY', 'its own title, never R7\'s "No tractor trailer — …"');
+  assert.ok(r.detail.startsWith('TRACTOR 2 is running a tractor-trailer, but this stop is a school (set by dispatch).'), r.detail);
+  assert.ok(r.detail.includes('School: no tractor trailer unless Vehicle is Tractor-trailer OK.'), r.detail);
+  assert.ok(r.detail.includes('Stop 3 on the route.'), r.detail);
+  assert.ok(r.detail.endsWith('Move it to a box truck, or set Vehicle to Tractor-trailer OK if a trailer fits.'), r.detail);
+  assert.deepEqual(r.stopNbrs, ['1001']);
+  assert.equal(r.ordersHere, 1);
+  assert.equal(r.seq, 3);
+  assert.equal(out.redCount, 1, 'it counts on the red chip like R7');
+  assert.equal(out.checked.placeConflicts, 1);
+  assert.deepEqual(trailerRows(out), [], 'it is its own rule, not a trailer_conflict in disguise');
+});
+
+test('a CHURCH and a GOVERNMENT building flag too, each with its own reason text', () => {
+  for (const [bt, label, noun, title] of [
+    ['church', 'Church', 'church', 'Church on a tractor-trailer — ACME'],
+    // A noun, not the pin's label: "this stop is a Government" is not a sentence.
+    ['government', 'Government', 'government building', 'Government building on a tractor-trailer — ACME'],
+  ]) {
+    const [r] = placeRows(runP([stop()], { acme: { building_type: bt } }));
+    assert.ok(r, `${bt} must flag on a tractor`);
+    assert.equal(r.placeMark, bt);
+    assert.equal(r.title, title);
+    assert.equal(placeNoTractorReason(bt), `${label}: no tractor trailer unless Vehicle is Tractor-trailer OK`);
+    assert.ok(r.detail.includes(`this stop is a ${noun} (set by dispatch).`), r.detail);
+    assert.ok(r.detail.includes(`${placeNoTractorReason(bt)}.`), r.detail);
+  }
+});
+
+test('the same school on a BOX-TRUCK route is exactly what it should be on — no card', () => {
+  const out = runP([stop({ loadNbr: 'BOX 1', routeName: 'BOX 1' })], { acme: { building_type: 'school' } });
+  assert.deepEqual(placeRows(out), []);
+  assert.equal(out.checked.placeConflicts, 0);
+});
+
+test('a school on a route NOBODY HAS CLASSED is not judged — and says so, never "clean"', () => {
+  const out = runP([stop({ loadNbr: 'BRENT', routeName: 'BRENT', driverName: 'Brent  Bryd' })],
+    { acme: { building_type: 'school' } }, undefined, { MARCUS: 'tractor' });
+  assert.deepEqual(placeRows(out), [], 'not knowing the truck is not knowing it is a tractor');
+  assert.deepEqual(out.skipped.routesNoTruckClass, [{ route: 'BRENT', drivers: ['Brent  Bryd'] }]);
+  const none = runP([stop()], { acme: { building_type: 'school' } }, undefined, null);
+  assert.deepEqual(placeRows(none), []);
+  assert.equal(none.skipped.noTruckClasses, true, 'no class map at all is reported as not checked');
+});
+
+test('a dispatcher who set Vehicle to "Tractor-trailer OK" lifts it — never told off for answering the question', () => {
+  const out = runP([stop()], { acme: { building_type: 'church', vehicle_eligibility: 'tractor' } });
+  assert.deepEqual(placeRows(out), []);
+  assert.deepEqual(out.placeLiftWanted, [], 'and no tractor record is even asked for');
+});
+
+test('A TRACTOR HAS ALREADY DELIVERED HERE (by match key) — the rule stands down', () => {
+  const tractorMap = new Map([['acme', { first: '2026-03-02' }]]);
+  const seenOf = (s) => tractorSeenAt(s, tractorMap, tractorPlaceKeys(tractorMap)).any;
+  const out = runP([stop()], { acme: { building_type: 'school' } }, { tractorSeenOf: seenOf, tractorKnown: true });
+  assert.deepEqual(placeRows(out), []);
+  assert.equal(out.checked.placeLift, 'tractor_seen');
+});
+
+test('…and BY STREET + ZIP under another customer name — the caller decides, the engine obeys', () => {
+  // A tractor delivered to "GWINNETT COUNTY SCHOOLS" at 905 Main St; today's order is booked
+  // as "LINCOLN ELEMENTARY" at the same building. Different match key, same lot.
+  const addr = { addr1: '905 MAIN ST', city: 'LAWRENCEVILLE', zip: '30046' };
+  const key = normalizeMatchKey('LINCOLN ELEMENTARY', addr.addr1, addr.city, addr.zip);
+  const school = stop({ businessName: 'LINCOLN ELEMENTARY', ...addr, matchKey: key });
+  const tractorMap = new Map([[normalizeMatchKey('GWINNETT COUNTY SCHOOLS', addr.addr1, addr.city, addr.zip), { first: '2026-01-05' }]]);
+  const seen = tractorSeenAt(school, tractorMap, tractorPlaceKeys(tractorMap));
+  assert.equal(seen.byKey, false, 'the fixture must exercise the street + ZIP path, not the key path');
+  assert.equal(seen.byPlace, true);
+  const notes = { [key]: { building_type: 'school' } };
+  assert.equal(placeRows(runP([school], notes)).length, 1, 'without the lift it flags');
+  const lifted = runP([school], notes, { tractorSeenOf: (s) => tractorSeenAt(s, tractorMap, tractorPlaceKeys(tractorMap)).any, tractorKnown: true });
+  assert.deepEqual(placeRows(lifted), [], 'with it, it does not');
+});
+
+test('RESIDENTIAL NEVER FLAGS — a house is a place mark, not a truck rule', () => {
+  assert.deepEqual(placeRows(runP([stop()], { acme: { building_type: 'residential' } })), []);
+  // Nor a Shiplify residential, switch on.
+  const res = shiplifyRec([], { tariff_items: ['RES'] });
+  assert.equal(resolvePlaceMark({ shiplify: res, shiplifyOn: true }).mark, 'residential', 'the fixture really is residential');
+  assert.deepEqual(placeRows(runP([stop()], {}, withShiplify(res))), []);
+});
+
+test('A SHIPLIFY SCHOOL FLAGS ONLY WHILE THE CALLER\'S SWITCH IS ON', () => {
+  const rec = shiplifyRec(['School']);
+  const on = placeRows(runP([stop()], {}, withShiplify(rec)));
+  assert.equal(on.length, 1);
+  assert.equal(on[0].placeSource, 'shiplify');
+  assert.ok(on[0].detail.includes('this stop is a school (from Shiplify).'), on[0].detail);
+  assert.deepEqual(placeRows(runP([stop()], {}, withShiplify(rec, { shiplifyOn: false }))), [], 'switch off');
+  assert.deepEqual(placeRows(runP([stop()], {}, withShiplify(rec, { shiplifyOn: undefined }))), [],
+    'a caller that did not SAY the trial is on does not get it — only an explicit true counts');
+  assert.deepEqual(placeRows(runP([stop()], {})), [], 'no placeMarks at all (a server sweep): never Shiplify');
+});
+
+test('the board\'s own { rec, via } lookup shape is read, not silently treated as "no record"', () => {
+  const rec = shiplifyRec(['Courthouse']);
+  const rows = placeRows(runP([stop()], {}, withShiplify(null, { shiplifyOf: () => ({ rec, via: 'place' }) })));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].placeMark, 'government');
+});
+
+test('A DISPATCHER\'S BUILDING TYPE ALWAYS COUNTS — switch off, and with no placeMarks at all', () => {
+  const notes = { acme: { building_type: 'government' } };
+  assert.equal(placeRows(runP([stop()], notes, { shiplifyOn: false, tractorSeenOf: () => false, tractorKnown: true })).length, 1);
+  const serverShape = runP([stop()], notes);
+  assert.equal(placeRows(serverShape).length, 1, 'absent placeMarks: dispatcher types still judged');
+  assert.equal(serverShape.checked.placeLift, 'none', 'and the reader can see no tractor lift was applied');
+  assert.deepEqual(serverShape.placeLiftWanted, ['acme'], 'while naming the key a lift would need');
+});
+
+test('"None" HIDES A SHIPLIFY SCHOOL — the dispatcher wins in both directions', () => {
+  const out = runP([stop()], { acme: { building_type: 'none' } }, withShiplify(shiplifyRec(['School'])));
+  assert.deepEqual(placeRows(out), []);
+});
+
+test('NOT LOADED IS NOT "NOT SEEN": tractorKnown false holds every row and says why', () => {
+  const out = runP([stop()], { acme: { building_type: 'school' } }, { tractorSeenOf: () => false, tractorKnown: false });
+  assert.deepEqual(placeRows(out), [], 'a lift nobody can evaluate would cry wolf on a school a tractor serves weekly');
+  assert.equal(out.skipped.placeTractorUnknown, true);
+  assert.equal(out.checked.placeLift, 'not_checked');
+  const loaded = runP([stop()], { acme: { building_type: 'school' } }, { tractorSeenOf: () => false, tractorKnown: true });
+  assert.equal(placeRows(loaded).length, 1, 'the moment the record is known, the card appears');
+  assert.equal(loaded.skipped.placeTractorUnknown, false);
+});
+
+test('a tractor lookup that THROWS holds that stop and is counted — it does not take the board down', () => {
+  const out = runP([stop()], { acme: { building_type: 'school' } }, { tractorSeenOf: () => { throw new Error('boom'); }, tractorKnown: true });
+  assert.deepEqual(placeRows(out), []);
+  assert.equal(out.skipped.placeLookupErrors, 1);
+});
+
+test('A BUILDING TYPE IS NOT AN EQUIPMENT RESTRICTION — no icon, nothing written, R7 untouched', () => {
+  const note = { building_type: 'school' };
+  const before = structuredClone(note);
+  const out = runP([stop()], { acme: note });
+  assert.equal(placeRows(out).length, 1);
+  assert.deepEqual(note, before, 'the engine only READS the note — equipment_restrictions never appears');
+  assert.equal('equipment_restrictions' in note, false);
+  assert.deepEqual(drawnRestrictionKeys(note.equipment_restrictions), [], 'so the map draws no restriction icon');
+  assert.equal(dispatcherTrailerBlock(note).blocked, false, 'and the dispatcher-block function R7 and the map read is unmoved');
+  assert.equal(tractorPaintAllowed(note.vehicle_eligibility ?? null, [], note), true, 'lime paint still allowed');
+  // R7 on the SAME board reads exactly as it would with no school on it.
+  const board = [
+    stop({ stopNbr: 'H1', matchKey: 'hard', businessName: 'HARD NO CO', routeSeq: 1 }),
+    stop({ stopNbr: 'S1', matchKey: 'acme', businessName: 'LINCOLN ELEMENTARY', routeSeq: 2 }),
+  ];
+  const withSchool = runP(board, { hard: HARD_NO.acme, acme: { building_type: 'school' } });
+  const without = runP(board, { hard: HARD_NO.acme });
+  assert.deepEqual(trailerRows(withSchool), trailerRows(without), 'R7 cards byte-identical');
+  assert.equal(withSchool.checked.trailerConflicts, without.checked.trailerConflicts);
+});
+
+test('PICKUPS COUNT — a turning radius does not care which way the pallets go', () => {
+  assert.equal(placeRows(runP([stop({ stopType: 'PU', routeSeq: null })], { acme: { building_type: 'church' } })).length, 1);
+});
+
+const schoolDock = (over = {}) => stop({
+  businessName: 'LINCOLN ELEMENTARY', addr1: '905 MAIN ST', city: 'LAWRENCEVILLE', zip: '30046',
+  matchKey: 'lincoln', routeSeq: 2, ...over,
+});
+
+test('ONE DOCK, ONE CARD: a pickup and a delivery at one school make one card that names both', () => {
+  const rows = placeRows(runP(
+    [schoolDock({ stopNbr: 'P1', stopType: 'PU' }), schoolDock({ stopNbr: 'D1', stopType: 'DO' })],
+    { lincoln: { building_type: 'school' } },
+  ));
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0].stopNbrs, ['D1', 'P1'], 'deterministic order, both orders kept');
+  assert.equal(rows[0].ordersHere, 2);
+  assert.equal(rows[0].routeConflicts, 1, 'one dock is one conflict');
+  assert.match(rows[0].detail, /2 orders at this stop \(D1, P1\) — one dock, so this is one move/);
+  assert.doesNotMatch(rows[0].detail, /other stop/);
+  assert.equal(rows[0].fingerprint, `place|${DATE}|TRACTOR 2|905_main_st__30046`, 'keyed on the dock, not a stop');
+});
+
+test('two different schools on one tractor say "check the truck" — that is the wrong truck', () => {
+  const rows = placeRows(runP([
+    schoolDock({ stopNbr: 'S1' }),
+    schoolDock({ stopNbr: 'C1', businessName: 'GRACE CHURCH', addr1: '12 FAR RD', zip: '30518', matchKey: 'grace', routeSeq: 5 }),
+  ], { lincoln: { building_type: 'school' }, grace: { building_type: 'church' } }));
+  assert.equal(rows.length, 2);
+  for (const r of rows) {
+    assert.equal(r.routeConflicts, 2);
+    assert.match(r.detail, /1 other stop on TRACTOR 2 is also a school, church or government stop — check the truck, not just the stop\./);
+  }
+});
+
+test('A DOCK THAT ALREADY CARRIES THE DISPATCHER\'S OWN "NO TRACTOR TRAILER" GETS NO SECOND CARD', () => {
+  // The same school, hard-marked by dispatch AND typed as a school: R7 is the stronger
+  // statement about the same single move, and two red cards for one dock is the Jewel Reign
+  // duplicate again.
+  const out = runP([schoolDock({ stopNbr: 'S1' })], {
+    lincoln: { building_type: 'school', ...HARD_NO.acme },
+  });
+  assert.equal(trailerRows(out).length, 1, 'the dispatcher\'s card stands');
+  assert.deepEqual(placeRows(out), [], 'no duplicate');
+  assert.equal(out.checked.placeInTrailerCard, 1, 'and the fold is counted, not silent');
+  // …including when the hard mark is on ANOTHER customer at the same street + ZIP.
+  const twoNames = runP([
+    schoolDock({ stopNbr: 'S1' }),
+    schoolDock({ stopNbr: 'X1', businessName: 'DISTRICT OFFICE', matchKey: 'district' }),
+  ], { lincoln: { building_type: 'school' }, district: HARD_NO.acme });
+  assert.equal(trailerRows(twoNames).length, 1);
+  assert.deepEqual(placeRows(twoNames), []);
+  assert.deepEqual(twoNames.placeLiftWanted, [], 'and nobody reads a tractor doc for a card that cannot appear');
+});
+
+// ── IT NEVER TEXTS, EMAILS OR REACHES FLAG HISTORY ───────────────────────────
+
+test('the text, email and history selectors pick NOTHING from a building-type row', () => {
+  const out = runP([stop()], { acme: { building_type: 'school' } });
+  const place = placeRows(out);
+  assert.equal(place.length, 1);
+  assert.ok(place[0].stopNbr && place[0].tier === 'red' && place[0].scope === 'occurrence',
+    'it has the stop number, tier and scope the text selector filters on — only its rule keeps it out of the texts');
+  assert.deepEqual(selectTextable(place, 99, 99, 99), [], 'no 9pm text');
+  assert.deepEqual(selectAlertable(place, 600), [], 'no customer-service email');
+  assert.deepEqual(selectAlertable(place, null), [], 'with or without a clock');
+  const hist = mergeSweep(null, place, { nowMin: 600, atISO: '2026-09-01T14:00:00Z' });
+  assert.equal(hist.added, 0);
+  assert.deepEqual(hist.rows, {}, 'not recorded in flag history');
+  assert.ok(!selectTextable(out.rows, 99, 99, 99).some((r) => r.rule === 'place_trailer_conflict'));
+});
+
+test('…AND AFTER THE CAP COLLAPSES THEM: the summary carries placeMark/placeSource, and still texts nobody', () => {
+  const stops = Array.from({ length: 14 }, (_, i) => stop({
+    stopNbr: `S${i}`, matchKey: `c${i}`, routeSeq: i + 1, loadNbr: `TRACTOR ${i}`, routeName: `TRACTOR ${i}`,
+  }));
+  const notes = Object.fromEntries(stops.map((s, i) => [`c${i}`, { building_type: 'school' }]));
+  const classes = Object.fromEntries(stops.map((s) => [s.loadNbr, 'tractor']));
+  const out = runP(stops, notes, undefined, classes);
+  const panel = placeRows(out);
+  assert.equal(panel.length, 1, 'one summary line on the panel');
+  assert.equal(panel[0].collapsed, 14);
+  assert.equal(panel[0].title, '14 stops: School, church or government on a tractor-trailer',
+    'the summary names the rule — never R7\'s "N stops: No tractor trailer"');
+  assert.equal(out.checked.placeConflicts, 14, 'the count is the docks, not the summary');
+  const flat = flattenForConsumers(out.rows).filter((r) => r.rule === 'place_trailer_conflict');
+  assert.equal(flat.length, 14);
+  assert.ok(flat.every((r) => r.placeMark === 'school' && r.placeSource === 'dispatcher'), 'survived the projection');
+  assert.ok(flat.every((r) => r.scope === 'occurrence' && r.routeKey), 'as did the filter inputs');
+  assert.deepEqual(selectTextable(panel, 99, 99, 99), []);
+  assert.deepEqual(selectAlertable(panel, 600), []);
+  assert.equal(mergeSweep(null, panel, { nowMin: 600, atISO: '2026-09-01T14:00:00Z' }).added, 0);
+});
+
+test('the dry run names the channel: in-app only, never texted', () => {
+  const [r] = placeRows(runP([stop()], { acme: { building_type: 'school' } }));
+  assert.equal(heldReason(r, false, 600), 'building-type conflict — in-app only, never texted');
+});
+
+// ── WHAT THE SWEEPS READ, AND WHAT THEY RECORD ───────────────────────────────
+
+const fakeReader = (docs) => {
+  const reads = [];
+  return { reads, readDoc: async (p) => { reads.push(p); if (docs.throws?.has(p)) throw new Error('read failed'); return docs.map.get(p) ?? null; } };
+};
+
+test('THE SERVER LIFT reads ONLY the tractor docs the first pass named, and the run record counts what is left', async () => {
+  // Lincoln (school) and Grace (church) ride TRACTOR 2; a tractor has delivered to Grace.
+  // An ordinary stop rides beside them and must cost no read at all.
+  const board = [
+    schoolDock({ stopNbr: 'S1' }),
+    schoolDock({ stopNbr: 'C1', businessName: 'GRACE CHURCH', addr1: '12 FAR RD', zip: '30518', matchKey: 'grace', routeSeq: 5 }),
+    stop({ stopNbr: 'O1', matchKey: 'acme', routeSeq: 7 }),
+  ];
+  const notes = { lincoln: { building_type: 'school' }, grace: { building_type: 'church' } };
+  const first = runP(board, notes);
+  assert.deepEqual(first.placeLiftWanted, ['grace', 'lincoln']);
+  const { reads, readDoc } = fakeReader({ map: new Map([[tractorLocPath('davis', 'grace'), { match_key: 'grace' }]]) });
+  const lift = await readPlaceLift(first.placeLiftWanted, readDoc, 'davis');
+  assert.deepEqual(reads.sort(), [tractorLocPath('davis', 'grace'), tractorLocPath('davis', 'lincoln')].sort(),
+    'two reads, by id, and nothing for the ordinary stop');
+  assert.equal(lift.placeMarks.shiplifyOn, false, 'the server never runs the Shiplify trial');
+  const final = runP(board, notes, lift.placeMarks);
+  assert.deepEqual(placeRows(final).map((r) => r.stopNbr), ['S1'], 'Grace is lifted; Lincoln is not');
+  assert.deepEqual(placeRunFields(final, lift), {
+    placeConflicts: 1, placeInTrailerCard: 0, placeSources: 'dispatcher_only',
+    placeLift: 'match_key', placeLiftWanted: 2, placeLiftRead: 2, placeLiftSeen: 1,
+    placeLiftCapped: false, placeLiftErrors: 0,
+  });
+});
+
+test('a board with no school, church or government on a tractor costs ZERO reads', async () => {
+  const first = runP([stop()], {});
+  assert.deepEqual(first.placeLiftWanted, []);
+  const { reads, readDoc } = fakeReader({ map: new Map() });
+  const lift = await readPlaceLift(first.placeLiftWanted, readDoc, 'davis');
+  assert.deepEqual(reads, []);
+  assert.equal(placeRunFields(runP([stop()], {}, lift.placeMarks), lift).placeConflicts, 0);
+});
+
+test('THE READ BOUND IS RECORDED WHEN IT BITES, and a failed read is counted — no silent cap', async () => {
+  assert.equal(PLACE_LIFT_READ_CAP, 50);
+  const { reads, readDoc } = fakeReader({ map: new Map(), throws: new Set([tractorLocPath('davis', 'a')]) });
+  const lift = await readPlaceLift(['c', 'a', 'b', 'a', ''], readDoc, 'davis', 2);
+  assert.equal(reads.length, 2, 'the bound held');
+  assert.deepEqual(lift.record, {
+    placeLift: 'match_key', placeLiftWanted: 3, placeLiftRead: 2, placeLiftSeen: 0,
+    placeLiftCapped: true, placeLiftErrors: 1,
+  });
+  // Without a lift object (the read itself blew up), the record still says what was used.
+  assert.equal(placeRunFields(runP([stop()], { acme: { building_type: 'school' } }), null).placeLift, 'none');
+});
+
+// ── WHAT THE CARD SAYS, AND WHAT IT SAYS WHEN IT COULD NOT LOOK ──────────────
+
+test('SHIPLIFY NOT LOADED IS SAID, NOT SILENT: shiplifyKnown false judges the dispatcher\'s types only, and says so', () => {
+  // The switch is ON and the index is 'loading' or 'error': every Shiplify record reads as
+  // null, so a Shiplify school on a tractor cannot raise a card — and a rule that says nothing
+  // about that is pixel-identical to a board with no school on a tractor.
+  const board = [
+    stop({ stopNbr: 'G1', matchKey: 'gov', businessName: 'COUNTY COURTHOUSE', addr1: '1 Court Sq', routeSeq: 1 }),
+    stop({ stopNbr: 'S1', matchKey: 'lincoln', businessName: 'LINCOLN ELEMENTARY', addr1: '905 Main St', routeSeq: 2 }),
+  ];
+  const notes = { gov: { building_type: 'government' } };
+  const rec = shiplifyRec(['School']);
+  let calls = 0;
+  const shiplifyOf = (s) => { calls += 1; return s.matchKey === 'lincoln' ? rec : null; };
+  const loading = runP(board, notes, withShiplify(null, { shiplifyOf, shiplifyKnown: false }));
+  assert.equal(loading.skipped.placeShiplifyUnknown, true);
+  assert.deepEqual(placeRows(loading).map((r) => r.stopNbr), ['G1'], 'the dispatcher\'s own type still flags');
+  assert.equal(calls, 0, 'a lookup that cannot answer yet is not asked');
+  // Reported even while the tractor record is ALSO missing — two gaps, two words.
+  const both = runP(board, notes, withShiplify(null, { shiplifyOf, shiplifyKnown: false, tractorKnown: false }));
+  assert.equal(both.skipped.placeShiplifyUnknown, true);
+  assert.equal(both.skipped.placeTractorUnknown, true);
+  const ready = runP(board, notes, withShiplify(null, { shiplifyOf, shiplifyKnown: true }));
+  assert.equal(ready.skipped.placeShiplifyUnknown, false);
+  assert.deepEqual(placeRows(ready).map((r) => r.stopNbr).sort(), ['G1', 'S1'], 'loaded, the Shiplify school flags');
+  // The switch OFF is not "unknown": the trial was not asked for, so nothing is missing.
+  assert.equal(runP(board, notes, withShiplify(null, { shiplifyOf, shiplifyOn: false, shiplifyKnown: false })).skipped.placeShiplifyUnknown, false);
+  // A caller that does not pass it keeps exactly what it had.
+  const absent = runP(board, notes, withShiplify(null, { shiplifyOf }));
+  assert.equal(absent.skipped.placeShiplifyUnknown, false);
+  assert.equal(placeRows(absent).length, 2);
+});
+
+test('A SHIPLIFY CARD OFFERS "Building type None" — the fix for a wrong type, not a claim that a trailer fits', () => {
+  // Shiplify lists a church-run distribution warehouse as 'Place of Worship'. The router knows
+  // it is not a church and has never checked whether a 53' fits. "Tractor-trailer OK" would
+  // record that it does — and disarm R7 for this customer with it.
+  const [shp] = placeRows(runP([stop()], {}, withShiplify(shiplifyRec(['Place of Worship']))));
+  assert.equal(shp.placeSource, 'shiplify');
+  assert.ok(shp.detail.endsWith(' If Shiplify has the place wrong, set Building type to None.'), shp.detail);
+  assert.ok(shp.detail.includes('or set Vehicle to Tractor-trailer OK if a trailer fits.'), 'the trailer-fits answer stays, for when one does');
+  // …and None is the right fix: the card goes, and a later hard "no" at the dock still counts,
+  // where Tractor-trailer OK would have silenced it.
+  assert.deepEqual(placeRows(runP([stop()], { acme: { building_type: 'none' } }, withShiplify(shiplifyRec(['Place of Worship'])))), []);
+  assert.equal(dispatcherTrailerBlock({ building_type: 'none', ...HARD_NO.acme }).blocked, true);
+  assert.equal(dispatcherTrailerBlock({ vehicle_eligibility: 'tractor', ...HARD_NO.acme }).blocked, false);
+  // A dispatcher's own type gets no such line: they set it, and there is nothing to correct.
+  const [disp] = placeRows(runP([stop()], { acme: { building_type: 'church' } }));
+  assert.doesNotMatch(disp.detail, /Building type to None/);
+});
+
+test('R7 AND R7b ARE TOLD APART — a dispatcher\'s hard no and a building type never share a title, one by one or summarised', () => {
+  const board = [
+    stop({ stopNbr: 'H1', matchKey: 'hard', businessName: 'HARD NO CO', addr1: '2 Elm St', routeSeq: 1 }),
+    stop({ stopNbr: 'S1', matchKey: 'lincoln', businessName: 'LINCOLN ELEMENTARY', addr1: '905 Main St', routeSeq: 2 }),
+  ];
+  const out = runP(board, { hard: HARD_NO.acme, lincoln: { building_type: 'school' } });
+  assert.equal(trailerRows(out)[0].title, 'No tractor trailer — HARD NO CO', 'R7 reads as it always has');
+  assert.equal(placeRows(out)[0].title, 'School on a tractor-trailer — LINCOLN ELEMENTARY');
+  // Past the red cap each rule becomes ONE summary, titled from the words before the dash. A
+  // bucket of schools AND churches is summarised by the rule, not by whichever sorted first.
+  const stops = [];
+  const notes = {};
+  const classes = {};
+  for (let i = 0; i < 13; i++) {
+    const route = `TRACTOR ${i}`;
+    classes[route] = 'tractor';
+    stops.push(stop({ stopNbr: `H${i}`, matchKey: `h${i}`, addr1: `${i} Hard Rd`, loadNbr: route, routeName: route, routeSeq: 1 }));
+    stops.push(stop({ stopNbr: `P${i}`, matchKey: `p${i}`, addr1: `${i} School Rd`, loadNbr: route, routeName: route, routeSeq: 2 }));
+    notes[`h${i}`] = HARD_NO.acme;
+    notes[`p${i}`] = { building_type: i % 2 ? 'church' : 'school' };
+  }
+  const big = runP(stops, notes, undefined, classes);
+  assert.deepEqual(big.rows.filter((r) => r.collapsed).map((r) => r.title).sort(), [
+    '13 stops: No tractor trailer',
+    '13 stops: School, church or government on a tractor-trailer',
+  ]);
+});

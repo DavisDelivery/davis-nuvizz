@@ -77,6 +77,8 @@ import { emailEnabled, sendEmail } from './lib/email.mts';
 import { runStackerAlert } from './lib/stacker-alert.mts';
 import { ALERT_TO } from './lib/flag-alert.mts';
 import { readRouteClassesFor } from './lib/route-classes.mts';
+// R7b's tractor lift, read for exactly the stops that need it (see the file's header).
+import { readPlaceLift, placeRunFields } from './lib/place-lift.mts';
 
 const TENANT = 'davis';
 const DEPOT = { name: 'Buford Terminal', lat: 34.147791, lng: -83.960911 };
@@ -199,7 +201,17 @@ export default async (req: Request): Promise<Response> => {
     const first = computeBoardFlags({ stops, notes, servedDate: date, dayKey: weekdayKey(date), opts: engineOpts({}) });
     let legInfo = { legs: {} as Record<string, number> };
     try { legInfo = await ensureLegs(TENANT, first.legsWanted || []); } catch { /* curve carries it */ }
-    const flags = computeBoardFlags({ stops, notes, servedDate: date, dayKey: weekdayKey(date), opts: engineOpts(legInfo.legs) });
+    // R7b's lift, read between the two passes exactly as the legs are: only the tractor_locations
+    // docs the first pass named, and nothing at all on a board with no school, church or
+    // government stop on a tractor. Never texted (selectTextable does not name the rule) — this
+    // exists so the status doc's count means what the board means.
+    let placeLift: Awaited<ReturnType<typeof readPlaceLift>> | null = null;
+    try { placeLift = await readPlaceLift(first.placeLiftWanted, getDoc, TENANT); }
+    catch (e: any) { console.error('place lift read failed (R7b judged with no lift):', e?.message); }
+    const flags = computeBoardFlags({
+      stops, notes, servedDate: date, dayKey: weekdayKey(date),
+      opts: { ...engineOpts(legInfo.legs), ...(placeLift ? { placeMarks: placeLift.placeMarks } : {}) },
+    });
 
     const candidates = selectTextable(flags.rows);
     // WHO IS ON THE LIST TONIGHT, read fresh every sweep. Chad edits this from Diagnostics
@@ -249,6 +261,10 @@ export default async (req: Request): Promise<Response> => {
       classSource: rc?.source ?? 'none',
       tractorRoutes: flags.checked?.tractorRoutes ?? 0,
       trailerConflicts: flags.checked?.trailerConflicts ?? 0,
+      // R7b — school / church / government stops on a tractor. Its OWN field: these never
+      // text, so folding them into trailerConflicts would make "2 conflicts, 1 text" look like
+      // a failed send. placeLift names how the tractor lift was evaluated ('match_key').
+      ...placeRunFields(flags, placeLift),
       // THE ROUTES THIS SWEEP COULD NOT CLASS, BY NAME, WITH THE DRIVER NUVIZZ CARRIES. The
       // Evans miss: BRENT sat unclassed for a one-letter alias difference and no record
       // anywhere said so — a route the map cannot class read exactly like one judged fine.

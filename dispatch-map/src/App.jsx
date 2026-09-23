@@ -85,6 +85,20 @@ import {
   restrictionConfidence, TRAILER_BLOCKER_KEYS, tractorFriendlySelection, tractorBlockedSelection,
 } from './lib/map-legend.js';
 import { isEstesOrder, ESTES_FILL, ESTES_RING } from './lib/carrier-mark.js';
+// The Shiplify trial and the dispatcher's Building type: which place mark a stop wears, the
+// hollow lime dock / forklift pins, and the artwork both are drawn with.
+import {
+  resolvePlaceMark, placeNoTractor, placeNoTractorLine, shiplifyPinCandidate, shiplifyPinKind,
+  shiplifyRecordFor, buildShiplifyLookup, tractorPlaceKeys, tractorSeenAt, limeAsOf, shiplifyPanelRows,
+  limeNoDockLine, EMPTY_SHIPLIFY_LOOKUP, PLACE_MARK_LABEL, BUILDING_TYPE_LABEL, normalizeBuildingType,
+  buildingTypeChanged,
+} from './lib/place-mark.js';
+import {
+  glyphCenter, glyphBadge, glyphMuted, glyphClusterBadge, GLYPH_INK_ON_LIME, FORKLIFT_BADGE_LIME,
+} from './lib/place-glyphs.js';
+import {
+  rowsFromAoa, summarizeShiplify, shiplifyBatchId, chunkRowsBySize, decodeIndexLine, SHIPLIFY_SHEET,
+} from './lib/shiplify-import.js';
 import { eligibilityChanged } from './lib/trailer-block.js';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops, hoursSummary } from './lib/ai-search.js';
@@ -153,7 +167,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.57.2';
+const APP_VERSION = '1.58.0';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -207,6 +221,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.58.0', 'SHIPLIFY\u2019S TEST IS ON BOTH MAPS, AND A DISPATCHER CAN NOW SAY WHAT KIND OF BUILDING A STOP IS. Chad is deciding whether to buy Shiplify: \u201cImport their test results and draw them on the Map and Routing tabs, each tab with its own on/off switch.\u201d IMPORT: Routing gear \u2192 Import Shiplify results, desktop and phone. The .xls is read in the browser and its counts are shown BEFORE anything is written, so they can be checked against the file; the rows then go up in chunks and are kept VERBATIM (Shipper rows too) under a batch id that is a hash of the file, so importing the same file twice writes the same records rather than a second copy and never overwrites another batch. A background job builds one location per consignee on the app\u2019s own match key, VERIFIES what it wrote by counting it back out of Firestore rather than by counting its own writes, records every skipped row with its reason, and builds a small index the maps read (the full records would be megabytes on a phone). THE PINS: where Shiplify says there is a dock and no tractor has delivered yet, a lime ring \u2014 round a white core on an unplanned stop\u2019s resting dot, hollow with the lime centre dot on a scheduled one; where there is no dock but there is a forklift, the same ring with a dark forklift. Every colour the board already uses keeps winning \u2014 a selection, a flag, the ? flag, a route, a muted planned stop, Estes, address-off, a restriction, a live status, Tractor-trailer OK or Box truck only, a confirmed no-trailer mark, a school/church/government, a tractor already delivered there by name OR at the same street + ZIP under another name \u2014 and once a tractor delivers, the lime paint takes over and the pin fills in. BUILDING TYPE: a new control in the stop\u2019s notes \u2014 Auto, Residential, School, Church, Government, None \u2014 saved to the location, stamped with who and when like the Vehicle mark. One place mark per pin (house, school, church, government), in the middle when the middle is free, else a corner badge; it rides route pins, the do-not-send \u2715, Estes discs, restriction clusters and the muted ring. A dispatcher\u2019s type always shows; Auto follows Shiplify only while that tab\u2019s switch is on; None hides Shiplify\u2019s. SCHOOL, CHURCH AND GOVERNMENT COUNT AS NO TRACTOR TRAILER \u2014 not as a restriction (nothing is written into Equipment restrictions and no restriction icon is drawn; the solver and truck matching are untouched) but as an in-app red flag when one sits on a tractor-trailer route, lifted by Vehicle: Tractor-trailer OK or by a tractor having delivered there. The overnight texts do not send it; the sweeps count it in their run records. SWITCHES, one per tab per device, both default on: Map \u2014 the Legend on desktop, Filters \u2192 Map display on the phone; Routing \u2014 the Routing map\u2019s Filters. Off takes that tab\u2019s Shiplify pins, place marks, flags, Legend rows and stop panel block away and leaves the other tab, the dispatcher\u2019s own types and the lime paint alone. TRIAL: \u201cLime as of board date\u201d in the Map Legend (off by default) counts a location as lime only if a tractor first served it before the board date, everywhere the lime is read; Routing shows a notice while it is on. RWB-CHANGE: the Routing map\u2019s paint gains the pins and marks above and nothing else \u2014 with no Shiplify data imported and no Building type set, every pin is byte-identical to v1.57.1. PUT IT BACK: one squash commit, so git revert is the whole way back; the switches turn it off per device without a deploy. NOT DONE HERE, SAID PLAINLY: the real file has not been imported (it is Chad\u2019s to upload), so its counts are unverified until he does; the new collections are readable and writable without a login while the login is off (rules unchanged, as briefed). 148 new tests \u2014 every pin and suppression built through stopMarkerIcon and read back, the Legend counted against what the map drew, the import end to end against the Firestore fake, the flag through the real sweep \u2014 plus a browser check of the switches and the import screen; 5,605 green.'],
   ['1.57.2', 'THE CUSTOMER EDITOR, LOOKED AT INSTEAD OF DESCRIBED. Chad, on v1.53.0: “Are you happy with the ui on this work? Formatting and function?” I rendered it at 1600, 1024 and 390 and read the screenshots, and the honest answer was no, on both counts. FUNCTION, TWICE. (1) The “Nothing on file yet” line and the “Add details” wording — the whole point of un-hiding the card — never rendered: the has-anything test counted the ADDRESS list, and in customer mode there are always addresses, so a customer with no note got a bare card and an “Edit” button that implied something was there. Split into hasNote (what the empty state answers) and has (whether to draw at all). (2) “note saved Sep 16, 11:20 AM by dispatch” had never rendered on a real document: notesSummary read updated_at, and all ten writers of customer_notes — Map, Routing, the address fixer, and now Stop lookup — write last_updated. The fixture carried updatedAt, so every screenshot showed a footer production never draws, and the read-back I promised would repaint the card had nothing visible to repaint when only the stamp changed. notesSummary now reads last_updated first and normalises the three shapes it arrives in (an ISO string off the REST decoder, a Timestamp object off the client SDK after a save, a bare seconds map) — one pure function, both sides, tested on each shape. FORMATTING. On a 1600px monitor the editor was a 672px form in the left corner of a 1,552px box, 880px of white beside it, Cancel 880px from the fields and Save 1,300px down a 1,000px screen — the exact species of “designed for mobile” page Chad named the SCREEN_ conventions over. It is two columns at xl now: the form still capped at 42rem (a 1,600px time input reads worse), and the width spent on a sticky rail carrying Save, Cancel and the dock being saved to, in view for the whole scroll. The card’s per-dock Edit buttons sat 1,100px right of the addresses they edit; they sit beside them. The grey “2 docks — edit one below” at the far top-right was invisible at that distance and the dock list’s own heading already says it; gone. On a phone Cancel had wrapped onto a row of its own under the address; it shares the title line. And the Save bar’s helper text was an engineer’s sentence (“read back before it says saved”); it is a rep’s now (“Applies to this address only.”). One pre-existing nit fixed in passing because the screenshot showed it: a contact’s email broke as “r / eceiving@…” on a phone — break-all was splitting it at the first letter; break-words moves it whole to the next line. NOT CHANGED, on purpose: the order of sections inside the editor (email toggles above receiving hours) is the Map’s shared editor and its order was set for the dispatcher sidebar — moving hours to the top would move them on the Map too, which is a change to a screen nobody asked about. Named here so it can be asked for. Verified the way the finding was made: rebuilt, re-shot all three widths, and read them.'],
   ['1.57.1', '3D COMES UP ON THE BUILDING YOU WERE LOOKING AT, NOT SOMEWHERE ELSE. Chad: \u201cif i\u2019m over a building and turn it on when it comes up and is working the position on the map has moved so fix that i want you to build it render it and test it to see what i\u2019m talking about.\u201d SO IT WAS RENDERED, ON PRODUCTION, BEFORE A LINE WAS CHANGED: the board centred on the Buford Terminal at z18, then into 3D. What came up was a grazing close-up of rooftop air-handlers \u2014 no terminal, no docks, not the spot. THE CAUSE, MEASURED RATHER THAN GUESSED: Google defines the 3D centre\u2019s altitude as \u201cmeters above the mean sea level\u201d, and every version since v1.38.0 passed 0. The terminal sits about 368m up, so the camera was aimed 368m UNDER the building \u2014 Google reported the camera itself at 219m above sea level, which is inside the hill, and whatever it could see from there is what filled the screen. THE FIX IS GOOGLE\u2019S OWN: the camera\u2019s altitudeMode, RELATIVE_TO_GROUND, \u201cmeasured relative to the terrain elevation at that location\u201d, so zero means ON THE GROUND and Google looks the height up itself \u2014 no Elevation API, nothing extra billed \u2014 teleported in so the view comes up already right. Proved by hand on the live element before it was written: centre 367.8m, camera 208m above the ground, the terminal dead centre with its dock doors and the trailers at them in frame. Then built, and rendered again from the real build. AND THE PIN WAS UNDER THE ROOF THE WHOLE TIME. It was clamped to the ground at the middle of the building\u2019s footprint, so the marker that says \u201cthis is where you were\u201d was hidden exactly when you look at a building, which is always. It sits on the roof now. ONE THING THE RENDER FOUND THAT NO TEST WOULD HAVE: once the camera is grounded, Google re-reports its centre as wherever the line of sight first hits the ROOF \u2014 26m short, range 573m to 545m, with nobody touching anything \u2014 and the check for \u201cdid you move in 3D?\u201d compared centres, so a look-and-leave would have read as a 26m flight and nudged the board on the way out. It compares where the CAMERA stands now, which did not move by a metre, computed from the camera it was given (Google applies a camera a moment AFTER being asked, so reading it back straight away gets the old one); that geometry agrees with Google\u2019s to six decimals, and the test uses the numbers measured today. Dispatch Map and Routing both, from the one hook; nothing about the Route Workbench\u2019s paint, selection, Send or Save is touched. 53 tests on lib/map-3d.js.'],
   ['1.57.0', '3D WORKS LIKE GOOGLE MAPS NOW: A MODE YOU STAY IN, GOOGLE\u2019S OWN CONTROLS, AND IT IS ON ROUTING TOO. Chad: \u201cIt is kind of working but not like it does when you are on google maps and you put it in globe view and use the 3d view there \u2026 make mine work like that.\u201d FIRST, AN HONEST ACCOUNTING: the fixes for his last two complaints about this (\u201ci cant pan around the building\u201d, and \u201ci need this on the routing tab too\u201d) were built in #962 and NEVER SHIPPED \u2014 it sat open with a merge conflict while main moved from 1.42 to 1.56, so everything he has used since was still v1.38.0. This release carries all of it, and then the redesign on top. WHY IT DID NOT FEEL LIKE GOOGLE MAPS, in two verified facts. (1) GOOGLE\u2019S 3D ELEMENT SHIPS ITS OWN COMPASS, ZOOM, TILT, TURN AND MOVE CONTROLS, ON BY DEFAULT \u2014 and v1.38.0\u2019s layer sat at z-11, UNDER the board\u2019s data grid (z-12) and its filter, status and flag cards (z-15 to z-22), which is exactly where those controls live. They were there all along, buried. The layer is z-40 now, above every in-map overlay and below every modal, and the controls are requested explicitly rather than left to a default. (2) V1.38.0 WAS A PEEK AND GOOGLE MAPS IS A MODE. It opened on Ctrl and vanished the instant Ctrl was released \u2014 but Ctrl is also the key Google\u2019s 3D map reads for turn and tilt, so the gesture that opened the view fought the gesture that uses it. 3D STAYS NOW, until Back, Escape or the button. THE WAY IN IS CTRL+DRAG, GOOGLE\u2019S OWN GESTURE, NOT A BARE CTRL \u2014 and that is the one change in how you use it worth saying out loud. As a peek, a bare Ctrl that opened and closed was a flicker. As a MODE, Ctrl is the first key of Ctrl+C, Ctrl+F and Ctrl+R: a dispatcher copying a PRO would be thrown into full-screen 3D and LEFT there, with a load billed for it. Ctrl+drag is the same physical motion that tilts the board today \u2014 it lands on the photographs now instead of grey blocks \u2014 and it has to MOVE six pixels before it counts, so a Ctrl+click is never taken. The listener only watches: nothing on either map is ever prevented or stopped, which a test pins. INSIDE 3D, CTRL+DRAG IS GOOGLE\u2019S, and it can no longer snap you back \u2014 opening while already open does nothing. AND YOU LAND WHERE YOU FLEW, the other half of \u201clike Google Maps\u201d: orbit to the back of a building to find the dock, leave, and the flat board takes that centre, zoom and heading. FLAT \u2014 tilt is never carried back, because a tilted vector map is the grey-block view that started all this. BUT A LOOK-AND-LEAVE PUTS THE BOARD BACK EXACTLY, and that is a logistics call rather than a copy of Google: the entry camera is clamped to 4,000m so a whole-metro Ctrl+drag lands at building height, and without this a dispatcher who opened 3D over Atlanta and left without touching it would come back to a board zoomed in on one warehouse. It also undoes the few pixels the drag had already moved the flat map before 3D took over. The zoom the board lands on is the exact inverse of the entry maths, and a test round-trips it. ON ROUTING TOO, FROM ONE HOOK \u2014 this repo already paid once for building a control twice (the satellite toggle drifted into two implementations), so both screens call useMap3dPeek. THE ROUTE WORKBENCH IS NOT CHANGED: rwb-boundary is green with no approval token, and nothing here touches what the map paints, what box / lasso / ninja select, what Send or Save writes, or any card guard \u2014 it lays a separate element OVER the map and takes it away. THE FAILURES ARE NAMED, NOT BLANK: a browser whose WebGL is software gets a sentence instead of Google\u2019s empty \u201cOops\u201d card (the v1.38.0 check asked whether WebGL existed at all, and a software context passed it \u2014 the real signal is getRenderingType() reading RASTER on a map we asked to be VECTOR, skipped when Hide place labels makes raster deliberate), and Google\u2019s own gmp-error is listened for. THE HINT IS LIVE AND ITS ADVICE CHANGED: it follows the camera on every range change and says \u201cscroll in on the building\u201d, because \u201czoom the board in, then hold Ctrl again\u201d was right for a peek and wrong in a mode; it is never printed beside an error, where zooming cannot help. VITE_MAP_3D=off still puts the whole feature back, both screens at once. 49 tests on lib/map-3d.js, 5,453 green.'],
@@ -2318,13 +2333,18 @@ function useTractorLocsState() {
   }, []);
   return state;
 }
-function useTractorLocations() {
+function useTractorLocations(boardDate = null) {
   const state = useTractorLocsState();
   const [paintOn] = useTractorPaintToggle();
+  const [asOfOn] = useLimeAsOfToggle();
   // Referentially stable both ways: the resolved Map is one object for the page's life
   // and EMPTY_TRACTOR_MAP is a module constant, so marker effects that carry this in
   // their deps only rebuild when the data actually changes.
   if (!paintOn) return EMPTY_TRACTOR_MAP;
+  // "LIME AS OF BOARD DATE" (trial switch, Map Legend). Applied HERE, where the lime switch is
+  // applied, so the pins, the stop panel banner and the green rows all read the same filtered
+  // map. limeAsOf memoises per (map, date), so the Map it hands back is stable too.
+  if (asOfOn && boardDate) return limeAsOf(state.map || EMPTY_TRACTOR_MAP, boardDate);
   return state.map || EMPTY_TRACTOR_MAP;
 }
 // Diagnostics for the paint control: is the lime layer loaded, empty, or broken?
@@ -2336,6 +2356,215 @@ function useTractorPaintStatus() {
     count: state.map ? state.map.size : 0,
     retry: retryTractorLocations,
   };
+}
+
+// ── "LIME AS OF BOARD DATE" — a trial switch, off by default ──────────────────
+//
+// Chad is deciding whether Shiplify would have told us something we did not already know.
+// Looking back at a past board, today's lime paint is hindsight: a dock a tractor first served
+// LAST week paints lime on a board from the week before. With this on, a location counts as lime
+// only if its first_tractor_date is BEFORE the board date — the board as it stood that morning.
+// It rides the shared lime store (useTractorLocations above), so it changes Routing too, and the
+// Routing tab says so while it is on.
+const LS_LIME_AS_OF = 'dispatchMap.limeAsOfBoardDate';
+let __limeAsOfOn = (() => {
+  try { return localStorage.getItem('dispatchMap.limeAsOfBoardDate') === 'on'; } catch { return false; }
+})();
+const __limeAsOfListeners = new Set();
+function setLimeAsOfOn(v) {
+  __limeAsOfOn = !!v;
+  try { localStorage.setItem(LS_LIME_AS_OF, __limeAsOfOn ? 'on' : 'off'); } catch { /* private mode */ }
+  for (const cb of [...__limeAsOfListeners]) cb(__limeAsOfOn);
+}
+function useLimeAsOfToggle() {
+  const [on, setOn] = useState(__limeAsOfOn);
+  useEffect(() => {
+    // Re-read storage on mount, as useShiplifySwitch does: the Diagnostics "This device" screen
+    // writes storage directly, and every consumer already mounted hears about a change.
+    let stored = __limeAsOfOn;
+    try { stored = localStorage.getItem('dispatchMap.limeAsOfBoardDate') === 'on'; } catch { /* keep */ }
+    if (stored !== __limeAsOfOn) {
+      __limeAsOfOn = stored;
+      for (const l of [...__limeAsOfListeners]) l(__limeAsOfOn);
+    }
+    const cb = (v) => setOn(v);
+    __limeAsOfListeners.add(cb);
+    setOn(__limeAsOfOn);
+    return () => { __limeAsOfListeners.delete(cb); };
+  }, []);
+  return [on, setLimeAsOfOn];
+}
+
+// ── THE TRACTOR FACT, as opposed to the lime PAINT ───────────────────────────
+//
+// useTractorLocations answers "paint this lime?" and so goes empty when the lime switch is off.
+// The Shiplify pins and the school/church/government rule ask a different question — "has a
+// tractor delivered here?" — and turning the paint off does not make a proven dock unproven. So
+// they read the record itself (as-of filtered when that trial is on), plus the street + ZIP
+// half of every tractor match key, because a building a tractor served under another customer's
+// name has still had a tractor at it. `known` is false until the record has loaded: "no tractor
+// yet" cannot be claimed from a fetch that is still running or has failed.
+const __tractorPlaceCache = new WeakMap();
+function tractorPlacesOf(map) {
+  if (!map) return new Set();
+  let set = __tractorPlaceCache.get(map);
+  if (!set) { set = tractorPlaceKeys(map); __tractorPlaceCache.set(map, set); }
+  return set;
+}
+function useTractorFacts(boardDate = null) {
+  const state = useTractorLocsState();
+  const [asOfOn] = useLimeAsOfToggle();
+  const base = state.map || EMPTY_TRACTOR_MAP;
+  const map = asOfOn && boardDate ? limeAsOf(base, boardDate) : base;
+  return { map, places: tractorPlacesOf(map), known: state.status === 'ready' };
+}
+
+// ── "SHIPLIFY DATA" — one switch per tab, per device, both default ON ────────
+//
+// Chad is trialling Shiplify's data before deciding whether to buy it, so each map carries its
+// own way to turn the trial off and look at the board without it. Each switch covers only its
+// own tab: the dock and forklift pins, Shiplify's place marks, the flags those raise, the Legend
+// rows and the stop panel's Shiplify block. A dispatcher's own Building type, the lime paint and
+// every dispatcher mark are untouched by it.
+//
+// House shape: default ON, only the explicit 'off' turns it off, so a malformed value leaves the
+// trial showing rather than silently hiding it. Registered in lib/device-switches.js, so the
+// Diagnostics "This device" screen can read where each one stands.
+const LS_SHIPLIFY = { map: 'dispatchMap.shiplifyOn', routing: 'routing.shiplify' };
+const __shiplifyOn = {
+  map: (() => { try { return localStorage.getItem('dispatchMap.shiplifyOn') !== 'off'; } catch { return true; } })(),
+  routing: (() => { try { return localStorage.getItem('routing.shiplify') !== 'off'; } catch { return true; } })(),
+};
+const __shiplifyOnListeners = { map: new Set(), routing: new Set() };
+function setShiplifyOn(tab, v) {
+  __shiplifyOn[tab] = !!v;
+  try { localStorage.setItem(LS_SHIPLIFY[tab], v ? 'on' : 'off'); } catch { /* private mode */ }
+  for (const cb of [...__shiplifyOnListeners[tab]]) cb(__shiplifyOn[tab]);
+}
+function useShiplifySwitch(tab) {
+  const t = tab === 'routing' ? 'routing' : 'map';
+  const [on, setOn] = useState(__shiplifyOn[t]);
+  useEffect(() => {
+    // Re-read storage on mount as well as listening: the Diagnostics "This device" screen writes
+    // storage directly, and that change should hold the next time this tab mounts.
+    try { __shiplifyOn[t] = localStorage.getItem(LS_SHIPLIFY[t]) !== 'off'; } catch { /* keep */ }
+    const cb = (v) => setOn(v);
+    __shiplifyOnListeners[t].add(cb);
+    setOn(__shiplifyOn[t]);
+    return () => { __shiplifyOnListeners[t].delete(cb); };
+  }, [t]);
+  const set = useCallback((v) => setShiplifyOn(t, v), [t]);
+  return [on, set];
+}
+
+// ── THE SHIPLIFY LOCATIONS, loaded once ──────────────────────────────────────
+//
+// The import (netlify/functions/shiplify-import*) writes one document per location to
+// shiplify_locations AND a compact index beside them: shiplify_index/davis (the head: how many
+// chunks, which generation) and shiplify_index/davis__0..n-1 (tab-separated lines,
+// lib/shiplify-import.js encodeIndexLine). 8,680 full documents are several megabytes on a phone
+// every page load; the index is a few documents carrying exactly what the map, the flags and the
+// stop panel read. Same one-fetch-per-page shape as tractor_locations above, with the same
+// published status so an empty trial layer is never ambiguous: 'none' means nothing has been
+// imported yet, which is a different fact from a failed read.
+const SHIPLIFY_TENANT = 'davis';
+let __shiplify = { status: 'idle', lookup: EMPTY_SHIPLIFY_LOOKUP, head: null, error: null };
+const __shiplifySubs = new Set();
+let __shiplifyPromise = null;
+function __publishShiplify(next) {
+  __shiplify = { ...__shiplify, ...next };
+  for (const cb of [...__shiplifySubs]) cb(__shiplify);
+}
+function fetchShiplifyIndexOnce({ force = false } = {}) {
+  if ((__shiplify.status === 'ready' || __shiplify.status === 'none') && !force) return Promise.resolve(__shiplify);
+  if (__shiplifyPromise) return __shiplifyPromise;
+  __publishShiplify({ status: 'loading', error: null });
+  __shiplifyPromise = (async () => {
+    try {
+      if (!db) { __publishShiplify({ status: 'none', lookup: EMPTY_SHIPLIFY_LOOKUP, head: null }); return __shiplify; }
+      const headSnap = await getDoc(doc(db, 'shiplify_index', SHIPLIFY_TENANT));
+      if (!headSnap.exists()) {
+        __publishShiplify({ status: 'none', lookup: EMPTY_SHIPLIFY_LOOKUP, head: null });
+        return __shiplify;
+      }
+      const head = headSnap.data() || {};
+      const n = Math.max(0, Math.floor(Number(head.chunks) || 0));
+      const snaps = await Promise.all(Array.from({ length: n }, (_, i) => getDoc(doc(db, 'shiplify_index', `${SHIPLIFY_TENANT}__${i}`))));
+      const records = [];
+      for (let i = 0; i < n; i++) {
+        const d = snaps[i];
+        // A chunk from another build means the index is mid-rebuild (the head is written last,
+        // so this is a reader racing an import). Say so rather than draw half a trial.
+        if (!d.exists() || (d.data() || {}).generation !== head.generation) {
+          throw new Error(`Shiplify index chunk ${i + 1} of ${n} is missing or from another import — reload in a minute`);
+        }
+        for (const line of (d.data().lines || [])) {
+          const r = decodeIndexLine(line);
+          if (r) records.push(r);
+        }
+      }
+      __publishShiplify({ status: 'ready', lookup: buildShiplifyLookup(records), head, error: null });
+      return __shiplify;
+    } catch (err) {
+      console.error('shiplify_index fetch error', err);
+      __publishShiplify({ status: 'error', error: err?.message || String(err) });
+      return __shiplify;
+    } finally {
+      __shiplifyPromise = null;
+    }
+  })();
+  return __shiplifyPromise;
+}
+function useShiplifyData() {
+  const [state, setState] = useState(__shiplify);
+  useEffect(() => {
+    const cb = (st) => setState(st);
+    __shiplifySubs.add(cb);
+    fetchShiplifyIndexOnce();
+    setState(__shiplify);
+    return () => { __shiplifySubs.delete(cb); };
+  }, []);
+  return state;
+}
+
+// EVERYTHING ONE TAB NEEDS TO DRAW THE TRIAL, in one hook, so the Map and the Routing screen
+// cannot wire it differently. `markerOpts(stop)` is what stopMarkerIcon / stopShiplifyMarks take;
+// `recordFor(stop)` is the stop's Shiplify record (null with the switch off — nothing Shiplify
+// says reaches that tab); `placeOf(stop, note)` is the resolved place mark and its source.
+function useShiplifyTab(tab, boardDate) {
+  const [on, setOn] = useShiplifySwitch(tab);
+  const data = useShiplifyData();
+  const facts = useTractorFacts(boardDate);
+  return useMemo(() => {
+    const lookup = data.lookup || EMPTY_SHIPLIFY_LOOKUP;
+    const recordFor = (s) => (on ? (shiplifyRecordFor(lookup, s)?.rec || null) : null);
+    const seenAt = (s) => tractorSeenAt(s, facts.map, facts.places).any;
+    return {
+      on, setOn, data, facts, lookup, recordFor, seenAt,
+      markerOpts: (s) => ({ shiplifyRec: recordFor(s), shiplifyOn: on, tractorSeen: seenAt(s), tractorKnown: facts.known }),
+      placeOf: (s, note) => resolvePlaceMark({ buildingType: note?.building_type, shiplify: recordFor(s), shiplifyOn: on }),
+      // A stable identity for effect deps: changes when anything the pins read changes.
+      sig: `${on ? 1 : 0}|${data.status}|${data.head?.generation || ''}|${facts.known ? 1 : 0}|${facts.map.size}`,
+    };
+  }, [on, setOn, data, facts.map, facts.places, facts.known]);
+}
+
+// WHICH TAB A STOP PANEL IS OPEN ON. The stop panel (StopDataSections) is shared by the Map and
+// the Routing screen, and its Shiplify block follows THAT tab's switch and board date. Provided
+// at the four places a panel is mounted (Map desktop + phone, Routing desktop + phone) rather
+// than threaded through every panel's props; anywhere else (the PRO lookup) reads the Map's.
+const ShiplifyTabContext = React.createContext({ tab: 'map', boardDate: null });
+
+// The label on the stop panel's block — the date Shiplify's test results came back.
+const SHIPLIFY_TEST_LABEL = 'Shiplify test, Sep 18, 2026';
+
+// A place mark as the map draws it, for the editor, the stop panel and the Legend: the same
+// circleMarkerSvg the pins use, on a neutral slate disc, so the picture a dispatcher learns in
+// one place is the picture on the map.
+const PLACE_MARK_SWATCH = '#475569';
+function PlaceMarkIcon({ kind, size = 16, title = undefined }) {
+  const url = useMemo(() => circleMarkerSvg(PLACE_MARK_SWATCH, { placeMark: kind || null }), [kind]);
+  return <img src={url} width={size} height={size} alt="" title={title} className="flex-shrink-0 inline-block" />;
 }
 
 // Subscribe to ALL customer_notes docs and expose as a Map<match_key, note>.
@@ -3357,15 +3586,32 @@ function pinSvgStatus(color, opts = {}) {
 // SymbolPath marker, which silently failed to paint on the vector base — see v0.29.77).
 // Callers anchor at the CENTER of the returned size.
 function circleMarkerSvg(color, opts = {}) {
-  const { hollow = false, glyph = null, tag = null, label = null, count = 0, ring = null, pickup = false } = opts;
+  const {
+    hollow = false, glyph = null, tag = null, label = null, count = 0, ring = null, pickup = false,
+    // THE SHIPLIFY TRIAL AND THE BUILDING TYPE (lib/place-mark.js, lib/place-glyphs.js).
+    //   strokeWidth — the hollow LIME pin's heavier 3px ring. Its own option rather than a new
+    //                 hollow default, because the planned-muted pin is hollow too and keeps 2.5.
+    //   ink         — what text and glyphs are drawn in when the body's own colour would be too
+    //                 faint: lime on white cannot carry a forklift, so the hollow lime pin says
+    //                 #1f2937 here and every tag and glyph on it follows.
+    //   placeMark   — 'residential' | 'school' | 'church' | 'government': in the MIDDLE when
+    //                 the middle is free, else a badge bottom right.
+    //   forklift    — the forklift: in the middle when the middle is free (a place mark takes it
+    //                 first), else a badge bottom left, the one free corner.
+    //   placeMuted  — the planned-muted ring: the place mark in slate in place of the centre dot.
+    strokeWidth = null, ink = null, placeMark = null, forklift = false, placeMuted = false,
+  } = opts;
   const bodyFill = hollow ? '#ffffff' : color;
   // `ring` — an IDENTITY ring (the Estes yellow, lib/carrier-mark.js) takes the disc's edge
   // over from the white/colour one and draws a touch heavier, so it still reads at the 16px
   // resting size. The fill, glyph and count are untouched: the ring says WHOSE order this is,
   // the disc keeps saying what state it is in.
   const bodyStroke = ring || (hollow ? color : '#ffffff');
-  const strokeW = ring ? 3 : (hollow ? 2.5 : 2);
-  const txtOnBody = hollow ? color : readableTextColor(color);
+  const strokeW = ring ? 3 : (strokeWidth != null ? strokeWidth : (hollow ? 2.5 : 2));
+  const txtOnBody = ink || (hollow ? color : readableTextColor(color));
+  // A place or forklift glyph's own paint: the shape in the readable ink, the cut-outs (door,
+  // board edge, hubs) in the body colour so they read as holes.
+  const glyphInk = ink || (hollow ? color : readableTextColor(color));
   let center;
   // Did the PU end up in the MIDDLE? Only then is the corner badge redundant. Inferring this
   // from `tag === 'PU'` instead was wrong in a way worth recording: a DELIVERED pickup carries
@@ -3398,14 +3644,32 @@ function circleMarkerSvg(color, opts = {}) {
     // one of the two was updated and the other was missed, and nothing could see the difference.
     center = `<text x="14" y="18" font-family="system-ui, sans-serif" font-size="10.5" font-weight="800" fill="${txtOnBody}" text-anchor="middle" letter-spacing="-0.5">${tag}</text>`;
   } else {
-    center = `<circle cx="14" cy="14" r="4.5" fill="${hollow ? color : 'white'}"/>`;
+    center = null;
   }
+  // THE MIDDLE, WHEN NOTHING ABOVE CLAIMED IT: the place mark first, then the forklift, then the
+  // plain dot. Whatever does not get the middle rides a corner instead of disappearing — the same
+  // rule the PU mark follows, and for the same reason: an identity that only shows when nothing
+  // else needed the space is not an identity.
+  let placeBadge = '';
+  let forkliftBadge = '';
+  if (center == null && placeMark && placeMuted) {
+    center = glyphMuted(placeMark);
+  } else if (center == null && placeMark) {
+    center = glyphCenter(placeMark, glyphInk, bodyFill);
+  } else if (placeMark) {
+    placeBadge = glyphBadge(placeMark, { corner: 'br' });
+  }
+  if (forklift) {
+    if (center == null) center = glyphCenter('forklift', glyphInk, bodyFill);
+    else forkliftBadge = glyphBadge('forklift', { corner: 'bl', fill: FORKLIFT_BADGE_LIME });
+  }
+  if (center == null) center = `<circle cx="14" cy="14" r="4.5" fill="${hollow ? color : 'white'}"/>`;
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28">
       <circle cx="14" cy="14" r="12.5" fill="${bodyFill}" stroke="${bodyStroke}" stroke-width="${strokeW}"/>
       ${center}
       ${pickup && !centerIsPickupTag ? pickupBadgeSvg() : ''}
-      ${countBadgeSvg(count)}
+      ${countBadgeSvg(count)}${forkliftBadge}${placeBadge}
     </svg>`;
   return 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
 }
@@ -3657,6 +3921,9 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
   const tractorProven = opts.tractorProven === true;
   // Scaled up for these bigger viewBoxes, which restrictionMarkerScale shrinks on the way out.
   const puBadge = opts.pickup === true ? pickupBadgeSvg(1.5, 1.5, 1.45) : '';
+  // THE PLACE MARK RIDES THE CLUSTER TOO (lib/place-glyphs.js): a larger badge at the bottom
+  // right of the LAST disc, so a school with a receiving clock still says it is a school.
+  const placeMark = opts.placeMark || null;
 
   // State B: single 36-diameter circle.
   if (restrictions.length === 1) {
@@ -3676,7 +3943,7 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
       <svg xmlns="http://www.w3.org/2000/svg" width="40" height="44" viewBox="0 0 40 44">
         <ellipse cx="20" cy="40" rx="10" ry="1.6" fill="black" opacity="0.16"/>
         ${renderMarkerGlyph(r, 1, 1, tint, 38 / 22)}
-        ${puBadge}
+        ${puBadge}${placeMark ? glyphClusterBadge(placeMark, 20, 20, 18) : ''}
       </svg>`
       : `
       <svg xmlns="http://www.w3.org/2000/svg" width="40" height="44" viewBox="0 0 40 44">
@@ -3685,7 +3952,7 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
           ? blockerDiscMarkup(20, 20, 18, restrictionWarnColor(r), isAdvisory(r), tractorProven)
           : `<circle cx="20" cy="20" r="18" fill="white" fill-opacity="0.95" stroke="${accent}" stroke-width="2"/>`}
         ${isBlocker(r) ? renderBlockerGlyph(r, 9, 9) : renderMarkerGlyph(r, 9, 9, tint)}
-        ${puBadge}
+        ${puBadge}${placeMark ? glyphClusterBadge(placeMark, 20, 20, 18) : ''}
       </svg>`;
     return scaleMarkerSpec({
       url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
@@ -3742,7 +4009,7 @@ function iconMarkerSvg(restrictions, tint, opts = {}) {
     <svg xmlns="http://www.w3.org/2000/svg" width="${totalW}" height="${totalH}" viewBox="0 0 ${totalW} ${totalH}">
       <ellipse cx="${totalW / 2}" cy="36" rx="${shadowRx}" ry="1.8" fill="black" opacity="0.15"/>
       ${elementsMarkup}
-      ${puBadge}
+      ${puBadge}${placeMark ? glyphClusterBadge(placeMark, (n - 1) * (slotW + gap) + slotW / 2, 18, 15) : ''}
     </svg>`;
   return scaleMarkerSpec({
     url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
@@ -3809,6 +4076,59 @@ const PLAIN_GEOMETRY = {
     Point: function Point(x, y) { this.x = x; this.y = y; },
   },
 };
+
+// WHICH PLACE MARK AND WHICH SHIPLIFY PIN A STOP DRAWS — the one answer stopMarkerIcon paints and
+// the Legend counts (useLegendInventory calls this too, so "Legend counts equal what the map
+// drew" holds by construction rather than by two copies agreeing).
+//
+//   opts.shiplifyRec   the stop's Shiplify record (shiplifyRecordFor), or null
+//   opts.shiplifyOn    THIS TAB's "Shiplify data" switch
+//   opts.tractorSeen   a tractor has delivered here, by match key OR street + ZIP — the FACT,
+//                      not the lime paint (the paint switch hides lime; it does not make a
+//                      proven dock unproven), filtered by "Lime as of board date" when that is on
+//   opts.tractorKnown  the tractor record has loaded. Until it has, "no tractor yet" cannot be
+//                      claimed, so no pin draws — a failed fetch must not light every dock.
+//
+// The place mark: building_type set → that mark ('none' → no mark, even over Shiplify), else
+// Shiplify's while the switch is on. The pin: see shiplifyPinKind (lib/place-mark.js) — every
+// existing colour keeps winning, so each fact below that earns its own colour suppresses it.
+function stopShiplifyMarks(s, note, opts = {}) {
+  const {
+    selectedDayKey, matched = false, inRoute = false, searchMatched = false, plannedMuted = false,
+    tractorDelivered = false, shiplifyRec = null, shiplifyOn = false, tractorSeen = false, tractorKnown = true,
+  } = opts;
+  const { mark } = resolvePlaceMark({ buildingType: note?.building_type, shiplify: shiplifyRec, shiplifyOn });
+  const elig = note?.vehicle_eligibility || null;
+  const statusKind = classifyStopStatus(s);
+  // MUTED AS DRAWN, not as asked: stopMarkerIcon paints the muted ring only for a SCHEDULED stop
+  // that is not a pickup, a do-not-send, a selection, a search hit or on an open route. A planned
+  // pickup on Routing stays a full pin, so it may carry the Shiplify pin like any other.
+  const mutedDrawn = !!plannedMuted && statusKind === 'SCHEDULED'
+    && String(s?.stopType || '').toUpperCase() !== 'PU' && !note?.do_not_send && !matched && !searchMatched && !inRoute;
+  const restrictions = drawnRestrictionKeys(
+    getRestrictionBadgeKeys(note, { day: selectedDayKey }),
+    { deliveryWindow: note?.delivery_window, eligibility: elig, resolve: resolveRestrictionKey },
+  );
+  const pin = shiplifyPinKind({
+    candidate: shiplifyOn && tractorKnown ? shiplifyPinCandidate(shiplifyRec) : null,
+    shiplifyOn,
+    tractorSeen: !!tractorSeen || !!tractorDelivered,
+    eligibility: elig,
+    paintAllowed: tractorPaintAllowed(elig, restrictions, note),
+    placeMark: mark,
+    statusKind,
+    dns: !!note?.do_not_send,
+    matched: !!matched,
+    searchMatched: !!searchMatched,
+    inRoute: !!inRoute,
+    plannedMuted: mutedDrawn,
+    priorityFlag: note?.priority_flag || null,
+    addressOff: addressLooksOff(s, note),
+    estes: isEstesOrder(s?.stopNbr),
+    restrictionCount: restrictions.length,
+  });
+  return { placeMark: mark, pin };
+}
 
 function stopMarkerIcon(google, s, note, opts = {}) {
   //   opts.tractorDelivered — a tractor driver has completed a delivery at this
@@ -3897,6 +4217,10 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   // ring already says whose order it is without spending the one colour that says where it is.
   const estesFill = estes && (statusKind === 'UNPLANNED' || statusKind === 'SCHEDULED') ? ESTES_FILL : null;
   const addrOff = addressLooksOff(s, note);
+  // THE PLACE MARK AND THE HOLLOW LIME SHIPLIFY PIN — decided once, in stopShiplifyMarks, which
+  // the Legend also reads. `placeMarkKind` rides every disc (centre, corner badge, muted slate,
+  // cluster badge); `shiplifyPin` is 'dock' | 'forklift' | null.
+  const { placeMark: placeMarkKind, pin: shiplifyPin } = stopShiplifyMarks(s, note, opts);
   // Signature of EVERY input that changes the rendered icon (restrictions already folds in
   // selectedDayKey plus the AM/PM + tractor filters applied above). This MUST track the
   // branches below exactly — miss an input and a stop could paint a stale icon. \x1f = an
@@ -3921,6 +4245,11 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // key must still carry it, or an Estes order and a plain one sharing every other input would
     // share one cached icon and the second to render would wear the first one's paint.
     + '\x1f' + (estes ? 'E' : '')
+    // THE PLACE MARK AND THE SHIPLIFY PIN change the disc, the centre and the size tier. Both are
+    // DERIVED (building_type, the Shiplify record, the tab's switch, the tractor facts), so the
+    // derived answer is what goes in the key — two stops that differ only here must not share an
+    // icon, which is exactly the missing-input shape CODE-REVIEW-FIXES.md records.
+    + '\x1f' + (placeMarkKind || '') + '\x1f' + (shiplifyPin || '')
     // WHOSE Size AND Point THESE ARE. The wall display builds this same artwork with
     // PLAIN_GEOMETRY, because the Maps script is never loaded there — so the scaledSize and
     // anchor it gets back are plain objects, not google.maps ones. The URL string is identical
@@ -3948,7 +4277,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // already settled once the stop is planned). DNS, an active selection, a search hit
     // and an open route all still win, so nothing safety- or task-critical is muted.
     result = {
-      url: circleMarkerSvg(estesFill || PLANNED_MUTED_COLOR, { hollow: true, count, ring }),
+      url: circleMarkerSvg(estesFill || PLANNED_MUTED_COLOR, { hollow: true, count, ring, placeMark: placeMarkKind, placeMuted: true }),
       scaledSize: new google.maps.Size(14, 14),
       anchor: new google.maps.Point(7, 7),
     };
@@ -3957,13 +4286,13 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   }
   if (dnsStop) {
     // DNS — strong red circle with a white ✕, taking precedence over everything else.
-    result = { url: circleMarkerSvg(DNS_COLOR, { glyph: 'dns', pickup }), scaledSize: new google.maps.Size(28, 28), anchor: new google.maps.Point(14, 14) };
+    result = { url: circleMarkerSvg(DNS_COLOR, { glyph: 'dns', pickup, placeMark: placeMarkKind }), scaledSize: new google.maps.Size(28, 28), anchor: new google.maps.Point(14, 14) };
   } else if (inRoute) {
     // Numbered route pin (delivery sequence). Colored by route when a routeColor is
     // given (Routing), else by status (Map): green=delivered / blue=scheduled.
     const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
     const color = routeColor || ((tractorDelivered && !noTractorOverride) ? TRACTOR_DELIVERED_COLOR : (estesFill || meta.color || flagColor(note)));
-    result = { url: circleMarkerSvg(color, { label: String(seq), count, ring, pickup }), scaledSize: new google.maps.Size(30, 30), anchor: new google.maps.Point(15, 15) };
+    result = { url: circleMarkerSvg(color, { label: String(seq), count, ring, pickup, placeMark: placeMarkKind }), scaledSize: new google.maps.Size(30, 30), anchor: new google.maps.Point(15, 15) };
   } else if (restrictions.length === 0) {
     // State A — status drives the pin; matched stops pop orange; a priority flag,
     // AM/PM window, or "address looks off" signal recolor/reglyph as appropriate.
@@ -4010,12 +4339,26 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     let glyph = meta.glyph;
     if (questionGlyph) glyph = 'question';
     else if (!hi && addressOff) glyph = 'bang';
+    // THE HOLLOW LIME SHIPLIFY PIN sits just above the default status colour: it may only take a
+    // pin whose colour would otherwise have come from that last arm. stopShiplifyMarks already
+    // refuses every stop an earlier arm would colour; this re-checks it against the chain as
+    // actually evaluated here, so the two can never disagree into a hollow pin of another colour.
+    const defaultArm = !matched && !searchMatched && !noTractorOverride && !tractorDelivered
+      && !eligColor && !pinFlagHue && !addressOff && !estesFill;
+    const limePin = defaultArm ? shiplifyPin : null;
+    const pinColor = limePin ? TRACTOR_DELIVERED_COLOR : color;
+    // Anything drawn ON a hollow lime pin is #1f2937: lime on white is too faint for a shape.
+    const limeInk = limePin ? { strokeWidth: 3, ink: GLYPH_INK_ON_LIME } : {};
     // UNPLANNED resting pins (not highlighted, no AM/PM tag) render as a white-circle-wrapped DOT
     // instead of the washed-out small teardrop — same ≤16px footprint, so it never grows. A
     // co-located count sits inside the dot. Highlighted/tagged unplanned keep the pop pin.
-    if (statusKind === 'UNPLANNED' && !hi && !tag) {
+    // A place mark or a forklift needs the room a tag needs, so it leaves the 16px dot the same
+    // way PU does. The DOCK pin keeps the dot: a lime ring around a white core.
+    if (statusKind === 'UNPLANNED' && !hi && !tag && !placeMarkKind && limePin !== 'forklift') {
       result = {
-        url: unplannedDotSvg(color, { glyph, count, ring }),
+        url: limePin === 'dock'
+          ? unplannedDotSvg('#ffffff', { glyph, count, ring: TRACTOR_DELIVERED_COLOR })
+          : unplannedDotSvg(color, { glyph, count, ring }),
         scaledSize: new google.maps.Size(16, 16),
         anchor: new google.maps.Point(8, 8),
       };
@@ -4042,10 +4385,15 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       // invisible, which is the bug v0.97.7 existed to fix. And a pickup that DOES carry a
       // delivery window still gets 28, because then the time tag is what it is wearing.
       const timeTag = tag === 'AM' || tag === 'PM';
-      const size = hi ? 22 : (timeTag ? 28 : (tag ? 22 : 16));
+      // A place mark and a forklift pin take the PU tier (22) for the same reason PU does: the
+      // mark has to be readable, and it is a kind of place, not a deadline.
+      const size = hi ? 22 : (timeTag ? 28 : ((tag || placeMarkKind || limePin === 'forklift') ? 22 : 16));
       const half = size / 2;
       result = {
-        url: circleMarkerSvg(color, { hollow: hi ? false : meta.hollow, glyph, tag, count, ring, pickup }),
+        url: circleMarkerSvg(pinColor, {
+          hollow: limePin ? true : (hi ? false : meta.hollow), glyph, tag, count, ring, pickup,
+          ...limeInk, placeMark: placeMarkKind, forklift: limePin === 'forklift',
+        }),
         scaledSize: new google.maps.Size(size, size),
         anchor: new google.maps.Point(half, half),
       };
@@ -4061,7 +4409,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       // a blocker the glyph is white and can no longer carry the tractor-delivered lime, so
       // the "a trailer fits" half wears it instead. Passing the tint here would let a priority
       // flag's hue become that half.
-      { advisoryKeys, blockerKeys, tractorProven: tractorDelivered && !noTractorOverride, pickup },
+      { advisoryKeys, blockerKeys, tractorProven: tractorDelivered && !noTractorOverride, pickup, placeMark: placeMarkKind },
     );
     result = { url: spec.url, scaledSize: new google.maps.Size(spec.width, spec.height), anchor: new google.maps.Point(spec.anchor[0], spec.anchor[1]) };
   }
@@ -4682,6 +5030,11 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
     // Its own line, in its own words — see isSetAsideRoute. A set-aside route that is not
     // reported is indistinguishable from a route the engine simply missed.
     sk.routesOwner?.length ? `${sk.routesOwner.join(', ')} not judged — the owner's own route` : null,
+    // THE SCHOOL / CHURCH / GOVERNMENT CHECK (board-flags place_trailer_conflict) says when it
+    // could not run, rather than reading as a board with no school on a tractor.
+    sk.placeTractorUnknown ? 'building-type check off — tractor history not loaded' : null,
+    sk.placeShiplifyUnknown ? 'Shiplify building types not checked — Shiplify data not loaded' : null,
+    sk.placeLookupErrors ? `${sk.placeLookupErrors} stop(s) not checked for building type — lookup failed` : null,
   ].filter(Boolean);
   // THE HEADLINE THE CLOSED DRAWER CARRIES. Whole checks that are OFF outrank individual
   // routes that were skipped: "route checks off" means the sweep could not look at the loads
@@ -4693,7 +5046,7 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
   // KEPT SHORT ENOUGH TO SURVIVE THE ROW. The first cut named both outages in full and the
   // 340px row truncated it to "route checks and t…" — an amber warning nobody can read is
   // furniture. Two outages collapse to a count; the drawer says which.
-  const checksOff = [sk.noRoster ? 'route checks' : null, sk.noTruckClasses ? 'no-trailer check' : null].filter(Boolean);
+  const checksOff = [sk.noRoster ? 'route checks' : null, sk.noTruckClasses ? 'no-trailer check' : null, sk.placeTractorUnknown ? 'building-type check' : null].filter(Boolean);
   const gapLabel = checksOff.length
     ? (checksOff.length > 1 ? `${checksOff.length} checks off` : `${checksOff[0]} off`)
     : routesNotJudged > 0
@@ -5448,6 +5801,9 @@ function useLegendInventory({
   stops, notes, dayKey, tractorLocs,
   routeStopNbrs = null, plannedMuted = false, isPlanned = null,
   selectedIds = null, searchMatchIds = null,
+  // The tab's Shiplify context (useShiplifyTab). The place mark and the hollow lime pin come
+  // out of stopShiplifyMarks — the SAME function stopMarkerIcon draws them from.
+  shiplify = null,
 }) {
   return useMemo(() => {
     if (!Array.isArray(stops) || !stops.length) return emptyLegendInventory();
@@ -5471,13 +5827,28 @@ function useLegendInventory({
         && typeof isPlanned === 'function' && isPlanned(s)
         && classifyStopStatus(s) === 'SCHEDULED';
       const hidden = dns || inRoute || muted;
+      const tractorDelivered = !!tractorLocs?.has?.(s.matchKey);
+      // Handed to stopShiplifyMarks exactly as the marker effects hand it to stopMarkerIcon: the
+      // Routing screen passes plannedMuted per stop (`!numbered && isPlannedStop(s)`), the Map
+      // passes none.
+      const marks = stopShiplifyMarks(s, note, {
+        selectedDayKey: dayKey,
+        matched: inSet(selectedIds),
+        searchMatched: inSet(searchMatchIds),
+        inRoute,
+        plannedMuted: plannedMuted && !inRoute && typeof isPlanned === 'function' && isPlanned(s),
+        tractorDelivered,
+        ...(shiplify ? shiplify.markerOpts(s) : {}),
+      });
       entries.push({
         note,
         hidden,
         dns,
         pickup,
         estes: isEstesOrder(s.stopNbr),
-        tractorDelivered: !!tractorLocs?.has?.(s.matchKey),
+        tractorDelivered,
+        placeMark: marks.placeMark,
+        shiplifyPin: marks.pin,
         icons: drawnRestrictionKeys(getRestrictionBadgeKeys(note, { day: dayKey }), {
           deliveryWindow: note?.delivery_window,
           eligibility: note?.vehicle_eligibility,
@@ -5487,7 +5858,7 @@ function useLegendInventory({
       });
     }
     return buildLegendInventory(entries);
-  }, [stops, notes, dayKey, tractorLocs, routeStopNbrs, plannedMuted, isPlanned, selectedIds, searchMatchIds]);
+  }, [stops, notes, dayKey, tractorLocs, routeStopNbrs, plannedMuted, isPlanned, selectedIds, searchMatchIds, shiplify]);
 }
 
 // ONE MARK, ONE RENDERER. Chad, three rounds in: "its not showing the full icon in the legend
@@ -5649,8 +6020,68 @@ function LegendCount({ n }) {
 // null means "no inventory available" and falls back to the full catalogue rather than
 // showing an empty panel — a legend that hides everything because it could not measure the
 // board is worse than one that shows too much.
-function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true }) {
+// THE SHIPLIFY LEGEND ROWS, drawn by the SAME builders the pins are: the dock pin is the hollow
+// lime ring with its lime centre dot, the forklift pin the same ring with a dark forklift, and a
+// place mark the glyph on a disc. A key built any other way can teach a mark the map never draws.
+const SHIPLIFY_DOCK_SWATCH = circleMarkerSvg(TRACTOR_DELIVERED_COLOR, { hollow: true, strokeWidth: 3, ink: GLYPH_INK_ON_LIME });
+// The dock pin has TWO forms on the map, and the key shows both: an unplanned stop keeps the
+// resting dot (a lime ring round a white core), a scheduled one the hollow ring with its dot.
+const SHIPLIFY_DOCK_REST_SWATCH = unplannedDotSvg('#ffffff', { ring: TRACTOR_DELIVERED_COLOR });
+const SHIPLIFY_FORKLIFT_SWATCH = circleMarkerSvg(TRACTOR_DELIVERED_COLOR, { hollow: true, strokeWidth: 3, ink: GLYPH_INK_ON_LIME, forklift: true });
+
+// "Shiplify data" for one tab — the switch, and a status line that says whether anything is
+// actually loaded, so an empty trial layer can never be mistaken for a switched-off one.
+function ShiplifySwitchControl({ tab }) {
+  const [on, setOn] = useShiplifySwitch(tab);
+  const data = useShiplifyData();
+  const n = data.lookup?.size || 0;
+  const status = !on
+    ? 'Off on this tab — no Shiplify pins, marks, flags or panel block here.'
+    : data.status === 'error' ? `Couldn't load the Shiplify test${data.error ? ` (${data.error})` : ''}.`
+      : data.status === 'none' ? 'No Shiplify results imported yet (Routing gear → Import Shiplify results).'
+        : data.status === 'ready' ? `${n.toLocaleString()} Shiplify location${n === 1 ? '' : 's'} loaded.`
+          : 'Loading the Shiplify test…';
+  return (
+    <div data-shiplify-switch={tab}>
+      <MapFilterToggle label="Shiplify data" checked={on} onChange={setOn} />
+      <div className={`text-[10px] leading-snug ${data.status === 'error' && on ? 'text-red-600' : 'text-slate-500'}`}>{status}</div>
+    </div>
+  );
+}
+
+// "Lime as of board date" — the trial filter on the lime store (useLimeAsOfToggle). It changes
+// both tabs, so its description says so.
+// THE ROUTING TAB SAYS SO WHILE THE TRIAL FILTER IS ON. It is switched from the Map's Legend but
+// changes Routing's lime too, and a lime pin missing for a reason set on another screen is the
+// "hidden switch" failure lib/device-switches.js was written about. In the map's own overlay
+// column, so it moves what is below it rather than landing on top of it.
+function LimeAsOfNotice() {
+  return (
+    <div className="rounded border border-amber-300 bg-amber-50/95 text-amber-900 text-[11px] font-semibold px-2 py-1 shadow-sm"
+         role="status" data-lime-as-of-notice
+         title="Only locations a tractor first served before this board's date paint lime. Turn it off in the Map tab's Legend.">
+      Lime as of board date
+    </div>
+  );
+}
+
+function LimeAsOfControl() {
+  const [on, setOn] = useLimeAsOfToggle();
+  return (
+    <div data-lime-as-of>
+      <MapFilterToggle label="Lime as of board date" checked={on} onChange={setOn} />
+      <div className="text-[10px] text-slate-500 leading-snug">
+        Trial. Only locations a tractor first served before the board date paint lime — on the Map and on Routing.
+      </div>
+    </div>
+  );
+}
+
+function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true, tab = 'map', shiplifySwitch = false, limeAsOfSwitch = false }) {
   const inv = inventory || null;
+  // This tab's Shiplify switch: with it off, no Shiplify row is listed even in "Show all" —
+  // the trial is not on this map, so its key is not either.
+  const [shiplifyOn] = useShiplifySwitch(tab);
   const all = showAll || !inv;
   const empty = legendIsEmpty(inv);
   const has = (n) => all || !!n;
@@ -5766,6 +6197,52 @@ function MapLegendBody({ inventory, showAll, onShowAll, tractorControl = true })
           because today's board happens to have no lime on it would hide the switch precisely
           when somebody is asking why there is no lime. */}
       {tractorControl && <TractorPaintControl litCount={inv ? inv.tractorDelivered : null} />}
+      {limeAsOfSwitch && <LimeAsOfControl />}
+
+      {/* THE SHIPLIFY TRIAL. The switch (desktop Map legend only — the phone's is under Filters →
+          Map display, Routing's in the Routing map's Filters menu) and the two hollow lime pins:
+          "Shiplify says a trailer could work here, and no tractor has delivered yet". */}
+      {shiplifySwitch && <ShiplifySwitchControl tab={tab} />}
+      {shiplifyOn && (has(inv && inv.shiplifyDock) || has(inv && inv.shiplifyForklift)) && (
+        <div data-legend-shiplify>
+          <div className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide mb-1">Shiplify</div>
+          <div className="space-y-1">
+            {has(inv && inv.shiplifyDock) && (
+              <div className="flex items-center gap-2" data-legend-row="shiplify-dock">
+                <img src={SHIPLIFY_DOCK_REST_SWATCH} width={16} height={16} alt="" className="flex-shrink-0" title="Unplanned" />
+                <img src={SHIPLIFY_DOCK_SWATCH} width={16} height={16} alt="" className="flex-shrink-0" title="Scheduled" />
+                <span>Shiplify: dock, no tractor yet</span>
+                <LegendCount n={!all && inv.shiplifyDock} />
+              </div>
+            )}
+            {has(inv && inv.shiplifyForklift) && (
+              <div className="flex items-center gap-2" data-legend-row="shiplify-forklift">
+                <img src={SHIPLIFY_FORKLIFT_SWATCH} width={18} height={18} alt="" className="flex-shrink-0" />
+                <span>Shiplify: forklift, no dock, no tractor yet</span>
+                <LegendCount n={!all && inv.shiplifyForklift} />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* PLACE MARKS — a dispatcher's Building type, or Shiplify's while this tab's switch is on.
+          School, church and government count as no tractor trailer. Counts are what the map drew
+          (stopShiplifyMarks), so a row appears only while that mark is on the board. */}
+      {['residential', 'school', 'church', 'government'].some((k) => has(inv && inv.placeMarks?.[k])) && (
+        <div data-legend-place-marks>
+          <div className="text-[10px] uppercase font-semibold text-slate-600 tracking-wide mb-1">Building type</div>
+          <div className="space-y-1">
+            {['residential', 'school', 'church', 'government'].filter((k) => has(inv && inv.placeMarks?.[k])).map((k) => (
+              <div key={k} className="flex items-center gap-2" data-legend-row={`place-${k}`}>
+                <PlaceMarkIcon kind={k} size={16} />
+                <span>{PLACE_MARK_LABEL[k]}{k === 'residential' ? '' : ' — no tractor trailer'}</span>
+                <LegendCount n={!all && inv.placeMarks[k]} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {shapeRows.length > 0 && (
         <div>
@@ -5876,7 +6353,7 @@ function Legend({ expanded, setExpanded, inventory }) {
       </button>
       {expanded && (
         <div className="px-3 pb-3">
-          <MapLegendBody inventory={inventory} showAll={showAll} onShowAll={setShowAll} />
+          <MapLegendBody inventory={inventory} showAll={showAll} onShowAll={setShowAll} tab="map" shiplifySwitch limeAsOfSwitch />
         </div>
       )}
     </div>
@@ -8872,6 +9349,73 @@ function StopContactBlock({ stop, note, onSaveContacts, onRefreshed, saving = fa
   );
 }
 
+// THE STOP PANEL'S SHIPLIFY TRIAL AND BUILDING TYPE, for THIS tab (ShiplifyTabContext): the place
+// mark and who set it, the no-tractor line while that rule applies, and the Shiplify block.
+//   stop       the stop, carrying its matchKey
+//   note       its customer_notes document
+//   limeHere   the lime banner above is showing (a tractor-proven location, as painted)
+function StopShiplifySection({ stop, note, limeHere = false }) {
+  const shiplifyCtx = React.useContext(ShiplifyTabContext);
+  // The record (null with this tab's switch off), the place mark and who set it, and the tractor
+  // FACT the no-tractor rule is lifted by — not the lime paint (see useTractorFacts).
+  const shiplifyTab = useShiplifyTab(shiplifyCtx.tab, shiplifyCtx.boardDate);
+  const shiplifyRec = shiplifyTab.recordFor(stop);
+  const place = shiplifyTab.placeOf(stop, note);
+  const placeRule = place.mark && shiplifyTab.facts.known
+    ? placeNoTractor({ mark: place.mark, eligibility: note?.vehicle_eligibility || null, tractorSeen: shiplifyTab.seenAt(stop) })
+    : null;
+  const shiplifyPanel = shiplifyPanelRows(shiplifyRec);
+  const limeNoDock = limeNoDockLine(shiplifyRec, !!limeHere);
+  return (
+    <>
+      {/* WHAT KIND OF PLACE THIS IS, AND WHO SAID SO. The mark on the pin, named, with its
+          source — a dispatcher's Building type, or Shiplify's record while this tab's switch is
+          on — so nobody has to guess whether a school icon is a fact or a trial. */}
+      {place.mark && (
+        <div className="flex items-center gap-1.5 text-xs text-slate-700 -mx-0.5 mb-1" data-place-mark={place.mark}>
+          <PlaceMarkIcon kind={place.mark} size={16} />
+          <span className="font-semibold">{PLACE_MARK_LABEL[place.mark]}</span>
+          <span className="text-slate-500">· {place.source === 'dispatcher' ? 'Set by dispatcher' : 'From Shiplify'}</span>
+        </div>
+      )}
+      {placeRule?.applies && (
+        <div className="text-xs font-semibold rounded px-2 py-1 -mx-0.5 mb-1"
+             style={{ color: '#7f1d1d', background: 'rgba(220,38,38,0.08)', border: '1px solid #fca5a5' }}
+             data-place-no-tractor>
+          {placeNoTractorLine(place.mark)}
+        </div>
+      )}
+      {/* THE SHIPLIFY TEST, in words. Hidden entirely while this tab's Shiplify switch is off;
+          never blank while it is on — no record says "Not in the Shiplify test", and a trial
+          nobody has imported yet says that instead of pretending the stop was checked. */}
+      {shiplifyTab.on && (
+        <div className="rounded border border-slate-200 bg-slate-50 px-2 py-1.5 -mx-0.5 mb-1 text-xs" data-shiplify-block>
+          <div className="text-[10px] uppercase font-semibold text-slate-500 tracking-wide mb-0.5">{SHIPLIFY_TEST_LABEL}</div>
+          {shiplifyTab.data.status === 'loading' || shiplifyTab.data.status === 'idle'
+            ? <div className="text-slate-500">Loading the Shiplify test…</div>
+            : shiplifyTab.data.status === 'error'
+              ? <div className="text-red-700">Couldn't load the Shiplify test{shiplifyTab.data.error ? ` (${shiplifyTab.data.error})` : ''}.</div>
+              : shiplifyTab.data.status === 'none'
+                ? <div className="text-slate-500">No Shiplify results imported yet.</div>
+                : !shiplifyPanel.found
+                  ? <div className="text-slate-600">Not in the Shiplify test</div>
+                  : (
+                    <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
+                      {shiplifyPanel.rows.map(([k, v]) => (
+                        <React.Fragment key={k}>
+                          <dt className="text-slate-500">{k}</dt>
+                          <dd className="text-slate-800">{v}</dd>
+                        </React.Fragment>
+                      ))}
+                    </dl>
+                  )}
+          {limeNoDock && <div className="mt-1 text-slate-500">{limeNoDock}</div>}
+        </div>
+      )}
+    </>
+  );
+}
+
 function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, onSaveContacts, savingNote = false, noteSaveError = null }) {
   // `stop` is the already-merged "live" stop the PARENT owns (see useLiveStop). The parent
   // holds the refresh overlay so the header status badge updates too — not just this body.
@@ -8879,13 +9423,14 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
   // "View delivery photo" button) back up to that parent.
   const live = stop;
   const stopKey = stop.stopNbr || stop.pro;
+  // Which tab this panel is on (Map or Routing) — its Shiplify switch and board date.
+  const shiplifyCtx = React.useContext(ShiplifyTabContext);
   // Sticky tractor-delivered flag for this location (fetched once per page load,
   // shared app-wide). Stops opened via PRO lookup may lack a precomputed
   // matchKey — derive it the same way the map does.
-  const tractorLocs = useTractorLocations();
-  const tractorInfo = tractorLocs.get(
-    stop.matchKey || normalizeMatchKey(stop.businessName || '', stop.addr1 || '', stop.city || '', stop.zip || ''),
-  );
+  const tractorLocs = useTractorLocations(shiplifyCtx.boardDate);
+  const panelMatchKey = stop.matchKey || normalizeMatchKey(stop.businessName || '', stop.addr1 || '', stop.city || '', stop.zip || '');
+  const tractorInfo = tractorLocs.get(panelMatchKey);
   // IS THAT HISTORY STILL THE ANSWER? Chad, on a stop whose panel said "Tractor has delivered
   // here — last Aug 17" while its row in the Selected list was not green: "this stop has had a
   // tractor delivery to it but the row is not highlighted green why?"
@@ -8941,6 +9486,7 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
           </span>
         </div>
       )}
+      <StopShiplifySection stop={stop.matchKey ? stop : { ...stop, matchKey: panelMatchKey }} note={note} limeHere={!!tractorInfo} />
       <div>
         {/* Two NuVizz records carry this order number (the Estes-0828068215 case). The board is
             showing the LIVE one, but by-number lookups (portal search included) can answer with
@@ -9115,7 +9661,70 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
 // (desktop) tightens controls; otherwise controls use 44px touch targets.
 // `draft` is the working note; `setDraft` takes a PARTIAL patch and merges it
 // (the parent tracks dirty state + persists).
-function StopNotesEditor({ draft, setDraft, compact = false, drivers = [] }) {
+// BUILDING TYPE — what kind of place this is, set by a dispatcher. Saved to the location
+// (customer_notes.building_type, keyed by match key), so it applies to every future order here.
+//
+//   Auto        follow Shiplify (the field is absent / null) — Shiplify's answer shown beside it
+//   Residential / School / Church / Government   that mark, whatever Shiplify says, with the
+//               Shiplify switch on or off
+//   None        no mark at all, even where Shiplify has one
+//
+// DELIBERATELY ITS OWN CONTROL, NOT AN EQUIPMENT RESTRICTION. Those keys draw restriction icons,
+// feed the trailer-blocker checks and tractorPaintAllowed, and drive truck matching; a building
+// type does none of that. Its one tractor effect is the no-tractor flag for a school, church or
+// government stop on a tractor-trailer route (board-flags), lifted by Vehicle "Tractor-trailer OK".
+const BUILDING_TYPE_OPTIONS = [
+  { value: null, label: 'Auto' },
+  { value: 'residential', label: 'Residential' },
+  { value: 'school', label: 'School' },
+  { value: 'church', label: 'Church' },
+  { value: 'government', label: 'Government' },
+  { value: 'none', label: 'None' },
+];
+function BuildingTypePicker({ draft, setD, pad, tap, stop = null }) {
+  const shiplifyCtx = React.useContext(ShiplifyTabContext);
+  // The switch and the index only — not useShiplifyTab, which would also fetch the tractor record
+  // this hint never reads (the Stop lookup screen mounts this editor too).
+  const [shiplifyOn] = useShiplifySwitch(shiplifyCtx.tab);
+  const shiplifyData = useShiplifyData();
+  // What Shiplify says about this place, shown beside Auto — only while this tab's Shiplify
+  // switch is on, and by match key alone on the Stop lookup screen, which opens a location
+  // rather than a stop.
+  const keyed = stop ? (stop.matchKey ? stop : { ...stop, matchKey: draft?.match_key }) : { matchKey: draft?.match_key };
+  const rec = shiplifyOn ? (shiplifyRecordFor(shiplifyData.lookup || EMPTY_SHIPLIFY_LOOKUP, keyed)?.rec || null) : null;
+  const shiplifyMark = resolvePlaceMark({ shiplify: rec, shiplifyOn }).shiplifyMark;
+  const current = normalizeBuildingType(draft?.building_type);
+  return (
+    <div data-building-type-picker>
+      <div className="text-[11px] font-semibold text-slate-600 mb-1">Building type</div>
+      <div className="flex flex-wrap gap-1.5">
+        {BUILDING_TYPE_OPTIONS.map((o) => {
+          const active = current === o.value;
+          const glyphKind = o.value === null ? shiplifyMark : (o.value === 'none' ? null : o.value);
+          return (
+            <button key={String(o.value)} type="button" onClick={() => setD({ building_type: o.value })} style={tap}
+              data-building-type={o.value ?? 'auto'} aria-pressed={active}
+              title={o.value === null
+                ? 'Follow Shiplify for this location'
+                : o.value === 'none' ? 'No place mark here, whatever Shiplify says' : `Mark this location as ${o.label.toLowerCase()}`}
+              className={`${pad} rounded border text-xs inline-flex items-center gap-1.5 ${active ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700'}`}>
+              {(o.value !== null || glyphKind) && <PlaceMarkIcon kind={glyphKind} size={14} />}
+              {o.label}
+              {o.value === null && shiplifyMark && (
+                <span className={active ? 'text-slate-300' : 'text-slate-500'}>· Shiplify: {PLACE_MARK_LABEL[shiplifyMark]}</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+      <div className="text-[10px] text-slate-500 mt-1">
+        Sticks to this location for every future stop here. School, church and government count as no tractor trailer unless Vehicle is Tractor-trailer OK.
+      </div>
+    </div>
+  );
+}
+
+function StopNotesEditor({ draft, setDraft, compact = false, drivers = [], stop = null }) {
   const D = draft;
   const setD = (patch) => setDraft(patch);
   // DNS — barred-driver list. Names sourced from the app's known drivers.
@@ -9378,6 +9987,8 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [] }) {
         </div>
       </div>
 
+      <BuildingTypePicker draft={D} setD={setD} pad={pad} tap={tap} stop={stop} />
+
       <div>
         <div className="text-[11px] font-semibold text-slate-600 mb-1">Dock type</div>
         <div className="flex flex-wrap gap-1.5">
@@ -9581,7 +10192,7 @@ function StopRecentDeliveries({ stop, note }) {
 
 // Customer-notes section wrapper: the Edit toggle, the read-only view, the full
 // editor, and recent-PRO history. Shared by desktop + mobile.
-function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact = false, drivers = [] }) {
+function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact = false, drivers = [], stop = null }) {
   return (
     <div className="px-4 py-3 space-y-3">
       <div className="flex items-center justify-between">
@@ -9594,7 +10205,7 @@ function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact 
       </div>
       {!editing && !note && <div className="text-xs text-slate-500 italic">No notes yet. {compact ? 'Click' : 'Tap'} Edit to add.</div>}
       {!editing && note && <ReadOnlyNoteView note={note} />}
-      {editing && <StopNotesEditor draft={draft} setDraft={setDraft} compact={compact} drivers={drivers} />}
+      {editing && <StopNotesEditor draft={draft} setDraft={setDraft} compact={compact} drivers={drivers} stop={stop} />}
     </div>
   );
 }
@@ -9793,7 +10404,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, saveDenie
       <div className="overflow-y-auto flex-1">
         <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} onSaveContacts={saveContacts} savingNote={saving} noteSaveError={saveError} />
         <ProsSection stop={live} />
-        <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} compact drivers={drivers} />
+        <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} compact drivers={drivers} stop={stop} />
         <StopRecentDeliveries stop={stop} note={note} />
       </div>
 
@@ -10121,6 +10732,12 @@ function ReadOnlyNoteView({ note }) {
   if (note.vehicle_eligibility === 'tractor' || note.vehicle_eligibility === 'box_only') {
     const tractorOk = note.vehicle_eligibility === 'tractor';
     items.push({ k: 'Vehicle', v: <span className="font-semibold" style={{ color: tractorOk ? ELIG_TRACTOR_COLOR : ELIG_BOX_COLOR }}>{tractorOk ? 'Tractor-trailer OK' : 'Box truck only'}</span> });
+  }
+  // The dispatcher's Building type, so a saved choice shows in the read-only card (None
+  // included — it is a deliberate answer, not an absence).
+  if (normalizeBuildingType(note.building_type)) {
+    const bt = normalizeBuildingType(note.building_type);
+    items.push({ k: 'Building', v: <span className="font-semibold inline-flex items-center gap-1">{bt !== 'none' && <PlaceMarkIcon kind={bt} size={14} />}{BUILDING_TYPE_LABEL[bt]}</span> });
   }
   if (note.delivery_window === 'AM' || note.delivery_window === 'PM') items.push({ k: 'Window', v: <span className="font-semibold">{note.delivery_window}</span> });
   // Confirm the CS-notify flag in the collapsed view — without this the read-only card
@@ -11237,6 +11854,9 @@ function MobileFiltersTab({
             checked={mapFilters.hideLabels}
             onChange={setMF('hideLabels')}
           />
+          {/* The Map tab's Shiplify switch, on a phone. Its own per-device store (not
+              mapFilters), shared with the desktop Legend's copy of the same switch. */}
+          <ShiplifySwitchControl tab="map" />
           {/* Clustering required on mobile — see brief P3.4. */}
           <div className="flex items-center justify-between gap-2 py-1.5">
             <span className="text-xs text-slate-700 min-w-0 flex-1 truncate">Show clustered markers</span>
@@ -11261,7 +11881,7 @@ function MobileFiltersTab({
         </button>
         <div className="px-3 pb-3">
           {legendOpen
-            ? <MapLegendBody inventory={legendInventory} showAll={legendAll} onShowAll={setLegendAll} />
+            ? <MapLegendBody inventory={legendInventory} showAll={legendAll} onShowAll={setLegendAll} tab="map" limeAsOfSwitch />
             : <TractorPaintControl litCount={legendInventory ? legendInventory.tractorDelivered : null} />}
         </div>
       </div>
@@ -11481,7 +12101,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
         </div>
         <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} onSaveContacts={saveContacts} savingNote={saving} noteSaveError={saveError} />
         <ProsSection stop={live} />
-        <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} drivers={drivers} />
+        <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} drivers={drivers} stop={stop} />
         <StopRecentDeliveries stop={stop} note={note} />
       </div>
       {/* Sticky save bar — visible while editing */}
@@ -12400,7 +13020,11 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   }, [presence?.peers, refresh]);
 
   const { notes, ready: notesReady } = useCustomerNotes();
-  const tractorLocs = useTractorLocations();
+  const tractorLocs = useTractorLocations(selectedDate);
+  // The Shiplify trial on THIS tab: the Map's own switch, the Shiplify index and the tractor
+  // facts the pins are judged against (see useShiplifyTab).
+  const shiplifyMap = useShiplifyTab('map', selectedDate);
+  const mapShiplifyCtx = useMemo(() => ({ tab: 'map', boardDate: selectedDate }), [selectedDate]);
   useAutoScanner(stops, notes, notesReady);
   // THE WALL DISPLAY DOES NOT LOAD THE JS MAP AT ALL when it is drawing a picture. Not an
   // optimisation: the JS map is the thing that would not draw on that television, so the fix
@@ -12501,11 +13125,25 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             ? { ...travelInputs, routeClasses: undefined }
             : travelInputs,
         } : {}),
+        // SCHOOL, CHURCH AND GOVERNMENT ON A TRACTOR-TRAILER ROUTE (board-flags). A dispatcher's
+        // Building type always counts; Shiplify's only while THIS tab's switch is on (recordFor
+        // answers null otherwise). The lift — a tractor has delivered here, by match key or
+        // street + ZIP — is judged against the tractor FACT, and until that has loaded the rule
+        // reports "not checked" rather than flagging every school.
+        placeMarks: {
+          shiplifyOn: shiplifyMap.on,
+          shiplifyOf: shiplifyMap.recordFor,
+          tractorSeenOf: shiplifyMap.seenAt,
+          tractorKnown: shiplifyMap.facts.known,
+          // Until the Shiplify index has answered, its schools cannot be judged; the engine then
+          // judges the dispatcher's own types and says the Shiplify half was not checked.
+          shiplifyKnown: ['ready', 'none'].includes(shiplifyMap.data.status),
+        },
       },
     });
     const classesLive = !!(travelInputs?.classCurves && travelInputs?.routeClasses && travelInputs.routeClassesDate === selectedDate);
     return { ...out, travelMeta: travelInputs ? { ...travelInputs.meta, classes: classesLive, routeClassCount: classesLive ? Object.keys(travelInputs.routeClasses).length : 0 } : null };
-  }, [stops, notes, rosterRawRows, selectedDate, flagsClockTick, travelInputs, tierFloorByStop, departTable]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [stops, notes, rosterRawRows, selectedDate, flagsClockTick, travelInputs, tierFloorByStop, departTable, shiplifyMap]); // eslint-disable-line react-hooks/exhaustive-deps
   // The chip's number excludes dismissed rows — a cleared list must read as cleared.
   const visibleFlagCounts = useMemo(() => {
     const live = boardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]);
@@ -12966,12 +13604,13 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
           selectedDayKey,
           sameLocCount: locCounts.get(stopLocKey(s)) || 1,
           tractorDelivered: tractorLocs.has(s.matchKey),
+          ...shiplifyMap.markerOpts(s),
         }),
       });
     }
     out.sort((a, b) => b.lat - a.lat);
     return out;
-  }, [tvStatic, tvStaticUrl, filteredStops, notes, tractorLocs, selectedDate]);
+  }, [tvStatic, tvStaticUrl, filteredStops, notes, tractorLocs, selectedDate, shiplifyMap]);
   // HOW MUCH OF THE FRAME THE FREIGHT ACTUALLY OCCUPIES, for the corner readout above.
   // Measured off the pins that were DRAWN rather than off the bounds they were fitted from:
   // the question this answers is "is the wall wasting half its screen", and only the drawn
@@ -13541,12 +14180,25 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     [selectedRoute, selectedRouteStops],
   );
   const legendDayKey = useMemo(() => weekdayKeyFromDate(selectedDate), [selectedDate]);
+  // WHAT THE MAP DRAWS, not what the filters kept: an open route's stops are drawn even when a
+  // filter hid them (the marker effect adds them back), so the Legend counts them too — a school
+  // badge on a route pin is a mark on the map, and its row has to be there.
+  const legendStops = useMemo(() => {
+    if (!selectedRoute || !selectedRouteStops.length) return filteredStops;
+    const have = new Set(filteredStops.map((s) => s.stopNbr));
+    const extra = selectedRouteStops.filter((s) => !have.has(s.stopNbr) && s.lat != null && s.lng != null);
+    return extra.length ? filteredStops.concat(extra) : filteredStops;
+  }, [filteredStops, selectedRoute, selectedRouteStops]);
   const legendInventory = useLegendInventory({
-    stops: filteredStops,
+    stops: legendStops,
     notes,
     dayKey: legendDayKey,
     tractorLocs,
     routeStopNbrs: selectedRouteStopNbrs,
+    // The Map paints a selected or searched stop amber, which takes the pin from a hollow lime
+    // Shiplify pin; the Legend has to know which stops those are to count what was drawn.
+    selectedIds: effectiveMatchSet || null,
+    shiplify: shiplifyMap,
   });
 
   // The day's loads, grouped from the board by loadNbr — powers the mobile Loads
@@ -13844,7 +14496,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
       // The rich per-stop icon (DNS / numbered route / status-flag-window /
       // restriction) is built by the shared stopMarkerIcon helper so the Map and
       // Routing screens stay pixel-identical.
-      const icon = stopMarkerIcon(google, s, note, { selectedDayKey, matched, inRoute, seq, sameLocCount: locCounts.get(stopLocKey(s)) || 1, tractorDelivered: tractorLocs.has(s.matchKey) });
+      const icon = stopMarkerIcon(google, s, note, { selectedDayKey, matched, inRoute, seq, sameLocCount: locCounts.get(stopLocKey(s)) || 1, tractorDelivered: tractorLocs.has(s.matchKey), ...shiplifyMap.markerOpts(s) });
       // The native Marker `title` still carries the business name (OS hover fallback).
       const marker = new google.maps.Marker({
         position: { lat: s.lat, lng: s.lng },
@@ -13902,7 +14554,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     } else {
       newMarkers.forEach((m) => m.setMap(mapRef.current));
     }
-  }, [google, filteredStops, notes, tractorLocs, effectiveMatchSet, mapFilters.showClustered, selectedDate, selectedRoute, selectedRouteStops, mapReady]);
+  }, [google, filteredStops, notes, tractorLocs, effectiveMatchSet, mapFilters.showClustered, selectedDate, selectedRoute, selectedRouteStops, mapReady, shiplifyMap]);
 
   // Center/zoom the map to fit a route's stops when it's opened (per dispatcher
   // request — NuVizz frames the route on open). Restores the prior board view on close.
@@ -14206,6 +14858,10 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         // box-only mark somebody painted last month.
         ...(eligibilityChanged(draft, existing)
           ? { vehicle_eligibility_at: serverTimestamp(), vehicle_eligibility_by: 'dispatcher' }
+          : {}),
+        // The Building type leaves the same trace as the Vehicle mark, and only when it moved.
+        ...(buildingTypeChanged(draft, existing)
+          ? { building_type_at: serverTimestamp(), building_type_by: 'dispatcher' }
           : {}),
         last_updated: serverTimestamp(),
         updated_by: NOTES_UPDATED_BY,
@@ -14970,6 +15626,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         {/* Stop detail drawer — slides up over the map. Tabs Info / Notes /
             Hours / PROs. Editing on Notes or Hours pins a sticky Save bar. */}
         {!selectedDriver && selectedStop && (!selectedRoute || routeMapView) && (
+          <ShiplifyTabContext.Provider value={mapShiplifyCtx}>
           <MobileStopDetailDrawer
             stop={selectedStop}
             note={notes.get(selectedStop.matchKey)}
@@ -14994,6 +15651,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             saveError={saveError}
             saveDenied={notesGate.reason}
           />
+          </ShiplifyTabContext.Provider>
         )}
 
         {/* M5.2 — route detail drawer (mobile). Same bottom-sheet pattern as the
@@ -15135,6 +15793,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         </div>
         </div>
         {!selectedDriver && selectedStop ? (
+          <ShiplifyTabContext.Provider value={mapShiplifyCtx}>
           <StopSidebar
             embedded
             stop={selectedStop}
@@ -15153,6 +15812,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             saveDenied={notesGate.reason}
             onOpenRoute={(loadNbr) => { openRouteExplicit(loadNbr); }}
           />
+          </ShiplifyTabContext.Provider>
         ) : (
           <div className="flex-1 min-h-0 overflow-y-auto">
         <FilterPanel
@@ -16092,7 +16752,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // ones twice: `rows` is what is drawn. tractorLocs is the shared, paint-toggle-aware map the
   // markers use — switch the lime paint off in the Legend and the proven-history green leaves
   // these rows too, exactly as it leaves the pins.
-  const tractorLocs = useTractorLocations();
+  const tractorLocs = useTractorLocations(boardDate);
   const tractorOkIds = useMemo(() => {
     const out = new Set();
     for (const s of rows) if (stopTractorFriendly(s, notes, tractorLocs)) out.add(String(s.stopNbr));
@@ -20241,7 +20901,7 @@ function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja,
         <span className="text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5"><Info size={13} /> Legend</span>
         <button onClick={() => setLegendOpen(false)} className="tap-dense text-slate-500 hover:text-slate-900" aria-label="Close legend"><X size={14} /></button>
       </div>
-      <MapLegendBody inventory={legendInventory} showAll={legendAll} onShowAll={setLegendAll} />
+      <MapLegendBody inventory={legendInventory} showAll={legendAll} onShowAll={setLegendAll} tab="routing" />
     </div>
   ) : null;
   // TWO VIEWS, and the phone one is why the panel is not absolutely pinned anywhere. On a
@@ -22090,6 +22750,11 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, showRoutes, setSho
               filter toggle under filters to hide the stem out." Same per-device setting
               (routing.hideStem) — only the control moved, the default did not. */}
           {setHideStem && <MapFilterToggle label="Hide stem-out line" checked={hideStem} onChange={setHideStem} />}
+          {/* THE ROUTING TAB'S SHIPLIFY SWITCH — the same popover on desktop and phone. It covers
+              this tab only; the Map tab has its own. */}
+          <div className="border-t border-slate-200 mt-1 pt-1">
+            <ShiplifySwitchControl tab="routing" />
+          </div>
         </div>
       )}
     </div>
@@ -22289,6 +22954,326 @@ function NewRouteModal({ date, existingNames, origin, originOptions = [], busy, 
 }
 
 // Beta version history popup (opened from the build badge).
+// ── IMPORT SHIPLIFY RESULTS ─────────────────────────────────────────────────
+//
+// Chad uploads Shiplify's test file (DavisfileResults.xls) here, from the Routing gear on the
+// desktop and on the phone. The file is parsed IN THE BROWSER by lib/shiplify-import.js and its
+// counts are shown BEFORE anything is written, so they can be checked against the file. Then the
+// rows go to shiplify-import in chunks (raw, verbatim — Shipper rows too), the background job
+// derives one location per consignee, verifies what it wrote by AGGREGATION READS of Firestore
+// rather than by counting its own writes, and builds the compact index the maps read. This screen
+// shows that verified result, not the one it hoped for.
+//
+// Same file twice is safe: the batch id is a hash of the rows, so a re-import writes the same
+// documents again rather than a second copy. Zero NuVizz calls.
+const SHIPLIFY_DONE = new Set(['complete', 'mismatch', 'failed']);
+function shiplifyStatusTone(st) {
+  return st === 'complete' ? 'text-emerald-700' : st === 'mismatch' || st === 'failed' ? 'text-red-700' : 'text-slate-700';
+}
+function ShiplifySummaryList({ s }) {
+  if (!s) return null;
+  const n = (v) => (Number.isFinite(Number(v)) ? Number(v).toLocaleString() : '—');
+  const rows = [
+    ['Rows in the sheet', n(s.rows)],
+    ['Consignee rows', n(s.consignee)],
+    ['Shipper rows (kept raw, never a location)', n(s.shipper)],
+    ...(s.other ? [['Other rows', n(s.other)]] : []),
+    ['Tariff RES', n(s.tariffs?.RES)],
+    ['Tariff LIM', n(s.tariffs?.LIM)],
+    ['Tariff GROC', n(s.tariffs?.GROC)],
+    // A code nobody has a word for is shown, not dropped — the tariff rows then add up.
+    ...Object.entries(s.otherTariffs || {}).map(([code, c]) => [`Tariff ${code}`, n(c)]),
+    ['Dock yes / no / blank', `${n(s.dock?.yes)} / ${n(s.dock?.no)} / ${n(s.dock?.blank)}`],
+    ['No dock, with a forklift', n(s.forkliftNoDock)],
+    ['Locations by match key', n(s.locationsByMatchKey)],
+    ['Locations by street + ZIP', n(s.locationsByPlaceKey)],
+    // What the maps will mark, per LOCATION: the counts behind every Shiplify place mark and every
+    // Shiplify no-tractor flag.
+    ...(s.placeMarks ? [
+      ['Locations marked school', n(s.placeMarks.school)],
+      ['Locations marked church', n(s.placeMarks.church)],
+      ['Locations marked government', n(s.placeMarks.government)],
+      ['Locations marked residential', n(s.placeMarks.residential)],
+    ] : []),
+    ['Keys with more than one spelling', n(s.collisions)],
+    ['Locations whose PROs disagree', n(s.conflicts)],
+    ['Pickup dates', s.dates?.first ? `${fmtTractorDate(s.dates.first)} – ${fmtTractorDate(s.dates.last)}` : '—'],
+  ];
+  const skipped = Object.entries(s.skippedByReason || {}).filter(([k]) => k !== 'shipper_row');
+  return (
+    <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-0.5 text-[12px]">
+      {rows.map(([k, v]) => (
+        <React.Fragment key={k}><dt className="text-slate-600">{k}</dt><dd className="text-right font-semibold tabular-nums">{v}</dd></React.Fragment>
+      ))}
+      {skipped.map(([k, v]) => (
+        <React.Fragment key={`skip-${k}`}><dt className="text-amber-800">Skipped — {k.replace(/_/g, ' ')}</dt><dd className="text-right font-semibold tabular-nums text-amber-800">{n(v)}</dd></React.Fragment>
+      ))}
+    </dl>
+  );
+}
+function ShiplifySkippedTable({ rows }) {
+  const list = Array.isArray(rows) ? rows : [];
+  const { sorted, sortKey, sortDir, toggle } = useSortable(list, 'index', 'asc');
+  if (!list.length) return null;
+  return (
+    <div className="max-h-48 overflow-auto border rounded">
+      <table className="w-full text-[11px]">
+        <thead className="bg-slate-50 sticky top-0"><tr>
+          {/* The n-th DATA row the sheet held (blank rows skipped) — not the spreadsheet's own row
+              number, so the PRO is the way to find it in the file. */}
+          <SortableTh label="Data row" k="index" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+          <SortableTh label="Reason" k="reason" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+          <SortableTh label="PRO" k="pro" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+          <SortableTh label="Name" k="name" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+        </tr></thead>
+        <tbody>
+          {sorted.map((r) => (
+            <tr key={`${r.index}-${r.reason}`} className="border-t">
+              <td className="px-2 py-0.5 tabular-nums">{Number(r.index) + 1}</td>
+              <td className="px-2 py-0.5">{String(r.reason || '').replace(/_/g, ' ')}</td>
+              <td className="px-2 py-0.5">{r.pro || ''}</td>
+              <td className="px-2 py-0.5">{r.name || ''}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+function ShiplifyImportModal({ onClose }) {
+  const fileRef = useRef(null);
+  const [phase, setPhase] = useState('idle');       // idle | parsing | ready | uploading | processing | done | error
+  const [fileName, setFileName] = useState('');
+  const [rows, setRows] = useState(null);
+  const [summary, setSummary] = useState(null);
+  const [sheetName, setSheetName] = useState('');
+  const [progress, setProgress] = useState(null);   // { done, total }
+  const [log, setLog] = useState(null);             // the server's import log — the verified result
+  const [latest, setLatest] = useState(null);       // the last import on record, shown on open
+  const [error, setError] = useState('');
+  const aliveRef = useRef(true);
+  useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false; }; }, []);
+  useEffect(() => {
+    // Closable while the server works (the poll below outlives this screen and reloads the maps
+    // when the job ends); not while rows are still being sent.
+    const onKey = (e) => { if (e.key === 'Escape' && phase !== 'uploading' && phase !== 'parsing') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose, phase]);
+  // The last import, so opening this screen answers "has it been done, and how did it go?"
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch('/.netlify/functions/shiplify-import?latest=1')
+      .then((r) => r.json().catch(() => null))
+      .then((j) => {
+        if (cancelled || !j || !j.ok || j.none) return;
+        setLatest(j);
+        // An import that finished after this page loaded its index (on another device, or after
+        // this screen was closed mid-run): pick the new index up now rather than at a reload.
+        const gen = j.index?.generation;
+        if (gen && gen !== __shiplify.head?.generation) fetchShiplifyIndexOnce({ force: true });
+      })
+      .catch(() => { /* the screen still works without it */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  const readFile = async (file) => {
+    if (!file) return;
+    setError(''); setLog(null); setRows(null); setSummary(null); setProgress(null);
+    setFileName(file.name || ''); setPhase('parsing');
+    try {
+      const name = (file.name || '').toLowerCase();
+      if (!/\.(xls|xlsx|csv)$/.test(name)) throw new Error('Choose the .xls, .xlsx or .csv Shiplify sent.');
+      const mod = await import('xlsx');   // lazy — the parser only loads when a file is chosen
+      const XLSX = mod?.read ? mod : (mod?.default || mod);   // xlsx is CJS: named exports may sit on .default under Vite
+      const wb = name.endsWith('.csv')
+        ? XLSX.read(await file.text(), { type: 'string' })
+        : XLSX.read(await file.arrayBuffer(), { type: 'array' });
+      // The results sheet by name; the "Summary" pivot beside it is never read. A file with a
+      // single sheet (a CSV, or a re-saved copy) is that sheet.
+      const sheet = wb.SheetNames.includes(SHIPLIFY_SHEET) ? SHIPLIFY_SHEET
+        : wb.SheetNames.length === 1 ? wb.SheetNames[0] : null;
+      if (!sheet) throw new Error(`No "${SHIPLIFY_SHEET}" sheet in this file (it has: ${wb.SheetNames.join(', ')}).`);
+      // raw: dates stay Excel serials and numbers stay numbers — the raw layer keeps the cells
+      // exactly as the sheet holds them, and lib/shiplify-import.js reads the serials.
+      const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sheet], { header: 1, blankrows: false, defval: '', raw: true });
+      const parsed = rowsFromAoa(aoa);
+      if (parsed.missing.length) throw new Error(`This does not look like the Shiplify results sheet — missing column${parsed.missing.length === 1 ? '' : 's'}: ${parsed.missing.join(', ')}.`);
+      if (!parsed.rows.length) throw new Error('The sheet has a header and no rows.');
+      if (!aliveRef.current) return;
+      setSheetName(sheet); setRows(parsed.rows); setSummary(summarizeShiplify(parsed.rows)); setPhase('ready');
+    } catch (e) {
+      if (!aliveRef.current) return;
+      setError(e?.message || String(e)); setPhase('error');
+    }
+  };
+
+  const post = async (url, body) => {
+    const r = await apiFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) throw new Error(j.error || `${url.split('/').pop()} answered ${r.status}`);
+    return j;
+  };
+
+  const upload = async () => {
+    if (!rows || !rows.length) return;
+    setError(''); setLog(null); setPhase('uploading');
+    try {
+      const batchId = shiplifyBatchId(rows);
+      // Bounded by rows AND by encoded size (lib/shiplify-import.js chunkRowsBySize): each chunk
+      // becomes one stored document, and the split cannot change once the first one lands.
+      const chunks = chunkRowsBySize(rows);
+      await post('/.netlify/functions/shiplify-import', {
+        action: 'begin', batch_id: batchId, file_name: fileName, sheet: sheetName,
+        row_count: rows.length, raw_chunk_count: chunks.length, summary,
+      });
+      setProgress({ done: 0, total: chunks.length });
+      for (let i = 0; i < chunks.length; i++) {
+        const body = { action: 'raw', batch_id: batchId, chunk_index: i, row_start: chunks[i].row_start, rows: chunks[i].rows };
+        // One retry per chunk: a replay of a stored chunk is answered "same", never a duplicate.
+        try { await post('/.netlify/functions/shiplify-import', body); } catch { await post('/.netlify/functions/shiplify-import', body); }
+        if (aliveRef.current) setProgress({ done: i + 1, total: chunks.length });
+      }
+      const kick = await apiFetch('/.netlify/functions/shiplify-import-background', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ batch_id: batchId }),
+      });
+      if (!kick.ok && kick.status !== 202) throw new Error(`The import job did not start (${kick.status}).`);
+      if (aliveRef.current) setPhase('processing');
+      // Poll the LOG — the background job writes its verified result there. Never report done
+      // from this side: only the server's aggregation reads can say what landed. The poll keeps
+      // going if this screen is closed (only its state updates stop), so the maps still pick up
+      // the new index when the job ends; one dropped request on a phone is a retry, not a failure.
+      const started = Date.now();
+      let finalLog = null;
+      for (;;) {
+        await new Promise((res) => setTimeout(res, 3000));
+        try {
+          const r = await apiFetch(`/.netlify/functions/shiplify-import?batch_id=${encodeURIComponent(batchId)}`);
+          const j = await r.json().catch(() => null);
+          if (j && j.ok) {
+            if (aliveRef.current) setLog(j);
+            if (SHIPLIFY_DONE.has(j.status)) { finalLog = j; break; }
+          }
+        } catch { /* a dropped request — ask again next tick */ }
+        if (Date.now() - started > 15 * 60 * 1000) throw new Error('The import job has not finished after 15 minutes. Its log will say where it stopped (open this screen again later).');
+      }
+      // Reload the map layer from the index the job just built.
+      // Whenever the job PUBLISHED an index (a mismatch after the location check still does), so
+      // this device reads what every other page load now reads.
+      if (finalLog?.index) fetchShiplifyIndexOnce({ force: true });
+      if (aliveRef.current) setPhase('done');
+    } catch (e) {
+      if (!aliveRef.current) return;
+      setError(e?.message || String(e)); setPhase('error');
+    }
+  };
+
+  const busy = phase === 'parsing' || phase === 'uploading' || phase === 'processing';
+  const closable = phase !== 'parsing' && phase !== 'uploading';
+  const v = log?.verified || null;
+  // A count the server did not take is not a zero. '—' says "not counted".
+  const cnt = (x) => (x == null || !Number.isFinite(Number(x)) ? '—' : Number(x).toLocaleString());
+  const failedChecks = Array.isArray(v?.checks) ? v.checks.filter((c) => c && c.ok === false) : [];
+  // Said only where the server said it: the 'mismatch' that stopped at the raw layer, before any
+  // location or index write. A 'failed' run may have stopped half way, so it claims nothing.
+  const nothingWritten = log?.status === 'mismatch' && !log?.index && v?.locations_written == null;
+  return (
+    <div className="fixed inset-0 z-[1000] bg-black/40 flex items-center justify-center p-3" data-overlay-layer
+         onClick={() => { if (closable) onClose(); }}>
+      <div className="bg-white rounded-lg shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-4 space-y-3" onClick={(e) => e.stopPropagation()}
+           role="dialog" aria-label="Import Shiplify results">
+        <div className="flex items-center justify-between gap-2">
+          <div className="font-semibold text-slate-800">Import Shiplify results</div>
+          <button type="button" onClick={onClose} disabled={!closable} className="tap-dense p-1 rounded hover:bg-slate-100 disabled:opacity-40" aria-label="Close"><X size={16} /></button>
+        </div>
+        <p className="text-[12px] text-slate-600 leading-snug">
+          Shiplify's test file (the <b>{SHIPLIFY_SHEET}</b> sheet). It is read here first and the counts shown below, so they can be checked before anything is written. Importing the same file again writes the same records, not a second copy.
+        </p>
+        {latest && phase === 'idle' && (
+          <div className="text-[12px] rounded border border-slate-200 bg-slate-50 px-2 py-1.5">
+            Last import: <b>{latest.file_name || latest.batch_id}</b>
+            {(latest.finished_at || latest.last_attempt_at || latest.first_imported_at)
+              ? ` · ${latest.finished_at ? 'finished' : 'started'} ${fmtAbsoluteET(latest.finished_at || latest.last_attempt_at || latest.first_imported_at)}`
+              : ''}
+            {' · '}<span className={`font-semibold ${shiplifyStatusTone(latest.status)}`}>{latest.status || 'unknown'}</span>
+            {latest.status === 'complete' && latest.verified?.locations_written != null ? ` · ${Number(latest.verified.locations_written).toLocaleString()} locations verified` : ''}
+          </div>
+        )}
+        <div>
+          <input ref={fileRef} type="file" accept=".xls,.xlsx,.csv" className="hidden"
+                 onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; readFile(f); }} />
+          <button type="button" disabled={busy} onClick={() => fileRef.current?.click()}
+                  className="w-full rounded border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50" style={{ minHeight: 44 }}>
+            {fileName ? `Choose a different file (${fileName})` : 'Choose the Shiplify file (.xls, .xlsx or .csv)'}
+          </button>
+        </div>
+        {phase === 'parsing' && <div className="text-[12px] text-slate-600 inline-flex items-center gap-1.5"><RefreshCw size={13} className="animate-spin" /> Reading {fileName}…</div>}
+        {summary && (
+          <div className="space-y-1" data-shiplify-summary>
+            <div className="text-[11px] uppercase font-semibold text-slate-500 tracking-wide">What the file says — check before importing</div>
+            <ShiplifySummaryList s={summary} />
+          </div>
+        )}
+        {phase === 'ready' && (
+          <button type="button" onClick={upload} className="w-full rounded px-3 py-2 text-sm font-semibold text-white" style={{ background: BRAND, minHeight: 44 }}>
+            Import {rows.length.toLocaleString()} rows
+          </button>
+        )}
+        {phase === 'uploading' && progress && (
+          <div className="text-[12px] text-slate-700 inline-flex items-center gap-1.5"><RefreshCw size={13} className="animate-spin" /> Sending rows — part {progress.done} of {progress.total}…</div>
+        )}
+        {phase === 'processing' && (
+          <div className="text-[12px] text-slate-700 inline-flex items-center gap-1.5"><RefreshCw size={13} className="animate-spin" /> Building the locations and checking what was written{log?.status ? ` (${log.status})` : ''}… You can close this screen — the maps pick the new data up when it finishes.</div>
+        )}
+        {log && SHIPLIFY_DONE.has(log.status) && (
+          <div className="space-y-2 border-t pt-2" data-shiplify-result>
+            <div className={`text-sm font-semibold ${shiplifyStatusTone(log.status)}`}>
+              {log.status === 'complete'
+                ? 'Imported and verified.'
+                : nothingWritten
+                  ? `Nothing was written: ${log.error || 'the check disagreed before anything was written'}`
+                  : log.status === 'mismatch'
+                    ? `Written, but the check disagreed${log.error ? `: ${log.error}` : ' — see below.'}`
+                    : `Failed: ${log.error || 'see the log'}`}
+            </div>
+            {failedChecks.length > 0 && (
+              <ul className="text-[12px] text-red-700 list-disc pl-4">
+                {failedChecks.map((c) => (
+                  <li key={c.name}>{String(c.name).replace(/_/g, ' ')}: expected {String(c.expected)}, found {String(c.actual)}{c.source ? ` (${String(c.source).replace(/_/g, ' ')})` : ''}</li>
+                ))}
+              </ul>
+            )}
+            {v && (
+              <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-0.5 text-[12px]">
+                <dt className="text-slate-600">Raw rows stored (counted in Firestore)</dt><dd className="text-right font-semibold tabular-nums">{cnt(v.raw_rows)}</dd>
+                <dt className="text-slate-600">Raw chunks stored</dt><dd className="text-right font-semibold tabular-nums">{cnt(v.raw_chunks)}</dd>
+                <dt className="text-slate-600">Locations written (counted in Firestore)</dt><dd className="text-right font-semibold tabular-nums">{cnt(v.locations_written)}</dd>
+                <dt className="text-slate-600">Locations expected</dt><dd className="text-right font-semibold tabular-nums">{cnt(v.expected_locations)}</dd>
+                {log.index && <><dt className="text-slate-600">Locations the maps will read (read back)</dt><dd className="text-right font-semibold tabular-nums">{cnt(log.index.locations)}</dd></>}
+              </dl>
+            )}
+            {log.derived && (
+              <details>
+                <summary className="text-[12px] text-slate-700 cursor-pointer">The file, as the server read it</summary>
+                <div className="mt-1"><ShiplifySummaryList s={log.derived} /></div>
+              </details>
+            )}
+            {Array.isArray(log.rejected?.sample) && log.rejected.sample.length > 0 && (
+              <details>
+                <summary className="text-[12px] text-slate-700 cursor-pointer">
+                  Skipped rows{log.rejected.sample_is_partial || log.rejected.is_sample ? ' (sample)' : ''}
+                </summary>
+                <div className="mt-1"><ShiplifySkippedTable rows={log.rejected.sample} /></div>
+              </details>
+            )}
+          </div>
+        )}
+        {error && <div className="text-[12px] text-red-700 inline-flex items-start gap-1.5"><AlertTriangle size={13} className="mt-0.5 flex-shrink-0" /> {error}</div>}
+      </div>
+    </div>
+  );
+}
+
 function VersionLogModal({ onClose }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -22524,7 +23509,11 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     return out;
   }, [selectedDate, refreshStops, presence?.bumpSave]);
   const { notes } = useCustomerNotes();
-  const tractorLocs = useTractorLocations();
+  const tractorLocs = useTractorLocations(selectedDate);
+  // The Shiplify trial on THIS tab: Routing's own switch, independent of the Map's.
+  const shiplifyRouting = useShiplifyTab('routing', selectedDate);
+  const routingShiplifyCtx = useMemo(() => ({ tab: 'routing', boardDate: selectedDate }), [selectedDate]);
+  const [limeAsOfOn] = useLimeAsOfToggle();
   const { profiles, saveProfile } = useTruckProfiles();
   const { loadVehicleByKey, rememberLoadVehicle } = useLoadVehicles();
   const { google, error: mapsError } = useGoogleMaps();
@@ -22607,6 +23596,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
   const [histSeed, setHistSeed] = useState('');
   const openCustomerHistory = useCallback((s) => { setHistSeed((s?.businessName || '').trim()); setHistOpen(true); }, []);
   const [versionLogOpen, setVersionLogOpen] = useState(false);
+  const [shiplifyImportOpen, setShiplifyImportOpen] = useState(false);
   const openStop = useCallback((s) => setPanelStop(s || null), []);
 
   // ── Edit-address + Correct-pin-location (ported from MapScreen) ──────────────
@@ -22866,11 +23856,25 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
             ? { ...travelInputs, routeClasses: undefined }
             : travelInputs,
         } : {}),
+        // SCHOOL, CHURCH AND GOVERNMENT ON A TRACTOR-TRAILER ROUTE (board-flags). A dispatcher's
+        // Building type always counts; Shiplify's only while THIS tab's switch is on (recordFor
+        // answers null otherwise). The lift — a tractor has delivered here, by match key or
+        // street + ZIP — is judged against the tractor FACT, and until that has loaded the rule
+        // reports "not checked" rather than flagging every school.
+        placeMarks: {
+          shiplifyOn: shiplifyRouting.on,
+          shiplifyOf: shiplifyRouting.recordFor,
+          tractorSeenOf: shiplifyRouting.seenAt,
+          tractorKnown: shiplifyRouting.facts.known,
+          // Until the Shiplify index has answered, its schools cannot be judged; the engine then
+          // judges the dispatcher's own types and says the Shiplify half was not checked.
+          shiplifyKnown: ['ready', 'none'].includes(shiplifyRouting.data.status),
+        },
       },
     });
     const classesLive = !!(travelInputs?.classCurves && travelInputs?.routeClasses && travelInputs.routeClassesDate === selectedDate);
     return { ...out, travelMeta: travelInputs ? { ...travelInputs.meta, classes: classesLive, routeClassCount: classesLive ? Object.keys(travelInputs.routeClasses).length : 0 } : null };
-  }, [stops, notes, loadRosterList, selectedDate, flagsClockTick, travelInputs, tierFloorByStop, departTable]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [stops, notes, loadRosterList, selectedDate, flagsClockTick, travelInputs, tierFloorByStop, departTable, shiplifyRouting]); // eslint-disable-line react-hooks/exhaustive-deps
   const visibleFlagCounts = useMemo(() => {
     const live = routingBoardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]);
     return {
@@ -24551,6 +25555,10 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         ...(eligibilityChanged(draft, existing)
           ? { vehicle_eligibility_at: serverTimestamp(), vehicle_eligibility_by: 'dispatcher' }
           : {}),
+        // The Building type leaves the same trace as the Vehicle mark, and only when it moved.
+        ...(buildingTypeChanged(draft, existing)
+          ? { building_type_at: serverTimestamp(), building_type_by: 'dispatcher' }
+          : {}),
         last_updated: serverTimestamp(),
         updated_by: NOTES_UPDATED_BY,
       }, { merge: true });
@@ -24836,6 +25844,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     isPlanned: isPlannedStop,
     selectedIds: viewing ? null : selectedIds,
     searchMatchIds,
+    shiplify: shiplifyRouting,
   });
   useEffect(() => {
     if (!google || !mapRef.current) return;
@@ -24872,6 +25881,8 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
         routeColor: ri?.color,
         sameLocCount: (locMates.get(stopLocKey(s)) || []).length || 1,
         tractorDelivered: tractorLocs.has(s.matchKey),
+        // The Shiplify trial on the Routing tab — Routing's own switch (useShiplifyTab).
+        ...shiplifyRouting.markerOpts(s),
         // Planned onto a load and no card open for it → mute. `numbered` covers the
         // open-card case, so closing a card is exactly the moment a route's stops go
         // from numbered-in-route-colour to quiet slate — never back to pool-coloured.
@@ -24950,7 +25961,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     });
     markerByIdRef.current = byId;
     lastEmphRef.current = hoverIdRef.current; // markers were built already-emphasized
-  }, [google, drawnStops, vPositioned, viewing, selectedIds, searchMatchIds, statusFilterIds, effectiveRouteInfo, notes, tractorLocs, toggleStopGroup, mapReady, selectedDayKey, emphIcon]);
+  }, [google, drawnStops, vPositioned, viewing, selectedIds, searchMatchIds, statusFilterIds, effectiveRouteInfo, notes, tractorLocs, toggleStopGroup, mapReady, selectedDayKey, emphIcon, shiplifyRouting]);
 
   // Hover emphasis — touch only the two affected markers, not all of them. Keeps
   // the sequence label intact (only the icon scale/ring change).
@@ -25710,6 +26721,8 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
     // Build/Engine row so the way back is on screen.
     ...(onOpenEngine ? [{ key: 'engine', label: '⇄ Engine view (shadow routing)', onClick: onOpenEngine }] : []),
     { key: 'versionLog', label: `ⓘ Version history (v${APP_VERSION})`, onClick: () => setVersionLogOpen(true) },
+    // The Shiplify trial file — desktop and phone gear alike.
+    { key: 'shiplifyImport', label: '⇪ Import Shiplify results', onClick: () => setShiplifyImportOpen(true) },
     { key: 'reset', label: '↺ Reset layout to defaults', onClick: resetRoutingLayout },
   ];
   const leftPanelToggle = { key: 'leftPanel', label: 'Setup panel (left controls)', on: leftPanelOn, setOn: setLeftPanelVisible };
@@ -26223,7 +27236,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
           <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} hideStem={routeHideStem} setHideStem={setRouteHideStem} hideTerminal={routeHideTerminal} setHideTerminal={setRouteHideTerminal} />
           {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button),
               with the Board Flags chip stacked above it. */}
-          <div className="absolute top-12 right-2 z-[15] max-w-[230px] flex flex-col items-end gap-1">{flagsOverlay()}{statusCard()}</div>
+          <div className="absolute top-12 right-2 z-[15] max-w-[230px] flex flex-col items-end gap-1">{limeAsOfOn && <LimeAsOfNotice />}{flagsOverlay()}{statusCard()}</div>
           {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
           {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[92%] bg-slate-900/90 text-white text-[11px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={12} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
           {/* Ninja status — while armed, tapping a stop on the map adds it to the active route. Shown
@@ -26329,6 +27342,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
           </div>
           {sheetOpen && (
             panelStop ? (
+              <ShiplifyTabContext.Provider value={routingShiplifyCtx}>
               <RoutingStopPanel
                 stop={panelStop}
                 notes={notes}
@@ -26347,6 +27361,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
                 saveDenied={notesGate.reason}
                 drivers={notesDrivers}
               />
+              </ShiplifyTabContext.Provider>
             ) : (
             <div className={`flex-1 min-h-0 overflow-y-auto text-sm ${mobilePanel === 'loads' ? 'p-2 space-y-2' : 'p-3 space-y-3'}`} style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
               {mobilePanel === 'setup'
@@ -26382,6 +27397,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
             marker/polyline effects so the map comes back exactly as it was. */}
         {wbManifest && <PrintDocModal title={wbManifest.title} html={wbManifest.html} onClose={() => { setWbManifest(null); setMapReady((n) => n + 1); }} />}
         {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
+        {shiplifyImportOpen && <ShiplifyImportModal onClose={() => setShiplifyImportOpen(false)} />}
         {/* Customer-history overlay (History button on the stop panel) — Firestore-only. */}
         {histOpen && (
           <div className="fixed inset-0 z-[1100] bg-white flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
@@ -26456,7 +27472,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
             mean a dispatcher dragging the right rail wider has to pass BOTH before anything
             is hidden, and a flag count that goes quiet is pixel-identical to a clean board,
             which is the one failure on this map nobody can see happening. */}
-        <div className="absolute top-32 right-2 z-[15] max-w-[240px] flex flex-col items-end gap-1">{flagsOverlay()}</div>
+        <div className="absolute top-32 right-2 z-[15] max-w-[240px] flex flex-col items-end gap-1">{limeAsOfOn && <LimeAsOfNotice />}{flagsOverlay()}</div>
         {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} legendInventory={routingLegendInventory} satellite={routeSatellite} onToggleSatellite={() => setRouteSatellite((v) => !v)} map3dOn={routeMap3d.on} onToggle3d={MAP_3D_ON ? () => (routeMap3d.on ? routeMap3d.close() : routeMap3d.open()) : null} />}
         {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
         {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[80%] bg-slate-900/90 text-white text-[12px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={13} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
@@ -26547,6 +27563,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
       <ResizeHandle onMouseDown={rightPanel.onMouseDown} onDoubleClick={rightPanel.onDoubleClick} />
       <div className="shrink-0 border-l bg-white flex flex-col min-h-0" style={{ width: rightPanel.width }}>
         {panelStop ? (
+          <ShiplifyTabContext.Provider value={routingShiplifyCtx}>
           <RoutingStopPanel
             stop={panelStop}
             notes={notes}
@@ -26565,6 +27582,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
             saveDenied={notesGate.reason}
             drivers={notesDrivers}
           />
+          </ShiplifyTabContext.Provider>
         ) : isRoutesPanelMode(rightPanelMode) ? (
           <>
             {/* THE STRIP, AND THE ONE BUTTON THAT BELONGS BESIDE IT. Chad: "move new route to
@@ -26631,6 +27649,7 @@ function RoutingScreen({ debugCaptureRef, presence = null, onOpenEngine = null }
             marker/polyline effects so the map comes back exactly as it was. */}
         {wbManifest && <PrintDocModal title={wbManifest.title} html={wbManifest.html} onClose={() => { setWbManifest(null); setMapReady((n) => n + 1); }} />}
         {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
+        {shiplifyImportOpen && <ShiplifyImportModal onClose={() => setShiplifyImportOpen(false)} />}
         {/* Customer-history overlay (History button on the stop panel) — this location's past
             PROs + date + delivering driver, from saved Firestore history only (no NuVizz). */}
         {histOpen && (
@@ -35314,6 +36333,10 @@ function StopLookupScreen() {
         // is worse than no stamp, because it looks authoritative.
         ...(eligibilityChanged(draft, existing)
           ? { vehicle_eligibility_at: serverTimestamp(), vehicle_eligibility_by: 'dispatcher' }
+          : {}),
+        // The Building type leaves the same trace as the Vehicle mark, and only when it moved.
+        ...(buildingTypeChanged(draft, existing)
+          ? { building_type_at: serverTimestamp(), building_type_by: 'dispatcher' }
           : {}),
         last_updated: serverTimestamp(),
         updated_by: NOTES_UPDATED_BY,

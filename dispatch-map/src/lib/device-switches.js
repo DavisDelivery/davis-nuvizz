@@ -94,6 +94,26 @@ export const DEVICE_SWITCHES = [
     does: "Hides Google's business and place names on the routing map.",
     symptom: 'ON and the map reads bare — useful when pins are dense, confusing if you did not set it.',
   },
+  // THE SHIPLIFY TRIAL — one switch per tab, each default ON (Chad is trialling the data), plus
+  // the "Lime as of board date" trial filter, default OFF.
+  {
+    key: 'dispatchMap.shiplifyOn', kind: 'toggle', on: 'on', off: 'off', dflt: true,
+    label: 'Shiplify data — Map tab',
+    does: 'Draws the Shiplify trial on the Map tab: hollow lime dock and forklift pins, Shiplify place marks (house, school, church, government), their Legend rows and the Shiplify block in the stop panel.',
+    symptom: 'OFF and the Map shows no hollow lime pins and only the Building types a dispatcher set — Routing is unaffected.',
+  },
+  {
+    key: 'routing.shiplify', kind: 'toggle', on: 'on', off: 'off', dflt: true,
+    label: 'Shiplify data — Routing tab',
+    does: 'Draws the Shiplify trial on the Routing tab, and lets a Shiplify school, church or government stop raise the no-tractor-trailer flag.',
+    symptom: 'OFF and Routing shows no hollow lime pins, and only dispatcher-set Building types raise the no-tractor flag — the Map tab is unaffected.',
+  },
+  {
+    key: 'dispatchMap.limeAsOfBoardDate', kind: 'toggle', on: 'on', off: 'off', dflt: false,
+    label: 'Lime as of board date (trial)',
+    does: 'A location paints lime only if its first tractor delivery was before the board date — the board as it stood that morning. Applies to both tabs.',
+    symptom: 'ON and lime pins go missing on older boards — a dock a tractor first served later reads as unproven. Routing shows a "Lime as of board date" notice while it is on.',
+  },
 ];
 
 /** PURE: the stored value for a switch, or null when nothing has been stored on this device. */

@@ -12,6 +12,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { heldReason, explainStop, normStopNbr, hoursProvenance, hoursCoverage, isBoardUrgent } from '../netlify/functions/eta-flag-check.mts';
 import { selectAlertable, ALERT_TIERS } from '../netlify/functions/lib/flag-alert.mts';
+import { flattenForConsumers } from '../netlify/functions/lib/flag-rows.mts';
+import { computeBoardFlags } from '../src/lib/board-flags.js';
 
 const NOON = 12 * 60;
 // The default row is CRITICAL because that is the only tier that emails since 2026-09-02
@@ -149,6 +151,43 @@ test('explainStop distinguishes NOT FLAGGED from FLAGGED BUT HELD', () => {
   // explanation that reorders them is explaining a different function than the one that ran.
   const redHeld = explainStop('007164290', STOPS, [row({ tier: 'red' })], new Set(), 13 * 60, []);
   assert.match(redHeld.heldBecause, /tier is red/);
+});
+
+test('A SCHOOL WITH A RED HOURS ROW: ?stop= answers about the hours, not the building type', () => {
+  // The engine emits its building-type card (board-flags R7b) and R7 BEFORE its hours rows, and
+  // the red tier keeps that order — so "the first row with this PRO" answered "why no email"
+  // with "building-type conflict — in-app only", close null, eta null, on a stop whose red
+  // hours row is the only thing that could ever have emailed. Real engine, real order.
+  const DEPOT = { lat: 34.147791, lng: -83.960911 };
+  const s = {
+    stopNbr: '1001', businessName: 'LINCOLN ELEMENTARY', addr1: '1 Main', city: 'Buford', lat: 34.10, lng: -84.00,
+    matchKey: 'lincoln', normalizedStatus: 'SCHEDULED', status: '20', isPlanned: true,
+    loadNbr: 'TRACTOR 2', routeName: 'TRACTOR 2', routeSeq: 3, stopType: 'DO', driverName: 'Ben',
+  };
+  const hours = { manual_overrides: { receiving_hours: true }, receiving_hours: { tue: { open: '07:00', close: '08:05' } } };
+  const explain = (note) => {
+    const notes = new Map([['lincoln', note]]);
+    const out = computeBoardFlags({
+      stops: [s], notes, rosterRows: [], servedDate: '2026-09-01', dayKey: 'tue',
+      opts: { depot: DEPOT, departMin: 480, nowMin: 480, travel: { legs: {}, routeClasses: { 'TRACTOR 2': 'tractor' } } },
+    });
+    const flat = flattenForConsumers(out.rows);
+    const alertable = new Set(selectAlertable(flat, 480).map((c) => c.stopNbr));
+    return { rules: flat.map((r) => r.rule), e: explainStop('1001', [s], flat, alertable, 480, [], { notes, dayKey: 'tue' }) };
+  };
+  const plain = explain(hours);
+  assert.deepEqual(plain.rules, ['hours_risk']);
+  const school = explain({ ...hours, building_type: 'school' });
+  assert.deepEqual(school.rules, ['place_trailer_conflict', 'hours_risk'], 'the fixture reproduces the order that shadowed it');
+  assert.equal(school.e.close, '8:05a');
+  assert.equal(school.e.eta, plain.e.eta);
+  assert.equal(school.e.lateBy, plain.e.lateBy);
+  assert.equal(school.e.heldBecause, plain.e.heldBecause, 'the same answer the stop got before it was typed a school');
+  assert.match(school.e.heldBecause, /tier is red/);
+  // With no hours row at all, the building type IS the stop's only flag, and it is the answer.
+  const only = explain({ building_type: 'school' });
+  assert.deepEqual(only.rules, ['place_trailer_conflict']);
+  assert.equal(only.e.heldBecause, 'building-type conflict — in-app only, never texted');
 });
 
 test('explainStop reports an unknown PRO as not on the board', () => {
