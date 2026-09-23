@@ -332,7 +332,6 @@ export function zoomForRange({ range, lat, heightPx, fovDeg = MAP3D_FOV } = {}) 
 
 /** How far the 3D camera has to move before leaving 3D moves the board. */
 export const HANDOFF_MIN_METRES = 25;
-export const HANDOFF_MIN_RANGE_RATIO = 0.1;
 export const HANDOFF_MIN_HEADING_DEG = 3;
 
 /** Metres between two points — equirectangular, which is exact enough at yard scale. */
@@ -345,6 +344,55 @@ export function metresBetween(a, b) {
 }
 
 /**
+ * AIM AT THE GROUND, NOT AT SEA LEVEL — the fix for "when it comes up the position has moved".
+ *
+ * Chad, 2026-09-23: "if i'm over a building and turn it on when it comes up and is working the
+ * position on the map has moved … build it render it and test it to see what i'm talking about."
+ *
+ * RENDERED AND MEASURED, NOT ARGUED. Google's reference defines Map3DElement's `center` altitude
+ * as "meters above the mean sea level", and v1.38.0 through v1.57.0 passed altitude 0. The
+ * Buford Terminal sits ~368m up, so the camera was aimed ~368m UNDER the building. On
+ * production, over the terminal at z18, Google reported the camera itself at 219m above sea
+ * level — inside the hill — and the picture was a grazing close-up of rooftop HVAC units, with
+ * the terminal, its docks and the stop nowhere in frame.
+ *
+ * Google's own answer is the camera's `altitudeMode`: RELATIVE_TO_GROUND is "measured relative to
+ * the terrain elevation at that location", so altitude 0 means ON THE GROUND and Google looks the
+ * elevation up itself — no Elevation API, nothing extra billed. Applied through flyCameraTo with
+ * durationMillis 0 ("will teleport the camera"), Google put the centre at 367.8m and the camera
+ * 208m above the ground, and the terminal came up dead centre with its dock doors in view.
+ */
+export function groundedCamera(cam, altitudeMode = 'RELATIVE_TO_GROUND') {
+  if (!cam || !cam.center) return null;
+  const c = readLatLng(cam.center);
+  if (!c) return null;
+  return { center: { lat: c.lat, lng: c.lng, altitude: 0 }, range: cam.range, tilt: cam.tilt, heading: cam.heading, altitudeMode };
+}
+
+/**
+ * Where the 3D camera stands, on the map: `range · sin(tilt)` behind the centre, facing along
+ * `heading`. Great-circle destination, which is exact at any scale this board uses.
+ *
+ * WHY THIS AND NOT GOOGLE'S OWN NUMBER. Measured on production: Google applies the camera a
+ * moment AFTER flyCameraTo returns (an immediate read still shows the old one; by 300ms it has
+ * moved), so a baseline read straight after the call is the wrong camera. This needs no waiting.
+ * It agrees with Google to six decimal places on the Buford Terminal (a test pins it with the
+ * measured numbers), and grounding the camera changes only its ALTITUDE, never where it stands.
+ */
+export function cameraGroundPoint({ center, range, tilt, heading } = {}) {
+  const c = readLatLng(center);
+  const r = Number(range); const t = Number(tilt); const h = Number(heading);
+  if (!c || !Number.isFinite(r) || r < 0 || !Number.isFinite(t)) return null;
+  const R = 6371008.8;
+  const d = r * Math.sin(t * Math.PI / 180) / R;
+  const brg = ((Number.isFinite(h) ? h : 0) + 180) * Math.PI / 180;
+  const lat1 = c.lat * Math.PI / 180; const lng1 = c.lng * Math.PI / 180;
+  const lat2 = Math.asin(Math.sin(lat1) * Math.cos(d) + Math.cos(lat1) * Math.sin(d) * Math.cos(brg));
+  const lng2 = lng1 + Math.atan2(Math.sin(brg) * Math.sin(d) * Math.cos(lat1), Math.cos(d) - Math.sin(lat1) * Math.sin(lat2));
+  return { lat: lat2 * 180 / Math.PI, lng: ((lng2 * 180 / Math.PI + 540) % 360) - 180 };
+}
+
+/**
  * DID THE DISPATCHER GO ANYWHERE IN 3D?
  *
  * THE LOGISTICS CALL THIS ENCODES: Google Maps keeps you where you flew when you drop back to
@@ -353,14 +401,24 @@ export function metresBetween(a, b) {
  * the whole metro and left without touching anything would otherwise come back zoomed in to
  * building height — their board rearranged by a look. So the board only follows a camera the
  * dispatcher actually MOVED; a look-and-leave returns them to exactly the board they left.
+ *
+ * IT COMPARES WHERE THE CAMERA STANDS, NOT WHAT GOOGLE CALLS THE CENTRE — and the rendered test
+ * is why. Once the camera is grounded, Google re-reports `center` as wherever its line of sight
+ * first hits the mesh: over the Buford Terminal that was the ROOF, 26m short of the ground point,
+ * with `range` 573m -> 545m. Nobody had touched anything, and a centre comparison called that a
+ * 26m flight and would have nudged the board on the way out. The camera's own position did not
+ * move by a metre. Pan, orbit, zoom and tilt all move it; tile loading and roof-hits never do.
+ *
+ * `entry` = { camera: {lat,lng}, heading } — from cameraGroundPoint.
+ * `now`   = { camera: el.cameraPosition, heading: el.heading }.
+ * Known blind spot, and the safe side of it: zooming while looking STRAIGHT DOWN moves the camera
+ * only vertically, so it reads as a look and the board is put back as it was rather than moved.
  */
 export function cameraMoved(entry, now) {
   if (!entry || !now) return false;
-  const a = readLatLng(entry.center); const b = readLatLng(now.center);
+  const a = readLatLng(entry.camera); const b = readLatLng(now.camera);
   if (!a || !b) return false;
   if (metresBetween(a, b) >= HANDOFF_MIN_METRES) return true;
-  const r0 = Number(entry.range); const r1 = Number(now.range);
-  if (Number.isFinite(r0) && Number.isFinite(r1) && r0 > 0 && Math.abs(r1 - r0) / r0 >= HANDOFF_MIN_RANGE_RATIO) return true;
   const h0 = Number(entry.heading); const h1 = Number(now.heading);
   if (Number.isFinite(h0) && Number.isFinite(h1)) {
     const d = Math.abs((((h1 - h0) % 360) + 540) % 360 - 180);
