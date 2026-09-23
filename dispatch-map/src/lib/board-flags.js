@@ -49,6 +49,13 @@ import { dispatcherTrailerBlock, trailerBlockerLabels } from './trailer-block.js
 // truck question from the customer-keyed marks above.
 import { stopNeedsTractor, stopHandlingFlags, HANDLING_FLAGS } from './handling-flags.js';
 import { placeKeyOfStop } from './matchKey.js';
+// WHAT KIND OF PLACE A STOP IS — the dispatcher's Building type, or Shiplify's record while the
+// trial switch is on — and whether that says "no tractor trailer". One module answers it for
+// the pin, the stop panel and this engine (R7b below), so they cannot disagree.
+import { resolvePlaceMark, placeNoTractor, placeNoTractorReason } from './place-mark.js';
+// The place marks as nouns, for R7b's title and sentence: "this stop is a government building",
+// never "this stop is a Government" (place-mark.js PLACE_MARK_LABEL is a label, not a noun).
+const PLACE_NOUN = { school: 'school', church: 'church', government: 'government building' };
 // The 8am-5pm delivery day, and the reading of a meridiem-less range that matches it. Shared
 // with signal-scanner so a stored "1-5" and a freshly scanned "1-5" can never disagree.
 import { resolveDaytimeWindow } from './daytime-window.js';
@@ -648,7 +655,9 @@ export function flagChipParts(flags) {
  *                    the Routes panel has not fetched it (route checks then report skipped)
  * @param servedDate  'YYYY-MM-DD' — the board day being LOOKED AT (never stop.boardDate,
  *                    which carry-over folding can leave stale)
- * @param opts        { departMin?: number (default 480 = 8:00a), serviceSec?, nowMin? }
+ * @param opts        { departMin?: number (default 480 = 8:00a), serviceSec?, nowMin?,
+ *                      placeMarks?: { shiplifyOf?, shiplifyOn?, shiplifyKnown?, tractorSeenOf?, tractorKnown? } —
+ *                      see R7b; absent = dispatcher-set building types only, no tractor lift }
  */
 export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = null, servedDate = null, dayKey = null, opts = {} } = {}) {
   const day = dayKey || null;
@@ -855,10 +864,35 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     if (isPickupStop(s) || isOwnFacility(s)) return null;
     return dayReceivingWindow(noteOf(s), day) || assumedWindow();
   };
+  // R7b's inputs (see the rule itself for why each one exists). Parsed once, here, because the
+  // footer's `checked` / `skipped` below have to say which lift the rule ran with.
+  //   shiplifyOn    THE CALLER'S Shiplify switch. Only an explicit true counts: a Shiplify
+  //                 school must never flag on a surface that did not say the trial is on.
+  //   tractorSeenOf (stop) => boolean — a tractor has delivered here (by key or street + ZIP;
+  //                 the caller decides which it can answer).
+  //   tractorKnown  false = the caller's tractor record has not loaded, so the lift cannot be
+  //                 evaluated and R7b holds every row rather than cry wolf.
+  //   shiplifyKnown false = the switch is on but the Shiplify index has not loaded (or failed):
+  //                 no Shiplify type is judged, the dispatcher's own types still are, and
+  //                 skipped.placeShiplifyUnknown says so. Only an explicit false counts, so a
+  //                 caller that does not pass it keeps exactly what it had.
+  const placeOpts = opts.placeMarks && typeof opts.placeMarks === 'object' ? opts.placeMarks : null;
+  const placeShiplifyOn = !!placeOpts && placeOpts.shiplifyOn === true;
+  const placeShiplifyUnknown = placeShiplifyOn && placeOpts.shiplifyKnown === false;
+  const placeShiplifyOf = placeShiplifyOn && !placeShiplifyUnknown && typeof placeOpts.shiplifyOf === 'function' ? placeOpts.shiplifyOf : null;
+  const placeTractorOf = placeOpts && typeof placeOpts.tractorSeenOf === 'function' ? placeOpts.tractorSeenOf : null;
+  const placeTractorUnknown = !!placeOpts && placeOpts.tractorKnown === false;
   const rows = [];
   // Rows a later rule took off the panel. Kept, never rendered — see the R6 supersede block.
   const suppressed = [];
-  const skipped = { noRoster: false, noTruckClasses: false, routesNoTruckClass: [], ambiguousRoutes: [], routesNoSequence: [], routesAppointment: [], routesOwner: [], stopsNoPosition: 0 };
+  const skipped = {
+    noRoster: false, noTruckClasses: false, routesNoTruckClass: [], ambiguousRoutes: [], routesNoSequence: [], routesAppointment: [], routesOwner: [], stopsNoPosition: 0,
+    // R7b held back because the tractor record it needs for its lift is not loaded yet.
+    placeTractorUnknown: placeTractorUnknown,
+    // R7b judged the dispatcher's Building types only: the Shiplify switch is on and its index
+    // is not loaded, so a Shiplify school on a tractor could not have raised a card.
+    placeShiplifyUnknown: placeShiplifyUnknown,
+  };
   for (const k of [...new Set(open.filter(onAppointmentRoute).map(routeKeyOf))]) if (k) skipped.routesAppointment.push(k);
   // Reported separately and in its own words. Folding the owner's route into the appointment
   // list would label it "held for appointments", which is not what happened to it — and the
@@ -866,10 +900,21 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   for (const k of [...new Set(open.filter(onOwnerRoute).map(routeKeyOf))]) if (k) skipped.routesOwner.push(k);
   // What the detector actually LOOKED at — the panel shows these so a quiet board can
   // prove it was watched, and so "no hours on file" is visibly a data gap, not a bug.
-  const checked = { stops: judged.length, routesJudged: 0, stopsWithHours: 0, stopsAssumedClose: 0, legsTotal: 0, legsGoogle: 0, tractorRoutes: 0, trailerConflicts: 0 };
+  const checked = {
+    stops: judged.length, routesJudged: 0, stopsWithHours: 0, stopsAssumedClose: 0, legsTotal: 0, legsGoogle: 0, tractorRoutes: 0, trailerConflicts: 0,
+    // R7b: docks carded, and WHICH LIFT the verdict ran with — 'none' (no tractor lookup was
+    // offered, e.g. a server sweep's first pass), 'tractor_seen' (the caller's lookup), or
+    // 'not_checked' (the lookup exists but has not loaded; see skipped.placeTractorUnknown).
+    placeConflicts: 0, placeInTrailerCard: 0,
+    placeLift: placeTractorUnknown ? 'not_checked' : (placeTractorOf ? 'tractor_seen' : 'none'),
+  };
   // Every leg the walk crosses, keyed and positioned, so the server sweep can prefetch
   // real drive times for exactly these pairs next pass. Deduped; order irrelevant.
   const legsWanted = new Map();
+  // THE SAME TWO-PASS SHAPE FOR R7b's LIFT: the match keys whose "has a tractor delivered
+  // here?" answer would change a verdict on this board. A server sweep reads exactly these
+  // tractor_locations docs and judges again, instead of loading the whole collection.
+  const placeLiftWanted = new Set();
   // Predicted arrival per stop, from the SAME walk that decides the flags. Consumed by the
   // route-detail card so a dispatcher reads our ETA instead of a shared appointment window.
   const etaByStop = new Map();
@@ -1098,6 +1143,136 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         // Keyed on the DOCK, so the card a dispatcher dismisses is the card that stays gone.
         scope: 'occurrence', servedDate, fingerprint: `trailer|${servedDate}|${k}|${placeKeyOfStop(s)}`,
       }));
+    }
+
+    // R7b — A 53-FOOTER ROUTED TO A SCHOOL, A CHURCH OR A GOVERNMENT BUILDING.
+    //
+    // A school car line at 3pm, a church lot and a courthouse are not places a 53' trailer
+    // turns around in. The place mark comes from lib/place-mark.js — a dispatcher's Building
+    // type on the customer's notes, or, while Chad trials it, Shiplify's location record — and
+    // a stop wearing school, church or government counts as NO TRACTOR TRAILER on the same
+    // tractor routes, the same unclassed-route discipline and the same dock merge as R7 above.
+    // Residential is never part of it.
+    //
+    // WHAT IT IS NOT: an equipment restriction. It is deliberately NOT written into
+    // equipment_restrictions, draws no restriction icon, and changes nothing that reads those
+    // keys (dispatcherTrailerBlock, tractorPaintAllowed, truck matching). This rule only READS
+    // the note. The place mark on the pin is the signal; this card is its one tractor effect.
+    //
+    // WHO SAID SO decides whether it counts. A dispatcher's Building type always counts, on
+    // every surface, whatever the Shiplify switch says. A Shiplify-sourced type counts only when
+    // the caller passes its switch ON — a trial dataset must never raise a red on a surface that
+    // did not opt into it, and the server sweeps never do. 'none' hides whatever Shiplify says.
+    //
+    // THE LIFT, AND WHY "NOT LOADED" IS NOT "NOT SEEN". The rule stands down where the evidence
+    // says a trailer fits: Vehicle set to Tractor-trailer OK, or a tractor has already delivered
+    // there (tractor_locations, by match key or street + ZIP — the caller's tractorSeenOf). A
+    // caller whose tractor record has not loaded (tractorKnown false) gets NO rows and
+    // skipped.placeTractorUnknown instead: a red on a school a tractor serves every week, raised
+    // only because a fetch was slow, is how a dispatcher learns to scroll past the card.
+    //
+    // NOT TEXTED, NOT EMAILED, NOT IN FLAG HISTORY — in-app only. Every sweep consumer selects
+    // by rule name (selectTextable, selectAlertable's ALERT_RULES, mergeSweep) and none of them
+    // names this one. R7 is a dispatcher's own hard "no" and is what reaches a phone at 9pm; a
+    // building type is a question for the router at the board.
+    //
+    // ONE DOCK, ONE CARD — AND THE DISPATCHER'S OWN MARK IS THE STRONGER STATEMENT. A dock that
+    // already carries an R7 card on this route gets no second card here: "dispatch marked this
+    // No tractor trailer" says everything this card would, with more authority, about the same
+    // single move — and two red cards for one dock is the Jewel Reign duplicate again. Counted
+    // in checked.placeInTrailerCard so the fold is visible rather than silent.
+    //
+    // PICKUPS COUNT, as in R7: a turning radius does not care which way the pallets go.
+    if (!placeTractorUnknown) {
+      // A caller's lookup that throws must not take every other flag on the board down with it,
+      // and must not be silent either: the stop is held (tractor) or read with no Shiplify
+      // record (Shiplify), and the count says it happened.
+      const placeCall = (fn, s) => {
+        try { return { ok: true, v: fn(s) }; } catch {
+          skipped.placeLookupErrors = (skipped.placeLookupErrors || 0) + 1;
+          return { ok: false, v: null };
+        }
+      };
+      // The contract is the record itself; shiplifyRecordFor's { rec, via } is accepted too, so
+      // a caller who hands that over does not silently read every stop as "no record".
+      const shiplifyRec = (v) => (v && typeof v === 'object' && v.rec && typeof v.rec === 'object'
+        && !Array.isArray(v.location_types) ? v.rec : (v || null));
+      const placeCandidates = [];
+      const placeInTrailerCard = new Set();
+      for (const s of scheduledJudged) {
+        const k = routeKeyOf(s);
+        if (!k || routeClassOf(k) !== 'tractor') continue;   // unclassed: already in routesNoTruckClass
+        const note = noteOf(s);
+        const shiplify = placeShiplifyOf ? shiplifyRec(placeCall(placeShiplifyOf, s).v) : null;
+        const { mark, source } = resolvePlaceMark({
+          buildingType: note?.building_type ?? null, shiplify, shiplifyOn: placeShiplifyOn,
+        });
+        const eligibility = note?.vehicle_eligibility ?? null;
+        // The mark alone, before any tractor evidence: is this a no-tractor place at all?
+        if (!placeNoTractor({ mark, eligibility }).applies) continue;
+        const dock = `${k}|${placeKeyOfStop(s)}`;
+        if (byDock.has(dock)) { placeInTrailerCard.add(dock); continue; }
+        placeCandidates.push({ s, k, dock, mark, source, eligibility });
+      }
+      const placeHits = [];
+      for (const c of placeCandidates) {
+        if (c.s.matchKey) placeLiftWanted.add(String(c.s.matchKey));
+        let tractorSeen = false;
+        if (placeTractorOf) {
+          const r = placeCall(placeTractorOf, c.s);
+          if (!r.ok) continue;                                 // unknown for this stop: held, counted
+          tractorSeen = !!r.v;
+        }
+        if (placeNoTractor({ mark: c.mark, eligibility: c.eligibility, tractorSeen }).applies) placeHits.push(c);
+      }
+      const placeByDock = new Map();
+      for (const c of placeHits) {
+        if (!placeByDock.has(c.dock)) placeByDock.set(c.dock, []);
+        placeByDock.get(c.dock).push(c);
+      }
+      // Deterministic, for the same reason as R7: the dismiss key must not move under a
+      // dispatcher who already waved the card off.
+      for (const list of placeByDock.values()) {
+        list.sort((a, b) => String(a.s.stopNbr ?? '').localeCompare(String(b.s.stopNbr ?? '')));
+      }
+      const placePerRoute = new Map();
+      for (const list of placeByDock.values()) placePerRoute.set(list[0].k, (placePerRoute.get(list[0].k) || 0) + 1);
+      checked.placeConflicts = placeByDock.size;
+      checked.placeInTrailerCard = placeInTrailerCard.size;
+      for (const list of placeByDock.values()) {
+        const { s, k, mark, source } = list[0];
+        const atThisDock = list.map((c) => String(c.s.stopNbr ?? '')).filter(Boolean);
+        const alsoN = (placePerRoute.get(k) || 1) - 1;
+        const label = s.routeName || s.loadNbr || k;
+        const placeNoun = PLACE_NOUN[mark] || String(mark);
+        rows.push(row('red', 'place_trailer_conflict', s, {
+          customer: s.businessName || s.stopNbr || null,
+          // Machine-readable, so no consumer parses the sentence to learn what kind of place.
+          placeMark: mark, placeSource: source, routeClass: 'tractor',
+          routeKey: k, routeConflicts: placePerRoute.get(k) || 1, seq: seqOf(s),
+          stopNbrs: atThisDock, ordersHere: atThisDock.length,
+          // NOT R7's title. "No tractor trailer — X" is a dispatcher's hard no, and it texts; this
+          // is a building-type question that never does. Same words on both cards and a router
+          // cannot tell which one carries a dispatcher's authority — on the panel, on the wall,
+          // or in the collapsed summary, which is built from the words before the dash.
+          title: `${placeNoun[0].toUpperCase()}${placeNoun.slice(1)} on a tractor-trailer — ${s.businessName || s.stopNbr}`,
+          // The summary line when the cap folds these: one bucket can hold schools AND churches,
+          // so it names the rule rather than whichever mark happened to sort first.
+          collapseTitle: 'School, church or government on a tractor-trailer',
+          detail: `${label} is running a tractor-trailer, but this stop is a ${placeNoun} (${source === 'dispatcher' ? 'set by dispatch' : 'from Shiplify'}).`
+            + ` ${placeNoTractorReason(mark)}.`
+            + `${seqOf(s) != null ? ` Stop ${seqOf(s)} on the route.` : ''}`
+            + `${atThisDock.length > 1 ? ` ${atThisDock.length} orders at this stop (${atThisDock.join(', ')}) — one dock, so this is one move.` : ''}`
+            + `${alsoN > 0 ? ` ${alsoN} other stop${alsoN === 1 ? '' : 's'} on ${label} ${alsoN === 1 ? 'is' : 'are'} also a school, church or government stop — check the truck, not just the stop.` : ''}`
+            + ' Move it to a box truck, or set Vehicle to Tractor-trailer OK if a trailer fits.'
+            // A SHIPLIFY TYPE CAN BE WRONG, and "Tractor-trailer OK" is the wrong way to say so:
+            // it also clears R7 for this customer (dispatcherTrailerBlock) and every later "No
+            // tractor trailer" tick behind it. Building type None hides what Shiplify says and
+            // claims nothing about the truck.
+            + (source === 'shiplify' ? ' If Shiplify has the place wrong, set Building type to None.' : ''),
+          scope: 'occurrence', servedDate, fingerprint: `place|${servedDate}|${k}|${placeKeyOfStop(s)}`,
+        }));
+      }
     }
 
     // R4b — THE SAME QUESTION FROM THE OTHER SIDE: freight that needs a tractor, sitting on
@@ -1751,7 +1926,9 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     // selectAlertable and by nothing that renders.
     const summaryRow = {
       ...rs[0], stopNbr: null, matchKey: null,
-      title: `${rs.length} stops: ${rs[0].title.split('—')[0].trim()}`,
+      // collapseTitle when a rule sets one (R7b only): its per-card title names one mark, and a
+      // bucket can hold several. Every other rule keeps the words before its title's dash.
+      title: `${rs.length} stops: ${rs[0].collapseTitle || rs[0].title.split('—')[0].trim()}`,
       detail: `Too many to list one by one (cap ${cap}) — this is a data-quality batch, not ${rs.length} separate emergencies. Work it from the stops grid.`,
       fingerprint: `collapsed|${rule}|${rs[0].tier}|${servedDate}|${rs.length}`, collapsed: rs.length,
       // EVERY FIELD A DOWNSTREAM CONSUMER FILTERS ON MUST SURVIVE THE COLLAPSE. The first
@@ -1780,6 +1957,8 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         // one of those is dropped here: thirteen reds that texted nobody.
         routeKey: r.routeKey, routeConflicts: r.routeConflicts,
         blockers: r.blockers, blockedVia: r.blockedVia,
+        // R7b's own facts — what kind of place and who said so — for the same reason.
+        placeMark: r.placeMark, placeSource: r.placeSource,
       })),
     };
     summaryRow.dismissKey = `${rule}|${summaryRow.scope === 'occurrence' ? `${summaryRow.servedDate}|` : ''}${summaryRow.fingerprint}|t${TIER_RANK[summaryRow.tier] ?? 1}`;
@@ -1815,6 +1994,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     skipped,
     checked,
     legsWanted: [...legsWanted.values()],
+    placeLiftWanted: [...placeLiftWanted].sort(),
     etaByStop,
   };
 }

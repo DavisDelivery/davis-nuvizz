@@ -56,6 +56,10 @@ const DISPATCHER_SET = [
   // The prompted call on Stop lookup: one metered /stop/info, written into history — the same
   // act nuvizz-pro-lookup performs, gated at the same role.
   'stop-lookup-prompted',
+  // The Shiplify trial import: the POST writes ~1 MB raw chunks into Firestore under a
+  // caller-chosen batch id (mirrors manifest-upload), and the background job derives and
+  // overwrites every shiplify_locations doc plus the map's index (mirrors routing-build).
+  'shiplify-import', 'shiplify-import-background',
 ];
 const ADMIN_SET = ['routing-engine-tuning'];
 
@@ -89,6 +93,9 @@ test('the split endpoints gate their acting branch above their read — collapsi
     // why it is not: a work queue anybody passing by can silence is not a work queue, and the
     // row it hides is one that sends a truck to the wrong door.
     ['address-queue', 'viewer', 'dispatcher', /POST/],
+    // The READ is the import log — consignee names and PROs in its rejected-row sample, the
+    // facts a stop card shows. The POST stores a file into Firestore; see DISPATCHER_SET.
+    ['shiplify-import', 'viewer', 'dispatcher', /POST/],
   ];
   for (const [name, readRole, actRole, branch] of SPLIT) {
     const body = src(name);
@@ -118,13 +125,14 @@ test('a *-background function without a cron must use the observable gate, never
   }
 });
 
-test('the eleven plain background jobs (no cron) are all gated — none was missed', () => {
+test('the twelve plain background jobs (no cron) are all gated — none was missed', () => {
   const PLAIN = [
     'nuvizz-manual-scan-background', 'routing-build-background', 'manifest-ocr-background',
     'history-manifest-heal-background', 'nuvizz-rebuild-customer-history-background',
     'routing-engine-experiment-background', 'routing-engine-replay-background',
     'routing-engine-plan-replay-background', 'routing-observations-backfill-background',
     'routing-reference-backfill-background', 'tractor-flags-rebuild-background',
+    'shiplify-import-background',
   ];
   for (const name of PLAIN) {
     const body = src(name);

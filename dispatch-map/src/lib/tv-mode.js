@@ -38,6 +38,14 @@ export function isTvPath(pathname) {
 /** How many flag rows the rail can show before it is just a wall of text. */
 export const TV_RAIL_LIMIT = 12;
 
+// RED ON THE BOARD, AND STILL NOT A PHONE CALL. board-flags R7b (a school, church or government
+// stop on a tractor-trailer) is red so the router at the board sees it, but it is in-app only:
+// never texted, never emailed — a question about which truck, for the person planning the
+// route. On the wall it would count toward "N stops need a call", and because the engine emits
+// it before the hours rows it would sit above them and could push a stop somebody can still
+// phone about into the overflow. It stays on the board and off the wall.
+const TV_NOT_A_CALL = new Set(['place_trailer_conflict']);
+
 /**
  * PURE. WHAT THE FLAG RAIL SHOWS, and what it must say about the rest.
  *
@@ -61,7 +69,7 @@ export const TV_RAIL_LIMIT = 12;
 export function tvRailRows(rows, dismissed = null, limit = TV_RAIL_LIMIT) {
   const dis = dismissed && typeof dismissed === 'object' ? dismissed : {};
   const live = (Array.isArray(rows) ? rows : []).filter((r) => r && !dis[r.dismissKey]);
-  const urgent = live.filter((r) => r.tier === 'critical' || r.tier === 'red');
+  const urgent = live.filter((r) => (r.tier === 'critical' || r.tier === 'red') && !TV_NOT_A_CALL.has(r.rule));
   // Critical above red; otherwise the detector's own order is kept, because it already sorts
   // worst-first within a tier and re-sorting here would be a second opinion nobody asked for.
   const rank = (t) => (t === 'critical' ? 0 : 1);

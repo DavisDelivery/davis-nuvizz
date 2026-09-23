@@ -30,10 +30,12 @@ import { legSecondsMap, travelLegsPath, readTravelCalibration, readRouteClasses 
 import { routeDeparturePath, readDepartureTable } from './lib/route-departure.mts';
 import { flagHistoryPath } from './lib/flag-history.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
-import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, alertRecipients, ALERT_CC_REJECTED, DAILY_ALERT_CAP, ALERT_MIN_TIER, alertTiersFor, normalizeMinTier, AMBER_LEAD_GATE_MIN, ALERT_LATE_FLOOR_MIN, bandOfCandidate, finiteMinutes } from './lib/flag-alert.mts';
+import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, alertRecipients, ALERT_CC_REJECTED, DAILY_ALERT_CAP, ALERT_MIN_TIER, alertTiersFor, normalizeMinTier, AMBER_LEAD_GATE_MIN, ALERT_LATE_FLOOR_MIN, bandOfCandidate, finiteMinutes, ALERT_RULES } from './lib/flag-alert.mts';
 import { flattenForConsumers } from './lib/flag-rows.mts';
 import { emailEnabled } from './lib/email.mts';
 import { requireUser } from './lib/require-user.mts';
+// R7b's tractor lift — the same targeted read the sweeps make, so this dry twin counts what they count.
+import { readPlaceLift, placeRunFields } from './lib/place-lift.mts';
 
 const TENANT = 'davis';
 const DEPOT = { name: 'Buford Terminal', lat: 34.147791, lng: -83.960911 };
@@ -91,6 +93,12 @@ export function heldReason(r: any, alertable: boolean, nowMin: number | null, am
   // sends somebody looking in the wrong inbox.
   if (r?.rule === 'trailer_conflict') {
     return 'a no-tractor-trailer conflict — it texts on the overnight sweep (see /flag-evening-status), it never emails';
+  }
+  // R7b. Named for the same reason as R7 — and its channel is different again: a school, church
+  // or government stop on a tractor is a card on the board and nothing else. It never texts and
+  // never emails, so "why did nobody hear about it" has this answer and no other.
+  if (r?.rule === 'place_trailer_conflict') {
+    return 'building-type conflict — in-app only, never texted';
   }
   if (r?.rule !== 'hours_risk') return 'not a receiving-hours risk';
   // THE ANSWER HAS TO KNOW ABOUT THE GATE, OR IT IS A CONFIDENT LIE.
@@ -291,7 +299,12 @@ export function explainStop(
   const want = normStopNbr(askedStop);
   const matches = (v: any) => normStopNbr(v) === want;
   const stop = (stops || []).find((s: any) => matches(s?.stopNbr) || matches(s?.pro) || matches(s?.primaryPro));
-  const row = (rows || []).find((r: any) => matches(r?.stopNbr));
+  // THE INBOX RULE FIRST. A stop can carry several rows, and the engine emits R7 / R7b before
+  // the hours rows, so "the first row with this number" answered "why no email" about a
+  // building type or a trailer mark on a stop that also has a red hours row. The hours row is
+  // the one that emails; any other row answers only when the stop has no hours row at all.
+  const forStop = (rows || []).filter((r: any) => matches(r?.stopNbr));
+  const row = forStop.find((r: any) => ALERT_RULES.has(String(r?.rule))) ?? forStop[0];
 
   if (!stop && !row) return { asked: askedStop, found: false, note: 'no stop with that number on this board' };
 
@@ -408,7 +421,7 @@ export default async (req: Request): Promise<Response> => {
         tierFloorByStop = Object.keys(t).length ? t : null;
       }
     } catch { /* no floor — judged on this pass alone */ }
-    const flags = computeBoardFlags({
+    const judge = (placeMarks?: any) => computeBoardFlags({
       stops, notes, servedDate: date, dayKey: weekdayKey(date),
       opts: {
         depot: DEPOT, ...(nowMin != null ? { nowMin } : {}),
@@ -423,8 +436,18 @@ export default async (req: Request): Promise<Response> => {
             ...(cal.classService ? { classService: cal.classService } : {}),
           } : {}),
         },
+        ...(placeMarks ? { placeMarks } : {}),
       },
     });
+    // R7b's tractor lift, read exactly as the sweeps read it: the first pass names the match
+    // keys whose answer would change a verdict, only those tractor_locations docs are read, and
+    // the answer is judged again. Reads only — this endpoint still writes nothing. Without this
+    // the dry twin would list school stops the sweeps had already lifted.
+    const prePlace = judge();
+    let placeLift: Awaited<ReturnType<typeof readPlaceLift>> | null = null;
+    try { placeLift = await readPlaceLift(prePlace.placeLiftWanted, getDoc, TENANT); }
+    catch { /* judged with no lift, and placeLift in the response says 'none' */ }
+    const flags = placeLift ? judge(placeLift.placeMarks) : prePlace;
 
     // EVERY URGENT ROW, not just the top tier. This list used to filter to
     // tier === 'critical', which gave it the same blind spot as the alert itself: when Chad
@@ -470,6 +493,16 @@ export default async (req: Request): Promise<Response> => {
       .map((r: any) => ({
         stopNbr: r.stopNbr, customer: r.customer, route: r.routeKey ?? r.routeName,
         tier: r.tier, blockers: r.blockers, blockedVia: r.blockedVia,
+        routeConflicts: r.routeConflicts,
+      }));
+    // R7b, beside R7 and just as separate from `urgent`: a building type on a tractor is a
+    // board card that neither texts nor emails, and listing it here is how "is anything on the
+    // wrong truck tonight" gets a whole answer from one request.
+    const placeConflicts = flatRows
+      .filter((r: any) => r.rule === 'place_trailer_conflict')
+      .map((r: any) => ({
+        stopNbr: r.stopNbr, customer: r.customer, route: r.routeKey ?? r.routeName,
+        tier: r.tier, placeMark: r.placeMark, placeSource: r.placeSource,
         routeConflicts: r.routeConflicts,
       }));
     const askedStop = url.searchParams.get('stop');
@@ -552,6 +585,10 @@ export default async (req: Request): Promise<Response> => {
       // dry run that shows only the email population would answer "is anything on the wrong
       // truck tonight" with silence.
       trailerConflicts,
+      // Board-flags R7b — in-app only, never texted or emailed; `place` says how the tractor
+      // lift was evaluated so the list can be read against the board's own.
+      placeConflicts,
+      place: placeRunFields(flags, placeLift),
       // ?stop=<PRO> — the answer to "why did I not get an email about THIS one", for any
       // stop on the board, flagged or not. Added because answering it once by hand meant
       // reading three modules; it should cost one request.

@@ -7,6 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { isTvPath, tvRailRows, tvVerdict, tvFeedState, tvFeedStale, TV_RAIL_LIMIT } from '../src/lib/tv-mode.js';
+import { computeBoardFlags } from '../src/lib/board-flags.js';
 
 // ── the URL ────────────────────────────────────────────────────────────────
 test('/tv is the wall display, and a kiosk launcher may send a trailing slash', () => {
@@ -77,6 +78,37 @@ test('nothing at all still answers in the right shape', () => {
   for (const empty of [null, undefined, [], 'nope']) {
     const out = tvRailRows(empty, null);
     assert.deepEqual(out, { rows: [], overflow: 0, urgent: 0, amber: 0 });
+  }
+});
+
+test('A SCHOOL ON A TRACTOR IS A BOARD QUESTION, NOT A CALL — it never pushes a late stop off the wall', () => {
+  // Run on the real engine, because the ORDER is the bug: board-flags emits its building-type
+  // cards (R7b) before its hours rows, and this rail keeps the engine's order within red. Twelve
+  // schools on TRACTOR 2 filled the rail, the one stop somebody could still phone about went to
+  // the overflow, and the headline read "13 stops need a call".
+  const DEPOT = { lat: 34.147791, lng: -83.960911 };
+  const base = { city: 'Buford', lat: 34.10, lng: -84.00, normalizedStatus: 'SCHEDULED', status: '20', isPlanned: true, stopType: 'DO' };
+  for (const n of [12, 14]) {   // 14 is past the red cap: one collapsed summary, same rule
+    const stops = Array.from({ length: n }, (_, i) => ({
+      ...base, stopNbr: `S${i}`, businessName: `SCHOOL ${i}`, addr1: `${i} School Rd`, matchKey: `s${i}`,
+      loadNbr: 'TRACTOR 2', routeName: 'TRACTOR 2', routeSeq: i + 1, driverName: 'Ben',
+    }));
+    // A real receiving-hours red: typed 7:00-8:05 close, the truck leaves at 8:00.
+    stops.push({ ...base, stopNbr: '3000', businessName: 'LATE CO', addr1: '9 Late Rd', matchKey: 'late', loadNbr: 'T3', routeName: 'T3', routeSeq: 1, driverName: 'Ann' });
+    const notes = new Map(stops.slice(0, n).map((s) => [s.matchKey, { building_type: 'school' }]));
+    notes.set('late', { manual_overrides: { receiving_hours: true }, receiving_hours: { tue: { open: '07:00', close: '08:05' } } });
+    const flags = computeBoardFlags({
+      stops, notes, rosterRows: [], servedDate: '2026-09-01', dayKey: 'tue',
+      opts: { depot: DEPOT, departMin: 480, nowMin: 480, travel: { legs: {}, routeClasses: { 'TRACTOR 2': 'tractor' } } },
+    });
+    const reds = flags.rows.filter((r) => r.tier === 'red').map((r) => r.rule);
+    assert.equal(reds[0], 'place_trailer_conflict', 'the fixture reproduces the engine order');
+    assert.ok(reds.includes('hours_risk'), 'and carries a real hours red');
+    const rail = tvRailRows(flags.rows, {}, TV_RAIL_LIMIT);
+    assert.deepEqual(rail.rows.map((r) => r.stopNbr), ['3000'], `n=${n}: the stop somebody can phone about is ON the wall`);
+    assert.equal(rail.overflow, 0);
+    assert.equal(rail.urgent, 1);
+    assert.equal(tvVerdict({ urgent: rail.urgent, amber: rail.amber, feed: 'live' }).text, '1 stop needs a call');
   }
 });
 

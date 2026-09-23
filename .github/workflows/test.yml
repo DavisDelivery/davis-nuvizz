@@ -240,6 +240,13 @@ jobs:
       - run: npm run verify:routing-topbar
         env:
           SMOKE_PORT: '8810'
+      # THE SHIPLIFY TRIAL'S CONTROLS, in the real bundle, desktop and phone: each tab's own
+      # "Shiplify data" switch where the brief puts it and writing only its own key, the Routing
+      # "Lime as of board date" notice exactly while that trial switch is on, and the gear's
+      # import screen reading a synthetic legacy .xls to its summary (nothing is written).
+      - run: npm run verify:shiplify
+        env:
+          SMOKE_PORT: '8812'
       # "Hide place labels" can only misbehave on a build that HAS a cloud mapId: Google
       # ignores the JS `styles` array on those maps, so the toggle had nothing to do on the
       # roadmap base. Honouring it means REBUILDING the map without the mapId, and the risk

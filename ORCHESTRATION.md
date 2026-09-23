@@ -643,3 +643,15 @@ LEVER 2 — Free road-distance matrices at scale (self-hosted OSRM).
   APP_VERSION 0.23.0.
 - Jun 2026 — Orchestrator — #52 (Chunk B, v0.23.0) retro-review: CONCERNS, one blocker. Phase 3 growth guard guard++ <= remaining.length + 5 re-read the shrinking remaining.length, exiting early once the growth phase held >=8 stops and phantom-spilling routable stops (empty reasons). Stops were not dropped end-to-end (repair Phase B recovers) but recovery is geography-blind first-fit — reproduced skewed loads and a real two-truck criss-cross, the exact defect Chunk B prevents. The 4 Chunk B tests passed only because all used <=7 growth-phase stops. Confirmed good in #52: assign() anchor/seed/grow with truckCanCarry/capacityFits as the only gates, haversine on lat/lng (matrix-independent), no load-balancing, deterministic; sequence/nearestNeighbor/twoOpt/repair/pipeline/constraints/matrix/cost untouched; green markers + red ring + tappable build badge/VERSION_LOG; APP_VERSION shown.
 - Jun 2026 — Claude (#52 retro fix, v0.23.1) — Hoisted the Phase 3 cap to a const (maxIters = remaining.length + 5; guard++ < maxIters), assign() only. Added a dense-cluster regression (14 co-located stops / 2 trucks -> 0 raw spill, all served) and a node --test CI job (the suite previously had no CI signal — only Netlify deploy checks ran). Verified 101/101; 9/12/22-stop and adversarial criss-cross repros now 0 raw spill with clean geographic splits. NuVizz read-only; scope = assign() + test + workflow + this v0.23.1 docs/version amend.
+- Sep 2026 — Davis Dispatch Build (Shiplify trial, v1.58.0) — A vendor-data TRIAL layer,
+  additive and switchable per tab per device. New ingest (four-layer, per §2): browser parses
+  Shiplify's results file and posts it in chunks to `shiplify-import`; `shiplify_raw/{batch}__{n}`
+  keeps every row verbatim (Shipper rows included, never overwritten — the batch id is a content
+  hash, so a re-import is idempotent), `shiplify-import-background` derives
+  `shiplify_locations/{tenant}__{matchKey}` (one per consignee, the app's own match key) and a
+  compact `shiplify_index/{tenant}` the maps read, verifies both by AGGREGATION reads, and writes
+  its log (counts, rejected rows with reasons, key collisions, conflicts) to
+  `shiplify_imports/{batch}`. New dispatcher field `customer_notes.building_type` (+ `_by`/`_at`)
+  drives place marks; school/church/government raise the in-app-only `place_trailer_conflict`
+  flag on tractor routes (never texted, counted in the sweeps' run records). Live Firestore rules
+  unchanged: the new collections are readable (and writable) without auth while login is off.

@@ -75,7 +75,9 @@ test('the grid row is painted by gridRowTone, and the staged tint still rides as
   // grid-staged-rows pins the inline style itself; this pins that it sits BETWEEN selection
   // and the class tones (an inline background beats every class), which is the ranking.
   assert.ok(/style=\{\(!highlightIds\?\.has\(String\(s\.stopNbr\)\) && stagedByStop\?\.get\?\.\(String\(s\.stopNbr\)\)\)/.test(src));
-  assert.ok(/const tractorLocs = useTractorLocations\(\);\s*\n\s*const tractorOkIds = useMemo/.test(src),
+  // Handed the board date since the "Lime as of board date" trial switch: the green rows read
+  // the same filtered map the pins and the stop panel banner do.
+  assert.ok(/const tractorLocs = useTractorLocations\(boardDate\);\s*\n\s*const tractorOkIds = useMemo/.test(src),
     'the grid must read the SHARED, paint-toggle-aware tractor map — the one the pins use');
 });
 
