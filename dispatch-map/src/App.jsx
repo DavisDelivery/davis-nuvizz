@@ -40,7 +40,7 @@ import { manifestIssues, manifestHeadline, manifestProvenance, manifestFreshness
 import { noteFreshness } from './lib/stop-notes-freshness.js';
 import { stopHandlingFlags, itemHandlingFlags, stopNeedsTractor, tallyHandlingFlags, HANDLING_FLAGS } from './lib/handling-flags.js';
 import { mapBaseOptions, mapLiveOptions, mapIdKey, usesMapId, keepView } from './lib/map-base-options.js';
-import { map3dEnabled, cameraFor2dView, hintForRange, isCtrlDragStart, dragCrossedThreshold, isEscape, cameraMoved, twoDViewFor3dCamera, paint3dControl, control3dSpec, webglUsable, vectorFellBack, MAP3D_BUTTON_CSS, MAP3D_NO_WEBGL, MAP3D_NO_VECTOR } from './lib/map-3d.js';
+import { map3dEnabled, cameraFor2dView, hintForRange, isCtrlDragStart, dragCrossedThreshold, isEscape, cameraMoved, groundedCamera, cameraGroundPoint, twoDViewFor3dCamera, paint3dControl, control3dSpec, webglUsable, vectorFellBack, MAP3D_BUTTON_CSS, MAP3D_NO_WEBGL, MAP3D_NO_VECTOR } from './lib/map-3d.js';
 import { stopTimelineModel } from './lib/stop-timeline.js';
 import { diffRouteStyle, DIFF_ORIGINAL_COLOR, groupDispatchTrips } from './lib/diff-route-style.js';
 import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
@@ -153,7 +153,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.57.0';
+const APP_VERSION = '1.57.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -207,6 +207,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.57.1', '3D COMES UP ON THE BUILDING YOU WERE LOOKING AT, NOT SOMEWHERE ELSE. Chad: \u201cif i\u2019m over a building and turn it on when it comes up and is working the position on the map has moved so fix that i want you to build it render it and test it to see what i\u2019m talking about.\u201d SO IT WAS RENDERED, ON PRODUCTION, BEFORE A LINE WAS CHANGED: the board centred on the Buford Terminal at z18, then into 3D. What came up was a grazing close-up of rooftop air-handlers \u2014 no terminal, no docks, not the spot. THE CAUSE, MEASURED RATHER THAN GUESSED: Google defines the 3D centre\u2019s altitude as \u201cmeters above the mean sea level\u201d, and every version since v1.38.0 passed 0. The terminal sits about 368m up, so the camera was aimed 368m UNDER the building \u2014 Google reported the camera itself at 219m above sea level, which is inside the hill, and whatever it could see from there is what filled the screen. THE FIX IS GOOGLE\u2019S OWN: the camera\u2019s altitudeMode, RELATIVE_TO_GROUND, \u201cmeasured relative to the terrain elevation at that location\u201d, so zero means ON THE GROUND and Google looks the height up itself \u2014 no Elevation API, nothing extra billed \u2014 teleported in so the view comes up already right. Proved by hand on the live element before it was written: centre 367.8m, camera 208m above the ground, the terminal dead centre with its dock doors and the trailers at them in frame. Then built, and rendered again from the real build. AND THE PIN WAS UNDER THE ROOF THE WHOLE TIME. It was clamped to the ground at the middle of the building\u2019s footprint, so the marker that says \u201cthis is where you were\u201d was hidden exactly when you look at a building, which is always. It sits on the roof now. ONE THING THE RENDER FOUND THAT NO TEST WOULD HAVE: once the camera is grounded, Google re-reports its centre as wherever the line of sight first hits the ROOF \u2014 26m short, range 573m to 545m, with nobody touching anything \u2014 and the check for \u201cdid you move in 3D?\u201d compared centres, so a look-and-leave would have read as a 26m flight and nudged the board on the way out. It compares where the CAMERA stands now, which did not move by a metre, computed from the camera it was given (Google applies a camera a moment AFTER being asked, so reading it back straight away gets the old one); that geometry agrees with Google\u2019s to six decimals, and the test uses the numbers measured today. Dispatch Map and Routing both, from the one hook; nothing about the Route Workbench\u2019s paint, selection, Send or Save is touched. 53 tests on lib/map-3d.js.'],
   ['1.57.0', '3D WORKS LIKE GOOGLE MAPS NOW: A MODE YOU STAY IN, GOOGLE\u2019S OWN CONTROLS, AND IT IS ON ROUTING TOO. Chad: \u201cIt is kind of working but not like it does when you are on google maps and you put it in globe view and use the 3d view there \u2026 make mine work like that.\u201d FIRST, AN HONEST ACCOUNTING: the fixes for his last two complaints about this (\u201ci cant pan around the building\u201d, and \u201ci need this on the routing tab too\u201d) were built in #962 and NEVER SHIPPED \u2014 it sat open with a merge conflict while main moved from 1.42 to 1.56, so everything he has used since was still v1.38.0. This release carries all of it, and then the redesign on top. WHY IT DID NOT FEEL LIKE GOOGLE MAPS, in two verified facts. (1) GOOGLE\u2019S 3D ELEMENT SHIPS ITS OWN COMPASS, ZOOM, TILT, TURN AND MOVE CONTROLS, ON BY DEFAULT \u2014 and v1.38.0\u2019s layer sat at z-11, UNDER the board\u2019s data grid (z-12) and its filter, status and flag cards (z-15 to z-22), which is exactly where those controls live. They were there all along, buried. The layer is z-40 now, above every in-map overlay and below every modal, and the controls are requested explicitly rather than left to a default. (2) V1.38.0 WAS A PEEK AND GOOGLE MAPS IS A MODE. It opened on Ctrl and vanished the instant Ctrl was released \u2014 but Ctrl is also the key Google\u2019s 3D map reads for turn and tilt, so the gesture that opened the view fought the gesture that uses it. 3D STAYS NOW, until Back, Escape or the button. THE WAY IN IS CTRL+DRAG, GOOGLE\u2019S OWN GESTURE, NOT A BARE CTRL \u2014 and that is the one change in how you use it worth saying out loud. As a peek, a bare Ctrl that opened and closed was a flicker. As a MODE, Ctrl is the first key of Ctrl+C, Ctrl+F and Ctrl+R: a dispatcher copying a PRO would be thrown into full-screen 3D and LEFT there, with a load billed for it. Ctrl+drag is the same physical motion that tilts the board today \u2014 it lands on the photographs now instead of grey blocks \u2014 and it has to MOVE six pixels before it counts, so a Ctrl+click is never taken. The listener only watches: nothing on either map is ever prevented or stopped, which a test pins. INSIDE 3D, CTRL+DRAG IS GOOGLE\u2019S, and it can no longer snap you back \u2014 opening while already open does nothing. AND YOU LAND WHERE YOU FLEW, the other half of \u201clike Google Maps\u201d: orbit to the back of a building to find the dock, leave, and the flat board takes that centre, zoom and heading. FLAT \u2014 tilt is never carried back, because a tilted vector map is the grey-block view that started all this. BUT A LOOK-AND-LEAVE PUTS THE BOARD BACK EXACTLY, and that is a logistics call rather than a copy of Google: the entry camera is clamped to 4,000m so a whole-metro Ctrl+drag lands at building height, and without this a dispatcher who opened 3D over Atlanta and left without touching it would come back to a board zoomed in on one warehouse. It also undoes the few pixels the drag had already moved the flat map before 3D took over. The zoom the board lands on is the exact inverse of the entry maths, and a test round-trips it. ON ROUTING TOO, FROM ONE HOOK \u2014 this repo already paid once for building a control twice (the satellite toggle drifted into two implementations), so both screens call useMap3dPeek. THE ROUTE WORKBENCH IS NOT CHANGED: rwb-boundary is green with no approval token, and nothing here touches what the map paints, what box / lasso / ninja select, what Send or Save writes, or any card guard \u2014 it lays a separate element OVER the map and takes it away. THE FAILURES ARE NAMED, NOT BLANK: a browser whose WebGL is software gets a sentence instead of Google\u2019s empty \u201cOops\u201d card (the v1.38.0 check asked whether WebGL existed at all, and a software context passed it \u2014 the real signal is getRenderingType() reading RASTER on a map we asked to be VECTOR, skipped when Hide place labels makes raster deliberate), and Google\u2019s own gmp-error is listened for. THE HINT IS LIVE AND ITS ADVICE CHANGED: it follows the camera on every range change and says \u201cscroll in on the building\u201d, because \u201czoom the board in, then hold Ctrl again\u201d was right for a peek and wrong in a mode; it is never printed beside an error, where zooming cannot help. VITE_MAP_3D=off still puts the whole feature back, both screens at once. 49 tests on lib/map-3d.js, 5,453 green.'],
   ['1.56.1', 'HOURS WE TYPED NOW SHOW ON THE COMPARE ROW, HOWEVER ORDINARY THE WINDOW LOOKS. Chad, 2026-09-22, with AMERICAS VALUE CHANNEL wearing a clock chip on NOR 2 and INTUITIVE SURGICAL — “Set by a dispatcher”, 8:00a–3:30p — wearing nothing: “if we have put the hours in they should be flagging in the compare panel like americas value channel.” ANSWERED FROM THE CODE, NOT GUESSED: run through classifyTimeMark those two are hours_narrow_window and null. AVC opens at 11:00a, past the 9:00a opens-late dial, and shuts at 4:00p, inside the 5:00p pivot — a pinched day. Intuitive Surgical misses every dial: its 3:30p close is LATER than the 3:00p early-close pivot and its 8:00a open is EARLIER than the 9:00a one, so the rule calls it an ordinary working day and stays silent. THAT IS THE RIGHT ANSWER FOR THE MAP AND THE WRONG ONE FOR A COMPARE CARD, and the two surfaces are allowed to differ because they are doing different jobs: on the map the question is which of 700 pins constrains the day, and v0.65 cut 116 clock icons down to the ones worth looking at precisely because noise there is expensive; on a Compare card the question is what you need to know about each of fourteen stops while you sequence them, and a window somebody here took the trouble to type is exactly that. THE MAP IS UNTOUCHED — classifyTimeMark is unchanged, the new kind is deliberately absent from TIME_MARK_KEYS so no pin can reach it, and it is excluded from the Legend because a legend of map paint that lists a mark the map never draws is a legend that lies. TYPED ONLY, NOT PARSED: manual_overrides.receiving_hours is a human taking ownership of the field, the same provenance board-flags already weights as red on any predicted overrun. Parsed hours are a different confidence and a far bigger population, so widening to them is Chad’s call and not a detail slipped in here. A plain slate clock, no arrows: every other hours mark draws arrows because ONE edge is the story, and here neither edge is remarkable while the whole window is the message — which the chip prints beside it. 11 new tests, mutation-checked (short-circuit the new branch and three go red). One commit, so git revert is the whole way back.'],
   ['1.56.0', 'THE FLAG SWEEPS NOW RUN ON THE SCANNER’S OWN FIVE-MINUTE TICK, AND A DOCK THAT SHUTS BEFORE LUNCH GETS A RED AT THIRTY MINUTES. Chad, 2026-09-22, after a night AWC INC was predicted 77 minutes past an 11:00a close and nobody was texted: “RUN THE FLAG SWEEPS RIGHT AFTER OUR SCANS SO THEY ARE MUCH MORE CURRENT NOT ONCE PER HOUR AS THE FLAG SWEEPS ARE FREE AND COST NOTHING WITH NUVIZZ”; “BUMP UP TO 24 PER SWEEP TRAILER AND BOX CAP TO 8 EACH”; and “i want it to flag at 30 mins late for anything that closes at 11 am or before.” THE CLUMP WAS THE CADENCE, MEASURED NOT GUESSED. He doubted seven texts could mean seven loads built between 4:45 and 5:00, and he was right: replaying the SAME board at 2:00a, 4:00a, 5:00a and 6:00a returns an identical flag set (0 critical / 3 red / 3 amber), so the clock explains none of it. The evening sweep ran 0 0-11 (hourly) while the scanner runs */5 and acts on its own plan — every 20 minutes in the small hours, every 15 through the 5am rollout — so a board that changed at 4:47a was not looked at until 5:00a and everything it brought in arrived on one phone in one breath. Both sweeps now fire */5, the same tick as the scan. They read Firestore only and make ZERO NuVizz calls, which is why the cost rule does not reach them. NO “has the board changed” GATE, deliberately: it was the obvious economy and it buys a new way to go silent, and the sweep is already idempotent — createDocIfAbsent claims one message per subject per board day, so looking again is safe and cheap is the right trade against silence. THE EARLY-CLOSE FLOOR IS A LOGISTICS ARGUMENT, NOT AN ENGINEERING ONE. Thirty minutes late to a 5pm dock is usually nothing; thirty minutes late to an 11am dock is a redelivery, because the only moment anybody could have fixed it was hours earlier while the route could still be rebuilt. So a predicted overrun of 30+ minutes against a close of 11:00a or earlier is a RED whatever the model’s confidence. MODEL_ERROR_MIN IS UNTOUCHED and that is the point: the 90-minute unanchored band is a measurement over 39 sealed days and 24,238 stops, not a policy dial, so critical still means “misses even allowing for the model being as wrong as it usually is”. Only ONE thing moves — whether an early-close overrun reaches a person. IT ONLY EVER MOVES AUTO-DETECTED HOURS, and that is worth saying: severityTier already returned red for any overrun against dispatcher-TYPED hours, so a typed dock was never the silent case. AWC’s 11:00a was parsed from order text, which is exactly why it came back amber. THE FIRST DRAFT OF THE TEST PROVED NOTHING — it used typed hours, so every assertion sat behind a branch the fixture could not reach and the suite went green with the rule wired to nothing. Rebuilt on parsed hours, 60 minutes past an 11:00a close, and mutation-checked: unwire the floor and it goes red. The two cap tests that broke were rewritten to READ the caps rather than retype them, because a cap test edited on every bump is one that will eventually be edited to go green. 5,433 green. TWO SWITCHES, BOTH HOUSE SHAPE (default ON, an off-word turns them off, anything malformed leaves them ON): FLAG_SWEEP_EVERY_TICK=off puts BOTH sweeps back on the old cadence with no redeploy, and FLAG_EARLY_CLOSE=off removes the 30-minute floor from the texts and the emails. Said plainly, because a half-reverted state is worse than none: FLAG_EARLY_CLOSE silences the phone, and the board keeps showing the stronger tier until a deploy carries the revert — a dispatcher standing at the screen should still SEE it. And eta-flag-check?earlyClose=off now rehearses the board without the floor and lists every row it is carrying, by name, so what the policy costs is a question anyone can ask on a real board instead of arguing about.'],
@@ -12015,6 +12016,7 @@ function useMap3dPeek({ google, mapRef, mapDiv, enabled, satellite, askedForVect
   const layerRef = useRef(null);
   const elRef = useRef(null);       // the ONE Map3DElement — see above on the spend
   const markerRef = useRef(null);   // the pin on the building you were looking at
+  const libRef = useRef(null);      // the maps3d library, for AltitudeMode on every re-open
   const btnRef = useRef(null);      // the dispatch Map's DOM control (Routing leaves it null)
   const toggleRef = useRef(null);   // latest toggle fn, for that once-created button
   const busyRef = useRef(false);    // a second drag must not start a second library load
@@ -12039,6 +12041,21 @@ function useMap3dPeek({ google, mapRef, mapDiv, enabled, satellite, askedForVect
     try { tilt = m.getTilt?.() ?? 0; } catch { tilt = 0; }
     return { center: v.center, zoom: v.zoom, heading, tilt };
   }, [mapReady]); // eslint-disable-line
+
+  /**
+   * AIM THE 3D CAMERA AT THE GROUND UNDER THE SPOT, NOT AT SEA LEVEL. See groundedCamera in
+   * lib/map-3d.js for the measured account: altitude 0 is "metres above mean sea level" to
+   * Google, the Buford Terminal is ~368m up, and the camera was landing inside the hill.
+   * Teleported (durationMillis 0), so the view comes up already where it should be.
+   * Returns false when this channel has no flyCameraTo, so the caller can fall back.
+   */
+  const aimAtGround = (el, lib, cam) => {
+    if (!el || typeof el.flyCameraTo !== 'function') return false;
+    const mode = lib?.AltitudeMode?.RELATIVE_TO_GROUND ?? 'RELATIVE_TO_GROUND';
+    const endCamera = groundedCamera(cam, mode);
+    if (!endCamera) return false;
+    try { el.flyCameraTo({ endCamera, durationMillis: 0 }); return true; } catch { return false; }
+  };
 
   /**
    * INTO 3D, AND IT STAYS. `from` is the flat board as it stood when the gesture STARTED —
@@ -12083,6 +12100,7 @@ function useMap3dPeek({ google, mapRef, mapDiv, enabled, satellite, askedForVect
       busyRef.current = true;
       try {
         const lib = await google.maps.importLibrary('maps3d');
+        libRef.current = lib;
         // Guard the race: two quick drags must not both construct (two elements = two billed
         // loads, and two WebGL canvases stacked on the board).
         if (!elRef.current) {
@@ -12114,13 +12132,22 @@ function useMap3dPeek({ google, mapRef, mapDiv, enabled, satellite, askedForVect
           // THE PIN IS NOT DECORATION. At 300m over an industrial park of near-identical
           // tilt-wall units, "which of these roofs is the stop" is the question standing
           // between the dispatcher and the answer they came for.
+          //
+          // ON THE BUILDING, NOT UNDER IT. It was CLAMP_TO_GROUND, which put it on the ground in
+          // the middle of the building's footprint — UNDER THE ROOF. Rendered on production over
+          // the Buford Terminal, the element existed and nothing was on screen: the marker that
+          // says "this is where you were" hidden exactly when you are looking at a building,
+          // which is always. RELATIVE_TO_MESH measures from the mesh — the roof — so it sits on
+          // top, where it can be seen.
           try {
             if (lib.Marker3DElement) {
-              const pin = new lib.Marker3DElement({ position: cam.center, altitudeMode: 'CLAMP_TO_GROUND' });
+              const onMesh = lib.AltitudeMode?.RELATIVE_TO_MESH ?? 'RELATIVE_TO_MESH';
+              const pin = new lib.Marker3DElement({ position: { ...cam.center, altitude: 0 }, altitudeMode: onMesh });
               markerRef.current = pin;
               el.appendChild(pin);
             }
           } catch { /* imagery without a pin still answers most of the question */ }
+          aimAtGround(el, lib, cam);
         }
         setError(null);
       } catch (e) {
@@ -12140,13 +12167,17 @@ function useMap3dPeek({ google, mapRef, mapDiv, enabled, satellite, askedForVect
         if (layerRef.current && el.parentNode !== layerRef.current) layerRef.current.appendChild(el);
       } catch { /* an element that refuses to move is still better than none */ }
       try {
-        el.center = cam.center; el.range = cam.range; el.tilt = cam.tilt;
-        el.heading = cam.heading; el.mode = cam.mode;
-        if (markerRef.current) markerRef.current.position = cam.center;
+        el.mode = cam.mode;
+        if (markerRef.current) markerRef.current.position = { ...cam.center, altitude: 0 };
+        if (!aimAtGround(el, libRef.current, cam)) {
+          // No flyCameraTo on this channel: the old absolute camera, which is the known-wrong
+          // answer over high ground — still better than no picture, and it is said here.
+          el.center = cam.center; el.range = cam.range; el.tilt = cam.tilt; el.heading = cam.heading;
+        }
       } catch { /* a camera that refuses to move still shows the last good view */ }
     }
     board2dRef.current = board;
-    entryCamRef.current = { center: cam.center, range: cam.range, heading: cam.heading };
+    entryCamRef.current = { camera: cameraGroundPoint(cam), heading: cam.heading };
     setRange(cam.range);
     onRef.current = true;
     setOn(true);
@@ -12168,7 +12199,7 @@ function useMap3dPeek({ google, mapRef, mapDiv, enabled, satellite, askedForVect
     const m = mapRef.current;
     if (el && m && onRef.current) {
       try {
-        const now = { center: el.center, range: el.range, heading: el.heading };
+        const now = { camera: el.cameraPosition, heading: el.heading, center: el.center, range: el.range };
         const heightPx = mapDiv.current?.clientHeight || 0;
         const flight = cameraMoved(entryCamRef.current, now) ? twoDViewFor3dCamera({ ...now, heightPx }) : null;
         if (flight) {

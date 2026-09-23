@@ -15,6 +15,7 @@ import {
   control3dSpec, paint3dControl, map3dHint, hintForRange,
   isCtrlDragStart, dragCrossedThreshold, isEscape, readLatLng, zoomForRange, cameraMoved,
   twoDViewFor3dCamera, metresBetween, DRAG_THRESHOLD_PX, HANDOFF_MIN_ZOOM, HANDOFF_MAX_ZOOM,
+  groundedCamera, cameraGroundPoint,
   MAP3D_TILT, MAP3D_MIN_RANGE, MAP3D_MAX_RANGE, MAP3D_DETAIL_RANGE,
 } from '../src/lib/map-3d.js';
 
@@ -212,22 +213,63 @@ test('ZOOMING OUT IN 3D IS HONOURED ON THE WAY OUT — the entry ceiling is not 
   assert.equal(zoomForRange({ range: 800, lat: 33, heightPx: 0 }), null);
 });
 
-test('A LOOK-AND-LEAVE PUTS THE BOARD BACK EXACTLY — opening 3D must not rearrange the board', () => {
-  // The entry camera is CLAMPED, so a whole-metro board opened in 3D and closed untouched would
-  // otherwise come back zoomed to building height: the board rearranged by a look.
-  const entry = { center: { lat: 33.6187, lng: -84.3733 }, range: 4000, heading: 0 };
-  assert.equal(cameraMoved(entry, { ...entry }), false);
-  assert.equal(cameraMoved(entry, { center: { lat: 33.61871, lng: -84.37331 }, range: 4010, heading: 1 }), false,
-    'float noise from Google echoing the camera back is not a flight');
+// ── AIMED AT THE GROUND — measured on production, 2026-09-23 ─────────────────
+// Chad: "if i'm over a building and turn it on when it comes up and is working the position on
+// the map has moved". Rendered, not argued: the Buford Terminal (ROUTING_DEPOT) at z18 on
+// production v1.57.0. These are the numbers Google reported, and they are the fixtures below.
+const TERMINAL = { lat: 34.147791, lng: -83.960911 };
+const ENTRY = { center: { ...TERMINAL, altitude: 0 }, range: 572.895489942209, tilt: 67.5, heading: 0 };
+// What Google reported AFTER the grounded teleport, nobody having touched anything:
+const GOOGLE_AFTER = {
+  camera: { lat: 34.14303145078566, lng: -83.96091099994534, altitude: 576.3353528979309 },
+  center: { lat: 34.147558694996796, lng: -83.96091099994534, altitude: 367.77604498217767 },
+  range: 544.9344256577751, heading: 0,
+};
+
+test('THE CAMERA IS AIMED AT THE GROUND, NOT AT SEA LEVEL — altitude 0 put it inside the hill', () => {
+  // Google defines the centre's altitude as "meters above the mean sea level". v1.57.0 passed
+  // 0, and Google put the camera at 219m above sea level over a site ~368m up: underground.
+  const g = groundedCamera(ENTRY, 'RELATIVE_TO_GROUND');
+  assert.equal(g.altitudeMode, 'RELATIVE_TO_GROUND', 'altitude read as metres above the TERRAIN');
+  assert.deepEqual(g.center, { ...TERMINAL, altitude: 0 }, 'zero metres above the ground under the spot');
+  assert.equal(g.range, ENTRY.range); assert.equal(g.tilt, 67.5); assert.equal(g.heading, 0);
+  assert.equal(groundedCamera(null), null);
+  assert.equal(groundedCamera({ center: { lat: null, lng: null } }), null, 'Number(null) is 0 — no camera from nothing');
 });
 
-test('A FLIGHT MOVES THE BOARD — orbit to the back of the building, and that is where you land', () => {
-  const entry = { center: { lat: 33.6187, lng: -84.3733 }, range: 800, heading: 0 };
-  assert.equal(cameraMoved(entry, { ...entry, center: { lat: 33.6195, lng: -84.3733 } }), true, 'panned ~90m');
-  assert.equal(cameraMoved(entry, { ...entry, range: 400 }), true, 'zoomed in');
-  assert.equal(cameraMoved(entry, { ...entry, heading: 180 }), true, 'turned round to the back');
-  assert.equal(cameraMoved(entry, { ...entry, heading: 359 }), false, '359° is 1° from 0°, not 359°');
-  assert.ok(metresBetween({ lat: 33.6187, lng: -84.3733 }, { lat: 33.6195, lng: -84.3733 }) > 80);
+test('MY CAMERA GEOMETRY AGREES WITH GOOGLE\'S TO SIX DECIMALS — the measured Buford Terminal', () => {
+  const mine = cameraGroundPoint(ENTRY);
+  assert.equal(mine.lat.toFixed(6), GOOGLE_AFTER.camera.lat.toFixed(6));
+  assert.equal(mine.lng.toFixed(6), GOOGLE_AFTER.camera.lng.toFixed(6));
+  assert.ok(metresBetween(mine, GOOGLE_AFTER.camera) < 1, 'within a metre of where Google put it');
+  assert.equal(cameraGroundPoint({ center: null, range: 500, tilt: 60 }), null);
+});
+
+test('A LOOK-AND-LEAVE PUTS THE BOARD BACK EXACTLY — even though Google re-reports the centre 26m off', () => {
+  // THE REGRESSION THE RENDER FOUND. After grounding, Google reports `center` where its line of
+  // sight hits the ROOF (26m short) and `range` 573m -> 545m. Nobody moved. A centre comparison
+  // called that a 26m flight and would have nudged the board on the way out.
+  assert.ok(metresBetween(ENTRY.center, GOOGLE_AFTER.center) > 25, 'sanity: the centre really did move 26m');
+  const entry = { camera: cameraGroundPoint(ENTRY), heading: ENTRY.heading };
+  assert.equal(cameraMoved(entry, { camera: GOOGLE_AFTER.camera, heading: GOOGLE_AFTER.heading }), false);
+});
+
+test('A FLIGHT MOVES THE BOARD — pan, orbit round the back, or zoom in, and that is where you land', () => {
+  const entry = { camera: cameraGroundPoint(ENTRY), heading: 0 };
+  const panned = cameraGroundPoint({ ...ENTRY, center: { lat: TERMINAL.lat + 0.0008, lng: TERMINAL.lng } });
+  assert.equal(cameraMoved(entry, { camera: panned, heading: 0 }), true, 'panned ~90m north');
+  const orbited = cameraGroundPoint({ ...ENTRY, heading: 180 });
+  assert.equal(cameraMoved(entry, { camera: orbited, heading: 180 }), true, 'round to the back of the building');
+  const zoomed = cameraGroundPoint({ ...ENTRY, range: 300 });
+  assert.equal(cameraMoved(entry, { camera: zoomed, heading: 0 }), true, 'zoomed in on the docks');
+  assert.equal(cameraMoved(entry, { camera: entry.camera, heading: 359 }), false, '359° is 1° from 0°, not 359°');
+});
+
+test('an unreadable camera is not a flight — the board stays where it was, never moved to a guess', () => {
+  const entry = { camera: cameraGroundPoint(ENTRY), heading: 0 };
+  assert.equal(cameraMoved(entry, { camera: null, heading: 0 }), false);
+  assert.equal(cameraMoved(entry, { camera: { lat: null, lng: null }, heading: 0 }), false);
+  assert.equal(cameraMoved(null, { camera: GOOGLE_AFTER.camera }), false);
 });
 
 test('THE BOARD LANDS FLAT — tilt is never carried back, because tilted 2D is the grey-block view', () => {
@@ -492,3 +534,17 @@ test('THE "ZOOM IN" HINT IS NOT SHOWN BESIDE AN ERROR — it is wrong advice, no
   assert.ok(/\{!error && hint && <span/.test(src),
     'the hint must be suppressed while an error is on the layer');
 });
+
+test('THE HOOK GROUNDS THE CAMERA ON EVERY OPEN, PINS ON THE ROOF, AND BASELINES WHERE THE CAMERA STANDS', async () => {
+  const src = await readFile(APP, 'utf8');
+  const hook = src.slice(src.indexOf('function useMap3dPeek'), src.indexOf('function Cube3dIcon'));
+  assert.ok(/flyCameraTo\(\{ endCamera, durationMillis: 0 \}\)/.test(hook), 'teleported, so it comes up already right');
+  assert.ok(/groundedCamera\(cam, mode\)/.test(hook) && /RELATIVE_TO_GROUND/.test(hook), 'through the tested grounded camera');
+  const calls = hook.match(/aimAtGround\(el, /g) || [];
+  assert.ok(calls.length >= 2, `both the first open AND every re-open must be grounded, found ${calls.length}`);
+  assert.ok(/RELATIVE_TO_MESH/.test(hook) && !/altitudeMode: 'CLAMP_TO_GROUND'/.test(hook),
+    'the pin sits on the building, not on the ground under its roof');
+  assert.ok(/entryCamRef\.current = \{ camera: cameraGroundPoint\(cam\)/.test(hook), 'baseline computed, not read before Google applies it');
+  assert.ok(/camera: el\.cameraPosition/.test(hook), 'and compared against where the camera actually stands');
+});
+
