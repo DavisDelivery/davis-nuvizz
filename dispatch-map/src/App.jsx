@@ -153,7 +153,7 @@ if (typeof window !== 'undefined') {
 // the desktop nav, the phone menu and the router can never disagree about it.
 const BENCH_ON = (() => { try { return isUatHost(window.location.hostname); } catch { return false; } })();
 
-const APP_VERSION = '1.57.1';
+const APP_VERSION = '1.57.2';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -207,6 +207,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['1.57.2', 'THE CUSTOMER EDITOR, LOOKED AT INSTEAD OF DESCRIBED. Chad, on v1.53.0: “Are you happy with the ui on this work? Formatting and function?” I rendered it at 1600, 1024 and 390 and read the screenshots, and the honest answer was no, on both counts. FUNCTION, TWICE. (1) The “Nothing on file yet” line and the “Add details” wording — the whole point of un-hiding the card — never rendered: the has-anything test counted the ADDRESS list, and in customer mode there are always addresses, so a customer with no note got a bare card and an “Edit” button that implied something was there. Split into hasNote (what the empty state answers) and has (whether to draw at all). (2) “note saved Sep 16, 11:20 AM by dispatch” had never rendered on a real document: notesSummary read updated_at, and all ten writers of customer_notes — Map, Routing, the address fixer, and now Stop lookup — write last_updated. The fixture carried updatedAt, so every screenshot showed a footer production never draws, and the read-back I promised would repaint the card had nothing visible to repaint when only the stamp changed. notesSummary now reads last_updated first and normalises the three shapes it arrives in (an ISO string off the REST decoder, a Timestamp object off the client SDK after a save, a bare seconds map) — one pure function, both sides, tested on each shape. FORMATTING. On a 1600px monitor the editor was a 672px form in the left corner of a 1,552px box, 880px of white beside it, Cancel 880px from the fields and Save 1,300px down a 1,000px screen — the exact species of “designed for mobile” page Chad named the SCREEN_ conventions over. It is two columns at xl now: the form still capped at 42rem (a 1,600px time input reads worse), and the width spent on a sticky rail carrying Save, Cancel and the dock being saved to, in view for the whole scroll. The card’s per-dock Edit buttons sat 1,100px right of the addresses they edit; they sit beside them. The grey “2 docks — edit one below” at the far top-right was invisible at that distance and the dock list’s own heading already says it; gone. On a phone Cancel had wrapped onto a row of its own under the address; it shares the title line. And the Save bar’s helper text was an engineer’s sentence (“read back before it says saved”); it is a rep’s now (“Applies to this address only.”). One pre-existing nit fixed in passing because the screenshot showed it: a contact’s email broke as “r / eceiving@…” on a phone — break-all was splitting it at the first letter; break-words moves it whole to the next line. NOT CHANGED, on purpose: the order of sections inside the editor (email toggles above receiving hours) is the Map’s shared editor and its order was set for the dispatcher sidebar — moving hours to the top would move them on the Map too, which is a change to a screen nobody asked about. Named here so it can be asked for. Verified the way the finding was made: rebuilt, re-shot all three widths, and read them.'],
   ['1.57.1', '3D COMES UP ON THE BUILDING YOU WERE LOOKING AT, NOT SOMEWHERE ELSE. Chad: \u201cif i\u2019m over a building and turn it on when it comes up and is working the position on the map has moved so fix that i want you to build it render it and test it to see what i\u2019m talking about.\u201d SO IT WAS RENDERED, ON PRODUCTION, BEFORE A LINE WAS CHANGED: the board centred on the Buford Terminal at z18, then into 3D. What came up was a grazing close-up of rooftop air-handlers \u2014 no terminal, no docks, not the spot. THE CAUSE, MEASURED RATHER THAN GUESSED: Google defines the 3D centre\u2019s altitude as \u201cmeters above the mean sea level\u201d, and every version since v1.38.0 passed 0. The terminal sits about 368m up, so the camera was aimed 368m UNDER the building \u2014 Google reported the camera itself at 219m above sea level, which is inside the hill, and whatever it could see from there is what filled the screen. THE FIX IS GOOGLE\u2019S OWN: the camera\u2019s altitudeMode, RELATIVE_TO_GROUND, \u201cmeasured relative to the terrain elevation at that location\u201d, so zero means ON THE GROUND and Google looks the height up itself \u2014 no Elevation API, nothing extra billed \u2014 teleported in so the view comes up already right. Proved by hand on the live element before it was written: centre 367.8m, camera 208m above the ground, the terminal dead centre with its dock doors and the trailers at them in frame. Then built, and rendered again from the real build. AND THE PIN WAS UNDER THE ROOF THE WHOLE TIME. It was clamped to the ground at the middle of the building\u2019s footprint, so the marker that says \u201cthis is where you were\u201d was hidden exactly when you look at a building, which is always. It sits on the roof now. ONE THING THE RENDER FOUND THAT NO TEST WOULD HAVE: once the camera is grounded, Google re-reports its centre as wherever the line of sight first hits the ROOF \u2014 26m short, range 573m to 545m, with nobody touching anything \u2014 and the check for \u201cdid you move in 3D?\u201d compared centres, so a look-and-leave would have read as a 26m flight and nudged the board on the way out. It compares where the CAMERA stands now, which did not move by a metre, computed from the camera it was given (Google applies a camera a moment AFTER being asked, so reading it back straight away gets the old one); that geometry agrees with Google\u2019s to six decimals, and the test uses the numbers measured today. Dispatch Map and Routing both, from the one hook; nothing about the Route Workbench\u2019s paint, selection, Send or Save is touched. 53 tests on lib/map-3d.js.'],
   ['1.57.0', '3D WORKS LIKE GOOGLE MAPS NOW: A MODE YOU STAY IN, GOOGLE\u2019S OWN CONTROLS, AND IT IS ON ROUTING TOO. Chad: \u201cIt is kind of working but not like it does when you are on google maps and you put it in globe view and use the 3d view there \u2026 make mine work like that.\u201d FIRST, AN HONEST ACCOUNTING: the fixes for his last two complaints about this (\u201ci cant pan around the building\u201d, and \u201ci need this on the routing tab too\u201d) were built in #962 and NEVER SHIPPED \u2014 it sat open with a merge conflict while main moved from 1.42 to 1.56, so everything he has used since was still v1.38.0. This release carries all of it, and then the redesign on top. WHY IT DID NOT FEEL LIKE GOOGLE MAPS, in two verified facts. (1) GOOGLE\u2019S 3D ELEMENT SHIPS ITS OWN COMPASS, ZOOM, TILT, TURN AND MOVE CONTROLS, ON BY DEFAULT \u2014 and v1.38.0\u2019s layer sat at z-11, UNDER the board\u2019s data grid (z-12) and its filter, status and flag cards (z-15 to z-22), which is exactly where those controls live. They were there all along, buried. The layer is z-40 now, above every in-map overlay and below every modal, and the controls are requested explicitly rather than left to a default. (2) V1.38.0 WAS A PEEK AND GOOGLE MAPS IS A MODE. It opened on Ctrl and vanished the instant Ctrl was released \u2014 but Ctrl is also the key Google\u2019s 3D map reads for turn and tilt, so the gesture that opened the view fought the gesture that uses it. 3D STAYS NOW, until Back, Escape or the button. THE WAY IN IS CTRL+DRAG, GOOGLE\u2019S OWN GESTURE, NOT A BARE CTRL \u2014 and that is the one change in how you use it worth saying out loud. As a peek, a bare Ctrl that opened and closed was a flicker. As a MODE, Ctrl is the first key of Ctrl+C, Ctrl+F and Ctrl+R: a dispatcher copying a PRO would be thrown into full-screen 3D and LEFT there, with a load billed for it. Ctrl+drag is the same physical motion that tilts the board today \u2014 it lands on the photographs now instead of grey blocks \u2014 and it has to MOVE six pixels before it counts, so a Ctrl+click is never taken. The listener only watches: nothing on either map is ever prevented or stopped, which a test pins. INSIDE 3D, CTRL+DRAG IS GOOGLE\u2019S, and it can no longer snap you back \u2014 opening while already open does nothing. AND YOU LAND WHERE YOU FLEW, the other half of \u201clike Google Maps\u201d: orbit to the back of a building to find the dock, leave, and the flat board takes that centre, zoom and heading. FLAT \u2014 tilt is never carried back, because a tilted vector map is the grey-block view that started all this. BUT A LOOK-AND-LEAVE PUTS THE BOARD BACK EXACTLY, and that is a logistics call rather than a copy of Google: the entry camera is clamped to 4,000m so a whole-metro Ctrl+drag lands at building height, and without this a dispatcher who opened 3D over Atlanta and left without touching it would come back to a board zoomed in on one warehouse. It also undoes the few pixels the drag had already moved the flat map before 3D took over. The zoom the board lands on is the exact inverse of the entry maths, and a test round-trips it. ON ROUTING TOO, FROM ONE HOOK \u2014 this repo already paid once for building a control twice (the satellite toggle drifted into two implementations), so both screens call useMap3dPeek. THE ROUTE WORKBENCH IS NOT CHANGED: rwb-boundary is green with no approval token, and nothing here touches what the map paints, what box / lasso / ninja select, what Send or Save writes, or any card guard \u2014 it lays a separate element OVER the map and takes it away. THE FAILURES ARE NAMED, NOT BLANK: a browser whose WebGL is software gets a sentence instead of Google\u2019s empty \u201cOops\u201d card (the v1.38.0 check asked whether WebGL existed at all, and a software context passed it \u2014 the real signal is getRenderingType() reading RASTER on a map we asked to be VECTOR, skipped when Hide place labels makes raster deliberate), and Google\u2019s own gmp-error is listened for. THE HINT IS LIVE AND ITS ADVICE CHANGED: it follows the camera on every range change and says \u201cscroll in on the building\u201d, because \u201czoom the board in, then hold Ctrl again\u201d was right for a peek and wrong in a mode; it is never printed beside an error, where zooming cannot help. VITE_MAP_3D=off still puts the whole feature back, both screens at once. 49 tests on lib/map-3d.js, 5,453 green.'],
   ['1.56.1', 'HOURS WE TYPED NOW SHOW ON THE COMPARE ROW, HOWEVER ORDINARY THE WINDOW LOOKS. Chad, 2026-09-22, with AMERICAS VALUE CHANNEL wearing a clock chip on NOR 2 and INTUITIVE SURGICAL — “Set by a dispatcher”, 8:00a–3:30p — wearing nothing: “if we have put the hours in they should be flagging in the compare panel like americas value channel.” ANSWERED FROM THE CODE, NOT GUESSED: run through classifyTimeMark those two are hours_narrow_window and null. AVC opens at 11:00a, past the 9:00a opens-late dial, and shuts at 4:00p, inside the 5:00p pivot — a pinched day. Intuitive Surgical misses every dial: its 3:30p close is LATER than the 3:00p early-close pivot and its 8:00a open is EARLIER than the 9:00a one, so the rule calls it an ordinary working day and stays silent. THAT IS THE RIGHT ANSWER FOR THE MAP AND THE WRONG ONE FOR A COMPARE CARD, and the two surfaces are allowed to differ because they are doing different jobs: on the map the question is which of 700 pins constrains the day, and v0.65 cut 116 clock icons down to the ones worth looking at precisely because noise there is expensive; on a Compare card the question is what you need to know about each of fourteen stops while you sequence them, and a window somebody here took the trouble to type is exactly that. THE MAP IS UNTOUCHED — classifyTimeMark is unchanged, the new kind is deliberately absent from TIME_MARK_KEYS so no pin can reach it, and it is excluded from the Legend because a legend of map paint that lists a mark the map never draws is a legend that lies. TYPED ONLY, NOT PARSED: manual_overrides.receiving_hours is a human taking ownership of the field, the same provenance board-flags already weights as red on any predicted overrun. Parsed hours are a different confidence and a far bigger population, so widening to them is Chad’s call and not a detail slipped in here. A plain slate clock, no arrows: every other hours mark draws arrows because ONE edge is the story, and here neither edge is remarkable while the whole window is the message — which the chip prints beside it. 11 new tests, mutation-checked (short-circuit the new branch and three go red). One commit, so git revert is the whole way back.'],
@@ -33847,7 +33848,14 @@ function StopIdentityCard({ d, stacked }) {
 function StopNotesCard({ notes, locations, docks, noteKey, onEdit, editReason }) {
   const hours = notes?.hours ? hoursSummary({ receiving_hours: notes.hours }) : '';
   const dockList = docks || [];
-  const has = notes?.text || notes?.flags?.length || notes?.contacts?.length || hours || notes?.customerNbr || (locations || []).length;
+  // TWO QUESTIONS, NOT ONE. `hasNote` is "is anything written about this customer" — that is
+  // what the empty-state line and the Add-details wording answer. `has` is "is there anything
+  // to draw at all", and the address list counts towards THAT, because it is drawn from the
+  // stops rather than the note. The first cut folded them together, and since a customer in
+  // this view always has addresses, "nothing on file" could never render. Measured, not
+  // reasoned: two docks and no note produced a card with no empty-state line on every width.
+  const hasNote = !!(notes?.text || notes?.flags?.length || notes?.contacts?.length || hours || notes?.customerNbr);
+  const has = hasNote || (locations || []).length;
   // THE CUSTOMER WITH NOTHING ON FILE IS THE ONE THIS CARD MATTERS MOST TO. It used to return
   // null the moment there was no note, so the customer a rep most needed to write receiving
   // hours for — the one we have never written any for — was the one with no way to.
@@ -33864,13 +33872,13 @@ function StopNotesCard({ notes, locations, docks, noteKey, onEdit, editReason })
           dockList.length === 1
             ? <button onClick={() => onEdit(dockList[0])}
               className="ml-auto rounded-lg border px-2.5 min-h-[44px] text-xs font-semibold text-blue-800 bg-white hover:bg-blue-50">
-              {has ? 'Edit' : 'Add details'}
+              {hasNote ? 'Edit' : 'Add details'}
             </button>
-            : <span className="ml-auto text-[11px] text-slate-400">{dockList.length} docks — edit one below</span>
+            : null
         )}
         {!onEdit && editReason && <span className="ml-auto text-[11px] text-slate-400">{editReason}</span>}
       </div>
-      {!has && <div className="text-xs text-slate-500">Nothing on file for this customer yet — receiving hours, the dock instruction and who to call all live here.</div>}
+      {!hasNote && <div className="text-xs text-slate-500">Nothing on file for this customer yet — receiving hours, the dock instruction and who to call all live here.</div>}
 
       {/* THE TWO THINGS THAT CHANGE WHAT YOU MAY PROMISE, ABOVE EVERYTHING ELSE. */}
       {(hours || !!notes?.flags?.length) && (
@@ -33903,7 +33911,7 @@ function StopNotesCard({ notes, locations, docks, noteKey, onEdit, editReason })
             <div key={`${c.phone || c.email}-${i}`} className="text-sm text-slate-700 break-words">
               {c.name && <span className="font-semibold">{c.name}</span>}
               {c.phone && <> · <a href={`tel:${c.phone}`} className="text-blue-800 font-semibold hover:underline">{c.phone}</a></>}
-              {c.email && <> · <a href={`mailto:${c.email}`} className="text-blue-800 hover:underline break-all">{c.email}</a></>}
+              {c.email && <> · <a href={`mailto:${c.email}`} className="text-blue-800 hover:underline break-words">{c.email}</a></>}
             </div>
           ))}
         </div>
@@ -33920,7 +33928,7 @@ function StopNotesCard({ notes, locations, docks, noteKey, onEdit, editReason })
           <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{dockList.length} docks — each has its own hours and instructions</div>
           {dockList.map((dk) => (
             <div key={dk.key} className="flex items-start gap-2 flex-wrap border-t pt-1.5 first:border-t-0 first:pt-0">
-              <div className="text-[11px] text-slate-600 break-words min-w-0 flex-1">
+              <div className="text-[11px] text-slate-600 break-words min-w-0 flex-1 xl:flex-none xl:max-w-2xl">
                 {[dk.addr1, dk.addr2].filter(Boolean).join(' · ')}
                 <span className="text-slate-400"> {[dk.city, dk.state, dk.zip].filter(Boolean).join(', ')}</span>
                 {dk.key === noteKey && <span className="ml-1 text-[10px] font-semibold text-amber-700">· the note above</span>}
@@ -33987,55 +33995,83 @@ function CustomerNotesEditPanel({ dock, draft, setDraft, loading, saving, err, o
   const ref = useRef(null);
   useEffect(() => { try { ref.current?.scrollIntoView({ block: 'nearest' }); } catch { /* older browsers */ } }, []);
   const where = [[dock?.addr1, dock?.addr2].filter(Boolean).join(' · '), [dock?.city, dock?.state, dock?.zip].filter(Boolean).join(', ')].filter(Boolean).join(' — ');
+  // ONE set of actions, rendered in one of two places: at the foot of the form below xl, and
+  // in the rail beside it at xl. Never both at once.
+  const actions = (
+    <div className="flex items-center gap-2 flex-wrap">
+      <button onClick={onSave} disabled={saving || !canSave}
+        className="rounded-lg px-4 min-h-[44px] text-sm font-semibold text-white disabled:opacity-60"
+        style={{ background: BRAND }}>{saving ? 'Saving…' : 'Save'}</button>
+      <button onClick={onCancel} disabled={saving}
+        className="rounded-lg border px-3 min-h-[44px] text-xs font-semibold bg-white hover:bg-slate-50 disabled:opacity-50">Cancel</button>
+      {/* A rep's sentence, not an engineer's. "Read back before it says saved" is how the
+          code works; "this address only" is what the rep needs to know before pressing it. */}
+      <span className="text-[11px] text-slate-400">Applies to this address only.</span>
+    </div>
+  );
+  const notice = !canSave && (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 text-amber-900 text-xs p-2">
+      No database in this build — nothing typed here can be saved. The fields are live so the layout can be checked.
+    </div>
+  );
   return (
     <div ref={ref} role="region" aria-label="Edit customer details"
-      className="rounded-xl border border-blue-200 bg-white p-3 sm:p-4 space-y-3 shadow-sm">
-      <div className="flex items-start gap-3 flex-wrap">
-        <div className="min-w-0">
-          <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Editing this dock</div>
-          {/* WHICH DOCK, IN FULL, ABOVE THE FIELDS. Hours are per address; a rep who thinks
-              they are editing "the customer" will set the wrong door's closing time. */}
-          <div className="text-sm font-semibold text-slate-800 break-words">{dock?.name || 'this customer'}</div>
-          {where && <div className="text-[11px] text-slate-500 break-words">{where}</div>}
-        </div>
-        <button onClick={onCancel} disabled={saving}
-          className="ml-auto rounded-lg border px-3 min-h-[44px] text-xs font-semibold bg-white hover:bg-slate-50 disabled:opacity-50">Cancel</button>
-      </div>
-
-      {loading
-        ? <div className="text-sm text-slate-500">Reading what is on file…</div>
-        : (
-          <>
-            {/* THE SAME EDITOR THE MAP USES. `drivers` is empty here on purpose — the barred-
-                driver list is chosen off the board's own roster, which this screen does not
-                load; everything else is identical.
-
-                CAPPED, NOT STRETCHED. This panel is as wide as the list it drops into — 1,552px
-                on a dispatcher's monitor — and the editor is a stack of single controls built
-                for the Map's ~400px sidebar. Given the whole width it renders a 700-pixel time
-                box to hold "08:00", which is SCREEN_FORM's rule in this file arriving from the
-                other direction: "a 1600px text field and a 200-character line read worse than
-                the narrow version, not better". A form wants a column, so it gets one. */}
-            <div className="w-full max-w-2xl"><StopNotesEditor draft={draft} setDraft={(patch) => setDraft((d) => ({ ...d, ...patch }))} compact drivers={[]} /></div>
-            {err && <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-2 break-words">{err}</div>}
-            {!canSave && (
-              <div className="rounded-lg border border-amber-200 bg-amber-50 text-amber-900 text-xs p-2">
-                This build has no database connection, so nothing typed here can be saved. The fields are live so the
-                layout can be checked; the real editor is the same one on a configured deploy.
-              </div>
-            )}
-            <div className="flex items-center gap-2 flex-wrap border-t pt-2">
-              <button onClick={onSave} disabled={saving || !canSave}
-                className="rounded-lg px-4 min-h-[44px] text-sm font-semibold text-white disabled:opacity-60"
-                style={{ background: BRAND }}>{saving ? 'Saving…' : 'Save'}</button>
-              <button onClick={onCancel} disabled={saving}
-                className="rounded-lg border px-3 min-h-[44px] text-xs font-semibold bg-white hover:bg-slate-50 disabled:opacity-50">Cancel</button>
-              <span className="text-[11px] text-slate-400">
-                Saved against this dock only, and read back before it says saved.
-              </span>
+      className="rounded-xl border border-blue-200 bg-white p-3 sm:p-4 shadow-sm">
+      {/* TWO COLUMNS ON A MONITOR, ONE EVERYWHERE ELSE. The first cut put a 672px form in the
+          left corner of a 1,552px box and left the other 880px white, with Save 1,300px down
+          the page — a dispatcher's monitor is 1,000px tall, so Save was below the fold of a
+          form that is mostly receiving hours. The form column is still capped (a 1,600px time
+          input reads worse, not better); the width goes to a rail that keeps Save, Cancel and
+          the dock's name in view for the whole scroll. */}
+      <div className="xl:grid xl:grid-cols-[minmax(0,42rem)_minmax(16rem,22rem)] xl:gap-8 xl:items-start">
+        <div className="space-y-3 min-w-0">
+          <div className="flex items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Editing this dock</div>
+              {/* WHICH DOCK, IN FULL, ABOVE THE FIELDS. Hours are per address; a rep who thinks
+                  they are editing "the customer" will set the wrong door's closing time. */}
+              <div className="text-sm font-semibold text-slate-800 break-words">{dock?.name || 'this customer'}</div>
+              {where && <div className="text-[11px] text-slate-500 break-words">{where}</div>}
             </div>
-          </>
+            {/* On a phone Cancel shares the title line instead of dropping onto a row of its
+                own; at xl the rail carries it. */}
+            <button onClick={onCancel} disabled={saving}
+              className="xl:hidden shrink-0 rounded-lg border px-3 min-h-[44px] text-xs font-semibold bg-white hover:bg-slate-50 disabled:opacity-50">Cancel</button>
+          </div>
+
+          {loading
+            ? <div className="text-sm text-slate-500">Reading what is on file…</div>
+            : (
+              <>
+                {/* THE SAME EDITOR THE MAP USES. `drivers` is empty here on purpose — the barred-
+                    driver list is chosen off the board's own roster, which this screen does not
+                    load; everything else is identical. Capped at 42rem below xl too: a form wants
+                    a column (SCREEN_FORM's rule in this file). */}
+                <div className="w-full max-w-2xl"><StopNotesEditor draft={draft} setDraft={(patch) => setDraft((d) => ({ ...d, ...patch }))} compact drivers={[]} /></div>
+                {err && <div className="rounded-lg border border-red-200 bg-red-50 text-red-800 text-xs p-2 break-words max-w-2xl">{err}</div>}
+                <div className="xl:hidden space-y-3 border-t pt-3 max-w-2xl">
+                  {notice}
+                  {actions}
+                </div>
+              </>
+            )}
+        </div>
+
+        {/* THE RAIL — a monitor only. Sticky, so the buttons ride along with a form that is
+            taller than the screen, and the dock is named beside them so the rep confirms what
+            they are saving to without scrolling back up. */}
+        {!loading && (
+          <aside className="hidden xl:block xl:sticky xl:top-4 space-y-3 rounded-lg border bg-slate-50 p-3">
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Saving to</div>
+              <div className="text-sm font-semibold text-slate-800 break-words">{dock?.name || 'this customer'}</div>
+              {where && <div className="text-[11px] text-slate-500 break-words">{where}</div>}
+            </div>
+            {notice}
+            {actions}
+          </aside>
         )}
+      </div>
     </div>
   );
 }
